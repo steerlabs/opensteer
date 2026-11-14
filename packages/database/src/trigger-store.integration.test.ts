@@ -1059,7 +1059,7 @@ integration.sequential("Trigger failure auto-pause", () => {
       }),
     ).rejects.toMatchObject({
       code: "conflict",
-      message: "Webhook Trigger is not active",
+      message: "Webhook automation is not active",
     });
   });
   it("does not reset the count when a stale-Revision occurrence succeeds", async ({

@@ -298,7 +298,7 @@ it("fits largest catalog and single-message tool pages but rejects an oversized 
     items: [largeItem, { ...largeItem, itemId: createId("message") }],
   });
   expect(oversized.error?.issues.map(({ message }) => message)).toEqual([
-    "Thread history exceeds the agent output byte limit",
+    "Task history exceeds the agent output byte limit",
   ]);
 });
 

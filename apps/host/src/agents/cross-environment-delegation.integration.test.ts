@@ -1336,7 +1336,7 @@ integration("personal task delegation lifecycle", () => {
       fixture,
       (await readToolRecords(store, verbose)).run!.id,
     );
-    const note = "\n\n[Reply truncated. The full reply is in the task Thread.]";
+    const note = "\n\n[Reply truncated. The full reply is in the task.]";
     const budget = assignmentResultMaxBytes - Buffer.byteLength(note, "utf8");
     // The cut falls inside a four-byte character, which must not be split.
     await reply(verboseWorker, `${"x".repeat(budget - 1)}🙂${"y".repeat(4_096)}`);

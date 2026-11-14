@@ -39,7 +39,7 @@ export async function requireDeviceAccess(
     .where("id", "=", machineId)
     .executeTakeFirst();
   if (!runner || runner.revokedAt)
-    throw new OpensteerError({ code: "not_found", message: "Active device not found" });
+    throw new OpensteerError({ code: "not_found", message: "Active computer not found" });
   if (!online) throw new DeviceAccessRefusal("device-offline", machineId, capability);
   if (!deviceAccess(runner.accessPolicy)[capability])
     throw new DeviceAccessRefusal("device-access-off", machineId, capability);

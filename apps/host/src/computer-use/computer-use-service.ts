@@ -1241,7 +1241,7 @@ export class ComputerUseService {
       const title = holder.threadTitle;
       throw new ComputerUseError(
         "busy",
-        `${session.runnerName} is already being used by another task.${title ? ` (Thread: ${title})` : ""} ${computerUseBusyNextStep}`,
+        `${session.runnerName} is already being used by another task.${title ? ` (Task: ${title})` : ""} ${computerUseBusyNextStep}`,
         true,
       );
     }
@@ -1317,7 +1317,7 @@ export class ComputerUseService {
       .get(session.runnerId)
       ?.get(computerUseHolderKey(holdingOf(scope)));
     const title = holder?.runId !== session.runId ? holder?.threadTitle : null;
-    return `${title ? `${message} (Thread: ${title})` : message} ${computerUseBusyNextStep}`;
+    return `${title ? `${message} (Task: ${title})` : message} ${computerUseBusyNextStep}`;
   }
 
   // ---- Mac operations --------------------------------------------------

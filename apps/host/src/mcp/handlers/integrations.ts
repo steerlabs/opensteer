@@ -1357,7 +1357,7 @@ function integrationRequestGuidance(
         // A deduplicated ask belongs to the thread that opened it, so its
         // outcome is delivered there, not here.
         return origin.replayed
-          ? `An equivalent Request is already pending, so no second one was opened; its outcome is delivered to the thread that opened it. ${asked} Do not submit this request again.`
+          ? `An equivalent Request is already pending, so no second one was opened; its outcome is delivered to the task that opened it. ${asked} Do not submit this request again.`
           : `${asked} This Request is durable and still open. Do not submit this request again.`;
       }
       // An occurrence that files the same ask again is handed the Request that
@@ -1366,7 +1366,7 @@ function integrationRequestGuidance(
       const opened = origin.replayed
         ? `An equivalent Request is already pending, so no second one was opened. ${asked}`
         : asked;
-      return `${opened} This request is durable and outlives this Trigger occurrence, but no answer comes back to it; a later occurrence can inspect readiness. Do not submit this request again.`;
+      return `${opened} This request is durable and outlives this automation occurrence, but no answer comes back to it; a later occurrence can inspect readiness. Do not submit this request again.`;
     }
     case "fulfilled":
       return "This request was fulfilled. Use integration_search now for current access and available operations.";
@@ -1576,7 +1576,7 @@ function integrationScope(caller: AgentCaller): AnyIntegrationToolsScope {
   if (caller.kind === "connection")
     throw new OpensteerError({
       code: "forbidden",
-      message: "This integration requires an anchor Thread",
+      message: "This integration requires a task",
     });
   const p = caller.program;
   if (p.kind === "trigger") return { ...p, aud: "opensteer-trigger-integration-tools" };

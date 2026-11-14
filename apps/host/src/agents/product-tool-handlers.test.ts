@@ -614,7 +614,7 @@ describe("Product tool handlers", () => {
         title: "Unavailable driver",
         type: "thread.delegate",
       }),
-    ).rejects.toThrow("cannot run harness driver native");
+    ).rejects.toThrow("cannot run native AI accounts");
     expect(delegateThread).not.toHaveBeenCalled();
     expect(enqueueThreadInput).not.toHaveBeenCalled();
   });

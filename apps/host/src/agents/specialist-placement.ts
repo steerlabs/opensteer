@@ -89,7 +89,7 @@ export async function resolveDelegationSpecialist(
   if ((selector || existingThread?.specialistId) && !specialist)
     throw badRequest("Specialist is not registered");
   if (existingThread && selector && selector !== specialist?.id && selector !== specialist?.plugin)
-    throw badRequest("An existing Thread keeps its specialist binding");
+    throw badRequest("An existing task keeps its specialist");
   if (specialist && specialist.ownerUserId !== userId)
     throw forbidden(
       `${specialist.plugin} uses ${specialist.ownerName ?? specialist.ownerUserId}'s accounts; add it for yourself to use your own`,

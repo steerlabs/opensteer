@@ -1181,7 +1181,7 @@ describe("per-app sessions", () => {
       retryable: false,
     });
     await expect(observe(test.service, callable, third)).rejects.toThrow(
-      "This app is already being used by another task. (Thread: Tidy the notes)",
+      "This app is already being used by another task. (Task: Tidy the notes)",
     );
     expect(test.service.sessionsForRunner(runnerId)).toHaveLength(2);
     // Busy on a new app leaves the existing Calendar session alive.

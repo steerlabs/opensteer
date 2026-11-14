@@ -1326,7 +1326,7 @@ export async function updateThreadExecutionSelection(
         transaction,
         current.environmentId,
         input.requestedBy,
-        "Only the execution owner can change this Thread's AI engine",
+        "Only the execution owner can change this task's AI account",
       );
       return {
         asOfSequence: await deploymentHead(transaction),
@@ -1342,7 +1342,7 @@ export async function updateThreadExecutionSelection(
     if (!observed)
       throw new OpensteerError({
         code: "not_found",
-        message: "Thread not found",
+        message: "Task not found",
       });
     await requirePersonalOwner(transaction, input.requestedBy);
     const requestedHarness = await transaction
@@ -1374,7 +1374,7 @@ export async function updateThreadExecutionSelection(
       transaction,
       thread.environmentId,
       input.requestedBy,
-      "Only the execution owner can change this Thread's AI engine",
+      "Only the execution owner can change this task's AI account",
     );
     const activeRun = await transaction
       .selectFrom("runs")
@@ -1392,7 +1392,7 @@ export async function updateThreadExecutionSelection(
     if (requestedHarness.environmentId !== thread.environmentId) {
       throw new OpensteerError({
         code: "bad_request",
-        message: "AI engine belongs to a different execution environment",
+        message: "AI account belongs to a different computer",
       });
     }
     if (requestedHarness.driverKind !== continuationIdentity.driverKind) {
@@ -1558,7 +1558,7 @@ export async function resumeThreadInputQueue(
     if (!observed)
       throw new OpensteerError({
         code: "not_found",
-        message: "Thread not found",
+        message: "Task not found",
       });
     await lockThreadRow(transaction, input.threadId);
     const thread = await transaction
@@ -1581,7 +1581,7 @@ export async function resumeThreadInputQueue(
     if (thread.status === "archived")
       throw new OpensteerError({
         code: "conflict",
-        message: "Archived threads cannot run",
+        message: "Archived tasks cannot run",
       });
     const payload = {
       type: "thread.inputQueue.resume",
@@ -1709,7 +1709,7 @@ export async function renameThread(
       if (!destination)
         throw new OpensteerError({
           code: "not_found",
-          message: "Thread not found",
+          message: "Task not found",
         });
       const thread = await transaction
         .selectFrom("threads")
@@ -1727,7 +1727,7 @@ export async function renameThread(
       if (!thread)
         throw new OpensteerError({
           code: "not_found",
-          message: "Thread not found",
+          message: "Task not found",
         });
       await requireThreadWriteAuthority(transaction, thread, input, "rename");
       if (existing)
@@ -1849,7 +1849,7 @@ export async function setThreadIcon(
       if (!destination)
         throw new OpensteerError({
           code: "not_found",
-          message: "Thread not found",
+          message: "Task not found",
         });
       const thread = await transaction
         .selectFrom("threads")
@@ -1867,7 +1867,7 @@ export async function setThreadIcon(
       if (!thread)
         throw new OpensteerError({
           code: "not_found",
-          message: "Thread not found",
+          message: "Task not found",
         });
       await requireThreadWriteAuthority(transaction, thread, input, "set_icon");
       if (existing)
@@ -2066,7 +2066,7 @@ export async function updateThreadAccessMode(
     if (!observed)
       throw new OpensteerError({
         code: "not_found",
-        message: "Thread not found",
+        message: "Task not found",
       });
     await requirePersonalOwner(transaction, input.requestedBy);
     const thread = await transaction
@@ -2086,7 +2086,7 @@ export async function updateThreadAccessMode(
       transaction,
       thread.environmentId,
       input.requestedBy,
-      "Only the execution owner can change this Thread's access mode",
+      "Only the execution owner can change this task's access mode",
     );
     if (thread.accessMode === accessMode)
       return {

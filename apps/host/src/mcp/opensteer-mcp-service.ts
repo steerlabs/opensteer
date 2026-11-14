@@ -552,7 +552,7 @@ export class OpensteerMcpService {
       [...new Set(ids)].map(async (id) => {
         const thread = await this.options.store.getThreadForOwner(id, caller.userId);
         if (!thread)
-          throw new OpensteerError({ code: "forbidden", message: "Thread is unavailable" });
+          throw new OpensteerError({ code: "forbidden", message: "Task is unavailable" });
         return thread;
       }),
     );

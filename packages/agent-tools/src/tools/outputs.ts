@@ -563,7 +563,7 @@ export const ThreadReadOutputSchema = z
   })
   .refine(
     (result) => new TextEncoder().encode(JSON.stringify(result)).byteLength <= 432 * 1024,
-    "Thread history exceeds the agent output byte limit",
+    "Task history exceeds the agent output byte limit",
   );
 
 export { UseCardResultSchema as UseCardOutputSchema } from "@opensteer/protocol";

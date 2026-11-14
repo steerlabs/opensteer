@@ -44,7 +44,7 @@ describe("ContinuationService", () => {
     await fixture.service.close();
     expect(fixture.enqueueThreadInput).toHaveBeenCalledOnce();
     expect(fixture.enqueueThreadInput.mock.calls[0]![0].content[0].text).toContain(
-      "rebuilds device routes",
+      "rebuilds computer routes",
     );
     expect(
       await continuationMessage(fulfilled, {
@@ -311,7 +311,7 @@ describe("ContinuationService", () => {
   it("settles a permanently unreachable originating Thread", async () => {
     const failure = new OpensteerError({
       code: "conflict",
-      message: "Archived threads cannot run",
+      message: "Archived tasks cannot run",
     });
     const request = fulfilledRequest("browser.access");
     const fixture = makeService([request], {
@@ -320,7 +320,7 @@ describe("ContinuationService", () => {
     fixture.service.notify();
     await fixture.service.close();
     expect(fixture.recordContinuationAttempt).toHaveBeenCalledWith({
-      reason: "Archived threads cannot run",
+      reason: "Archived tasks cannot run",
       requestId: request.id,
       status: "undeliverable",
     });

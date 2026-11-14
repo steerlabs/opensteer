@@ -37,7 +37,7 @@ describe("WatchProgramService", () => {
     await expect(service.get("token", revisionId)).resolves.toEqual(program);
     expect(watchProgram).toHaveBeenCalledWith(claims);
     await expect(service.get("token", createId("triggerRevision"))).rejects.toThrow(
-      "does not grant this Trigger revision",
+      "does not grant this automation revision",
     );
   });
 });

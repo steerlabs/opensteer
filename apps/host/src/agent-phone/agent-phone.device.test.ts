@@ -1442,12 +1442,12 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       const row = await phoneRow(agentB, runnerId);
       expect(row).toMatchObject({ access: "read-write", inUse: true });
       expect(row.nextAction).toContain(
-        `${phoneName} is already being used by another task. (Thread: Text the driver)`,
+        `${phoneName} is already being used by another task. (Task: Text the driver)`,
       );
       refsB = row.toolRefs!;
       const busy = refusalOf(await call(agentB, "integration_call", { toolRef: refsB.observe }));
       expect(busy).toContain(
-        `${phoneName} is already being used by another task. (Thread: Text the driver)`,
+        `${phoneName} is already being used by another task. (Task: Text the driver)`,
       );
     });
 
