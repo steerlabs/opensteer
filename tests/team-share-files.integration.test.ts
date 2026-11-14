@@ -498,7 +498,9 @@ it("verifies size and digest before delivering partner bytes and reports peer ou
     request.mockRejectedValue(new Error("offline"));
     const offline = await download(f.a, f.aSession, remote.id);
     expect(offline.status).toBe(409);
-    expect(await offline.json()).toMatchObject({ reason: "partner-unreachable", retryable: true });
+    expect(await offline.json()).toMatchObject({
+      error: { reason: "partner-unreachable", retryable: true },
+    });
     request.mockRestore();
     expect(Buffer.from(await (await download(f.a, f.aSession, remote.id)).arrayBuffer())).toEqual(
       bytes,
