@@ -123,9 +123,11 @@ jobs:
       OPENSTEER_DESKTOP_TARGET_ARCH: arm64
       OPENSTEER_RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
       OPENSTEER_SOURCE_REVISION: ${{ needs.preflight.outputs.sha }}
-      OPENSTEER_RELEASE_TIMING_FILE: ${{ runner.temp }}/release-timing.jsonl
       OPENSTEER_MAC_SIGN_TIMINGS: "1"
     steps:
+      # The runner context is unavailable in job env, so the path is set from a step.
+      - name: Locate release phase timings
+        run: echo "OPENSTEER_RELEASE_TIMING_FILE=$RUNNER_TEMP/release-timing.jsonl" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ needs.preflight.outputs.sha }}
