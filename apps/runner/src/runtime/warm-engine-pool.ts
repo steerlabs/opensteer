@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { RunnerCommand } from "@opensteer/protocol";
-import type { HarnessSkillPlan } from "@opensteer/harness";
+import type { HarnessCapabilities, HarnessSkillPlan } from "@opensteer/harness";
 import type { HarnessInstanceId, ThreadId } from "@opensteer/core";
 import type { HarnessSession } from "@opensteer/harness";
 import type { BrowserCdpRelay } from "../browser/browser-cdp-relay.js";
@@ -157,7 +157,7 @@ export class WarmEnginePool {
  * its machine notice — are not in it; the session is rebound with them.
  */
 export function warmEngineKey(input: {
-  readonly perTurnEffortOption?: string | undefined;
+  readonly warmSelection?: HarnessCapabilities["warmSelection"];
   readonly attachmentRoot: string | null;
   readonly baseEnvironment: Readonly<Record<string, string>>;
   readonly context: Extract<RunnerCommand, { readonly type: "run.execute" }>["context"];
@@ -195,14 +195,20 @@ export function warmEngineKey(input: {
         context.agentTools.skills,
         context.taskPurpose,
         context.personalContext,
-        {
-          ...context.modelSelection,
-          options: Object.fromEntries(
-            Object.entries(context.modelSelection.options).filter(
-              ([key]) => key !== input.perTurnEffortOption,
-            ),
-          ),
-        },
+        input.warmSelection
+          ? {
+              providerId: context.modelSelection.providerId,
+              modelId: input.warmSelection.model ? null : context.modelSelection.modelId,
+              nativeModelId: input.warmSelection.model
+                ? null
+                : context.modelSelection.nativeModelId,
+              options: Object.fromEntries(
+                Object.entries(context.modelSelection.options).filter(
+                  ([key]) => !input.warmSelection?.options.includes(key),
+                ),
+              ),
+            }
+          : context.modelSelection,
         [...context.plugins.versions].sort((a, b) => a.pluginId.localeCompare(b.pluginId)),
         input.skills,
         input.homeSkillsDigest,

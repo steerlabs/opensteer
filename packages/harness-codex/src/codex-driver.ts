@@ -290,7 +290,7 @@ export interface CodexLaunch {
 /** Every Codex adapter runs with the same provider capabilities. */
 const codexHarnessCapabilities: HarnessCapabilities = Object.freeze({
   voiceCalls: true,
-  perTurnEffortOption: "effort",
+  warmSelection: { options: ["effort"] },
   approvals: true,
   attachments: true,
   messageAttachments: {

@@ -34,8 +34,6 @@ import type { z } from "zod";
 import type { InstalledEngineUpdateFacts } from "./engine-installation.js";
 
 export interface HarnessCapabilities {
-  /** Model option applied on every turn, safe to change while reusing a session. */
-  readonly perTurnEffortOption?: string;
   readonly voiceCalls?: true;
   readonly approvals: boolean;
   readonly attachments: boolean;
@@ -87,6 +85,11 @@ export interface HarnessCapabilities {
    * stream closed, so the Runner waits for that event instead of stopping it.
    */
   readonly warmReuse?: boolean;
+  /** The model selection a reused engine applies itself on its next turn; the rest restarts it. */
+  readonly warmSelection?: {
+    readonly model?: boolean;
+    readonly options: readonly string[];
+  };
 }
 
 /**

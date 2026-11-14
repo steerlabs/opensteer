@@ -2569,7 +2569,7 @@ export class RunnerRuntime {
       const { instructions = null, path: workspacePath } = workspace;
       const warmKeyFor = (providerSessionReference: string | null, machineAccessLaunch: string) =>
         warmEngineKey({
-          perTurnEffortOption: adapter.capabilities.perTurnEffortOption,
+          warmSelection: adapter.capabilities.warmSelection,
           attachmentRoot: attachmentRoot ?? null,
           baseEnvironment,
           context,
@@ -2797,6 +2797,7 @@ export class RunnerRuntime {
                   omittedMachines:
                     machineAccessContext.machines.length + machineAccessContext.omittedMachines,
                 },
+                Date.now(),
                 machineAccessUnavailable,
               ),
         machineAccessPlatform: launch?.machineAccessPlatform,
@@ -2914,7 +2915,6 @@ export class RunnerRuntime {
         const execution = active.session.execute({
           attachments,
           context: {
-            teamTurnContext: context.teamTurnContext,
             assignment: context.assignment,
             requesterTimeZone: context.requesterTimeZone,
             threadState: context.threadState,

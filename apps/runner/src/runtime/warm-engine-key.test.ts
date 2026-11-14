@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { createId, ModelIdSchema, SequenceSchema, TeamSourceSchema } from "@opensteer/core";
+import { createId, ModelSelectionSchema, SequenceSchema, TeamSourceSchema } from "@opensteer/core";
 import { warmEngineKey } from "./warm-engine-pool.js";
 it("invalidates warm reuse for tool inventory, instructions, roots and discovered skills while preserving per-Run credential rebinding", () => {
   const context = {
@@ -62,27 +62,39 @@ it("invalidates warm reuse for tool inventory, instructions, roots and discovere
   };
   expect(warmEngineKey(team)).toBe(warmEngineKey(privateTurn));
   expect(warmEngineKey(team)).toBe(before);
-  const effortInput = {
+  const selectionChanged = {
     ...input,
-    perTurnEffortOption: "effort",
     context: {
       ...context,
-      modelSelection: { ...context.modelSelection, options: { effort: "high" } },
+      modelSelection: ModelSelectionSchema.parse({
+        ...context.modelSelection,
+        modelId: "another",
+        options: { effort: "low" },
+      }),
     },
   };
-  expect(warmEngineKey(effortInput)).toBe(
-    warmEngineKey({ ...input, perTurnEffortOption: "effort" }),
-  );
-  expect(warmEngineKey({ ...effortInput, perTurnEffortOption: undefined })).not.toBe(before);
+  expect(warmEngineKey(selectionChanged)).not.toBe(before);
   expect(
     warmEngineKey({
-      ...effortInput,
+      ...selectionChanged,
+      warmSelection: { model: true, options: ["effort", "fast"] },
+    }),
+  ).toBe(warmEngineKey({ ...input, warmSelection: { model: true, options: ["effort", "fast"] } }));
+  expect(
+    warmEngineKey({
+      ...selectionChanged,
+      warmSelection: { model: true, options: ["effort", "fast"] },
       context: {
-        ...effortInput.context,
-        modelSelection: { ...context.modelSelection, options: { effort: "high", speed: "fast" } },
+        ...selectionChanged.context,
+        modelSelection: ModelSelectionSchema.parse({
+          ...selectionChanged.context.modelSelection,
+          options: { effort: "low", thinking: false },
+        }),
       },
     }),
-  ).not.toBe(warmEngineKey(effortInput));
+  ).not.toBe(
+    warmEngineKey({ ...input, warmSelection: { model: true, options: ["effort", "fast"] } }),
+  );
   context.agentTools.token = "rotated";
   expect(warmEngineKey(input)).toBe(before);
   for (const change of [
