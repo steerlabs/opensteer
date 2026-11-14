@@ -236,6 +236,7 @@ import type { AttachmentService } from "./attachments/attachment-service.js";
 import type { RunFileRelay } from "./integrations/run-file-relay.js";
 import { browserRuntimeCompatibilityReason } from "./browser/browser-runtime-compatibility.js";
 import type { BrowserSourceService } from "./browser/browser-source-service.js";
+import type { PasswordSignInService } from "./browser/password-sign-in-service.js";
 import type {
   BrowserRelayEvent,
   RunnerBrowserHub,
@@ -377,6 +378,7 @@ export interface HostServerDependencies {
   readonly browser: BrowserService;
   readonly browserTabs: BrowserTabGroupService;
   readonly browserSources: BrowserSourceService;
+  readonly passwordSignIns: Pick<PasswordSignInService, "get" | "respond">;
   readonly signBrowserSourceInvitation: (bytes: Uint8Array) => string;
   /** Handed to a browser relay so it can verify the attach tickets it is sent. */
   readonly browserAttachPublicKeys: readonly {
@@ -567,6 +569,7 @@ export async function createHostServer(
         });
     },
     service: dependencies.browserSources,
+    passwords: dependencies.passwordSignIns,
     canonicalOrigin: dependencies.discovery.document.canonicalOrigin,
     authority: dependencies.discovery,
     personal: dependencies.personalRemoteAccess !== undefined,

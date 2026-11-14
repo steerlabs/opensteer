@@ -6,7 +6,8 @@ import { z } from "zod";
 import { OperationKeySchema, BrowserAccessSuggestionInputSchema } from "./inputs.js";
 import {
   BrowserProfileListOutputSchema,
-  SignInOutputSchema,
+  CopyChromeCookiesOutputSchema,
+  UseSavedLoginOutputSchema,
   UseCardOutputSchema,
   RequestCreationOutputSchema,
 } from "./outputs.js";
@@ -37,26 +38,51 @@ export const use_card = defineAgentTool({
   callers: ["run"] as const,
 });
 
-export const sign_in = defineAgentTool({
-  name: "sign_in",
-  title: "Request sign-in",
+const SiteInputSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(2_048)
+  .describe("Site whose login is needed, such as github.com. Covers its subdomains.");
+const ReasonInputSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(500)
+  .describe("Why this task needs the account.");
+
+export const copy_chrome_cookies = defineAgentTool({
+  name: "copy_chrome_cookies",
+  title: "Copy Chrome cookies",
   description:
-    "Request saved-login or Chrome sign-in authorization. Saved passwords fill websites only in the hosting computer's browser. Run-only; returns the outcome. Only a passwords field means Passwords can help, and says what it needs. Do not poll, repeat or route around the Request. Use ready loginRef only for sealed field filling; never read/reveal credentials. Verify the account. Open a website sign-in page first; omit tabId for a genuine Mac/phone app.",
+    "Copy the person's Chrome cookies for a site into a browser tab, with their approval. No typing or codes, but some sites (often banks) tie a sign-in to the original browser and refuse copied cookies; use_saved_login signs in fresh instead. copied means only that cookies arrived: reload and check the account. You never see cookie values. Run-only.",
   input: z
     .strictObject({
-      reason: z.string().trim().min(1).max(500).describe("Why this task needs the account."),
-      tabId: BrowserSurfaceIdSchema.optional().describe(
-        "Website tab on its sign-in page; omit for a genuine app.",
-      ),
-      site: z
-        .string()
-        .trim()
-        .min(1)
-        .max(2_048)
-        .describe("Site whose login is needed, such as github.com."),
+      reason: ReasonInputSchema,
+      tabId: BrowserSurfaceIdSchema.describe("Browser tab to receive the cookies."),
+      site: SiteInputSchema,
     })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
-  output: SignInOutputSchema,
+  output: CopyChromeCookiesOutputSchema,
+  access: "write",
+  callers: ["run"] as const,
+});
+
+export const use_saved_login = defineAgentTool({
+  name: "use_saved_login",
+  title: "Use a saved login",
+  description:
+    'Use a login saved in Opensteer Passwords, with the person\'s approval. ready gives a loginRef you fill without seeing the values: in a browser, focus each field and call fillLogin(loginRef, "username" | "password" | "code"); in a genuine Mac or phone app, type {loginRef, field}. Then submit and check the account. The reference lasts about an hour, so call again to sign back in after a site logs you out. When Passwords lacks the login, is not set up or is off, Opensteer shows the person how to fix it under your reply and tells you once a login is saved; that status is true only when returned, so if the person says it is fixed or asks again, call again first. Run-only.',
+  input: z
+    .strictObject({
+      reason: ReasonInputSchema,
+      tabId: BrowserSurfaceIdSchema.optional().describe(
+        "Browser tab showing the site's sign-in form; omit for a genuine app.",
+      ),
+      site: SiteInputSchema,
+    })
+    .safeExtend({ operationKey: OperationKeySchema.optional() }),
+  output: UseSavedLoginOutputSchema,
   access: "write",
   callers: ["run"] as const,
 });

@@ -161,6 +161,7 @@ import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js"
 import { BrowserAttachTicketSigner } from "../browser/browser-ticket.js";
 import { PasswordSignInService } from "../browser/password-sign-in-service.js";
 import { passwordsLoginSavedMessage } from "../browser/passwords-offers.js";
+import { SavedLoginService } from "../browser/saved-logins.js";
 import { RunnerBrowserHub } from "../browser/runner-browser-hub.js";
 import { RunnerBrowserRuntimeRouter } from "../browser/runner-browser-runtime.js";
 import { ChannelService } from "../channels/channel-service.js";
@@ -917,6 +918,16 @@ export async function createHostRuntime(
       store: new BrowserSourceStore(database),
       requests: store.requests,
       onError: (error) => reportBrowserSignInError(error),
+      onRequestResolved: () => notifyIntegrationContinuations(),
+      onDeploymentEvent: (event) => publishDeploymentEvent(event),
+    });
+    const savedLogins = new SavedLoginService({
+      passwords: passwordSignIns,
+      browser,
+      requests: store.requests,
+      canonicalOrigin: config.canonicalOrigin.origin,
+      currentRoute: async () => (await personalRemoteAccess?.status())?.route ?? null,
+      onError: (error) => reportBrowserSignInError(error),
       onLoginSaved: async (offer) => {
         await commands.enqueueThreadInput({
           content: [{ text: passwordsLoginSavedMessage(offer), type: "text" }],
@@ -927,9 +938,6 @@ export async function createHostRuntime(
           threadId: offer.threadId,
         });
       },
-      onRequestResolved: () => notifyIntegrationContinuations(),
-      onDeploymentEvent: (event) => publishDeploymentEvent(event),
-      passwords: passwordSignIns,
       stoppedByPerson: (threadId) => store.latestRunStoppedByPerson(threadId),
     });
     disconnectBrowserSources = () => browserSources.disconnectRouteAdmittedSources();
@@ -2208,6 +2216,7 @@ export async function createHostRuntime(
       placeContext,
       onBrowserUsage: (credits) => browser.announceUsage(credits),
       browserSources,
+      savedLogins,
       deviceAccess: deviceAccessService,
       machineFullDiskAccess,
       browser,
@@ -2508,6 +2517,7 @@ export async function createHostRuntime(
         browser,
         browserTabs,
         browserSources,
+        passwordSignIns,
         signBrowserSourceInvitation: (bytes) =>
           sign(null, bytes, keys.privateKey).toString("base64url"),
         browserAttachPublicKeys,
@@ -2837,6 +2847,7 @@ export async function createHostRuntime(
         await step("browser", () => browser.close());
         await step("password sign-ins", () => passwordSignIns.close());
         browserSources.close();
+        savedLogins.close();
         runnerBrowsers.close();
         browserRelay.close();
         await step("shell hub", () => shellHub?.close());

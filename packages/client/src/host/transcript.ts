@@ -1216,14 +1216,12 @@ function toolEntryId(runId: string | null, callId: string): string {
 export function requestReceipt(
   request: Exclude<Request, { status: "pending" }>,
 ): RequestReceiptEntry {
-  const passwordsOffer = browserSignInPasswordsOffer(request);
   return {
     createdAt: request.resolvedAt,
     ...(request.status === "declined" ? { declined: true } : {}),
     id: `request:${request.id}`,
     kind: "request",
     outcome: requestOutcome(request),
-    ...(passwordsOffer === null ? {} : { passwordsOffer }),
     requestId: request.id,
     requestKind: request.kind,
     runId: request.originatingRunId,
@@ -1272,18 +1270,6 @@ function requestOutcome(request: Request): string {
   return prefix;
 }
 
-function browserSignInPasswordsOffer(
-  request: Request,
-): NonNullable<RequestReceiptEntry["passwordsOffer"]> | null {
-  if (request.payload.kind !== "browser.sign-in" || request.status !== "fulfilled") return null;
-  const response = BrowserSignInRequestResponseSchema.safeParse(
-    request.response.kind === "external" ? request.response.value : null,
-  );
-  return response.success && response.data.outcome === "not-signed-in" && response.data.passwords
-    ? { need: response.data.passwords, site: request.payload.site }
-    : null;
-}
-
 /** A sign-in receipt says what happened to the browser, in the card's own words. */
 export function browserSignInReceipt(request: Request): string {
   if (request.status === "declined") return "Not allowed";
@@ -1293,7 +1279,7 @@ export function browserSignInReceipt(request: Request): string {
   if (!response.success || response.data.outcome === "session-closed") return "Allowed";
   if (response.data.outcome === "not-signed-in") return "Chrome not signed in";
   const site = request.payload.kind === "browser.sign-in" ? request.payload.site : null;
-  return site ? `Signed in to ${browserSiteLabel(site)}` : "Signed in";
+  return site ? `Copied Chrome sign-in for ${browserSiteLabel(site)}` : "Copied Chrome sign-in";
 }
 
 /**

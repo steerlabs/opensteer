@@ -258,9 +258,9 @@ never another account, and inspection never sends cookie values. Any agent with 
 can act as the person on that site.
 
 When a Chrome connects while a Request nobody has allowed waits, and every paired Chrome is
-connected without the site, the Request ends as `not-signed-in`: the check `agentSignIn` makes
-before opening one. Left pending, its card offers only Don't allow, which tells the agent the
-person refused; ending it lets the agent offer signing in by hand or Opensteer Passwords.
+connected without the site, the Request ends as `not-signed-in`: the check
+`agentCopyChromeCookies` makes before opening one. Left pending, its card offers only Don't allow,
+which tells the agent the person refused; ending it lets the agent try another way in.
 
 A source token works only at the destination (origin and route generation) it paired on; a source
 paired before that rule binds to the first destination it connects through. The Host checks token,

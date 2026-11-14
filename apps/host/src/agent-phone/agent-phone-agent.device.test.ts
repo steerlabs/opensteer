@@ -427,8 +427,10 @@ describe.skipIf(requestedEngine === undefined)(
         const calls = turn.events.flatMap((event) =>
           event.type === "tool.started" ? [event.data] : [],
         );
-        const signIns = calls.filter((call) => call.tool.name === "sign_in");
-        expect(signIns, "the real engine discovers first-class sign_in").not.toHaveLength(0);
+        const signIns = calls.filter((call) => call.tool.name === "use_saved_login");
+        expect(signIns, "the real engine discovers first-class use_saved_login").not.toHaveLength(
+          0,
+        );
         for (const call of signIns) {
           const arguments_ = z
             .object({ site: z.string(), reason: z.string().min(1) })

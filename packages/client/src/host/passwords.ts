@@ -3,14 +3,16 @@ import { requestSettlementLabel } from "./request-settlement.js";
 import { toolOutputRecord, type Request } from "@opensteer/core";
 import {
   PasswordSignInRequestResponseSchema,
-  type PasswordSignInFailureReason,
+  SavedLoginResultSchema,
+  type PasswordsNeed,
   type PasswordSignInRequestResponse,
+  type SavedLoginResult,
+  type SavedLoginUnavailableReason,
 } from "@opensteer/protocol";
 import {
-  AgentBrowserSignInResultSchema,
-  type AgentBrowserSignInResult,
-  type BrowserSignInPasswords,
-  type BrowserSignInUnavailableReason,
+  ChromeCookiesResultSchema,
+  type ChromeCookiesResult,
+  type ChromeCookiesUnavailableReason,
 } from "@opensteer/protocol/browser-sources";
 import type { DesktopPasswordsStatus } from "@opensteer/protocol/desktop";
 import type { PasswordsBrokerAccount } from "@opensteer/protocol/passwords-broker";
@@ -164,29 +166,6 @@ export function passwordSignInExpiry(expiresAt: string, now: Date = new Date()):
  * How a sign-in ended
  * ------------------------------------------------------------------------- */
 
-/** Why a sign-in did not happen, in one line. */
-export function passwordSignInFailureMessage(
-  reason: PasswordSignInFailureReason,
-  domain: string,
-): string {
-  switch (reason) {
-    case "needs-sign-in-page":
-      return `Open the sign-in page on ${domain}, then try again`;
-    case "wrong-password":
-      return `${domain} didn’t accept the saved password`;
-    case "unsupported-page":
-      return `Opensteer couldn’t find where to sign in on ${domain}`;
-    case "blocked-destination":
-      return "The page tried to reach a blocked address, so nothing was handed to the agent";
-    case "cleanup-failed":
-      return "The private sign-in couldn’t be cleared, so nothing was handed to the agent";
-    case "busy":
-      return "Too many sign-ins at once";
-    case "needs-fresh-session":
-      return "This needs a new browser session. Ask your agent to open one and try again";
-  }
-}
-
 /** What a fulfilled sign-in Request came to. */
 export function passwordSignInResponseMessage(
   response: PasswordSignInRequestResponse,
@@ -197,14 +176,8 @@ export function passwordSignInResponseMessage(
   switch (response.outcome) {
     case "authorized":
       return `Allowed agents to sign in to ${domain} as ${response.account}`;
-    case "signed-in":
-      return response.method === "saved-password"
-        ? `Signed in to ${domain}`
-        : `You signed in to ${domain}`;
     case "expired":
       return "This sign-in timed out";
-    case "failed":
-      return passwordSignInFailureMessage(response.reason, domain);
     case "unavailable":
       switch (response.reason) {
         case "no-saved-login":
@@ -216,8 +189,6 @@ export function passwordSignInResponseMessage(
         case "not-responding":
           return `Passwords didn’t respond${onComputer}`;
       }
-    case "outcome-unknown":
-      return "Opensteer couldn’t confirm the sign-in";
     case "session-closed":
       return "The agent’s browser closed";
     case "interrupted":
@@ -253,7 +224,7 @@ export function passwordSignInOutcome(request: Request): PasswordSignInOutcome |
   );
   if (!response.success) return { signedIn: false, text: "Answered" };
   return {
-    signedIn: response.data.outcome === "signed-in" || response.data.outcome === "authorized",
+    signedIn: response.data.outcome === "authorized",
     text:
       passwordSignInResponseMessage(response.data, request.payload) +
       (requestSettlementLabel(request) ? ` · ${requestSettlementLabel(request)}` : ""),
@@ -266,100 +237,95 @@ export function passwordSignInReceipt(request: Request): string {
 }
 
 /* ------------------------------------------------------------------------- *
- * A `sign_in` step in the transcript
+ * Sign-in steps in the transcript
  * ------------------------------------------------------------------------- */
 
-/**
- * The result `sign_in` returned, read from the text every engine
- * records for it, or null when this client cannot read it.
- */
-export function readBrowserSignInResult(text: string): AgentBrowserSignInResult | null {
-  const parsed = AgentBrowserSignInResultSchema.safeParse(toolOutputRecord(text));
+/** What `use_saved_login` returned, read from the text every engine records, or null. */
+export function readSavedLoginResult(text: string): SavedLoginResult | null {
+  const parsed = SavedLoginResultSchema.safeParse(toolOutputRecord(text));
   return parsed.success ? parsed.data : null;
 }
 
-export interface BrowserSignInStep {
-  readonly hint: string;
-  readonly label: string;
-  /** Whether it signed in; null while the sign-in is still on its way. */
-  readonly signedIn: boolean | null;
+/** What `copy_chrome_cookies` returned, read from the text every engine records, or null. */
+export function readChromeCookiesResult(text: string): ChromeCookiesResult | null {
+  const parsed = ChromeCookiesResultSchema.safeParse(toolOutputRecord(text));
+  return parsed.success ? parsed.data : null;
 }
 
-/**
- * What one `sign_in` call came to, in the words its Request card and
- * receipt use. `requestedSite` is the site the call asked for, which names the
- * results that carry none.
- */
-export function browserSignInStep(
-  result: AgentBrowserSignInResult,
-  requestedSite: string | null,
-): BrowserSignInStep {
-  const site = "site" in result ? result.site : requestedSite;
-  const domain = site === null ? "the site" : browserSiteLabel(site);
-  const failed = (hint: string): BrowserSignInStep => ({
-    hint,
-    label: `Couldn’t sign in to ${domain}`,
-    signedIn: false,
-  });
+export interface SignInStep {
+  readonly hint: string;
+  readonly label: string;
+  /** Whether the step did what it asked; null while it is still on its way. */
+  readonly succeeded: boolean | null;
+}
+
+const notAllowed: SignInStep = { hint: "", label: "Not allowed", succeeded: false };
+
+/** What one `use_saved_login` call came to, in the words its Request card uses. */
+export function savedLoginStep(result: SavedLoginResult): SignInStep {
+  const domain = browserSiteLabel(result.site);
   switch (result.status) {
-    case "applied":
+    case "ready":
+      return {
+        hint: `As ${result.account}`,
+        label: `Ready to sign in to ${domain}`,
+        succeeded: true,
+      };
+    case "pending":
+      return {
+        hint: "Waiting for you",
+        label: `Asked to use your saved login for ${domain}`,
+        succeeded: null,
+      };
+    case "declined":
+      return notAllowed;
+    case "unavailable":
+      return {
+        hint: savedLoginUnavailableMessage(result.reason, result.site),
+        label: `Couldn’t use a saved login for ${domain}`,
+        succeeded: false,
+      };
+  }
+}
+
+/** What one `copy_chrome_cookies` call came to. */
+export function chromeCookiesStep(result: ChromeCookiesResult): SignInStep {
+  const domain = browserSiteLabel(result.site);
+  switch (result.status) {
+    case "copied":
       return {
         hint:
           result.profileName === null
             ? `From ${result.sourceName}`
             : `From ${result.sourceName} · saved to ${result.profileName}`,
-        label: `Signed in to ${domain}`,
-        signedIn: true,
+        label: `Copied your Chrome sign-in for ${domain}`,
+        succeeded: true,
       };
-    case "ready":
-      return {
-        hint: `As ${result.account}`,
-        label: `Ready to sign in to ${domain}`,
-        signedIn: null,
-      };
-    case "signed-in":
-      return result.method === "saved-password"
-        ? { hint: "With your saved password", label: `Signed in to ${domain}`, signedIn: true }
-        : { hint: "", label: `You signed in to ${domain}`, signedIn: true };
-    case "failed":
-      return failed(passwordSignInFailureMessage(result.reason, domain));
-    case "needs-code":
-      return { hint: "", label: `${domain} sent a code; the agent is getting it`, signedIn: null };
     case "pending":
       return {
         hint: "Waiting for you",
-        label:
-          result.waitingFor === "person" || result.waitingFor === "code"
-            ? `${domain} needs you to finish signing in`
-            : `Asked you to sign in to ${domain}`,
-        signedIn: null,
+        label: `Asked to copy your Chrome sign-in for ${domain}`,
+        succeeded: null,
       };
     case "declined":
-      return { hint: "", label: "Not allowed", signedIn: false };
-    case "resolved":
-      return { hint: "Already answered", label: `Asked to sign in to ${domain}`, signedIn: null };
-    case "not-signed-in":
-      return failed(`Chrome isn’t signed in to ${domain}`);
+      return notAllowed;
     case "unavailable":
-      return failed(browserSignInUnavailableMessage(result.reason, result.site));
+      return {
+        hint: chromeCookiesUnavailableMessage(result.reason, result.site),
+        label: `Couldn’t copy your Chrome sign-in for ${domain}`,
+        succeeded: false,
+      };
   }
 }
 
-function browserSignInUnavailableMessage(
-  reason: BrowserSignInUnavailableReason,
-  site: string,
-): string {
+function savedLoginUnavailableMessage(reason: SavedLoginUnavailableReason, site: string): string {
   switch (reason) {
     case "no-saved-login":
-      return `No saved login for ${browserSiteLabel(site)}. Save one in Opensteer Passwords or sign in in the browser tab`;
+      return `No saved login for ${browserSiteLabel(site)}`;
     case "needs-approval":
       return "A task or automation can’t ask you to allow a sign-in";
     case "rate-limited":
       return "Too many sign-in attempts for now";
-    case "needs-fresh-session":
-      return passwordSignInFailureMessage(reason, browserSiteLabel(site));
-    case "no-code-expected":
-      return "No sign-in was waiting for a code";
     case "passwords-off":
       return passwordSignInResponseMessage(
         { outcome: "unavailable", reason: "passwords-off" },
@@ -381,17 +347,29 @@ function browserSignInUnavailableMessage(
     case "stopped":
       return passwordSignInResponseMessage({ outcome: "interrupted" }, { site });
     case "busy":
-      return "Another agent is waiting for you to sign in to this site. Try again later";
+      return "Another agent is waiting for you to allow this site. Try again later";
     case "main-browser-required":
-      return `Saved logins fill only in the browser on the computer that runs Opensteer. Sign in to ${browserSiteLabel(site)} in the browser tab`;
-    case "unsupported-operation":
-    case "chrome-blocked":
-    case "limit":
+      return "Saved logins fill only in the browser on the computer that runs Opensteer";
     case "unsupported":
-    case "too-large":
     case "session-closed":
     case "runtime-outdated":
     case "not-allowed":
+      return browserSignInProblemCopy(reason, { context: "request", site, sourceName: null }).title;
+  }
+}
+
+function chromeCookiesUnavailableMessage(
+  reason: ChromeCookiesUnavailableReason,
+  site: string,
+): string {
+  switch (reason) {
+    case "chrome-signed-out":
+      return `Chrome isn’t signed in to ${browserSiteLabel(site)}`;
+    case "needs-approval":
+      return "A task or automation can’t ask you to allow a sign-in";
+    case "rate-limited":
+      return "Too many sign-in attempts for now";
+    default:
       return browserSignInProblemCopy(reason, { context: "request", site, sourceName: null }).title;
   }
 }
@@ -449,7 +427,6 @@ export const passwordsHowItWorks = [
   "You allow an account from any device signed in to this Opensteer. Your agents can then use it for your tasks.",
   "Take that access away any time in the Passwords window.",
   "Sign-ins can stay saved in the browser profile.",
-  "Sites you allowed from Chrome keep using Chrome.",
   passwordsCardsFact,
 ] as const;
 export const passwordsNeedsReset =
@@ -471,7 +448,7 @@ export interface PasswordsOfferLine {
 export function passwordsOfferLine(input: {
   readonly card: boolean;
   readonly computer: string | null;
-  readonly need: BrowserSignInPasswords;
+  readonly need: PasswordsNeed;
   readonly site: string;
 }): PasswordsOfferLine {
   const { computer } = input;
@@ -505,7 +482,7 @@ export function passwordsOfferLine(input: {
 export function passwordsOfferNeedHere(
   state: PasswordsSettingsState["kind"] | null,
   agentSignIns: "on" | "off" | null,
-): BrowserSignInPasswords | null {
+): PasswordsNeed | null {
   if (state === "not-set-up") return "not-set-up";
   if (state !== "ready") return null;
   return agentSignIns === "off" ? "off" : "no-login";

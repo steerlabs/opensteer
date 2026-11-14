@@ -18,7 +18,13 @@ import {
   thread_queue,
 } from "./threads.js";
 import { person_message, person_show } from "./person.js";
-import { browser_profile_list, sign_in, use_card, browser_profile_request } from "./browser.js";
+import {
+  browser_profile_list,
+  copy_chrome_cookies,
+  use_saved_login,
+  use_card,
+  browser_profile_request,
+} from "./browser.js";
 import { device_access_request, machine_full_disk_access_request } from "./computer.js";
 import { trigger_read, trigger_write } from "./triggers.js";
 import { integrationTools } from "./integrations.js";
@@ -47,7 +53,8 @@ export const agentTools = [
   thread_configure,
   thread_queue,
   browser_profile_list,
-  sign_in,
+  copy_chrome_cookies,
+  use_saved_login,
   use_card,
   browser_profile_request,
   machine_full_disk_access_request,
@@ -72,7 +79,8 @@ export const requestToolNames = [
   "integration_request",
   "machine_full_disk_access_request",
   "device_access_request",
-  "sign_in",
+  "copy_chrome_cookies",
+  "use_saved_login",
   "use_card",
 ] as const satisfies readonly AgentToolName[];
 

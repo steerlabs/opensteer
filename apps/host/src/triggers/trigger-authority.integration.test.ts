@@ -170,10 +170,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
   const triggers = triggerService();
   const agents = new ProductToolsTestClient({
     ...services,
-    browserSources: {
-      agentSignIn: unexpected,
-      agentUseCard: unexpected,
-    },
+    browserSources: { agentCopyChromeCookies: unexpected },
+    savedLogins: { useSavedLogin: unexpected, useCard: unexpected },
     machineFullDiskAccess: {
       request: unexpected,
     },

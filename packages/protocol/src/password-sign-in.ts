@@ -1,5 +1,6 @@
 import {
   BrowserSiteSchema,
+  RequestIdSchema,
   RunIdSchema,
   RunnerIdSchema,
   DeploymentIdSchema,
@@ -26,18 +27,10 @@ export const passwordSignInProbeTimeoutMs = 5_000;
 /** Concurrent pending login authorizations one browser host accepts. */
 export const maxPasswordSignInsPerHost = 4;
 /**
- * The longest one `sign_in` call waits for its operation before it
+ * The longest one `use_saved_login` or `use_card` call waits for its operation before it
  * answers with what is known, kept under the engines' 60-second tool limit.
  */
 export const passwordSignInAgentWaitMs = 45_000;
-
-export const PasswordSignInMethodSchema = z.enum(["saved-password", "person"]);
-export type PasswordSignInMethod = z.infer<typeof PasswordSignInMethodSchema>;
-
-export const PasswordSignInNeedSchema = z.enum(["approval", "person", "code"]);
-export type PasswordSignInNeed = z.infer<typeof PasswordSignInNeedSchema>;
-
-export const PasswordSignInCodeSchema = z.string().regex(/^[0-9A-Za-z-]{4,12}$/u);
 
 /**
  * What the Mac says about signing in to one site, without asking the person.
@@ -66,24 +59,6 @@ export const PasswordSignInRequesterSchema = z.strictObject({
 });
 export type PasswordSignInRequester = z.infer<typeof PasswordSignInRequesterSchema>;
 
-export const PasswordSignInFailureReasonSchema = z.enum([
-  /** Open the site’s sign-in page in the agent session, then ask again. */
-  "needs-sign-in-page",
-  /** The site rejected the saved password. */
-  "wrong-password",
-  /** The login page has no form Opensteer can fill, and the person did not finish it. */
-  "unsupported-page",
-  /** The page tried to reach a private, loopback or Opensteer address. */
-  "blocked-destination",
-  /** The private sign-in could not be wiped, so nothing was handed over. */
-  "cleanup-failed",
-  /** This browser already runs as many sign-ins as it accepts. */
-  "busy",
-  /** The session shares a saved profile; saved-password sign-ins go only into fresh sessions. */
-  "needs-fresh-session",
-]);
-export type PasswordSignInFailureReason = z.infer<typeof PasswordSignInFailureReasonSchema>;
-
 export const PasswordSignInCancelReasonSchema = z.enum([
   "declined",
   "withdrawn",
@@ -105,27 +80,83 @@ export const PasswordSignInUnavailableReasonSchema = z.enum([
 ]);
 export type PasswordSignInUnavailableReason = z.infer<typeof PasswordSignInUnavailableReasonSchema>;
 
-export const PasswordSignInOutcomeSchema = z.discriminatedUnion("kind", [
-  z.strictObject({
-    kind: z.literal("signed-in"),
-    method: PasswordSignInMethodSchema,
-  }),
-  z.strictObject({ kind: z.literal("declined") }),
-  z.strictObject({ kind: z.literal("cancelled"), reason: PasswordSignInCancelReasonSchema }),
-  z.strictObject({ kind: z.literal("expired") }),
-  z.strictObject({ kind: z.literal("failed"), reason: PasswordSignInFailureReasonSchema }),
-  z.strictObject({ kind: z.literal("unavailable"), reason: PasswordSignInUnavailableReasonSchema }),
-  /** The form may have been submitted but the handoff could not be confirmed. */
-  z.strictObject({ kind: z.literal("outcome-unknown") }),
-]);
-export type PasswordSignInOutcome = z.infer<typeof PasswordSignInOutcomeSchema>;
-
 export const LoginRefSchema = z
   .string()
   .regex(
     /^lgn_[0-9a-f]{32}$/u,
     "Saved card references can only be used with fillCard in a Browser Session.",
   );
+/** Why `use_saved_login` has no login to hand over. */
+export const SavedLoginUnavailableReasonSchema = z.enum([
+  "no-saved-login",
+  "passwords-off",
+  "passwords-not-set-up",
+  "passwords-not-responding",
+  /** Saved logins fill websites only in the hosting computer's own browser. */
+  "main-browser-required",
+  "unsupported",
+  "runtime-outdated",
+  "session-closed",
+  /** A loopback site or this Deployment's own site. */
+  "not-allowed",
+  "rate-limited",
+  /** Another Deployment's sign-in to this site is waiting on the person. */
+  "busy",
+  /** This Run can no longer open Requests. */
+  "stopped",
+  "needs-approval",
+  "expired",
+  "interrupted",
+]);
+export type SavedLoginUnavailableReason = z.infer<typeof SavedLoginUnavailableReasonSchema>;
+
+/** What an agent learns from `use_saved_login`; it never carries a saved value. */
+export const SavedLoginResultSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("ready"),
+    site: BrowserSiteSchema,
+    loginRef: LoginRefSchema,
+    /** Masked; names which saved account the reference fills. */
+    account: z.string().max(200),
+  }),
+  z.object({
+    status: z.literal("pending"),
+    site: BrowserSiteSchema,
+    requestId: RequestIdSchema,
+    replayed: z.boolean(),
+  }),
+  z.object({
+    status: z.literal("declined"),
+    site: BrowserSiteSchema,
+    requestId: RequestIdSchema,
+  }),
+  z.object({
+    status: z.literal("unavailable"),
+    site: BrowserSiteSchema,
+    reason: SavedLoginUnavailableReasonSchema,
+  }),
+]);
+export type SavedLoginResult = z.infer<typeof SavedLoginResultSchema>;
+
+/** What Opensteer Passwords lacks that the person can fix: a login, setup, or turning it on. */
+export const PasswordsNeedSchema = z.enum(["no-login", "not-set-up", "off"]);
+export type PasswordsNeed = z.infer<typeof PasswordsNeedSchema>;
+
+/** What the person could fix in Passwords for this result, or null when nothing would help. */
+export function savedLoginPasswordsNeed(result: SavedLoginResult): PasswordsNeed | null {
+  if (result.status !== "unavailable") return null;
+  switch (result.reason) {
+    case "no-saved-login":
+      return "no-login";
+    case "passwords-off":
+      return "off";
+    case "passwords-not-set-up":
+      return "not-set-up";
+    default:
+      return null;
+  }
+}
+
 export const LoginFieldSchema = z.enum(["username", "password", "code"]);
 export type LoginField = z.infer<typeof LoginFieldSchema>;
 export const LoginFillStatusSchema = z.enum([
@@ -156,18 +187,11 @@ export type LoginAuthorizationOutcome = z.infer<typeof LoginAuthorizationOutcome
 /** A fulfilled `browser.password-sign-in` Request's response value. */
 export const PasswordSignInRequestResponseSchema = z.discriminatedUnion("outcome", [
   z.strictObject({ outcome: z.literal("authorized"), account: z.string().max(200) }),
-  // Historical responses remain readable; new authorizations never produce these.
-  z.strictObject({
-    outcome: z.literal("signed-in"),
-    method: PasswordSignInMethodSchema,
-  }),
   z.strictObject({ outcome: z.literal("expired") }),
-  z.strictObject({ outcome: z.literal("failed"), reason: PasswordSignInFailureReasonSchema }),
   z.strictObject({
     outcome: z.literal("unavailable"),
     reason: PasswordSignInUnavailableReasonSchema,
   }),
-  z.strictObject({ outcome: z.literal("outcome-unknown") }),
   z.strictObject({ outcome: z.literal("session-closed") }),
   /** The sign-in stopped before any handoff, including a withdrawal or lost authority. */
   z.strictObject({ outcome: z.literal("interrupted") }),

@@ -10,12 +10,6 @@ import {
   BrowserSourceNameSchema,
   BrowserSourceStatusSchema,
 } from "@opensteer/browser-source-wire/frames";
-import {
-  LoginRefSchema,
-  PasswordSignInFailureReasonSchema,
-  PasswordSignInMethodSchema,
-  PasswordSignInNeedSchema,
-} from "./password-sign-in.js";
 
 /**
  * Version 4 scopes every operation to a schemeful site and moves the approval of
@@ -124,113 +118,53 @@ export const BrowserSignInOutcomeSchema = z.discriminatedUnion("status", [
 ]);
 export type BrowserSignInOutcome = z.infer<typeof BrowserSignInOutcomeSchema>;
 
-/**
- * What an agent learns from `sign_in`. It never carries cookie values.
- * `pending` means an owner Request is open: it completes by itself when the
- * owner allows it and a connected Chrome can supply the sign-in, or, for a
- * saved password, when what it is `waitingFor` is done.
- */
-export const BrowserSignInUnavailableReasonSchema = z.enum([
-  "needs-approval",
-  /** Another Run's sign-in to this session/site needs the person; try again later. */
-  "busy",
-  "stopped",
-  "chrome-blocked",
-  "limit",
-  "unsupported",
-  "too-large",
-  "session-closed",
-  "runtime-outdated",
-  "unsupported-operation",
-  "main-browser-required",
-  "rate-limited",
-  /** A loopback site or this Deployment's own site; see `BrowserSignInProblemSchema`. */
-  "not-allowed",
-  /** Saved-password sign-ins go only into a fresh session, never one with a saved profile. */
-  "needs-fresh-session",
-  /** A `code` arrived but no sign-in of this Run's for the session and site waits for one. */
-  "no-code-expected",
-  "passwords-off",
-  "passwords-not-set-up",
-  "passwords-not-responding",
-  "no-saved-login",
-  "expired",
-  "interrupted",
+/** Why `copy_chrome_cookies` copied nothing; `chrome-signed-out` means no paired Chrome has the site. */
+export const ChromeCookiesUnavailableReasonSchema = z.union([
+  BrowserSourceExportProblemSchema.exclude(["no-state"]),
+  z.enum([
+    "chrome-signed-out",
+    "needs-approval",
+    "session-closed",
+    "runtime-outdated",
+    "unsupported-operation",
+    "rate-limited",
+    /** A loopback site or this Deployment's own site. */
+    "not-allowed",
+  ]),
 ]);
-export type BrowserSignInUnavailableReason = z.infer<typeof BrowserSignInUnavailableReasonSchema>;
-/** What Opensteer Passwords needs before it could sign in; absent, it can't be offered at all. */
-export const BrowserSignInPasswordsSchema = z.enum(["no-login", "not-set-up", "off"]);
-export type BrowserSignInPasswords = z.infer<typeof BrowserSignInPasswordsSchema>;
-export const AgentBrowserSignInResultSchema = z.discriminatedUnion("status", [
+export type ChromeCookiesUnavailableReason = z.infer<typeof ChromeCookiesUnavailableReasonSchema>;
+
+/**
+ * What an agent learns from `copy_chrome_cookies`. It never carries cookie
+ * values, and `copied` means only that cookies reached the session: the site
+ * may still refuse them.
+ */
+export const ChromeCookiesResultSchema = z.discriminatedUnion("status", [
   z.object({
-    status: z.literal("ready"),
-    site: BrowserSiteSchema,
-    loginRef: LoginRefSchema,
-    account: z.string().max(200),
-  }),
-  z.object({
-    profileName: z.string().max(200).nullable(),
+    status: z.literal("copied"),
     site: BrowserSiteSchema,
     sourceName: BrowserSourceNameSchema,
-    status: z.literal("applied"),
-  }),
-
-  z.object({
-    method: PasswordSignInMethodSchema,
-    site: BrowserSiteSchema,
-    status: z.literal("signed-in"),
+    /** Set when the session is profile-backed: the cookies are saved to that profile. */
+    profileName: z.string().max(200).nullable(),
   }),
   z.object({
-    reason: PasswordSignInFailureReasonSchema,
-    site: BrowserSiteSchema,
-    status: z.literal("failed"),
-  }),
-  /** The site sent the person a one-time code; the sign-in waits for it until `expiresAt`. */
-  z.object({
-    expiresAt: IsoDateTimeSchema,
-    site: BrowserSiteSchema,
-    status: z.literal("needs-code"),
-  }),
-  z.object({
-    passwords: BrowserSignInPasswordsSchema.optional(),
-    replayed: z.boolean(),
-    requestId: RequestIdSchema,
     status: z.literal("pending"),
-    waitingFor: PasswordSignInNeedSchema.optional(),
-  }),
-  z.object({ requestId: RequestIdSchema, status: z.literal("declined") }),
-  /** The Request ended; its outcome accompanies the tool result or a later continuation. */
-  z.object({ requestId: RequestIdSchema, status: z.literal("resolved") }),
-  z.object({
-    passwords: BrowserSignInPasswordsSchema.optional(),
     site: BrowserSiteSchema,
-    status: z.literal("not-signed-in"),
+    requestId: RequestIdSchema,
+    replayed: z.boolean(),
   }),
   z.object({
-    reason: BrowserSignInUnavailableReasonSchema,
+    status: z.literal("declined"),
     site: BrowserSiteSchema,
+    requestId: RequestIdSchema,
+  }),
+  z.object({
     status: z.literal("unavailable"),
+    site: BrowserSiteSchema,
+    reason: ChromeCookiesUnavailableReasonSchema,
   }),
 ]);
-export type AgentBrowserSignInResult = z.infer<typeof AgentBrowserSignInResultSchema>;
-
-/** What a sign-in result says Opensteer Passwords lacks, or null when it can't help. */
-export function browserSignInPasswordsNeed(
-  result: AgentBrowserSignInResult,
-): BrowserSignInPasswords | null {
-  if ("passwords" in result && result.passwords !== undefined) return result.passwords;
-  if (result.status !== "unavailable") return null;
-  switch (result.reason) {
-    case "no-saved-login":
-      return "no-login";
-    case "passwords-off":
-      return "off";
-    case "passwords-not-set-up":
-      return "not-set-up";
-    default:
-      return null;
-  }
-}
+export type ChromeCookiesResult = z.infer<typeof ChromeCookiesResultSchema>;
 
 /** A Request's fulfilled response value. */
 export const BrowserSignInRequestResponseSchema = z.discriminatedUnion("outcome", [
@@ -241,10 +175,7 @@ export const BrowserSignInRequestResponseSchema = z.discriminatedUnion("outcome"
   }),
   z.strictObject({ outcome: z.literal("session-closed") }),
   /** Chrome connected after the Request opened, and no Chrome has a sign-in to the site. */
-  z.strictObject({
-    outcome: z.literal("not-signed-in"),
-    passwords: BrowserSignInPasswordsSchema.optional(),
-  }),
+  z.strictObject({ outcome: z.literal("not-signed-in") }),
 ]);
 export type BrowserSignInRequestResponse = z.infer<typeof BrowserSignInRequestResponseSchema>;
 

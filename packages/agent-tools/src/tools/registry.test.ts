@@ -14,14 +14,14 @@ import {
   thread_list,
   thread_send,
 } from "./index.js";
-import { sign_in } from "./browser.js";
+import { use_saved_login } from "./browser.js";
 import { person_message } from "./person.js";
 import { trigger_read, trigger_write } from "./triggers.js";
 
 describe("Opensteer tool registry", () => {
   it("has one specification per product and integration tool", () => {
-    expect(agentTools).toHaveLength(49);
-    expect(new Set(agentTools.map(({ name }) => name)).size).toBe(49);
+    expect(agentTools).toHaveLength(50);
+    expect(new Set(agentTools.map(({ name }) => name)).size).toBe(50);
     const runs = agentTools.filter((t) => t.callers.some((c) => c === "run")).map((t) => t.name);
     expect(runs).toContain("integration_call");
     expect(runs).toEqual(
@@ -38,6 +38,10 @@ describe("Opensteer tool registry", () => {
       "thread_delegate",
       "thread_message",
       "request_list",
+      "sign_in",
+      "browser_session_list",
+      "browser_session_close",
+      "browser_tab_write",
       "browser_session_open",
       "browser_tab_read",
     ])
@@ -153,14 +157,14 @@ describe("Opensteer tool registry", () => {
       }),
     ).toEqual({ content: [image] });
   });
-  it("returns a ready sign-in's login reference, which grants nothing without the Run's authority", () => {
+  it("returns a ready login reference and drops any other field, such as a saved value", () => {
     const ready = {
       status: "ready",
       site: "https://example.com",
       loginRef: `lgn_${"1".repeat(32)}`,
       account: "a•••@example.com",
     };
-    expect(sign_in.output.parse({ ...ready, password: "hidden" })).toEqual(ready);
+    expect(use_saved_login.output.parse({ ...ready, password: "hidden" })).toEqual(ready);
   });
   it("returns webhook setup credentials on writes and excludes them from reads", () => {
     const result = {

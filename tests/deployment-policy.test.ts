@@ -94,9 +94,9 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     reason:
       "Transport pins deployment kind and negotiates the independent protocol before admitting a request.",
   },
-  "apps/host/src/browser/browser-source-service.ts": {
+  "apps/host/src/browser/saved-logins.ts": {
     counts: {
-      "prior.payload.scope": 2,
+      "prior.payload.scope": 1,
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },

@@ -1,20 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { createId } from "@opensteer/core";
-import type { PasswordSignInAvailability } from "@opensteer/protocol";
-import type { AgentBrowserSignInResult } from "@opensteer/protocol/browser-sources";
+import type { PasswordSignInAvailability, SavedLoginResult } from "@opensteer/protocol";
 import {
   PasswordsOffers,
   passwordsLoginSavedMessage,
-  passwordsOfferGuidance,
   type PasswordsOffer,
   type PasswordsOfferOutcome,
 } from "./passwords-offers.js";
 
 const site = "https://brex.com";
-const offered: AgentBrowserSignInResult = {
-  passwords: "not-set-up",
+const offered: SavedLoginResult = { reason: "passwords-not-set-up", site, status: "unavailable" };
+const ready: SavedLoginResult = {
+  account: "t•••@brex.com",
+  loginRef: `lgn_${"0".repeat(32)}`,
   site,
-  status: "not-signed-in",
+  status: "ready",
 };
 
 function watch(options: { wake?: () => Promise<PasswordsOfferOutcome> } = {}) {
@@ -23,7 +23,6 @@ function watch(options: { wake?: () => Promise<PasswordsOfferOutcome> } = {}) {
     beforeAnswer: () => {},
     clock: 0,
     errors: [] as unknown[],
-    found: [] as number[],
     woken: [] as PasswordsOffer[],
   };
   const offers = new PasswordsOffers({
@@ -33,16 +32,15 @@ function watch(options: { wake?: () => Promise<PasswordsOfferOutcome> } = {}) {
       state.beforeAnswer();
       return state.answer;
     },
-    wake: async (offer, found) => {
+    wake: async (offer) => {
       state.woken.push(offer);
-      state.found.push(found.length);
       return options.wake ? await options.wake() : "ended";
     },
   });
   const input = {
     ownerId: createId("user"),
     runId: createId("run"),
-    sessionId: null,
+    tabId: null,
     site,
     threadId: createId("thread"),
   };
@@ -72,7 +70,7 @@ describe("PasswordsOffers", () => {
     const { input, offers, state } = watch();
     offers.note(input, offered);
     state.beforeAnswer = () => {
-      offers.note(input, { profileName: null, site, sourceName: "Work", status: "applied" });
+      offers.note(input, ready);
     };
     await offers.sweep();
     expect(state.woken).toEqual([]);
@@ -91,12 +89,12 @@ describe("PasswordsOffers", () => {
     offers.close();
   });
 
-  it("probes everything before waking, so each wake knows what else was answered", async () => {
+  it("wakes every offer one pass finds a login for", async () => {
     const { input, offers, state } = watch();
     offers.note(input, offered);
     offers.note({ ...input, site: "https://ramp.com" }, { ...offered, site: "https://ramp.com" });
     await offers.sweep();
-    expect(state.found).toEqual([2, 2]);
+    expect(state.woken.map((offer) => offer.site)).toEqual([site, "https://ramp.com"]);
     offers.close();
   });
 
@@ -104,7 +102,7 @@ describe("PasswordsOffers", () => {
     const { input, offers, state } = watch();
     offers.note(input, offered);
     offers.note({ ...input, threadId: createId("thread") }, offered);
-    offers.note(input, { profileName: null, site, sourceName: "Work", status: "applied" });
+    offers.note(input, ready);
     await offers.sweep();
     expect(state.woken).toHaveLength(1);
     expect(state.woken[0]?.threadId).not.toBe(input.threadId);
@@ -113,27 +111,17 @@ describe("PasswordsOffers", () => {
 });
 
 describe("what the agent reads", () => {
-  it("carries the next step on every result Passwords could still help", () => {
-    expect(passwordsOfferGuidance(offered)).toMatch(/Chrome has no sign-in.*call sign_in again/u);
-    expect(
-      passwordsOfferGuidance({ reason: "no-saved-login", site, status: "unavailable" }),
-    ).toMatch(/call sign_in again/u);
-    expect(passwordsOfferGuidance({ site, status: "not-signed-in" })).toBeNull();
-    expect(passwordsOfferGuidance({ reason: "busy", site, status: "unavailable" })).toBeNull();
-  });
-
   it("states a fact and leaves the decision to the agent", () => {
     const message = passwordsLoginSavedMessage({
       id: "offer",
       ownerId: createId("user"),
-      requestId: null,
       runId: createId("run"),
-      sessionId: "bsn_session",
+      tabId: "tab-fixture",
       site,
       threadId: createId("thread"),
     });
     expect(message).toContain(site);
-    expect(message).toContain("bsn_session");
-    expect(message).toContain("If the person still wants this sign-in");
+    expect(message).toContain("tab-fixture");
+    expect(message).toContain("use_saved_login again");
   });
 });

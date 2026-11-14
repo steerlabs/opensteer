@@ -17,7 +17,7 @@ import {
   shippedEnginesFirstOnPath,
 } from "../agents/engine-qualification.test-support.js";
 import { startVerticalStack, type VerticalStack } from "../agents/vertical-stack.test-support.js";
-import { BrowserSourceService } from "./browser-source-service.js";
+import { SavedLoginService } from "./saved-logins.js";
 
 const holdEngines = qualifiedEngines.flatMap((engine) => {
   const holdMs = qualificationHoldMs[engine.driverKind];
@@ -54,7 +54,7 @@ describe.each(holdEngines)("$label held MCP", (engine) => {
     }
   }, 60_000);
 
-  it("receives one sign_in result after the old MCP deadline", async () => {
+  it("receives one use_saved_login result after the old MCP deadline", async () => {
     const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
     if (!databaseUrl || !runtimeCacheDirectory)
       throw new Error("Run through pnpm test:engines with a throwaway PostgreSQL database");
@@ -96,9 +96,9 @@ describe.each(holdEngines)("$label held MCP", (engine) => {
         }),
       );
     }
-    vi.spyOn(BrowserSourceService.prototype, "agentSignIn").mockImplementation(async (input) => {
+    vi.spyOn(SavedLoginService.prototype, "useSavedLogin").mockImplementation(async (input) => {
       calls += 1;
-      if (calls > 1) throw new Error("The held sign_in call was replayed");
+      if (calls > 1) throw new Error("The held use_saved_login call was replayed");
       enteredAt = performance.now();
       // oxlint-disable-next-line opensteer/no-real-time-wait-in-tests -- Measures the real engine deadline; fake clocks cannot advance its process.
       await delay(holdMs + 1, undefined, { signal: holdLifetime.signal });
@@ -139,7 +139,7 @@ describe.each(holdEngines)("$label held MCP", (engine) => {
       const turn = await stack.sendMessage({
         threadId,
 
-        text: `This is a fake-data transport test. Call sign_in exactly once with sessionId bsn_00000000-0000-4000-8000-000000000001, site https://example.test, reason Test held sign-in. This fake session does not need opening or inspecting. Wait for this same tool call to return after ${holdMs / 1_000} seconds. Do not retry it or run other tools while it is pending. The ready result's account field contains an unpredictable marker. Reply with exactly that marker after receiving it. Never browse, open files, or retrieve credentials.`,
+        text: `This is a fake-data transport test. Call use_saved_login exactly once with tabId tab-00000000-0000-4000-8000-000000000001, site https://example.test, reason Test held sign-in. This fake tab does not need opening or inspecting. Wait for this same tool call to return after ${holdMs / 1_000} seconds. Do not retry it or run other tools while it is pending. The ready result's account field contains an unpredictable marker. Reply with exactly that marker after receiving it. Never browse, open files, or retrieve credentials.`,
       });
       lastAnswer = turn.assistantText;
       expect(calls).toBe(1);
@@ -153,7 +153,7 @@ describe.each(holdEngines)("$label held MCP", (engine) => {
       expect(turn.assistantText.trim().split("\n").at(-1)).toBe(marker);
       const started = turn.events
         .filter((event) => event.type === "tool.started")
-        .filter((event) => event.data.tool.name === "sign_in");
+        .filter((event) => event.data.tool.name === "use_saved_login");
       // Claude restates a streamed call once with its full arguments, under the same id.
       expect(new Set(started.map((event) => event.data.callId)).size).toBe(1);
       const callId = started[0]?.data.callId;
@@ -170,7 +170,7 @@ describe.each(holdEngines)("$label held MCP", (engine) => {
           (item) =>
             item.method === "item/started" &&
             item.type === "mcpToolCall" &&
-            item.tool === "sign_in",
+            item.tool === "use_saved_login",
         );
         expect(direct).toMatchObject([{ server: "opensteer-direct", id: callId }]);
         expect(

@@ -757,7 +757,7 @@ export function createBrowserHarness(client, initialTargetId) {
     if (typeof loginRef === "string" && loginRef.startsWith("crd_"))
       throw new TypeError("Saved card references can only be used with fillCard in a tab.");
     if (typeof loginRef !== "string" || !/^lgn_[0-9a-f]{32}$/u.test(loginRef)) {
-      throw new TypeError("fillLogin requires a loginRef from sign_in.");
+      throw new TypeError("fillLogin requires a loginRef from use_saved_login.");
     }
     if (!["username", "password", "code"].includes(field)) {
       throw new TypeError("fillLogin field must be username, password, or code.");
@@ -768,7 +768,7 @@ export function createBrowserHarness(client, initialTargetId) {
       "no-field": "Focus an editable field of the requested kind.",
       "wrong-site": "The focused field is outside the approved website.",
       stale: "The focused field or page changed; inspect the page before trying again.",
-      expired: "Call sign_in again to authorize this tab.",
+      expired: "Call use_saved_login again for a fresh reference.",
       denied: "Permission to use this login ended.",
       unavailable: "The saved field or Opensteer Passwords is unavailable.",
     };

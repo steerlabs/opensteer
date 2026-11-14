@@ -1,30 +1,22 @@
 import { randomUUID } from "node:crypto";
+import { OpensteerError, type RunId, type ThreadId, type UserId } from "@opensteer/core";
 import {
-  OpensteerError,
-  type RequestId,
-  type RunId,
-  type ThreadId,
-  type UserId,
-} from "@opensteer/core";
-import type { PasswordSignInAvailability } from "@opensteer/protocol";
-import {
-  browserSignInPasswordsNeed,
-  type AgentBrowserSignInResult,
-} from "@opensteer/protocol/browser-sources";
+  savedLoginPasswordsNeed,
+  type PasswordSignInAvailability,
+  type SavedLoginResult,
+} from "@opensteer/protocol";
 
 // Long enough to export and import, short enough that a stale offer can't wake a moved-on Thread.
 const offerLifetimeMs = 15 * 60_000;
 const sweepIntervalMs = 3_000;
 const maxOffers = 32;
 
-/** What a sign-in told the agent Passwords lacks, which Passwords may gain without the agent. */
+/** What `use_saved_login` told the agent Passwords lacks, which Passwords may gain without the agent. */
 export interface PasswordsOffer {
   readonly id: string;
   readonly ownerId: UserId;
-  /** The Chrome Request opened beside this offer, whose answer can end it. */
-  readonly requestId: RequestId | null;
   readonly runId: RunId;
-  readonly sessionId: string | null;
+  readonly tabId: string | null;
   readonly site: string;
   readonly threadId: ThreadId;
 }
@@ -34,49 +26,31 @@ type Offer = PasswordsOffer & { readonly expiresAt: number };
 /** Whether an offer that found its login is finished with, or waits for the next sweep. */
 export type PasswordsOfferOutcome = "ended" | "held";
 
-function offerRequestId(result: AgentBrowserSignInResult): RequestId | null {
-  return result.status === "pending" ? result.requestId : null;
-}
-
 /** Whether `result` leaves Passwords something to gain, ends what it offered, or says neither. */
-function offerChange(result: AgentBrowserSignInResult): "offer" | "end" | "keep" {
-  if (browserSignInPasswordsNeed(result) !== null) return "offer";
+function offerChange(result: SavedLoginResult): "offer" | "end" | "keep" {
+  if (savedLoginPasswordsNeed(result) !== null) return "offer";
   return result.status === "unavailable" || (result.status === "pending" && result.replayed)
     ? "keep"
     : "end";
 }
 
-/**
- * The next step, carried on the result because a long-lived session keeps the
- * guide it read first. The result is the one thing every call gets fresh.
- */
-export function passwordsOfferGuidance(result: AgentBrowserSignInResult): string | null {
-  if (offerChange(result) !== "offer") return null;
-  const chrome = result.status === "not-signed-in" ? "Chrome has no sign-in for this site. " : "";
-  return `${chrome}This is true only now: Opensteer shows the person what to do under your reply, and tells you when a login is saved. If they say it's done or ask again first, call sign_in again before answering.`;
-}
-
 /** What a woken agent reads: a fact about Passwords, with the decision left to it. */
 export function passwordsLoginSavedMessage(offer: PasswordsOffer): string {
-  const session = offer.sessionId === null ? "" : ` in Browser Session ${offer.sessionId}`;
-  return `Opensteer Passwords now has a login for ${offer.site}, saved after your last sign_in, so that result is out of date. If the person still wants this sign-in, call sign_in again${session}.`;
+  const session = offer.tabId === null ? "" : ` for browser tab ${offer.tabId}`;
+  return `Opensteer Passwords now has a login for ${offer.site}, saved after your last use_saved_login, so that result is out of date. If the task still needs ${offer.site}, call use_saved_login again${session}.`;
 }
 
 /**
  * Sign-ins that found Passwords short of something, watched until it isn't.
  * A Request wakes its agent when it settles; an offer has nothing to settle, so
- * this is what closes the same loop. Memory-only: a restarted Host forgets
- * them, and the result's guidance still gets the agent there on the next word.
+ * this is what closes the same loop. Memory-only: a restarted Host forgets them.
  */
 export class PasswordsOffers {
   readonly #offers = new Map<string, Offer>();
   readonly #now: () => number;
   readonly #onError: (error: unknown) => void;
   readonly #probe: (ownerId: UserId, site: string) => Promise<PasswordSignInAvailability>;
-  readonly #wake: (
-    offer: PasswordsOffer,
-    found: readonly PasswordsOffer[],
-  ) => Promise<PasswordsOfferOutcome>;
+  readonly #wake: (offer: PasswordsOffer) => Promise<PasswordsOfferOutcome>;
   #sweeping = false;
   #timer: NodeJS.Timeout | undefined;
 
@@ -84,11 +58,7 @@ export class PasswordsOffers {
     readonly now: () => number;
     readonly onError: (error: unknown) => void;
     readonly probe: (ownerId: UserId, site: string) => Promise<PasswordSignInAvailability>;
-    /** `found` is every offer this pass found a login for, `offer` included. */
-    readonly wake: (
-      offer: PasswordsOffer,
-      found: readonly PasswordsOffer[],
-    ) => Promise<PasswordsOfferOutcome>;
+    readonly wake: (offer: PasswordsOffer) => Promise<PasswordsOfferOutcome>;
   }) {
     this.#now = options.now;
     this.#onError = options.onError;
@@ -96,10 +66,10 @@ export class PasswordsOffers {
     this.#wake = options.wake;
   }
 
-  /** Follows what one `sign_in` came to. */
+  /** Follows what one `use_saved_login` came to. */
   note(
-    input: Pick<PasswordsOffer, "ownerId" | "runId" | "sessionId" | "site" | "threadId">,
-    result: AgentBrowserSignInResult,
+    input: Pick<PasswordsOffer, "ownerId" | "runId" | "tabId" | "site" | "threadId">,
+    result: SavedLoginResult,
   ): void {
     const change = offerChange(result);
     if (change === "keep") return;
@@ -114,29 +84,20 @@ export class PasswordsOffers {
         ...input,
         expiresAt: this.#now() + offerLifetimeMs,
         id: randomUUID(),
-        requestId: offerRequestId(result),
       });
     }
     this.#schedule();
   }
 
-  /**
-   * One pass. A pass still running covers this one. Every probe comes before
-   * any wake, because one import can answer several sign-ins at once, and each
-   * has to know the others no longer wait on the person.
-   */
+  /** One pass. A pass still running covers this one. */
   async sweep(): Promise<void> {
     if (this.#sweeping) return;
     this.#sweeping = true;
     try {
-      const found = await this.#withLogins();
-      for (const [key, offer] of found) {
+      for (const [key, offer] of await this.#withLogins()) {
         // A newer sign-in replaced or ended this offer since its probe.
         if (this.#offers.get(key) !== offer) continue;
-        await this.#wake(
-          offer,
-          found.map(([, each]) => each),
-        ).then(
+        await this.#wake(offer).then(
           (outcome) => {
             if (outcome === "ended" && this.#offers.get(key) === offer) this.#offers.delete(key);
           },

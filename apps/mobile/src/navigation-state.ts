@@ -103,8 +103,8 @@ export function deploymentRoot(deploymentId: string): InitialState {
 }
 
 /**
- * A deep link keeps Home beneath its exact destination, so Back lands where
- * the sidebar, and with it every other task, is one tap away.
+ * A deep link opens its task top-level, directly on Home, as the sidebar
+ * would: the sidebar and every other task are one swipe away.
  */
 export function threadRoot(destination: ThreadDestination): InitialState {
   return {

@@ -13,8 +13,7 @@ Opensteer is one person, their one agent, and their tasks. A task holds private 
 Authority:
 - Your access mode is a ceiling. Delegated work cannot raise it. Act directly within authorization, including administration and reducing access.
 - Never grant access, raise your power or manage sign-in sessions, pairing or enrollment. Except for the phone PIN, sign-in-code and webhook cases here, never retrieve or reveal credentials.
-- For a sign-in, card, profile or access, use \`sign_in\`, \`use_card\`, \`browser_profile_request\` or \`integration_request\`. Credentials go in the Request UI. If no tool fits, ask the person or your assigner.
-- A \`sign_in\` Passwords status is true only when returned: if the person retries or says it is set up, call \`sign_in\` again first.
+- To sign in, use \`copy_chrome_cookies\` or \`use_saved_login\` before asking the person; choose by the site and what you've tried. For a card, profile or access, use \`use_card\`, \`browser_profile_request\` or \`integration_request\`. Credentials go in the Request UI. If no tool fits, ask the person or your assigner.
 - Phone screen-lock PIN: opensteer:computer-use covers an authorized unlock with a person-supplied PIN and keeping it privately only at their explicit request.
 - Asking you to sign in covers its SMS/email code unless they say otherwise. Retrieve the fresh code through an already-granted integration and enter it only into the genuine challenge. Never approve an Opensteer Request, repeat the code in replies or retain it.
 - A webhook result may supply its address and secret for the requested setup; never commit it, put it in memory or send it elsewhere.
@@ -62,8 +61,7 @@ Opensteer is one person, their one agent, and their tasks. A task holds private 
 Authority:
 - Your access mode is a ceiling. Delegated work cannot raise it. Act directly within authorization, including administration and reducing access.
 - Never grant access, raise your power or manage sign-in sessions, pairing or enrollment. Except for the phone PIN, sign-in-code and webhook cases here, never retrieve or reveal credentials.
-- For a sign-in, card, profile or access, use \`sign_in\`, \`use_card\`, \`browser_profile_request\` or \`integration_request\`. Credentials go in the Request UI. If no tool fits, ask the person or your assigner.
-- A \`sign_in\` Passwords status is true only when returned: if the person retries or says it is set up, call \`sign_in\` again first.
+- To sign in, use \`copy_chrome_cookies\` or \`use_saved_login\` before asking the person; choose by the site and what you've tried. For a card, profile or access, use \`use_card\`, \`browser_profile_request\` or \`integration_request\`. Credentials go in the Request UI. If no tool fits, ask the person or your assigner.
 - Phone screen-lock PIN: opensteer:computer-use covers an authorized unlock with a person-supplied PIN and keeping it privately only at their explicit request.
 - Asking you to sign in covers its SMS/email code unless they say otherwise. Retrieve the fresh code through an already-granted integration and enter it only into the genuine challenge. Never approve an Opensteer Request, repeat the code in replies or retain it.
 - A webhook result may supply its address and secret for the requested setup; never commit it, put it in memory or send it elsewhere.
@@ -1865,13 +1863,56 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "type": "string",
         },
         "site": {
-          "description": "Site whose login is needed, such as github.com.",
+          "description": "Site whose login is needed, such as github.com. Covers its subdomains.",
           "maxLength": 2048,
           "minLength": 1,
           "type": "string",
         },
         "tabId": {
-          "description": "Website tab on its sign-in page; omit for a genuine app.",
+          "description": "Browser tab to receive the cookies.",
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "reason",
+        "tabId",
+        "site",
+      ],
+      "type": "object",
+    },
+    "name": "copy_chrome_cookies",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "description": "Why this task needs the account.",
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string",
+        },
+        "site": {
+          "description": "Site whose login is needed, such as github.com. Covers its subdomains.",
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+        "tabId": {
+          "description": "Browser tab showing the site's sign-in form; omit for a genuine app.",
           "maxLength": 512,
           "minLength": 1,
           "type": "string",
@@ -1883,7 +1924,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       ],
       "type": "object",
     },
-    "name": "sign_in",
+    "name": "use_saved_login",
   },
   {
     "access": "write",

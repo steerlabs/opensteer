@@ -22,13 +22,14 @@ it("pages text by code point without splitting a surrogate pair", () => {
 });
 
 it.each([
-  "sign_in",
+  "use_saved_login",
+  "copy_chrome_cookies",
   "use_card",
   "trigger_write",
   "computer",
   "computer.type",
   "mcp__opensteer__computer",
-  "opensteer_sign_in",
+  "opensteer_use_saved_login",
   "computer (opensteer MCP Server)",
 ])("withholds %s however an engine spells it", (name) => {
   expect(withheldTool(name)).toBe(true);

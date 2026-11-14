@@ -15,8 +15,10 @@ import type { ReservedRegion } from "react-native-reserved-regions";
  *   markers stop and alerts about what is on screen interrupt;
  * - an unmeasured fold is straddled because the column showed before the
  *   regions arrived;
- * - choosing a task or a tab from the docked sidebar piles screens up behind
- *   Back, or rebuilds Home instead of returning to the mounted one;
+ * - choosing a task or a tab from the sidebar piles screens up behind Back,
+ *   or rebuilds Home instead of returning to the mounted one;
+ * - the edge swipe opens the drawer over a drill-in, taking its swipe back,
+ *   or stays locked on a task chosen from the sidebar;
  * - a page in front keeps the docked sidebar, so the page and its agent's
  *   Thread make three panes;
  * - a page is handed different folds depending on how it was reached, so one
@@ -54,7 +56,13 @@ const harness = vi.hoisted(() => ({
     scroll: { offset: number };
     shelves: { list: unknown };
   }[],
-  drawer: { lock: "", panel: null as ReactNode },
+  drawer: {
+    lock: "",
+    panel: null as ReactNode,
+    position: "",
+    onState: null as null | ((state: string, willShow: boolean) => void),
+  },
+  i18n: { isRTL: false },
   openDrawer: vi.fn(),
   closeDrawer: vi.fn(),
 }));
@@ -62,7 +70,7 @@ const harness = vi.hoisted(() => ({
 vi.mock("react-native", () => ({
   AccessibilityInfo: { sendAccessibilityEvent: harness.sendAccessibilityEvent },
   BackHandler: { addEventListener: () => ({ remove: () => undefined }) },
-  I18nManager: { isRTL: false },
+  I18nManager: harness.i18n,
   Keyboard: { dismiss: harness.dismiss },
   Platform: { OS: "ios" },
   StyleSheet: { create: <T,>(styles: T) => styles, hairlineWidth: 1 },
@@ -78,6 +86,7 @@ vi.mock("@react-navigation/native", () => ({
     reset: (payload: object) => ({ payload, type: "RESET" }),
   },
   StackActions: {
+    pop: (count: number) => ({ payload: { count }, type: "POP" }),
     popToTop: () => ({ type: "POP_TO_TOP" }),
     push: (name: string, params?: object) => ({ payload: { name, params }, type: "PUSH" }),
     replace: (name: string, params?: object) => ({ payload: { name, params }, type: "REPLACE" }),
@@ -131,6 +140,8 @@ vi.mock("react-native-gesture-handler/ReanimatedDrawerLayout", async () => {
       props: {
         children?: ReactNode;
         drawerLockMode: string;
+        drawerPosition: string;
+        onDrawerStateChanged: (state: string, willShow: boolean) => void;
         renderNavigationView: () => ReactNode;
       },
       ref,
@@ -140,6 +151,8 @@ vi.mock("react-native-gesture-handler/ReanimatedDrawerLayout", async () => {
         openDrawer: harness.openDrawer,
       }));
       harness.drawer.lock = props.drawerLockMode;
+      harness.drawer.position = props.drawerPosition;
+      harness.drawer.onState = props.onDrawerStateChanged;
       return (
         <div>
           <aside>{props.renderNavigationView()}</aside>
@@ -149,8 +162,8 @@ vi.mock("react-native-gesture-handler/ReanimatedDrawerLayout", async () => {
     }),
     DrawerKeyboardDismissMode: { ON_DRAG: "on-drag" },
     DrawerLockMode: { LOCKED_CLOSED: "locked-closed", UNLOCKED: "unlocked" },
-    DrawerPosition: { LEFT: "left" },
-    DrawerState: { IDLE: "idle" },
+    DrawerPosition: { LEFT: "left", RIGHT: "right" },
+    DrawerState: { IDLE: "idle", SETTLING: "settling" },
     DrawerType: { FRONT: "front", SLIDE: "slide" },
   };
 });
@@ -175,7 +188,12 @@ vi.mock("./sidebar-panel.js", () => ({
 }));
 
 import { SidebarShell } from "./sidebar-shell.js";
-import { useSidebarControl, useSidebarDocked, useSidebarVisible } from "./sidebar-context.js";
+import {
+  sidebarRef,
+  useSidebarControl,
+  useSidebarDocked,
+  useSidebarVisible,
+} from "./sidebar-context.js";
 
 const tabB = { kind: "browser", sessionId: "session-b", tabId: "tab-b" } as const;
 /** Tab B as a route names it. */
@@ -201,6 +219,7 @@ afterEach(() => {
   harness.dispatch.mockReset();
   harness.openDrawer.mockReset();
   harness.closeDrawer.mockReset();
+  harness.i18n.isRTL = false;
 });
 
 const mounts = { count: 0, unmounts: 0 };
@@ -289,35 +308,76 @@ function stackStyle(container: HTMLElement): Record<string, unknown> {
 }
 
 describe("the sidebar as the window changes shape", () => {
-  it("allows drawer drag on Schedules and replaces sidebar destinations without growing the stack", async () => {
+  it("lets the edge swipe open the drawer on a top-level screen and leaves a drill-in's to its Back", async () => {
+    const { render } = await mount([home, threadA]);
+    // A task chosen from the sidebar: its swipe is the sidebar's, and it is marked open.
+    expect(harness.drawer.lock).toBe("unlocked");
+    expect(lastPanel().selectedThreadId).toBe("thread-a");
+    // A subagent drilled into over it keeps the native swipe back, and its task marked.
+    await render([home, threadA, { key: "subagent", name: "Subagent" }]);
+    expect(harness.drawer.lock).toBe("locked-closed");
+    expect(lastPanel().selectedThreadId).toBe("thread-a");
+    // A sheet over the task leaves it in charge.
+    await render([home, threadA, { key: "sheet", name: "ThreadAround" }]);
+    expect(harness.drawer.lock).toBe("unlocked");
+    // Phone setup over Home is a step to finish, not somewhere to be.
+    await render([home, { key: "setup", name: "SetUpPhone" }]);
+    expect(harness.drawer.lock).toBe("locked-closed");
+    // A streamed page owns its edges: the Menu in its bar opens the sidebar.
+    await render([home, { key: "tab", name: "WorkspaceBrowser", params: tabBRoute }]);
+    expect(harness.drawer.lock).toBe("locked-closed");
+    await render([home]);
+    expect(harness.drawer.lock).toBe("unlocked");
+    expect(mounts).toEqual({ count: 1, unmounts: 0 });
+  });
+
+  it("closes the drawer once for a choice, though the screen it changes asks again, and only while it shows", async () => {
+    const { container, render } = await mount([home, threadA]);
+    // Closed, there is nothing to close: no spring starts, and nothing flickers as if covered.
+    act(() => sidebarRef.current?.close());
+    expect(harness.closeDrawer).not.toHaveBeenCalled();
+
+    act(() => harness.drawer.onState?.("idle", true));
+    press(container, "Task B");
+    act(() => harness.drawer.onState?.("settling", false));
+    // The task chosen comes to front while the drawer is still sliding away.
+    await render([home, { ...threadA, key: "thread-b-key" }]);
+    expect(harness.closeDrawer).toHaveBeenCalledOnce();
+
+    // Settled, it closes again the next time it is open: a link arriving over it.
+    act(() => harness.drawer.onState?.("idle", false));
+    act(() => harness.drawer.onState?.("idle", true));
+    act(() => sidebarRef.current?.close());
+    expect(harness.closeDrawer).toHaveBeenCalledTimes(2);
+  });
+
+  it("opens the drawer from the leading edge, which is the right in a right-to-left language", async () => {
+    await mount([home, threadA]);
+    expect(harness.drawer.position).toBe("left");
+    harness.i18n.isRTL = true;
+    await mount([home, threadA]);
+    expect(harness.drawer.position).toBe("right");
+  });
+
+  it("makes a row top-level over the same mounted Home, from wherever the reader is", async () => {
     const schedules = {
       key: "schedules",
       name: "Schedules",
       params: { deploymentId: "deployment-a" },
     };
     const { container } = await mount([home, schedules]);
-    expect(harness.drawer.lock).toBe("unlocked");
     press(container, "Schedules");
     expect(harness.dispatch).not.toHaveBeenCalled();
     press(container, "Tabs");
     expect(harness.dispatch).toHaveBeenLastCalledWith({
-      type: "REPLACE",
-      payload: { name: "Tabs", params: { deploymentId: "deployment-a" } },
+      type: "RESET",
+      payload: {
+        index: 1,
+        routes: [home, { name: "Tabs", params: { deploymentId: "deployment-a" } }],
+      },
     });
     press(container, "Home");
     expect(harness.dispatch).toHaveBeenLastCalledWith({ type: "POP_TO_TOP" });
-  });
-
-  it("replaces Tabs with Schedules and resets deep screens to Home plus Schedules", async () => {
-    const { container } = await mount([
-      home,
-      { key: "tabs", name: "Tabs", params: { deploymentId: "deployment-a" } },
-    ]);
-    press(container, "Schedules");
-    expect(harness.dispatch).toHaveBeenLastCalledWith({
-      type: "REPLACE",
-      payload: { name: "Schedules", params: { deploymentId: "deployment-a" } },
-    });
     const deep = await mount([home, threadA, { key: "detail", name: "Schedule" }]);
     press(deep.container, "Schedules");
     expect(harness.dispatch).toHaveBeenLastCalledWith({
@@ -497,19 +557,6 @@ describe("the sidebar as the window changes shape", () => {
     expect(action.payload.routes[1]).toEqual({
       name: "WorkspaceBrowser",
       params: tabBRoute,
-    });
-  });
-
-  it("pushes a tab chosen over Tabs, so Back returns to Tabs", async () => {
-    const tabs = { key: "tabs-key", name: "Tabs", params: { deploymentId: "deployment-a" } };
-    const { container } = await mount([home, tabs]);
-    press(container, "Tab B");
-    expect(harness.dispatch).toHaveBeenCalledExactlyOnceWith({
-      payload: {
-        name: "WorkspaceBrowser",
-        params: tabBRoute,
-      },
-      type: "PUSH",
     });
   });
 

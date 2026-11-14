@@ -70,7 +70,7 @@ import { computerAppIdentityKey } from "@opensteer/protocol";
 
 import type { BrowserService } from "../../browser/browser-service.js";
 import type { BrowserSourceService } from "../../browser/browser-source-service.js";
-import { passwordsOfferGuidance } from "../../browser/passwords-offers.js";
+import type { SavedLoginService } from "../../browser/saved-logins.js";
 import type { BrowserTabGroupService } from "../../browser/browser-tab-group-service.js";
 import type { PlaceContextService } from "../../computer-use/place-context-service.js";
 import type { ComputerUseService } from "../../computer-use/computer-use-service.js";
@@ -132,7 +132,8 @@ export class ProductToolHandlers {
     | ((userId: RunToolScope["requestedBy"], message: PersonShowMessage) => Promise<number>)
     | undefined;
   readonly #supportsLoginFill: (scope: RunToolScope) => boolean;
-  readonly #browserSources: Pick<BrowserSourceService, "agentSignIn" | "agentUseCard">;
+  readonly #browserSources: Pick<BrowserSourceService, "agentCopyChromeCookies">;
+  readonly #savedLogins: Pick<SavedLoginService, "useSavedLogin" | "useCard">;
   readonly #deviceAccess: Pick<DeviceAccessService, "request">;
   readonly #machineFullDiskAccess: Pick<MachineFullDiskAccessService, "request">;
   readonly #browser: Pick<
@@ -173,7 +174,8 @@ export class ProductToolHandlers {
       message: PersonShowMessage,
     ) => Promise<number>;
     readonly supportsLoginFill?: (scope: RunToolScope) => boolean;
-    readonly browserSources: Pick<BrowserSourceService, "agentSignIn" | "agentUseCard">;
+    readonly browserSources: Pick<BrowserSourceService, "agentCopyChromeCookies">;
+    readonly savedLogins: Pick<SavedLoginService, "useSavedLogin" | "useCard">;
     readonly deviceAccess: Pick<DeviceAccessService, "request">;
     readonly machineFullDiskAccess: Pick<MachineFullDiskAccessService, "request">;
     readonly browser: Pick<
@@ -213,6 +215,7 @@ export class ProductToolHandlers {
     this.#personShow = options.personShow;
     this.#supportsLoginFill = options.supportsLoginFill ?? (() => false);
     this.#browserSources = options.browserSources;
+    this.#savedLogins = options.savedLogins;
     this.#deviceAccess = options.deviceAccess;
     this.#machineFullDiskAccess = options.machineFullDiskAccess;
     this.#browser = options.browser;
@@ -1342,7 +1345,7 @@ export class ProductToolHandlers {
 
   async use_card({ caller, input, operationKey }: ToolCall<"use_card">) {
     const claims = requireRun(caller).claims;
-    return await this.#browserSources.agentUseCard({
+    return await this.#savedLogins.useCard({
       deploymentId: this.#deploymentId,
       callId: operationId(caller, operationKey, "use_card"),
       ownerId: claims.requestedBy,
@@ -1354,14 +1357,12 @@ export class ProductToolHandlers {
     });
   }
 
-  async sign_in({ caller, input, operationKey }: ToolCall<"sign_in">) {
+  async use_saved_login({ caller, input, operationKey }: ToolCall<"use_saved_login">) {
     const claims = requireRun(caller).claims;
-    const requestId = operationId(caller, operationKey, "sign_in");
-
-    const result = await this.#browserSources.agentSignIn({
+    return await this.#savedLogins.useSavedLogin({
       deploymentId: this.#deploymentId,
       loginFill: this.#supportsLoginFill(claims),
-      callId: requestId,
+      callId: operationId(caller, operationKey, "use_saved_login"),
       ownerId: claims.requestedBy,
       reason: input.reason,
       runId: claims.runId,
@@ -1369,8 +1370,20 @@ export class ProductToolHandlers {
       site: input.site,
       threadId: claims.threadId,
     });
-    const guidance = passwordsOfferGuidance(result);
-    return guidance === null ? result : { ...result, guidance };
+  }
+
+  async copy_chrome_cookies({ caller, input, operationKey }: ToolCall<"copy_chrome_cookies">) {
+    const claims = requireRun(caller).claims;
+    return await this.#browserSources.agentCopyChromeCookies({
+      deploymentId: this.#deploymentId,
+      callId: operationId(caller, operationKey, "copy_chrome_cookies"),
+      ownerId: claims.requestedBy,
+      reason: input.reason,
+      runId: claims.runId,
+      tabId: input.tabId,
+      site: input.site,
+      threadId: claims.threadId,
+    });
   }
 
   async device_access_request({ caller, input, operationKey }: ToolCall<"device_access_request">) {

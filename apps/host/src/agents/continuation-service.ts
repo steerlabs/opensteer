@@ -345,26 +345,17 @@ export async function continuationMessage(
         throw new Error("Browser sign-in Request payload is invalid");
       const { site } = request.payload;
       if (request.status === "declined")
-        return `Request ${request.id} to reuse the user's Chrome sign-in was declined by the user. Continue without signing in to ${site} and do not ask for it again unless the user asks.`;
+        return `Request ${request.id} to copy the user's Chrome cookies for ${site} was declined. Continue without them and do not ask again unless the user asks.`;
       const response = BrowserSignInRequestResponseSchema.parse(
         request.response.kind === "external" ? request.response.value : undefined,
       );
       switch (response.outcome) {
         case "applied":
-          return `Request ${request.id} was fulfilled. Signed in to ${site} with ${response.sourceName} in the browser tab. Reload the page and confirm the account before continuing.`;
-        case "not-signed-in": {
-          const passwords =
-            response.passwords === "not-set-up"
-              ? ", or to set up Opensteer Passwords on their Mac so agents can sign in for them (Opensteer shows them where under your reply)"
-              : response.passwords === "no-login"
-                ? ", or to add this login in Opensteer Passwords"
-                : response.passwords === "off"
-                  ? ", or to turn agent sign-ins back on in the Passwords window"
-                  : "";
-          return `Request ${request.id} ended without signing in: Chrome is connected but not signed in to ${site}, so there is no Chrome sign-in to reuse. The user did not decline. Ask them to sign in to ${site} themselves in the browser tab${passwords}, then call sign_in again.`;
-        }
+          return `Request ${request.id} was fulfilled: copied ${response.sourceName}'s cookies for ${site} into the browser tab. Reload the page and check the account; the site may still refuse copied cookies.`;
+        case "not-signed-in":
+          return `Request ${request.id} ended: no connected Chrome is signed in to ${site}, so nothing was copied. The user did not decline.`;
         case "session-closed":
-          return `Request ${request.id} was fulfilled. The user allowed ${site}. Your tab had closed; call sign_in again with your current tabId.`;
+          return `Request ${request.id} was allowed, but the browser tab had closed. Call copy_chrome_cookies again with your current tabId.`;
       }
     }
     case "browser.password-sign-in": {
@@ -375,23 +366,21 @@ export async function continuationMessage(
       const response = PasswordSignInRequestResponseSchema.parse(
         request.response.kind === "external" ? request.response.value : undefined,
       );
-      {
-        const { site, computerName } = request.payload;
-        if (request.payload.credential === "card") {
-          const action =
-            response.outcome === "authorized" && loginRef
-              ? `Focus each required checkout field and call fillCard("${loginRef}", field). Never read back, print, log, copy or save card values. This approval covers filling only; the person's request must cover any purchase.`
-              : "The card use ended. Call use_card again only if the task still requires it.";
-          return `Request ${request.id} for card use on ${site} ended. ${action}`;
-        }
-        if (response.outcome === "authorized") {
-          const action = loginRef
-            ? `Use saved login ${loginRef} for ${site} as ${response.account}: in the genuine phone/Mac app, type {loginRef: "${loginRef}", field: "username" | "password" | "code"}; in a browser, focus each field and use Browser Harness fillLogin("${loginRef}", field). Submit and verify the signed-in account. Never reveal or read back saved fields.`
-            : `The saved login for ${site} ended. Call sign_in again.`;
-          return `Request ${request.id} was approved. ${action} If the reference expires, call sign_in again.`;
-        }
-        return `Request ${request.id} was fulfilled. ${passwordSignInContinuation({ site, computerName }, response)}`;
+      const { site, computerName } = request.payload;
+      if (request.payload.credential === "card") {
+        const action =
+          response.outcome === "authorized" && loginRef
+            ? `Focus each required checkout field and call fillCard("${loginRef}", field). Never read back, print, log, copy or save card values. This approval covers filling only; the person's request must cover any purchase.`
+            : "The card use ended. Call use_card again only if the task still requires it.";
+        return `Request ${request.id} for card use on ${site} ended. ${action}`;
       }
+      if (response.outcome === "authorized") {
+        const action = loginRef
+          ? `Saved login ${loginRef} for ${site} is ready as ${response.account}: in a browser, focus each field and call fillLogin("${loginRef}", field); in a genuine phone or Mac app, type {loginRef: "${loginRef}", field}. Fields are "username", "password" and "code". Submit and check the account. Never reveal or read back saved fields.`
+          : `The saved login for ${site} ended. Call use_saved_login again if the task still needs it.`;
+        return `Request ${request.id} was approved. ${action}`;
+      }
+      return `Request ${request.id} ended. ${passwordSignInContinuation({ site, computerName }, response)}`;
     }
     case "integration.access": {
       if (request.status === "declined") {
@@ -720,56 +709,27 @@ function continuationFailureReason(error: unknown): string {
 
 /** What the agent is told; it never learns a password, a username or a cookie. */
 function passwordSignInContinuation(
-  payload: {
-    readonly computerName: string;
-    readonly sessionId?: string | undefined;
-    readonly site: string;
-  },
-  response: PasswordSignInRequestResponse,
+  payload: { readonly computerName: string; readonly site: string },
+  response: Exclude<PasswordSignInRequestResponse, { outcome: "authorized" }>,
 ): string {
   const { computerName, site } = payload;
   switch (response.outcome) {
-    case "authorized":
-      return "Call sign_in again. If fillLogin answers expired, call sign_in again.";
-    case "signed-in":
-      return response.method === "saved-password"
-        ? `Signed in to ${site} with the user's saved password in the browser tab. Reload the page and confirm the account before continuing.`
-        : `The user signed in to ${site} themselves, and the sign-in was handed to the browser tab. Reload the page and confirm the account before continuing.`;
     case "expired":
-      return `Nobody answered on ${computerName} within an hour, so ${site} was not signed in. Continue without signing in. If the task still needs it, call sign_in again.`;
+      return `Nobody answered on ${computerName} within an hour, so no saved login for ${site} was released. Call use_saved_login again if the task still needs it.`;
     case "unavailable":
       switch (response.reason) {
         case "no-saved-login":
-          return `There is no saved login for ${site}. Ask the user to sign in in the visible tab or save the login in Opensteer Passwords, then call sign_in again.`;
+          return `Opensteer Passwords on ${computerName} has no login for ${site}.`;
         case "passwords-off":
-          return `Opensteer Passwords is turned off on ${computerName}, so ${site} was not signed in. Continue without signing in unless the user turns it on.`;
+          return `Agent sign-ins are turned off in Opensteer Passwords on ${computerName}.`;
         case "not-set-up":
-          return `Opensteer Passwords is not set up on ${computerName}, so ${site} was not signed in. Continue without signing in unless the user sets it up.`;
+          return `Opensteer Passwords is not set up on ${computerName}.`;
         case "not-responding":
-          return `Opensteer Passwords did not respond on ${computerName}, so ${site} was not signed in. Continue without signing in. If the task still needs it later, call sign_in again.`;
+          return `Opensteer Passwords did not respond on ${computerName}. Call use_saved_login again later if the task still needs ${site}.`;
       }
-    case "outcome-unknown":
-      return `Opensteer couldn't confirm the sign-in to ${site}, so it closed the browser tab. If the task still needs ${site}, open a Guest tab with Browser Harness newTab(url, { guest: true }) and call sign_in there.`;
     case "interrupted":
-      return `The sign-in to ${site} stopped on ${computerName} before anything was handed to the browser tab. If the task still needs it, call sign_in again.`;
+      return `The saved-login release for ${site} stopped on ${computerName} before anything was released. Call use_saved_login again if the task still needs it.`;
     case "session-closed":
-      return `the browser tab closed before the sign-in to ${site} finished. If the task still needs it, open a Guest tab with Browser Harness newTab(url, { guest: true }) and call sign_in there.`;
-    case "failed":
-      switch (response.reason) {
-        case "needs-sign-in-page":
-          return `Open the sign-in form for ${site} in the browser tab, then call sign_in again. No approval was requested and no credential was released.`;
-        case "wrong-password":
-          return `${site} rejected the saved password. Tell the user the saved password for ${site} needs updating in Opensteer Passwords before calling sign_in again.`;
-        case "unsupported-page":
-          return `Opensteer couldn't sign in to ${site} on this page and the user didn't finish it. Continue without signing in, and ask the user only if the task requires it.`;
-        case "blocked-destination":
-          return `The ${site} sign-in page tried to reach a blocked address, so nothing was sent. Do not retry; tell the user.`;
-        case "cleanup-failed":
-          return `Opensteer could not clear its private sign-in for ${site}, so it handed nothing over. If the task still needs it later, call sign_in again.`;
-        case "busy":
-          return `Another sign-in was already running in this browser. Wait for it to finish; if the task still needs ${site}, call sign_in again.`;
-        case "needs-fresh-session":
-          return `Saved-password sign-ins need a Guest tab. Open one with Browser Harness newTab(url, { guest: true }), then call sign_in with its tabId.`;
-      }
+      return `The browser tab closed before the saved login for ${site} was released.`;
   }
 }

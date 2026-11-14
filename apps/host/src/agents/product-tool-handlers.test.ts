@@ -280,20 +280,22 @@ describe("Product tool handlers", () => {
       originatingThreadId: claims.threadId,
     });
   });
-  it.each(["sign-in"] as const)(
+  it.each(["use_saved_login", "copy_chrome_cookies"] as const)(
     "keeps %s tab requests admitted through the single sign-in permission",
     async (type) => {
       const current = thread(currentThreadId, nativeHarnessId, "Worker");
       const result = {
         status: "unavailable",
         site: "https://example.com",
-        reason: "no-saved-login",
+        reason: "unsupported",
       } as const;
-      const agentSignIn = vi.fn(async () => result);
+      const useSavedLogin = vi.fn(async () => result);
+      const agentCopyChromeCookies = vi.fn(async () => result);
       const { service, admitRunToolCall } = makeService({
-        browserSources: {
-          agentSignIn,
-          agentUseCard: async () => {
+        browserSources: { agentCopyChromeCookies },
+        savedLogins: {
+          useSavedLogin,
+          useCard: async () => {
             throw new Error("Unexpected card use");
           },
         },
@@ -305,30 +307,21 @@ describe("Product tool handlers", () => {
         threads: [current],
       });
       const tabId = BrowserSurfaceIdSchema.parse("sign-in-tab");
-      const requestId = crypto.randomUUID();
       await expect(
-        service.handle("run-token", {
-          requestId,
+        service.service.callTool(
+          "run-token",
           type,
-          tabId,
-          site: result.site,
-          reason: "Read the account",
-        }),
-      ).resolves.toEqual({
-        requestId,
-        type: `${type}.result`,
-        // On the result, because a long-lived session keeps the skill it read first.
-        result: {
-          ...result,
-          guidance: expect.stringContaining("call sign_in again"),
-        },
-      });
-      expect(agentSignIn).toHaveBeenCalledWith(
-        expect.objectContaining({
-          tabId,
-          site: result.site,
-        }),
-      );
+          {
+            tabId,
+            site: result.site,
+            reason: "Read the account",
+          },
+          { operationKey: "tab-sign-in" },
+        ),
+      ).resolves.toEqual(result);
+      expect(
+        type === "use_saved_login" ? useSavedLogin : agentCopyChromeCookies,
+      ).toHaveBeenCalledWith(expect.objectContaining({ tabId, site: result.site }));
       expect(admitRunToolCall).not.toHaveBeenCalled();
     },
   );
@@ -947,6 +940,7 @@ describe("Product tool handlers", () => {
 function makeService(options: {
   personShow?: ConstructorParameters<typeof ProductToolsTestClient>[0]["personShow"];
   browserSources?: ConstructorParameters<typeof ProductToolsTestClient>[0]["browserSources"];
+  savedLogins?: ConstructorParameters<typeof ProductToolsTestClient>[0]["savedLogins"];
   machineFullDiskAccess?: ConstructorParameters<
     typeof ProductToolsTestClient
   >[0]["machineFullDiskAccess"];
@@ -1332,8 +1326,11 @@ function makeService(options: {
           }
         : {}),
       browserSources: options.browserSources ?? {
-        agentSignIn: unexpectedBrowserRequest,
-        agentUseCard: unexpectedBrowserRequest,
+        agentCopyChromeCookies: unexpectedBrowserRequest,
+      },
+      savedLogins: options.savedLogins ?? {
+        useSavedLogin: unexpectedBrowserRequest,
+        useCard: unexpectedBrowserRequest,
       },
       machineFullDiskAccess: options.machineFullDiskAccess ?? {
         request: vi.fn(),

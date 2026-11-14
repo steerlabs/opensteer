@@ -109,7 +109,9 @@ describe("Runner Agent Skills", () => {
       "utf8",
     );
     expect(signIn).toContain("never reveal, read back or screenshot a typed saved field");
-    expect(signIn).toContain("Delegated tasks can use `sign_in` for already-authorized sites.");
+    expect(signIn).toContain(
+      "Delegated tasks can use `use_saved_login` for already-authorized sites.",
+    );
   });
 
   it("teaches that a reply, never a report, is what reaches the person", async () => {
