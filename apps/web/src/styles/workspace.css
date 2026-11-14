@@ -880,6 +880,11 @@ button.side-needs:hover {
   border-bottom-color: var(--line);
 }
 
+/* Tabs' rim already marks the foot of the pane above it. */
+.side-section--tasks [data-scroll-edges][data-more-below] {
+  border-bottom-color: transparent;
+}
+
 [data-scroll-edges]:is(:hover, :focus-within, [data-scrolling]) {
   scrollbar-color: rgb(255 255 255 / 18%) transparent;
 }
