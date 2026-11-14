@@ -136,8 +136,7 @@ export function TeamDialogsProvider({ children }: { readonly children: ReactNode
   const [transfers, setTransfers] = useState(0);
   useEffect(() => {
     navigator.current = (path) => {
-      const team = /^\/teams\/([^/]+)\//u.exec(path)?.[1];
-      void navigate(path, team ? { state: { enteredTeam: decodeURIComponent(team) } } : undefined);
+      void navigate(path);
     };
     return () => {
       navigator.current = null;
@@ -153,9 +152,7 @@ export function TeamDialogsProvider({ children }: { readonly children: ReactNode
         label: "Open",
         run: () => {
           coordination?.coordinator.dismissReady(notice.hostedTeamId);
-          void navigate(teamPath(notice.teamDeploymentId, ""), {
-            state: { enteredTeam: notice.teamDeploymentId },
-          });
+          void navigate(teamPath(notice.teamDeploymentId, ""));
         },
         lapse: () => coordination?.coordinator.dismissReady(notice.hostedTeamId),
       });

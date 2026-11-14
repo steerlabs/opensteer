@@ -94,7 +94,6 @@ import type { DeviceElsewhere } from "@opensteer/client/computers";
 import { DeviceLabel } from "./computers/device-label.js";
 import { useHereId } from "./computers/here.js";
 import { useTaskDirectory, type TaskDirectory } from "./workspace/task-directory.js";
-import { useTeams } from "../team/team-attachments.js";
 import type { SegmentBadge } from "./team/team-sidebar.js";
 import {
   useHighlightMatch,
@@ -163,7 +162,7 @@ export function Sidebar({
 }: SidebarProps) {
   const workspace = useWorkspace();
   const { nav } = workspace;
-  const { pathname, state: locationState } = useLocation();
+  const { pathname } = useLocation();
   const snapshot = useTaskSnapshot(hostClient);
   const deploymentId = useHostSelector(hostClient, (current) => current.deploymentId);
   const userId = useHostSelector(hostClient, (current) => current.user?.id ?? null);
@@ -277,12 +276,7 @@ export function Sidebar({
   const directory = useTaskDirectory(hostClient, openRowThreadId);
   const { list } = directory;
   const tasksList = useRef<HTMLUListElement | null>(null);
-  const [side, setSide] = useSidebarSide(deploymentId, userId, pathname);
-  // Entering a team the person just created or joined is their choice of side.
-  const enteredTeam = enteredTeamOf(locationState);
-  useEffect(() => {
-    if (enteredTeam) setSide(enteredTeam);
-  }, [enteredTeam, setSide]);
+  const { side, openSide } = nav;
   const doneShelf = useRef<HTMLLIElement | null>(null);
   // Done takes the place of Tasks while it is open.
   const [doneView, setDoneView] = useState(false);
@@ -741,7 +735,7 @@ export function Sidebar({
       <TasksBadgeSwitch
         hostClient={hostClient}
         onNavigate={onCloseMobile}
-        onSide={setSide}
+        onSide={openSide}
         side={side}
       />
 
@@ -1088,63 +1082,6 @@ function VoiceButton({ onOpen }: { readonly onOpen: () => void }) {
       {since !== null ? <VoiceClock /> : null}
     </button>
   );
-}
-
-/**
- * Which side of the switch shows. On load it follows the address (a channel
- * opens on its team, a task on Tasks), else what this person last chose here;
- * after that only the person changes it.
- */
-function useSidebarSide(
-  deploymentId: string | null,
-  userId: string | null,
-  pathname: string,
-): readonly [string, (side: string) => void] {
-  const key = `opensteer.sidebar.side:${deploymentId ?? ""}:${userId ?? ""}`;
-  const loadedAt = useRef(pathname).current;
-  const [chosen, setChosen] = useState<{ readonly key: string; readonly side: string } | null>(
-    null,
-  );
-  const loaded = useMemo(() => routeSide(loadedAt) ?? storedSide(key), [key, loadedAt]);
-  const side = chosen?.key === key ? chosen.side : loaded;
-  const { teams } = useTeams();
-  const choose = useCallback(
-    (next: string) => {
-      setChosen({ key, side: next });
-      try {
-        localStorage.setItem(key, next);
-      } catch {
-        // The choice still holds for this window.
-      }
-    },
-    [key],
-  );
-  // A team that is gone leaves its side; Tasks is what remains.
-  return [side === "tasks" || teams.some((team) => team.teamId === side) ? side : "tasks", choose];
-}
-
-/** The team a navigation entered, as `TeamDialogsProvider` marks it. */
-export function enteredTeamOf(state: unknown): string | null {
-  return typeof state === "object" &&
-    state !== null &&
-    "enteredTeam" in state &&
-    typeof state.enteredTeam === "string"
-    ? state.enteredTeam
-    : null;
-}
-
-function routeSide(pathname: string): string | null {
-  const team = /^\/teams\/([^/]+)\//u.exec(pathname);
-  if (team) return decodeURIComponent(team[1]!);
-  return pathname.startsWith("/tasks/") ? "tasks" : null;
-}
-
-function storedSide(key: string): string {
-  try {
-    return localStorage.getItem(key) ?? "tasks";
-  } catch {
-    return "tasks";
-  }
 }
 
 const selectTasksBadge = (snapshot: HostSnapshot): SegmentBadge => {

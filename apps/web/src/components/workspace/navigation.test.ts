@@ -1,6 +1,12 @@
 // @vitest-environment happy-dom
 import { afterEach, expect, it } from "vitest";
-import { placeAddress, placeSelection, rememberPlace, rememberedPlace } from "./navigation.js";
+import {
+  placeAddress,
+  placeSelection,
+  rememberPlace,
+  rememberedPlace,
+  workspaceSide,
+} from "./navigation.js";
 
 const destination = {
   kind: "opensteer-app",
@@ -27,4 +33,22 @@ it("remembers an app tab and refuses a forged memory of one", () => {
   const [key] = Object.keys(localStorage);
   localStorage.setItem(key!, JSON.stringify({ kind: "opensteer-app", appId: "../settings" }));
   expect(rememberedPlace(scope)).toBeNull();
+});
+
+it("classifies only workspace addresses, including a bare team link", () => {
+  for (const path of ["/", "/tasks/t", "/automations", "/automations/a/edit", "/voice"])
+    expect(workspaceSide(path)).toBe("tasks");
+  for (const path of ["/teams/acme", "/teams/acme/", "/teams/acme/knowledge"])
+    expect(workspaceSide(path)).toBe("acme");
+  for (const path of [
+    "/settings",
+    "/settings/teams/acme/profile",
+    "/setup",
+    "/get-started",
+    "/join",
+    "/teams",
+    "/live",
+    "/teams/%",
+  ])
+    expect(workspaceSide(path)).toBeNull();
 });

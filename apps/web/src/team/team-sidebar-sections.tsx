@@ -167,8 +167,8 @@ export function TeamSwitch({
         <LeaveTeamDialog
           onClose={() => setLeaving(null)}
           onLeft={() => {
+            onNavigate();
             onSide("tasks");
-            go("/");
           }}
           team={leaving}
         />

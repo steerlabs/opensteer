@@ -54,9 +54,11 @@ interface Step {
   readonly type: string;
   readonly path: string;
   readonly search: string;
+  readonly hash?: string;
 }
 let history: Step[] = [];
 let historyState: unknown = null;
+let historyKey = "";
 /** The router's own navigate, for Back and Forward as a person's browser does them. */
 let goTo: ReturnType<typeof useNavigate> | null = null;
 /** The window's width as media queries read it, changeable mid-test like a resize. */
@@ -96,6 +98,7 @@ function cleanupWorkspace() {
   viewport.queries.clear();
   document.body.replaceChildren();
   localStorage.clear();
+  sessionStorage.clear();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 }
@@ -103,11 +106,22 @@ function cleanupWorkspace() {
 function History() {
   const location = useLocation();
   historyState = location.state;
+  historyKey = location.key;
   const type = useNavigationType();
   goTo = useNavigate();
   const last = history.at(-1);
-  if (!last || last.path !== location.pathname || last.search !== location.search)
-    history.push({ path: location.pathname, search: location.search, type });
+  if (
+    !last ||
+    last.path !== location.pathname ||
+    last.search !== location.search ||
+    (last.hash ?? "") !== location.hash
+  )
+    history.push({
+      path: location.pathname,
+      search: location.search,
+      ...(location.hash ? { hash: location.hash } : {}),
+      type,
+    });
   return null;
 }
 
@@ -152,7 +166,17 @@ async function mount(
   sessionClient = options.hostClient?.(client) ?? null;
   if (sessionClient) await sessionClient.load();
   let teams: readonly TeamAttachment[] = [];
-  if (options.team) {
+  if (options.team && options.sameHost && teamHost && teamSession) {
+    teams = [
+      {
+        teamId: teamHost.teamId,
+        name: teamHost.bootstrap.teamName,
+        origin: teamHost.origin,
+        client: teamSession,
+        link: null,
+      },
+    ];
+  } else if (options.team) {
     const host = new MockTeamHost();
     teamHost = host;
     const session = new TeamSessionClient({
@@ -373,6 +397,7 @@ export {
   teamSession,
   history,
   historyState,
+  historyKey,
   goTo,
   resize,
   type Entry,
