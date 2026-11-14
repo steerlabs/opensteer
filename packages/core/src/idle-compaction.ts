@@ -4,6 +4,7 @@ import { ProviderSessionIdSchema, RunIdSchema, MessageIdSchema } from "./ids.js"
 export const IdleCompactionPolicySchema = z.strictObject({
   mode: z.enum(["onReturn", "beforeCacheExpires", "off"]),
 });
+export const IdleCompactionPolicyViewSchema = z.object(IdleCompactionPolicySchema.shape);
 export type IdleCompactionPolicy = z.infer<typeof IdleCompactionPolicySchema>;
 export const defaultIdleCompactionPolicy: IdleCompactionPolicy = { mode: "onReturn" };
 const milliseconds = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -27,6 +28,7 @@ export const RunMaintenanceSchema = z.strictObject({
   sourceRunId: RunIdSchema,
   providerSessionId: ProviderSessionIdSchema,
 });
+export const RunMaintenanceViewSchema = z.object(RunMaintenanceSchema.shape);
 export type RunMaintenance = z.infer<typeof RunMaintenanceSchema>;
 export const CompactionSendChoiceSchema = z.enum(["compactFirst", "keepFullHistory"]);
 export type CompactionSendChoice = z.infer<typeof CompactionSendChoiceSchema>;

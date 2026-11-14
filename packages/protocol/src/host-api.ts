@@ -1,6 +1,10 @@
 import { TeamCommandResultViewSchema, teamReadViews } from "./team-views.js";
 import { NeedsYouPageSchema } from "./needs-you.js";
-import { CompactionSendChoiceSchema, IdleCompactionPolicySchema } from "@opensteer/core";
+import {
+  CompactionSendChoiceSchema,
+  IdleCompactionPolicySchema,
+  IdleCompactionPolicyViewSchema,
+} from "@opensteer/core";
 import { ToolOutputViewSchema } from "@opensteer/core";
 import { AutomaticModelsViewSchema } from "./automatic-models.js";
 import { TeamCommandSchema, teamReadSchemas } from "./team-api.js";
@@ -1193,7 +1197,10 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     registered: z.literal(true),
   }),
   z.object({ timeZone: TimeZoneSchema, type: z.literal("viewer.timeZone.update") }),
-  z.object({ policy: IdleCompactionPolicySchema, type: z.literal("settings.idleCompaction.set") }),
+  z.object({
+    policy: IdleCompactionPolicyViewSchema,
+    type: z.literal("settings.idleCompaction.set"),
+  }),
   z.object({ quietTaskDays: QuietTaskDaysSchema, type: z.literal("viewer.quietTasks.update") }),
   z.object({
     asOfSequence: SequenceSchema,

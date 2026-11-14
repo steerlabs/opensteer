@@ -7,6 +7,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  createUsageNoticeDismissals,
   placeHasAgents,
   placeList,
   type HostClient,
@@ -1027,6 +1028,7 @@ async function world(
       subscribe: () => () => undefined,
     },
     subscribe: () => () => undefined,
+    usageNotices: createUsageNoticeDismissals({ read: () => [], write: () => undefined }),
   } as unknown as MobileClient;
   const stack = new TestStack(options.routes ?? [{ name: "Home", params: { deploymentId } }]);
   const container = document.createElement("div");

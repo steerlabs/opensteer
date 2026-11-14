@@ -1,5 +1,5 @@
 import { CompactionReturnHintSchema } from "./idle-compaction.js";
-import { RunMaintenanceSchema } from "./idle-compaction.js";
+import { RunMaintenanceSchema, RunMaintenanceViewSchema } from "./idle-compaction.js";
 import {
   TeamTaskOriginSchema,
   TeamSourceSchema,
@@ -834,6 +834,7 @@ const runShape = {
 export const RunSchema = z.strictObject(runShape);
 export const RunViewSchema = z.object({
   ...runShape,
+  maintenance: RunMaintenanceViewSchema.nullable().optional(),
   delivery: TeamRunDeliveryViewSchema.nullable().default(null),
   failure: RunFailureViewSchema.nullable(),
   modelSelection: ModelSelectionViewSchema,
@@ -1117,7 +1118,10 @@ export const ThreadRunQueueEntrySchema = RunSchema.pick({
 })
   .extend({ status: ActiveRunStatusSchema })
   .strict();
-export const ThreadRunQueueEntryViewSchema = z.object(ThreadRunQueueEntrySchema.shape);
+export const ThreadRunQueueEntryViewSchema = z.object({
+  ...ThreadRunQueueEntrySchema.shape,
+  maintenance: RunMaintenanceViewSchema.nullable().optional(),
+});
 export type ThreadRunQueueEntry = z.infer<typeof ThreadRunQueueEntrySchema>;
 
 export const ExecutionBindingStatusSchema = z.enum([
