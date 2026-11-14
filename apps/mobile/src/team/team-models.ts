@@ -104,6 +104,7 @@ export type MessageAuthor =
   | { readonly kind: "agent"; readonly agent: AgentView };
 
 export interface MessageView {
+  readonly askStatuses?: readonly { id: string; label: string }[];
   readonly id: string;
   /** Bumps on every edit, pin or summary change; a row redraws only when this does. */
   readonly version: number;

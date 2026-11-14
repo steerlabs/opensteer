@@ -116,6 +116,16 @@ export function threadRoot(destination: ThreadDestination): InitialState {
   };
 }
 
+export function needsYouRoot(deploymentId: string): InitialState {
+  return {
+    index: 1,
+    routes: [
+      { name: "Home", params: { deploymentId } },
+      { name: "NeedsYou", params: { deploymentId } },
+    ],
+  };
+}
+
 /** An agent's connection request, reviewed over Home so closing it lands somewhere useful. */
 export function agentAuthorizationRoot(deploymentId: string, requestId: string): InitialState {
   return {

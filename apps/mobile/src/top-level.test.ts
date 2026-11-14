@@ -40,6 +40,7 @@ describe("the top-level screen", () => {
   it("is Home, or the screen on it that can be a place to be", () => {
     expect(topLevelIndex(stack(home))).toBe(0);
     expect(topLevelIndex(stack(home, taskA, subagent))).toBe(1);
+    expect(topLevelIndex(stack(home, { key: "needs-you", name: "NeedsYou" }))).toBe(1);
     expect(topLevelIndex(stack(home, { key: "setup", name: "SetUpPhone" }))).toBe(0);
     expect(topLevelIndex(stack(home, { key: "sheet", name: "ThreadAround" }))).toBe(0);
     expect(topLevelIndex(stack(taskA))).toBeNull();

@@ -1,3 +1,4 @@
+import { needsYouEntryKey, refreshNeedsYou, settleTeamAsk } from "./needs-you.js";
 import type { MachineSummary } from "@opensteer/protocol";
 import type { PersonalStreamCache, PersonalCacheScope } from "./personal-stream-cache.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -1207,6 +1208,19 @@ export class HttpHostClient {
         );
     const result = await this.#dispatch(parsedCommand);
     switch (result.type) {
+      case "teams.ask.decide":
+        this.#update({
+          ...this.#snapshot,
+          needsYou:
+            parsedCommand.type === "teams.ask.decide"
+              ? settleTeamAsk(
+                  this.#snapshot.needsYou,
+                  parsedCommand.teamId,
+                  parsedCommand.requestId,
+                )
+              : this.#snapshot.needsYou,
+        });
+        break;
       case "assignment.cancel":
         this.#update({
           ...this.#snapshot,
@@ -3266,12 +3280,15 @@ export class HttpHostClient {
     );
     if (generation !== this.#viewerGeneration || this.#disposed || this.#snapshot.needsYou !== held)
       return;
-    const ids = new Set(held.entries.map(({ request }) => request.id));
+    const ids = new Set(held.entries.map(needsYouEntryKey));
     this.#update({
       ...this.#snapshot,
       needsYou: {
         ...page,
-        entries: [...held.entries, ...page.entries.filter(({ request }) => !ids.has(request.id))],
+        entries: [
+          ...held.entries,
+          ...page.entries.filter((entry) => !ids.has(needsYouEntryKey(entry))),
+        ],
       },
     });
   }
@@ -3282,12 +3299,22 @@ export class HttpHostClient {
 
   async #readWaitingRequests(): Promise<void> {
     const needsGeneration = this.#viewerGeneration;
-    const needsYou = unwrapRpcResult(
-      await this.rpc["needsYou.get"](
-        this.#supportsDeviceAccessRequests() ? { deviceAccessRequests: "include" } : {},
+    const held = this.#snapshot.needsYou;
+    const needsYou = await refreshNeedsYou(held, async (before) =>
+      unwrapRpcResult(
+        await this.rpc["needsYou.get"]({
+          ...(before ? { before } : {}),
+          ...(this.#supportsDeviceAccessRequests()
+            ? { deviceAccessRequests: "include" as const }
+            : {}),
+        }),
       ),
     );
     if (needsGeneration !== this.#viewerGeneration || this.#disposed) return;
+    if (this.#snapshot.needsYou !== held) {
+      this.#rereadWaitingRequests();
+      return;
+    }
     this.#update({ ...this.#snapshot, needsYou });
     const generation = this.#viewerGeneration;
     const userId = this.#snapshot.user?.id;

@@ -1640,6 +1640,12 @@ export async function createHostServer(
           type: command.type,
           link: await (await dependencies.teamLinks()).join(command.link),
         };
+      case "teams.ask.decide":
+        await requirePersonalOwner(dependencies.store.database, userId);
+        await (
+          await dependencies.teamLinks()
+        ).options.requests.decide(userId, command.teamId, command.requestId, command.decision);
+        return { type: command.type };
       case "teams.link.leave":
         await (await dependencies.teamLinks()).leave(command.teamId);
         return { type: command.type };

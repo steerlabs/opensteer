@@ -40,14 +40,14 @@ export const HostBootstrapMethodSchema = z.enum([
 export type HostBootstrapMethod = z.infer<typeof HostBootstrapMethodSchema>;
 
 /** Personal and team transports negotiate their own mandatory contract version. */
-export const hostApiVersion = 56;
+export const hostApiVersion = 57;
 /**
  * The team API this tree speaks, and the oldest peer it still serves. See the
  * compatibility policy in docs/teams.md before changing either; the wire
  * snapshot test refuses a breaking schema change without a bump.
  */
-export const teamApiVersion = 4;
-export const minimumTeamApiVersion = 4;
+export const teamApiVersion = 5;
+export const minimumTeamApiVersion = 5;
 export const teamOAuthVersionParameter = "opensteer_team_api_version";
 export const teamOidcStatePrefix = "ost-team-api-";
 export const hostApiVersionHeader = "x-opensteer-api-version";

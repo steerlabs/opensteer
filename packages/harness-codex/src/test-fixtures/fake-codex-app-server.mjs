@@ -72,6 +72,25 @@ if (process.argv.includes("--version")) {
   writeFileSync(1, `codex-cli ${version}\n`);
   process.exit(0);
 }
+// Recovery must exercise marker reaping after the supervisor has killed its own group.
+if (
+  process.platform !== "win32" &&
+  process.argv.includes("--survive-parent") &&
+  !process.argv.includes("--orphan-engine")
+) {
+  const engine = spawn(process.execPath, [...process.argv.slice(1), "--orphan-engine"], {
+    detached: true,
+    stdio: "inherit",
+  });
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"])
+    process.on(signal, () => engine.kill(signal));
+  const code = await new Promise((resolve) => {
+    engine.once("exit", (code) => resolve(code ?? 1));
+    engine.once("error", () => resolve(1));
+  });
+  process.exit(code);
+}
+
 const writeCaptureRecord = capturePath ? createCaptureRecordWriter(capturePath) : undefined;
 let captureRunId = null;
 
@@ -220,6 +239,14 @@ process.on("exit", () => {
   for (const thread of threads.values())
     for (const terminal of thread.terminals) terminal.kill("SIGKILL");
 });
+
+if (process.argv.includes("--survive-parent")) {
+  // A killed Runner may close its read pipe before the engine's last write flushes.
+  process.stdout.on("error", (error) => {
+    if (error.code !== "EPIPE") throw error;
+    capture({ recoveryBrokenPipe: true });
+  });
+}
 
 lines.on("close", () => {
   if (scenario === "ignore-termination") setInterval(() => undefined, 1_000);

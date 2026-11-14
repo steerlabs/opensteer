@@ -1,5 +1,9 @@
 import {
   notificationPushWindowMilliseconds,
+  NotificationViewSchema,
+  createId,
+  type DeploymentId,
+  type TeamAgentRequestId,
   type AgentEvent,
   type EventId,
   type NotificationId,
@@ -32,7 +36,8 @@ export interface NotificationDispatcherOptions {
   readonly onLive: (notification: DecidedNotification) => void;
   readonly onWarning: (failure: NotificationDispatchFailure) => void;
   readonly ready: Promise<void>;
-  readonly store: Pick<NotificationStore, "decide" | "publicationSkipReason" | "accountSubjects">;
+  readonly store: Pick<NotificationStore, "decide" | "publicationSkipReason" | "accountSubjects"> &
+    Partial<Pick<NotificationStore, "teamAsk">>;
 }
 
 const retryDelays = [1_000, 2_000, 4_000, 8_000, 16_000] as const;
@@ -54,6 +59,29 @@ export class NotificationDispatcher {
     const pending = this.#decide(event).catch(() => {
       this.#report("onError", { eventId: event.eventId, reason: "Notification decision failed" });
     });
+    this.#pending.add(pending);
+    void pending.finally(() => this.#pending.delete(pending));
+  }
+
+  dispatchTeamAsk(teamId: DeploymentId, requestId: TeamAgentRequestId): void {
+    if (this.#stop.signal.aborted || !this.#options.store.teamAsk) return;
+    const pending = (async () => {
+      const entry = await this.#options.store.teamAsk!(teamId, requestId);
+      if (!entry || this.#stop.signal.aborted || entry.expiresAt <= this.#now()) return;
+      this.#options.onLive({
+        userId: entry.userId,
+        view: NotificationViewSchema.parse({
+          ...entry,
+          occurredAt: entry.occurredAt.toISOString(),
+        }),
+      });
+      if (this.#options.client) await this.#send(entry);
+    })().catch(() =>
+      this.#report("onError", {
+        eventId: createId("event"),
+        reason: "Team ask notification failed",
+      }),
+    );
     this.#pending.add(pending);
     void pending.finally(() => this.#pending.delete(pending));
   }

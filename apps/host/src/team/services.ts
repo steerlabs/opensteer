@@ -23,7 +23,7 @@ import {
   type HostApiCommand,
 } from "@opensteer/protocol";
 import type { HostedTeamId } from "@opensteer/control-plane-protocol/hosted-teams";
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import type { z } from "zod";
 import type { DatabaseSchema } from "@opensteer/database";
 import {
@@ -166,6 +166,17 @@ export async function startTeamServices(options: TeamServiceOptions) {
         .execute())
         options.machine.cancel(request.linkId, request.id);
     await options.machine.close(effects);
+    if (effects.requests.length) {
+      const returns = await options.database
+        .selectFrom("teamAgentRequests")
+        .select(["linkId"])
+        .where("kind", "=", "return")
+        .where("state", "=", "queued")
+        .where(sql<boolean>`return_payload->>'originAskId' = any(${[...effects.requests]}::text[])`)
+        .execute();
+      for (const linkId of new Set(returns.map((row) => row.linkId)))
+        await options.machine.deliver(linkId);
+    }
   });
   push();
   maintenance();
@@ -460,6 +471,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
               .selectAll()
               .where("channelId", "=", input.channelId)
               .where("threadRootId", "=", input.rootId)
+              .where("kind", "!=", "return")
               .orderBy("createdAt", "desc")
               .limit(32)
               .execute()

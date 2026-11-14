@@ -7,6 +7,7 @@ import {
   TeamOriginSchema,
   teamPageUrl,
   parseMobileOpenDeepLink,
+  parseMobileNeedsYouDeepLink,
   parseMobilePairingDeepLink,
   parseMobileSetupCode,
   parseMobileThreadDeepLink,
@@ -37,6 +38,7 @@ import { parseAgentConnectionDeepLink } from "@opensteer/protocol";
  * opens that team's notices.
  */
 export type ApplicationLinkOutcome =
+  | { readonly kind: "needs-you"; readonly deploymentId: string }
   | { readonly kind: "ignore" }
   | {
       readonly deploymentId: string;
@@ -75,6 +77,15 @@ export function resolveApplicationLink(
           detail:
             "That agent wants to connect to a deployment this phone has not been added to. Add it, then start again from the agent.",
           kind: "unknown-deployment",
+        };
+  const needsYou = parseMobileNeedsYouDeepLink(url);
+  if (needsYou)
+    return knownDeploymentIds.includes(needsYou.deploymentId)
+      ? { kind: "needs-you", deploymentId: needsYou.deploymentId }
+      : {
+          kind: "unknown-deployment",
+          detail:
+            "Those requests are on a deployment this phone has not been added to. Add it, then open the link again.",
         };
   const link = parseMobileThreadDeepLink(url);
   if (link === null) return { kind: "ignore" };

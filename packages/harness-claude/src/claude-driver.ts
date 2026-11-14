@@ -75,6 +75,7 @@ import {
   EventBufferOverflowError,
   harnessTurnPreamble,
   harnessInputHeader,
+  escapeOpensteerPromptMarkers,
   meetsMinimumVersion,
   nativeImageBase64Budget,
   prepareNativeImage,
@@ -3648,7 +3649,11 @@ function contentToPrompt(
       code: "bad_request",
       message: "Claude report context cannot contain native image input",
     });
-  return claudeReadsHeader(input) ? harnessInputHeader(input, projected.body) : projected.body;
+  return claudeReadsHeader(input)
+    ? harnessInputHeader(input, projected.body)
+    : input.author.kind === "human"
+      ? projected.body
+      : escapeOpensteerPromptMarkers(projected.body);
 }
 
 /**
@@ -3761,6 +3766,13 @@ function claudeMessageOrigin(input: HarnessInput, body: string): SDKMessageOrigi
       return { kind: "human" };
     case "agent":
       return { body, from: author.threadId, kind: "peer", name: author.displayName };
+    case "team-member":
+      return {
+        body,
+        from: `${author.teamId}:${author.teamUserId}`,
+        kind: "peer",
+        name: author.actor === "agent" ? `${author.displayName}'s agent` : author.displayName,
+      };
     case "connection":
       return { body, from: author.connectionId, kind: "peer", name: author.displayName };
     case "trigger":

@@ -27,7 +27,12 @@ import {
   parseTeamLinkOffer,
   serializeTeamLinkOffer,
 } from "./team-link.js";
-import { TeamChannelSummarySchema, TeamConsistentCutSchema } from "./team-chat.js";
+import { NeedsYouEntrySchema } from "./needs-you.js";
+import {
+  TeamAgentRequestSchema,
+  TeamChannelSummarySchema,
+  TeamConsistentCutSchema,
+} from "./team-chat.js";
 import { hostApi } from "./host-api.js";
 import { TeamCommandSchema } from "./team-api.js";
 import {
@@ -297,5 +302,132 @@ describe("team boundary contracts", () => {
         attachmentIds: [],
       }).success,
     ).toBe(true);
+  });
+});
+
+describe("team ask and private return contracts", () => {
+  const teamId = createId("deployment"),
+    channelId = createId("teamChannel");
+  const root = TeamMessageIdSchema.parse("1"),
+    requestId = createId("teamAgentRequest");
+  const presentation = {
+    asker: { teamUserId: createId("user"), displayName: "Maya", actor: "agent" as const },
+    bodyMarkdown: "Review **this**",
+    attachments: [],
+    destination: { teamId, channelId, threadRootId: root },
+    audience: {
+      teamName: "Studio",
+      channelName: "support",
+      channelKind: "public" as const,
+      memberCount: 2,
+      peopleOnly: false,
+    },
+  };
+  const request = {
+    id: requestId,
+    kind: "ask",
+    consentExpiresAt: "2026-11-20T00:00:00.000Z",
+    ownerUserId: createId("user"),
+    channelId,
+    threadRootId: root,
+    triggerMessageId: root,
+    state: "awaiting_approval",
+    steps: [],
+    createdAt: "2026-11-13T00:00:00.000Z",
+    acceptedAt: null,
+    expiresAt: null,
+    finishedAt: null,
+    replyMessageId: null,
+    failureCode: null,
+    changeSeq: "1",
+  };
+  it("keeps private resume attribution on the link and strips future nested presentation fields", () => {
+    const payload = {
+      originAskId: requestId,
+      resumeRunId: createId("run"),
+      outcome: "answered",
+      bodyMarkdown: "Looks good",
+      attachments: [],
+    };
+    const frame = TeamLinkServerFrameViewSchema.parse({
+      type: "requests",
+      requests: [
+        {
+          request: { ...request, presentation, returnPayload: payload },
+          presentation: {
+            ...presentation,
+            asker: { ...presentation.asker, future: true },
+            future: true,
+          },
+          returnPayload: null,
+          source: { ...presentation.destination, messageId: root, audience: presentation.audience },
+          bodyMarkdown: "Review **this**",
+          attachments: [],
+        },
+        {
+          request: { ...request, kind: "return", state: "queued", consentExpiresAt: null },
+          presentation: null,
+          returnPayload: { ...payload, future: true },
+          source: { ...presentation.destination, messageId: root, audience: presentation.audience },
+          bodyMarkdown: "Looks good",
+          attachments: [],
+        },
+      ],
+    });
+    expect(frame.type).toBe("requests");
+    if (frame.type !== "requests") throw new Error("Expected requests frame");
+    expect(frame.requests[1]!.returnPayload).toEqual(payload);
+    expect(frame.requests[0]!.presentation).toEqual(presentation);
+    expect(frame.requests[0]!.request).not.toHaveProperty("presentation");
+    expect(frame.requests[0]!.request).not.toHaveProperty("returnPayload");
+    for (const extra of [{ returnPayload: payload }, { presentation }])
+      expect(TeamAgentRequestSchema.safeParse({ ...request, ...extra }).success).toBe(false);
+  });
+  it("represents consent without a task or generic Request and carries explicit decisions and reconciliation", () => {
+    const entry = NeedsYouEntrySchema.parse({
+      kind: "team-ask",
+      teamId,
+      requestId,
+      presentation,
+      createdAt: request.createdAt,
+      consentExpiresAt: request.consentExpiresAt,
+    });
+    expect(entry).not.toHaveProperty("request");
+    expect(entry).not.toHaveProperty("navigationThreadId");
+    for (const decision of ["approve", "decline"])
+      expect(
+        hostApi["commands.dispatch"].payload.parse({
+          type: "teams.ask.decide",
+          teamId,
+          requestId,
+          decision,
+        }),
+      ).toMatchObject({ decision });
+    expect(
+      TeamLinkClientFrameSchema.parse({
+        type: "accept",
+        id: "decision",
+        requestId,
+        decision: "decline",
+      }),
+    ).toHaveProperty("decision", "decline");
+    expect(
+      TeamLinkClientFrameSchema.parse({ type: "accept", id: "reconnect", requestId }),
+    ).not.toHaveProperty("decision");
+    expect(
+      TeamLinkClientFrameViewSchema.parse({
+        type: "reconcile",
+        id: "reconcile",
+        requestIds: [requestId],
+      }),
+    ).toHaveProperty("requestIds", [requestId]);
+    const result = TeamLinkServerFrameViewSchema.parse({
+      type: "result",
+      id: "reconcile",
+      result: { kind: "reconciled", requests: [{ requestId, request: null }] },
+    });
+    expect(result).toMatchObject({
+      result: { kind: "reconciled", requests: [{ requestId, request: null }] },
+    });
   });
 });

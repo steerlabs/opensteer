@@ -230,7 +230,11 @@ describeStore("device access Requests", (it) => {
       userId: run.userId,
       deviceAccessRequests: "include",
     });
-    expect(supported.entries.map(({ request }) => request.id)).toContain(opened.request.id);
+    expect(
+      supported.entries
+        .filter((entry) => entry.kind === "request")
+        .map(({ request }) => request.id),
+    ).toContain(opened.request.id);
     const modern = await f.store.deploymentSnapshot({
       viewerId: run.userId,
       deviceAccessRequests: "include",

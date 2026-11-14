@@ -5,6 +5,7 @@ import {
   TeamChannelIdSchema,
   TeamMessageIdSchema,
   TeamSourceSchema,
+  TeamAskOutcomeSchema,
 } from "@opensteer/core";
 import {
   TeamMarkdownSchema,
@@ -92,7 +93,11 @@ export const team_post = defineAgentTool({
     bodyMarkdown: TeamMarkdownSchema,
     attachmentPaths: z.array(z.string().min(1).max(4096)).max(10).default([]),
   }),
-  output: z.strictObject({ messageId: TeamMessageIdSchema, source: TeamSourceSchema }),
+  output: z.strictObject({
+    messageId: TeamMessageIdSchema,
+    source: TeamSourceSchema,
+    askOutcomes: z.array(TeamAskOutcomeSchema).max(21).optional(),
+  }),
   access: "write",
   team: true,
   callers: ["run"],

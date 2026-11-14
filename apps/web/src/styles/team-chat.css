@@ -1617,6 +1617,11 @@ a.team-row__main:hover {
   white-space: nowrap;
 }
 
+.team-composer__hint--notice {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .team-composer__people-only {
   display: inline-flex;
   align-items: center;
@@ -3828,4 +3833,10 @@ a.team-input-source:hover {
   color: var(--muted);
   font-size: var(--text-lg);
   line-height: 1.5;
+}
+
+.team-ask-status {
+  margin: 4px 0;
+  color: var(--muted);
+  font-size: 12px;
 }

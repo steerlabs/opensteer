@@ -22,6 +22,10 @@ export interface TeamTaskAdmissionReceipt {
 }
 export interface TaskAdmissionPort {
   /** Atomically binds the task, reopens Done, records the receipt, and queues its own turn under team:<teamId>:<requestId>. */
+  admitTeamReturn(input: {
+    readonly teamId: TeamTaskOrigin["teamId"];
+    readonly requestId: TeamAgentRequestId;
+  }): Promise<void>;
   admitTeamRequest(input: TeamTaskAdmission): Promise<TeamTaskAdmissionReceipt>;
   /** Pending input is cancelled; an already-started input stops only its associated Run. */
   cancelTeamRequest(input: {

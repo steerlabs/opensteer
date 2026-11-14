@@ -18,6 +18,8 @@ import {
   type MockTeamSocket,
 } from "./mock-team-host.js";
 import { TeamSessionClient } from "./team-session-client.js";
+import { teamScopeKey } from "./reducers.js";
+import { teamAskRefusalNotice } from "./ask-status.js";
 import { createMemoryTeamPersistence } from "./persistence.js";
 import {
   emptyTeamTimeline,
@@ -40,6 +42,66 @@ function fixture() {
   return { host, persistence, client };
 }
 describe("team synchronization", () => {
+  it("keeps a sent message confirmed while showing scoped agent refusals", async () => {
+    const f = fixture();
+    const read = f.host.read.bind(f.host);
+    const target = createId("user");
+    vi.spyOn(f.host, "read").mockImplementation(async (name, input) => {
+      const result = await read(name, input);
+      if (name === "commands.dispatch" && (input as { type: string }).type === "team.message.send")
+        return {
+          ...(result as object),
+          askOutcomes: [{ ownerUserId: target, outcome: "no-link" }],
+        };
+      return result;
+    });
+    try {
+      await f.client.load();
+      await vi.waitFor(
+        () =>
+          expect(f.client.getSnapshot().connection, "Team session never connected").toBe(
+            "connected",
+          ),
+        {
+          timeout: 1000,
+        },
+      );
+      await f.client.send({
+        channelId: mockTeamChannelId,
+        threadRootId: null,
+        bodyMarkdown: "@maya-agent help",
+        mentions: [],
+        attachmentIds: [],
+      });
+      await vi.waitFor(
+        () =>
+          expect(
+            f.client.getSnapshot().sendNotices[teamScopeKey(channelScope)],
+            "Agent refusal never reached the composer",
+          ).toEqual([{ ownerUserId: target, outcome: "no-link" }]),
+        { timeout: 1000 },
+      );
+      expect(f.client.getSnapshot().pending).toEqual([]);
+      expect(
+        [...f.host.messages.values()].some(
+          (message) => message.bodyMarkdown === "@maya-agent help",
+        ),
+      ).toBe(true);
+      expect(
+        teamAskRefusalNotice(
+          f.client.getSnapshot().sendNotices[teamScopeKey(channelScope)]!,
+          () => "Maya",
+        ),
+      ).toContain("Maya’s agent");
+      expect(teamAskRefusalNotice([], () => "Maya")).toBeNull();
+      await f.client.remove();
+      expect(f.client.getSnapshot().sendNotices).toEqual({});
+    } finally {
+      f.client.dispose();
+      f.host.dispose();
+    }
+  });
+
   it.each(["Active team membership required", "Team session generation changed"])(
     "removes the partition for an older server's bootstrap refusal: %s",
     async (message) => {

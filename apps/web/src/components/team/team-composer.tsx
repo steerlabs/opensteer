@@ -39,10 +39,10 @@ const pickerLimit = 7;
  * The team composer: words, files, @ mentions and the viewer's own agent.
  * "Ask my agent" is one state with two ways in — the pill, or "My agent" in
  * the @ list — and while it is on the message goes to the
- * thread and asks the viewer's agent. Nobody else's agent can be woken from
- * here; naming one is a reference.
+ * thread and asks the viewer's agent. Naming another agent asks its owner.
  */
 export function TeamComposer({
+  notice,
   agent,
   agentStartsOn = false,
   onAgentRecipient,
@@ -61,6 +61,7 @@ export function TeamComposer({
   staged = [],
   typing = [],
 }: {
+  readonly notice?: string | null;
   readonly agent: MyAgentHere;
   /** The team Host's current recipient state for this thread. */
   readonly agentStartsOn?: boolean;
@@ -401,6 +402,11 @@ export function TeamComposer({
           </button>
         </div>
       </div>
+      {notice ? (
+        <p className="team-composer__hint team-composer__hint--notice" role="status">
+          {notice}
+        </p>
+      ) : null}
       <TypingLine people={typing} />
       {why && pill.current && (agent.kind === "not-linked" || agent.kind === "no-computer") ? (
         <Popover
@@ -484,9 +490,7 @@ function MentionList({
           className: [
             "at-list__row",
             selected ? "is-active" : "",
-            item.kind === "agent-reference" || (item.kind === "my-agent" && !item.available)
-              ? "at-list__row--inert"
-              : "",
+            item.kind === "my-agent" && !item.available ? "at-list__row--inert" : "",
           ]
             .filter(Boolean)
             .join(" "),
@@ -542,7 +546,7 @@ function MentionList({
             <span className="at-list__text">
               <span className="at-list__name">{agentName(item.owner)}</span>
               <span className="at-list__detail at-list__detail--wrap">
-                Only {firstName(item.owner)} can ask this agent. Mentioning it won’t wake it.
+                Ask {firstName(item.owner)}
               </span>
             </span>
           </div>

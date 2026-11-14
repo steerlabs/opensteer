@@ -15,6 +15,7 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction, type RawBuilder } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
+import { createTeamAskReturn } from "./team-request-returns.js";
 import { appendTeamAudit } from "./team-audit-store.js";
 import { addTeamSelfAddNotices } from "./team-notices-store.js";
 import { teamReadableTopicIds } from "./team-knowledge-store.js";
@@ -414,7 +415,7 @@ export class TeamAccessStore {
     const pending = await transaction
       .selectFrom("teamAgentRequests")
       .selectAll()
-      .where("state", "in", ["queued", "working", "needs_you"])
+      .where("state", "in", ["awaiting_approval", "queued", "working", "needs_you"])
       .orderBy("channelId")
       .orderBy("id")
       .execute();
@@ -424,8 +425,26 @@ export class TeamAccessStore {
         { kind: "agent", userId: request.ownerUserId },
         request.channelId,
       );
+      const asker = request.presentation?.asker;
+      const askerAuthority = asker
+        ? await this.channel(
+            transaction,
+            { kind: asker.actor, userId: asker.teamUserId },
+            request.channelId,
+          )
+        : null;
+      const trigger =
+        asker?.actor === "agent"
+          ? await transaction
+              .selectFrom("teamMessages")
+              .select("agentLinkId")
+              .where("id", "=", request.triggerMessageId)
+              .executeTakeFirstOrThrow()
+          : null;
       if (
         links.has(request.linkId) ||
+        (trigger?.agentLinkId && links.has(trigger.agentLinkId)) ||
+        (askerAuthority && (!askerAuthority.read || !askerAuthority.post)) ||
         !authority.read ||
         !authority.post ||
         requests.has(request.id)
@@ -447,7 +466,7 @@ export class TeamAccessStore {
     const affectedRequests = pending.filter((r) => requests.has(r.id));
     await lockTeamMessages(
       transaction,
-      affectedRequests.map((r) => r.threadRootId),
+      affectedRequests.flatMap((r) => [r.threadRootId, r.triggerMessageId]),
     );
     if (affectedRequests.length)
       await transaction
@@ -479,8 +498,23 @@ export class TeamAccessStore {
         await transaction
           .updateTable("teamMessages")
           .set({ changeSeq })
-          .where("id", "=", request.threadRootId)
+          .where("id", "in", [request.threadRootId, request.triggerMessageId])
           .execute();
+        const returned = await createTeamAskReturn(transaction, request, "cancelled", changeSeq);
+        if (returned && request.presentation) {
+          const asker = request.presentation.asker;
+          const rights = await this.channel(
+            transaction,
+            { kind: "agent", userId: asker.teamUserId },
+            request.channelId,
+          );
+          if (!rights.read || !rights.post)
+            await transaction
+              .updateTable("teamAgentRequests")
+              .set({ state: "cancelled", finishedAt: new Date(), failureCode: "access_revoked" })
+              .where("id", "=", returned.id)
+              .execute();
+        }
       }
     }
     return { ...input, channels: [...channels], links: [...links], requests: [...requests] };

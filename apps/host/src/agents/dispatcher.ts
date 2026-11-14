@@ -128,6 +128,7 @@ export type TeamRequestContextLoader = (
   signal: AbortSignal,
 ) => Promise<{
   readonly instructionsMarkdown: string;
+  readonly asker?: Pick<import("@opensteer/core").TeamAsker, "displayName" | "actor"> | null;
   readonly source: import("@opensteer/core").TeamSource;
   readonly instructionsRevision: import("@opensteer/core").Sequence;
 }>;
@@ -260,6 +261,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       context.run.replyTarget?.kind === "team-thread"
         ? {
             kind: "team",
+            asker: null,
             ...(await this.#teamRequestContext(
               {
                 runId: context.run.id,

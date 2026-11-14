@@ -1,6 +1,8 @@
 import type {
   RunId,
+  TeamAskOutcome,
   TeamAgentRequestId,
+  TeamAskDecision,
   TeamBlobId,
   TeamLinkId,
   TeamMessageId,
@@ -19,9 +21,26 @@ export interface TeamRequestStorePort {
     requestId: TeamAgentRequestId,
     action: "read" | "post" | "knowledge" | "status",
   ): Promise<TeamAgentRequest>;
-  pending(linkId: TeamLinkId): Promise<readonly TeamRunRequest[]>;
+  reconcile(
+    linkId: TeamLinkId,
+    requestIds: readonly TeamAgentRequestId[],
+  ): Promise<
+    readonly {
+      readonly requestId: TeamAgentRequestId;
+      readonly request: TeamAgentRequest | null;
+    }[]
+  >;
+  pending(
+    linkId: TeamLinkId,
+    excludeRequestIds?: readonly TeamAgentRequestId[],
+    limit?: number,
+  ): Promise<readonly TeamRunRequest[]>;
   /** First accept fixes expiry at seven days; repeated accepts never extend it. */
-  accept(linkId: TeamLinkId, requestId: TeamAgentRequestId): Promise<TeamAgentRequest>;
+  accept(
+    linkId: TeamLinkId,
+    requestId: TeamAgentRequestId,
+    decision?: TeamAskDecision,
+  ): Promise<TeamAgentRequest>;
   context(
     linkId: TeamLinkId,
     requestId: TeamAgentRequestId,
@@ -46,7 +65,10 @@ export interface TeamRequestStorePort {
       readonly requestId?: TeamAgentRequestId | undefined;
       readonly publication?: boolean | undefined;
     },
-  ): Promise<TeamMessageId>;
+  ): Promise<{
+    readonly messageId: TeamMessageId;
+    readonly askOutcomes: readonly TeamAskOutcome[];
+  }>;
   reply(
     linkId: TeamLinkId,
     requestId: TeamAgentRequestId,

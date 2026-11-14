@@ -1,5 +1,6 @@
 import {
   buildMobileThreadDeepLink,
+  buildMobileNeedsYouDeepLink,
   DeploymentIdSchema,
   TeamChannelIdSchema,
   TeamMessageIdSchema,
@@ -27,6 +28,23 @@ const deepLink = buildMobileThreadDeepLink({ deploymentId, requestId, threadId }
 const push = (data: unknown) => ({ data });
 
 describe("notificationDestination", () => {
+  it("opens taskless consent in Needs you and keeps it visible while reading a task", async () => {
+    const link = buildMobileNeedsYouDeepLink(deploymentId);
+    const payload = push({ deepLink: link, threadId, deploymentId: otherDeploymentId });
+    expect(notificationDestination(payload)).toEqual({
+      kind: "needs-you",
+      deepLink: link,
+      deploymentId,
+    });
+    expect(shouldPresentNotification(payload, { deploymentId, threadId }, true)).toBe(true);
+    const dismiss = vi.fn();
+    await dismissThreadNotifications({
+      dismiss,
+      presented: async () => [{ identifier: "consent", payload }],
+      visible: { deploymentId, threadId },
+    });
+    expect(dismiss).not.toHaveBeenCalled();
+  });
   it("reads the whole destination from the link alone", () => {
     expect(
       notificationDestination(
