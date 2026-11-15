@@ -8,34 +8,9 @@ import {
   type BrowserGroupRow,
   type BrowserTabRow,
 } from "@opensteer/protocol/browser-tabs";
-import { KeyedStreamPublisher, type KeyedStreamMessage } from "@opensteer/protocol/keyed-stream";
-import { BrowserTabStore } from "../host/browser-tab-store.js";
-import { BrowserSnapshotDerivation } from "../host/browser-snapshot.js";
-import type {
-  HostSnapshot as PublicHostSnapshot,
-  PersonalTabLineage,
-} from "../host/client.js";
+import type { PersonalTabLineage } from "../host/client.js";
 
-class MockRows<Row extends { id: string }> {
-  #rows = new Map<string, Row>();
-  readonly #publisher = new KeyedStreamPublisher<Row, Record<string, never>>({
-    ids: () => this.#rows.keys(),
-    read: (id) => this.#rows.get(id),
-    meta: () => ({}),
-    targetBytes: 16 * 1024,
-    envelopeBytes: 200,
-  });
-  publish(rows: Row[], receive: (frame: KeyedStreamMessage<Row, Record<string, never>>) => void) {
-    for (const id of this.#rows.keys()) this.#publisher.mark(id);
-    this.#rows = new Map(rows.map((row) => [row.id, row]));
-    for (const id of this.#rows.keys()) this.#publisher.mark(id);
-    for (let frame = this.#publisher.next(); frame; frame = this.#publisher.next()) {
-      receive(frame);
-      this.#publisher.settled(frame, true);
-    }
-  }
-}
-
+/** The browser world's sessions and tabs as rows, from which the mock Host lists page tabs. */
 export function mockBrowserRows(snapshot: HostSnapshot) {
   const liveSessions = new Map(snapshot.browserSessions.map((session) => [session.id, session]));
   const sessions = new Map<string, PersonalTabLineage["session"] | BrowserSessionSummary>(
@@ -116,40 +91,3 @@ export function mockBrowserRows(snapshot: HostSnapshot) {
   return { groups, tabs };
 }
 
-export class MockBrowserStream {
-  readonly #groups = new MockRows<BrowserGroupRow>();
-  readonly #tabs = new Map<string, MockRows<BrowserTabRow>>();
-  readonly #store: BrowserTabStore;
-  constructor(store: BrowserTabStore) {
-    this.#store = store;
-  }
-  readonly #derive = new BrowserSnapshotDerivation();
-  publish(snapshot: HostSnapshot, previous: PublicHostSnapshot | null): PublicHostSnapshot {
-    const rows =
-      snapshot.session === "authenticated"
-        ? mockBrowserRows(snapshot)
-        : { groups: [], tabs: new Map<string, BrowserTabRow[]>() };
-    this.#groups.publish(rows.groups, (frame) => this.#store.applyGroups(frame));
-    for (const [id, tabs] of rows.tabs) {
-      let stream = this.#tabs.get(id);
-      if (!stream) this.#tabs.set(id, (stream = new MockRows<BrowserTabRow>()));
-      stream.publish(tabs, (frame) => this.#store.applyTabs(id, frame));
-    }
-    for (const id of this.#tabs.keys()) if (!rows.tabs.has(id)) this.#tabs.delete(id);
-    const derived = this.#derive.derive(snapshot, this.#store);
-    const order = new Map(snapshot.browserSessions.map((session, index) => [session.id, index]));
-    const sessions = [...derived.browserSessions].sort(
-      (a, b) => (order.get(a.id) ?? Infinity) - (order.get(b.id) ?? Infinity),
-    );
-    const { browserGroups: _groups, ...metadata } = snapshot;
-    return {
-      ...metadata,
-      ...derived,
-      browserSessions:
-        previous?.browserSessions.length === sessions.length &&
-        sessions.every((session, index) => session === previous.browserSessions[index])
-          ? previous.browserSessions
-          : sessions,
-    };
-  }
-}

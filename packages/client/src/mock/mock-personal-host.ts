@@ -128,10 +128,8 @@ export class MockPersonalHost {
         socket.deliver({
           type: "host.events",
           events: rows
-            .filter((event) => this.#subscribed.get(socket) || !isDeviceAccessRequestEvent(event))
-            .map((event) =>
-              projectDeviceAccessRequestEvent(event, this.#subscribed.get(socket) === true),
-            ),
+            .filter((event) => this.#subscribed.get(socket) || !deviceAccessEvent(event))
+            .map((event) => projected(event, this.#subscribed.get(socket) === true)),
           throughSequence: this.#through,
         });
       else this.#snapshot(socket);
@@ -178,8 +176,8 @@ export class MockPersonalHost {
       socket.deliver({
         type: "host.events",
         events: events
-          .filter((event) => supportsDeviceAccess || !isDeviceAccessRequestEvent(event))
-          .map((event) => projectDeviceAccessRequestEvent(event, supportsDeviceAccess)),
+          .filter((event) => supportsDeviceAccess || !deviceAccessEvent(event))
+          .map((event) => projected(event, supportsDeviceAccess)),
         throughSequence: through,
       });
   }
@@ -188,4 +186,14 @@ export class MockPersonalHost {
     for (const socket of this.sockets) socket.close();
     this.client.dispose();
   }
+}
+
+/** Tab place events carry no Request; only the rest pass through the device projection. */
+function deviceAccessEvent(event: TabAgentEventView): boolean {
+  return event.type !== "place.entered" && isDeviceAccessRequestEvent(event);
+}
+function projected(event: TabAgentEventView, include: boolean): TabAgentEventView {
+  return event.type === "place.entered"
+    ? event
+    : (projectDeviceAccessRequestEvent(event, include) as TabAgentEventView);
 }
