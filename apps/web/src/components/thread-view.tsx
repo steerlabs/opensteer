@@ -214,7 +214,7 @@ function ThreadView({
   const phoneStageRef = useRef(phoneStage);
   phoneStageRef.current = phoneStage;
   const currentScroller = () => (phoneStageRef.current ? bodyRef.current : scrollRef.current);
-  const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerInputRef = useRef<HTMLElement | null>(null);
   // Whether new content keeps the reader at the foot, and where the scroller stood when last read.
   const tailRef = useRef<TailReading>({ follows: true, offset: 0 });
   const scrollGeometryRef = useRef<{

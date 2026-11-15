@@ -2,7 +2,11 @@ import { useEffect, useRef, useState, type ReactNode, type RefObject } from "rea
 import { classifyHref, teamPageUrl } from "@opensteer/core";
 import { markdownLink } from "@opensteer/shared/markdownLinks";
 import { collectComposerTokens } from "@opensteer/client/references";
-import type { HostClient, HostSnapshot, PlaceItem } from "@opensteer/client/host";
+import {
+  composerReferenceCandidates,
+  type HostClient,
+  type PlaceItem,
+} from "@opensteer/client/host";
 import type { TeamChannelSummary, TeamTopic } from "@opensteer/protocol";
 import { Icon, type IconName } from "./icon.js";
 import type { ComposerEditorControl } from "./composer-editor.js";
@@ -15,30 +19,6 @@ export interface ComposerLinkCandidate {
   readonly label: string;
   readonly markdown: string;
 }
-
-/** The candidate union `composerReferenceCandidates` returns (see `@opensteer/client/host`). */
-type ComposerCandidate =
-  | {
-      readonly kind: "link";
-      readonly key: string;
-      readonly label: string;
-      readonly markdown: string;
-    }
-  | {
-      readonly kind: "place";
-      readonly key: string;
-      readonly label: string;
-      readonly place: PlaceItem;
-    };
-
-/**
- * The one seam to the personal candidate projection. Until it is wired, the
- * personal list offers places only, exactly as before.
- */
-const composerReferenceCandidates = (
-  _snapshot: HostSnapshot,
-  _query: string,
-): readonly ComposerCandidate[] => [];
 
 /** Personal links for an `@` query, from what this Host already holds. */
 export function personalReferenceCandidates(

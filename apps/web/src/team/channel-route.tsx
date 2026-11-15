@@ -32,6 +32,7 @@ import {
 } from "../components/team/channel-view.js";
 import { MessageList } from "../components/team/message-list.js";
 import { AgentUnavailable, TeamComposer } from "../components/team/team-composer.js";
+import { teamReferenceCandidates } from "../components/composer-reference-picker.js";
 import type {
   ChannelTab,
   ChannelView,
@@ -717,6 +718,16 @@ function ChannelScreenFor({
           client.typing(channelId, rootId ? TeamMessageIdSchema.parse(rootId) : null, true)
         }
         people={people}
+        references={(query) =>
+          teamReferenceCandidates(
+            {
+              origin: team.origin,
+              channels: (snapshot.sidebar?.channels ?? []).map((entry) => entry.channel),
+              topics: [],
+            },
+            query,
+          )
+        }
         placeholder={
           rootId
             ? "Reply…"
