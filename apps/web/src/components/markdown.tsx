@@ -15,6 +15,7 @@ import {
   splitMarkdownBlocks,
 } from "@opensteer/shared/markdown";
 import { CopyMark } from "./copy-mark.js";
+import { remarkChipPunctuation } from "./references/chip-punctuation.js";
 import { ReferenceLink } from "./references/reference-link.js";
 
 type MarkdownTree = Parameters<typeof repairStrong>[0];
@@ -24,12 +25,13 @@ const remarkRepairStrong = () => (tree: MarkdownTree) => repairStrong(tree);
 const remarkRepairStreaming = () => (tree: MarkdownTree) => repairStrong(tree, { streaming: true });
 const remarkPersonWords = () => (tree: MarkdownTree) => void personMarkdownTree(tree);
 
-const remarkPlugins = [remarkGfm, remarkRepairStrong];
-const streamingRemarkPlugins = [remarkGfm, remarkRepairStreaming];
+const remarkPlugins = [remarkGfm, remarkRepairStrong, remarkChipPunctuation];
+const streamingRemarkPlugins = [remarkGfm, remarkRepairStreaming, remarkChipPunctuation];
 // A person's words: no single-tilde strikethrough, and raw HTML or line breaks read as typed.
 const personRemarkPlugins: PluggableList = [
   [remarkGfm, personMarkdownGfmOptions],
   remarkPersonWords,
+  remarkChipPunctuation,
 ];
 const rehypePlugins = [rehypeHighlight];
 const noRehypePlugins: [] = [];

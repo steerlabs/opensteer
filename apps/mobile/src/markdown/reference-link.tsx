@@ -1,11 +1,15 @@
-import { localTeamReference } from "@opensteer/client/references";
+import {
+  fileIcon,
+  localTeamReference,
+  referenceIcon,
+  teamPageIcon,
+} from "@opensteer/client/references";
 import { useReference } from "@opensteer/client/react";
 import type { TeamSessionClient } from "@opensteer/client/team";
 import {
   classifyHref,
   type ClassifiedHref,
   type Reference,
-  type ReferenceKind,
   type TeamPageLink,
 } from "@opensteer/core";
 import {
@@ -15,9 +19,21 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { Alert, Linking, Pressable, StyleSheet, Text, useWindowDimensions } from "react-native";
-import { color, material, radius, space } from "../theme.js";
+import {
+  Alert,
+  Linking,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+  type StyleProp,
+  type TextStyle,
+} from "react-native";
+import { color, material, radius, space, type } from "../theme.js";
 import { LinkHoldContext, useConversationLinks } from "../thread/link-context.js";
+import { referenceSymbols } from "../ui/reference-symbols.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import {
   ReferenceVisibility,
@@ -38,56 +54,105 @@ export function ReferenceLink(props: {
   readonly children: ReactNode;
   readonly href: string;
   readonly label: string;
+  /** Punctuation that closes on the link, drawn on the chip's line. */
+  readonly trailing?: string | undefined;
 }): ReactNode {
   const navigation = useReferenceNavigation();
   const link = classifyHref(props.href);
+  const words = (element: ReactNode) => (
+    <>
+      {element}
+      {props.trailing}
+    </>
+  );
+  const chip = (element: ReactNode) => (
+    <>
+      <InlineChip trailing={props.trailing}>{element}</InlineChip>
+      {/* An invisible, unbreakable character gives a line holding only chips the words'
+          depth below the baseline on Android, which the dropped chip reaches into. */}
+      {Platform.OS === "android" ? "\u2060" : null}
+    </>
+  );
   switch (link.kind) {
     case "reference":
       // Another person's Opensteer means nothing to a team reader: its words stay.
-      return navigation?.context.kind === "personal" ? (
-        <PersonalChip
-          href={props.href}
-          label={props.label}
-          navigation={navigation}
-          reference={link.reference}
-        />
-      ) : (
-        props.children
-      );
+      return navigation?.context.kind === "personal"
+        ? chip(
+            <PersonalChip
+              href={props.href}
+              label={props.label}
+              navigation={navigation}
+              reference={link.reference}
+            />,
+          )
+        : words(props.children);
     case "file":
-      return navigation?.context.kind === "personal" ? (
-        <FileChip file={link} href={props.href} label={props.label} navigation={navigation} />
-      ) : (
-        props.children
-      );
+      return navigation?.context.kind === "personal"
+        ? chip(
+            <FileChip file={link} href={props.href} label={props.label} navigation={navigation} />,
+          )
+        : words(props.children);
     case "team-page":
-      return navigation === null ? (
-        props.children
-      ) : (
-        <TeamPageChip
-          href={props.href}
-          label={props.label}
-          navigation={navigation}
-          page={link.page}
-        />
-      );
+      return navigation === null
+        ? words(props.children)
+        : chip(
+            <TeamPageChip
+              href={props.href}
+              label={props.label}
+              navigation={navigation}
+              page={link.page}
+            />,
+          );
     case "web":
     case "mail":
-      return <WebLink url={link.url}>{props.children}</WebLink>;
+      return words(<WebLink url={link.url}>{props.children}</WebLink>);
     case "none":
-      return props.children;
+      return words(props.children);
   }
 }
 
-const referenceGlyph: Record<ReferenceKind, SFSymbolName> = {
-  task: "bubble.left",
-  run: "waveform.path.ecg",
-  request: "hand.raised",
-  message: "text.quote",
-  automation: "clock",
-  computer: "desktopcomputer",
-  attachment: "paperclip",
-};
+/** The type of the words a chip sits in, which the punctuation after it is set in. */
+export const ChipProse = createContext<StyleProp<TextStyle>>(null);
+
+/**
+ * A chip as one inline view, with the punctuation that closes on it, so a
+ * period never wraps alone to the next line: the chip's title gives way first.
+ */
+function InlineChip(props: {
+  readonly children: ReactNode;
+  readonly trailing: string | undefined;
+}): ReactNode {
+  const prose = useContext(ChipProse);
+  const { fontScale } = useWindowDimensions();
+  return (
+    <View
+      style={[
+        styles.inline,
+        // Android stands an inline view on the baseline; drop it so its title's baseline is the line's.
+        Platform.OS === "android" && { transform: [{ translateY: androidChipDrop(fontScale) }] },
+      ]}
+    >
+      {props.children}
+      {props.trailing ? (
+        // As tall as the chip, so the two share a baseline whatever the words' own line height.
+        <Text style={[styles.trailing, prose, { lineHeight: chipLineHeight + 2 / fontScale }]}>
+          {props.trailing}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * For text holding a chip. Android's last line ends at the font's own depth, a
+ * little short of a dropped chip's rim, which whatever holds the text would clip.
+ */
+export const chipRoom: TextStyle | null = Platform.OS === "android" ? { paddingBottom: 2 } : null;
+
+/** Where the chip's title baseline meets the line's, measured on Android's system font at 1× and 1.5×. */
+function androidChipDrop(fontScale: number): number {
+  return 4.8 + 1.1 * fontScale;
+}
 
 function PersonalChip(props: {
   readonly href: string;
@@ -102,7 +167,7 @@ function PersonalChip(props: {
   const unavailable = state.state === "unavailable";
   return (
     <Chip
-      glyph={referenceGlyph[props.reference.kind]}
+      glyph={referenceSymbols[referenceIcon(props.reference.kind)]}
       href={props.href}
       label={props.label}
       onPress={unavailable ? null : () => void navigation.open(props.href)}
@@ -110,8 +175,6 @@ function PersonalChip(props: {
     />
   );
 }
-
-const imageName = /\.(?:avif|bmp|gif|heic|heif|jpe?g|png|svg|tiff?|webp)$/iu;
 
 function FileChip(props: {
   readonly file: Extract<ClassifiedHref, { kind: "file" }>;
@@ -127,7 +190,7 @@ function FileChip(props: {
       : `:${file.line}${file.column === undefined ? (file.endLine === undefined ? "" : `-${file.endLine}`) : `:${file.column}`}`;
   return (
     <Chip
-      glyph={imageName.test(name) ? "photo" : "doc"}
+      glyph={referenceSymbols[fileIcon(name)]}
       href={props.href}
       label={props.label}
       onPress={() => void props.navigation.open(props.href)}
@@ -136,15 +199,6 @@ function FileChip(props: {
     />
   );
 }
-
-const teamGlyph: Record<TeamPageLink["target"]["kind"], SFSymbolName> = {
-  invite: "person.badge.plus",
-  channel: "number",
-  message: "number",
-  thread: "bubble.left.and.bubble.right",
-  "knowledge-topic": "folder",
-  "knowledge-note": "doc.text",
-};
 
 function TeamPageChip(props: {
   readonly href: string;
@@ -160,7 +214,7 @@ function TeamPageChip(props: {
   );
   return (
     <Chip
-      glyph={teamGlyph[props.page.target.kind]}
+      glyph={referenceSymbols[teamPageIcon(props.page.target.kind)]}
       href={props.href}
       label={props.label}
       onPress={() => void props.navigation.open(props.href)}
@@ -292,6 +346,8 @@ function WebLink(props: { readonly children: ReactNode; readonly url: string }):
   );
 }
 
+const chipLineHeight = 19;
+
 const styles = StyleSheet.create({
   accentChip: {
     backgroundColor: "rgba(27, 18, 14, 0.08)",
@@ -305,6 +361,7 @@ const styles = StyleSheet.create({
   // Inline in a line of words, no taller than the line.
   chip: {
     alignItems: "center",
+    flexShrink: 1,
     borderRadius: radius.full,
     flexDirection: "row",
     gap: space[4],
@@ -320,9 +377,11 @@ const styles = StyleSheet.create({
     boxShadow: [],
   },
   goneText: { color: color.muted },
+  inline: { alignItems: "flex-start", flexDirection: "row", maxWidth: "100%" },
   link: { color: color.ember, textDecorationLine: "underline" },
   pressed: { ...material.platePressed },
   // Set tight against the name it qualifies, inside the glyph gap.
   secondary: { color: color.muted, flexShrink: 0, marginLeft: -space[4] },
-  title: { color: color.text, flexShrink: 1, fontSize: 15, lineHeight: 19 },
+  trailing: { ...type.body, color: color.text, flexShrink: 0 },
+  title: { color: color.text, flexShrink: 1, fontSize: 15, lineHeight: chipLineHeight },
 });

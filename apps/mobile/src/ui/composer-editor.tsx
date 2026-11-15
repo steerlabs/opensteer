@@ -1,6 +1,7 @@
 import { classifyHref } from "@opensteer/core";
 import {
   collectComposerTokens,
+  hrefIcon,
   replaceComposerRange,
   snapComposerSelection,
   type ComposerEditorHandle,
@@ -28,6 +29,9 @@ import {
 } from "../../modules/composer-editor/index.js";
 import { color, controlFontScaleLimit, plateFill, type } from "../theme.js";
 import { ComposerRevision } from "./composer-editor-revision.js";
+import { referenceSymbols } from "./reference-symbols.js";
+import type { SFSymbolName } from "./symbol.js";
+import { symbolArt } from "./symbol-art.js";
 
 export interface ComposerEditorProps {
   readonly ref?: Ref<ComposerEditorHandle>;
@@ -252,46 +256,38 @@ export function dismissKeyboard(): void {
   void KeyboardController.dismiss();
 }
 
-interface Presentation {
-  /** The SF Symbol iOS draws. */
-  readonly symbol: string;
-  /** The character Android draws, from the ranges its font fallback covers. */
-  readonly glyph: string;
-  readonly noun: string;
-}
-
-const presentations = {
-  task: { symbol: "bubble.left", glyph: "✉︎", noun: "Task" },
-  run: { symbol: "waveform", glyph: "⦀", noun: "Run" },
-  request: { symbol: "hand.raised", glyph: "!", noun: "Request" },
-  message: { symbol: "quote.bubble", glyph: "❝", noun: "Message" },
-  automation: { symbol: "clock", glyph: "◷", noun: "Automation" },
-  computer: { symbol: "desktopcomputer", glyph: "▭", noun: "Computer" },
-  attachment: { symbol: "paperclip", glyph: "⌇", noun: "Attachment" },
-  channel: { symbol: "number", glyph: "#", noun: "Channel" },
-  thread: { symbol: "bubble.left.and.bubble.right", glyph: "❞", noun: "Thread" },
-  "knowledge-topic": { symbol: "folder", glyph: "❐", noun: "Topic" },
-  "knowledge-note": { symbol: "doc.text", glyph: "▤", noun: "Note" },
-  invite: { symbol: "envelope", glyph: "✉︎", noun: "Invite" },
-  file: { symbol: "doc.text", glyph: "▤", noun: "File" },
-  image: { symbol: "photo", glyph: "▣", noun: "Image" },
-} satisfies Record<string, Presentation>;
+const nouns: Readonly<Record<string, string>> = {
+  task: "Task",
+  run: "Run",
+  request: "Request",
+  message: "Message",
+  automation: "Automation",
+  computer: "Computer",
+  attachment: "Attachment",
+  channel: "Channel",
+  thread: "Thread",
+  "knowledge-topic": "Topic",
+  "knowledge-note": "Note",
+  invite: "Invite",
+};
 
 /** How a reference reads as a chip, by what it points at. */
-export function referencePresentation(href: string): Presentation {
+function referencePresentation(href: string): {
+  readonly symbol: SFSymbolName;
+  readonly noun: string;
+} {
   const classified = classifyHref(href);
-  switch (classified.kind) {
-    case "reference":
-      return presentations[classified.reference.kind];
-    case "team-page":
-      return presentations[classified.page.target.kind];
-    case "file":
-      return /\.(png|jpe?g|gif|webp|heic|svg)$/iu.test(classified.file.path)
-        ? presentations.image
-        : presentations.file;
-    default:
-      return presentations.file;
-  }
+  const kind =
+    classified.kind === "reference"
+      ? classified.reference.kind
+      : classified.kind === "team-page"
+        ? classified.page.target.kind
+        : null;
+  const icon = hrefIcon(href);
+  return {
+    symbol: referenceSymbols[icon],
+    noun: kind === null ? (icon === "image" ? "Image" : "File") : (nouns[kind] ?? "File"),
+  };
 }
 
 function nativeToken(token: ComposerToken) {
@@ -303,7 +299,8 @@ function nativeToken(token: ComposerToken) {
     source: token.source,
     label,
     symbol: presentation.symbol,
-    glyph: presentation.glyph,
+    // Android draws the same strokes the transcript's chip does.
+    art: symbolArt[presentation.symbol] ?? "",
     accessibilityLabel: `${presentation.noun}, ${label}`,
   };
 }

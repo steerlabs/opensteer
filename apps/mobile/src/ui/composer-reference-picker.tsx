@@ -1,6 +1,11 @@
 import type { HostSnapshot } from "@opensteer/client/host";
 import { useKnowledgeNotes, useKnowledgeTopics, useSettledText } from "@opensteer/client/react";
-import { collectComposerTokens, type ComposerEditorHandle } from "@opensteer/client/references";
+import {
+  collectComposerTokens,
+  referenceIcon,
+  teamPageIcon,
+  type ComposerEditorHandle,
+} from "@opensteer/client/references";
 import type { TeamSessionClient, TeamSidebar } from "@opensteer/client/team";
 import { classifyHref, teamPageUrl } from "@opensteer/core";
 import { markdownLink } from "@opensteer/shared/markdownLinks";
@@ -9,6 +14,7 @@ import { Pressable, StyleSheet, View } from "react-native";
 import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
 import { composerReferenceCandidates } from "./composer-reference-candidates.js";
 import { AppText } from "./primitives.js";
+import { referenceSymbols } from "./reference-symbols.js";
 import { Symbol, type SFSymbolName } from "./symbol.js";
 
 export interface ReferenceRow {
@@ -74,7 +80,7 @@ export function personalReferenceSections(
     const kind = target.reference.kind;
     if (kind !== "task" && kind !== "automation" && kind !== "computer") continue;
     groups[kind].push({
-      icon: kind === "task" ? "bubble.left" : kind === "automation" ? "clock" : "desktopcomputer",
+      icon: referenceSymbols[referenceIcon(kind)],
       key: candidate.key,
       label: candidate.label,
       markdown: candidate.markdown,
@@ -111,7 +117,7 @@ export function useTeamReferenceSections(
     .filter((channel) => channel.kind !== "dm" && channel.kind !== "group_dm")
     .filter((channel) => channel.archivedAt === null && matches(channel.name))
     .map((channel): ReferenceRow => ({
-      icon: "number",
+      icon: referenceSymbols[teamPageIcon("channel")],
       key: channel.id,
       label: channel.name,
       markdown: link(channel.name, { kind: "channel", channelId: channel.id }),
@@ -120,13 +126,13 @@ export function useTeamReferenceSections(
     ...(topics.topics ?? [])
       .filter((topic) => topic.archivedAt === null && matches(topic.name))
       .map((topic): ReferenceRow => ({
-        icon: "folder",
+        icon: referenceSymbols[teamPageIcon("knowledge-topic")],
         key: topic.id,
         label: topic.name,
         markdown: link(topic.name, { kind: "knowledge-topic", topicId: topic.id }),
       })),
     ...(notes.answered === settled ? (notes.notes ?? []) : []).map((note): ReferenceRow => ({
-      icon: "doc.text",
+      icon: referenceSymbols[teamPageIcon("knowledge-note")],
       key: note.id,
       label: note.title,
       markdown: link(note.title, {

@@ -17,6 +17,7 @@ import {
   type NodeViewProps,
 } from "@tiptap/react";
 import {
+  hrefIcon,
   snapComposerSelection,
   type ComposerEditorHandle,
   type ComposerSelection,
@@ -48,7 +49,7 @@ import {
   type ComposerScope,
 } from "./composer-editor-document.js";
 import { Icon } from "./icon.js";
-import { hrefGlyph } from "./references/reference-glyphs.js";
+import { referenceGlyphs } from "./references/reference-glyphs.js";
 import "../styles/composer-editor.css";
 
 /** Who changed the words: the person at the keyboard, or code acting for them. */
@@ -485,7 +486,7 @@ function ReferenceChip({ node, selected }: NodeViewProps) {
       className={selected ? "ref-chip composer-token is-selected" : "ref-chip composer-token"}
       title={token.label}
     >
-      <Icon name={hrefGlyph(token.href)} />
+      <Icon name={referenceGlyphs[hrefIcon(token.href)]} />
       <span className="ref-chip__title">{token.label || token.href}</span>
     </NodeViewWrapper>
   );

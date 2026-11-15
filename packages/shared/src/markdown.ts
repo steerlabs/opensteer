@@ -383,3 +383,38 @@ export function hideIncompleteLinkTail(text: string): string {
   }
   return text;
 }
+
+const closingPunctuation = /^[.,;:!?)\]}»›”’…。，、；：！？）」』】〉》]+/u;
+
+/** A phrasing node, and for a link the punctuation that closes on it. */
+export interface PunctuatedNode {
+  readonly node: PhrasingContent;
+  readonly trailing: string;
+}
+
+/**
+ * Hands each link the closing punctuation that follows it in `nodes`, taking
+ * it from the text after, so a renderer can draw a chip and its period as one
+ * unbreakable piece: a period never starts a line of its own. The source is
+ * unchanged; only what is drawn moves.
+ */
+export function punctuateLinks(nodes: readonly PhrasingContent[]): readonly PunctuatedNode[] {
+  const out: PunctuatedNode[] = [];
+  let taken = 0;
+  for (const [index, node] of nodes.entries()) {
+    if (node.type === "text" && taken > 0) {
+      const rest = node.value.slice(taken);
+      taken = 0;
+      if (rest !== "") out.push({ node: { ...node, value: rest }, trailing: "" });
+      continue;
+    }
+    const next = nodes[index + 1];
+    const trailing =
+      node.type === "link" && next?.type === "text"
+        ? (closingPunctuation.exec(next.value)?.[0] ?? "")
+        : "";
+    taken = trailing.length;
+    out.push({ node, trailing });
+  }
+  return out;
+}
