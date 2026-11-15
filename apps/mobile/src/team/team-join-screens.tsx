@@ -1,11 +1,12 @@
 import { HostVersionMismatchError } from "@opensteer/client/connections";
 import { HostClientRequestError, unwrapRpcResult } from "@opensteer/client/host";
 import { DeploymentIdSchema } from "@opensteer/core";
-import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import * as Linking from "expo-linking";
 import { useEffect, useState, type ReactNode } from "react";
 import { AppState, StyleSheet, TextInput, View } from "react-native";
+import { enterSide } from "../navigation-ref.js";
 import type { RootParamList } from "../navigation.js";
 import { color, radius, space, type } from "../theme.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
@@ -243,10 +244,9 @@ function OpenPlace(props: {
     void teams.destination(team.teamId, intent.channelId, intent.messageId).then(
       (destination) => {
         if (!current) return;
-        navigation.goBack();
-        navigation.dispatch(
-          StackActions.push(
-            destination.kind === "thread" ? "TeamThread" : "TeamChannel",
+        enterSide({
+          name: destination.kind === "thread" ? "TeamThread" : "TeamChannel",
+          params:
             destination.kind === "thread"
               ? {
                   teamId: team.teamId,
@@ -259,8 +259,7 @@ function OpenPlace(props: {
                   channelId: destination.channelId,
                   ...(destination.messageId === null ? {} : { messageId: destination.messageId }),
                 },
-          ),
-        );
+        });
       },
       () => current && setFailure("You don't have access to this."),
     );

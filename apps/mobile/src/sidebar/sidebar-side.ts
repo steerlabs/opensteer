@@ -1,5 +1,4 @@
 import { isRecord } from "@opensteer/shared/isRecord";
-
 import type { SidebarSide } from "@opensteer/client/team";
 
 export type { SidebarSide };

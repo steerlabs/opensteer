@@ -101,6 +101,7 @@ export interface TeamAccount {
 }
 
 interface TeamsValue {
+  readonly forgotten: ReadonlySet<string>;
   readonly owner: TeamRuntimeOwner | null;
   readonly surface: TeamSurface["kind"] | null;
   readonly teams: readonly TeamAttachment[];
@@ -125,6 +126,7 @@ interface TeamsValue {
 }
 
 const TeamsContext = createContext<TeamsValue>({
+  forgotten: new Set(),
   owner: null,
   surface: null,
   teams: [],
@@ -260,7 +262,10 @@ export function TeamsProvider({
     () => null,
   );
   useEffect(() => {
-    const open = (teamId: string) => navigator.current?.(teamPath(teamId, ""));
+    const open = (teamId: string) => {
+      setForgotten((held) => new Set([...held].filter((id) => id !== teamId)));
+      navigator.current?.(teamPath(teamId, ""));
+    };
     const made =
       world && hostClient
         ? previewTeamCoordination({ world, hostClient, open })
@@ -453,6 +458,7 @@ export function TeamsProvider({
         await session.leave();
       }
       if (registry && scope) await registry.remove(scope);
+      setForgotten((held) => new Set([...held, teamId]));
       await reload();
     },
     [linked, coordination, world, worldTeams, sessionOf, registry, reload],
@@ -487,6 +493,7 @@ export function TeamsProvider({
               owner.assertCurrent();
               await owner.run(() => sessions.signIn(verified, null));
             } else await coordination.coordinator.enterTeam(team.origin);
+            setForgotten((held) => new Set([...held].filter((id) => id !== teamId)));
             setEntered((count) => count + 1);
           }
         : null,
@@ -509,6 +516,7 @@ export function TeamsProvider({
               link: linked.find((link) => link.teamId === teamId) ?? null,
             }));
     return {
+      forgotten,
       owner,
       surface: surface.kind,
       teams: teams.filter((team) => !forgotten.has(team.teamId)),

@@ -171,7 +171,11 @@ vi.mock("@react-navigation/native", () => ({
   StackActions: { replace: (name: string, params: unknown) => ({ name, params }) },
   useIsFocused: () => true,
 }));
-vi.mock("../sidebar/sidebar-context.js", () => ({ useSidebarVisible: () => false }));
+vi.mock("../sidebar/sidebar-context.js", () => ({
+  useSidebarControl: () => null,
+  useSidebarDocked: () => false,
+  useSidebarVisible: () => false,
+}));
 vi.mock(
   "../browser/toolbar.js",
   async () => (await import("../../test-support/native-chrome.js")).toolbar,

@@ -2877,7 +2877,7 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
     expect(state.dispatch).not.toHaveBeenCalled();
   });
 
-  it("reads a lineage the bounded catalog leaves out once, and calls it closed without a sibling", async () => {
+  it("returns from a confirmed closed lineage without opening a sibling", async () => {
     const readPersonalTabs = vi.fn(async () => ({ ...lineage("old", []), tabs: [] }));
     state.hostClient = {
       browserFrames: { subscribe: () => () => undefined },
@@ -2898,7 +2898,7 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
     render();
     await act(async () => undefined);
     expect(readPersonalTabs).toHaveBeenCalledOnce();
-    expect(state.dispatch).not.toHaveBeenCalled();
+    expect(state.dispatch).toHaveBeenLastCalledWith({ type: "POP", count: 1 });
     expect(state.setParams).not.toHaveBeenCalled();
   });
 
@@ -2923,7 +2923,7 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
     expect(container.textContent).not.toContain("Looking for this tab");
   });
 
-  it("shows a failed bounded lookup and retries the same tab", async () => {
+  it("keeps a failed lookup in place, then returns only after retry confirms closure", async () => {
     const readPersonalTabs = vi
       .fn()
       .mockRejectedValueOnce(new Error("The tab lookup was interrupted."))
@@ -2940,10 +2940,11 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
     );
     await act(async () => undefined);
     expect(container.textContent).toContain("The tab lookup was interrupted.");
+    expect(state.dispatch).not.toHaveBeenCalled();
     await pressAsync(container, "Try again");
     expect(readPersonalTabs.mock.calls).toEqual([["old"], ["old"]]);
     expect(container.textContent).toContain("This tab was closed");
-    expect(state.dispatch).not.toHaveBeenCalled();
+    expect(state.dispatch).toHaveBeenLastCalledWith({ type: "POP", count: 1 });
   });
 
   it("names the task whose own session of an app the route opens, not another task holding it", () => {

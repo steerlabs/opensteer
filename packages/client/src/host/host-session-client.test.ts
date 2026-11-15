@@ -2006,6 +2006,92 @@ describe("HttpHostClient harness authentication", () => {
 });
 
 describe("HttpHostClient durable realtime", () => {
+  describe("ensure loaded", () => {
+    function fixture() {
+      const workspace = makeDeployment();
+      const socket = new FakeSocket();
+      const fetch = vi.fn(async () => json(bootstrap([workspace])));
+      const client = createHttpHostClient({
+        fetch,
+        refreshIntervalMs: 0,
+        webSocketFactory: () => socket,
+      });
+      const synchronize = () => {
+        socket.open();
+        socket.receive({ type: "host.snapshot", snapshot: deploymentSnapshot(workspace, "0") });
+        socket.receive({ type: "host.synchronized", sequence: sequence("0") });
+      };
+      return { client, fetch, socket, synchronize };
+    }
+
+    it("reuses a live snapshot while explicit refresh and reauthentication still read", async () => {
+      const f = fixture();
+      try {
+        await f.client.load();
+        f.synchronize();
+        expect(f.client.getSnapshot().connection).toBe("connected");
+        expect(f.fetch).toHaveBeenCalledTimes(1);
+
+        await f.client.load();
+        await f.client.load();
+        expect(f.fetch).toHaveBeenCalledTimes(1);
+
+        await f.client.refresh();
+        expect(f.fetch).toHaveBeenCalledTimes(2);
+        await f.client.reauthenticate();
+        expect(f.fetch).toHaveBeenCalledTimes(3);
+      } finally {
+        f.client.dispose();
+      }
+    });
+
+    it.each(["connecting", "subscribing", "disconnected"])(
+      "rereads on load while the channel is %s",
+      async (state) => {
+        const f = fixture();
+        try {
+          await f.client.load();
+          if (state === "subscribing") f.socket.open();
+          if (state === "disconnected") {
+            f.synchronize();
+            f.socket.serverClose();
+          }
+          await f.client.load();
+          expect(f.fetch).toHaveBeenCalledTimes(2);
+        } finally {
+          f.client.dispose();
+        }
+      },
+    );
+
+    it.each(["initial", "live"])("retries load after a %s bootstrap failure", async (state) => {
+      const f = fixture();
+      try {
+        if (state === "live") {
+          await f.client.load();
+          f.synchronize();
+        }
+        const reads = f.fetch.mock.calls.length;
+        f.fetch.mockRejectedValueOnce(new TypeError("Network request failed"));
+        const reading = state === "initial" ? f.client.load() : f.client.refresh();
+        await Promise.all([
+          expect(reading).rejects.toThrow("The Host could not be reached."),
+          expect(f.client.load()).rejects.toThrow("The Host could not be reached."),
+        ]);
+
+        await f.client.load();
+        expect(f.fetch).toHaveBeenCalledTimes(reads + 2);
+        expect(f.client.getSnapshot().session).toBe("authenticated");
+        if (state === "live") {
+          await f.client.load();
+          expect(f.fetch).toHaveBeenCalledTimes(reads + 2);
+        }
+      } finally {
+        f.client.dispose();
+      }
+    });
+  });
+
   it("routes viewer-wide history notices to the history cache", async () => {
     const workspace = makeDeployment();
     const socket = new FakeSocket();
@@ -2730,11 +2816,11 @@ describe("HttpHostClient durable realtime", () => {
       const f = await fixture();
       try {
         // Align the Thread's derived labels with bootstrap before measuring a reread.
-        await f.client.load();
+        await f.client.refresh();
         const before = f.client.getSnapshot();
         expect(before.threads).toHaveLength(1);
         expect(before.machines.length).toBeGreaterThan(0);
-        await f.client.load();
+        await f.client.refresh();
         const after = f.client.getSnapshot();
         expect(sameStableHostSnapshot(before, after)).toBe(true);
         expect(samePlaceListSource(before, after)).toBe(true);
@@ -2751,7 +2837,7 @@ describe("HttpHostClient durable realtime", () => {
           if (key !== "browserTabs") expect(after[key]![0]).toBe(before[key]![0]);
         }
         f.body.environments[0]!.name = "Renamed computer";
-        await f.client.load();
+        await f.client.refresh();
         const changed = f.client.getSnapshot();
         expect(changed.environments[0]!.name).toBe("Renamed computer");
         expect(changed.environments[0]).not.toBe(after.environments[0]);

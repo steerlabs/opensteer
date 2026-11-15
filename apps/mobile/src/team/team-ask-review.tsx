@@ -1,5 +1,5 @@
 import { teamAskerLabel, teamAskAudienceLabel } from "@opensteer/client/team";
-import { useNavigation } from "@react-navigation/native";
+import { enterSide } from "../navigation-ref.js";
 import { useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 import type { NeedsYouTeamAskEntry } from "@opensteer/protocol";
@@ -17,7 +17,6 @@ export function TeamAskReview({
   client: HostClient;
   onClose: () => void;
 }) {
-  const navigation = useNavigation();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { presentation: ask } = entry;
@@ -75,10 +74,13 @@ export function TeamAskReview({
           accessibilityRole="link"
           onPress={() => {
             onClose();
-            navigation.navigate("TeamThread", {
-              teamId: entry.teamId,
-              channelId: ask.destination.channelId,
-              rootId: ask.destination.threadRootId,
+            enterSide({
+              name: "TeamThread",
+              params: {
+                teamId: entry.teamId,
+                channelId: ask.destination.channelId,
+                rootId: ask.destination.threadRootId,
+              },
             });
           }}
         >

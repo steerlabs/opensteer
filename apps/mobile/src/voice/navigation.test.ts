@@ -2,8 +2,16 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { paramsDestination, type SurfacesRoute } from "../browser/surface-route.js";
 import { navigationRef } from "../navigation-ref.js";
 import { show } from "./navigation.js";
+const ref = vi.hoisted(() => ({
+  isReady: vi.fn(() => true),
+  getCurrentRoute: vi.fn(),
+  getRootState: vi.fn(),
+  dispatch: vi.fn(),
+}));
 vi.mock("@react-navigation/native", () => ({
+  createNavigationContainerRef: () => ref,
   CommonActions: {
+    reset: (payload: object) => ({ type: "RESET", payload }),
     setParams: (params: object) => ({ type: "SET_PARAMS", payload: { params } }),
   },
   StackActions: {
@@ -11,16 +19,13 @@ vi.mock("@react-navigation/native", () => ({
     popTo: (name: string, params: object) => ({ type: "POP_TO", payload: { name, params } }),
   },
 }));
-vi.mock("../navigation-ref.js", () => ({
-  navigationRef: {
-    isReady: vi.fn(() => true),
-    getCurrentRoute: vi.fn(),
-    dispatch: vi.fn(),
-  },
-}));
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(navigationRef.dispatch).mockReset();
+  ref.getRootState.mockImplementation(() => ({
+    index: 1,
+    routes: [{ key: "home", name: "Home", params: { deploymentId: "d" } }, ref.getCurrentRoute()],
+  }));
 });
 it("reports failure when navigation is not ready", () => {
   vi.mocked(navigationRef.isReady).mockReturnValueOnce(false);
@@ -116,6 +121,17 @@ it("pushes the first place from a Thread or a different deployment", () => {
       expect.objectContaining({ type: "PUSH" }),
     );
   }
+});
+it("opens a task's place from a team's screen through the Tasks side", () => {
+  ref.getCurrentRoute.mockReturnValue({
+    key: "channel",
+    name: "TeamChannel",
+    params: { teamId: "team", channelId: "general" },
+  });
+  expect(show("d", { kind: "thread", threadId: "t" })).toBe(true);
+  expect(navigationRef.dispatch).toHaveBeenLastCalledWith(
+    expect.objectContaining({ type: "RESET" }),
+  );
 });
 
 it("replaces all destination fields when showing a different kind of place", () => {

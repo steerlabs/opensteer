@@ -15,7 +15,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { Navigate, useLocation, useParams, useSearchParams } from "react-router";
+import { useLocation, useParams, useSearchParams } from "react-router";
 import { placeContentLabel, type ModelSelection, type Request } from "@opensteer/core";
 import {
   type ConversationActivitySelection,
@@ -101,14 +101,19 @@ export function ThreadRoute() {
 /** One task, wherever it is reached from: a row, a link, Voice. */
 export function ThreadSurface({ threadId }: { readonly threadId: string | null }) {
   const { hostClient, placements, snapshot } = useShell();
+  const { nav } = useWorkspace();
   const thread = snapshot.threads.find((candidate) => candidate.id === threadId) ?? null;
+  const missing =
+    thread === null && threadId !== null && snapshot.threadLookups[threadId] === "missing";
+  useEffect(() => {
+    if (missing) nav.openConversation("/", { replace: true });
+  }, [missing, nav]);
   useEffect(() => {
     if (threadId) hostClient.activateThread(threadId);
   }, [hostClient, threadId, thread?.id]);
 
   if (!thread) {
-    if (threadId && snapshot.threadLookups[threadId] === "missing")
-      return <Navigate replace to="/" />;
+    if (missing) return null;
     if (threadId && snapshot.threadLookups[threadId] === "failed")
       return (
         <div className="thread">

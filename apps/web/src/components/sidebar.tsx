@@ -12,7 +12,6 @@ import {
   memo,
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -97,7 +96,7 @@ import { useHereId } from "./computers/here.js";
 import { useTaskDirectory, type TaskDirectory } from "./workspace/task-directory.js";
 import { useTeams } from "../team/team-attachments.js";
 import type { SegmentBadge } from "./team/team-sidebar.js";
-import { chooseSide, type SidebarSide, type SidebarSides } from "@opensteer/client/team";
+import type { SidebarSide, SidebarSides } from "@opensteer/client/team";
 import {
   useHighlightMatch,
   useWorkspace,
@@ -165,7 +164,7 @@ export function Sidebar({
 }: SidebarProps) {
   const workspace = useWorkspace();
   const { nav } = workspace;
-  const { pathname, state: locationState } = useLocation();
+  const { pathname } = useLocation();
   const snapshot = useTaskSnapshot(hostClient);
   const deploymentId = useHostSelector(hostClient, (current) => current.deploymentId);
   const userId = useHostSelector(hostClient, (current) => current.user?.id ?? null);
@@ -278,13 +277,8 @@ export function Sidebar({
   const directory = useTaskDirectory(hostClient, openRowThreadId);
   const { list } = directory;
   const tasksList = useRef<HTMLUListElement | null>(null);
-  const [sides, setSide] = useSidebarSide(deploymentId, userId, pathname);
+  const { sides, openSide } = nav;
   const { side } = sides;
-  // Entering a team the person just created or joined is their choice of side.
-  const enteredTeam = enteredTeamOf(locationState);
-  useEffect(() => {
-    if (enteredTeam) setSide(enteredTeam);
-  }, [enteredTeam, setSide]);
   const doneShelf = useRef<HTMLLIElement | null>(null);
   // Done takes the place of Tasks while it is open.
   const [doneView, setDoneView] = useState(false);
@@ -740,7 +734,7 @@ export function Sidebar({
           </button>
         )}
       </div>
-      <TasksBadgeSwitch hostClient={hostClient} onSide={setSide} sides={sides} />
+      <TasksBadgeSwitch hostClient={hostClient} onSide={openSide} sides={sides} />
 
       <SidebarSearch
         badges={presentations.badges}
@@ -1075,79 +1069,6 @@ function VoiceButton({ onOpen }: { readonly onOpen: () => void }) {
       {since !== null ? <VoiceClock /> : null}
     </button>
   );
-}
-
-/**
- * Which side of the switch shows, and the team last shown. On load the side
- * follows the address (a channel opens on its team, a task on Tasks), else
- * what this person last chose here; after that only the person changes it.
- */
-function useSidebarSide(
-  deploymentId: string | null,
-  userId: string | null,
-  pathname: string,
-): readonly [SidebarSides, (side: SidebarSide) => void] {
-  const key = `opensteer.sidebar.side:${deploymentId ?? ""}:${userId ?? ""}`;
-  const loadedAt = useRef(pathname).current;
-  const [chosen, setChosen] = useState<{
-    readonly key: string;
-    readonly sides: SidebarSides;
-  } | null>(null);
-  const loaded = useMemo(() => {
-    const stored = storedSides(key);
-    const side = routeSide(loadedAt);
-    return side === null ? stored : chooseSide(stored, side);
-  }, [key, loadedAt]);
-  const sides = chosen?.key === key ? chosen.sides : loaded;
-  const { teams } = useTeams();
-  const latest = useRef(sides);
-  useLayoutEffect(() => {
-    latest.current = sides;
-  });
-  const choose = useCallback(
-    (side: SidebarSide) => {
-      const next = chooseSide(latest.current, side);
-      latest.current = next;
-      setChosen({ key, sides: next });
-      try {
-        localStorage.setItem(key, next.side);
-        if (next.recent !== null) localStorage.setItem(`${key}:team`, next.recent);
-      } catch {
-        // The choice still holds for this window.
-      }
-    },
-    [key],
-  );
-  // A team that is gone leaves its side; Tasks is what remains.
-  const present = sides.side === "tasks" || teams.some((team) => team.teamId === sides.side);
-  return [present ? sides : { side: "tasks", recent: sides.recent }, choose];
-}
-
-/** The team a navigation entered, as `TeamDialogsProvider` marks it. */
-export function enteredTeamOf(state: unknown): string | null {
-  return typeof state === "object" &&
-    state !== null &&
-    "enteredTeam" in state &&
-    typeof state.enteredTeam === "string"
-    ? state.enteredTeam
-    : null;
-}
-
-function routeSide(pathname: string): string | null {
-  const team = /^\/teams\/([^/]+)\//u.exec(pathname);
-  if (team) return decodeURIComponent(team[1]!);
-  return pathname.startsWith("/tasks/") ? "tasks" : null;
-}
-
-function storedSides(key: string): SidebarSides {
-  try {
-    return {
-      side: localStorage.getItem(key) ?? "tasks",
-      recent: localStorage.getItem(`${key}:team`),
-    };
-  } catch {
-    return { side: "tasks", recent: null };
-  }
 }
 
 const selectTasksBadge = (snapshot: HostSnapshot): SegmentBadge => {

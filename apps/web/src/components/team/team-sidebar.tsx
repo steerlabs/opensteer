@@ -50,8 +50,7 @@ export interface SwitchTeam {
  * Tasks and each team the computer joined, as one switch. Tasks keeps its own
  * width, the team last shown takes the rest and says its name, and every
  * other team is its mark, so a team is always one visible click away and
- * moving between Tasks and that team moves nothing but the plate. Only the
- * person ever changes the side.
+ * moving between Tasks and that team moves nothing but the plate.
  *
  * Every segment's place comes from `sideSwitchLayout`, so the plate and the
  * segments it slides over move from the same numbers in the same frame.
@@ -99,10 +98,20 @@ export function SidebarSwitch({
   const radios = layout.segments.flatMap((segment) =>
     segment.key === moreTeamsKey ? [] : [segment.key],
   );
+  // Choosing a side navigates; the page that opens must not take focus from a
+  // radio group the person is still moving through with the keyboard.
+  const keyed = useRef<SidebarSide | null>(null);
+  const focusSide = (side: SidebarSide) =>
+    track.current?.querySelector<HTMLElement>(`[data-value="${CSS.escape(side)}"]`)?.focus();
+  useEffect(() => {
+    if (keyed.current !== active) return;
+    keyed.current = null;
+    focusSide(active);
+  });
   const select = (side: SidebarSide, focus: boolean) => {
+    if (focus) keyed.current = side;
     onSelect(side);
-    if (focus)
-      track.current?.querySelector<HTMLElement>(`[data-value="${CSS.escape(side)}"]`)?.focus();
+    if (focus) focusSide(side);
   };
   const keys = (event: KeyboardEvent<HTMLButtonElement>, side: SidebarSide) => {
     const index = radios.indexOf(side);
