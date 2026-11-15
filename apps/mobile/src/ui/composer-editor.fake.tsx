@@ -14,6 +14,7 @@ export const composerEditorFake = {
   calls: [] as { text: string; start: number; end: number }[],
   /** Text native holds but has not reported yet; only a flush delivers it. */
   ahead: null as string | null,
+  composing: false,
 };
 
 export function dismissKeyboard(): void {}
@@ -38,7 +39,11 @@ export function ComposerEditor(props: ComposerEditorProps): ReactNode {
     focus: () => undefined,
     blur: () => composerEditorFake.blur(),
     containsFocus: () => false,
-    readSnapshot: () => ({ ...latest.current, generation: 0, composing: false }),
+    readSnapshot: () => ({
+      ...latest.current,
+      generation: 0,
+      composing: composerEditorFake.composing,
+    }),
     replace: (range, insert) => {
       const next = replaceComposerRange(latest.current.text, range, insert, []);
       change(next.text);
@@ -57,7 +62,7 @@ export function ComposerEditor(props: ComposerEditorProps): ReactNode {
       const ahead = composerEditorFake.ahead;
       composerEditorFake.ahead = null;
       if (ahead !== null) change(ahead);
-      return { ...latest.current, generation: 0, composing: false };
+      return { ...latest.current, generation: 0, composing: composerEditorFake.composing };
     },
   }));
   return (

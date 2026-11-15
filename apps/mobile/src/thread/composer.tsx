@@ -714,7 +714,7 @@ export function Composer(props: {
       // still be on its way to React: read what the field holds now.
       if (result.kind !== "committed" && input.current !== null && generation !== null) {
         const flushed = await input.current.flushPendingInput(generation).catch(() => null);
-        if (flushed === null) return;
+        if (flushed === null || flushed.composing) return;
         words = flushed.text;
       }
       if (!mounted.current || !visible.current || !latestSend.current.canSend) return;

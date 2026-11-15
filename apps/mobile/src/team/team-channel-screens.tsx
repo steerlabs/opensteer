@@ -683,7 +683,7 @@ function Place(props: {
       const flushed = await field
         .flushPendingInput(field.readSnapshot().generation)
         .catch(() => null);
-      if (flushed === null || openEdit.current !== editing) return;
+      if (flushed === null || flushed.composing || openEdit.current !== editing) return;
       current = flushed.text;
     }
     const words = current.trim();

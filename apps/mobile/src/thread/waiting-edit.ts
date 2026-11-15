@@ -253,6 +253,7 @@ export function useWaitingEdit(
         : await input.flushPendingInput(input.readSnapshot().generation).catch(() => null);
     const shown = editRef.current;
     if (
+      flushed?.composing === true ||
       lease.current !== held ||
       shown === null ||
       shown.messageId !== opened.messageId ||

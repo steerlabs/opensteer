@@ -30,9 +30,11 @@ function labelSource(source: string): string {
   return "";
 }
 
-/** Removes private destinations without rewriting unrelated Markdown or creating recipients. */
-export function stripRefs(markdown: string): string {
-  if (!markdown.includes("[") && !markdown.includes("<")) return markdown;
+function escapeLinkSyntax(source: string): string {
+  return source.replace(/\\[\s\S]|[[<]/gu, (token) => (token.length === 1 ? "\\" + token : token));
+}
+
+function stripPrivateLinks(markdown: string, neutralize = false): string {
   const source = hideIncompleteLinkTail(markdown);
   const tree = markdownSourceTree(source);
   const definitions = new Map<string, string>();
@@ -42,14 +44,18 @@ export function stripRefs(markdown: string): string {
   });
   const edits: { start: number; end: number; text: string }[] = [];
   visitMarkdownSource(tree, (node) => {
+    const start = node.position?.start.offset,
+      end = node.position?.end.offset;
+    if (neutralize && node.type === "text" && start !== undefined && end !== undefined) {
+      edits.push({ start, end, text: escapeLinkSyntax(source.slice(start, end)) });
+      return false;
+    }
     const url =
       node.type === "link" || node.type === "image" || node.type === "definition"
         ? node.url
         : node.type === "linkReference" || node.type === "imageReference"
           ? definitions.get(node.identifier)
           : undefined;
-    const start = node.position?.start.offset,
-      end = node.position?.end.offset;
     if (url !== undefined && privateDestination(url) && start !== undefined && end !== undefined) {
       const written = source.slice(start, end);
       const label =
@@ -59,8 +65,8 @@ export function stripRefs(markdown: string): string {
             ? /^opensteer:/iu.test(url)
               ? "Opensteer item"
               : "File"
-            : stripRefs(labelSource(written));
-      edits.push({ start, end, text: label });
+            : labelSource(written);
+      edits.push({ start, end, text: neutralize ? escapeLinkSyntax(label) : label });
       return false;
     }
     return true;
@@ -68,6 +74,20 @@ export function stripRefs(markdown: string): string {
   let result = source;
   for (const edit of edits.sort((left, right) => right.start - left.start))
     result = result.slice(0, edit.start) + edit.text + result.slice(edit.end);
+  return result;
+}
+
+/** Removes private destinations without rewriting unrelated Markdown or creating recipients. */
+export function stripRefs(markdown: string): string {
+  if (!markdown.includes("[") && !markdown.includes("<")) return markdown;
+  let result = markdown;
+  // Removing an inner link can activate an outer one; cap reparsing for adversarial nesting.
+  for (let pass = 0; pass < 32; pass++) {
+    const next = stripPrivateLinks(result);
+    if (next === result) break;
+    result = next;
+    if (pass === 31) result = stripPrivateLinks(result, true);
+  }
   if (result === markdown) return result;
   const originalHandles = new Set(teamMentionHandles(markdown));
   for (const match of [...teamMentionHandleRanges(result)].reverse()) {

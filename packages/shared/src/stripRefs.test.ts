@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { stripRefs } from "./stripRefs.js";
+import { markdownSourceTree, visitMarkdownSource } from "./markdownParser.js";
 import { teamMentionHandles } from "./teamMentions.js";
 
 const href = "opensteer:thr_12345678-1234-4234-8234-123456789abc";
@@ -57,6 +58,20 @@ describe("stripRefs", () => {
     expect(stripRefs(source)).toBe(source);
   });
 
+  it.each([
+    [`[outer [inner](${href})](/Users/me/Opensteer/private.txt)`, "outer inner"],
+    [
+      `[outer [middle [inner](${href})](/Users/me/Opensteer/inner.txt)](/Users/me/Opensteer/private.txt)`,
+      "outer middle inner",
+    ],
+    [`[outer [inner](${href})](${href})`, "outer inner"],
+  ])("removes private links activated by its own edits: %s", (source, expected) => {
+    const result = stripRefs(source);
+    expect(result).toBe(expected);
+    expect(result).not.toMatch(/opensteer:|\/Users\/me\/Opensteer\//iu);
+    expect(stripRefs(result)).toBe(result);
+  });
+
   it("never adds handles inside labels or across replacement and definition boundaries", () => {
     for (const source of [
       "[word ](" + href + ")@tim-agent",
@@ -71,5 +86,22 @@ describe("stripRefs", () => {
       expect(stripRefs(result)).toBe(result);
     }
     expect(stripRefs("[word ](" + href + ")@tim-agent")).toBe("word \\@tim-agent");
+  });
+
+  it("neutralizes remaining link syntax when deeply nested edits reach the reparse limit", () => {
+    const prefix = `[web](https://example.test) \`[code](${href})\`\n\n`;
+    let nested = "inner @hidden-agent";
+    for (let depth = 0; depth < 80; depth++) nested = `[outer ${nested}](${href})`;
+    const source = prefix + nested;
+    const result = stripRefs(source);
+    const destinations: string[] = [];
+    visitMarkdownSource(markdownSourceTree(result), (node) => {
+      if (node.type === "link" || node.type === "image" || node.type === "definition")
+        destinations.push(node.url);
+    });
+    expect(destinations).toEqual(["https://example.test"]);
+    expect(result.startsWith(prefix)).toBe(true);
+    expect(teamMentionHandles(result)).toEqual([]);
+    expect(stripRefs(result)).toBe(result);
   });
 });

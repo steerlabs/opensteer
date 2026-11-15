@@ -756,6 +756,8 @@ function WithNativeHeader(props: {
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
 afterEach(() => {
+  composerEditorFake.composing = false;
+  composerEditorFake.ahead = null;
   aiSharingTestPermission.allowed = true;
   for (const root of roots.splice(0)) act(() => root.unmount());
   dictation.dispose();
@@ -1573,6 +1575,27 @@ describe("a conversation with a page", () => {
       expect.objectContaining({
         type: "thread.sendMessage",
         content: expect.arrayContaining([included, { text: words, type: "text" }]),
+      }),
+    );
+  });
+
+  it("keeps a task's composing text until Send is tapped after composition ends", async () => {
+    const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+    const { container } = await mount(host, workId);
+    await type(container, "Message", "未確定");
+    composerEditorFake.composing = true;
+    composerEditorFake.ahead = "未確定の入力";
+    await press(container, "Send message");
+    expect(sent(host.dispatch)).not.toContain("thread.sendMessage");
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+    ).toBe("未確定の入力");
+    composerEditorFake.composing = false;
+    await press(container, "Send message");
+    expect(host.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "thread.sendMessage",
+        content: expect.arrayContaining([{ text: "未確定の入力", type: "text" }]),
       }),
     );
   });
@@ -3164,6 +3187,31 @@ describe("a task", () => {
     // The message is changed where it waits; nothing is taken back or sent anew.
     expect(host.client.cancelThreadInput).not.toHaveBeenCalled();
     expect(sent(host.dispatch)).not.toContain("thread.sendMessage");
+    expect(editField(container)).toBeNull();
+  });
+
+  it("keeps a waiting edit open while composing and releases Save for the completed text", async () => {
+    const waiting = said("Include the card fees", null);
+    const host = fakeHost(
+      snapshotFor({
+        entries: [waiting],
+        queue: [waitingInput(waiting, workId)],
+        run: null,
+        threadId: workId,
+      }),
+    );
+    const { container } = await mount(host, workId);
+    await tapWaiting(container, waiting.body);
+    await type(container, "Edit message", "未確定");
+    composerEditorFake.composing = true;
+    composerEditorFake.ahead = "未確定の編集";
+    await press(container, "Save");
+    expect(host.editor.save).not.toHaveBeenCalled();
+    expect(host.editor.cancel).not.toHaveBeenCalled();
+    expect(editField(container)?.value).toBe("未確定の編集");
+    composerEditorFake.composing = false;
+    await press(container, "Save");
+    expect(host.editor.save).toHaveBeenCalledWith([{ text: "未確定の編集", type: "text" }], 0);
     expect(editField(container)).toBeNull();
   });
 

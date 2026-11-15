@@ -52,6 +52,8 @@ transcript or arbitrary tool output. The private task shows whether delivery is 
 or blocked, with a reason. Reconnect reconciles pending publication against its receipt without
 rerunning the work or duplicating the post; revoked access or cancellation cannot resurrect it.
 
+<a id="publication-privacy"></a>
+
 Personal Opensteer removes private object and local-file Markdown destinations before
 agent replies or notes go to a team, before messaging-bridge delivery, in Voice speech
 and notes, and before plain-text excerpts and notification previews are clipped. Labels

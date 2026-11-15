@@ -188,7 +188,7 @@ function NewTask(props: {
         const flushed = await field
           .flushPendingInput(field.readSnapshot().generation)
           .catch(() => null);
-        if (flushed === null) return;
+        if (flushed === null || flushed.composing) return;
         words = flushed.text.trim();
       }
       if (!(await authorizeAiSharing(aiSharing, hostClient))) return;
