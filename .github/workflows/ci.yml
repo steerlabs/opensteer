@@ -610,10 +610,10 @@ jobs:
         with:
           go: "false"
           filters: opensteer... @opensteer/database...
+      # One folder per artifact: ci-check.ts reads each file only from the job that owns it.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: ${{ runner.temp }}/evidence
-          merge-multiple: true
       - run: pnpm exec tsx scripts/ci-check.ts "$RUNNER_TEMP/evidence"
         env:
           CI_NEEDS: ${{ toJSON(needs) }}
@@ -625,6 +625,6 @@ jobs:
         with:
           name: aggregate-${{ github.sha }}
           path: |
-            ${{ runner.temp }}/evidence/ci-plan.json
+            ${{ runner.temp }}/evidence/plan-${{ github.sha }}/ci-plan.json
             ${{ runner.temp }}/evidence/combined-lock-graph.json
           if-no-files-found: error

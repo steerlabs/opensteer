@@ -455,7 +455,13 @@ test("real-browser command fails its existing job and Check and uploads inventor
     assert.equal(uploads[0].with.path.trim(), "${{ runner.temp }}/evidence", lane);
   }
   const aggregate = readFileSync("scripts/ci-check.ts", "utf8");
-  assert.match(aggregate, /read\("browser-1.inventory.json"\)/);
+  assert.match(aggregate, /read\("browser-journeys", "browser-1.inventory.json"\)/);
+  // A lane's test code writes into its own evidence; merged artifacts would let it forge the plan.
+  const download = workflow.jobs.Check.steps.find((entry) =>
+    entry.uses?.startsWith("actions/download-artifact@"),
+  );
+  assert.equal(download.with["merge-multiple"], undefined);
+  assert.match(aggregate, /read\("plan", "ci-plan.json"\)/);
   assert.match(aggregate, /checkInventories\(\[inventory\], 1, "browser"\)/);
   assert.match(aggregate, /inventory.discovered/);
   assert.match(aggregate, /realBrowserTests/);

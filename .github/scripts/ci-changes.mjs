@@ -275,32 +275,80 @@ export function laneUniverse(tracked) {
   };
 }
 /** Importer directories whose lockfile entries differ, and whether anything else differs. */
+/**
+ * Which workspace importers a lockfile edit reaches: their own entries changed, or a package
+ * they depend on changed anywhere in their dependency closure. `other` is a change outside
+ * importers, packages and snapshots (settings, catalogs, overrides, patches).
+ */
 export function lockfileChanges(base, head) {
-  const split = (text) => {
-    const importers = new Map();
+  const unquote = (key) => key.replace(/^['"]|['"]$/g, "");
+  const parse = (text) => {
+    const keyed = { importers: new Map(), packages: new Map(), snapshots: new Map() };
     let rest = "";
     let section;
     let key;
     for (const line of text.split("\n")) {
       if (/^\S/.test(line)) {
-        section = line;
+        section = line.trim();
         key = undefined;
       }
-      const entry = section === "importers:" && /^ {2}(\S.*):\s*$/.exec(line);
-      if (entry) key = entry[1].replace(/^['"]|['"]$/g, "");
-      if (section === "importers:" && key !== undefined)
-        importers.set(key, (importers.get(key) ?? "") + line + "\n");
-      else rest += line + "\n";
+      const map = keyed[section?.replace(/:$/, "")];
+      const entry = map && /^ {2}(\S.*?):(?:\s|$)/.exec(line);
+      if (entry) key = unquote(entry[1]);
+      if (map && key !== undefined) map.set(key, (map.get(key) ?? "") + line + "\n");
+      else if (!map) rest += line + "\n";
     }
-    return { importers, rest };
+    return { ...keyed, rest };
   };
-  const before = split(base);
-  const after = split(head);
-  const keys = new Set([...before.importers.keys(), ...after.importers.keys()]);
-  return {
-    importers: [...keys].filter((k) => before.importers.get(k) !== after.importers.get(k)).sort(),
-    other: before.rest !== after.rest,
+  // Dependencies a block names, as snapshot keys: `name@version(peers)`.
+  const dependencies = (block, importer) => {
+    const found = [];
+    let name;
+    for (const line of block.split("\n")) {
+      const child = /^ {6}(\S[^:]*):\s*(\S.*)?$/.exec(line);
+      if (child) {
+        name = unquote(child[1]);
+        // Snapshots, and older importer entries, name the version inline.
+        if (child[2] && !child[2].startsWith("link:")) found.push(`${name}@${unquote(child[2])}`);
+        continue;
+      }
+      const version = importer && /^ {8}version:\s*(\S.*)$/.exec(line);
+      if (version && name && !version[1].startsWith("link:"))
+        found.push(`${name}@${unquote(version[1])}`);
+    }
+    return found;
   };
+  const before = parse(base);
+  const after = parse(head);
+  const differs = (section) =>
+    new Set(
+      [...before[section].keys(), ...after[section].keys()].filter(
+        (k) => before[section].get(k) !== after[section].get(k),
+      ),
+    );
+  const changedPackages = differs("packages");
+  const changed = new Set([...differs("snapshots"), ...changedPackages]);
+  for (const snapshot of new Set([...before.snapshots.keys(), ...after.snapshots.keys()]))
+    if (changedPackages.has(snapshot.replace(/\(.*$/, ""))) changed.add(snapshot);
+  const reaches = (graph, roots) => {
+    const seen = new Set();
+    const queue = [...roots];
+    while (queue.length) {
+      const next = queue.pop();
+      if (seen.has(next)) continue;
+      seen.add(next);
+      if (changed.has(next)) return true;
+      const block = graph.snapshots.get(next);
+      if (block) queue.push(...dependencies(block, false));
+    }
+    return false;
+  };
+  const importers = new Set(differs("importers"));
+  // Either side's closure: an update and a removal both change what the importer installs.
+  for (const graph of [before, after])
+    for (const [dir, block] of graph.importers)
+      if (!importers.has(dir) && reaches(graph, dependencies(block, true))) importers.add(dir);
+  return { importers: [...importers].sort(), other: before.rest !== after.rest };
 }
 // Vitest treats each path argument as a substring filter; name everything it will match.
 function expandFilters(selected, universe) {
@@ -477,7 +525,11 @@ export function decide(
     const reach = (file) => {
       const reached = { owned: false, names: new Set() };
       for (const found of importClosure([file], edges.files)) {
-        if (ownerOf(found).length) reached.owned = true;
+        // A relative import into a package depends on that package as much as its name does.
+        for (const owner of ownerOf(found)) {
+          reached.owned = true;
+          reached.names.add(owner.name);
+        }
         for (const name of edges.packages.get(found) ?? [])
           if (names.has(name)) reached.names.add(name);
       }

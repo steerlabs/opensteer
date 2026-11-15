@@ -198,6 +198,13 @@ test("selection table: lanes, test files and typecheck scope per change", () => 
     assert.deepEqual(plan.build, [], `${c.name}: PRs build nothing`);
   }
 });
+test("a root test reaching a package by relative import runs when that package is affected", () => {
+  // host-flow imports host's source by path, never by name; a host manifest change still reaches it.
+  const host = decide(["apps/host/package.json"], fixtureGraph, fixtureGraph, {
+    repo: repoWith({}),
+  });
+  assert.ok(host.files.tests.includes("tests/host-flow.test.ts"));
+});
 test("a lockfile change selects the importers whose entries changed", () => {
   const web = decide(["pnpm-lock.yaml"], fixtureGraph, fixtureGraph, {
     repo: repoWith({ "pnpm-lock.yaml": lock("19.1.0") }),
@@ -205,15 +212,46 @@ test("a lockfile change selects the importers whose entries changed", () => {
   assert.deepEqual(web.affected, ["web"]);
   assert.deepEqual(on(web), ["lint", "build-types", "tests", "browser-journeys"]);
   assert.deepEqual(web.files.tests, ["apps/web/src/app.test.ts", guard, "tests/prettier.test.ts"]);
-  // Only shared entries changed: every unit test and typecheck, no integration.
+  // A shared package entry changed: only the importers that install it.
   const shared = lock("19.0.0").replace("react@19.0.0: {}", "react@19.0.0: {resolution: x}");
   const other = decide(["pnpm-lock.yaml"], fixtureGraph, fixtureGraph, {
     repo: repoWith({ "pnpm-lock.yaml": shared }),
   });
-  assert.equal(other.typecheck, "all");
-  assert.deepEqual(other.files.tests, unitAll);
-  assert.deepEqual(other.files.integration, []);
-  assert.deepEqual(lockfileChanges(lock("1"), lock("2")), { importers: ["apps/web"], other: true });
+  assert.deepEqual(other.affected, ["web"]);
+  assert.deepEqual(lockfileChanges(lock("1"), lock("2")).importers, ["apps/web"]);
+  // A transitive update reaches its consumers even when their own entries are unchanged.
+  const graph = (protocol, page) =>
+    [
+      "importers:",
+      "",
+      "  apps/marketing:",
+      "    dependencies:",
+      "      next:",
+      "        specifier: 1.0.0",
+      `        version: ${page}`,
+      "  packages/database:",
+      "    dependencies:",
+      "      pg:",
+      "        specifier: 8.0.0",
+      "        version: 8.0.0",
+      "",
+      "snapshots:",
+      "",
+      `  next@${page}: {}`,
+      "",
+      "  pg@8.0.0:",
+      "    dependencies:",
+      `      pg-protocol: ${protocol}`,
+      "",
+      `  pg-protocol@${protocol}: {}`,
+      "",
+    ].join("\n");
+  assert.deepEqual(lockfileChanges(graph("1.0.0", "1.0.0"), graph("1.0.1", "1.0.1")), {
+    importers: ["apps/marketing", "packages/database"],
+    other: false,
+  });
+  // Settings, catalogs, overrides and patches reach everything.
+  assert.equal(lockfileChanges(lock("1"), `settings:\n  x: 1\n${lock("1")}`).other, true);
   // An unreadable base lockfile cannot narrow anything.
   const missing = decide(["pnpm-lock.yaml"], fixtureGraph, fixtureGraph, {
     repo: repoWith({}, { "pnpm-lock.yaml": undefined }),
@@ -367,9 +405,10 @@ test("real browser journeys run for their owners, their dependencies and their r
     "packages/client/src/index.ts",
   ])
     assert.equal(real([file]).lanes["browser-journeys"], true, file);
-  // The control plane and the Account app reach no browser-journey owner.
-  for (const file of ["apps/control-plane/src/main.ts", "packages/identity/src/index.ts"])
-    assert.equal(real([file]).lanes["browser-journeys"], false, file);
+  // The control plane reaches no browser-journey owner.
+  assert.equal(real(["apps/control-plane/src/main.ts"]).lanes["browser-journeys"], false);
+  // Identity does: root journeys import Host source by path, and the Host depends on identity.
+  assert.equal(real(["packages/identity/src/index.ts"]).lanes["browser-journeys"], true);
 });
 test("git fixture: a main push checks its one commit; anything else runs everything", async () => {
   const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
