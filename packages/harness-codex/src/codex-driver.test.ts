@@ -3308,7 +3308,15 @@ describe("one Codex app-server per account", () => {
       });
       const observer = observe(session.events);
       const running = session.execute(fixture.turn("Delegate the release notes"));
-      await observer.waitFor("node.started");
+      // A spawn announcement can precede the child's interruptible turn.
+      await vi.waitFor(() =>
+        expect(
+          observer.events.some(
+            (event) => event.type === "node.updated" && event.data.stopSupported,
+          ),
+          "Codex child never became interruptible",
+        ).toBe(true),
+      );
       lifetime.abort(new Error("Stop"));
       await running;
       await session.stop();
