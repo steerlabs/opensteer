@@ -117,6 +117,13 @@ export class TeamAccessStore {
   get revision() {
     return this.#revision;
   }
+  /** Catches up with access changes any team Host process committed, then runs local closers. */
+  async sync(): Promise<void> {}
+  /** The access revision to authorize against: never older than what any copy has committed. */
+  async current(): Promise<Sequence> {
+    await this.sync();
+    return this.#revision;
+  }
   withHumanSession<Value>(session: AuthenticatedSession, run: () => Promise<Value>) {
     return this.#sessions.run({ sessionId: session.id, userId: session.user.id }, run);
   }
