@@ -22,6 +22,7 @@ import {
   MessageIdSchema,
   type ThreadAccessMode,
   ThreadAccessModeSchema,
+  type UserId,
 } from "@opensteer/core";
 import { AgentConnectionStore, type OpensteerStore } from "@opensteer/database";
 import {
@@ -231,8 +232,8 @@ async function serveMcp(
         } as unknown as ConstructorParameters<typeof TriggerService>[0]),
       ),
       apps: {
-        list: async (ownerId: import("@opensteer/core").UserId) =>
-          new AppStore(store.database).list(ownerId),
+        list: async (actor: { readonly caller: { readonly userId: UserId } }) =>
+          new AppStore(store.database).list(actor.caller.userId),
       } as never,
       pluginInstall: async () => {
         throw new Error("Unexpected install");
