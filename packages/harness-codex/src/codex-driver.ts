@@ -2365,7 +2365,12 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     )
       return;
     if (method === "turn/started" && turnId) {
+      const alreadyRegistered = active.childTurns.get(childThreadId) === turnId;
       active.childTurns.set(childThreadId, turnId);
+      if (active.interruptRequested && !alreadyRegistered)
+        void this.#requireClient()
+          .request("turn/interrupt", { threadId: childThreadId, turnId })
+          .catch(() => undefined);
       active.nodes.update(childThreadId, { stopSupported: true });
       this.#childThreads.add(childThreadId);
       this.#ownTurn(active, childThreadId, turnId);
@@ -2415,10 +2420,6 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         const turn = requireObject(params.turn, "turn/started params.turn");
         const turnId = requireString(turn.id, "turn/started params.turn.id");
         // A new turn on a child whose last invocation ended is a resumption.
-        active.childTurns.set(childThreadId, turnId);
-        active.nodes.update(childThreadId, { stopSupported: true });
-        this.#childThreads.add(childThreadId);
-        this.#ownTurn(active, childThreadId, turnId);
         ensure(`${childThreadId}:${turnId}`);
         this.#readChildSelection(childThreadId);
         break;
