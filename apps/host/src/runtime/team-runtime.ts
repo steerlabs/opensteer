@@ -11,6 +11,7 @@ import { teamOidcStatePrefix, teamOAuthVersionParameter } from "@opensteer/deplo
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import { createHash, randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { mkdir, open, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
@@ -32,7 +33,6 @@ import {
   TeamAccessStore,
   appendTeamAudit,
   type DatabaseSchema,
-  type DeploymentAuthorityLease,
 } from "@opensteer/database";
 import {
   IdentityService,
@@ -88,9 +88,8 @@ export async function createTeamHostRuntime(input: {
   deployment: Deployment;
   keys: HostKeyPair;
   hostKeyFingerprint: HostKeyFingerprint;
-  authorityLease: DeploymentAuthorityLease;
 }): Promise<TeamHostRuntime> {
-  const { config, options, database, deployment, keys, hostKeyFingerprint, authorityLease } = input;
+  const { config, options, database, deployment, keys, hostKeyFingerprint } = input;
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: 1024 * 1024 });
   const stopping = new AbortController();
   const lifetimes = new TeamLinkLifetimes();
@@ -103,6 +102,8 @@ export async function createTeamHostRuntime(input: {
   let directory: AccountDirectoryPublisher | undefined;
   let admitted: TeamIdentityAdmission | undefined;
   let stopped = false;
+  let ready = false;
+  let draining = false;
   let step: string | undefined;
   const report = (area: string) => app.log.error({ area }, "Team background service failed");
   const envelope = signHostDiscovery(keys, {
@@ -347,8 +348,20 @@ export async function createTeamHostRuntime(input: {
         assertTeamApiVersion(toWebHeaders(request.headers));
     });
     installHostHttpBoundary(app);
+    // While draining, every response retires its connection so a proxy's pooled connections to
+    // this process end, and new sockets are refused so clients reconnect to another copy.
+    app.addHook("onRequest", async (request, reply) => {
+      if (draining && request.headers.upgrade?.toLowerCase() === "websocket")
+        await reply.code(503).header("connection", "close").send({ ok: false });
+    });
+    app.addHook("onSend", async (_request, reply) => {
+      if (draining) reply.header("connection", "close");
+    });
     await app.register(websocket, { options: { maxPayload: 512 * 1024 } });
     app.get("/healthz", () => ({ ok: true }));
+    app.get("/readyz", async (_request, reply) =>
+      ready && !draining ? { ok: true } : reply.code(503).send({ ok: false }),
+    );
     app.get("/.well-known/opensteer", () =>
       HostDescriptorSchema.parse({
         ...apiNegotiation("team"),
@@ -481,28 +494,46 @@ export async function createTeamHostRuntime(input: {
     await app.ready();
     await partners.start();
     await publishDirectory();
+    ready = true;
     let closing: Promise<void> | undefined;
+    const drainDelayMs = options.teamDrainDelayMs ?? 5_000;
+    const drainDeadlineMs = options.teamDrainDeadlineMs ?? 60_000;
     return {
       kind: "team",
       app,
       deployment,
       team,
-      authorityLost: authorityLease.lost,
       listen: () => app.listen({ host: config.bindAddress, port: config.port }),
       closingStep: () => step,
+      drain: async () => {
+        if (draining) return;
+        step = "draining";
+        draining = true;
+        app.server.closeIdleConnections();
+        await delay(drainDelayMs);
+      },
       close: () =>
         (closing ??= (async () => {
+          draining = true;
           stopped = true;
           stopping.abort();
           lifetimes.stop();
           const failures: unknown[] = [];
+          const http = async () => {
+            const deadline = setTimeout(() => app.server.closeAllConnections(), drainDeadlineMs);
+            deadline.unref();
+            try {
+              await app.close();
+            } finally {
+              clearTimeout(deadline);
+            }
+          };
           for (const [name, close] of [
             ["partner transports", () => partners?.close()],
             ["team transports", () => team.close()],
-            ["http", () => app.close()],
+            ["http", http],
             ["Account directory", () => directory?.close()],
             ["Account authority", () => authority?.close()],
-            ["authority lease", () => authorityLease.close()],
             ["database", () => database.destroy()],
           ] as const) {
             step = name;

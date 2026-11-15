@@ -410,13 +410,18 @@ export interface TeamHostRuntime {
   readonly app: FastifyInstance;
   readonly deployment: Deployment;
   readonly team: Awaited<ReturnType<typeof import("../team/services.js").startTeamServices>>;
-  readonly authorityLost: Promise<Error>;
+  /** Turns unready and retires keep-alive connections while load balancers drop this process. */
+  drain(): Promise<void>;
   close(): Promise<void>;
   closingStep(): string | undefined;
   listen(): Promise<string>;
 }
 export interface HostRuntimeOptions {
   readonly teamPartnerNetwork?: import("../team-partners/service.js").TeamPartnerNetwork;
+  /** How long a stopping team Host stays reachable while load balancers drop it; tests shorten it. */
+  readonly teamDrainDelayMs?: number;
+  /** How long a stopping team Host waits for in-flight requests and transfers before cutting them. */
+  readonly teamDrainDeadlineMs?: number;
   readonly onDeploymentEvent?: (event: AgentEvent) => void;
   readonly executionClock?: import("@opensteer/shared/clock").Clock;
   /** Controls notification grace/backoff independently of Account transport. */
@@ -492,7 +497,9 @@ export async function createHostRuntime(
   let taskQuestions: TaskQuestionNotices | undefined;
   let pluginChangeNotices: PluginChangeNotices | undefined;
   try {
-    authorityLease = await acquireDeploymentAuthorityLease(database);
+    // A team database is served by several Host processes at once; a personal one by exactly one.
+    if (!deploymentPolicy(config.deploymentShape).services.team)
+      authorityLease = await acquireDeploymentAuthorityLease(database);
     await migrateToLatest(database).catch((error: unknown) => {
       throw config.mode === "development" ? withDevelopmentDatabaseReset(error) : error;
     });
@@ -504,7 +511,7 @@ export async function createHostRuntime(
       hostInstanceId: hostInstance.hostInstanceId,
       deploymentShape: config.deploymentShape,
     });
-    if (deploymentPolicy(config.deploymentShape).services.team) {
+    if (!authorityLease) {
       return await createTeamHostRuntime({
         config,
         options,
@@ -512,7 +519,6 @@ export async function createHostRuntime(
         deployment,
         keys,
         hostKeyFingerprint,
-        authorityLease,
       });
     }
     const personalConfig = config.personal!;
