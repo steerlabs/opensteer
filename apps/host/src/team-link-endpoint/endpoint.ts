@@ -74,6 +74,13 @@ export class TeamLinkEndpoint {
   >();
   readonly #off: (() => void)[] = [];
   readonly #processId = randomUUID();
+  /** Database work started from events; close waits for it so the pool outlives it. */
+  readonly #work = new Set<Promise<unknown>>();
+  #track(work: Promise<unknown>) {
+    const tracked = work.catch(() => {});
+    this.#work.add(tracked);
+    void tracked.finally(() => this.#work.delete(tracked));
+  }
   constructor(options: TeamLinkEndpointOptions) {
     this.options = options;
     if (options.bus)
@@ -85,7 +92,7 @@ export class TeamLinkEndpoint {
           // Only that link's sockets: deliver what is pending and cancel what they hold that ended.
           if (event.kind === "request")
             for (const socket of this.#sockets.get(event.linkId) ?? [])
-              void socket.refresh().catch(() => {});
+              this.#track(socket.refresh());
         }),
       );
   }
@@ -109,10 +116,11 @@ export class TeamLinkEndpoint {
       else {
         this.#online.delete(link.ownerUserId);
         if (epoch)
-          void links
-            .disconnected(linkId, epoch)
-            .then(() => this.options.onPresence?.(link.ownerUserId, false))
-            .catch(() => {});
+          this.#track(
+            links
+              .disconnected(linkId, epoch)
+              .then(() => this.options.onPresence?.(link.ownerUserId, false)),
+          );
         else this.options.onPresence?.(link.ownerUserId, false);
       }
     };
@@ -264,7 +272,7 @@ export class TeamLinkEndpoint {
       active = false;
       offline();
       unregister();
-      if (epoch) void links.disconnected(linkId, epoch).catch(() => {});
+      if (epoch) this.#track(links.disconnected(linkId, epoch));
       sockets.delete(subscriber);
       if (!sockets.size) this.#sockets.delete(linkId);
     });
@@ -396,6 +404,7 @@ export class TeamLinkEndpoint {
   async close() {
     for (const off of this.#off) off();
     this.closeAll();
+    while (this.#work.size) await Promise.all(this.#work);
     await sql`delete from team_link_connections where process_id=${this.options.processId ?? this.#processId}`.execute(
       this.options.links.database,
     );

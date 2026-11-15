@@ -61,7 +61,7 @@ export class PartnerMailbox {
             .selectFrom("teamPartnerLinks")
             .select("id")
             .where("id", "=", linkId)
-            .forUpdate()
+            .forNoKeyUpdate()
             .executeTakeFirstOrThrow();
           const count = await t
             .selectFrom("teamPartnerCalls")
@@ -138,7 +138,7 @@ export class PartnerMailbox {
         .where("expiresAt", ">", sql<Date>`now()`)
         .orderBy("createdAt")
         .limit(32)
-        .forUpdate()
+        .forNoKeyUpdate()
         .skipLocked()
         .execute();
       if (!rows.length) return [];

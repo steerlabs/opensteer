@@ -461,19 +461,6 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     }
   }
   const parsed = HostEnvironmentSchema.parse(values);
-  if (parsed.OPENSTEER_STRICT_INSTALLATION === "true") {
-    if (
-      parsed.OPENSTEER_DEPLOYMENT_KIND !== "team" ||
-      !environment.OPENSTEER_AUTH_SECRET_FILE ||
-      !parsed.OPENSTEER_HOST_INSTANCE_PATH ||
-      !parsed.OPENSTEER_HOST_PRIVATE_KEY_PATH ||
-      !parsed.OPENSTEER_HOST_PUBLIC_KEY_PATH ||
-      !environment.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST_FILE
-    )
-      throw new Error(
-        "Strict team installation requires mounted auth secret, setup digest, Host instance and key pair files",
-      );
-  }
   if (
     parsed.OPENSTEER_TEAM_FILE_STORE === "gcs" &&
     (!parsed.OPENSTEER_TEAM_FILE_BUCKET ||
@@ -512,6 +499,19 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
   const deploymentShape = DeploymentShapeSchema.parse({
     kind: parsed.OPENSTEER_DEPLOYMENT_KIND ?? "personal",
   });
+  if (parsed.OPENSTEER_STRICT_INSTALLATION === "true") {
+    if (
+      !deploymentPolicy(deploymentShape).services.team ||
+      !environment.OPENSTEER_AUTH_SECRET_FILE ||
+      !parsed.OPENSTEER_HOST_INSTANCE_PATH ||
+      !parsed.OPENSTEER_HOST_PRIVATE_KEY_PATH ||
+      !parsed.OPENSTEER_HOST_PUBLIC_KEY_PATH ||
+      !environment.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST_FILE
+    )
+      throw new Error(
+        "Strict team installation requires mounted auth secret, setup digest, Host instance and key pair files",
+      );
+  }
   const accountBundle = readAccountAdoptionBundle({
     ...parsed,
     ...(parsed.OPENSTEER_ACCOUNT_BUNDLE_FD === undefined &&

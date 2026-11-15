@@ -41,7 +41,8 @@ export async function main(environment: NodeJS.ProcessEnv = process.env): Promis
 
   const stopper = hostStopper(runtime);
   for (const signal of shutdownSignals) process.once(signal, () => stopper.signal(signal));
-  if (runtime.kind === "personal")
+  // Only a Host that fences its database with the lifetime lock can lose it.
+  if ("authorityLost" in runtime)
     void runtime.authorityLost.then((error) => stopper.authorityLost(error));
 }
 

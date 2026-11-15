@@ -543,6 +543,7 @@ describe("standing team link authority", () => {
       );
       socket.emit("close");
     } finally {
+      await copy.close();
       await bus.close();
     }
   });
