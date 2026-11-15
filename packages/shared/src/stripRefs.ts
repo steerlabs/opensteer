@@ -38,39 +38,52 @@ function stripPrivateLinks(markdown: string, neutralize = false): string {
   const source = hideIncompleteLinkTail(markdown);
   const tree = markdownSourceTree(source);
   const definitions = new Map<string, string>();
-  visitMarkdownSource(tree, (node) => {
-    if (node.type === "definition" && !definitions.has(node.identifier))
-      definitions.set(node.identifier, node.url);
-  });
+  visitMarkdownSource(
+    tree,
+    (node) => {
+      if (node.type === "definition" && !definitions.has(node.identifier))
+        definitions.set(node.identifier, node.url);
+    },
+    { inlineHtml: "visit" },
+  );
   const edits: { start: number; end: number; text: string }[] = [];
-  visitMarkdownSource(tree, (node) => {
-    const start = node.position?.start.offset,
-      end = node.position?.end.offset;
-    if (neutralize && node.type === "text" && start !== undefined && end !== undefined) {
-      edits.push({ start, end, text: escapeLinkSyntax(source.slice(start, end)) });
-      return false;
-    }
-    const url =
-      node.type === "link" || node.type === "image" || node.type === "definition"
-        ? node.url
-        : node.type === "linkReference" || node.type === "imageReference"
-          ? definitions.get(node.identifier)
-          : undefined;
-    if (url !== undefined && privateDestination(url) && start !== undefined && end !== undefined) {
-      const written = source.slice(start, end);
-      const label =
-        node.type === "definition"
-          ? ""
-          : written.startsWith("<")
-            ? /^opensteer:/iu.test(url)
-              ? "Opensteer item"
-              : "File"
-            : labelSource(written);
-      edits.push({ start, end, text: neutralize ? escapeLinkSyntax(label) : label });
-      return false;
-    }
-    return true;
-  });
+  visitMarkdownSource(
+    tree,
+    (node) => {
+      const start = node.position?.start.offset,
+        end = node.position?.end.offset;
+      if (neutralize && node.type === "text" && start !== undefined && end !== undefined) {
+        edits.push({ start, end, text: escapeLinkSyntax(source.slice(start, end)) });
+        return false;
+      }
+      const url =
+        node.type === "link" || node.type === "image" || node.type === "definition"
+          ? node.url
+          : node.type === "linkReference" || node.type === "imageReference"
+            ? definitions.get(node.identifier)
+            : undefined;
+      if (
+        url !== undefined &&
+        privateDestination(url) &&
+        start !== undefined &&
+        end !== undefined
+      ) {
+        const written = source.slice(start, end);
+        const label =
+          node.type === "definition"
+            ? ""
+            : written.startsWith("<")
+              ? /^opensteer:/iu.test(url)
+                ? "Opensteer item"
+                : "File"
+              : labelSource(written);
+        edits.push({ start, end, text: neutralize ? escapeLinkSyntax(label) : label });
+        return false;
+      }
+      return true;
+    },
+    { inlineHtml: "visit" },
+  );
   let result = source;
   for (const edit of edits.sort((left, right) => right.start - left.start))
     result = result.slice(0, edit.start) + edit.text + result.slice(edit.end);

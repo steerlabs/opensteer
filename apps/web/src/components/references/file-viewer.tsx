@@ -303,7 +303,9 @@ function TextLines({ input, text }: { readonly input: FileOpenInput; readonly te
     return split;
   }, [text]);
   const widest = useMemo(() => lines.reduce((max, line) => Math.max(max, line.length), 0), [lines]);
-  const first = input.line === undefined ? null : Math.min(input.line, lines.length);
+  // A line past what loaded is never stood in for by another: say so and show the end.
+  const outside = input.line !== undefined && input.line > lines.length;
+  const first = input.line === undefined || outside ? null : input.line;
   const last =
     first === null ? null : Math.min(Math.max(input.endLine ?? first, first), lines.length);
   const scroller = useRef<HTMLDivElement | null>(null);
@@ -317,47 +319,58 @@ function TextLines({ input, text }: { readonly input: FileOpenInput; readonly te
   useLayoutEffect(() => {
     const element = scroller.current;
     if (!element) return;
-    const top =
-      first === null ? 0 : Math.max(0, (first - 1) * fileLineHeight - element.clientHeight / 3);
+    const top = outside
+      ? Math.max(0, lines.length * fileLineHeight - element.clientHeight)
+      : first === null
+        ? 0
+        : Math.max(0, (first - 1) * fileLineHeight - element.clientHeight / 3);
     element.scrollTop = top;
     update(top);
-  }, [lines, first]);
+  }, [lines, first, outside]);
   const digits = String(lines.length).length;
   return (
-    <div
-      aria-label="File contents"
-      className="file-viewer__text"
-      onScroll={(event) => update(event.currentTarget.scrollTop)}
-      ref={scroller}
-      role="region"
-      style={{ "--gutter-digits": digits } as CSSProperties}
-      tabIndex={0}
-    >
+    <>
+      {outside ? (
+        <p className="file-viewer__banner" role="status">
+          <Icon name="alert-circle" />
+          Line {input.line} isn't in what loaded here.
+        </p>
+      ) : null}
       <div
-        className="file-viewer__lines"
-        style={{
-          height: lines.length * fileLineHeight,
-          width: `calc(${widest + digits}ch + 6ch)`,
-        }}
+        aria-label="File contents"
+        className="file-viewer__text"
+        onScroll={(event) => update(event.currentTarget.scrollTop)}
+        ref={scroller}
+        role="region"
+        style={{ "--gutter-digits": digits } as CSSProperties}
+        tabIndex={0}
       >
-        {lines.slice(range.start, range.end).map((line, index) => {
-          const number = range.start + index + 1;
-          const target = first !== null && last !== null && number >= first && number <= last;
-          return (
-            <div
-              aria-current={target && number === first ? "location" : undefined}
-              className={target ? "file-line file-line--target" : "file-line"}
-              data-line={number}
-              key={number}
-              style={{ top: (number - 1) * fileLineHeight }}
-            >
-              <span className="file-line__number">{number}</span>
-              <span className="file-line__text">{line}</span>
-            </div>
-          );
-        })}
+        <div
+          className="file-viewer__lines"
+          style={{
+            height: lines.length * fileLineHeight,
+            width: `calc(${widest + digits}ch + 6ch)`,
+          }}
+        >
+          {lines.slice(range.start, range.end).map((line, index) => {
+            const number = range.start + index + 1;
+            const target = first !== null && last !== null && number >= first && number <= last;
+            return (
+              <div
+                aria-current={target && number === first ? "location" : undefined}
+                className={target ? "file-line file-line--target" : "file-line"}
+                data-line={number}
+                key={number}
+                style={{ top: (number - 1) * fileLineHeight }}
+              >
+                <span className="file-line__number">{number}</span>
+                <span className="file-line__text">{line}</span>
+              </div>
+            );
+          })}
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 

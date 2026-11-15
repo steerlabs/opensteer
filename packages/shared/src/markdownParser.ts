@@ -82,8 +82,15 @@ export function parseMarkdown(
   return tree;
 }
 
-/** Visits authored Markdown outside code and raw HTML, retaining original source positions. */
-export function visitMarkdownSource(tree: Root, visit: (node: Nodes) => boolean | void): void {
+/**
+ * Visits source nodes outside code. Markdown between inline HTML tags is skipped
+ * unless `inlineHtml` is "visit": it still renders, so sanitation must see it.
+ */
+export function visitMarkdownSource(
+  tree: Root,
+  visit: (node: Nodes) => boolean | void,
+  options: { readonly inlineHtml?: "skip" | "visit" } = {},
+): void {
   const voidTags = new Set([
     "area",
     "base",
@@ -113,7 +120,7 @@ export function visitMarkdownSource(tree: Root, visit: (node: Nodes) => boolean 
             if (index !== -1) tags.length = index;
           } else if (!voidTags.has(tag) && !match[0].endsWith("/>")) tags.push(tag);
         }
-      } else if (tags.length === 0) walk(child);
+      } else if (tags.length === 0 || options.inlineHtml === "visit") walk(child);
     }
   };
   walk(tree);

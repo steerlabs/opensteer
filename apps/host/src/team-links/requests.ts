@@ -443,17 +443,16 @@ export class PersonalTeamRequests {
           await this.options.requests.forgetPost(teamId, post.clientMessageId, post.localLinkId);
           continue;
         }
-        const message =
-          "The saved post contains private references and cannot be replayed. Send a new post.";
         if (request)
           await this.options.requests.publication(
             teamId,
             request.requestId,
             "blocked",
             null,
-            message,
+            "The saved post contains private references and cannot be replayed. Send a new post.",
           );
-        throw new OpensteerError({ code: "conflict", message });
+        await this.options.requests.forgetPost(teamId, post.clientMessageId, post.localLinkId);
+        continue;
       }
       try {
         const result = await this.options.rpc(teamId).call({

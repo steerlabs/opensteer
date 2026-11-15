@@ -318,7 +318,8 @@ it("opens a file at its line, and says when a file isn't available", async () =>
     <Markdown
       text={
         "Changed [http.ts:42](/Users/me/Opensteer/src/http.ts:42) and " +
-        "[gone.ts](/Users/me/Opensteer/gone.ts)."
+        "[gone.ts](/Users/me/Opensteer/gone.ts), not " +
+        "[http.ts:9000](/Users/me/Opensteer/src/http.ts:9000)."
       }
     />,
   );
@@ -361,4 +362,23 @@ it("opens a file at its line, and says when a file isn't available", async () =>
     { timeout: 1000 },
   );
   expect(showLauncher).not.toHaveBeenCalled();
+
+  // A line past what loaded is never stood in for by the last line it has.
+  await act(async () =>
+    document
+      .querySelector(".file-viewer")
+      ?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" })),
+  );
+  const far = [...container.querySelectorAll<HTMLElement>(".ref-chip")].find(
+    (node) => node.querySelector(".ref-chip__position")?.textContent === ":9000",
+  )!;
+  await act(async () => far.click());
+  await vi.waitFor(
+    () =>
+      expect(document.querySelector(".file-viewer")?.textContent).toContain(
+        "Line 9000 isn't in what loaded here.",
+      ),
+    { timeout: 1000 },
+  );
+  expect(document.querySelector(".file-viewer .file-line--target")).toBeNull();
 });

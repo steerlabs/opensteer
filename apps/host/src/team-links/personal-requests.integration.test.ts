@@ -396,27 +396,40 @@ describeStore("personal team consent and returns", (it) => {
         attachmentIds: [],
         requestId: claimed ? request.requestId : null,
       });
+      const safeClientMessageId = crypto.randomUUID();
+      await f.store.recordPost({
+        teamDeploymentId: f.origin.teamId,
+        localLinkId: link.id,
+        remoteLinkId: link.remoteLinkId!,
+        clientMessageId: safeClientMessageId,
+        runId: asking.receipt.runId!,
+        messageId: null,
+        channelId: f.origin.channelId,
+        threadRootId: f.origin.threadRootId,
+        mentionedAgentHandles: [],
+        bodyMarkdown: "Still sent after the unsafe post.",
+        attachmentIds: [],
+        requestId: null,
+      });
       const calls: TeamLinkCallInput[] = [];
       const publisher = new PersonalTeamRequests({
         ...f.publisher.options,
         rpc: () => ({
           call: async (input) => {
             calls.push(input);
-            if (input.type === "post") throw new Error("Unsafe provenance must never be sent");
-            return { kind: "receipt", messageId: null };
+            if (input.type === "post" && input.bodyMarkdown === bodyMarkdown)
+              throw new Error("Unsafe provenance must never be sent");
+            return input.type === "post"
+              ? { kind: "receipt", messageId: f.source.messageId }
+              : { kind: "receipt", messageId: null };
           },
         }),
       });
-      await expect(publisher.reconnect(f.origin.teamId)).rejects.toMatchObject({
-        code: "conflict",
-        message: expect.stringContaining("private references"),
-      });
-      expect(await f.store.post(f.origin.teamId, clientMessageId)).toMatchObject({
-        bodyMarkdown,
-        clientMessageId,
-        messageId: null,
-      });
-      expect(calls.map((call) => call.type)).toEqual(claimed ? ["receipt"] : []);
+      await publisher.reconnect(f.origin.teamId);
+      expect(await f.store.post(f.origin.teamId, clientMessageId)).toBeFalsy();
+      expect(
+        calls.filter((call) => call.type === "post").map((call) => call.clientMessageId),
+      ).toEqual([safeClientMessageId]);
       if (claimed)
         expect(await f.store.get(f.origin.teamId, request.requestId)).toMatchObject({
           publicationState: "blocked",

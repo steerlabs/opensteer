@@ -26,6 +26,8 @@ describe("stripRefs", () => {
       "[public][ref]\n\n[ref]: https://team.example/c/abc\n",
     ],
     ["![alt][ref]\n\n[ref]: /tmp/private.png", "alt\n\n"],
+    ["<span>[file](/private/secret.txt)</span>", "<span>file</span>"],
+    ["<b>see [task](" + href + ")</b>", "<b>see task</b>"],
   ])("sanitizes source and stays idempotent: %s", (source, expected) => {
     expect(stripRefs(source)).toBe(expected);
     expect(stripRefs(stripRefs(source))).toBe(expected);

@@ -240,48 +240,57 @@ function TextLines(props: {
       ),
     [lines],
   );
-  const target = props.line === null ? null : Math.min(Math.max(props.line, 1), lines.length);
+  // A line past what loaded is never stood in for by another: say so and show the end.
+  const outside = props.line !== null && props.line > lines.length;
+  const target = props.line === null || outside ? null : Math.max(props.line, 1);
   const end =
     target === null ? null : Math.max(target, Math.min(props.endLine ?? target, lines.length));
   const list = useRef<FlatList<string>>(null);
   const [height, setHeight] = useState(0);
-  const initial =
-    target === null ? 0 : Math.max(0, target - 1 - Math.floor(height / rowHeight / 3));
+  const visibleRows = Math.floor(height / rowHeight);
+  const initial = outside
+    ? Math.max(0, lines.length - visibleRows)
+    : target === null
+      ? 0
+      : Math.max(0, target - 1 - Math.floor(visibleRows / 3));
   return (
-    <ScrollView
-      directionalLockEnabled
-      horizontal
-      onLayout={(event) => setHeight(event.nativeEvent.layout.height)}
-      style={styles.lines}
-    >
-      {height === 0 ? null : (
-        <FlatList
-          data={lines}
-          getItemLayout={(_, index) => ({ index, length: rowHeight, offset: rowHeight * index })}
-          initialNumToRender={Math.ceil(height / rowHeight) + 4}
-          initialScrollIndex={Math.min(initial, Math.max(0, lines.length - 1))}
-          keyExtractor={(_, index) => String(index)}
-          ref={list}
-          renderItem={({ index, item }) => {
-            const number = index + 1;
-            const marked = target !== null && end !== null && number >= target && number <= end;
-            return (
-              <View
-                accessibilityLabel={marked ? `Line ${number}, linked` : undefined}
-                style={[styles.row, { height: rowHeight }, marked && styles.marked]}
-              >
-                <Text style={[styles.number, { width: gutter }]}>{number}</Text>
-                <Text numberOfLines={1} selectable style={styles.code}>
-                  {item.length > widestLine ? `${item.slice(0, widestLine)}…` : item}
-                </Text>
-              </View>
-            );
-          }}
-          style={{ width: gutter + longest * charWidth + space[24] }}
-          windowSize={7}
-        />
-      )}
-    </ScrollView>
+    <>
+      {outside ? <Banner text={`Line ${props.line} isn't in what loaded here.`} /> : null}
+      <ScrollView
+        directionalLockEnabled
+        horizontal
+        onLayout={(event) => setHeight(event.nativeEvent.layout.height)}
+        style={styles.lines}
+      >
+        {height === 0 ? null : (
+          <FlatList
+            data={lines}
+            getItemLayout={(_, index) => ({ index, length: rowHeight, offset: rowHeight * index })}
+            initialNumToRender={Math.ceil(height / rowHeight) + 4}
+            initialScrollIndex={Math.min(initial, Math.max(0, lines.length - 1))}
+            keyExtractor={(_, index) => String(index)}
+            ref={list}
+            renderItem={({ index, item }) => {
+              const number = index + 1;
+              const marked = target !== null && end !== null && number >= target && number <= end;
+              return (
+                <View
+                  accessibilityLabel={marked ? `Line ${number}, linked` : undefined}
+                  style={[styles.row, { height: rowHeight }, marked && styles.marked]}
+                >
+                  <Text style={[styles.number, { width: gutter }]}>{number}</Text>
+                  <Text numberOfLines={1} selectable style={styles.code}>
+                    {item.length > widestLine ? `${item.slice(0, widestLine)}…` : item}
+                  </Text>
+                </View>
+              );
+            }}
+            style={{ width: gutter + longest * charWidth + space[24] }}
+            windowSize={7}
+          />
+        )}
+      </ScrollView>
+    </>
   );
 }
 
