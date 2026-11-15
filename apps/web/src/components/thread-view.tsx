@@ -52,7 +52,7 @@ import {
   type TranscriptEntry,
 } from "@opensteer/client/host";
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
-import { useThreadInputQueue, useWaitingInputs } from "@opensteer/client/react";
+import { useTabsRevision, useThreadInputQueue, useWaitingInputs } from "@opensteer/client/react";
 import { fromLivePage, useMediaQuery, useWindowInForeground } from "../ui-utils.js";
 import { AgentTranscript, ConversationActivity } from "./agent-activity.js";
 import { useShell } from "./app-shell.js";
@@ -306,6 +306,12 @@ function ThreadView({
   }, [composerKey]);
   const inputQueue = useThreadInputQueue(hostClient, thread.id);
   const waiting = useWaitingInputs(hostClient, thread.id);
+  // Links in the transcript open tabs; a tab change gives them a new source to read.
+  const tabRevision = useTabsRevision(hostClient);
+  const tabSource = useMemo(
+    () => ({ tabs: snapshot.tabs, browserProfiles: snapshot.browserProfiles, tabRevision }),
+    [snapshot.tabs, snapshot.browserProfiles, tabRevision],
+  );
   // The composer's own record: words sent as new from an open edit are kept the same way.
   const pendingSends = usePendingSends(
     snapshot.deploymentId && snapshot.user?.id
@@ -1144,7 +1150,7 @@ function ThreadView({
                       key={thread.id}
                       attachmentReader={hostClient}
                       activity={activity}
-                      browserSessions={snapshot.browserSessions}
+                      browserSessions={tabSource}
                       browserUses={snapshot.browserUses}
                       // A conversation (Opensteer, a direct message) reads as messages, each
                       // turn's steps behind its reply; work keeps its whole trace in view.
@@ -1282,7 +1288,7 @@ function ThreadView({
                     ? (activityOwnerAnchor ?? activityView.opener)
                     : (activityAnchor() ?? activityView.opener)
                 }
-                browserSessions={snapshot.browserSessions}
+                browserSessions={tabSource}
                 browserUses={snapshot.browserUses}
                 entries={conversation}
                 id={activityPanelId}

@@ -3,9 +3,8 @@ import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } fro
 import { Link, useLocation } from "react-router";
 import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 import type {
-  BrowserSessionSummary,
   RunPage,
-  SurfaceDestination,
+  TabDestination,
   TurnApp,
   TurnPhone,
 } from "@opensteer/client/host";
@@ -28,7 +27,7 @@ export interface ChipSurface {
   /** A phone's whole screen. */
   readonly phone?: true;
   /** Null once nothing is left to open: an app or phone the agent finished with. */
-  readonly destination: SurfaceDestination | null;
+  readonly destination: TabDestination | null;
   /** The browser closed, or the agent finished with the app or phone. */
   readonly ended: boolean;
   /** Ended because the browser stopped working, not because it was closed. */
@@ -37,16 +36,11 @@ export interface ChipSurface {
 }
 
 /** A Run's page as a chip, told apart by whether its browser closed or stopped working. */
-export function pageChip(page: RunPage, sessions: readonly BrowserSessionSummary[]): ChipSurface {
+export function pageChip(page: RunPage): ChipSurface {
   return {
     acting: page.acting,
     destination: page.destination,
     ended: page.ended,
-    failed:
-      page.ended &&
-      sessions.some(
-        (session) => session.id === page.destination.sessionId && session.state === "failed",
-      ),
     favicon: page.favicon,
     key: page.key,
     site: page.site,
@@ -119,11 +113,7 @@ export function SurfaceChip({
       {surface.app ? (
         <AppMark
           identity={surface.app}
-          machineId={
-            surface.destination?.kind === "app"
-              ? surface.destination.machineId
-              : (surface.key.split(":")[1] ?? null)
-          }
+          machineId={surface.key.startsWith("app:") ? (surface.key.split(":")[1] ?? null) : null}
         />
       ) : surface.phone ? (
         <Icon name="phone" />
@@ -189,7 +179,7 @@ export function SurfaceLink({
 }: {
   readonly children: ReactNode;
   readonly className: string;
-  readonly destination: SurfaceDestination | null;
+  readonly destination: TabDestination | null;
   readonly elementRef?: (node: HTMLElement | null) => void;
   readonly label: string;
   readonly title: string;

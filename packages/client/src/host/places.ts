@@ -9,7 +9,13 @@ export type { PlaceOccupant } from "@opensteer/protocol";
 
 export type PlaceIcon =
   | { readonly kind: "opensteer-app" }
-  | { readonly kind: "site"; readonly ref: string | null; readonly url: string | null }
+  | {
+      readonly kind: "site";
+      readonly ref: string | null;
+      readonly url: string | null;
+      /** The page tab, whose bound session serves its icon; absent for a page named by a message. */
+      readonly tabId?: string;
+    }
   | {
       readonly kind: "app";
       readonly bundleId: string;
@@ -89,7 +95,7 @@ function fallbackTitle(tab: Tab): string {
 function iconOf(tab: Tab): PlaceIcon {
   switch (tab.kind) {
     case "page":
-      return { kind: "site", ref: tab.iconRef ?? null, url: tab.url ?? null };
+      return { kind: "site", ref: tab.iconRef ?? null, url: tab.url ?? null, tabId: tab.tabId };
     case "window":
       return {
         kind: "app",

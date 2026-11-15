@@ -29,11 +29,7 @@ const cursorId = "voice";
  */
 export function voiceRowKey(target: VoiceTarget): string {
   if (target.kind === "thread") return target.threadId;
-  const place = target.destination;
-  if (place.kind === "browser") return `browser:${place.tabId}`;
-  if (place.kind === "phone") return `phone:${place.machineId}`;
-  if (place.kind === "opensteer-app") return `opensteer-app:${place.appId}`;
-  return `app:${place.machineId}:${place.appKey}:${place.computerSessionId}`;
+  return `tab:${target.destination.tabId}`;
 }
 
 /**
@@ -45,11 +41,7 @@ export function voiceRowKey(target: VoiceTarget): string {
 export function voiceCursorAim(target: VoiceTarget): Point | null {
   if (!document.hasFocus()) return null;
   if (globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return null;
-  if (
-    target.kind === "place" &&
-    target.destination.kind === "browser" &&
-    document.documentElement.classList.contains("electron-shell")
-  )
+  if (target.kind === "place" && document.documentElement.classList.contains("electron-shell"))
     return null;
   const key = voiceRowKey(target);
   const row = [...document.querySelectorAll<HTMLElement>("[data-voice-row]")].find(

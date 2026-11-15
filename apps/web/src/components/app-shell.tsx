@@ -294,14 +294,12 @@ export function AppShell({
     key: location.key,
     revision: 0,
     changedAt: 0,
-    pendingBrowserTab: new URLSearchParams(location.search).get("pendingBrowserTab"),
   });
   if (webLinkView.current.key !== location.key)
     webLinkView.current = {
       key: location.key,
       revision: webLinkView.current.revision + 1,
       changedAt: Date.now(),
-      pendingBrowserTab: new URLSearchParams(location.search).get("pendingBrowserTab"),
     };
   const [webLinkFailure, setWebLinkFailure] = useState<{
     message: string;

@@ -4,7 +4,7 @@ import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
 import { TeamInputSource } from "../team/task-source-chip.js";
 import { useToolOutput } from "@opensteer/client/react";
 import { copyText } from "@opensteer/shared/clipboard";
-import { placeIdentityKey, voiceCallSeed } from "@opensteer/core";
+import { voiceCallSeed } from "@opensteer/core";
 import { AppCard } from "./apps/app-card.js";
 import { AppMark } from "./computer-apps/computer-use-section.js";
 import { useTaskSnapshot } from "./task-rows.js";
@@ -27,8 +27,9 @@ import {
   type SetStateAction,
 } from "react";
 import {
-  type BrowserSessionSummary,
+  TabStore,
   type BrowserSessionUseSummary,
+  type HostSnapshot,
   incomingMessageAction,
   activityStepHead,
   conversationActivities,
@@ -186,7 +187,10 @@ const TaskViews = createContext<TaskRenderer | undefined>(undefined);
 /** The reader's Home: a message from it leads to Home itself, not to a Thread page. */
 /** Every browser this reader can see, which a Run's pages are looked up in. */
 const TranscriptBrowserUses = createContext<readonly BrowserSessionUseSummary[]>([]);
-const TranscriptBrowsers = createContext<readonly BrowserSessionSummary[]>([]);
+/** The person's tabs, as links in the transcript open them; a new object on every tab change. */
+export type TranscriptTabSource = Pick<HostSnapshot, "tabs" | "browserProfiles">;
+const noTabs: TranscriptTabSource = { tabs: new TabStore(), browserProfiles: [] };
+const TranscriptBrowsers = createContext<TranscriptTabSource>(noTabs);
 /** Whose transcript this is and the reader's Workspaces, which say who speaks in it. */
 const Speakers = createContext<{
   readonly threadId: string | null;
@@ -253,7 +257,6 @@ function useAgentSource(
 const noWaitingRequests: readonly WaitingRequest[] = [];
 const noAssignments: Readonly<Record<string, AssignmentSummary>> = {};
 const noBrowserUses: readonly BrowserSessionUseSummary[] = [];
-const noBrowsers: readonly BrowserSessionSummary[] = [];
 
 /**
  * The agent's side of the conversation.
@@ -270,7 +273,7 @@ export function AgentTranscript({
   entries,
   waitingRequests = noWaitingRequests,
   assignments = noAssignments,
-  browserSessions = noBrowsers,
+  browserSessions = noTabs,
   browserUses = noBrowserUses,
   activityOwner = null,
   onOpenActivity,
@@ -304,7 +307,7 @@ export function AgentTranscript({
   entries: readonly TranscriptEntry[];
   waitingRequests?: readonly WaitingRequest[];
   assignments?: Readonly<Record<string, AssignmentSummary>>;
-  browserSessions?: readonly BrowserSessionSummary[];
+  browserSessions?: TranscriptTabSource;
   browserUses?: readonly BrowserSessionUseSummary[];
   /**
    * Given, each reply in a conversation that did anything on the way offers
@@ -961,18 +964,17 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
 function ReplySurfaces({ turn, turnKey }: { turn: Turn; turnKey: string }) {
   const uses = useContext(TranscriptBrowserUses);
   const sessions = useContext(TranscriptBrowsers);
-  const computers = useContext(ReaderComputers);
   const whole = useContext(ActivityOfTurn).get(turnKey)?.turn ?? turn;
   const surfaces = useMemo(
     () =>
-      replyPlaces(whole, uses, sessions, computers?.machines ?? []).map((place) =>
+      replyPlaces(whole, uses, sessions).map((place) =>
         place.kind === "page"
-          ? pageChip(place.page, sessions)
+          ? pageChip(place.page)
           : place.kind === "phone"
             ? phoneChip(place.phone)
             : appChip(place.app),
       ),
-    [computers?.machines, uses, sessions, whole],
+    [uses, sessions, whole],
   );
   return <SurfaceChips label="Pages and apps this reply used" surfaces={surfaces} />;
 }
@@ -1285,7 +1287,7 @@ function Typing({ turnKey = null }: { turnKey?: string | null }) {
  */
 export function ConversationActivity({
   anchor,
-  browserSessions = noBrowsers,
+  browserSessions = noTabs,
   browserUses = noBrowserUses,
   entries,
   id,
@@ -1300,7 +1302,7 @@ export function ConversationActivity({
 }: {
   /** What the panel hangs from beside the conversation: the control that holds it, or the header. */
   anchor: HTMLElement;
-  browserSessions?: readonly BrowserSessionSummary[];
+  browserSessions?: TranscriptTabSource;
   browserUses?: readonly BrowserSessionUseSummary[];
   /** The conversation as it is drawn. */
   entries: readonly TranscriptEntry[];
@@ -1597,15 +1599,13 @@ function TracePlace({
   markOnly?: boolean;
 }) {
   const sessions = useContext(TranscriptBrowsers);
-  const { threadId } = useContext(Speakers);
-  const computers = useContext(ReaderComputers);
   const place = useMemo(
-    () => placeReply(entry, sessions, computers?.machines ?? [], threadId),
-    [entry, sessions, computers?.machines, threadId],
+    () => placeReply(entry, sessions),
+    [entry, sessions],
   );
   const page =
     place.kind === "page"
-      ? pageChip(place.page, sessions)
+      ? pageChip(place.page)
       : place.kind === "app"
         ? appChip(place.app)
         : phoneChip(place.phone);
@@ -1763,8 +1763,7 @@ function StepsRow({ row, turn }: { row: Extract<WorkRow, { kind: "steps" }>; tur
         places={row.places.slice(0, 3).map((entry) => (
           <TracePlace
             entry={
-              row.currentPlace &&
-              placeIdentityKey(row.currentPlace.place) === placeIdentityKey(entry.place)
+              row.currentPlace && row.currentPlace.tabId === entry.tabId
                 ? row.currentPlace
                 : entry
             }
@@ -2304,7 +2303,7 @@ function MessagePages({ pages }: { pages: readonly BrowserPageContentPart[] }) {
       {pages.map((part) => (
         <SurfaceChip
           key={`${part.sessionId}:${part.tabId}`}
-          surface={pageChip(messagePages([part], sessions)[0]!, sessions)}
+          surface={pageChip(messagePages([part], sessions)[0]!)}
           withSite
         />
       ))}
