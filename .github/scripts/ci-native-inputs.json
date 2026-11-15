@@ -240,6 +240,7 @@
     "apps/host/src/agent-phone/update-release.ts",
     "apps/host/src/agents/agent-tools-plan.ts",
     "apps/host/src/agents/automatic-models.ts",
+    "apps/host/src/agents/browser-capability.ts",
     "apps/host/src/agents/continuation-service.ts",
     "apps/host/src/agents/delegation-placement.ts",
     "apps/host/src/agents/dispatcher.ts",

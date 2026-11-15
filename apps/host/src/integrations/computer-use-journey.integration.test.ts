@@ -355,8 +355,10 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         ).isError,
       ).toBeUndefined();
       const store = new OpensteerStore(database);
-      const hostEvents = (await store.eventsAfter(SequenceSchema.parse("0"))).filter(
-        (event) => event.type === "tool.started" && event.data.tool.name.startsWith("computer."),
+      const hostEvents = (await store.eventsAfter(SequenceSchema.parse("0"))).flatMap((event) =>
+        event.type === "tool.started" && event.data.tool.name.startsWith("computer.")
+          ? [event]
+          : [],
       );
       expect(hostEvents.map((event) => event.data.tool.name)).toEqual([
         "computer.bind",

@@ -1,5 +1,6 @@
 import { callMcpTool } from "../../host/src/mcp/call-tool.test-support.js";
 import { createId } from "@opensteer/core";
+import { TabCommandResultSchema } from "@opensteer/protocol";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { startPersonalRuntime } from "../../host/src/runtime/personal-startup.test-support.js";
 /**
@@ -446,12 +447,16 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
     // ---- 3. Owner signs a live hosted Browser Session in ----
     const tabIds = new Map<string, string>();
     const startSession = async () => {
-      const opened = await rpc.command({
-        type: "tab.open",
-        target: { kind: "page", url: "about:blank", guest: true },
-      });
+      const opened = TabCommandResultSchema.parse(
+        await rpc.command({
+          type: "tab.open",
+          target: { kind: "page", url: "about:blank", guest: true },
+        }),
+      );
       if (opened.type !== "tab.open") throw new Error("Wrong tab response");
-      const activated = await rpc.command({ type: "tab.activate", tabId: opened.tab.tabId });
+      const activated = TabCommandResultSchema.parse(
+        await rpc.command({ type: "tab.activate", tabId: opened.tab.tabId }),
+      );
       if (activated.type !== "tab.activate" || activated.viewer.kind !== "page")
         throw new Error("Wrong page viewer");
       tabIds.set(activated.viewer.sessionId, opened.tab.tabId);

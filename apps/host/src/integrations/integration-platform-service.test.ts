@@ -4152,7 +4152,10 @@ describe("IntegrationPlatformService computer use gateway", () => {
     const computerUse = liveComputerUse ?? mockedComputerUse;
     const service = platform({
       adapters: [],
-      nativeTabs: { acquired: vi.fn(async () => TabIdSchema.parse("native-fixture")) },
+      nativeTabs: {
+        acquired: vi.fn(async () => TabIdSchema.parse("native-fixture")),
+        captureMembership: vi.fn(async () => 0),
+      },
       computerApps,
       computerUse,
       definitions: [definition],
