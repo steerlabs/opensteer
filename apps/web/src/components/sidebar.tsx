@@ -295,13 +295,19 @@ export function Sidebar({
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const doneActive = !doneView && doneRows.some((row) => row.threadId === openRowThreadId);
   // Opening a Done task brings its shelf into view; the open task moving to
-  // Done later leaves the list where the reader put it.
+  // Done later leaves the list where the reader put it. Each opening decides
+  // once, when its task is first listed.
   const openListed =
     openRowThreadId !== null && (doneActive || directory.rows.has(openRowThreadId));
-  const shelfShownFor = useRef<string | null>(null);
+  const opening = useRef<{ readonly threadId: string | null; placed: boolean }>({
+    threadId: null,
+    placed: false,
+  });
   useEffect(() => {
-    if (!openListed || shelfShownFor.current === openRowThreadId) return;
-    shelfShownFor.current = openRowThreadId;
+    if (opening.current.threadId !== openRowThreadId)
+      opening.current = { threadId: openRowThreadId, placed: false };
+    if (opening.current.placed || !openListed) return;
+    opening.current.placed = true;
     if (doneActive && doneShelf.current) revealInList(doneShelf.current);
   }, [doneActive, openListed, openRowThreadId]);
 

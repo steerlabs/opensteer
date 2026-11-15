@@ -273,6 +273,8 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   readonly shelves: ShelfMemory;
   /** The task in front, marked as the one open. */
   readonly selectedThreadId: string | null;
+  /** The conversation the reader is looking at, which may be drilled in under the selected task. */
+  readonly viewedThreadId: string | null;
   /** The team whose screen is in front. */
   readonly openTeamId: string | null;
   /** The channel or DM in front, marked as the one open. */
@@ -349,16 +351,19 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
     if (hostClient === null || selectedThreadId === null) return selectedThreadId;
     return listedRowThreadId(hostClient.getSnapshot(), selectedThreadId);
   }, [hostClient, selectedThreadId]);
-  const selectedRow = useRef(selectedRowId);
-  selectedRow.current = selectedRowId;
+  const viewed = useRef(props.viewedThreadId);
+  viewed.current = props.viewedThreadId;
   // Done on the task in view moves on to the next one, if it is still in view.
   const moveTask = useCallback(
     (task: TaskRow, done: boolean) => {
       if (hostClient === null) return;
       const { threadId } = task;
-      if (selectedRow.current !== threadId) return setTaskDone(hostClient, threadId, done);
+      const inView = () =>
+        viewed.current !== null &&
+        listedRowThreadId(hostClient.getSnapshot(), viewed.current) === threadId;
+      if (!inView()) return setTaskDone(hostClient, threadId, done);
       setTaskDone(hostClient, threadId, done, (next) => {
-        if (selectedRow.current !== threadId) return;
+        if (!inView()) return;
         if (next === null) actions.onHome();
         else openTask(next);
       });

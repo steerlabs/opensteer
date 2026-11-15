@@ -208,6 +208,11 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
       ? topParams["threadId"]
       : null;
   const openTeamId = typeof topParams?.["teamId"] === "string" ? topParams["teamId"] : null;
+  const focusedParams = isRecord(focused?.params) ? focused.params : null;
+  const viewedThreadId =
+    focused?.name === "Thread" && typeof focusedParams?.["threadId"] === "string"
+      ? focusedParams["threadId"]
+      : null;
   const channelRoute = props.state.routes
     .slice(0, props.state.index + 1)
     .findLast((route) => route.name === "TeamChannel");
@@ -496,6 +501,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                   openChannelId={openChannelId}
                   openTeamId={openTeamId}
                   selectedThreadId={selectedThreadId}
+                  viewedThreadId={viewedThreadId}
                   sides={sides}
                   visible={visible}
                 />
@@ -537,6 +543,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                       openChannelId={openChannelId}
                       openTeamId={openTeamId}
                       selectedThreadId={selectedThreadId}
+                      viewedThreadId={viewedThreadId}
                       sides={sides}
                       visible
                     />
