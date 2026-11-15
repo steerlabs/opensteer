@@ -48,7 +48,7 @@ async function webRows(page: Page) {
               row.querySelector(".side-tab-group__main")?.getAttribute("aria-expanded") === "true",
           },
         ];
-      if (row.dataset.group !== "web") return [];
+      if (!row.matches(".side-tab[data-kind]")) return [];
       return [
         {
           key: row.dataset.motionKey!,
@@ -657,7 +657,7 @@ try {
       const closing = tabs.at(-1)!.key;
       await reveal(moving!.key);
       const target = await box(page, landing!.key);
-      const tabId = closing.split(":").at(-1)!;
+      const tabId = closing;
       const stats = await observe(page, () =>
         drag(page, moving!.key, target.y + target.height / 2, {
           during: () =>
@@ -665,9 +665,9 @@ try {
               (id) =>
                 (
                   Reflect.get(window, "opensteerMock") as {
-                    closePersonalTabs(ids: string[]): Promise<unknown>;
+                    closeTabs(ids: string[]): Promise<unknown>;
                   }
-                ).closePersonalTabs([id]),
+                ).closeTabs([id]),
               tabId,
             ),
         }),
@@ -696,10 +696,10 @@ try {
           (id) =>
             (
               Reflect.get(window, "opensteerMock") as {
-                closePersonalTabs(ids: string[]): Promise<unknown>;
+                closeTabs(ids: string[]): Promise<unknown>;
               }
-            ).closePersonalTabs([id]),
-          after!.key.split(":").at(-1)!,
+            ).closeTabs([id]),
+          after!.key,
         ),
     });
     const now = await keys(page);

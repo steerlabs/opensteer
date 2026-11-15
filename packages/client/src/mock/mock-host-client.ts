@@ -29,6 +29,7 @@ import { MockTabCatalog, seedMockApps } from "./mock-tabs.js";
 import { placeList as tabPlaceList } from "../host/places.js";
 import type { WindowId } from "@opensteer/core";
 import { createTabsClient, type TabsClientPort } from "../host/tabs-client.js";
+import { TabViewers } from "../host/tab-viewers.js";
 import type { TabsClient } from "../host/tabs-contract.js";
 import { TabAgentEventViewSchema } from "@opensteer/core";
 import { TabIdSchema, type App, type TabId, type TabTarget } from "@opensteer/core";
@@ -2193,16 +2194,18 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     },
     "browser.tabIcon.get": async (input) => {
       if (!client.places) return unsupportedMockRpc();
-      const sessionId =
-        "sessionId" in input
-          ? input.sessionId
+      const tabId =
+        "tabId" in input
+          ? input.tabId
           : client
               .getSnapshot()
-              .browserSessions.find((session) =>
-                session.surfaces.some((surface) => surface.id === input.tabId),
+              .browserSessions.find((session) => session.id === input.sessionId)
+              ?.surfaces.find(
+                (surface) => client.tabCatalog.store.get(surface.id)?.iconRef === input.iconRef,
               )?.id;
-      if (!sessionId) return rpcSuccess({ favicon: null });
-      return rpcSuccess({ favicon: await client.places.icon(sessionId, input.iconRef) });
+      if (!tabId) return rpcSuccess({ favicon: null });
+      const row = client.tabCatalog.store.get(tabId);
+      return rpcSuccess({ favicon: await client.places.icon(tabId, input.iconRef, row) });
     },
     "bootstrap.get": async () =>
       rpcSuccess(hostApi["bootstrap.get"].success.parse(client.bootstrap())),
@@ -3818,9 +3821,10 @@ export class MockHostClient implements HostClient {
     setConnected: () => undefined,
   };
   readonly closeComputerView: HostClient["closeComputerView"];
-  readonly #viewers = new Map<string, import("@opensteer/protocol").TabViewer>();
+  readonly #viewers = new TabViewers();
   tabViewer(tabId: string) {
-    return this.getSnapshot().tabs.get(tabId as TabId) ? (this.#viewers.get(tabId) ?? null) : null;
+    const snapshot = this.getSnapshot();
+    return snapshot.tabs.get(tabId as TabId) ? this.#viewers.get(tabId, snapshot.machines) : null;
   }
   readonly openTab: TabsClient["openTab"];
   readonly closeTabs: TabsClient["closeTabs"];
@@ -4283,8 +4287,8 @@ export class MockHostClient implements HostClient {
   };
   readonly subscribeBrowserWatch = (sessionId: string, surfaceId: string, listener: () => void) =>
     this.#places.subscribeWatch(sessionId, surfaceId, listener);
-  readonly readBrowserTabIcon = (sessionId: string, iconRef: string) =>
-    this.#places.icon(sessionId, iconRef);
+  readonly readBrowserTabIcon = (tabId: string, iconRef: string) =>
+    this.#places.icon(tabId, iconRef, this.getSnapshot().tabs.get(tabId as TabId));
   readonly retainBrowserWatch = (sessionId: string, surfaceId: string): (() => void) =>
     this.retainBrowserViewer(sessionId, surfaceId);
   readonly subscribeLifecycle = (
@@ -12553,11 +12557,12 @@ class MockHostState {
    * why its latest Run failed. The same list is kept while nothing in it moved.
    */
   // Every update rebuilds the list; parsing each reply's Markdown again cost ~0.4ms per task.
-  private readonly lineExcerpts = new Map<string, string>();
-  private lineExcerpt(text: string): string {
-    let excerpt = this.lineExcerpts.get(text);
-    if (excerpt === undefined)
-      this.lineExcerpts.set(text, (excerpt = plainTextExcerpt(text, taskLineMaxLength)));
+  private readonly lineExcerpts = new Map<string, string | null>();
+  private lineExcerpt(text: string): string | null {
+    const held = this.lineExcerpts.get(text);
+    if (held !== undefined) return held;
+    const excerpt = plainTextExcerpt(text, taskLineMaxLength);
+    this.lineExcerpts.set(text, excerpt);
     return excerpt;
   }
   private taskList(held: TaskListState | null): TaskListState | null {

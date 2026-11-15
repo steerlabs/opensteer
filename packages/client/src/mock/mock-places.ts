@@ -11,6 +11,7 @@ import {
   RunIdSchema,
   ThreadIdSchema,
   nextMarkColor,
+  type Tab,
 } from "@opensteer/core";
 import type { MachineSummary } from "@opensteer/protocol";
 import {
@@ -1618,12 +1619,11 @@ export class MockPlaceWorld {
       }
     }
   }
-  async icon(sessionId: string, iconRef: string): Promise<string | null> {
-    BrowserTabIconInputSchema.parse({ sessionId, iconRef });
-    const tab = this.#snapshot()
-      .browserSessions.find((session) => session.id === sessionId)
-      ?.catalog?.tabs.find((tab) => tab.iconRef === iconRef);
-    return BrowserTabIconResultSchema.parse({ favicon: tab ? iconData : null }).favicon;
+  /** As the Host serves it: a listed page tab's stored icon, awake or not. */
+  async icon(tabId: string, iconRef: string, row: Tab | undefined): Promise<string | null> {
+    BrowserTabIconInputSchema.parse({ tabId, iconRef });
+    const stored = row?.kind === "page" && row.iconRef === iconRef;
+    return BrowserTabIconResultSchema.parse({ favicon: stored ? iconData : null }).favicon;
   }
   #notify(key: string): void {
     for (const listener of this.#watchListeners.get(key) ?? []) listener();

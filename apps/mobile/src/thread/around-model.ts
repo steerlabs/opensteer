@@ -36,7 +36,7 @@ export interface AroundPlace {
   readonly title: string;
   /** The page's site, or the Mac an app is on; null for anything else. */
   readonly detail: string | null;
-  /** The page's site icon reference, which `useTabIcon` reads once this device has the page bound. */
+  /** The page's stored site icon reference, which `useTabIcon` reads by its tab. */
   readonly iconRef: string | null;
   /** An agent of this conversation acts in it now, as the Host's activity for that tab says. */
   readonly working: boolean;

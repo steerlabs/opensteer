@@ -1310,7 +1310,8 @@ export interface HostClient extends TabsClient {
   ) => () => void;
   browserViewerState(sessionId: string, surfaceId: string): BrowserWatchState;
   subscribeBrowserWatch(sessionId: string, surfaceId: string, listener: () => void): () => void;
-  readBrowserTabIcon(sessionId: string, iconRef: string): Promise<string | null>;
+  /** A page tab's stored site icon, whether or not this device has the page awake. */
+  readBrowserTabIcon(tabId: string, iconRef: string): Promise<string | null>;
   /**
    * The view is done with this Control or Watch picture — drawn, or dropped because it
    * could not be — so the next may come. A late or repeated token is ignored.

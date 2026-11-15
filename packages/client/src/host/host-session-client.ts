@@ -28,7 +28,8 @@ import type { HostCapability as AuthorityHostCapability } from "@opensteer/deplo
 import type { NativeViewerSource } from "./surfaces.js";
 import { TabStore } from "./tab-store.js";
 import { createTabsClient, type TabsClientPort } from "./tabs-client.js";
-import type { App, Tab, TabId } from "@opensteer/core";
+import { TabViewers } from "./tab-viewers.js";
+import { BrowserSurfaceIdSchema, type App, type Tab, type TabId } from "@opensteer/core";
 import { BrowserHistoryClient } from "./browser-history.js";
 import type { BrowserPreferencesStorage } from "./browser-preferences.js";
 import { computerViewMethods } from "./computer-views.js";
@@ -502,9 +503,9 @@ export class HttpHostClient {
   readonly #tabs = new TabStore();
   /** The page session each tab's viewer was bound to by this device's own activation. */
   readonly #pageSessions = new Map<string, string>();
-  readonly #viewers = new Map<string, import("@opensteer/protocol").TabViewer>();
+  readonly #viewers = new TabViewers();
   tabViewer(tabId: string) {
-    return this.#viewers.get(tabId) ?? null;
+    return this.#viewers.get(tabId, this.#snapshot.machines);
   }
   #tabRows: ReadonlyMap<TabId, Tab> | null = null;
   browserViewerSurface(sessionId: string, surfaceId: string) {
@@ -739,8 +740,10 @@ export class HttpHostClient {
       browserSessions: [...this.#snapshot.browserSessions, session],
     });
   }
-  async readBrowserTabIcon(sessionId: string, iconRef: string): Promise<string | null> {
-    return unwrapRpcResult(await this.rpc["browser.tabIcon.get"]({ sessionId, iconRef })).favicon;
+  async readBrowserTabIcon(tabId: string, iconRef: string): Promise<string | null> {
+    return unwrapRpcResult(
+      await this.rpc["browser.tabIcon.get"]({ tabId: BrowserSurfaceIdSchema.parse(tabId), iconRef }),
+    ).favicon;
   }
   /** Holds on Threads observed beside the active one, counted per Thread. */
   readonly #observedThreads = new Map<string, number>();
@@ -5327,8 +5330,7 @@ export class HttpHostClient {
       // A page binding lasts while its tab is listed; a closed tab's session is no longer this device's.
       for (const tabId of this.#pageSessions.keys())
         if (!tabRows.has(tabId as TabId)) this.#pageSessions.delete(tabId);
-      for (const tabId of this.#viewers.keys())
-        if (!tabRows.has(tabId as TabId)) this.#viewers.delete(tabId);
+      this.#viewers.retain(tabRows as ReadonlyMap<string, Tab>);
       const bound = new Set(this.#pageSessions.values());
       if (snapshot.browserSessions.some((session) => !bound.has(session.id)))
         snapshot = {

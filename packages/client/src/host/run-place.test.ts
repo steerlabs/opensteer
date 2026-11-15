@@ -8,7 +8,13 @@ import {
 } from "@opensteer/core";
 import type { MachineSummary } from "@opensteer/protocol";
 import { expect, it, vi } from "vitest";
-import { runPlaceDestination, runPlaceSessionId, RunPlaceStore } from "./run-place.js";
+import { runPlaceActing } from "./run-page.js";
+import {
+  runPlaceDestination,
+  runPlacePictureSession,
+  runPlaceSessionId,
+  RunPlaceStore,
+} from "./run-place.js";
 
 const threadId = createId("thread");
 const runId = createId("run");
@@ -86,4 +92,55 @@ it("a resync removes ended Runs without discarding places newer than its cut", (
   expect(store.get(runId)).toBeNull();
   store.seed([current]);
   expect(store.get(runId)).toBeNull();
+});
+
+// Failure mode: a Run in Notes window B shows as acting in, and pictures under, window A's tab,
+// because both windows belong to the app the Run's session holds.
+it("knows a Run acts in, and pictures, one window of an app by its exact tab", () => {
+  const machineId = RunnerIdSchema.parse(createId("runner"));
+  const tab = (id: string) =>
+    tabFixture({
+      tabId: TabIdSchema.parse(id),
+      kind: "window",
+      appName: "Notes",
+      bundleId: "com.apple.Notes",
+      computer: { computerId: machineId, name: "Mac" },
+    });
+  const notes = { bundleId: "com.apple.Notes", displayName: "Notes" };
+  const snapshot = {
+    tabs: tabStoreFixture([tab("window-a"), tab("window-b")]),
+    machines: [
+      {
+        id: machineId,
+        computerUse: {
+          sessions: [
+            {
+              runId,
+              display: false,
+              sessionId: "cus_notes",
+              apps: [notes],
+              actingAppKeys: ["com.apple.notes"],
+            },
+          ],
+        },
+      } as unknown as MachineSummary,
+    ],
+  };
+  const entryA = TabPlaceEnteredEventViewSchema.parse({
+    ...entered("5"),
+    data: { tabId: "window-a", title: "Notes", site: null },
+  });
+  const inB = [{ runId, threadId }];
+  // The Run acts in B: A's tab has no activity of its own.
+  expect(runPlaceActing(entryA, snapshot, [], threadId)).toBe(false);
+  expect(runPlacePictureSession("window", runPlaceSessionId(entryA, snapshot), runId, [])).toBe(
+    null,
+  );
+  // Back in A, A's own activity names it, and its picture is the session's.
+  expect(runPlaceActing(entryA, snapshot, inB, threadId)).toBe(true);
+  expect(runPlacePictureSession("window", runPlaceSessionId(entryA, snapshot), runId, inB)).toBe(
+    "cus_notes",
+  );
+  // A page's picture is its own tab's, whoever acts.
+  expect(runPlacePictureSession("page", "bsn_page", runId, [])).toBe("bsn_page");
 });
