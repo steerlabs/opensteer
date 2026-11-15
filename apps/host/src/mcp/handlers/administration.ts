@@ -2,6 +2,7 @@ import { deviceAccessStates } from "@opensteer/database";
 import type { z } from "zod";
 import {
   OpensteerError,
+  formatReferenceLink,
   RunnerIdSchema,
   type ExecutionPreferencesViewSchema,
   type EnvironmentId,
@@ -316,6 +317,7 @@ export class AdministrationToolHandlers {
             const environmentId = computers.environmentId(runner.id);
             return {
               computerId: runner.id,
+              link: formatReferenceLink(runner.id, runner.name),
               name: runner.name,
               online: runners.isRunnerConnected(runner.id),
               hosting: environmentId !== undefined,

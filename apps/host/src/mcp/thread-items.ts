@@ -2,6 +2,7 @@ import {
   isPlaceContentPart,
   placeContentLabel,
   requestTitleText,
+  formatReferenceLink,
   type AssignmentSummary,
   type Message,
   type Request,
@@ -40,6 +41,7 @@ export function messageItem(message: Message, maxChars: number, offset = 0): Thr
   const places = message.content.filter(isPlaceContentPart);
   return {
     itemId: message.id,
+    link: formatReferenceLink(message.id, "Message"),
     type: "message",
     status: "published",
     runId: message.runId,
@@ -117,6 +119,7 @@ export function activityItem(
       : facts.maxChars;
   return {
     itemId: event.sequence,
+    ...(facts.request ? { link: formatReferenceLink(facts.request.id, title ?? "Request") } : {}),
     type: event.type,
     status,
     runId: event.runId,
@@ -129,6 +132,7 @@ export function activityItem(
 export function taskItem(summary: AssignmentSummary, result: string | null) {
   return {
     assignmentId: summary.id,
+    link: formatReferenceLink(summary.workerThread.id, summary.workerThread.title),
     threadId: summary.workerThread.id,
     runId: summary.currentRunId,
     runStatus: summary.currentRunStatus,

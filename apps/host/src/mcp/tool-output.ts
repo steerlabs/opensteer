@@ -17,6 +17,7 @@ const fields: Readonly<Record<string, string>> = {
   threadTitle: "taskTitle",
 };
 const opaque = new Set([
+  "link",
   "result",
   "payload",
   "source",
