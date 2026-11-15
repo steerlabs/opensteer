@@ -47,7 +47,7 @@ export function rootedFileSegments(key: string): string[] {
 export function absoluteFileKey(root: string, absolutePath: string) {
   if (
     !path.isAbsolute(absolutePath) ||
-    /[\0-\x1f\x7f]/u.test(absolutePath) ||
+    /\p{Cc}/u.test(absolutePath) ||
     (process.platform !== "win32" && absolutePath.includes("\\")) ||
     isNetworkPath(absolutePath) ||
     absolutePath.split(/[/\\]/u).some((p) => p === "." || p === "..")

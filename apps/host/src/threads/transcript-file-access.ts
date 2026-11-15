@@ -126,7 +126,7 @@ export class TranscriptFileAccess {
     } else if (/^[a-z][a-z\d+.-]*:/iu.test(value) && !/^[a-z]:[/\\]/iu.test(value))
       throw fileUnavailable();
     if (
-      /[\0-\x1f\x7f]/u.test(value) ||
+      /\p{Cc}/u.test(value) ||
       (process.platform !== "win32" && value.includes("\\")) ||
       isNetworkPath(value) ||
       value.split(/[/\\]/u).some((p) => p === "..")
