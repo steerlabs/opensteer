@@ -27,6 +27,7 @@ import { TeamsProvider, type TeamAttachment } from "../../team/team-attachments.
 import {
   MockTeamHost,
   TeamSessionClient,
+  busyTeamIds,
   createMemoryTeamPersistence,
   mockAccountEmail,
   mockAccountSubject,
@@ -50,6 +51,8 @@ let client: MockHostClient;
 let sessionClient: HostClient | null = null;
 let teamHost: MockTeamHost | null = null;
 let teamSession: TeamSessionClient | null = null;
+/** Teams past the first, for a mount with more than one. */
+let moreTeams: { host: MockTeamHost; session: TeamSessionClient }[] = [];
 interface Step {
   readonly type: string;
   readonly path: string;
@@ -92,6 +95,11 @@ function cleanupWorkspace() {
   teamSession = null;
   teamHost?.dispose();
   teamHost = null;
+  for (const team of moreTeams) {
+    team.session.dispose();
+    team.host.dispose();
+  }
+  moreTeams = [];
   client?.dispose();
   history = [];
   goTo = null;
@@ -139,8 +147,8 @@ async function mount(
     latencyMs?: number;
     /** What else the mock Host starts with: plugins, say. */
     mock?: Omit<MockHostClientOptions, "latencyMs" | "now">;
-    /** One live mock team beside the person's own tasks, as a joined desktop has. */
-    team?: boolean;
+    /** One live mock team beside the person's own tasks, as a joined desktop has; a second named here. */
+    team?: boolean | { readonly second: string };
     /** Hosted teams this app can create and join, in memory. */
     world?: MockTeamWorld;
     /** The Host the last mount drew, as a page reload finds it. */
@@ -175,6 +183,13 @@ async function mount(
         client: teamSession,
         link: null,
       },
+      ...moreTeams.map(({ host, session }) => ({
+        teamId: host.teamId,
+        name: host.bootstrap.teamName,
+        origin: "https://chat.second.example",
+        client: session,
+        link: null,
+      })),
     ];
   } else if (options.team) {
     const host = new MockTeamHost();
@@ -196,6 +211,30 @@ async function mount(
         link: null,
       },
     ];
+    if (typeof options.team === "object") {
+      const second = new MockTeamHost({
+        teamId: busyTeamIds[1],
+        teamName: options.team.second,
+      });
+      const secondSession = new TeamSessionClient({
+        scope: { teamDeploymentId: second.teamId, userId: second.userId },
+        persistence: createMemoryTeamPersistence(),
+        rpc: second.rpc,
+        connect: second.connect,
+      });
+      await secondSession.load();
+      moreTeams.push({ host: second, session: secondSession });
+      teams = [
+        ...teams,
+        {
+          teamId: second.teamId,
+          name: second.bootstrap.teamName,
+          origin: "https://chat.second.example",
+          client: secondSession,
+          link: null,
+        },
+      ];
+    }
   }
   const node = document.createElement("div");
   document.body.append(node);

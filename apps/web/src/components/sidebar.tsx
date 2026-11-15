@@ -94,7 +94,9 @@ import type { DeviceElsewhere } from "@opensteer/client/computers";
 import { DeviceLabel } from "./computers/device-label.js";
 import { useHereId } from "./computers/here.js";
 import { useTaskDirectory, type TaskDirectory } from "./workspace/task-directory.js";
+import { useTeams } from "../team/team-attachments.js";
 import type { SegmentBadge } from "./team/team-sidebar.js";
+import type { SidebarSide, SidebarSides } from "@opensteer/client/team";
 import {
   useHighlightMatch,
   useWorkspace,
@@ -276,7 +278,8 @@ export function Sidebar({
   const directory = useTaskDirectory(hostClient, openRowThreadId);
   const { list } = directory;
   const tasksList = useRef<HTMLUListElement | null>(null);
-  const { side, openSide } = nav;
+  const { sides, openSide } = nav;
+  const { side } = sides;
   const doneShelf = useRef<HTMLLIElement | null>(null);
   // Done takes the place of Tasks while it is open.
   const [doneView, setDoneView] = useState(false);
@@ -732,12 +735,7 @@ export function Sidebar({
           </button>
         )}
       </div>
-      <TasksBadgeSwitch
-        hostClient={hostClient}
-        onNavigate={onCloseMobile}
-        onSide={openSide}
-        side={side}
-      />
+      <TasksBadgeSwitch hostClient={hostClient} onSide={openSide} sides={sides} />
 
       <SidebarSearch
         badges={presentations.badges}
@@ -1095,17 +1093,15 @@ const sameBadge = (left: SegmentBadge, right: SegmentBadge) =>
 /** The switch, with the Tasks badge read here so it never redraws the lists. */
 function TasksBadgeSwitch({
   hostClient,
-  onNavigate,
   onSide,
-  side,
+  sides,
 }: {
   readonly hostClient: HostClient;
-  readonly onNavigate: () => void;
-  readonly onSide: (side: string) => void;
-  readonly side: string;
+  readonly onSide: (side: SidebarSide) => void;
+  readonly sides: SidebarSides;
 }) {
   const badge = useHostSelector(hostClient, selectTasksBadge, sameBadge);
-  return <TeamSwitch onNavigate={onNavigate} onSide={onSide} side={side} tasksBadge={badge} />;
+  return <TeamSwitch onSide={onSide} sides={sides} tasksBadge={badge} />;
 }
 
 /**
@@ -1685,6 +1681,7 @@ function SidebarFooter({
 }) {
   const navigate = useNavigate();
   const places = useDesktopPlaces();
+  const inTeams = useTeams().teams.length > 0;
   const [open, setOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const anchorRef = useRef<HTMLButtonElement | null>(null);
@@ -1708,6 +1705,16 @@ function SidebarFooter({
       : []),
     { icon: "bolt", label: "Automations", onSelect: () => go("/automations", true) },
     { icon: "settings", label: "Settings", onSelect: () => go("/settings", false) },
+    // Once in a team, this lives under Settings → Teams instead.
+    ...(inTeams
+      ? []
+      : [
+          {
+            icon: "users" as const,
+            label: "Create or join a team",
+            onSelect: () => go("/teams", false),
+          },
+        ]),
   ];
   return (
     <div className="sidebar__footer">

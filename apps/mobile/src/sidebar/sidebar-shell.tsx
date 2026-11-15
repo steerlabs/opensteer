@@ -75,6 +75,7 @@ import {
   type SidebarActions,
   type SidebarDestination,
 } from "./sidebar-panel.js";
+import { chooseSide, type SidebarSides } from "@opensteer/client/team";
 import { sideOfScreen, type SidebarSide } from "./sidebar-side.js";
 import type { TeamPlace } from "./team-side.js";
 
@@ -219,14 +220,20 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   // to one shown before; in between, only the person moves it. Kept here, so the
   // drawer and the column agree. The panel shows Tasks for a team it no longer lists.
   const frontSide = sideOfScreen(topLevel);
-  const [side, setSide] = useState<SidebarSide>(frontSide ?? "tasks");
+  const [sides, setSides] = useState<SidebarSides>(() =>
+    chooseSide({ side: "tasks", recent: null }, frontSide ?? "tasks"),
+  );
+  const setSide = useCallback(
+    (side: SidebarSide) => setSides((held) => chooseSide(held, side)),
+    [],
+  );
   const frontKey = topLevel?.key ?? null;
   const [sideFront, setSideFront] = useState(frontKey);
   if (sideFront !== frontKey) {
     setSideFront(frontKey);
-    if (frontSide !== null) setSide(frontSide);
+    if (frontSide !== null) setSides((held) => chooseSide(held, frontSide));
   }
-  const chooseSide = useCallback(
+  const switchSide = useCallback(
     (next: SidebarSide) => {
       setSide(next);
       const action = sideMemory.resume(latest.current, next);
@@ -444,7 +451,6 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
         presentedTeamPlaces.has(place.name)
           ? present(StackActions.push(place.name, place.params))
           : go(place),
-      onTeams: () => go({ name: "Teams", params: {} }),
       onTeamSetup: (hostedTeamId) => present(StackActions.push("TeamSetup", { hostedTeamId })),
       onSearch: () => show("TaskSearch"),
       onSettings: () => present(StackActions.push("Settings")),
@@ -482,11 +488,11 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                   docked={false}
                   scroll={scrollMemory}
                   shelves={shelfMemory}
-                  onSide={chooseSide}
+                  onSide={switchSide}
                   openChannelId={openChannelId}
                   openTeamId={openTeamId}
                   selectedThreadId={selectedThreadId}
-                  side={side}
+                  sides={sides}
                   visible={visible}
                 />
               )
@@ -523,11 +529,11 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                       docked
                       scroll={scrollMemory}
                       shelves={shelfMemory}
-                      onSide={chooseSide}
+                      onSide={switchSide}
                       openChannelId={openChannelId}
                       openTeamId={openTeamId}
                       selectedThreadId={selectedThreadId}
-                      side={side}
+                      sides={sides}
                       visible
                     />
                   </Pane>

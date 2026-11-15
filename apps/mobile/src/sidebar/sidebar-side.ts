@@ -1,8 +1,7 @@
-import type { SideId } from "../side-memory.js";
 import { isRecord } from "@opensteer/shared/isRecord";
+import type { SidebarSide } from "@opensteer/client/team";
 
-/** Which side of the sidebar's switch shows: the person's own tasks, or one team by its id. */
-export type SidebarSide = SideId;
+export type { SidebarSide };
 
 /** Top-level screens that belong to the Tasks side. */
 const tasksScreens: ReadonlySet<string> = new Set([

@@ -9,6 +9,7 @@ import {
 import { AppIdSchema } from "@opensteer/core";
 import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import { useTeams } from "../../team/team-attachments.js";
+import type { SidebarSides } from "@opensteer/client/team";
 
 /**
  * The address has two axes and this module is the only thing that writes
@@ -415,6 +416,8 @@ const SideBookmarkSchema = z.object({
 });
 const SideMemorySchema = z.object({
   side: z.string(),
+  /** The team last shown, which keeps its name in the switch while on Tasks. */
+  recent: z.string().nullable().catch(null),
   bookmarks: z.record(z.string(), SideBookmarkSchema),
 });
 type SideMemory = z.infer<typeof SideMemorySchema>;
@@ -440,12 +443,12 @@ function readSideMemory(key: string | null): SideMemory {
             (!bookmark.hash || bookmark.hash.startsWith("#")),
         ),
       );
-      return { side: parsed.data.side, bookmarks };
+      return { side: parsed.data.side, recent: parsed.data.recent, bookmarks };
     }
   } catch {
     /* The window still remembers when storage is unavailable. */
   }
-  return { side: "tasks", bookmarks: {} };
+  return { side: "tasks", recent: null, bookmarks: {} };
 }
 
 function useTeamViewers() {
@@ -482,7 +485,7 @@ function useTeamViewers() {
 }
 
 export interface WorkspaceNavigation {
-  readonly side: string;
+  readonly sides: SidebarSides;
   readonly openSide: (side: string) => void;
   /** Changes on a place choice, including reselecting the current tab. */
   readonly placeOpening: number;
@@ -604,6 +607,7 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
     if (team.removed || (team.viewer && bookmark?.viewer && bookmark.viewer !== team.viewer))
       delete bookmarks.bookmarks[team.id];
     if (team.removed && bookmarks.side === team.id) bookmarks.side = "tasks";
+    if (team.removed && bookmarks.recent === team.id) bookmarks.recent = null;
     const previous = previousViewers.current.find((held) => held.id === team.id);
     if (previous && (team.viewer !== previous.viewer || team.removed !== previous.removed))
       placeEpoch.current += 1;
@@ -622,6 +626,7 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
       const team = viewers.find((viewer) => viewer.id === side);
       if (team?.removed) return;
       bookmarks.side = side;
+      if (side !== "tasks") bookmarks.recent = side;
       if (side !== "tasks" && !team?.viewer) return;
       // An opening still under way finishes only on the address it started from.
       const params = new URLSearchParams(address.search);
@@ -650,6 +655,8 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
   }
   remember(location);
   const side = workspaceSide(location.pathname) ?? bookmarks.side;
+  const recent = bookmarks.recent;
+  const sides = useMemo<SidebarSides>(() => ({ side, recent }), [side, recent]);
   useEffect(() => {
     try {
       if (scopeKey) sessionStorage.setItem(scopeKey, JSON.stringify(bookmarks));
@@ -884,7 +891,7 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
   return useMemo(
     () => ({
       address,
-      side,
+      sides,
       openSide,
       placeOpening,
       beginPlaceOperation,
@@ -907,7 +914,7 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
     }),
     [
       address,
-      side,
+      sides,
       openSide,
       placeOpening,
       beginPlaceOperation,

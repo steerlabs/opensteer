@@ -45,7 +45,7 @@ const harness = vi.hoisted(() => ({
     docked: boolean;
     selectedThreadId: string | null;
     openThreadId: string | null;
-    side: string;
+    sides: { side: string; recent: string | null };
     onSide: (side: string) => void;
     visible: boolean;
     actions: {
@@ -330,10 +330,10 @@ describe("the sidebar's side", () => {
       params: { teamId: "dep_acme", channelId: "general" },
     };
     const { render } = await mount([home, task, page]);
-    expect(lastPanel().side).toBe("tasks");
+    expect(lastPanel().sides.side).toBe("tasks");
     act(() => lastPanel().onSide("dep_acme"));
     expect(harness.dispatch).not.toHaveBeenCalled();
-    expect(lastPanel().side).toBe("dep_acme");
+    expect(lastPanel().sides.side).toBe("dep_acme");
     await render([home, acme]);
     const count = harness.dispatch.mock.calls.length;
     act(() => lastPanel().onSide("dep_acme"));
@@ -344,7 +344,7 @@ describe("the sidebar's side", () => {
       payload: { index: 2, routes: [home, task, page] },
     });
     await render([home, task, page]);
-    expect(lastPanel().side).toBe("tasks");
+    expect(lastPanel().sides.side).toBe("tasks");
   });
 });
 

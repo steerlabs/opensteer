@@ -711,8 +711,8 @@ describe("a channel and back", () => {
       team: true,
     });
     const task = history.at(-1)!;
-    const team = () => element('.side-switch__option:not([data-value="tasks"])');
-    const tasks = () => element('.side-switch__option[data-value="tasks"]');
+    const team = () => element('.side-switch [role="radio"]:not([data-value="tasks"])');
+    const tasks = () => element('.side-switch [role="radio"][data-value="tasks"]');
     const entries = history.length;
     await click(team());
     expect(history.slice(entries).filter((step) => step.type === "PUSH")).toHaveLength(1);
@@ -746,12 +746,12 @@ describe("a channel and back", () => {
     const message = host.post({ channelId: mockTeamChannelId, bodyMarkdown: "Thread bookmark" });
     const thread = `/teams/${mockTeamId}/c/${mockTeamChannelId}/t/${message.id}`;
     await act(async () => goTo!(thread));
-    expect(element('.side-switch__option[aria-checked="true"]').getAttribute("data-value")).toBe(
-      mockTeamId,
-    );
-    await click(element('.side-switch__option[data-value="tasks"]'));
+    expect(
+      element('.side-switch [role="radio"][aria-checked="true"]').getAttribute("data-value"),
+    ).toBe(mockTeamId);
+    await click(element('.side-switch [role="radio"][data-value="tasks"]'));
     expect(history.at(-1)).toEqual({ ...task, type: "PUSH" });
-    await click(element(`.side-switch__option[data-value="${mockTeamId}"]`));
+    await click(element(`.side-switch [role="radio"][data-value="${mockTeamId}"]`));
     expect(history.at(-1)).toMatchObject({ path: thread, search: "", type: "PUSH" });
   });
 
@@ -764,8 +764,8 @@ describe("a channel and back", () => {
       },
       { team: true },
     );
-    await click(element(`.side-switch__option[data-value="${mockTeamId}"]`));
-    await click(element('.side-switch__option[data-value="tasks"]'));
+    await click(element(`.side-switch [role="radio"][data-value="${mockTeamId}"]`));
+    await click(element('.side-switch [role="radio"][data-value="tasks"]'));
     expect(history.at(-1)).toMatchObject({ path: task, search: "?panel=browser", type: "PUSH" });
   });
 
@@ -778,9 +778,9 @@ describe("a channel and back", () => {
     await act(async () => goTo!(knowledge));
     await act(async () => goTo!("/settings/general"));
     await click(element(".settings-navigation__back"));
-    await click(element('.side-switch__option[data-value="tasks"]'));
+    await click(element('.side-switch [role="radio"][data-value="tasks"]'));
     expect(history.at(-1)).toEqual({ ...task, type: "PUSH" });
-    await click(element(`.side-switch__option[data-value="${mockTeamId}"]`));
+    await click(element(`.side-switch [role="radio"][data-value="${mockTeamId}"]`));
     expect(history.at(-1)).toMatchObject({
       path: `/teams/${mockTeamId}/knowledge`,
       search: "?q=bookmark",
@@ -788,10 +788,10 @@ describe("a channel and back", () => {
       type: "PUSH",
     });
     await act(async () => goTo!("/teams"));
-    expect(element('.side-switch__option[aria-checked="true"]').getAttribute("data-value")).toBe(
-      mockTeamId,
-    );
-    await click(element(`.side-switch__option[data-value="${mockTeamId}"]`));
+    expect(
+      element('.side-switch [role="radio"][aria-checked="true"]').getAttribute("data-value"),
+    ).toBe(mockTeamId);
+    await click(element(`.side-switch [role="radio"][data-value="${mockTeamId}"]`));
     expect(history.at(-1)).toMatchObject({
       path: `/teams/${mockTeamId}/knowledge`,
       search: "?q=bookmark",
@@ -811,9 +811,9 @@ describe("a channel and back", () => {
     const incoming = `/teams/${mockTeamId}/c/${mockTeamChannelId}`;
     await mount(incoming, { sameHost: true, team: true });
     expect(history).toEqual([{ path: incoming, search: "", type: "POP" }]);
-    await click(element('.side-switch__option[data-value="tasks"]'));
+    await click(element('.side-switch [role="radio"][data-value="tasks"]'));
     expect(history.at(-1)).toEqual({ ...task, type: "PUSH" });
-    await click(element(`.side-switch__option[data-value="${mockTeamId}"]`));
+    await click(element(`.side-switch [role="radio"][data-value="${mockTeamId}"]`));
     expect(history.at(-1)).toEqual({ path: incoming, search: "", type: "PUSH" });
   });
 
@@ -836,12 +836,12 @@ describe("a channel and back", () => {
       },
       { team: true },
     );
-    await click(element(`.side-switch__option[data-value="${mockTeamId}"]`));
-    await click(element('.side-switch__option[data-value="tasks"]'));
+    await click(element(`.side-switch [role="radio"][data-value="${mockTeamId}"]`));
+    await click(element('.side-switch [role="radio"][data-value="tasks"]'));
     expect(historyState).toEqual({ startFrom: from });
     const entries = history.length;
     const selectedKey = historyKey;
-    await click(element('.side-switch__option[data-value="tasks"]'));
+    await click(element('.side-switch [role="radio"][data-value="tasks"]'));
     expect(history.length).toBe(entries);
     expect(historyKey).toBe(selectedKey);
     await act(async () =>
@@ -951,20 +951,20 @@ describe("a channel and back", () => {
     "clears a confirmed %s team's bookmark, preserving it while offline",
     async (ended) => {
       await mount(`/teams/${mockTeamId}/knowledge?q=keep`, { team: true });
-      await click(element('.side-switch__option[data-value="tasks"]'));
+      await click(element('.side-switch [role="radio"][data-value="tasks"]'));
       await act(async () => teamSession!.disconnect());
-      await click(element(`.side-switch__option[data-value="${mockTeamId}"]`));
+      await click(element(`.side-switch [role="radio"][data-value="${mockTeamId}"]`));
       expect(history.at(-1)).toMatchObject({
         path: `/teams/${mockTeamId}/knowledge`,
         search: "?q=keep",
       });
-      await click(element('.side-switch__option[data-value="tasks"]'));
+      await click(element('.side-switch [role="radio"][data-value="tasks"]'));
       await act(async () => teamSession!.remove(ended));
       const key = Object.keys(sessionStorage).find((key) =>
         key.startsWith("opensteer.workspace.sides.v1:"),
       )!;
       expect(JSON.parse(sessionStorage.getItem(key)!).bookmarks[mockTeamId]).toBeUndefined();
-      await click(element(`.side-switch__option[data-value="${mockTeamId}"]`));
+      await click(element(`.side-switch [role="radio"][data-value="${mockTeamId}"]`));
       expect(history.at(-1)!.path).toBe(`/teams/${mockTeamId}/`);
       expect(history.at(-1)!.search).toBe("");
     },
@@ -1007,7 +1007,7 @@ describe("a channel and back", () => {
       );
       await click(
         element(
-          `.side-switch__option[data-value="${changed === "team-viewer" ? mockTeamId : "tasks"}"]`,
+          `.side-switch [role="radio"][data-value="${changed === "team-viewer" ? mockTeamId : "tasks"}"]`,
         ),
       );
       expect(history.at(-1)!.search).not.toContain("browserTab");
@@ -1030,8 +1030,8 @@ describe("a channel and back", () => {
       team: true,
     });
     const task = history.at(-1)!;
-    await click(element(`.side-switch__option[data-value="${mockTeamId}"]`));
-    await click(element('.side-switch__option[data-value="tasks"]'));
+    await click(element(`.side-switch [role="radio"][data-value="${mockTeamId}"]`));
+    await click(element('.side-switch [role="radio"][data-value="tasks"]'));
     expect(history.at(-1)).toEqual({ ...task, type: "PUSH" });
   });
 
@@ -1056,9 +1056,29 @@ describe("a channel and back", () => {
     expect(element(".place").getAttribute("data-place-key")).toBe(pageTab().key);
   });
 
+  it("keeps the team last shown named while on Tasks, across a reload", async () => {
+    await mount("/", { team: { second: "Beacon" } });
+    const named = () =>
+      document.querySelector('.side-switch [role="radio"].is-recent')?.getAttribute("aria-label");
+    const choose = (label: string) =>
+      click(element(`.side-switch [role="radio"][aria-label^="${label}"]`));
+    expect(named()).toMatch(/^Acme/u);
+    await choose("Beacon");
+    await click(element('.side-switch [data-value="tasks"]'));
+    expect(element('.side-switch [aria-checked="true"]').getAttribute("data-value")).toBe("tasks");
+    expect(named()).toMatch(/^Beacon/u);
+
+    act(() => root?.unmount());
+    setRoot(null);
+    document.body.replaceChildren();
+    await mount("/", { team: { second: "Beacon" }, sameHost: true });
+    expect(element('.side-switch [aria-checked="true"]').getAttribute("data-value")).toBe("tasks");
+    expect(named()).toMatch(/^Beacon/u);
+  });
+
   it("a tab opened from a channel docks the channel beside its page, and Back fills the window again", async () => {
     await mount("/", { team: true });
-    await click(element('.side-switch__option:not([data-value="tasks"])'));
+    await click(element('.side-switch [role="radio"]:not([data-value="tasks"])'));
     await click(element(".team-row[data-channel-id] .team-row__main"));
     const channel = history.at(-1)!;
     expect(document.querySelector(".place")).toBeNull();

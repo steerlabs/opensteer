@@ -1,13 +1,11 @@
 import type { TeamSessionSnapshot } from "@opensteer/client/team";
-import { DeploymentIdSchema } from "@opensteer/core";
 import { useCallback, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { ActivityIndicator, Alert, Pressable, StyleSheet, View } from "react-native";
 import type { MobileTeam } from "../team/mobile-teams.js";
-import { useMobileTeams, useTeamEntry } from "../team/team-context.js";
+import { useMobileTeams } from "../team/team-context.js";
 import { TeamPageList } from "../team/team-page-list.js";
 import { drawerSection } from "../team/team-views.js";
 import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
-import type { NativeMenuSection } from "../thread/composer-menu.js";
 import { AppText } from "../ui/primitives.js";
 
 /** A team place the sidebar opens. The shell decides whether it is top-level or presented. */
@@ -41,6 +39,7 @@ export function TeamSide(props: {
   const teamId = team.teamId;
   const sidebar = useSessionValue(team, readSidebar);
   const canCreateChannel = useSessionValue(team, readCanCreateChannel);
+  const canInvite = useSessionValue(team, readCanInvite);
   const section = useMemo(
     () => (sidebar === null ? null : drawerSection({ teamId, name: team.name, sidebar })),
     [sidebar, team.name, teamId],
@@ -72,6 +71,7 @@ export function TeamSide(props: {
         <TeamPageList
           canCreateChannel={canCreateChannel}
           onBrowseChannels={go("TeamChannels")}
+          onInvite={canInvite ? go("TeamInvites") : undefined}
           onKnowledge={go("TeamKnowledge")}
           onLoadMore={loadMore}
           onNewChannel={go("TeamNewChannel")}
@@ -184,76 +184,6 @@ function noticeFor(team: MobileTeam): {
         action: "remove",
       };
   }
-}
-
-/**
- * The chosen team's menu, hung off its segment in the switch: inviting and its
- * settings, making or joining another team, and leaving this one.
- */
-export function useTeamMenu(
-  team: MobileTeam | null,
-  actions: {
-    readonly onOpen: (place: TeamPlace) => void;
-    readonly onTeams: () => void;
-  },
-): readonly NativeMenuSection[] {
-  const { coordinator } = useTeamEntry();
-  const canInvite = useSessionValue(team, readCanInvite);
-  const { onOpen, onTeams } = actions;
-  return useMemo((): readonly NativeMenuSection[] => {
-    if (team === null) return [];
-    const { teamId, name } = team;
-    const leave = (): void =>
-      Alert.alert(
-        `Leave ${name}?`,
-        `You'll lose access to its channels. Tasks your agent did for ${name} stay on your computer.`,
-        [
-          { style: "cancel", text: "Cancel" },
-          {
-            style: "destructive",
-            text: "Leave",
-            onPress: () =>
-              void coordinator
-                .leaveTeam(DeploymentIdSchema.parse(teamId))
-                .catch((error: unknown) =>
-                  Alert.alert(
-                    "You're still in the team",
-                    error instanceof Error ? error.message : undefined,
-                  ),
-                ),
-          },
-        ],
-      );
-    return [
-      [
-        ...(canInvite
-          ? [
-              {
-                icon: "link" as const,
-                id: "invite",
-                label: "Invite people",
-                onPress: () => onOpen({ name: "TeamInvites", params: { teamId } }),
-              },
-            ]
-          : []),
-        {
-          icon: "gearshape",
-          id: "settings",
-          label: "Team settings",
-          onPress: () => onOpen({ name: "TeamSettings", params: { teamId } }),
-        },
-      ],
-      [
-        {
-          icon: "plus.square.on.square",
-          id: "teams",
-          label: "Create or join a team",
-          onPress: onTeams,
-        },
-      ],
-      [{ destructive: true, id: "leave", label: `Leave ${name}`, onPress: leave }],
-    ];
-  }, [canInvite, coordinator, onOpen, onTeams, team]);
 }
 
 const readSidebar = (snapshot: TeamSessionSnapshot | null) => snapshot?.sidebar ?? null;
