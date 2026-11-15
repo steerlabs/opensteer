@@ -15,16 +15,33 @@ export const composerEditorFake = {
   /** Text native holds but has not reported yet; only a flush delivers it. */
   ahead: null as string | null,
   composing: false,
+  /**
+   * Native has input React has not heard yet, so it refuses a plain change of the
+   * value and keeps its text until a reset with a newer generation, as the native view does.
+   */
+  runningAhead: false,
 };
 
 export function dismissKeyboard(): void {}
 
 export function ComposerEditor(props: ComposerEditorProps): ReactNode {
   const [preview, setPreview] = useState<string | null>(null);
-  const shown = preview ?? props.value;
-  const latest = useRef({ text: shown, selection: { start: shown.length, end: shown.length } });
+  const generation = useRef(0);
+  const kept = useRef<string | null>(null);
+  const latest = useRef({
+    text: props.value,
+    selection: { start: props.value.length, end: props.value.length },
+  });
+  if (
+    composerEditorFake.runningAhead &&
+    kept.current === null &&
+    props.value !== latest.current.text
+  )
+    kept.current = latest.current.text;
+  const shown = preview ?? kept.current ?? props.value;
   latest.current.text = shown;
   const change = (text: string): void => {
+    kept.current = null;
     latest.current = { text, selection: { start: text.length, end: text.length } };
     setPreview(null);
     props.onChangeText(text);
@@ -41,7 +58,7 @@ export function ComposerEditor(props: ComposerEditorProps): ReactNode {
     containsFocus: () => false,
     readSnapshot: () => ({
       ...latest.current,
-      generation: 0,
+      generation: generation.current,
       composing: composerEditorFake.composing,
     }),
     replace: (range, insert) => {
@@ -55,6 +72,11 @@ export function ComposerEditor(props: ComposerEditorProps): ReactNode {
       setPreview(snapshot.text);
     },
     restore: (snapshot) => {
+      if (snapshot.generation > generation.current) {
+        generation.current = snapshot.generation;
+        kept.current = null;
+        composerEditorFake.runningAhead = false;
+      }
       record(snapshot.text, snapshot.selection);
       setPreview(null);
     },
@@ -62,7 +84,11 @@ export function ComposerEditor(props: ComposerEditorProps): ReactNode {
       const ahead = composerEditorFake.ahead;
       composerEditorFake.ahead = null;
       if (ahead !== null) change(ahead);
-      return { ...latest.current, generation: 0, composing: composerEditorFake.composing };
+      return {
+        ...latest.current,
+        generation: generation.current,
+        composing: composerEditorFake.composing,
+      };
     },
   }));
   return (
