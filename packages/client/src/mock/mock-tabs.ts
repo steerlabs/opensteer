@@ -470,6 +470,9 @@ export class MockTabCatalog {
     } else if (!machine || machine.status !== "online")
       state = unavailable("computer-offline", "Computer offline");
     else if (native.closedWindow) state = unavailable("window-closed", "Window closed");
+    // A computer whose views wait on its owner, as the Host reports it, shows no window or phone.
+    else if (machine.computerUse && machine.computerUse.state !== "ready")
+      state = unavailable("access-denied", "Needs permission on this computer");
     else {
       const viewing = machine.computerUse?.ownerViews?.some(
         (view) =>
@@ -502,7 +505,8 @@ export class MockTabCatalog {
     return TabSchema.parse({
       tabId: native.tabId,
       kind: native.kind,
-      title: native.title,
+      // A phone's tab is named for the phone, as the Host names it now.
+      title: native.kind === "phone" ? computer.name : native.title,
       computer,
       groupId: null,
       ...state,

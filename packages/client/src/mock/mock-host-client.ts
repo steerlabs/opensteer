@@ -6567,18 +6567,7 @@ class MockHostState {
           app: { bundleId: "com.apple.Keynote", displayName: "Keynote", teamId: null },
         },
       });
-    // The seeded Keynote window tab opens on the hosting Mac, so Keynote is approved there too.
-    if (template?.computer)
-      this.integrations.connections.push({
-        ...template,
-        id: createIntegrationId("connection"),
-        displayName: "Keynote on Mac mini",
-        computer: {
-          ...template.computer,
-          runnerId: mockMessagesRunnerId,
-          app: { bundleId: "com.apple.Keynote", displayName: "Keynote", teamId: null },
-        },
-      });
+
     // The busy world's Mac mini has more approved apps than its row shows at once.
     if (world !== "seeded" && template?.computer)
       for (const [bundleId, displayName] of [
@@ -6614,12 +6603,13 @@ class MockHostState {
       this.tabCatalog.addNative({ tabId, createdAt: at, openedBy: "person", ...tab });
       return tabId;
     };
-    const keynote = native("01", {
+    // A window of an app this Mac approved, so the person can open it.
+    const notes = native("01", {
       kind: "window",
       computerId: home.id,
       title: "Launch plan",
-      appName: "Keynote",
-      bundleId: "com.apple.Keynote",
+      appName: "Notes",
+      bundleId: "com.apple.Notes",
     });
     const phone = this.snapshot.machines.some((machine) => machine.id === mockAgentPhoneRunnerId)
       ? native("02", { kind: "phone", computerId: mockAgentPhoneRunnerId, title: "Pixel 7" })
@@ -6649,7 +6639,7 @@ class MockHostState {
     this.tabCatalog.group(
       world === "seeded" ? "Launch prep" : "Lisbon trip",
       "cyan",
-      [firstPage?.key, keynote, phone, ferry].filter((id): id is TabId => !!id),
+      [firstPage?.key, notes, phone, ferry].filter((id): id is TabId => !!id),
     );
     this.emit();
   }

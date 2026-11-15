@@ -28,6 +28,7 @@ import {
   HostedBrowserSessionSchema,
   TabPlaceActivitySchema,
   PlaceIdentitySchema,
+  computerAppIdentityKey,
   PersonalTabActivateResultSchema,
   browserHistoryMaxEntries,
   browserHistoryRetentionMs,
@@ -897,7 +898,11 @@ export class MockPlaceWorld {
       state: "live",
       title: tab.title,
       url: tab.url,
-      documentId: tab.documentId ?? `document-${tab.id}`,
+      // The document the page's context reads name, so a chip and its read agree.
+      documentId:
+        tab.documentId ??
+        session.catalog?.tabs.find((held) => held.id === surfaceId)?.documentId ??
+        `document-${tab.id}`,
       geometryRevision: 1,
       loading: tab.loading ?? false,
       navigationFailed: false,
@@ -1791,6 +1796,28 @@ export class MockPlaceWorld {
         }
       }
     }
+    // A task working on a phone or a Mac app has entered that place, as the Host records it.
+    for (const machine of current.machines)
+      for (const held of machine.computerUse?.sessions ?? []) {
+        const runId = liveRuns.get(held.threadId);
+        const app = held.apps.find((candidate) =>
+          held.actingAppKeys.includes(computerAppIdentityKey(candidate)),
+        );
+        // Only work acting there now has entered it.
+        if (!runId || (held.display ? !held.actingDisplay : !app)) continue;
+        const reference = `${held.threadId}:${runId}:${machine.id}:${held.display ? "phone" : "app"}`;
+        if (this.#nativeReferences.has(reference)) continue;
+        this.#nativeReferences.add(reference);
+        this.#entered(runId, held.threadId, {
+          place: PlaceIdentitySchema.parse(
+            held.display || !app
+              ? { kind: "phone", machineId: machine.id, display: "main" }
+              : { kind: "app", machineId: machine.id, appKey: computerAppIdentityKey(app) },
+          ),
+          title: held.display || !app ? machine.name : app.displayName,
+          site: null,
+        });
+      }
     this.#frames();
   }
   dispose(): void {

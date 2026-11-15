@@ -1599,20 +1599,16 @@ function TracePlace({
   markOnly?: boolean;
 }) {
   const sessions = useContext(TranscriptBrowsers);
-  const place = useMemo(
-    () => placeReply(entry, sessions),
-    [entry, sessions],
-  );
+  const place = useMemo(() => placeReply(entry, sessions), [entry, sessions]);
   const page =
     place.kind === "page"
       ? pageChip(place.page)
       : place.kind === "app"
         ? appChip(place.app)
         : phoneChip(place.phone);
-  // An agent is in one tab at a time, so only the turn's latest stop can be live.
+  // An agent is in one tab at a time: the live turn's latest stop, while its tab is listed.
   const acting =
     turnState(turn) !== "settled" &&
-    page.acting &&
     !page.ended &&
     turn.work.findLast((work) => work.kind === "place") === entry;
   if (markOnly)
@@ -1763,9 +1759,7 @@ function StepsRow({ row, turn }: { row: Extract<WorkRow, { kind: "steps" }>; tur
         places={row.places.slice(0, 3).map((entry) => (
           <TracePlace
             entry={
-              row.currentPlace && row.currentPlace.tabId === entry.tabId
-                ? row.currentPlace
-                : entry
+              row.currentPlace && row.currentPlace.tabId === entry.tabId ? row.currentPlace : entry
             }
             turn={turn}
             markOnly

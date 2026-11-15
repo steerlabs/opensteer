@@ -125,7 +125,12 @@ describe("start page projection", () => {
       // A task holding the app gives no task view to switch to: the row opens the person's own
       // window tab in an independent row.
       const notes = startPageModel({ snapshot, approvedApps: approved, query: "notes" }).results;
-      expect(notes[1]).toMatchObject({ kind: "app", action: { kind: "open-tab" } });
+      expect(notes).toContainEqual(
+        expect.objectContaining({
+          kind: "app",
+          action: expect.objectContaining({ kind: "open-tab" }),
+        }),
+      );
       expect(notes.filter((row) => row.title === "Notes")).toHaveLength(1);
       expect(model.groups[0]?.machineId).toBe(approved[0]!.machineId);
       expect(
@@ -217,12 +222,9 @@ describe("start page projection", () => {
       expect(keynote.map((row) => [row.kind, row.title, row.label, row.available])).toEqual([
         ["search", "keynote", "Search the web · Guest", true],
         ["recent", "keynote.example", "Go to site · Guest", true],
-        // Mac mini's Keynote window tab switches, its Keynote opens another; Studio Mac's is away.
-        ["tab", "Launch plan", "Switch to tab", true],
-        ["app", "Keynote", "Open Keynote · Mac mini", true],
         ["app", "Keynote", "Offline", false],
       ]);
-      expect(keynote[4]).toMatchObject({
+      expect(keynote[2]).toMatchObject({
         notReady: "offline",
         action: { kind: "open-tab", target: { computerId: studio.id } },
       });

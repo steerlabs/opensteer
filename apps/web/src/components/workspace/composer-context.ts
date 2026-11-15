@@ -6,7 +6,13 @@ import {
   type HostSnapshot,
   type PlaceItem,
 } from "@opensteer/client/host";
-import { useHostSelector, usePlaceList, useTab } from "@opensteer/client/react";
+import {
+  useBrowserViewerSurface,
+  useHostSelector,
+  usePlaceList,
+  useTab,
+  useTabsRevision,
+} from "@opensteer/client/react";
 import {
   PlaceContentPartSchema,
   RunnerIdSchema,
@@ -140,10 +146,13 @@ export function useComposerContext({
   const selection = workspace?.selection;
   const shownKey = selection?.kind === "place" ? destinationPlaceKey(selection.destination) : null;
   const shown = shownKey ? (places.find((place) => place.key === shownKey) ?? null) : null;
-  const target = useHostSelector(hostClient, () => (shown ? pageTarget(hostClient, shown) : null), samePageTarget);
-  const documentId = target
-    ? (hostClient.browserViewerSurface(target.sessionId, target.tabId)?.documentId ?? null)
-    : null;
+  const target = useHostSelector(
+    hostClient,
+    () => (shown ? pageTarget(hostClient, shown) : null),
+    samePageTarget,
+  );
+  const documentId =
+    useBrowserViewerSurface(hostClient, target?.sessionId, target?.tabId)?.documentId ?? null;
   const candidateKey =
     frozen === null && shown?.availability === "ready"
       ? shown.kind !== "page"
@@ -235,6 +244,8 @@ export function useComposerContext({
     [places],
   );
   const placeState = useHostSelector(hostClient, selectSnapshot, samePlaceEndSource);
+  // The tab list is one live store: its revision says when a tab came or went.
+  const tabsRevision = useTabsRevision(hostClient);
   const chips = useMemo(() => {
     const base = frozen ?? (followed && candidateKey === followed.key ? [followed.chip] : []);
     return standing(base, placeState).map((chip) => {
@@ -298,7 +309,7 @@ export function useComposerContext({
     if (!held) return;
     const kept = standing(held, placeState);
     if (kept.length < held.length) hold(kept);
-  }, [frozen, hold, placeState]);
+  }, [frozen, hold, placeState, tabsRevision]);
   /**
    * An explicit pick freezes the draft at once and stands as a chip while its
    * exact reference is read; the answer replaces that chip only if it is still
@@ -421,6 +432,14 @@ function pageTarget(
   const viewer = hostClient.tabViewer(place.key);
   return viewer?.kind === "page" ? { sessionId: viewer.sessionId, tabId: place.key } : null;
 }
+async function boundPage(
+  hostClient: HostClient,
+  place: PlaceItem,
+): Promise<{ readonly sessionId: string; readonly tabId: string }> {
+  const viewer = await hostClient.activateTab(place.tab.tabId);
+  if (viewer.kind !== "page") throw new Error("This page is unavailable.");
+  return { sessionId: viewer.sessionId, tabId: place.key };
+}
 function samePageTarget(
   left: { readonly sessionId: string; readonly tabId: string } | null,
   right: { readonly sessionId: string; readonly tabId: string } | null,
@@ -467,8 +486,8 @@ function parsePlacePart(value: unknown): PlacePart {
  */
 async function placePart(hostClient: HostClient, place: PlaceItem): Promise<PlacePart> {
   if (place.kind === "page") {
-    const target = pageTarget(hostClient, place);
-    if (!target) throw new Error("Show this page first, then add it.");
+    // A page not shown here yet is bound to this device's view first, so it can be read.
+    const target = pageTarget(hostClient, place) ?? (await boundPage(hostClient, place));
     const candidate = await hostClient.readBrowserContextCandidate(target.sessionId, target.tabId);
     return browserPagePart({
       auto: false,
@@ -497,7 +516,11 @@ function nativePart(place: PlaceItem): PlacePart {
   }
   if (!place.tab.bundleId) throw new Error("This app is unavailable.");
   return parsePlacePart({
-    app: { bundleId: place.tab.bundleId, displayName: place.tab.appName ?? place.title, teamId: null },
+    app: {
+      bundleId: place.tab.bundleId,
+      displayName: place.tab.appName ?? place.title,
+      teamId: null,
+    },
     machineId,
     name: place.title,
     type: "computer-app",
