@@ -348,6 +348,86 @@ describe("ContinuationService", () => {
   });
 });
 describe("continuationMessage", () => {
+  it("tells the agent each answer to its question, chosen or typed", async () => {
+    const question = PendingRequestSchema.parse({
+      callId: crypto.randomUUID(),
+      cancellationReason: null,
+      createdAt: now,
+      id: createId("request"),
+      kind: "person.question",
+      mode: "durable",
+      originatingOccurrenceId: null,
+      originatingRunId: createId("run"),
+      originatingThreadId: threadId,
+      payload: { kind: "person.question" },
+      presentation: {
+        kind: "form",
+        title: "Reply to Sarah?",
+        fields: [
+          {
+            choices: [
+              { label: "Send it", value: "Send it" },
+              { label: "Not yet", value: "Not yet" },
+            ],
+            custom: true,
+            id: "question_1",
+            multiSelect: false,
+            prompt: "Send this reply?",
+            secret: false,
+          },
+          {
+            custom: true,
+            id: "question_2",
+            multiSelect: false,
+            prompt: "Anything to add?",
+            secret: false,
+          },
+        ],
+      },
+      requestedBy: ownerId,
+      requiredActor: "requester",
+      resolvedAt: null,
+      resolvedBy: null,
+      response: null,
+      status: "pending",
+    });
+    const settled = { resolvedAt: now, resolvedBy: ownerId };
+    const inventory = {
+      listDiscoveryInventory: async () => [],
+      listCallableTools: async () => [],
+      computerUseMachines: async () => [],
+      computerUsePhones: async () => [],
+    };
+    const answered = RequestSchema.parse({
+      ...question,
+      ...settled,
+      status: "fulfilled",
+      response: {
+        kind: "form",
+        answers: { question_1: ["Wait until Friday"], question_2: ["Thank her"] },
+      },
+    });
+    expect(await continuationMessage(answered, inventory)).toBe(
+      [
+        `The person answered your question "Reply to Sarah?" (Request ${question.id}):`,
+        "- Send this reply?",
+        '  Answer: "Wait until Friday"',
+        "- Anything to add?",
+        '  Answer: "Thank her"',
+        "Continue with what they said.",
+      ].join("\n"),
+    );
+    const dismissed = RequestSchema.parse({
+      ...question,
+      ...settled,
+      status: "declined",
+      response: { kind: "external", value: { decision: "declined" } },
+    });
+    expect(await continuationMessage(dismissed, inventory)).toContain(
+      'dismissed your question "Reply to Sarah?" without answering',
+    );
+  });
+
   it("says a Chrome Request found nothing to copy without steering the agent", async () => {
     const message = await continuationMessage(
       browserSignInRequest({ outcome: "not-signed-in" }),

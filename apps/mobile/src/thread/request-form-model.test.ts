@@ -21,6 +21,7 @@ const choices = [
   { label: "Gamma", value: "c" },
 ];
 const one: RequestFormField = {
+  custom: false,
   choices,
   id: "one",
   multiSelect: false,
@@ -28,14 +29,27 @@ const one: RequestFormField = {
   secret: false,
 };
 const many: RequestFormField = {
+  custom: false,
   choices,
   id: "many",
   multiSelect: true,
   prompt: "Pick",
   secret: false,
 };
-const text: RequestFormField = { id: "text", multiSelect: false, prompt: "Say", secret: false };
-const secret: RequestFormField = { id: "token", multiSelect: false, prompt: "Token", secret: true };
+const text: RequestFormField = {
+  custom: false,
+  id: "text",
+  multiSelect: false,
+  prompt: "Say",
+  secret: false,
+};
+const secret: RequestFormField = {
+  custom: false,
+  id: "token",
+  multiSelect: false,
+  prompt: "Token",
+  secret: true,
+};
 const empty: RequestFormField = { ...one, choices: [], id: "empty" };
 
 describe("requestFieldMode", () => {
@@ -138,6 +152,18 @@ describe("isRequestFieldAnswered", () => {
 
   it("takes nothing, not even text, for a field with no offered choices", () => {
     expect(isRequestFieldAnswered(empty, ["typed anyway"])).toBe(false);
+  });
+
+  it("takes one typed answer in place of the choices where the field offers its own", () => {
+    const own = { ...many, custom: true };
+    expect(isRequestFieldAnswered(own, ["Only the verifier"])).toBe(true);
+    expect(isRequestFieldAnswered(own, ["a", "Only the verifier"])).toBe(false);
+    expect(isRequestFieldAnswered(own, ["  "])).toBe(false);
+  });
+
+  it("types the answer to a field that offers no choices but takes its own", () => {
+    expect(requestFieldMode({ ...empty, custom: true })).toBe("text");
+    expect(isRequestFieldAnswered({ ...empty, custom: true }, ["typed"])).toBe(true);
   });
 });
 

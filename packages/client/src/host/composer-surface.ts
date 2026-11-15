@@ -1,17 +1,20 @@
 import { requestTitleText, type AuthenticatedUser, type Request } from "@opensteer/core";
+import { isQuestionRequest } from "./question-answers.js";
 
 /**
  * What the one input surface at the bottom of a Thread is for, right now.
  *
  * Idle, it is the message composer. When the agent asks for something, the
- * focused pending Request docks into the same surface above it. A Request is
- * answered only with its own controls: the text field stays an ordinary
- * message beside it, and is hidden only while a form collects its own answers.
- * Both applications dock the same Request the same way, so this decision is
- * made once here rather than in each of their composers.
+ * focused pending Request docks into the same surface above it. A question
+ * turns the text field into its answer, as T3 Code does: options dock above,
+ * and what is typed is the person's own answer to that question, never a
+ * message. Every other Request is answered only with its own controls: the
+ * field stays an ordinary message beside it, and is hidden only while a form
+ * collects its own answers. Both applications dock the same Request the same
+ * way, so this decision is made once here rather than in each of their composers.
  */
 
-export type SurfaceTextRole = "hidden" | "message";
+export type SurfaceTextRole = "answer" | "hidden" | "message";
 
 export interface SurfaceModel {
   request: Request;
@@ -46,10 +49,13 @@ export function deriveSurface(
       ? ("requester" as const)
       : null;
 
-  const textRole: SurfaceTextRole =
-    request.mode === "live" && !denied && request.presentation.kind === "form"
-      ? "hidden"
-      : "message";
+  const textRole: SurfaceTextRole = denied
+    ? "message"
+    : isQuestionRequest(request)
+      ? "answer"
+      : request.mode === "live" && request.presentation.kind === "form"
+        ? "hidden"
+        : "message";
 
   const waiting = pending.filter((candidate) => candidate.id !== request.id);
   return {

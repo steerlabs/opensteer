@@ -105,6 +105,8 @@ const museSourceId = "meta";
 const museDeviceMethodId = "muse-subscription";
 const museApiKeyMethodId = "muse-api-key";
 const museApiKeyFileName = ".opensteer-meta-api-key";
+/** Muse's limit on a typed answer to one of its questions (msp `UserInputAnswer.freeText`). */
+const museFreeTextMaxLength = 500;
 const mintUuid = createUuidV7Mint();
 const nativeUserOnlyDetail = "Muse Code runs only on a computer you own.";
 
@@ -895,14 +897,21 @@ class MuseHarnessSession implements HarnessSession {
     const answers = RequestFormAnswersSchema.parse(response.answers);
     const wireAnswers = pending.request.questions.map((question) => {
       const values = answers[question.id] ?? [];
-      if (question.selection.mode === "multiple") {
-        return { questionId: question.id, ...(values.length ? { selectedLabels: values } : {}) };
+      const offered = values.every((value) =>
+        question.options.some((option) => option.label === value),
+      );
+      if (!offered) {
+        const freeText = values[0] ?? "";
+        if (freeText.length > museFreeTextMaxLength)
+          throw new OpensteerError({
+            code: "bad_request",
+            message: `Muse takes a typed answer of at most ${museFreeTextMaxLength} characters.`,
+          });
+        return { freeText, questionId: question.id };
       }
-      const selected = values[0];
-      const offered = question.options.some((option) => option.label === selected);
-      return offered
-        ? { questionId: question.id, selectedLabel: selected }
-        : { freeText: selected ?? "", questionId: question.id };
+      return question.selection.mode === "multiple"
+        ? { questionId: question.id, ...(values.length ? { selectedLabels: values } : {}) }
+        : { questionId: question.id, selectedLabel: values[0] };
     });
     await this.#requireHost().command("userInput/answer", {
       answers: wireAnswers,
@@ -1427,6 +1436,8 @@ class MuseHarnessSession implements HarnessSession {
       data: {
         request: this.#pendingRequest(active, id, request.toolCallId, "harness.input", {
           fields: request.questions.map((question) => ({
+            // Muse takes free text in place of any selection.
+            custom: true,
             choices: question.options.map((option) => ({
               ...(option.description ? { description: option.description } : {}),
               label: option.label,

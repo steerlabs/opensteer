@@ -639,8 +639,9 @@ describe("rpc envelope", () => {
     const listRunners = vi.fn(async () => ({ nextCursor: null, runners: [] as const }));
     const app = await machinesServer({ authenticateSession, listRunners });
     try {
+      // Every version below the window; the window itself is served.
       for (const legacyHostApiVersion of Array.from(
-        { length: hostApiVersion - 1 },
+        { length: minimumHostApiVersion - 1 },
         (_, index) => index + 1,
       )) {
         const legacyEpoch = await injectRpcRequest(
@@ -2000,6 +2001,44 @@ describe("Request routes", () => {
           type: "request.respond",
         }),
       );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("settles a question an agent asked the person and wakes its task", async () => {
+    const asked = pendingRequestFixture("harness.input");
+    const request = {
+      ...asked,
+      kind: "person.question",
+      mode: "durable",
+      payload: { kind: "person.question" },
+    } as const;
+    const answerPersonQuestion = vi.fn(async () => ({ events: [], request }));
+    const notify = vi.fn();
+    const app = await requestRouteServer({
+      continuations: { notify },
+      ownerId: fixtureOwnerId,
+      request,
+      store: { requests: { answerPersonQuestion } },
+    });
+    const answer = { answers: { password: ["Friday"] }, kind: "form" } as const;
+    try {
+      const response = await injectRpcRequest(app, "commands.dispatch", {
+        idempotencyKey: "answer-question",
+        requestId: request.id,
+        response: answer,
+        type: "request.respond",
+      });
+      expect(response.statusCode).toBe(200);
+      expect(answerPersonQuestion).toHaveBeenCalledWith(
+        expect.objectContaining({
+          requestId: request.id,
+          resolvedBy: fixtureOwnerId,
+          response: answer,
+        }),
+      );
+      expect(notify).toHaveBeenCalledOnce();
     } finally {
       await app.close();
     }
@@ -4018,6 +4057,7 @@ function pendingRequestFixture(
         ? {
             fields: [
               {
+                custom: false,
                 id: "password",
                 multiSelect: false,
                 prompt: "Enter the password",

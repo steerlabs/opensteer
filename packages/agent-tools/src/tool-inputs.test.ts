@@ -9,7 +9,7 @@ function tool(name: AgentToolName) {
 }
 describe("Opensteer tool inputs", () => {
   it("accepts the current Run place without caller-supplied native identities", () => {
-    const schema = tool("person_show").input;
+    const schema = tool("show_to_person").input;
     expect(schema.parse({ target: { current: true } })).toEqual({ target: { current: true } });
     expect(schema.safeParse({ target: { current: false } }).success).toBe(false);
     expect(schema.safeParse({ target: { current: true, tabId: "another-tab" } }).success).toBe(

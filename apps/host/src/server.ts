@@ -147,6 +147,8 @@ import {
   CorrelationIdSchema,
   HostBootstrapSchema,
   HostToClientMessageSchema,
+  projectHostMessage,
+  projectNeedsYouPage,
   HostToIntegrationsModuleMessageSchema,
   HostToShellModuleMessageSchema,
   IntegrationsModuleEventSchema,
@@ -1543,14 +1545,17 @@ export async function createHostServer(
     },
     "needsYou.get": async (input, context) =>
       rpcSuccess(
-        await needsYouPage(dependencies.store.database, {
-          ...(input.before ? { before: input.before } : {}),
-          ...(input.limit ? { limit: input.limit } : {}),
-          ...(input.deviceAccessRequests
-            ? { deviceAccessRequests: input.deviceAccessRequests }
-            : {}),
-          userId: requireRpcSession(context).user.id,
-        }),
+        projectNeedsYouPage(
+          await needsYouPage(dependencies.store.database, {
+            ...(input.before ? { before: input.before } : {}),
+            ...(input.limit ? { limit: input.limit } : {}),
+            ...(input.deviceAccessRequests
+              ? { deviceAccessRequests: input.deviceAccessRequests }
+              : {}),
+            userId: requireRpcSession(context).user.id,
+          }),
+          servedHostApiVersion(context.headers),
+        ),
       ),
     "teams.links.list": async (_input, context) => {
       await requirePersonalOwner(dependencies.store.database, requireRpcSession(context).user.id);
@@ -1900,6 +1905,12 @@ export async function createHostServer(
               case "device.access":
                 await dependencies.deviceAccess.decline(input);
                 return;
+              case "person.question": {
+                const result = await dependencies.store.requests.answerPersonQuestion(input);
+                for (const event of result.events) publishDeploymentEvent(event);
+                dependencies.integrations.continuations.notify();
+                return;
+              }
               case "machine.full-disk-access":
                 await dependencies.machineFullDiskAccess.decline(input);
                 return;
@@ -3722,7 +3733,11 @@ function attachRealtimeSocket(
     send: async (message: HostToClientMessage | BrowserClientStreamMessage) => {
       const projected = HostToClientMessageSchema.safeParse(
         // Tells the reader which version the state it just received was read at.
-        message.type === "host.synchronized" ? { ...message, apiVersion } : message,
+        message.type === "host.synchronized"
+          ? { ...message, apiVersion }
+          : message.type === "host.events" || message.type === "host.snapshot"
+            ? projectHostMessage(message, apiVersion)
+            : message,
       );
       if (!projected.success) {
         // Publisher faults cannot be repaired by replaying the same cursor.

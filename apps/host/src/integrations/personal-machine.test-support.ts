@@ -11,11 +11,10 @@ import {
   type ThreadId,
 } from "@opensteer/core";
 import { ownTestDatabaseProducer } from "@opensteer/database/test-support/database";
-import { hostApiVersion } from "@opensteer/deployment-authority";
+import { apiVersionHeaders } from "@opensteer/deployment-authority";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
 import {
   HarnessInstanceCatalogSchema,
-  hostApiVersionHeader,
   RunnerBootIdSchema,
   RunnerChallengeSchema,
   RunnerDescriptorSchema,
@@ -82,7 +81,7 @@ export async function claimPrivateMachineOwner(runtime: PersonalHostRuntime, con
     url: "/v1/rpc/auth.setup.claim",
     headers: {
       origin: config.canonicalOrigin.origin,
-      [hostApiVersionHeader]: String(hostApiVersion),
+      ...apiVersionHeaders("personal"),
     },
     payload: { kind: "local-machine-owner", token: config.identity.localOwnerClaimToken },
   });
@@ -91,7 +90,8 @@ export async function claimPrivateMachineOwner(runtime: PersonalHostRuntime, con
   return {
     cookie: claimed.cookies.map((c) => `${c.name}=${c.value}`).join("; "),
     origin: config.canonicalOrigin.origin,
-    [hostApiVersionHeader]: String(hostApiVersion),
+    // As every app states it: the oldest version it reads, and the one it speaks.
+    ...apiVersionHeaders("personal"),
   };
 }
 export async function startPrivateMachineHost(

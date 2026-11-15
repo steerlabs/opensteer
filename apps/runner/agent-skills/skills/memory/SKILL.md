@@ -36,4 +36,4 @@ When the person clearly tells you how agents should always work, save it now in 
 
 When the section starts `Memory: off at the person's request`, save nothing until the person asks again, and finish any pending deletion.
 
-Opensteer runs two independent hidden background jobs in agent home. Useful news uses `person_notify` in the job's own task history and personal notifications or Needs you. To pause or resume them, stop remembering, turn memory back on, or change which models run them and name tasks, read [controls](references/controls.md).
+Opensteer runs two independent hidden background jobs in agent home. Useful news uses `send_to_person` in the job's own task history, which notifies the person; a decision for the person goes to a listed task the job starts, which asks with `ask_person` and shows in Needs you. To pause or resume them, stop remembering, turn memory back on, or change which models run them and name tasks, read [controls](references/controls.md).

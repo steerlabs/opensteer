@@ -62,6 +62,14 @@ poll, repeat, approve or route around it. Outcomes already delivered in a held c
 wake the agent. Requests and Assignments outlive Runs; programs have no native turn to resume.
 Hold sequencing lives in [request-hold.ts](../apps/host/src/mcp/request-hold.ts).
 
+`ask_person` opens the one durable question, `person.question`: only the person it asked may answer
+or dismiss it, and either reaches the task through the same continuation outbox without waiting on
+the Run's other Requests, so an answer days later still continues the work. Stop leaves it
+answerable; Done cancels it. The Host checks every form answer against its fields, native questions
+included; a field's `custom` says whether a typed answer may stand in for its choices. Older apps
+are served Needs you and events without person questions
+([person-questions.ts](../packages/protocol/src/person-questions.ts)).
+
 Thread state is a stored projection; pending Requests drive Needs you independently of whether a
 Run still executes. The [lock order](../packages/database/src/lock-order.ts) is authoritative: lock the
 personal event fence before domain rows in order. Retryable transactions return only the committed attempt's events, and callbacks doing

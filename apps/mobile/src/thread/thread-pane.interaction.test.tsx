@@ -728,8 +728,24 @@ vi.mock("./request-card.js", () => ({
 }));
 
 vi.mock("./answer-bar.js", () => ({
-  AnswerBar: (props: { readonly question: string }) => (
-    <section aria-label="Answer bar">{props.question}</section>
+  AnswerBar: (props: {
+    readonly surface: { readonly request: { readonly presentation: { readonly title: string } } };
+  }) => <section aria-label="Answer bar">{props.surface.request.presentation.title}</section>,
+}));
+vi.mock("./question-card.js", () => ({
+  QuestionRequestCard: (props: {
+    readonly composer: string | null;
+    readonly onAnswerHere?: () => void;
+    readonly onBackToMessage?: () => void;
+  }) => (
+    <section aria-label="Question" data-composer={props.composer ?? undefined}>
+      {props.onAnswerHere === undefined ? null : (
+        <button aria-label="Type an answer" onClick={props.onAnswerHere} />
+      )}
+      {props.onBackToMessage === undefined ? null : (
+        <button aria-label="Back to message" onClick={props.onBackToMessage} />
+      )}
+    </section>
   ),
 }));
 
@@ -1639,40 +1655,58 @@ describe("a conversation with a page", () => {
     expect(text(container)).toContain("This Host cannot open app tabs.");
   });
 
-  it("takes one open question in the bar, and leaves a durable one to its card", async () => {
+  it("answers a question, live or durable, in the bar, and leaves a draft its bar until asked", async () => {
     const runId = createId("run");
     const question = (mode: "durable" | "live"): Request =>
       ({
-        ...approval(runId, "More information needed"),
-        kind: "harness.input",
+        ...approval(runId, "Which branch?"),
+        kind: mode === "live" ? "harness.input" : "person.question",
         mode,
         originatingThreadId: workId,
-        payload: { kind: "harness.input" },
+        payload: { kind: mode === "live" ? "harness.input" : "person.question" },
         presentation: {
-          fields: [{ id: "q", multiSelect: false, prompt: "Which branch?", secret: false }],
+          fields: [
+            { custom: false, id: "q", multiSelect: false, prompt: "Which branch?", secret: false },
+          ],
           kind: "form",
-          title: "More information needed",
+          title: "Which branch?",
         },
       }) as Request;
-    const asking = (request: Request) =>
-      fakeHost(
-        snapshotFor({
-          entries: [],
-          requests: [request],
-          run: { id: runId, status: "waiting" },
-          threadId: workId,
-        }),
-      );
-    const live = await mount(asking(question("live")), workId);
-    expect(live.container.querySelector('[aria-label="Answer bar"]')?.textContent).toBe(
-      "Which branch?",
-    );
-    expect(live.container.querySelector('[aria-label="Docked request"]')).toBeNull();
-    const durable = await mount(asking(question("durable")), workId);
-    expect(durable.container.querySelector('[aria-label="Answer bar"]')).toBeNull();
-    expect(durable.container.querySelector('[aria-label="Docked request"]')?.textContent).toBe(
-      "More information needed",
-    );
+    const snapshot = (requests: readonly Request[]) =>
+      snapshotFor({
+        entries: [],
+        requests: [...requests],
+        run: { id: runId, status: "waiting" },
+        threadId: workId,
+      });
+    const bar = (container: HTMLElement) => container.querySelector('[aria-label="Answer bar"]');
+    const card = (container: HTMLElement) =>
+      container.querySelector<HTMLElement>('[aria-label="Question"]');
+    for (const mode of ["live", "durable"] as const) {
+      const { container } = await mount(fakeHost(snapshot([question(mode)])), workId);
+      expect(bar(container)?.textContent).toBe("Which branch?");
+      expect(card(container)?.dataset["composer"]).toBe("answer");
+      expect(container.querySelector('textarea[aria-label="Message"]')).toBeNull();
+      expect(container.querySelector('[aria-label="Docked request"]')).toBeNull();
+    }
+
+    // A message being written keeps the bar; the question docks beside it.
+    const host = fakeHost(snapshot([]));
+    const { container } = await mount(host, workId);
+    await type(container, "Message", "Half a thought");
+    await act(async () => host.move(snapshot([question("durable")])));
+    await settle();
+    expect(card(container)?.dataset["composer"]).toBe("message");
+    expect(bar(container)).toBeNull();
+    await press(container, "Type an answer");
+    expect(bar(container)).not.toBeNull();
+    expect(card(container)?.dataset["composer"]).toBe("answer");
+    await press(container, "Back to message");
+    expect(bar(container)).toBeNull();
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+    ).toBe("Half a thought");
+    expect(host.dispatch).not.toHaveBeenCalled();
   });
 
   it("shows all of itself beside the page, with its approval, and includes the page", async () => {

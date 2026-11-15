@@ -358,7 +358,7 @@ integration("input from a computer's MCP server", () => {
       presentation: {
         kind: "form",
         title: "TV",
-        fields: [{ id: "code", prompt: "Code", secret: true, multiSelect: false }],
+        fields: [{ id: "code", prompt: "Code", custom: false, secret: true, multiSelect: false }],
       },
       requiredActor: "requester",
       requestedBy: s.host.ownerId,

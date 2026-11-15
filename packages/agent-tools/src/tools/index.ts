@@ -32,7 +32,7 @@ import {
   opensteer_task_configure,
   opensteer_task_queue,
 } from "./threads.js";
-import { person_notify, person_show } from "./person.js";
+import { ask_person, send_to_person, show_to_person } from "./person.js";
 import { browserTools } from "./browser.js";
 import { computerTools } from "./computer.js";
 import {
@@ -73,8 +73,9 @@ export const agentTools = [
   opensteer_task_delegate,
   opensteer_delegation_status,
   opensteer_delegation_cancel,
-  person_notify,
-  person_show,
+  ask_person,
+  send_to_person,
+  show_to_person,
   opensteer_task_send,
   opensteer_task_interrupt,
   opensteer_task_update,
@@ -100,11 +101,9 @@ export const agentTools = [
 export type AgentTool = (typeof agentTools)[number];
 export type AgentToolName = AgentTool["name"];
 
-type RequestTool = Extract<AgentTool, { readonly name: `${string}_request` }>;
-const isRequestTool = (tool: AgentTool): tool is RequestTool => tool.name.endsWith("_request");
-/** The tools that can open a durable Request, and so hold their call for a person. */
-export const requestToolNames: readonly RequestTool["name"][] = agentTools
-  .filter(isRequestTool)
+/** The tools that open a Request, and so hold their call for a person. */
+export const requestToolNames: readonly AgentToolName[] = agentTools
+  .filter((tool) => "opensRequest" in tool && tool.opensRequest === true)
   .map(({ name }) => name);
 
 export * from "./apps.js";

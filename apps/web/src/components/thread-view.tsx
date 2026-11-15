@@ -1053,6 +1053,10 @@ function ThreadView({
         : dockedRequests.filter((item) => item.surface.request.originatingNodeId !== openedNode),
     [dockedRequests, openedNode],
   );
+  // The composer answers the question the stack shows, never one answered elsewhere.
+  const shownRequest =
+    dockItems.find((item) => item.surface.request.id === openRequestId) ?? dockItems[0];
+  const dockQuestion = shownRequest?.surface.textRole === "answer" ? shownRequest : null;
 
   return (
     <PersonalReferences client={hostClient} threadId={thread.id}>
@@ -1309,6 +1313,7 @@ function ThreadView({
                 )}
                 <ThreadServerApprovals threadId={thread.id} />
                 <RequestStack
+                  composer={!voiceThread}
                   disabled={!canRespond}
                   folded={requestFolded && nowOpen && !historical}
                   items={dockItems}
@@ -1388,6 +1393,7 @@ function ThreadView({
                         : undefined
                     }
                     placeholder={composerPlaceholder}
+                    question={dockQuestion}
                     recipient={recipient}
                     // A conversation's Stop ends the reply under way, and Chat's cards each
                     // stop their own task. A task's strip stops the task; this stops only

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("react-native", () => ({ Alert: { alert: vi.fn() } }));
 
-const { requestCardAnswers, requestCardHeading, requestOptionLabel } =
+const { questionHeading, requestCardAnswers, requestCardHeading, requestOptionLabel } =
   await import("./request-answers.js");
 
 const allow = { hint: "allow-once", id: "allow", label: "Allow once" } as const;
@@ -106,39 +106,15 @@ describe("requestCardAnswers", () => {
     expect(requestCardAnswers(install, false)).toEqual({ kind: "sheet", label: "Review" });
   });
 
-  it("answers one choice with a tap, and one open question by typing", () => {
-    expect(requestCardAnswers(form([one]), false)).toMatchObject({
-      kind: "choose",
-      options: [{ id: "main" }, { id: "beta" }],
-    });
-    expect(requestCardAnswers(form([text]), false)).toMatchObject({ field: text, kind: "type" });
-  });
-
-  it("keeps secrets, long questions, several questions and plugin input in the sheet", () => {
+  it("leaves a secret form and plugin input to the sheet", () => {
     const sheet = { kind: "sheet", label: "Answer" };
     expect(requestCardAnswers(form([{ ...text, secret: true }]), false)).toEqual(sheet);
-    expect(requestCardAnswers(form([{ ...text, prompt: "x".repeat(200) }]), false)).toEqual(sheet);
-    expect(requestCardAnswers(form([text, { ...text, id: "r" }]), false)).toEqual(sheet);
     expect(
       requestCardAnswers(
-        form([text], {
-          kind: "integration.input",
-          payload: { kind: "integration.input" },
-        }),
+        form([one], { kind: "integration.input", payload: { kind: "integration.input" } }),
         false,
       ),
     ).toEqual(sheet);
-  });
-
-  it("doesn't put a question in the composer that needs more than the composer holds", () => {
-    const withContext = (presentation: object): Request =>
-      form([text], {
-        presentation: { fields: [text], kind: "form", title: "A question", ...presentation },
-      });
-    const sheet = { kind: "sheet", label: "Answer" };
-    expect(requestCardAnswers(withContext({ detail: "Why it asks" }), false)).toEqual(sheet);
-    expect(requestCardAnswers(withContext({ agentProposed: true }), false)).toEqual(sheet);
-    expect(requestCardAnswers(withContext({ title: "x".repeat(200) }), false)).toEqual(sheet);
   });
 
   it("reviews what this client can answer, and leaves the rest to a computer", () => {
@@ -191,6 +167,23 @@ describe("requestCardHeading", () => {
     expect(requestCardHeading(form([text]), "Choose where to deploy")).toEqual({
       context: "Which branch?",
       question: "Choose where to deploy",
+    });
+  });
+});
+
+describe("questionHeading", () => {
+  it("heads a generic form with the question in view, and keeps a title that explains it", () => {
+    expect(questionHeading("More information needed", "Which branch?")).toEqual({
+      heading: "Which branch?",
+      prompt: null,
+    });
+    expect(questionHeading("Choose where to deploy", "Which branch?")).toEqual({
+      heading: "Choose where to deploy",
+      prompt: "Which branch?",
+    });
+    expect(questionHeading("Which branch?", " Which branch? ")).toEqual({
+      heading: "Which branch?",
+      prompt: null,
     });
   });
 });

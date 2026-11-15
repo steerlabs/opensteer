@@ -30,7 +30,7 @@ import {
   opensteer_task_read,
   opensteer_task_send,
   opensteer_task_list,
-  person_show,
+  show_to_person,
   opensteer_task_configure,
   opensteer_task_queue,
   opensteer_task_delegate,
@@ -197,9 +197,9 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
       operationKey: randomUUID(),
     });
   const show = (target: unknown, actor: RunCaller = caller) =>
-    product.person_show({
+    product.show_to_person({
       caller: actor,
-      input: person_show.input.parse({ target }),
+      input: show_to_person.input.parse({ target }),
       operationKey: randomUUID(),
     });
   return {
@@ -581,6 +581,7 @@ describeStore("agents answering task questions", (it) => {
         installationId: "installation",
         serverId: "server",
       },
+      "person.question": { kind: "person.question" },
     };
     for (const kind of RequestKindSchema.options.filter((kind) => kind !== "harness.input")) {
       const request = PendingRequestSchema.parse({

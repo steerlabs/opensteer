@@ -157,6 +157,8 @@ vi.mock("../ui/sheet.js", () => ({
     ) : null,
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
+// A question opens as its card, which question.interaction.test.tsx covers.
+vi.mock("./waiting-questions.js", () => ({ QuestionCard: () => null }));
 vi.mock("../computers/here-device.js", () => ({ useHereDeviceId: () => null }));
 vi.mock("../ui/sheet-bar.js", () => ({
   SheetBarButton: ({ onPress }: { onPress: () => void }) => (

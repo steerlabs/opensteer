@@ -1626,7 +1626,7 @@ it("uses authenticated admission for a person message without waking work", asyn
         `run:${fixture.claims.runId}`,
         requestId,
         "operation",
-        "person_notify",
+        "send_to_person",
       ),
     }),
   });

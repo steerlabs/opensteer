@@ -38,7 +38,12 @@ import {
   type Thread,
   type ThreadInputQueue,
 } from "@opensteer/core";
-import { apiVersionQueryParameter, hostApiVersion } from "@opensteer/deployment-authority";
+import {
+  apiCurrentQueryParameter,
+  apiVersionQueryParameter,
+  hostApiVersion,
+  minimumHostApiVersion,
+} from "@opensteer/deployment-authority";
 import { createIntegrationId } from "@opensteer/integration-core";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import {
@@ -158,7 +163,11 @@ it("opts control viewers into basic input and exposes only the returned negotiat
     await client.load();
     const release = client.retainBrowserViewer(sessionId, surfaceId, { picture: false });
     const control = sockets.find(({ url }) => url.includes("/browser-sessions/"))!;
+    // A socket states the oldest version it reads and the one it speaks.
     expect(new URL(control.url).searchParams.get(apiVersionQueryParameter)).toBe(
+      String(minimumHostApiVersion),
+    );
+    expect(new URL(control.url).searchParams.get(apiCurrentQueryParameter)).toBe(
       String(hostApiVersion),
     );
     expect(new URL(control.url).searchParams.get("basicInput")).toBe("1");
@@ -184,7 +193,11 @@ it("opts control viewers into basic input and exposes only the returned negotiat
     });
     const releaseWatch = client.retainBrowserWatch(sessionId, surfaceId);
     const watch = sockets.find(({ url }) => new URL(url).searchParams.get("mode") === "watch")!;
+    // A socket states the oldest version it reads and the one it speaks.
     expect(new URL(watch.url).searchParams.get(apiVersionQueryParameter)).toBe(
+      String(minimumHostApiVersion),
+    );
+    expect(new URL(watch.url).searchParams.get(apiCurrentQueryParameter)).toBe(
       String(hostApiVersion),
     );
     expect(new URL(watch.url).searchParams.has("basicInput")).toBe(false);
@@ -3132,7 +3145,15 @@ describe("HttpHostClient durable realtime", () => {
     const runId = createId("run");
     const pending = pendingRequest({
       presentation: {
-        fields: [{ id: "choice", multiSelect: false, prompt: "Which option?", secret: false }],
+        fields: [
+          {
+            custom: false,
+            id: "choice",
+            multiSelect: false,
+            prompt: "Which option?",
+            secret: false,
+          },
+        ],
         kind: "form",
         title: "Input needed",
       },
@@ -6199,6 +6220,7 @@ describe("HttpHostClient durable realtime", () => {
       presentation: {
         fields: [
           {
+            custom: false,
             id: "token",
             multiSelect: false,
             prompt: "Enter the release token",
@@ -12982,6 +13004,8 @@ function bootstrap(
   },
 ) {
   const result = {
+    // A current Host states the version it serves; one that doesn't is older.
+    apiVersion: hostApiVersion,
     browser: browserBootstrapWithRows(browser),
     deploymentId: workspaces[0]?.id ?? createId("deployment"),
     personalSettings: {
