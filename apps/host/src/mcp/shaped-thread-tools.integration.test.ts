@@ -2030,8 +2030,9 @@ describeStore("shaped agent task tools", (it) => {
   }) => {
     const f = await storeFixture.startRunFixture("send-reference-links");
     const s = setup(storeFixture, f);
-    const target = await storeFixture.createRunFixture("send-reference-target");
-    const message = formatReferenceLink(f.thread.id, "Readable title ".repeat(50));
+    const target = await storeFixture.startRunFixture("send-reference-target");
+    const label = "Readable title ".repeat(50);
+    const message = formatReferenceLink(f.thread.id, label);
     const sent = opensteer_task_send.output.parse(
       productToolOutput(
         await s.product.opensteer_task_send({
@@ -2047,6 +2048,7 @@ describeStore("shaped agent task tools", (it) => {
     );
     const link = formatReferenceLink(sent.messageId, `Message · ${target.thread.title}`);
     expect(sent.link).toBe(link);
+    expect(sent.disposition).toBe("pending");
     const queue = opensteer_task_queue.output.parse(
       productToolOutput(
         await s.product.opensteer_task_queue({
@@ -2057,7 +2059,12 @@ describeStore("shaped agent task tools", (it) => {
       ),
     );
     expect(queue.items).toContainEqual(
-      expect.objectContaining({ messageId: sent.messageId, link, truncated: true }),
+      expect.objectContaining({
+        messageId: sent.messageId,
+        link,
+        preview: label.slice(0, 500),
+        truncated: true,
+      }),
     );
     expect(queue.items.find((item) => item.messageId === sent.messageId)!.preview).not.toContain(
       "opensteer:",

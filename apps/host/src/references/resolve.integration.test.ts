@@ -70,11 +70,6 @@ describeStore("personal reference handlers", (it) => {
     storeFixture: f,
   }) => {
     const run = await f.startRunFixture("references");
-    await f.database
-      .updateTable("threads")
-      .set({ title: "Current **task**", listed: false, doneAt: new Date() })
-      .where("id", "=", run.threadId)
-      .execute();
     const request = liveRequest({
       id: createId("request"),
       harnessInstanceId: run.harnessInstance.id,
@@ -84,7 +79,7 @@ describeStore("personal reference handlers", (it) => {
       presentation: {
         kind: "choice",
         title: "Choose a format",
-        options: [{ id: "csv", label: "CSV" }],
+        options: [{ id: "csv", label: "CSV", hint: "other" }],
       },
     });
     await f.database.insertInto("requests").values(requestInsert(request)).execute();
@@ -105,6 +100,11 @@ describeStore("personal reference handlers", (it) => {
       },
     });
     const attachmentId = await readyAttachment(f, run.userId);
+    await f.database
+      .updateTable("threads")
+      .set({ title: "Current **task**", listed: false, doneAt: new Date() })
+      .where("id", "=", run.threadId)
+      .execute();
     const missing = createId("thread");
     const ids = [
       run.run.id,
@@ -326,7 +326,7 @@ describeStore("personal reference handlers", (it) => {
       presentation: {
         kind: "choice",
         title: "Choose export",
-        options: [{ id: "csv", label: "CSV" }],
+        options: [{ id: "csv", label: "CSV", hint: "other" }],
       },
     });
     await f.database.insertInto("requests").values(requestInsert(request)).execute();
