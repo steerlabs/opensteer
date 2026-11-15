@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 import { sharedDisplayStreams } from "@opensteer/client/integrations";
 import { RunnerIdSchema } from "@opensteer/core";
-import type { HostSnapshot } from "@opensteer/client/host";
+import { runPlacePicture, type HostSnapshot } from "@opensteer/client/host";
 import { useRunPlacePicture } from "@opensteer/client/react";
 import { LivePlace } from "./workspace/viewfinder.js";
 import { RunPlacePictureScope, useDisplayDecoding } from "./workspace/run-place-picture.js";
@@ -1316,6 +1316,27 @@ it.each([
     expect(node.querySelector("canvas")?.width).toBe(360);
   });
   const canvas = node.querySelector("canvas");
+  if (refusal === "ownership") {
+    // A network change replaces the socket under the same decoder: the old picture stays
+    // on screen but is not current until the new socket's picture is drawn.
+    await vi.waitFor(() => expect(runPlacePicture(client, threadId, runId).fresh).toBe(true));
+    decoder.blocked = true;
+    decoder.pending.length = 0;
+    await act(async () => sharedDisplayStreams(client).reconnect());
+    await vi.waitFor(() =>
+      expect(decoder.pending.length, "reconnected stream never submitted a frame").toBeGreaterThan(
+        0,
+      ),
+    );
+    await act(async () => {});
+    expect(runPlacePicture(client, threadId, runId).fresh).toBe(false);
+    decoder.blocked = false;
+    await act(async () => decoder.pending.splice(0).forEach((output) => output()));
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(runPlacePicture(client, threadId, runId).fresh).toBe(true);
+    });
+  }
   const move = async (machines: HostSnapshot["machines"]) =>
     act(async () => {
       snapshot = { ...snapshot, machines };
@@ -1370,6 +1391,14 @@ it.each([
     return;
   }
   decoder.blocked = true;
+  // A replacement stream that goes away before it draws leaves the kept picture in place.
+  await move([machine]);
+  await move([{ ...machine, computerUse: { ...machine.computerUse!, sessions: [] } }]);
+  decoder.pending.length = 0;
+  await act(async () => root!.render(<Pane runId={runId} threadId={threadId} />));
+  await act(async () => root!.render(<Pane folded runId={runId} threadId={threadId} />));
+  expect(node.querySelectorAll("canvas")[1]?.width).toBe(360);
+  await act(async () => root!.render(<Pane runId={runId} threadId={threadId} />));
   await move([machine]);
   expect(node.querySelector("canvas")).toBe(canvas);
   expect(node.querySelector(".place-canvas--hidden")).toBeNull();

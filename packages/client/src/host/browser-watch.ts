@@ -596,6 +596,7 @@ export class BrowserWatchStore {
                 this.accept(target.sessionId, target.surfaceId, token);
               this.#set(target, {
                 ...this.#kept(target),
+                status: "unavailable",
                 error: "Too many browser capture targets.",
               });
             } else if (target.pictureHolds && target.state.status !== "live")

@@ -20,6 +20,7 @@ import {
   knownPhoneDisplayDecoding,
   phoneDisplayDecoding,
   PhoneDisplayPicture,
+  type PhoneDisplayPictureState,
 } from "../phone-display-media.js";
 
 /**
@@ -95,20 +96,22 @@ export function RunPlacePictureScope({
     if (display === null || !decoding || placeKey === null) return;
     // The display is the owner's to release; this decoder only reads it.
     const current = new PhoneDisplayPicture({ ...display, release: () => {} }, decoding);
-    let drawn = false;
+    let reported: PhoneDisplayPictureState["shown"] = null;
     const stop = current.subscribe(() => {
-      const shown = current.getSnapshot().shown;
-      if (shown) {
+      const { shown, stale } = current.getSnapshot();
+      if (shown && !stale) {
+        // Only a paint replaces `shown`; decoder bookkeeping keeps the same one.
+        if (shown === reported) return;
+        reported = shown;
         // Every canvas attached now shows this decoder's own picture.
         kept.hold(null);
-        drawn = true;
         reportRunPlacePicture(hostClient, threadId, placeKey, {
           kind: "drawn",
           width: shown.width,
           height: shown.height,
         });
-      } else if (drawn) {
-        drawn = false;
+      } else if (!shown && reported) {
+        reported = null;
         reportRunPlacePicture(hostClient, threadId, placeKey, { kind: "cleared" });
       }
     });
@@ -116,7 +119,8 @@ export function RunPlacePictureScope({
     return () => {
       stop();
       // A picture the owner still counts stays on screen until the next one draws over it.
-      if (usable.current) kept.hold(current.takePicture());
+      const last = usable.current ? current.takePicture() : null;
+      if (last) kept.hold(last);
       current.dispose(usable.current);
       setMedia((held) => (held === current ? null : held));
     };

@@ -432,6 +432,10 @@ describe("BrowserWatchStore", () => {
     socket.receive({ type: "browser.stream.state", surfaceId, state: "capacity" });
     expect(socket.closes).toEqual([]);
     expect(store.get(sessionId, surfaceId).frame?.header.frameId).toBe(5);
+    expect(store.status(sessionId, surfaceId)).toMatchObject({
+      status: "unavailable",
+      error: "Too many browser capture targets.",
+    });
     store.accept(sessionId, surfaceId, "00000000-0000-4000-8000-000000000004");
     socket.picture(6);
     socket.picture(7);
