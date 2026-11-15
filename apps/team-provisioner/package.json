@@ -14,7 +14,8 @@
     "@opensteer/control-plane-protocol": "workspace:*",
     "zod": "catalog:",
     "pg": "catalog:",
-    "@google-cloud/storage": "^7.19.0",
+    "@google-cloud/storage": "catalog:",
+    "google-auth-library": "catalog:",
     "@opensteer/core": "workspace:*"
   },
   "devDependencies": {

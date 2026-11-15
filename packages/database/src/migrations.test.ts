@@ -31,6 +31,7 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0022_person_names",
     "0023_agent_home_settings",
     "0024_waiting_input_edits",
+    "0025_team_copies",
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());

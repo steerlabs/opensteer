@@ -94,12 +94,15 @@ class FakeCluster implements KubernetesApi {
     }
   }
 
-  async readDatabaseUrl(namespace: string) {
-    return this.secrets.get(namespace)?.["database-url"];
-  }
-
-  async readSetupTokenDigest(namespace: string) {
-    return this.secrets.get(namespace)?.["setup-token-digest"];
+  async readTeamSecret(namespace: string) {
+    const secret = this.secrets.get(namespace);
+    return (
+      secret && {
+        setupTokenDigest: secret["setup-token-digest"] ?? "",
+        databaseUrl: secret["database-url"],
+        databaseCa: secret["database-ca.pem"],
+      }
+    );
   }
 
   async createSecret(secret: KubernetesObject) {
@@ -109,9 +112,9 @@ class FakeCluster implements KubernetesApi {
     });
   }
 
-  async writeSetupTokenDigest(namespace: string, value: string) {
-    this.calls.push(`write digest ${namespace}`);
-    this.secrets.get(namespace)!["setup-token-digest"] = value;
+  async writeTeamSecret(namespace: string, values: Readonly<Record<string, string>>) {
+    this.calls.push(`write ${Object.keys(values).sort().join(",")} ${namespace}`);
+    Object.assign(this.secrets.get(namespace)!, values);
   }
 
   async deleteNamespace(name: string) {
@@ -163,8 +166,7 @@ class FakeAccount implements AccountApi {
   }
 }
 
-function setup(now = { value: 0 }) {
-  const cluster = new FakeCluster();
+function setup(now = { value: 0 }, databaseCa = "CA", cluster = new FakeCluster()) {
   const account = new FakeAccount();
   const database = {
     exists: vi.fn(async () => false),
@@ -179,7 +181,7 @@ function setup(now = { value: 0 }) {
     platform: {
       databaseIp: "10.1.1.1",
       databaseHost: "db.example.com",
-      databaseCa: "CA",
+      databaseCa,
       bucket: "teams",
     },
     database,
@@ -275,7 +277,7 @@ describe("Reconciler", () => {
 
     account.teams = [team("acme", { setupTokenDigest: digest("b"), setupGeneration: 2 })];
     await reconciler.pass();
-    expect(cluster.calls).toContain("write digest team-acme");
+    expect(cluster.calls).toContain("write setup-token-digest team-acme");
     expect(cluster.calls).not.toContain("create Secret team-acme");
     expect(cluster.secrets.get("team-acme")).toMatchObject({
       "host-private.pem": password,
@@ -294,6 +296,22 @@ describe("Reconciler", () => {
       phase: "ready",
       observedSetupGeneration: 2,
     });
+  });
+
+  it("moves every team onto a rotated database CA and rolls its Host", async () => {
+    const first = setup();
+    first.account.teams = [team("acme")];
+    await first.reconciler.pass();
+    const before = first.cluster.deployments.get("team-acme")!;
+
+    const rotated = setup(undefined, "CA-2", first.cluster);
+    rotated.account.teams = first.account.teams;
+    await rotated.reconciler.pass();
+    expect(rotated.cluster.calls).toContain("write database-ca.pem team-acme");
+    expect(rotated.cluster.secrets.get("team-acme")!["database-ca.pem"]).toBe("CA-2");
+    expect(JSON.stringify(rotated.cluster.deployments.get("team-acme")!.spec)).not.toBe(
+      JSON.stringify(before.spec),
+    );
   });
 
   it("rolls existing teams to a new release one at a time", async () => {

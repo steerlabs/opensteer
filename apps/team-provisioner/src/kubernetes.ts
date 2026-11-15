@@ -1,7 +1,12 @@
 import { readFileSync } from "node:fs";
 import { request } from "node:https";
 import { z } from "zod";
-import type { KubernetesApi, ManagedNamespace, ManagedDeployment } from "./reconcile.js";
+import type {
+  KubernetesApi,
+  ManagedNamespace,
+  ManagedDeployment,
+  TeamSecretValues,
+} from "./reconcile.js";
 import {
   appliedHashAnnotation,
   managedBy,
@@ -178,26 +183,20 @@ export class KubernetesClient implements KubernetesApi {
     });
   }
 
-  async readSetupTokenDigest(namespace: string): Promise<string | undefined> {
+  async readTeamSecret(namespace: string): Promise<TeamSecretValues | undefined> {
     try {
       const secret = SecretSchema.parse(
         await this.#call("GET", `/api/v1/namespaces/${namespace}/secrets/${teamSecretName}`),
       );
-      const value = secret.data?.["setup-token-digest"];
-      return value === undefined ? "" : Buffer.from(value, "base64").toString("utf8");
-    } catch (error) {
-      if (error instanceof KubernetesRequestError && error.status === 404) return undefined;
-      throw error;
-    }
-  }
-
-  async readDatabaseUrl(namespace: string): Promise<string | undefined> {
-    try {
-      const secret = SecretSchema.parse(
-        await this.#call("GET", `/api/v1/namespaces/${namespace}/secrets/${teamSecretName}`),
-      );
-      const value = secret.data?.["database-url"];
-      return value === undefined ? undefined : Buffer.from(value, "base64").toString("utf8");
+      const value = (key: string) => {
+        const encoded = secret.data?.[key];
+        return encoded === undefined ? undefined : Buffer.from(encoded, "base64").toString("utf8");
+      };
+      return {
+        setupTokenDigest: value("setup-token-digest") ?? "",
+        databaseUrl: value("database-url"),
+        databaseCa: value("database-ca.pem"),
+      };
     } catch (error) {
       if (error instanceof KubernetesRequestError && error.status === 404) return undefined;
       throw error;
@@ -217,9 +216,9 @@ export class KubernetesClient implements KubernetesApi {
     }
   }
 
-  async writeSetupTokenDigest(namespace: string, digest: string): Promise<void> {
+  async writeTeamSecret(namespace: string, values: Readonly<Record<string, string>>) {
     await this.#call("PATCH", `/api/v1/namespaces/${namespace}/secrets/${teamSecretName}`, {
-      body: { stringData: { "setup-token-digest": digest } },
+      body: { stringData: values },
       contentType: "application/merge-patch+json",
     });
   }

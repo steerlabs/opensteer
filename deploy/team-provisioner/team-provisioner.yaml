@@ -37,7 +37,7 @@ spec:
           envFrom:
             - configMapRef: { name: team-platform }
           volumeMounts:
-            - { name: database, mountPath: /run/secrets/database, readOnly: true }
+            - { name: database-ca, mountPath: /etc/opensteer/team-database, readOnly: true }
           ports:
             - { name: readiness, containerPort: 8081 }
           # Ready only after a whole reconcile pass succeeds, so a release that cannot reach
@@ -54,5 +54,5 @@ spec:
             readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
       volumes:
-        - name: database
-          secret: { secretName: team-provisioner-database, defaultMode: 0440 }
+        - name: database-ca
+          configMap: { name: team-database-ca }

@@ -16,7 +16,8 @@ const EnvironmentSchema = z.object({
   OPENSTEER_TEAM_DATABASE_IP: z.ipv4(),
   OPENSTEER_TEAM_DATABASE_HOST: z.hostname(),
   OPENSTEER_TEAM_DATABASE_CA_FILE: z.string().min(1),
-  OPENSTEER_PROVISIONER_DATABASE_URL_FILE: z.string().min(1),
+  /** The provisioner's IAM database user; it logs in with its own Google access token. */
+  OPENSTEER_PROVISIONER_DATABASE_USER: z.string().min(1),
   OPENSTEER_TEAM_GCS_BUCKET: z.string().min(1),
   OPENSTEER_GOOGLE_PROJECT: z.string().min(1),
   OPENSTEER_GOOGLE_PROJECT_NUMBER: z.string().regex(/^\d+$/u),
@@ -34,7 +35,7 @@ export interface ProvisionerConfig {
     databaseCa: string;
     bucket: string;
   };
-  readonly databaseUrl: string;
+  readonly databaseUser: string;
   readonly project: string;
   readonly projectNumber: string;
   readonly kubernetes: { readonly host: string; readonly port: string };
@@ -42,14 +43,6 @@ export interface ProvisionerConfig {
 
 export function loadProvisionerConfig(environment: NodeJS.ProcessEnv): ProvisionerConfig {
   const parsed = EnvironmentSchema.parse(environment);
-  const databaseUrl = readFileSync(parsed.OPENSTEER_PROVISIONER_DATABASE_URL_FILE, "utf8").trim();
-  const database = new URL(databaseUrl);
-  if (
-    database.pathname !== "/postgres" ||
-    database.searchParams.get("sslmode") !== "verify-full" ||
-    !database.searchParams.get("sslrootcert")
-  )
-    throw new Error("Provisioner requires the postgres database with verified TLS");
   return {
     accountOrigin: new URL(parsed.OPENSTEER_ACCOUNT_URL),
     replicas: parsed.OPENSTEER_TEAM_REPLICAS,
@@ -62,7 +55,7 @@ export function loadProvisionerConfig(environment: NodeJS.ProcessEnv): Provision
       databaseCa: readFileSync(parsed.OPENSTEER_TEAM_DATABASE_CA_FILE, "utf8"),
       bucket: parsed.OPENSTEER_TEAM_GCS_BUCKET,
     },
-    databaseUrl,
+    databaseUser: parsed.OPENSTEER_PROVISIONER_DATABASE_USER,
     project: parsed.OPENSTEER_GOOGLE_PROJECT,
     projectNumber: parsed.OPENSTEER_GOOGLE_PROJECT_NUMBER,
     kubernetes: {

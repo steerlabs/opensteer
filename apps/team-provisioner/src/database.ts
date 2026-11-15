@@ -1,5 +1,5 @@
 import pg from "pg";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, pbkdf2Sync, randomBytes } from "node:crypto";
 
 export function teamDatabaseName(id: string): string {
   return `team_${createHash("sha256").update(id).digest("hex").slice(0, 32)}`;
@@ -13,6 +13,15 @@ export function teamDatabaseUrl(id: string, host: string): string {
   url.searchParams.set("sslmode", "verify-full");
   url.searchParams.set("sslrootcert", "/run/secrets/host/database-ca.pem");
   return url.toString();
+}
+
+/** PostgreSQL's stored form of a SCRAM-SHA-256 password (RFC 7677). */
+export function scramSha256Verifier(password: string, salt = randomBytes(16), iterations = 4096) {
+  const salted = pbkdf2Sync(password, salt, iterations, 32, "sha256");
+  const clientKey = createHmac("sha256", salted).update("Client Key").digest();
+  const storedKey = createHash("sha256").update(clientKey).digest();
+  const serverKey = createHmac("sha256", salted).update("Server Key").digest();
+  return `SCRAM-SHA-256$${iterations}:${salt.toString("base64")}$${storedKey.toString("base64")}:${serverKey.toString("base64")}`;
 }
 
 export interface TeamDatabase {
@@ -45,8 +54,9 @@ export class PostgresTeamDatabase implements TeamDatabase {
       const role = await client.query("select 1 from pg_roles where rolname=$1", [name]);
       if (!role.rowCount) {
         const password = decodeURIComponent(new URL(databaseUrl).password);
+        // Only the SCRAM verifier reaches the server, so the password can't surface in its logs.
         await client.query(
-          `CREATE ROLE ${identifier} LOGIN PASSWORD ${pg.escapeLiteral(password)} NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 16`,
+          `CREATE ROLE ${identifier} LOGIN PASSWORD ${pg.escapeLiteral(scramSha256Verifier(password))} NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 16`,
         );
       }
       await client.query(`GRANT ${identifier} TO CURRENT_USER WITH SET TRUE`);

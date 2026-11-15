@@ -1,5 +1,6 @@
 import pg from "pg";
 import { Storage } from "@google-cloud/storage";
+import { GoogleAuth } from "google-auth-library";
 import { PostgresTeamDatabase } from "./database.js";
 import { GcsTeamStorage } from "./storage.js";
 import { createServer } from "node:http";
@@ -19,12 +20,27 @@ function log(event: string, fields: Readonly<Record<string, unknown>> = {}): voi
 
 async function main(): Promise<void> {
   const config = loadProvisionerConfig(process.env);
+  const google = new GoogleAuth({
+    scopes: ["https://www.googleapis.com/auth/sqlservice.login"],
+  });
   const pool = new pg.Pool({
-    connectionString: config.databaseUrl,
+    host: config.platform.databaseHost,
+    port: 5432,
+    database: "postgres",
+    user: config.databaseUser,
+    // IAM database authentication: a fresh short-lived access token is the password.
+    password: async () => {
+      const token = await google.getAccessToken();
+      if (!token) throw new Error("No Google access token for the database");
+      return token;
+    },
+    ssl: { ca: config.platform.databaseCa, servername: config.platform.databaseHost },
     max: 2,
     connectionTimeoutMillis: 15_000,
     query_timeout: 30_000,
   });
+  // The pool drops an idle client the server ends; without a listener that would crash.
+  pool.on("error", () => {});
   const reconciler = new Reconciler({
     account: new AccountClient({
       origin: config.accountOrigin,

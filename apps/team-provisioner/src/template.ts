@@ -226,7 +226,10 @@ function teamDeployment(
       template: {
         metadata: {
           labels,
-          annotations: { [setupGenerationAnnotation]: String(input.setupGeneration) },
+          annotations: {
+            [setupGenerationAnnotation]: String(input.setupGeneration),
+            "opensteer.dev/database-ca": input.platform.databaseCaDigest,
+          },
         },
         spec: {
           serviceAccountName: "team",
@@ -354,4 +357,6 @@ export function newTeamSecret(input: {
 export interface TeamPlatform {
   readonly databaseIp: string;
   readonly bucket: string;
+  /** Changes when the database CA bundle does, so every team rolls onto the new bundle. */
+  readonly databaseCaDigest: string;
 }

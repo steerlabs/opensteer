@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { teamDatabaseUrl, type TeamDatabase } from "./database.js";
 import type { TeamStorage } from "./storage.js";
 import type {
@@ -38,13 +39,23 @@ export interface KubernetesApi {
   listNamespaces(): Promise<readonly ManagedNamespace[]>;
   listDeployments(): Promise<readonly ManagedDeployment[]>;
   apply(object: KubernetesObject): Promise<void>;
-  /** The stored setup digest, or undefined when the team has no Secret yet. */
-  readSetupTokenDigest(namespace: string): Promise<string | undefined>;
-  readDatabaseUrl(namespace: string): Promise<string | undefined>;
+  /** The team's installation Secret, or undefined when it has none yet. */
+  readTeamSecret(namespace: string): Promise<TeamSecretValues | undefined>;
   createSecret(secret: KubernetesObject): Promise<void>;
-  writeSetupTokenDigest(namespace: string, digest: string): Promise<void>;
+  writeTeamSecret(namespace: string, values: Readonly<Record<string, string>>): Promise<void>;
   deleteNamespace(name: string): Promise<void>;
 }
+
+export interface TeamSecretValues {
+  readonly setupTokenDigest: string;
+  readonly databaseUrl: string | undefined;
+  readonly databaseCa: string | undefined;
+}
+
+type ProvisionerPlatform = Omit<TeamPlatform, "databaseCaDigest"> & {
+  readonly databaseHost: string;
+  readonly databaseCa: string;
+};
 
 export interface AccountApi {
   desired(): Promise<readonly DesiredHostedTeam[]>;
@@ -65,7 +76,7 @@ export class Reconciler {
   readonly #kubernetes: KubernetesApi;
   readonly #images: TeamImages;
   readonly #replicas: number;
-  readonly #platform: TeamPlatform & { databaseHost: string; databaseCa: string };
+  readonly #platform: ProvisionerPlatform & TeamPlatform;
   readonly #database: TeamDatabase;
   readonly #storage: TeamStorage;
   readonly #log: ReconcilerLog;
@@ -78,7 +89,7 @@ export class Reconciler {
     readonly kubernetes: KubernetesApi;
     readonly images: TeamImages;
     readonly replicas?: number;
-    readonly platform: TeamPlatform & { databaseHost: string; databaseCa: string };
+    readonly platform: ProvisionerPlatform;
     readonly database: TeamDatabase;
     readonly storage: TeamStorage;
     readonly log: ReconcilerLog;
@@ -88,7 +99,10 @@ export class Reconciler {
     this.#kubernetes = input.kubernetes;
     this.#images = input.images;
     this.#replicas = input.replicas ?? 1;
-    this.#platform = input.platform;
+    this.#platform = {
+      ...input.platform,
+      databaseCaDigest: createHash("sha256").update(input.platform.databaseCa).digest("hex"),
+    };
     this.#database = input.database;
     this.#storage = input.storage;
     this.#log = input.log;
@@ -162,7 +176,7 @@ export class Reconciler {
     const namespace = teamNamespace(team.slug);
     await this.#kubernetes.apply(objects[0]!);
     await this.#kubernetes.apply(objects[1]!);
-    const stored = await this.#kubernetes.readSetupTokenDigest(namespace);
+    let stored = await this.#kubernetes.readTeamSecret(namespace);
     if (stored === undefined) {
       if (await this.#database.exists(team.id))
         throw new Error("Existing team installation Secret is missing");
@@ -176,12 +190,17 @@ export class Reconciler {
           databaseCa: this.#platform.databaseCa,
         }),
       );
-    } else if (team.setupTokenDigest && stored !== team.setupTokenDigest) {
-      await this.#kubernetes.writeSetupTokenDigest(namespace, team.setupTokenDigest);
+      stored = await this.#kubernetes.readTeamSecret(namespace);
+    } else {
+      const changes: Record<string, string> = {};
+      if (team.setupTokenDigest && stored.setupTokenDigest !== team.setupTokenDigest)
+        changes["setup-token-digest"] = team.setupTokenDigest;
+      if (stored.databaseCa !== this.#platform.databaseCa)
+        changes["database-ca.pem"] = this.#platform.databaseCa;
+      if (Object.keys(changes).length) await this.#kubernetes.writeTeamSecret(namespace, changes);
     }
-    const databaseUrl = await this.#kubernetes.readDatabaseUrl(namespace);
-    if (!databaseUrl) throw new Error("Team installation is incomplete");
-    await this.#database.ensure(team.id, databaseUrl);
+    if (!stored?.databaseUrl) throw new Error("Team installation is incomplete");
+    await this.#database.ensure(team.id, stored.databaseUrl);
     await this.#storage.ensure(team.id, namespace);
     for (const object of objects.slice(2)) await this.#kubernetes.apply(object);
   }

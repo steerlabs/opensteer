@@ -17,7 +17,7 @@ const input: TeamTemplateInput = {
   images: {
     host: pinned("opensteer-team-host", "1"),
   },
-  platform: { databaseIp: "10.1.1.1", bucket: "teams" },
+  platform: { databaseIp: "10.1.1.1", bucket: "teams", databaseCaDigest: "ca-1" },
   replicas: 1,
   setupGeneration: 1,
 };
