@@ -1,4 +1,12 @@
-import { memo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
+import {
+  memo,
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { useWindowedRows } from "../workspace/windowed-rows.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
@@ -57,8 +65,24 @@ export function SidebarSwitch({
 }) {
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const anchors = useRef(new Map<string, HTMLButtonElement>());
+  const group = useRef<HTMLDivElement | null>(null);
+  // Arrow keys switch sides, which navigates; the page that opens must not take
+  // focus from a radio group the person is still moving through.
+  const keyed = useRef<string | null>(null);
+  useEffect(() => {
+    if (keyed.current !== active) return;
+    keyed.current = null;
+    group.current
+      ?.querySelector<HTMLButtonElement>(`[data-value="${CSS.escape(active)}"]`)
+      ?.focus();
+  }, [active]);
   return (
-    <div aria-label="Tasks or a team" className="segmented side-switch" role="radiogroup">
+    <div
+      aria-label="Tasks or a team"
+      className="segmented side-switch"
+      ref={group}
+      role="radiogroup"
+    >
       {segments.map((segment, index) => {
         const chosen = segment.id === active;
         const menu = chosen ? segment.menu : undefined;
@@ -90,9 +114,9 @@ export function SidebarSwitch({
                 if (nextIndex === null) return;
                 event.preventDefault();
                 const next = segments[nextIndex]!;
+                keyed.current = next.id;
                 onSelect(next.id);
-                const group = event.currentTarget.closest('[role="radiogroup"]');
-                group
+                group.current
                   ?.querySelector<HTMLButtonElement>(`[data-value="${CSS.escape(next.id)}"]`)
                   ?.focus();
               }}

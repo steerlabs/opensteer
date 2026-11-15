@@ -1,5 +1,6 @@
 import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
-import { enterSide } from "../navigation-ref.js";
+import { useNavigation } from "@react-navigation/native";
+import { sideMemory } from "../side-memory.js";
 import { useTeamsSnapshot } from "../team/team-context.js";
 import type { TeamSource } from "@opensteer/core";
 import {
@@ -1868,6 +1869,7 @@ const styles = StyleSheet.create({
 });
 
 function TeamInputSource({ source }: { readonly source: TeamSource }): ReactNode {
+  const navigation = useNavigation();
   const team = useTeamsSnapshot().teams.find((row) => row.teamId === source.teamId);
   const label = (
     <AppText role="caption" tone="muted">{`#${source.audience.channelName} ↗`}</AppText>
@@ -1877,19 +1879,23 @@ function TeamInputSource({ source }: { readonly source: TeamSource }): ReactNode
   return (
     <Pressable
       accessibilityRole="link"
-      onPress={() =>
-        enterSide({
-          name: "TeamThread",
-          params: {
-            teamId: source.teamId,
-            channelId: source.channelId,
-            rootId,
-            ...(source.messageId && source.messageId !== rootId
-              ? { replyId: source.messageId }
-              : {}),
-          },
-        })
-      }
+      onPress={() => {
+        const state = navigation.getState();
+        const action =
+          state &&
+          sideMemory.enter(state, {
+            name: "TeamThread",
+            params: {
+              teamId: source.teamId,
+              channelId: source.channelId,
+              rootId,
+              ...(source.messageId && source.messageId !== rootId
+                ? { replyId: source.messageId }
+                : {}),
+            },
+          });
+        if (action) navigation.dispatch(action);
+      }}
     >
       {label}
     </Pressable>

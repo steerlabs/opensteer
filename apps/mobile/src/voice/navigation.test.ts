@@ -104,7 +104,7 @@ it("changes A to B to C in place, preserving the Thread below and clearing trans
   expect(navigationRef.dispatch).toHaveBeenCalledTimes(2);
   vi.mocked(navigationRef.dispatch).mockReset();
 });
-it("enters the first place through its side from a Thread or a different deployment", () => {
+it("pushes the first place from a Thread or a different deployment", () => {
   for (const route of [
     { key: "thread", name: "Thread" as const, params: { deploymentId: "d", threadId: "t" } },
     {
@@ -118,9 +118,20 @@ it("enters the first place through its side from a Thread or a different deploym
       show("d", { kind: "place", destination: { kind: "browser", sessionId: "s", tabId: "B" } }),
     ).toBe(true);
     expect(navigationRef.dispatch).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type: "RESET" }),
+      expect.objectContaining({ type: "PUSH" }),
     );
   }
+});
+it("opens a task's place from a team's screen through the Tasks side", () => {
+  ref.getCurrentRoute.mockReturnValue({
+    key: "channel",
+    name: "TeamChannel",
+    params: { teamId: "team", channelId: "general" },
+  });
+  expect(show("d", { kind: "thread", threadId: "t" })).toBe(true);
+  expect(navigationRef.dispatch).toHaveBeenLastCalledWith(
+    expect.objectContaining({ type: "RESET" }),
+  );
 });
 
 it("replaces all destination fields when showing a different kind of place", () => {

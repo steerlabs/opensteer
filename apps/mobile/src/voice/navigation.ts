@@ -1,6 +1,7 @@
 import type { VoiceTarget } from "@opensteer/client/voice";
-import { CommonActions } from "@react-navigation/native";
+import { CommonActions, StackActions } from "@react-navigation/native";
 import { enterSide, navigationRef } from "../navigation-ref.js";
+import { routeSide } from "../side-memory.js";
 import { paramsDestination, sameDestination, tabsRoute } from "../browser/surface-route.js";
 
 /** The route naming the conversation here: the one on screen, or beneath the places over it. */
@@ -53,5 +54,10 @@ export function show(deploymentId: string | null, target: VoiceTarget): boolean 
     Object.entries(params).every(([key, value]) => current[key] === value)
   )
     return false;
+  // Within Tasks the shown screen goes over the task, so Back returns to it.
+  if (routeSide(navigationRef.getRootState()?.routes[1]) === "tasks") {
+    navigationRef.dispatch(StackActions.push(name, params));
+    return true;
+  }
   return enterSide({ name, params });
 }

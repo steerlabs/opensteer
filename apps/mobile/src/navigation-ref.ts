@@ -1,6 +1,6 @@
 import { StackActions, createNavigationContainerRef } from "@react-navigation/native";
 import type { RootParamList } from "./navigation.js";
-import { sideMemory } from "./side-memory.js";
+import { routeSide, sideMemory } from "./side-memory.js";
 import type { TopLevelTarget } from "./top-level.js";
 import { deploymentRoot, deploymentsRoot } from "./navigation-state.js";
 
@@ -54,6 +54,15 @@ export function forgetTeamSide(teamId: string): void {
   if (!navigationRef.isReady()) return;
   const state = navigationRef.getRootState();
   if (state === undefined) return;
+  // Without a selected computer there is no Home to resume; the team's screens just close.
+  if (state.routes[0]?.name !== "Home") {
+    const routes = state.routes
+      .filter((route) => routeSide(route) !== teamId)
+      .map(({ key, name, params }) => ({ key, name, params }));
+    if (routes.length > 0 && routes.length < state.routes.length)
+      navigationRef.resetRoot({ index: routes.length - 1, routes });
+    return;
+  }
   const action = sideMemory.forget(state, teamId);
   if (action !== null) navigationRef.dispatch(action);
 }

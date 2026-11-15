@@ -72,13 +72,22 @@ export function ToolbarLeave(props: { readonly ownRow?: boolean }): ReactNode {
   );
 }
 
+/** The Menu, only where a drawer sidebar can open from this screen. */
 function ToolbarMenuButton(): ReactNode {
   const sidebar = useSidebarControl();
   const docked = useSidebarDocked();
   const presented = useIsPresented();
+  if (sidebar === null || docked || presented) return null;
+  return <ToolbarMenu sidebar={sidebar} />;
+}
+
+function ToolbarMenu({
+  sidebar,
+}: {
+  readonly sidebar: NonNullable<ReturnType<typeof useSidebarControl>>;
+}): ReactNode {
   const attention = useMenuAttention();
   const button = useRef<HostInstance>(null);
-  if (sidebar === null || docked || presented) return null;
   return (
     <ToolbarButton
       accessibilityHint={menuHint}

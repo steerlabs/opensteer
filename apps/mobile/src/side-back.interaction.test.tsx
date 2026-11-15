@@ -14,7 +14,7 @@ import {
   type NavigationAction,
   type ParamListBase,
 } from "@react-navigation/native";
-import { enterSide, navigationRef } from "./navigation-ref.js";
+import { enterSide, forgetTeamSide, navigationRef } from "./navigation-ref.js";
 import { useTeamSideBack } from "./side-back.js";
 import { sideMemory } from "./side-memory.js";
 
@@ -141,7 +141,7 @@ it("allows switches, resets and pop-to-top away from a team root, and redirects 
   }
 });
 
-it("opens a team destination when no computer is selected, with no Home to keep", async () => {
+it("opens and closes a team when no computer is selected, with no Home to keep", async () => {
   const root = createRoot(document.createElement("div"));
   const channel = { name: "TeamChannel", params: { teamId: "a", channelId: "general" } };
   try {
@@ -162,8 +162,12 @@ it("opens a team destination when no computer is selected, with no Home to keep"
     await act(async () => {
       expect(enterSide(channel)).toBe(true);
     });
-    const state = navigationRef.getRootState();
-    expect(state?.routes.at(-1)).toMatchObject(channel);
+    expect(navigationRef.getRootState()?.routes.at(-1)).toMatchObject(channel);
+    // Leaving that team closes its screens, back to the computer list.
+    await act(async () => forgetTeamSide("a"));
+    expect(navigationRef.getRootState()?.routes.map((route) => route.name)).toEqual([
+      "Deployments",
+    ]);
   } finally {
     await act(async () => root.unmount());
   }
