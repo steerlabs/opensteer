@@ -1858,7 +1858,7 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).rejects.toThrow("Only a tool.started event names an integration call's subject");
 
-    // After a restart the Host rebuilds the Thread's last app from its named calls.
+    // An integration subject alone does not invent a durable tab or a tab-based recent place.
     await store.commitRunnerEvent({
       environmentId: fixture.environmentId,
       event: pendingEvent({
@@ -1876,17 +1876,8 @@ describeStore("PostgreSQL store", (it) => {
       runnerBootId,
       runnerId: fixture.runnerId,
     });
-    await expect(store.latestNativePlaces(fixture.userId)).resolves.toEqual([
-      expect.objectContaining({
-        place: {
-          appKey: "com.tinyspeck.slackmacgap",
-          kind: "app",
-          machineId: fixture.runnerId,
-        },
-        runId: work.run.id,
-        threadId: fixture.thread.id,
-      }),
-    ]);
+    await expect(store.latestNativePlaces(fixture.userId)).resolves.toEqual([]);
+    expect(await database.selectFrom("personalTabs").select("id").execute()).toEqual([]);
   });
   it("names a Run's requester only for its own Thread", async ({ storeFixture }) => {
     const { createRunFixture, store } = storeFixture;

@@ -72,7 +72,10 @@ export const PersonShowMessageSchema = z.object({
   type: z.literal("host.show"),
   threadId: ThreadIdSchema,
   runId: RunIdSchema,
-  target: PersonShowTargetSchema,
+  target: z.union([
+    z.object(PersonShowTargetSchema.options[0].shape),
+    z.object(PersonShowTargetSchema.options[1].shape),
+  ]),
 });
 export type PersonShowMessage = z.infer<typeof PersonShowMessageSchema>;
 export const ThreadPlaceReferenceSchema = z.object({
@@ -94,8 +97,17 @@ export const TabPlaceActivitySchema = z
     "Activity must expire within the acting window.",
   );
 export type TabPlaceActivity = z.infer<typeof TabPlaceActivitySchema>;
+export const TabPlaceActivityViewSchema = z
+  .object({
+    ...TabPlaceActivitySchema.shape,
+    pointer: z.object(TabPlaceActivitySchema.shape.pointer.unwrap().shape).nullable(),
+  })
+  .refine(
+    (activity) => activity.expiresAt > activity.at && activity.expiresAt - activity.at <= 15_000,
+    "Activity must expire within the acting window.",
+  );
 export const TabPlaceActivityNoticeSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("host.place-activity"), activity: TabPlaceActivitySchema }),
+  z.object({ type: z.literal("host.place-activity"), activity: TabPlaceActivityViewSchema }),
   z.object({
     type: z.literal("host.place-activity-cleared"),
     tabId: TabIdSchema,

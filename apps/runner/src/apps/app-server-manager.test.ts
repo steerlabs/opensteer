@@ -564,3 +564,37 @@ it.each(["stop", "replacement", "crash", "stopAll"] as const)(
     }
   },
 );
+
+it("starts no desired server when complete-set reconciliation cannot prove an orphan stopped", async () => {
+  const root = await mkdtemp(join(tmpdir(), "opensteer-app-sync-unknown-"));
+  let proof: "unknown" | "proven" = "unknown";
+  const starts: string[] = [];
+  const manager = new AppServerManager({
+    resolveRoot: async () => root,
+    privateDirectory: join(root, "private"),
+    planLaunch: async (id) => {
+      starts.push(id);
+      return (launch) => launch;
+    },
+    terminate: async (_id, stopEngine) => {
+      await stopEngine();
+      return proof;
+    },
+    readyTimeoutMs: 2_000,
+  });
+  await writeFile(join(root, "server.cjs"), crashServer);
+  const orphan = await specFor(root, `${process.execPath} server.cjs`);
+  const desired = await specFor(root, `${process.execPath} server.cjs`);
+  try {
+    await manager.start(orphan);
+    await expect(
+      manager.sync([{ spec: desired, desiredState: "running" }], AbortSignal.timeout(2_000)),
+    ).rejects.toThrow(/cannot prove.*stopped/i);
+    expect(starts).toHaveLength(1);
+    expect(manager.running(desired)).toBe(false);
+  } finally {
+    proof = "proven";
+    await manager.stopAll();
+    await rm(root, { recursive: true, force: true });
+  }
+});

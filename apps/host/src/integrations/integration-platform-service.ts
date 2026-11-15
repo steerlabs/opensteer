@@ -1,3 +1,4 @@
+import { agentToolFailureResult } from "@opensteer/agent-tools";
 import { randomUUID } from "node:crypto";
 import type { NativeTabTargets, NativeReplTabTarget } from "../computer-use/native-tab-targets.js";
 import type { TabServicePort } from "../tabs/ports.js";
@@ -3546,7 +3547,11 @@ export class IntegrationPlatformService {
           ? unconfirmedIntegrationWriteMessage(callable)
           : adapterErrorMessage(result, definition, grantedScopes);
       return sanitizeToolResult(
-        { content: [{ text: message, type: "text" as const }], isError: true },
+        agentToolFailureResult({
+          code: result.details?.outcomeUnknown === true ? "outcome_unknown" : result.code,
+          message,
+          next: null,
+        }),
         responseRedactor,
       );
     }

@@ -33,8 +33,18 @@ const clientPolicyDerivations: Record<string, { count: number; reason: string }>
   },
 };
 const exceptions: Record<string, { counts: Record<string, number>; reason: string }> = {
+  "apps/mobile/src/screens/apps.tsx": {
+    counts: { "app.kind": 1 },
+    reason:
+      "The app content kind selects HTML or server lifecycle controls, not Deployment policy.",
+  },
+  "apps/web/src/components/apps/apps-page.tsx": {
+    counts: { "deleting.kind": 1, "app.kind": 1 },
+    reason:
+      "The app content kind selects server deletion copy and lifecycle controls, not Deployment policy.",
+  },
   "apps/mobile/src/markdown/reference-link.tsx": {
-    counts: { "navigation?.context.kind": 2, "navigation.context.kind": 1, "context.kind": 2 },
+    counts: { "navigation?.context.kind": 2, "navigation.context.kind": 2, "context.kind": 2 },
     reason:
       "A reference's render scope says whether words sit in personal or team text, not Deployment policy.",
   },

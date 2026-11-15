@@ -1,3 +1,4 @@
+import { ToolFailureSchema } from "@opensteer/core";
 import { startHeldRequest } from "./held-request.test-support.js";
 /**
  * Real Host/PostgreSQL proposal, review, connection and repair journey.
@@ -1191,7 +1192,11 @@ integration("proposal credential guidance", () => {
           () => null,
           (error: unknown) => (error instanceof Error ? error.message : String(error)),
         );
-        expect(refusal?.startsWith(`invalid_arguments: ${field}: `)).toBe(true);
+        expect(ToolFailureSchema.parse(JSON.parse(refusal!)).error).toMatchObject({
+          code: "invalid_input",
+          message: expect.stringMatching(new RegExp(`^invalid_arguments: ${field}: `)),
+          next: null,
+        });
         refusals.push(refusal!);
       }
       facts.push({ step: "argument refusals name their field", observed: refusals });

@@ -738,7 +738,9 @@ integration.sequential("PostgreSQL integration uninstall", () => {
             await sql<{ query: string }>`select query from pg_stat_activity
         where datname = current_database() and application_name = 'opensteer-integration-uninstall-test'
         and wait_event_type = 'Lock'`.execute(database)
-          ).rows.some(({ query }) => query.includes('from "deployment_event_state"')),
+          ).rows.some(({ query }) =>
+            query.includes("from deployment_event_state for no key update"),
+          ),
         )
         .toBe(true);
       release.resolve();
@@ -3371,7 +3373,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
             }>`select query from pg_stat_activity where datname=current_database() and application_name='opensteer-computer-app-connections-test' and wait_event_type='Lock'`.execute(
               database,
             )
-          ).rows.some(({ query }) => query.includes('"deployment_event_state"')),
+          ).rows.some(({ query }) =>
+            query.includes("from deployment_event_state for no key update"),
+          ),
         )
         .toBe(true);
       barrier.release();
@@ -3623,7 +3627,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
             }>`select query from pg_stat_activity where datname=current_database() and application_name='opensteer-computer-app-connections-test' and wait_event_type='Lock'`.execute(
               database,
             )
-          ).rows.some(({ query }) => query.includes('"deployment_event_state"')),
+          ).rows.some(({ query }) =>
+            query.includes("from deployment_event_state for no key update"),
+          ),
         )
         .toBe(true);
       barrier.release();
@@ -3767,9 +3773,8 @@ integration.sequential("PostgreSQL computer app connections", () => {
           transformQuery(args) {
             const node = JSON.stringify(args.node);
             if (
-              args.node.kind === "SelectQueryNode" &&
-              /"name":"deployment_?event_?state"/iu.test(node) &&
-              (node.includes("ForNoKeyUpdate") || node.includes("ForShare"))
+              args.node.kind === "RawNode" &&
+              node.includes("select deployment_id from deployment_event_state for no key update")
             )
               acquiring.resolve();
             return args.node;
@@ -3803,7 +3808,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
               await sql<{ query: string }>`select query from pg_stat_activity
         where datname = current_database() and application_name = 'opensteer-covered-order-test'
         and wait_event_type = 'Lock'`.execute(database)
-            ).rows.some(({ query }) => query.includes('"deployment_event_state"')),
+            ).rows.some(({ query }) =>
+              query.includes("from deployment_event_state for no key update"),
+            ),
           )
           .toBe(true);
         release.resolve();
