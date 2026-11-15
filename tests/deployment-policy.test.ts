@@ -121,6 +121,7 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   "apps/host/src/server/host-api-registration.ts": {
     counts: {
       "options.kind": 2,
+      kind: 3,
     },
     reason:
       "Transport pins deployment kind and negotiates the independent protocol before admitting a request.",
@@ -345,7 +346,7 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   },
   "packages/client/src/host/host-api-client.ts": {
     counts: {
-      "options.kind": 2,
+      "options.kind": 1,
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
@@ -408,11 +409,11 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   },
   "packages/deployment-authority/src/authority.ts": {
     counts: {
-      kind: 3,
+      kind: 5,
       "parsed.data.kind": 1,
     },
     reason:
-      "Transport pins deployment kind and negotiates the independent protocol before admitting a request; only team peers negotiate a version window.",
+      "Transport pins deployment kind and negotiates the independent protocol before admitting a request; personal and team peers each negotiate their own version window.",
   },
   "packages/control-plane-protocol/src/hosted-teams.ts": {
     counts: {

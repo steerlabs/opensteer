@@ -105,6 +105,8 @@ export class MockPersonalHost {
         : result,
     );
   };
+  /** The version this Host's sockets serve; its bootstrap does not say. */
+  apiVersion = hostApiVersion;
   readonly connect = (): MockPersonalSocket => {
     const socket = new MockPersonalSocket((data) => {
       const frame = ClientToHostMessageSchema.parse(JSON.parse(data));
@@ -115,7 +117,7 @@ export class MockPersonalHost {
       }
       this.#subscribed.set(socket, frame.deviceAccessRequests === "include");
       // Like the Host, state read at another version is replaced, not resumed.
-      const after = frame.cursor.apiVersion === hostApiVersion ? frame.cursor.afterSequence : "0";
+      const after = frame.cursor.apiVersion === this.apiVersion ? frame.cursor.afterSequence : "0";
       const rows = this.#rows.filter((row) => BigInt(row.sequence) > BigInt(after));
       if (
         after !== "0" &&
@@ -141,7 +143,11 @@ export class MockPersonalHost {
       );
       for (let start = 0; start < visits.length; start += 100)
         socket.deliver({ type: "host.thread-visits", visits: visits.slice(start, start + 100) });
-      socket.deliver({ type: "host.synchronized", sequence: this.#through });
+      socket.deliver({
+        type: "host.synchronized",
+        apiVersion: this.apiVersion,
+        sequence: this.#through,
+      });
     });
     this.sockets.add(socket);
     socket.addEventListener("close", () => {

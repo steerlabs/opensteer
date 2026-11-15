@@ -4729,8 +4729,11 @@ export class HttpHostClient {
       else this.#browserTabs.applyTabs(message.groupId, message.stream);
       return;
     }
+    // What this socket sent was read at the version it names, whatever bootstrap last said.
+    if (message.apiVersion !== undefined)
+      channel.apiVersion = this.#servedApiVersion = message.apiVersion;
     channel.cursor = maxSequence(channel.cursor, message.sequence);
-    this.#persistCheckpoint(channel);
+    this.#persistCheckpoint(channel, true);
     // A resubscription sends every open stream whole right after this, so what
     // the old connection streamed is forgotten rather than continued, and any
     // reread still in flight belongs to the old subscription.
@@ -5536,7 +5539,9 @@ export class HttpHostClient {
         }
       : null;
   }
-  #persistCheckpoint(channel: DeploymentChannel): void {
+  #persistCheckpoint(channel: DeploymentChannel, synchronizing = false): void {
+    // Until a socket synchronizes, the version its state was read at is unconfirmed.
+    if (!channel.synchronized && !synchronizing) return;
     const scope = this.#cacheScope();
     if (!scope || !this.#streamCache) return;
     const generation = this.#viewerGeneration;

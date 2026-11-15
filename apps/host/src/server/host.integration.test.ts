@@ -35,7 +35,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { IntegrationConnectionAuthStore, type OpensteerStore } from "@opensteer/database";
-import { hostApiVersion } from "@opensteer/deployment-authority";
+import { hostApiVersion, minimumHostApiVersion } from "@opensteer/deployment-authority";
 import { createIntegrationId } from "@opensteer/integration-core";
 import {
   agentToolPayloadMaxSerializedBytes,
@@ -380,11 +380,12 @@ describe("Host signing keys", () => {
     try {
       const discovery = await app.inject({ method: "GET", url: "/.well-known/opensteer" });
       expect(discovery.statusCode).toBe(200);
-      expect(discovery.json().apiVersion).toBe(hostApiVersion);
+      expect(discovery.json().apiVersion).toBe(minimumHostApiVersion);
       expect(discovery.headers["cache-control"]).toBe("no-store");
       expect(discovery.json()).toEqual({
         kind: "personal",
-        apiVersion: hostApiVersion,
+        apiVersion: minimumHostApiVersion,
+        currentApiVersion: hostApiVersion,
         authority: testDiscovery,
         bootstrapMethods: ["password"],
         capabilities: [
@@ -537,7 +538,8 @@ describe("Host signing keys", () => {
       const discovery = await app.inject({ method: "GET", url: "/.well-known/opensteer" });
 
       expect(discovery.json()).toMatchObject({
-        apiVersion: hostApiVersion,
+        apiVersion: minimumHostApiVersion,
+        currentApiVersion: hostApiVersion,
         capabilities: [
           "devices-v1",
           "automatic-models-v1",

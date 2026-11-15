@@ -286,6 +286,8 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     ...clientMessageBase,
     type: z.literal("host.synchronized"),
+    /** The version this subscription is served; a Host from before the window omits it. */
+    apiVersion: z.number().int().positive().optional(),
     sequence: SequenceSchema,
   }),
   /**

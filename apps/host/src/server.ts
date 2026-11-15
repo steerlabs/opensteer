@@ -3729,7 +3729,10 @@ function attachRealtimeSocket(
   const sink = {
     ...peer,
     send: async (message: HostToClientMessage | BrowserClientStreamMessage) => {
-      const projected = HostToClientMessageSchema.safeParse(message);
+      const projected = HostToClientMessageSchema.safeParse(
+        // Tells the reader which version the state it just received was read at.
+        message.type === "host.synchronized" ? { ...message, apiVersion } : message,
+      );
       if (!projected.success) {
         // Publisher faults cannot be repaired by replaying the same cursor.
         // Keep validation errors (which can contain private values) off the wire.

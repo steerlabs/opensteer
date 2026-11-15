@@ -144,6 +144,22 @@ it("restores a saved cut only for the same Deployment, viewer, served version an
     client.dispose();
   }
 });
+it("saves what a socket sent under the version that socket served, not the last bootstrap's", async () => {
+  let held: PersonalStreamCheckpoint | null = null;
+  const cache: PersonalStreamCache = {
+    load: async () => held,
+    remove: async () => {
+      held = null;
+    },
+    commit: async (checkpoint, current) => {
+      if (current()) held = structuredClone(checkpoint);
+    },
+  };
+  const f = fixture(cache);
+  f.host.apiVersion = hostApiVersion + 1;
+  await f.client.load();
+  await vi.waitFor(() => expect(held?.cursor.apiVersion).toBe(hostApiVersion + 1));
+});
 it("restores absolute task versions so replay cannot undo a newer HTTP answer", async () => {
   const { ThreadStateProjection } = await import("./thread-state.js");
   const { AgentEventViewSchema, SequenceSchema } = await import("@opensteer/core");

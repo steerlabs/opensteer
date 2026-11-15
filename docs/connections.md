@@ -35,8 +35,9 @@ resort: a person whose phone updated before their Mac loses their Mac.
 - Move a current version only for a change an older peer would misread, and then serve older
   callers the shape they read; the personal [wire guard](../packages/protocol/src/personal-wire.test.ts)
   compares every personal schema with the one recorded at the minimum. Bootstrap tells a caller
-  the version it is served before it reads any state, and saved state read at another version is
-  replaced by a snapshot, never resumed or refused.
+  the version it is served before it reads any state, and each realtime sync names the version its
+  state was read at; saved state read at another version is replaced by a snapshot, never resumed
+  or refused.
 - Raise a minimum only for a security reason or once published Stable already speaks the new
   minimum; the [Stable floor guard](../.github/scripts/ci-stable-api.mjs) enforces both, and an
   exception needs an explicit guard change and Tim's approval.
