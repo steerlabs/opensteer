@@ -137,6 +137,8 @@ export class TeamPartnerStore {
         .set({ policy })
         .where("singletonKey", "=", "team")
         .execute();
+      await sql`select team_bus_notify(jsonb_build_object('kind', 'partnerLink', 'linkId', id))
+        from team_partner_links`.execute(t);
       await this.audit(t, actor, "policy.changed", undefined, { policy });
     });
   }
@@ -219,7 +221,12 @@ export class TeamPartnerStore {
     });
   }
 
-  async propose(actor: TeamActor, authority: HostDiscoveryEnvelope, name: string) {
+  async propose(
+    actor: TeamActor,
+    authority: HostDiscoveryEnvelope,
+    name: string,
+    seal?: (id: string) => Promise<Buffer>,
+  ) {
     return this.write(async (t) => {
       const approved = await this.authorize(t, actor, "propose");
       const existing = await t
@@ -236,9 +243,22 @@ export class TeamPartnerStore {
           hostInstanceId: existing.partnerHostInstanceId,
         });
         requireTeam(existing.role === "dialer");
+        if (seal)
+          await t
+            .updateTable("teamPartnerLinks")
+            .set({ sealedOffer: await seal(existing.id) })
+            .where("id", "=", existing.id)
+            .execute();
         return existing;
       }
-      return this.insert(t, authority, name, "dialer", actor.userId, approved, false);
+      const row = await this.insert(t, authority, name, "dialer", actor.userId, approved, false);
+      if (seal)
+        await t
+          .updateTable("teamPartnerLinks")
+          .set({ sealedOffer: await seal(row.id) })
+          .where("id", "=", row.id)
+          .execute();
+      return row;
     });
   }
 
@@ -362,7 +382,7 @@ export class TeamPartnerStore {
     await this.write(async (t) => {
       await t
         .updateTable("teamPartnerLinks")
-        .set({ state: "revoked", revokedAt: new Date(), revokedBy: "local" })
+        .set({ sealedOffer: null, state: "revoked", revokedAt: new Date(), revokedBy: "local" })
         .where("id", "=", id)
         .where("role", "=", "dialer")
         .where("partnerApproved", "=", false)
@@ -379,7 +399,12 @@ export class TeamPartnerStore {
       if (row.state === "revoked") return;
       await t
         .updateTable("teamPartnerLinks")
-        .set({ state: "revoked", revokedAt: new Date(), revokedBy: actor ? "local" : "partner" })
+        .set({
+          sealedOffer: null,
+          state: "revoked",
+          revokedAt: new Date(),
+          revokedBy: actor ? "local" : "partner",
+        })
         .where("id", "=", id)
         .execute();
       await this.audit(t, actor ?? null, "revoked", id, { by: actor ? "local" : "partner" });
