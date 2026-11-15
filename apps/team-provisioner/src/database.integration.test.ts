@@ -12,9 +12,13 @@ integration("team databases", () => {
     const admin = new pg.Pool({ connectionString: adminUrl.toString() });
     // Roles are cluster-wide, so every name here is unique to this run.
     const provisionerRole = `team_provisioner_${randomUUID().replaceAll("-", "")}`;
-    await admin.query(`create role ${provisionerRole} login createdb createrole`);
+    const provisionerPassword = randomUUID();
+    await admin.query(
+      `create role ${provisionerRole} login createdb createrole password ${pg.escapeLiteral(provisionerPassword)}`,
+    );
     const provisionerUrl = new URL(adminUrl);
     provisionerUrl.username = provisionerRole;
+    provisionerUrl.password = provisionerPassword;
     const pool = new pg.Pool({ connectionString: provisionerUrl.toString() });
     const database = new PostgresTeamDatabase(pool);
     const id = randomUUID();
