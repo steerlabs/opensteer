@@ -12,7 +12,12 @@ import {
   type HostClient,
   type RunPageMoment,
 } from "@opensteer/client/host";
-import { useBrowserTabAwake, useRunPageView, useRunPlace } from "@opensteer/client/react";
+import {
+  useBrowserTabAwake,
+  useRunPageView,
+  useRunPlace,
+  useRunPlaceView,
+} from "@opensteer/client/react";
 import { observeResize } from "@opensteer/shared/resizeObserver";
 import {
   memo,
@@ -29,7 +34,6 @@ import {
   PlaceGlyph,
   PlacePicture,
   placeName,
-  useRunPlaceView,
 } from "./viewfinder.js";
 import { useWorkspace } from "./workspace-context.js";
 

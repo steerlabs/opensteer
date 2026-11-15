@@ -839,10 +839,11 @@ function ThreadPaneForUser(
   // Beside a page, a page chip turns that page rather than stacking another.
   const openSurface = useCallback(
     (destination: TabDestination) => {
-      if (destination.kind === "browser" && showTab !== null) showTab(destination);
+      const page = hostClient.getSnapshot().tabs.get(destination.tabId)?.kind === "page";
+      if (page && showTab !== null) showTab({ tabId: destination.tabId });
       else openPlace(destination);
     },
-    [openPlace, showTab],
+    [hostClient, openPlace, showTab],
   );
   const appTabs = useMemo<TranscriptAppTabs>(() => ({ show: showTabHere }), [showTabHere]);
   const surfaces = useMemo<TranscriptSurfaces>(

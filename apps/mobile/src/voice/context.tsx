@@ -2,8 +2,6 @@ import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { conversationRoute, show, type ShowTarget } from "./navigation.js";
 import { VoiceController, type VoiceTarget } from "@opensteer/client/voice";
 import { handlePersonShow, type HostSnapshot } from "@opensteer/client/host";
-import { TabIdSchema } from "@opensteer/core";
-import { selectTabs } from "../tabs/tabs-host.js";
 import { VoiceContext } from "@opensteer/client/react";
 import { AppState } from "react-native";
 import { randomUUID } from "expo-crypto";
@@ -95,27 +93,13 @@ function BackgroundStop({ controller }: { readonly controller: VoiceController }
 }
 
 /**
- * A show's place as the tab already in the list for it. A closed tab is not
- * reopened and nothing stands in for it: then nothing is shown.
- * (Delete once the shared client hands shows over as `{tabId}`.)
+ * Where a show goes: its conversation, or its tab while it is in the list. A
+ * closed tab is never reopened and nothing stands in for it; until the list
+ * is complete a tab not yet received is shown as named.
  */
 function showTarget(snapshot: HostSnapshot, target: VoiceTarget): ShowTarget | null {
   if (target.kind === "thread") return target;
-  const { destination } = target;
-  const tabs = selectTabs(snapshot);
-  const listed = [...(tabs?.rows.values() ?? [])].find((tab) =>
-    destination.kind === "browser"
-      ? tab.tabId === destination.tabId
-      : destination.kind === "opensteer-app"
-        ? tab.kind === "app" && tab.appId === destination.appId
-        : destination.kind === "phone"
-          ? tab.kind === "phone" && tab.computer.computerId === destination.machineId
-          : false,
-  );
-  if (listed) return { kind: "tab", tabId: listed.tabId };
-  // A page's tab is its own id even before the list has caught up.
-  const page = destination.kind === "browser" ? TabIdSchema.safeParse(destination.tabId) : null;
-  return page?.success === true && (tabs === null || !tabs.complete)
-    ? { kind: "tab", tabId: page.data }
-    : null;
+  const { tabId } = target.destination;
+  const tabs = snapshot.tabs;
+  return tabs.get(tabId) !== undefined || !tabs.complete ? { kind: "tab", tabId } : null;
 }

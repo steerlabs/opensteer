@@ -4,7 +4,6 @@ import {
   conversationThreadIds,
   sameConversationSurfaceSource,
   sameTaskFamilyGlance,
-  surfaceDestination,
   taskFamilyGlance,
   threadRequester,
   requesterLink,
@@ -13,20 +12,13 @@ import {
   type HostSnapshot,
   type RequesterLink,
   type FamilyTask,
+  type PlaceActivity,
   type SurfaceItem,
+  type TabDestination,
   type TaskFamily,
   type TaskFamilyGlance,
-  type TaskSurfaceDestination,
 } from "@opensteer/client/host";
-import {
-  actingFor,
-  opensteerAppGlyph,
-  surfaceGlyph,
-  type SurfaceGlyph,
-} from "../browser/agent-surface.js";
-import type { TabsReadModel } from "@opensteer/client/host";
-import type { TabId } from "@opensteer/core";
-import { selectTabs } from "../tabs/tabs-host.js";
+import { opensteerAppGlyph, surfaceGlyph, type SurfaceGlyph } from "../browser/agent-surface.js";
 
 /**
  * What is around a conversation: the places it and the work it handed out
@@ -44,38 +36,45 @@ export interface AroundPlace {
   readonly title: string;
   /** The page's site, or the Mac an app is on; null for anything else. */
   readonly detail: string | null;
-  /** The page's site icon, while this client has one. */
-  readonly favicon: string | null;
-  /** An agent of this conversation acts in it now. */
+  /** The page's site icon reference, which `useTabIcon` reads once this device has the page bound. */
+  readonly iconRef: string | null;
+  /** An agent of this conversation acts in it now, as the Host's activity for that tab says. */
   readonly working: boolean;
-  readonly destination: TaskSurfaceDestination | AroundTabDestination;
+  readonly destination: TabDestination;
 }
 
-/** A tab this conversation opened, such as its app, named by its tabId. */
-export interface AroundTabDestination {
-  readonly kind: "tab";
-  readonly tabId: TabId;
-}
-
-type AroundPlaceSource = ConversationSurfaceSource & { readonly tabs?: TabsReadModel | null };
+/** Who acts in a tab now, by tab ID (`HostClient.placeActivity`). */
+export type ActivityOf = (tabId: string) => readonly Pick<PlaceActivity, "threadId">[];
 
 /** Working places first; each group keeps the order its places opened in. */
-export function aroundPlaces(source: AroundPlaceSource, threadId: string): readonly AroundPlace[] {
+export function aroundPlaces(
+  source: ConversationSurfaceSource,
+  threadId: string,
+  activity: ActivityOf,
+): readonly AroundPlace[] {
   const threads = conversationThreadIds(source, threadId);
   const places = conversationSurfaces(source, threadId).map((item) =>
-    aroundPlace(item, actingFor(item, threads)),
+    aroundPlace(
+      item,
+      activity(item.key).some((record) => threads.has(record.threadId)),
+    ),
   );
-  const apps = [...(source.tabs?.rows.values() ?? [])]
+  const listed = new Set(places.map(({ key }) => key));
+  const apps = [...source.tabs.rows.values()]
     .filter(
-      (tab) => tab.kind === "app" && tab.openedBy !== "person" && tab.openedBy.taskId === threadId,
+      (tab) =>
+        tab.kind === "app" &&
+        !listed.has(tab.tabId) &&
+        tab.openedBy !== "person" &&
+        tab.openedBy.taskId === threadId,
     )
     .reverse()
     .map((tab): AroundPlace => ({
       destination: { kind: "tab", tabId: tab.tabId },
       detail: null,
-      favicon: null,
+      iconRef: null,
       glyph: opensteerAppGlyph,
-      key: `tab:${tab.tabId}`,
+      key: tab.tabId,
       title: tab.title,
       working: false,
     }));
@@ -88,24 +87,19 @@ export function aroundPlaces(source: AroundPlaceSource, threadId: string): reado
 
 function aroundPlace(item: SurfaceItem, working: boolean): AroundPlace {
   return {
-    destination: surfaceDestination(item),
+    destination: item.destination,
     detail:
-      item.kind === "browser"
+      item.kind === "page"
         ? item.site === null
           ? null
           : browserSiteLabel(`https://${item.site}`) || item.site
-        : item.kind === "app"
-          ? item.machine.name
+        : item.kind === "window"
+          ? item.device.name
           : null,
-    favicon: item.kind === "browser" ? item.favicon : null,
+    iconRef: item.icon.kind === "site" ? item.icon.ref : null,
     glyph: surfaceGlyph(item),
     key: item.key,
-    title:
-      item.kind === "browser"
-        ? item.title
-        : item.kind === "app"
-          ? item.app.displayName
-          : item.machine.name,
+    title: item.title,
     working,
   };
 }
@@ -123,7 +117,7 @@ export function sameAroundPlaces(
         place.key === other.key &&
         place.title === other.title &&
         place.detail === other.detail &&
-        place.favicon === other.favicon &&
+        place.iconRef === other.iconRef &&
         place.working === other.working &&
         JSON.stringify(place.destination) === JSON.stringify(other.destination)
       );
@@ -265,37 +259,47 @@ export interface AroundGlance {
  */
 export function aroundGlanceSelector(
   threadId: string,
+  activity: ActivityOf,
 ): (snapshot: HostSnapshot) => AroundGlance | null {
   let held: {
-    readonly source: AroundPlaceSource;
-    readonly tabRows: TabsReadModel["rows"] | undefined;
-    readonly places: Pick<AroundGlance, "places" | "placesWorking" | "placeGlyph">;
+    readonly source: ConversationSurfaceSource;
+    readonly tabRows: HostSnapshot["tabs"]["rows"];
+    readonly places: readonly AroundPlace[];
+    readonly placeGlyph: SurfaceGlyph | null;
   } | null = null;
   return (snapshot) => {
     if (
       held === null ||
-      held.tabRows !== selectTabs(snapshot)?.rows ||
+      held.tabRows !== snapshot.tabs.rows ||
       !sameConversationSurfaceSource(held.source, snapshot)
     ) {
-      const tabs = selectTabs(snapshot);
-      const places = aroundPlaces({ ...snapshot, tabs }, threadId);
+      const places = aroundPlaces(snapshot, threadId, noActivity);
       const glyphs = new Set(places.map(({ glyph }) => glyph));
       held = {
-        places: {
-          placeGlyph: glyphs.size === 1 ? places[0]!.glyph : null,
-          places: places.length,
-          placesWorking: places.filter(({ working }) => working).length,
-        },
+        placeGlyph: glyphs.size === 1 ? places[0]!.glyph : null,
+        places,
         source: snapshot,
-        tabRows: tabs?.rows,
+        tabRows: snapshot.tabs.rows,
       };
     }
+    // Activity is read fresh each time: it changes without the snapshot doing so.
+    const threads = conversationThreadIds(snapshot, threadId);
+    const placesWorking = held.places.filter(({ key }) =>
+      activity(key).some((record) => threads.has(record.threadId)),
+    ).length;
     const family = taskFamilyGlance(snapshot, threadId);
     const from = aroundFrom(snapshot, threadId);
-    if (held.places.places === 0 && family === null && from === null) return null;
-    return { ...held.places, family, from };
+    if (held.places.length === 0 && family === null && from === null) return null;
+    return {
+      family,
+      from,
+      placeGlyph: held.placeGlyph,
+      places: held.places.length,
+      placesWorking,
+    };
   };
 }
+const noActivity: ActivityOf = () => [];
 
 export function sameAroundGlance(left: AroundGlance | null, right: AroundGlance | null): boolean {
   if (left === null || right === null) return left === right;

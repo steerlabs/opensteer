@@ -60,7 +60,7 @@ export interface BrowserStreamProps {
   readonly hostClient: Pick<
     HostClient,
     | "browserPresentationDeadline"
-    | "browserTabs"
+    | "getSnapshot"
     | "markBrowserPagePresented"
     | "acceptBrowserWatchFrame"
     | "browserFrames"
@@ -219,7 +219,7 @@ function BrowserStreamView({
   const feedError = feed.status === "unavailable" ? feed.error : null;
 
   // A Watch of a sleeping tab shows its last picture: watching it would wake it.
-  const awake = useBrowserTabAwake(hostClient, session.id, tabId);
+  const awake = useBrowserTabAwake(hostClient, tabId);
   // The client bounds how many browser targets it holds; past that it refuses, and says so.
   const [leaseError, setLeaseError] = useState<string | null>(null);
   useEffect(() => {

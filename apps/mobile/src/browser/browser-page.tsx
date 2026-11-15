@@ -2,16 +2,14 @@ import { useTabSuggestions } from "./tab-suggestions.js";
 import { BrowserPageMenu, type BrowserPageMenuAction } from "./browser-page-menu.js";
 import { editingClipboardMaxBytes } from "@opensteer/protocol/editing";
 import {
-  useBrowserSessionGroupId,
-  useBrowserTab,
-  useBrowserTabs,
   useBrowserViewerSurface,
+  usePlaceActivity,
+  useTab,
+  useTabStrip,
 } from "@opensteer/client/react";
-import { tabsClient } from "../tabs/tabs-host.js";
 import {
   passkeyNotice,
   passwordSaveResultMessage,
-  browserActingTabId,
   browserSiteForTab,
   browserTabTitle,
   parseNavigationInput,
@@ -179,10 +177,26 @@ export function BrowserPage(props: {
   const [prompt, setPrompt] = useState<{ readonly id: string; readonly text: string } | null>(null);
   const promptText = prompt?.id === dialog?.id ? (prompt?.text ?? "") : "";
   // This tab's own row, and the exact page a viewer holds: nothing of the other tabs.
-  const groupId = useBrowserSessionGroupId(hostClient, session.id);
-  const row = useBrowserTab(hostClient, groupId, tabId);
-  const catalogTab = row?.documentId == null ? undefined : row;
+  const listed = useTab(hostClient, tabId);
   const viewer = useBrowserViewerSurface(hostClient, session.id, tabId);
+  // The row as the page chrome reads it: the viewer's page adds what the page shows now.
+  const row = useMemo(
+    () =>
+      listed
+        ? {
+            title: listed.title,
+            site: listed.url ?? "",
+            documentId: viewer?.documentId ?? null,
+            loading: viewer?.loading ?? false,
+            navigationFailed: viewer?.navigationFailed ?? false,
+            // The viewer's page does not say whether history exists; both stay offered.
+            canGoBack: true,
+            canGoForward: true,
+          }
+        : undefined,
+    [listed, viewer],
+  );
+  const catalogTab = row?.documentId == null ? undefined : row;
   // A page waking keeps its row's title and site until it commits: never a blank address.
   const committed =
     viewer && !(row?.site && (viewer.url === "" || viewer.url === "about:blank"))
@@ -480,7 +494,7 @@ export function BrowserPage(props: {
   };
   // Closing takes the tab off the list; an agent working in it keeps working.
   const closeTab = () => {
-    void tabsClient(hostClient)
+    void hostClient
       .closeTabs([surfaceId])
       .then((result) => {
         const failed = result.failed.find((item) => item.tabId === surfaceId);
@@ -520,14 +534,27 @@ export function BrowserPage(props: {
   const signInSite =
     session.state === "ready" && tab ? browserSiteForTab({ navigationFailed, url: tab.url }) : null;
   const pageUrl = site === null ? null : (tab?.url ?? null);
-  const acting = browserActingTabId(session) === tabId;
+  // An agent acts in this very tab now, as the Host's activity for it says.
+  const acting = usePlaceActivity(hostClient, tabId).length > 0;
   const loading = liveTab?.loading === true || catalogTab?.loading === true;
   // A browser that reports where its history goes says so; one that does not
   // leaves both ways open, as it did before it could say.
   const canGoBack = catalogTab?.canGoBack !== false;
   const canGoForward = catalogTab?.canGoForward !== false;
 
-  const tabIds = useBrowserTabs(hostClient, groupId ?? "").ids;
+  // The pages of this same browser, profile and computer, in the one list's order.
+  const strip = useTabStrip(hostClient);
+  const browser = listed?.kind === "page" ? `${listed.computer.computerId}:${listed.profile?.profileId ?? ""}` : null;
+  const tabIds = useMemo(() => {
+    const tabs = hostClient.getSnapshot().tabs;
+    return strip.ordered.filter((id) => {
+      const other = tabs.get(id);
+      return (
+        other?.kind === "page" &&
+        `${other.computer.computerId}:${other.profile?.profileId ?? ""}` === browser
+      );
+    }) as readonly string[];
+  }, [browser, hostClient, strip]);
   const tabs = useTabSuggestions(hostClient, addressOpen);
   const otherTabs = useMemo(() => tabs.filter(({ id }) => id !== tabId), [tabId, tabs]);
   const position = useMemo(() => tabIds.indexOf(tabId), [tabId, tabIds]);

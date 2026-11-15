@@ -1,11 +1,6 @@
-import {
-  browserTabPicture,
-  runPlaceActing,
-  type HostClient,
-  type TabDestination,
-} from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
-import type { PlaceEnteredEventView } from "@opensteer/core";
+import { browserTabPicture, type HostClient } from "@opensteer/client/host";
+import type { RunPlaceView } from "@opensteer/client/react";
+import type { TabKind } from "@opensteer/core";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Image, StyleSheet, View } from "react-native";
 import { BrowserStream, useBrowserFeedState } from "../browser/browser-stream.js";
@@ -22,13 +17,11 @@ export type PictureState = "live" | "waiting" | "none";
 
 interface SurfaceProps {
   readonly active: boolean;
-  readonly destination: TabDestination | null;
-  readonly entry: PlaceEnteredEventView;
   readonly hostClient: HostClient;
   readonly onPageSize?: (size: { readonly height: number; readonly width: number }) => void;
   readonly onPicture: (state: PictureState) => void;
-  /** The Run's session in a Mac app or phone. */
-  readonly sessionId: string | null;
+  /** The Run's place: its tab, this device's page session, or the Run's own native session. */
+  readonly place: RunPlaceView;
 }
 
 /**
@@ -36,27 +29,31 @@ interface SurfaceProps {
  * the pictures it asks for are only as large as what is drawn. Every one is
  * watch-only today; a tab that runs on this phone will bring its own here.
  */
-const surfaces: Record<
-  PlaceEnteredEventView["data"]["place"]["kind"],
-  (props: SurfaceProps) => ReactNode
-> = { browser: BrowserSurface, app: ComputerSurface, phone: ComputerSurface };
+const surfaces: Record<TabKind, (props: SurfaceProps) => ReactNode> = {
+  page: BrowserSurface,
+  window: ComputerSurface,
+  phone: ComputerSurface,
+  app: NoSurface,
+};
 
 /** The live picture of the place a conversation's Run is in, by the kind of place. */
 export function PlaceSurface(props: SurfaceProps): ReactNode {
-  const Surface = surfaces[props.entry.data.place.kind];
+  const Surface = surfaces[props.place.kind];
   return <Surface {...props} />;
 }
 
+/** An app has no live picture here; its tab shows it. */
+function NoSurface(props: SurfaceProps): ReactNode {
+  const { onPicture } = props;
+  useEffect(() => onPicture("none"), [onPicture]);
+  return null;
+}
+
 function BrowserSurface(props: SurfaceProps): ReactNode {
-  const { active, destination, hostClient, onPicture } = props;
-  const place = props.entry.data.place;
-  const tabId = place.kind === "browser" ? place.surfaceId : "";
-  const sessionId =
-    destination?.kind === "browser"
-      ? destination.sessionId
-      : place.kind === "browser"
-        ? place.sessionId
-        : "";
+  const { active, hostClient, onPicture, place } = props;
+  const tabId = place.placeKey;
+  // The page is watched through this device's own binding of its tab.
+  const sessionId = place.pageSession ?? "";
   const feed = useBrowserFeedState(hostClient, sessionId, tabId, false);
   // A feed can be live before anything is drawn; only a drawn picture reports a size.
   const [drawn, setDrawn] = useState(false);
@@ -81,7 +78,7 @@ function BrowserSurface(props: SurfaceProps): ReactNode {
             : "waiting",
     );
   }, [active, drawn, feed.error, feed.status, onPicture]);
-  const kept = active ? null : browserTabPicture(hostClient, sessionId, tabId);
+  const kept = active ? null : browserTabPicture(hostClient, tabId);
   return (
     <>
       {kept ? (
@@ -95,10 +92,9 @@ function BrowserSurface(props: SurfaceProps): ReactNode {
       <BrowserStream
         active={active}
         hostClient={hostClient}
-        label={props.entry.data.title}
+        label={place.title}
         onPageSize={sized}
         preserveLastFrame
-        previewSessionId={place.kind === "browser" ? place.sessionId : sessionId}
         session={{ id: sessionId, state: "ready" }}
         tabId={tabId}
       />
@@ -107,8 +103,9 @@ function BrowserSurface(props: SurfaceProps): ReactNode {
 }
 
 function ComputerSurface(props: SurfaceProps): ReactNode {
-  const { onPicture, sessionId } = props;
-  const place = props.entry.data.place;
+  const { onPicture, place } = props;
+  const sessionId = place.sessionId ?? null;
+  const machineId = place.machineId ?? null;
   const shown = useCallback(
     (picture: boolean) => onPicture(picture ? "live" : "none"),
     [onPicture],
@@ -116,13 +113,13 @@ function ComputerSurface(props: SurfaceProps): ReactNode {
   useEffect(() => {
     if (sessionId === null) onPicture("none");
   }, [onPicture, sessionId]);
-  if (sessionId === null || place.kind === "browser") return null;
+  if (sessionId === null || machineId === null) return null;
   return (
     <ComputerDisplay
       active={props.active}
       hostClient={props.hostClient}
-      label={props.entry.data.title}
-      machineId={place.machineId}
+      label={place.title}
+      machineId={machineId}
       onPageSize={props.onPageSize}
       onShown={shown}
       phone={place.kind === "phone"}
@@ -130,7 +127,7 @@ function ComputerSurface(props: SurfaceProps): ReactNode {
       source={{
         kind: "task-session",
         sessionId,
-        ...(place.kind === "app" ? { appKey: place.appKey } : {}),
+        ...(place.kind === "window" && place.appKey ? { appKey: place.appKey } : {}),
       }}
     />
   );
@@ -158,31 +155,22 @@ export function usePicture(): readonly [
   return [value, report] as const;
 }
 
-/** Whether this conversation's agent acts in its Run's place right now. */
-export function useRunPlaceActing(
-  hostClient: HostClient,
-  entry: PlaceEnteredEventView | null,
-  threadId: string,
-): boolean {
-  return useHostSelector(hostClient, (snapshot) =>
-    entry === null ? false : runPlaceActing(entry, snapshot, threadId),
-  );
-}
-
 /** What stands for a place with no picture to show: its kind, never an empty frame. */
 export function PlaceGlyph(props: {
-  readonly kind: PlaceEnteredEventView["data"]["place"]["kind"];
+  readonly kind: TabKind;
   readonly size: number;
 }): ReactNode {
   return (
     <View pointerEvents="none" style={styles.glyph}>
       <Symbol
         name={
-          props.kind === "browser"
+          props.kind === "page"
             ? "globe"
             : props.kind === "phone"
               ? "smartphone"
-              : "laptopcomputer"
+              : props.kind === "app"
+                ? "square.grid.2x2"
+                : "laptopcomputer"
         }
         size={props.size}
         tint={color.muted}

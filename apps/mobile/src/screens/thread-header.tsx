@@ -168,7 +168,10 @@ function ThreadTitle(
   },
 ): ReactNode {
   const navigation = useNavigation();
-  const selectAround = useMemo(() => aroundGlanceSelector(props.threadId), [props.threadId]);
+  const selectAround = useMemo(
+    () => aroundGlanceSelector(props.threadId, props.hostClient.placeActivity),
+    [props.hostClient, props.threadId],
+  );
   const glance = useHostSelector(props.hostClient, selectAround, sameAroundGlance);
   // A folded page stands beside Around; the title takes what they leave, and
   // when that is short of its name, Around gives up parts until it is not.

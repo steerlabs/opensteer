@@ -275,7 +275,7 @@ export interface PhoneBrowserNativePort {
       deadline: number;
       request: BrowserActionRequest;
     },
-  ): Promise<Exclude<BrowserActionResult, { type: "page.capture" }> | { type: "delivered" }>;
+  ): Promise<Exclude<BrowserActionResult, { type: "page.capture" | "surface.resume" }> | { type: "delivered" }>;
   applyViewerInput(
     input: NativeDocumentRef & {
       channelId: string;
