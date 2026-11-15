@@ -149,7 +149,12 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
         </>
       ) : file.preview.kind === "image" ? (
         <TranscriptImageContext value={{ client, threadId: params.threadId }}>
-          <ImageSurface name={file.name} source={source} />
+          <ImageSurface
+            name={file.name}
+            onStale={retry}
+            revision={file.resource.revision}
+            source={source}
+          />
         </TranscriptImageContext>
       ) : (
         <View style={styles.download}>
@@ -280,10 +285,24 @@ function TextLines(props: {
   );
 }
 
-/** An image fit to the screen; Original fetches its full size only when asked. */
-function ImageSurface(props: { readonly name: string; readonly source: FileSource }): ReactNode {
+/**
+ * An image fit to the screen, from the preview its open minted; Original fetches its full
+ * size only when asked. A later mint naming another revision opens the file again, so
+ * Download stays on what is shown.
+ */
+function ImageSurface(props: {
+  readonly name: string;
+  readonly onStale: () => void;
+  readonly revision: string;
+  readonly source: FileSource;
+}): ReactNode {
   const [variant, setVariant] = useState<"preview" | "original">("preview");
   const image = useAssetImage(props.source, variant);
+  const stale = image.image !== null && image.image.revision !== props.revision;
+  const { onStale } = props;
+  useEffect(() => {
+    if (stale) onStale();
+  }, [stale]);
   return (
     <View style={styles.imageSurface}>
       {image.failed ? (
@@ -304,7 +323,7 @@ function ImageSurface(props: { readonly name: string; readonly source: FileSourc
             key={image.retry}
             onError={image.onError}
             source={
-              image.image
+              image.image && !stale
                 ? {
                     cacheKey: `${image.deploymentId}:${image.image.revision}:${variant}:v1`,
                     uri: image.image.source,

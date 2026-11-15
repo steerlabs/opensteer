@@ -147,6 +147,22 @@ export class AssetUrlStore {
     }
     return entry;
   }
+  /** Holds an address the Host already minted elsewhere, so the image's first use reads nothing. */
+  seed(
+    deploymentId: string,
+    threadId: string | null,
+    source: FileSource | string,
+    variant: AssetVariant,
+    value: AssetUrl,
+  ) {
+    if (this.#disposed) return;
+    const entry = this.#entry(deploymentId, threadId, source, variant);
+    entry.confirmedAt = Date.now();
+    if (sameAsset(entry.value, value)) return;
+    entry.value = value;
+    entry.loadRetried = false;
+    this.#emit([entry]);
+  }
   async image(
     deploymentId: string,
     threadId: string | null,

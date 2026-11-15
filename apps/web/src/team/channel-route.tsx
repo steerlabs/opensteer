@@ -17,7 +17,7 @@ import {
   teamScopeKey,
   type TeamTimeline,
 } from "@opensteer/client/team";
-import { useTeamShareParticipants } from "@opensteer/client/react";
+import { useTeamReferenceCandidates, useTeamShareParticipants } from "@opensteer/client/react";
 import { ChannelShares } from "./channel-shares.js";
 import { TeamPreviewUrls } from "./preview-urls.js";
 import type { z } from "zod";
@@ -32,7 +32,6 @@ import {
 } from "../components/team/channel-view.js";
 import { MessageList } from "../components/team/message-list.js";
 import { AgentUnavailable, TeamComposer } from "../components/team/team-composer.js";
-import { teamReferenceCandidates } from "../components/composer-reference-picker.js";
 import type {
   ChannelTab,
   ChannelView,
@@ -278,6 +277,14 @@ function ChannelScreenFor({
     client,
     channelId,
     (timeline?.channel ?? entry?.channel)?.share ? mentionQuery : null,
+  );
+  const references = useTeamReferenceCandidates(
+    client,
+    {
+      origin: team.origin,
+      channels: (snapshot.sidebar?.channels ?? []).map((entry) => entry.channel),
+    },
+    mentionQuery,
   );
   const go = (path: string, keepPlace = true) =>
     void navigate({ pathname: path, search: keepPlace ? search : "" });
@@ -718,16 +725,7 @@ function ChannelScreenFor({
           client.typing(channelId, rootId ? TeamMessageIdSchema.parse(rootId) : null, true)
         }
         people={people}
-        references={(query) =>
-          teamReferenceCandidates(
-            {
-              origin: team.origin,
-              channels: (snapshot.sidebar?.channels ?? []).map((entry) => entry.channel),
-              topics: [],
-            },
-            query,
-          )
-        }
+        references={references}
         placeholder={
           rootId
             ? "Reply…"

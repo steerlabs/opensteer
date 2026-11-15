@@ -16,13 +16,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router";
-import {
-  OpensteerError,
-  RequestIdSchema,
-  placeContentLabel,
-  type ModelSelection,
-  type Request,
-} from "@opensteer/core";
+import { placeContentLabel, type ModelSelection, type Request } from "@opensteer/core";
 import {
   type ConversationActivitySelection,
   canContinueThreadOnPlacement,
@@ -56,9 +50,6 @@ import {
   type ThreadSummary,
   type HostClient,
   type TranscriptEntry,
-  HostClientRequestError,
-  requestReceipt,
-  unwrapRpcResult,
 } from "@opensteer/client/host";
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
 import { useThreadInputQueue, useWaitingInputs } from "@opensteer/client/react";
@@ -102,9 +93,9 @@ import { LivePlace } from "./workspace/viewfinder.js";
 import { useWorkspace } from "./workspace/workspace-context.js";
 import { TaskMark, TaskState, taskStateWords } from "./workspace/task-mark.js";
 import { useTaskDirectory } from "./workspace/task-directory.js";
-import { Dialog } from "./dialog.js";
 import { PersonalReferences } from "./references/reference-scope.js";
 import { Unavailable } from "./references/unavailable.js";
+import { notFound, useLinkedRequest } from "./references/linked-request.js";
 
 export function ThreadRoute() {
   const { threadId } = useParams();
@@ -279,10 +270,6 @@ function ThreadView({
     readonly id: string;
     readonly offline: boolean;
   } | null>(null);
-  // A Request a link named, once read: a finished one is shown, never answered again.
-  const [linkedRequest, setLinkedRequest] = useState<
-    { readonly state: "unavailable" | "offline"; readonly id: string } | Request | null
-  >(null);
   const [returning, setReturning] = useState(false);
   const [switchingAccount, setSwitchingAccount] = useState(false);
   const [finding, setFinding] = useState(false);
@@ -823,47 +810,11 @@ function ThreadView({
       },
       { replace: true },
     );
-  const linkedRequestId = linkSearch.get("requestId");
-  useEffect(() => {
-    const parsed = RequestIdSchema.safeParse(linkedRequestId);
-    if (!linkedRequestId) return;
-    releaseLinkParam("requestId");
-    if (!parsed.success) return setLinkedRequest({ state: "unavailable", id: linkedRequestId });
-    const requestId = parsed.data;
-    let current = true;
-    void hostClient.rpc["thread.requests.list"]({ threadId: thread.id, requestId }).then(
-      (result) => {
-        if (!current) return;
-        const request = result.ok
-          ? result.data.requests.find((candidate) => candidate.id === requestId)
-          : undefined;
-        if (!result.ok) {
-          try {
-            unwrapRpcResult(result);
-          } catch (error) {
-            if (notFound(error)) hostClient.references.unavailable(requestId);
-            return setLinkedRequest({
-              state: notFound(error) ? "unavailable" : "offline",
-              id: requestId,
-            });
-          }
-        }
-        if (!request) {
-          hostClient.references.unavailable(requestId);
-          return setLinkedRequest({ state: "unavailable", id: requestId });
-        }
-        // One still waiting opens where it is answered, exactly as the Tasks count opens it.
-        if (request.status === "pending") setFocusTarget({ id: request.id, key: location.key });
-        else setLinkedRequest(request);
-      },
-      () => {
-        if (current) setLinkedRequest({ state: "offline", id: requestId });
-      },
-    );
-    return () => {
-      current = false;
-    };
-  }, [linkedRequestId, thread.id]);
+  // A Request a link named: one still waiting opens where it is answered,
+  // exactly as the Tasks count opens it; a finished one is shown, never answered again.
+  const linkedRequest = useLinkedRequest(hostClient, thread.id, (id) =>
+    setFocusTarget({ id, key: location.key }),
+  );
 
   // ⌘F / Ctrl+F searches this conversation rather than the rendered page,
   // which only holds the window that happens to be loaded.
@@ -1468,74 +1419,11 @@ function ThreadView({
             </div>
             {pushed ? pane : null}
             {paneLayout === "beside" && besideSlot && pane ? createPortal(pane, besideSlot) : null}
-            {linkedRequest ? (
-              <LinkedRequest
-                onClose={() => setLinkedRequest(null)}
-                onRetry={(id) => {
-                  setLinkedRequest(null);
-                  setLinkSearch(
-                    (current) => {
-                      const next = new URLSearchParams(current);
-                      next.set("requestId", id);
-                      return next;
-                    },
-                    { replace: true },
-                  );
-                }}
-                request={linkedRequest}
-              />
-            ) : null}
+            {linkedRequest}
           </div>
         </AgentsLive>
       </AgentEngine>
     </PersonalReferences>
-  );
-}
-
-/** Whether the Host refused a read because the thing is gone or not this reader's. */
-function notFound(error: unknown): boolean {
-  return (
-    (error instanceof HostClientRequestError && (error.status === 403 || error.status === 404)) ||
-    (error instanceof OpensteerError && (error.code === "forbidden" || error.code === "not_found"))
-  );
-}
-
-/**
- * A Request a link named, read-only: what it asked and how it ended. It is
- * never offered to be answered again; one still waiting opens in the dock instead.
- */
-function LinkedRequest({
-  onClose,
-  onRetry,
-  request,
-}: {
-  readonly onClose: () => void;
-  readonly onRetry: (id: string) => void;
-  readonly request: Request | { readonly state: "unavailable" | "offline"; readonly id: string };
-}) {
-  if ("state" in request)
-    return (
-      <Dialog onClose={onClose} title="Request">
-        <Unavailable
-          backLabel="Close"
-          offline={request.state === "offline"}
-          onBack={onClose}
-          onRetry={() => onRetry(request.id)}
-        />
-      </Dialog>
-    );
-  if (request.status === "pending") return null;
-  const receipt = requestReceipt(request);
-  return (
-    <Dialog onClose={onClose} title="Request">
-      <div className="ref-request">
-        <p className="ref-request__status">
-          <Icon name={request.status === "fulfilled" ? "check-circle" : "stop"} />
-          {receipt.outcome}
-        </p>
-        <p className="ref-request__title">{receipt.title}</p>
-      </div>
-    </Dialog>
   );
 }
 

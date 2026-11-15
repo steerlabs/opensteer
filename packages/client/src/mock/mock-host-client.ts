@@ -4137,6 +4137,7 @@ export class MockHostClient implements HostClient {
       { origin: async () => "http://mock.invalid" },
     );
     this.transcriptFiles = new TranscriptFileController({
+      images: { store: this.assetUrls, deploymentId: () => this.#state.getSnapshot().deploymentId },
       rpc: {
         openFile: async (input, signal) =>
           unwrapRpcResult(await this.rpc["file.open"](input, signal ? { signal } : undefined)),
@@ -4145,7 +4146,12 @@ export class MockHostClient implements HostClient {
       },
     });
     const referenceOwner = (snapshot: PublicHostSnapshot) =>
-      JSON.stringify([snapshot.deploymentId, snapshot.user?.id, snapshot.sessionId, snapshot.session]);
+      JSON.stringify([
+        snapshot.deploymentId,
+        snapshot.user?.id,
+        snapshot.sessionId,
+        snapshot.session,
+      ]);
     let owner = referenceOwner(this.#state.getSnapshot());
     this.references = new ReferenceStore({
       getSnapshot: this.#state.getSnapshot,
@@ -5021,6 +5027,16 @@ export class MockHostClient implements HostClient {
   async loadEarlierTasks(): Promise<void> {}
   async loadEarlierNeedsYou(): Promise<void> {
     this.#state.loadEarlierNeedsYou();
+  }
+  async readRequest(threadId: string, requestId: string): Promise<Request | null> {
+    const { requests } = unwrapRpcResult(
+      await this.rpc["thread.requests.list"]({
+        deviceAccessRequests: "include",
+        requestId: RequestIdSchema.parse(requestId),
+        threadId: ThreadIdSchema.parse(threadId),
+      }),
+    );
+    return requests.find(({ id }) => id === requestId) ?? null;
   }
 
   async loadDoneTasks(deploymentId?: string): Promise<void> {
@@ -7440,7 +7456,7 @@ class MockHostState {
     if (!untouched) return false;
     this.askTasks.delete(threadId);
     this.awaitingAsks.delete(threadId);
-    const without = <Value,>(record: Readonly<Record<string, Value>>): Record<string, Value> => {
+    const without = <Value>(record: Readonly<Record<string, Value>>): Record<string, Value> => {
       const { [threadId]: _removed, ...rest } = record;
       return rest;
     };

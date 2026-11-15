@@ -10,6 +10,7 @@ import {
   type TranscriptFileContent,
 } from "@opensteer/protocol";
 import type { ReferenceReadPorts } from "../references/contracts.js";
+import type { AssetUrlStore } from "./asset-urls.js";
 import { HostClientRequestError } from "./client.js";
 import { HostTransportError } from "../connections/host-transport-error.js";
 
@@ -53,6 +54,11 @@ function isUnavailable(error: unknown): boolean {
   );
 }
 
+export interface TranscriptFileImages {
+  readonly store: Pick<AssetUrlStore, "seed">;
+  readonly deploymentId: () => string | null;
+}
+
 export class TranscriptFileController {
   readonly #ports: Pick<ReferenceReadPorts, "openFile" | "readFile">;
   readonly #opens = new Map<string, Operation<TranscriptFileState>>();
@@ -62,14 +68,18 @@ export class TranscriptFileController {
     { readonly value: OpenTranscriptFile; readonly bytes: number }
   >();
   readonly #ownerSignal: AbortSignal | undefined;
+  readonly #images: TranscriptFileImages | undefined;
   #bytes = 0;
   #generation = 0;
   #disposed = false;
   constructor(options: {
     readonly rpc: Pick<ReferenceReadPorts, "openFile" | "readFile">;
     readonly ownerSignal?: AbortSignal;
+    /** Where an image's preview, minted by the open itself, is kept for the viewer to show. */
+    readonly images?: TranscriptFileImages;
   }) {
     this.#ports = options.rpc;
+    this.#images = options.images;
     this.#ownerSignal = options.ownerSignal;
     if (this.#ownerSignal?.aborted) this.dispose();
     else this.#ownerSignal?.addEventListener("abort", this.#retire, { once: true });
@@ -96,6 +106,15 @@ export class TranscriptFileController {
         );
         this.#assertCurrent(controller, generation);
         this.#forget(key);
+        const deploymentId = this.#images?.deploymentId();
+        if (value.status === "ok" && value.preview.kind === "image" && deploymentId)
+          this.#images!.store.seed(
+            deploymentId,
+            input.threadId,
+            input.source,
+            "preview",
+            value.preview.image,
+          );
         if (value.status === "ok" && value.preview.kind === "text") {
           const bytes = new TextEncoder().encode(value.preview.text).byteLength;
           if (bytes <= textCacheLimit) {

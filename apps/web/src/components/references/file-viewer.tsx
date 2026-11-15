@@ -237,7 +237,12 @@ function FileBody({
       if (preview.kind === "image")
         return (
           <TranscriptImageContext value={{ client, threadId }}>
-            <ViewerImage name={name} source={input.source} />
+            <ViewerImage
+              name={name}
+              onStale={retry}
+              revision={state.resource.revision}
+              source={input.source}
+            />
           </TranscriptImageContext>
         );
       return (
@@ -356,9 +361,27 @@ function TextLines({ input, text }: { readonly input: FileOpenInput; readonly te
   );
 }
 
-function ViewerImage({ name, source }: { readonly name: string; readonly source: FileSource }) {
+/**
+ * The image the open already minted (it seeds the shared image store). A later
+ * mint naming another revision opens the file again, so Download stays on what is shown.
+ */
+function ViewerImage({
+  name,
+  onStale,
+  revision,
+  source,
+}: {
+  readonly name: string;
+  readonly onStale: () => void;
+  readonly revision: string;
+  readonly source: FileSource;
+}) {
   const [original, setOriginal] = useState(false);
   const image = useAssetImage(source, original ? "original" : "preview");
+  const stale = image.image !== null && image.image.revision !== revision;
+  useEffect(() => {
+    if (stale) onStale();
+  }, [stale]);
   return (
     <>
       <div
@@ -368,7 +391,7 @@ function ViewerImage({ name, source }: { readonly name: string; readonly source:
       >
         {image.failed ? (
           <ViewerState body="Its preview couldn't be loaded." icon="help-circle" title={name} />
-        ) : image.image ? (
+        ) : image.image && !stale ? (
           <img alt={name} key={image.retry} onError={image.onError} src={image.image.source} />
         ) : (
           <span aria-label="Loading image" className="spinner" role="status" />

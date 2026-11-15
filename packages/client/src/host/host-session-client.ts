@@ -47,6 +47,7 @@ import {
   RunnerIdSchema,
   ExecutionNodeIdSchema,
   TeamAgentRequestIdSchema,
+  RequestIdSchema,
   nodeDetailEventNodeId,
   type QuietTaskDays,
   type PersonName,
@@ -1020,6 +1021,7 @@ export class HttpHostClient {
       options.desktopMedia,
     );
     this.transcriptFiles = new TranscriptFileController({
+      images: { store: this.assetUrls, deploymentId: () => this.#snapshot.deploymentId },
       rpc: {
         openFile: async (input, signal) =>
           unwrapRpcResult(await this.rpc["file.open"](input, signal ? { signal } : undefined)),
@@ -3485,6 +3487,19 @@ export class HttpHostClient {
         ],
       },
     });
+  }
+
+  async readRequest(threadId: string, requestId: string): Promise<Request | null> {
+    const { requests } = unwrapRpcResult(
+      await this.rpc["thread.requests.list"]({
+        requestId: RequestIdSchema.parse(requestId),
+        threadId: ThreadIdSchema.parse(threadId),
+        ...(this.#supportsDeviceAccessRequests()
+          ? { deviceAccessRequests: "include" as const }
+          : {}),
+      }),
+    );
+    return requests.find(({ id }) => id === requestId) ?? null;
   }
 
   #supportsDeviceAccessRequests(): boolean {
