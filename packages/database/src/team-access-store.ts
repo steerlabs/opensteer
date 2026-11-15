@@ -180,7 +180,13 @@ export class TeamAccessStore {
   }
   async sync(): Promise<void> {
     if (this.#syncing) return this.#syncing;
-    if (!this.#force && this.#bus?.healthy && this.#notified <= BigInt(this.#revision)) return;
+    // Without a bus this process is the only writer, so its own revision is already current.
+    if (
+      !this.#force &&
+      (!this.#bus || this.#bus.healthy) &&
+      this.#notified <= BigInt(this.#revision)
+    )
+      return;
     this.#force = false;
     this.#syncing = (async () => {
       const changes = await sql<{

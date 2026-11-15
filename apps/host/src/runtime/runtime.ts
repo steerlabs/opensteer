@@ -495,8 +495,6 @@ export async function createHostRuntime(
   const database = createDatabase({
     applicationName: "opensteer-host",
     connectionString: config.databaseUrl,
-    // Several team copies share one database login during a rollout; 5 queries + 1 listener each.
-    ...(deploymentPolicy(config.deploymentShape).services.team ? { maxConnections: 6 } : {}),
   });
   let administrationCatalogs: HarnessCatalogReconciliationOwner | undefined;
   let authorityLease: DeploymentAuthorityLease | undefined;

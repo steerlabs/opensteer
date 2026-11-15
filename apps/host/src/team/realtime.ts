@@ -45,6 +45,8 @@ interface Peer {
   seen: number;
   closed: boolean;
   presence: string;
+  /** What this process last stored for the peer; undefined until it is first visible. */
+  stored?: string;
   readable?: { revision: TeamAccessStore["revision"]; ids: Set<TeamChannelId> };
 }
 export class TeamRealtimeHub {
@@ -186,11 +188,19 @@ export class TeamRealtimeHub {
     );
     return result.rows.length > 0;
   }
-  async #persist(peer: Peer) {
+  /**
+   * Shares what other copies read from presence: only visible devices count as online or
+   * suppress a push, so an unseen device writes nothing. A presence frame refreshes freshness.
+   */
+  async #persist(peer: Peer, heartbeat = false) {
     if (peer.closed) return;
     const ids = [...peer.subscriptions.values()].flatMap((s) =>
       s.scope ? [s.scope.channelId] : [],
     );
+    const stored = JSON.stringify([peer.visible, ids]);
+    if (!peer.visible && peer.stored === undefined) return;
+    if (!heartbeat && stored === peer.stored) return;
+    peer.stored = stored;
     await sql`insert into team_presence(connection_id,process_id,user_id,visible,channel_ids,seen_at)
       values (${peer.id},${this.#processId},${peer.actor.userId},${peer.visible},${ids}::text[],${new Date(peer.seen)})
       on conflict(connection_id) do update set visible=excluded.visible,channel_ids=excluded.channel_ids,seen_at=excluded.seen_at`.execute(
@@ -255,7 +265,6 @@ export class TeamRealtimeHub {
       presence: "",
     };
     this.#peers.add(peer);
-    void this.#persist(peer).catch(() => this.#close(peer, "Presence unavailable", 1012));
     return {
       receive: async (raw: unknown) => {
         if (typeof raw !== "object" || raw === null || !("type" in raw))
@@ -309,7 +318,6 @@ export class TeamRealtimeHub {
           peer.watched = frame.watchedUserIds;
           await this.#refreshPresence();
         } else {
-          await this.#persist(peer);
           const allowed = await withTeamPeerVersion(peer.version, () =>
             this.access.database
               .transaction()
@@ -342,7 +350,7 @@ export class TeamRealtimeHub {
           });
           this.#typingFrame(frame.channelId, frame.rootId);
         }
-        await this.#persist(peer);
+        await this.#persist(peer, frame.type === "team.presence");
       },
       close: () => this.#close(peer, "Disconnected", 1012),
     };
@@ -582,7 +590,7 @@ export class TeamRealtimeHub {
     peer.closed = true;
     this.#peers.delete(peer);
     peer.socket.close(code, reason);
-    void this.#deletePresence(peer).catch(() => {});
+    if (peer.stored !== undefined) void this.#deletePresence(peer).catch(() => {});
   }
   async cleanup() {
     await sql`delete from team_presence where process_id=${this.#processId}`.execute(

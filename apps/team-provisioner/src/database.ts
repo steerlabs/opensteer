@@ -2,8 +2,8 @@ import pg from "pg";
 import { createHash, createHmac, pbkdf2Sync, randomBytes } from "node:crypto";
 
 /**
- * Room for every team Host pod a rollout runs at once (6 connections each: two steady
- * replicas plus a surge pod) with headroom for migrations and a draining predecessor.
+ * Room for every team Host pod a rollout runs at once: a Host pools up to 10 connections
+ * (its bus listener among them), times two steady replicas plus a surge pod.
  */
 const teamConnectionLimit = 32;
 

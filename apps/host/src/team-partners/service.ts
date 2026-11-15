@@ -350,18 +350,38 @@ export class TeamPartners {
       offer,
     );
     if (!this.options.offerVault) throw new Error("Partner pairing requires offerVault");
-    const row = await this.store.propose(
-      actor,
-      descriptor.authority,
-      new URL(offer.origin).hostname.slice(0, 160),
-      (id) => this.options.offerVault!.seal(id, offer),
-    );
+    // Claimed inside the proposal's own transaction: its notification can arrive before this
+    // call resumes, and `reconnect` must not start a second handshake for the same invite.
+    const handshake = Promise.withResolvers<void>();
+    let claimed: string | undefined;
+    let row: Awaited<ReturnType<TeamPartnerStore["propose"]>>;
+    try {
+      row = await this.store.propose(
+        actor,
+        descriptor.authority,
+        new URL(offer.origin).hostname.slice(0, 160),
+        (id) => {
+          if (claimed) this.#opening.delete(claimed);
+          claimed = id;
+          this.#opening.set(id, handshake.promise);
+          return this.options.offerVault!.seal(id, offer);
+        },
+      );
+    } catch (error) {
+      if (claimed) this.#opening.delete(claimed);
+      handshake.resolve();
+      throw error;
+    }
     try {
       await this.store.access.outsideHumanSession(() => this.#open(row, offer));
     } catch (error) {
+      this.#opening.delete(row.id);
+      handshake.resolve();
       await this.store.access.outsideHumanSession(() => this.#failed(row.id, error));
       throw error;
     }
+    this.#opening.delete(row.id);
+    handshake.resolve();
     const result = await this.store.list(actor, this.connected, { id: row.id });
     const link = result.links.find((r) => r.id === row.id);
     if (!link) throw partnerError();
