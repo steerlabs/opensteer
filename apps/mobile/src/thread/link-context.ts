@@ -8,6 +8,12 @@ export interface LinkAction {
   readonly title: string;
 }
 
+/** A link as written: where it goes and the words it shows, which Copy keeps together. */
+export interface HeldLink {
+  readonly href: string;
+  readonly label: string;
+}
+
 /**
  * How a conversation's links open. Absent, a link goes to the system, as it
  * always has; a tap and a hold read the Host's view of this phone at that
@@ -16,8 +22,8 @@ export interface LinkAction {
 export interface ConversationLinks {
   readonly open: (url: string) => void;
   /** What holding the link offers; empty where a hold keeps doing what it did. */
-  readonly menu: (url: string) => readonly LinkAction[];
-  readonly act: (url: string, id: string) => void;
+  readonly menu: (link: HeldLink) => readonly LinkAction[];
+  readonly act: (link: HeldLink, id: string) => void;
   /** Words a hold selects, around which a hold that begins on a link offers its places. */
   readonly Hold: (props: { readonly children: ReactNode }) => ReactNode;
 }
@@ -34,9 +40,9 @@ export function useConversationLinks(): ConversationLinks | null {
  */
 export interface LinkHold {
   /** The press began on this link; `at` is the touch's own time, shared by every handler of it. */
-  readonly press: (url: string, at: number) => void;
+  readonly press: (link: HeldLink, at: number) => void;
   /** Held long enough to open its menu, where the platform does not do so itself. */
-  readonly hold: (url: string) => void;
+  readonly hold: (link: HeldLink) => void;
 }
 
 export const LinkHoldContext = createContext<LinkHold | null>(null);

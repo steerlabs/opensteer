@@ -30,8 +30,11 @@ import {
   type SurfaceModel,
 } from "@opensteer/client/host";
 import { computerAppAccessApproval, computerUseAccessLabel } from "@opensteer/client/integrations";
+import { unwrapRpcResult } from "@opensteer/client/host";
 import { useHostSelector, useHostSnapshot } from "@opensteer/client/react";
 import {
+  RequestIdSchema,
+  ThreadIdSchema,
   requestAgentProposedDetail,
   requestAgentProposedLabel,
   requestOptionDeclines,
@@ -67,10 +70,11 @@ import { HomeMenu } from "../screens/profile-home-menu.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget, type } from "../theme.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Chip, monoFontFamily, Notice, StatusDot } from "../ui/primitives.js";
+import { readFailure, UnavailableState } from "../ui/unavailable-state.js";
 import { SheetBarButton } from "../ui/sheet-bar.js";
 import { Symbol } from "../ui/symbol.js";
 import { AnswerPill, AnswerRow } from "./answer-pill.js";
-import { requestTitle } from "./docked-requests.js";
+import { requestTitle, requestTitleLine } from "./docked-requests.js";
 import { answerDeviceAccessRequest } from "@opensteer/client/computers";
 import { AskerByline, useRequestAsker } from "./asker-byline.js";
 import { InstallReview } from "./integration-install-review.js";
@@ -109,6 +113,8 @@ export type RequestSheetScreenProps = StaticScreenProps<{
   readonly full?: boolean;
   /** "Don't Allow and say why": the sheet takes the reason instead. */
   readonly reason?: boolean;
+  /** Opened from a link: a settled Request is shown as it ended rather than closed. */
+  readonly opened?: "reference";
   readonly requestId: string;
   readonly threadId: string;
 }>;
@@ -116,11 +122,21 @@ export type RequestSheetScreenProps = StaticScreenProps<{
 /** The route names a Request and nothing else: what it asks is read from the Host. */
 export function RequestSheetScreen(props: RequestSheetScreenProps): ReactNode {
   const navigation = useNavigation();
-  const { deploymentId, reason, requestId, threadId } = props.route.params;
+  const { deploymentId, opened, reason, requestId, threadId } = props.route.params;
   const { selection } = useMobileState();
   if (selection.deploymentId !== deploymentId || selection.hostClient === null) {
     return <Gone onClose={() => navigation.goBack()} />;
   }
+  if (opened === "reference")
+    return (
+      <ReferencedRequest
+        deploymentId={deploymentId}
+        hostClient={selection.hostClient}
+        key={`${deploymentId}:${requestId}`}
+        requestId={requestId}
+        threadId={threadId}
+      />
+    );
   return (
     <SubscribedRequestSheet
       deploymentId={deploymentId}
@@ -167,6 +183,130 @@ function SubscribedRequestSheet(props: {
       surface={deriveSurface([pending], snapshot.user)}
       userId={snapshot.user.id}
     />
+  );
+}
+
+type TargetedRead =
+  | { readonly state: "loading" }
+  | { readonly state: "read"; readonly request: Request | null }
+  | { readonly state: "offline" | "failed" };
+
+/**
+ * A Request a link named, which may have been settled long ago. One still
+ * waiting opens as any approval does, and closes once answered; one that has
+ * ended shows what it asked and how it ended, and answers nothing. Absence is
+ * decided only once the Host has been asked for exactly this Request.
+ */
+function ReferencedRequest(props: {
+  readonly deploymentId: string;
+  readonly hostClient: HostClient;
+  readonly requestId: string;
+  readonly threadId: string;
+}): ReactNode {
+  const { deploymentId, hostClient, requestId, threadId } = props;
+  const navigation = useNavigation();
+  const [attempt, setAttempt] = useState(0);
+  const [read, setRead] = useState<TargetedRead>({ state: "loading" });
+  // The conversation's Requests stay live while it is open, so an answer given here shows.
+  useEffect(() => hostClient.observeThread(threadId), [hostClient, threadId]);
+  const held = useHostSelector(
+    hostClient,
+    (snapshot) =>
+      (snapshot.requests[threadId] ?? []).find(({ id }) => id === requestId) ??
+      snapshot.waitingRequests.find(({ request }) => request.id === requestId)?.request ??
+      null,
+  );
+  useEffect(() => {
+    let current = true;
+    setRead({ state: "loading" });
+    hostClient.rpc["thread.requests.list"]({
+      requestId: RequestIdSchema.parse(requestId),
+      threadId: ThreadIdSchema.parse(threadId),
+    })
+      .then(unwrapRpcResult)
+      .then(
+        ({ requests }) =>
+          current &&
+          setRead({ state: "read", request: requests.find(({ id }) => id === requestId) ?? null }),
+        (error: unknown) => {
+          if (!current) return;
+          const failure = readFailure(error);
+          setRead(
+            failure === "unavailable" ? { state: "read", request: null } : { state: failure },
+          );
+        },
+      );
+    return () => {
+      current = false;
+    };
+  }, [attempt, hostClient, requestId, threadId]);
+  if (held?.status === "pending")
+    return (
+      <SubscribedRequestSheet
+        deploymentId={deploymentId}
+        hostClient={hostClient}
+        reason={false}
+        requestId={requestId}
+        threadId={threadId}
+      />
+    );
+  const request = held ?? (read.state === "read" ? read.request : null);
+  if (request !== null)
+    return (
+      <SettledRequest
+        onClose={() => navigation.goBack()}
+        onOpenTask={() => {
+          navigation.goBack();
+          navigation.dispatch(StackActions.push("Thread", { deploymentId, threadId, requestId }));
+        }}
+        request={request}
+      />
+    );
+  if (read.state === "loading")
+    return (
+      <View style={[styles.gone, styles.referenced]}>
+        <ActivityIndicator color={color.muted} />
+      </View>
+    );
+  return (
+    <View style={styles.referenced}>
+      <UnavailableState
+        onBack={() => navigation.goBack()}
+        onRetry={read.state === "read" ? undefined : () => setAttempt((count) => count + 1)}
+      />
+    </View>
+  );
+}
+
+const settledWords: Record<Request["status"], string> = {
+  pending: "Waiting for an answer",
+  fulfilled: "Answered",
+  declined: "Declined",
+  withdrawn: "Withdrawn",
+  cancelled: "Cancelled",
+};
+
+/** A Request as it ended, read only: what it asked and how it was settled. */
+function SettledRequest(props: {
+  readonly onClose: () => void;
+  readonly onOpenTask: () => void;
+  readonly request: Request;
+}): ReactNode {
+  const { request } = props;
+  return (
+    <ScrollView contentContainerStyle={styles.settled} style={styles.referenced}>
+      <View style={styles.settledHead}>
+        <Symbol name="hand.raised" size={18} tint={color.muted} />
+        <AppText role="caption" tone="muted">
+          {settledWords[request.status]}
+        </AppText>
+      </View>
+      <AppText role="title">{requestTitleLine(request)}</AppText>
+      <AnswerRow>
+        <AnswerPill label="Open task" onPress={props.onOpenTask} tone="secondary" />
+        <AnswerPill label="Close" onPress={props.onClose} tone="secondary" />
+      </AnswerRow>
+    </ScrollView>
   );
 }
 
@@ -1575,6 +1715,9 @@ const styles = StyleSheet.create({
   },
   form: { gap: space[16] },
   gone: { gap: space[8], padding: space[16] },
+  referenced: { backgroundColor: color.surfaceElevated, flex: 1 },
+  settled: { gap: space[12], padding: space[24] },
+  settledHead: { alignItems: "center", flexDirection: "row", gap: space[6] },
   group: {
     backgroundColor: "rgba(255, 255, 255, 0.05)",
     borderRadius: radius.lg,

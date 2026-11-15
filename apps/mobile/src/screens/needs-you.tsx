@@ -1,4 +1,5 @@
 import { teamAskerLabel } from "@opensteer/client/team";
+import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { useHostSelector } from "@opensteer/client/react";
 import { needsYouEntryKey, type HostClient } from "@opensteer/client/host";
 import type { NeedsYouEntry, NeedsYouTeamAskEntry } from "@opensteer/protocol";
@@ -70,7 +71,11 @@ function NeedsYouList({ client, deploymentId }: { client: HostClient; deployment
               <AppText>
                 {entry.kind === "team-ask" ? teamAskerLabel(entry.presentation.asker) : entry.title}
               </AppText>
-              {ask ? <AppText tone="muted">{ask.presentation.bodyMarkdown}</AppText> : null}
+              {ask ? (
+                <AppText numberOfLines={3} tone="muted">
+                  {plainTextExcerpt(ask.presentation.bodyMarkdown, 280) ?? ""}
+                </AppText>
+              ) : null}
             </>
           );
           return (

@@ -1,13 +1,12 @@
 import { useTranscriptImages } from "@opensteer/client/react";
+import { classifyHref } from "@opensteer/core";
 import { classifyMarkdownImageSource } from "@opensteer/shared/markdownImages";
+import type { MarkdownProfile } from "@opensteer/shared/personMarkdown";
 import { AssetImage } from "./asset-image.js";
 import { splitMarkdownBlocks } from "@opensteer/shared/markdown";
-import { transcriptLinkUrl } from "@opensteer/shared/transcriptLinks";
 import type { List, PhrasingContent, RootContent, Table as TableNode } from "mdast";
 import { memo, useContext, useMemo, useState, type ReactNode } from "react";
 import {
-  Alert,
-  Linking,
   ScrollView,
   StyleSheet,
   Text,
@@ -16,11 +15,12 @@ import {
   type TextStyle,
 } from "react-native";
 import { color, radius, space, type } from "../theme.js";
-import { LinkHoldContext, useConversationLinks } from "../thread/link-context.js";
+import { useConversationLinks } from "../thread/link-context.js";
 import { CopyMark } from "../ui/copy-mark.js";
 import { monoFontFamily } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { markdownTree } from "./markdown-tree.js";
+import { ChipInk, ReferenceLink } from "./reference-link.js";
 import { TextLines } from "./text-lines.js";
 
 /**
@@ -31,39 +31,47 @@ import { TextLines } from "./text-lines.js";
 export type MarkdownLook = "bubble" | "reading";
 
 /**
- * Assistant prose, drawn from the same parser web uses, so a reply reads the
- * same on every client. Each block is memoised on the exact source it came from,
- * so a streaming message re-parses and re-draws only its trailing block.
+ * Markdown, drawn from the same parser web uses, so a reply reads the same on
+ * every client. Each block is memoised on the exact source it came from, so a
+ * streaming message re-parses and re-draws only its trailing block. A person's
+ * words take the person profile: their line breaks stand as written.
  */
 export const Markdown = memo(function Markdown(props: {
   readonly look?: MarkdownLook;
+  /** The reader's own bubble, whose accent fill takes its own ink. */
+  readonly mine?: boolean;
+  readonly profile?: MarkdownProfile;
   readonly streaming?: boolean;
   readonly text: string;
 }): ReactNode {
   const look = props.look ?? "reading";
+  const profile = props.profile ?? "assistant";
   const blocks = useMemo(() => splitMarkdownBlocks(props.text), [props.text]);
-  return (
+  const prose = (
     <View style={look === "bubble" ? styles.bubbleProse : styles.prose}>
       {blocks.map((source, index) => (
         <Block
           key={index}
           look={look}
+          profile={profile}
           source={source}
           streaming={props.streaming === true && index === blocks.length - 1}
         />
       ))}
     </View>
   );
+  return props.mine === true ? <ChipInk value="accent">{prose}</ChipInk> : prose;
 });
 
 const Block = memo(function Block(props: {
   readonly look: MarkdownLook;
+  readonly profile: MarkdownProfile;
   readonly source: string;
   readonly streaming: boolean;
 }): ReactNode {
   const tree = useMemo(
-    () => markdownTree(props.source, props.streaming),
-    [props.source, props.streaming],
+    () => markdownTree(props.source, props.streaming, props.profile),
+    [props.source, props.streaming, props.profile],
   );
   return <Nodes look={props.look} nodes={tree.children} />;
 });
@@ -77,6 +85,7 @@ function Nodes(props: {
 
 function Node(props: { readonly look: MarkdownLook; readonly node: RootContent }): ReactNode {
   const { look, node } = props;
+  const accent = useContext(ChipInk) === "accent";
   switch (node.type) {
     case "paragraph":
       if (node.children.some((child) => child.type === "image"))
@@ -107,7 +116,7 @@ function Node(props: { readonly look: MarkdownLook; readonly node: RootContent }
         <Text
           accessibilityRole="header"
           selectable={look === "reading"}
-          style={headingStyle(look, node.depth)}
+          style={[headingStyle(look, node.depth), accent && styles.bubbleInk]}
         >
           <Spans nodes={node.children} />
         </Text>
@@ -140,11 +149,15 @@ function headingStyle(look: MarkdownLook, depth: number): TextStyle {
 
 function Prose(props: { readonly children: ReactNode; readonly look: MarkdownLook }): ReactNode {
   const lines = useContext(TextLines);
+  const ink = useContext(ChipInk);
   return (
     <Text
       onTextLayout={lines ?? undefined}
       selectable={props.look === "reading"}
-      style={props.look === "bubble" ? styles.bubbleText : styles.readingText}
+      style={[
+        props.look === "bubble" ? styles.bubbleText : styles.readingText,
+        ink === "accent" && styles.bubbleInk,
+      ]}
     >
       {props.children}
     </Text>
@@ -153,13 +166,18 @@ function Prose(props: { readonly children: ReactNode; readonly look: MarkdownLoo
 
 function ListView(props: { readonly list: List; readonly look: MarkdownLook }): ReactNode {
   const { list, look } = props;
+  const accent = useContext(ChipInk) === "accent";
   return (
     <View style={styles.list}>
       {list.children.map((item, index) => (
         <View key={index} style={styles.listItem}>
           {item.checked === null || item.checked === undefined ? (
             <Text
-              style={[look === "bubble" ? styles.bubbleText : styles.readingText, styles.marker]}
+              style={[
+                look === "bubble" ? styles.bubbleText : styles.readingText,
+                styles.marker,
+                accent && styles.bubbleMarker,
+              ]}
             >
               {list.ordered === true ? `${(list.start ?? 1) + index}.` : "•"}
             </Text>
@@ -316,11 +334,12 @@ function Span(props: { readonly node: PhrasingContent }): ReactNode {
       return node.value;
     case "image":
       return <MarkdownImage src={node.url} alt={node.alt ?? ""} />;
-    case "link": {
-      const words = <Spans nodes={node.children} />;
-      if (!transcriptLinkUrl(node.url)) return words;
-      return <Link url={node.url}>{words}</Link>;
-    }
+    case "link":
+      return (
+        <ReferenceLink href={node.url} label={plainWords(node.children)}>
+          <Spans nodes={node.children} />
+        </ReferenceLink>
+      );
     default:
       return null;
   }
@@ -344,34 +363,24 @@ function LinkHold(props: {
 function holdsLink(nodes: readonly PhrasingContent[]): boolean {
   return nodes.some(
     (node) =>
-      (node.type === "link" && transcriptLinkUrl(node.url) !== null) ||
+      (node.type === "link" && classifyHref(node.url).kind !== "none") ||
       ("children" in node && holdsLink(node.children as readonly PhrasingContent[])),
   );
 }
 
-/**
- * A link an agent wrote. In a conversation it opens where the conversation
- * says; anywhere else it goes to the system, as it always has.
- */
-function Link(props: { readonly children: ReactNode; readonly url: string }): ReactNode {
-  const { url } = props;
-  const links = useConversationLinks();
-  const hold = useContext(LinkHoldContext);
-  return (
-    <Text
-      accessibilityRole="link"
-      onLongPress={hold ? () => hold.hold(url) : undefined}
-      onPress={() => {
-        if (links) links.open(url);
-        // Outside a conversation a link goes to the system, which decides what opens it.
-        else void Linking.openURL(url).catch(() => Alert.alert("Link could not be opened", url));
-      }}
-      onPressIn={hold ? (event) => hold.press(url, event.nativeEvent.timestamp) : undefined}
-      style={styles.link}
-    >
-      {props.children}
-    </Text>
-  );
+/** A link's words as plain text: what its chip falls back to and what Copy keeps. */
+export function plainWords(nodes: readonly PhrasingContent[]): string {
+  return nodes
+    .map((node) =>
+      "value" in node && typeof node.value === "string"
+        ? node.value
+        : node.type === "image"
+          ? (node.alt ?? "")
+          : "children" in node
+            ? plainWords(node.children as readonly PhrasingContent[])
+            : "",
+    )
+    .join("");
 }
 
 /**
@@ -422,6 +431,7 @@ const styles = StyleSheet.create({
   },
   bubbleHeading: { ...type.bubble, color: color.text, fontWeight: "600" },
   bubbleInk: { color: color.bubbleInk },
+  bubbleMarker: { color: "rgba(27, 18, 14, 0.6)" },
   bubbleProse: { gap: space[8] },
   bubbleText: { ...type.bubble, color: color.text },
   cell: {
@@ -461,7 +471,6 @@ const styles = StyleSheet.create({
     fontFamily: monoFontFamily,
     fontSize: 15,
   },
-  link: { color: color.ember, textDecorationLine: "underline" },
   list: { gap: space[4] },
   listBody: { flexShrink: 1, gap: space[4] },
   listItem: { flexDirection: "row", gap: space[8] },

@@ -50,6 +50,7 @@ export type SFSymbolName =
   | "cpu"
   | "cursorarrow"
   | "desktopcomputer"
+  | "doc"
   | "doc.text"
   | "ellipsis"
   | "exclamationmark.circle"
@@ -60,6 +61,7 @@ export type SFSymbolName =
   | "globe"
   | "hand.raised"
   | "hifispeaker"
+  | "icloud.slash"
   | "house"
   | "key"
   | "keyboard"
@@ -94,6 +96,7 @@ export type SFSymbolName =
   | "powerplug"
   | "puzzlepiece.extension"
   | "qrcode.viewfinder"
+  | "questionmark.circle"
   | "rectangle.on.rectangle"
   | "rectangle.portrait.and.arrow.right"
   | "repeat"
@@ -113,9 +116,11 @@ export type SFSymbolName =
   | "tablecells"
   | "terminal"
   | "text.append"
+  | "text.quote"
   | "trash"
   | "tv"
   | "waveform"
+  | "waveform.path.ecg"
   | "xmark";
 
 export type SymbolWeightName = "regular" | "medium" | "semibold" | "bold";
@@ -233,6 +238,7 @@ const glyph: Record<SFSymbolName, string> = {
   cpu: "▣",
   cursorarrow: "↖",
   desktopcomputer: "▭",
+  doc: "▯",
   "doc.text": "▤",
   ellipsis: "…",
   "exclamationmark.circle": "!",
@@ -243,6 +249,7 @@ const glyph: Record<SFSymbolName, string> = {
   globe: "◍",
   "hand.raised": "✋\uFE0E",
   hifispeaker: "♫",
+  "icloud.slash": "⊘",
   house: "⌂",
   key: "⚷",
   keyboard: "⌨",
@@ -277,6 +284,7 @@ const glyph: Record<SFSymbolName, string> = {
   powerplug: "⌁",
   "puzzlepiece.extension": "⧉",
   "qrcode.viewfinder": "⌗",
+  "questionmark.circle": "?",
   "rectangle.on.rectangle": "❐",
   "rectangle.portrait.and.arrow.right": "⇥",
   repeat: "↻",
@@ -296,9 +304,11 @@ const glyph: Record<SFSymbolName, string> = {
   tablecells: "⊞",
   terminal: "›",
   "text.append": "≡",
+  "text.quote": "❝",
   trash: "⌫",
   tv: "⊡",
   waveform: "⦀",
+  "waveform.path.ecg": "∿",
   xmark: "✕",
 };
 
