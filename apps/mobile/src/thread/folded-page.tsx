@@ -7,13 +7,7 @@ import { agentWorkingLabel } from "../browser/acting-dot.js";
 import { useSidebarVisible } from "../sidebar/sidebar-context.js";
 import { space, touchTarget } from "../theme.js";
 import { useAppForeground } from "../ui/foreground.js";
-import {
-  ActingRing,
-  PlaceGlyph,
-  PlaceSurface,
-  pictureRadius,
-  usePicture,
-} from "./live-place.js";
+import { ActingRing, PlaceGlyph, PlaceSurface, pictureRadius, usePicture } from "./live-place.js";
 
 /** Small enough to sit in the bar, so it asks for a small picture. */
 const size = { height: 24, width: 38 } as const;
@@ -73,12 +67,7 @@ function FoldedPicture(props: {
       testID="folded-page"
     >
       <View pointerEvents="none" style={styles.picture}>
-        <PlaceSurface
-          active={active}
-          hostClient={hostClient}
-          onPicture={report}
-          place={place}
-        />
+        <PlaceSurface active={active} hostClient={hostClient} onPicture={report} place={place} />
         {/* Only a picture arriving now stands for the page here. */}
         {picture.state === "live" ? null : <PlaceGlyph kind={place.kind} size={13} />}
         {acting ? <ActingRing radius={pictureRadius} /> : null}

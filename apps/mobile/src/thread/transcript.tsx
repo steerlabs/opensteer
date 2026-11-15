@@ -1057,8 +1057,7 @@ function StepsRow(props: {
             <View style={{ flexDirection: "row" }}>
               {row.places.slice(0, 3).map((entry) => {
                 const place =
-                  row.currentPlace &&
-                  row.currentPlace.tabId === entry.tabId
+                  row.currentPlace && row.currentPlace.tabId === entry.tabId
                     ? row.currentPlace
                     : entry;
                 return (

@@ -179,40 +179,39 @@ function RunSurfaces(props: {
   const [open, setOpen] = useState(false);
   const chips = useMemo(
     (): readonly Chip[] =>
-      replyPlaces(turn, uses, source).map(
-        (place): Chip =>
-          place.kind === "page"
+      replyPlaces(turn, uses, source).map((place): Chip =>
+        place.kind === "page"
+          ? {
+              acting: place.page.acting,
+              destination: place.page.destination,
+              ended: place.page.ended,
+              favicon: place.page.favicon,
+              glyph: "globe",
+              key: place.page.key,
+              secondary: place.page.site,
+              title: place.page.title,
+            }
+          : place.kind === "phone"
             ? {
-                acting: place.page.acting,
-                destination: place.page.destination,
-                ended: place.page.ended,
-                favicon: place.page.favicon,
-                glyph: "globe",
-                key: place.page.key,
-                secondary: place.page.site,
-                title: place.page.title,
+                acting: false,
+                destination: place.phone.destination,
+                ended: place.phone.ended,
+                favicon: null,
+                glyph: "smartphone",
+                key: place.phone.key,
+                secondary: null,
+                title: place.phone.title,
               }
-            : place.kind === "phone"
-              ? {
-                  acting: false,
-                  destination: place.phone.destination,
-                  ended: place.phone.ended,
-                  favicon: null,
-                  glyph: "smartphone",
-                  key: place.phone.key,
-                  secondary: null,
-                  title: place.phone.title,
-                }
-              : {
-                  acting: place.app.acting,
-                  destination: place.app.destination,
-                  ended: place.app.ended,
-                  favicon: null,
-                  glyph: "laptopcomputer",
-                  key: place.app.key,
-                  secondary: null,
-                  title: place.app.title,
-                },
+            : {
+                acting: place.app.acting,
+                destination: place.app.destination,
+                ended: place.app.ended,
+                favicon: null,
+                glyph: "laptopcomputer",
+                key: place.app.key,
+                secondary: null,
+                title: place.app.title,
+              },
       ),
     [source, turn, uses],
   );

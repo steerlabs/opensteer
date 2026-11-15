@@ -207,7 +207,10 @@ export interface PhoneBrowserNativePort extends Pick<
       deadline: number;
       request: BrowserActionRequest;
     },
-  ): Promise<Exclude<BrowserActionResult, { type: "page.capture" | "surface.resume" }> | { type: "delivered" }>;
+  ): Promise<
+    | Exclude<BrowserActionResult, { type: "page.capture" | "surface.resume" }>
+    | { type: "delivered" }
+  >;
   applyViewerInput(
     input: NativeDocumentRef & {
       channelId: string;

@@ -8,10 +8,7 @@ import {
 } from "@opensteer/client/references";
 import { useReference, useTabReference } from "@opensteer/client/react";
 import type { TeamSessionClient } from "@opensteer/client/team";
-import {
-  type ClassifiedHref,
-  type TeamPageLink,
-} from "@opensteer/core";
+import { type ClassifiedHref, type TeamPageLink } from "@opensteer/core";
 import {
   createContext,
   useCallback,

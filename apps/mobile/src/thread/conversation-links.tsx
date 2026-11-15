@@ -66,17 +66,15 @@ export function ConversationLinksProvider(props: {
         openOutside(url);
         return;
       }
-      hostClient
-        .openTab(pageOpenTarget(place.target, url))
-        .then(
-          (tab) => {
-            if (navigation.isFocused())
-              navigation.dispatch(
-                StackActions.push("WorkspaceBrowser", tabRoute(deploymentId, tab.tabId, threadId)),
-              );
-          },
-          () => openOutside(url),
-        );
+      hostClient.openTab(pageOpenTarget(place.target, url)).then(
+        (tab) => {
+          if (navigation.isFocused())
+            navigation.dispatch(
+              StackActions.push("WorkspaceBrowser", tabRoute(deploymentId, tab.tabId, threadId)),
+            );
+        },
+        () => openOutside(url),
+      );
     };
     return {
       Hold: ReadingHold,

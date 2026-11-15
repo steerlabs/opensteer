@@ -1,8 +1,4 @@
-import {
-  canRespondToRequests,
-  deriveSurface,
-  type HostSnapshot,
-} from "@opensteer/client/host";
+import { canRespondToRequests, deriveSurface, type HostSnapshot } from "@opensteer/client/host";
 import type { HostClient } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import type { VoiceSnapshot } from "@opensteer/client/voice";

@@ -1,8 +1,4 @@
-import {
-  threadInDirectory,
-  type HostClient,
-  type HostSnapshot,
-} from "@opensteer/client/host";
+import { threadInDirectory, type HostClient, type HostSnapshot } from "@opensteer/client/host";
 import type { AppsList } from "@opensteer/client/host";
 import { useAppsList, useHostSelector } from "@opensteer/client/react";
 import type { App } from "@opensteer/core";

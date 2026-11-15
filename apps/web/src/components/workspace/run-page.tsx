@@ -29,12 +29,7 @@ import {
   type RefObject,
 } from "react";
 import { Icon } from "../icon.js";
-import {
-  hasPlacePicture,
-  PlaceGlyph,
-  PlacePicture,
-  placeName,
-} from "./viewfinder.js";
+import { hasPlacePicture, PlaceGlyph, PlacePicture, placeName } from "./viewfinder.js";
 import { useWorkspace } from "./workspace-context.js";
 
 /**

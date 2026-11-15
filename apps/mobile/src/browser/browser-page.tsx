@@ -544,7 +544,10 @@ export function BrowserPage(props: {
 
   // The pages of this same browser, profile and computer, in the one list's order.
   const strip = useTabStrip(hostClient);
-  const browser = listed?.kind === "page" ? `${listed.computer.computerId}:${listed.profile?.profileId ?? ""}` : null;
+  const browser =
+    listed?.kind === "page"
+      ? `${listed.computer.computerId}:${listed.profile?.profileId ?? ""}`
+      : null;
   const tabIds = useMemo(() => {
     const tabs = hostClient.getSnapshot().tabs;
     return strip.ordered.filter((id) => {

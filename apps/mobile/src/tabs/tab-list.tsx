@@ -13,7 +13,12 @@ import {
   useTabLayout,
   useTabStrip,
 } from "@opensteer/client/react";
-import { TabGroupColorSchema, type TabGroup, type TabGroupColor, type TabId } from "@opensteer/core";
+import {
+  TabGroupColorSchema,
+  type TabGroup,
+  type TabGroupColor,
+  type TabId,
+} from "@opensteer/core";
 import type { TabOrganizeInput } from "@opensteer/protocol";
 import { memo, useCallback, useMemo, useState, type ReactElement, type ReactNode } from "react";
 import { FlatList, Pressable, StyleSheet, View } from "react-native";
@@ -529,7 +534,8 @@ const TabRow = memo(function TabRow(props: TabRowProps & { readonly place: Place
   const tab = place.tab;
   // Who uses the tab, each marked working while the Host reports its Run acting in this very tab.
   const agents = usePlaceAgents(hostClient, place.key);
-  const picture = props.shown && tab.kind === "page" ? browserTabPicture(hostClient, tab.tabId) : null;
+  const picture =
+    props.shown && tab.kind === "page" ? browserTabPicture(hostClient, tab.tabId) : null;
   const detail = tabDetail(tab, props);
   const unavailable = tab.state === "unavailable";
   const movingThis =

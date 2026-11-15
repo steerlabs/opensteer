@@ -39,13 +39,7 @@ import { descend, duration, move } from "../ui/motion.js";
 import { AppText } from "../ui/primitives.js";
 import { useLayout } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
-import {
-  ActingRing,
-  PlaceGlyph,
-  PlaceSurface,
-  pictureRadius,
-  usePicture,
-} from "./live-place.js";
+import { ActingRing, PlaceGlyph, PlaceSurface, pictureRadius, usePicture } from "./live-place.js";
 
 const rowPicture = { height: 30, width: 46 } as const;
 

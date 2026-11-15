@@ -1,8 +1,4 @@
-import {
-  canRespondToRequests,
-  type HostClient,
-  type HostSnapshot,
-} from "@opensteer/client/host";
+import { canRespondToRequests, type HostClient, type HostSnapshot } from "@opensteer/client/host";
 import { useCallback, useRef, useSyncExternalStore } from "react";
 interface EngineInstallationRow {
   readonly driverKind: string;

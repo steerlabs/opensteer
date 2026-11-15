@@ -313,7 +313,9 @@ it("keeps a live app view during a link blip and invalidates it for a publicatio
       listeners.delete(listener);
     };
   });
-  const read = vi.spyOn(client, "viewApp").mockResolvedValue({ title: metadata.title, url: appUrl });
+  const read = vi
+    .spyOn(client, "viewApp")
+    .mockResolvedValue({ title: metadata.title, url: appUrl });
   function Probe() {
     const { view } = useAppView(client, appId, "dark");
     return <span>{view?.url ?? "loading"}</span>;

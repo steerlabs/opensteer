@@ -995,6 +995,9 @@ function useAroundWorking(
         .some((record) => threads.has(record.threadId));
       return working === place.working ? place : { ...place, working };
     });
-    return [...marked.filter(({ working }) => working), ...marked.filter(({ working }) => !working)];
+    return [
+      ...marked.filter(({ working }) => working),
+      ...marked.filter(({ working }) => !working),
+    ];
   }, [hostClient, listed, seen, threadId]);
 }

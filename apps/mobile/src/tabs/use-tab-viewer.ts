@@ -41,29 +41,27 @@ export function useTabViewer(
     const opening = explicit.current;
     const wake = opening.open;
     opening.open = false;
-    void hostClient
-      .activateTab(tabId, { wake })
-      .then(
-        (viewer) => {
-          // An answer for a tab no longer here wakes nothing.
-          const source = phoneSource(viewer);
-          if (!current) {
-            if (source !== null && wake) sharedDisplayStreams(hostClient).cancelAutoWake(source);
-            return;
-          }
-          setAnswer({ state: { status: "ready", viewer }, tabId });
-        },
-        (error: unknown) => {
-          if (current)
-            setAnswer({
-              state: {
-                error: operationDetail(error, "This tab could not open."),
-                status: "failed",
-              },
-              tabId,
-            });
-        },
-      );
+    void hostClient.activateTab(tabId, { wake }).then(
+      (viewer) => {
+        // An answer for a tab no longer here wakes nothing.
+        const source = phoneSource(viewer);
+        if (!current) {
+          if (source !== null && wake) sharedDisplayStreams(hostClient).cancelAutoWake(source);
+          return;
+        }
+        setAnswer({ state: { status: "ready", viewer }, tabId });
+      },
+      (error: unknown) => {
+        if (current)
+          setAnswer({
+            state: {
+              error: operationDetail(error, "This tab could not open."),
+              status: "failed",
+            },
+            tabId,
+          });
+      },
+    );
     return () => {
       current = false;
     };

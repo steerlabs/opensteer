@@ -58,10 +58,7 @@ const noSuggestions: readonly OpenTabSuggestion[] = [];
 const inactive = { read: () => noSuggestions, subscribe: () => () => {} };
 export function useTabSuggestions(client: HostClient, enabled = true) {
   const model = useHostSelector(client, selectTabs);
-  const selection = useMemo(
-    () => (enabled ? tabSuggestions(model) : inactive),
-    [enabled, model],
-  );
+  const selection = useMemo(() => (enabled ? tabSuggestions(model) : inactive), [enabled, model]);
   return useSyncExternalStore(selection.subscribe, selection.read, selection.read);
 }
 

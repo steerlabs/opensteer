@@ -156,10 +156,7 @@ export function usePicture(): readonly [
 }
 
 /** What stands for a place with no picture to show: its kind, never an empty frame. */
-export function PlaceGlyph(props: {
-  readonly kind: TabKind;
-  readonly size: number;
-}): ReactNode {
+export function PlaceGlyph(props: { readonly kind: TabKind; readonly size: number }): ReactNode {
   return (
     <View pointerEvents="none" style={styles.glyph}>
       <Symbol

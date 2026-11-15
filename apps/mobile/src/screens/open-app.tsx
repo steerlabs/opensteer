@@ -487,11 +487,7 @@ const AppRow = memo(function AppRow(props: {
           id: window.windowId,
           label: window.title || "Untitled window",
           onPress: () =>
-            props.onOpen(
-              app,
-              rowTarget(app, window),
-              `${app.connectionId}:${window.windowId}`,
-            ),
+            props.onOpen(app, rowTarget(app, window), `${app.connectionId}:${window.windowId}`),
         }))}
         style={styles.menu}
         title={app.name}

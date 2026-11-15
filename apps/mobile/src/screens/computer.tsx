@@ -8,11 +8,7 @@ import { RemoteIphoneAppsBlock } from "../iphone-apps/remote-iphone-apps-block.j
 import { AppText, Notice, SecondaryButton, StatusDot } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
 
-import {
-  canRespondToRequests,
-  type HostClient,
-  type HostSnapshot,
-} from "@opensteer/client/host";
+import { canRespondToRequests, type HostClient, type HostSnapshot } from "@opensteer/client/host";
 import type { MachineSummary } from "@opensteer/protocol";
 import {
   computerRole,

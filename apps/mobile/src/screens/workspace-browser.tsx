@@ -301,10 +301,7 @@ function ClosedTab(props: { readonly hostClient: HostClient; readonly tabId: Tab
       action={{
         label: reopening.busy ? "Reopening…" : "Reopen",
         onPress: () =>
-          void reopening.run(
-            () => hostClient.reopenTab(tabId),
-            "This tab could not reopen.",
-          ),
+          void reopening.run(() => hostClient.reopenTab(tabId), "This tab could not reopen."),
       }}
       detail={reopening.failure}
       title="This tab was closed"

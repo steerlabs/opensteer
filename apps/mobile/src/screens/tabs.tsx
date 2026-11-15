@@ -1,4 +1,8 @@
-import type { HostClient, HostSnapshot, TabFilter as SharedTabFilter } from "@opensteer/client/host";
+import type {
+  HostClient,
+  HostSnapshot,
+  TabFilter as SharedTabFilter,
+} from "@opensteer/client/host";
 import {
   useHostSelector,
   useTabDeviceChoice,
@@ -114,11 +118,7 @@ function TabsForReader(props: {
     [deploymentId, navigation],
   );
   const reopenClosed = useCallback(
-    () =>
-      void reopen.run(
-        () => hostClient.reopenTab(),
-        "There is no closed tab to reopen.",
-      ),
+    () => void reopen.run(() => hostClient.reopenTab(), "There is no closed tab to reopen."),
     [hostClient, reopen],
   );
   useTabsBar({
