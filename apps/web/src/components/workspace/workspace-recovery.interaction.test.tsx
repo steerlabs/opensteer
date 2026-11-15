@@ -812,7 +812,7 @@ describe("the v7 web review's findings", () => {
     const activate = vi.spyOn(client, "activateTab");
     await act(async () => goTo!({ pathname: "/", search: `?panel=browser&tab=${held.key}` }));
     await settle(120);
-    expect(activate).toHaveBeenCalledExactlyOnceWith(held.key);
+    expect(activate).toHaveBeenCalledExactlyOnceWith(held.key, { wake: true });
     expect(element(".place .owner-view")).toBeTruthy();
     const address = history.at(-1);
     const shown = client.tabViewer(held.key);

@@ -22,7 +22,8 @@ it("activates a selected tab once across republished rows, then again on Try aga
       .mockRejectedValueOnce(new Error("Still unavailable."));
     return `/?panel=browser&tab=${tabId}`;
   });
-  expect(activate).toHaveBeenCalledExactlyOnceWith(tabId);
+  // Selecting a tab is the person's Open: only it, Try again and choosing it again may wake a phone.
+  expect(activate).toHaveBeenCalledExactlyOnceWith(tabId, { wake: true });
   expect(element(".place-state").textContent).toContain("The browser could not start.");
   for (let revision = 0; revision < 10; revision++)
     await act(async () => client.setBrowserLoading(tabId, revision % 2 === 0));
@@ -37,6 +38,8 @@ it("activates a selected tab once across republished rows, then again on Try aga
   )!;
   await click(element(`.side-tab[data-place-key="${other.key}"] .side-tab__main`));
   await click(element(`.side-tab[data-place-key="${tabId}"] .side-tab__main`));
-  expect(activate.mock.calls.map(([id]) => id)).toEqual([tabId, tabId, other.key, tabId]);
+  expect(activate.mock.calls).toEqual(
+    [tabId, tabId, other.key, tabId].map((id) => [id, { wake: true }]),
+  );
   expect(document.querySelector(".place-state .btn")).toBeNull();
 });
