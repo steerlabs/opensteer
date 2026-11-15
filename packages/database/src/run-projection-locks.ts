@@ -3,7 +3,11 @@ import { sql, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
 type ProjectionScope = {
-  readonly includeRetiredInputs?: boolean;
+  /**
+   * The caller may delete the task: every input and its message, retired ones included,
+   * is locked for deletion here, in rank order, rather than upgraded later.
+   */
+  readonly forRemoval?: boolean;
   readonly runIds: readonly RunId[];
   readonly requestIds?: readonly RequestId[];
   readonly threadIds: readonly ThreadId[];
@@ -15,7 +19,7 @@ function projectionInputs(transaction: Transaction<DatabaseSchema>, input: Proje
   return transaction
     .selectFrom("threadInputs")
     .where("threadId", "in", [...input.threadIds])
-    .$if(!input.includeRetiredInputs, (q) =>
+    .$if(!input.forRemoval, (q) =>
       q.where((eb) =>
         eb.or([
           eb("state", "in", ["awaiting-approval", "pending", "claimed", "unknown"]),
@@ -95,10 +99,23 @@ export async function lockThreadProjectionParents(
             ]
           : []),
         ...(input.causalChainIds?.length ? [eb("id", "in", [...input.causalChainIds])] : []),
+        // A removed task takes the chains rooted at its messages with it.
+        ...(input.forRemoval
+          ? [
+              eb(
+                "rootMessageId",
+                "in",
+                eb
+                  .selectFrom("messages")
+                  .select("id")
+                  .where("threadId", "in", [...input.threadIds]),
+              ),
+            ]
+          : []),
       ]),
     )
     .orderBy("id", "asc")
-    .forNoKeyUpdate()
+    .$call((query) => (input.forRemoval ? query.forUpdate() : query.forNoKeyUpdate()))
     .execute();
   {
     await transaction
@@ -151,12 +168,12 @@ export async function lockRunProjectionRows(
 ): Promise<void> {
   if (!input.threadIds.length) return;
   const runIds = await lockThreadProjectionParents(transaction, input);
-  if (runIds.length || input.includeRetiredInputs) {
+  if (runIds.length || input.forRemoval) {
     await transaction
       .selectFrom("commands")
       .select("id")
       .where((eb) =>
-        input.includeRetiredInputs
+        input.forRemoval
           ? eb("threadId", "in", [...input.threadIds])
           : eb("runId", "in", [...runIds]),
       )
@@ -167,14 +184,14 @@ export async function lockRunProjectionRows(
   await projectionInputs(transaction, input)
     .select("messageId")
     .orderBy("messageId", "asc")
-    .forNoKeyUpdate()
+    .$call((query) => (input.forRemoval ? query.forUpdate() : query.forNoKeyUpdate()))
     .execute();
   await transaction
     .selectFrom("messages")
     .select("id")
     .where("id", "in", projectionInputs(transaction, input).select("messageId"))
     .orderBy("id", "asc")
-    .forNoKeyUpdate()
+    .$call((query) => (input.forRemoval ? query.forUpdate() : query.forNoKeyUpdate()))
     .execute();
   await transaction
     .selectFrom("personalTeamRequests")

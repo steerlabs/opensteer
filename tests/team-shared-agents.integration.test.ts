@@ -304,11 +304,13 @@ it.each([
         ],
       });
       expect(await bob.database.selectFrom("runs").select("id").execute()).toHaveLength(0);
+      // Bob approves the ask as it arrived; nobody edited his copy.
       await bob.publisher.decide(
         bob.owner.userId,
         target.host.deployment.id,
         ask.request.id,
         "approve",
+        0,
       );
       if (catchUp)
         for (let index = 0; index < teamShareBatchRows; index++)

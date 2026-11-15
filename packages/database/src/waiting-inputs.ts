@@ -100,7 +100,7 @@ export async function inputLeaseBarrier(
 export async function lockInputQueueProjection(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
-  includeRetiredInputs = false,
+  forRemoval = false,
 ): Promise<ThreadRow> {
   const runs = await transaction
     .selectFrom("runs")
@@ -111,10 +111,18 @@ export async function lockInputQueueProjection(
     .forNoKeyUpdate()
     .execute();
   await lockThreadRow(transaction, threadId);
+  // Deleting the task needs the row's strongest lock, taken before anything ranked after it.
+  if (forRemoval)
+    await transaction
+      .selectFrom("threads")
+      .select("id")
+      .where("id", "=", threadId)
+      .forUpdate()
+      .execute();
   await lockRunProjectionRows(transaction, {
     threadIds: [threadId],
     runIds: runs.map((row) => row.id),
-    includeRetiredInputs,
+    forRemoval,
   });
   return transaction
     .selectFrom("threads")

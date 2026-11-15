@@ -533,10 +533,12 @@ async function succeedCommandInTransaction(
         .where("status", "=", "waiting")
         .executeTakeFirst();
       if (resumed.numUpdatedRows === 1n) {
+        // The resumed state is projected before a hand-off can restart the attempt:
+        // thread state ranks ahead of run attempts, and a restart leaves the Run running.
+        events.push(...(await projectThreadState(transaction, observed.threadId)));
         const handed = await deliverConversationInputsInTransaction(transaction, observed.runId);
         events.push(...handed.events);
         revokedGrants = handed.revokedGrants;
-        events.push(...(await projectThreadState(transaction, observed.threadId)));
       }
     }
     events.push(...(await assignmentActivityEventsForRun(transaction, observed.runId)));
