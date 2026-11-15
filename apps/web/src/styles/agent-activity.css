@@ -679,11 +679,15 @@
   font-weight: var(--weight-medium);
 }
 
+/* Every version reads in full, so the list scrolls rather than any version being cut short. */
 .revisions__list {
   display: flex;
   flex-direction: column;
+  max-height: min(60vh, 440px);
   margin: 0;
   padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   list-style: none;
 }
 
@@ -708,16 +712,12 @@
 }
 
 .revisions__text {
-  display: -webkit-box;
   margin: 0;
-  overflow: hidden;
   color: var(--muted);
   font-size: var(--text-lg);
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
 }
 
 .revisions__row[data-current] .revisions__text {

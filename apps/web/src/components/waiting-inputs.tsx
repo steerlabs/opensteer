@@ -180,7 +180,8 @@ type EditNotice = "taken" | "changed" | "failed" | "unconfirmed";
 
 /** One opening of the editor on this device: its lease, and what it has under way. */
 interface EditSession {
-  readonly opening: Promise<WaitingMessageEditor>;
+  /** Replaced when a lease that never opened is taken again; the words stay. */
+  opening: Promise<WaitingMessageEditor>;
   /** Left: unmounted, or closed by the person. */
   closed: boolean;
   /** A save is out; it ends the lease, and nothing closes the editor before it answers. */
@@ -287,7 +288,11 @@ function useInPlaceEdit(
     // The words as sent, kept through the save, so a refusal hands them back unchanged.
     setKept(draft);
     try {
-      const edit = await (await held.opening).save(plan.content, plan.expectedRevision);
+      const editor = await held.opening.catch(() => {
+        held.opening = client.editWaitingMessage(input.threadId, input.messageId);
+        return held.opening;
+      });
+      const edit = await editor.save(plan.content, plan.expectedRevision);
       held.saving = false;
       // Saving ended the lease; there is nothing left to cancel.
       finish(held, true);

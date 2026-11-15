@@ -5,6 +5,7 @@ import {
   leaseChangedEvent,
 } from "./waiting-inputs.js";
 import { executionDate } from "./personal-transaction.js";
+import { threadInputFromRow } from "./thread-row-mappers.js";
 import { isDeepStrictEqual } from "node:util";
 import {
   MessageIdSchema,
@@ -422,6 +423,26 @@ export class PersonalTeamRequestsStore {
         .where("requestId", "=", requestId)
         .returningAll()
         .executeTakeFirstOrThrow();
+      // A decided ask can no longer be edited or decided again, even while the team is unreachable;
+      // every device reading the task's queue learns that now, not when the team answers.
+      const input =
+        thread && row.localInputId
+          ? await tx
+              .selectFrom("threadInputs")
+              .selectAll()
+              .where("messageId", "=", row.localInputId)
+              .executeTakeFirst()
+          : undefined;
+      if (thread && input)
+        events.push(
+          await appendHostDeploymentEvent(tx, {
+            data: { input: threadInputFromRow(input) },
+            environmentId: thread.environmentId,
+            runId: null,
+            threadId: thread.id,
+            type: "thread-input.updated",
+          }),
+        );
       return { mirror: personalTeamRequestMirrorFromRow(saved), events };
     });
     for (const event of result.events) this.#onDeliveryEvent?.(event);

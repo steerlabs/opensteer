@@ -422,6 +422,30 @@ describe("WaitingInputs", () => {
     expect(editor.cancel).not.toHaveBeenCalled();
   });
 
+  it("takes the lease again when an edit that could not open is tried again, keeping the words", async () => {
+    const editor = fakeEditor();
+    const editWaitingMessage = vi
+      .fn<() => Promise<typeof editor>>()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(editor);
+    const client = { editWaitingMessage } as unknown as HostClient;
+    const container = mount(
+      render(client, inputsOf([item("mine", "Check the shard", { canEdit: true })])),
+    );
+    await clickWords(container, "mine");
+    await write(field(container)!, "Check the integration shard");
+    expect(container.textContent).toContain("Couldn’t save your edit.");
+
+    await act(async () => button(container, "Try again").click());
+
+    expect(editWaitingMessage).toHaveBeenCalledTimes(2);
+    expect(editor.save).toHaveBeenCalledWith(
+      [{ text: "Check the integration shard", type: "text" }],
+      0,
+    );
+    expect(field(container)).toBeNull();
+  });
+
   it("Escape ends the edit unsaved and lets the message go on", async () => {
     const editor = fakeEditor();
     const client = { editWaitingMessage: vi.fn(async () => editor) } as unknown as HostClient;

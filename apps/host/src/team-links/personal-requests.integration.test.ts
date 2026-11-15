@@ -417,9 +417,27 @@ describeStore("personal team consent and returns", (it) => {
       f.publisher.decide(f.userId, f.origin.teamId, f.frame.request.id, "approve", 0),
     ).rejects.toMatchObject({ code: "conflict" });
     f.offline(true);
+    const inputEvents = () =>
+      storeFixture.database
+        .selectFrom("deploymentEvents")
+        .select("sequence")
+        .where("threadId", "=", identity.threadId)
+        .where("type", "=", "thread-input.updated")
+        .execute();
+    const before = (await inputEvents()).length;
     await expect(
       f.publisher.decide(f.userId, f.origin.teamId, f.frame.request.id, "approve", 1),
     ).rejects.toMatchObject({ code: "runner_offline" });
+    // Other devices learn the ask is frozen from the stored decision, not from the team's answer.
+    expect((await inputEvents()).length).toBe(before + 1);
+    expect(
+      (
+        await storeFixture.store.getThreadInputQueue({
+          threadId: identity.threadId,
+          requestedBy: f.userId,
+        })
+      ).items.find(({ message }) => message.id === identity.messageId),
+    ).toMatchObject({ canEdit: false });
     await expect(
       storeFixture.store.editThreadInput({
         ...identity,
