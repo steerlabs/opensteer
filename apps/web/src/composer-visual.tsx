@@ -20,6 +20,7 @@ import { MockHostClient } from "@opensteer/client/mock";
 import { DictationController } from "@opensteer/client/dictation";
 import { DictationContext } from "./components/dictation.js";
 import { Composer } from "./components/composer.js";
+import type { ComposerLinkCandidate } from "./components/composer-reference-picker.js";
 import { ExecutionControls } from "./components/execution-controls.js";
 import { UsageNoticeLine } from "./components/usage-notice.js";
 import { Icon } from "./components/icon.js";
@@ -127,8 +128,19 @@ const voice = {
   subscribe: () => () => {},
   start: async () => {},
 } as unknown as VoiceControls;
+/** `?tokens`: a draft holding references; typing `@` offers these. */
+const references: readonly ComposerLinkCandidate[] = [
+  ["thr_00000000-0000-4000-8000-000000000001", "Fix the flaky integration shard"],
+  ["thr_00000000-0000-4000-8000-000000000002", "Quarterly planning notes for the design review"],
+  ["trg_00000000-0000-4000-8000-000000000003", "Morning inbox triage"],
+  ["rnr_00000000-0000-4000-8000-000000000004", "Studio Mac mini"],
+].map(([id, label]) => ({ key: id!, label: label!, markdown: `[${label}](opensteer:${id})` }));
+const draft = query.has("tokens")
+  ? `Compare ${references[0]!.markdown} with ${references[1]!.markdown}, then run it on ${references[3]!.markdown} `
+  : null;
+const restore = draft ? { key: 1, text: draft } : null;
 function App() {
-  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const inputRef = useRef<HTMLElement | null>(null);
   const variant = query.get("variant") === "conversation" ? "conversation" : "work";
   const [selection, setSelection] = useState(select(codex, gpt, { effort: "xhigh" }));
   const [mode, setMode] = useState<ThreadAccessMode>("full-access");
@@ -174,6 +186,12 @@ function App() {
           }
           placeholder="What should Opensteer do?"
           onSend={async () => {}}
+          references={(search) =>
+            references.filter((item) =>
+              item.label.toLocaleLowerCase().includes(search.toLocaleLowerCase()),
+            )
+          }
+          restore={restore}
           attachments={{
             client,
             deploymentId: client.getSnapshot().deploymentId!,

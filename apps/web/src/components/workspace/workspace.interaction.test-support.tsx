@@ -36,6 +36,7 @@ import {
 import { TeamDialogsProvider } from "../../team/hosted-teams.js";
 import { TeamsRoute } from "../../team/join-route.js";
 import { SettingsTeamRoute } from "../settings/settings-shell.js";
+import { composerField, rewrite } from "../composer-editor.test-support.js";
 
 /**
  * The workspace contract over the moving mock world: each selection action
@@ -399,10 +400,19 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-async function write(field: HTMLTextAreaElement, text: string) {
+/** Replaces what a field holds: a textarea's value, or a composer's words. */
+async function write(field: HTMLElement | { readonly element: HTMLElement }, text: string) {
+  const target = "element" in field ? field.element : field;
   await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, text);
-    field.dispatchEvent(new Event("input", { bubbles: true }));
+    if (target instanceof HTMLTextAreaElement) {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
+        target,
+        text,
+      );
+      target.dispatchEvent(new Event("input", { bubbles: true }));
+      return;
+    }
+    rewrite(target.closest(".composer-editor__field") ?? composerField(target), text);
   });
 }
 

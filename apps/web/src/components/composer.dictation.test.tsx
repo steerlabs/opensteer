@@ -10,6 +10,13 @@ import type {
 } from "@opensteer/protocol/dictation";
 import { composerDrafts } from "./composer-drafts.js";
 import { Composer } from "./composer.js";
+import {
+  composerField,
+  mod,
+  pressKey,
+  rewrite,
+  textareaView,
+} from "./composer-editor.test-support.js";
 import * as dictationHooks from "./dictation.js";
 import { DictationContext } from "./dictation.js";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -79,7 +86,7 @@ async function setup(
       ),
     );
   render();
-  const field = node.querySelector("textarea")!;
+  const field = textareaView(composerField(node));
   const click = async (label: string) =>
     act(async () => node.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!.click());
   const emit = async (
@@ -104,14 +111,7 @@ async function setup(
         new KeyboardEvent("keydown", { key, bubbles: true, isComposing: composing }),
       ),
     );
-  const edit = async (value: string) =>
-    act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
-        field,
-        value,
-      );
-      field.dispatchEvent(new Event("input", { bubbles: true }));
-    });
+  const edit = async (value: string) => rewrite(field.element, value);
   return { node, port, field, send, render, click, emit, start, text, end, key, edit };
 }
 it.each([null, { available: false, reason: "os" } as const])(
@@ -280,6 +280,29 @@ it("keeps downloading when the person edits their message", async () => {
   expect(t.field.selectionStart).toBe(10);
 });
 
+it("dictates beside a reference without breaking it, and undoes the words as one step", async () => {
+  const t = await setup();
+  const link = "[Fix the build](opensteer:thr_12345678-1234-4234-8234-123456789abc)";
+  await t.edit(`${link} bad day`);
+  const at = link.length + 1;
+  const dictate = async () => {
+    t.field.setSelectionRange(at, at + 3);
+    await t.click("Start dictation (English)");
+    await t.emit({ type: "listening" });
+    await t.text();
+    expect(t.field.value).toBe(`${link} good day`);
+  };
+  await dictate();
+  await t.click("Cancel dictation");
+  expect(t.field.value).toBe(`${link} bad day`);
+  expect([t.field.selectionStart, t.field.selectionEnd]).toEqual([at, at + 3]);
+  await dictate();
+  await t.end();
+  expect(t.field.value).toBe(`${link} good day`);
+  pressKey(t.field.element, "z", mod);
+  expect(t.field.value).toBe(`${link} bad day`);
+});
+
 it("consumes the committed caret even when final text matches the preview", async () => {
   const t = await setup();
   await t.start();
@@ -296,14 +319,14 @@ it("returns keyboard mic activation to the field and handles Escape from toolbar
   const mic = t.node.querySelector<HTMLButtonElement>('[title="Dictate"]')!;
   mic.focus();
   await t.click("Start dictation (English)");
-  expect(document.activeElement).toBe(t.field);
+  expect(document.activeElement).toBe(t.field.element);
   const cancel = t.node.querySelector<HTMLButtonElement>('[aria-label="Cancel dictation"]')!;
   cancel.focus();
   await act(async () =>
     cancel.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })),
   );
   expect(t.port.stop).toHaveBeenCalledOnce();
-  expect(document.activeElement).toBe(t.field);
+  expect(document.activeElement).toBe(t.field.element);
 });
 it.each(["stop", "cancel"])(
   "announces a quiet %s once and never announces ticks",
@@ -361,7 +384,7 @@ it("rescues a focused Stop when finalization disables it", async () => {
   stop.focus();
   await t.key("Enter");
   expect(stop.disabled).toBe(true);
-  expect(document.activeElement).toBe(t.field);
+  expect(document.activeElement).toBe(t.field.element);
   await t.end();
 });
 

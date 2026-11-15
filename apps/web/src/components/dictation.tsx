@@ -53,7 +53,7 @@ export function DictationStatus({
   controller: DictationController;
   snapshot: DictationSnapshot;
   owner: string;
-  returnFocusTo: { readonly current: HTMLTextAreaElement | null };
+  returnFocusTo: { readonly current: HTMLElement | null };
 }) {
   const view = dictationView(snapshot, owner);
   const active = view.phase !== "idle";
@@ -120,7 +120,7 @@ export function DictationLive({
   view: DictationView;
   onCancel: () => void;
   onStop: () => void;
-  returnFocusTo: { readonly current: HTMLTextAreaElement | null };
+  returnFocusTo: { readonly current: HTMLElement | null };
 }) {
   const stopRef = useRef<HTMLButtonElement | null>(null);
   useEffect(() => {
@@ -233,7 +233,7 @@ function FocusRow({
 }: {
   live?: boolean;
   children: ReactNode;
-  returnFocusTo: { readonly current: HTMLTextAreaElement | null };
+  returnFocusTo: { readonly current: HTMLElement | null };
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const fallback = useRef(() => returnFocusTo.current);

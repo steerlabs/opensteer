@@ -13,6 +13,7 @@ import {
 import { useShell } from "../app-shell.js";
 import { composerDraftKeyFor, composerDrafts, homeDraftId } from "../composer-drafts.js";
 import { Composer, type ComposerSubmission } from "../composer.js";
+import { personalReferenceCandidates } from "../composer-reference-picker.js";
 import { ExecutionControls } from "../execution-controls.js";
 import { UsageNotice } from "../usage-notice.js";
 import {
@@ -120,7 +121,7 @@ function NewTaskComposer({
     [placements, selection],
   );
   const canCreateThread = canCreate && selection !== null;
-  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const inputRef = useRef<HTMLElement | null>(null);
   const storageReady = useMemo(() => pendingStorageAvailable(), []);
   const accessConflict = selectedPlacement
     ? accessModeConflict(accessMode, selectedPlacement)
@@ -191,6 +192,7 @@ function NewTaskComposer({
         onSend={startThread}
         placeContext={placeContext}
         placeholder={placeholderFor(selection !== null, blockedPlacement, canCreate)}
+        references={(query) => personalReferenceCandidates(hostClient, query)}
         sendBlocked={sendBlocked}
         sendLabel="Start task"
       />
