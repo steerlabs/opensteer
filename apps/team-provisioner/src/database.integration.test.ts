@@ -35,7 +35,7 @@ integration("team databases", () => {
           rolcreaterole: false,
           rolreplication: false,
           rolbypassrls: false,
-          rolconnlimit: 16,
+          rolconnlimit: 32,
           scram: true,
         },
       ]);

@@ -82,7 +82,10 @@ export class TeamLinkEndpoint {
           if (event.kind === "link")
             for (const socket of this.#sockets.get(event.linkId) ?? [])
               if (socket.epoch() && BigInt(socket.epoch()!) < BigInt(event.epoch)) socket.close();
-          if (event.kind === "request") void this.resync().catch(() => {});
+          // Only that link's sockets: deliver what is pending and cancel what they hold that ended.
+          if (event.kind === "request")
+            for (const socket of this.#sockets.get(event.linkId) ?? [])
+              void socket.refresh().catch(() => {});
         }),
       );
   }
@@ -152,6 +155,8 @@ export class TeamLinkEndpoint {
     let delivery: Promise<void> | undefined;
     let deliveryRequested = false;
     const delivered = new Set<TeamAgentRequestId>();
+    let refreshing: Promise<void> | undefined;
+    let refreshAgain = false;
     const inFlightReturns = new Set<TeamAgentRequestId>();
     let returnBacklog = false;
     const subscriber = {
@@ -159,18 +164,29 @@ export class TeamLinkEndpoint {
       online: false,
       epoch: () => epoch,
       close: () => close(),
-      refresh: async () => {
-        if (delivered.size) {
-          const rows = await links.database
-            .selectFrom("teamAgentRequests")
-            .select(["id", "state"])
-            .where("id", "in", [...delivered])
-            .execute();
-          for (const row of rows)
-            if (!["queued", "working", "needs_you", "awaiting_approval"].includes(row.state))
-              subscriber.cancel(row.id);
-        }
-        await subscriber.deliver();
+      // One pass at a time per socket; an event during a pass schedules exactly one more.
+      refresh: () => {
+        refreshAgain = true;
+        return (refreshing ??= (async () => {
+          try {
+            while (refreshAgain) {
+              refreshAgain = false;
+              if (delivered.size) {
+                const rows = await links.database
+                  .selectFrom("teamAgentRequests")
+                  .select(["id", "state"])
+                  .where("id", "in", [...delivered])
+                  .execute();
+                for (const row of rows)
+                  if (!["queued", "working", "needs_you", "awaiting_approval"].includes(row.state))
+                    subscriber.cancel(row.id);
+              }
+              await subscriber.deliver();
+            }
+          } finally {
+            refreshing = undefined;
+          }
+        })());
       },
       deliver: (refill = false) => {
         if (!refill) deliveryRequested = true;

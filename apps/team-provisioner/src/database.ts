@@ -1,6 +1,12 @@
 import pg from "pg";
 import { createHash, createHmac, pbkdf2Sync, randomBytes } from "node:crypto";
 
+/**
+ * Room for every team Host pod a rollout runs at once (6 connections each: two steady
+ * replicas plus a surge pod) with headroom for migrations and a draining predecessor.
+ */
+const teamConnectionLimit = 32;
+
 export function teamDatabaseName(id: string): string {
   return `team_${createHash("sha256").update(id).digest("hex").slice(0, 32)}`;
 }
@@ -56,9 +62,10 @@ export class PostgresTeamDatabase implements TeamDatabase {
         const password = decodeURIComponent(new URL(databaseUrl).password);
         // Only the SCRAM verifier reaches the server, so the password can't surface in its logs.
         await client.query(
-          `CREATE ROLE ${identifier} LOGIN PASSWORD ${pg.escapeLiteral(scramSha256Verifier(password))} NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 16`,
+          `CREATE ROLE ${identifier} LOGIN PASSWORD ${pg.escapeLiteral(scramSha256Verifier(password))} NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT ${teamConnectionLimit}`,
         );
       }
+      await client.query(`ALTER ROLE ${identifier} CONNECTION LIMIT ${teamConnectionLimit}`);
       await client.query(`GRANT ${identifier} TO CURRENT_USER WITH SET TRUE`);
       const database = await client.query("select 1 from pg_database where datname=$1", [name]);
       if (!database.rowCount)

@@ -62,8 +62,16 @@ integration("team Host copies", () => {
       { timeout: 10_000, interval: 50 },
     );
 
+    const closes: [number, string][] = [];
+    current.team.realtime.connect(
+      { kind: "human", userId: team.userId },
+      { send: () => true, close: (code, reason) => closes.push([code, reason]) },
+    );
+
     await current.drain();
     expect(await ready(current)).toBe(503);
+    // Its people move to the other copy: told to reconnect, never refused.
+    expect(closes.map(([code]) => code)).toEqual([1012]);
     const health = await current.app.inject({ url: "/healthz" });
     expect(health.statusCode).toBe(200);
     // A proxy's pooled connection to the draining copy is retired with its next response.

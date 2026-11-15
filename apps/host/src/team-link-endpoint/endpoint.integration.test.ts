@@ -21,6 +21,7 @@ import { teamPrincipalProfiles } from "@opensteer/database/team-principals";
 import { TeamAccessStore } from "@opensteer/database/team-access";
 import { TeamChatStore } from "@opensteer/database/team-chat";
 import { TeamRequestsStore } from "@opensteer/database/team-requests";
+import { TeamBus } from "@opensteer/database/team-bus";
 import { TeamLinkEndpoint } from "./endpoint.js";
 import { TeamEndpointLinks } from "./links.js";
 import { TeamLinkLifetimes } from "./lifetimes.js";
@@ -474,6 +475,76 @@ describe("standing team link authority", () => {
       release.resolve();
     }
     expect(await outcome).toBe("denied");
+  });
+  it("cancels only the held requests another copy ended, never a live one", async () => {
+    class Socket extends EventEmitter {
+      bufferedAmount = 0;
+      frames: { type: string; requestId?: string; requests?: { request: { id: string } }[] }[] = [];
+      send(frame: string) {
+        this.frames.push(JSON.parse(frame));
+        this.emit("sent");
+      }
+      close() {
+        queueMicrotask(() => this.emit("close"));
+      }
+      terminate() {
+        this.emit("close");
+      }
+    }
+    const bus = new TeamBus(fixture.database);
+    await bus.start();
+    const copy = new TeamLinkEndpoint({ ...endpoint.options, bus });
+    try {
+      for (const words of ["first", "second"])
+        await chat.send(human(), {
+          channelId,
+          threadRootId: null,
+          clientMessageId: randomUUID(),
+          bodyMarkdown: `@maya-agent ${words}`,
+          attachmentIds: [],
+          mentions: [{ kind: "agent", userId: fixture.userId }],
+        });
+      const [live, ended] = (await requests.pending(linkId)).map((r) => r.request.id);
+      const socket = new Socket();
+      await copy.attach(socket as unknown as WebSocket, linkId);
+      const delivered = () =>
+        socket.frames.flatMap((frame) => frame.requests?.map((r) => r.request.id) ?? []);
+      socket.emit(
+        "message",
+        Buffer.from(JSON.stringify({ type: "hello", teamApiVersion, terminalRequests: [] })),
+        false,
+      );
+      await vi.waitFor(
+        () =>
+          expect(delivered().sort(), "requests never reached the link").toEqual(
+            [live, ended].sort(),
+          ),
+        { timeout: 5000, interval: 20 },
+      );
+      await requests.accept(linkId, live!);
+      // Another copy commits both changes at once; the link hears one request event.
+      await fixture.database.transaction().execute(async (t) => {
+        await sql`update team_agent_requests set change_seq=change_seq+1 where id=${live!}`.execute(
+          t,
+        );
+        await sql`update team_agent_requests set state='cancelled', finished_at=now(), change_seq=change_seq+1 where id=${ended!}`.execute(
+          t,
+        );
+      });
+      await vi.waitFor(
+        () =>
+          expect(
+            socket.frames
+              .filter((frame) => frame.type === "cancel")
+              .map((frame) => frame.requestId),
+            "the ended request was never cancelled",
+          ).toEqual([ended]),
+        { timeout: 5000, interval: 20 },
+      );
+      socket.emit("close");
+    } finally {
+      await bus.close();
+    }
   });
   it("bounds trigger batches by encoded bytes and rejects an old hello before parsing its body", async () => {
     class Socket extends EventEmitter {

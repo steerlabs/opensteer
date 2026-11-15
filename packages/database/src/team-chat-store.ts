@@ -313,24 +313,11 @@ export class TeamChatStore {
     this.access = access;
     this.identity = identity;
   }
+  /** Request changes reach the copy holding the link through the link endpoint's own refresh. */
   attach(bus: TeamBus) {
     return bus.on((event) => {
       if (event.kind === "channel") this.changed(event.channelId);
-      if (event.kind === "request") void this.refreshRequests(event.linkId).catch(() => {});
     });
-  }
-  async refreshRequests(linkId: TeamLinkId) {
-    const rows = await this.access.database
-      .selectFrom("teamAgentRequests")
-      .select(["id", "state"])
-      .where("linkId", "=", linkId)
-      .execute();
-    for (const row of rows)
-      await this.requestChanged({
-        kind: ["queued", "working", "needs_you"].includes(row.state) ? "queued" : "cancelled",
-        linkId,
-        requestId: row.id,
-      });
   }
   onChange(listener: (channelId: TeamChannelId) => void) {
     this.#listeners.add(listener);
