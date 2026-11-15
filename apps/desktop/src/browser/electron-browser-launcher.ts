@@ -1,5 +1,7 @@
 import {
-  agentCdpAllowlist,
+  SessionCdpRouterError,
+  contextScopedCdpMethods,
+  CdpProductIsolation,
   ExecutionContextInventory,
   type BrowserCdpBackend,
   type CdpChannel,
@@ -2152,6 +2154,7 @@ type ChannelRole = "agent" | "platform";
 class ElectronDebuggerHub {
   readonly #channels = new Set<ElectronCdpChannel>();
   readonly #contexts = new ExecutionContextInventory();
+  readonly #agentWorlds = new CdpProductIsolation();
   readonly #debugger: Debugger;
   readonly #destroyed: Promise<void>;
   readonly #domainOwners = new Map<string, Set<ElectronCdpChannel>>();
@@ -2210,14 +2213,36 @@ class ElectronDebuggerHub {
     this.#destroyed = new Promise((resolve) => {
       webContents.once("destroyed", () => resolve());
     });
-    this.#debugger.on("message", (_event, method, parameters) => {
+    this.#debugger.on("message", (_event, method, parameters, sessionId) => {
+      if (sessionId) {
+        if (!this.#agentWorlds.observe(method, asRecord(parameters))) {
+          if (method === "Debugger.paused")
+            void this.#debugger
+              .sendCommand("Debugger.resume", {}, sessionId)
+              .catch(() => undefined);
+          return;
+        }
+        for (const channel of this.#channels)
+          if (channel.targetSessionId === sessionId) channel.emit(method, asRecord(parameters));
+        return;
+      }
       const record = asRecord(parameters);
       this.#contexts.observe(method, record);
+      const pageEvent = this.#agentWorlds.observe(method, record);
+      if (method.startsWith("Runtime.executionContext"))
+        for (const channel of this.#channels) channel.observeContextEvent(method, record);
       const recipients =
         method === "Page.screencastFrame"
           ? [...this.#screencastOwners.keys()]
           : this.#domainOwners.get(method.split(".", 1)[0] ?? "");
-      for (const channel of recipients ?? []) channel.emit(method, record);
+      for (const channel of recipients ?? []) {
+        if (channel.role === "agent" && !pageEvent) {
+          if (method === "Debugger.paused")
+            void this.#command("Debugger.resume").catch(() => undefined);
+          continue;
+        }
+        channel.emit(method, record);
+      }
     });
     this.#debugger.on("detach", (_event, reason) => {
       this.#interrupt(new Error(`Electron CDP debugger detached: ${reason}.`));
@@ -2313,6 +2338,8 @@ class ElectronDebuggerHub {
     const channel = new ElectronCdpChannel(this, role);
     // Counted before the attachment settles, so a release cannot detach under it.
     this.#channels.add(channel);
+    if (role === "agent")
+      for (const context of this.#contexts.entries()) channel.observeContext(context.description);
     this.#updateThrottling();
     const generation = this.#rendererGeneration;
     try {
@@ -2367,9 +2394,21 @@ class ElectronDebuggerHub {
     channel: ElectronCdpChannel,
     method: string,
     parameters?: Record<string, unknown>,
-    cleanup = false,
+    _cleanup = false,
   ): Promise<unknown> {
     const generation = this.#rendererGeneration;
+    if (channel.role === "platform") this.#agentWorlds.observePlatformCommand(method, parameters);
+    if (
+      channel.role === "agent" &&
+      !method.startsWith("Debugger.") &&
+      method !== "Runtime.runScript" &&
+      method !== "Page.removeScriptToEvaluateOnNewDocument"
+    )
+      this.#agentWorlds.assertCommand(method, parameters);
+    const send = (method: string, parameters?: Record<string, unknown>) =>
+      this.#command(method, parameters);
+    if (channel.role === "agent" && method.startsWith("Target."))
+      return this.#agentTargets(channel, method, parameters);
     if (this.#closed || !this.#channels.has(channel))
       return Promise.reject(new Error("CDP channel is closed."));
     if (
@@ -2377,18 +2416,9 @@ class ElectronDebuggerHub {
       (method === "Page.bringToFront" || method === "Target.activateTarget")
     )
       return Promise.resolve({});
-    // Derived gestures can deliver native input after their CDP response.
-    // Live composition belongs only to the private editing channel.
-    if (
-      method.startsWith("Input.") &&
-      !agentCdpAllowlist.methods.has(method) &&
-      !(channel.role === "platform" && method === "Input.imeSetComposition") &&
-      !(cleanup && method === "Input.cancelDragging")
-    )
-      return Promise.reject(new Error(`${method} is unavailable on an Electron page channel.`));
     // A first-document dialog can hold Runtime.enable or Page.enable. Its
     // answer releases those waits, so it must reach the browser ahead of them.
-    if (method === "Page.handleJavaScriptDialog") return this.#dispatch(method, parameters);
+    if (method === "Page.handleJavaScriptDialog") return send(method, parameters);
     if (
       method === "Emulation.setDeviceMetricsOverride" &&
       typeof parameters?.deviceScaleFactor === "number" &&
@@ -2405,7 +2435,7 @@ class ElectronDebuggerHub {
       method === "Input.cancelDragging";
     // Resize/revocation releases run before geometry changes. Waiting for that
     // geometry's paint here would make the ledger wait on its own lock.
-    if (releasesInput) return this.#command(method, parameters);
+    if (releasesInput) return send(method, parameters);
     if (method.startsWith("Input.")) {
       // A background document can finish before its native hit-test surface
       // exists. Its first input waits for paint; dialog answers and the other
@@ -2434,7 +2464,7 @@ class ElectronDebuggerHub {
                 scale: z.number().positive(),
               }),
             })
-            .parse(await this.#command("Page.getLayoutMetrics"));
+            .parse(await send("Page.getLayoutMetrics"));
           // Chromium divides native wheel deltas by the emulated/native DPR ratio
           // and visual page scale. CDP pointer anchors already use CSS coordinates.
           const density =
@@ -2449,7 +2479,7 @@ class ElectronDebuggerHub {
         if (generation !== this.#rendererGeneration)
           throw new Error("Electron CDP renderer changed before command dispatch.");
         if (this.#closed || !this.#channels.has(channel)) throw new Error("CDP channel is closed.");
-        return this.#command(method, parameters);
+        return send(method, parameters);
       });
     }
     if (method === "Page.startScreencast") {
@@ -2462,9 +2492,9 @@ class ElectronDebuggerHub {
         this.#screencastOwners.set(channel, parameters);
         this.#updateThrottling();
         try {
-          if (casting) await this.#command("Page.stopScreencast");
+          if (casting) await send("Page.stopScreencast");
           this.#assertCurrent(generation);
-          await this.#command(method, this.#deciding()?.[1]);
+          await send(method, this.#deciding()?.[1]);
           return {};
         } catch (error) {
           this.#screencastOwners.delete(channel);
@@ -2480,7 +2510,7 @@ class ElectronDebuggerHub {
       return this.#serializeOwnership(async () => {
         if (!this.#screencastOwners.delete(channel)) return {};
         this.#updateThrottling();
-        if (this.#screencastOwners.size === 0) await this.#command(method, parameters);
+        if (this.#screencastOwners.size === 0) await send(method, parameters);
         return {};
       });
     }
@@ -2514,13 +2544,13 @@ class ElectronDebuggerHub {
         const owners = this.#domainOwners.get(domain) ?? new Set<ElectronCdpChannel>();
         const reconfigure =
           domain === "Network" && parameters !== undefined && Object.keys(parameters).length > 0;
-        if (owners.has(channel)) return reconfigure ? this.#command(method, parameters) : {};
+        if (owners.has(channel)) return reconfigure ? send(method, parameters) : {};
         const first = owners.size === 0;
         owners.add(channel);
         channel.enabledDomains.add(domain);
         this.#domainOwners.set(domain, owners);
         try {
-          if (first || reconfigure) await this.#command(method, parameters);
+          if (first || reconfigure) await send(method, parameters);
           return {};
         } catch (error) {
           owners.delete(channel);
@@ -2540,7 +2570,7 @@ class ElectronDebuggerHub {
         if (channel.role === "platform" && this.#persistentPlatformDomains.has(domain)) return {};
         // Page remains enabled for this page's lifetime so Electron never owns
         // JavaScript dialogs, even between ledger/channel subscriptions.
-        if (owners.size === 1 && domain !== "Page") await this.#command(method, parameters);
+        if (owners.size === 1 && domain !== "Page") await send(method, parameters);
         owners.delete(channel);
         channel.enabledDomains.delete(domain);
         if (owners.size === 0 && this.#domainOwners.get(domain) === owners)
@@ -2549,17 +2579,47 @@ class ElectronDebuggerHub {
       });
     }
     const change = channel.domainChanges.get(domain);
-    if (!change) return this.#command(method, parameters);
+    if (!change) return send(method, parameters);
     return change.then(() => {
       if (generation !== this.#rendererGeneration)
         throw new Error("Electron CDP renderer changed before command dispatch.");
       if (this.#closed || !this.#channels.has(channel)) throw new Error("CDP channel is closed.");
-      return this.#command(method, parameters);
+      return send(method, parameters);
     });
+  }
+
+  async #agentTargets(
+    channel: ElectronCdpChannel,
+    method: string,
+    parameters?: Record<string, unknown>,
+  ): Promise<unknown> {
+    channel.targetConnection ??= (async () => {
+      const info = asRecord(await this.#command("Target.getTargetInfo"));
+      const targetId = asRecord(info.targetInfo).targetId;
+      if (typeof targetId !== "string") throw new Error("Browser page target is unavailable");
+      const attached = asRecord(
+        await this.#command("Target.attachToTarget", { targetId, flatten: true }),
+      );
+      if (typeof attached.sessionId !== "string")
+        throw new Error("Page debugger did not return a session");
+      channel.targetSessionId = attached.sessionId;
+      if (!this.#channels.has(channel)) {
+        void this.#command("Target.detachFromTarget", { sessionId: attached.sessionId }).catch(
+          () => undefined,
+        );
+        throw new Error("Page channel closed while attaching its child targets");
+      }
+      return attached.sessionId;
+    })();
+    return this.#command(method, parameters, await channel.targetConnection);
   }
 
   async release(channel: ElectronCdpChannel): Promise<void> {
     if (!this.#channels.delete(channel)) return;
+    if (channel.targetSessionId)
+      void this.#command("Target.detachFromTarget", { sessionId: channel.targetSessionId }).catch(
+        () => undefined,
+      );
     this.#renderingOwners.delete(channel);
     if (this.#channels.size === 0) {
       channel.clearListeners();
@@ -2768,10 +2828,14 @@ class ElectronDebuggerHub {
   }
 
   /** Only Runtime commands wait for the attachment to inventory execution contexts. */
-  #command(method: string, parameters?: Record<string, unknown>): Promise<unknown> {
+  #command(
+    method: string,
+    parameters?: Record<string, unknown>,
+    sessionId?: string,
+  ): Promise<unknown> {
     const generation = this.#rendererGeneration;
     const gate = method.startsWith("Runtime.") ? this.#gate : null;
-    if (!gate) return this.#dispatch(method, parameters);
+    if (!gate) return this.#dispatch(method, parameters, sessionId);
     let dispatched: () => void = () => undefined;
     this.#holdCommandsUntil(
       new Promise<void>((resolve) => {
@@ -2782,7 +2846,7 @@ class ElectronDebuggerHub {
       try {
         if (generation !== this.#rendererGeneration)
           throw new Error("Electron CDP renderer changed before command dispatch.");
-        return this.#dispatch(method, parameters);
+        return this.#dispatch(method, parameters, sessionId);
       } finally {
         dispatched();
       }
@@ -2796,7 +2860,11 @@ class ElectronDebuggerHub {
     });
   }
 
-  #dispatch(method: string, parameters?: Record<string, unknown>): Promise<unknown> {
+  #dispatch(
+    method: string,
+    parameters?: Record<string, unknown>,
+    sessionId?: string,
+  ): Promise<unknown> {
     if (this.#webContents.isDestroyed())
       return Promise.reject(new Error("Electron CDP target is closed."));
     if (this.#crashed && method !== "Page.reload" && method !== "Page.navigate")
@@ -2819,7 +2887,11 @@ class ElectronDebuggerHub {
     const completed = () => this.#pending.delete(command.reject);
     void command.promise.then(completed, completed);
     try {
-      void this.#debugger.sendCommand(method, parameters).then(
+      void (
+        sessionId
+          ? this.#debugger.sendCommand(method, parameters, sessionId)
+          : this.#debugger.sendCommand(method, parameters)
+      ).then(
         (result) => {
           settle();
           command.resolve(result);
@@ -2903,6 +2975,9 @@ class ElectronCdpChannel implements CdpSession, CdpChannel {
   readonly domainChanges = new Map<string, Promise<void>>();
   readonly enabledDomains = new Set<string>();
   readonly role: ChannelRole;
+  targetSessionId: string | undefined;
+  targetConnection: Promise<string> | undefined;
+  readonly #worlds = new CdpProductIsolation();
   readonly #events = new EventEmitter();
   readonly #hub: ElectronDebuggerHub;
   #closed = false;
@@ -2933,7 +3008,19 @@ class ElectronCdpChannel implements CdpSession, CdpChannel {
 
   send<Result = unknown>(method: string, parameters?: Record<string, unknown>): Promise<Result> {
     if (this.#closed) return Promise.reject(new Error("CDP channel is closed."));
-    return this.#hub.send(this, method, parameters) as Promise<Result>;
+    if (this.role === "agent") {
+      this.#worlds.assertCommand(method, parameters);
+      if (
+        method === "Runtime.addBinding" &&
+        parameters?.executionContextId === undefined &&
+        parameters?.executionContextName === undefined
+      )
+        parameters = { ...parameters, executionContextName: "" };
+    }
+    return this.#hub.send(this, method, parameters).then((result) => {
+      if (this.role === "agent") this.#worlds.observeResult(method, parameters ?? {}, result);
+      return result as Result;
+    });
   }
 
   onEvent(listener: (method: string, parameters: CdpParameters) => void): () => void {
@@ -2949,8 +3036,20 @@ class ElectronCdpChannel implements CdpSession, CdpChannel {
     this.#events.off(event, listener);
   }
 
+  observeContext(context: CdpParameters): void {
+    this.#worlds.observe("Runtime.executionContextCreated", { context });
+  }
+  observeContextEvent(method: string, params: CdpParameters): void {
+    this.#worlds.observe(method, params);
+  }
+
   emit(method: string, parameters: CdpParameters): void {
     if (this.#closed) return;
+    if (this.role === "agent" && !this.#worlds.observe(method, parameters)) {
+      if (method === "Debugger.paused")
+        void this.#hub.send(this, "Debugger.resume").catch(() => undefined);
+      return;
+    }
     this.#events.emit("event", method, parameters);
     this.#events.emit(method, parameters);
   }
@@ -2961,6 +3060,7 @@ class ElectronCdpChannel implements CdpSession, CdpChannel {
 }
 
 class ElectronBrowserCdpBackend implements BrowserCdpBackend {
+  readonly protectProductWorlds = true;
   readonly #context: ElectronBrowserContext;
   readonly #listeners = new Set<(method: string, parameters: CdpParameters) => void>();
   readonly #removeTargetListener: () => void;
@@ -2978,6 +3078,39 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
     const page = await this.#context.pageByTargetId(targetId);
     if (!page) throw new Error("CDP target is not an attachable page in this Profile Host.");
     return page.agentCdp();
+  }
+
+  assertScope(method: string, parameters: CdpParameters): void {
+    if (method === "Browser.getBrowserCommandLine" || method.startsWith("SystemInfo."))
+      throw new Error(`${method} describes the Opensteer process, outside browser page ownership.`);
+    if (
+      parameters.browserContextId !== undefined &&
+      parameters.browserContextId !== "opensteer-electron-profile"
+    )
+      throw new SessionCdpRouterError(
+        "forbidden",
+        "CDP command requested another browser context.",
+      );
+    if (parameters.windowId !== undefined)
+      throw new SessionCdpRouterError(
+        "forbidden",
+        "Opensteer windows are outside the browser page context.",
+      );
+  }
+
+  async scopeParameters(method: string, parameters: CdpParameters): Promise<CdpParameters> {
+    if (!contextScopedCdpMethods.has(method)) return parameters;
+    const page = this.#context.pages()[0] as ElectronBrowserPage | undefined;
+    if (!page) throw new SessionCdpRouterError("not_found", "Browser profile has no page target.");
+    const platform = await page.cdp();
+    const result = asRecord(await platform.send("Target.getTargetInfo"));
+    const browserContextId = asRecord(result.targetInfo).browserContextId;
+    if (typeof browserContextId !== "string" || !browserContextId.length)
+      throw new SessionCdpRouterError(
+        "forbidden",
+        `${method} cannot be scoped to this browser profile by this Electron version.`,
+      );
+    return { ...parameters, browserContextId };
   }
 
   onEvent(listener: (method: string, parameters: CdpParameters) => void): () => void {
@@ -3031,7 +3164,18 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
         await channel.close();
       }
     }
-    throw new Error(`${method} is unavailable at Electron browser scope.`);
+    if (method === "Target.activateTarget")
+      throw new Error("Target.activateTarget is unavailable at Electron browser scope.");
+    this.assertScope(method, parameters);
+    const routed = await this.scopeParameters(method, parameters);
+    const page = this.#context.pages()[0] as ElectronBrowserPage | undefined;
+    if (!page) throw new Error("Electron profile has no page target.");
+    const channel = await page.agentCdp();
+    try {
+      return await channel.send(method, routed);
+    } finally {
+      await channel.close();
+    }
   }
 
   async close(): Promise<void> {

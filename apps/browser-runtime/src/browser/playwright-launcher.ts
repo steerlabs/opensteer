@@ -1,5 +1,7 @@
 /// <reference lib="dom" />
 import {
+  SessionCdpRouterError,
+  contextScopedCdpMethods,
   reducedUserAgentMetadata,
   type BrowserCdpBackend,
   type CdpChannel,
@@ -1482,12 +1484,34 @@ class PlaywrightBrowserCdpBackend implements BrowserCdpBackend {
     return page.agentCdp();
   }
 
+  assertScope(_method: string, parameters: CdpParameters): void {
+    if (
+      parameters.browserContextId !== undefined &&
+      parameters.browserContextId !== this.browserContextId
+    )
+      throw new SessionCdpRouterError(
+        "forbidden",
+        "CDP command requested another browser context.",
+      );
+    if (parameters.windowId !== undefined)
+      throw new SessionCdpRouterError(
+        "forbidden",
+        "Native browser windows are outside this page context.",
+      );
+  }
+
+  async scopeParameters(method: string, parameters: CdpParameters): Promise<CdpParameters> {
+    if (!contextScopedCdpMethods.has(method) || !this.browserContextId) return parameters;
+    return { ...parameters, browserContextId: this.browserContextId };
+  }
+
   onEvent(listener: (method: string, parameters: CdpParameters) => void): () => void {
     return this.handle.onEvent(listener);
   }
 
   send(method: string, parameters?: CdpParameters): Promise<unknown> {
     if (this.closed) return Promise.reject(new Error("Browser CDP backend is closed."));
+    this.assertScope(method, parameters ?? {});
     if (method === "Target.createTarget") {
       const requestedContext = parameters?.browserContextId;
       if (requestedContext !== undefined && requestedContext !== this.browserContextId) {
@@ -1500,7 +1524,7 @@ class PlaywrightBrowserCdpBackend implements BrowserCdpBackend {
         browserContextIds: this.browserContextId ? [this.browserContextId] : [],
       });
     }
-    if (contextScopedBrowserMethods.has(method)) {
+    if (contextScopedCdpMethods.has(method)) {
       const requestedContext = parameters?.browserContextId;
       if (requestedContext !== undefined && requestedContext !== this.browserContextId) {
         return Promise.reject(new Error("CDP command requested another browser context."));
@@ -1539,15 +1563,6 @@ class PlaywrightBrowserCdpBackend implements BrowserCdpBackend {
     return { targetId };
   }
 }
-
-const contextScopedBrowserMethods = new Set([
-  "Browser.grantPermissions",
-  "Browser.resetPermissions",
-  "Browser.setPermission",
-  "Storage.clearCookies",
-  "Storage.getCookies",
-  "Storage.setCookies",
-]);
 
 type ProtocolJson = {
   readonly domains?: readonly {

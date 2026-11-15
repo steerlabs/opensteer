@@ -1,343 +1,162 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { CdpClient, createBrowserHarness } from "./cdp.mjs";
-import { ActionsClient, createActionsHarness, negotiateBackend } from "./actions.mjs";
+import { postJson } from "./http.mjs";
+import { ActionsClient, createActionsHarness } from "./actions.mjs";
 
 const VERSION = "0.5.0-opensteer";
 const USAGE = "usage: browser-harness [--tab <tabId>] < JavaScript on stdin";
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-/** Browsers a script stays connected to at once; the relay admits 16 connections per Run. */
-const OPEN_BROWSERS = 4;
 const NO_TAB =
-  'Call switchTab(tabId) or newTab(url, { profile: "<name>" }) or newTab(url, { guest: true }) before using page helpers.';
+  "Use --tab <tabId> for page, or await openPage(tabId) for a bound page handle. Get tabId from tab_list or tab_open.";
+const helpers = [
+  "captureScreenshot",
+  "cdp",
+  "clickAt",
+  "currentTab",
+  "drainEvents",
+  "ensureRealTab",
+  "fillInput",
+  "fillLogin",
+  "fillCard",
+  "gotoUrl",
+  "js",
+  "pageInfo",
+  "pressKey",
+  "respondDialog",
+  "scroll",
+  "setInputFiles",
+  "stageFiles",
+  "typeText",
+  "waitForElement",
+  "waitForLoad",
+  "waitForNetworkIdle",
+];
 
-function tabIdOf(tab) {
-  const id = typeof tab === "string" ? tab : tab?.tabId;
-  if (typeof id !== "string" || !id.length)
-    throw new TypeError("A tab ID or listTabs() row is required.");
-  return id;
+function endpoint(base, path) {
+  const url = new URL(base);
+  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+  url.pathname = `${url.pathname.replace(/\/$/u, "")}/${path}`;
+  return url;
 }
 
-function publicInfo(info) {
-  const { targetId, surfaceId, sessionId: _sessionId, ...rest } = info;
-  return { ...rest, tabId: surfaceId ?? targetId };
-}
-
-function createFacade(base) {
-  const adapters = new Map();
-  let active;
-  let current;
-  let epoch = 0;
-  let switching = Promise.resolve();
-  const requireAdapter = () => {
-    if (!active) throw new Error(NO_TAB);
-    return active;
-  };
-  const agent = async (path, input, query) => {
-    const url = new URL(base);
-    url.protocol = url.protocol === "wss:" ? "https:" : "http:";
-    url.pathname = `${url.pathname.replace(/\/$/u, "")}/agent/${path}`;
-    for (const [key, value] of Object.entries(query ?? {}))
-      if (value !== undefined) url.searchParams.set(key, String(value));
-    const response = await fetch(url, {
-      method: input === undefined ? "GET" : "POST",
-      ...(input === undefined
-        ? {}
-        : { headers: { "content-type": "application/json" }, body: JSON.stringify(input) }),
+export function createFacade(base, post = postJson) {
+  const connections = new Set();
+  let closed = false;
+  let initial;
+  const request = async (path, body, timeout) => {
+    if (closed) throw new Error("Browser Harness is closed");
+    const response = await post(endpoint(base, path), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
       redirect: "error",
-      signal: AbortSignal.timeout(30_000),
+      ...(timeout ? { signal: AbortSignal.timeout(timeout) } : {}),
     });
-    const body = await response.json().catch(() => null);
+    const result = await response.json().catch(() => null);
     if (!response.ok) {
-      const refusal = body?.error;
-      const error = new Error(
-        (refusal?.message ?? `Browser request refused (HTTP ${response.status}).`) +
-          (refusal?.machineId
-            ? ` (machineId ${refusal.machineId}, capability ${refusal.capability ?? "browser"})`
-            : ""),
+      const error = result?.error;
+      throw Object.assign(
+        new Error(error?.message ?? `Opensteer request failed (HTTP ${response.status})`),
+        error ? { code: error.code, next: error.next } : {},
       );
-      if (refusal?.machineId)
-        Object.assign(error, { machineId: refusal.machineId, capability: refusal.capability });
-      // A lost or unconfirmed outcome may still have taken effect; its key recovers it.
-      error.uncertain =
-        response.status >= 500 || body?.error?.reason === "browser-tab-open-outcome-unknown";
-      throw error;
     }
-    if (!body) throw new Error("Invalid browser response.");
-    return body;
+    if (!result || typeof result !== "object") throw new Error("Invalid Opensteer response");
+    return result;
   };
-  const mutate = async (path, input, retry = false) => {
-    const keyed = { ...input, operationKey: randomUUID() };
+  const openPage = async (tabId) => {
+    if (typeof tabId !== "string" || !/^[A-Za-z0-9_-]{1,256}$/u.test(tabId))
+      throw new TypeError("openPage requires a tabId from tab_list or tab_open");
+    // Each handle owns its socket, subscriptions and helpers for its entire lifetime.
+    if (connections.size >= 16)
+      throw new Error("At most 16 page handles may be open in one script");
+    const binding = await request("agent/pages/bind", { tabId }, 30_000);
+    if (binding.tabId !== tabId || !["cdp", "actions"].includes(binding.backend))
+      throw new Error("Invalid page binding");
+    const client =
+      binding.backend === "actions"
+        ? await ActionsClient.connect(base, binding.sessionId)
+        : await CdpClient.connect(base, binding.sessionId);
+    const harness =
+      binding.backend === "actions"
+        ? createActionsHarness(client, tabId)
+        : createBrowserHarness(client, tabId);
+    const connection = { client, harness };
+    connections.add(connection);
     try {
-      return await agent(path, keyed);
-    } catch (error) {
-      if (!retry || error.uncertain === false) throw error;
-      return agent(path, keyed);
-    }
-  };
-  /** Runs work on an adapter, which stays connected until the work settles. */
-  const track = (adapter, work) => {
-    adapter.busy += 1;
-    let result;
-    try {
-      result = adapter.harness.run(work);
-    } catch (error) {
-      adapter.busy -= 1;
-      throw error;
-    }
-    // Locators refuse unknown properties, so only a real promise is awaited for.
-    if (!(result instanceof Promise)) {
-      adapter.busy -= 1;
-      return result;
-    }
-    return result.finally(() => {
-      adapter.busy -= 1;
-    });
-  };
-  const release = async (adapter) => {
-    try {
-      await adapter.harness.detach();
-    } finally {
-      adapter.client.close();
-    }
-  };
-  const getAdapter = async (binding) => {
-    let adapter = adapters.get(binding.sessionId);
-    if (adapter) {
-      // Most recently used last, so the oldest idle browser is released first.
-      adapters.delete(binding.sessionId);
-      adapters.set(binding.sessionId, adapter);
-    } else {
-      for (const [sessionId, idle] of adapters) {
-        if (adapters.size < OPEN_BROWSERS) break;
-        // A browser with work in flight stays; the limit is exceeded until it settles.
-        if (idle === active || idle.busy > 0) continue;
-        adapters.delete(sessionId);
-        await release(idle).catch(() => undefined);
-      }
-      const backend = binding.backend ?? (await negotiateBackend(base, binding.sessionId));
-      const client =
-        backend === "actions"
-          ? await ActionsClient.connect(base, binding.sessionId)
-          : await CdpClient.connect(base, binding.sessionId);
-      adapter = {
-        backend,
-        busy: 0,
-        client,
-        harness:
-          backend === "actions" ? createActionsHarness(client) : createBrowserHarness(client),
+      await harness.attach();
+      if (closed) throw new Error("Browser Harness is closed");
+      const info = async (name) => {
+        const {
+          targetId: _targetId,
+          surfaceId: _surfaceId,
+          sessionId: _sessionId,
+          ...rest
+        } = await harness[name]();
+        return { ...rest, tabId };
       };
-      adapters.set(binding.sessionId, adapter);
+      const members = { ...harness.page, tabId };
+      for (const name of helpers)
+        members[name] = (...args) => harness.run(() => harness[name](...args));
+      for (const name of ["pageInfo", "currentTab", "ensureRealTab"])
+        members[name] = () => info(name);
+      return Object.freeze(members);
+    } catch (error) {
+      connections.delete(connection);
+      client.close();
+      throw error;
     }
-    return adapter;
   };
-  const serializeSwitch = (work) => {
-    const pending = switching.then(work);
-    switching = pending.catch(() => {});
-    return pending;
-  };
-  const leave = async () => {
-    const departing = active;
-    if (departing) await departing.harness.detach();
-    epoch++;
-  };
-  const selectBinding = async (binding) => {
-    const next = await getAdapter(binding);
-    await next.harness.switchTab(binding.tabId);
-    active = next;
-    current = binding.tabId;
-    if (binding.reloaded)
-      process.stderr.write(
-        `[opensteer] Tab ${current} reloaded. Observe it again and use fresh page handles.\n`,
-      );
-    return current;
-  };
-  const switchTab = (tab) =>
-    serializeSwitch(async () => {
-      const tabId = tabIdOf(tab);
-      await leave();
-      if (active) {
-        const local = await active.harness.listTabs().catch(() => []);
-        if (
-          local.some(
-            (row) => (row.surfaceId ?? row.targetId) === tabId && row.state !== "suspended",
-          )
-        ) {
-          await active.harness.switchTab(tabId);
-          current = tabId;
-          return tabId;
-        }
-      }
-      return selectBinding(await agent("tabs/use", { tabId }));
-    });
-  const listTabs = async ({ query, state, limit = 50, all = false } = {}) => {
-    const selected = current;
-    const tabs = [];
-    let cursor;
-    do {
-      const result = await agent("tabs", undefined, { query, state, limit, cursor });
-      tabs.push(
-        ...result.tabs.map((tab) => ({
-          ...tab,
-          ...(tab.tabId === selected ? { current: true } : {}),
-        })),
-      );
-      if (!all && result.total > tabs.length)
-        process.stderr.write(
-          `[opensteer] ${result.total} tabs match; showing ${tabs.length}. Narrow listTabs({ query, state }) or pass { all: true }.\n`,
-        );
-      cursor = all ? result.nextCursor : null;
-    } while (cursor);
-    return tabs;
-  };
-  // Page is dynamic; objects it creates (locators and their refinements) belong to this selection.
-  const handle = (value, adapter, generation) => {
-    if (!value || typeof value !== "object" || typeof value.then === "function") return value;
-    return new Proxy(
-      {},
-      {
-        get(_target, key) {
-          if (key === "then" || typeof key === "symbol") return undefined;
-          const member = value[key];
-          if (typeof member !== "function") return handle(member, adapter, generation);
-          return (...args) => {
-            if (epoch !== generation || active !== adapter)
-              throw new Error(
-                "This page handle belongs to a tab you left. Use fresh page handles after switchTab() or newTab().",
-              );
-            return handle(
-              track(adapter, () => member.apply(value, args)),
-              adapter,
-              generation,
-            );
-          };
-        },
+  const noPage = new Proxy(
+    {},
+    {
+      get() {
+        throw new Error(NO_TAB);
       },
-    );
-  };
-  const pageProxy = (keys = []) =>
-    new Proxy(
-      {},
-      {
-        get(_target, key) {
-          if (key === "then" || typeof key === "symbol") return undefined;
-          const adapter = requireAdapter();
-          let parent = adapter.harness.page;
-          for (const part of keys) parent = parent[part];
-          const member = parent[key];
-          if (typeof member !== "function") return pageProxy([...keys, key]);
-          return (...args) => {
-            const selected = requireAdapter();
-            let owner = selected.harness.page;
-            for (const part of keys) owner = owner[part];
-            return handle(
-              track(selected, () => owner[key](...args)),
-              selected,
-              epoch,
-            );
-          };
-        },
-      },
-    );
-  const call =
-    (name) =>
-    (...args) => {
-      const adapter = requireAdapter();
-      const method = adapter.harness[name];
-      if (!method)
-        throw new Error(`${name} is unavailable in this browser (${adapter.backend} backend).`);
-      return track(adapter, () => method(...args));
-    };
-  const facade = {
-    page: pageProxy(),
-    listTabs,
-    switchTab,
-    attach: async () => {
-      await call("attach")();
-      return current;
     },
-    detach: () =>
-      serializeSwitch(async () => {
-        await leave();
-      }),
-    newTab: (url = "about:blank", options = {}) =>
-      serializeSwitch(async () => {
-        const { profile, guest, computer, ...unknown } = options;
-        if (
-          Object.keys(unknown).length ||
-          (profile !== undefined && (guest !== undefined || computer !== undefined)) ||
-          (guest !== undefined && guest !== true)
-        )
-          throw new TypeError(
-            'newTab options are { profile: "<name>" } or { guest: true, computer? }.',
-          );
-        if (profile === undefined && guest === undefined && computer === undefined) {
-          const adapter = requireAdapter();
-          await leave();
-          current = await adapter.harness.newTab(url);
-          return current;
-        }
-        if (profile === undefined && guest !== true && computer === undefined)
-          throw new TypeError('Choose { profile: "<name>" } or { guest: true, computer? }.');
-        const binding = await mutate(
-          "tabs/open",
-          {
-            url,
-            identity:
-              profile !== undefined
-                ? { kind: "profile", profile }
-                : { kind: "guest", ...(computer === undefined ? {} : { computer }) },
-          },
-          true,
-        );
-        await leave();
-        return selectBinding(binding);
-      }),
-    closeTab: (tab = current) =>
-      serializeSwitch(async () => {
-        if (!tab) throw new Error(NO_TAB);
-        const tabId = tabIdOf(tab);
-        const result = await mutate("tabs/close", { tabIds: [tabId] });
-        if (result.closed.includes(current)) {
-          await leave();
-          active = undefined;
-          current = undefined;
-        }
-        return result;
-      }),
-    organizeTabs: (input) => mutate("tabs/organize", input),
-    listGroups: async () => (await agent("tabs", undefined, { limit: 1 })).groups,
-    currentTab: async () => publicInfo(await call("currentTab")()),
-    pageInfo: async () => publicInfo(await call("pageInfo")()),
-    ensureRealTab: async () => publicInfo(await call("ensureRealTab")()),
+  );
+  const facade = {
+    page: noPage,
+    openPage,
+    opensteer: Object.freeze({
+      callTool: async (name, input) => {
+        if (typeof name !== "string" || !name.length || name.length > 255)
+          throw new TypeError("callTool requires an Opensteer tool name");
+        // Generated once; a caller never retries an uncertain effect under a fresh identity.
+        const result = await request("tools/call", { callId: randomUUID(), name, input });
+        return result.content?.some((block) => block.type !== "text")
+          ? result
+          : (result.structuredContent ?? result);
+      },
+    }),
     sleep: (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(milliseconds)))),
   };
-  for (const name of [
-    "captureScreenshot",
-    "cdp",
-    "clickAt",
-    "drainEvents",
-    "fillInput",
-    "fillLogin",
-    "fillCard",
-    "gotoUrl",
-    "js",
-    "pressKey",
-    "respondDialog",
-    "scroll",
-    "setInputFiles",
-    "stageFiles",
-    "typeText",
-    "waitForElement",
-    "waitForLoad",
-  ])
-    facade[name] = call(name);
+  for (const name of helpers)
+    facade[name] = (...args) => {
+      if (!initial) throw new Error(NO_TAB);
+      return initial[name](...args);
+    };
   return {
     facade,
+    bindInitial: async (tabId) => {
+      initial = await openPage(tabId);
+      facade.page = initial;
+    },
     close: async () => {
-      const results = await Promise.allSettled([...adapters.values()].map(release));
-      const failed = results.find((result) => result.status === "rejected");
+      closed = true;
+      const settled = await Promise.allSettled(
+        [...connections].map(async ({ harness, client }) => {
+          try {
+            await harness.detach({ final: true });
+          } finally {
+            client.close();
+          }
+        }),
+      );
+      connections.clear();
+      const failed = settled.find((result) => result.status === "rejected");
       if (failed) throw failed.reason;
     },
   };
@@ -350,14 +169,14 @@ async function main() {
     return;
   }
   if (
-    args.length !== 0 &&
+    args.length &&
     (args.length !== 2 || args[0] !== "--tab" || !/^[A-Za-z0-9_-]{1,256}$/u.test(args[1]))
   )
     throw new Error(USAGE);
   const url = process.env.OPENSTEER_BROWSER_CDP_WS;
   if (!url)
     throw new Error(
-      "OPENSTEER_BROWSER_CDP_WS is required; the Opensteer Runner did not configure browser control for this Run",
+      "OPENSTEER_BROWSER_CDP_WS is required; the Runner did not configure browser control for this Run",
     );
   const chunks = [];
   let bytes = 0;
@@ -368,9 +187,9 @@ async function main() {
   }
   const program = Buffer.concat(chunks).toString("utf8");
   if (!program.trim()) throw new Error(USAGE);
-  const { facade, close } = createFacade(url);
+  const { facade, bindInitial, close } = createFacade(url);
   try {
-    if (args[1]) await facade.switchTab(args[1]);
+    if (args[1]) await bindInitial(args[1]);
     const names = Object.keys(facade);
     const execute = new AsyncFunction(...names, `"use strict";\n{\n${program}\n}\n`);
     await execute(...names.map((name) => facade[name]));
@@ -378,7 +197,8 @@ async function main() {
     await close();
   }
 }
-main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });

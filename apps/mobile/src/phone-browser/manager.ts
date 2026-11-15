@@ -15,7 +15,7 @@ import {
 import { SessionCdpRouterError } from "@opensteer/browser-core/session-cdp-router";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import {
-  LegacyBrowserActionResultSchema,
+  BrowserActionResultSchema,
   BrowserAttachTicketClaimsSchema,
   BrowserClientMessageSchema,
   BrowserContextCandidateSchema,
@@ -24,7 +24,7 @@ import {
   browserBasicInputAllows,
   browserHostMethods,
   type BrowserActionBindingSchema,
-  type LegacyBrowserActionResult,
+  type BrowserActionResult,
   type BrowserClientMessage,
   type BrowserRuntimeServerMessage,
   type HeldLocalProfile,
@@ -1264,7 +1264,7 @@ export class PhoneBrowserManager {
         ].includes(action.type)
       )
         throw new PhoneBrowserError("forbidden", "Control access is required.");
-      let result: LegacyBrowserActionResult;
+      let result: BrowserActionResult;
       if (action.type === "session.tabs") {
         const records = function* () {
           for (const tab of session.tabs.values())
@@ -1311,8 +1311,12 @@ export class PhoneBrowserManager {
         )
           throw new PhoneBrowserError("stale-geometry", "The page geometry changed.");
         if (action.type === "surface.resume" || action.type === "surface.attach") {
+          const reloaded = !isLive(tab);
           await this.#claimCovered(tab, { channel, attachmentId: message.attachmentId });
-          result = { type: action.type, binding: actionBinding(tab) };
+          result =
+            action.type === "surface.resume"
+              ? { type: action.type, binding: actionBinding(tab), dialog: tab.dialog, reloaded }
+              : { type: action.type, binding: actionBinding(tab) };
         } else if (action.type === "surface.close") {
           await this.#closeTab(session, tab);
           result = { type: "surface.close", outcome: "closed" };
@@ -1382,7 +1386,7 @@ export class PhoneBrowserManager {
                 "unsupported-operation",
                 "The native action result mismatched.",
               );
-            result = LegacyBrowserActionResultSchema.parse(nativeResult);
+            result = BrowserActionResultSchema.parse(nativeResult);
           }
         }
       }

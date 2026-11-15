@@ -904,14 +904,24 @@ describe("real Chromium pages follow the person's view", () => {
     );
     cleanup.push(() => bridge.close());
     const program = "console.log(JSON.stringify(await pageInfo()))";
-    const told = await runHarness(bridge.url, session.claims.sessionId, targetId, program);
+    const told = await runHarness(
+      bridge.url,
+      session.claims.sessionId,
+      session.rootSurfaceId,
+      program,
+    );
     expect(told.stderr).toMatch(
       /^\[opensteer\] The person resized this page to 980×660 \d+s ago\. Look at the page again before continuing\.\n$/u,
     );
     expect(JSON.parse(told.stdout)).toMatchObject({
       pageResize: { width: 980, height: 660, sinceLastAgentCommand: true },
     });
-    const toldAgain = await runHarness(bridge.url, session.claims.sessionId, targetId, program);
+    const toldAgain = await runHarness(
+      bridge.url,
+      session.claims.sessionId,
+      session.rootSurfaceId,
+      program,
+    );
     expect(toldAgain.stderr).toBe("");
 
     // A fit that takes away the agent's size is a change the agent hears of,
@@ -933,11 +943,21 @@ describe("real Chromium pages follow the person's view", () => {
       sinceLastAgentCommand: true,
       width: 980,
     });
-    const toldFit = await runHarness(bridge.url, session.claims.sessionId, targetId, program);
+    const toldFit = await runHarness(
+      bridge.url,
+      session.claims.sessionId,
+      session.rootSurfaceId,
+      program,
+    );
     expect(toldFit.stderr).toMatch(
       /^\[opensteer\] The person fit this page to their view \(980×660\) \d+s ago, removing the size an agent set\. Look at the page again before continuing\.\n$/u,
     );
-    const toldFitAgain = await runHarness(bridge.url, session.claims.sessionId, targetId, program);
+    const toldFitAgain = await runHarness(
+      bridge.url,
+      session.claims.sessionId,
+      session.rootSurfaceId,
+      program,
+    );
     expect(toldFitAgain.stderr).toBe("");
     // A fit with no agent size over the page, at the size it shows, is no news.
     await session.fit(root, { width: 980, height: 660 });
@@ -2578,8 +2598,8 @@ describe("real Chromium pages follow the person's view", () => {
     const harnessStale = await runHarness(
       bridge.url,
       session.claims.sessionId,
-      targetId,
-      'await currentTab(); await cdp("Page.handleJavaScriptDialog", { accept: true });',
+      session.rootSurfaceId,
+      `await currentTab(); await cdp("Page.handleJavaScriptDialog", { accept: true, dialogId: ${JSON.stringify(first.id)} });`,
     ).then(
       () => "answered",
       (error: unknown) => String(error),
@@ -2709,7 +2729,7 @@ describe("real Chromium pages follow the person's view", () => {
     );
     cleanup.push(() => bridge.close());
     const harness = (program: string) =>
-      runHarness(bridge.url, session.claims.sessionId, targetId, program).then(
+      runHarness(bridge.url, session.claims.sessionId, session.rootSurfaceId, program).then(
         (output) => ({ ...output, exitCode: 0 }),
         (error: unknown) => ({
           exitCode: 1,

@@ -1,6 +1,6 @@
 import websocket from "@fastify/websocket";
 import { createId } from "@opensteer/core";
-import { createBrowserSessionId } from "@opensteer/protocol";
+import { BrowserSurfaceIdSchema, createBrowserSessionId } from "@opensteer/protocol";
 import Fastify from "fastify";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +8,7 @@ import type { RunToolTokenService } from "../agents/run-tool-tokens.js";
 import { BrowserCdpConnectionEnded, type BrowserService } from "./browser-service.js";
 import {
   registerAgentCdpBridge,
+  registerAgentPageBindingRoute,
   registerTriggerCdpBridge,
   registerWatchCdpBridge,
 } from "./trigger-cdp-bridge.js";
@@ -445,4 +446,51 @@ describe("CDP bridge dispatch", () => {
       expect(closeTriggerSessionsForBinding).toHaveBeenCalledWith(`watch:${activationId}`);
     });
   });
+});
+
+it("requires full Run access before binding Browser Harness and derives authority from the token", async () => {
+  const app = Fastify();
+  applications.push(app);
+  const claims = {
+    runId: createId("run"),
+    requestedBy: createId("user"),
+  } as import("../agents/run-tool-tokens.js").RunToolScope;
+  const tokens = {
+    authenticate: vi.fn(async () => claims),
+    reauthorize: vi.fn(async () => claims),
+  };
+  const binding = {
+    tabId: BrowserSurfaceIdSchema.parse("tab"),
+    sessionId: createBrowserSessionId(),
+    backend: "cdp" as const,
+    reloaded: false,
+  };
+  const pages = { requireOpenPage: vi.fn(async () => binding) };
+  const caller = {
+    kind: "run" as const,
+    accessMode: "auto" as import("@opensteer/core").ThreadAccessMode,
+  };
+  const callers = {
+    authenticate: vi.fn(async () => caller as import("../mcp/agent-caller.js").RunCaller),
+  };
+  registerAgentPageBindingRoute(app, tokens, pages, callers);
+  const request = {
+    method: "POST" as const,
+    url: "/internal/v1/browser-agent/pages/bind",
+    headers: { authorization: "Bearer run-token-123456789012345" },
+    payload: { tabId: "tab" },
+  };
+  const denied = await app.inject(request);
+  expect(denied.statusCode).toBe(403);
+  expect(denied.json()).toEqual({
+    error: {
+      code: "access_denied",
+      message: "Browser control requires full access for this Run.",
+      next: "Use a full-access Run to control browser tabs.",
+    },
+  });
+  expect(pages.requireOpenPage).not.toHaveBeenCalled();
+  caller.accessMode = "full-access";
+  expect((await app.inject(request)).json()).toEqual(binding);
+  expect(pages.requireOpenPage).toHaveBeenCalledWith(claims, "tab");
 });

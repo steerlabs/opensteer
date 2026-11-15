@@ -47,8 +47,7 @@ await js("document.querySelector('#zip').focus();true");await typeText('10014');
     "fixture baseline: legacy measure-all then click deterministically activates the wrong capacity",
     async (kit, report) => {
       const output = await kit.run(`
-const tabs=await listTabs(); const before=await currentTab();
-assert(tabs.some(t=>t.tabId===before.tabId),'legacy inventory');
+const before=await currentTab(); assert(before.tabId === page.tabId, 'bound tab');
 const controls=await js(\`[...document.querySelectorAll('[role=dialog] input[name="pl_dimensionCapacity"]')].map(e=>{const l=document.querySelector('label[for="'+e.id+'"]');l.scrollIntoView({block:'nearest'});const r=l.getBoundingClientRect();return {value:e.value,x:r.x+r.width/2,y:r.y+r.height/2}})\`);
 const pos=controls.find(e=>e.value==='512gb'); await clickAt(pos.x,pos.y);
 console.log(JSON.stringify({controls,target:'512gb',selected:await js("document.querySelector('[name=pl_dimensionCapacity]:checked').value")}));`);
@@ -478,21 +477,16 @@ assert(await page.getByRole('button',{name:${name},exact:true,includeHidden:true
 
   acceptance(
     "20",
-    "legacy adapters, local page declaration, lazy inventory and unsupported subset errors",
+    "page aliases, local page declaration, bound handles and unsupported subset errors",
     async (kit) => {
-      await kit.run(
-        `const page={legacy:true};assert(page.legacy,'script page declaration');console.log((await listTabs()).length);`,
-      );
+      await kit.run(`const page={local:true};assert(page.local,'script page declaration');`);
       await kit.controller.handle({ type: "surface.open", url: kit.site.url("20") });
-      const other = kit.ledger.binding(kit.ledger.active()!.surface.id)!.page;
-      expect(kit.ledger.snapshot()).toHaveLength(2);
-      const inventory = await kit.run(
-        `const tabs=await listTabs();assert(tabs.length===2,'multi-tab inventory');console.log(JSON.stringify(tabs));`,
-        { inventory: true },
+      const otherId = kit.ledger.active()!.surface.id;
+      await kit.run(
+        `const other = await openPage(${JSON.stringify(otherId)}); assert(other.tabId !== page.tabId, 'independent handles'); assert(await page.locator('body').count()===1, 'original handle');`,
       );
-      expect(JSON.parse(inventory.stdout)).toHaveLength(2);
-      await other.close();
-      await kit.run(`const tabs=await listTabs();const current=await currentTab();assert(tabs.some(t=>t.tabId===current.tabId),'legacy inventory');
+      await kit.ledger.closeSurface(otherId);
+      await kit.run(`const current=await currentTab(); assert(current.tabId===page.tabId,'bound identity');
 await fillInput('.legacy','replace');await fillInput('.legacy',' appended',{clear:false});
 assert(await js("document.querySelectorAll('.legacy')[1].value")==='second','first match semantics');
 await js("document.querySelector('#zip').focus();true");await pressKey('Enter',{modifiers:0});
@@ -659,12 +653,6 @@ acceptance(
   "--tab resumes the exact sleeping surface and attaches its new target",
   async (kit) => {
     expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(true);
-    const inventory = await kit.run(`console.log(JSON.stringify(await listTabs()));`, {
-      inventory: true,
-    });
-    expect(JSON.parse(inventory.stdout)).toContainEqual(
-      expect.objectContaining({ tabId: kit.surfaceId, state: "asleep" }),
-    );
     const out = await kit.run(`console.log(JSON.stringify(await currentTab()));`, {
       tab: kit.surfaceId,
     });
@@ -672,7 +660,7 @@ acceptance(
     expect(JSON.parse(out.stdout)).toMatchObject({ tabId: kit.surfaceId });
     expect(kit.ledger.snapshot().find((tab) => tab.id === kit.surfaceId)?.state).toBe("live");
     const implicit = await kit.run(
-      `const [tab] = await listTabs(); await switchTab(tab); console.log(JSON.stringify(await currentTab()));`,
+      `const resumed = await openPage(${JSON.stringify(kit.surfaceId)}); console.log(JSON.stringify(await resumed.currentTab()));`,
       {
         inventory: true,
       },
@@ -680,7 +668,7 @@ acceptance(
     expect(JSON.parse(implicit.stdout)).toMatchObject({ tabId: kit.surfaceId });
     expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(true);
     const implicitWake = await kit.run(
-      `const [tab] = await listTabs(); await switchTab(tab); console.log(JSON.stringify(await currentTab()));`,
+      `const resumed = await openPage(${JSON.stringify(kit.surfaceId)}); console.log(JSON.stringify(await resumed.currentTab()));`,
       {
         inventory: true,
       },
@@ -698,7 +686,7 @@ acceptance(
       `await currentTab(); await fails(() => js('true'), /asleep|Resume|suspended/i);`,
       { tab: kit.surfaceId },
     );
-    expect(existing.stderr).toMatch(/asleep.*Resume.*old page handles/i);
+    expect(existing.stderr).toMatch(/asleep.*openPage.*old page handles/i);
     expect(slept).toBe(true);
     delete kit.hooks.before;
     await kit.run(`await currentTab();`, { tab: kit.surfaceId });
@@ -709,164 +697,111 @@ acceptance(
   "01",
 );
 
-describe("Browser Harness tab facade", () => {
-  it("starts with --tab alone, pages the Host catalog and switches between CDP and actions", async () => {
+describe("Browser Harness bound pages", () => {
+  it("keeps CDP and actions handles permanently bound while tool discovery leaves the initial page alone", async () => {
     const kit = await startTabJourney();
     const a = kit.first.surfaceId,
       b = kit.second.surfaceId;
     const out = await kit.run(
       `
-const first = await pageInfo();
-assert(first.tabId === ${JSON.stringify(a)} && !('surfaceId' in first) && !('targetId' in first), 'public tab identity');
 const saved = page.locator('body');
-const limited = await listTabs({limit: 1});
-assert(limited.length === 1 && limited[0].current === true, 'current flag');
-const all = await listTabs({limit: 1, all: true});
-assert(all.length === 3 && all.filter(t => t.current).length === 1, 'cursor pages');
-await switchTab(all[1]);
-await fails(() => saved.textContent(), /fresh page handles/);
-assert((await currentTab()).tabId === ${JSON.stringify(b)}, 'other browser');
-await switchTab(${JSON.stringify(kit.phoneId)});
-assert((await pageInfo()).title === 'Phone', 'actions backend');
-assert(await page.locator('body').textContent() === 'Phone text', 'actions locator');
-await fails(() => js('true'), /unsupported-operation/);
-const phoneHandle = page.locator('body');
-await switchTab(${JSON.stringify(a)});
-await fails(() => phoneHandle.textContent(), /fresh page handles/);
-assert(await page.locator('body').count() === 1, 'CDP reconnect');
+const listed = await opensteer.callTool('tab_list', {});
+assert(listed.tabs.length === 3, 'tool inventory');
+const other = await openPage(${JSON.stringify(b)});
+const phone = await openPage(${JSON.stringify(kit.phoneId)});
+assert((await other.currentTab()).tabId === ${JSON.stringify(b)}, 'other profile');
+assert((await phone.pageInfo()).title === 'Phone', 'actions page');
+assert(await phone.locator('body').textContent() === 'Phone text', 'actions locator');
+await fails(() => phone.evaluate('true'), /unsupported-operation/);
+assert(await saved.count() === 1 && page.tabId === ${JSON.stringify(a)}, 'initial handle stays bound');
 console.log('done');`,
       a,
     );
     expect(out.stdout.trim()).toBe("done");
-    expect(out.stderr.split("\n").filter((line) => line.includes("tabs match"))).toEqual([
-      "[opensteer] 3 tabs match; showing 1. Narrow listTabs({ query, state }) or pass { all: true }.",
-    ]);
     expect(
-      kit.calls.filter((call) => call.path === "tabs/use").map((call) => call.input.tabId),
-    ).toEqual([a, b, kit.phoneId, a]);
-    expect(kit.calls.filter((call) => call.path === "tabs")).toHaveLength(4);
+      kit.calls.filter((call) => call.path === "pages/bind").map((call) => call.input.tabId),
+    ).toEqual([a, b, kit.phoneId]);
   });
-
-  it("requires selection, opens locally or by identity, replays an uncertain open, and closes another browser's tab", async () => {
+  it("uses tools for catalog mutations and keeps a held page usable after closing its tab", async () => {
     const kit = await startTabJourney();
     const a = kit.first.surfaceId,
       b = kit.second.surfaceId;
-    const empty = await kit.run(`
-await fails(() => pageInfo(), /switchTab.*newTab/);
-await fails(() => newTab(), /profile.*guest/);
-const rows = await listTabs({ query: 'Phone', state: 'open' });
-assert(rows.length === 1 && !rows[0].current, 'unselected filtered inventory');`);
+    const empty = await kit.run(
+      `await fails(() => pageInfo(), /Use --tab/); const rows=await opensteer.callTool('tab_list',{query:'Phone'});assert(rows.tabs.length===1,'tool discovery without page');`,
+    );
     expect(empty.stderr).toBe("");
-    const local = await kit.run(
-      `const saved=page.locator('body'); const id = await newTab(); assert(id === (await currentTab()).tabId, 'new local tab'); await fails(()=>saved.count(), /fresh page handles/); await switchTab(${JSON.stringify(a)}); assert((await currentTab()).tabId===${JSON.stringify(a)}, 'same browser selection'); console.log(id);`,
-      a,
-    );
-    expect(kit.first.ledger.snapshot().some((tab) => tab.id === local.stdout.trim())).toBe(true);
-    expect(kit.calls.some((call) => call.path === "tabs/open")).toBe(false);
-    expect(
-      kit.calls.filter((call) => call.path === "tabs/use").map((call) => call.input.tabId),
-    ).toEqual([a]);
-    kit.uncertainOpen();
-    const opened = await kit.run(
-      `const id = await newTab('about:blank', {profile: 'Work'}); assert(id === (await currentTab()).tabId, 'profile tab'); console.log(id);`,
-    );
-    expect(kit.opens.size).toBe(1);
-    const attempts = kit.calls.filter((call) => call.path === "tabs/open");
-    expect(attempts).toHaveLength(2);
-    expect(attempts[0]!.input).toEqual(attempts[1]!.input);
-    await kit.run(`await newTab('about:blank', {guest:true});`);
-    expect(await kit.second.ledger.sleep(b, () => null)).toBe(true);
-    await kit.run(
-      `const result=await closeTab(${JSON.stringify(b)}); assert(result.closed[0]===${JSON.stringify(b)}, 'closed foreign tab'); assert((await currentTab()).tabId===${JSON.stringify(a)}, 'kept current'); await organizeTabs({action:'move',tabIds:[${JSON.stringify(a)}]}); await closeTab(); await fails(() => pageInfo(), /switchTab/);`,
-      a,
-    );
-    expect(kit.second.ledger.snapshot().some((tab) => tab.id === b)).toBe(false);
-    expect(
-      kit.calls.some(
-        (call) => call.path === "tabs/organize" && typeof call.input.operationKey === "string",
-      ),
-    ).toBe(true);
-    expect(opened.stdout.trim()).toBe([...kit.opens.values()][0]!.tabId);
-  });
-
-  it("finishes a page wait on its own tab after the script switches away", async () => {
-    const kit = await startTabJourney();
-    const a = kit.first.surfaceId,
-      b = kit.second.surfaceId;
     const out = await kit.run(
-      `await switchTab(${JSON.stringify(a)});
-const until = Date.now() + 400;
-const pending = page.waitForFunction((at) => Date.now() > at, until);
-await switchTab(${JSON.stringify(b)});
-await pending;
-console.log((await currentTab()).tabId);`,
+      `
+const held = await openPage(${JSON.stringify(b)});
+const created = await opensteer.callTool('tab_open', {target:{kind:'page',guest:true,url:'about:blank'}});
+const other = await openPage(created.tab.tabId);
+assert(other.tabId !== page.tabId, 'new handle');
+const closed = await opensteer.callTool('tab_close',{tabIds:[${JSON.stringify(b)}]});
+assert(closed.closed[0]===held.tabId,'closed entry');
+await fails(() => openPage(held.tabId), /unavailable/);
+assert(await held.locator('body').count()===1,'held page remains usable');
+await opensteer.callTool('tab_organize',{tabIds:[page.tabId],group:null});
+console.log(created.tab.tabId);`,
+      a,
     );
-    expect(out.stdout.trim()).toBe(b);
+    expect(kit.opened).toEqual([out.stdout.trim()]);
+    expect(kit.closed.has(b)).toBe(true);
   });
-
-  it("keeps a browser with work in flight connected while a script walks more browsers", async () => {
+  it("finishes a pending page evaluation on its original handle while another profile is open", async () => {
+    const kit = await startTabJourney();
+    const out = await kit.run(`
+const first=await openPage(${JSON.stringify(kit.first.surfaceId)});
+const pending=first.waitForFunction((at)=>Date.now()>at,Date.now()+400);
+const other=await openPage(${JSON.stringify(kit.second.surfaceId)});
+await pending; console.log(other.tabId);`);
+    expect(out.stdout.trim()).toBe(kit.second.surfaceId);
+  });
+  it("keeps an actions handle connected with work in flight while opening several others", async () => {
     const kit = await startTabJourney({ phones: 5 });
     const held = kit.holdPhoneQuery();
     const [busy, ...others] = kit.phoneIds;
     const running = kit.run(
-      `await switchTab(${JSON.stringify(busy)});
-const pending = page.locator('body').innerText();
-for (const id of ${JSON.stringify(others)}) await switchTab(id);
-console.log(await pending);`,
+      `const first=await openPage(${JSON.stringify(busy)});const pending=first.locator('body').innerText();for(const id of ${JSON.stringify(others)}) await openPage(id);console.log(await pending);`,
     );
-    await withTimeout(held.entered, 10_000, {
-      timeoutError: () => new Error("the first phone's page read never started"),
+    await withTimeout(held.entered, 5000, {
+      timeoutError: () => new Error("Actions read never started"),
     });
-    // The script has switched through every phone, so the first is no longer selected.
     await waitForBrowserState(
-      () => kit.calls.filter((call) => call.path === "tabs/use").length === kit.phoneIds.length,
+      () => kit.calls.filter((call) => call.path === "pages/bind").length === kit.phoneIds.length,
     );
     held.release();
     expect((await running).stdout.trim()).toBe("Phone text");
   });
-
-  it("keeps every upload chunk on its captured browser while switching", async () => {
+  it("keeps every upload chunk on its original connection while opening another handle", async () => {
     const kit = await startTabJourney();
     const directory = await mkdtemp(join(tmpdir(), "opensteer-tab-upload-"));
     cleanup.push(() => rm(directory, { recursive: true, force: true }));
     const file = join(directory, "payload.txt");
     await writeFile(file, "x".repeat(600_000));
     const chunks: Array<{ browser: string; offset: unknown }> = [];
-    const admitted = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    cleanup.push(async () => {
-      release.resolve();
-    });
-    for (const [name, browser] of [
-      ["first", kit.first],
-      ["second", kit.second],
-    ] as const) {
-      browser.hooks.before = async (method, parameters) => {
-        if (method === "Opensteer.stageFile") {
-          chunks.push({ browser: name, offset: parameters?.offset });
-          if (name === "first" && parameters?.offset === 0) {
-            admitted.resolve();
-            await withTimeout(release.promise, 5_000, {
-              timeoutError: () => new Error("Switch never released the first upload chunk"),
-            });
-          }
-        }
-        if (name === "first" && method === "Browser.getVersion")
-          await withTimeout(admitted.promise, 5_000, {
-            timeoutError: () => new Error("First upload chunk was never admitted"),
+    const admitted = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    cleanup.push(async () => release.resolve());
+    kit.first.hooks.before = async (method, parameters) => {
+      if (method === "Opensteer.stageFile") {
+        chunks.push({ browser: "first", offset: parameters?.offset });
+        if (parameters?.offset === 0) {
+          admitted.resolve();
+          await withTimeout(release.promise, 5000, {
+            timeoutError: () => new Error("Other handle never released upload"),
           });
-        if (name === "second" && method === "Opensteer.listTabs") release.resolve();
-      };
-    }
+        }
+      }
+      if (method === "Browser.getVersion")
+        await withTimeout(admitted.promise, 5000, {
+          timeoutError: () => new Error("Upload never began"),
+        });
+    };
+    kit.second.hooks.before = async (method) => {
+      if (method === "Opensteer.resumeTab") release.resolve();
+    };
     const out = await kit.run(
-      `
-const upload = stageFiles(${JSON.stringify(file)});
-upload.catch(() => {});
-await cdp("Browser.getVersion");
-await switchTab(${JSON.stringify(kit.second.surfaceId)});
-const paths = await upload;
-assert(paths.length === 1 && (await currentTab()).tabId === ${JSON.stringify(kit.second.surfaceId)}, 'upload and switch');
-console.log('done');`,
+      `const upload=stageFiles(${JSON.stringify(file)});upload.catch(()=>{});await cdp('Browser.getVersion');const other=await openPage(${JSON.stringify(kit.second.surfaceId)});const paths=await upload;assert(paths.length===1&&other.tabId!==page.tabId,'separate upload handle');console.log('done');`,
       kit.first.surfaceId,
     );
     expect(out.stdout.trim()).toBe("done");
