@@ -18,6 +18,7 @@ import { useToast } from "../components/toast.js";
 import { actionErrorMessage } from "../ui-utils.js";
 import { ChannelRoute, TeamUnavailable } from "./channel-route.js";
 import { useTeamAttachment, useTeamSession } from "./team-attachments.js";
+import { TeamReferences } from "../components/references/reference-scope.js";
 import { TeamKnowledge } from "./team-knowledge.js";
 import { channelPath, teamPath } from "./team-paths.js";
 import { useTeamView, type TeamView } from "./team-view.js";
@@ -30,15 +31,19 @@ const noPreviews: ReadonlyMap<string, string> = new Map();
 export function TeamRoutes() {
   const { teamId = "", "*": splat = "" } = useParams();
   const [section, ...rest] = splat.split("/").filter(Boolean);
+  // Everything under a team reads its words as that team's: its pages open here, personal ones don't.
+  const team = useTeamAttachment(teamId);
   return (
     <TeamPaneGate teamId={teamId}>
-      {section === "c" ? (
-        <ChannelRoute rest={rest} teamId={teamId} />
-      ) : !section ? (
-        <TeamLanding teamId={teamId} />
-      ) : (
-        <TeamPage rest={rest} section={section} teamId={teamId} />
-      )}
+      <TeamReferences team={team}>
+        {section === "c" ? (
+          <ChannelRoute rest={rest} teamId={teamId} />
+        ) : !section ? (
+          <TeamLanding teamId={teamId} />
+        ) : (
+          <TeamPage rest={rest} section={section} teamId={teamId} />
+        )}
+      </TeamReferences>
     </TeamPaneGate>
   );
 }

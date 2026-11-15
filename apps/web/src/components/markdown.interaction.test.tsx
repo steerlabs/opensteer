@@ -81,6 +81,37 @@ describe("Markdown an agent wrote", () => {
     act(() => root.render(<Markdown streaming text={"Done.\n\nThis is **partial"} />));
     expect(container.querySelectorAll("p")[1]).toBe(growing);
   });
+
+  it("holds back a reference whose address is still arriving, in the block being written only", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const earlier = "Earlier [a draft](opensteer:thr_x";
+    act(() =>
+      root.render(<Markdown streaming text={`${earlier}\n\nNext [the task](opensteer:thr_`} />),
+    );
+    // Settled blocks keep exactly what was written; only the growing tail is held back.
+    expect(container.textContent).toContain(earlier);
+    expect(container.textContent).toContain("Next");
+    expect(container.textContent).not.toContain("the task");
+  });
+
+  it("reads a person's words as typed: no single-tilde strike, raw HTML stays text", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    act(() =>
+      root.render(<Markdown profile="person" text={"~maybe~ <b>bold</b>\n- **one**\n- two"} />),
+    );
+    expect(container.querySelector(".md-prose--person")).not.toBeNull();
+    expect(container.querySelector("del")).toBeNull();
+    expect(container.querySelector("b")).toBeNull();
+    expect(container.textContent).toContain("~maybe~ <b>bold</b>");
+    expect(container.querySelectorAll("li")).toHaveLength(2);
+    expect(container.querySelector("strong")?.textContent).toBe("one");
+  });
 });
 
 describe("Copying from a block in a reading column", () => {

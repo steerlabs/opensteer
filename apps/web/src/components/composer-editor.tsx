@@ -16,7 +16,6 @@ import {
   useEditor,
   type NodeViewProps,
 } from "@tiptap/react";
-import { classifyHref, type ReferenceKind, type TeamPageTarget } from "@opensteer/core";
 import {
   snapComposerSelection,
   type ComposerEditorHandle,
@@ -48,7 +47,8 @@ import {
   typedTokenConversions,
   type ComposerScope,
 } from "./composer-editor-document.js";
-import { Icon, type IconName } from "./icon.js";
+import { Icon } from "./icon.js";
+import { hrefGlyph } from "./references/reference-glyphs.js";
 import "../styles/composer-editor.css";
 
 /** Who changed the words: the person at the keyboard, or code acting for them. */
@@ -482,44 +482,11 @@ function ReferenceChip({ node, selected }: NodeViewProps) {
   return (
     <NodeViewWrapper
       as="span"
-      className={selected ? "composer-token is-selected" : "composer-token"}
+      className={selected ? "ref-chip composer-token is-selected" : "ref-chip composer-token"}
       title={token.label}
     >
-      <Icon name={composerTokenGlyph(token.href)} />
-      <span className="composer-token__label">{token.label || token.href}</span>
+      <Icon name={hrefGlyph(token.href)} />
+      <span className="ref-chip__title">{token.label || token.href}</span>
     </NodeViewWrapper>
   );
-}
-
-const referenceGlyphs: Readonly<Record<ReferenceKind, IconName>> = {
-  task: "message",
-  run: "activity",
-  request: "hand",
-  message: "corner-down-right",
-  automation: "clock",
-  computer: "desktop",
-  attachment: "paperclip",
-};
-
-const teamPageGlyphs: Readonly<Record<TeamPageTarget["kind"], IconName>> = {
-  invite: "users",
-  channel: "hash",
-  message: "corner-down-right",
-  thread: "reply",
-  "knowledge-topic": "folder",
-  "knowledge-note": "file",
-};
-
-function composerTokenGlyph(href: string): IconName {
-  const target = classifyHref(href);
-  switch (target.kind) {
-    case "reference":
-      return referenceGlyphs[target.reference.kind];
-    case "team-page":
-      return teamPageGlyphs[target.page.target.kind];
-    case "file":
-      return /\.(?:avif|gif|heic|jpe?g|png|svg|webp)$/iu.test(target.file.path) ? "image" : "file";
-    default:
-      return "link";
-  }
 }

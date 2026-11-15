@@ -107,6 +107,8 @@ import {
   MessageAttachments,
 } from "./attachments/message-attachments.js";
 import { CopyMark } from "./copy-mark.js";
+import type { MarkdownProfile } from "./markdown.js";
+import { readableMarkdown } from "./references/readable-markdown.js";
 import { Dialog } from "./dialog.js";
 import { Icon, type IconName } from "./icon.js";
 import { LoadingRows } from "./loading-rows.js";
@@ -1088,7 +1090,13 @@ function ReplyBubblePart({
         {part.kind === "draft" ? (
           part.text
         ) : (
-          <Suspense fallback={<p className="md-prose md-prose--plain">{part.text}</p>}>
+          <Suspense
+            fallback={
+              <p className="md-prose md-prose--plain">
+                {part.kind === "code" ? part.text : readableMarkdown(part.text)}
+              </p>
+            }
+          >
             <Markdown
               bare={part.kind === "code"}
               text={part.kind === "code" ? part.source : part.text}
@@ -1718,7 +1726,11 @@ export function SubagentSteps({
                   key={part.entry.id}
                 >
                   <Suspense
-                    fallback={<p className="md-prose md-prose--plain">{part.entry.text}</p>}
+                    fallback={
+                      <p className="md-prose md-prose--plain">
+                        {readableMarkdown(part.entry.text)}
+                      </p>
+                    }
                   >
                     <Markdown text={part.entry.text} />
                   </Suspense>
@@ -1804,7 +1816,9 @@ function Reasoning({ entry, active }: { entry: ReasoningEntry; active: boolean }
       <StepHead head={activityStepHead(entry)} onToggle={() => setOpen(!open)} open={open} />
       {open ? (
         <div className="trace-step__thought">
-          <Suspense fallback={<p className="md-prose md-prose--plain">{entry.text}</p>}>
+          <Suspense
+            fallback={<p className="md-prose md-prose--plain">{readableMarkdown(entry.text)}</p>}
+          >
             <Markdown text={entry.text} />
           </Suspense>
         </div>
@@ -2065,7 +2079,9 @@ function Reply({
   return (
     <div aria-busy={streaming} className="msg--assistant__body" data-message-id={message.id}>
       {message.body ? (
-        <Suspense fallback={<p className="md-prose md-prose--plain">{message.body}</p>}>
+        <Suspense
+          fallback={<p className="md-prose md-prose--plain">{readableMarkdown(message.body)}</p>}
+        >
           <Markdown streaming={streaming} text={message.body} />
         </Suspense>
       ) : null}
@@ -2248,7 +2264,7 @@ function OwnMessage({
               onOpenChange={setOpen}
               open={open}
             >
-              {message.body}
+              <PersonWords text={message.body} />
             </MessageFold>
           </div>
         </div>
@@ -2260,6 +2276,22 @@ function OwnMessage({
         </p>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * A person's own words, as the Markdown they typed: a reference reads as its
+ * chip. Until the renderer arrives they read as words, each link as its label.
+ */
+function PersonWords({ text }: { readonly text: string }) {
+  return (
+    <Suspense
+      fallback={
+        <p className="md-prose md-prose--plain md-prose--person">{readableMarkdown(text)}</p>
+      }
+    >
+      <Markdown profile="person" text={text} />
+    </Suspense>
   );
 }
 
@@ -2361,7 +2393,11 @@ function RecoveryNote({
         <div className="update-line__body" id={bodyId}>
           <MessageAttachments attachments={message.attachments ?? []} />
           {message.body ? (
-            <Suspense fallback={<p className="md-prose md-prose--plain">{message.body}</p>}>
+            <Suspense
+              fallback={
+                <p className="md-prose md-prose--plain">{readableMarkdown(message.body)}</p>
+              }
+            >
               <Markdown text={message.body} />
             </Suspense>
           ) : null}
@@ -2503,8 +2539,16 @@ function InputMessage({
             open={open}
           >
             {source.markdown ? (
-              <Suspense fallback={<p className="md-prose md-prose--plain">{body}</p>}>
-                <Markdown text={body} />
+              <Suspense
+                fallback={
+                  <p
+                    className={`md-prose md-prose--plain${source.markdown === "person" ? " md-prose--person" : ""}`}
+                  >
+                    {readableMarkdown(body)}
+                  </p>
+                }
+              >
+                <Markdown profile={source.markdown} text={body} />
               </Suspense>
             ) : (
               <p className="input-card__plain">{body}</p>
@@ -2529,7 +2573,8 @@ function InputMessage({
 function inputSource(message: MessageEntry): {
   glyph: ReactNode;
   href: string | null;
-  markdown: boolean;
+  /** How its words read: an agent's or a person's Markdown, or plain words. */
+  markdown: MarkdownProfile | null;
   name: string;
 } {
   const { author } = message;
@@ -2539,7 +2584,7 @@ function inputSource(message: MessageEntry): {
       return {
         glyph: <SenderTaskMark threadId={author.threadId} />,
         href: `/tasks/${author.threadId}`,
-        markdown: true,
+        markdown: "assistant",
         name,
       };
     case "trigger":
@@ -2551,12 +2596,12 @@ function inputSource(message: MessageEntry): {
           </span>
         ),
         href: automationPath(author.triggerId),
-        markdown: true,
+        markdown: "assistant",
         name,
       };
     case "connection":
     case "team-member":
-      return { glyph: null, href: null, markdown: true, name };
+      return { glyph: null, href: null, markdown: "assistant", name };
     case "human":
       return {
         glyph: (
@@ -2565,12 +2610,12 @@ function inputSource(message: MessageEntry): {
           </span>
         ),
         href: null,
-        markdown: false,
+        markdown: "person",
         name,
       };
     case "platform":
       // The schema forbids platform-authored input; typed for exhaustiveness.
-      return { glyph: null, href: null, markdown: false, name };
+      return { glyph: null, href: null, markdown: null, name };
   }
 }
 
