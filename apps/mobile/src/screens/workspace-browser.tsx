@@ -16,6 +16,7 @@ import {
   useBrowserPopupFollow,
   useHostSelector,
   useHostSnapshot,
+  useApp,
   usePlaceAgents,
   useTab,
   useTabStrip,
@@ -399,8 +400,11 @@ function Focused(
   );
 
   const shownPage = viewer.kind === "page" ? page : null;
-  const latest = useRef({ shownPage });
-  latest.current = { shownPage };
+  // The chat that made this app, read from the app itself: Ask can still reach it; none once deleted.
+  const appThreadId =
+    useApp(hostClient, tab.kind === "app" ? (tab.appId ?? null) : null)?.taskId ?? null;
+  const latest = useRef({ appThreadId, shownPage });
+  latest.current = { appThreadId, shownPage };
 
   /**
    * An agent's Thread, as its own screen. The screen directly under this one
@@ -431,16 +435,11 @@ function Focused(
    */
   const putPageOnDraft = useCallback(
     (target: AskTarget): boolean => {
+      const { appThreadId: origin, shownPage: included } = latest.current;
       const userId = hostClient.getSnapshot().user?.id;
-      if (userId === undefined || target === "thread") return false;
-      void drafts
-        .writeDraftPage(
-          deploymentId,
-          userId,
-          newTaskDraftKey(homeDraftId),
-          latest.current.shownPage,
-        )
-        .catch(() => undefined);
+      const draftKey = target === "thread" ? origin : newTaskDraftKey(homeDraftId);
+      if (userId === undefined || draftKey === null) return false;
+      void drafts.writeDraftPage(deploymentId, userId, draftKey, included).catch(() => undefined);
       return true;
     },
     [deploymentId, drafts, hostClient],
@@ -448,14 +447,21 @@ function Focused(
   /** Ask, on a phone: that composer's own screen, with the page on its draft. */
   const askAway = useCallback(
     (target: AskTarget) => {
-      if (putPageOnDraft(target)) navigation.dispatch(StackActions.popToTop());
+      if (!putPageOnDraft(target)) return;
+      const { appThreadId: origin } = latest.current;
+      if (target === "thread") {
+        if (origin !== null) openThread(origin);
+      } else navigation.dispatch(StackActions.popToTop());
     },
-    [navigation, putPageOnDraft],
+    [navigation, openThread, putPageOnDraft],
   );
   /** Ask, where a pair fits: the composer opens beside the page, with the page on its draft. */
   const askBeside = useCallback(
     (target: AskTarget) => {
-      if (putPageOnDraft(target)) setChosen({ kind: "task" });
+      if (!putPageOnDraft(target)) return;
+      const { appThreadId: origin } = latest.current;
+      if (target === "task") setChosen({ kind: "task" });
+      else if (origin !== null) setChosen({ kind: "thread", threadId: origin });
     },
     [putPageOnDraft],
   );
@@ -549,6 +555,10 @@ function Focused(
   const appId = viewer.kind === "app" ? viewer.appId : null;
   const appReload = useRef<(() => void) | null>(null);
   const reloadApp = useCallback(() => appReload.current?.(), []);
+  const openAppThread = useCallback(() => {
+    const { appThreadId: origin } = latest.current;
+    if (origin !== null) openThread(origin);
+  }, [openThread]);
   const reportApp = useCallback(() => {
     if (appId !== null) contactSupport({ kind: "app", id: appId });
   }, [appId]);
@@ -560,11 +570,20 @@ function Focused(
             closable: props.connected && !closing.closing,
             live: !closing.closing,
             onClose: closing.close,
-            onOpenThread: null,
+            onOpenThread: appThreadId === null ? null : openAppThread,
             onReload: reloadApp,
             onReport: reportApp,
           },
-    [appId, closing.close, closing.closing, props.connected, reloadApp, reportApp],
+    [
+      appId,
+      appThreadId,
+      closing.close,
+      closing.closing,
+      openAppThread,
+      props.connected,
+      reloadApp,
+      reportApp,
+    ],
   );
   const onAsk = paired ? askBeside : askAway;
   const onOpenAgent = paired ? showBeside : openThread;
@@ -574,7 +593,7 @@ function Focused(
   usePageHeader({
     agents,
     app: appMenu,
-    asksThread: false,
+    asksThread: appThreadId !== null,
     noAsk: pairedChrome,
     onAsk,
     onOpenAgent,
@@ -610,10 +629,13 @@ function Focused(
     (): AppPairChrome | null =>
       appPaired && appMenu !== null
         ? {
-            sections: appMenuSections(appMenu, askChoices({ asksThread: false, onAsk: askBeside })),
+            sections: appMenuSections(
+              appMenu,
+              askChoices({ asksThread: appThreadId !== null, onAsk: askBeside }),
+            ),
           }
         : null,
-    [appMenu, appPaired, askBeside],
+    [appMenu, appPaired, appThreadId, askBeside],
   );
   const others = agents.agents.some(({ threadId }) => threadId !== besideId);
   const pairMenu: NativeMenuSection[] = [
