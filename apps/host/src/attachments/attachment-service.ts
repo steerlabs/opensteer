@@ -1,5 +1,7 @@
+import { constants } from "node:fs";
+import { noFollowFlag } from "@opensteer/shared/privateFiles";
 import { createHash, randomUUID } from "node:crypto";
-import { link, mkdir, open, readFile, readdir, rm, stat, unlink } from "node:fs/promises";
+import { link, mkdir, open, readdir, rm, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import {
   AttachmentIdSchema,
@@ -246,12 +248,25 @@ export class AttachmentService {
   async contentForUser(
     attachmentId: string,
     userId: UserId,
+    signal?: AbortSignal,
   ): Promise<{
     readonly bytes: Uint8Array;
     readonly metadata: ContentMetadata;
   }> {
     const row = await this.#store.getForUser(AttachmentIdSchema.parse(attachmentId), userId);
-    return this.#verifiedContent(row);
+    const result = await this.#verifiedContent(row, attachmentMaxBytes, signal);
+    return { ...result, metadata: { ...result.metadata, truncated: false as const } };
+  }
+  async previewForUser(
+    attachmentId: string,
+    userId: UserId,
+    maxBytes: number,
+    signal?: AbortSignal,
+  ) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > attachmentMaxBytes)
+      throw unavailable();
+    const row = await this.#store.getForUser(AttachmentIdSchema.parse(attachmentId), userId);
+    return this.#verifiedContent(row, maxBytes, signal);
   }
   async listForRun(
     token: string,
@@ -285,32 +300,67 @@ export class AttachmentService {
       runId: claims.runId,
       threadId: claims.threadId,
     });
-    return this.#verifiedContent(row);
+    const result = await this.#verifiedContent(row);
+    return { ...result, metadata: { ...result.metadata, truncated: false as const } };
   }
-  async #verifiedContent(row: AttachmentRow): Promise<{
-    readonly bytes: Uint8Array;
-    readonly metadata: ContentMetadata;
-  }> {
-    if (row.state !== "ready" || !row.sha256) throw unavailable();
-    let bytes: Buffer;
-    try {
-      const info = await stat(this.#path(row.id));
-      if (!info.isFile() || info.size !== row.sizeBytes) throw unavailable();
-      bytes = await readFile(this.#path(row.id));
-    } catch {
+  async #verifiedContent(row: AttachmentRow, maxBytes = attachmentMaxBytes, signal?: AbortSignal) {
+    if (
+      row.state !== "ready" ||
+      !row.sha256 ||
+      row.sizeBytes > attachmentMaxBytes ||
+      (!row.messageId && row.expiresAt <= new Date())
+    )
       throw unavailable();
+    signal?.throwIfAborted();
+    const file = await open(
+      this.#path(row.id),
+      constants.O_RDONLY | constants.O_NONBLOCK | noFollowFlag(),
+    ).catch(() => {
+      throw unavailable();
+    });
+    try {
+      const info = await file.stat();
+      if (!info.isFile() || info.size !== row.sizeBytes) throw unavailable();
+      const hash = createHash("sha256");
+      const chunks: Buffer[] = [];
+      let size = 0,
+        retained = 0;
+      for await (const chunk of file.createReadStream({ autoClose: false })) {
+        signal?.throwIfAborted();
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        size += bytes.length;
+        if (size > row.sizeBytes) throw unavailable();
+        hash.update(bytes);
+        if (retained < maxBytes) {
+          const part = bytes.subarray(0, maxBytes - retained);
+          chunks.push(Buffer.from(part));
+          retained += part.length;
+        }
+      }
+      const after = await file.stat();
+      if (
+        size !== row.sizeBytes ||
+        after.mtimeMs !== info.mtimeMs ||
+        after.ctimeMs !== info.ctimeMs ||
+        hash.digest("hex") !== row.sha256
+      )
+        throw unavailable();
+      return {
+        bytes: Buffer.concat(chunks, retained),
+        metadata: {
+          contentType: row.mediaType,
+          etag: `"sha256-${row.sha256}"`,
+          modifiedAt: row.createdAt.toISOString(),
+          sizeBytes: row.sizeBytes,
+          truncated: retained < size,
+        },
+      };
+    } catch {
+      signal?.throwIfAborted();
+      throw unavailable();
+    } finally {
+      await file.close();
     }
-    if (createHash("sha256").update(bytes).digest("hex") !== row.sha256) throw unavailable();
-    return {
-      bytes,
-      metadata: {
-        contentType: row.mediaType,
-        etag: `"sha256-${row.sha256}"`,
-        modifiedAt: row.createdAt.toISOString(),
-        sizeBytes: row.sizeBytes,
-        truncated: false,
-      },
-    };
   }
   #path(id: string): string {
     return join(this.#directory, "originals", AttachmentIdSchema.parse(id));

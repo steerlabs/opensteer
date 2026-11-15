@@ -1,175 +1,164 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { constants } from "node:fs";
-import {
-  mkdir,
-  open,
-  realpath,
-  readdir,
-  rename,
-  stat,
-  unlink,
-  type FileHandle,
-} from "node:fs/promises";
-import { homedir } from "node:os";
+import { mkdir, open, readdir, rename, stat, unlink } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import sharp, { type Metadata } from "sharp";
+import sharp from "sharp";
 import { z } from "zod";
-import { OpensteerError, type UserId } from "@opensteer/core";
-import type { AssetUrl, AssetUrlsInput } from "@opensteer/protocol";
-import { isNetworkPath } from "@opensteer/shared/markdownImages";
-import { noFollowFlag } from "@opensteer/shared/privateFiles";
+import { UserIdSchema, ThreadIdSchema, type DeploymentId } from "@opensteer/core";
+import {
+  FileResourceSchema,
+  type AssetUrl,
+  type AssetVariant,
+  type TranscriptAssetUrlsInput,
+  transcriptFileContentMaxBytes,
+} from "@opensteer/protocol";
+import { noFollowFlag, readBounded } from "@opensteer/shared/privateFiles";
 import type { FastifyInstance } from "fastify";
+import {
+  rpcSuccess,
+  TranscriptAssetUrlsSchema,
+  type HostApiServerContext,
+} from "@opensteer/protocol";
+import { requireSession } from "../integrations/integration-rpc-context.js";
+import {
+  TranscriptFileAccess,
+  type FileActor,
+  type FileContext,
+  type ResolvedTranscriptFile,
+} from "../threads/transcript-file-access.js";
+import { fileUnavailable } from "../threads/rooted-file-reader.js";
 
-const types = {
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".webp": "image/webp",
-  ".gif": "image/gif",
-  ".avif": "image/avif",
-  ".svg": "image/svg+xml",
-} as const;
 const Claims = z.strictObject({
-  v: z.literal(1),
-  path: z.string().max(4096),
-  dev: z.number(),
-  ino: z.number(),
-  size: z.number().nonnegative(),
-  mtimeMs: z.number(),
+  v: z.literal(2),
+  deploymentId: z.string().min(1),
+  sessionId: z.string().min(1).max(512),
+  userId: UserIdSchema,
+  threadId: ThreadIdSchema.nullable(),
+  resource: FileResourceSchema,
   variant: z.enum(["preview", "original"]),
   exp: z.number().int(),
 });
 type Claims = z.infer<typeof Claims>;
-const bucket = 4 * 60 * 60 * 1000;
-const within = (file: string, root: string) => file === root || file.startsWith(root + path.sep);
-const revision = (s: Pick<Claims, "dev" | "ino" | "size" | "mtimeMs">) =>
-  `${s.dev}-${s.ino}-${s.size}-${s.mtimeMs}`;
-const mediaType = (file: string) => types[path.extname(file).toLowerCase() as keyof typeof types];
-
+const bucket = 5 * 60 * 1000;
+const previewMaxBytes = 512 * 1024;
+const unavailable = (): AssetUrl => ({ status: "unavailable", reason: "missing" });
+const rasterTypes: Readonly<Record<string, string>> = {
+  png: "image/png",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+  avif: "image/avif",
+  svg: "image/svg+xml",
+};
 export class AssetService {
   readonly #key: Buffer;
-  readonly #pending = new Map<string, Promise<string>>();
+  readonly #pending = new Map<string, Promise<Buffer>>();
   #active = 0;
   readonly #waiting: (() => void)[] = [];
   readonly options: {
     authSecret: string;
     dataDirectory: string;
-    runnerDataDirectory: string;
-    agentHome: () => Promise<string>;
-    owns: (threadId: AssetUrlsInput["threadId"], ownerId: UserId) => Promise<boolean>;
-    homeDirectory?: string;
+    deploymentId: DeploymentId;
+    access: TranscriptFileAccess;
+    authorizeMedia: (input: FileContext & { sessionId: string }) => Promise<boolean>;
     now?: () => number;
   };
   constructor(options: AssetService["options"]) {
     this.options = options;
     this.#key = createHmac("sha256", options.authSecret)
-      .update("opensteer-local-media-v1")
+      .update("opensteer-local-media-v2")
       .digest();
   }
   #now() {
     return (this.options.now ?? Date.now)();
   }
-  async urls(input: AssetUrlsInput, ownerId: UserId) {
-    if (!(await this.options.owns(input.threadId, ownerId)))
-      throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-    const assets: AssetUrl[] = await Promise.all(
-      input.assets.map((item) => this.#mint(item.path, item.variant)),
-    );
-    return { assets };
-  }
-  async #resolve(source: string): Promise<string | null> {
-    if (isNetworkPath(source)) return null;
-    if (/^file:/iu.test(source)) {
-      const url = new URL(source);
-      if (url.hostname && url.hostname !== "localhost") return null;
-      source = fileURLToPath(url);
-      if (isNetworkPath(source)) return null;
-    } else if (/^[a-z][a-z\d+.-]*:/iu.test(source) && !/^[a-z]:[\\/]/iu.test(source)) return null;
-    const home = this.options.homeDirectory ?? homedir();
-    if (source.startsWith("~/")) source = path.join(home, source.slice(2));
-    const resolved = path.resolve(await this.options.agentHome(), source);
-    return isNetworkPath(resolved) ? null : resolved;
-  }
-  async #denied(file: string) {
-    const canonical = async (root: string) => realpath(root).catch(() => path.resolve(root));
-    const host = await canonical(this.options.dataDirectory);
-    const runner = await canonical(this.options.runnerDataDirectory);
-    const images = path.join(runner, "images");
-    const validImage =
-      path.dirname(file) === images &&
-      /^[a-f0-9]{64}\.(png|jpg|jpeg|webp|gif|avif|svg)$/u.test(path.basename(file));
-    if (within(file, runner)) return !validImage;
-    const home = this.options.homeDirectory ?? homedir();
-    const roots = [
-      host,
-      ...["postgres", "runtime", "logs"].map((name) => path.join(path.dirname(host), name)),
-      path.join(path.dirname(host), "deployment.v1.json"),
-      "/dev",
-      "/proc",
-      path.join(home, ".opensteer"),
-      path.join(home, ".config/opensteer"),
-      path.join(home, "Library/Application Support/Opensteer"),
-      path.join(home, "Library/Application Support/Opensteer Beta"),
-    ];
-    for (const root of roots) if (within(file, path.resolve(root))) return true;
-    return false;
-  }
-  async #mint(source: string, variant: Claims["variant"]): Promise<AssetUrl> {
+  async #slot<T>(run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (this.#active >= 2) await new Promise<void>((resolve) => this.#waiting.push(resolve));
+    else this.#active++;
     try {
-      const resolved = await this.#resolve(source);
-      if (!resolved) return { status: "unavailable", reason: "denied" };
-      if (await this.#denied(resolved)) return { status: "unavailable", reason: "denied" };
-      const file = await realpath(resolved);
-      if (await this.#denied(file)) return { status: "unavailable", reason: "denied" };
-      const type = mediaType(file);
-      if (!type) return { status: "unavailable", reason: "unsupported" };
-      const handle = await open(file, constants.O_RDONLY | noFollowFlag() | constants.O_NONBLOCK);
-      try {
-        const s = await handle.stat();
-        if (!s.isFile()) return { status: "unavailable", reason: "unsupported" };
-        const metadata = await this.#metadata(file);
-        const preview = variant === "preview" && this.#resize(type, s.size, metadata);
-        const width = metadata.autoOrient?.width ?? metadata.width ?? null;
-        const height = metadata.autoOrient?.height ?? metadata.height ?? null;
-        const scale = preview && width && height ? Math.min(1, 1280 / Math.max(width, height)) : 1;
-        const exp = Math.floor(this.#now() / bucket) * bucket + 2 * bucket;
-        const claims: Claims = {
-          v: 1,
-          path: file,
-          dev: s.dev,
-          ino: s.ino,
-          size: s.size,
-          mtimeMs: s.mtimeMs,
-          // A preview that would equal the original is the original's URL, so
-          // both share one cache entry and serving never inspects the image.
-          variant: preview ? "preview" : "original",
-          exp,
-        };
-        const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
-        const token = `${payload}.${this.#sign(payload)}`;
-        return {
-          status: "ok",
-          url: `/media/${token}/${encodeURIComponent(path.basename(file))}`,
-          expiresAt: new Date(exp).toISOString(),
-          revision: revision(claims),
-          mediaType: preview ? "image/webp" : type,
-          width: width ? Math.round(width * scale) : null,
-          height: height ? Math.round(height * scale) : null,
-        };
-      } finally {
-        await handle.close();
-      }
-    } catch (error) {
-      return {
-        status: "unavailable",
-        reason:
-          (error as NodeJS.ErrnoException).code === "ENOENT"
-            ? "missing"
-            : ["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")
-              ? "denied"
-              : "unsupported",
+      signal?.throwIfAborted();
+      return await run();
+    } finally {
+      const next = this.#waiting.shift();
+      if (next) next();
+      else this.#active--;
+    }
+  }
+  async urls(input: TranscriptAssetUrlsInput, actor: FileActor, signal?: AbortSignal) {
+    const context = { userId: actor.userId, threadId: input.threadId };
+    await this.options.access.admit(context);
+    if (!(await this.options.authorizeMedia({ ...context, sessionId: actor.sessionId })))
+      throw fileUnavailable();
+    const sources = await Promise.all(
+      input.assets.map(async (item) => {
+        try {
+          return await this.options.access.normalizeImageSource(item.source);
+        } catch {
+          return null;
+        }
+      }),
+    );
+    const valid = sources.flatMap((s) => (s ? [s] : []));
+    const resolved = await this.options.access.resolveMany(valid, context, signal);
+    let index = 0;
+    const ordered = sources.map((s) => (s ? (resolved[index++] ?? null) : null));
+    return {
+      assets: await Promise.all(
+        ordered.map((f, i) =>
+          f
+            ? this.urlForResource(f, input.assets[i]!.variant, actor, input.threadId, signal)
+            : unavailable(),
+        ),
+      ),
+    };
+  }
+  async urlForResource(
+    file: ResolvedTranscriptFile,
+    variant: AssetVariant,
+    actor: FileActor,
+    threadId: FileContext["threadId"],
+    signal?: AbortSignal,
+  ): Promise<AssetUrl> {
+    const context = { userId: actor.userId, threadId };
+    try {
+      if (!(await this.options.authorizeMedia({ ...context, sessionId: actor.sessionId })))
+        return unavailable();
+      const metadata = await this.#slot(async () => {
+        const result = await this.options.access.read(
+          file.resource,
+          context,
+          { maxBytes: transcriptFileContentMaxBytes, full: true },
+          signal,
+        );
+        return this.#metadata(result.bytes, result.mediaType, variant);
+      }, signal);
+      if (!metadata) return { status: "unavailable", reason: "unsupported" };
+      const exp = Math.floor(this.#now() / bucket) * bucket + 2 * bucket;
+      const claims: Claims = {
+        v: 2,
+        deploymentId: this.options.deploymentId,
+        sessionId: actor.sessionId,
+        ...context,
+        resource: file.resource,
+        variant,
+        exp,
       };
+      const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
+      const token = `${payload}.${this.#sign(payload)}`;
+      const url = `/media/${token}/${encodeURIComponent(file.name)}`;
+      if (url.length > 8192) return unavailable();
+      return {
+        status: "ok",
+        url,
+        expiresAt: new Date(exp).toISOString(),
+        revision: file.resource.revision,
+        mediaType: variant === "preview" ? "image/webp" : metadata.type,
+        width: metadata.width,
+        height: metadata.height,
+      };
+    } catch {
+      signal?.throwIfAborted();
+      return unavailable();
     }
   }
   #sign(payload: string) {
@@ -180,79 +169,117 @@ export class AssetService {
       if (token.length > 8192) return null;
       const [payload, signature, extra] = token.split(".");
       if (!payload || !signature || extra !== undefined) return null;
-      const expected = Buffer.from(this.#sign(payload));
-      const supplied = Buffer.from(signature);
+      const expected = Buffer.from(this.#sign(payload)),
+        supplied = Buffer.from(signature);
       if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) return null;
       const c = Claims.parse(JSON.parse(Buffer.from(payload, "base64url").toString()));
-      return c.exp > this.#now() && c.exp <= this.#now() + 2 * bucket ? c : null;
+      return c.deploymentId === this.options.deploymentId &&
+        c.exp > this.#now() &&
+        c.exp <= this.#now() + 2 * bucket
+        ? c
+        : null;
     } catch {
       return null;
     }
   }
-  async #metadata(file: string) {
-    return sharp(file, { limitInputPixels: 100_000_000 }).metadata();
+  async #metadata(bytes: Buffer, expectedType: string, variant: AssetVariant) {
+    // SVG originals are downloads. They never enter a decoder or an active preview.
+    if (expectedType === "image/svg+xml")
+      return variant === "original" &&
+        /^(?:\uFEFF)?\s*(?:<\?xml[^>]*>\s*)?<svg[\s>]/iu.test(bytes.subarray(0, 1024).toString())
+        ? { type: "image/svg+xml" as const, width: null, height: null }
+        : null;
+    const m = await sharp(bytes, { limitInputPixels: 40_000_000, pages: 1 }).metadata();
+    const type =
+      m.format === "heif" && m.compression === "av1" ? "image/avif" : rasterTypes[m.format ?? ""];
+    if (
+      !type ||
+      type !== expectedType ||
+      type === "image/svg+xml" ||
+      !m.width ||
+      !m.height ||
+      m.width * m.height > 40_000_000
+    )
+      return null;
+    const width = m.autoOrient.width,
+      height = m.autoOrient.height;
+    const scale = variant === "preview" ? Math.min(1, 1280 / Math.max(width, height)) : 1;
+    return {
+      type: type as "image/png" | "image/jpeg" | "image/webp" | "image/gif" | "image/avif",
+      width: Math.max(1, Math.round(width * scale)),
+      height: Math.max(1, Math.round(height * scale)),
+    };
   }
-  #resize(type: string, size: number, m: Metadata) {
-    return (
-      type !== "image/svg+xml" &&
-      (m.pages ?? 1) <= 1 &&
-      (Math.max(m.width ?? 0, m.height ?? 0) > 1280 || size > 512 * 1024)
-    );
-  }
-  async #preview(c: Claims, handle: FileHandle) {
+  async #preview(c: Claims, bytes: Buffer) {
     const key = createHash("sha256")
-      .update(`${c.path}:${revision(c)}:1280:webp:80:v1`)
+      .update(
+        JSON.stringify([
+          c.deploymentId,
+          c.sessionId,
+          c.userId,
+          c.threadId,
+          c.resource,
+          "webp-1280-v2",
+        ]),
+      )
       .digest("hex");
-    const directory = path.join(this.options.dataDirectory, "media-previews");
-    const target = path.join(directory, `${key}.webp`);
     const pending = this.#pending.get(key);
     if (pending) return pending;
     const job = (async () => {
-      if (
-        await stat(target).then(
-          (s) => s.isFile(),
-          () => false,
-        )
-      )
-        return target;
-      if (this.#active >= 2) await new Promise<void>((resolve) => this.#waiting.push(resolve));
-      else this.#active++;
-      const temporary = `${target}.${randomUUID()}.tmp`;
-      try {
-        await mkdir(directory, { recursive: true, mode: 0o700 });
-        const transform = sharp({ limitInputPixels: 100_000_000 })
+      const directory = path.join(this.options.dataDirectory, "media-previews");
+      const target = path.join(directory, `${key}.webp`);
+      const cached = await open(
+        target,
+        constants.O_RDONLY | constants.O_NONBLOCK | noFollowFlag(),
+      ).catch(() => null);
+      if (cached) {
+        try {
+          const info = await cached.stat();
+          if (info.isFile() && info.size <= previewMaxBytes)
+            return await readBounded(cached, previewMaxBytes, fileUnavailable);
+        } finally {
+          await cached.close();
+        }
+      }
+      let output = Buffer.alloc(0);
+      for (const quality of [80, 60, 40, 20, 10, 1]) {
+        output = await sharp(bytes, { limitInputPixels: 40_000_000, pages: 1 })
           .rotate()
           .resize({ width: 1280, height: 1280, fit: "inside", withoutEnlargement: true })
-          .webp({ quality: 80 });
-        const { pipeline } = await import("node:stream/promises");
-        const output = transform.toFile(temporary);
-        await Promise.all([
-          pipeline(handle.createReadStream({ autoClose: false, start: 0 }), transform),
-          output,
-        ]);
-        await rename(temporary, target);
-        const entries = await Promise.all(
-          (await readdir(directory))
-            .filter((n) => n.endsWith(".webp"))
-            .map(async (name) => ({
-              name,
-              s: await stat(path.join(directory, name)).catch(() => null),
-            })),
-        );
-        let total = entries.reduce((n, e) => n + (e.s?.size ?? 0), 0);
-        for (const entry of entries.sort((a, b) => (a.s?.mtimeMs ?? 0) - (b.s?.mtimeMs ?? 0))) {
-          if (total <= 256 * 1024 * 1024) break;
-          if (entry.name === `${key}.webp`) continue;
-          await unlink(path.join(directory, entry.name)).catch(() => undefined);
-          total -= entry.s?.size ?? 0;
+          .webp({ quality })
+          .toBuffer();
+        if (output.length <= previewMaxBytes) break;
+      }
+      if (output.length > previewMaxBytes) throw fileUnavailable();
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      const temporary = `${target}.${randomUUID()}.tmp`;
+      try {
+        const file = await open(temporary, "wx", 0o600);
+        try {
+          await file.writeFile(output);
+        } finally {
+          await file.close();
         }
-        return target;
+        await rename(temporary, target);
       } finally {
         await unlink(temporary).catch(() => undefined);
-        const next = this.#waiting.shift();
-        if (next) next();
-        else this.#active--;
       }
+      const entries = await Promise.all(
+        (await readdir(directory))
+          .filter((n) => /^[a-f0-9]{64}\.webp$/u.test(n))
+          .map(async (name) => ({
+            name,
+            s: await stat(path.join(directory, name)).catch(() => null),
+          })),
+      );
+      let total = entries.reduce((n, e) => n + (e.s?.size ?? 0), 0);
+      for (const entry of entries.sort((a, b) => (a.s?.mtimeMs ?? 0) - (b.s?.mtimeMs ?? 0))) {
+        if (total <= 256 * 1024 * 1024) break;
+        if (entry.name === `${key}.webp`) continue;
+        await unlink(path.join(directory, entry.name)).catch(() => undefined);
+        total -= entry.s?.size ?? 0;
+      }
+      return output;
     })();
     this.#pending.set(key, job);
     try {
@@ -266,41 +293,60 @@ export class AssetService {
       "/media/:token/:name",
       { logLevel: "silent" },
       async (request, reply) => {
-        let handle: FileHandle | undefined;
+        const abort = new AbortController();
+        const disconnected = () => abort.abort();
+        request.raw.once("aborted", disconnected);
         try {
           const c = this.#verify(request.params.token);
-          if (!c || request.params.name !== path.basename(c.path) || (await this.#denied(c.path)))
-            return reply.code(404).send();
-          handle = await open(c.path, constants.O_RDONLY | noFollowFlag() | constants.O_NONBLOCK);
-          const s = await handle.stat();
-          const type = mediaType(c.path);
-          if (!s.isFile() || !type || revision(s) !== revision(c)) return reply.code(404).send();
-          const preview = c.variant === "preview";
-          if (preview) {
-            const cached = await this.#preview(c, handle);
-            await handle.close();
-            handle = undefined;
-            handle = await open(cached, constants.O_RDONLY | noFollowFlag() | constants.O_NONBLOCK);
-          }
-          const length = (await handle.stat()).size;
+          if (!c || !(await this.options.authorizeMedia(c))) return reply.code(404).send();
+          const result = await this.#slot(async () => {
+            if (!(await this.options.authorizeMedia(c))) throw fileUnavailable();
+            const file = await this.options.access.read(
+              c.resource,
+              c,
+              { maxBytes: transcriptFileContentMaxBytes, full: true },
+              abort.signal,
+            );
+            if (request.params.name !== file.name) throw fileUnavailable();
+            if (!(await this.#metadata(file.bytes, file.mediaType, c.variant)))
+              throw fileUnavailable();
+            const bytes = c.variant === "preview" ? await this.#preview(c, file.bytes) : file.bytes;
+            return { bytes, type: c.variant === "preview" ? "image/webp" : file.mediaType };
+          }, abort.signal);
           reply.headers({
-            "content-type": preview ? "image/webp" : type,
-            "content-length": length,
+            "content-type": result.type,
+            "content-length": result.bytes.length,
             "x-content-type-options": "nosniff",
             "cache-control": `private, max-age=${Math.max(0, Math.floor((c.exp - this.#now()) / 1000))}, immutable`,
-            etag: `"${revision(c)}-${c.variant}"`,
+            etag: `"${c.resource.revision}-${c.variant}"`,
             "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
             "cross-origin-resource-policy": "cross-origin",
+            ...(result.type === "image/svg+xml" ? { "content-disposition": "attachment" } : {}),
           });
-          const stream = handle.createReadStream({ start: 0 });
-          handle = undefined;
-          return reply.send(stream);
+          return reply.send(result.bytes);
         } catch {
           return reply.code(404).send();
         } finally {
-          await handle?.close();
+          request.raw.removeListener("aborted", disconnected);
         }
       },
     );
   }
+}
+export function createAssetUrlHandlers(assets: AssetService | undefined) {
+  return {
+    "asset.urls": async (input: TranscriptAssetUrlsInput, context: HostApiServerContext) => {
+      const session = requireSession(context);
+      if (!assets) throw fileUnavailable();
+      return rpcSuccess(
+        TranscriptAssetUrlsSchema.parse(
+          await assets.urls(
+            input,
+            { userId: session.user.id, sessionId: session.id },
+            context.signal,
+          ),
+        ),
+      );
+    },
+  };
 }
