@@ -25,7 +25,7 @@ describe("container entrypoint", () => {
       setupTokenDigest: "a".repeat(64),
       databaseUrl: "postgresql://team:secret@db.example.com:5432/team?sslmode=verify-full",
       databaseCa: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
-    }) as { stringData: Record<string, string> };
+    }) as unknown as { stringData: Record<string, string> };
     for (const [name, value] of Object.entries(secret.stringData))
       await writeFile(join(directory, name), value, { mode: 0o600 });
     const deployment = renderTeam({
