@@ -19,7 +19,9 @@ import {
 } from "../attachments/personal-team-ports.js";
 import { TaskAdmissionService } from "../threads/task-admission-service.js";
 import {
+  findPersonalSettings,
   personalSettings,
+  reportAgentHomeSettings,
   reportAgentHomeSkills,
   ensureDeployment,
   personalDeploymentOwner,
@@ -1692,6 +1694,20 @@ export async function createHostRuntime(
           );
           if (changed) notices.notify({ runnerId: identity.runnerId });
         },
+        onSettingsReport: async (identity, report) => {
+          if (!identity.environmentIds.includes(report.environmentId)) return;
+          const owner = await reportAgentHomeSettings(
+            database,
+            { ...identity.fence, environmentId: report.environmentId },
+            report,
+          );
+          if (owner) realtime.sendToUsers([owner], { type: "host.plugins-changed" });
+        },
+        agentHome: async (identity) => {
+          if (!identity.capabilities.includes("agent-home-settings-v1")) return null;
+          const settings = await findPersonalSettings(database);
+          return settings?.agentHome.computerId === identity.runnerId ? settings.agentHome : null;
+        },
         onLive: (_identity, live) => {
           const frame = liveRuns.apply(live.progress);
           if (frame) realtime.publishLive(frame);
@@ -2370,6 +2386,7 @@ export async function createHostRuntime(
         (id) => administrationCatalogs?.schedule(id),
       ),
       (ownerId) => integrationStore.listConnections(ownerId),
+      execution.canExecute,
     );
     const agentTools = new OpensteerMcpService({
       teamsAvailable: async () =>

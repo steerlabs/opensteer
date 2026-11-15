@@ -2270,10 +2270,10 @@ function executeCommand(
       assignment: null,
       teamTurnContext: null,
       agentTools: {
-        tools: ["thread_read", "integration_call", "computer"],
+        tools: ["opensteer_task_read", "integration_call", "computer_use"],
         toolsRevision: "test-tools-v1",
         instructions: "Host Opensteer instructions",
-        skills: ["opensteer:threads"],
+        skills: ["opensteer:tasks"],
         token: "agent-tools-token",
         url: "https://host.example.test/internal/v1/mcp",
       },
@@ -2434,7 +2434,7 @@ function triggerCommand(environmentId: ReturnType<typeof createId<"environment">
       },
       occurrenceId,
       program: {
-        toolContractVersion: 3,
+        toolContractVersion: 4,
         language: "javascript",
         source: "export default async () => null",
       },

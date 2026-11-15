@@ -128,6 +128,8 @@ export type User = z.infer<typeof UserSchema>;
 // The wire contract stays limited to the capabilities every Runner actually advertises.
 export const RunnerCapabilitySchema = z.enum([
   "background-text-v1",
+  // Reports settings.json in the Agent home its welcome names, before it attaches.
+  "agent-home-settings-v1",
   "settings-plugin-policy-v1",
   "assignments-v1",
   // Runs a successor attempt of a Run from the Host's next ordinal, and stops
@@ -141,7 +143,7 @@ export const RunnerCapabilitySchema = z.enum([
   "browser-profile-create-v1",
   "environment-list-v1",
   // Can parse and execute v3 Trigger and Watch programs; independent of tool discovery.
-  "trigger-program-v3",
+  "trigger-program-v4",
   "native-place-input-v1",
   "execution-plane-v2",
   "filesystem",

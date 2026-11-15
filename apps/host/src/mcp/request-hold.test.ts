@@ -49,7 +49,7 @@ function fixture() {
       selectedAuth: "oauth",
       authNote: "Keep this",
     },
-    tool: "integration_propose",
+    tool: "custom_integration_request",
     admittedAt: Date.now(),
     steersAtAdmission: 0,
     limitMs: 45_000,
@@ -85,7 +85,7 @@ describe("Request hold", () => {
         reason: "Read project",
       },
     } as Request;
-    await expect(f.hold.wait({ ...f.input, tool: "device_access_request" })).rejects.toThrow();
+    await expect(f.hold.wait({ ...f.input, tool: "computer_access_request" })).rejects.toThrow();
     expect(f.stopHeldRun).toHaveBeenCalledWith(f.input.caller.claims, "device-access");
     expect(f.markToolDelivered).not.toHaveBeenCalled();
   });

@@ -27,7 +27,7 @@ export const passwordSignInProbeTimeoutMs = 5_000;
 /** Concurrent pending login authorizations one browser host accepts. */
 export const maxPasswordSignInsPerHost = 4;
 /**
- * The longest one `use_saved_login` or `use_card` call waits for its operation before it
+ * The longest one `saved_login_request` or `card_request` call waits for its operation before it
  * answers with what is known, kept under the engines' 60-second tool limit.
  */
 export const passwordSignInAgentWaitMs = 45_000;
@@ -86,7 +86,7 @@ export const LoginRefSchema = z
     /^lgn_[0-9a-f]{32}$/u,
     "Saved card references can only be used with fillCard in a Browser Session.",
   );
-/** Why `use_saved_login` has no login to hand over. */
+/** Why `saved_login_request` has no login to hand over. */
 export const SavedLoginUnavailableReasonSchema = z.enum([
   "no-saved-login",
   "passwords-off",
@@ -110,7 +110,7 @@ export const SavedLoginUnavailableReasonSchema = z.enum([
 ]);
 export type SavedLoginUnavailableReason = z.infer<typeof SavedLoginUnavailableReasonSchema>;
 
-/** What an agent learns from `use_saved_login`; it never carries a saved value. */
+/** What an agent learns from `saved_login_request`; it never carries a saved value. */
 export const SavedLoginResultSchema = z.discriminatedUnion("status", [
   z.object({
     status: z.literal("ready"),

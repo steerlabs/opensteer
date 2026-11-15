@@ -220,7 +220,7 @@ export async function recoverLostRunTransaction(
         ),
       ...(openTools.length > 10
         ? [
-            `- and ${openTools.length - 10} more commands; read them with thread_read view activity.`,
+            `- and ${openTools.length - 10} more commands; read them with opensteer_task_read view activity.`,
           ]
         : []),
       ...nodes
@@ -251,7 +251,7 @@ export async function recoverLostRunTransaction(
     }
     if (omittedFacts)
       summary +=
-        "- Further interrupted activity details were omitted; read them with thread_read view activity. Live approvals and questions did not complete; ask again if needed.\n";
+        "- Further interrupted activity details were omitted; read them with opensteer_task_read view activity. Live approvals and questions did not complete; ask again if needed.\n";
     const content: ContentPart[] = [
       {
         type: "text",
@@ -294,7 +294,7 @@ export async function recoverLostRunTransaction(
       if (omitted.length)
         content.push({
           type: "text",
-          text: `Additional quoted context: ${omitted.join(", ")}. Read them with thread_read before continuing.`,
+          text: `Additional quoted context: ${omitted.join(", ")}. Read them with opensteer_task_read before continuing.`,
         });
     }
     const parsedContent = MessageContentSchema.parse(content);

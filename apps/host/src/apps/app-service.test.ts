@@ -72,7 +72,7 @@ function fixture(
 }
 
 it.each(["timeout", "bytes"] as const)(
-  "cancels an endless app_fetch upstream on %s",
+  "cancels an endless opensteer_app_call upstream on %s",
   async (mode) => {
     const received = Promise.withResolvers<void>();
     const closed = Promise.withResolvers<void>();
@@ -96,11 +96,11 @@ it.each(["timeout", "bytes"] as const)(
       const deadline = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeout.signal);
       const result = service.fetch(scope, { appId: app.id, method: "GET", path: "/events" });
       await withTimeout(received.promise, 2_000, {
-        timeoutError: () => new Error("app_fetch never reached its server"),
+        timeoutError: () => new Error("opensteer_app_call never reached its server"),
       });
       if (mode === "timeout") timeout.abort(new Error("App fetch deadline"));
       const response = await withTimeout(result, 2_000, {
-        timeoutError: () => new Error("app_fetch did not stop at its bound"),
+        timeoutError: () => new Error("opensteer_app_call did not stop at its bound"),
       });
       expect(deadline).toHaveBeenCalledWith(30_000);
       deadline.mockRestore();
@@ -112,7 +112,7 @@ it.each(["timeout", "bytes"] as const)(
         });
       else expect(response.status).toBe(503);
       await withTimeout(closed.promise, 2_000, {
-        timeoutError: () => new Error("Bounded app_fetch left its upstream socket open"),
+        timeoutError: () => new Error("Bounded opensteer_app_call left its upstream socket open"),
       });
     } finally {
       await closeHttpServerNow(server);
@@ -160,7 +160,7 @@ it.each([false, true])(
   },
 );
 
-it("returns server HTML unchanged to app_fetch while preparing viewer frames", async () => {
+it("returns server HTML unchanged to opensteer_app_call while preparing viewer frames", async () => {
   const html =
     "<!DOCTYPE HTML>\n<html><head><title>Exact</title></head><body>  original &amp; text\n</body></html>";
   const server = createServer((_req, res) => {

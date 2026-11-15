@@ -227,11 +227,11 @@ const endings: readonly (readonly [string, Request])[] = [
 const site = "https://github.com";
 /** What the two sign-in tools can return, as the transcript shows each call. */
 const autonomous: readonly (
-  | { readonly tool: "use_saved_login"; readonly result: SavedLoginResult }
-  | { readonly tool: "copy_chrome_cookies"; readonly result: ChromeCookiesResult }
+  | { readonly tool: "saved_login_request"; readonly result: SavedLoginResult }
+  | { readonly tool: "chrome_cookies_request"; readonly result: ChromeCookiesResult }
 )[] = [
   {
-    tool: "use_saved_login",
+    tool: "saved_login_request",
     result: {
       status: "ready",
       site,
@@ -240,21 +240,27 @@ const autonomous: readonly (
     },
   },
   {
-    tool: "use_saved_login",
+    tool: "saved_login_request",
     result: { status: "pending", site, requestId: createId("request"), replayed: false },
   },
-  { tool: "use_saved_login", result: { status: "unavailable", site, reason: "no-saved-login" } },
-  { tool: "use_saved_login", result: { status: "declined", site, requestId: createId("request") } },
   {
-    tool: "copy_chrome_cookies",
+    tool: "saved_login_request",
+    result: { status: "unavailable", site, reason: "no-saved-login" },
+  },
+  {
+    tool: "saved_login_request",
+    result: { status: "declined", site, requestId: createId("request") },
+  },
+  {
+    tool: "chrome_cookies_request",
     result: { status: "copied", site, sourceName: "Work", profileName: null },
   },
   {
-    tool: "copy_chrome_cookies",
+    tool: "chrome_cookies_request",
     result: { status: "pending", site, requestId: createId("request"), replayed: false },
   },
   {
-    tool: "copy_chrome_cookies",
+    tool: "chrome_cookies_request",
     result: { status: "unavailable", site, reason: "chrome-signed-out" },
   },
 ];
@@ -336,7 +342,7 @@ function SuggestionView() {
     {
       ...signInStep(
         {
-          tool: "use_saved_login",
+          tool: "saved_login_request",
           result: {
             status: "unavailable",
             site: "https://brex.com",

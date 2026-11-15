@@ -2882,7 +2882,7 @@ export class IntegrationPlatformService {
       )
         throw new ComputerUseError(
           "failed",
-          `${connection.runnerName} allows seeing only. Ask for read-write access to act: call integration_request {kind: "computer-app", runnerId, access, reason} with access "read-write"; do not retry this call until it is fulfilled.`,
+          `${connection.runnerName} allows seeing only. Ask for read-write access to act: call app_access_request {computerId, access, reason} with access "read-write"; do not retry this call until it is fulfilled.`,
         );
       throw refused(
         "forbidden",
@@ -3206,7 +3206,10 @@ export class IntegrationPlatformService {
   async runComputerCode(caller: ToolCaller, code: string, signal: AbortSignal) {
     const run = caller.run;
     if (!run || !(await this.computerToolEnabled(run)))
-      throw refused("conflict", "Update this task's Runner to use the computer tool.");
+      throw refused(
+        "conflict",
+        "Update Opensteer on the computer this task runs on to use computer_use.",
+      );
     const key = `${run.runId}:${run.bindingGeneration}`;
     for (const [old, entry] of this.#replCallers)
       if (entry.run?.runId === run.runId && old !== key) this.#replCallers.delete(old);

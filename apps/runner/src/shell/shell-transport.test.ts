@@ -12,10 +12,10 @@ it.each(["device-access-off", "device-offline"] as const)(
     }).error;
     const text = shellConnectRefusalMessage(error);
     expect(text).toContain(code);
-    expect(text).toContain(machineId);
+    expect(text).toContain(`computerId=${machineId}`);
     expect(text).toContain("files");
     expect(text).toContain(
-      code === "device-access-off" ? "device_access_request" : "Do not request access",
+      code === "device-access-off" ? "computer_access_request" : "Do not request access",
     );
   },
 );

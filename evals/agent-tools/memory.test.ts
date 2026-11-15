@@ -2,12 +2,11 @@ import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { TriggerSchema, TriggerRevisionSchema } from "../../packages/triggers/src/models.js";
 import {
   ThreadDetailSchema,
   ThreadUpdateOutputSchema,
 } from "../../packages/agent-tools/src/tools/outputs.js";
-import { toolsFor } from "@opensteer/agent-tools";
+import { agentTools, toolsFor } from "@opensteer/agent-tools";
 import { CaseSchema, inputForCaseTurn, parseCases } from "./cases.js";
 import { grade, gradeWorkspaceFiles, gradeToolBoundary } from "./grader.js";
 
@@ -102,7 +101,7 @@ it("uses production worker wakes and requires a brief outcome for task wakes", a
         `${label} pass due (${timestamp}). Load opensteer:memory and follow its ${label === "Light" ? "light-pass" : "nightly"} reference.`,
       );
       expect(activity, `${c.id} carries the Host's list`).toMatch(
-        /^(?:No new conversations since your last pass at |New since your last pass at )/u,
+        /^(?:No new tasks since your last pass at |New since your last pass at )/u,
       );
       wakes += 1;
     }
@@ -122,10 +121,12 @@ it("requires quiet background work and one valid notification for important news
   expect(grade(quiet, [mail], "", "").every((c) => c.pass)).toBe(true);
   expect(grade(quiet, [mail], "", "Done.").every((c) => c.pass)).toBe(true);
   expect(
-    grade(quiet, [mail, { tool: "thread_send", args: {}, valid: false }], "").every((c) => c.pass),
+    grade(quiet, [mail, { tool: "opensteer_task_send", args: {}, valid: false }], "").every(
+      (c) => c.pass,
+    ),
   ).toBe(false);
   const important = cases.find((c) => c.id === "memory-important-item")!.expect;
-  const message = { tool: "person_message", args: { message: "Important news" }, valid: true };
+  const message = { tool: "person_notify", args: { message: "Important news" }, valid: true };
   expect(grade(important, [mail, message], "").every((c) => c.pass)).toBe(true);
   expect(grade(important, [mail, { ...message, valid: false }], "").every((c) => c.pass)).toBe(
     false,
@@ -149,20 +150,24 @@ it("offers every expected call and uses production-shaped control fixtures", asy
     (mock as { $byArgs: { result: Record<string, unknown> }[] }).$byArgs.map(
       ({ result }) => result,
     );
-  for (const c of cases.filter(({ mocks }) => mocks.trigger_read)) {
-    for (const result of results(c.mocks.trigger_read)) {
-      if (result.revision) expect(() => TriggerRevisionSchema.parse(result.revision)).not.toThrow();
-      const triggers = (result.triggers as unknown[] | undefined) ?? [result.trigger];
-      for (const trigger of triggers)
-        if (TriggerSchema.parse(trigger).systemRole !== null)
-          expect(TriggerSchema.parse(trigger).systemRole).toMatch(/^memory-/u);
-    }
-    for (const result of results(c.mocks.trigger_write))
-      if (!result.$error) expect(() => TriggerSchema.parse(result)).not.toThrow();
-    if (c.mocks.thread_update) {
-      for (const result of results(c.mocks.thread_read))
-        expect(() => ThreadDetailSchema.parse(result.thread)).not.toThrow();
-      for (const result of results(c.mocks.thread_update))
+  const output = (name: string) => agentTools.find((tool) => tool.name === name)!.output;
+  for (const c of cases.filter(({ mocks }) => mocks.opensteer_automation_list)) {
+    for (const name of ["opensteer_automation_list", "opensteer_automation_read"])
+      for (const result of results(c.mocks[name])) {
+        const parsed = output(name).parse(result) as {
+          automation?: { systemRole: string | null };
+          automations?: { systemRole: string | null }[];
+        };
+        for (const automation of parsed.automations ?? [parsed.automation!])
+          if (automation.systemRole !== null) expect(automation.systemRole).toMatch(/^memory-/u);
+      }
+    for (const result of results(c.mocks.opensteer_automation_control))
+      if (!result.$error)
+        expect(() => output("opensteer_automation_control").parse(result)).not.toThrow();
+    if (c.mocks.opensteer_task_update) {
+      for (const result of results(c.mocks.opensteer_task_read))
+        expect(() => ThreadDetailSchema.parse(result.task)).not.toThrow();
+      for (const result of results(c.mocks.opensteer_task_update))
         expect(() => ThreadUpdateOutputSchema.parse(result)).not.toThrow();
     }
   }
@@ -177,7 +182,7 @@ it("rejects delete-first traces and requires successful Done then stopped reads 
       await mkdir(join(root, path, ".."), { recursive: true });
       await writeFile(join(root, path), content);
     }
-    const pause = c.expect.calls.find((call) => call.tool === "trigger_write")!;
+    const pause = c.expect.calls.find((call) => call.tool === "opensteer_automation_control")!;
     expect((await gradeToolBoundary(c.expect, calls, pause, root)).every((c) => c.pass)).toBe(
       false,
     );
@@ -354,10 +359,7 @@ it("accepts source-only tuning and rejects program edits or resuming a paused li
   expect(
     grade(
       c.expect,
-      [
-        call,
-        { tool: "trigger_write", args: { action: "set_status", status: "active" }, valid: true },
-      ],
+      [call, { tool: "opensteer_automation_control", args: { action: "resume" }, valid: true }],
       "",
     ).every((check) => check.pass),
   ).toBe(false);

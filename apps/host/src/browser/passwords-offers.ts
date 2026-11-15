@@ -11,7 +11,7 @@ const offerLifetimeMs = 15 * 60_000;
 const sweepIntervalMs = 3_000;
 const maxOffers = 32;
 
-/** What `use_saved_login` told the agent Passwords lacks, which Passwords may gain without the agent. */
+/** What `saved_login_request` told the agent Passwords lacks, which Passwords may gain without the agent. */
 export interface PasswordsOffer {
   readonly id: string;
   readonly ownerId: UserId;
@@ -37,7 +37,7 @@ function offerChange(result: SavedLoginResult): "offer" | "end" | "keep" {
 /** What a woken agent reads: a fact about Passwords, with the decision left to it. */
 export function passwordsLoginSavedMessage(offer: PasswordsOffer): string {
   const session = offer.tabId === null ? "" : ` for browser tab ${offer.tabId}`;
-  return `Opensteer Passwords now has a login for ${offer.site}, saved after your last use_saved_login, so that result is out of date. If the task still needs ${offer.site}, call use_saved_login again${session}.`;
+  return `Opensteer Passwords now has a login for ${offer.site}, saved after your last saved_login_request, so that result is out of date. If the task still needs ${offer.site}, call saved_login_request again${session}.`;
 }
 
 /**
@@ -66,7 +66,7 @@ export class PasswordsOffers {
     this.#wake = options.wake;
   }
 
-  /** Follows what one `use_saved_login` came to. */
+  /** Follows what one `saved_login_request` came to. */
   note(
     input: Pick<PasswordsOffer, "ownerId" | "runId" | "tabId" | "site" | "threadId">,
     result: SavedLoginResult,

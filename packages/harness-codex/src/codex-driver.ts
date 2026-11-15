@@ -172,8 +172,9 @@ const codexIsolatedPermissionProfile = Object.freeze({
 });
 
 /**
- * The output budget Codex gives `integration_call` and `integration_describe`,
- * in its own approximate tokens (UTF-8 bytes / 4), before its 20% allowance.
+ * The output budget Codex gives `integration_call`, `integration_describe` and
+ * `computer_use`, in its own approximate tokens (UTF-8 bytes / 4), before its
+ * 20% allowance.
  *
  * A computer-use observation is one text block of up to about 33,000 bytes
  * (a 32,000-byte tree plus its header and notes) and one image, which Codex
@@ -4238,7 +4239,7 @@ async function codexThreadRuntimeConfig(
       runtimeConfig[codexMcpConfigPath(name, "omit_tools_from")] = ["code_mode", "deferred"];
     }
   }
-  for (const tool of ["integration_call", "integration_describe", "computer"]) {
+  for (const tool of ["integration_call", "integration_describe", "computer_use"]) {
     runtimeConfig[codexMcpConfigPath("opensteer", `tools.${tool}.output_token_limit`)] =
       codexIntegrationOutputTokenLimit;
   }
@@ -4351,7 +4352,11 @@ async function codexSkillsDisabled(
 }
 
 function codexMcpTools(tools: readonly string[]): ReadonlyMap<string, readonly string[]> {
-  const requestTools = new Set<string>([...requestToolNames, "thread_wait"]);
+  const requestTools = new Set<string>([
+    ...requestToolNames,
+    "opensteer_task_wait",
+    "opensteer_delegation_wait",
+  ]);
   const directTools = tools.filter((tool) => requestTools.has(tool));
   return new Map([
     ["opensteer", tools.filter((tool) => !requestTools.has(tool))],

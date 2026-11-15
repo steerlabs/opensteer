@@ -93,8 +93,8 @@ const testAgentSkills = {
     "opensteer:computer-use": "/runner/agent-skills/skills/computer-use",
     "opensteer:computers": "/runner/agent-skills/skills/computers",
     "opensteer:devices": "/runner/agent-skills/skills/devices",
-    "opensteer:threads": "/runner/agent-skills/skills/threads",
-    "opensteer:triggers": "/runner/agent-skills/skills/triggers",
+    "opensteer:tasks": "/runner/agent-skills/skills/tasks",
+    "opensteer:automations": "/runner/agent-skills/skills/automations",
   },
   rootPath: "/runner/agent-skills",
 } as const;
@@ -3922,7 +3922,7 @@ describe("RunnerRuntime", () => {
     const stateRoot = join(temporaryRoot, "private", "harness-state");
     await writeWorkspaceSkill(workspacePath, "release-notes");
     await writeWorkspaceSkill(workspacePath, "research");
-    await writeWorkspaceSkill(workspacePath, "opensteer:threads");
+    await writeWorkspaceSkill(workspacePath, "opensteer:tasks");
     const pluginRoot = join(stateRoot, "plugins", "a".repeat(64));
     await mkdir(pluginRoot, { recursive: true });
     await writeFile(
@@ -4099,15 +4099,15 @@ describe("RunnerRuntime", () => {
           },
           {
             plugin: "opensteer",
-            localName: "threads",
-            fullName: "opensteer:threads",
-            path: "/runner/agent-skills/skills/threads",
+            localName: "tasks",
+            fullName: "opensteer:tasks",
+            path: "/runner/agent-skills/skills/tasks",
           },
           {
             plugin: "opensteer",
-            localName: "triggers",
-            fullName: "opensteer:triggers",
-            path: "/runner/agent-skills/skills/triggers",
+            localName: "automations",
+            fullName: "opensteer:automations",
+            path: "/runner/agent-skills/skills/automations",
           },
           {
             plugin: "example",
@@ -4136,7 +4136,7 @@ describe("RunnerRuntime", () => {
         ].filter((skill) => !disabled || skill.fullName !== "research"),
       );
       expect(logged).toEqual([
-        "Agent home skill opensteer:threads was skipped: the directory name is not a valid skill name",
+        "Agent home skill opensteer:tasks was skipped: the directory name is not a valid skill name",
       ]);
     } finally {
       await runtime.close();
@@ -6001,8 +6001,8 @@ function executeCommand(
           "opensteer:computer-use",
           "opensteer:browser",
           "opensteer:computers",
-          "opensteer:threads",
-          "opensteer:triggers",
+          "opensteer:tasks",
+          "opensteer:automations",
         ],
         token: "opaque-agent-tools-token",
         url: "https://host.example/internal/v1/mcp",
@@ -6100,7 +6100,7 @@ function triggerCommand(
       mcp: { token: "trigger-mcp-token", url: "https://host.example/internal/v1/mcp" },
       occurrenceId,
       program: {
-        toolContractVersion: 3,
+        toolContractVersion: 4,
         language: "javascript",
         source: "export default async () => null",
       },

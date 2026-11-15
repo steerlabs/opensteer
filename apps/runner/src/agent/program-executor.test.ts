@@ -120,7 +120,7 @@ describe("TriggerProgramExecutor", () => {
           console.log("price", event.payload.price);
           const response = await fetch(${JSON.stringify(`http://127.0.0.1:${address.port}/data`)});
           if (!response.ok) throw new Error("fetch failed");
-          const delivered = await opensteer.callTool("thread_send", { message: "done" });
+          const delivered = await opensteer.callTool("opensteer_task_send", { message: "done" });
           const integrationDelivered = await opensteer.callTool(
             "integration_tool",
             { value: 42 },
@@ -176,7 +176,7 @@ describe("TriggerProgramExecutor", () => {
         stdout: "price 42\n",
       });
       expect(requests.filter(({ method }) => method === "tools/call")).toEqual([
-        { method: "tools/call", name: "thread_send" },
+        { method: "tools/call", name: "opensteer_task_send" },
         { method: "tools/call", name: "integration_tool" },
       ]);
       expect(requests.filter(({ method }) => method === "DELETE")).toHaveLength(2);
@@ -614,7 +614,7 @@ function triggerContext(input: { readonly mcpUrl?: string; readonly source: stri
 
     mcp: { token: "test-token", url: input.mcpUrl ?? "http://127.0.0.1:1/mcp" },
     occurrenceId,
-    program: { toolContractVersion: 3, language: "typescript", source: input.source },
+    program: { toolContractVersion: 4, language: "typescript", source: input.source },
     revisionId,
     triggerId,
   });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createId, type DeploymentId } from "@opensteer/core";
-import { knowledge_write } from "@opensteer/agent-tools/tools";
+import { opensteer_knowledge_remove, opensteer_knowledge_save } from "@opensteer/agent-tools/tools";
 import type { PersonalTeamLink } from "@opensteer/protocol";
 import type { TeamLinkCallInput, TeamLinkResult } from "../team-link-endpoint/contracts.js";
 import { PersonalTeamKnowledge } from "./knowledge.js";
@@ -55,7 +55,7 @@ describe("an agent's team knowledge over its owner's links", () => {
         () =>
           f.knowledge.write(
             caller,
-            knowledge_write.input.parse({
+            opensteer_knowledge_save.input.parse({
               topicId: createId("knowledgeTopic"),
               title: "Hi",
               body: "Text",
@@ -107,10 +107,14 @@ describe("an agent's team knowledge over its owner's links", () => {
     const run = { runId: f.runId, teamOrigin: null, requestId: null };
     const topicId = createId("knowledgeTopic");
     const noteId = createId("knowledgeNote");
-    const write = (input: object) => f.knowledge.write(run, knowledge_write.input.parse(input));
+    const write = (input: object) =>
+      f.knowledge.write(run, opensteer_knowledge_save.input.parse(input));
     await write({ topicId, title: "Refunds", body: "30 days" });
     await write({ noteId, version: 3, body: "14 days" });
-    await write({ noteId, version: 4, delete: true });
+    await f.knowledge.write(run, {
+      ...opensteer_knowledge_remove.input.parse({ noteId, version: 4 }),
+      delete: true,
+    });
     const inputs = f.sent.map(({ frame }) => ("input" in frame ? frame.input : undefined));
     expect(inputs).toEqual([
       {

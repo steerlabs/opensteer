@@ -33,7 +33,7 @@ function tab(id = selected) {
 }
 function online(t) {
   if (state.offlineComputers.includes(t.computer)) throw new Error(t.computer + ' is offline. Reconnect that computer to use this tab.');
-  if (state.accessRequiredComputers.includes(t.computer)) throw new Error('Browser access required on ' + t.computer + '. Use device_access_request.');
+  if (state.accessRequiredComputers.includes(t.computer)) throw new Error('Browser access required on ' + t.computer + '. Use computer_access_request.');
 }
 function listTabs(options = {}) { return record('listTabs', options, () => {
   const q = (options.query ?? '').toLowerCase();

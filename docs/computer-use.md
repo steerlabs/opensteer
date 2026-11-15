@@ -120,7 +120,7 @@ can read. One authenticated bridge owns its sessions, and nested deadlines must 
 cleanup time. Native errors must not disclose paths.
 
 Every app operation rechecks callable rows, digests, connection access, grant and Run capability
-immediately before Mac dispatch; `integration_call` refuses computer rows. The `computer` REPL guest
+immediately before Mac dispatch; `integration_call` refuses computer rows. The `computer_use` REPL guest
 has no Node, filesystem, network, process or timers, and its state is per Run attempt, not storage.
 Dispatched mutations are never retried. Stop is durable per Run and Mac across reconnects and
 restarts, and only native `reason: user` records it; remote Stop returns once Host authority is

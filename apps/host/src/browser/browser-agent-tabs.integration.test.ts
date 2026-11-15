@@ -139,7 +139,7 @@ integration("agent tabs", () => {
     // Guest's computer is chosen only among this person's browser computers.
     await expect(
       f.browser.openAgentTab(f.actor, {
-        identity: { kind: "guest", computer: createId("environment") },
+        identity: { kind: "guest", computer: createId("runner") },
         operationKey: randomUUID(),
       }),
     ).rejects.toMatchObject({

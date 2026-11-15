@@ -506,7 +506,7 @@ describe("the personal stack from source", () => {
       ? `set "GREETING=hello from cmd" && node server.cjs`
       : `export GREETING="hello from cmd" && node server.cjs`;
     await turn(
-      `${toolCall("app_publish", { path: "server app", start, title: "Greeting" })} [[reply Published.]]`,
+      `${toolCall("opensteer_app_publish", { path: "server app", start, title: "Greeting" })} [[reply Published.]]`,
       "Published.",
     );
     const { events } = await rpc("thread.events.list", { threadId });
@@ -532,7 +532,7 @@ describe("the personal stack from source", () => {
       input: {
         anchorThreadId: threadId,
         name: "Doubler",
-        program: { language: "typescript", source: automationSource, toolContractVersion: 3 },
+        program: { language: "typescript", source: automationSource, toolContractVersion: 4 },
         source: { kind: "webhook" },
       },
       type: "trigger.create",
@@ -562,7 +562,7 @@ describe("the personal stack from source", () => {
 
     // Publishing a page in its place stops the server and everything it started.
     await turn(
-      `${toolCall("app_publish", { appId, path: "server app/index.html", title: "Greeting" })} [[reply Replaced.]]`,
+      `${toolCall("opensteer_app_publish", { appId, path: "server app/index.html", title: "Greeting" })} [[reply Replaced.]]`,
       "Replaced.",
     );
     await vi.waitFor(

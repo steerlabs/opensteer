@@ -393,7 +393,7 @@ export class AppService {
             if (!version.server)
               throw new OpensteerError({
                 code: "bad_request",
-                message: "app_fetch requires a server app",
+                message: "opensteer_app_call requires a server app",
               });
             const spec = await this.#runtimeSpec(app.id, version.version, version.server);
             return this.#tunnels().connect(spec, signal);
@@ -516,6 +516,6 @@ function publicationResult(result: { readonly appId: string; readonly version: n
     appId: result.appId,
     version: result.version,
     message:
-      "The app is shown inline in this Thread. Do not restate its contents; refer to it by title or appId.",
+      "The app is shown inline in this task. Do not restate its contents; refer to it by title or appId.",
   };
 }

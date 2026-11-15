@@ -91,8 +91,8 @@ describe("connection labels", () => {
 
 describe("opensteerToolIdentity", () => {
   it("names Opensteer's own servers and keeps every other behind mcp:", () => {
-    expect(opensteerToolIdentity("opensteer", "thread_read")).toEqual({
-      name: "thread_read",
+    expect(opensteerToolIdentity("opensteer", "opensteer_task_read")).toEqual({
+      name: "opensteer_task_read",
       namespace: "opensteer",
     });
     expect(opensteerToolIdentity("opensteer_integrations", "gateway_call")).toEqual({

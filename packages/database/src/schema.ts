@@ -23,7 +23,6 @@ import type {
 } from "@opensteer/core";
 import type { TeamStatusStepSchema } from "@opensteer/core";
 import type { z } from "zod";
-import type { AutomaticModelConfig } from "@opensteer/core";
 import type { ThreadCallerAuthority } from "./thread-caller.js";
 
 import type {
@@ -133,7 +132,7 @@ import type {
   ShellCloseReason,
   ShellSessionId,
 } from "@opensteer/protocol";
-import type { TriggerProgram, TriggerProgramEvent, TriggerSource } from "@opensteer/triggers";
+import type { StoredTriggerProgram, TriggerProgramEvent, TriggerSource } from "@opensteer/triggers";
 import type { ColumnType, Generated, Selectable } from "kysely";
 
 export type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>;
@@ -1110,7 +1109,7 @@ interface TriggerRevisionTable {
   triggerId: TriggerId;
   ordinal: number;
   source: JsonColumn<TriggerSource>;
-  program: JsonColumn<TriggerProgram>;
+  program: JsonColumn<StoredTriggerProgram>;
   createdBy: UserId;
   createdByThreadId: ThreadId | null;
   createdAt: Timestamp;
@@ -1966,6 +1965,19 @@ export interface DatabaseSchema {
     scanStatus: "complete" | "failed";
     metadata: JsonColumn<readonly { fullName: string; description: string; digest: string }[]>;
   };
+  agentHomeSettings: {
+    computerId: RunnerId;
+    environmentId: EnvironmentId;
+    bootId: string;
+    connectionGeneration: number;
+    connectionId: string;
+    connectionLeaseId: string;
+    readSequence: number;
+    readAt: Timestamp;
+    fileStatus: "valid" | "missing" | "invalid";
+    fileError: JsonColumn<import("@opensteer/protocol").AgentHomeSettingsError> | null;
+    settings: JsonColumn<import("@opensteer/core").AgentHomeSettings>;
+  };
   teamMembers: TeamMemberTable;
   teamPrincipals: TeamPrincipalTable;
   teamSharingSettings: {
@@ -2284,7 +2296,6 @@ export interface PersonalSettingsTable {
   timeZone: string | null;
   quietTaskDays: QuietTaskDays;
   executionPreferences: JsonColumn<ExecutionPreferences>;
-  backgroundModelPreferences: JsonColumn<AutomaticModelConfig>;
   /** The owner's own name, or null for "You"; see `owner-profile-store.ts`. */
   ownerName: Generated<string | null>;
   /** When anyone first chose or adopted a name; the computer's name seeds only before. */

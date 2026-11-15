@@ -33,7 +33,8 @@ gives the agent each topic's audience and the room's; deciding what to repeat wh
 judgment, not a rule the server enforces. Keeping something from agents means not granting those
 people the topic: anyone who can read a note can hand it to their agent.
 
-Agents use three thin tools (`knowledge_topics`, `knowledge_read`, `knowledge_write`) that the
+Agents use thin tools (`opensteer_knowledge_topic_list`, `opensteer_knowledge_search`,
+`opensteer_knowledge_read`, `opensteer_knowledge_save`, `opensteer_knowledge_remove`) that the
 team Host serves with fixed queries. There is no agent SQL. The team audits every agent call,
 allowed or refused, with ids and counts only, never titles, bodies or search words.
 

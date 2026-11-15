@@ -144,7 +144,7 @@ export const ComputerUseObservationIdSchema = z.string().min(1).max(64);
 export const computerUseMaxWindows = 64;
 
 export const computerUseToolRequiredSentence =
-  "Use the computer tool to see and operate apps and phones.";
+  "Use computer_use to see and operate apps and phones.";
 export const computerUseWindowClosedSentence = "That window is closed.";
 export const computerUseObserveAgainSentence = "Observe this window again.";
 export const computerUseObserveFirstSentence = "Observe this window first.";

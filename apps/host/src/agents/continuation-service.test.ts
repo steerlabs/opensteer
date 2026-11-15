@@ -44,7 +44,7 @@ describe("ContinuationService", () => {
     await fixture.service.close();
     expect(fixture.enqueueThreadInput).toHaveBeenCalledOnce();
     expect(fixture.enqueueThreadInput.mock.calls[0]![0].content[0].text).toContain(
-      "rebuilds device routes",
+      "rebuilds computer routes",
     );
     expect(
       await continuationMessage(fulfilled, {
@@ -195,7 +195,7 @@ describe("ContinuationService", () => {
     expect(input.content[0].text).toContain(first.id);
     expect(input.content[0].text).toContain(second.id);
     expect(input.content[0].text).toContain(broken.id);
-    expect(input.content[0].text).toContain("pending_request");
+    expect(input.content[0].text).toContain("opensteer_request_answer");
     expect(fixture.recordContinuationAttempt).toHaveBeenCalledTimes(3);
   });
 
@@ -311,7 +311,7 @@ describe("ContinuationService", () => {
   it("settles a permanently unreachable originating Thread", async () => {
     const failure = new OpensteerError({
       code: "conflict",
-      message: "Archived threads cannot run",
+      message: "Archived tasks cannot run",
     });
     const request = fulfilledRequest("browser.access");
     const fixture = makeService([request], {
@@ -320,7 +320,7 @@ describe("ContinuationService", () => {
     fixture.service.notify();
     await fixture.service.close();
     expect(fixture.recordContinuationAttempt).toHaveBeenCalledWith({
-      reason: "Archived threads cannot run",
+      reason: "Archived tasks cannot run",
       requestId: request.id,
       status: "undeliverable",
     });
@@ -444,7 +444,7 @@ describe("continuationMessage", () => {
     expect(message).not.toContain("open a fresh Browser Session");
     expect(message).not.toContain("because Opensteer Passwords stopped answering");
     expect(message).not.toContain("the user did not sign in another way");
-    expect(message).toContain("use_saved_login again");
+    expect(message).toContain("saved_login_request again");
   });
   it("uses the live personal ref on every surface without inventing a session", async () => {
     const request = RequestSchema.parse({
@@ -475,7 +475,7 @@ describe("continuationMessage", () => {
     expect(message).toContain("type");
     expect(message).toContain("fillLogin");
     expect(message).not.toContain("Browser Session undefined");
-    expect(await continuationMessage(request, inventory())).toContain("use_saved_login again");
+    expect(await continuationMessage(request, inventory())).toContain("saved_login_request again");
   });
   it("does not claim access when the Mac has been removed", async () => {
     await expect(

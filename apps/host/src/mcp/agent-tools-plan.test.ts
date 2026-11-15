@@ -11,11 +11,21 @@ it("keeps standing team inventory stable across tasks and invalidates a warm pla
   const ordinary = agentToolsPlanForRun(input),
     team = agentToolsPlanForRun({ ...input, teamsAvailable: true, knowledge: true }),
     linked = agentToolsPlanForRun({ ...input, teamsAvailable: true, knowledge: true });
-  const knowledgeTools = ["knowledge_topics", "knowledge_read", "knowledge_write"];
+  const knowledgeTools = [
+    "opensteer_knowledge_topic_list",
+    "opensteer_knowledge_read",
+    "opensteer_knowledge_save",
+  ];
   expect(RunAgentToolsPlanSchema.parse(ordinary)).toEqual(ordinary);
-  for (const name of [...knowledgeTools, "team_read"]) expect(ordinary.tools).not.toContain(name);
+  for (const name of [...knowledgeTools, "opensteer_team_read"])
+    expect(ordinary.tools).not.toContain(name);
   expect(team.tools).toEqual(
-    expect.arrayContaining(["team_read", "team_search", "team_post", ...knowledgeTools]),
+    expect.arrayContaining([
+      "opensteer_team_read",
+      "opensteer_team_search",
+      "opensteer_team_post",
+      ...knowledgeTools,
+    ]),
   );
   // Standing access has the same plan in every task.
   expect(linked.tools).toEqual(expect.arrayContaining(knowledgeTools));
@@ -30,6 +40,20 @@ it("keeps standing team inventory stable across tasks and invalidates a warm pla
   expect(agentToolsPlanForRun({ ...input, voiceCall: true }).toolsRevision).not.toBe(
     ordinary.toolsRevision,
   );
+  // A broken settings.json reaches the agent's next Run, and a warm engine must not hide it.
+  const broken = agentToolsPlanForRun({
+    ...input,
+    settingsError: {
+      path: "/home/settings.json",
+      line: 3,
+      column: 5,
+      message: "Unexpected token ','",
+    },
+  });
+  expect(broken.instructions).toContain(
+    "/home/settings.json line 3, column 5: Unexpected token ','",
+  );
+  expect(broken.toolsRevision).not.toBe(ordinary.toolsRevision);
 });
 
 vi.mock("@opensteer/shared/advertisedJsonSchema", async (importOriginal) => {

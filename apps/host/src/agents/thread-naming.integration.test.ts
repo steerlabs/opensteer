@@ -13,6 +13,7 @@ import {
 import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AutomaticModelsView } from "@opensteer/protocol";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
 
 /*
@@ -151,6 +152,39 @@ integration("Task naming through the Runner", () => {
           .select(["title", "titleSource", "icon", "iconSource"])
           .where("id", "=", threadId)
           .executeTakeFirstOrThrow(),
+      preview: async () => {
+        const read = await active.api["automaticModels.get"]({});
+        if (!read.ok) throw new Error(read.error.message);
+        return read.data;
+      },
+      /**
+       * The Runner watches Agent home's settings.json once a Run has used Agent home.
+       * That first task names its icon; this returns once it has, so later turns are the test's.
+       */
+      watchSettings: async () => {
+        const threadId = await active.createThread({ modelSelection: taskModel, title: "First" });
+        await active.sendMessage({ text: "Hello", threadId });
+        await vi.waitFor(async () => {
+          const thread = await active.host.store.database
+            .selectFrom("threads")
+            .select("iconSource")
+            .where("id", "=", threadId)
+            .executeTakeFirstOrThrow();
+          expect(thread.iconSource, "the first task's icon was never named").toBe("generated");
+        }, waitOptions);
+        return (
+          await parseCaptureJsonl<Captured>(await readFile(captureFile, "utf8").catch(() => ""))
+        ).filter((line) => line.fakeTitleTurn).length;
+      },
+      /** Writes settings.json as an agent would, then waits until the Host has the Runner's read. */
+      writeSettings: async (text: string, settled: (view: AutomaticModelsView) => boolean) => {
+        await writeFile(join(active.agentHome.path, "settings.json"), text);
+        await vi.waitFor(async () => {
+          const read = await active.api["automaticModels.get"]({});
+          if (!read.ok) throw new Error(read.error.message);
+          expect(settled(read.data), "the Host never saw the new settings.json").toBe(true);
+        }, waitOptions);
+      },
     };
   }
   it("names a new task through its account's Runner without holding up the Run", async () => {
@@ -366,6 +400,46 @@ integration("Task naming through the Runner", () => {
       waitOptions,
     );
   });
+  it("names with the person's naming list from settings.json, and keeps it while the file is broken", async () => {
+    const f = await start();
+    await f.script({
+      "gpt-5.6-luna": { reply: "Lease offers\nmail" },
+      "gpt-6-luna": { reply: "Recommended\nmail" },
+    });
+    const warmed = await f.watchSettings();
+    expect((await f.preview()).file).toEqual({ status: "missing" });
+    await f.writeSettings(
+      JSON.stringify({
+        backgroundModels: { naming: [{ engine: "codex", model: "gpt-5.6-luna" }] },
+      }),
+      (view) => view.file.status === "valid",
+    );
+    const named = await f.task("Compare the two lease offers");
+    await f.send(named, "Compare the two lease offers");
+    await vi.waitFor(
+      async () => expect(await f.thread(named)).toMatchObject({ title: "Lease offers" }),
+      waitOptions,
+    );
+    await f.writeSettings(
+      '{\n  "backgroundModels": {,\n}',
+      (view) => view.file.status === "invalid",
+    );
+    expect((await f.preview()).file.error).toMatchObject({
+      path: join(f.active.agentHome.path, "settings.json"),
+      line: 2,
+      column: 24,
+    });
+    const kept = await f.task("Compare the two lease offers again");
+    await f.send(kept, "Compare the two lease offers again");
+    await vi.waitFor(
+      async () => expect(await f.thread(kept)).toMatchObject({ title: "Lease offers" }),
+      waitOptions,
+    );
+    expect((await f.turns()).slice(warmed).map((turn) => turn.model)).toEqual([
+      "gpt-5.6-luna",
+      "gpt-5.6-luna",
+    ]);
+  });
   it("never names on an account the person excluded, its own task's included, and uses it once allowed", async () => {
     const f = await start();
     await f.script({
@@ -373,29 +447,15 @@ integration("Task naming through the Runner", () => {
         reply: "Lease offers\nmail",
       },
     });
-    const config = async (excludedAccounts: readonly HarnessInstanceId[]) => {
-      const result = await f.active.api["commands.dispatch"]({
-        type: "automaticModels.set",
-        config: {
-          roles: {},
-          excludedAccounts: [...excludedAccounts],
-        },
-        idempotencyKey: `automatic-${randomUUID()}`,
-      });
-      if (!result.ok) throw new Error(result.error.message);
-    };
-    const preview = async () => {
-      const read = await f.active.api["automaticModels.get"]({});
-      if (!read.ok) throw new Error(read.error.message);
-      return read.data;
-    };
-    const account = (await preview()).accounts[0]!;
-    await config([account.harnessInstanceId]);
-    expect((await preview()).light.candidates).toEqual([]);
-    expect((await preview()).accounts[0]).toMatchObject({
-      eligible: false,
-      reason: "excluded",
-    });
+    const warmed = await f.watchSettings();
+    const before = await f.active.api["bootstrap.get"]({});
+    if (!before.ok) throw new Error(before.error.message);
+    const account = before.data.harnesses[0]!.id;
+    await f.writeSettings(
+      JSON.stringify({ backgroundModels: { excludedAccounts: [account] } }),
+      (view) => view.excludedAccounts.includes(account as HarnessInstanceId),
+    );
+    expect((await f.preview()).naming).toBeNull();
     const bootstrap = await f.active.api["bootstrap.get"]({});
     if (!bootstrap.ok) throw new Error(bootstrap.error.message);
     expect(bootstrap.data.harnesses).toMatchObject([
@@ -419,11 +479,11 @@ integration("Task naming through the Runner", () => {
           ),
         waitOptions,
       );
-      expect(await f.turns()).toEqual([]);
+      expect((await f.turns()).slice(warmed)).toEqual([]);
       expect(await f.thread(threadId)).toMatchObject({
         titleSource: "provisional",
       });
-      await config([]);
+      await f.writeSettings("{}", (view) => view.excludedAccounts.length === 0);
       await f.send(threadId, "Start with the cheaper one");
       await vi.waitFor(
         async () =>
@@ -432,7 +492,7 @@ integration("Task naming through the Runner", () => {
           }),
         waitOptions,
       );
-      expect((await f.turns()).map((turn) => turn.model)).toEqual(["gpt-6-luna"]);
+      expect((await f.turns()).slice(warmed).map((turn) => turn.model)).toEqual(["gpt-6-luna"]);
     } finally {
       warn.mockRestore();
     }

@@ -162,7 +162,7 @@ describe("credential proxy", () => {
     await call("person_show");
     proxy.suspend();
     proxy.resume();
-    await call("thread_list");
+    await call("opensteer_task_list");
     expect(host.seen).toHaveLength(3);
   });
 

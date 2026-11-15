@@ -2,12 +2,12 @@ import { TeamMessageIdSchema } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import { createId, type Thread } from "@opensteer/core";
 import {
-  knowledge_read,
-  knowledge_topics,
-  knowledge_write,
-  team_read,
-  team_search,
-  team_post,
+  opensteer_knowledge_read,
+  opensteer_knowledge_topic_list,
+  opensteer_knowledge_save,
+  opensteer_team_read,
+  opensteer_team_search,
+  opensteer_team_post,
 } from "@opensteer/agent-tools/tools";
 import type { RunCaller } from "../agent-caller.js";
 import type { TeamKnowledgePort, TeamToolPort } from "../team-tool-port.js";
@@ -52,11 +52,11 @@ describe("standing owner team authority", () => {
 
     for (const c of [first, second]) {
       expect(
-        await handlers.team_post({
+        await handlers.opensteer_team_post({
           caller: c,
           input: {
             channelId: origin.channelId,
-            threadRootId: origin.threadRootId,
+            threadId: origin.threadRootId,
             bodyMarkdown: "Result",
             attachmentPaths: [],
           },
@@ -70,35 +70,68 @@ describe("standing owner team authority", () => {
     ]);
     expect(personalContext).toHaveBeenCalledTimes(2);
     for (const tool of [
-      team_read,
-      team_search,
-      team_post,
-      knowledge_topics,
-      knowledge_read,
-      knowledge_write,
+      opensteer_team_read,
+      opensteer_team_search,
+      opensteer_team_post,
+      opensteer_knowledge_topic_list,
+      opensteer_knowledge_read,
+      opensteer_knowledge_save,
     ]) {
       for (const key of ["requestId", "teamRequestId", "ownerId", "taskId", "token", "url"]) {
         const input =
-          tool.name === "team_search" || tool.name === "knowledge_read"
+          tool.name === "opensteer_team_search" || tool.name === "opensteer_knowledge_read"
             ? { query: "help" }
-            : tool.name === "team_post"
+            : tool.name === "opensteer_team_post"
               ? { bodyMarkdown: "Result" }
-              : tool.name === "knowledge_write"
+              : tool.name === "opensteer_knowledge_save"
                 ? { topicId: createId("knowledgeTopic"), title: "Note", body: "Text" }
                 : {};
         expect(tool.input.safeParse({ ...input, [key]: "another" }).success).toBe(false);
       }
     }
   });
+  it("reads older messages by cursor and newer ones after a message the agent saw", async () => {
+    const read = vi.fn<TeamToolPort["read"]>().mockResolvedValue({
+      source: { ...origin, messageId: TeamMessageIdSchema.parse("5") },
+      page: { messages: [{ id: TeamMessageIdSchema.parse("5") }], hasMore: true },
+    } as unknown as Awaited<ReturnType<TeamToolPort["read"]>>);
+    const handlers = teamToolHandlers({
+      port: { read } as unknown as TeamToolPort,
+      personalContext: async () => true,
+    });
+    const pages = [];
+    for (const input of [
+      { channelId: origin.channelId, cursor: "4" },
+      { channelId: origin.channelId, afterMessageId: TeamMessageIdSchema.parse("4") },
+    ])
+      pages.push(
+        await handlers.opensteer_team_read({ caller: caller(), input, operationKey: "read" }),
+      );
+    expect(read.mock.calls.map(([, query]) => query)).toEqual([
+      { channelId: origin.channelId, before: "4" },
+      { channelId: origin.channelId, after: "4" },
+    ]);
+    expect(
+      pages.map((page) => (page as { page: { nextCursor: unknown } }).page.nextCursor),
+    ).toEqual(["5", null]);
+    expect(
+      opensteer_team_read.input.safeParse({
+        channelId: origin.channelId,
+        cursor: "4",
+        afterMessageId: "4",
+      }).success,
+    ).toBe(false);
+  });
+
   it("denies shared conversations and every non-Run caller", async () => {
     const port = { read: vi.fn() } as unknown as TeamToolPort;
     const handlers = teamToolHandlers({ port, personalContext: async () => false });
     const c = caller();
     await expect(
-      handlers.team_read({ caller: c, input: {}, operationKey: "read" }),
+      handlers.opensteer_team_read({ caller: c, input: {}, operationKey: "read" }),
     ).rejects.toThrow("other people share");
     await expect(
-      handlers.team_read({
+      handlers.opensteer_team_read({
         caller: {
           kind: "connection",
           key: "connection:1",
@@ -131,7 +164,11 @@ describe("team knowledge as the Run's owner", () => {
     const teamRun = caller();
     const privateRun = { ...caller(), thread: { ...teamRun.thread, teamOrigin: null } as Thread };
     for (const c of [teamRun, privateRun])
-      await handlers.knowledge_topics({ caller: c, input: {}, operationKey: "topics" });
+      await handlers.opensteer_knowledge_topic_list({
+        caller: c,
+        input: {},
+        operationKey: "topics",
+      });
     expect(topics.mock.calls.map(([knowledgeCaller]) => knowledgeCaller)).toEqual([
       { runId: teamRun.claims.runId, teamOrigin: { teamId: origin.teamId }, requestId },
       { runId: privateRun.claims.runId, teamOrigin: null, requestId: null },
@@ -139,10 +176,14 @@ describe("team knowledge as the Run's owner", () => {
     // Someone else joined the conversation mid-task: its owner's team knowledge is gone.
     personal = false;
     await expect(
-      handlers.knowledge_topics({ caller: privateRun, input: {}, operationKey: "topics" }),
+      handlers.opensteer_knowledge_topic_list({
+        caller: privateRun,
+        input: {},
+        operationKey: "topics",
+      }),
     ).rejects.toMatchObject({ code: "forbidden" });
     await expect(
-      handlers.knowledge_topics({
+      handlers.opensteer_knowledge_topic_list({
         caller: {
           kind: "connection",
           key: "connection:1",

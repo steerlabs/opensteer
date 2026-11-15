@@ -3,6 +3,7 @@ import { sql, type Kysely } from "kysely";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDatabase } from "./connection.js";
 import {
+  agentHomeSettingsMigrationName,
   MigrationLineageError,
   migrateToLatest,
   migrationProvider,
@@ -672,6 +673,22 @@ describe("fresh personal/team lineage", () => {
         )
       ).rows,
     ).toEqual([]);
+  });
+  it("drops stored background model choices from databases made before settings.json held them", async () => {
+    await migrateToLatest(database, migrationsBefore(agentHomeSettingsMigrationName));
+    await seedPersonalFixture(database, "/tmp/fixture-agent-home");
+    await sql`alter table personal_settings add column background_model_preferences jsonb not null default '{"roles":{},"excludedAccounts":[]}'`.execute(
+      database,
+    );
+    await migrateToLatest(database);
+    expect(
+      (
+        await sql`select column_name from information_schema.columns where table_name='personal_settings' and column_name='background_model_preferences'`.execute(
+          database,
+        )
+      ).rows,
+    ).toEqual([]);
+    expect(await database.selectFrom("agentHomeSettings").selectAll().execute()).toEqual([]);
   });
   it("upgrades existing queued inputs with fresh context disabled in the table and work view", async () => {
     await migrateToLatest(database, migrationsBefore("0005_thread_input_fresh_context"));

@@ -39,7 +39,7 @@ export async function specialistPlacement(
 ): Promise<DelegationPlacement> {
   const { candidates, skipped } = await resolveAutomaticModels(dependencies, {
     userId: request.userId,
-    wants: (config) => expandModelWants(request.specialist.models, config),
+    wants: (settings) => expandModelWants(request.specialist.models, settings),
     original: request.specialist.fallback === "caller" ? request.caller : undefined,
     canRun: personalExecution(dependencies.runners, request),
   });
@@ -89,7 +89,7 @@ export async function resolveDelegationSpecialist(
   if ((selector || existingThread?.specialistId) && !specialist)
     throw badRequest("Specialist is not registered");
   if (existingThread && selector && selector !== specialist?.id && selector !== specialist?.plugin)
-    throw badRequest("An existing Thread keeps its specialist binding");
+    throw badRequest("An existing task keeps its specialist");
   if (specialist && specialist.ownerUserId !== userId)
     throw forbidden(
       `${specialist.plugin} uses ${specialist.ownerName ?? specialist.ownerUserId}'s accounts; add it for yourself to use your own`,

@@ -1846,7 +1846,7 @@ integration.sequential("thread input queue promotion", () => {
       }),
     ).rejects.toMatchObject({
       code: "conflict",
-      message: "Archived threads cannot run",
+      message: "Archived tasks cannot run",
     });
     await expect(
       database
@@ -2318,7 +2318,7 @@ integration.sequential("thread input queue promotion", () => {
     });
     await expect(move(f, b.message.id, a.message.id, "move-archived")).rejects.toMatchObject({
       code: "conflict",
-      message: "Archived threads cannot run",
+      message: "Archived tasks cannot run",
     });
   });
   it("places a queued message after everything the Thread said while it waited", async ({

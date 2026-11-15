@@ -1031,36 +1031,6 @@ export const RequestComputerAppSetupSchema = z.discriminatedUnion("kind", [
 export const SetComputerAppConnectionSchema = computerAppSetupInputSchema;
 export type SetComputerAppConnection = z.infer<typeof SetComputerAppConnectionSchema>;
 
-/**
- * How a task asks for one app on one Mac, or for a whole Android phone, as an
- * `integration_request` variant.
- *
- * For a Mac, `app` is whatever the model has — a name, a path, or a bundle
- * identifier — because only the Mac can turn that into a
- * `ComputerAppIdentity`, and a model inventing one would name an app nobody
- * resolved; `runnerId` is optional so a Deployment with one Mac needs no id at
- * all. A phone is asked for whole, so it takes no `app` and must be named by
- * its `runnerId`.
- */
-export const RequestComputerAppAccessSchema = z
-  .strictObject({
-    access: IntegrationAccessSchema,
-    app: z.string().trim().min(1).max(255).optional(),
-    kind: z.literal("computer-app"),
-    reason: z.string().trim().min(1).max(requestReasonMaxLength),
-    runnerId: RunnerIdSchema.optional(),
-  })
-  .superRefine((request, context) => {
-    if (request.app === undefined && request.runnerId === undefined) {
-      context.addIssue({
-        code: "custom",
-        message: "Name the app on a Mac, or the phone by its runnerId",
-        path: ["app"],
-      });
-    }
-  });
-export type RequestComputerAppAccess = z.infer<typeof RequestComputerAppAccessSchema>;
-
 export const IntegrationProposalKindSchema = z.enum(["graphql", "mcp", "openapi"]);
 export type IntegrationProposalKind = z.infer<typeof IntegrationProposalKindSchema>;
 

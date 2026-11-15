@@ -661,7 +661,7 @@ describe("human Passwords settlement", () => {
         .wait({
           caller: { claims: h.call } as unknown as RunCaller,
           result: { status: "pending", requestId: h.request().id },
-          tool: "use_saved_login",
+          tool: "saved_login_request",
           admittedAt: Date.now(),
           steersAtAdmission: 0,
           limitMs: 45_000,

@@ -57,7 +57,7 @@ device completed sign-in.
 
 ## Saved cards
 
-At checkout, call `use_card` with the merchant site, reason and current browser sessionId.
+At checkout, call `card_request` with the merchant site, reason and checkout `tabId`.
 Pending means end your turn after independent work, without polling or resubmitting. A decline ends
 this attempt: do not ask again. An expired approval needs a fresh request if the purchase is still
 wanted. For no-saved-card, passwords-off or passwords-not-set-up, tell the person to open Passwords

@@ -63,7 +63,7 @@ export async function prepareThreadInsertion(
   if (profile.environmentId !== parents.environmentId) {
     throw new OpensteerError({
       code: "bad_request",
-      message: "AI engine belongs to a different execution environment",
+      message: "AI account belongs to a different computer",
     });
   }
   if (!profile.enabled || profile.removedAt !== null) {

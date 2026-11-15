@@ -20,7 +20,7 @@ export class WatchProgramService {
     if (claims.revisionId !== revisionId) {
       throw new OpensteerError({
         code: "forbidden",
-        message: "Watch capability does not grant this Trigger revision",
+        message: "Watch capability does not grant this automation revision",
       });
     }
     return this.#store.watchProgram(claims);

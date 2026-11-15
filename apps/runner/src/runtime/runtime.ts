@@ -38,6 +38,7 @@ import {
   utf8ByteLength,
   utf8HeadAndTail,
   utf8Prefix,
+  type ComputerFolder,
   type ContentPart,
   type ExecutionNodeId,
   type UserId,
@@ -99,6 +100,11 @@ import type { RunnerLogger } from "../host/host-connection.js";
 import { cacheRunPlugins } from "../skills/plugin-cache.js";
 import { resolveSkillPlan } from "../skills/skill-plan.js";
 import { type AgentHomeSkills, discoverAgentHomeSkills } from "../skills/agent-home-skills.js";
+import {
+  type AgentHomeSettingsRead,
+  readAgentHomeSettings,
+  watchAgentHomeSettings,
+} from "../settings/agent-home-settings.js";
 import { BrowserCdpRelay } from "../browser/browser-cdp-relay.js";
 import { CredentialProxy } from "../credentials/credential-proxy.js";
 import { RunCredentials } from "../credentials/run-credentials.js";
@@ -444,6 +450,64 @@ export class RunnerRuntime {
     }
     await this.#skillObserver?.(bindingGeneration, scan).catch(() => undefined);
     return scan;
+  }
+  #settingsObserver: ((read: AgentHomeSettingsRead) => Promise<void>) | undefined;
+  #settingsHome: string | undefined;
+  #stopSettingsWatch: (() => void) | undefined;
+  #settingsReports: Promise<void> = Promise.resolve();
+  /**
+   * Hears every read of Agent home's settings.json while a Host connection is open.
+   * The Host names Agent home in its welcome; otherwise a Run makes it known.
+   * Resolves once the first read is reported.
+   */
+  async observeAgentHomeSettings(
+    observer: ((read: AgentHomeSettingsRead) => Promise<void>) | undefined,
+    home?: { readonly agentHome: ComputerFolder; readonly signal: AbortSignal },
+  ): Promise<void> {
+    this.#settingsObserver = observer;
+    this.#stopSettingsWatch?.();
+    this.#stopSettingsWatch = undefined;
+    if (!observer) return;
+    if (home) {
+      const workspace = await this.#agentHome
+        .prepare({ agentHome: home.agentHome, personalContext: false, signal: home.signal })
+        .catch(() => undefined);
+      if (this.#settingsObserver !== observer) return;
+      if (workspace) this.#settingsHome = workspace.path;
+    }
+    if (!this.#settingsHome) return;
+    if (!this.#stopSettingsWatch) this.#watchAgentHomeSettings(this.#settingsHome);
+    return this.#settingsReports;
+  }
+  #readAgentHomeSettings(path: string): Promise<void> {
+    const known = this.#settingsHome === path;
+    this.#settingsHome = path;
+    if (!this.#settingsObserver) return Promise.resolve();
+    if (!known || !this.#stopSettingsWatch) {
+      this.#stopSettingsWatch?.();
+      this.#watchAgentHomeSettings(path);
+      return this.#settingsReports;
+    }
+    return this.#reportAgentHomeSettings();
+  }
+  #watchAgentHomeSettings(path: string): void {
+    try {
+      this.#stopSettingsWatch = watchAgentHomeSettings(path, () => {
+        void this.#reportAgentHomeSettings();
+      });
+    } catch {
+      this.#stopSettingsWatch = undefined;
+    }
+    void this.#reportAgentHomeSettings();
+  }
+  #reportAgentHomeSettings(): Promise<void> {
+    this.#settingsReports = this.#settingsReports.then(async () => {
+      const home = this.#settingsHome;
+      const observer = this.#settingsObserver;
+      if (!home || !observer) return;
+      await observer(await readAgentHomeSettings(home)).catch(() => undefined);
+    });
+    return this.#settingsReports;
   }
 
   readonly #watchSupervisor: Pick<
@@ -2542,6 +2606,7 @@ export class RunnerRuntime {
       const homeSkills = context.personalContext
         ? await this.#scanAgentHomeSkills(workspace.path, context.bindingGeneration)
         : { skills: [], warnings: [], digest: "personal-context-disabled" };
+      if (context.personalContext) await this.#readAgentHomeSettings(workspace.path);
       for (const warning of new Set(homeSkills.warnings)) {
         this.#logger?.info(warning, {
           runId: context.runId,
@@ -2993,6 +3058,7 @@ export class RunnerRuntime {
           () => undefined,
         );
       }
+      if (workspace && context.personalContext) await this.#readAgentHomeSettings(workspace.path);
       // Naming owns another process in this containment scope. It must exit
       // before stop, the single-tree warm check, or credential teardown.
       active.settling = true;

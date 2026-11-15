@@ -310,7 +310,7 @@ export async function updateMachineAccessPolicy(
       .executeTakeFirst();
     const ownership = await machineOwnershipIn(transaction, input.runnerId);
     if (!ownership || !machineIsManagedBy(ownership, input.ownerId)) {
-      throw new OpensteerError({ code: "not_found", message: "Active Runner not found" });
+      throw new OpensteerError({ code: "not_found", message: "Active computer not found" });
     }
     // "My agents" has to name somebody. A Deployment-owned machine normally
     // names nobody, so saving owner reach on one would publish a setting that
@@ -323,7 +323,7 @@ export async function updateMachineAccessPolicy(
       });
     }
     if (!stored)
-      throw new OpensteerError({ code: "not_found", message: "Active Runner not found" });
+      throw new OpensteerError({ code: "not_found", message: "Active computer not found" });
     if (
       stored.kind === "main" &&
       stored.ownerKind === "deployment" &&
