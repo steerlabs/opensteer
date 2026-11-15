@@ -501,8 +501,13 @@ export class TeamRealtimeHub {
       },
     );
   }
+  /** Never rejects: presence is advisory, and callers fire it from events while a copy drains. */
   async linkPresenceChanged(userId: UserId, online: boolean) {
-    online = (await teamLinksOnline(this.access.database, [userId])).has(userId);
+    try {
+      online = (await teamLinksOnline(this.access.database, [userId])).has(userId);
+    } catch {
+      return;
+    }
     for (const peer of this.#peers) {
       if (
         ![...peer.subscriptions.values()].some(
