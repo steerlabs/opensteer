@@ -179,7 +179,7 @@ describe("an app tab", () => {
       )!;
       app = place.key;
       vi.spyOn(source, "viewApp").mockImplementation(async (appId) => ({
-        app: { id: appId } as never,
+        title: "App",
         url: `https://host.test/v1/apps/${appId}/dark/token/`,
       }));
       return `/?panel=browser&tab=${app}`;

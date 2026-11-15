@@ -3,7 +3,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { AppIdSchema, TabIdSchema, createId, type OpensteerApp } from "@opensteer/core";
+import { AppIdSchema, TabIdSchema, createId } from "@opensteer/core";
 import { tabFixture, tabStoreFixture } from "@opensteer/client/test-support";
 import type { AppEntry, HostSnapshot } from "@opensteer/client/host";
 import { useAppView } from "@opensteer/client/react";
@@ -39,15 +39,7 @@ const entry: AppEntry = {
   title: "Budget",
   version: 1,
 };
-const metadata: OpensteerApp = {
-  id: appId,
-  threadId: createId("thread"),
-  runId: createId("run"),
-  title: "Budget",
-  latestVersion: 1,
-  createdAt: entry.createdAt,
-  updatedAt: entry.createdAt,
-};
+const metadata = { title: "Budget" };
 async function mount(
   client: MockHostClient,
   count = 1,
@@ -87,7 +79,7 @@ function inWorkspace(client: MockHostClient) {
     };
   });
   vi.spyOn(client, "getSnapshot").mockImplementation(() => snapshot);
-  vi.spyOn(client, "viewApp").mockResolvedValue({ app: metadata, url: appUrl });
+  vi.spyOn(client, "viewApp").mockResolvedValue({ title: metadata.title, url: appUrl });
   const showPlace = vi.fn();
   const nav = { showPlace, beginPlaceOperation: () => showPlace } as unknown as WorkspaceNavigation;
   return {
@@ -112,7 +104,7 @@ function inWorkspace(client: MockHostClient) {
 it("uses an opaque sandbox, caps tall inline content, ignores foreign messages, and stays readable without height reports", async () => {
   const client = new MockHostClient();
   vi.spyOn(client, "viewApp").mockResolvedValue({
-    app: metadata,
+    title: metadata.title,
     url: "https://host.test/app?version=1",
   });
   const container = await mount(client);
@@ -168,7 +160,7 @@ it("reloads already-rendered cards on republish", async () => {
   });
   vi.spyOn(client, "getSnapshot").mockImplementation(() => snapshot);
   const read = vi.spyOn(client, "viewApp").mockImplementation(async () => ({
-    app: { ...metadata, title: `Budget ${latest}`, latestVersion: latest },
+    title: `Budget ${latest}`,
     url: appUrl,
   }));
   const container = await mount(client, 2);
@@ -226,7 +218,7 @@ it("says why an open failed and leaves the running card usable", async () => {
 });
 it("stays inline where there is no stage to open it in", async () => {
   const client = new MockHostClient();
-  vi.spyOn(client, "viewApp").mockResolvedValue({ app: metadata, url: appUrl });
+  vi.spyOn(client, "viewApp").mockResolvedValue({ title: metadata.title, url: appUrl });
   vi.spyOn(client, "getSnapshot").mockReturnValue({
     ...client.getSnapshot(),
     tabs: tabStoreFixture([tab]),
@@ -239,7 +231,7 @@ it("offers retry when a view read fails", async () => {
   const client = new MockHostClient();
   vi.spyOn(client, "viewApp")
     .mockRejectedValueOnce(new Error("offline"))
-    .mockResolvedValue({ app: metadata, url: "https://host.test/app" });
+    .mockResolvedValue({ title: metadata.title, url: "https://host.test/app" });
   const container = await mount(client);
   expect(container.querySelector('[role="alert"]')?.textContent).toContain("Could not load");
   await act(async () =>
@@ -252,7 +244,7 @@ it("passes a theme change to the existing frame without reloading the interactiv
   const client = new MockHostClient();
   const read = vi
     .spyOn(client, "viewApp")
-    .mockResolvedValue({ app: metadata, url: "https://host.test/app" });
+    .mockResolvedValue({ title: metadata.title, url: "https://host.test/app" });
   const previous = document.documentElement.style.colorScheme;
   try {
     document.documentElement.style.colorScheme = "dark";
@@ -276,8 +268,8 @@ it("retries a document that loaded without its bootstrap, ignoring forged ready 
   const client = new MockHostClient();
   const read = vi
     .spyOn(client, "viewApp")
-    .mockResolvedValueOnce({ app: metadata, url: "https://host.test/app?expired" })
-    .mockResolvedValue({ app: metadata, url: "https://host.test/app?fresh" });
+    .mockResolvedValueOnce({ title: metadata.title, url: "https://host.test/app?expired" })
+    .mockResolvedValue({ title: metadata.title, url: "https://host.test/app?fresh" });
   const container = await mount(client);
   const expired = container.querySelector("iframe")!;
   await act(() =>
@@ -321,7 +313,7 @@ it("keeps a live app view during a link blip and invalidates it for a publicatio
       listeners.delete(listener);
     };
   });
-  const read = vi.spyOn(client, "viewApp").mockResolvedValue({ app: metadata, url: appUrl });
+  const read = vi.spyOn(client, "viewApp").mockResolvedValue({ title: metadata.title, url: appUrl });
   function Probe() {
     const { view } = useAppView(client, appId, "dark");
     return <span>{view?.url ?? "loading"}</span>;
@@ -330,7 +322,7 @@ it("keeps a live app view during a link blip and invalidates it for a publicatio
   root = createRoot(container);
   await act(async () => root!.render(<Probe />));
   expect(container.textContent).toBe(appUrl);
-  const gate = Promise.withResolvers<{ app: OpensteerApp; url: string }>();
+  const gate = Promise.withResolvers<{ title: string; url: string }>();
   read.mockImplementation(() => gate.promise);
   try {
     await act(async () => {
@@ -349,7 +341,7 @@ it("keeps a live app view during a link blip and invalidates it for a publicatio
     });
     expect(container.textContent).toBe("loading");
   } finally {
-    await act(async () => gate.resolve({ app: metadata, url: appUrl }));
+    await act(async () => gate.resolve({ title: metadata.title, url: appUrl }));
   }
 });
 
@@ -358,7 +350,7 @@ it("keeps real-origin frames isolated and authenticates their messages under the
   const url = `https://${appOriginKey(appId)}-${"1".repeat(32)}.example.test/?opensteer-ticket=test`;
   vi.stubGlobal("location", { protocol: "app:" });
   const client = new MockHostClient();
-  vi.spyOn(client, "viewApp").mockResolvedValue({ app: metadata, url });
+  vi.spyOn(client, "viewApp").mockResolvedValue({ title: metadata.title, url });
   const container = await mount(client);
   const frame = container.querySelector("iframe")!;
   expect(frame.src).toBe(url);
@@ -398,7 +390,7 @@ it("retains a running origin across reconnect tickets and refreshes it on every 
   });
   let ticket = 0;
   const read = vi.spyOn(client, "viewApp").mockImplementation(async () => ({
-    app: metadata,
+    title: metadata.title,
     url: `${origin}/?opensteer-ticket=${++ticket}`,
   }));
   let state: ReturnType<typeof useAppView>;
@@ -472,7 +464,7 @@ it("retains a running origin across reconnect tickets and refreshes it on every 
 it("keeps the legacy document opaque when desktop rewrites its capability URL", async () => {
   vi.stubGlobal("location", { protocol: "app:" });
   const client = new MockHostClient();
-  vi.spyOn(client, "viewApp").mockResolvedValue({ app: metadata, url: appUrl });
+  vi.spyOn(client, "viewApp").mockResolvedValue({ title: metadata.title, url: appUrl });
   const container = await mount(client);
   const frame = container.querySelector("iframe")!;
   expect(frame.getAttribute("src")).toBe(`opensteer-app://view${new URL(appUrl).pathname}`);

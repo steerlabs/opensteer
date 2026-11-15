@@ -141,6 +141,10 @@ function SelectedPlace({
     placeKey === null ? null : hostClient.tabViewer(placeKey),
   );
   const pageSession = viewer?.kind === "page" ? viewer.sessionId : null;
+  // The page view stays mounted from page to page, as a browser's does: while a newly selected
+  // page activates, it holds the last page's picture and waits for this page's own binding.
+  const lastPageSession = useRef<string | null>(null);
+  if (pageSession) lastPageSession.current = pageSession;
   const dockedThread = !phone && dock.open ? conversationAt(pathname) : null;
   const showBrowserTab = useCallback(
     (destination: { readonly tabId: TabId }, options: { replace: boolean }) =>
@@ -162,6 +166,10 @@ function SelectedPlace({
     readonly message?: string;
   } | null>(null);
   const [retry, setRetry] = useState(0);
+  // The person's Open of this tab: spent by its first activation, renewed by Try again or Reopen.
+  // Only it may wake a phone; reactivating an expired view never does.
+  const open = useRef<{ tabId: string | null; wake: boolean }>({ tabId: placeKey, wake: true });
+  if (open.current.tabId !== placeKey) open.current = { tabId: placeKey, wake: true };
   const tabState = live?.tab.state;
   const kind = live?.kind;
   // Selecting a tab opens (or wakes) this device's view of it; an unavailable tab says why instead.
@@ -184,7 +192,8 @@ function SelectedPlace({
     setActivation({ tabId: placeKey, state: "activating" });
     let pending = pendingActivation.current;
     if (pending?.tabId !== placeKey) {
-      const done = hostClient.activateTab(placeKey);
+      const done = hostClient.activateTab(placeKey, { wake: open.current.wake });
+      open.current.wake = false;
       pending = pendingActivation.current = { tabId: placeKey, done };
       const settled = () => {
         if (pendingActivation.current === pending) pendingActivation.current = null;
@@ -213,7 +222,7 @@ function SelectedPlace({
       ? (activation.message ?? null)
       : null;
   const reopenView = useCallback(async () => {
-    if (placeKey !== null) await hostClient.activateTab(placeKey);
+    if (placeKey !== null) await hostClient.activateTab(placeKey, { wake: true });
   }, [hostClient, placeKey]);
   if (live && placeKey) known.current.set(placeKey, live);
   // A tab just closed keeps its chrome until its successor takes the middle.
@@ -296,7 +305,7 @@ function SelectedPlace({
           }
           trailing={trailing}
         />
-      ) : place?.kind === "page" && tabId && !pageSession ? (
+      ) : place?.kind === "page" && tabId && !(pageSession ?? lastPageSession.current) ? (
         <div className="browser-view">
           <div className="browser-toolbar surface-row" ref={toolbarRef}>
             {leading}
@@ -311,7 +320,10 @@ function SelectedPlace({
                   {activationError ? (
                     <button
                       className="btn btn--small"
-                      onClick={() => setRetry((value) => value + 1)}
+                      onClick={() => {
+                        open.current.wake = true;
+                        setRetry((value) => value + 1);
+                      }}
                       type="button"
                     >
                       Try again
@@ -324,13 +336,17 @@ function SelectedPlace({
             </div>
           </div>
         </div>
-      ) : place?.kind === "page" && tabId && pageSession ? (
+      ) : place?.kind === "page" && tabId ? (
         <PlaceBrowserView
           activationError={activationError}
+          awaitingBinding={pageSession === null}
           chromeSignIn={chromeSignIn}
           connected={hostConnected}
           lastingReason={place.unavailableReason}
-          onRetry={() => setRetry((value) => value + 1)}
+          onRetry={() => {
+            open.current.wake = true;
+            setRetry((value) => value + 1);
+          }}
           compact={phone}
           pair={pair}
           marks={marks}
@@ -340,7 +356,7 @@ function SelectedPlace({
           onReportError={onReportError}
           place={place}
           presentation={presentations.byTab.get(tabId) ?? null}
-          sessionId={pageSession}
+          sessionId={(pageSession ?? lastPageSession.current)!}
           tabId={tabId}
           trailing={trailing}
           visible={pageVisible}

@@ -673,10 +673,11 @@ export class HttpHostClient {
     },
     listApps: async (query) =>
       unwrapRpcResult(await this.rpc["apps.list"](query ? { query } : {})).apps as App[],
-    activated: (tab, viewer) => {
+    getApp: async (appId) => unwrapRpcResult(await this.rpc["apps.get"]({ appId })) as App,
+    activated: (tab, viewer, wake) => {
       this.#viewers.set(tab.tabId, viewer);
       if (viewer.kind === "page") this.#bindPage(tab, viewer.sessionId);
-      else if (viewer.kind !== "app") this.#acceptOwnerView(viewer.view);
+      else if (viewer.kind !== "app") this.#acceptOwnerView(viewer.view, wake);
       else this.#update(this.#snapshot);
     },
   });
@@ -688,18 +689,19 @@ export class HttpHostClient {
   readonly updateTabGroup = this.#tabsClient.updateTabGroup;
   readonly deleteTabGroup = this.#tabsClient.deleteTabGroup;
   readonly listApps = this.#tabsClient.listApps;
+  readonly getApp = this.#tabsClient.getApp;
   readonly renameApp = this.#tabsClient.renameApp;
   readonly startApp = this.#tabsClient.startApp;
   readonly stopApp = this.#tabsClient.stopApp;
   readonly deleteApp = this.#tabsClient.deleteApp;
   /** A person's own view of a window or phone, opened by activating its tab. */
-  #acceptOwnerView(view: import("@opensteer/protocol").ComputerView): void {
+  #acceptOwnerView(view: import("@opensteer/protocol").ComputerView, wake: boolean): void {
     this.#update({
       ...this.#snapshot,
       machines: [...this.#ownerViews.accept(this.#snapshot.machines, view)],
     });
-    // Only a person's own activation may wake a phone, and only once.
-    if (view.target.kind === "phone" && view.state === "ready")
+    // Only the person's explicit Open may wake a phone, and only once.
+    if (wake && view.target.kind === "phone" && view.state === "ready")
       sharedDisplayStreams(this).armAutoWake({
         kind: "owner-view",
         viewId: view.viewId,
@@ -1424,7 +1426,9 @@ export class HttpHostClient {
     const view = unwrapRpcResult(
       await this.rpc["apps.view"]({ appId, theme }, signal ? { signal } : undefined),
     );
-    return { app: view.app, url: view.entryUrl ?? this.#url(view.path) };
+    // Read by field so the app's name serves whichever app record the Host returns.
+    const app: { readonly name?: string; readonly title?: string } = view.app;
+    return { title: app.name ?? app.title ?? "", url: view.entryUrl ?? this.#url(view.path) };
   }
 
   async getAttachment(attachmentId: string): Promise<Attachment> {

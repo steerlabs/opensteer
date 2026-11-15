@@ -8,8 +8,7 @@ import {
   type ComputerGlyph,
   type DeviceElsewhere,
 } from "../computers/computers.js";
-import { placeHasAgents, type PlaceItem } from "./places.js";
-type PlaceFilterItem = Pick<PlaceItem, "key" | "identity" | "device" | "occupants">;
+import { placeHasAgents, type PlaceFilterItem, type PlaceItem } from "./places.js";
 import { sameIdentity, type PlaceBrowserIdentity } from "./start-page-model.js";
 
 /**

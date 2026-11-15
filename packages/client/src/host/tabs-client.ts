@@ -20,9 +20,10 @@ export interface TabsClientPort {
   /** Sends one command under the given key; a transport retry reuses that key. */
   dispatch(command: TabCommand | AppCommand): Promise<TabCommandResult | AppCommandResult>;
   listApps(query?: string): Promise<App[]>;
+  getApp(appId: AppId): Promise<App>;
   readonly store: TabStore;
   /** The page session the Host bound for this device's view of a tab. */
-  activated?(tab: Tab, viewer: TabViewer): void;
+  activated?(tab: Tab, viewer: TabViewer, wake: boolean): void;
 }
 
 /**
@@ -56,9 +57,9 @@ export function createTabsClient(port: TabsClientPort): TabsClient {
       port.store.applyCommand({ layout: result.layout, tabs: [result.tab as Tab] });
       return result.tab as Tab;
     },
-    async activateTab(tabId) {
+    async activateTab(tabId, options) {
       const result = await send({ type: "tab.activate", tabId });
-      port.activated?.(result.tab as Tab, result.viewer);
+      port.activated?.(result.tab as Tab, result.viewer, options?.wake === true);
       return result.viewer;
     },
     async organizeTabs(input) {
@@ -79,6 +80,7 @@ export function createTabsClient(port: TabsClientPort): TabsClient {
       port.store.applyCommand({ layout: result.layout });
     },
     listApps: (query?: string) => port.listApps(query),
+    getApp: (appId: AppId) => port.getApp(appId),
     async renameApp(appId: AppId, name: string) {
       return (await send({ type: "app.rename", appId, name })).app as App;
     },

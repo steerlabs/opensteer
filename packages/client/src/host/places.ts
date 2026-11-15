@@ -1,6 +1,11 @@
 import type { Tab, TabId, TabKind } from "@opensteer/core";
 import type { PlaceOccupant } from "@opensteer/protocol";
-import { browserIdentity, displayAddress, type PlaceBrowserIdentity } from "./start-page-model.js";
+import {
+  browserIdentity,
+  displayAddress,
+  sameIdentity,
+  type PlaceBrowserIdentity,
+} from "./start-page-model.js";
 import { searchText, type SearchField } from "./search.js";
 import type { HostSnapshot } from "./client.js";
 import type { TabDestination } from "./surfaces.js";
@@ -168,6 +173,48 @@ export function placeList(source: PlaceListSource): readonly PlaceItem[] {
       : next;
   lists.set(strip, { rows: source.tabs.rows, profiles: source.browserProfiles, list });
   return list;
+}
+/** What the tab filter reads of one tab: only who it browses as, where, and whether agents use it. */
+export type PlaceFilterItem = Pick<PlaceItem, "key" | "identity" | "device" | "occupants">;
+const filterLists = new WeakMap<
+  object,
+  { readonly places: readonly PlaceItem[]; readonly list: readonly PlaceFilterItem[] }
+>();
+/**
+ * Every known tab as the filter reads it, in layout order. A row keeps its
+ * item, and the list its identity, until something the filter reads changes,
+ * so a title or a page loading costs one pass and recomputes no match.
+ */
+export function placeFilterList(source: PlaceListSource): readonly PlaceFilterItem[] {
+  const places = placeList(source);
+  const held = filterLists.get(source.tabs);
+  if (held?.places === places) return held.list;
+  const before = new Map(held?.list.map((item) => [item.key, item]));
+  let same = held !== undefined && held.list.length === places.length;
+  const list = places.map((place, index): PlaceFilterItem => {
+    const old = before.get(place.key);
+    const kept =
+      old !== undefined &&
+      old.device.machineId === place.device.machineId &&
+      old.occupants.length > 0 === place.occupants.length > 0 &&
+      (old.identity === place.identity ||
+        (old.identity !== null &&
+          place.identity !== null &&
+          sameIdentity(old.identity, place.identity)));
+    const item = kept
+      ? old
+      : {
+          key: place.key,
+          identity: place.identity,
+          device: place.device,
+          occupants: place.occupants,
+        };
+    if (item !== held?.list[index]) same = false;
+    return item;
+  });
+  const result = same ? held!.list : list;
+  filterLists.set(source.tabs, { places, list: result });
+  return result;
 }
 export function placeByKey(source: PlaceListSource, key: string): PlaceItem | undefined {
   const tab = source.tabs.get(key as TabId);

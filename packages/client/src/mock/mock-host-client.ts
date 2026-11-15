@@ -1,6 +1,7 @@
 import { NeedsYouPageSchema } from "@opensteer/protocol";
 import { localReference } from "../references/local.js";
-import { parseLegacyReferenceHref, type ReferenceId } from "@opensteer/core";
+import type { IdReference } from "../references/links.js";
+import { parseReferenceHref, type ReferenceId } from "@opensteer/core";
 import { AssetUrlStore } from "../host/asset-urls.js";
 import { ReferenceStore } from "../references/store.js";
 import { TranscriptFileController } from "../host/transcript-files.js";
@@ -1940,7 +1941,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
           ok: false,
           error: {
             code: "internal",
-            message: "LegacyReference lookup temporarily unavailable",
+            message: "Reference lookup temporarily unavailable",
             retryable: true,
           },
         };
@@ -1948,7 +1949,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       return rpcSuccess(
         hostApi["references.resolve"].success.parse({
           results: [...new Set(ids)].map((id) => {
-            const reference = parseLegacyReferenceHref(`opensteer:${id}`)!;
+            const reference = parseReferenceHref(`opensteer:${id}`) as IdReference;
             if (reference.kind === "request") {
               const request = client.referenceRequest(id);
               if (request && heldThread(snapshot, request.originatingThreadId))
@@ -3834,6 +3835,7 @@ export class MockHostClient implements HostClient {
   readonly updateTabGroup: TabsClient["updateTabGroup"];
   readonly deleteTabGroup: TabsClient["deleteTabGroup"];
   readonly listApps: TabsClient["listApps"];
+  readonly getApp: TabsClient["getApp"];
   readonly renameApp: TabsClient["renameApp"];
   readonly startApp: TabsClient["startApp"];
   readonly stopApp: TabsClient["stopApp"];
@@ -4053,10 +4055,11 @@ export class MockHostClient implements HostClient {
       },
       listApps: async (query) =>
         unwrapRpcResult(await this.rpc["apps.list"](query ? { query } : {})).apps as App[],
-      activated: (tab, viewer) => {
+      getApp: async (appId) => unwrapRpcResult(await this.rpc["apps.get"]({ appId })) as App,
+      activated: (tab, viewer, wake) => {
         this.#viewers.set(tab.tabId, viewer);
-        // Only a person's own activation may wake a phone, and only once.
-        if (viewer.kind === "phone" && viewer.view.state === "ready")
+        // Only the person's explicit Open may wake a phone, and only once.
+        if (wake && viewer.kind === "phone" && viewer.view.state === "ready")
           sharedDisplayStreams(this).armAutoWake({
             kind: "owner-view",
             viewId: viewer.view.viewId,
@@ -4073,6 +4076,7 @@ export class MockHostClient implements HostClient {
     this.updateTabGroup = tabs.updateTabGroup;
     this.deleteTabGroup = tabs.deleteTabGroup;
     this.listApps = tabs.listApps;
+    this.getApp = tabs.getApp;
     this.renameApp = tabs.renameApp;
     this.startApp = tabs.startApp;
     this.stopApp = tabs.stopApp;
@@ -4366,7 +4370,7 @@ export class MockHostClient implements HostClient {
     _appId: string,
     _theme: "light" | "dark",
     _signal?: AbortSignal,
-  ): Promise<{ app: import("@opensteer/core").OpensteerApp; url: string }> {
+  ): Promise<{ title: string; url: string }> {
     throw new Error("Published apps are unavailable in this preview.");
   }
 

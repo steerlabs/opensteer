@@ -6,12 +6,12 @@ import path from "node:path";
 import { expectThat, finishJourney, journeyChecks, openMockWeb } from "./mock-web-journey.js";
 
 const artifactDirectory = path.resolve(
-  process.env.OPENSTEER_BROWSER_RESTORE_EVIDENCE_DIR ??
-    path.join(tmpdir(), "opensteer-browser-restore-evidence"),
+  process.env.OPENSTEER_TAB_ACTIVATION_EVIDENCE_DIR ??
+    path.join(tmpdir(), "opensteer-tab-activation-evidence"),
 );
 await mkdir(artifactDirectory, { recursive: true });
 const { checks, check, abort } = journeyChecks();
-const web = await openMockWeb("opensteer-browser-restore-web");
+const web = await openMockWeb("opensteer-tab-activation-web");
 const trace: Record<string, unknown>[] = [];
 try {
   const context = await web.browser.newContext({ viewport: { width: 1440, height: 1000 } });

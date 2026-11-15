@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useSyncExternalStore } from "react";
-import type { Tab, TabId, TabLayout } from "@opensteer/core";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import type { App, AppId, Tab, TabId, TabLayout } from "@opensteer/core";
 import { AppsList, type AppsListState } from "../host/apps.js";
 import type { HostClient } from "../host/client.js";
 import { hostSnapshotStore } from "../host/host-snapshot-store.js";
@@ -80,4 +80,32 @@ export function useTabsRevision(hostClient: HostClient): number {
   const subscribe = useCallback((listener: () => void) => tabs.subscribe(listener), [tabs]);
   const get = useCallback(() => tabs.revision, [tabs]);
   return useSyncExternalStore(subscribe, get, get);
+}
+
+/**
+ * One app's record, read when shown and again on each apps change. Null until
+ * the first read lands or if it fails; a failed reread keeps the last answer.
+ */
+export function useApp(hostClient: HostClient, appId: AppId | null): App | null {
+  const store = hostSnapshotStore(hostClient);
+  const revision = useSyncExternalStore(
+    store.subscribe,
+    () => hostClient.getSnapshot().appsRevision,
+    () => hostClient.getSnapshot().appsRevision,
+  );
+  const [read, setRead] = useState<{ readonly appId: AppId; readonly app: App | null } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (appId === null) return;
+    let current = true;
+    hostClient.getApp(appId).then(
+      (app) => current && setRead({ appId, app }),
+      () => current && setRead((held) => (held?.appId === appId ? held : { appId, app: null })),
+    );
+    return () => {
+      current = false;
+    };
+  }, [appId, hostClient, revision]);
+  return read?.appId === appId ? read.app : null;
 }

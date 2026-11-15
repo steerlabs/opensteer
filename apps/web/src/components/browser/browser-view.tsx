@@ -87,6 +87,7 @@ function sameReads(left: BrowserReads, right: BrowserReads): boolean {
  */
 export function PlaceBrowserView({
   activationError,
+  awaitingBinding = false,
   connected,
   lastingReason,
   onRetry,
@@ -106,6 +107,11 @@ export function PlaceBrowserView({
   visible,
 }: {
   readonly activationError: string | null;
+  /**
+   * This tab's own session is not bound yet: `sessionId` is the page shown before it, whose
+   * viewer stays held until this one is admitted, so the view hands over instead of remounting.
+   */
+  readonly awaitingBinding?: boolean;
   readonly connected: boolean;
   readonly lastingReason: string | null;
   readonly onRetry: () => void;
@@ -210,7 +216,12 @@ export function PlaceBrowserView({
     error: presentationError,
     presented: presentationPresented,
     retry: retryPresentation,
-  } = useBrowserPresentationWait(hostClient, sessionId, tabId, visible && watchable);
+  } = useBrowserPresentationWait(
+    hostClient,
+    sessionId,
+    tabId,
+    visible && watchable && !awaitingBinding,
+  );
   useLayoutEffect(() => {
     if (!watchable) {
       retained.current?.release();
@@ -224,7 +235,7 @@ export function PlaceBrowserView({
       for (const release of retired.current.splice(0)) release();
       return;
     }
-    if (mode.mode === "pending") return;
+    if (mode.mode === "pending" || awaitingBinding) return;
     const key = viewerKey;
     if (retained.current?.key === key) return;
     try {
@@ -254,6 +265,7 @@ export function PlaceBrowserView({
       onReportError(error);
     }
   }, [
+    awaitingBinding,
     hostClient,
     mode.error,
     mode.mode,
