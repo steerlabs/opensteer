@@ -333,7 +333,7 @@ export async function startTeamKnowledge(options: {
   async function topics(
     agent: TeamKnowledgeAgent,
   ): Promise<TeamKnowledgeAnswer<TeamKnowledgeTopicsResult>> {
-    const authorizedAt = access.revision;
+    const authorizedAt = await access.current();
     return denied(agent, "knowledge.topics", async () => {
       const { result, room, actor } = await inTransaction(async (transaction) => {
         const { actor, room } = await caller(transaction, agent);
@@ -400,7 +400,7 @@ export async function startTeamKnowledge(options: {
     agent: TeamKnowledgeAgent,
     input: TeamKnowledgeReadInput,
   ): Promise<TeamKnowledgeAnswer<TeamKnowledgeReadResult>> {
-    const authorizedAt = access.revision;
+    const authorizedAt = await access.current();
     return denied(agent, "knowledge.read", async () => {
       const read = await inTransaction(async (transaction) => {
         const { actor, room } = await caller(transaction, agent);
@@ -485,7 +485,7 @@ export async function startTeamKnowledge(options: {
     agent: TeamKnowledgeAgent,
     input: TeamKnowledgeWrite,
   ): Promise<TeamKnowledgeAnswer<TeamKnowledgeWriteResult>> {
-    const authorizedAt = access.revision;
+    const authorizedAt = await access.current();
     return denied(agent, "knowledge.write", async () => {
       const outcome = await access.knowledgeWrite(async (transaction) => {
         const { actor, room } = await caller(transaction, agent);
@@ -590,7 +590,7 @@ export async function startTeamKnowledge(options: {
     });
 
   async function topicsList(actor: TeamActor, input: Read<"team.knowledge.topics.list">["input"]) {
-    const authorizedAt = access.revision;
+    const authorizedAt = await access.current();
     const page = await inTransaction(async (transaction) => {
       const seen: TeamTopic[] = [];
       let after = input.after;
@@ -620,7 +620,7 @@ export async function startTeamKnowledge(options: {
     const person = human(actor);
     if (!isTeamKnowledgeRead(name))
       throw new OpensteerError({ code: "not_found", message: "Unsupported knowledge read" });
-    const authorizedAt = access.revision;
+    const authorizedAt = await access.current();
     switch (name) {
       case "team.knowledge.topics.list":
         return topicsList(person, teamReadSchemas[name].input.parse(input));

@@ -1,7 +1,11 @@
+import { randomUUID } from "node:crypto";
+import { sql } from "kysely";
+import type { TeamBus } from "@opensteer/database/team-bus";
 import { OpensteerError, type TeamActor, type TeamChannelId, type UserId } from "@opensteer/core";
 import {
   readTeamFrame,
   TeamClientFrameViewSchema,
+  TeamMemberSchema,
   type TeamConsistentCut,
   type TeamServerFrameSchema,
 } from "@opensteer/protocol";
@@ -19,7 +23,7 @@ type Frame = z.infer<typeof TeamServerFrameSchema>;
 type Scope = TeamConsistentCut["scope"];
 export interface TeamSocket {
   send(frame: Frame): boolean;
-  close(reason: string): void;
+  close(code: number, reason: string): void;
 }
 interface Subscription {
   id: string;
@@ -31,6 +35,7 @@ interface Subscription {
   linkOwners: UserId[];
 }
 interface Peer {
+  id: string;
   version: number;
   actor: TeamActor;
   socket: TeamSocket;
@@ -57,7 +62,36 @@ export class TeamRealtimeHub {
   #pumping = false;
   readonly access: TeamAccessStore;
   readonly chat: TeamChatStore;
-  constructor(access: TeamAccessStore, chat: TeamChatStore) {
+  readonly #bus: TeamBus | undefined;
+  readonly #processId: string;
+  readonly #off: (() => void)[] = [];
+  #lastPresence = 0;
+  constructor(
+    access: TeamAccessStore,
+    chat: TeamChatStore,
+    bus?: TeamBus,
+    processId: string = randomUUID(),
+  ) {
+    this.#bus = bus;
+    this.#processId = processId;
+    this.#off.push(access.onCloseAll((code) => this.closeAll(code)));
+    if (bus)
+      this.#off.push(
+        bus.on((event) => {
+          if (event.kind === "typing") {
+            const key = `${event.userId}:${event.channelId}:${event.rootId}`;
+            if (event.typing)
+              this.#typing.set(key, { ...event, sent: Date.now(), until: Date.now() + 6000 });
+            else this.#typing.delete(key);
+            this.#typingFrame(event.channelId, event.rootId);
+          }
+          if (event.kind === "presence")
+            void this.#refreshPresence().catch(() => this.closeAll(1012));
+          if (event.kind === "member")
+            void this.#member(event.userId).catch(() => this.closeAll(1012));
+          if (event.kind === "linkPresence") void this.linkPresenceChanged(event.userId, false);
+        }),
+      );
     this.access = access;
     this.chat = chat;
     this.#unsubscribeChange = chat.onChange((id) => {
@@ -145,19 +179,71 @@ export class TeamRealtimeHub {
     }
     return pending;
   }
-  visible(userId: UserId, channelId: TeamChannelId) {
-    return [...this.#peers].some(
-      (p) =>
-        p.actor.userId === userId &&
-        p.visible &&
-        [...p.subscriptions.values()].some((s) => s.scope?.channelId === channelId) &&
-        Date.now() - p.seen < 90000,
+  async visible(userId: UserId, channelId: TeamChannelId) {
+    const result = await sql`select 1 from team_presence where user_id=${userId} and visible
+      and seen_at > now()-interval '90 seconds' and ${channelId}=any(channel_ids) limit 1`.execute(
+      this.access.database,
     );
+    return result.rows.length > 0;
+  }
+  async #persist(peer: Peer) {
+    if (peer.closed) return;
+    const ids = [...peer.subscriptions.values()].flatMap((s) =>
+      s.scope ? [s.scope.channelId] : [],
+    );
+    await sql`insert into team_presence(connection_id,process_id,user_id,visible,channel_ids,seen_at)
+      values (${peer.id},${this.#processId},${peer.actor.userId},${peer.visible},${ids}::text[],${new Date(peer.seen)})
+      on conflict(connection_id) do update set visible=excluded.visible,channel_ids=excluded.channel_ids,seen_at=excluded.seen_at`.execute(
+      this.access.database,
+    );
+    if (peer.closed) await this.#deletePresence(peer);
+  }
+  async #deletePresence(peer: Peer) {
+    await sql`delete from team_presence where connection_id=${peer.id}`.execute(
+      this.access.database,
+    );
+  }
+  async #member(userId: UserId) {
+    const row = await this.access.database
+      .selectFrom("teamMembers as m")
+      .innerJoin("users as u", "u.id", "m.userId")
+      .selectAll("m")
+      .select(["u.displayName", "u.image", "u.nameRevision"])
+      .where("m.userId", "=", userId)
+      .executeTakeFirst();
+    if (row)
+      this.memberUpdated(
+        TeamMemberSchema.parse({
+          ...row,
+          joinedAt: row.joinedAt.toISOString(),
+          nameRevision: Number(row.nameRevision),
+        }),
+      );
+  }
+  async resync() {
+    await this.access.sync();
+    for (const peer of this.#peers) {
+      for (const subscription of peer.subscriptions.values())
+        if (subscription.scope) this.#dirty.add(subscription.scope.channelId);
+      if ([...peer.subscriptions.values()].some((s) => s.sidebar)) {
+        const revision = await this.access.current();
+        await this.#handoff(
+          peer,
+          { type: "team.sidebar", sidebar: await this.#sidebar(peer.actor, peer.version) },
+          revision,
+        );
+      }
+    }
+    const members = await this.access.database.selectFrom("teamMembers").select("userId").execute();
+    for (const member of members) await this.#member(member.userId);
+    await this.#refreshPresence();
+    await this.#pump();
   }
   connect(actor: TeamActor, socket: TeamSocket) {
     if (actor.kind !== "human")
       throw new OpensteerError({ code: "forbidden", message: "Human team session required" });
     const peer: Peer = {
+      id: randomUUID(),
       actor,
       version: 0,
       socket,
@@ -169,6 +255,7 @@ export class TeamRealtimeHub {
       presence: "",
     };
     this.#peers.add(peer);
+    void this.#persist(peer).catch(() => this.#close(peer, "Presence unavailable", 1012));
     return {
       receive: async (raw: unknown) => {
         if (typeof raw !== "object" || raw === null || !("type" in raw))
@@ -204,12 +291,12 @@ export class TeamRealtimeHub {
           const hadSidebar = [...peer.subscriptions.values()].some((s) => s.sidebar);
           peer.subscriptions.set(subscription.id, subscription);
           if (frame.sidebar && !hadSidebar) {
-            const revision = this.access.revision;
+            const revision = await this.access.current();
             const sidebar = await this.#sidebar(actor, peer.version);
             await this.#handoff(peer, { type: "team.sidebar", sidebar }, revision);
           }
           if (frame.scope) {
-            const revision = this.access.revision;
+            const revision = await this.access.current();
             const cut = await this.#snapshot(actor, subscription, peer.version);
             if (peer.subscriptions.get(subscription.id) !== subscription || peer.closed) return;
             subscription.can = cut.channel.can;
@@ -220,8 +307,9 @@ export class TeamRealtimeHub {
         } else if (frame.type === "team.presence") {
           peer.visible = frame.visible;
           peer.watched = frame.watchedUserIds;
-          this.#presence(peer);
+          await this.#refreshPresence();
         } else {
+          await this.#persist(peer);
           const allowed = await withTeamPeerVersion(peer.version, () =>
             this.access.database
               .transaction()
@@ -232,12 +320,19 @@ export class TeamRealtimeHub {
           if (!allowed) return;
           const key = `${actor.userId}:${frame.channelId}:${frame.rootId}`;
           const prior = this.#typing.get(key);
+          if (frame.typing && prior && Date.now() - prior.sent < 3000) return;
+          await this.#bus?.publish({
+            kind: "typing",
+            channelId: frame.channelId,
+            rootId: frame.rootId,
+            userId: actor.userId,
+            typing: frame.typing,
+          });
           if (!frame.typing) {
             this.#typing.delete(key);
             this.#typingFrame(frame.channelId, frame.rootId);
             return;
           }
-          if (prior && Date.now() - prior.sent < 3000) return;
           this.#typing.set(key, {
             userId: actor.userId,
             channelId: frame.channelId,
@@ -247,11 +342,20 @@ export class TeamRealtimeHub {
           });
           this.#typingFrame(frame.channelId, frame.rootId);
         }
+        await this.#persist(peer);
       },
-      close: () => this.#close(peer, "Disconnected"),
+      close: () => this.#close(peer, "Disconnected", 1012),
     };
   }
   #send(peer: Peer, frame: Frame) {
+    void (async () => {
+      const revision = await this.access.current();
+      if (!(await this.#authorize(peer)))
+        throw new OpensteerError({ code: "forbidden", message: "Team access changed" });
+      await this.#handoff(peer, frame, revision);
+    })().catch((error) => this.#failure(peer, error, "Team access changed"));
+  }
+  #write(peer: Peer, frame: Frame) {
     if (frame.type === "team.cut") {
       const shared = !!frame.cut.channel.share;
       try {
@@ -261,41 +365,29 @@ export class TeamRealtimeHub {
         return;
       }
     }
-    if (frame.type === "team.link.presence")
-      frame = { ...frame, online: this.chat.identity.agentOnline?.(frame.userId) ?? frame.online };
-    else if (frame.type === "team.cut")
-      frame = {
-        ...frame,
-        cut: {
-          ...frame.cut,
-          linkPresence: frame.cut.linkPresence.map((entry) => ({
-            ...entry,
-            online: this.chat.identity.agentOnline?.(entry.ownerUserId) ?? entry.online,
-          })),
-        },
-      };
     if (!peer.closed && !peer.socket.send(frame))
-      this.#close(peer, "Team connection exceeded its buffer");
+      this.#close(peer, "Team connection exceeded its buffer", 1012);
+  }
+  async #authorize(peer: Peer) {
+    return withTeamPeerVersion(peer.version, () =>
+      this.access.database.transaction().execute(async (t) => {
+        await this.access.member(t, peer.actor.userId);
+        for (const subscription of peer.subscriptions.values())
+          if (
+            subscription.scope &&
+            !(await this.access.peerChannel(t, peer.actor, subscription.scope.channelId)).read
+          )
+            return false;
+        return true;
+      }),
+    );
   }
   async #handoff(peer: Peer, frame: Frame, revision: typeof this.access.revision) {
     await withTeamPeerVersion(peer.version, () =>
       this.access.handoff(
         revision,
-        () =>
-          this.access.database.transaction().execute(async (t) => {
-            await this.access.member(t, peer.actor.userId);
-            return (
-              await Promise.all(
-                [...peer.subscriptions.values()]
-                  .filter((s) => s.scope)
-                  .map(
-                    async (s) =>
-                      (await this.access.peerChannel(t, peer.actor, s.scope!.channelId)).read,
-                  ),
-              )
-            ).every(Boolean);
-          }),
-        () => this.#send(peer, frame),
+        () => this.#authorize(peer),
+        () => this.#write(peer, frame),
       ),
     );
   }
@@ -311,8 +403,8 @@ export class TeamRealtimeHub {
           if ([...peer.subscriptions.values()].some((s) => s.sidebar)) {
             try {
               await this.#sidebarDirty(peer, dirty);
-            } catch {
-              this.#close(peer, "Team sidebar unavailable");
+            } catch (error) {
+              this.#failure(peer, error, "Team sidebar unavailable");
             }
           }
           for (const subscription of peer.subscriptions.values()) {
@@ -334,7 +426,7 @@ export class TeamRealtimeHub {
           const scope = subscription.scope;
           if (!scope) continue;
           try {
-            const revision = this.access.revision;
+            const revision = await this.access.current();
             const cut = await withTeamPeerVersion(first.peer.version, () =>
               this.chat.resume(first.peer.actor, {
                 subscriptionId: subscription.id,
@@ -363,10 +455,7 @@ export class TeamRealtimeHub {
             }
           } catch (error) {
             for (const { peer } of viewers)
-              this.#close(
-                peer,
-                error instanceof Error ? error.message : "Team subscription unavailable",
-              );
+              this.#failure(peer, error, "Team subscription unavailable");
           }
         }
       }
@@ -375,8 +464,8 @@ export class TeamRealtimeHub {
     }
   }
   async #readable(peer: Peer) {
-    while (peer.readable?.revision !== this.access.revision) {
-      const revision = this.access.revision;
+    while (peer.readable?.revision !== (await this.access.current())) {
+      const revision = await this.access.current();
       const ids = await withTeamPeerVersion(peer.version, () =>
         this.access.database.transaction().execute(async (t) => {
           await this.access.member(t, peer.actor.userId);
@@ -387,7 +476,7 @@ export class TeamRealtimeHub {
             .execute();
         }),
       );
-      if (revision === this.access.revision)
+      if (revision === (await this.access.current()))
         peer.readable = { revision, ids: new Set(ids.map((row) => row.id)) };
     }
     return peer.readable;
@@ -412,6 +501,7 @@ export class TeamRealtimeHub {
     );
   }
   async linkPresenceChanged(userId: UserId, online: boolean) {
+    online = (await this.chat.identity.agentOnline?.(userId)) ?? online;
     for (const peer of this.#peers) {
       if (
         ![...peer.subscriptions.values()].some(
@@ -420,7 +510,7 @@ export class TeamRealtimeHub {
       )
         continue;
       try {
-        const revision = this.access.revision;
+        const revision = await this.access.current();
         await this.access.database.transaction().execute(async (t) => {
           await this.access.member(t, peer.actor.userId);
           for (const subscription of peer.subscriptions.values())
@@ -431,8 +521,8 @@ export class TeamRealtimeHub {
               throw new OpensteerError({ code: "forbidden", message: "Team access changed" });
         });
         await this.#handoff(peer, { type: "team.link.presence", userId, online }, revision);
-      } catch {
-        this.#close(peer, "Team presence unavailable");
+      } catch (error) {
+        this.#failure(peer, error, "Team presence unavailable");
       }
     }
   }
@@ -453,19 +543,21 @@ export class TeamRealtimeHub {
           userIds,
         });
   }
-  #presence(peer: Peer, online = this.#online()) {
+  #presence(peer: Peer, online: Set<UserId>) {
     const people = peer.watched.map((userId) => ({ userId, online: online.has(userId) }));
     const key = JSON.stringify(people);
     if (key === peer.presence) return;
     peer.presence = key;
     this.#send(peer, { type: "team.presence", people });
   }
-  #online() {
-    return new Set(
-      [...this.#peers]
-        .filter((p) => p.visible && p.seen > Date.now() - 90000)
-        .map((p) => p.actor.userId),
+  async #refreshPresence() {
+    const rows = await sql<{
+      userId: UserId;
+    }>`select distinct user_id from team_presence where visible and seen_at > now()-interval '90 seconds'`.execute(
+      this.access.database,
     );
+    const online = new Set(rows.rows.map((row) => row.userId));
+    for (const peer of this.#peers) if (peer.watched.length) this.#presence(peer, online);
   }
   #expire() {
     const now = Date.now();
@@ -474,19 +566,37 @@ export class TeamRealtimeHub {
         this.#typing.delete(key);
         this.#typingFrame(typing.channelId, typing.rootId);
       }
-    const online = this.#online();
-    for (const peer of this.#peers) if (peer.watched.length) this.#presence(peer, online);
+    if (now - this.#lastPresence >= 15_000) {
+      this.#lastPresence = now;
+      void this.#refreshPresence().catch(() => this.closeAll(1012));
+    }
   }
-  #close(peer: Peer, reason: string) {
+  #failure(peer: Peer, error: unknown, reason: string) {
+    const refused =
+      error instanceof OpensteerError &&
+      (error.code === "forbidden" || error.reason === "api-version-mismatch");
+    this.#close(peer, error instanceof Error ? error.message : reason, refused ? 1008 : 1012);
+  }
+  #close(peer: Peer, reason: string, code = 1008) {
     if (peer.closed) return;
     peer.closed = true;
     this.#peers.delete(peer);
-    peer.socket.close(reason);
+    peer.socket.close(code, reason);
+    void this.#deletePresence(peer).catch(() => {});
+  }
+  async cleanup() {
+    await sql`delete from team_presence where process_id=${this.#processId}`.execute(
+      this.access.database,
+    );
+  }
+  closeAll(code = 1012) {
+    for (const peer of this.#peers) this.#close(peer, "Team connection moved", code);
   }
   close() {
+    for (const off of this.#off) off();
     clearInterval(this.#timer);
     this.#unsubscribeChange();
     this.#unsubscribeAccess();
-    for (const peer of this.#peers) this.#close(peer, "Team Host stopped");
+    this.closeAll(1012);
   }
 }
