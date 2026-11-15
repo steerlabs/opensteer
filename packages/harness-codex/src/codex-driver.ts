@@ -2370,9 +2370,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       if (active.interruptRequested && !alreadyRegistered)
         void this.#requireClient()
           .request("turn/interrupt", { threadId: childThreadId, turnId })
-          .catch((error) =>
-            this.#publishFailure(active, toHarnessError(error, "Failed to interrupt Codex child")),
-          );
+          .catch(() => undefined);
       active.nodes.update(childThreadId, { stopSupported: true });
       this.#childThreads.add(childThreadId);
       this.#ownTurn(active, childThreadId, turnId);
