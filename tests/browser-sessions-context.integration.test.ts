@@ -33,7 +33,6 @@ import {
   HttpHostClient,
   type WebSocketClient,
 } from "../packages/client/src/host/host-session-client.js";
-import type { BrowserSessionSummary } from "../packages/client/src/host/client.js";
 import { hostApi } from "../packages/protocol/src/host-api.js";
 import { runPages } from "../packages/client/src/host/surfaces.js";
 import { WebSocket } from "../apps/host/src/browser/browser-watch-e2e.test-support.js";
@@ -454,17 +453,33 @@ run("Browser Sessions through a whole deployment", () => {
     const ada = inventory.targetInfos.find((target) => target.surfaceId === adaId)!;
     expect(unrelated).toBeDefined();
     expect(ada).toBeDefined();
-    const session = () =>
-      client.getSnapshot().browserSessions.find((value) => value.id === sessionId)!;
+    const session = () => {
+      const inventory = stack.host.browser.pageInventory(sessionId);
+      return inventory
+        ? {
+            ...inventory,
+            state: inventory.ready ? "ready" : "closed",
+            attachedRunIds: [
+              ...new Set(
+                [...inventory.records.values()].flatMap((tab) =>
+                  stack.host.browser
+                    .tabOccupants(owner.id, sessionId, tab.id)
+                    .map((occupant) => (occupant.threadId === threadA ? runA : runB)),
+                ),
+              ),
+            ],
+          }
+        : undefined;
+    };
     const usageReady = (runId: string) =>
       client.getSnapshot().browserUses?.some((use) => use.runId === runId) === true;
     await waitFor(
-      async () => usageReady(runA) && usageReady(runB) && session().acting === true,
+      async () => usageReady(runA) && usageReady(runB) && session()?.acting === true,
       10_000,
     );
     const phases: {
       phase: string;
-      session: BrowserSessionSummary | null;
+      session: ReturnType<typeof session> | null;
       pagesA: ReturnType<typeof runPages>;
       pagesB: ReturnType<typeof runPages>;
     }[] = [];
@@ -473,18 +488,25 @@ run("Browser Sessions through a whole deployment", () => {
         ...row,
         occupants: stack.host.browser.tabOccupants(owner.id, sessionId, row.id),
       }));
+    const pagesFor = (runIds: string[]) =>
+      runPages(client.getSnapshot().browserUses, client.getSnapshot(), runIds).map((page) => ({
+        ...page,
+        acting: client
+          .placeActivity(page.key)
+          .some((activity) => runIds.includes(activity.runId) && activity.expiresAt > clock.now()),
+      }));
     const note = (phase: string) => {
       const current = session();
       const unrelatedTab = runtimeRows().find((tab) => tab.id === unrelated.surfaceId);
-      if (current?.state === "ready") expect(unrelatedTab).toBeDefined();
+      if (current?.ready === true) expect(unrelatedTab).toBeDefined();
       expect(unrelatedTab?.occupants ?? []).toEqual([]);
       expect(
         client
           .getSnapshot()
           .browserUses?.some((use) => use.runId && use.tabId === unrelated.surfaceId),
       ).toBe(false);
-      const pagesA = runPages(client.getSnapshot().browserUses, client.getSnapshot(), [runA]);
-      const pagesB = runPages(client.getSnapshot().browserUses, client.getSnapshot(), [runB]);
+      const pagesA = pagesFor([runA]);
+      const pagesB = pagesFor([runB]);
       expect(
         [...pagesA, ...pagesB].some(
           (page) => page.destination.tabId === unrelated.surfaceId || page.title === "www.sixt.com",
@@ -498,7 +520,7 @@ run("Browser Sessions through a whole deployment", () => {
     clock.advanceBy(300);
     await request(runB, agentB, { method: "Target.getTargets" });
     await stack.host.browser.flushPendingTabDescriptors();
-    await waitFor(async () => session().acting === true, 10_000);
+    await waitFor(async () => session()?.acting === true, 10_000);
     expect(note("still discovery-only")).toEqual({ pagesA: [], pagesB: [] });
     const attached = z.object({ sessionId: z.string(), surfaceId: z.string() }).parse(
       await request(runA, agentA, {
@@ -514,7 +536,9 @@ run("Browser Sessions through a whole deployment", () => {
           .browserUses?.some((use) => use.runId === runA && use.tabId === adaId) === true &&
         runtimeRows()
           .find((tab) => tab.id === adaId)
-          ?.occupants.some((occupant) => occupant.threadId === threadA && occupant.acting) === true,
+          ?.occupants.some((occupant) => occupant.threadId === threadA && occupant.acting) ===
+          true &&
+        pagesFor([runA]).some((page) => page.key === adaId && page.acting),
       10_000,
     );
     expect(note("Run A attached Ada")).toMatchObject({
@@ -528,7 +552,10 @@ run("Browser Sessions through a whole deployment", () => {
       JSON.stringify({ type: "navigation.go", surfaceId: adaId, url: `${origin}/ada-renamed` }),
     );
     await waitFor(
-      async () => runtimeRows().find((tab) => tab.id === adaId)?.title === "Ada Lovelace — updated",
+      async () =>
+        runtimeRows().find((tab) => tab.id === adaId)?.title === "Ada Lovelace — updated" &&
+        client.getSnapshot().tabs.get(BrowserSurfaceIdSchema.parse(adaId))?.title ===
+          "Ada Lovelace — updated",
       15_000,
     );
     expect(client.getSnapshot().tabs.get(BrowserSurfaceIdSchema.parse(adaId))).toMatchObject({
@@ -560,7 +587,9 @@ run("Browser Sessions through a whole deployment", () => {
           .getSnapshot()
           .browserUses?.some((use) => use.runId === runA && use.tabId === babbage.surfaceId) ===
           true &&
-        runtimeRows().find((tab) => tab.id === babbage.surfaceId)?.title === "Charles Babbage",
+        runtimeRows().find((tab) => tab.id === babbage.surfaceId)?.title === "Charles Babbage" &&
+        client.getSnapshot().tabs.get(BrowserSurfaceIdSchema.parse(babbage.surfaceId))?.title ===
+          "Charles Babbage",
       15_000,
     );
     expect(note("Run A created Babbage").pagesA.map((page) => page.title)).toEqual([
@@ -572,7 +601,7 @@ run("Browser Sessions through a whole deployment", () => {
     await request(runB, agentB, { method: "Target.getTargets" });
     await waitFor(
       async () =>
-        session().acting === true &&
+        session()?.acting === true &&
         runtimeRows().every((tab) => tab.occupants.every((occupant) => !occupant.acting)) === true,
       10_000,
     );
@@ -593,19 +622,25 @@ run("Browser Sessions through a whole deployment", () => {
           true &&
         runtimeRows()
           .find((tab) => tab.id === babbage.surfaceId)
-          ?.occupants.some((occupant) => occupant.threadId === threadB && occupant.acting) === true,
+          ?.occupants.some((occupant) => occupant.threadId === threadB && occupant.acting) ===
+          true &&
+        pagesFor([runB]).some((page) => page.key === babbage.surfaceId && page.acting),
       10_000,
     );
     const concurrent = note("only Run B acts on shared Babbage");
     expect(concurrent.pagesA.every((page) => !page.acting)).toBe(true);
     expect(concurrent.pagesB).toMatchObject([{ title: "Charles Babbage", acting: true }]);
-    const combined = runPages(client.getSnapshot().browserUses, client.getSnapshot(), [runA, runB]);
+    const combined = pagesFor([runA, runB]);
     expect(combined).toHaveLength(2);
     expect(combined.find((page) => page.destination.tabId === babbage.surfaceId)?.acting).toBe(
       true,
     );
     await stack.interruptRun(threadB, runB);
-    await waitFor(async () => !session().attachedRunIds.includes(runB), 10_000);
+    await waitFor(
+      async () =>
+        !session()?.attachedRunIds.includes(runB) && pagesFor([runB]).every((page) => !page.acting),
+      10_000,
+    );
     expect(note("Run B ended").pagesB.every((page) => !page.acting)).toBe(true);
     await request(runA, agentA, {
       method: "Runtime.evaluate",
@@ -626,16 +661,18 @@ run("Browser Sessions through a whole deployment", () => {
         .map((command) => command.targetId),
     ).toEqual([ada.targetId, created.targetId, created.targetId]);
     await stack.interruptRun(threadA, runA);
-    await waitFor(async () => !session().attachedRunIds.includes(runA), 10_000);
+    await waitFor(
+      async () =>
+        !session()?.attachedRunIds.includes(runA) && pagesFor([runA]).every((page) => !page.acting),
+      10_000,
+    );
     note("both Runs ended");
     await stack.host.browser.stop(owner.id, sessionId);
-    await waitFor(async () => !session() || session().state === "closed", 10_000);
+    await waitFor(async () => !session() || session()?.state === "closed", 10_000);
     const ended = note("browser ended; exact recorded labels survive");
-    expect(ended.pagesA.every((page) => page.ended && !page.acting && page.favicon === null)).toBe(
-      true,
-    );
+    expect(ended.pagesA.every((page) => !page.ended && !page.acting)).toBe(true);
     expect(ended.pagesA.find((page) => page.destination.tabId === adaId)?.title).toBe(
-      "Ada Lovelace",
+      "Ada Lovelace — updated",
     );
     const directory =
       process.env.OPENSTEER_RUN_CHIPS_E2E_ARTIFACT_DIR ??

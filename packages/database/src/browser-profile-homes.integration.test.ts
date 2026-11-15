@@ -202,6 +202,7 @@ describeStore("browser profile homes", (it) => {
           title: "Saved",
           url: "https://example.test/",
           profileId: profile.id,
+          profileName: profile.name,
           openedBy: "person",
           pageBinding: { lineageId: sessionId, sessionId, surfaceId: tabId },
         },

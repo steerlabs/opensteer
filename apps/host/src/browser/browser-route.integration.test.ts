@@ -275,10 +275,10 @@ integration("Host browser broker vertical", () => {
     expect(bootstrap.browser).toMatchObject({
       available: true,
       profiles: [{ name: "Integration browser" }],
-      groups: {
-        complete: true,
-        rows: [{ attachedRunIds: [], sessionId: started.session.id, state: "ready" }],
-      },
+    });
+    expect(bootstrap.tabs).toMatchObject({
+      complete: true,
+      tabs: [expect.objectContaining({ kind: "page", state: "open" })],
     });
     // Only an active Run holds a session; one that is not running holds nothing.
     const projectionRunId = createId("run");

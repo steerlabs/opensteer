@@ -141,9 +141,7 @@ run("Browser Sessions through a whole deployment", () => {
       if (!native) expect(contexts.browserContextIds[0]).toEqual(expect.any(String));
     }
     const after = await stack.host.store.listBrowserSessions(owner);
-    expect(after.find((session) => session.id === legacy.session.id)?.opener).toEqual({
-      kind: "unknown",
-    });
+    expect(after.find((session) => session.id === legacy.session.id)?.opener).toBeNull();
     // Initialization is the real Host restart recovery path: open sessions fail; bindings survive.
     await stack.host.browser.stop(owner, sessionId);
     await stack.restartHost();

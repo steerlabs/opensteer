@@ -127,14 +127,16 @@ export function passwordsAnywhereJourneys() {
               });
               cleanups.push(() => browser.close());
               await waitForValue(async () => (host.runtime.browser.available ? true : undefined));
-              const { tabId } = await host.runtime.browser.openAgentTab(
-                {
-                  ownerId: host.ownerId,
-                  agentBindingId: `run:${run.runId}`,
-                  threadId: run.threadId,
-                },
-                { identity: { kind: "guest" }, operationKey: "browser-login" },
+              const write = await host.runtime.browser.pageTabs.open(
+                { kind: "person", ownerId: host.ownerId },
+                { kind: "page", url: "about:blank", guest: true },
+                "browser-login",
               );
+              const { TabStore } = await import("@opensteer/database");
+              await new TabStore(host.store.database).open(write, "browser-login");
+              await host.runtime.browser.pageTabs.admitted!(write);
+              const { id: tabId } = write;
+
               const before = authority.commands.length;
               const result = await client.callTool({
                 name: "saved_login_request",

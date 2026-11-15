@@ -1,6 +1,10 @@
 import { createId } from "@opensteer/core";
 import { BrowserRuntime, type BrowserAttachment } from "@opensteer/browser-runtime-core";
-import { FakeIsolatingLauncher } from "@opensteer/browser-runtime-core/test-support";
+import {
+  FakeIsolatingLauncher,
+  FakeContext,
+  FakePage,
+} from "@opensteer/browser-runtime-core/test-support";
 import { TabStore, type DatabaseSchema } from "@opensteer/database";
 import {
   createStoreFixture,
@@ -15,7 +19,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sql, type Kysely } from "kysely";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { BrowserService, type BrowserRuntimeConnection } from "./browser-service.js";
 import { BrowserAttachTicketSigner } from "./browser-ticket.js";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
@@ -166,7 +170,34 @@ integration("page tab adapter", () => {
       { kind: "page", url: "https://example.com/saved", guest: true },
       "page",
     );
+    const initialContext = [...launcher.browsersByPartition.values()].at(-1)!
+      .context as FakeContext;
+    const initialOpener = initialContext.pages()[0]!;
+    initialContext.addPage(
+      new FakePage({
+        opener: initialOpener,
+        title: "Initial popup",
+        url: "https://example.com/initial-popup",
+      }),
+    );
+    await vi.waitFor(
+      () =>
+        expect(
+          [...browser.pageInventory(descriptor.pageBinding!.sessionId)!.records.values()].some(
+            (page) => page.url === "https://example.com/initial-popup",
+          ),
+        ).toBe(true),
+      { timeout: 3000 },
+    );
+    await browser.flushPendingTabDescriptors();
+    expect((await tabs.snapshot(f.userId)).rows).toEqual([]);
     await tabs.open(descriptor, "page");
+    await browser.pageTabs.admitted!(descriptor);
+    expect(
+      (await tabs.snapshot(f.userId)).rows.some(
+        (page) => page.url === "https://example.com/initial-popup",
+      ),
+    ).toBe(true);
     let row = await tabs.get(f.userId, descriptor.id);
     if (!row) throw new Error("Admitted page missing");
     const first = await withTimeout(browser.bindPage(claims, row), 3000, {
@@ -201,6 +232,15 @@ integration("page tab adapter", () => {
       Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: row.id, frames: false })),
       false,
     );
+    const siblingWrite = await browser.pageTabs.open(
+      actor,
+      { kind: "page", url: "https://example.com/sibling", guest: true },
+      "sibling",
+    );
+    await tabs.open(siblingWrite, "sibling");
+    await browser.pageTabs.admitted!(siblingWrite);
+    const sibling = (await tabs.get(f.userId, siblingWrite.id))!;
+    expect(sibling.pageBinding?.sessionId).toBe(first.sessionId);
     const oldRow = row;
     await tabs.close(f.userId, [row.id], "close-held");
     await expect(
@@ -251,7 +291,30 @@ integration("page tab adapter", () => {
     expect((await browser.bindPage(claims, (await tabs.get(f.userId, row.id))!)).reloaded).toBe(
       false,
     );
-    expect((await tabs.snapshot(f.userId)).rows).toHaveLength(1);
+    const restoredContext = [...launcher.browsersByPartition.values()].at(-1)!
+      .context as FakeContext;
+    const siblingRestored = await browser.bindPage(claims, sibling);
+    expect(siblingRestored.sessionId).not.toBe(restored.sessionId);
+    expect(connections).toHaveLength(3);
+    const context = restoredContext;
+    const opener = context.pages()[0] as FakePage;
+    opener.navigate("https://example.com/after-sibling", "A after sibling restoration");
+    context.addPage(
+      new FakePage({ opener, title: "Popup after sibling", url: "https://example.com/popup" }),
+    );
+    await vi.waitFor(
+      async () => {
+        await browser.flushPendingTabDescriptors();
+        expect((await tabs.get(f.userId, row.id))?.url).toBe("https://example.com/after-sibling");
+        expect(
+          (await tabs.snapshot(f.userId)).rows.some(
+            (row) => row.url === "https://example.com/popup",
+          ),
+        ).toBe(true);
+      },
+      { timeout: 3000 },
+    );
+    expect((await tabs.snapshot(f.userId)).rows).toHaveLength(4);
     expect(errors).toEqual([]);
   });
 });

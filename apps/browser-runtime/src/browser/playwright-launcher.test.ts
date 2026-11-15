@@ -573,6 +573,27 @@ describe("native Chromium profiles", () => {
     }
   });
 
+  it("detaches the browser CDP before starting native protocol shutdown", async () => {
+    const f = await nativeCloseFixture();
+    const detached = Promise.withResolvers<void>();
+    try {
+      const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      const closingCdp = vi
+        .spyOn(launched.cdp as typeof launched.cdp & { close(): Promise<void> }, "close")
+        .mockImplementationOnce(() => detached.promise);
+      const closing = launched.close();
+      await vi.waitFor(() => expect(closingCdp).toHaveBeenCalledOnce());
+      expect(f.context.close).not.toHaveBeenCalled();
+      detached.resolve();
+      await closing;
+      expect(f.context.close).toHaveBeenCalledOnce();
+    } finally {
+      detached.resolve();
+      f.exit();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
   it("bounds a hung CDP detach and still joins the owner's close", async () => {
     const f = await nativeCloseFixture();
     const detached = Promise.withResolvers<void>();

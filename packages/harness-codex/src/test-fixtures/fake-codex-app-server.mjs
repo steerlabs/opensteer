@@ -2874,7 +2874,43 @@ async function browserJourneyHarness(tabId, program) {
       }),
     );
   });
-  child.stdin.end(program);
+  const helpers = [
+    "currentTab",
+    "pageInfo",
+    "gotoUrl",
+    "waitForLoad",
+    "js",
+    "setInputFiles",
+    "pressKey",
+    "cdp",
+    "respondDialog",
+    "click",
+    "fill",
+    "typeText",
+    "screenshot",
+    "drainEvents",
+    "waitForElement",
+    "scroll",
+    "readPage",
+  ];
+  let body = program
+    .replace(/\bnewTab\(/gu, "fixtureOpen(")
+    .replace(/\blistTabs\(/gu, "fixtureTabs(")
+    .replace(/\bswitchTab\(/gu, "fixtureBind(")
+    .replace(/\bcloseTab\(/gu, "fixtureClose(")
+    .replace(/\borganizeTabs\(/gu, "fixtureOrganize(")
+    .replace(/\bpage\./gu, "fixturePage.");
+  for (const helper of helpers)
+    body = body.replace(new RegExp(`(?<![.\\w])${helper}\\(`, "gu"), `fixturePage.${helper}(`);
+  child.stdin.end(`
+let fixturePage = page;
+const fixtureCall = async (name, input) => { const result = await opensteer.callTool(name, input); if (result.error) throw Object.assign(new Error(result.error.message), result.error); return result; };
+const fixtureTabs = async () => { const tabs = []; let cursor; do { const result = await fixtureCall("tab_list", { kind: "page", ...(cursor ? {cursor} : {}) }); tabs.push(...result.tabs); cursor = result.nextCursor; } while(cursor); return tabs; };
+const fixtureBind = async (value) => { fixturePage = await openPage(typeof value === "string" ? value : value.tabId); return fixturePage; };
+const fixtureOpen = async (url, identity = {guest: true}) => { const result = await fixtureCall("tab_open", { target: {kind:"page", url, ...(identity.profile ? {profileId: identity.profile} : {guest: true})} }); await fixtureBind(result.tab.tabId); return result.tab.tabId; };
+const fixtureClose = async (tabId) => fixtureCall("tab_close", {tabIds: [tabId]});
+const fixtureOrganize = async (input) => fixtureCall("tab_organize", input);
+${body}`);
   return completed;
 }
 
@@ -2941,7 +2977,7 @@ async function browserAgentTurn(input) {
     const result = await browserJourneyHarness(
       undefined,
       `const tabs = await listTabs();
-const existing = tabs.find(tab => tab.profile?.id === ${JSON.stringify(checkProfile)} && tab.url.startsWith(${JSON.stringify(uploadPage)}));
+const existing = tabs.find(tab => tab.profile?.profileId === ${JSON.stringify(checkProfile)} && tab.url.startsWith(${JSON.stringify(uploadPage)}));
 if (existing) await switchTab(existing);
 else await newTab(${JSON.stringify(`${uploadPage}?account`)}, {profile:${JSON.stringify(checkProfile)}});
 await waitForLoad();
@@ -3030,11 +3066,14 @@ ${tabState}`),
     failed: await visit(`const failures = [];
 for (const url of ["example.com", "http://127.0.0.1:1/"]) {
   try {
-    failures.push({ opened: await newTab(url) });
+    const opened = await newTab(url);
+    failures.push({opened});
+    await closeTab(opened);
   } catch (error) {
     failures.push({ error: error.message });
   }
 }
+await switchTab(${JSON.stringify(browsing)});
 console.log(JSON.stringify({ failures, tabs: (await listTabs()).filter(t => !t.profile).length, url: (await pageInfo()).url }));`),
     many: await visit(`const opened = [];
 for (let index = 0; index < 7; index += 1) {

@@ -1,3 +1,4 @@
+import { WindowIdSchema, OpensteerError } from "@opensteer/core";
 import { productToolOutput } from "./tool-output.js";
 import {
   opensteer_subagent_read,
@@ -145,6 +146,17 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     requestResponseVault: vault,
     questionNotices,
     computerUse,
+    tabs: {
+      get: async (owner, id) => {
+        const row = await new TabStore(store.database).get(owner, id);
+        if (!row) throw new OpensteerError({ code: "not_found", message: "Tab not found" });
+        return {} as import("@opensteer/core").Tab;
+      },
+      authorizeShow: async (claims, id) => {
+        if (!(await new TabStore(store.database).get(claims.requestedBy, id)))
+          throw new OpensteerError({ code: "not_found", message: "Tab not found" });
+      },
+    },
     personShow: async (_userId, frame) => {
       frames.push(frame);
       return 1;
@@ -867,6 +879,49 @@ async function place(
   value: PlaceIdentity,
   title = "Place",
 ) {
+  const id =
+    value.kind === "browser"
+      ? value.surfaceId
+      : BrowserSurfaceIdSchema.parse(
+          value.kind === "app"
+            ? `window:${value.machineId}:${value.appKey}`
+            : `phone:${value.machineId}`,
+        );
+  if (
+    value.kind === "browser" &&
+    !(await storeFixture.store.getBrowserSessionForOwner(value.sessionId, f.userId))
+  )
+    await storeFixture.store.createBrowserSession({
+      id: value.sessionId,
+      ownerId: f.userId,
+      runnerId: f.runnerId,
+      origin: "agent",
+      profileId: null,
+      placementKey: "place",
+      runtimeId: "test",
+    });
+  await new TabStore(storeFixture.database).open(
+    {
+      id,
+      ownerId: f.userId,
+      computerId: value.kind === "browser" ? f.runnerId : value.machineId,
+      kind: value.kind === "browser" ? "page" : value.kind === "app" ? "window" : "phone",
+      title,
+      openedBy: "person",
+      ...(value.kind === "browser"
+        ? {
+            url: "https://example.com/",
+            pageBinding: { lineageId: value.sessionId, sessionId: value.sessionId, surfaceId: id },
+          }
+        : value.kind === "app"
+          ? {
+              windowId: WindowIdSchema.parse(`win_${randomUUID()}`),
+              windowApp: { bundleId: value.appKey, displayName: title, teamId: null },
+            }
+          : {}),
+    },
+    randomUUID(),
+  );
   return withDatabaseTransaction(storeFixture.database, (tx) =>
     appendHostDeploymentEvent(tx, {
       type: "place.entered",

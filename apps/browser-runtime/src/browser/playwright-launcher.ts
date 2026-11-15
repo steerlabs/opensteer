@@ -867,13 +867,13 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
    * disposable Guest owners kill only their own child.
    */
   private async closeOnce(): Promise<void> {
-    const stopped = this.owner.close();
-    const results = await Promise.allSettled([
+    const detached = await Promise.allSettled([
       withTimeout((this.cdp as PlaywrightBrowserCdpBackend).close(), 500, {
         timeoutError: () => new Error("Browser CDP detach did not finish."),
       }),
-      stopped,
     ]);
+    const stopped = await Promise.allSettled([this.owner.close()]);
+    const results = [...detached, ...stopped];
     const failures = results.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : [],
     );
@@ -1511,7 +1511,11 @@ class PlaywrightBrowserCdpBackend implements BrowserCdpBackend {
 
   send(method: string, parameters?: CdpParameters): Promise<unknown> {
     if (this.closed) return Promise.reject(new Error("Browser CDP backend is closed."));
-    this.assertScope(method, parameters ?? {});
+    try {
+      this.assertScope(method, parameters ?? {});
+    } catch (error) {
+      return Promise.reject(error);
+    }
     if (method === "Target.createTarget") {
       const requestedContext = parameters?.browserContextId;
       if (requestedContext !== undefined && requestedContext !== this.browserContextId) {

@@ -1051,6 +1051,7 @@ describe("HostCommandDispatcher run planning", () => {
           "agent-tools-plan-v1",
         ],
         name: "Run computer",
+        modules: { agents: { computerTool: 1 } },
         runnerId: createId("runner"),
       };
       const agentHome = { computerId: identity.runnerId, path: "/tmp/dispatcher/home" };

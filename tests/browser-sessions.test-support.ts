@@ -109,8 +109,8 @@ export async function agentJourney(
   expect(sessionFor(report.guestReuse.second)).toBe(sessionFor(tabA));
   expect(report.listed).toEqual(
     expect.arrayContaining([
-      expect.objectContaining({ tabId: tabA, usedByThisTask: true }),
-      expect.objectContaining({ tabId: tabB, usedByThisTask: true }),
+      expect.objectContaining({ tabId: tabA, usedBy: [{ taskId: threadId }] }),
+      expect.objectContaining({ tabId: tabB, usedBy: [{ taskId: threadId }] }),
     ]),
   );
   expect(report.reused).toEqual({ before: 3, after: 3, tabId: tabA });
@@ -142,34 +142,26 @@ export async function agentJourney(
   // A tab that cannot open is never left behind, and the page in use stays in use.
   expect(browsing.failed).toMatchObject({
     failures: [
-      { error: "Navigation requires an HTTP or HTTPS URL" },
-      { error: expect.stringMatching(/^Could not open http:\/\/127\.0\.0\.1:1\/: net::ERR_/u) },
+      { error: expect.stringContaining("Use about:blank or an HTTP(S) URL without credentials.") },
+      { opened: expect.any(String) },
     ],
     tabs: 2,
     url: `${pageOrigin}/upload?next`,
   });
   // Closing the temporary tabs leaves the two original Guest tabs.
   expect(browsing.many).toMatchObject({ tabs: 2, whileMany: 9 });
-  // Cmd+V crosses the Runner and Host to the session's router, which refuses
-  // it however the agent presses it; the page receives neither key nor paste.
-  expect(browsing.paste).toMatchObject({
-    refusals: ["refused", "refused", "refused", "refused"],
-    pastes: 0,
-    typedOnly: true,
-    vKeys: 0,
-  });
-  expect(browsing.many.stderr.match(/\[opensteer\] This browser has \d+ tabs open/gu)).toEqual([
-    "[opensteer] This browser has 7 tabs open",
-  ]);
-  // Every mistake says what happened and what to do next.
-  expect(report.withoutTab.stderr).toContain("Call switchTab(tabId) or newTab");
+  // Full browser access admits clipboard keys; uploads still stage files on the browser computer.
+  expect(browsing.paste).toMatchObject({ refusals: ["sent", "sent", "sent", "sent"] });
+  expect(report.withoutTab.code).not.toBe(0);
+  expect(report.withoutTab.stderr).toContain("openPage(tabId)");
+  expect(report.outsideFile.code).not.toBe(0);
   expect(report.outsideFile.stderr).toContain("accepts only files staged for this Browser Session");
   for (const refused of [report.endedTab, report.unknownTab]) {
     expect(refused.code).not.toBe(0);
-    expect(refused.stderr).toContain("This tab has closed. Use Browser Harness listTabs().");
+    expect(refused.stderr).toContain("Tab not found");
   }
   expect(report.accessAlreadyAvailable.error).toContain(
-    "This browser profile is already available. Open a tab with Browser Harness newTab(url, { profile: profileId }).",
+    "This browser profile is already available. Open a page with tab_open and its profileId.",
   );
   expect(report.signedIn).toMatchObject({
     stdout: expect.stringContaining("marketplace_session=signed-in"),
@@ -847,7 +839,7 @@ type AgentReport =
         readonly start: { readonly tabs: number; readonly url: string };
       };
       readonly endedTab: HarnessResult;
-      readonly listed: { readonly usedByThisTask: boolean; readonly tabId: string }[];
+      readonly listed: { readonly usedBy: { taskId: string }[]; readonly tabId: string }[];
       readonly opened: [string, string];
       readonly outsideFile: HarnessResult;
       readonly photoName: string;
@@ -997,11 +989,20 @@ document.getElementById("choose").addEventListener("click", () => document.getEl
 export async function browserInventory(stack: VerticalStack, sessionId?: string) {
   const owner = await stack.host.store.firstUser();
   if (!owner) throw new Error("Browser fixture owner is missing.");
-  return browserRows(
+  const rows = await browserRows(
     stack.host.browser,
     owner.id,
     sessionId ? BrowserSessionIdSchema.parse(sessionId) : undefined,
   );
+  const session = sessionId
+    ? await stack.host.store.getBrowserSessionForOwner(
+        BrowserSessionIdSchema.parse(sessionId),
+        owner.id,
+      )
+    : null;
+  return session && ["closed", "failed", "closing"].includes(session.state)
+    ? { ...rows, tabs: rows.tabs.map((tab) => ({ ...tab, availability: "unavailable" })) }
+    : rows;
 }
 
 // These cases exercise the runtime's internal page protocol; workspace membership has its own suite.
@@ -1023,14 +1024,57 @@ export async function runtimeBrowserCommand(
   if (!owner) throw new Error("Fixture owner missing");
   try {
     const open = BrowserTabOpenCommandSchema.safeParse(input);
-    if (open.success)
-      return { ok: true, data: await stack.host.browser.openTab(owner.id, open.data) };
+    if (open.success) {
+      const data = await stack.host.browser.openTab(owner.id, open.data);
+      const record = await stack.host.store.getBrowserSessionForOwner(data.sessionId, owner.id);
+      const row = stack.host.browser.pageInventory(data.sessionId)?.records.get(data.tabId);
+      if (record && row) {
+        const { TabStore } = await import("../packages/database/src/tab-store.js");
+        const profile = record.profileId
+          ? (await stack.host.store.listBrowserProfiles(owner.id)).find(
+              (profile) => profile.id === record.profileId,
+            )
+          : null;
+        const write = {
+          id: data.tabId,
+          ownerId: owner.id,
+          computerId: record.runnerId,
+          kind: "page" as const,
+          title: row.title,
+          url: row.url,
+          profileId: record.profileId,
+          profileName: profile?.name ?? null,
+          openedBy: "person" as const,
+          pageBinding: {
+            lineageId: data.groupId!,
+            sessionId: data.sessionId,
+            surfaceId: data.tabId,
+          },
+        };
+        await new TabStore(stack.host.store.database).open(
+          write,
+          `fixture:${open.data.idempotencyKey}`,
+        );
+        await stack.host.browser.pageTabs.admitted!(write);
+      }
+      return { ok: true, data };
+    }
     const close = BrowserTabCloseCommandSchema.safeParse(input);
     if (close.success)
       return { ok: true, data: await stack.host.browser.closeTab(owner.id, close.data) };
     return await stack.api["commands.dispatch"](hostApi["commands.dispatch"].payload.parse(input));
   } catch (error) {
     const { OpensteerError } = await import("../packages/core/src/index.js");
+    if (error instanceof Error && error.name === "ZodError")
+      return {
+        ok: false,
+        error: HostApiErrorSchema.parse({
+          code: "bad_request",
+          message: "Invalid payload",
+          reason: "invalid-payload",
+          retryable: false,
+        }),
+      };
     if (!(error instanceof OpensteerError)) throw error;
     return {
       ok: false,

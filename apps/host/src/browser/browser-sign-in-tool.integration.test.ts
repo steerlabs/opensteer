@@ -4,7 +4,6 @@ import { testRpcData } from "../server/test-host-api-request.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { BrowserSessionIdSchema } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
@@ -141,18 +140,17 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       cleanups.push(() => runtime.close());
       await waitForValue(async () => (host.runtime.browser.available ? true : undefined));
       const open = async () => {
-        const response = await fetch(new URL("/internal/v1/browser-agent/tabs/open", host.origin), {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${run.toolsToken}`,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({ identity: { kind: "guest" }, operationKey: randomUUID() }),
+        const result = await client.callTool({
+          name: "tab_open",
+          arguments: { target: { kind: "page", url: "about:blank", guest: true } },
         });
-        expect(response.ok).toBe(true);
-        return z
-          .object({ tabId: BrowserSurfaceIdSchema, sessionId: BrowserSessionIdSchema })
-          .parse(await response.json());
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        const tabId = z
+          .object({ tab: z.object({ tabId: BrowserSurfaceIdSchema }) })
+          .parse(result.structuredContent).tab.tabId;
+        const { TabStore } = await import("@opensteer/database");
+        const row = (await new TabStore(host.store.database).get(host.ownerId, tabId))!;
+        return { tabId, sessionId: row.pageBinding!.sessionId };
       };
       const { sessionId, tabId } = await open();
       await evidence.run("sessionful-sign-in", async () => {
@@ -405,15 +403,11 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           { headers: host.ownerHeaders },
         );
         expect((await pending).structuredContent).toMatchObject({ status: "declined", site });
-        const closed = await fetch(new URL("/internal/v1/browser-agent/tabs/close", host.origin), {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${run.toolsToken}`,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({ tabIds: [exact.tabId], operationKey: "close-pin-test" }),
+        const closed = await client.callTool({
+          name: "tab_close",
+          arguments: { tabIds: [exact.tabId] },
         });
-        expect(closed.ok).toBe(true);
+        expect(closed.isError, JSON.stringify(closed)).not.toBe(true);
         const starts = authority.commands.filter((c) => c.type === "login.authorize").length;
         const stale = await client.callTool({
           name: "saved_login_request",

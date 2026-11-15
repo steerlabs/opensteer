@@ -406,7 +406,14 @@ export class TabStore {
       authorize,
       async (tx, { rows, layout }) => {
         if (input.kind === "page") {
-          const session = input.pageBinding ? await this.#latest(tx, input.pageBinding) : null;
+          const session = input.pageBinding
+            ? await this.#session(tx, input.pageBinding, input.ownerId)
+            : null;
+          if (input.openerTabId) {
+            const opener = await this.get(input.ownerId, input.openerTabId, true, tx);
+            if (opener?.pageBinding?.sessionId !== input.pageBinding?.sessionId)
+              failure("conflict", "The popup opener changed browser.");
+          }
           if (!session || ["closed", "failed"].includes(session.state))
             failure("conflict", "The browser session no longer admits new tabs.");
         }
@@ -704,6 +711,29 @@ export class TabStore {
       ? latest
       : null;
   }
+  async #session(tx: TabTransaction, binding: PageBinding, ownerId: UserId) {
+    const session = await tx
+      .selectFrom("browserSessions")
+      .select(["id", "origin", "opener", "state", "runnerId"])
+      .where("id", "=", binding.sessionId)
+      .where("tabGroupId", "=", binding.lineageId)
+      .executeTakeFirst(databaseOperationOptions());
+    if (
+      !session ||
+      session.origin === "trigger" ||
+      session.opener?.kind === "automation" ||
+      ["closed", "failed"].includes(session.state)
+    )
+      return null;
+    const viewer = await tx
+      .selectFrom("personalSettings")
+      .innerJoin("users", "users.id", "personalSettings.ownerId")
+      .select("ownerId")
+      .where("ownerId", "=", ownerId)
+      .where("users.disabledAt", "is", null)
+      .executeTakeFirst(databaseOperationOptions());
+    return viewer ? session : null;
+  }
   async bindPage(
     ownerId: UserId,
     tabId: TabId,
@@ -745,7 +775,7 @@ export class TabStore {
     if (descriptor.favicon) BrowserFaviconSchema.parse(descriptor.favicon);
     return withPersonalTransaction(this.database, async (tx) => {
       await this.#lock(tx, ownerId, [], [tabId]);
-      if (!(await this.#latest(tx, binding))) return false;
+      if (!(await this.#session(tx, binding, ownerId))) return false;
       const row = await this.get(ownerId, tabId, false, tx);
       if (
         !row ||
@@ -755,6 +785,12 @@ export class TabStore {
         return false;
       if (restoring && descriptor.url === "about:blank" && row.url !== "about:blank") return false;
       const favicon = descriptor.favicon ?? (descriptor.url === row.url ? row.favicon : null);
+      if (
+        row.title === descriptor.title.slice(0, 1024) &&
+        row.url === descriptor.url &&
+        row.favicon === favicon
+      )
+        return false;
       await tx
         .updateTable("personalTabs")
         .set({

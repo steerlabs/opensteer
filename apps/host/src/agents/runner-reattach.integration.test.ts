@@ -1312,7 +1312,7 @@ integration("Runs that outlive their connection", () => {
       if (
         role &&
         !backendPids.has(role) &&
-        statement === 'select "deployment_id" from "deployment_event_state" for no key update'
+        statement === "select deployment_id from deployment_event_state for no key update"
       ) {
         backendPids.set(role, (this as PgClient & { processID: number }).processID);
       }

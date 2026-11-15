@@ -24,15 +24,6 @@ export function hostServerTestDependencies(
     attachments: inert(),
     runFiles: inert(),
     runToolTokens: inert(),
-    agentTools: {
-      options: {
-        callers: {
-          authenticate: async () => {
-            throw new Error("Unexpected agent call");
-          },
-        },
-      },
-    } as unknown as HostServerDependencies["agentTools"],
     authenticator: inert(),
     browser: inert(),
     tabs: {
@@ -91,11 +82,6 @@ export function hostServerTestDependencies(
     // Not inert: every command that touches a computer tells the connected
     // clients to read the list again, so a hub with nothing on it would fail
     // tests that are about something else entirely.
-    realtime: {
-      observe: () => () => undefined,
-      broadcast: () => undefined,
-      sendToUsers: () => undefined,
-    } as unknown as HostServerDependencies["realtime"],
     requestResponseVault: inert(),
     runnerAuthenticator: inert(),
     runners: inert(),
@@ -108,6 +94,28 @@ export function hostServerTestDependencies(
       watchPrograms: inert(),
     },
     ...overrides,
+    agentTools: Object.assign(
+      {
+        options: {
+          callers: {
+            authenticate: async () => {
+              throw new Error("Unexpected agent call");
+            },
+          },
+        },
+      },
+      overrides.agentTools,
+    ) as HostServerDependencies["agentTools"],
+    realtime: Object.assign(
+      {
+        observe: () => () => undefined,
+        broadcast: () => undefined,
+        sendToUsers: () => undefined,
+        publish: () => undefined,
+        publishConnectionsChanged: () => undefined,
+      },
+      overrides.realtime,
+    ) as HostServerDependencies["realtime"],
     commands:
       overrides.commands && typeof overrides.commands.withInputAdmission === "function"
         ? overrides.commands

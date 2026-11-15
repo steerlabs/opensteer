@@ -53,6 +53,7 @@ const unavailable = (
 export class NativeTabTargets implements NativeTabTargetsPort {
   readonly #options: NativeTabTargetsOptions;
   #acquired: NativeTargetAcquiredHandler | undefined;
+  #capture: ((ownerId: UserId) => Promise<number>) | undefined;
   constructor(options: NativeTabTargetsOptions) {
     this.#options = options;
   }
@@ -201,12 +202,23 @@ export class NativeTabTargets implements NativeTabTargetsPort {
   closeOwnerViews(ownerId: UserId, tabId: TabId, tabGeneration: number): Promise<void> {
     return this.#options.views.closeTabViews(ownerId, tabId, tabGeneration);
   }
-  onTargetAcquired(handler: NativeTargetAcquiredHandler): () => void {
+  onTargetAcquired(
+    handler: NativeTargetAcquiredHandler,
+    capture?: (ownerId: UserId) => Promise<number>,
+  ): () => void {
+    this.#capture = capture;
     if (this.#acquired) throw new Error("Native tab acquisition is already connected.");
     this.#acquired = handler;
     return () => {
-      if (this.#acquired === handler) this.#acquired = undefined;
+      if (this.#acquired === handler) {
+        this.#acquired = undefined;
+        this.#capture = undefined;
+      }
     };
+  }
+  async captureMembership(ownerId: UserId): Promise<number> {
+    if (!this.#capture) throw refused("conflict", "The tab service is unavailable.");
+    return this.#capture(ownerId);
   }
   async acquired(target: NativeTargetAcquired): Promise<TabId> {
     if (!this.#acquired) throw refused("conflict", "The tab service is unavailable.");

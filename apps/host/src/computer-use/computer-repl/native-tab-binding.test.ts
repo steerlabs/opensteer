@@ -66,6 +66,7 @@ describe("native tab binding", () => {
           computerId,
           kind: "window",
           windowId,
+          membershipRevision: 0,
           key: "acquire",
         });
         return { value: { tabId, window: { windowId, title: "Note", ref: "ref", focused: true } } };
@@ -141,13 +142,21 @@ describe("native tab binding", () => {
         computerId,
         kind: "window",
         windowId,
+        membershipRevision: 0,
         key: "acquire",
       }),
     ).toBe(tabId);
     expect(acquired).toHaveBeenCalledOnce();
     disconnect();
     await expect(
-      targets.acquired({ ownerId, runClaims: claims, computerId, kind: "phone", key: "acquire2" }),
+      targets.acquired({
+        ownerId,
+        runClaims: claims,
+        computerId,
+        kind: "phone",
+        membershipRevision: 0,
+        key: "acquire2",
+      }),
     ).rejects.toThrow("unavailable");
   });
 });

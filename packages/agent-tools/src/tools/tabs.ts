@@ -48,7 +48,7 @@ export const tab_organize = defineAgentTool({
   name: "tab_organize",
   title: "Organize tabs",
   description:
-    "Move tabs into an existing group, a new named group, or no group (null). All kinds can mix. tabIds gives their order. beforeTabId inserts before a destination tab; omit it to append. For every member of the same group, an outside anchor moves that whole group before the anchor’s group or ungrouped entry. Get IDs from tab_list. A stale destination fails without moving anything.",
+    "Move tabs into an existing group, a new named group, or no group (null). All kinds can mix. tabIds gives their order. beforeTabId inserts before a destination tab; omit it to append. To move a whole group, pass all of its tabIds with its groupId; beforeTabId then places the group before that tab. Get IDs from tab_list. A stale destination fails without moving anything.",
   input: TabOrganizeInputSchema,
   output: TabOrganizeResultSchema,
   access: "write",

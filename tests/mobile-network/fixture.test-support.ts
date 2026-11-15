@@ -125,12 +125,12 @@ export async function startMobileNetworkHost(databaseUrl: string): Promise<Mobil
                 ownerId: active.ownerId,
                 computerId: caller.runnerId,
                 kind: "page",
-                openedBy: "person",
-                pageBinding: {
+                openedBy: jsonValue("person"),
+                pageBinding: jsonValue({
                   lineageId: id,
                   sessionId: id,
                   surfaceId: TabIdSchema.parse(`benchmark-${index}`),
-                },
+                }),
                 title: `Saved tab ${index}`,
                 url: `https://example.test/${index}`,
                 createdAt,
@@ -139,6 +139,30 @@ export async function startMobileNetworkHost(databaseUrl: string): Promise<Mobil
               .execute();
           });
         }
+        await active.store.database
+          .insertInto("tabLayouts")
+          .values({
+            ownerId: active.ownerId,
+            revision: 1,
+            items: jsonValue(
+              Array.from({ length: count }, (_, index) => ({
+                kind: "tab",
+                tabId: TabIdSchema.parse(`benchmark-${index}`),
+              })),
+            ),
+          })
+          .onConflict((conflict) =>
+            conflict.column("ownerId").doUpdateSet({
+              revision: 1,
+              items: jsonValue(
+                Array.from({ length: count }, (_, index) => ({
+                  kind: "tab",
+                  tabId: TabIdSchema.parse(`benchmark-${index}`),
+                })),
+              ),
+            }),
+          )
+          .execute();
       },
       close: async () => {
         try {

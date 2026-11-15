@@ -64,6 +64,7 @@ it("snapshots the personal/team guide and model-facing inventory", () => {
       name: tool.name,
       callers: tool.callers,
       access: tool.access,
+      description: tool.description,
       input: z.toJSONSchema(tool.input, { io: "input" }),
     })),
   ).toMatchSnapshot();
