@@ -5,6 +5,7 @@ import * as Haptics from "expo-haptics";
 import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   StyleSheet,
   TextInput,
@@ -350,8 +351,10 @@ function WaitingEditor(props: {
   const { edit, editing } = props;
   const input = useRef<TextInputInstance>(null);
   const locked = edit.phase === "saving" || edit.phase === "taken";
+  // Android drops a keyboard asked for while the menu that opened this still
+  // holds the window, and focusing a field that already has focus does
+  // nothing, so there the field takes focus only once the menu has gone.
   useEffect(() => {
-    // `autoFocus` alone can lose the keyboard to a list still laying out on Android.
     const focus = setTimeout(() => input.current?.focus(), duration.enter);
     return () => clearTimeout(focus);
   }, []);
@@ -378,7 +381,7 @@ function WaitingEditor(props: {
         <TextInput
           accessibilityHint="Save or cancel below"
           accessibilityLabel={props.asker === null ? "Edit message" : `Edit ${props.asker}’s ask`}
-          autoFocus
+          autoFocus={Platform.OS === "ios"}
           cursorColor={color.ember}
           editable={!locked}
           maxFontSizeMultiplier={controlFontScaleLimit}
