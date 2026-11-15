@@ -5,13 +5,13 @@ import { OpensteerError, type TeamActor, type TeamChannelId, type UserId } from 
 import {
   readTeamFrame,
   TeamClientFrameViewSchema,
-  TeamMemberSchema,
   type TeamConsistentCut,
   type TeamServerFrameSchema,
 } from "@opensteer/protocol";
 import { acceptsTeamApiVersion, teamApiVersionRefusal } from "@opensteer/deployment-authority";
 import type { z } from "zod";
-import type { TeamChatStore } from "@opensteer/database/team-chat";
+import { teamLinksOnline, type TeamChatStore } from "@opensteer/database/team-chat";
+import { teamMemberView } from "@opensteer/database/team-members";
 import {
   withTeamPeerVersion,
   assertTeamSharedChannelVersion,
@@ -221,14 +221,7 @@ export class TeamRealtimeHub {
       .select(["u.displayName", "u.image", "u.nameRevision"])
       .where("m.userId", "=", userId)
       .executeTakeFirst();
-    if (row)
-      this.memberUpdated(
-        TeamMemberSchema.parse({
-          ...row,
-          joinedAt: row.joinedAt.toISOString(),
-          nameRevision: Number(row.nameRevision),
-        }),
-      );
+    if (row) this.memberUpdated(teamMemberView(row));
   }
   async resync() {
     await this.access.sync();
@@ -509,7 +502,7 @@ export class TeamRealtimeHub {
     );
   }
   async linkPresenceChanged(userId: UserId, online: boolean) {
-    online = (await this.chat.identity.agentOnline?.(userId)) ?? online;
+    online = (await teamLinksOnline(this.access.database, [userId])).has(userId);
     for (const peer of this.#peers) {
       if (
         ![...peer.subscriptions.values()].some(

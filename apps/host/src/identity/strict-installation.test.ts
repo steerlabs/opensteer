@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp, readdir, stat, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
@@ -31,6 +31,22 @@ it("strict installation loading fails for missing files and never creates or chm
     expect((await loadHostInstance(path)).hostInstanceId).toBe(id);
     for (const file of [path, privateKeyPath, publicKeyPath])
       expect((await stat(file)).mode & 0o777).toBe(0o444);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("reads an installation mounted the way Kubernetes mounts a Secret, through symlinks", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "strict-installation-"));
+  try {
+    const id = createId("hostInstance");
+    await mkdir(join(directory, "..data"));
+    await writeFile(
+      join(directory, "..data", "host-instance.json"),
+      JSON.stringify({ schemaVersion: 1, hostInstanceId: id }),
+    );
+    await symlink(join("..data", "host-instance.json"), join(directory, "host-instance.json"));
+    expect((await loadHostInstance(join(directory, "host-instance.json"))).hostInstanceId).toBe(id);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

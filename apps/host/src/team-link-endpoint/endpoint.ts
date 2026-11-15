@@ -137,6 +137,7 @@ export class TeamLinkEndpoint {
       linkId,
       userId: link.ownerUserId,
       channelIds: [],
+      socket: true,
       cancel: close,
     });
     const write = (frame: TeamLinkServerFrame) => {
@@ -397,6 +398,10 @@ export class TeamLinkEndpoint {
   async resync() {
     for (const sockets of this.#sockets.values())
       for (const socket of sockets) await socket.refresh();
+  }
+  /** A planned stop: link sockets reconnect to another copy while transfers finish. */
+  relocate() {
+    this.options.lifetimes.closeSockets();
   }
   closeAll(code = 1012) {
     this.options.lifetimes.closeAll(code);

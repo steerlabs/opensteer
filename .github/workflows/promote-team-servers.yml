@@ -40,8 +40,10 @@ jobs:
         run: |
           [[ $SHA =~ ^[0-9a-f]{40}$ ]]
           git merge-base --is-ancestor "$SHA" origin/main
+          # Each input names its own repository, so swapped digests fail here.
+          [[ $PROVISIONER_IMAGE =~ ^ghcr.io/steerlabs/opensteer-team-provisioner@sha256:[0-9a-f]{64}$ ]]
+          [[ $TEAM_HOST_IMAGE =~ ^ghcr.io/steerlabs/opensteer-team-host@sha256:[0-9a-f]{64}$ ]]
           for image in "$PROVISIONER_IMAGE" "$TEAM_HOST_IMAGE"; do
-            [[ $image =~ ^ghcr.io/steerlabs/opensteer-team-(provisioner|host)@sha256:[0-9a-f]{64}$ ]]
             docker pull "$image"
             revision=$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
             [[ $revision == "$SHA" ]]

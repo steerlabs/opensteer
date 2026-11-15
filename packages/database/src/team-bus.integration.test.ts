@@ -148,3 +148,22 @@ it("stops trusting a listening session that silently stops answering", async () 
     await database.destroy();
   }
 });
+
+it("stays unhealthy until a failed rescan succeeds on a later attempt", async () => {
+  const b = new TeamBus(copyB, { onError: () => {} });
+  buses.push(b);
+  let attempts = 0;
+  b.onResync(async () => {
+    if (++attempts === 1) throw new Error("rescan failed");
+  });
+  const health: boolean[] = [];
+  b.onHealth((healthy) => health.push(healthy));
+  await b.start();
+  expect(b.healthy).toBe(false);
+  await vi.waitFor(() => expect(b.healthy, "the failed rescan was never retried").toBe(true), {
+    timeout: 10_000,
+    interval: 20,
+  });
+  expect(attempts).toBe(2);
+  expect(health).toEqual([true]);
+});

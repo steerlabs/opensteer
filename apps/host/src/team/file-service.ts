@@ -321,10 +321,23 @@ export class TeamFileService {
   }
   async #cache(row: FileRow, part: "original" | "preview", transfer: CachedFileTransfer) {
     const key = part === "original" ? row.storageKey : row.previewStorageKey!;
-    const cached = await this.store.cacheWrite(row.id, async (_t, current) =>
-      part === "original" ? current.generation : current.previewGeneration,
-    );
+    const column = part === "original" ? "generation" : "previewGeneration";
+    const cached = await this.store.cacheWrite(row.id, async (_t, current) => current[column]);
     if (cached) return;
+    // Bytes at the final key were verified before they were published (or cached before
+    // generations were recorded): adopt them rather than delete and fetch them again.
+    for await (const object of this.files.list(key))
+      if (object.key === key) {
+        await this.store.cacheWrite(row.id, async (t, current) => {
+          if (!current[column])
+            await t
+              .updateTable("teamBlobs")
+              .set({ [column]: object.generation })
+              .where("id", "=", row.id)
+              .execute();
+        });
+        return;
+      }
     requireTeam(this.remote, "Partner file transfer unavailable");
     const signal = transfer.controller.signal;
     const authorize = async () => {
@@ -368,7 +381,6 @@ export class TeamFileService {
       await this.store.cacheWrite(row.id, async (t, current) => {
         signal.throwIfAborted();
         requireTeam(lease && this.store.cacheLeaseValid(current, lease), "Cache lease expired");
-        const column = part === "original" ? "generation" : "previewGeneration";
         if (current[column]) return;
         generation = await this.files.put(key, pending);
         await t

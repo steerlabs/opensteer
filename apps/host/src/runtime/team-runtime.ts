@@ -226,6 +226,7 @@ export async function createTeamHostRuntime(input: {
           await machine?.endpoint.resync();
         },
         closeAll: (code) => machine?.endpoint.closeAll(code),
+        relocate: () => machine?.endpoint.relocate(),
       },
       registerPreviewKey: (session, command) =>
         preview.register({ userId: session.user.id, authSessionId: session.id, ...command }),
@@ -548,7 +549,6 @@ export async function createTeamHostRuntime(input: {
           draining = true;
           stopped = true;
           stopping.abort();
-          lifetimes.stop();
           const failures: unknown[] = [];
           const http = async () => {
             const deadline = setTimeout(() => app.server.closeAllConnections(), drainDeadlineMs);
@@ -564,6 +564,7 @@ export async function createTeamHostRuntime(input: {
           // HTTP first: admitted uploads and downloads finish before their services close.
           for (const [name, close] of [
             ["http", http],
+            ["link lifetimes", () => lifetimes.stop()],
             ["partner transports", () => partners?.close()],
             ["team transports", () => team.close()],
             ["link endpoint", () => machine?.endpoint.close()],

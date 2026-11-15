@@ -2,7 +2,7 @@ import { setPrivateDirectoryMode, setPrivateHandleMode } from "@opensteer/shared
 import { noFollowFlag } from "@opensteer/shared/privateFiles";
 import { isNodeError } from "@opensteer/shared/nodeError";
 import { constants as fsConstants } from "node:fs";
-import { mkdir, open, writeFile } from "node:fs/promises";
+import { mkdir, open, realpath, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { HostInstanceIdSchema, createId, type HostInstanceId } from "@opensteer/core";
 import { z } from "zod";
@@ -51,7 +51,10 @@ export async function loadHostInstance(
 ): Promise<HostInstanceIdentity> {
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    handle = await open(path, fsConstants.O_RDONLY | noFollowFlag() | fsConstants.O_NONBLOCK);
+    // A strict installation is mounted by its operator, and Kubernetes mounts Secret files as
+    // symlinks; resolve that trusted link, then refuse any link at the file itself.
+    const target = strict ? await realpath(path) : path;
+    handle = await open(target, fsConstants.O_RDONLY | noFollowFlag() | fsConstants.O_NONBLOCK);
     const metadata = await handle.stat();
     if (!metadata.isFile() || metadata.size < 1 || metadata.size > maximumHostInstanceFileBytes) {
       throw new Error("Host instance identity file is invalid");

@@ -134,6 +134,34 @@ it("shares presence and typing across copies", async () => {
   p.close();
   await vi.waitFor(async () => expect(await hubB.visible(f.userId, channel.id)).toBe(false), wait);
 });
+it("redraws a name another copy changed for people connected here", async () => {
+  const frames: { type: string; member?: { userId: string; displayName: string } }[] = [];
+  hubB.connect(
+    { kind: "human", userId: f.userId },
+    {
+      send: (frame) => {
+        frames.push(frame as (typeof frames)[number]);
+        return true;
+      },
+      close: () => {},
+    },
+  );
+  await f.database
+    .updateTable("users")
+    .set({ displayName: "Maya Renamed" })
+    .where("id", "=", f.userId)
+    .execute();
+  await vi.waitFor(
+    () =>
+      expect(frames).toContainEqual(
+        expect.objectContaining({
+          type: "team.member.updated",
+          member: expect.objectContaining({ userId: f.userId, displayName: "Maya Renamed" }),
+        }),
+      ),
+    wait,
+  );
+});
 it("resyncs a missed channel change and full sidebar after losing LISTEN", async () => {
   const actor = { kind: "human" as const, userId: f.userId };
   const channel = await chatA.create(actor, {

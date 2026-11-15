@@ -91,6 +91,7 @@ export interface TeamServiceOptions {
     isOnline?(ownerUserId: UserId): boolean | Promise<boolean>;
     resync?(): Promise<void>;
     closeAll?(code: number): void;
+    relocate?(): void;
   };
   readonly registerPreviewKey?: (
     session: AuthenticatedSession,
@@ -126,7 +127,6 @@ export async function startTeamServices(options: TeamServiceOptions) {
   const chat = new TeamChatStore(access, {
     teamId: options.teamId,
     teamName: options.teamName,
-    agentOnline: (ownerUserId) => options.machine?.isOnline?.(ownerUserId) ?? false,
   });
   const requests = new TeamRequestsStore(access, chat);
   const shares = options.partners
@@ -156,12 +156,13 @@ export async function startTeamServices(options: TeamServiceOptions) {
   /** Moves every socket to another copy; HTTP transfers already admitted keep running. */
   const relocate = (code = 1012) => {
     realtime.closeAll(code);
-    options.machine?.closeAll?.(code);
+    options.machine?.relocate?.();
     void options.partners?.closeSockets();
   };
   /** This copy can no longer vouch for access: drop sockets and abort transfers too. */
   const closeAll = (code = 1012) => {
     relocate(code);
+    options.machine?.closeAll?.(code);
     void fileService.abortTransfers();
   };
   const detachAll = access.onCloseAll(closeAll);

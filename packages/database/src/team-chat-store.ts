@@ -299,6 +299,22 @@ export interface TeamChatRelay {
     pin: boolean,
   ): Promise<boolean>;
 }
+/**
+ * Which of these people have their agent online: a live connection on the link's current
+ * epoch, on any team Host copy. One query on the caller's connection.
+ */
+export async function teamLinksOnline(
+  executor: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
+  userIds: readonly UserId[],
+): Promise<Set<UserId>> {
+  if (!userIds.length) return new Set();
+  const rows = await sql<{ owner: UserId }>`select distinct l.owner_user_id as owner
+    from team_link_connections c join team_links l on l.id=c.link_id
+    where l.owner_user_id = any(${[...userIds]}::text[]) and l.state='active'
+      and c.epoch=l.connection_epoch and c.seen_at > now()-interval '90 seconds'`.execute(executor);
+  return new Set(rows.rows.map((row) => row.owner));
+}
+
 export class TeamChatStore {
   relay: TeamChatRelay | undefined;
   readonly #requestListeners = new Set<(event: TeamRequestChange) => Promise<void> | void>();
@@ -307,7 +323,6 @@ export class TeamChatStore {
   readonly identity: {
     readonly teamId: DeploymentId;
     readonly teamName: string;
-    readonly agentOnline?: (ownerUserId: UserId) => boolean | Promise<boolean>;
   };
   constructor(access: TeamAccessStore, identity: TeamChatStore["identity"]) {
     this.access = access;
@@ -1878,15 +1893,11 @@ export class TeamChatStore {
         .orderBy("id")
         .limit(200)
         .execute();
-      const linkPresence = async (rows: readonly { ownerUserId: UserId }[]) =>
-        Promise.all(
-          [...new Set(rows.map((row) => row.ownerUserId))]
-            .slice(0, 200)
-            .map(async (ownerUserId) => ({
-              ownerUserId,
-              online: (await this.identity.agentOnline?.(ownerUserId)) ?? false,
-            })),
-        );
+      const linkPresence = async (rows: readonly { ownerUserId: UserId }[]) => {
+        const owners = [...new Set(rows.map((row) => row.ownerUserId))].slice(0, 200);
+        const online = await teamLinksOnline(t, owners);
+        return owners.map((ownerUserId) => ({ ownerUserId, online: online.has(ownerUserId) }));
+      };
       if (input.sinceSeq !== null && BigInt(input.sinceSeq) <= BigInt(channel.changeSeq)) {
         const rows = await messages
           .where("changeSeq", ">", input.sinceSeq)
@@ -2209,6 +2220,7 @@ export class TeamChatStore {
           .where("state", "=", "active")
           .executeTakeFirst());
         const channels = [];
+        let selfOnline: boolean | undefined;
         for (const row of pageRows) {
           const authority = authorities.get(row.id) ?? {
             read: false,
@@ -2248,7 +2260,9 @@ export class TeamChatStore {
             notificationLevel:
               state?.notificationLevel ??
               (row.kind === "dm" || row.kind === "group_dm" ? "all" : "mentions"),
-            agentOnline: linked && ((await this.identity.agentOnline?.(actor.userId)) ?? false),
+            agentOnline:
+              linked &&
+              (selfOnline ??= (await teamLinksOnline(t, [actor.userId])).has(actor.userId)),
           });
         }
         if (actor.kind === "agent")

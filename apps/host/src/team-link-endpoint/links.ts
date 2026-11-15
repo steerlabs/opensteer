@@ -1,3 +1,4 @@
+import { teamLinksOnline } from "@opensteer/database/team-chat";
 import { createHash } from "node:crypto";
 import { OpensteerError, type TeamLinkId } from "@opensteer/core";
 import {
@@ -94,10 +95,7 @@ export class TeamEndpointLinks {
     );
   }
   async isOnline(userId: import("@opensteer/core").UserId) {
-    const row = await sql`select 1 from team_link_connections c join team_links l on l.id=c.link_id
-      where l.owner_user_id=${userId} and l.state='active' and c.epoch=l.connection_epoch
-      and c.seen_at>now()-interval '90 seconds' limit 1`.execute(this.database);
-    return row.rows.length > 0;
+    return (await teamLinksOnline(this.database, [userId])).has(userId);
   }
 
   async redeem(value: unknown) {

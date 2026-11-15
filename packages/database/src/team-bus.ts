@@ -156,7 +156,6 @@ export class TeamBus {
       }
       this.#session = session;
       this.#end = end;
-      this.#attempt = 0;
       const interval = this.#options.probeIntervalMs ?? 5_000;
       let probing = false;
       probe = setInterval(() => {
@@ -173,8 +172,15 @@ export class TeamBus {
         );
       }, interval);
       probe.unref();
+      // Healthy only once every missed change is recovered; a failed rescan reconnects and retries.
+      try {
+        for (const resync of this.#resyncs) await resync();
+      } catch (error) {
+        lost(error);
+        return;
+      }
+      this.#attempt = 0;
       this.#setHealthy(true);
-      for (const resync of this.#resyncs) await resync().catch((error) => this.#error(error));
     })().finally(() => {
       this.#connecting = undefined;
     });
