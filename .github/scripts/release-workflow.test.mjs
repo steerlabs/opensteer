@@ -66,8 +66,9 @@ test("read-only preflight, secret-free discovery and only stable publication app
   // A Beta must never reach people before the Account service it may depend on.
   assert.ok(workflow.jobs["publish-insider"].needs.includes("account"));
   assert.match(workflow.jobs.account.if, /channel == 'beta'/);
-  assert.ok(workflow.jobs["team-provisioner"].needs.includes("publish-insider"));
-  assert.ok(!workflow.jobs["team-provisioner"].needs.includes("publish-stable"));
+  // Team images deploy only through promote-team-servers, so their build never waits on desktop.
+  assert.deepEqual(workflow.jobs["team-provisioner"].needs, ["preflight", "team-images"]);
+  assert.match(workflow.jobs["team-provisioner"].if, /channel == 'beta'/);
   assert.ok(workflow.jobs.build.needs.includes("discover"));
   assert.match(
     workflow.jobs.build.steps.find((step) => step.run?.includes("stampReleaseVersion")).run,

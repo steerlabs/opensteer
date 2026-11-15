@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { z } from "zod";
 import type { TeamImages } from "./template.js";
 
@@ -16,7 +15,8 @@ const EnvironmentSchema = z.object({
   OPENSTEER_TEAM_REPLICAS: z.coerce.number().int().min(1).max(2).default(1),
   OPENSTEER_TEAM_DATABASE_IP: z.ipv4(),
   OPENSTEER_TEAM_DATABASE_HOST: z.hostname(),
-  OPENSTEER_TEAM_DATABASE_CA_FILE: z.string().min(1),
+  /** The image entrypoint reads OPENSTEER_TEAM_DATABASE_CA_FILE into this and drops the `_FILE`. */
+  OPENSTEER_TEAM_DATABASE_CA: z.string().includes("-----BEGIN CERTIFICATE-----"),
   /** The provisioner's IAM database user; it logs in with its own Google access token. */
   OPENSTEER_PROVISIONER_DATABASE_USER: z.string().min(1),
   OPENSTEER_TEAM_GCS_BUCKET: z.string().min(1),
@@ -53,7 +53,7 @@ export function loadProvisionerConfig(environment: NodeJS.ProcessEnv): Provision
     platform: {
       databaseIp: parsed.OPENSTEER_TEAM_DATABASE_IP,
       databaseHost: parsed.OPENSTEER_TEAM_DATABASE_HOST,
-      databaseCa: readFileSync(parsed.OPENSTEER_TEAM_DATABASE_CA_FILE, "utf8"),
+      databaseCa: parsed.OPENSTEER_TEAM_DATABASE_CA,
       bucket: parsed.OPENSTEER_TEAM_GCS_BUCKET,
     },
     databaseUser: parsed.OPENSTEER_PROVISIONER_DATABASE_USER,
