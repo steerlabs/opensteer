@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createId } from "@opensteer/core";
 import { rpcSuccess } from "@opensteer/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
+import type { HostSnapshot } from "@opensteer/client/host";
 
 const hooks = vi.hoisted(() => {
   const slots: unknown[] = [];

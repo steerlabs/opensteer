@@ -11,7 +11,7 @@ import {
   doneTaskList,
   placeList,
   taskList,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
 } from "@opensteer/client/host";
 import {
   BrowserSurfaceIdSchema,

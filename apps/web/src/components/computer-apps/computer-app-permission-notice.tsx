@@ -2,7 +2,7 @@ import {
   computerAppPermissionNotice,
   type ComputerAppLiveState,
 } from "@opensteer/client/integrations";
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 import { Link } from "react-router";
 import { Icon } from "../icon.js";
 
@@ -22,7 +22,7 @@ export function ComputerAppPermissionNotice({
   state,
 }: {
   readonly appName: string;
-  readonly machine: Pick<LegacyMachineSummary, "device" | "name">;
+  readonly machine: Pick<MachineSummary, "device" | "name">;
   /** Where the app's own editor lives. */
   readonly managePath: string;
   readonly state: ComputerAppLiveState;

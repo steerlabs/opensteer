@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 import {
   placeList,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type PlaceItem,
 } from "@opensteer/client/host";
 

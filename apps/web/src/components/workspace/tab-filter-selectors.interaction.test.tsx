@@ -6,7 +6,7 @@ import { MockHostClient } from "@opensteer/client/mock";
 import { useTabDeviceChoice, useTabFilterMatches } from "@opensteer/client/react";
 import type {
   HostClient,
-  LegacyHostSnapshot as HostSnapshot,
+  HostSnapshot,
   TabDeviceChoice,
 } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema, ThreadIdSchema } from "@opensteer/core";

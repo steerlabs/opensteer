@@ -4,8 +4,8 @@ import { browserStoreFixture, seedBrowserSnapshot } from "@opensteer/client/test
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
-import { createId, PlaceEnteredEventViewSchema } from "@opensteer/core";
-import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
+import { createId, TabPlaceEnteredEventViewSchema } from "@opensteer/core";
+import type { HostClient, HostSnapshot } from "@opensteer/client/host";
 import { RunPlaceStore } from "@opensteer/client/host";
 import { LivePlace } from "./viewfinder.js";
 
@@ -38,7 +38,7 @@ const threadId = createId("thread"),
 const sessionId = "bsn_00000000-0000-4000-8000-000000000001";
 const surfaceId = "srf_00000000-0000-4000-8000-000000000001";
 const entry = (sequence = "1", session = sessionId, surface = surfaceId) =>
-  PlaceEnteredEventViewSchema.parse({
+  TabPlaceEnteredEventViewSchema.parse({
     type: "place.entered",
     eventId: createId("event"),
     environmentId: createId("environment"),
@@ -141,7 +141,7 @@ it("keeps the card and its watch lease across independent inventories, Request w
   expect(node.querySelector("canvas")).not.toBe(canvas);
   await act(async () =>
     store.accept(
-      PlaceEnteredEventViewSchema.parse({
+      TabPlaceEnteredEventViewSchema.parse({
         ...entry("4"),
         data: {
           place: { kind: "app", machineId: createId("runner"), appKey: "com.apple.notes" },

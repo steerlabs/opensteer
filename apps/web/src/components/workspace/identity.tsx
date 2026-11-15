@@ -47,30 +47,24 @@ export interface BrowserPresentation {
 }
 
 export interface BrowserPresentations {
-  /** Internal lookup keys; only the profile and computer words are shown. */
-  readonly bySession: ReadonlyMap<string, BrowserPresentation>;
+  /** By page tab; only the profile and computer words are shown. */
+  readonly byTab: ReadonlyMap<string, BrowserPresentation>;
   /** Two or more identities are in use: site icons wear profile badges. */
   readonly badges: boolean;
 }
 
 /** Each listed tab's profile and computer. */
 export function browserPresentations(places: readonly PlaceItem[]): BrowserPresentations {
-  const bySession = new Map<string, BrowserPresentation>();
+  const byTab = new Map<string, BrowserPresentation>();
   for (const place of places) {
-    if (
-      !place.browser ||
-      !place.identity ||
-      !place.device ||
-      bySession.has(place.browser.sessionId)
-    )
-      continue;
-    bySession.set(place.browser.sessionId, {
+    if (!place.identity) continue;
+    byTab.set(place.key, {
       identity: place.identity,
       computer: place.device.name,
       computerId: place.device.machineId,
     });
   }
-  return { bySession, badges: profileBadgesVisible(places) };
+  return { byTab, badges: profileBadgesVisible(places) };
 }
 
 export function useBrowserPresentations(places: readonly PlaceItem[]): BrowserPresentations {
@@ -103,16 +97,16 @@ function keptPresentations(
   next: BrowserPresentations,
 ): BrowserPresentations {
   if (!held) return next;
-  let changed = held.badges !== next.badges || held.bySession.size !== next.bySession.size;
-  const bySession = new Map<string, BrowserPresentation>();
-  for (const [sessionId, presentation] of next.bySession) {
-    const before = held.bySession.get(sessionId);
+  let changed = held.badges !== next.badges || held.byTab.size !== next.byTab.size;
+  const byTab = new Map<string, BrowserPresentation>();
+  for (const [tabId, presentation] of next.byTab) {
+    const before = held.byTab.get(tabId);
     const kept =
       before && JSON.stringify(before) === JSON.stringify(presentation) ? before : presentation;
     if (kept !== before) changed = true;
-    bySession.set(sessionId, kept);
+    byTab.set(tabId, kept);
   }
-  return changed ? { badges: next.badges, bySession } : held;
+  return changed ? { badges: next.badges, byTab } : held;
 }
 
 /**

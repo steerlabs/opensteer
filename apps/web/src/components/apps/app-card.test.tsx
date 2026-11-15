@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createId, type OpensteerApp } from "@opensteer/core";
-import type { AppEntry, LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
+import type { AppEntry, HostSnapshot } from "@opensteer/client/host";
 import { useAppView } from "@opensteer/client/react";
 import { MockHostClient } from "@opensteer/client/mock";
 import { AppCard } from "./app-card.js";

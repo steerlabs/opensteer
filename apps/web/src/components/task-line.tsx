@@ -13,7 +13,7 @@ import {
   type AssignmentPresentation,
   type AssignmentTone,
   type DelegationEntry,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type TaskMark as ResolvedTaskMark,
 } from "@opensteer/client/host";
 import { useActionReview } from "@opensteer/client/react";

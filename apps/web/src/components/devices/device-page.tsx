@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate, useParams } from "react-router";
 import {
   ComputerUseDataAppIdSchema,
   ComputerUseDataGrantSchema,
-  type LegacyMachineSummary,
+  type MachineSummary,
 } from "@opensteer/protocol";
 import { computerGlyph, deviceRemovalProfiles, hostsDeployment } from "@opensteer/client/computers";
 import {
@@ -76,7 +76,7 @@ function PendingDeviceDetail({
   machine,
 }: {
   readonly enrollmentId: string;
-  readonly machine: LegacyMachineSummary;
+  readonly machine: MachineSummary;
 }) {
   const { hostClient, openMobileNavigation } = useShell();
   const navigate = useNavigate();
@@ -175,7 +175,7 @@ function PendingDeviceDetail({
 }
 
 export function deviceRemovalCopy(input: {
-  readonly machine: Pick<LegacyMachineSummary, "id" | "name" | "status">;
+  readonly machine: Pick<MachineSummary, "id" | "name" | "status">;
   readonly thisDevice: boolean;
   readonly profiles: Parameters<typeof deviceRemovalProfiles>[1];
 }): { readonly title: string; readonly body: string; readonly confirm: string } {
@@ -199,7 +199,7 @@ export function deviceRemovalCopy(input: {
   };
 }
 
-function DeviceDetail({ machine }: { readonly machine: LegacyMachineSummary }) {
+function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
   const { desktopBridge, desktopDeployment, hostClient, openMobileNavigation, snapshot } =
     useShell();
   const navigate = useNavigate();

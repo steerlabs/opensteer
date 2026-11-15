@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { deviceElsewhere } from "@opensteer/client/computers";
 import type {
   HostClient,
-  LegacyHostSnapshot as HostSnapshot,
+  HostSnapshot,
   PlaceItem,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";

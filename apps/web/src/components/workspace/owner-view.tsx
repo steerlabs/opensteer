@@ -3,7 +3,7 @@ import {
   HostClientRequestError,
   ownerViewDestination,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type NativeViewerSource,
   type PlaceItem,
   type PersonalSurfaceDestination,
@@ -11,7 +11,7 @@ import {
 import { useHostSelector } from "@opensteer/client/react";
 import {
   computerAppIdentityKey,
-  type LegacyComputerView as ComputerView,
+  type ComputerView,
 } from "@opensteer/protocol";
 import { actionErrorMessage, usePageVisible } from "../../ui-utils.js";
 import { AppMark } from "../computer-apps/computer-use-section.js";

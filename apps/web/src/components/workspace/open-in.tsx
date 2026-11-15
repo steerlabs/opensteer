@@ -1,18 +1,17 @@
 import { useCallback, useMemo } from "react";
 import {
-  mutationIdempotencyKey,
   newTabTarget,
+  pageOpenTarget,
   parseNavigationInput,
   sameIdentity,
   startPageIndex,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type PlaceItem,
   type StartPageProfileChoice,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { actionErrorMessage } from "../../ui-utils.js";
-import { browserTargetViewport } from "../browser/browser-viewport.js";
 import { DeviceLabel } from "../computers/device-label.js";
 import { useHereId } from "../computers/here.js";
 import { SurfaceSubmenuRow } from "../surface-submenu-row.js";
@@ -23,7 +22,6 @@ import { useWorkspace } from "./workspace-context.js";
 const selectProfiles = (snapshot: HostSnapshot) => snapshot;
 function sameProfiles(left: HostSnapshot, right: HostSnapshot): boolean {
   return (
-    left.browserSessions === right.browserSessions &&
     left.browserProfiles === right.browserProfiles &&
     left.browserPlacements === right.browserPlacements &&
     left.connection === right.connection &&
@@ -38,39 +36,31 @@ function sameProfiles(left: HostSnapshot, right: HostSnapshot): boolean {
  * agent stay where they are.
  */
 export function useOpenPageIn(hostClient: HostClient) {
-  const { nav, phone } = useWorkspace();
+  const { nav } = useWorkspace();
   const hereId = useHereId();
   const toast = useToast();
   return useCallback(
     (place: PlaceItem, profile: StartPageProfileChoice) => {
-      if (place.destination.kind !== "browser" || !place.destination.tabId) return;
-      const { sessionId, tabId } = place.destination;
+      // Only a full web address the page has now is copied.
+      const parsed = /^https?:\/\//iu.test(place.tab.url ?? "")
+        ? parseNavigationInput(place.tab.url!)
+        : null;
+      if (parsed?.kind !== "url") {
+        toast.error("This page’s address can’t be opened in another profile.");
+        return;
+      }
       const show = nav.beginPlaceOperation();
-      const stage = document.querySelector(".place .browser-stage");
-      const viewport = browserTargetViewport(stage?.getBoundingClientRect() ?? null, phone);
       void hostClient
-        .readBrowserContextCandidate(sessionId, tabId)
-        .then((candidate) => {
-          // Only a full web address read from the page itself is copied.
-          const parsed = /^https?:\/\//iu.test(candidate.url)
-            ? parseNavigationInput(candidate.url)
-            : null;
-          if (parsed?.kind !== "url")
-            throw new Error("This page’s address can’t be opened in another profile.");
-          return hostClient
-            .openBrowserTab(newTabTarget(hostClient.getSnapshot(), profile.identity, hereId), {
-              url: parsed.url,
-              ...(viewport ? { viewport } : {}),
-              idempotencyKey: mutationIdempotencyKey("open-in"),
-            })
-            .then((opened) => {
-              show({ kind: "browser", sessionId: opened.sessionId, tabId: opened.tabId });
-              toast.success(`Opened in ${profile.presentation.name} · the original stays`);
-            });
+        .openTab(
+          pageOpenTarget(newTabTarget(hostClient.getSnapshot(), profile.identity, hereId), parsed.url),
+        )
+        .then((tab) => {
+          show({ kind: "tab", tabId: tab.tabId });
+          toast.success(`Opened in ${profile.presentation.name} · the original stays`);
         })
         .catch((error: unknown) => toast.error(actionErrorMessage(error)));
     },
-    [hereId, hostClient, nav, phone, toast],
+    [hereId, hostClient, nav, toast],
   );
 }
 

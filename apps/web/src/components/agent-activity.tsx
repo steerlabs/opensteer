@@ -100,7 +100,7 @@ import {
 } from "@opensteer/client/integrations";
 import { useComputerUseStop, useComputerUseStopForRun } from "@opensteer/client/react";
 import type { AssignmentSummary, BrowserPageContentPart, WaitingRequest } from "@opensteer/core";
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 import { replyParts, type ReplyPart } from "@opensteer/shared/markdown";
 import {
   TranscriptHostClientContext,
@@ -199,7 +199,7 @@ const Speakers = createContext<{
  */
 export interface TranscriptComputers {
   readonly hostClient: HostClient;
-  readonly machines: readonly LegacyMachineSummary[];
+  readonly machines: readonly MachineSummary[];
 }
 const ReaderComputers = createContext<TranscriptComputers | null>(null);
 

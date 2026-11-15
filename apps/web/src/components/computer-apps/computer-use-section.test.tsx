@@ -3,7 +3,7 @@
 import type { HostClient } from "@opensteer/client/host";
 import type { ComputerUseView } from "@opensteer/client/integrations";
 import type { IntegrationDefinitionSummary } from "@opensteer/integration-core";
-import type { LegacyComputerUseSessionSummary, LegacyMachineSummary } from "@opensteer/protocol";
+import type { ComputerUseSessionSummary, MachineSummary } from "@opensteer/protocol";
 import type { DesktopOpenComputerUsePermissionsPanelResult } from "@opensteer/protocol/desktop";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -517,7 +517,7 @@ async function mount(input: MountInput) {
         <ComputerUseBlock
           hostClient={hostClient}
           local={input.local === undefined ? localActions({}) : input.local}
-          machine={{ id: mac, name: "Studio", status: "online" } as LegacyMachineSummary}
+          machine={{ id: mac, name: "Studio", status: "online" } as MachineSummary}
           onChanged={input.onChanged ?? (async () => undefined)}
           owned
           view={input.view}
@@ -564,7 +564,7 @@ function session(
   sessionId: string,
   apps: readonly (typeof notes)[],
   threadTitle: string | null,
-): LegacyComputerUseSessionSummary {
+): ComputerUseSessionSummary {
   return {
     actionCount: 4,
     apps,
@@ -573,7 +573,7 @@ function session(
     sessionId,
     threadId: "thr_00000000-0000-4000-8000-000000000001",
     threadTitle,
-  } as unknown as LegacyComputerUseSessionSummary;
+  } as unknown as ComputerUseSessionSummary;
 }
 
 function deferred<T>() {

@@ -793,7 +793,7 @@ describe("page rail", () => {
           ...client.getSnapshot(),
           tabRestoreVersion: undefined,
           browserSessions: [rawSession],
-        } as import("@opensteer/client/host").LegacyHostSnapshot,
+        } as import("@opensteer/client/host").HostSnapshot,
         undefined,
       ),
     ).browserSessions[0]!;

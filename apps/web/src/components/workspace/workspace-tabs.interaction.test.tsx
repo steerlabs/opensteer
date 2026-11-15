@@ -11,7 +11,7 @@ import {
   placeHasAgents,
   placeList,
   type AppTab,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
 } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 

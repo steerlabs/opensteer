@@ -17,8 +17,8 @@ import { useComputerUseStop } from "@opensteer/client/react";
 import { computerAppIdentityKey } from "@opensteer/integration-core/computer-app";
 import type {
   ComputerAppIdentity,
-  LegacyComputerUseSessionSummary,
-  LegacyMachineSummary,
+  ComputerUseSessionSummary,
+  MachineSummary,
 } from "@opensteer/protocol";
 import { AppMark } from "./computer-apps/computer-use-section.js";
 import { handleModalKeyDown } from "./dialog.js";
@@ -40,8 +40,8 @@ export function ComputerStopButton({
   readonly hostConnected: boolean;
   readonly label: string;
   readonly machineName: string;
-  readonly runId: LegacyComputerUseSessionSummary["runId"];
-  readonly sessionId: LegacyComputerUseSessionSummary["sessionId"];
+  readonly runId: ComputerUseSessionSummary["runId"];
+  readonly sessionId: ComputerUseSessionSummary["sessionId"];
 }) {
   const stop = useComputerUseStop(hostClient, sessionId);
   if (!hostConnected || stop?.phase === "stopped") return null;
@@ -90,7 +90,7 @@ export function ComputerWatchView({
   leading?: ReactNode;
   /** The Mac the address names, when it names one. */
   machineId: string | null;
-  machines: readonly LegacyMachineSummary[];
+  machines: readonly MachineSummary[];
   /** Told the shape of each picture shown, so a tile can take that shape. */
   onPictureRatio?: ((ratio: string) => void) | undefined;
   onPictureLive?: ((live: boolean) => void) | undefined;
@@ -284,7 +284,7 @@ export function ComputerWatchView({
 
 /** The exact session and app named, while its Mac can show it. */
 function watchableSession(
-  machines: readonly LegacyMachineSummary[],
+  machines: readonly MachineSummary[],
   target: {
     readonly appKey: string | null;
     readonly machineId: string | null;

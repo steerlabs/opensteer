@@ -9,7 +9,7 @@ import {
   HostClientRequestError,
   placeList,
   type BrowserTabStore,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type PlaceItem,
 } from "@opensteer/client/host";
 import type { BrowserTabRow } from "@opensteer/protocol/browser-tabs";

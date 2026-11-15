@@ -3,7 +3,7 @@ import {
   taskAttention,
   taskList,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type TaskAttention,
   type TaskList,
   type TaskRow,

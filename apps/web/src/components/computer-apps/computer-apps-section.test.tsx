@@ -8,7 +8,7 @@ import type {
   IntegrationPlatformDashboard,
 } from "@opensteer/integration-core";
 import { RunnerIdSchema } from "@opensteer/core";
-import type { HostApiCommandInput, LegacyMachineSummary } from "@opensteer/protocol";
+import type { HostApiCommandInput, MachineSummary } from "@opensteer/protocol";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
@@ -631,7 +631,7 @@ describe("ComputerAppsSection on an iPhone seen from another device", () => {
 const iphoneId = RunnerIdSchema.parse("rnr_22222222-2222-4222-8222-222222222222");
 
 /** An iPhone as a newer Host lists it: apps only, no shell and no Mac grants. */
-function iphone(overrides: Partial<LegacyMachineSummary> = {}): LegacyMachineSummary {
+function iphone(overrides: Partial<MachineSummary> = {}): MachineSummary {
   return machine({
     allowedModules: ["integrations"],
     device: { form: "phone", platform: "ios" },
@@ -666,12 +666,12 @@ function calendar(): IntegrationDefinitionSummary {
 }
 
 function iphoneCalendarStatus(
-  ...operations: NonNullable<LegacyMachineSummary["apps"]>[number]["operations"]
-): NonNullable<LegacyMachineSummary["apps"]>[number] {
+  ...operations: NonNullable<MachineSummary["apps"]>[number]["operations"]
+): NonNullable<MachineSummary["apps"]>[number] {
   return { definitionId: "apple-calendar", operations };
 }
 
-function iphoneCalendarReady(): NonNullable<LegacyMachineSummary["apps"]>[number] {
+function iphoneCalendarReady(): NonNullable<MachineSummary["apps"]>[number] {
   return iphoneCalendarStatus(readyOperation("list_events"), readyOperation("create_event"));
 }
 
@@ -692,7 +692,7 @@ interface MountInput {
   readonly definition?: IntegrationDefinitionSummary;
   readonly dispatch?: HostClient["dispatch"];
   readonly localApproval?: ComputerAppLocalApproval | null;
-  readonly machine: LegacyMachineSummary;
+  readonly machine: MachineSummary;
   readonly onCancelSetupRequest?: (request: ComputerAppSetupSummary) => Promise<void>;
   readonly onRequestSetup?: (input: ComputerAppRequestInput) => Promise<void>;
   readonly owned?: boolean;
@@ -802,11 +802,11 @@ function contacts(): IntegrationDefinitionSummary {
   } as unknown as IntegrationDefinitionSummary;
 }
 
-function ready(): NonNullable<LegacyMachineSummary["apps"]>[number] {
+function ready(): NonNullable<MachineSummary["apps"]>[number] {
   return appStatus(readyOperation(), readyOperation("send_message"));
 }
 
-function readPermissionRequired(): NonNullable<LegacyMachineSummary["apps"]>[number] {
+function readPermissionRequired(): NonNullable<MachineSummary["apps"]>[number] {
   return appStatus({
     detail: "Messages needs Full Disk Access.",
     operation: "query_messages",
@@ -815,7 +815,7 @@ function readPermissionRequired(): NonNullable<LegacyMachineSummary["apps"]>[num
   });
 }
 
-function sendPermissionRequired(): NonNullable<LegacyMachineSummary["apps"]>[number] {
+function sendPermissionRequired(): NonNullable<MachineSummary["apps"]>[number] {
   return appStatus(readyOperation(), {
     detail: "Messages needs Automation permission.",
     operation: "send_message",
@@ -825,8 +825,8 @@ function sendPermissionRequired(): NonNullable<LegacyMachineSummary["apps"]>[num
 }
 
 function appStatus(
-  ...operations: NonNullable<LegacyMachineSummary["apps"]>[number]["operations"]
-): NonNullable<LegacyMachineSummary["apps"]>[number] {
+  ...operations: NonNullable<MachineSummary["apps"]>[number]["operations"]
+): NonNullable<MachineSummary["apps"]>[number] {
   return { definitionId: "apple-messages", operations };
 }
 
@@ -871,7 +871,7 @@ function setupRequest(access: "read" | "read-write"): ComputerAppSetupSummary {
   } as ComputerAppSetupSummary;
 }
 
-function machine(overrides: Partial<LegacyMachineSummary> = {}): LegacyMachineSummary {
+function machine(overrides: Partial<MachineSummary> = {}): MachineSummary {
   return {
     access: null,
     allowedModules: ["integrations", "shell"],
@@ -891,7 +891,7 @@ function machine(overrides: Partial<LegacyMachineSummary> = {}): LegacyMachineSu
     status: "online",
     unlinkedLocalFolders: 0,
     ...overrides,
-  } as LegacyMachineSummary;
+  } as MachineSummary;
 }
 
 function dispatcher(

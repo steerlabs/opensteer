@@ -3823,6 +3823,10 @@ export class MockHostClient implements HostClient {
     setConnected: () => undefined,
   };
   readonly closeComputerView: HostClient["closeComputerView"];
+  readonly #viewers = new Map<string, import("@opensteer/protocol").TabViewer>();
+  tabViewer(tabId: string) {
+    return this.getSnapshot().tabs.get(tabId as TabId) ? (this.#viewers.get(tabId) ?? null) : null;
+  }
   readonly openTab: TabsClient["openTab"];
   readonly closeTabs: TabsClient["closeTabs"];
   readonly reopenTab: TabsClient["reopenTab"];

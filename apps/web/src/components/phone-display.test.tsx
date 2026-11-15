@@ -6,10 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 import { sharedDisplayStreams } from "@opensteer/client/integrations";
 import { RunnerIdSchema } from "@opensteer/core";
-import type { LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
+import type { HostSnapshot } from "@opensteer/client/host";
 import { LivePlace } from "./workspace/viewfinder.js";
 import type { WebSocketClient } from "@opensteer/client/host";
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 
 /*
  * Ways the live phone Watch can fail in a page, each answered below:
@@ -200,7 +200,7 @@ afterEach(() => {
   Reflect.deleteProperty(window, "opensteerDesktop");
 });
 
-function phone(): { machine: LegacyMachineSummary; sessionId: string } {
+function phone(): { machine: MachineSummary; sessionId: string } {
   const machine = client.getSnapshot().machines.find((item) => item.device?.form === "phone");
   const sessionId = machine?.computerUse?.sessions[0]?.sessionId;
   if (!machine || !sessionId) throw new Error("Missing phone fixture");

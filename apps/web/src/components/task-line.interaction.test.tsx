@@ -12,7 +12,7 @@ import {
 } from "@opensteer/core";
 import type {
   AssignmentEntry,
-  LegacyHostSnapshot as HostSnapshot,
+  HostSnapshot,
   TranscriptEntry,
 } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";

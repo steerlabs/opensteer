@@ -497,6 +497,10 @@ export class HttpHostClient {
   readonly #tabs = new TabStore();
   /** The page session each tab's viewer was bound to by this device's own activation. */
   readonly #pageSessions = new Map<string, string>();
+  readonly #viewers = new Map<string, import("@opensteer/protocol").TabViewer>();
+  tabViewer(tabId: string) {
+    return this.#viewers.get(tabId) ?? null;
+  }
   #tabRows: ReadonlyMap<TabId, Tab> | null = null;
   browserViewerSurface(sessionId: string, surfaceId: string) {
     return (
@@ -664,8 +668,10 @@ export class HttpHostClient {
     listApps: async (query) =>
       unwrapRpcResult(await this.rpc["apps.list"](query ? { query } : {})).apps as App[],
     activated: (tab, viewer) => {
+      this.#viewers.set(tab.tabId, viewer);
       if (viewer.kind === "page") this.#bindPage(tab, viewer.sessionId);
       else if (viewer.kind !== "app") this.#acceptOwnerView(viewer.view);
+      else this.#update(this.#snapshot);
     },
   });
   readonly openTab = this.#tabsClient.openTab;
@@ -5362,6 +5368,8 @@ export class HttpHostClient {
       // A page binding lasts while its tab is listed; a closed tab's session is no longer this device's.
       for (const tabId of this.#pageSessions.keys())
         if (!tabRows.has(tabId as TabId)) this.#pageSessions.delete(tabId);
+      for (const tabId of this.#viewers.keys())
+        if (!tabRows.has(tabId as TabId)) this.#viewers.delete(tabId);
       const bound = new Set(this.#pageSessions.values());
       if (snapshot.browserSessions.some((session) => !bound.has(session.id)))
         snapshot = {
@@ -5379,6 +5387,7 @@ export class HttpHostClient {
       this.#computerViews.clear();
       this.#ownerViews.clear();
       this.#pageSessions.clear();
+      this.#viewers.clear();
       this.#tabs.clear();
       snapshot = { ...snapshot, browserSessions: [] };
     }

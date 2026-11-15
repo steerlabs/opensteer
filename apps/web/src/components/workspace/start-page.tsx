@@ -29,7 +29,7 @@ import {
   type BrowserIdentityChoice,
   type BrowserTabOpenInput,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type PlaceItem,
   type StartPageGroup,
   type StartPageProfileChoice,
@@ -44,7 +44,7 @@ import { useHostSelector, usePlaceList } from "@opensteer/client/react";
 import { computerGlyph, orderDevices } from "@opensteer/client/computers";
 import type {
   ApprovedComputerApp,
-  LegacyOwnerWindowInfo as OwnerWindowInfo,
+  OwnerWindowInfo,
 } from "@opensteer/protocol";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { browserTargetViewport } from "../browser/browser-viewport.js";

@@ -6,7 +6,7 @@ import {
   sameTaskRow,
   taskRowLabel,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type TaskRow,
   taskMark,
   taskMarkQuiet,

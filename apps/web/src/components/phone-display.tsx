@@ -17,7 +17,7 @@ import {
 import type {
   NativeViewerSource,
   HostClient,
-  LegacyHostSnapshot as HostSnapshot,
+  HostSnapshot,
 } from "@opensteer/client/host";
 import {
   DisplayEditingSession,

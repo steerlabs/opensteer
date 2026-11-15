@@ -1,5 +1,5 @@
 import { createId } from "@opensteer/core";
-import { LegacyHostBootstrapSchema as HostBootstrapSchema } from "@opensteer/protocol";
+import { HostBootstrapSchema as HostBootstrapSchema } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { createHttpHostApiClient } from "@opensteer/client/host";
 import { createDesktopHostFetch } from "./desktop-host-transport.js";

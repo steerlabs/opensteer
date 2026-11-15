@@ -1058,6 +1058,11 @@ export type TeamAskDecision =
 
 export interface HostClient extends TabsClient {
   /**
+   * What this device's own activation of a tab bound — its page session, its
+   * view of a window or phone, or its app — until the tab leaves the list.
+   */
+  tabViewer(tabId: string): import("@opensteer/protocol").TabViewer | null;
+  /**
    * The page a viewer of this tab holds now, exactly (its address, icon and
    * size owner); undefined until a viewer of it is admitted. A list row reads
    * the tab's row instead, which carries only its site. The same object

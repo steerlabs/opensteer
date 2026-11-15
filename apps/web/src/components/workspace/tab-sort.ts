@@ -1,13 +1,19 @@
-import {
-  BrowserTabMoveSchema,
-  type BrowserTabGroupColor,
-  type BrowserTabMove,
-} from "@opensteer/protocol";
+import type { TabGroupColor, TabId, TabLayout } from "@opensteer/core";
+import type { TabOrganizeInput } from "@opensteer/protocol";
+
+type BrowserTabGroupColor = TabGroupColor;
+/** A drop: one tab or a whole group, into a group or the top level, before a row or at the end. */
+export interface TabMove {
+  readonly item: { readonly tabIds: readonly string[] } | { readonly groupId: string };
+  readonly to: {
+    readonly groupId: string | null;
+    readonly before: { readonly tabId: string } | { readonly groupId: string } | null;
+  };
+}
 
 /**
- * The tab list as drag-and-drop sees it: the visible rows of saved web tabs
- * in order, each tab with the group it sits in. Rows that cannot move (live
- * tabs a browser does not save) are not part of it; they follow it.
+ * The tab list as drag-and-drop sees it: the visible rows in layout order,
+ * every kind alike, each tab with the group it sits in.
  */
 export type SortRow =
   | {
@@ -184,14 +190,47 @@ export function slotMove(
   from: number,
   slots: readonly SortSlot[],
   slot: number,
-): BrowserTabMove | null {
+): TabMove | null {
   const target = slots[slot];
   if (!target || slot === homeSlot(rows, from, slots)) return null;
   const lifted = rows[from]!;
-  return BrowserTabMoveSchema.parse({
+  return {
     item: lifted.kind === "group" ? { groupId: lifted.groupId } : { tabIds: [lifted.tabId] },
     to: { groupId: target.group?.id ?? null, before: target.before },
-  });
+  };
+}
+
+/**
+ * The Host's organize command for a drop. A group anchor stands for its
+ * first tab, which places the moved block before that group's block; a whole
+ * group moves as all its members, in order, back into it.
+ */
+export function organizeInput(move: TabMove, layout: TabLayout): TabOrganizeInput | null {
+  const group = (groupId: string) =>
+    layout.items.find((item) => item.kind === "group" && item.group.groupId === groupId);
+  const anchor = (before: TabMove["to"]["before"]): TabId | undefined => {
+    if (!before) return undefined;
+    if ("tabId" in before) return before.tabId as TabId;
+    const held = group(before.groupId);
+    return held?.kind === "group" ? held.group.tabIds[0] : undefined;
+  };
+  const beforeTabId = anchor(move.to.before);
+  if ("groupId" in move.item) {
+    const held = group(move.item.groupId);
+    if (held?.kind !== "group" || !held.group.tabIds.length) return null;
+    return {
+      tabIds: [...held.group.tabIds],
+      group: { groupId: held.group.groupId },
+      ...(beforeTabId ? { beforeTabId } : {}),
+    };
+  }
+  return {
+    tabIds: move.item.tabIds.map((id) => id as TabId),
+    group: move.to.groupId
+      ? { groupId: move.to.groupId as Extract<TabOrganizeInput["group"], { groupId: unknown }>["groupId"] }
+      : null,
+    ...(beforeTabId ? { beforeTabId } : {}),
+  };
 }
 
 /** One keyboard step to the neighbouring gap; collapsed groups are stepped over, as Chrome's are. */
