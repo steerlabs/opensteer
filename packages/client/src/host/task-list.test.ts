@@ -1,9 +1,9 @@
-import { browserStoreFixture } from "../test-support/browser-snapshot.js";
-import type { BrowserGroupRow, BrowserTabRow } from "@opensteer/protocol/browser-tabs";
+import { tabFixture, tabStoreFixture } from "../test-support/tab-fixtures.js";
 import { mergeTaskEntries } from "./task-entries.js";
 import { describe, expect, it } from "vitest";
 import {
   createId,
+  TabIdSchema,
   ThreadIdSchema,
   WaitingRequestSchema,
   type ThreadStatus,
@@ -12,7 +12,6 @@ import {
 import { MockHostClient } from "../mock/mock-host-client.js";
 import {
   mainDoneTasks,
-  type BrowserSessionSummary,
   type HostSnapshot,
   type TaskEntry,
 } from "./client.js";
@@ -76,7 +75,7 @@ function asking(index: number, title: string): WaitingRequest {
 function snapshot(
   entries: readonly TaskEntry[],
   options: {
-    readonly browserSessions?: readonly BrowserSessionSummary[];
+    readonly tabs?: HostSnapshot["tabs"];
     readonly chat?: number;
     readonly unread?: readonly number[];
     readonly waiting?: readonly WaitingRequest[];
@@ -87,7 +86,7 @@ function snapshot(
     ...base,
     activeTasks: [],
     assignments: {},
-    browserSessions: [...(options.browserSessions ?? [])],
+    tabs: options.tabs ?? tabStoreFixture([]),
 
     voiceThreadId: null,
     machines: [],
@@ -268,51 +267,19 @@ describe("taskList", () => {
   });
 
   it("names the site a working task is on, and no place for a task that is not working", () => {
-    const session = {
-      acting: true,
-      createdAt: hoursAgo(1),
-      id: "brs_1",
-      profileId: null,
-      state: "ready",
-      tabs: [
-        { id: "other", active: true, title: "Other page", url: "https://example.com" },
-        {
-          id: "awards",
-          active: false,
-          title: "Award search",
-          url: "https://www.united.com/en/us/awards",
-        },
-      ],
-      browserTabs: browserStoreFixture(
-        [{ id: "brs_1", sessionId: "brs_1", createdAt: hoursAgo(1) } as BrowserGroupRow],
-        [
-          {
-            groupId: "brs_1",
-            rows: [
-              {
-                id: "other",
-                title: "Other page",
-                site: "https://example.com",
-                order: 0,
-                occupants: [],
-              },
-              {
-                id: "awards",
-                title: "Award search",
-                site: "https://www.united.com/en/us/awards",
-                order: 1,
-                occupants: [{ acting: true, lastActiveAt: hoursAgo(0) }],
-              },
-            ].map((tab) => ({ ...tab, sessionId: "brs_1" })) as BrowserTabRow[],
-          },
-        ],
-      ),
-      threadIds: [threadId(1), threadId(2)],
-    } as unknown as BrowserSessionSummary;
+    const tabs = tabStoreFixture([
+      tabFixture({ tabId: TabIdSchema.parse("other"), url: "https://example.com" }),
+      tabFixture({
+        tabId: TabIdSchema.parse("awards"),
+        title: "Award search",
+        url: "https://www.united.com/en/us/awards",
+        usedBy: [{ taskId: ThreadIdSchema.parse(threadId(1)) }],
+      }),
+    ]);
     const list = taskList(
       snapshot(
         [entry(1, "Flight award alerts", "running", 1, 0), entry(2, "Finished", "idle", 2, 1)],
-        { browserSessions: [session] },
+        { tabs },
       ),
     );
     expect(list.working[0]!.place).toBe("united.com");
