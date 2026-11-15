@@ -15,7 +15,7 @@ type ComputerAppApprovalList = {
     readonly request: import("@opensteer/integration-core").ComputerAppSetupRequest;
   }[];
 };
-import { TabIdSchema, WindowIdSchema } from "@opensteer/core";
+import { WindowIdSchema } from "@opensteer/core";
 import {
   createId,
   HarnessIdSchema,
@@ -37,6 +37,7 @@ import {
   IntegrationPlatformStore,
   IntegrationStore,
   OpensteerStore,
+  TabStore,
 } from "@opensteer/database";
 import { resolvedInputParts } from "@opensteer/harness";
 import { computerAppIntegrations } from "@opensteer/integration-catalog";
@@ -89,6 +90,10 @@ import {
   computerUseBusyNextStep,
   ComputerUseService,
 } from "../computer-use/computer-use-service.js";
+import { NativeTabTargets } from "../computer-use/native-tab-targets.js";
+import { ComputerViewService } from "../computer-use/computer-view-service.js";
+import { TabService } from "../tabs/tab-service.js";
+import { authorizeTabActor, canReadTab, tabComputer } from "../tabs/tab-authority.js";
 import { PlaceContextService } from "../computer-use/place-context-service.js";
 import { signHostDiscovery } from "../identity/host-keys.js";
 import {
@@ -353,7 +358,12 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const hostEvents = (await store.eventsAfter(SequenceSchema.parse("0"))).filter(
         (event) => event.type === "tool.started" && event.data.tool.name.startsWith("computer."),
       );
-      expect(hostEvents).toHaveLength(3);
+      expect(hostEvents.map((event) => event.data.tool.name)).toEqual([
+        "computer.bind",
+        "computer.observe",
+        "computer.act",
+        "computer.release",
+      ]);
       const outer: PendingAgentEvent = {
         bindingGeneration: first.claims.bindingGeneration,
         environmentId: first.environmentId,
@@ -554,7 +564,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         fake.frames
           .filter((frame) => frame.operation === "act")
           .map((frame) => frame.params.observationId),
-      ).toEqual(["phone-obs-1", "phone-obs-2"]);
+      ).toEqual(["phone-obs-3", "phone-obs-4"]);
       expect(fake.completedActions).toBe(2);
       const rows = await database
         .selectFrom("deploymentEvents")
@@ -563,7 +573,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         .where("type", "in", ["tool.started", "tool.completed"])
         .orderBy("sequence")
         .execute();
-      expect(rows).toHaveLength(8);
+      expect(rows).toHaveLength(12);
       expect(rows.every((row) => row.runnerOrdinal === null)).toBe(true);
       expect(
         rows
@@ -573,6 +583,32 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       expect(JSON.stringify(rows)).not.toContain('"hello"');
       const discovery = json(await gateway.call("integration_search", { query: "Android phone" }));
       expect(JSON.stringify(discovery)).not.toContain("toolRef");
+      const initialTabs = await world.tabStore.snapshot(world.owner.userId);
+      expect(initialTabs.rows).toHaveLength(1);
+      const nativeTab = initialTabs.rows[0]!;
+      expect(nativeTab).toMatchObject({ kind: "phone", computerId: world.phoneId, generation: 1 });
+      const rebound = await gateway.call("computer_use", {
+        code: `globalThis.activePhone=await tab(${JSON.stringify(nativeTab.id)});await activePhone.observe();return activePhone.tabId`,
+      });
+      expect(rebound.isError, JSON.stringify(rebound)).toBeUndefined();
+      expect(text(rebound)).toContain(JSON.stringify(nativeTab.id));
+      expect((await world.tabStore.snapshot(world.owner.userId)).rows).toEqual(initialTabs.rows);
+      const closes = fake.received("close");
+      await world.tabs.close(
+        { kind: "person", ownerId: world.owner.userId },
+        [nativeTab.id],
+        "close-phone-tab",
+      );
+      expect((await world.tabStore.snapshot(world.owner.userId)).rows).toEqual([]);
+      expect(fake.received("close")).toBe(closes);
+      const ongoing = await gateway.call("computer_use", { code: "await activePhone.tap(1)" });
+      expect(ongoing.isError, JSON.stringify(ongoing)).toBeUndefined();
+      expect(fake.completedActions).toBe(3);
+      const closed = await gateway.call("computer_use", {
+        code: `await tab(${JSON.stringify(nativeTab.id)})`,
+      });
+      expect(closed.isError).toBe(true);
+      expect((await world.tabStore.snapshot(world.owner.userId)).rows).toEqual([]);
       const artifactDirectory = process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR;
       if (artifactDirectory) {
         await mkdir(artifactDirectory, { recursive: true });
@@ -613,7 +649,9 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           account: row.grant.connectionId,
           operation: row.tool.name,
         }),
-      ).toEqual(refusal("Use computer_use to see and operate apps and phones."));
+      ).toEqual(
+        toolRefusal("invalid_input", "Use computer_use to see and operate apps and phones."),
+      );
     } finally {
       await world.close();
     }
@@ -655,7 +693,11 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       cancellation.abort();
       const cancelled = await pending;
       expect(cancelled.isError).toBe(true);
-      expect(JSON.stringify(cancelled)).toContain("outcome-unknown");
+      expect(cancelled).toMatchObject({
+        structuredContent: {
+          error: { code: "outcome_unknown", next: "Observe before repeating an effectful call." },
+        },
+      });
       resume();
       await vi.waitFor(async () => {
         const rows = await database
@@ -664,7 +706,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           .where("runId", "=", run.runId)
           .where("type", "=", "tool.completed")
           .execute();
-        expect(rows).toHaveLength(2);
+        expect(rows).toHaveLength(3);
         expect(JSON.stringify(rows)).toContain("This step was cancelled.");
       });
       expect(fake.received("act")).toBe(1);
@@ -747,7 +789,14 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         const cancelled = await pending;
         expect(cancelled.isError).toBe(true);
         if (termination === "MCP cancellation")
-          expect(JSON.stringify(cancelled)).toContain("outcome-unknown");
+          expect(cancelled).toMatchObject({
+            structuredContent: {
+              error: {
+                code: "outcome_unknown",
+                next: "Observe before repeating an effectful call.",
+              },
+            },
+          });
         ending ??= world.platform.endComputerRun(run.runId);
         const before = (await world.store.eventsAfter(SequenceSchema.parse("0"))).filter(
           (event) => event.type === "tool.completed" && event.data.callId === started.data.callId,
@@ -900,7 +949,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       await world.approveOnMac(setup);
       const loginRef = `lgn_${"a".repeat(32)}`;
       const result = await gateway.call("computer_use", {
-        code: `const a=await app("Notes");const w=await a.window(7);await w.observe();await w.type({loginRef:"${loginRef}",field:"password"})`,
+        code: `const a=await app("Notes");const w=await a.window("${windowIds[0]}");await w.observe();await w.type({loginRef:"${loginRef}",field:"password"})`,
       });
       expect(result.isError, JSON.stringify(result)).toBeUndefined();
       expect(JSON.stringify(result)).toContain("Typed saved password");
@@ -1115,7 +1164,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       await world.approveOnMac(setup);
       world.imageGate.on = true;
       const result = await gateway.call("computer_use", {
-        code: 'const a=await app("Notes"); print(await apps()); print(await a.windows()); const w=await a.window(8); const alias=await a.window(8); await Promise.all([w.observe({screenshot:true}),alias.click(1)]); await w.type("milk"); return "finished"',
+        code: `const a=await app("Notes"); print(await apps()); print(await a.windows()); const w=await a.window("${windowIds[1]}"); const alias=await a.window("${windowIds[1]}"); await Promise.all([w.observe({screenshot:true}),alias.click(1)]); await w.type("milk"); return "finished"`,
       });
       expect(result.isError, JSON.stringify(result)).toBeUndefined();
       const frames = world.fakeMac.frames.filter((frame) =>
@@ -1142,10 +1191,71 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         "text",
       ]);
       expect(world.computerUse.sessionsForRunner(world.macId)[0]?.windows).toEqual([
-        { appKey: apps.notes.bundleId.toLowerCase(), id: 8, title: "Work" },
+        { appKey: apps.notes.bundleId.toLowerCase(), windowId: windowIds[1], title: "Work" },
       ]);
       const search = json(await gateway.call("integration_search", { computerId: world.macId }));
       expect(JSON.stringify(search)).not.toContain("toolRef");
+      const initialTabs = await world.tabStore.snapshot(world.owner.userId);
+      expect(initialTabs.rows).toHaveLength(1);
+      const nativeTab = initialTabs.rows[0]!;
+      expect(nativeTab).toMatchObject({ kind: "window", windowId: windowIds[1], generation: 1 });
+      expect((await world.tabs.get(world.owner.userId, nativeTab.id)).tabId).toBe(nativeTab.id);
+      const rebound = await gateway.call("computer_use", {
+        code: `const bound=await tab(${JSON.stringify(nativeTab.id)});await bound.observe();return [bound.tabId,bound.windowId,typeof bound.id]`,
+      });
+      expect(rebound.isError, JSON.stringify(rebound)).toBeUndefined();
+      expect(text(rebound)).toContain(JSON.stringify([nativeTab.id, windowIds[1], "undefined"]));
+      expect(
+        world.fakeMac.frames.filter((frame) => frame.operation === "bind").at(-1)?.params,
+      ).toEqual({ windowId: windowIds[1] });
+      expect((await world.tabStore.snapshot(world.owner.userId)).rows).toEqual(initialTabs.rows);
+      const viewed = await world.tabs.activate(
+        world.owner.userId,
+        nativeTab.id,
+        "view-bound-window",
+      );
+      expect(viewed.viewer).toMatchObject({
+        kind: "window",
+        view: {
+          state: "ready",
+          target: { windowId: windowIds[1] },
+          window: { windowId: windowIds[1] },
+        },
+      });
+      const sessions = world.fakeMac.openSessions();
+      await world.tabs.close(
+        { kind: "person", ownerId: world.owner.userId },
+        [nativeTab.id],
+        "close-window-tab",
+      );
+      expect(await world.computerViews.list(world.owner.userId, world.macId)).toEqual([]);
+      expect(world.fakeMac.openSessions()).toEqual(sessions);
+      await world.tabs.reopen(
+        { kind: "person", ownerId: world.owner.userId },
+        nativeTab.id,
+        "reopen-window-tab",
+      );
+      const nextView = await world.tabs.activate(
+        world.owner.userId,
+        nativeTab.id,
+        "view-reopened-window",
+      );
+      expect(nextView.viewer).toMatchObject({
+        kind: "window",
+        view: { state: "ready", window: { windowId: windowIds[1] } },
+      });
+      if (viewed.viewer.kind !== "window" || nextView.viewer.kind !== "window")
+        throw new Error("Expected window viewers");
+      expect(nextView.viewer.view.viewId).not.toBe(viewed.viewer.view.viewId);
+      await world.computerViews.closeTabViews(
+        world.owner.userId,
+        nativeTab.id,
+        nativeTab.generation,
+      );
+      expect(await world.computerViews.list(world.owner.userId, world.macId)).toEqual([
+        nextView.viewer.view,
+      ]);
+
       const artifactDirectory = process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR;
       if (artifactDirectory) {
         await mkdir(artifactDirectory, { recursive: true });
@@ -1300,7 +1410,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     const world = await createWorld(database, { ownerViews: true });
     try {
       expect(await world.hub.ownerWindows(world.macId, apps.notes, { timeoutMs: 1000 })).toEqual([
-        { id: 7, title: "Groceries", focused: true, main: true, minimized: false, onScreen: true },
+        { windowId: windowIds[0], title: "Groceries" },
       ]);
       expect(world.fakeMac.openSessions()).toEqual([]);
       const cancellation = new AbortController();
@@ -1315,7 +1425,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       await expect(
         world.hub.ownerWindows(world.macId, apps.notes, { timeoutMs: 1000 }),
       ).rejects.toMatchObject({ code: "offline" });
-      const old = new FakeMac(world.hub, world.macId);
+      const old = new FakeMac(world.hub, world.macId, false);
       await old.attach();
       expect(world.hub.attached(old.stream.identity.runnerId)).toBe(true);
       await expect(
@@ -1327,30 +1437,22 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
   });
 
   it("recovers accepted native latest place after immediate end and a real Host restart", async () => {
-    const scheduled = new Set<() => void>();
-    const host = await startPrivateMachineHost(isolated.url, {
-      browserActivityClock: {
-        now: Date.now,
-        schedule: (callback) => {
-          scheduled.add(callback);
-          return () => {
-            scheduled.delete(callback);
-          };
-        },
-      },
-    });
+    const host = await startPrivateMachineHost(isolated.url);
+    let nativeTabId: import("@opensteer/core").TabId | undefined;
     const notices = vi.spyOn(RealtimeHub.prototype, "sendToUsers");
     let restarted: Awaited<ReturnType<typeof createHostRuntime>> | null = null;
     const world = await createWorld(database, {
       ownerUserId: host.ownerId,
       onPlaceActivity: (input) => {
-        const tabId = TabIdSchema.parse("native-notes");
-        host.runtime.browser.noteTabActivity({ ...input, tabId });
-        if (!input.ended)
-          host.runtime.browser.beginRunTabPlace(
-            input.runId,
-            input.generation,
-          )({ tabId, title: "Notes", site: null });
+        if (!nativeTabId) return;
+        host.runtime.browser.noteTabActivity({ ...input, tabId: nativeTabId, title: "Groceries" });
+      },
+      onTabUsed: (claims, tabId, title) => {
+        nativeTabId = tabId;
+        host.runtime.browser.beginRunTabPlace(
+          claims.runId,
+          claims.bindingGeneration,
+        )({ tabId, title, site: null });
       },
     });
     try {
@@ -1390,16 +1492,19 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       };
       const acted = await gateway.call("computer_use", { code: "await w.click(1)" });
       expect(acted.isError).toBeUndefined();
-      // End before the live-activity coalescer fires, before any history reads.
-      expect(scheduled.size).toBeGreaterThan(0);
-      expect(notices.mock.calls.some(([, notice]) => notice.type === "host.place-activity")).toBe(
-        false,
-      );
+      // Native activity is published for its durable tab before any history read.
+      expect(nativeTabId).toBeDefined();
+      expect(
+        notices.mock.calls.some(
+          ([, notice]) =>
+            notice.type === "host.place-activity" && notice.activity.tabId === nativeTabId,
+        ),
+      ).toBe(true);
       world.computerUse.closeForRun(run.runId);
       expect(
         notices.mock.calls.some(([, notice]) => notice.type === "host.place-activity-cleared"),
       ).toBe(true);
-      expect(scheduled.size).toBe(0);
+      await host.runtime.browser.drainRunPlaces(run.runId);
       const persisted = await store.eventsAfter(SequenceSchema.parse("0"));
       const operationStarted = persisted.find(
         (event) => event.type === "tool.started" && event.data.tool.name === "computer.click",
@@ -1426,8 +1531,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       );
       expect(before).toMatchObject({
         runId: run.runId,
-        tabId: "native-notes",
-        title: "Notes",
+        tabId: nativeTabId,
+        title: "Groceries",
       });
       await store.commitRunnerEvent({
         environmentId: run.environmentId,
@@ -1478,7 +1583,9 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       if (restarted.kind !== "personal") throw new Error("Expected Personal Host");
       await restarted.listen();
       expect(await restarted.browser.latestTabPlaces(host.ownerId)).toEqual(
-        expect.arrayContaining([expect.objectContaining({ title: "Notes" })]),
+        expect.arrayContaining([
+          expect.objectContaining({ tabId: nativeTabId, title: "Groceries" }),
+        ]),
       );
       const bootstrap = await testRpcData(
         host.origin,
@@ -1493,8 +1600,10 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       expect(recovered).toMatchObject({
         runId: run.runId,
         tabId: before!.tabId,
-        title: "Notes",
-        at: completedAction.createdAt,
+        title: "Groceries",
+        at: persisted.find(
+          (event) => event.type === "place.entered" && event.data.tabId === nativeTabId,
+        )?.createdAt,
       });
       const directory = process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR;
       if (directory) {
@@ -2253,7 +2362,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         account: legacy.grant.connectionId,
         operation: legacy.tool.name,
       }),
-    ).toEqual(refusal("Use computer_use to see and operate apps and phones."));
+    ).toEqual(toolRefusal("invalid_input", "Use computer_use to see and operate apps and phones."));
 
     // 6. Observe the bound window, without an image-capable engine and then with one.
     const observed = await a.call("computer_use", {
@@ -2261,7 +2370,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     });
     expect(observed.structuredContent).toBeUndefined();
     expect(observed.isError).toBeUndefined();
-    const firstText = `Looked at Notes\nObservation obs-1 of Notes (Groceries) — 2 elements. Screenshot 1200×900 px; all coordinates are screenshot pixels.\n${tree}\nWindows: [{"id":7,"title":"Groceries","current":true},{"id":8,"title":"Work","current":false}]\nScreenshot unavailable in this engine.`;
+    const firstText = `Looked at Notes\nObservation obs-1 of Notes (Groceries) — 2 elements. Screenshot 1200×900 px; all coordinates are screenshot pixels.\n${tree}\nWindows: [{"windowId":"${windowIds[0]}","title":"Groceries","current":true},{"windowId":"${windowIds[1]}","title":"Work","current":false}]\nScreenshot unavailable in this engine.`;
     expect(observed.content).toEqual([{ type: "text", text: firstText }]);
     world.imageGate.on = true;
     const pictured = await a.call("computer_use", { code: "await w.observe({screenshot:true})" });
@@ -2298,7 +2407,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     );
     expect(
       await a.call("computer_use", {
-        code: 'const unseen=await (await app("Notes")).window(8); await unseen.key("cmd+s")',
+        code: `const unseen=await (await app("Notes")).window("${windowIds[1]}"); await unseen.key("cmd+s")`,
       }),
     ).toEqual(refusal("stale-observation: Observe this window first."));
     expect(
@@ -2528,17 +2637,18 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         access: "read",
         reason: "Find the Wi-Fi password.",
       }),
-    ).toEqual(refusal("Opensteer does not operate password managers."));
+    ).toEqual(toolRefusal("invalid_input", "Opensteer does not operate password managers."));
     expect(
       await a.call("app_access_request", {
         app: "Photoshop",
         access: "read",
         reason: "Crop the photo.",
       }),
-    ).toEqual(refusal('No app on this Mac is called "Photoshop".'));
+    ).toEqual(toolRefusal("conflict", 'No app on this Mac is called "Photoshop".'));
 
     // The ordinary integration forms name no app, so they are sent to the one that does.
-    const oneAppAtATime = refusal(
+    const oneAppAtATime = toolRefusal(
+      "invalid_input",
       "Computer use is requested one app at a time: call app_access_request {computerId, app, access, reason}.",
     );
     expect(
@@ -2579,7 +2689,10 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         reason: "Look at the week.",
       }),
     ).toEqual(
-      refusal(`Calendar is blocked on ${mac}. The owner can unblock it from any Opensteer app.`),
+      toolRefusal(
+        "access_denied",
+        `Calendar is blocked on ${mac}. The owner can unblock it from any Opensteer app.`,
+      ),
     );
     expect(await a.call("computer_use", { code: 'await app("Calendar")' })).toEqual(
       refusal("app-not-allowed: No approved app matches Calendar. Search integrations for access."),
@@ -2633,7 +2746,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         reason: "Read the notes.",
       }),
     ).toEqual(
-      refusal(
+      toolRefusal(
+        "invalid_input",
         `This task is not running on a Mac set up for computer use, so name one with computerId. These are set up: ${mac} (${world.macId}), Studio Mac (${studio}).`,
       ),
     );
@@ -2648,12 +2762,12 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         access: "read",
         reason: "Find the invoice.",
       }),
-    ).toEqual(refusal(`${mac} is offline.`));
+    ).toEqual(toolRefusal("conflict", `${mac} is offline.`));
     expect(await world.persistence.listComputerAppSetupRequests(world.owner.userId)).toEqual(
       setupRequests,
     );
     expect(await a.call("integration_search", { computerId: world.macId })).toEqual(
-      refusal(`${mac} is offline.`),
+      toolRefusal("conflict", `${mac} is offline.`),
     );
     const offlineCatalog = json(await a.call("integration_search", { query: "Computer use" }));
     expect(macRow(offlineCatalog).computers[0]).toMatchObject({ state: "offline" });
@@ -2735,7 +2849,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
 
   function phoneCode(gateway: Gateway, code: string) {
     return gateway.call("computer_use", {
-      code: `const p=await phone(${JSON.stringify(phone)});\n${code}`,
+      code: `const p=globalThis.phoneHandle ??= await phone(${JSON.stringify(phone)});\n${code}`,
     });
   }
 
@@ -3108,7 +3222,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     expect(world.computerUse.holders(phoneId).size).toBe(0);
     fakePhone.detach();
     expect(await gateway.call("integration_search", { computerId: phoneId })).toEqual(
-      refusal(`${phone} is offline.`),
+      toolRefusal("conflict", `${phone} is offline.`),
     );
     await world.close();
   });
@@ -3353,7 +3467,8 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
         computerId: phoneId,
       }),
     ).toEqual(
-      refusal(
+      toolRefusal(
+        "invalid_input",
         `${phone} is an Android phone, which is asked for whole: call app_access_request {computerId, access, reason} without app.`,
       ),
     );
@@ -3419,7 +3534,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
         account: row.grant.connectionId,
         operation: row.tool.name,
       }),
-    ).toEqual(refusal("Use computer_use to see and operate apps and phones."));
+    ).toEqual(toolRefusal("invalid_input", "Use computer_use to see and operate apps and phones."));
 
     // 4. Observe: the header a client titles the step with, the phone's
     // state line by line, then the tree.
@@ -3429,7 +3544,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     expect(observedText).toBe(
       [
         `Looked at ${phone}`,
-        `Observation phone-obs-1 of ${phone} — 2 elements. Screenshot 540×1200 px; all coordinates are screenshot pixels.`,
+        `Observation phone-obs-2 of ${phone} — 2 elements. Screenshot 540×1200 px; all coordinates are screenshot pixels.`,
         phoneTree,
         "Screen: on",
         "Locked: no",
@@ -3443,7 +3558,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     const pictured = await phoneCode(a, "await p.observe()");
     expect(pictured.content[1]).toEqual({
       _meta: { "codex/imageDetail": "original" },
-      data: "/9j/phone2",
+      data: "/9j/phone3",
       mimeType: "image/jpeg",
       type: "image",
     });
@@ -3496,11 +3611,11 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       "Woke the screen",
       "Tapped element 1",
       `Looked at ${phone}`,
-      `Observation phone-obs-3 of ${phone} — 2 elements. Screenshot 540×1200 px; all coordinates are screenshot pixels.`,
+      `Observation phone-obs-4 of ${phone} — 2 elements. Screenshot 540×1200 px; all coordinates are screenshot pixels.`,
     ]);
     expect(
       fakePhone.frames.filter((frame) => frame.operation === "act").at(-1)?.params.observationId,
-    ).toBe("phone-obs-2");
+    ).toBe("phone-obs-3");
     const actsBefore = fakePhone.received("act");
     fakePhone.invalidateObservation();
     expect(await phoneCode(a, "await p.wake()")).toEqual(
@@ -3547,6 +3662,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     expect(text(await phoneCode(b, "await p.observe()"))).toContain(`Looked at ${phone}`);
     expect(fakePhone.frames.slice(framesBefore).map((frame) => frame.operation)).toEqual([
       "close",
+      "observe",
       "observe",
     ]);
 
@@ -3730,7 +3846,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
         ...retiredAct,
         arguments: { observationId: "retired", actions: [{ type: "wake" }] },
       }),
-    ).toEqual(refusal("Use computer_use to see and operate apps and phones."));
+    ).toEqual(toolRefusal("invalid_input", "Use computer_use to see and operate apps and phones."));
     expect(fakePhone.received("act")).toBe(0);
     expect(json(await phoneCode(gateway, "return await p.release()"))).toEqual({ released: true });
     await world.close();
@@ -3769,8 +3885,8 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       release = resolve;
     });
     const observing = phoneCode(gateway, "await p.observe()");
-    await fakePhone.reached("observe", 2);
-    expect(fakePhone.received("observe")).toBe(2);
+    await fakePhone.reached("observe", 3);
+    expect(fakePhone.received("observe")).toBe(3);
     fakePhone.detach();
     expect(await observing).toEqual(refusal("failed: That computer went offline."));
     release();
@@ -3794,16 +3910,17 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     const unknown = (runnerId: string) =>
       `No Android phone set up for agents has computerId ${runnerId}. Search "Android phone" with integration_search to list your phones and their computerIds.`;
 
-    expect(await ask(strangers)).toEqual(refusal(unknown(strangers)));
+    expect(await ask(strangers)).toEqual(toolRefusal("invalid_input", unknown(strangers)));
     const nobody = createId("runner");
-    expect(await ask(nobody)).toEqual(refusal(unknown(nobody)));
+    expect(await ask(nobody)).toEqual(toolRefusal("invalid_input", unknown(nobody)));
     expect(await ask(world.macId)).toEqual(
-      refusal(
+      toolRefusal(
+        "invalid_input",
         `${mac} is a Mac, whose apps are asked for one at a time: call app_access_request {computerId, app, access, reason}.`,
       ),
     );
     fakePhone.detach();
-    expect(await ask(phoneId)).toEqual(refusal(`${phone} is offline.`));
+    expect(await ask(phoneId)).toEqual(toolRefusal("conflict", `${phone} is offline.`));
     expect(await world.persistence.listComputerAppSetupRequests(world.owner.userId)).toEqual([]);
     await world.close();
   });
@@ -3857,6 +3974,15 @@ function inventorySource(platform: IntegrationPlatformService): IntegrationInven
     listCallableTools: (input) => platform.listCallableTools(input),
     listDiscoveryInventory: (input) => platform.listDiscoveryInventory(input),
   };
+}
+
+function toolRefusal(code: string, message: string, next: string | null = null) {
+  const error = { code, message, next };
+  return expect.objectContaining({
+    content: [{ type: "text", text: JSON.stringify({ error }) }],
+    structuredContent: { error },
+    isError: true,
+  });
 }
 
 function refusal(message: string) {
@@ -3926,6 +4052,11 @@ function text(result: ToolResult): string {
   return blocks.map((block) => block.text).join("\n");
 }
 
+const windowIds = [
+  WindowIdSchema.parse("win_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+  WindowIdSchema.parse("win_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+] as const;
+
 /** One Mac as the helper answers through the Runner, with just enough of its rules. */
 class FakeMac {
   respond: (
@@ -3951,6 +4082,17 @@ class FakeMac {
     apps.textEdit,
     apps.onePassword,
   ];
+  readonly #windows = new Map(
+    this.#installed.map((app) => [
+      app.bundleId,
+      app === apps.notes
+        ? windowIds
+        : ([
+            WindowIdSchema.parse(`win_${randomUUID()}`),
+            WindowIdSchema.parse(`win_${randomUUID()}`),
+          ] as const),
+    ]),
+  );
   readonly #sessions = new Map<string, Map<string, string>>();
   readonly #owners = new Map<string, string>();
   #observations = 0;
@@ -3995,7 +4137,7 @@ class FakeMac {
       identity: {
         modules: {
           integrations: {
-            ...(ownerViews ? { ownerViewVersion: 3 } : {}),
+            ...(macWindowVideo || ownerViews ? { ownerViewVersion: 3 } : {}),
             computerUseVersion: 2,
             ...(macWindowVideo ? { macWindowVideoVersion: 1 } : {}),
             platform: "darwin",
@@ -4118,6 +4260,33 @@ class FakeMac {
   }
 
   async #answer(message: HostIntegrationsOperation): Promise<void> {
+    if (message.type === "host.integrations.window-resolve") {
+      const target = message.target;
+      const app =
+        "app" in target
+          ? target.app
+          : this.#installed.find((app) =>
+              this.#windows.get(app.bundleId)?.includes(target.windowId),
+            );
+      const ids = app ? this.#windows.get(app.bundleId) : undefined;
+      const windowId = "windowId" in target ? target.windowId : ids?.[0];
+      await this.#hub.handleMessage(this.peer, this.stream, {
+        ...this.stream.fence,
+        type: "runner.integrations.window-resolved",
+        module: "integrations",
+        requestId: message.requestId,
+        result: {
+          kind: "ok",
+          value: {
+            windowId: windowId ?? null,
+            app: app ?? null,
+            title: windowId === ids?.[0] ? "Groceries" : "Work",
+            unavailableReason: app ? null : "window-identity-lost",
+          },
+        },
+      });
+      return;
+    }
     if (message.type === "host.integrations.computer-app-windows") {
       await this.#hub.handleMessage(this.peer, this.stream, {
         ...this.stream.fence,
@@ -4127,7 +4296,7 @@ class FakeMac {
         result: {
           kind: "ok",
           value: {
-            windows: [{ windowId: WindowIdSchema.parse("win_7"), title: "Groceries" }],
+            windows: [{ windowId: windowIds[0], title: "Groceries" }],
           },
         },
       });
@@ -4182,6 +4351,14 @@ class FakeMac {
         state: message.operation === "close" ? ("closed" as const) : ("ready" as const),
         captureTargetId:
           message.operation === "close" ? null : `window:${message.viewId}:${message.generation}`,
+        ...(message.target.kind === "app" && message.operation !== "close"
+          ? {
+              window: {
+                windowId: message.target.windowId,
+                title: message.target.windowId === windowIds[0] ? "Groceries" : "Work",
+              },
+            }
+          : {}),
       };
       if (!this.#hub.attached(this.stream.identity.runnerId)) return;
       await this.#hub.handleMessage(this.peer, this.stream, {
@@ -4299,24 +4476,25 @@ class FakeMac {
         const session = this.#sessions.get(frame.sessionId) ?? new Map<string, string>();
         this.#sessions.set(frame.sessionId, session);
         this.#owners.set(key, frame.sessionId);
-        const current = Number(session.get(`current:${key}`) ?? 7);
-        const windows = [7, 8].map((id) => ({
-          ref: `${frame.sessionId}:${key}:${id}`,
-          id,
-          title: id === 7 ? "Groceries" : "Work",
-          focused: id === 7,
-          main: id === 7,
+        const ids = this.#windows.get(app.bundleId)!;
+        const current = session.get(`current:${key}`) ?? ids[0];
+        const windows = ids.map((windowId) => ({
+          ref: `${frame.sessionId}:${key}:${windowId}`,
+          windowId,
+          title: windowId === ids[0] ? "Groceries" : "Work",
+          focused: windowId === ids[0],
+          main: windowId === ids[0],
           minimized: false,
           onScreen: true,
           modal: false,
-          current: id === current,
+          current: windowId === current,
           frame: { x: 0, y: 0, width: 800, height: 600 },
         }));
         if (frame.operation === "windows") return { windows };
         if (frame.operation === "bind") {
-          const window = windows.find((window) => window.id === (params.window ?? current));
+          const window = windows.find((window) => window.windowId === (params.windowId ?? current));
           if (!window) throw new MacError("stale-observation", "That window is closed.");
-          session.set(`current:${key}`, String(window.id));
+          session.set(`current:${key}`, window.windowId);
           return { window: { ...window, current: true } };
         }
         const window = windows.find((window) => window.ref === params.window);
@@ -4326,7 +4504,7 @@ class FakeMac {
             throw new MacError("stale-observation", "Observe this window first.");
           if (params.snapshot !== session.get(window.ref))
             throw new MacError("stale-observation", "Observe this window again.");
-          session.set(`current:${key}`, String(window.id));
+          session.set(`current:${key}`, window.windowId);
           if (this.actFailure)
             return {
               performed: this.actFailure.performed,
@@ -4362,7 +4540,7 @@ class FakeMac {
             truncated: false,
             window: {
               ref: window.ref,
-              id: window.id,
+              windowId: window.windowId,
               frame: window.frame,
               scale: 2,
               title: window.title,
@@ -4713,7 +4891,7 @@ async function observeMacWindow(
   const target = { kind: "app" as const, app, access };
   const bindLease = await world.computerUse.prepare(computer, claims);
   const bind = await world.hub.withRunnerAdmission(world.macId, () =>
-    world.computerUse.sendWindowOperation(bindLease, target, "bind", { window: null }),
+    world.computerUse.sendWindowOperation(bindLease, target, "bind", { windowId: null }),
   );
   const bound = WindowInfoSchema.parse((await bind.settle()).window);
   const observeLease = await world.computerUse.prepare(computer, claims);
@@ -4749,6 +4927,7 @@ async function createWorld(
     readonly releasedMacRunner?: boolean;
     readonly ownerViews?: boolean;
     readonly passwords?: ConstructorParameters<typeof ComputerUseService>[0]["passwords"];
+    readonly onTabUsed?: ConstructorParameters<typeof IntegrationPlatformService>[0]["onTabUsed"];
     readonly computerReplTime?: ConstructorParameters<
       typeof IntegrationPlatformService
     >[0]["computerReplTime"];
@@ -4907,7 +5086,66 @@ async function createWorld(
   const imageGate = { on: false };
   const executionCapability = { on: true };
   const macVersion = { value: 2 };
+  const tabStore = new TabStore(database);
+  const computerViews = new ComputerViewService({
+    hub,
+    connections: (ownerId) => connections.listConnections(ownerId),
+    owners: (ids) => store.effectiveMachineOwners(ids),
+    changed: () => undefined,
+  });
+  const nativeTabs = new NativeTabTargets({
+    views: computerViews,
+    connections: (ownerId) => connections.listConnections(ownerId),
+    owns: async (ownerId, computerId) =>
+      (await store.effectiveMachineOwners([computerId])).get(computerId)?.effectiveOwner ===
+      ownerId,
+    connected: (computerId) => hub.attached(computerId),
+    queryWindow: (computerId, target) =>
+      hub.resolveWindow(computerId, target, { timeoutMs: 1_000 }),
+    users: (ownerId, computerId, windowId) =>
+      computerUse.nativeTargetUsers(ownerId, computerId, windowId),
+    phoneUnavailable: (computerId) => hub.displayUnavailableReason(computerId),
+  });
+  const tabs = new TabService({
+    store: tabStore,
+    nativeTargets: nativeTabs,
+    pages: {
+      open: vi.fn(),
+      state: vi.fn(),
+      activate: vi.fn(),
+      bind: vi.fn(),
+      closeViewers: vi.fn(),
+    },
+    apps: { get: vi.fn() },
+    computer: async (ownerId, computerId, db) => ({
+      ...(await tabComputer(ownerId, computerId, db)),
+      connected: hub.attached(computerId),
+    }),
+    canRead: canReadTab,
+    canReadTask: async () => true,
+    authorize: (actor, _target, db) => authorizeTabActor(actor, db),
+    onError: (error) => {
+      throw error;
+    },
+  });
   const platform = new IntegrationPlatformService({
+    nativeTabs,
+    tabs,
+    ...(options.onTabUsed ? { onTabUsed: options.onTabUsed } : {}),
+    nativeTabTarget: async (ownerId, tabId) => {
+      const row = await tabStore.get(ownerId, tabId);
+      if (!row || (row.kind !== "window" && row.kind !== "phone"))
+        throw new Error("Native tab missing");
+      return row.kind === "window"
+        ? {
+            kind: "window",
+            computerId: row.computerId,
+            windowId: row.windowId!,
+            app: row.windowApp!,
+            tabGeneration: row.generation,
+          }
+        : { kind: "phone", computerId: row.computerId, tabGeneration: row.generation };
+    },
     adapters: [],
     authorizationSource: { providerAuthorizations: async () => ({}) },
     listConnections: (ownerUserId) => connections.listConnections(ownerUserId),
@@ -4992,6 +5230,9 @@ async function createWorld(
     hub,
     fakeMac,
     platform,
+    tabs,
+    tabStore,
+    computerViews,
     async startRun(title: string) {
       return startRun(store, owner, title);
     },
@@ -5062,6 +5303,8 @@ async function createWorld(
       return openGateway(platform, owner.userId, run, trigger, definitions);
     },
     async close() {
+      tabs.dispose();
+      computerViews.shutdown();
       await platform.close();
       await computerUse.shutdown();
       hub.close();
@@ -5297,9 +5540,9 @@ async function startRun(
   });
   const scope = await store.runCapabilityScope(admitted.run.id);
   if (!scope) throw new Error("The Run has no live grant");
-  const claims: RunCapabilityClaims<"opensteer-integration-tools"> = {
+  const claims: RunCapabilityClaims<"opensteer-run-tools"> = {
     ...scope,
-    aud: "opensteer-integration-tools",
+    aud: "opensteer-run-tools",
     exp: 2_000_000_000,
     iat: 1_900_000_000,
     iss: "opensteer-host",

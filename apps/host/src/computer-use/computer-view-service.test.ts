@@ -342,6 +342,11 @@ it("discards a window view response after its tab generation closed", async () =
     );
     const reopened = await h.open(11, 2);
     expect(reopened.window?.windowId).toBe(windowId(11));
+    await h.service.closeTabViews(owner, tabId(11), 1);
+    expect(await h.service.list(owner, machine)).toEqual([reopened]);
+    const sibling = await h.open(22);
+    await h.service.closeTabViews(owner, tabId(11), 2);
+    expect(await h.service.list(owner, machine)).toEqual([sibling]);
   } finally {
     answer.resolve();
     await opening.catch(() => undefined);

@@ -1000,9 +1000,16 @@ describe("Opensteer MCP integration access classes", () => {
       },
       callExtra("narrowed-computer-write"),
     );
-    expect(errorText(response)).toBe(
-      'Studio Mac allows reading only. Ask for read-write to send: call integration_request with integration "apple-messages" and access "read-write"; do not retry this call until it is fulfilled.',
-    );
+    expect(response).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: "access_denied",
+          message:
+            'Studio Mac allows reading only. Ask for read-write to send: call integration_request with integration "apple-messages" and access "read-write"; do not retry this call until it is fulfilled.',
+        },
+      },
+    });
   });
 
   it("does not short-circuit a read-write request above a computer's read-only ceiling", async () => {
@@ -1952,9 +1959,14 @@ describe("computer use discovery", () => {
       callExtra("mac-unknown"),
     );
     expect(answer).toMatchObject({ isError: true });
-    expect(errorText(answer)).toBe(
-      `No Mac set up for computer use has computerId ${unknown}. Search "Computer use" with integration_search to list your Macs and their computerIds.`,
-    );
+    expect(answer).toMatchObject({
+      structuredContent: {
+        error: {
+          code: "not_found",
+          message: `No Mac set up for computer use has computerId ${unknown}. Search "Computer use" with integration_search to list your Macs and their computerIds.`,
+        },
+      },
+    });
     expect(installedComputerApps).not.toHaveBeenCalled();
   });
   it("queries the Mac without icons and annotates blocked and unapproved results", async () => {
