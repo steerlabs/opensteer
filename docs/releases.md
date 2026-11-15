@@ -169,8 +169,9 @@ version `X.Y.Z` before its tag; Stable promotion reuses that `X.Y.Z`, so Stable
 runs the bytes Beta ran. GHCR tags are mutable, so [team-images.sh](../.github/scripts/team-images.sh)
 writes a version once and refuses one that records another source. There are no moving channel
 tags: the release tags are the channel feed. The `team-images` job outputs `host_image` and
-`gateway_image` as digest references for deployments in the same run. Tim makes both packages
-public once, after their first push.
+`gateway_image` as digest references; hosted teams take a Host digest only through
+[promotion](hosted-teams.md#releases), and only self-hosted teams use the gateway. Tim makes both
+packages public once, after their first push.
 
 ## Account service
 
