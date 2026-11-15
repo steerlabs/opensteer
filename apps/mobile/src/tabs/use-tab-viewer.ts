@@ -3,7 +3,7 @@ import { sharedDisplayStreams } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
 import type { TabId } from "@opensteer/core";
 import type { TabViewer } from "@opensteer/protocol";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState, type RefObject } from "react";
 import { operationDetail } from "../client/mobile-client.js";
 import { useAppForeground } from "../ui/foreground.js";
 
@@ -13,16 +13,24 @@ export type TabViewerState =
   | { readonly status: "failed"; readonly error: string };
 
 /**
+ * The person's Open of one tab: arriving at it, Try again or Reopen.
+ * It lives as long as the route, so a viewer remounting as its tab comes and
+ * goes never renews it; only the tab's next ask may spend it.
+ */
+export type OpenIntent = RefObject<TabId | null>;
+
+/**
  * The viewer for one tab on this screen: the Host opens or wakes it and says
  * how to show it. It asks once when the tab comes into view, and again only
  * after this phone reconnects or returns to the foreground, never on its own.
- * Only that first ask is the person's Open, so only it may arm a phone's
- * one-shot wake; an answer for a tab no longer here arms nothing.
+ * Only an ask that spends the person's Open may arm a phone's one-shot wake;
+ * an answer for a tab no longer here arms nothing.
  */
 export function useTabViewer(
   hostClient: HostClient,
   tabId: TabId,
   enabled: boolean,
+  intent: OpenIntent,
 ): { readonly state: TabViewerState; readonly retry: () => void } {
   const connected = useHostSelector(hostClient, selectConnected);
   const foreground = useAppForeground();
@@ -32,15 +40,11 @@ export function useTabViewer(
     readonly tabId: TabId;
     readonly state: TabViewerState;
   } | null>(null);
-  // The person's Open is spent by the first ask for this tab; Try again renews it.
-  const explicit = useRef<{ readonly tabId: TabId; open: boolean }>({ open: true, tabId });
-  if (explicit.current.tabId !== tabId) explicit.current = { open: true, tabId };
   useEffect(() => {
     if (!live) return;
     let current = true;
-    const opening = explicit.current;
-    const wake = opening.open;
-    opening.open = false;
+    const wake = intent.current === tabId;
+    if (wake) intent.current = null;
     void hostClient.activateTab(tabId, { wake }).then(
       (viewer) => {
         // An answer for a tab no longer here wakes nothing.
@@ -65,13 +69,13 @@ export function useTabViewer(
     return () => {
       current = false;
     };
-  }, [attempt, hostClient, live, tabId]);
+  }, [attempt, hostClient, intent, live, tabId]);
   // Try again and Reopen are the person's Open too.
   const retry = useCallback(() => {
-    explicit.current.open = true;
+    intent.current = tabId;
     setAnswer(null);
     setAttempt((value) => value + 1);
-  }, []);
+  }, [intent, tabId]);
   // Asking again keeps what is shown; a tab is never shown with another's viewer.
   return {
     retry,

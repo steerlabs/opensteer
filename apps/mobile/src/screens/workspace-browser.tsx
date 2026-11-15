@@ -5,7 +5,7 @@ import {
   describeHostConnection,
   placeAgentState,
   threadMark,
-  tabAfterClose,
+  tabSuccessor,
   type BrowserTabDestination,
   type HostClient,
   type TabStrip,
@@ -30,6 +30,7 @@ import {
   type Tab,
   type TabId,
   type TabTarget,
+  type TabUnavailableCode,
 } from "@opensteer/core";
 import { computerAppIdentityKey, type TabViewer } from "@opensteer/protocol";
 import { isRecord } from "@opensteer/shared/isRecord";
@@ -94,7 +95,7 @@ import { usePhoneTabPresentation } from "../phone-browser/presentation.js";
 import { ComputerOwnerView } from "../computers/phone-display.js";
 import { tabTitle } from "../tabs/tab-entries.js";
 import { useOperation } from "../tabs/use-tabs.js";
-import { useTabViewer } from "../tabs/use-tab-viewer.js";
+import { useTabViewer, type OpenIntent } from "../tabs/use-tab-viewer.js";
 import { computerSymbols } from "./settings-model.js";
 import { color, space, touchTarget } from "../theme.js";
 import {
@@ -262,15 +263,26 @@ function TabSurface(props: TabSurfaceProps): ReactNode {
   const tab = listed ?? (syncing ? held.current?.tab : undefined);
   const left = tab === undefined && !syncing && held.current !== null;
   const shown = props.presence.shown;
+  // The person's Open, made by arriving here, outlives the viewer: a tab that
+  // was closed or unavailable when first seen has spent it, so its coming back
+  // on its own never wakes a phone. Only Try again and Reopen renew it.
+  const intent = useRef<TabId | null>(route.tabId);
+  const unopened = tab === undefined ? !syncing : tab.state === "unavailable";
+  useEffect(() => {
+    if (unopened && intent.current === route.tabId) intent.current = null;
+  }, [intent, route.tabId, unopened]);
   useEffect(() => {
     if (!left || !shown || !navigation.isFocused()) return;
     const from = held.current;
     held.current = null;
+    // Whatever left with it, as when a group closes, is no neighbour to land on.
     const next =
-      route.popup === true || from === null ? null : tabAfterClose(from.strip, from.tabId);
+      route.popup === true || from === null
+        ? null
+        : tabSuccessor(from.strip, hostClient.getSnapshot().tabs.strip, from.tabId);
     if (next !== null) navigation.setParams({ editAddress: false, popup: false, tabId: next });
     else if (navigation.canGoBack()) navigation.goBack();
-  }, [left, navigation, route.popup, shown]);
+  }, [hostClient, left, navigation, route.popup, shown]);
   if (tab === undefined)
     return (
       <Screen>
@@ -278,7 +290,12 @@ function TabSurface(props: TabSurfaceProps): ReactNode {
         {syncing || left ? (
           <TabStatus title="Opening…" waiting />
         ) : (
-          <ClosedTab hostClient={hostClient} key={route.tabId} tabId={route.tabId} />
+          <ClosedTab
+            hostClient={hostClient}
+            intent={intent}
+            key={route.tabId}
+            tabId={route.tabId}
+          />
         )}
       </Screen>
     );
@@ -290,19 +307,32 @@ function TabSurface(props: TabSurfaceProps): ReactNode {
       </Screen>
     );
   // One mounted screen across tab changes in place, so the page's companion stays.
-  return <ViewedTab {...props} tab={tab} />;
+  return <ViewedTab {...props} intent={intent} tab={tab} />;
 }
 
 /** A tab no longer in the list: only the person's Reopen brings this same tab back. */
-function ClosedTab(props: { readonly hostClient: HostClient; readonly tabId: TabId }): ReactNode {
+function ClosedTab(props: {
+  readonly hostClient: HostClient;
+  readonly intent: OpenIntent;
+  readonly tabId: TabId;
+}): ReactNode {
   const reopening = useOperation();
-  const { hostClient, tabId } = props;
+  const { hostClient, intent, tabId } = props;
+  const reopen = async () => {
+    // Renewed before the answer: the reopened tab's first ask may land before it.
+    intent.current = tabId;
+    try {
+      return await hostClient.reopenTab(tabId);
+    } catch (error) {
+      if (intent.current === tabId) intent.current = null;
+      throw error;
+    }
+  };
   return (
     <TabStatus
       action={{
         label: reopening.busy ? "Reopening…" : "Reopen",
-        onPress: () =>
-          void reopening.run(() => hostClient.reopenTab(tabId), "This tab could not reopen."),
+        onPress: () => void reopening.run(reopen, "This tab could not reopen."),
       }}
       detail={reopening.failure}
       title="This tab was closed"
@@ -310,14 +340,34 @@ function ClosedTab(props: { readonly hostClient: HostClient; readonly tabId: Tab
   );
 }
 
-/** A tab that cannot open now says why; closing it is the one thing left to do. */
+/** A phone or window that refused its last view and may allow a fresh one. */
+const retriable: ReadonlySet<TabUnavailableCode> = new Set(["paused", "protected"]);
+
+/**
+ * A tab that cannot open now says why. One paused or protected may be asked
+ * again, which is the person's Open; otherwise closing it is all that is left.
+ */
 function UnavailableTab(props: { readonly hostClient: HostClient; readonly tab: Tab }): ReactNode {
-  const closing = useTabClose(props.hostClient, props.tab.tabId);
+  const { hostClient, tab } = props;
+  const closing = useTabClose(hostClient, tab.tabId);
+  const retrying = useOperation();
+  const retry = () =>
+    void retrying.run(async () => {
+      const viewer = await hostClient.activateTab(tab.tabId, { wake: true });
+      if (viewer.kind !== "page" && viewer.kind !== "app" && viewer.view.state === "unavailable")
+        throw new Error("It still can’t be shown. Try again once it is ready.");
+    }, "This tab could not open.");
+  const close = { label: closing.closing ? "Closing…" : "Close tab", onPress: closing.close };
+  const again =
+    tab.unavailableCode !== undefined && retriable.has(tab.unavailableCode)
+      ? { label: retrying.busy ? "Trying…" : "Try again", onPress: retry }
+      : null;
   return (
     <TabStatus
-      action={{ label: closing.closing ? "Closing…" : "Close tab", onPress: closing.close }}
-      detail={closing.failure}
-      title={props.tab.unavailableReason ?? "This tab can’t open right now"}
+      action={again ?? close}
+      also={again === null ? undefined : close}
+      detail={closing.failure ?? retrying.failure}
+      title={tab.unavailableReason ?? "This tab can’t open right now"}
     />
   );
 }
@@ -327,8 +377,16 @@ function UnavailableTab(props: { readonly hostClient: HostClient; readonly tab: 
  * Moving between pages of one browser keeps showing that browser while the
  * Host answers for the next page, so nothing remounts in between.
  */
-function ViewedTab(props: TabSurfaceProps & { readonly tab: Tab }): ReactNode {
-  const { state, retry } = useTabViewer(props.hostClient, props.tab.tabId, true);
+function ViewedTab(
+  props: TabSurfaceProps & { readonly intent: OpenIntent; readonly tab: Tab },
+): ReactNode {
+  const { intent, ...rest } = props;
+  const { state, retry } = useTabViewer(
+    props.hostClient,
+    props.tab.tabId,
+    props.presence.shown,
+    intent,
+  );
   const last = useRef<TabViewer | null>(null);
   const viewer: TabViewer | null =
     state.status === "ready"
@@ -348,7 +406,7 @@ function ViewedTab(props: TabSurfaceProps & { readonly tab: Tab }): ReactNode {
         )}
       </Screen>
     );
-  return <Focused {...props} onReactivate={retry} viewer={viewer} />;
+  return <Focused {...rest} onReactivate={retry} viewer={viewer} />;
 }
 
 /** What is beside the page: a Thread, or Home's new task being started from it. */
@@ -1144,6 +1202,8 @@ const AppTab = memo(function AppTab(props: {
 /** What a tab with no picture says, centred where the page would be. */
 function TabStatus(props: {
   readonly action?: { readonly label: string; readonly onPress: () => void };
+  /** A second way out, under the first. */
+  readonly also?: { readonly label: string; readonly onPress: () => void } | undefined;
   /** Why, under the title, when there is more to say. */
   readonly detail?: string | null;
   readonly title: string;
@@ -1162,6 +1222,9 @@ function TabStatus(props: {
       ) : null}
       {props.action === undefined ? null : (
         <SecondaryButton label={props.action.label} onPress={props.action.onPress} />
+      )}
+      {props.also === undefined ? null : (
+        <SecondaryButton label={props.also.label} onPress={props.also.onPress} />
       )}
     </View>
   );

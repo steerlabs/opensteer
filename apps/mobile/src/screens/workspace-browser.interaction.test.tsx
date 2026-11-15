@@ -1298,6 +1298,30 @@ describe("mobile pages", () => {
     expect(state.goBack).not.toHaveBeenCalled();
   });
 
+  it("lands on a tab still listed when its neighbour closed along with it", async () => {
+    const third = { id: "page-3", title: "Third", url: "https://third.example.com" };
+    const { render } = await setup(
+      { sessionId: "chosen" },
+      {
+        snapshot: snapshot([
+          session("chosen", "ready", [
+            firstPage,
+            { id: "page-2", title: "Next", url: "https://next.example.com" },
+            third,
+          ]),
+        ]),
+      },
+    );
+    // Another device closes this tab and the one after it at once.
+    state.snapshot = snapshot([session("chosen", "ready", [third])]);
+    await render();
+    expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
+      editAddress: false,
+      popup: false,
+      tabId: "page-3",
+    });
+  });
+
   it("goes back when the closed tab had nothing beside it, and says nothing of a sibling", async () => {
     const { container, render } = await setup(
       { sessionId: "chosen" },
@@ -1956,6 +1980,68 @@ describe("any kind of tab, by its tabId", () => {
     expect(reopenTab).toHaveBeenCalledExactlyOnceWith("tab_native");
     await render();
     expect(container.textContent).toContain("Mac app com.apple.notes view owner-view:1");
+  });
+
+  it.each([true, false])(
+    "never wakes a phone that comes back on its own (open first: %s)",
+    async (openFirst) => {
+      const offline = nativeTab(true, {
+        state: "unavailable",
+        unavailableCode: "computer-offline",
+        unavailableReason: "This phone is offline.",
+      });
+      state.extraTabs = [openFirst ? nativeTab(true) : offline];
+      state.activate = vi.fn(async () => nativeViewer(true, 7));
+      const { container, render } = await setup(
+        { tabId: "tab_native" },
+        { snapshot: withAgents([]) },
+      );
+      if (openFirst) {
+        expect(state.hostClient.activateTab).toHaveBeenCalledExactlyOnceWith("tab_native", {
+          wake: true,
+        });
+        // Its computer drops off and the viewer goes with it.
+        state.extraTabs = [offline];
+        await render();
+      }
+      expect(container.textContent).toContain("This phone is offline.");
+      expect(container.textContent).not.toContain("Try again");
+      state.extraTabs = [nativeTab(true)];
+      await render();
+      expect(container.textContent).toContain("Phone view owner-view:7");
+      expect(state.hostClient.activateTab).toHaveBeenCalledTimes(openFirst ? 2 : 1);
+      expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("tab_native", {
+        wake: false,
+      });
+    },
+  );
+
+  it("asks a paused phone again only when the person says so, and that may wake it", async () => {
+    state.extraTabs = [
+      nativeTab(true, {
+        state: "unavailable",
+        unavailableCode: "paused",
+        unavailableReason: "This phone is paused.",
+      }),
+    ];
+    state.activate = vi.fn(async () => {
+      state.extraTabs = [nativeTab(true)];
+      return nativeViewer(true, 2);
+    });
+    const { container, render } = await setup(
+      { tabId: "tab_native" },
+      { snapshot: withAgents([]) },
+    );
+    expect(container.textContent).toContain("This phone is paused.");
+    expect(container.textContent).toContain("Close tab");
+    expect(state.hostClient.activateTab).not.toHaveBeenCalled();
+    await pressAsync(container, "Try again");
+    expect(state.hostClient.activateTab).toHaveBeenCalledExactlyOnceWith("tab_native", {
+      wake: true,
+    });
+    await render();
+    expect(container.textContent).toContain("Phone view owner-view:2");
+    expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("tab_native", { wake: false });
   });
 
   it("says why an unavailable tab cannot open, and asks the Host nothing", async () => {

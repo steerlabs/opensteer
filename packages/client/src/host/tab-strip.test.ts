@@ -1,6 +1,6 @@
 import { createId, type TabGroup, type TabId, type TabLayout } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
-import { tabAfterClose, tabAtShortcut, tabBeside, tabStrip } from "./tab-strip.js";
+import { tabAfterClose, tabAtShortcut, tabBeside, tabStrip, tabSuccessor } from "./tab-strip.js";
 
 const id = (value: string) => value as TabId;
 const group = (name: string, tabIds: string[], collapsed = false): TabGroup => ({
@@ -68,5 +68,9 @@ describe("tabStrip", () => {
     expect(
       tabAfterClose(strip, id("page-2"), new Set([id("window-1"), id("phone-1"), id("app-1")])),
     ).toBe("window-2");
+    // Closed together elsewhere: the successor is a tab the list still holds.
+    const after = tabStrip({ revision: 4, items: [{ kind: "tab", tabId: id("window-2") }] }, all);
+    expect(tabSuccessor(strip, after, id("page-1"))).toBe("window-2");
+    expect(tabSuccessor(strip, tabStrip({ revision: 5, items: [] }, all), id("page-1"))).toBeNull();
   });
 });
