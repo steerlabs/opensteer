@@ -398,6 +398,7 @@ function Focused(props: {
   // Done on the task beside the page moves on to the next one, as on its own screen.
   const companionDone = (threadId: string) => (next: string | null) => {
     if (
+      !navigation.isFocused() ||
       shownBeside.current !== threadId ||
       listedRowThreadId(hostClient.getSnapshot(), threadId) !== threadId
     )
