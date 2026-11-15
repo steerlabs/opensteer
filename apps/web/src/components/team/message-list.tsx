@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { readTail, type TailReading } from "@opensteer/shared/tailFollow";
 import { observeTeamMessages } from "../../team/message-visibility.js";
 import { Icon } from "../icon.js";
 import { useStableActions } from "../use-stable-actions.js";
@@ -16,8 +17,8 @@ import { MessageRow, type MessageActions } from "./message-row.js";
 import type { AuthorView, MessageView, TimelineItem } from "./team-models.js";
 import { clockTime, dayLabel, sameDay } from "./team-time.js";
 
-/** Within this many pixels of the end, new rows follow; further up, the reader keeps their place. */
-const followDistance = 80;
+/** Within this many pixels of the top, older history loads. */
+const historyReach = 80;
 const groupWindowMs = 5 * 60_000;
 const readAfterMs = 1000;
 
@@ -81,7 +82,8 @@ export function MessageList({
   const scroller = useRef<HTMLDivElement | null>(null);
   const rowsRef = useRef<HTMLDivElement | null>(null);
   const headerRef = useRef<HTMLDivElement | null>(null);
-  const atEnd = useRef(true);
+  // Whether new rows follow at the end, and where the list stood when last read.
+  const tail = useRef<TailReading>({ follows: true, offset: 0 });
   const stable = useStableItems(items);
   const rowActions = useStableActions(actions ?? noActions);
   const rowCardActions = useStableActions(cardActions ?? noActions);
@@ -97,26 +99,54 @@ export function MessageList({
   const [newBelow, setNewBelow] = useState(0);
   const [unreadAbove, setUnreadAbove] = useState(false);
 
-  const measure = useCallback(() => {
-    const list = scroller.current;
-    if (!list) return;
-    atEnd.current = list.scrollHeight - list.scrollTop - list.clientHeight < followDistance;
-    if (atEnd.current) setNewBelow(0);
-    const top = list.getBoundingClientRect().top;
-    const rows = list.querySelectorAll<HTMLElement>("[data-row-id]");
-    for (const row of rows) {
-      const box = row.getBoundingClientRect();
-      if (box.bottom > top) {
-        anchor.current = { id: row.dataset.rowId ?? "", top: box.top - top };
-        break;
+  /** Reads the list where it stands; `own` for a scroll, the only thing that takes the end up again. */
+  const measure = useCallback(
+    (own: boolean) => {
+      const list = scroller.current;
+      if (!list) return;
+      tail.current = readTail(
+        tail.current,
+        list.scrollTop,
+        list.scrollHeight - list.clientHeight,
+        own,
+      );
+      if (tail.current.follows) setNewBelow(0);
+      const top = list.getBoundingClientRect().top;
+      const rows = list.querySelectorAll<HTMLElement>("[data-row-id]");
+      for (const row of rows) {
+        const box = row.getBoundingClientRect();
+        if (box.bottom > top) {
+          anchor.current = { id: row.dataset.rowId ?? "", top: box.top - top };
+          break;
+        }
       }
+      const line = list.querySelector<HTMLElement>(".tlist__new");
+      setUnreadAbove(line ? line.getBoundingClientRect().bottom < top : false);
+      const historyDistance = top - (rowsRef.current?.getBoundingClientRect().top ?? top);
+      if (historyDistance >= -historyReach && historyDistance < 240 && hasOlder && !loadingOlder)
+        onLoadOlder?.();
+    },
+    [hasOlder, loadingOlder, onLoadOlder],
+  );
+
+  /** Keeps a follower at the end, unless the list has moved up since it was last read. */
+  const keepEnd = (list: HTMLElement): boolean => {
+    const followed = tail.current.follows;
+    tail.current = readTail(
+      tail.current,
+      list.scrollTop,
+      list.scrollHeight - list.clientHeight,
+      false,
+    );
+    if (!tail.current.follows) {
+      // A scroll up not yet read: the row under the eye is where it took them, not where it was.
+      if (followed) measure(false);
+      return false;
     }
-    const line = list.querySelector<HTMLElement>(".tlist__new");
-    setUnreadAbove(line ? line.getBoundingClientRect().bottom < top : false);
-    const historyDistance = top - (rowsRef.current?.getBoundingClientRect().top ?? top);
-    if (historyDistance >= -followDistance && historyDistance < 240 && hasOlder && !loadingOlder)
-      onLoadOlder?.();
-  }, [hasOlder, loadingOlder, onLoadOlder]);
+    list.scrollTop = list.scrollHeight;
+    tail.current = { follows: true, offset: list.scrollTop };
+    return true;
+  };
 
   // First paint: at the first unread or a deep link, else at the end.
   useLayoutEffect(() => {
@@ -134,7 +164,12 @@ export function MessageList({
     }
     const last = items.at(-1);
     lastId.current = last ? itemId(last) : null;
-    measure();
+    // A short channel opened at its unread line is at its end all the same.
+    tail.current = {
+      follows: list.scrollTop >= list.scrollHeight - list.clientHeight - 1,
+      offset: list.scrollTop,
+    };
+    measure(false);
     // Only the first paint chooses where to open.
   }, []);
 
@@ -146,8 +181,8 @@ export function MessageList({
     list.scrollTop +=
       row.getBoundingClientRect().top - list.getBoundingClientRect().top - list.clientHeight / 2;
     landed.current = flashId;
-    atEnd.current = false;
-    measure();
+    tail.current = { follows: false, offset: list.scrollTop };
+    measure(false);
   }, [flashId, items]);
 
   // Every later change: follow at the end, otherwise hold the row under the eye.
@@ -156,9 +191,7 @@ export function MessageList({
     if (!list) return;
     const last = items.at(-1);
     const newest = last ? itemId(last) : null;
-    if (atEnd.current) {
-      list.scrollTop = list.scrollHeight;
-    } else {
+    if (!keepEnd(list)) {
       const held = anchor.current;
       const row = held
         ? list.querySelector<HTMLElement>(`[data-row-id="${CSS.escape(held.id)}"]`)
@@ -181,10 +214,7 @@ export function MessageList({
     const rows = rowsRef.current;
     if (!list || !rows || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
-      if (atEnd.current) {
-        list.scrollTop = list.scrollHeight;
-        return;
-      }
+      if (keepEnd(list)) return;
       const held = anchor.current;
       const row = held
         ? list.querySelector<HTMLElement>(`[data-row-id="${CSS.escape(held.id)}"]`)
@@ -286,7 +316,7 @@ export function MessageList({
       <div
         aria-label={label}
         className="tlist__scroller"
-        onScroll={measure}
+        onScroll={() => measure(true)}
         ref={scroller}
         role="log"
         tabIndex={-1}

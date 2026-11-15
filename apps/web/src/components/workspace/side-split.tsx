@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fitWholeRows } from "./scroll-edges.js";
 
 const tabsHeightKey = "opensteer.sidebar-tabs-height";
 
@@ -48,8 +47,8 @@ interface Reach {
 /**
  * The line along Tabs' top. It follows the pointer, as far as Tabs' floor
  * and its rows go; a row in part at Tabs' foot says there is more. While it
- * moves it writes Tabs' height straight to the sections' container and fits
- * the lists in the same frame, so the sidebar renders only at the release.
+ * moves it writes Tabs' height straight to the sections' container, so the
+ * sidebar renders only at the release.
  */
 export function SideSplit({ onCommit }: { readonly onCommit: (height: number | null) => void }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -105,7 +104,7 @@ export function SideSplit({ onCommit }: { readonly onCommit: (height: number | n
       onDoubleClick={(event) => {
         const lists = event.currentTarget.parentElement;
         if (!lists) return;
-        fitWholeRows(lists, () => lists.style.removeProperty("--side-tabs-height"));
+        lists.style.removeProperty("--side-tabs-height");
         onCommit(null);
       }}
       onFocus={(event) => probe(event.currentTarget)}
@@ -184,9 +183,7 @@ function follow(divider: HTMLElement, drag: Drag): void {
 }
 
 function place(reach: Reach, height: number): void {
-  fitWholeRows(reach.lists, () =>
-    reach.lists.style.setProperty("--side-tabs-height", `${height}px`),
-  );
+  reach.lists.style.setProperty("--side-tabs-height", `${height}px`);
 }
 
 function within({ least, most }: Reach, height: number): number {
