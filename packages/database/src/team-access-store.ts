@@ -131,8 +131,10 @@ export class TeamAccessStore {
   async checkLinkEpoch(transaction: Transaction<DatabaseSchema>) {
     const session = this.#linkSession.getStore();
     if (!session) return;
+    // No row lock: revocation is fenced by the access-state lock every write holds, and a write
+    // that read the old epoch before a reconnect committed simply happened before it.
     const row = await sql<{ epoch: string }>`select connection_epoch::text as epoch from team_links
-      where id=${session.linkId} and state='active' for share`.execute(transaction);
+      where id=${session.linkId} and state='active'`.execute(transaction);
     requireTeam(row.rows[0]?.epoch === session.epoch, "Team link superseded");
   }
   onCloseAll(close: (code: number) => void) {

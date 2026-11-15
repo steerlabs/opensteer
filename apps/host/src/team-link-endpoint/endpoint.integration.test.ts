@@ -524,12 +524,12 @@ describe("standing team link authority", () => {
       await requests.accept(linkId, live!);
       // Another copy commits both changes at once; the link hears one request event.
       await fixture.database.transaction().execute(async (t) => {
-        await sql`update team_agent_requests set change_seq=change_seq+1 where id=${live!}`.execute(
-          t,
-        );
-        await sql`update team_agent_requests set state='cancelled', finished_at=now(), change_seq=change_seq+1 where id=${ended!}`.execute(
-          t,
-        );
+        // Rows in ascending id order, as every writer locks them.
+        for (const id of [live!, ended!].sort())
+          await sql`update team_agent_requests set change_seq=change_seq+1,
+            state=case when id=${ended!} then 'cancelled' else state end,
+            finished_at=case when id=${ended!} then now() else finished_at end
+            where id=${id}`.execute(t);
       });
       await vi.waitFor(
         () =>
