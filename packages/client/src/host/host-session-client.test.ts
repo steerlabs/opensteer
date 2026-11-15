@@ -12,6 +12,7 @@ import { schedulesClient } from "./schedules.js";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 
 import {
+  AppSchema,
   ModelSelectionSchema,
   SequenceSchema,
   ThreadAccessModeSchema,
@@ -11907,19 +11908,22 @@ describe("a Run's current place", () => {
   });
 });
 
-it("uses a real app entry URL when supplied and resolves legacy paths for previous Hosts", async () => {
+it("uses a real app entry URL when supplied and resolves the Host path otherwise", async () => {
   const client = createHttpHostClient();
-  const app = {
-    id: "app_11111111-1111-4111-8111-111111111111",
-    deploymentId: createId("deployment"),
-    threadId: createId("thread"),
-    runId: createId("run"),
-    title: "App",
-    latestVersion: 1,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-  const path = `/v1/apps/${app.id}/dark/legacy/`;
+  const at = new Date().toISOString();
+  const app = AppSchema.parse({
+    appId: "app_11111111-1111-4111-8111-111111111111",
+    name: "App",
+    kind: "html",
+    state: "running",
+    computerId: createId("runner"),
+    taskId: null,
+    version: 1,
+    server: null,
+    createdAt: at,
+    updatedAt: at,
+  });
+  const path = `/v1/apps/${app.appId}/dark/${"a".repeat(43)}/`;
   const entryUrl =
     "https://aaaaaaaaaaaaaaaaaaaaaaaaaa-11111111111111111111111111111111.example.test/?opensteer-ticket=test";
   const read = vi.fn<(typeof client.rpc)["apps.view"]>();
@@ -11927,8 +11931,8 @@ it("uses a real app entry URL when supplied and resolves legacy paths for previo
   read.mockResolvedValueOnce({ ok: true, data: { app, path, entryUrl } });
   read.mockResolvedValueOnce({ ok: true, data: { app, path } });
   try {
-    expect((await client.viewApp(app.id, "dark")).url).toBe(entryUrl);
-    expect((await client.viewApp(app.id, "dark")).url).toBe(`http://127.0.0.1${path}`);
+    expect(await client.viewApp(app.appId, "dark")).toEqual({ title: "App", url: entryUrl });
+    expect((await client.viewApp(app.appId, "dark")).url).toBe(`http://127.0.0.1${path}`);
   } finally {
     client.dispose();
   }

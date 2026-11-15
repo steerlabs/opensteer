@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createId,
   OpensteerError,
-  parseLegacyReferenceHref,
+  parseReferenceHref,
   ThreadIdSchema,
   type TabAgentEventView,
   type ReferenceId,
@@ -103,7 +103,7 @@ it("uses genuinely held metadata without RPC, including hidden chips, and keeps 
   const { store, read, update } = setup();
   const thread = { ...base.threads[0]!, id: createId("thread"), title: "Held **title**" };
   update({ threads: [thread] });
-  const ref = parseLegacyReferenceHref(`opensteer:${thread.id}`)!;
+  const ref = parseReferenceHref(`opensteer:${thread.id}`)!;
   const first = store.read(ref.id);
   store.subscribe(ref.id, () => {}, { enabled: false });
   store.subscribe(ref.id, () => {});

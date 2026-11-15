@@ -1,27 +1,9 @@
-import {
-  classifyHref,
-  parseReferenceHref,
-  type ClassifiedHref,
-  type Reference,
-  type Tab,
-  type TabId,
-} from "@opensteer/core";
+import type { Reference, Tab, TabId } from "@opensteer/core";
 import type { TabsReadModel } from "../host/tabs-contract.js";
 
 /** A reference resolved by its ID through `references.resolve`: everything but a tab. */
 export type IdReference = Exclude<Reference, { readonly kind: "tab" }>;
 export type IdReferenceKind = IdReference["kind"];
-
-/** Where a written link goes, a workspace tab (`opensteer:tab/<id>`) included. */
-export type LinkTarget = ClassifiedHref | { readonly kind: "tab"; readonly tabId: TabId };
-
-export function classifyLink(href: string): LinkTarget {
-  if (/^opensteer:tab\//iu.test(href)) {
-    const reference = parseReferenceHref(href);
-    return reference?.kind === "tab" ? { kind: "tab", tabId: reference.id } : { kind: "none" };
-  }
-  return classifyHref(href);
-}
 
 export type TabReferenceState =
   | { readonly state: "unresolved" }

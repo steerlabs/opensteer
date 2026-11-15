@@ -33,6 +33,8 @@ export function refTarget(value: AvailableReference): ReferenceDestination {
       return { kind: value.kind, runnerId: value.id };
     case "attachment":
       return { kind: value.kind, attachmentId: value.id };
+    case "tab":
+      return { kind: value.kind, tabId: value.id };
   }
 }
 

@@ -5,8 +5,7 @@ import {
   type HostClient,
   type LinkPlace,
 } from "@opensteer/client/host";
-import { classifyLink } from "@opensteer/client/references";
-import { PageOpenUrlSchema } from "@opensteer/core";
+import { classifyHref, PageOpenUrlSchema } from "@opensteer/core";
 import { markdownLink } from "@opensteer/shared/markdownLinks";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import * as Clipboard from "expo-clipboard";
@@ -29,8 +28,8 @@ export function openOutside(url: string): void {
 
 /** A link that names something in Opensteer: it opens here, never in a browser or the system. */
 export function isInternalHref(href: string): boolean {
-  const kind = classifyLink(href).kind;
-  return kind === "reference" || kind === "team-page" || kind === "file" || kind === "tab";
+  const kind = classifyHref(href).kind;
+  return kind === "reference" || kind === "team-page" || kind === "file";
 }
 
 /** This phone, as its menu names it beside the computers. */

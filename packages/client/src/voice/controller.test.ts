@@ -49,12 +49,7 @@ function setup(
   };
 }
 
-function step(
-  runId: string,
-  state: ToolEntry["state"],
-  name = "browser_tab_read",
-  id = "step",
-): ToolEntry {
+function step(runId: string, state: ToolEntry["state"], name = "tab_list", id = "step"): ToolEntry {
   return {
     kind: "tool",
     id,

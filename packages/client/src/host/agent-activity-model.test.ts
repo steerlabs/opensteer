@@ -853,11 +853,6 @@ describe("Opensteer's own steps", () => {
   });
 
   it("say what an action did, not which tool did it", () => {
-    expect(opensteer("browser_tab_write", { action: "restore", tabIds: ["t1"] })).toMatchObject({
-      activeLabel: "Restoring tabs",
-      hint: "",
-      label: "Restored tabs",
-    });
     expect(opensteer("opensteer_task_update", { title: "Tonight" })).toMatchObject({
       hint: "Tonight",
       hintKind: "prose",

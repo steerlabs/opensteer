@@ -11,7 +11,6 @@ import {
   RunIdSchema,
   ThreadIdSchema,
   nextMarkColor,
-  type EventData,
 } from "@opensteer/core";
 import type { MachineSummary } from "@opensteer/protocol";
 import {
@@ -29,7 +28,7 @@ import {
   TabPlaceActivitySchema,
   PlaceIdentitySchema,
   computerAppIdentityKey,
-  PersonalTabActivateResultSchema,
+  type PlaceIdentity,
   browserHistoryMaxEntries,
   browserHistoryRetentionMs,
   createBrowserSessionId,
@@ -598,13 +597,23 @@ export interface MockPlaceScript {
   ): void;
 }
 
+/**
+ * Where the mock world says a Run began acting: its place as the world knows
+ * it, which the mock Host records as that place's tab.
+ */
+export interface MockPlaceEntry {
+  readonly place: PlaceIdentity;
+  readonly title: string;
+  readonly site: string | null;
+}
+
 /** All animation derives from elapsed injected-clock time and stable fixture IDs. */
 export class MockPlaceWorld {
   readonly input = new MockBrowserInput((sessionId, command) => this.command(sessionId, command));
   readonly #signInPage = new MockSignInPage(this.input.editing);
   readonly #history = new Map<string, BrowserHistory>();
   readonly #historyChanged: (profileId: string) => void;
-  readonly #entered: (runId: string, threadId: string, data: EventData<"place.entered">) => void;
+  readonly #entered: (runId: string, threadId: string, data: MockPlaceEntry) => void;
   readonly #historyOwner: string | undefined;
   readonly activity: PlaceActivityStore;
   readonly #watches = new Map<
@@ -654,8 +663,7 @@ export class MockPlaceWorld {
     now: () => Date,
     historyChanged: (profileId: string) => void = () => undefined,
     /** As the Host records it: a Run began acting in a tab. */
-    entered: (runId: string, threadId: string, data: EventData<"place.entered">) => void = () =>
-      undefined,
+    entered: (runId: string, threadId: string, data: MockPlaceEntry) => void = () => undefined,
   ) {
     this.#snapshot = snapshot;
     this.#historyChanged = historyChanged;
@@ -1401,7 +1409,8 @@ export class MockPlaceWorld {
     this.#frames();
     return result;
   }
-  activatePersonalTab(tabId: string) {
+  /** Restores a sleeping page into its browser, as activating its tab does. */
+  restorePage(tabId: string) {
     const snapshot = this.#snapshot();
     const lineage = snapshot.browserGroups?.find((group) =>
       group.tabs?.some((tab) => tab.id === tabId),
@@ -1451,13 +1460,7 @@ export class MockPlaceWorld {
       ),
     });
     this.#frames();
-    return PersonalTabActivateResultSchema.parse({
-      type: "legacy.tab.activate",
-      tabId,
-      groupId: lineage.id,
-      sessionId: session.id,
-      session: { ...updated, updatedAt: this.#now().toISOString() },
-    });
+    return { session: updated };
   }
   async close(sessionId: string, surfaceId: string, inventoryRevision: number) {
     const snapshot = this.#snapshot();

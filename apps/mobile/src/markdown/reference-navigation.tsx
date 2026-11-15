@@ -1,6 +1,5 @@
 import type { HostClient } from "@opensteer/client/host";
 import {
-  classifyLink,
   refTarget,
   tabReferenceState,
   type FileOpenInput,
@@ -9,7 +8,7 @@ import {
   type ReferenceNavigationPorts,
 } from "@opensteer/client/references";
 import type { TeamSessionClient } from "@opensteer/client/team";
-import { teamPageUrl, type ThreadId } from "@opensteer/core";
+import { classifyHref, teamPageUrl, type ThreadId } from "@opensteer/core";
 import { tabRoute } from "../browser/surface-route.js";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import * as Haptics from "expo-haptics";
@@ -155,14 +154,8 @@ export function PersonalReferenceProvider(props: {
       },
     };
     const open = async (href: string): Promise<void> => {
-      const link = classifyLink(href);
-      if (
-        link.kind !== "reference" &&
-        link.kind !== "team-page" &&
-        link.kind !== "file" &&
-        link.kind !== "tab"
-      )
-        return;
+      const link = classifyHref(href);
+      if (link.kind !== "reference" && link.kind !== "team-page" && link.kind !== "file") return;
       // As T3 does, a newer tap replaces one still on its way.
       current.current?.abort();
       const controller = new AbortController();
@@ -181,13 +174,14 @@ export function PersonalReferenceProvider(props: {
           return await ports.openFile({ source: { kind: "path", path }, ...position });
         }
         // A tab opens only while it is in the list; a closed one is never reopened by a link.
-        if (link.kind === "tab") {
-          if (tabReferenceState(host.getSnapshot().tabs, link.tabId).state === "available")
-            await ports.openReference({ kind: "tab", tabId: link.tabId });
+        const { reference } = link;
+        if (reference.kind === "tab") {
+          if (tabReferenceState(host.getSnapshot().tabs, reference.id).state === "available")
+            await ports.openReference({ kind: "tab", tabId: reference.id });
           return;
         }
         // Held or recently confirmed answers open at once; anything else is asked for now.
-        const answer = await host.references.resolve(link.reference.id);
+        const answer = await host.references.resolve(reference.id);
         currentHost(mobile, deploymentId, controller.signal);
         // Unavailable is drawn by the chip itself, from the same store.
         if (answer.status === "available") await ports.openReference(refTarget(answer));
@@ -239,7 +233,7 @@ export function TeamReferenceProvider(props: {
       context: { kind: "team", client, origin, teamId },
       ports,
       open: async (href) => {
-        const link = classifyLink(href);
+        const link = classifyHref(href);
         if (link.kind !== "team-page") return;
         void Haptics.selectionAsync();
         await ports.openTeamPage(link.page).catch(cannotOpen);

@@ -8,11 +8,10 @@ import {
   type MouseEvent,
   type ReactNode,
 } from "react";
-import { teamPageUrl, type TabId, type TeamPageLink } from "@opensteer/core";
+import { classifyHref, teamPageUrl, type TabId, type TeamPageLink } from "@opensteer/core";
 import type { FileLinkTarget } from "@opensteer/shared/fileHref";
 import { useReference, useTabReference } from "@opensteer/client/react";
 import {
-  classifyLink,
   fileIcon,
   localTeamReference,
   referenceIcon,
@@ -63,7 +62,7 @@ function Link({
   "data-trailing": trailing,
 }: LinkProps & { readonly web: "workspace" | "external" }) {
   const scope = useReferenceScope();
-  const target = useMemo(() => classifyLink(href ?? ""), [href]);
+  const target = useMemo(() => classifyHref(href ?? ""), [href]);
   // A chip keeps the punctuation after it on its line; words wrap as words do.
   const chip = (element: ReactNode) =>
     trailing ? (
@@ -82,13 +81,13 @@ function Link({
   );
   switch (target.kind) {
     case "reference":
-      return isPersonalScope(scope)
-        ? chip(<PersonalChip label={textOf(children)} reference={target.reference} scope={scope} />)
-        : words(<span>{children}</span>);
-    case "tab":
-      return isPersonalScope(scope)
-        ? chip(<TabChip label={textOf(children)} scope={scope} tabId={target.tabId} />)
-        : words(<span>{children}</span>);
+      return !isPersonalScope(scope)
+        ? words(<span>{children}</span>)
+        : target.reference.kind === "tab"
+          ? chip(<TabChip label={textOf(children)} scope={scope} tabId={target.reference.id} />)
+          : chip(
+              <PersonalChip label={textOf(children)} reference={target.reference} scope={scope} />,
+            );
     case "team-page":
       return target.page.target.kind === "invite"
         ? words(

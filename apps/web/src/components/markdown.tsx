@@ -1,5 +1,5 @@
 import { useTranscriptImages } from "@opensteer/client/react";
-import { classifyLink } from "@opensteer/client/references";
+import { classifyHref } from "@opensteer/core";
 import { classifyMarkdownImageSource } from "@opensteer/shared/markdownImages";
 import { personMarkdownGfmOptions, personMarkdownTree } from "@opensteer/shared/personMarkdown";
 import { AssetImage } from "./asset-image.js";
@@ -78,7 +78,7 @@ const components: Components = { ...bareComponents, pre: TranscriptBlock };
  * loaded through the Host or shown as words, so it keeps the writer's spelling.
  */
 const urlTransform: UrlTransform = (url, key, node) =>
-  node.tagName === "img" && key === "src" ? url : classifyLink(url).kind === "none" ? "" : url;
+  node.tagName === "img" && key === "src" ? url : classifyHref(url).kind === "none" ? "" : url;
 
 /**
  * Markdown an agent or a person wrote. Blocks are memoized so a streaming

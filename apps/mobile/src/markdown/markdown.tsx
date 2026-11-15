@@ -1,5 +1,5 @@
 import { useTranscriptImages } from "@opensteer/client/react";
-import { classifyLink } from "@opensteer/client/references";
+import { classifyHref } from "@opensteer/core";
 import { classifyMarkdownImageSource } from "@opensteer/shared/markdownImages";
 import type { MarkdownProfile } from "@opensteer/shared/personMarkdown";
 import { AssetImage } from "./asset-image.js";
@@ -376,18 +376,18 @@ function LinkHold(props: {
 function holdsLink(nodes: readonly PhrasingContent[]): boolean {
   return nodes.some(
     (node) =>
-      (node.type === "link" && classifyLink(node.url).kind !== "none") ||
+      (node.type === "link" && classifyHref(node.url).kind !== "none") ||
       ("children" in node && holdsLink(node.children as readonly PhrasingContent[])),
   );
 }
 
-const chipKinds = new Set(["reference", "file", "team-page", "tab"]);
+const chipKinds = new Set(["reference", "file", "team-page"]);
 
 /** Whether a link in `nodes` may draw as a chip. */
 export function holdsChip(nodes: readonly PhrasingContent[]): boolean {
   return nodes.some(
     (node) =>
-      (node.type === "link" && chipKinds.has(classifyLink(node.url).kind)) ||
+      (node.type === "link" && chipKinds.has(classifyHref(node.url).kind)) ||
       ("children" in node && holdsChip(node.children as readonly PhrasingContent[])),
   );
 }

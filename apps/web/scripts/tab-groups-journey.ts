@@ -188,16 +188,17 @@ try {
   await check("mock bootstrap advertises the resulting layout without browser errors", async () => {
     const layout = await page.evaluate(async () => {
       const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-      const result = await client.rpc["bootstrap.legacy.get"]({});
+      const result = await client.rpc["bootstrap.get"]({});
       if (!result.ok) throw new Error(result.error.message);
       return {
-        version: result.data.browser.tabGroupsVersion,
-        layout: result.data.browser.tabGroups,
+        groups: result.data.tabs.layout.items.flatMap((item) =>
+          item.kind === "group" ? [item.group.name] : [],
+        ),
       };
     });
     expectThat(
       { ...layout, errors },
-      layout.version === 1 && layout.layout?.groups[0]?.title === "Reading" && errors.length === 0,
+      layout.groups.includes("Reading") && errors.length === 0,
       "bootstrap or page errors disagree with the UI",
     );
     return { ...layout, errors };

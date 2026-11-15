@@ -4,7 +4,6 @@ import {
   imageGenerationToolName,
   isIntegrationGatewayTool,
   type AssignmentSummary,
-  type BrowserTabWriteInput,
   type WaitingRequest,
   type MessageAuthor,
   type IntegrationCallSubject,
@@ -2022,15 +2021,6 @@ function saidByAction<Action extends string>(
   };
 }
 
-const tabActions: Record<BrowserTabWriteInput["action"], StepWords> = {
-  close: ["Closing tabs", "Closed tabs"],
-  group: ["Grouping tabs", "Grouped tabs"],
-  move: ["Moving tabs", "Moved tabs"],
-  restore: ["Restoring tabs", "Restored tabs"],
-  ungroup: ["Ungrouping tabs", "Ungrouped tabs"],
-  update_group: ["Updating a tab group", "Updated a tab group"],
-};
-
 /** A step whose words follow one boolean argument, such as `done` or `paused`. */
 function saidByFlag(
   field: string,
@@ -2338,9 +2328,11 @@ const opensteerSteps = new Map<string, OpensteerStep>([
         : said(["Removing a plugin", "Removed a plugin"], "puzzle"))(tool, args),
   ],
 
-  ["opensteer_app_list", said(["Listing apps", "Listed apps"], "share")],
-  ["opensteer_app_call", said(["Calling an app", "Called an app"], "share")],
-  ["opensteer_app_publish", said(["Publishing an app", "Published an app"], "share")],
+  ["app_list", said(["Listing apps", "Listed apps"], "share")],
+  ["app_publish", said(["Publishing an app", "Published an app"], "share")],
+  ["app_start", said(["Starting an app", "Started an app"], "share")],
+  ["app_stop", said(["Stopping an app", "Stopped an app"], "share")],
+  ["app_delete", said(["Deleting an app", "Deleted an app"], "share")],
   ["person_notify", said(["Sending a message", "Sent a message"], "share")],
   ["person_show", said(["Sending to your screen", "Sent to your screen"], "share")],
 
@@ -2370,8 +2362,11 @@ const opensteerSteps = new Map<string, OpensteerStep>([
         surface: "browser",
       }),
   ],
-  ["browser_tab_read", said(["Looking at saved tabs", "Looked at saved tabs"], "browser")],
-  ["browser_tab_write", saidByAction(tabActions, ["Arranging tabs", "Arranged tabs"], "browser")],
+  ["tab_list", said(["Looking at tabs", "Looked at tabs"], "browser")],
+  ["tab_open", said(["Opening a tab", "Opened a tab"], "browser")],
+  ["tab_close", said(["Closing tabs", "Closed tabs"], "browser")],
+  ["tab_organize", said(["Arranging tabs", "Arranged tabs"], "browser")],
+  ["tab_group_update", said(["Updating a tab group", "Updated a tab group"], "browser")],
 ]);
 
 /** Every engine's name for each kind of step it shares with the others. */

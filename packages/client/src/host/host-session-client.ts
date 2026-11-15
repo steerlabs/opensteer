@@ -40,7 +40,6 @@ import {
   EventIdSchema,
   IsoDateTimeSchema,
   MessageIdSchema,
-  RunnerIdSchema,
   ExecutionNodeIdSchema,
   TeamAgentRequestIdSchema,
   RequestIdSchema,
@@ -108,6 +107,7 @@ import {
   type RealtimeFrameDiagnostic,
   type RpcResult,
   type DeploymentSnapshot,
+  realtimeEnvelopeTypes,
 } from "@opensteer/protocol";
 import { z } from "zod";
 import { BrowserWatchStore, browserCommandNeedsNoView } from "./browser-watch.js";
@@ -177,7 +177,6 @@ import {
   describeRealtimeFrameFailure,
   maxInboundFrameCharacters,
   realtimeEnvelopeType,
-  realtimeEnvelopeTypes,
   realtimeFrameLoss,
 } from "./realtime-frames.js";
 
@@ -1109,20 +1108,6 @@ export class HttpHostClient {
     return () => this.#listeners.delete(listener);
   };
 
-  async closePhoneTab(machineId: string): Promise<void> {
-    await this.dispatch({
-      type: "phone.tab.close",
-      machineId: RunnerIdSchema.parse(machineId),
-      idempotencyKey: crypto.randomUUID(),
-    });
-    this.#update({
-      ...this.#snapshot,
-      machines: this.#snapshot.machines.map((machine) =>
-        machine.id === machineId ? { ...machine, tabOpenedAt: null } : machine,
-      ),
-    });
-  }
-
   async dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput> {
     const parsedCommand = hostApi["commands.dispatch"].payload.parse(
       browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes),
@@ -1429,9 +1414,7 @@ export class HttpHostClient {
     const view = unwrapRpcResult(
       await this.rpc["apps.view"]({ appId, theme }, signal ? { signal } : undefined),
     );
-    // Read by field so the app's name serves whichever app record the Host returns.
-    const app: { readonly name?: string; readonly title?: string } = view.app;
-    return { title: app.name ?? app.title ?? "", url: view.entryUrl ?? this.#url(view.path) };
+    return { title: view.app.name, url: view.entryUrl ?? this.#url(view.path) };
   }
 
   async getAttachment(attachmentId: string): Promise<Attachment> {

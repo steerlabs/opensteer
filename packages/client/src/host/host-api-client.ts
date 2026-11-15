@@ -172,7 +172,10 @@ async function request<Name extends keyof typeof hostApi>(
       : attachmentMaxBytes
     : 16 * 1_024 * 1_024;
   const headersTimeoutMs =
-    name === "commands.dispatch" && "type" in payload && payload.type === "browser.tab.open"
+    // Opening or waking a tab may start its browser first.
+    name === "commands.dispatch" &&
+    "type" in payload &&
+    (payload.type === "tab.open" || payload.type === "tab.activate")
       ? 25_000
       : options.bufferedResponses
         ? bufferedHostResponseTimeoutMs(maximumBytes)

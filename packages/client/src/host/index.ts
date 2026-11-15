@@ -87,8 +87,6 @@ export * from "./connected-agents.js";
 
 export * from "./automatic-models.js";
 
-export type { AppTab } from "@opensteer/protocol";
-
 export * from "./browser-last-picture.js";
 export * from "./browser-agent-follow.js";
 export * from "./harness-authentication.js";

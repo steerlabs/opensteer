@@ -99,7 +99,6 @@ import {
   type SpecialistManifest,
   TabPlaceEnteredEventViewSchema,
   AssignmentIdSchema,
-  type EventData,
   AssignmentSummarySchema,
   AssignmentViewSchema,
   AttachmentSchema,
@@ -341,6 +340,7 @@ import { MockPhoneDisplaySocket } from "./mock-phone-display.js";
 import {
   MockPlaceWorld,
   seedMockPlaces,
+  type MockPlaceEntry,
   type MockPlaceScript,
   type MockPlacesWorld,
 } from "./mock-places.js";
@@ -2023,7 +2023,6 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     "connections.authorization.get": async ({ requestId }) =>
       rpcSuccess(client.connectionConsent(requestId)),
     "personal.remoteAccess.get": async () => rpcSuccess(client.remoteAdministration),
-    "apps.legacy.get": unsupportedMockRpc,
     "apps.view": unsupportedMockRpc,
     "attachment.get": async ({ attachmentId }) => rpcSuccess(client.getAttachment(attachmentId)),
     "attachment.upload": async ({ attachmentId }, context) =>
@@ -2192,11 +2191,19 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
         ...previousReleaseEligibility(new Date(client.nowIso())),
       });
     },
-    "browser.tabIcon.get": async ({ sessionId, iconRef }) => {
+    "browser.tabIcon.get": async (input) => {
       if (!client.places) return unsupportedMockRpc();
-      return rpcSuccess({ favicon: await client.places.icon(sessionId, iconRef) });
+      const sessionId =
+        "sessionId" in input
+          ? input.sessionId
+          : client
+              .getSnapshot()
+              .browserSessions.find((session) =>
+                session.surfaces.some((surface) => surface.id === input.tabId),
+              )?.id;
+      if (!sessionId) return rpcSuccess({ favicon: null });
+      return rpcSuccess({ favicon: await client.places.icon(sessionId, input.iconRef) });
     },
-    "bootstrap.legacy.get": unsupportedMockRpc,
     "bootstrap.get": async () =>
       rpcSuccess(hostApi["bootstrap.get"].success.parse(client.bootstrap())),
     "tabs.get": async ({ tabId }) => {
@@ -2342,7 +2349,6 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       rpcSuccess({
         grants: await client.loadIntegrationGrants(client.getSnapshot().deploymentId!),
       }),
-    "computer.app.legacy.windows": unsupportedMockRpc,
     "computer.app.windows": async (input) => {
       try {
         return rpcSuccess({
@@ -2396,7 +2402,6 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       rpcSuccess(hostApi["integrations.get"].success.parse(await client.loadIntegrations())),
     // The preview keeps no durable session history to page back through.
     "machine.access.history": async () => rpcSuccess({ nextCursor: null, sessions: [] }),
-    "machines.legacy.list": unsupportedMockRpc,
     "machines.list": async () => rpcSuccess({ machines: await client.loadMachines() }),
     // The preview holds every task, so a page is a slice of what it holds.
     "tasks.list": async (input) => {
@@ -3469,16 +3474,6 @@ async function executeMockCommand(
     case "app.stop":
     case "app.delete":
       return rpcSuccess(client.appCommand(command));
-    case "browser.tab.open": {
-      if (!client.places) return unsupportedMockRpc();
-      return rpcSuccess(await client.places.openTarget(command));
-    }
-    case "browser.tab.close": {
-      if (!client.places) return unsupportedMockRpc();
-      return rpcSuccess(
-        await client.places.close(command.sessionId, command.surfaceId, command.inventoryRevision),
-      );
-    }
     case "browser.session.close":
       await client.closeBrowser(command.sessionId);
       return unsupportedMockRpc();
@@ -4223,7 +4218,7 @@ export class MockHostClient implements HostClient {
   readonly subscribePlaceActivity = (placeKey: string, listener: () => void) =>
     this.#places.subscribeActivity(placeKey, listener);
   readonly runPlace = (runId: string) => this.#state.runPlaces.get(runId);
-  readonly enterPlace = (runId: string, threadId: string, data: EventData<"place.entered">) =>
+  readonly enterPlace = (runId: string, threadId: string, data: MockPlaceEntry) =>
     this.#state.enterPlace(runId, threadId, data);
   readonly actInPlace = (threadId: string, placeKey: string) =>
     this.#places.actInPlace(threadId, placeKey);
@@ -5059,7 +5054,17 @@ class MockHostState {
   readonly teamLinks = new Map<string, PersonalTeamLink>();
   nodeEvents: readonly import("@opensteer/core").TabAgentEventView[] = [];
   /** The mock Host's tab commands, over its tab catalog and browser world. */
+  /** The person's own tabs and apps answer only their signed-in owner, as the Host's scope does. */
+  #requireOwner(): void {
+    if (this.snapshot.session !== "authenticated")
+      throw new HostClientRequestError({
+        code: "unauthorized",
+        status: 401,
+        message: "Authentication required",
+      });
+  }
   async tabCommand(command: TabCommand): Promise<TabCommandResult> {
+    this.#requireOwner();
     const catalog = this.tabCatalog;
     const republish = () => this.emit();
     switch (command.type) {
@@ -5217,7 +5222,7 @@ class MockHostState {
       if (!lineage || !session) throw new Error("This page is unavailable.");
       const live =
         session.state === "ready" && session.catalog?.tabs.some((held) => held.id === tabId);
-      const sessionId = live ? session.id : this.places!.activatePersonalTab(tabId).session.id;
+      const sessionId = live ? session.id : this.places!.restorePage(tabId).session.id;
       return done({
         kind: "page",
         sessionId: BrowserSessionIdSchema.parse(sessionId),
@@ -5242,6 +5247,7 @@ class MockHostState {
   }
   /** The mock Host's person-side app lifecycle; servers start and stop at once. */
   appCommand(command: AppCommand): AppCommandResult {
+    this.#requireOwner();
     const index = this.apps.findIndex((app) => app.appId === command.appId);
     const app = this.apps[index];
     if (!app)
@@ -10604,7 +10610,7 @@ class MockHostState {
    * As the Host records it: a Run began acting in a tab other than the one it
    * entered last. Entering the same tab again records nothing.
    */
-  enterPlace(runId: string, threadId: string, data: EventData<"place.entered">): void {
+  enterPlace(runId: string, threadId: string, data: MockPlaceEntry): void {
     const thread = this.snapshot.threads.find(({ id }) => id === threadId);
     if (!thread) return;
     const transcript = this.snapshot.transcripts[threadId] ?? [];
