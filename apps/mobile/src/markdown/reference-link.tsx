@@ -15,15 +15,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import {
-  Alert,
-  Linking,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-  useWindowDimensions,
-} from "react-native";
+import { Alert, Linking, Pressable, StyleSheet, Text, useWindowDimensions } from "react-native";
 import { color, material, radius, space } from "../theme.js";
 import { LinkHoldContext, useConversationLinks } from "../thread/link-context.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
@@ -218,7 +210,10 @@ function Chip(props: {
 }): ReactNode {
   const hold = useContext(LinkHoldContext);
   const ink = useContext(ChipInk);
-  const { fontScale } = useWindowDimensions();
+  const { fontScale, width } = useWindowDimensions();
+  // An inline view is measured unconstrained, so the title carries the cap: never wider than
+  // most of a line, which leaves room for the glyph, the position and the rim.
+  const titleWidth = Math.max(96, Math.min(width - 112, 240 * fontScale));
   const gone = props.onPress === null;
   const link = { href: props.href, label: props.label };
   const accent = ink === "accent";
@@ -246,19 +241,26 @@ function Chip(props: {
         size={Math.round(13 * fontScale)}
         tint={accent ? color.bubbleInk : gone ? color.mutedDim : color.textSoft}
       />
-      <View style={styles.words}>
+      <Text
+        numberOfLines={1}
+        style={[
+          styles.title,
+          { maxWidth: titleWidth },
+          accent && styles.accentText,
+          gone && !accent && styles.goneText,
+        ]}
+      >
+        {props.title}
+      </Text>
+      {/* The position stays whole; the name gives way first. */}
+      {props.secondary ? (
         <Text
           numberOfLines={1}
-          style={[styles.title, accent && styles.accentText, gone && !accent && styles.goneText]}
+          style={[styles.title, accent ? styles.accentSecondary : styles.secondary]}
         >
-          {props.title}
-          {props.secondary ? (
-            <Text style={accent ? styles.accentSecondary : styles.secondary}>
-              {props.secondary}
-            </Text>
-          ) : null}
+          {props.secondary}
         </Text>
-      </View>
+      ) : null}
     </Pressable>
   );
 }
@@ -298,15 +300,14 @@ const styles = StyleSheet.create({
   },
   accentGone: { backgroundColor: "transparent", borderStyle: "dashed", opacity: 0.7 },
   accentLink: { color: color.bubbleInk, textDecorationLine: "underline" },
-  accentSecondary: { color: "rgba(27, 18, 14, 0.6)" },
+  accentSecondary: { color: "rgba(27, 18, 14, 0.6)", flexShrink: 0, marginLeft: -space[4] },
   accentText: { color: color.bubbleInk },
-  // Inline in a line of words: no taller than the line, and never wider than most of it.
+  // Inline in a line of words, no taller than the line.
   chip: {
     alignItems: "center",
     borderRadius: radius.full,
     flexDirection: "row",
     gap: space[4],
-    maxWidth: 260,
     paddingLeft: space[6] - 1,
     paddingRight: space[8] - 1,
     paddingVertical: 0,
@@ -321,7 +322,7 @@ const styles = StyleSheet.create({
   goneText: { color: color.muted },
   link: { color: color.ember, textDecorationLine: "underline" },
   pressed: { ...material.platePressed },
-  secondary: { color: color.muted },
-  title: { color: color.text, fontSize: 15, lineHeight: 19 },
-  words: { flexShrink: 1 },
+  // Set tight against the name it qualifies, inside the glyph gap.
+  secondary: { color: color.muted, flexShrink: 0, marginLeft: -space[4] },
+  title: { color: color.text, flexShrink: 1, fontSize: 15, lineHeight: 19 },
 });
