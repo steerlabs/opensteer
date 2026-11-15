@@ -107,8 +107,8 @@ export async function lockThreadProjectionParents(
                 "in",
                 eb
                   .selectFrom("messages")
-                  .select("id")
-                  .where("threadId", "in", [...input.threadIds]),
+                  .select("messages.id")
+                  .where("messages.threadId", "in", [...input.threadIds]),
               ),
             ]
           : []),
