@@ -6,7 +6,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { encodeDisplayViewerFrame } from "@opensteer/protocol";
 import { PlaceActivityStore, RunPlaceStore } from "@opensteer/client/host";
 import { tabFixture, tabStoreFixture } from "@opensteer/client/test-support";
-import { createId, TabIdSchema, TabPlaceEnteredEventViewSchema } from "@opensteer/core";
+import { createId, TabIdSchema, PlaceEnteredEventViewSchema } from "@opensteer/core";
 import { FoldedPage } from "../thread/folded-page.js";
 import type { HostClient, HostSnapshot, WebSocketClient } from "@opensteer/client/host";
 import { sharedDisplayStreams, type DisplaySnapshot } from "@opensteer/client/integrations";
@@ -299,7 +299,7 @@ async function setup(
   });
   if (screen === "live")
     runPlaces.accept(
-      TabPlaceEnteredEventViewSchema.parse({
+      PlaceEnteredEventViewSchema.parse({
         eventId: createId("event"),
         environmentId: createId("environment"),
         threadId,

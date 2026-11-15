@@ -650,7 +650,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "additionalProperties": false,
       "properties": {
         "beforeTabId": {
-          "description": "Tab ID from tab_list: a destination member for tab moves, or an outside tab for a whole-group move.",
+          "description": "Tab ID from tab_list. Inside a group, inserts before that member. At root, a group’s first member anchors its top-level boundary. Whole-group moves use an outside anchor; omit it to append the block. Empty groups cannot be anchors.",
           "maxLength": 512,
           "minLength": 1,
           "type": "string",

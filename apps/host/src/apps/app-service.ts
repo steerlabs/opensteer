@@ -18,7 +18,17 @@ import {
   type RunnerId,
   type UserId,
 } from "@opensteer/core";
-import type { AppRecord, AppStore, PublishedApp } from "@opensteer/database";
+import {
+  OpensteerStore,
+  TriggerStore,
+  threadAllowsPersonalContext,
+  resolveResourceAccess,
+  runAllowsPersonalContext,
+  type AppAuthorization,
+  type AppRecord,
+  type AppStore,
+  type PublishedApp,
+} from "@opensteer/database";
 import type { AppRuntimeSpec, RunnerAppState, RunnerConnectionId } from "@opensteer/protocol";
 import { createPrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
@@ -26,6 +36,7 @@ import { appFrameHeaders, prepareAppHtml, type AppTheme } from "@opensteer/share
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import type { RunToolScope, RunToolTokenService } from "../agents/run-tool-tokens.js";
+import type { ConnectionCaller, ProgramCaller } from "../mcp/agent-caller.js";
 import type { AppTabPort } from "../tabs/ports.js";
 import type { AgentHomeFiles } from "../threads/agent-home-files.js";
 import {
@@ -41,6 +52,11 @@ import { AppTunnelError, type AppRunnerConnection, type AppTunnelHub } from "./a
 export type AppActor =
   | { readonly kind: "person"; readonly ownerId: UserId }
   | { readonly kind: "run"; readonly claims: RunToolScope };
+
+type AppReader =
+  | AppActor
+  | { kind: "connection"; caller: ConnectionCaller }
+  | { kind: "program"; caller: ProgramCaller };
 
 export interface AppCallLifetime {
   readonly signal?: AbortSignal;
@@ -155,17 +171,23 @@ export class AppService {
     await this.#admit({ kind: "run", claims: scope }, lifetime, true);
     const run = runScope(scope);
     const reservation = previous
-      ? await this.#options.apps.prepareServer({
-          scope: run,
-          appId: previous.id,
-          computerId: agentHome.computerId,
-        })
-      : await this.#options.apps.reserve({
-          scope: run,
-          creationKey: `${scope.runId}:${operationKey}`,
-          name: input.name,
-          computerId: agentHome.computerId,
-        });
+      ? await this.#options.apps.prepareServer(
+          {
+            scope: run,
+            appId: previous.id,
+            computerId: agentHome.computerId,
+          },
+          this.#authorize({ kind: "run", claims: scope }, lifetime),
+        )
+      : await this.#options.apps.reserve(
+          {
+            scope: run,
+            creationKey: `${scope.runId}:${operationKey}`,
+            name: input.name,
+            computerId: agentHome.computerId,
+          },
+          this.#authorize({ kind: "run", claims: scope }, lifetime),
+        );
     if (previous) this.#options.changed(scope.requestedBy, [previous.id]);
     const spec: AppRuntimeSpec = {
       appId: reservation.appId,
@@ -206,15 +228,18 @@ export class AppService {
     }
     try {
       await this.#admit({ kind: "run", claims: scope }, lifetime, true);
-      return await this.#options.apps.commit({
-        scope: run,
-        appId: spec.appId,
-        name: input.name,
-        publishKey: operationKey,
-        expectedVersion: spec.version,
-        server,
-        serverGeneration: spec.generation,
-      });
+      return await this.#options.apps.commit(
+        {
+          scope: run,
+          appId: spec.appId,
+          name: input.name,
+          publishKey: operationKey,
+          expectedVersion: spec.version,
+          server,
+          serverGeneration: spec.generation,
+        },
+        this.#authorize({ kind: "run", claims: scope }, lifetime),
+      );
     } catch (error) {
       await abandon();
       throw error;
@@ -296,13 +321,16 @@ export class AppService {
       Buffer.from(bytes).toString("utf8"),
     );
     await this.#admit({ kind: "run", claims: scope }, lifetime, false);
-    const result = await this.#options.apps.commit({
-      scope: runScope(scope),
-      ...(previous ? { appId: previous.id } : {}),
-      name: input.name,
-      publishKey: operationKey,
-      html: { sha256, sizeBytes: bytes.byteLength },
-    });
+    const result = await this.#options.apps.commit(
+      {
+        scope: runScope(scope),
+        ...(previous ? { appId: previous.id } : {}),
+        name: input.name,
+        publishKey: operationKey,
+        html: { sha256, sizeBytes: bytes.byteLength },
+      },
+      this.#authorize({ kind: "run", claims: scope }, lifetime),
+    );
     // Publishing HTML over a server stops it; its port stays reserved for the app.
     if (previous && result.retiredServer)
       await this.#halt(previous.computerId, previous.id, result.retiredServer.generation).catch(
@@ -333,8 +361,11 @@ export class AppService {
     return this.#view(await this.#options.apps.get(ownerId, appId));
   }
 
-  async list(ownerId: UserId, query?: string): Promise<App[]> {
-    return (await this.#options.apps.list(ownerId, query)).map((app) => this.#view(app));
+  async list(actor: AppReader, query?: string, lifetime: AppCallLifetime = {}): Promise<App[]> {
+    await this.#admit(actor, lifetime, false, "read");
+    return (
+      await this.#options.apps.list(ownerOf(actor), query, this.#authorize(actor, lifetime, "read"))
+    ).map((app) => this.#view(app));
   }
 
   async rename(ownerId: UserId, appId: string, name: string): Promise<App> {
@@ -357,7 +388,12 @@ export class AppService {
       if (this.#computers.has(app.computerId)) await this.#ready(app.computerId, lifetime.signal);
       else if (actor.kind === "run") throw startFailure(new ComputerOfflineError());
       await this.#admit(actor, lifetime, true);
-      const record = await this.#options.apps.setDesiredState(ownerId, id, "running");
+      const record = await this.#options.apps.setDesiredState(
+        ownerId,
+        id,
+        "running",
+        this.#authorize(actor, lifetime, "read-write", true),
+      );
       this.#options.changed(ownerId, [id]);
       if (actor.kind === "person" && !this.#computers.has(record.computerId))
         return this.get(ownerId, id);
@@ -390,10 +426,15 @@ export class AppService {
   }
 
   /** Persists stopped intent before any I/O, so it beats a pending start and survives reconnect. */
-  async stop(actor: AppActor, appId: string): Promise<App> {
+  async stop(actor: AppActor, appId: string, lifetime: AppCallLifetime = {}): Promise<App> {
     const id = parseAppId(appId);
     const ownerId = ownerOf(actor);
-    const record = await this.#options.apps.setDesiredState(ownerId, id, "stopped");
+    const record = await this.#options.apps.setDesiredState(
+      ownerId,
+      id,
+      "stopped",
+      this.#authorize(actor, lifetime),
+    );
     this.#options.changed(ownerId, [id]);
     if (!this.#computers.has(record.computerId)) return this.get(ownerId, id);
     try {
@@ -410,13 +451,14 @@ export class AppService {
    * Withdraws viewing first, stops the exact process tree, then removes the records and
    * the app's tabs together. The folder stays on disk.
    */
-  async delete(actor: AppActor, appId: string): Promise<void> {
+  async delete(actor: AppActor, appId: string, lifetime: AppCallLifetime = {}): Promise<void> {
     const id = parseAppId(appId);
     const ownerId = ownerOf(actor);
     const record = await this.#options.apps.markDeleting(
       ownerId,
       id,
       this.#options.tabs.removeTabs,
+      this.#authorize(actor, lifetime),
     );
     this.#revoke(id);
     this.#options.changed(ownerId, [id]);
@@ -667,13 +709,66 @@ export class AppService {
     };
   }
 
-  async #admit(actor: AppActor, lifetime: AppCallLifetime, fullAccess: boolean): Promise<void> {
+  #authorize(
+    actor: AppReader,
+    lifetime: AppCallLifetime,
+    required: "read" | "read-write" = "read-write",
+    fullAccess = false,
+  ): AppAuthorization {
+    return async (database) => {
+      lifetime.signal?.throwIfAborted();
+      await lifetime.checkLive?.();
+      if (actor.kind === "run") {
+        await new OpensteerStore(database).assertActiveGrant(actor.claims);
+        if (!(await runAllowsPersonalContext(database, actor.claims.runId))) throw missing();
+        await this.#options.apps.authorizeRun(runScope(actor.claims), fullAccess, database);
+      }
+      if (actor.kind === "program") {
+        const triggers = new TriggerStore(database);
+        if (actor.caller.program.kind === "trigger")
+          await triggers.assertActiveExecutionBinding(actor.caller.program);
+        else await triggers.assertActiveWatchBinding(actor.caller.program);
+        if (
+          !(await threadAllowsPersonalContext(
+            database,
+            actor.caller.anchor.id,
+            actor.caller.userId,
+          ))
+        )
+          throw missing();
+      }
+      const { access } = await resolveResourceAccess(database, {
+        ownerUserId: ownerOf(actor),
+        explicitAccess: "read-write",
+        ...(actor.kind === "run"
+          ? { agentBindingId: `run:${actor.claims.runId}` }
+          : actor.kind === "connection"
+            ? { connectionId: actor.caller.connectionId }
+            : actor.kind === "program"
+              ? { agentBindingId: actor.caller.key }
+              : {}),
+      });
+      if (!access || (required === "read-write" && access !== "read-write"))
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Changing apps requires read-write access.",
+        });
+      lifetime.signal?.throwIfAborted();
+    };
+  }
+
+  async #admit(
+    actor: AppReader,
+    lifetime: AppCallLifetime,
+    fullAccess: boolean,
+    required: "read" | "read-write" = "read-write",
+  ): Promise<void> {
     lifetime.signal?.throwIfAborted();
     await lifetime.checkLive?.();
     if (actor.kind === "run") {
       await this.#options.tokens.reauthorize(actor.claims);
-      await this.#options.apps.authorizeRun(runScope(actor.claims), fullAccess);
     }
+    await this.#authorize(actor, lifetime, required, fullAccess)(this.#options.apps.database);
     lifetime.signal?.throwIfAborted();
   }
 
@@ -928,8 +1023,12 @@ function parseAppId(appId: string): AppId {
   return parsed.data;
 }
 
-function ownerOf(actor: AppActor): UserId {
-  return actor.kind === "person" ? actor.ownerId : actor.claims.requestedBy;
+function ownerOf(actor: AppReader): UserId {
+  return actor.kind === "person"
+    ? actor.ownerId
+    : actor.kind === "run"
+      ? actor.claims.requestedBy
+      : actor.caller.userId;
 }
 
 function runScope(scope: RunToolScope) {

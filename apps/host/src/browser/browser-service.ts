@@ -3,7 +3,7 @@ import type { PageTabsPort } from "../tabs/tab-service.js";
 import type { TabActor } from "../tabs/ports.js";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import { TabStore, type TabRecord, type TabWrite } from "@opensteer/database";
-import type { PageBinding, TabOpenedBy, TabTarget, TabPlaceEnteredEvent } from "@opensteer/core";
+import type { PageBinding, TabOpenedBy, TabTarget, PlaceEnteredEvent } from "@opensteer/core";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import {
   keyedStreamHardCapBytes,
@@ -122,8 +122,7 @@ import {
   type HostedBrowserSessionState,
   type InitialPageReady,
   type PendingBrowserProfileDeletion,
-  type PlaceActivity,
-  type PlaceActivityNotice,
+  type TabPlaceActivity,
   type PlaceOccupant,
   type PersonFillVersion,
   type RequestCreationResult,
@@ -585,13 +584,26 @@ type BrowserCdpWireResponse = Extract<
   { readonly type: "cdp.error" | "cdp.result" }
 >;
 
+type BrowserPlaceActivity = Omit<TabPlaceActivity, "tabId"> & {
+  place: import("@opensteer/core").PlaceIdentity;
+};
+type BrowserPlaceActivityNotice =
+  | { type: "host.place-activity"; activity: BrowserPlaceActivity }
+  | {
+      type: "host.place-activity-cleared";
+      place: import("@opensteer/core").PlaceIdentity;
+      runId: RunId;
+      generation: number;
+      seq: number;
+    };
+
 export interface TabPlaceHooks {
   write(input: {
     runId: RunId;
     bindingGeneration: number;
-    data: TabPlaceEnteredEvent["data"];
-  }): Promise<TabPlaceEnteredEvent | undefined>;
-  publish(event: TabPlaceEnteredEvent): void;
+    data: PlaceEnteredEvent["data"];
+  }): Promise<PlaceEnteredEvent | undefined>;
+  publish(event: PlaceEnteredEvent): void;
   notice(
     ownerId: UserId,
     notice:
@@ -624,7 +636,8 @@ interface BrowserServiceOptions {
   readonly onPlaceNotice?: (
     ownerId: UserId,
     notice:
-      PlaceActivityNotice | { type: "host.thread-place-changed"; reference: ThreadPlaceReference },
+      | BrowserPlaceActivityNotice
+      | { type: "host.thread-place-changed"; reference: ThreadPlaceReference },
   ) => void;
   readonly connectTimeoutMs?: number;
   readonly onSessionsChanged: (
@@ -682,7 +695,7 @@ export class BrowserService {
   readonly #profileRequestRunner: BrowserServiceOptions["profileRequestRunner"];
   readonly #nativeActivity = new Map<
     string,
-    { activity: PlaceActivity; ownerId: UserId; title: string; timer: (() => void) | null }
+    { activity: BrowserPlaceActivity; ownerId: UserId; title: string; timer: (() => void) | null }
   >();
   readonly #actors = new Map<string, BrowserActor>();
   readonly #actorKeys = new Map<string, string | null>();
@@ -718,7 +731,7 @@ export class BrowserService {
   readonly #holdings = new Map<BrowserSessionId, ReadonlySet<string>>();
   readonly #actorResolutions = new Map<string, Promise<void>>();
   readonly #sessionOperations = new Map<string, Promise<unknown>>();
-  readonly #runPlaces: RunPlaceRecorder<TabPlaceEnteredEvent["data"], TabPlaceEnteredEvent>;
+  readonly #runPlaces: RunPlaceRecorder;
 
   readonly #tabDescriptorTimers = new Map<BrowserSessionId, NodeJS.Timeout>();
   readonly #brokers = new Map<BrowserSessionId, HostedBrowserBroker>();
@@ -892,15 +905,18 @@ export class BrowserService {
     this.#actingWindowMs = options.actingWindowMs ?? browserActingWindowMs;
     this.#actorMetadataTimeoutMs = options.actorMetadataTimeoutMs ?? browserActorMetadataTimeoutMs;
     this.#onDeploymentEvent = options.onDeploymentEvent;
-    this.#runPlaces = new RunPlaceRecorder<TabPlaceEnteredEvent["data"], TabPlaceEnteredEvent>({
+    this.#runPlaces = new RunPlaceRecorder({
       clock: this.#activityClock,
       write: async (input) => {
         if (options.tabPlaces) return options.tabPlaces.write(input);
         const event = await this.#repository.recordRunTabPlace(input);
         return event?.type === "place.entered" ? event : undefined;
       },
-      publish: (event) =>
-        options.tabPlaces ? options.tabPlaces.publish(event) : this.#onDeploymentEvent(event),
+      publish: (event) => {
+        if (event.type !== "place.entered") return;
+        if (options.tabPlaces) options.tabPlaces.publish(event);
+        else this.#onDeploymentEvent(event);
+      },
       onError: (error) => this.#onError(error),
     });
     this.#repository = options.repository;
@@ -2603,7 +2619,7 @@ export class BrowserService {
           surfaceId: pending.activity.surfaceId,
         } as const;
         for (const [ownerId, identity] of pending.actor.audience) {
-          const value: PlaceActivity = {
+          const value: BrowserPlaceActivity = {
             threadId: identity.threadId,
             place,
             runId: pending.actor.runId,

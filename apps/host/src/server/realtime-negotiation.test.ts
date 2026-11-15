@@ -35,7 +35,7 @@ describe("realtime version negotiation", () => {
     const removed = Promise.withResolvers<void>();
     const watchNode = vi.fn();
     const streams = new TabStreams(
-      async () => ({ tabs: [], layout: { revision: 0, items: [] } }),
+      async () => ({ rows: new Map(), layout: { revision: 0, items: [] } }),
       (error) => {
         throw error;
       },

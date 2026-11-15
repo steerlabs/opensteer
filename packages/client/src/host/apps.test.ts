@@ -1,6 +1,6 @@
 import {
   createId,
-  TabAgentEventViewSchema,
+  AgentEventViewSchema,
   AppIdSchema,
   SequenceSchema,
   type App,
@@ -10,7 +10,7 @@ import { AppsList } from "./apps.js";
 import { foldTranscriptEvent } from "./transcript.js";
 import { conversationRows, groupTranscriptEntries } from "./agent-activity-model.js";
 it("restores one app at its latest publication point, idempotently, including conversation mode", () => {
-  const event = TabAgentEventViewSchema.parse({
+  const event = AgentEventViewSchema.parse({
     type: "app.published",
     eventId: createId("event"),
     sequence: "1",

@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
-import { createId, TabIdSchema, TabPlaceEnteredEventViewSchema } from "@opensteer/core";
+import { createId, TabIdSchema, PlaceEnteredEventViewSchema } from "@opensteer/core";
 import type { TabViewer } from "@opensteer/protocol";
 import type { HostClient, HostSnapshot } from "@opensteer/client/host";
 import { RunPlaceStore } from "@opensteer/client/host";
@@ -42,7 +42,7 @@ const tabs = [
   tabFixture({ tabId: TabIdSchema.parse("window-1"), kind: "window" }),
 ];
 const entry = (sequence: string, tabId: string, site: string | null = "https://example.com") =>
-  TabPlaceEnteredEventViewSchema.parse({
+  PlaceEnteredEventViewSchema.parse({
     type: "place.entered",
     eventId: createId("event"),
     environmentId: createId("environment"),

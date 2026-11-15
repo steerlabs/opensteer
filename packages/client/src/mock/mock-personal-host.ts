@@ -1,4 +1,4 @@
-import { SequenceSchema, ThreadIdSchema, type TabAgentEventView } from "@opensteer/core";
+import { SequenceSchema, ThreadIdSchema, type AgentEventView } from "@opensteer/core";
 import {
   ClientToHostMessageSchema,
   hostApi,
@@ -53,7 +53,7 @@ export class MockPersonalHost {
   readonly #subscribed = new Map<MockPersonalSocket, boolean>();
   readonly #release: () => void;
   #through = SequenceSchema.parse("0");
-  #rows: TabAgentEventView[] = [];
+  #rows: AgentEventView[] = [];
   constructor(client = new MockHostClient({ latencyMs: 0 })) {
     this.client = client;
     this.#through = this.#highWater();
@@ -163,7 +163,7 @@ export class MockPersonalHost {
       ),
     });
   }
-  publish(events: readonly TabAgentEventView[], throughSequence: string): void {
+  publish(events: readonly AgentEventView[], throughSequence: string): void {
     const through = SequenceSchema.parse(throughSequence);
     if (
       BigInt(through) < BigInt(this.#through) ||
@@ -189,11 +189,11 @@ export class MockPersonalHost {
 }
 
 /** Tab place events carry no Request; only the rest pass through the device projection. */
-function deviceAccessEvent(event: TabAgentEventView): boolean {
+function deviceAccessEvent(event: AgentEventView): boolean {
   return event.type !== "place.entered" && isDeviceAccessRequestEvent(event);
 }
-function projected(event: TabAgentEventView, include: boolean): TabAgentEventView {
+function projected(event: AgentEventView, include: boolean): AgentEventView {
   return event.type === "place.entered"
     ? event
-    : (projectDeviceAccessRequestEvent(event, include) as TabAgentEventView);
+    : (projectDeviceAccessRequestEvent(event, include) as AgentEventView);
 }

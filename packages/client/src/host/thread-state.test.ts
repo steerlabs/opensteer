@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { createId, TabAgentEventViewSchema, SequenceSchema } from "@opensteer/core";
+import { createId, AgentEventViewSchema, SequenceSchema } from "@opensteer/core";
 import type { ThreadSummary } from "./client.js";
 import { ThreadStateProjection } from "./thread-state.js";
 
@@ -19,7 +19,7 @@ it("retains return hints across stale pages and clears them through resumable st
     sessionRevision: "session:1:2",
   };
   const state = (sequence: string, returnHint: typeof hint | null) =>
-    TabAgentEventViewSchema.parse({
+    AgentEventViewSchema.parse({
       eventId: createId("event"),
       type: "thread.state-changed",
       threadId: thread.id,

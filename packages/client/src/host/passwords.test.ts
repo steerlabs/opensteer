@@ -2,7 +2,7 @@ import {
   createId,
   normalizeToolOutput,
   RunnerIdSchema,
-  type TabAgentEventView as AgentEvent,
+  type AgentEventView as AgentEvent,
   type Request,
 } from "@opensteer/core";
 import type { PasswordSignInRequestResponse } from "@opensteer/protocol";

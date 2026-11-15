@@ -3,7 +3,7 @@ import {
   createId,
   RunnerIdSchema,
   TabIdSchema,
-  TabPlaceEnteredEventViewSchema,
+  PlaceEnteredEventViewSchema,
   SequenceSchema,
 } from "@opensteer/core";
 import type { MachineSummary } from "@opensteer/protocol";
@@ -13,7 +13,7 @@ import { runPlaceDestination, runPlaceSessionId, RunPlaceStore } from "./run-pla
 const threadId = createId("thread");
 const runId = createId("run");
 function entered(sequence: string, id = runId) {
-  return TabPlaceEnteredEventViewSchema.parse({
+  return PlaceEnteredEventViewSchema.parse({
     type: "place.entered",
     eventId: createId("event"),
     environmentId: createId("environment"),

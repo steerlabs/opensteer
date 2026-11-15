@@ -4,7 +4,7 @@ import {
   OpensteerError,
   parseReferenceHref,
   ThreadIdSchema,
-  type TabAgentEventView,
+  type AgentEventView,
   type ReferenceId,
 } from "@opensteer/core";
 import type {
@@ -89,7 +89,7 @@ async function called(calls: readonly unknown[], count: number) {
 function threadEvent(
   threadId: string,
   type: "thread.state-changed" | "task.removed",
-): TabAgentEventView {
+): AgentEventView {
   return {
     type,
     threadId,
@@ -97,7 +97,7 @@ function threadEvent(
       type === "task.removed"
         ? {}
         : { title: "Renamed", status: "completed", inputQueuePaused: false, pendingRequests: 0 },
-  } as unknown as TabAgentEventView;
+  } as unknown as AgentEventView;
 }
 it("uses genuinely held metadata without RPC, including hidden chips, and keeps snapshots stable", async () => {
   const { store, read, update } = setup();

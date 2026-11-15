@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { createChannelId, slackChannelProviderManifest } from "@opensteer/channel-core";
 import { once } from "node:events";
 import { createServer, request, type Server } from "node:http";
 import { Readable } from "node:stream";
@@ -11,7 +12,7 @@ import { testHostApiContext } from "../server/test-host-api-context.js";
 import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import {
   appMaxBytes,
   createId,
@@ -24,7 +25,13 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import { AppStore, TabStore, type DatabaseSchema } from "@opensteer/database";
+import {
+  AppStore,
+  TabStore,
+  ChannelStore,
+  withPersonalTransaction,
+  type DatabaseSchema,
+} from "@opensteer/database";
 import {
   RunnerConnectionFenceSchema,
   type AppRuntimeSpec,
@@ -34,6 +41,7 @@ import {
 import { expect, vi } from "vitest";
 import { describeStore } from "@opensteer/database/test-support/store";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
+import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
 import { AppService } from "./app-service.js";
 import { AppTunnelHub, type AppRunners } from "./app-tunnel-hub.js";
 
@@ -44,6 +52,9 @@ type Fixture = {
   readonly environmentId: import("@opensteer/core").EnvironmentId;
   readonly thread: { readonly id: ThreadId };
   readonly run: { readonly id: RunId };
+  readonly runnerId: RunnerId;
+  readonly runnerBootId: string;
+  readonly bindingGeneration: number;
 };
 function runScope(f: Fixture) {
   return {
@@ -59,7 +70,15 @@ function toolScope(f: Fixture): RunToolScope {
     threadId: f.thread.id,
     environmentId: f.environmentId,
     requestedBy: f.userId,
-  } as unknown as RunToolScope;
+    runnerId: f.runnerId,
+    runnerBootId: f.runnerBootId,
+    bindingGeneration: f.bindingGeneration,
+    aud: "opensteer-run-tools",
+    iss: "opensteer-host",
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + 3600,
+    jti: crypto.randomUUID(),
+  };
 }
 
 function htmlFiles(read: () => Buffer) {
@@ -397,15 +416,17 @@ describeStore("published app HTML", (it) => {
         requestedBy: f.userId,
         threadId: other.id,
       });
-      await database
-        .updateTable("runs")
-        .set({ status: "running" })
-        .where("id", "=", otherTurn.run.id)
-        .execute();
+      const otherRun = await startPersonalQueuedRunFixture(store, otherTurn.run.id);
       files.list.mockImplementation(htmlFiles(() => bytes).list);
       expect(
         await service.publish(
-          { ...scope, threadId: other.id, runId: otherTurn.run.id } as RunToolScope,
+          {
+            ...scope,
+            threadId: other.id,
+            runId: otherTurn.run.id,
+            bindingGeneration: otherRun.bindingGeneration,
+            runnerBootId: otherRun.runnerBootId,
+          },
           "from-other-task",
           { path: "index.html", name: "Budget", appId: first.appId },
         ),
@@ -446,7 +467,7 @@ describeStore("published app HTML", (it) => {
         path: "index.html",
         name: "Foreign",
       }),
-    ).rejects.toMatchObject({ code: "not_found" });
+    ).rejects.toMatchObject({ code: "forbidden" });
     await expect(publish({ appId: "wrong" })).rejects.toThrow();
     await expect(publish({ path: "../index.html" })).rejects.toMatchObject({ code: "bad_request" });
     files.list.mockResolvedValueOnce({ parentKey: "", cursor: null, revision: "r", entries: [] });
@@ -473,6 +494,169 @@ describeStore("published app HTML", (it) => {
     expect(await database.selectFrom("apps").selectAll().execute()).toEqual([]);
   });
 
+  it("fences app reads, publication, stop and delete by current Run authority inside the personal transaction", async ({
+    storeFixture: f,
+  }) => {
+    const run = await f.startRunFixture("app-actor-authority");
+    const { service, store } = serviceFor(f.database, run.agentHome);
+    const scope = toolScope(run),
+      actor = { kind: "run", claims: scope } as const;
+    const reservation = await store.reserve({
+      scope: runScope(run),
+      creationKey: "authority",
+      name: "App",
+      computerId: run.runnerId,
+    });
+    await store.commit({
+      scope: runScope(run),
+      appId: reservation.appId,
+      name: "App",
+      publishKey: "authority",
+      server: {
+        folder: { ...run.agentHome, path: `${run.agentHome.path}/app` },
+        command: "node app.js",
+      },
+      serverGeneration: reservation.generation,
+    });
+    for (const accessMode of ["approval-required", "auto-accept-edits"] as const) {
+      await f.database
+        .updateTable("runs")
+        .set({ accessMode })
+        .where("id", "=", run.runId)
+        .execute();
+      for (const call of [
+        () => service.stop(actor, reservation.appId),
+        () => service.delete(actor, reservation.appId),
+        () => service.publish(scope, `html-${accessMode}`, { path: "index.html", name: "Denied" }),
+      ])
+        await expect(call()).rejects.toMatchObject({ code: "forbidden" });
+      expect((await service.list(actor)).map((app) => app.appId)).toEqual([reservation.appId]);
+    }
+    await f.database
+      .updateTable("runs")
+      .set({ accessMode: "full-access" })
+      .where("id", "=", run.runId)
+      .execute();
+    await f.database
+      .updateTable("runners")
+      .set({
+        allowedModules: sql`'["agents", "messaging"]'::jsonb`,
+        moduleDescriptors: {
+          messaging: {
+            capabilities: [
+              {
+                manifest: slackChannelProviderManifest,
+                provider: "slack",
+                transportKinds: ["socket"],
+              },
+            ],
+          },
+        },
+      })
+      .where("id", "=", run.runnerId)
+      .execute();
+    const configured = await new ChannelStore(f.database).createConnection({
+      createdBy: run.userId,
+      accessPolicy: {
+        directMessages: { mode: "anyone", allowedExternalUserIds: [] },
+        channels: {
+          conversationIds: [],
+          scope: "all",
+          sender: { mode: "anyone", allowedExternalUserIds: [] },
+        },
+      },
+      account: {
+        displayName: "Restricted",
+        externalAccountId: "restricted-app-context",
+        routingMode: "dedicated",
+      },
+      connection: {
+        connectionMethod: "bring-your-own",
+        displayName: "Restricted",
+        externalIdentityId: "bot",
+        externalTenantId: "tenant",
+        provider: "slack",
+        runnerId: run.runnerId,
+        transportKind: "socket",
+      },
+      credential: {
+        encryptedPayload: Buffer.from("fixture"),
+        encryptionKeyVersion: 1,
+        id: createId("credential"),
+        name: "Restricted",
+        ownerId: run.userId,
+        provider: "channel:slack",
+      },
+      executionPolicy: { harness: "specific", harnessInstanceId: run.harnessInstance.id },
+      selector: { conversationId: null, conversationType: null, scopeId: null, threadId: null },
+    });
+    const conversationId = createChannelId("conversation");
+    await f.database
+      .insertInto("channelConversations")
+      .values({
+        id: conversationId,
+        accountId: configured.account.id,
+        provider: "slack",
+        externalAccountId: "restricted-app-context",
+        bindingId: configured.binding.id,
+        bindingRevision: 1,
+        externalScopeId: null,
+        externalConversationId: "group",
+        externalThreadId: null,
+        conversationType: "group",
+        displayName: "Group",
+        activeThreadId: run.threadId,
+        providerState: {},
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .execute();
+    for (const call of [
+      () => service.list(actor),
+      () => service.stop(actor, reservation.appId),
+      () => service.delete(actor, reservation.appId),
+      () => service.publish(scope, "restricted-html", { path: "index.html", name: "Denied" }),
+    ])
+      await expect(call()).rejects.toMatchObject({ code: "not_found" });
+    await f.database.deleteFrom("channelConversations").where("id", "=", conversationId).execute();
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(
+      service.stop(actor, reservation.appId, { signal: aborted.signal }),
+    ).rejects.toThrow();
+    await expect(
+      service.delete(actor, reservation.appId, {
+        checkLive: async () => {
+          throw new Error("Call ended");
+        },
+      }),
+    ).rejects.toThrow("Call ended");
+    const entered = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    const fence = withPersonalTransaction(f.database, async (tx) => {
+      entered.resolve();
+      await withTimeout(release.promise, 2000, {
+        timeoutError: () => new Error("Personal fence was not released"),
+      });
+      await tx
+        .updateTable("grants")
+        .set({ status: "revoked" })
+        .where("runId", "=", run.runId)
+        .execute();
+    });
+    await withTimeout(entered.promise, 2000, {
+      timeoutError: () => new Error("Personal fence was not acquired"),
+    });
+    const stopping = service.stop(actor, reservation.appId);
+    release.resolve();
+    await fence;
+    await expect(stopping).rejects.toMatchObject({ code: "forbidden" });
+    await expect(service.list(actor)).rejects.toMatchObject({ code: "forbidden" });
+    expect(await store.get(run.userId, reservation.appId)).toMatchObject({
+      deleting: false,
+      server: { desiredState: "running", generation: reservation.generation },
+    });
+  });
   it("runs a person-owned server on one fixed port through stop, offline intent, reconnect, Host restart, origin deletion and deletion, keeping its folder", async ({
     storeFixture,
   }) => {

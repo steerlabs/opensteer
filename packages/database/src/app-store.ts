@@ -19,7 +19,7 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
 import { appendHostDeploymentEvent } from "./deployment-events.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { withPersonalReadTransaction, withPersonalTransaction } from "./personal-transaction.js";
 import type { DatabaseSchema } from "./schema.js";
 
 export const appPortFirst = 49_152;
@@ -62,6 +62,8 @@ export interface AppReservation {
   readonly generation: number;
   readonly published: boolean;
 }
+export type AppAuthorization = (database: Kysely<DatabaseSchema>) => Promise<void>;
+
 export interface AppRunScope {
   readonly threadId: ThreadId;
   readonly runId: RunId;
@@ -102,32 +104,39 @@ export class AppStore {
     return app;
   }
 
-  async list(ownerId: UserId, query?: string): Promise<PublishedApp[]> {
-    await requireOwner(this.database, ownerId);
-    const pattern = query ? `%${query.replace(/[\\%_]/gu, (c) => `\\${c}`)}%` : undefined;
-    const apps = await this.#records(this.database, (select) => {
-      let filtered = select
-        .where("apps.ownerId", "=", ownerId)
-        .where("apps.deleting", "=", false)
-        .where("apps.latestVersion", ">", 0);
-      if (pattern)
-        filtered = filtered.where((eb) =>
-          eb.or([
-            eb("apps.name", "ilike", pattern),
-            eb(sql<string>`app_versions.server->'folder'->>'path'`, "ilike", pattern),
-          ]),
-        );
-      return filtered
-        .orderBy("apps.updatedAt", "desc")
-        .orderBy("apps.id")
-        .limit(appListLimit + 1);
-    });
-    if (apps.length > appListLimit)
-      throw new OpensteerError({
-        code: "resource_exhausted",
-        message: `More than ${appListLimit} apps match. Narrow the query or delete apps you no longer need.`,
+  async list(
+    ownerId: UserId,
+    query?: string,
+    authorize?: AppAuthorization,
+  ): Promise<PublishedApp[]> {
+    return withPersonalReadTransaction(this.database, async (tx) => {
+      await authorize?.(tx);
+      await requireOwner(tx, ownerId);
+      const pattern = query ? `%${query.replace(/[\\%_]/gu, (c) => `\\${c}`)}%` : undefined;
+      const apps = await this.#records(tx, (select) => {
+        let filtered = select
+          .where("apps.ownerId", "=", ownerId)
+          .where("apps.deleting", "=", false)
+          .where("apps.latestVersion", ">", 0);
+        if (pattern)
+          filtered = filtered.where((eb) =>
+            eb.or([
+              eb("apps.name", "ilike", pattern),
+              eb(sql<string>`app_versions.server->'folder'->>'path'`, "ilike", pattern),
+            ]),
+          );
+        return filtered
+          .orderBy("apps.updatedAt", "desc")
+          .orderBy("apps.id")
+          .limit(appListLimit + 1);
       });
-    return apps.flatMap((app) => (app.version ? [{ ...app, version: app.version }] : []));
+      if (apps.length > appListLimit)
+        throw new OpensteerError({
+          code: "resource_exhausted",
+          message: `More than ${appListLimit} apps match. Narrow the query or delete apps you no longer need.`,
+        });
+      return apps.flatMap((app) => (app.version ? [{ ...app, version: app.version }] : []));
+    });
   }
 
   /** Server specs to reconcile on one computer, including stopped ones so the Runner fences them. */
@@ -182,22 +191,27 @@ export class AppStore {
   async authorizeRun(
     scope: AppRunScope,
     fullAccess: boolean,
+    database: Kysely<DatabaseSchema> = this.database,
   ): Promise<{ readonly agentHome: ComputerFolder }> {
-    return authorizeRun(this.database, scope, fullAccess);
+    return authorizeRun(database, scope, fullAccess);
   }
 
   /**
    * Reserves an unpublished app and its fixed port for a first server publication. The
    * creation key makes an interrupted call recover the same reservation.
    */
-  async reserve(input: {
-    readonly scope: AppRunScope;
-    readonly creationKey: string;
-    readonly name: string;
-    readonly computerId: RunnerId;
-  }): Promise<AppReservation> {
+  async reserve(
+    input: {
+      readonly scope: AppRunScope;
+      readonly creationKey: string;
+      readonly name: string;
+      readonly computerId: RunnerId;
+    },
+    authorize?: AppAuthorization,
+  ): Promise<AppReservation> {
     const name = AppNameSchema.parse(input.name);
     return withPersonalTransaction(this.database, async (tx) => {
+      await authorize?.(tx);
       await authorizeRun(tx, input.scope, true);
       const existing = await tx
         .selectFrom("apps")
@@ -236,12 +250,16 @@ export class AppStore {
    * Prepares an existing app for a server publication on its saved computer: its port is
    * allocated once, then kept, and the new generation fences every older start.
    */
-  async prepareServer(input: {
-    readonly scope: AppRunScope;
-    readonly appId: AppId;
-    readonly computerId: RunnerId;
-  }): Promise<AppReservation> {
+  async prepareServer(
+    input: {
+      readonly scope: AppRunScope;
+      readonly appId: AppId;
+      readonly computerId: RunnerId;
+    },
+    authorize?: AppAuthorization,
+  ): Promise<AppReservation> {
     return withPersonalTransaction(this.database, async (tx) => {
+      await authorize?.(tx);
       await authorizeRun(tx, input.scope, true);
       const app = await lockApp(tx, input.scope.userId, input.appId);
       if (app.computerId !== input.computerId)
@@ -284,16 +302,19 @@ export class AppStore {
    * creates an HTML app. HTML retires a server by moving it to a new stopped generation,
    * which the caller then stops.
    */
-  async commit(input: {
-    readonly scope: AppRunScope & { readonly environmentId: EnvironmentId };
-    readonly appId?: AppId;
-    readonly name: string;
-    readonly publishKey: string;
-    readonly expectedVersion?: number;
-    readonly html?: { readonly sha256: string; readonly sizeBytes: number };
-    readonly server?: AppServerSpec;
-    readonly serverGeneration?: number;
-  }): Promise<{
+  async commit(
+    input: {
+      readonly scope: AppRunScope & { readonly environmentId: EnvironmentId };
+      readonly appId?: AppId;
+      readonly name: string;
+      readonly publishKey: string;
+      readonly expectedVersion?: number;
+      readonly html?: { readonly sha256: string; readonly sizeBytes: number };
+      readonly server?: AppServerSpec;
+      readonly serverGeneration?: number;
+    },
+    authorize?: AppAuthorization,
+  ): Promise<{
     readonly appId: AppId;
     readonly version: number;
     readonly event: AgentEvent;
@@ -309,6 +330,7 @@ export class AppStore {
         message: "App HTML exceeds the 5 MiB limit",
       });
     return withPersonalTransaction(this.database, async (tx) => {
+      await authorize?.(tx);
       const { agentHome } = await authorizeRun(tx, input.scope, Boolean(input.server));
       if (!input.appId && !input.html)
         throw new OpensteerError({
@@ -421,8 +443,10 @@ export class AppStore {
     ownerId: UserId,
     appId: AppId,
     desiredState: "running" | "stopped",
+    authorize?: AppAuthorization,
   ): Promise<PublishedApp & { readonly server: AppServerRecord }> {
     return withPersonalTransaction(this.database, async (tx) => {
+      await authorize?.(tx);
       const app = await lockApp(tx, ownerId, appId);
       const [record] = await this.#records(tx, (query) => query.where("apps.id", "=", app.id));
       if (!record?.version) throw missing();
@@ -478,8 +502,10 @@ export class AppStore {
     ownerId: UserId,
     appId: AppId,
     removeTabs: (tx: Transaction<DatabaseSchema>, appId: AppId) => Promise<TabId[]>,
+    authorize?: AppAuthorization,
   ): Promise<AppRecord> {
     return withPersonalTransaction(this.database, async (tx) => {
+      await authorize?.(tx);
       const app = await lockApp(tx, ownerId, appId, true);
       await tx.updateTable("apps").set({ deleting: true }).where("id", "=", app.id).execute();
       await tx

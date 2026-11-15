@@ -1,7 +1,7 @@
 import {
   ReferenceIdSchema,
   parseReferenceHref,
-  type TabAgentEventView,
+  type AgentEventView,
   type ReferenceId,
 } from "@opensteer/core";
 import {
@@ -288,7 +288,7 @@ export class ReferenceStore {
     this.#sync();
     this.#invalidate(this.#entry(id), true);
   }
-  accept(event: TabAgentEventView | { readonly type: null }): void {
+  accept(event: AgentEventView | { readonly type: null }): void {
     if (this.#disposed || event.type === null) return;
     this.#sync();
     const ids = new Set<string>();

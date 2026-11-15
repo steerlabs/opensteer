@@ -1,10 +1,10 @@
 import { ComputerViewChangedSchema, ComputerViewRemovedSchema } from "./computer-view.js";
-import { TabPlaceEnteredEventViewSchema, TabAgentEventViewSchema } from "@opensteer/core";
+import { PlaceEnteredEventViewSchema, AgentEventViewSchema } from "@opensteer/core";
 import { HostedBrowserBootstrapSchema } from "./browser.js";
 import {
   PersonShowMessageSchema,
   TabPlaceActivityNoticeSchema,
-  TabThreadPlaceChangedSchema,
+  ThreadPlaceChangedSchema,
 } from "./places.js";
 import { TabBootstrapSchema } from "./tabs.js";
 import { HostTabsSchema } from "./tabs.js";
@@ -164,7 +164,7 @@ export const DeploymentSnapshotSchema = z
      * absence means the Host does not say, not that no Run is anywhere.
      */
     runPlaces: z
-      .array(TabPlaceEnteredEventViewSchema)
+      .array(PlaceEnteredEventViewSchema)
       .max(deploymentSnapshotMaxRunQueueEntries)
       .optional(),
     sequence: SequenceSchema,
@@ -224,7 +224,7 @@ export const ThreadEventPageSchema = z.object({
         const header = z.object({ type: z.string() }).safeParse(event);
         if (
           header.success &&
-          !TabAgentEventViewSchema.options.some(
+          !AgentEventViewSchema.options.some(
             (variant) => variant.shape.type.value === header.data.type,
           )
         )
@@ -232,7 +232,7 @@ export const ThreadEventPageSchema = z.object({
         return [event];
       }),
     )
-    .pipe(z.array(TabAgentEventViewSchema)),
+    .pipe(z.array(AgentEventViewSchema)),
   threadId: ThreadIdSchema,
   window: ThreadMessageWindowSchema,
 });
@@ -274,7 +274,7 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
     ...clientMessageBase,
     type: z.literal("host.events"),
     throughSequence: SequenceSchema,
-    events: z.array(TabAgentEventViewSchema).max(2_000),
+    events: z.array(AgentEventViewSchema).max(2_000),
   }),
   /**
    * A Run's streams before they complete. It follows every durable event
@@ -311,7 +311,7 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("host.triggers-changed"),
   }),
 
-  TabThreadPlaceChangedSchema,
+  ThreadPlaceChangedSchema,
 
   ...TabPlaceActivityNoticeSchema.options,
   z.object({

@@ -1,4 +1,4 @@
-import type { Tab, TabLayout, UserId } from "@opensteer/core";
+import type { Tab, TabId, TabLayout, UserId } from "@opensteer/core";
 import {
   equal,
   KeyedStreamPublisher,
@@ -11,11 +11,11 @@ export type TabStreamMessage = {
 };
 interface Subscription {
   ownerId: UserId;
-  rows: Map<string, Tab>;
+  rows: Map<TabId, Tab>;
   layout: TabLayout;
   publisher: KeyedStreamPublisher<Tab, { layout: TabLayout }, "tabId">;
   send(message: TabStreamMessage): Promise<void>;
-  dirty: boolean;
+  dirty: Set<TabId> | null | undefined;
   closed: boolean;
   tail: Promise<void>;
 }
@@ -23,7 +23,7 @@ interface Subscription {
 export class TabStreams {
   readonly #subscriptions = new Set<Subscription>();
   readonly #projections = new Map<UserId, ReturnType<TabStreams["read"]>>();
-  readonly read: (ownerId: UserId) => Promise<{ tabs: Tab[]; layout: TabLayout }>;
+  readonly read: (ownerId: UserId) => Promise<{ rows: ReadonlyMap<TabId, Tab>; layout: TabLayout }>;
   readonly onError: (error: unknown) => void;
   constructor(read: TabStreams["read"], onError: TabStreams["onError"]) {
     this.read = read;
@@ -38,14 +38,14 @@ export class TabStreams {
       ownerId,
       rows: new Map(),
       layout: { revision: 0, items: [] },
-      dirty: true,
+      dirty: null,
       closed: false,
       tail: Promise.resolve(),
       send,
       publisher: new KeyedStreamPublisher({
         key: "tabId",
         ids: () => subscription.rows.keys(),
-        read: (id) => subscription.rows.get(id),
+        read: (id) => subscription.rows.get(id as TabId),
         meta: () => ({ layout: subscription.layout }),
         targetBytes: 64 * 1024,
         envelopeBytes: 128,
@@ -65,19 +65,24 @@ export class TabStreams {
       flush: () => subscription.tail,
     };
   }
-  changed(ownerId?: UserId): void {
+  changed(ownerId?: UserId, tabIds?: readonly TabId[]): void {
     if (ownerId) this.#projections.delete(ownerId);
     else this.#projections.clear();
     for (const subscription of this.#subscriptions)
       if (!ownerId || subscription.ownerId === ownerId) {
-        subscription.dirty = true;
+        if (!tabIds) subscription.dirty = null;
+        else if (subscription.dirty !== null) {
+          subscription.dirty ??= new Set();
+          for (const id of tabIds) subscription.dirty.add(id);
+        }
         void this.#refresh(subscription).catch(this.onError);
       }
   }
   #refresh(subscription: Subscription): Promise<void> {
     const pending = subscription.tail.then(async () => {
-      while (subscription.dirty && !subscription.closed) {
-        subscription.dirty = false;
+      while (subscription.dirty !== undefined && !subscription.closed) {
+        const changed = subscription.dirty;
+        subscription.dirty = undefined;
         let projection = this.#projections.get(subscription.ownerId);
         if (!projection) {
           projection = this.read(subscription.ownerId);
@@ -87,17 +92,16 @@ export class TabStreams {
               this.#projections.delete(subscription.ownerId);
           });
         }
-        const { tabs, layout } = await projection;
+        const { rows, layout } = await projection;
         if (subscription.closed) return;
-        const next = new Map<string, Tab>(tabs.map((tab) => [tab.tabId, tab]));
-        for (const [id, row] of subscription.rows) {
-          const after = next.get(id);
-          if (!equal(row, after)) subscription.publisher.mark(id);
+        const ids = changed ?? new Set([...subscription.rows.keys(), ...rows.keys()]);
+        for (const id of ids) {
+          const after = rows.get(id);
+          if (!equal(subscription.rows.get(id), after)) subscription.publisher.mark(id);
+          if (after) subscription.rows.set(id, after);
+          else subscription.rows.delete(id);
         }
-        for (const [id, row] of next)
-          if (!equal(row, subscription.rows.get(id))) subscription.publisher.mark(id);
         if (layout.revision !== subscription.layout.revision) subscription.publisher.markMeta();
-        subscription.rows = next;
         subscription.layout = layout;
         while (!subscription.closed) {
           const frame = subscription.publisher.next();

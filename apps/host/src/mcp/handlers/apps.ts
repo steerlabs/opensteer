@@ -13,12 +13,22 @@ export function appToolHandlers(
   return {
     app_publish: async (c) => apps.publish(requireRun(c.caller).claims, c.operationKey, c.input, c),
     app_list: async (c) => ({
-      apps: (await apps.list(c.caller.userId, c.input.query)).map(appListItem),
+      apps: (
+        await apps.list(
+          c.caller.kind === "run"
+            ? run(c.caller)
+            : c.caller.kind === "connection"
+              ? { kind: "connection", caller: c.caller }
+              : { kind: "program", caller: c.caller },
+          c.input.query,
+          c,
+        )
+      ).map(appListItem),
     }),
     app_start: async (c) => ({ app: await apps.start(run(c.caller), c.input.appId, c) }),
-    app_stop: async (c) => ({ app: await apps.stop(run(c.caller), c.input.appId) }),
+    app_stop: async (c) => ({ app: await apps.stop(run(c.caller), c.input.appId, c) }),
     app_delete: async (c) => {
-      await apps.delete(run(c.caller), c.input.appId);
+      await apps.delete(run(c.caller), c.input.appId, c);
       return { appId: c.input.appId, deleted: true as const };
     },
   };

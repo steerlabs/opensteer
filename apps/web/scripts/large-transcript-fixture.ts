@@ -1,7 +1,4 @@
-import {
-  TabAgentEventSchema as AgentEventSchema,
-  type TabAgentEvent as AgentEvent,
-} from "@opensteer/core";
+import { AgentEventSchema, type AgentEvent } from "@opensteer/core";
 import { foldTranscriptEvent, type TranscriptEntry } from "@opensteer/client/host";
 
 /** Synthetic shape of the overnight incident; no user's text or identifiers. */

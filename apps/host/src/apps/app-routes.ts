@@ -27,7 +27,12 @@ export function createAppHandlers(
 ) {
   return {
     "apps.list": async (input: AppsListInput, context: HostApiServerContext) =>
-      rpcSuccess({ apps: await apps.list(requireSession(context).user.id, input.query) }),
+      rpcSuccess({
+        apps: await apps.list(
+          { kind: "person", ownerId: requireSession(context).user.id },
+          input.query,
+        ),
+      }),
     "apps.get": async (input: { appId: string }, context: HostApiServerContext) =>
       rpcSuccess(await apps.get(requireSession(context).user.id, input.appId)),
     "apps.view": async (

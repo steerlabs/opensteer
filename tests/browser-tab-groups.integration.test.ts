@@ -84,6 +84,7 @@ integration("mixed workspace layout", () => {
             : actor.caller.userId),
       canReadTask: async () => true,
       authorize: async () => {},
+      authorizeMembership: async () => {},
       onError: (error) => {
         throw error;
       },
