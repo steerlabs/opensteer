@@ -133,7 +133,10 @@ export function TabMenu({
           label: "Use on this Mac",
           onSelect: () =>
             void useHere
-              .use({ viewId: useHere.view.viewId, generation: useHere.view.generation }, useHere.app)
+              .use(
+                { viewId: useHere.view.viewId, generation: useHere.view.generation },
+                useHere.app,
+              )
               .catch(failed),
         },
       ]
@@ -143,14 +146,16 @@ export function TabMenu({
     label: "Reopen closed tab",
     onSelect: () => {
       const show = nav.beginPlaceOperation();
-      void hostClient
-        .reopenTab()
-        .then((tab) => show({ kind: "tab", tabId: tab.tabId }), failed);
+      void hostClient.reopenTab().then((tab) => show({ kind: "tab", tabId: tab.tabId }), failed);
     },
   };
   const closing: SurfaceMenuItem = {
     detail:
-      place.kind === "page" ? undefined : place.occupants.length > 0 ? "Work there carries on" : undefined,
+      place.kind === "page"
+        ? undefined
+        : place.occupants.length > 0
+          ? "Work there carries on"
+          : undefined,
     icon: "close",
     label: "Close tab",
     onSelect: () => requestClose(place),

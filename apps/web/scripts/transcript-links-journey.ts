@@ -233,21 +233,12 @@ try {
         await reply.getByRole("link", { name: label, exact: true }).click();
         await page.waitForFunction(
           (url) => {
-            const params = new URLSearchParams(location.search);
-            const snapshot = (Reflect.get(window, "opensteerMock") as MockHostClient).getSnapshot();
-            return snapshot.browserSessions.some(
-              (session) =>
-                session.id === params.get("browser") &&
-                snapshot
-                  .browserTabs!.sessionTabs(session.id)
-                  .some(
-                    (tab) =>
-                      tab.id === params.get("browserTab") &&
-                      (Reflect.get(window, "opensteerMock") as MockHostClient).browserViewerSurface(
-                        session.id,
-                        tab.id,
-                      )?.url === url,
-                  ),
+            const tabId = new URLSearchParams(location.search).get("tab");
+            const client = Reflect.get(window, "opensteerMock") as MockHostClient;
+            const viewer = tabId ? client.tabViewer(tabId) : null;
+            return (
+              viewer?.kind === "page" &&
+              client.browserViewerSurface(viewer.sessionId, tabId!)?.url === url
             );
           },
           expected,
@@ -570,19 +561,21 @@ async function clickWithoutOpening(page: Page, target: Locator): Promise<boolean
 
 async function mockTabs(page: Page) {
   return page.evaluate(() => {
-    const snapshot = (Reflect.get(window, "opensteerMock") as MockHostClient).getSnapshot();
-    return snapshot.browserSessions.flatMap((session) =>
-      snapshot.browserTabs!.sessionTabs(session.id).map((tab) => ({
-        id: tab.id,
-        sessionId: session.id,
-        profileId: session.profileId,
-        url:
-          (Reflect.get(window, "opensteerMock") as MockHostClient).browserViewerSurface(
-            session.id,
-            tab.id,
-          )?.url ?? tab.site,
-      })),
-    );
+    const client = Reflect.get(window, "opensteerMock") as MockHostClient;
+    return [...client.getSnapshot().tabs.rows.values()]
+      .filter((tab) => tab.kind === "page")
+      .map((tab) => {
+        const viewer = client.tabViewer(tab.tabId);
+        const sessionId = viewer?.kind === "page" ? (viewer.sessionId as string) : null;
+        return {
+          id: tab.tabId as string,
+          sessionId,
+          profileId: tab.profile?.profileId ?? null,
+          url:
+            (sessionId ? client.browserViewerSurface(sessionId, tab.tabId)?.url : undefined) ??
+            tab.url,
+        };
+      });
   });
 }
 

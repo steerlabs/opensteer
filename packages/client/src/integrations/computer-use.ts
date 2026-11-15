@@ -456,10 +456,7 @@ export function computerUseAutomaticFootnote(view: ComputerUseView): string {
  * when something is in the way, what is live, and otherwise the policy, which
  * is the one thing that can be changed from away.
  */
-export function computerUseMachineLine(
-  machine: MachineSummary,
-  hostConnected: boolean,
-): string {
+export function computerUseMachineLine(machine: MachineSummary, hostConnected: boolean): string {
   if (!hostConnected) return "Status unavailable";
   if (isAgentPhone(machine)) return phoneUseMachineLine(machine);
   const state = computerUseState(machine);

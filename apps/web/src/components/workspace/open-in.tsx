@@ -52,7 +52,10 @@ export function useOpenPageIn(hostClient: HostClient) {
       const show = nav.beginPlaceOperation();
       void hostClient
         .openTab(
-          pageOpenTarget(newTabTarget(hostClient.getSnapshot(), profile.identity, hereId), parsed.url),
+          pageOpenTarget(
+            newTabTarget(hostClient.getSnapshot(), profile.identity, hereId),
+            parsed.url,
+          ),
         )
         .then((tab) => {
           show({ kind: "tab", tabId: tab.tabId });

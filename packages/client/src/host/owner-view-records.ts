@@ -33,10 +33,7 @@ export class OwnerViewRecords {
     );
   }
 
-  accept(
-    machines: readonly MachineSummary[],
-    view: ComputerView,
-  ): readonly MachineSummary[] {
+  accept(machines: readonly MachineSummary[], view: ComputerView): readonly MachineSummary[] {
     if (this.#gone(view)) return machines;
     return machines.map((machine) => {
       if (machine.id !== view.machineId || !machine.computerUse) return machine;

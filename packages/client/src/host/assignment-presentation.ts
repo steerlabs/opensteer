@@ -5,12 +5,7 @@ import {
   type DelegationOutcome,
 } from "@opensteer/core";
 import { formatDuration, groupTranscriptEntries, workSummary } from "./agent-activity-model.js";
-import type {
-  AssignmentEntry,
-  DelegationEntry,
-  HostSnapshot,
-  TranscriptEntry,
-} from "./client.js";
+import type { AssignmentEntry, DelegationEntry, HostSnapshot, TranscriptEntry } from "./client.js";
 import { accountGettingReady, threadAccountPreparing } from "./thread-placement.js";
 import { taskMark, type TaskMark } from "./task-marks.js";
 import { requestWaitingOnAssignment } from "./waiting-requests.js";

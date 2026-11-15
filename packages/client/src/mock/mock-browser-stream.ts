@@ -90,4 +90,3 @@ export function mockBrowserRows(snapshot: HostSnapshot) {
   }
   return { groups, tabs };
 }
-

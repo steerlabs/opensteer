@@ -3,11 +3,7 @@ import { invalidateScheduleAnchor } from "./schedule-anchor-invalidation.js";
 import { createId, defaultTaskSymbol, type TabAgentEventView } from "@opensteer/core";
 import type { TriggerSummary } from "@opensteer/triggers/models";
 import { MockHostClient } from "../mock/mock-host-client.js";
-import {
-  HostClientRequestError,
-  type HostClient,
-  type HostSnapshot,
-} from "./client.js";
+import { HostClientRequestError, type HostClient, type HostSnapshot } from "./client.js";
 import { unwrapRpcResult } from "./host-session-client.js";
 import { scheduleDetail, scheduleList, scheduleTiming, schedulesClient } from "./schedules.js";
 import { describeRepeating, runOutcome } from "./automation-presentation.js";

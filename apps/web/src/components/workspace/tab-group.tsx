@@ -168,10 +168,12 @@ function TabGroupEditor({
     // A group always has a name; clearing it keeps the one it had.
     if (!trimmed || trimmed === saved.current) return;
     saved.current = trimmed;
-    void hostClient.updateTabGroup({ groupId: group.groupId, name: trimmed }).catch((error: unknown) => {
-      saved.current = group.name;
-      failed(error);
-    });
+    void hostClient
+      .updateTabGroup({ groupId: group.groupId, name: trimmed })
+      .catch((error: unknown) => {
+        saved.current = group.name;
+        failed(error);
+      });
   };
   return (
     <Popover

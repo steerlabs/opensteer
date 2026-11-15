@@ -2,12 +2,7 @@ import { observeResize } from "@opensteer/shared/resizeObserver";
 import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Link, useLocation } from "react-router";
 import { useOptionalWorkspace } from "./workspace/workspace-context.js";
-import type {
-  RunPage,
-  TabDestination,
-  TurnApp,
-  TurnPhone,
-} from "@opensteer/client/host";
+import type { RunPage, TabDestination, TurnApp, TurnPhone } from "@opensteer/client/host";
 import type { ComputerAppIdentity } from "@opensteer/protocol";
 import { AppMark } from "./computer-apps/computer-use-section.js";
 import { Icon } from "./icon.js";

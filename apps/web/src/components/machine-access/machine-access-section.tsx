@@ -581,9 +581,7 @@ function SavedReachChip({
   );
 }
 
-function draftGrantsAnything(
-  policy: NonNullable<MachineSummary["access"]>["policy"],
-): boolean {
+function draftGrantsAnything(policy: NonNullable<MachineSummary["access"]>["policy"]): boolean {
   return policy.commands || policy.forwarding || policy.shares.length > 0;
 }
 

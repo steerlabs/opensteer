@@ -62,5 +62,9 @@ function SiteIcon({
     const viewer = tabId === null ? null : hostClient.tabViewer(tabId);
     return viewer?.kind === "page" ? viewer.sessionId : null;
   });
-  return <SiteMark favicon={useBrowserTabIcon(hostClient, sessionId ?? "", sessionId ? iconRef : null)} />;
+  return (
+    <SiteMark
+      favicon={useBrowserTabIcon(hostClient, sessionId ?? "", sessionId ? iconRef : null)}
+    />
+  );
 }

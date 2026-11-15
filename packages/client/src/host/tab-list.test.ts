@@ -65,9 +65,7 @@ describe("the device each row names", () => {
   it("keeps its labels while their devices read the same, and changes them when one does not", () => {
     const before = devicesElsewhere(machines, "mini");
     // A machine's computer use and sessions change often; its name, shape and presence rarely.
-    const busier = machines.map(
-      (value) => ({ ...value, computerUse: null }) as MachineSummary,
-    );
+    const busier = machines.map((value) => ({ ...value, computerUse: null }) as MachineSummary);
     expect(sameDevicesElsewhere(before, devicesElsewhere(busier, "mini"))).toBe(true);
     const renamed = machines.map((value) =>
       value.id === "studio" ? { ...value, name: "Studio" } : value,

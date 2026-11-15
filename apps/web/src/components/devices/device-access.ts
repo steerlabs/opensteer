@@ -1,9 +1,5 @@
 export { cancelDeviceSetup } from "@opensteer/client/computers";
-import {
-  deviceAccess,
-  type DeviceInitialAccess,
-  type MachineSummary,
-} from "@opensteer/protocol";
+import { deviceAccess, type DeviceInitialAccess, type MachineSummary } from "@opensteer/protocol";
 import {
   deviceAccessRows,
   hostsDeployment,
@@ -98,10 +94,7 @@ export function appliedSetupAccess(input: {
 }
 
 /** A one-line summary for a Devices row: what the agent can use there. */
-export function deviceUsesLine(
-  machine: MachineSummary,
-  devicesAvailable: boolean,
-): string | null {
+export function deviceUsesLine(machine: MachineSummary, devicesAvailable: boolean): string | null {
   if (pendingEnrollmentId(machine)) return null;
   const items = deviceSwitches(machine, devicesAvailable).filter(
     (item) => item.kind === "fixed" || item.on,

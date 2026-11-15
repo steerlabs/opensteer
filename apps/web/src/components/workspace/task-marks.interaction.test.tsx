@@ -5,7 +5,6 @@ import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { HostSnapshot } from "@opensteer/client/host";
 
-
 import {
   client,
   history,

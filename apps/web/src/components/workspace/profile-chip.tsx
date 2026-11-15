@@ -1,10 +1,6 @@
 import { useRef, useState } from "react";
 import { deviceElsewhere } from "@opensteer/client/computers";
-import type {
-  HostClient,
-  HostSnapshot,
-  PlaceItem,
-} from "@opensteer/client/host";
+import type { HostClient, HostSnapshot, PlaceItem } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { DeviceLabel } from "../computers/device-label.js";
 import { useHereId } from "../computers/here.js";

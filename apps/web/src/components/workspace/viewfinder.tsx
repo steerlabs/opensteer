@@ -227,7 +227,9 @@ export function PlaceGlyph({ kind }: { readonly kind: RunPlaceView["kind"] }) {
   return (
     <Icon
       className="viewfinder__glyph"
-      name={kind === "page" ? "globe" : kind === "phone" ? "phone" : kind === "app" ? "app" : "desktop"}
+      name={
+        kind === "page" ? "globe" : kind === "phone" ? "phone" : kind === "app" ? "app" : "desktop"
+      }
     />
   );
 }

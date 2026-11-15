@@ -8,7 +8,8 @@ export class RunPlaceStore {
   readonly #ended = new Set<string>();
   readonly #listeners = new Map<string, Set<() => void>>();
   readonly #changed = new Set<string>();
-  readonly get = (runId: string): TabPlaceEnteredEventView | null => this.#values.get(runId) ?? null;
+  readonly get = (runId: string): TabPlaceEnteredEventView | null =>
+    this.#values.get(runId) ?? null;
   readonly subscribe = (runId: string, listener: () => void): (() => void) => {
     const listeners = this.#listeners.get(runId) ?? new Set();
     listeners.add(listener);

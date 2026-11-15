@@ -210,8 +210,7 @@ export function messagePages(
 function nativeTab(
   source: TabSource,
   match: { readonly computerId: string } & (
-    | { readonly kind: "window"; readonly bundleId: string }
-    | { readonly kind: "phone" }
+    { readonly kind: "window"; readonly bundleId: string } | { readonly kind: "phone" }
   ),
 ): PlaceItem | null {
   return (
@@ -377,7 +376,8 @@ export function replyPlaces(
     })),
   ];
   for (const entry of turn.work)
-    if (entry.kind === "place") used.push({ at: entry.createdAt, place: placeReply(entry, source) });
+    if (entry.kind === "place")
+      used.push({ at: entry.createdAt, place: placeReply(entry, source) });
   const unique = new Map<string, ReplyPlace>();
   for (const { place } of used.sort((left, right) => Date.parse(left.at) - Date.parse(right.at))) {
     const destination =
@@ -388,7 +388,11 @@ export function replyPlaces(
           : place.phone.destination;
     const key =
       destination?.tabId ??
-      (place.kind === "page" ? place.page.key : place.kind === "app" ? place.app.key : place.phone.key);
+      (place.kind === "page"
+        ? place.page.key
+        : place.kind === "app"
+          ? place.app.key
+          : place.phone.key);
     if (!unique.has(key)) unique.set(key, place);
   }
   return [...unique.values()];

@@ -44,10 +44,7 @@ import {
 } from "@opensteer/client/integrations";
 import { useHostSelector, usePlaceList } from "@opensteer/client/react";
 import { computerGlyph, orderDevices } from "@opensteer/client/computers";
-import type {
-  ApprovedComputerApp,
-  OwnerWindowInfo,
-} from "@opensteer/protocol";
+import type { ApprovedComputerApp, OwnerWindowInfo } from "@opensteer/protocol";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { AppMark } from "../computer-apps/computer-use-section.js";
 import { computerIcon } from "../computers/device-art.js";
@@ -129,9 +126,10 @@ export function openWorkspaceWebLink(
   });
   rememberBrowsingChoice(scope, choice);
   const show = nav.beginPlaceOperation();
-  void hostClient
-    .openTab(pageOpenTarget(replyLinkTarget(snapshot, choice, hereId, url), url))
-    .then((tab) => show({ kind: "tab", tabId: tab.tabId }), () => undefined);
+  void hostClient.openTab(pageOpenTarget(replyLinkTarget(snapshot, choice, hereId, url), url)).then(
+    (tab) => show({ kind: "tab", tabId: tab.tabId }),
+    () => undefined,
+  );
 }
 
 /* ---- New tab ---- */

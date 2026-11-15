@@ -1803,8 +1803,9 @@ export class MockPlaceWorld {
         const app = held.apps.find((candidate) =>
           held.actingAppKeys.includes(computerAppIdentityKey(candidate)),
         );
-        // Only work acting there now has entered it.
-        if (!runId || (held.display ? !held.actingDisplay : !app)) continue;
+        // Only work acting there now has entered it; a Run acting in a page is there instead.
+        if (!runId || animatedRuns.has(runId) || (held.display ? !held.actingDisplay : !app))
+          continue;
         const reference = `${held.threadId}:${runId}:${machine.id}:${held.display ? "phone" : "app"}`;
         if (this.#nativeReferences.has(reference)) continue;
         this.#nativeReferences.add(reference);

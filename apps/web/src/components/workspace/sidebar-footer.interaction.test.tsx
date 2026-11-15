@@ -119,7 +119,7 @@ function desktop(expired = false) {
 it("web keeps only app pages and, outside any team, a way into one in the menu; ? still opens shortcuts", async () => {
   await mount("/");
   await openMenu();
-  expect(menuLabels()).toEqual(["Automations", "Settings", "Create or join a team"]);
+  expect(menuLabels()).toEqual(["Automations", "Apps", "Settings", "Create or join a team"]);
   expect(document.body.textContent).not.toContain("Switch computer…");
   expect(document.body.textContent).not.toContain("Keyboard shortcuts");
   await act(async () =>
@@ -138,7 +138,7 @@ it("desktop shows computers with team and attention facts, then closes on select
   await mount("/");
   expect(readFacts).not.toHaveBeenCalled();
   await openMenu();
-  expect(menuLabels()).toEqual(["Automations", "Settings", "Create or join a team"]);
+  expect(menuLabels()).toEqual(["Automations", "Apps", "Settings", "Create or join a team"]);
   const computers = element('[aria-label="Your computers"]');
   expect([...computers.querySelectorAll(".place-row__name")].map((row) => row.textContent)).toEqual(
     ["Home Mac", "Lab Mac"],

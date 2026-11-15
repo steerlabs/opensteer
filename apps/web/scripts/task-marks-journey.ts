@@ -234,30 +234,25 @@ try {
       const s = m.getSnapshot();
       return {
         run: s.runQueue.find((run) => run.threadId === "thr_b21e07d4-9c3a-4f62-8e1d-73a5c0f4d912")!,
-        tab: s.browserSessions
-          .flatMap((session) =>
-            (session.browserTabs?.sessionTabs(session?.id) ?? []).map((tab) => ({
-              id: tab.id,
-              sessionId: session.id,
-              title: tab.title,
-            })),
-          )
+        tab: [...s.tabs.rows.values()]
+          .filter((row) => row.kind === "page")
+          .map((row) => {
+            const viewer = m.tabViewer(row.tabId);
+            return {
+              id: row.tabId as string,
+              sessionId: viewer?.kind === "page" ? (viewer.sessionId as string) : "",
+              title: row.title,
+            };
+          })
           .find((tab) => tab.title === "Launch brief")!,
       };
     });
     await page.evaluate(
       ({ id, tab }) =>
-        (Reflect.get(window, "opensteerMock") as MockHostClient).actInPlace(
-          id,
-          `browser:${tab.sessionId}:${tab.id}`,
-        ),
+        (Reflect.get(window, "opensteerMock") as MockHostClient).actInPlace(id, tab.id),
       { id: flights, tab: current.tab },
     );
-    await page
-      .locator(
-        `.side-tab[data-place-key="browser:${current.tab.sessionId}:${current.tab.id}"] .side-tab__main`,
-      )
-      .click();
+    await page.locator(`.side-tab[data-place-key="${current.tab.id}"] .side-tab__main`).click();
     await page.locator(".browser-stage .cursor-layer--middle").waitFor();
     await page.waitForFunction(
       ({ sessionId, id }) =>

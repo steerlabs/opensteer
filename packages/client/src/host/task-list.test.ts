@@ -10,11 +10,7 @@ import {
   type WaitingRequest,
 } from "@opensteer/core";
 import { MockHostClient } from "../mock/mock-host-client.js";
-import {
-  mainDoneTasks,
-  type HostSnapshot,
-  type TaskEntry,
-} from "./client.js";
+import { mainDoneTasks, type HostSnapshot, type TaskEntry } from "./client.js";
 import {
   doneTaskList,
   heldThread,

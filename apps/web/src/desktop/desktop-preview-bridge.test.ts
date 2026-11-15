@@ -1,5 +1,5 @@
 import { createId } from "@opensteer/core";
-import { HostBootstrapSchema as HostBootstrapSchema } from "@opensteer/protocol";
+import { HostBootstrapSchema } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { createHttpHostApiClient } from "@opensteer/client/host";
 import { createDesktopHostFetch } from "./desktop-host-transport.js";
@@ -55,7 +55,7 @@ describe("Desktop preview Host simulation", () => {
       fetch: createDesktopHostFetch(bridge, canonicalOrigin, snapshot.deployments[0]!.id),
       onAuthenticationRequired: () => undefined,
     });
-    const result = await rpc["bootstrap.legacy.get"]({});
+    const result = await rpc["bootstrap.get"]({});
     expect(result.ok, result.ok ? "" : result.error.message).toBe(true);
     if (!result.ok) return;
     expect(HostBootstrapSchema.safeParse(result.data).success).toBe(true);

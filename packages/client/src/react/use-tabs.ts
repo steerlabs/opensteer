@@ -8,14 +8,20 @@ import type { TabStrip } from "../host/tab-strip.js";
 /** The one layout order every surface draws; changes only with structure, never a title. */
 export function useTabStrip(hostClient: HostClient): TabStrip {
   const tabs = hostClient.getSnapshot().tabs;
-  const subscribe = useCallback((listener: () => void) => tabs.subscribeStructure(listener), [tabs]);
+  const subscribe = useCallback(
+    (listener: () => void) => tabs.subscribeStructure(listener),
+    [tabs],
+  );
   const get = useCallback(() => tabs.strip, [tabs]);
   return useSyncExternalStore(subscribe, get, get);
 }
 
 export function useTabLayout(hostClient: HostClient): TabLayout {
   const tabs = hostClient.getSnapshot().tabs;
-  const subscribe = useCallback((listener: () => void) => tabs.subscribeStructure(listener), [tabs]);
+  const subscribe = useCallback(
+    (listener: () => void) => tabs.subscribeStructure(listener),
+    [tabs],
+  );
   const get = useCallback(() => tabs.layout, [tabs]);
   return useSyncExternalStore(subscribe, get, get);
 }

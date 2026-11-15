@@ -322,10 +322,8 @@ describe("computerStatus", () => {
 });
 
 describe("what a device lends besides running agents", () => {
-  const phone = (
-    modules: MachineSummary["modules"],
-    status: MachineSummary["status"] = "online",
-  ) => machine({ allowedModules: ["browser", "integrations"], modules, status });
+  const phone = (modules: MachineSummary["modules"], status: MachineSummary["status"] = "online") =>
+    machine({ allowedModules: ["browser", "integrations"], modules, status });
   const profiles = [{ homeRunnerId: macId }, { homeRunnerId: macId }, { homeRunnerId: null }];
 
   it("takes apps and the browser from what the device advertises, never its platform", () => {

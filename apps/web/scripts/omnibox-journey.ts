@@ -243,15 +243,14 @@ try {
   await check("a late provider answer cannot change a highlighted history action", async () => {
     await page.evaluate(async () => {
       const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-      const session = client
-        .getSnapshot()
-        .browserSessions.find(
-          (session) => session.id === new URLSearchParams(location.search).get("browser"),
-        )!;
-      await client.openBrowserTab(
-        { sessionId: session.id },
-        { url: "https://slow.example.com/weather" },
-      );
+      const tab = client.getSnapshot().tabs.get(new URLSearchParams(location.search).get("tab")!)!;
+      await client.openTab({
+        kind: "page",
+        url: "https://slow.example.com/weather",
+        ...(tab.profile
+          ? { profileId: tab.profile.profileId }
+          : { guest: true as const, computerId: tab.computer.computerId }),
+      });
     });
     await launcher();
     await field().fill("slow weather");
@@ -580,14 +579,15 @@ try {
       const person = await page.evaluate(async () => {
         const client = Reflect.get(window, "opensteerMock") as MockHostClient;
         const snapshot = client.getSnapshot();
-        const params = new URLSearchParams(location.search);
-        const session = snapshot.browserSessions.find(
-          (session) => session.id === params.get("browser"),
-        )!;
-        const tab = (session.browserTabs?.sessionTabs(session?.id) ?? []).find(
-          (tab) => tab.id === params.get("browserTab"),
-        )!;
-        const identity = { kind: "profile", profileId: session.profileId! } as const;
+        const tabId = new URLSearchParams(location.search).get("tab")!;
+        const viewer = client.tabViewer(tabId);
+        if (viewer?.kind !== "page") throw new Error("The page in front was never shown");
+        const session = { id: viewer.sessionId };
+        const tab = { id: viewer.surfaceId };
+        const identity = {
+          kind: "profile",
+          profileId: snapshot.tabs.get(tabId)!.profile!.profileId,
+        } as const;
         await client.browserHistory.load(identity.profileId);
         const entry = client.browserHistory
           .entries(identity.profileId)
@@ -599,7 +599,7 @@ try {
           surfaceId: tab.id,
           url: "https://agent-history.example.com/private",
         });
-        return { entry, title: tab.title, before };
+        return { entry, title: snapshot.tabs.get(tabId)!.title, before };
       });
       await page.waitForTimeout(1200);
       const afterNavigation = await page.evaluate(async () => {

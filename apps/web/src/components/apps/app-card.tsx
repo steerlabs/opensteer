@@ -26,15 +26,12 @@ export function AppCard({ entry }: { readonly entry: AppEntry }) {
   const card = useRef<HTMLElement | null>(null);
   const { appId } = entry;
   // The app's one tab, while the person's list has it: then this card is a way there.
-  const appTab = useSyncExternalStore(
-    client?.subscribe ?? noSubscription,
-    () => {
-      if (!client) return null;
-      for (const tab of client.getSnapshot().tabs.rows.values())
-        if (tab.kind === "app" && tab.appId === appId) return tab;
-      return null;
-    },
-  );
+  const appTab = useSyncExternalStore(client?.subscribe ?? noSubscription, () => {
+    if (!client) return null;
+    for (const tab of client.getSnapshot().tabs.rows.values())
+      if (tab.kind === "app" && tab.appId === appId) return tab;
+    return null;
+  });
   // The pressed control is replaced; the keyboard stays in this card.
   const keepFocus = () =>
     requestAnimationFrame(() =>

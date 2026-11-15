@@ -184,13 +184,19 @@ try {
       runs: snapshot.runQueue
         .filter((run) => run.status === "running" || run.status === "waiting")
         .map(({ id, status, threadId }) => ({ id, status, threadId })),
-      tabs: snapshot.browserSessions.flatMap((session) =>
-        (session.browserTabs?.sessionTabs(session?.id) ?? []).map((tab) => ({
-          id: tab.id,
-          sessionId: session.id,
-          title: tab.title,
-        })),
-      ),
+      // A page's session is the one this device was shown it through.
+      tabs: [...snapshot.tabs.rows.values()]
+        .filter((row) => row.kind === "page")
+        .map((row) => {
+          const viewer = (Reflect.get(window, "opensteerMock") as MockHostClient).tabViewer(
+            row.tabId,
+          );
+          return {
+            id: row.tabId as string,
+            sessionId: viewer?.kind === "page" ? (viewer.sessionId as string) : "",
+            title: row.title,
+          };
+        }),
       marks: Object.fromEntries(
         snapshot.threads.map((thread) => [thread.id, { icon: thread.icon, color: thread.color }]),
       ),
@@ -215,7 +221,7 @@ try {
   );
   if (!homeRun || !main || !delegated) throw new Error("The mock has too few live Runs.");
   const mainTitle = fixture.titles[main.threadId] ?? "";
-  const keyOf = (target: TabRef) => `browser:${target.sessionId}:${target.id}`;
+  const keyOf = (target: TabRef) => target.id;
 
   let seq = 0;
   let order = 0;

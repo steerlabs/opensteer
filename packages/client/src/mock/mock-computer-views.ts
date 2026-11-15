@@ -299,7 +299,10 @@ export class MockComputerViews {
 /** A stable opaque window handle per mock app window, as the native identity registry mints. */
 export function mockWindowId(machineId: string, bundleId: string, index: number): WindowId {
   let hash = 0;
-  for (const char of `${machineId}:${bundleId}:${index}`) hash = (Math.imul(hash, 31) + char.charCodeAt(0)) >>> 0;
+  for (const char of `${machineId}:${bundleId}:${index}`)
+    hash = (Math.imul(hash, 31) + char.charCodeAt(0)) >>> 0;
   const hex = hash.toString(16).padStart(8, "0");
-  return WindowIdSchema.parse(`win_${hex}-0000-4000-8000-${hex}${index.toString(16).padStart(4, "0")}`);
+  return WindowIdSchema.parse(
+    `win_${hex}-0000-4000-8000-${hex}${index.toString(16).padStart(4, "0")}`,
+  );
 }

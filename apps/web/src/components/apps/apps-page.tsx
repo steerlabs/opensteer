@@ -1,5 +1,10 @@
 import { useState, type FormEvent } from "react";
-import { threadInDirectory, threadMark, type AppAction, type HostSnapshot } from "@opensteer/client/host";
+import {
+  threadInDirectory,
+  threadMark,
+  type AppAction,
+  type HostSnapshot,
+} from "@opensteer/client/host";
 import { useAppsList, useHostSelector } from "@opensteer/client/react";
 import type { App } from "@opensteer/core";
 import { useShell } from "../app-shell.js";
@@ -97,7 +102,9 @@ export function AppsPage() {
           title={`Delete ${deleting.name}?`}
         >
           <p className="browser-dialog__message">
-            {deleting.kind === "server" ? "Its server stops and its tab closes." : "Its tab closes."}{" "}
+            {deleting.kind === "server"
+              ? "Its server stops and its tab closes."
+              : "Its tab closes."}{" "}
             Its folder and data stay on its computer.
           </p>
         </Dialog>
@@ -191,7 +198,9 @@ function AppRow({ app, onDelete }: { readonly app: App; readonly onDelete: () =>
         ) : null}
       </span>
       <span className="app-row__side">
-        <span className={`chip chip--${words.tone}`}>{pending ? pendingWords[pending] : words.label}</span>
+        <span className={`chip chip--${words.tone}`}>
+          {pending ? pendingWords[pending] : words.label}
+        </span>
         <span className="app-row__actions">
           <button
             className="btn btn--small"

@@ -227,7 +227,12 @@ export function organizeInput(move: TabMove, layout: TabLayout): TabOrganizeInpu
   return {
     tabIds: move.item.tabIds.map((id) => id as TabId),
     group: move.to.groupId
-      ? { groupId: move.to.groupId as Extract<TabOrganizeInput["group"], { groupId: unknown }>["groupId"] }
+      ? {
+          groupId: move.to.groupId as Extract<
+            TabOrganizeInput["group"],
+            { groupId: unknown }
+          >["groupId"],
+        }
       : null,
     ...(beforeTabId ? { beforeTabId } : {}),
   };

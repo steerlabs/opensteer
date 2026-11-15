@@ -2,12 +2,7 @@ import { useEffect, useRef } from "react";
 import type { DesktopPersonalTabCommand } from "@opensteer/protocol/desktop";
 import { desktopBridge } from "../../desktop/desktop-bridge.js";
 import { useLocation } from "react-router";
-import {
-  tabAtShortcut,
-  tabBeside,
-  taskList,
-  type HostClient,
-} from "@opensteer/client/host";
+import { tabAtShortcut, tabBeside, taskList, type HostClient } from "@opensteer/client/host";
 import { actionErrorMessage, fromLivePage } from "../../ui-utils.js";
 import { Dialog } from "../dialog.js";
 import { destinationPlaceKey, taskAt } from "./navigation.js";
@@ -73,11 +68,7 @@ export function useWorkspaceShortcuts({
         }
         case "next-tab":
         case "previous-tab": {
-          const next = tabBeside(
-            strip,
-            shownKey,
-            command.type === "previous-tab" ? -1 : 1,
-          );
+          const next = tabBeside(strip, shownKey, command.type === "previous-tab" ? -1 : 1);
           if (next) nav.showPlace({ kind: "tab", tabId: next });
           return;
         }

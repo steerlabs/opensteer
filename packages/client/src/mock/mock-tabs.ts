@@ -217,7 +217,7 @@ export class MockTabCatalog {
   }
   /** Forgets every open and closed tab of a deleted app. */
   removeApp(appId: AppId): void {
-    for (const tab of [...this.#native.values()])
+    for (const tab of this.#native.values())
       if (tab.appId === appId) {
         this.#native.delete(tab.tabId);
         this.#remove(new Set([tab.tabId]));
