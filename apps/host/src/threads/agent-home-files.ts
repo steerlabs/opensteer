@@ -10,6 +10,7 @@ import {
 } from "@opensteer/protocol";
 import { NativeFsHelper } from "@opensteer/shared/files/native-fs-helper";
 import { z } from "zod";
+import { RootedFileReader, rootedFileKey, rootedFileSegments } from "./rooted-file-reader.js";
 
 const cursorSchema = z.strictObject({
   revision: z.string().length(43),
@@ -20,36 +21,15 @@ const badKey = () =>
   new OpensteerError({ code: "bad_request", message: "Invalid folder file key" });
 export function folderFileSegments(key: string): string[] {
   const encoded = FolderFileKeySchema.parse(key);
-  const raw = Buffer.from(encoded, "base64url");
-  if (raw.toString("base64url") !== encoded) throw badKey();
-  if (!raw.length) return [];
-  const parts: Buffer[] = [];
-  let start = 0;
-  for (let i = 0; i <= raw.length; i++)
-    if (i === raw.length || raw[i] === 0) {
-      parts.push(raw.subarray(start, i));
-      start = i + 1;
-    }
-  if (
-    parts.some(
-      (p) =>
-        !p.length ||
-        p.equals(Buffer.from(".")) ||
-        p.equals(Buffer.from("..")) ||
-        p.includes(47) ||
-        p.includes(92),
-    )
-  )
+  try {
+    return encoded === "" ? [] : rootedFileSegments(encoded);
+  } catch {
     throw badKey();
-  return parts.map((p) => p.toString("base64url"));
-}
-function fileKey(segments: readonly string[]) {
-  return Buffer.concat(
-    segments.flatMap((s, i) => [...(i ? [Buffer.from([0])] : []), Buffer.from(s, "base64url")]),
-  ).toString("base64url");
+  }
 }
 /** Reads Agent home through the native helper's no-follow, root-pinned file operations. */
 export class AgentHomeFiles {
+  readonly #reader: RootedFileReader;
   readonly #lifetime = new AbortController();
   readonly options: {
     readonly agentHome: () => Promise<ComputerFolder>;
@@ -57,6 +37,10 @@ export class AgentHomeFiles {
   };
   constructor(options: AgentHomeFiles["options"]) {
     this.options = options;
+    this.#reader = new RootedFileReader({
+      root: async () => (await options.agentHome()).path,
+      helperPath: options.helperPath,
+    });
   }
   async #root(signal: AbortSignal) {
     const { path } = await this.options.agentHome();
@@ -111,7 +95,7 @@ export class AgentHomeFiles {
       entries: result.entries.map(({ displayName, nameBase64, ...entry }) => ({
         ...entry,
         name: displayName,
-        key: fileKey([...segments, nameBase64]),
+        key: rootedFileKey([...segments, nameBase64]),
       })),
     });
   }
@@ -153,7 +137,17 @@ export class AgentHomeFiles {
       },
     });
   }
+  resolveAbsolutePath(...args: Parameters<RootedFileReader["resolveAbsolutePath"]>) {
+    return this.#reader.resolveAbsolutePath(...args);
+  }
+  read(...args: Parameters<RootedFileReader["read"]>) {
+    return this.#reader.read(...args);
+  }
+  readContent(...args: Parameters<RootedFileReader["readContent"]>) {
+    return this.#reader.readContent(...args);
+  }
   close() {
+    this.#reader.close();
     this.#lifetime.abort(new Error("Host file service closed"));
   }
 }
