@@ -2045,6 +2045,41 @@ export interface DatabaseSchema {
   teamOutbox: TeamOutboxTable;
   teamLinks: TeamLinkTable;
   teamAgentRequests: TeamAgentRequestTable;
+  teamAccessChanges: {
+    revision: string;
+    effects: JsonColumn<unknown>;
+    createdAt: Generated<Date>;
+  };
+  teamPresence: {
+    connectionId: string;
+    processId: string;
+    userId: UserId;
+    visible: boolean;
+    channelIds: ColumnType<TeamChannelId[], TeamChannelId[] | undefined, TeamChannelId[]>;
+    seenAt: Timestamp;
+  };
+  teamLinkConnections: {
+    linkId: TeamLinkId;
+    epoch: string;
+    processId: string;
+    seenAt: Timestamp;
+  };
+  teamPartnerCalls: {
+    id: string;
+    linkId: string;
+    operation: JsonColumn<unknown>;
+    state: "queued" | "claimed" | "done" | "failed";
+    claimedBy: string | null;
+    result: JsonColumn<unknown> | null;
+    error: JsonColumn<unknown> | null;
+    createdAt: Generated<Date>;
+    expiresAt: Timestamp;
+  };
+  teamInstallation: {
+    singletonKey: "team";
+    sealedAccountBundle: Buffer;
+    updatedAt: Generated<Date>;
+  };
   personalTeamLinks: PersonalTeamLinkTable;
   personalTeamPosts: {
     teamDeploymentId: DeploymentId;
@@ -2525,6 +2560,10 @@ export interface TeamBlobTable {
   createdAt: Timestamp;
   expiresAt: Timestamp;
   completedAt: NullableTimestamp;
+  generation: Generated<string | null>;
+  previewGeneration: Generated<string | null>;
+  uploadLease: Generated<string | null>;
+  uploadLeaseExpiresAt: Generated<Date | null>;
 }
 export interface TeamMessageAttachmentTable {
   messageId: TeamMessageId;
@@ -2597,6 +2636,7 @@ export interface TeamLinkTable {
   lastSeenAt: NullableTimestamp;
   createdAt: Timestamp;
   revokedAt: NullableTimestamp;
+  connectionEpoch: Generated<string>;
 }
 export interface TeamAgentRequestTable {
   shareId: Generated<string | null>;
@@ -2718,6 +2758,7 @@ export interface TeamPartnerLinkTable {
   lastError: "identity-mismatch" | "unsupported-partner-version" | "unreachable" | null;
   revokedAt: NullableTimestamp;
   revokedBy: "local" | "partner" | null;
+  sealedOffer: Generated<Buffer | null>;
 }
 
 export interface TeamShareTable {

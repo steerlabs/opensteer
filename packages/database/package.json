@@ -16,6 +16,7 @@
     "./personal-team-requests-store": "./src/personal-team-requests-store.ts",
     "./team-requests-port": "./src/team-requests-port.ts",
     "./team-access": "./src/team-access-store.ts",
+    "./team-bus": "./src/team-bus.ts",
     "./team-members": "./src/team-members-store.ts",
     "./team-principals": "./src/team-principals-store.ts",
     "./team-groups": "./src/team-groups-store.ts",

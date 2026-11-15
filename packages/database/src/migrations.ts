@@ -10,6 +10,7 @@ import { migrateTeamShareFileCache } from "./team-share-file-cache-migration.js"
 import { migrateTeamPartnerLinks } from "./team-partner-links-migration.js";
 import { migrateTeamPrincipals } from "./team-principals-migration.js";
 import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
+import { TEAM_COPIES_SQL, teamCopiesMigrationName } from "./team-copies-migration.js";
 import { TEAM_KNOWLEDGE_NOTES_SQL } from "./team-knowledge-schema.js";
 import type { DatabaseSchema } from "./schema.js";
 
@@ -285,6 +286,11 @@ export function migrationProvider(): MigrationProvider {
         [waitingInputEditsMigrationName]: {
           async up(database) {
             await sql.raw(WAITING_INPUT_EDITS_SQL).execute(database);
+          },
+        },
+        [teamCopiesMigrationName]: {
+          async up(database) {
+            await sql.raw(TEAM_COPIES_SQL).execute(database);
           },
         },
       };
