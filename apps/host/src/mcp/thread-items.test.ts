@@ -31,6 +31,12 @@ it.each([
   "mcp__opensteer__computer_use",
   "opensteer_saved_login_request",
   "computer_use (opensteer MCP Server)",
+  "opensteer_automation_update",
+  "use_saved_login",
+  "copy_chrome_cookies",
+  "use_card",
+  "trigger_write",
+  "mcp__opensteer__computer",
 ])("withholds %s however an engine spells it", (name) => {
   expect(withheldTool(name)).toBe(true);
 });

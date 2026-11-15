@@ -93,21 +93,27 @@ describe("standing owner team authority", () => {
   it("reads older messages by cursor and newer ones after a message the agent saw", async () => {
     const read = vi.fn<TeamToolPort["read"]>().mockResolvedValue({
       source: { ...origin, messageId: TeamMessageIdSchema.parse("5") },
-      page: { messages: [], hasMore: false },
+      page: { messages: [{ id: TeamMessageIdSchema.parse("5") }], hasMore: true },
     } as unknown as Awaited<ReturnType<TeamToolPort["read"]>>);
     const handlers = teamToolHandlers({
       port: { read } as unknown as TeamToolPort,
       personalContext: async () => true,
     });
+    const pages = [];
     for (const input of [
       { channelId: origin.channelId, cursor: "4" },
       { channelId: origin.channelId, afterMessageId: TeamMessageIdSchema.parse("4") },
     ])
-      await handlers.opensteer_team_read({ caller: caller(), input, operationKey: "read" });
+      pages.push(
+        await handlers.opensteer_team_read({ caller: caller(), input, operationKey: "read" }),
+      );
     expect(read.mock.calls.map(([, query]) => query)).toEqual([
       { channelId: origin.channelId, before: "4" },
       { channelId: origin.channelId, after: "4" },
     ]);
+    expect(
+      pages.map((page) => (page as { page: { nextCursor: unknown } }).page.nextCursor),
+    ).toEqual(["5", null]);
     expect(
       opensteer_team_read.input.safeParse({
         channelId: origin.channelId,

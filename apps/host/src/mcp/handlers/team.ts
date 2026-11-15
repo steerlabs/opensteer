@@ -68,7 +68,10 @@ export function teamToolHandlers(options: {
             ...result,
             page: {
               ...result.page,
-              nextCursor: result.page.hasMore ? (result.page.messages[0]?.id ?? null) : null,
+              nextCursor:
+                result.page.hasMore && !afterMessageId
+                  ? (result.page.messages[0]?.id ?? null)
+                  : null,
             },
           };
         return result;

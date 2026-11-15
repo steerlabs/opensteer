@@ -24,7 +24,7 @@ export const opensteer_team_read = defineAgentTool({
   name: "opensteer_team_read",
   title: "Read team context",
   description:
-    "List linked teams with {}, list readable channels with teamId, or read messages with channelId. cursor reads older messages or the next channel page; afterMessageId reads messages newer than one you saw. People-only content is unavailable. Use opensteer_team_file_download for files.",
+    "List linked teams with {}, list readable channels with teamId, or read messages with channelId. cursor reads older messages or the next channel page; afterMessageId reads messages newer than one you saw, and you keep reading newer by passing the newest one you got. People-only content is unavailable. Use opensteer_team_file_download for files.",
   input: z
     .strictObject({
       teamId: DeploymentIdSchema.optional(),

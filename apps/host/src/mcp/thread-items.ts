@@ -53,9 +53,12 @@ export function messageItem(message: Message, maxChars: number, offset = 0): Thr
 type ActivityEvent = Exclude<AgentThreadActivityItem, { type: "message" }>;
 type ToolStarted = Extract<ActivityEvent, { type: "tool.started" }>;
 
-/** Their text can hold a sign-in, a card, a webhook secret or typed values. Engines spell names their own way. */
+/**
+ * Their text can hold a sign-in, a card, a webhook secret or typed values. Engines spell names their
+ * own way, and stored history keeps the names tools had when it was recorded.
+ */
 export function withheldTool(name: string): boolean {
-  return /(?:^|[_\s.:/-])(?:saved_login_request|chrome_cookies_request|card_request|opensteer_automation_create|computer_use)(?:$|[\s.(])/u.test(
+  return /(?:^|[_\s.:/-])(?:saved_login_request|chrome_cookies_request|card_request|opensteer_automation_create|opensteer_automation_update|computer_use|use_saved_login|copy_chrome_cookies|use_card|trigger_write|computer)(?:$|[\s.(])/u.test(
     name,
   );
 }
