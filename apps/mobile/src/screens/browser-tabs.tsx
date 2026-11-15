@@ -169,6 +169,7 @@ function useTaskTabs(
           )
           .map((tab) => tab.tabId)
           .join("\n");
-  const key = useSyncExternalStore(tabs.subscribe.bind(tabs), read, read);
+  const subscribe = useCallback((listener: () => void) => tabs.subscribe(listener), [tabs]);
+  const key = useSyncExternalStore(subscribe, read, read);
   return useMemo(() => (key === null ? null : new Set(key.split("\n"))), [key]);
 }

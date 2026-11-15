@@ -13,7 +13,8 @@ export function useTabListSpans(hostClient: HostClient): {
     const spans = tabListSpans(tabs.rows.values());
     return (Number(spans.showComputer) << 1) | Number(spans.showProfile);
   };
-  const bits = useSyncExternalStore(tabs.subscribe.bind(tabs), read, read);
+  const subscribe = useCallback((listener: () => void) => tabs.subscribe(listener), [tabs]);
+  const bits = useSyncExternalStore(subscribe, read, read);
   return { showComputer: (bits & 2) !== 0, showProfile: (bits & 1) !== 0 };
 }
 
