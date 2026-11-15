@@ -1,5 +1,6 @@
 import { Fragment, useState, type ReactNode } from "react";
 import { ActivityIndicator, Alert, StyleSheet, View } from "react-native";
+import { TeamReferenceProvider } from "../markdown/reference-navigation.js";
 import { color, space } from "../theme.js";
 import { Notice, PrimaryButton } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
@@ -60,7 +61,13 @@ function AccountTeamScreen({
   const [busy, setBusy] = useState(false);
   const state = team?.state;
   if ((state === "live" || state === "offline" || state === "loading") && snapshot.bootstrap)
-    return <Fragment>{children}</Fragment>;
+    return team ? (
+      <TeamReferenceProvider client={team.session} origin={team.origin} teamId={teamId}>
+        {children}
+      </TeamReferenceProvider>
+    ) : (
+      <Fragment>{children}</Fragment>
+    );
   const name = team?.name ?? "this team";
   const signIn = state === "signed-out";
   const title =

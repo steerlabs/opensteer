@@ -1,7 +1,7 @@
 import type { HostClient } from "@opensteer/client/host";
 import type { DeploymentId } from "@opensteer/core";
 import { useNavigation } from "@react-navigation/native";
-import { useState, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useState, useSyncExternalStore, type ReactNode } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
 import { deploymentStatusDetail, deploymentStatusLabel } from "../client/deployment-rows.js";
@@ -40,6 +40,20 @@ export function useAttachedHost(deploymentId: string): HostClient | null {
   return row !== undefined && row.signIn === null && selection.deploymentId === deploymentId
     ? selection.hostClient
     : null;
+}
+
+/** `useAttachedHost`, read narrowly: a layout around every screen redraws only when it changes. */
+export function useAttachedHostOf(deploymentId: string | null): HostClient | null {
+  const client = useMobileClient();
+  const read = useCallback(() => {
+    if (deploymentId === null) return null;
+    const { rows, selection } = client.getSnapshot();
+    const row = rows.find((candidate) => candidate.deploymentId === deploymentId);
+    return row !== undefined && row.signIn === null && selection.deploymentId === deploymentId
+      ? selection.hostClient
+      : null;
+  }, [client, deploymentId]);
+  return useSyncExternalStore(client.subscribe, read, read);
 }
 
 /**

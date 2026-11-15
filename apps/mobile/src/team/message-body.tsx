@@ -1,9 +1,10 @@
 import { splitMarkdownBlocks } from "@opensteer/shared/markdown";
 import type { PhrasingContent, RootContent } from "mdast";
 import { memo, useMemo, type ReactNode } from "react";
-import { Linking, StyleSheet, Text, View } from "react-native";
-import { Markdown } from "../markdown/markdown.js";
+import { StyleSheet, Text, View } from "react-native";
+import { Markdown, plainWords } from "../markdown/markdown.js";
 import { markdownTree } from "../markdown/markdown-tree.js";
+import { ReferenceLink } from "../markdown/reference-link.js";
 import { color, radius, space, type } from "../theme.js";
 import { monoFontFamily } from "../ui/primitives.js";
 import { mentionFinder, mentionRuns, type MentionFinder } from "./mentions.js";
@@ -149,13 +150,9 @@ function Span(props: {
       return "\n";
     case "link":
       return (
-        <Text
-          accessibilityRole="link"
-          onPress={() => void Linking.openURL(node.url).catch(() => undefined)}
-          style={styles.link}
-        >
+        <ReferenceLink href={node.url} label={plainWords(node.children)}>
           <Spans finder={finder} nodes={node.children} />
-        </Text>
+        </ReferenceLink>
       );
     default:
       return "value" in node && typeof node.value === "string" ? node.value : null;
@@ -205,7 +202,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   emphasis: { fontStyle: "italic" },
-  link: { color: color.ember, textDecorationLine: "underline" },
   list: { gap: space[4] },
   listBody: { flexShrink: 1, gap: space[4] },
   listItem: { flexDirection: "row", gap: space[8] },
