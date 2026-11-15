@@ -339,13 +339,13 @@ const RootStack = createNativeStackNavigator({
       },
     },
     // Every version of a message edited while it waited, from its "Edited"
-    // mark. It opens part-way so the conversation it belongs to stays in view.
+    // mark. It is as tall as its versions, so the conversation stays in view.
     MessageHistory: {
       screen: MessageHistoryScreen,
       options: {
         headerShown: false,
         presentation: screenPresentations.MessageHistory,
-        sheetAllowedDetents: [0.6, 0.95],
+        sheetAllowedDetents: "fitToContents",
         sheetGrabberVisible: true,
         title: "Edit history",
       },
