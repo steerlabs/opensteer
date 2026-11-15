@@ -31,6 +31,7 @@ import { MessageFold } from "./message-fold.js";
 import { SubagentStop } from "./subagent-stop.js";
 import { useDeviceGrantFollowUps } from "./thread-device-access-action.js";
 import { AgentEngine, AgentFolds, AgentMark, Elapsed, WorkflowPhases } from "./subagent-rows.js";
+import { readableMarkdown } from "./references/readable-markdown.js";
 
 const Markdown = lazy(() => import("./markdown.js"));
 
@@ -400,7 +401,7 @@ function Outcome({ card, result }: { card: AgentCard; result: string | null }) {
           {card.detail[0].text}.
         </p>
       )}
-      <Suspense fallback={<p className="md-prose md-prose--plain">{result}</p>}>
+      <Suspense fallback={<p className="md-prose md-prose--plain">{readableMarkdown(result)}</p>}>
         <Markdown text={result} />
       </Suspense>
     </>

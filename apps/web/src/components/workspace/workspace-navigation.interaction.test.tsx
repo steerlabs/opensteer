@@ -1036,7 +1036,7 @@ describe("a channel and back", () => {
     expect(history.at(-1)).toEqual({ ...task, type: "PUSH" });
   });
 
-  it("a missing task redirects home with its place intact", async () => {
+  it("a missing task says it isn't available, with its place intact, and Back goes home", async () => {
     await mount((source) => {
       const missingId = createId("thread");
       const read = source.getSnapshot.bind(source);
@@ -1052,6 +1052,14 @@ describe("a channel and back", () => {
       });
       return `/tasks/${missingId}${tabSearch(pageTab(source))}`;
     });
+    expect(element(".ref-unavailable").textContent).toContain("This isn't available");
+    expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(pageTab())));
+    expect(element(".place").getAttribute("data-place-key")).toBe(pageTab().key);
+    await click(
+      [...document.querySelectorAll<HTMLButtonElement>(".ref-unavailable button")].find(
+        (button) => button.textContent === "Back",
+      )!,
+    );
     expect(history.at(-1)!.path).toBe("/");
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(pageTab())));
     expect(element(".place").getAttribute("data-place-key")).toBe(pageTab().key);

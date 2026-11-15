@@ -454,14 +454,22 @@ describe("the review's findings", () => {
   });
 
   it("11 · a place-only choice keeps the conversation's message anchor", async () => {
+    let anchor = "";
     await mount((source) => {
       const snapshot = source.getSnapshot();
-      const task = snapshot.threads.find((thread) => thread.listed && thread.purpose === "task")!;
-      return `/tasks/${task.id}?messageId=msg_anchor`;
+      // A message the task holds: one it no longer holds says so and leaves the address.
+      const [task, message] = snapshot.threads.flatMap((thread) => {
+        const held = (snapshot.transcripts[thread.id] ?? []).find(
+          (entry) => entry.kind === "message" && entry.published !== false && !entry.streaming,
+        );
+        return thread.listed && thread.purpose === "task" && held ? [[thread, held] as const] : [];
+      })[0]!;
+      anchor = message.id;
+      return `/tasks/${task.id}?messageId=${anchor}`;
     });
     const place = pageTab();
     await click(element(`.side-tab[data-place-key="${place.key}"] .side-tab__main`));
-    expect(new URLSearchParams(history.at(-1)!.search).get("messageId")).toBe("msg_anchor");
+    expect(new URLSearchParams(history.at(-1)!.search).get("messageId")).toBe(anchor);
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
     // Changing conversation leaves it behind.
     await click(element('[aria-label="New task"]'));
