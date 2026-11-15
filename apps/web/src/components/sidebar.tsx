@@ -1647,6 +1647,7 @@ function SidebarFooter({
       ? [{ icon: "check-circle" as const, label: "Setup", onSelect: () => go(setupPath, false) }]
       : []),
     { icon: "bolt", label: "Automations", onSelect: () => go("/automations", true) },
+    { icon: "app", label: "Apps", onSelect: () => go("/apps", true) },
     { icon: "settings", label: "Settings", onSelect: () => go("/settings", false) },
     // Once in a team, this lives under Settings → Teams instead.
     ...(inTeams
