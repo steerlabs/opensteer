@@ -5,8 +5,7 @@ export { isNetworkPath } from "./fileHref.js";
 
 /**
  * Markdown image handling shared by the Runner (embedding generated images in
- * a reply), the Host (keeping local paths out of team and bridge text) and
- * every client (deciding what an image source may load). Browser-safe.
+ * a reply) and every client (deciding what an image source may load). Browser-safe.
  */
 
 /**
@@ -144,42 +143,5 @@ export function appendImageEmbeds(markdown: string, paths: readonly string[]): s
   let result =
     end === undefined ? markdown : `${markdown}${/[\r\n]$/.test(markdown) ? "" : "\n"}${end}`;
   for (const path of missing) result += `${result ? "\n\n" : ""}${imageEmbed(path)}`;
-  return result;
-}
-export function stripLocalImageEmbeds(markdown: string): string {
-  let result = markdown;
-  const replacements = imageNodes(markdown).filter(
-    (image) =>
-      classifyMarkdownImageSource(image.url).kind === "local" ||
-      /^file:/i.test(image.url) ||
-      isUncPath(image.url),
-  );
-  const localUrls = new Set(replacements.map((image) => image.url));
-  const gather = (node: Nodes): void => {
-    if (
-      node.type === "definition" &&
-      localUrls.has(node.url) &&
-      node.position?.start.offset !== undefined &&
-      node.position.end.offset !== undefined
-    )
-      replacements.push({
-        url: node.url,
-        alt: "",
-        start: node.position.start.offset,
-        end: node.position.end.offset,
-      });
-    if ("children" in node) node.children.forEach(gather);
-  };
-  gather(parse(markdown));
-  for (const image of replacements.sort((a, b) => b.start - a.start)) {
-    // Network file references must not leak out either, even though clients refuse them.
-    if (
-      classifyMarkdownImageSource(image.url).kind !== "local" &&
-      !/^file:/i.test(image.url) &&
-      !isUncPath(image.url)
-    )
-      continue;
-    result = result.slice(0, image.start) + image.alt + result.slice(image.end);
-  }
   return result;
 }

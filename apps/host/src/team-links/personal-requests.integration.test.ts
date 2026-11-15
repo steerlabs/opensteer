@@ -1,3 +1,4 @@
+import { teamOperationId } from "./operation-id.js";
 import { expect, onTestFinished, vi } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
@@ -237,6 +238,191 @@ async function consentFixture(base: StoreFixture) {
 }
 
 describeStore("personal team consent and returns", (it) => {
+  for (const via of ["final", "tool"] as const)
+    it(`freezes one safe ${via} body before publication and provenance`, async ({
+      storeFixture,
+    }) => {
+      const f = await consentFixture(storeFixture);
+      const asking = await f.ask();
+      const request = (await f.store.forRun(asking.receipt.runId!))!;
+      const original =
+        "@maya-agent [see @hidden-agent](opensteer:future) [word ](/private/secret.txt)@adjacent-agent";
+      const safe = "@maya-agent see \\@hidden-agent word \\@adjacent-agent";
+      let posted = false;
+      const rpc = () => ({
+        call: async (input: TeamLinkCallInput): Promise<TeamLinkResult> => {
+          if (input.type === "receipt")
+            return { kind: "receipt", messageId: posted ? f.source.messageId : null };
+          if (input.type === "read")
+            return {
+              kind: "read",
+              result: { source: f.source, ownerHandle: "owner" },
+            } as TeamLinkResult;
+          if (input.type === "post") {
+            expect(input.bodyMarkdown).toBe(safe);
+            expect(
+              (await f.store.get(f.origin.teamId, request.requestId))!.answerPayload?.bodyMarkdown,
+            ).toBe(safe);
+            if (via === "tool")
+              expect(await f.store.post(f.origin.teamId, input.clientMessageId)).toMatchObject({
+                bodyMarkdown: safe,
+                mentionedAgentHandles: ["maya-agent"],
+              });
+            posted = true;
+            return { kind: "receipt", messageId: f.source.messageId };
+          }
+          return { kind: "ok" };
+        },
+      });
+      if (via === "tool") {
+        const tools = new TeamRunTools(f.publisher.options.links, f.store, rpc);
+        await tools.post(
+          { runId: asking.receipt.runId!, operationId: "safe-post" },
+          f.origin.teamId,
+          {
+            channelId: f.origin.channelId,
+            threadRootId: f.origin.threadRootId,
+            bodyMarkdown: original,
+            attachmentIds: [],
+          },
+        );
+      } else {
+        const publisher = new PersonalTeamRequests({
+          ...f.publisher.options,
+          rpc,
+          runs: {
+            outcome: async () => ({
+              state: "done",
+              runId: asking.receipt.runId!,
+              finalMessage: original,
+              answerMessageId: null,
+            }),
+          },
+        });
+        await publisher.reconcileOne(request);
+      }
+      expect(posted).toBe(true);
+      expect(await f.store.get(f.origin.teamId, request.requestId)).toMatchObject({
+        publicationState: "accepted",
+        answerPayload: { bodyMarkdown: safe },
+      });
+    });
+
+  for (const via of ["final", "tool"] as const)
+    for (const accepted of [false, true])
+      it(`checks receipts before refusing unsafe frozen replies (${via}, accepted: ${accepted})`, async ({
+        storeFixture,
+      }) => {
+        const f = await consentFixture(storeFixture);
+        const asking = await f.ask();
+        const request = (await f.store.forRun(asking.receipt.runId!))!;
+        const payload = { bodyMarkdown: "[old](/private/secret.txt)", attachmentIds: [] };
+        await f.store.freeze(f.origin.teamId, request.requestId, {
+          runId: asking.receipt.runId!,
+          via,
+          clientMessageId: teamOperationId("tool", asking.receipt.runId!, "old-operation"),
+          answerMessageId: null,
+          payload,
+        });
+        const calls: TeamLinkCallInput[] = [];
+        const publisher = new PersonalTeamRequests({
+          ...f.publisher.options,
+          runs: {
+            outcome: async () => ({
+              state: "done",
+              runId: asking.receipt.runId!,
+              finalMessage: "New answer",
+              answerMessageId: null,
+            }),
+          },
+          rpc: () => ({
+            call: async (input): Promise<TeamLinkResult> => {
+              calls.push(input);
+              if (input.type === "receipt")
+                return { kind: "receipt", messageId: accepted ? f.source.messageId : null };
+              if (input.type === "post") throw new Error("Unsafe frozen body must never be sent");
+              return { kind: "ok" };
+            },
+          }),
+        });
+        if (via === "final") await publisher.reconcileOne(request);
+        else {
+          const tools = new TeamRunTools(f.publisher.options.links, f.store, publisher.options.rpc);
+          const replay = tools.post(
+            { runId: asking.receipt.runId!, operationId: "old-operation" },
+            f.origin.teamId,
+            {
+              channelId: f.origin.channelId,
+              threadRootId: f.origin.threadRootId,
+              bodyMarkdown: "Changed input",
+              attachmentIds: [],
+            },
+          );
+          if (accepted) await replay;
+          else await expect(replay).rejects.toMatchObject({ code: "conflict" });
+        }
+        const saved = await f.store.get(f.origin.teamId, request.requestId);
+        expect(calls[0]?.type).toBe("receipt");
+        expect(calls.some((call) => call.type === "post")).toBe(false);
+        expect(saved).toMatchObject({
+          publicationState: accepted ? "accepted" : "blocked",
+          clientMessageId: teamOperationId("tool", asking.receipt.runId!, "old-operation"),
+          answerPayload: payload,
+        });
+        if (!accepted) expect(saved!.blockedReason).toContain("private references");
+      });
+
+  for (const claimed of [false, true])
+    it(`stops unresolved legacy provenance replay visibly without changing its identity (claimed: ${claimed})`, async ({
+      storeFixture,
+    }) => {
+      const f = await consentFixture(storeFixture);
+      const asking = await f.ask();
+      const request = (await f.store.forRun(asking.receipt.runId!))!;
+      const link = (await f.publisher.options.links.get(f.origin.teamId))!;
+      const clientMessageId = crypto.randomUUID();
+      const bodyMarkdown = "@maya-agent [old](/private/secret.txt)";
+      await f.store.recordPost({
+        teamDeploymentId: f.origin.teamId,
+        localLinkId: link.id,
+        remoteLinkId: link.remoteLinkId!,
+        clientMessageId,
+        runId: asking.receipt.runId!,
+        messageId: null,
+        channelId: f.origin.channelId,
+        threadRootId: f.origin.threadRootId,
+        mentionedAgentHandles: ["maya-agent"],
+        bodyMarkdown,
+        attachmentIds: [],
+        requestId: claimed ? request.requestId : null,
+      });
+      const calls: TeamLinkCallInput[] = [];
+      const publisher = new PersonalTeamRequests({
+        ...f.publisher.options,
+        rpc: () => ({
+          call: async (input) => {
+            calls.push(input);
+            if (input.type === "post") throw new Error("Unsafe provenance must never be sent");
+            return { kind: "receipt", messageId: null };
+          },
+        }),
+      });
+      await expect(publisher.reconnect(f.origin.teamId)).rejects.toMatchObject({
+        code: "conflict",
+        message: expect.stringContaining("private references"),
+      });
+      expect(await f.store.post(f.origin.teamId, clientMessageId)).toMatchObject({
+        bodyMarkdown,
+        clientMessageId,
+        messageId: null,
+      });
+      expect(calls.map((call) => call.type)).toEqual(claimed ? ["receipt"] : []);
+      if (claimed)
+        expect(await f.store.get(f.origin.teamId, request.requestId)).toMatchObject({
+          publicationState: "blocked",
+        });
+    });
+
   it("reopens a Done task when releasing its approved ask", async ({ storeFixture }) => {
     const f = await consentFixture(storeFixture);
     await f.publisher.deliver(f.origin.teamId, f.frame);

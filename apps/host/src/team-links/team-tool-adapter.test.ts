@@ -1,15 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { createId, TeamMessageIdSchema, TeamSourceSchema } from "@opensteer/core";
-import { opensteer_team_post, opensteer_team_search } from "@opensteer/agent-tools/tools";
 import {
-  TeamReadResultSchema,
+  AgentTeamReadResultSchema,
+  AgentTeamMessagePageSchema,
+  opensteer_team_post,
+  opensteer_team_read,
+  opensteer_team_search,
+} from "@opensteer/agent-tools/tools";
+import {
   agentToolPayloadMaxSerializedBytes,
   TeamMessagePageSchema,
   type TeamMessage,
 } from "@opensteer/protocol";
 import { PersonalTeamToolAdapter } from "./team-tool-adapter.js";
 
-const boundedRead = TeamReadResultSchema.refine(
+const boundedRead = AgentTeamReadResultSchema.extend({
+  page: AgentTeamMessagePageSchema.omit({ nextCursor: true }),
+}).refine(
   (value) =>
     new TextEncoder().encode(JSON.stringify(value)).byteLength <=
     agentToolPayloadMaxSerializedBytes,
@@ -78,9 +85,14 @@ function fixture() {
   }));
   const tools: ConstructorParameters<typeof PersonalTeamToolAdapter>[0] = {
     async teams() {
-      return [{ teamId: run.teamId, teamName: "Acme", state: "active" }] as Awaited<
-        ReturnType<ConstructorParameters<typeof PersonalTeamToolAdapter>[0]["teams"]>
-      >;
+      return [
+        {
+          teamId: run.teamId,
+          teamName: "Acme",
+          origin: "https://team.example.invalid",
+          state: "active",
+        },
+      ] as Awaited<ReturnType<ConstructorParameters<typeof PersonalTeamToolAdapter>[0]["teams"]>>;
     },
     async authority(id) {
       if (id && id !== run.teamId) throw new Error("That team is not linked");
@@ -185,6 +197,20 @@ describe("Run-bound team tool adapter", () => {
     });
   });
 
+  it("adds channel links using only the verified linked-team origin", async () => {
+    const f = fixture();
+    const read = await f.tools.read(f.run, f.run.teamId, { channelId: f.source.channelId });
+    const { instructionsMarkdown: _, instructionsRevision: __, ...channel } = read.page.channel;
+    f.tools.channels = async () => ({ channels: [channel], hasMore: false, nextAfter: null });
+    const result = await f.adapter.read(f.run, { teamId: f.run.teamId });
+    if (!("nextAfter" in result)) throw new Error("Expected channel page");
+    const { nextAfter, ...page } = result;
+    const parsed = opensteer_team_read.output.parse({ ...page, nextCursor: nextAfter });
+    expect(parsed).toMatchObject({
+      channels: [{ link: `[research](https://team.example.invalid/c/${channel.id})` }],
+    });
+  });
+
   it("paginates a byte-bounded asking-thread page without losing messages or its snapshot fence", async () => {
     const f = fixture();
     const seen: string[] = [];
@@ -199,6 +225,13 @@ describe("Run-bound team tool adapter", () => {
       );
       if (!("page" in result)) throw new Error("Expected page");
       expect(result.page.throughSeq).toBe("91");
+      expect(result.link).toBe(
+        `[research](https://team.example.invalid/c/${f.source.channelId}/t/1)`,
+      );
+      for (const message of result.page.messages)
+        expect(message.link).toBe(
+          `[Message in #research](https://team.example.invalid/c/${f.source.channelId}/t/1/m/${message.id})`,
+        );
       expect(result.source).toEqual(f.source);
       seen.unshift(...result.page.messages.map((m: TeamMessage) => m.id));
       if (!result.page.hasMore) break;
@@ -207,7 +240,11 @@ describe("Run-bound team tool adapter", () => {
     }
     expect(seen).toEqual(f.messages.map((m) => m.id));
     const file = await f.adapter.read(f.run, { fileId: createId("teamBlob") });
-    expect(file).toEqual({ path: "/private/attachment-cache/public.txt", source: f.source });
+    expect(file).toEqual({
+      path: "/private/attachment-cache/public.txt",
+      source: f.source,
+      link: "[public.txt](/private/attachment-cache/public.txt)",
+    });
     expect(JSON.stringify(file)).not.toMatch(/sha256|artifactId|Bearer|https:/);
   });
 
@@ -225,6 +262,13 @@ describe("Run-bound team tool adapter", () => {
       );
       if (!("page" in result)) throw new Error("Expected page");
       expect(result.page.throughSeq).toBe("91");
+      expect(result.link).toBe(
+        `[research](https://team.example.invalid/c/${f.source.channelId}/t/1)`,
+      );
+      for (const message of result.page.messages)
+        expect(message.link).toBe(
+          `[Message in #research](https://team.example.invalid/c/${f.source.channelId}/t/1/m/${message.id})`,
+        );
       seen.push(...result.page.messages.map((m) => m.id));
       if (!result.page.hasMore) break;
       after = result.page.messages.at(-1)!.id;
@@ -245,6 +289,7 @@ describe("Run-bound team tool adapter", () => {
     expect(opensteer_team_post.output.parse(await f.adapter.post(f.run, input))).toEqual({
       messageId: "99",
       source: f.source,
+      link: `[Message in #research](https://team.example.invalid/c/${f.source.channelId}/t/1/m/99)`,
     });
     expect(f.uploads).toEqual(["/private/EXPLICIT_FILE"]);
     expect(f.wire).toHaveLength(1);
@@ -272,10 +317,13 @@ describe("Run-bound team tool adapter", () => {
       results: [{ message: f.messages[0]!, source: other }],
       hasMore: false,
     });
-    expect(
-      (await f.adapter.search(f.run, opensteer_team_search.input.parse({ query: "a" }))).results[0]!
-        .source,
-    ).toEqual(other);
+    const found = opensteer_team_search.output.parse(
+      await f.adapter.search(f.run, opensteer_team_search.input.parse({ query: "a" })),
+    );
+    expect(found.results[0]!.source).toEqual(other);
+    expect(found.results[0]!.message.link).toBe(
+      `[Message in #another](https://team.example.invalid/c/${other.channelId}/t/1/m/1)`,
+    );
     await expect(
       f.adapter.post(
         f.run,

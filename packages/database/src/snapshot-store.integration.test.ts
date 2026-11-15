@@ -10,11 +10,61 @@ import { expect } from "vitest";
 import { OpensteerStore } from "./store.js";
 import {
   describeStore,
+  pendingEvent,
   testModelSelection,
   testContinuationIdentity,
   testRunnerDescriptor,
 } from "./store.integration.test-support.js";
 describeStore("Deployment snapshot history", (it) => {
+  it("sanitizes complete reply and failure sources before task-line clipping", async ({
+    storeFixture,
+  }) => {
+    const { store } = storeFixture;
+    const f = await storeFixture.startRunFixture("long-private-summary");
+    const source =
+      "[answer][private]\n\n" + " ".repeat(18_000) + "\n[private]: /private/secret.txt";
+    const scope = {
+      environmentId: f.environmentId,
+      threadId: f.thread.id,
+      runId: f.run.id,
+      bindingGeneration: f.bindingGeneration,
+    };
+    for (const event of [
+      pendingEvent({
+        ...scope,
+        ordinal: 1,
+        type: "assistant.message",
+        data: {
+          messageId: createId("message"),
+          content: [
+            { type: "text", text: "[answer][private]\n\n" + " ".repeat(18_000) },
+            { type: "text", text: "[private]: /private/secret.txt" },
+          ],
+        },
+      }),
+      pendingEvent({
+        ...scope,
+        ordinal: 2,
+        type: "run.failed",
+        data: { code: "harness_error", message: source, retryable: false, status: "failed" },
+      }),
+    ])
+      await store.commitRunnerEvent({
+        environmentId: f.environmentId,
+        runnerBootId: f.runnerBootId,
+        runnerId: f.runnerId,
+        event,
+      });
+    const started = performance.now();
+    const page = await store.taskPageForUser({ userId: f.userId });
+    const elapsed = performance.now() - started;
+    expect(page.tasks.find((task) => task.thread.id === f.thread.id)).toMatchObject({
+      lastReply: "answer",
+      failure: "answer",
+    });
+    console.info(`S3 full-source task page (18 KB reply + failure): ${elapsed.toFixed(2)} ms`);
+  });
+
   it("remembers a human hand-off returned to the queue at finalization", async ({
     storeFixture,
   }) => {

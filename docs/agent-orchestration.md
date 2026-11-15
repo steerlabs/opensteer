@@ -15,6 +15,13 @@ knowledge tools are the exception: any Run that may use the owner's personal con
 owner's topics as the owner ([knowledge](knowledge.md#agents)).
 See [Teams](teams.md) for the request and access fences.
 
+Personal Opensteer removes private object and local-file Markdown destinations before
+agent replies or notes go to a team, before messaging-bridge delivery, in Voice speech
+and notes, and before plain-text excerpts and notification previews are clipped. Labels
+remain readable; paths or IDs written in labels, prose or code are not redacted. Explicit
+copy and share preserve the person's chosen Markdown. Unsafe unresolved frozen replies
+stop visibly rather than changing their body under an existing operation ID.
+
 Typed Claude compaction maintenance is separate from conversation work. A lost maintenance Run
 must end without recovery replay: repeating an uncertain compaction can summarize the same
 conversation twice. Native compaction activity is durable evidence; ordinary Run outcomes remain

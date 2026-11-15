@@ -30,6 +30,23 @@ describe("stripRefs", () => {
     expect(stripRefs(stripRefs(source))).toBe(expected);
   });
 
+  it("retains the legacy bridge local/network image policy", () => {
+    const text =
+      "![chart](</tmp/a%20b.png>) ![ref][img] `![](/tmp/a.png)` ![web](https://example.com/a.png)\n\n[img]: file:///tmp/b.png";
+    expect(stripRefs(text)).toBe(
+      "chart ref `![](/tmp/a.png)` ![web](https://example.com/a.png)\n\n",
+    );
+    for (const path of [
+      "~/a.png",
+      "../a.png",
+      "file://host/a.png",
+      String.raw`\\host\a.png`,
+      "%2F%2Fhost/a.png",
+    ]) {
+      expect(stripRefs(`![alt](<${path}>)`)).toBe("alt");
+    }
+  });
+
   it("preserves unrelated Markdown and code exactly", () => {
     const source =
       "# Heading\n\n[team](https://team.example/c/a) [web](https://example.test) ![remote](https://example.test/image.png)\n\n`[literal](" +

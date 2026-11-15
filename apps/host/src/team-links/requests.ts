@@ -1,4 +1,4 @@
-import { stripLocalImageEmbeds } from "@opensteer/shared/markdownImages";
+import { stripRefs } from "@opensteer/shared/stripRefs";
 import {
   TeamSourceSchema,
   OpensteerError,
@@ -435,6 +435,26 @@ export class PersonalTeamRequests {
     if (!link || !["active", "unreachable"].includes(link.state)) throw linkError();
     for (const post of await this.options.requests.pendingPosts(teamId)) {
       if (post.localLinkId !== link.id || post.remoteLinkId !== link.remoteLinkId) continue;
+      if (stripRefs(post.bodyMarkdown) !== post.bodyMarkdown) {
+        const request = post.requestId
+          ? await this.options.requests.get(teamId, post.requestId)
+          : null;
+        if (request && (await this.#receipt(request))) {
+          await this.options.requests.forgetPost(teamId, post.clientMessageId, post.localLinkId);
+          continue;
+        }
+        const message =
+          "The saved post contains private references and cannot be replayed. Send a new post.";
+        if (request)
+          await this.options.requests.publication(
+            teamId,
+            request.requestId,
+            "blocked",
+            null,
+            message,
+          );
+        throw new OpensteerError({ code: "conflict", message });
+      }
       try {
         const result = await this.options.rpc(teamId).call({
           type: "post",
@@ -614,8 +634,10 @@ export class PersonalTeamRequests {
     answerMessageId: MessageId | null,
   ): Promise<void> {
     const { requests } = this.options;
-    if (!request.answerPayload && finalMessage) finalMessage = stripLocalImageEmbeds(finalMessage);
+    const frozen = request.answerPayload !== null;
+    if (!request.answerPayload && finalMessage) finalMessage = stripRefs(finalMessage);
     try {
+      if (frozen && (await this.#receipt(request))) return;
       if (
         !request.answerPayload &&
         finalMessage &&
@@ -638,7 +660,20 @@ export class PersonalTeamRequests {
           payload: { bodyMarkdown: finalMessage, attachmentIds: [] },
           clientMessageId: teamOperationId("final", request.teamId, request.requestId),
         });
-      if (await this.#receipt(request)) return;
+      if (!frozen && (await this.#receipt(request))) return;
+      if (
+        request.answerPayload &&
+        stripRefs(request.answerPayload.bodyMarkdown) !== request.answerPayload.bodyMarkdown
+      ) {
+        await requests.publication(
+          request.teamId,
+          request.requestId,
+          "blocked",
+          null,
+          "The saved reply contains private references and cannot be replayed. Send a new reply.",
+        );
+        return;
+      }
       if (request.terminalState === "cancelled") {
         await requests.publication(
           request.teamId,

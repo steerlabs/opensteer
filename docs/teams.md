@@ -52,6 +52,13 @@ transcript or arbitrary tool output. The private task shows whether delivery is 
 or blocked, with a reason. Reconnect reconciles pending publication against its receipt without
 rerunning the work or duplicating the post; revoked access or cancellation cannot resurrect it.
 
+Personal Opensteer removes private object and local-file Markdown destinations before
+agent replies or notes go to a team, before messaging-bridge delivery, in Voice speech
+and notes, and before plain-text excerpts and notification previews are clipped. Labels
+remain readable; paths or IDs written in labels, prose or code are not redacted. Explicit
+copy and share preserve the person's chosen Markdown. Unsafe unresolved frozen replies
+stop visibly rather than changing their body under an existing operation ID.
+
 ## Entering a team
 
 Desktop and mobile share `NativeTeamEntry.authorize` for startup, explicit entry and recovery.

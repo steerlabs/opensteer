@@ -1,7 +1,8 @@
+import { stripRefs } from "@opensteer/shared/stripRefs";
 import { OpensteerError, type DeploymentId, type RunId, type TeamBlobId } from "@opensteer/core";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
-import { TeamSearchInputSchema } from "@opensteer/protocol";
+import { TeamMarkdownSchema, TeamSearchInputSchema } from "@opensteer/protocol";
 import { teamMentionHandles } from "@opensteer/shared/teamMentions";
 import type { z } from "zod";
 import {
@@ -137,6 +138,7 @@ export class TeamRunTools {
       if (
         request.deliveryVia === "tool" &&
         request.answerPayload &&
+        stripRefs(request.answerPayload.bodyMarkdown) === request.answerPayload.bodyMarkdown &&
         (await this.requests.post(teamId, request.clientMessageId))?.messageId === null
       )
         return this.post(run, teamId, {
@@ -168,18 +170,72 @@ export class TeamRunTools {
       request.source.channelId === input.channelId &&
       request.source.threadRootId === (input.threadRootId ?? null);
     const clientMessageId = teamOperationId("tool", run.runId, run.operationId);
+    const frozen =
+      claimsReply && request.clientMessageId === clientMessageId ? request.answerPayload : null;
+    const previous = await this.requests.post(teamId, clientMessageId);
+    const savedBody = frozen?.bodyMarkdown ?? previous?.bodyMarkdown;
+    if (savedBody !== undefined && stripRefs(savedBody) !== savedBody) {
+      if (claimsReply) {
+        const receipt = await this.rpc(teamId).call({
+          type: "receipt",
+          requestId: request.requestId,
+        });
+        if (receipt.kind !== "receipt") throw linkError("bad_request");
+        if (receipt.messageId) {
+          await this.requests.publication(teamId, request.requestId, "accepted", receipt.messageId);
+          return {
+            messageId: receipt.messageId,
+            source: { ...request.source, messageId: receipt.messageId },
+          };
+        }
+        await this.requests.publication(
+          teamId,
+          request.requestId,
+          "blocked",
+          null,
+          "The saved post contains private references and cannot be replayed. Send a new post.",
+        );
+      }
+      throw new OpensteerError({
+        code: "conflict",
+        message:
+          "The saved post contains private references and cannot be replayed. Send a new post.",
+      });
+    }
+    input = {
+      ...input,
+      bodyMarkdown: savedBody ?? stripRefs(input.bodyMarkdown),
+      attachmentIds: frozen?.attachmentIds ?? previous?.attachmentIds ?? input.attachmentIds,
+    };
+    if (!TeamMarkdownSchema.safeParse(input.bodyMarkdown).success)
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "The sanitized post is empty or exceeds the team message limit.",
+      });
     const { source, ownerHandle } = await this.read(run, teamId, {
       channelId: input.channelId,
       ...(input.threadRootId ? { threadRootId: input.threadRootId } : {}),
     });
-    if (claimsReply)
-      await this.requests.freeze(teamId, request.requestId, {
+    if (claimsReply) {
+      const saved = await this.requests.freeze(teamId, request.requestId, {
         runId: run.runId,
         via: "tool",
         clientMessageId,
         answerMessageId: null,
         payload: { bodyMarkdown: input.bodyMarkdown, attachmentIds: [...input.attachmentIds] },
       });
+      if (
+        saved.clientMessageId === clientMessageId &&
+        saved.answerPayload &&
+        (saved.answerPayload.bodyMarkdown !== input.bodyMarkdown ||
+          JSON.stringify(saved.answerPayload.attachmentIds) !== JSON.stringify(input.attachmentIds))
+      )
+        throw new OpensteerError({
+          code: "conflict",
+          message:
+            "The saved post changed while it was being prepared. Check its receipt before retrying.",
+        });
+    }
     const mentionedAgentHandles = [...new Set(teamMentionHandles(input.bodyMarkdown))].filter(
       (handle) => handle.endsWith("-agent") && handle !== `${ownerHandle}-agent`,
     );

@@ -507,13 +507,6 @@ export async function deploymentSnapshot(
   );
 }
 
-/**
- * How much of a reply or failure its task line is made from. Markdown comes
- * out of it after, so it is more than the line it makes; the database reads
- * at most eight times this of a message, never a large one whole.
- */
-const taskLineSourceCharacters = 2_048;
-
 export async function taskPageForUser(
   database: Kysely<DatabaseSchema>,
   _notificationState: NotificationStateStore,
@@ -624,8 +617,8 @@ export async function taskPageForUser(
 /**
  * Each task's last reply and failure as plain lines. The reply is the first
  * words of the newest published assistant message that says something; the
- * failure is the newest Run's, only when that Run failed. Both are cut in the
- * database, so a large message never leaves it whole.
+ * failure is the newest Run's, only when that Run failed. Sanitation needs
+ * the full bounded source, including reference definitions after the visible words.
  */
 async function taskLines(
   transaction: Transaction<DatabaseSchema>,
@@ -641,9 +634,6 @@ async function taskLines(
   >
 > {
   if (threadIds.length === 0) return new Map();
-  // Whitespace collapses before the line is cut, a run that holds a line
-  // break into one break so Markdown that starts a line is still recognised
-  // when the excerpt is made.
   const rows = await sql<{
     threadId: ThreadId;
     reply: string | null;
@@ -652,22 +642,16 @@ async function taskLines(
   }>`
     select thread.id as thread_id,
       case when latest_run.status in ('completed', 'failed', 'interrupted') then latest_run.completed_at end as latest_run_completed_at,
-      left(
-        regexp_replace(
-          regexp_replace(left(reply.text, ${8 * taskLineSourceCharacters}), '\\s*\\n\\s*', E'\\n', 'g'),
-          '[[:blank:]]+', ' ', 'g'),
-        ${taskLineSourceCharacters}) as reply,
+      reply.text as reply,
       case when latest_run.status = 'failed'
-        then left(latest_run.failure->>'message', ${taskLineSourceCharacters})
+        then latest_run.failure->>'message'
       end as failure
     from public.threads thread
     left join lateral (
       select (
-        select part.value->>'text'
+        select string_agg(part.value->>'text', E'\\n' order by part.position)
         from jsonb_array_elements(message.content) with ordinality as part(value, position)
-        where part.value->>'type' = 'text' and part.value->>'text' ~ '\\S'
-        order by part.position
-        limit 1
+        where part.value->>'type' = 'text'
       ) as text
       from public.messages message
       left join public.thread_inputs inbox on inbox.message_id = message.id
