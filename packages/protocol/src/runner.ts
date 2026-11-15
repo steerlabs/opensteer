@@ -240,6 +240,8 @@ export const HarnessInputSchema = z
     kind: MessageKindSchema.exclude(["assistant"]),
     messageId: MessageIdSchema,
     quote: MessageQuoteSchema.optional(),
+    /** A teammate's ask whose words the owner edited before approving it. */
+    ownerEdited: z.literal(true).optional(),
   })
   .superRefine((input, context) => {
     if (!messageAuthorCanWriteKind(input.author, input.kind)) {

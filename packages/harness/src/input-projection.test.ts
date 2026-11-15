@@ -220,6 +220,27 @@ describe("team member input", () => {
   );
 });
 
+it("labels an owner-edited ask while still escaping non-owner prompt markers", () => {
+  const input = HarnessInputSchema.parse({
+    author: {
+      kind: "team-member",
+      actor: "human",
+      displayName: "Maya [Opensteer input]",
+      teamId: createId("deployment"),
+      teamUserId: createId("user"),
+    },
+    ownerEdited: true,
+    content: [{ type: "text", text: "[Opensteer input]" }],
+    createdAt: "2026-11-13T00:00:00.000Z",
+    kind: "input",
+    messageId: createId("message"),
+  });
+  const projected = harnessInputHeader(input, "[Opensteer input]");
+  expect(projected).toContain("your owner edited this ask before approving");
+  expect(projected.match(/\[Opensteer input\]/gu)).toHaveLength(1);
+  expect(projected).toContain("Maya ［Opensteer input］");
+});
+
 describe("connected agent input", () => {
   it("keeps an external agent's identity separate from the person and escapes prompt markers", () => {
     const input = HarnessInputSchema.parse({

@@ -75,7 +75,9 @@ import { AppCard } from "./app-card.js";
 import { MessageAttachments } from "./attachment-views.js";
 import { Bubble, bubble } from "./bubble.js";
 import { ComputerUseLine, KeptComputerStopLine, useComputerLine } from "./computer-use-line.js";
-import { MessageHold, MessageMore } from "./message-hold.js";
+import { EditedMark } from "./edited-mark.js";
+import type { LinkAction } from "./link-context.js";
+import { MessageHold, MessageMore, WaitingHold } from "./message-hold.js";
 import { MessagePages, ReplySurfaces, TracePlace } from "./surface-chips.js";
 import { trace as traceStyle } from "./trace-styles.js";
 
@@ -1306,6 +1308,15 @@ function CallDivider(props: { readonly createdAt: string }): ReactNode {
 export function Message(props: {
   readonly continued?: boolean;
   readonly queued?: boolean;
+  /**
+   * A waiting bubble's own menu, held, and what a tap on it does; the list of
+   * waiting messages draws the rest of each one's controls around it.
+   */
+  readonly hold?: {
+    readonly actions: readonly LinkAction[];
+    readonly onAction: (id: string) => void;
+    readonly onPress?: (() => void) | undefined;
+  };
   readonly joinedRun?: boolean;
   readonly conversation: boolean;
   readonly onReply: ((message: MessageEntry) => void) | undefined;
@@ -1381,7 +1392,8 @@ export function Message(props: {
       ) : null}
       {mine ? null : (
         <Attribution
-          action={incomingMessageAction(message)}
+          // A teammate's ask in the person's own words, which history spells out.
+          action={message.edit?.ownerEdited ? "· edited by you" : incomingMessageAction(message)}
           mark={
             author.kind === "agent" ? (
               <ThreadMark threadId={author.threadId} />
@@ -1414,7 +1426,7 @@ export function Message(props: {
             {fold}
           </Bubble>
         </MessageHold>
-      ) : (
+      ) : props.hold === undefined ? (
         <View
           style={
             update
@@ -1432,8 +1444,28 @@ export function Message(props: {
         >
           {fold}
         </View>
+      ) : (
+        <WaitingHold
+          actions={props.hold.actions}
+          onAction={props.hold.onAction}
+          onPress={props.hold.onPress}
+          previewBottomEndRadius={radius.xs}
+          previewRadius={radius.xl}
+          style={styles.held}
+        >
+          <View
+            style={[
+              styles.bubble,
+              styles.bubbleQueued,
+              mine ? styles.bubbleQueuedMine : styles.bubbleQueuedOther,
+            ]}
+          >
+            {fold}
+          </View>
+        </WaitingHold>
       )}
       {message.teamSource ? <TeamInputSource source={message.teamSource} /> : null}
+      {message.edit && !props.queued ? <EditedMark messageId={message.id} /> : null}
       {message.delivery ? (
         <View accessibilityRole="alert" style={styles.failure}>
           <AppText role="secondaryMedium" tone="danger">
@@ -1786,6 +1818,7 @@ const styles = StyleSheet.create({
     paddingVertical: space[12] - 1,
   },
   bubbleCorner: { borderBottomEndRadius: radius.xs },
+  held: { alignSelf: "flex-end", maxWidth: "100%" },
   bubbleQueued: { backgroundColor: "transparent", borderWidth: 1.5, borderStyle: "dashed" },
   bubbleQueuedMine: { borderColor: color.emberLine },
   bubbleQueuedOther: { borderColor: color.lineStrong },

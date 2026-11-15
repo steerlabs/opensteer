@@ -12,6 +12,7 @@ import {
   teamAgentMigrationName,
   teamAgentAsksMigrationName,
   teamPrincipalsMigrationName,
+  waitingInputEditsMigrationName,
 } from "./migrations.js";
 import type { DatabaseSchema } from "./schema.js";
 import { cloneTestDatabase, type TestDatabase } from "./test-database.test-support.js";
@@ -673,6 +674,63 @@ describe("fresh personal/team lineage", () => {
         )
       ).rows,
     ).toEqual([]);
+  });
+  it("upgrades waiting edits without releasing undecided or unacknowledged asks", async () => {
+    await migrateToLatest(database, migrationsBefore(waitingInputEditsMigrationName));
+    const { userId } = await seedPersonalFixture(database, "/tmp/opensteer-waiting-upgrade");
+    const { thread } = await createPersonalRunFixturePort(new OpensteerStore(database)).createTask({
+      ownerId: userId,
+      suffix: "waiting-upgrade",
+    });
+    const input = await legacyQueuedInput({
+      threadId: thread.id,
+      requestedBy: userId,
+      idempotencyKey: "waiting-upgrade",
+      content: [{ type: "text", text: "Original" }],
+    });
+    const teamId = createId("deployment");
+    await sql`insert into personal_team_links(id,team_deployment_id,team_host_instance_id,host_key_fingerprint,approved_origin,authority_envelope,state)
+      values('waiting-upgrade',${teamId},${createId("hostInstance")},'fixture','https://team.invalid','{}','active')`.execute(
+      database,
+    );
+    const pending = createId("teamAgentRequest"),
+      approving = createId("teamAgentRequest"),
+      released = createId("teamAgentRequest");
+    for (const id of [pending, approving, released])
+      await sql`insert into personal_team_requests(team_deployment_id,request_id,trigger_message_id,local_task_id,local_input_id,kind,remote_state,presentation,consent_expires_at,local_decision,decision_at,source,publication_state)
+        values(${teamId},${id},'1',${id === released ? thread.id : null},${id === released ? input.message.id : null},'ask','awaiting_approval','{}',now()+interval '1 day',
+          ${id === pending ? null : "approve"},case when ${id}=${pending} then null else now() end,'{}','pending')`.execute(
+        database,
+      );
+    await migrateToLatest(database);
+    expect(
+      await database
+        .selectFrom("messages")
+        .select(["revision", "editedAt"])
+        .where("id", "=", input.message.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ revision: 0, editedAt: null });
+    expect(await database.selectFrom("messageRevisions").selectAll().execute()).toEqual([]);
+    expect(
+      await database
+        .selectFrom("threadWorkInputs")
+        .select(["editLeaseId", "editLeaseSessionId", "editLeaseExpiresAt"])
+        .execute(),
+    ).toEqual([{ editLeaseId: null, editLeaseSessionId: null, editLeaseExpiresAt: null }]);
+    const rows = await database.selectFrom("personalTeamRequests").selectAll().execute();
+    expect(rows.find((row) => row.requestId === pending)).toMatchObject({
+      localTaskId: null,
+      approvedRevision: null,
+      releasedAt: null,
+    });
+    expect(rows.find((row) => row.requestId === approving)).toMatchObject({
+      localTaskId: null,
+      approvedRevision: 0,
+      releasedAt: null,
+    });
+    const admitted = rows.find((row) => row.requestId === released)!;
+    expect(admitted.approvedRevision).toBe(0);
+    expect(admitted.releasedAt).toEqual(admitted.decisionAt);
   });
   it("drops stored background model choices from databases made before settings.json held them", async () => {
     await migrateToLatest(database, migrationsBefore(agentHomeSettingsMigrationName));

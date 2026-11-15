@@ -13,12 +13,14 @@ import {
   requestTitleText,
   type AgentEventView as AgentEvent,
   type LiveStreamKey,
+  type MessageEdit,
   type MessageKind,
   type MessageView,
   type Request,
   type RunUsage,
   type ThreadInputPolicy,
   type ThreadInputQueue,
+  type ThreadInputState,
 } from "@opensteer/core";
 import { liveStreamText, type LiveRunView } from "./live-progress.js";
 import type {
@@ -117,7 +119,9 @@ function foldTranscriptOwnEvent(
         : updated;
     }
     case "thread.input-queue-updated":
+    case "thread-input.lease-changed":
     case "thread.state-changed":
+    case "task.removed":
       return [...entries];
     case "run.delivery-updated": {
       const prior = entries.find((entry) => entry.kind === "run" && entry.runId === event.runId);
@@ -477,7 +481,14 @@ function foldTranscriptOwnEvent(
     // while it waited, so its entry leaves the place it was sent from. Only a
     // queued input is ever placed.
     case "message.placed": {
-      const placed = toTranscriptEntry({ ...event.data.message, published: false }, "queue");
+      const placed = toTranscriptEntry(
+        {
+          ...event.data.message,
+          published: false,
+          ...(event.data.edit ? { edit: event.data.edit } : {}),
+        },
+        "queue",
+      );
       const rest = entries.filter((entry) => entry.id !== event.data.message.id);
       const prior = entries.find((entry) => entry.id === event.data.message.id);
       return placed
@@ -496,6 +507,8 @@ function foldTranscriptOwnEvent(
     // injection only records that the active Run accepted it.
     case "message.injected":
       return [...entries];
+    case "message.updated":
+      return withEditedMessage(entries, event.data.message, event.data.edit);
     case "thread-input.updated": {
       const input = event.data.input;
       // A withdrawn message was taken back before any Run could read it, so
@@ -514,12 +527,11 @@ function foldTranscriptOwnEvent(
       // refusal, or a Run that ended first — waits again, held by no Run until
       // one takes it, exactly as a reload reads it.
       const published = threadInputIsPublished(input);
-      const outcome =
-        state === "pending"
-          ? { delivery: null, waiting: true as const }
-          : state === "claimed"
-            ? { delivery: null }
-            : { delivery: threadInputDelivery({ ...input, state }) };
+      const outcome = isWaitingInputState(state)
+        ? { delivery: null, waiting: true as const }
+        : state === "claimed"
+          ? { delivery: null }
+          : { delivery: threadInputDelivery({ ...input, state }) };
       const held = entries.find((entry) => entry.id === input.messageId);
       if (held?.kind === "message") {
         const settled = {
@@ -560,6 +572,45 @@ function foldTranscriptOwnEvent(
         providerSessionId: event.data.thread.providerSessionId,
       });
   }
+}
+
+/**
+ * A message still waiting for a Run: in line, or a teammate's ask awaiting
+ * its owner's approval. Either may be edited, and neither has reached the agent.
+ */
+export function isWaitingInputState(
+  state: ThreadInputState,
+): state is Extract<ThreadInputState, "pending" | "awaiting-approval"> {
+  return state === "pending" || state === "awaiting-approval";
+}
+
+/**
+ * A waiting message rewritten in place keeps its place and lifecycle in the
+ * conversation; only its words, files and edit mark change. Without `edit` the
+ * Host rewrote it (a gathered assignment return), so its edit mark stays. An
+ * entry not loaded stays unloaded: an edit never draws a message.
+ */
+export function withEditedMessage(
+  entries: readonly TranscriptEntry[],
+  message: MessageView,
+  edit: MessageEdit | undefined,
+): TranscriptEntry[] {
+  const held = entries.find((entry) => entry.id === message.id);
+  if (held?.kind !== "message" || (edit && (held.edit?.revision ?? 0) > edit.revision))
+    return [...entries];
+  const mark = edit ?? held.edit;
+  const edited = toMessageEntry({ ...message, ...(mark ? { edit: mark } : {}) }, held.policy);
+  if (!edited) return [...entries];
+  const { places: _places, edit: _edit, ...kept } = held;
+  const next: MessageEntry = {
+    ...kept,
+    attachments: edited.attachments ?? [],
+    body: edited.body,
+    ...(mark ? { edit: mark } : {}),
+    pages: edited.pages ?? [],
+    ...(edited.places ? { places: edited.places } : {}),
+  };
+  return entries.map((entry) => (entry === held ? next : entry));
 }
 
 /**
@@ -1126,6 +1177,7 @@ export function toMessageEntry(
     sequence: message.sequence,
     published: input ? threadInputIsPublished(input) : (message.published ?? true),
     ...(message.quote ? { quote: message.quote } : {}),
+    ...(message.edit ? { edit: message.edit } : {}),
     attachments,
     pages,
     ...(places.length ? { places } : {}),

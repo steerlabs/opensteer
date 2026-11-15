@@ -331,6 +331,11 @@ export async function createTwoHostLinkFixture() {
     return result;
   };
   const admission: TaskAdmissionPort = {
+    async releaseTeamAsk(input) {
+      await (
+        await import("@opensteer/database/task-admission-store")
+      ).releaseTeamAsk(database, input);
+    },
     async admitTeamReturn(input) {
       await admitTeamReturn(database, { ...input, ownerId: personal.userId });
     },
@@ -388,6 +393,15 @@ export async function createTwoHostLinkFixture() {
     async cancelTeamRequest(input) {
       const local = await requests.get(input.teamId, input.requestId);
       if (!local) return;
+      await requests.terminal(input.teamId, input.requestId, local.runId, "cancelled");
+      if (local.publicationState !== "accepted")
+        await requests.publication(
+          input.teamId,
+          input.requestId,
+          "blocked",
+          null,
+          input.reason ?? "The team request was cancelled.",
+        );
       if (local.runId)
         await database
           .updateTable("runs")

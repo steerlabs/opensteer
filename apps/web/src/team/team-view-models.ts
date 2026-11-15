@@ -1,6 +1,7 @@
 import type { TeamPerson } from "@opensteer/client/team";
-import { teamAskStatuses } from "@opensteer/client/team";
+import { teamAskOwnerControl, teamAskStatuses } from "@opensteer/client/team";
 import type {
+  NeedsYouPage,
   TeamAgentRequest,
   TeamChannel,
   TeamMessage,
@@ -10,6 +11,7 @@ import type { TeamSidebar, TeamTimeline } from "@opensteer/client/team";
 import type { z } from "zod";
 import type {
   AgentRequestView,
+  AskStatusView,
   AuthorView,
   ChannelKind,
   ChannelRowView,
@@ -39,6 +41,11 @@ export interface TeamWords {
   readonly linkOnline: ReadonlyMap<string, boolean>;
   readonly previews: ReadonlyMap<string, string>;
   readonly managedChannels: ReadonlySet<string>;
+  /**
+   * The viewer's own Opensteer, where asks to their agent wait: with it, an
+   * ask awaiting them gets their control in place of its status line.
+   */
+  readonly asks?: { readonly teamId: string; readonly needsYou: NeedsYouPage | null } | undefined;
 }
 
 export function person(words: TeamWords, userId: string): PersonView {
@@ -250,10 +257,10 @@ export function messageView(
     : undefined;
   const replies = message.replySummary;
   return {
-    askStatuses: teamAskStatuses(
+    askStatuses: askStatusViews(
+      words,
       [...(options.requests ?? []), ...message.requests],
       message.id,
-      (id) => person(words, id).name,
     ),
     id: message.id,
     author: author(words, message),
@@ -289,6 +296,33 @@ export function messageView(
     canEdit: mine && !message.deletedAt,
     canDelete: (mine || words.managedChannels.has(message.channelId)) && !message.deletedAt,
   };
+}
+
+function askStatusViews(
+  words: TeamWords,
+  requests: readonly TeamAgentRequest[],
+  messageId: string,
+): readonly AskStatusView[] {
+  const statuses = teamAskStatuses(requests, messageId, (id) => person(words, id).name);
+  const { asks } = words;
+  if (!asks) return statuses;
+  return statuses.map((status) => {
+    const request = requests
+      .filter((row) => row.id === status.id)
+      .reduce<TeamAgentRequest | null>(
+        (latest, row) =>
+          !latest || BigInt(row.changeSeq) >= BigInt(latest.changeSeq) ? row : latest,
+        null,
+      );
+    if (!request) return status;
+    const control = teamAskOwnerControl({
+      needsYou: asks.needsYou,
+      request,
+      teamId: asks.teamId,
+      viewerUserId: words.viewerUserId,
+    });
+    return control.kind === "none" ? status : { ...status, control };
+  });
 }
 
 /** A message the server has not confirmed yet, drawn from what was sent. */

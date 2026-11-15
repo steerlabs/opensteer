@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 import { ContextMenu } from "../../modules/context-menu/index.js";
 import {
   LinkHoldContext,
@@ -59,7 +59,14 @@ export function HoldMenu(props: HoldMenuProps): ReactNode {
         }}
       >
         <LinkHoldContext.Provider value={links ? hold : null}>
-          {props.children}
+          {props.onPress === undefined ? (
+            props.children
+          ) : (
+            // The system's hold cancels this touch, so a hold never also taps.
+            <Pressable accessible={false} onPress={props.onPress}>
+              {props.children}
+            </Pressable>
+          )}
         </LinkHoldContext.Provider>
       </View>
       {props.actions.length === 0 ? null : (

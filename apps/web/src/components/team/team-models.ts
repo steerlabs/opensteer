@@ -3,6 +3,8 @@
  * records onto these; the components never read a client or a route.
  */
 
+import type { TeamAskOwnerControl } from "@opensteer/client/team";
+
 export type Presence = "active" | "away";
 
 /** A member as the viewer sees them. */
@@ -129,8 +131,16 @@ export interface AgentRequestView {
     | { readonly kind: "cannot-post" };
 }
 
+/** A teammate's ask under its message: the line everyone reads, or its owner's way to answer. */
+export interface AskStatusView {
+  readonly id: string;
+  readonly label: string;
+  /** Only the owner's, in place of "Waiting for <them>" (`teamAskOwnerControl`). */
+  readonly control?: Exclude<TeamAskOwnerControl, { readonly kind: "none" }>;
+}
+
 export interface MessageView {
-  readonly askStatuses?: readonly { id: string; label: string }[];
+  readonly askStatuses?: readonly AskStatusView[];
   readonly id: string;
   readonly author: AuthorView;
   readonly at: string;

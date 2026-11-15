@@ -672,6 +672,7 @@ function Focused(props: {
                 // Another Thread is another conversation: its draft, stream and
                 // scroll are its own.
                 key={companion.threadId}
+                onGone={closeCompanion}
                 onHeader={onHeader}
                 onOpenThread={(id) =>
                   navigation.dispatch(StackActions.push("Thread", { deploymentId, threadId: id }))

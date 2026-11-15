@@ -1,3 +1,14 @@
+import { executionDate } from "./personal-transaction.js";
+import {
+  liveInputLease,
+  inputEditEligibility,
+  inputLeaseBarrier,
+  assertInputLease,
+  lockInputQueueProjection,
+  advanceThreadQueue,
+  clearInputLease,
+  leaseChangedEvent,
+} from "./waiting-inputs.js";
 import { compactionIsEligible } from "./compaction-eligibility.js";
 import { freshContextBoundary } from "./fresh-context.js";
 import { threadAllowsPersonalContext } from "./run-personal-context.js";
@@ -94,6 +105,8 @@ import type {
 } from "./schema.js";
 import {
   messageFromRow,
+  messageViewFromRow,
+  messageEditFromRow,
   runFromRow,
   threadFromRow,
   threadPendingRequestsSelection,
@@ -251,6 +264,16 @@ export async function readThreadInputQueue(
           )
           .execute();
   const byId = new Map(messages.map((message) => [message.id, message]));
+  const editEligibility = new Map<MessageId, boolean>();
+  for (const row of rows) {
+    const message = byId.get(row.messageId);
+    editEligibility.set(
+      row.messageId,
+      !request.authority &&
+        Boolean(message) &&
+        (await inputEditEligibility(transaction, thread, row, message!, request.requestedBy)),
+    );
+  }
   return {
     threadId: thread.id,
     paused: thread.inputQueuePaused,
@@ -258,10 +281,14 @@ export async function readThreadInputQueue(
     items: rows.map((row) => {
       const message = byId.get(row.messageId);
       if (!message) throw new Error("Pending input lost its message");
-      const own = canManageQueuedInput(row, request);
+      const own =
+        row.state === "pending" && !row.teamRequestId && canManageQueuedInput(row, request);
+      const eligible = editEligibility.get(row.messageId) === true;
       return {
-        message: messageFromRow(message),
+        message: messageViewFromRow(message),
         input: threadInputFromRow(row),
+        canEdit: eligible,
+        lease: liveInputLease(transaction, row),
         canCancel: own && thread.status !== "archived",
         canMove: own && thread.status !== "archived",
         canSteer: Boolean(
@@ -444,7 +471,12 @@ async function claimFollowUps(
     .where("threadId", "=", thread.id)
     .where("state", "=", "pending")
     .where("policy", "=", "queue")
-    .where("freshContext", "=", true)
+    .where((eb) =>
+      eb.or([
+        eb("freshContext", "=", true),
+        eb("editLeaseExpiresAt", ">", executionDate(transaction)),
+      ]),
+    )
     .orderBy("queueRank", "asc")
     .limit(1)
     .executeTakeFirst();
@@ -902,7 +934,7 @@ export async function steerThreadInputInTransaction(
       code: "conflict",
       message: "The target Run is no longer available",
     });
-  await lockThreadRow(transaction, request.threadId);
+  await lockInputQueueProjection(transaction, request.threadId);
   await requirePersonalOwner(transaction, request.requestedBy);
   const thread = await transaction
     .selectFrom("threads")
@@ -944,6 +976,7 @@ export async function steerThreadInputInTransaction(
       throw idempotencyConflict(request.idempotencyKey);
     return replayThreadInput(transaction, row);
   }
+  assertInputLease(transaction, row, row.editLeaseId ?? undefined, request.sessionId);
   if (row.freshContext)
     throw new OpensteerError({
       code: "bad_request",
@@ -1022,9 +1055,13 @@ export async function steerThreadInputInTransaction(
     })
     .returningAll()
     .executeTakeFirstOrThrow();
+  const leaseEvent = row.editLeaseId
+    ? await leaseChangedEvent(transaction, thread, row.messageId, null)
+    : null;
   const promoted = await transaction
     .updateTable("threadInputs")
     .set({
+      ...clearInputLease,
       state: "claimed",
       runId: run.id,
       steerCommandId: command.id,
@@ -1054,7 +1091,7 @@ export async function steerThreadInputInTransaction(
   const revokedGrants = route === "restart" ? await supersedeForRestart(transaction, run.id) : [];
   return {
     ...(await replayThreadInput(transaction, promoted)),
-    events: [placed, event],
+    events: [...(leaseEvent ? [leaseEvent] : []), placed, event],
     revokedGrants,
     wasDuplicate: false,
   };
@@ -1083,7 +1120,7 @@ export async function moveThreadInputInTransaction(
       code: "not_found",
       message: "Task not found",
     });
-  await lockThreadRow(transaction, request.threadId);
+  await lockInputQueueProjection(transaction, request.threadId);
   const thread = await transaction
     .selectFrom("threads")
     .selectAll()
@@ -1119,12 +1156,15 @@ export async function moveThreadInputInTransaction(
       wasDuplicate: true,
     };
   }
+  assertInputLease(transaction, row, row.editLeaseId ?? undefined, request.sessionId);
   if (thread.status === "archived")
     throw new OpensteerError({
       code: "conflict",
       message: "Archived tasks cannot run",
     });
-  const waiting = await waitingThreadInputs(transaction, thread.id);
+  const waiting = (await waitingThreadInputs(transaction, thread.id)).filter(
+    (row) => row.state === "pending",
+  );
   const moving = waiting.find((input) => input.messageId === request.messageId);
   const before =
     request.beforeMessageId === null
@@ -1187,8 +1227,10 @@ export async function moveThreadInputInTransaction(
     threadId: thread.id,
     type: "thread.input-queue-updated",
   });
+  const advanced = await advanceThreadQueue(transaction, thread);
   return {
-    events: [event],
+    ...advanced,
+    events: [event, ...advanced.events],
     wasDuplicate: false,
   };
 }
@@ -1214,7 +1256,7 @@ export async function cancelThreadInputInTransaction(
       code: "not_found",
       message: "Task not found",
     });
-  await lockThreadRow(transaction, request.threadId);
+  await lockInputQueueProjection(transaction, request.threadId);
   const thread = await transaction
     .selectFrom("threads")
     .selectAll()
@@ -1251,6 +1293,7 @@ export async function cancelThreadInputInTransaction(
       wasDuplicate: true,
     };
   }
+  assertInputLease(transaction, row, row.editLeaseId ?? undefined, request.sessionId);
   if (thread.status === "archived")
     throw new OpensteerError({
       code: "conflict",
@@ -1290,6 +1333,7 @@ export async function cancelThreadInputInTransaction(
   const cancelled = await transaction
     .updateTable("threadInputs")
     .set({
+      ...clearInputLease,
       cancelReason: "withdrawn",
       state: "cancelled",
       updatedAt: new Date(),
@@ -1307,8 +1351,10 @@ export async function cancelThreadInputInTransaction(
     threadId: thread.id,
     type: "thread-input.updated",
   });
+  const advanced = await advanceThreadQueue(transaction, thread);
   return {
-    events: [event],
+    ...advanced,
+    events: [event, ...advanced.events],
     input,
     wasDuplicate: false,
   };
@@ -2285,7 +2331,7 @@ interface ResolvedThreadInputFacts {
   readonly memoryPass?: true;
 }
 
-async function assertThreadInputCapacity(
+export async function assertThreadInputCapacity(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
   contentBytes: number,
@@ -2300,7 +2346,7 @@ async function assertThreadInputCapacity(
       sql<string>`coalesce(sum(octet_length(messages.content::text)), 0)`.as("bytes"),
     ])
     .where("threadInputs.threadId", "=", threadId)
-    .where("threadInputs.state", "in", ["pending", "claimed", "unknown"])
+    .where("threadInputs.state", "in", ["awaiting-approval", "pending", "claimed", "unknown"])
     .where("threadInputs.policy", policy === "report" ? "=" : "!=", "report")
     .$if(replacingMessageId !== undefined, (query) =>
       query.where("threadInputs.messageId", "!=", replacingMessageId!),
@@ -2869,7 +2915,8 @@ export async function enqueueThreadInputInTransaction(
     policy === "queue" &&
     activeRun?.phase === "background" &&
     activeRun.harnessInstanceId === thread.harnessInstanceId &&
-    isDeepStrictEqual(activeRun.modelSelection, thread.modelSelection);
+    isDeepStrictEqual(activeRun.modelSelection, thread.modelSelection) &&
+    !(await inputLeaseBarrier(transaction, thread.id, thread.nextMessageSequence));
   const route =
     (policy === "steer" || joinsBackground) &&
     !thread.inputQueuePaused &&
@@ -2989,6 +3036,15 @@ export async function enqueueThreadInputInTransaction(
       .returningAll()
       .executeTakeFirstOrThrow();
   }
+  const askGate = request.teamRequest
+    ? await transaction
+        .selectFrom("personalTeamRequests")
+        .select(["kind", "releasedAt"])
+        .where("teamDeploymentId", "=", request.teamRequest.source.teamId)
+        .where("requestId", "=", request.teamRequest.id)
+        .executeTakeFirst()
+    : null;
+  const gated = askGate?.kind === "ask" && !askGate.releasedAt;
   const inputRow = await transaction
     .insertInto("threadInputs")
     .values({
@@ -3029,7 +3085,13 @@ export async function enqueueThreadInputInTransaction(
       requestFingerprint,
       ...(request.freshContext ? { freshContext: true } : {}),
       runId: steerRun?.id ?? null,
-      state: executionValid ? (steer ? "claimed" : "pending") : "cancelled",
+      state: executionValid
+        ? gated
+          ? "awaiting-approval"
+          : steer
+            ? "claimed"
+            : "pending"
+        : "cancelled",
       steerCommandId,
       threadId: thread.id,
       updatedAt: new Date(),
@@ -3163,7 +3225,13 @@ export async function enqueueThreadInputInTransaction(
         : finalInput.state === "cancelled"
           ? "cancelled"
           : "pending",
-    events: [...passEvents, messageEvent, ...handed.events, ...(queued?.events ?? [])],
+    events: [
+      ...passEvents,
+      messageEvent,
+      ...handed.events,
+      ...(queued?.events ?? []),
+      ...(gated ? await projectThreadState(transaction, thread.id) : []),
+    ],
     input: finalInput,
     message,
     revokedGrants: handed.revokedGrants,
@@ -3195,9 +3263,10 @@ async function resolveThreadInputFacts(
       .executeTakeFirstOrThrow();
     const asker =
       mirror.kind === "ask" &&
-      mirror.localDecision === "approve" &&
-      ["queued", "working", "needs_you"].includes(mirror.remoteState) &&
-      !mirror.terminalState
+      mirror.localDecision !== "decline" &&
+      !mirror.terminalState &&
+      mirror.consentExpiresAt !== null &&
+      (mirror.localDecision === "approve" || mirror.consentExpiresAt > executionDate(transaction))
         ? mirror.presentation?.asker
         : mirror.kind === "return"
           ? mirror.returnPayload?.author
@@ -3522,7 +3591,7 @@ async function resolveThreadInputFacts(
           .select("messageId")
           .where("threadId", "=", worker.id)
           .where("policy", "!=", "report")
-          .where("state", "in", ["pending", "claimed", "unknown"])
+          .where("state", "in", ["awaiting-approval", "pending", "claimed", "unknown"])
           .executeTakeFirst(),
       ]);
       if (
@@ -3918,7 +3987,7 @@ export async function ensureQueuedRun(
       .where("threadInputs.state", "=", "pending")
       .orderBy("threadInputs.queueRank", "asc")
       .executeTakeFirst();
-    if (!candidate)
+    if (!candidate || (await inputLeaseBarrier(transaction, thread.id, candidate.queueRank)))
       return {
         command: null,
         events,
@@ -4211,7 +4280,7 @@ async function waitingThreadInputs(
     .selectAll()
     .where("threadId", "=", threadId)
     .where("policy", "=", "queue")
-    .where("state", "=", "pending")
+    .where("state", "in", ["pending", "awaiting-approval"])
     .where(({ not, exists, selectFrom }) =>
       not(
         exists(
@@ -4222,6 +4291,7 @@ async function waitingThreadInputs(
         ),
       ),
     )
+    .orderBy(sql`case when state = 'awaiting-approval' then 1 else 0 end`)
     .orderBy("queueRank", "asc")
     .limit(threadInputMaxPendingEntries)
     .execute();
@@ -4269,6 +4339,7 @@ async function placeQueuedMessage(
   return appendHostDeploymentEvent(transaction, {
     data: {
       message: messageFromRow(placed),
+      ...(messageEditFromRow(placed) ? { edit: messageEditFromRow(placed) } : {}),
     },
     environmentId: thread.environmentId,
     runId,
@@ -4618,7 +4689,7 @@ async function rewriteAssignmentReturn(
       environmentId: parent.environmentId,
       runId: null,
       threadId: input.threadId,
-      type: "message.created",
+      type: "message.updated",
     }),
   );
   return events;

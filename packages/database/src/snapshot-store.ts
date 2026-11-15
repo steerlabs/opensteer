@@ -66,7 +66,7 @@ import {
   threadProviderSessionSelection,
   threadContinuationIdentitySelection,
   threadsFromRows,
-  messageFromRow,
+  messageViewFromRow,
   threadRunQueueEntriesFromRows,
   threadFromRow,
   executionNodeFromRow,
@@ -398,7 +398,7 @@ export async function deploymentSnapshot(
       );
       let messagesDesc = boundedSerializedPrefix(
         messageRows.slice(0, maxMessages).map(({ policy, published, ...row }): MessageView => ({
-          ...messageFromRow(row),
+          ...messageViewFromRow(row),
           ...(row.addressedToUserId
             ? {
                 addressedToUserId: row.addressedToUserId,

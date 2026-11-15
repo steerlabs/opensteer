@@ -196,6 +196,7 @@ export const databaseLockOrder = [
   "commands",
   "thread_inputs",
   "messages",
+  "message_revisions",
   "personal_team_requests",
   "integration_request_details",
   // Tool/skill projections follow complete authority and Request settlement.

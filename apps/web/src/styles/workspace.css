@@ -1149,6 +1149,11 @@ button.side-needs:hover {
   margin-top: 1px;
 }
 
+.side-task__dismiss {
+  flex: none;
+  margin-right: var(--space-6);
+}
+
 .side-task__text {
   display: grid;
   flex: 1;

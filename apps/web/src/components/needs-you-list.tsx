@@ -17,6 +17,23 @@ export function NeedsYouList({
   const page = useHostSelector(client, (snapshot) => snapshot.needsYou);
   const [loading, setLoading] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const [dismissing, setDismissing] = useState<string | null>(null);
+  // A failed ask is answered nowhere; dismissing declines it.
+  const dismiss = async (entry: Extract<NeedsYouEntry, { kind: "team-ask" }>) => {
+    setDismissing(needsYouEntryKey(entry));
+    setFailure(null);
+    try {
+      await client.decideTeamAsk({
+        decision: "decline",
+        requestId: entry.requestId,
+        teamId: entry.teamId,
+      });
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : "Could not dismiss it.");
+    } finally {
+      setDismissing(null);
+    }
+  };
   const loadMore = async () => {
     setLoading(true);
     setFailure(null);
@@ -33,7 +50,15 @@ export function NeedsYouList({
       {page?.entries.length === 0 ? <p>Nothing needs you.</p> : null}
       <ul className="side-list" aria-label="Needs you">
         {page?.entries.map((entry) => (
-          <NeedsYouRow entry={entry} key={needsYouEntryKey(entry)} onOpen={() => onOpen(entry)} />
+          <NeedsYouRow
+            dismissing={dismissing === needsYouEntryKey(entry)}
+            entry={entry}
+            key={needsYouEntryKey(entry)}
+            onDismiss={() => {
+              if (entry.kind === "team-ask") void dismiss(entry);
+            }}
+            onOpen={() => onOpen(entry)}
+          />
         ))}
       </ul>
       {failure ? <p role="alert">{failure}</p> : null}

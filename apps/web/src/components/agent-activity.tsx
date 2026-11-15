@@ -126,6 +126,7 @@ import { TaskMark, AgentOrb } from "./workspace/task-mark.js";
 import { automationPath, useMediaQuery } from "../ui-utils.js";
 import { AreaLink } from "./workspace/area-link.js";
 import { DelegationLine } from "./task-line.js";
+import { EditedMark } from "./message-revisions.js";
 import { AgentFolds, AgentGroupRow, AgentRow, AgentsLive, WorkflowRow } from "./subagent-rows.js";
 
 // Fetched with this module, not when a reply is first drawn: until it lands a
@@ -2170,6 +2171,35 @@ function SteerMark() {
   );
 }
 
+/**
+ * The edit mark on a message a Run took, which still opens its versions; a
+ * waiting message's row carries its own. Without a Host to ask, only the words.
+ */
+function TranscriptEditMark({
+  label,
+  message,
+  viewerUserId,
+}: {
+  label: string;
+  message: MessageEntry & { edit: NonNullable<MessageEntry["edit"]> };
+  viewerUserId: string | null;
+}) {
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
+  return client && threadId ? (
+    <EditedMark
+      client={client}
+      edit={message.edit}
+      label={label}
+      messageId={message.id}
+      threadId={threadId}
+      viewerUserId={viewerUserId}
+    />
+  ) : (
+    label
+  );
+}
+
 /** The reader's own message: their words in full, folded only once they run long. */
 function OwnMessage({
   message,
@@ -2202,6 +2232,13 @@ function OwnMessage({
         <div className={arrived ? "msg--user-line msg--user-line--arrived" : "msg--user-line"}>
           {queued ? null : (
             <div className="reply__marks">
+              {message.edit ? (
+                <TranscriptEditMark
+                  label="Edited"
+                  message={{ ...message, edit: message.edit }}
+                  viewerUserId={viewerUserId}
+                />
+              ) : null}
               <CopyMark label="Copy message" text={message.body} />
             </div>
           )}
@@ -2436,7 +2473,23 @@ function InputMessage({
           ) : (
             <span className="input-card__sender">{sender}</span>
           )}
-          {action ? <span className="input-card__action">{action}</span> : null}
+          {action ? (
+            <span className="input-card__action">{action}</span>
+          ) : message.edit?.ownerEdited ? (
+            // An ask its owner reworded before approving is no longer only its sender's words.
+            <span className="input-card__action">
+              ·{" "}
+              {queued ? (
+                "edited by you"
+              ) : (
+                <TranscriptEditMark
+                  label="edited by you"
+                  message={{ ...message, edit: message.edit }}
+                  viewerUserId={viewerUserId}
+                />
+              )}
+            </span>
+          ) : null}
           {message.body && !queued ? (
             <CopyMark className="input-card__copy" label="Copy message" text={message.body} />
           ) : null}

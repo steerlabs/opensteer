@@ -28,7 +28,14 @@ const deepLink = buildMobileThreadDeepLink({ deploymentId, requestId, threadId }
 const push = (data: unknown) => ({ data });
 
 describe("notificationDestination", () => {
-  it("opens taskless consent in Needs you and keeps it visible while reading a task", async () => {
+  it("opens a teammate's ask in the task it waits in, and one without a task in Needs you", async () => {
+    const inTask = buildMobileThreadDeepLink({ deploymentId, requestId: null, threadId });
+    expect(notificationDestination(push({ deepLink: inTask, kind: "team-ask" }))).toMatchObject({
+      kind: "thread",
+      deploymentId,
+      requestId: null,
+      threadId,
+    });
     const link = buildMobileNeedsYouDeepLink(deploymentId);
     const payload = push({ deepLink: link, threadId, deploymentId: otherDeploymentId });
     expect(notificationDestination(payload)).toEqual({

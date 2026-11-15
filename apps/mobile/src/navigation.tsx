@@ -59,6 +59,7 @@ import { NewThreadScreen, ThreadSettingsScreen } from "./screens/thread-settings
 import { RunningNowScreen } from "./screens/running-now.js";
 import { SubagentScreen } from "./screens/subagent.js";
 import { ThreadStepScreen } from "./screens/thread-step.js";
+import { MessageHistoryScreen } from "./screens/message-history.js";
 import { ThreadScreen } from "./screens/thread.js";
 import { WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
 import { SidebarShell } from "./sidebar/sidebar-shell.js";
@@ -332,6 +333,18 @@ const RootStack = createNativeStackNavigator({
         sheetAllowedDetents: [0.6, 0.95],
         sheetGrabberVisible: true,
         title: "Around this thread",
+      },
+    },
+    // Every version of a message edited while it waited, from its "Edited"
+    // mark. It is as tall as its versions, so the conversation stays in view.
+    MessageHistory: {
+      screen: MessageHistoryScreen,
+      options: {
+        headerShown: false,
+        presentation: screenPresentations.MessageHistory,
+        sheetAllowedDetents: "fitToContents",
+        sheetGrabberVisible: true,
+        title: "Edit history",
       },
     },
     // Running now: what works for a conversation at this moment, from the
@@ -762,6 +775,11 @@ type OpensteerRootParamList = {
     readonly threadId: string;
   };
   readonly RunningNow: { readonly deploymentId: string; readonly threadId: string };
+  readonly MessageHistory: {
+    readonly deploymentId: string;
+    readonly messageId: string;
+    readonly threadId: string;
+  };
   readonly Subagent: {
     readonly deploymentId: string;
     readonly nodeId: string;

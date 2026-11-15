@@ -366,6 +366,57 @@ describe("MockHostClient", () => {
     await first;
   });
 
+  it("edits a person's queued message in place under its lease, keeping every version", async () => {
+    const client = createClient();
+    const thread = await client.createThread(threadInput(client));
+    const first = sendMessage(client, thread.id, "First turn");
+    const queued = unwrapSend(await sendMessage(client, thread.id, "Draft the reply"));
+    const editor = await client.editWaitingMessage(thread.id, queued.message.id);
+    expect(client.getSnapshot().inputQueues[thread.id]?.items[0]).toMatchObject({
+      canEdit: true,
+      lease: { leaseId: editor.leaseId },
+    });
+    const content = [{ text: "Draft a shorter reply", type: "text" as const }];
+    await expect(editor.save(content, 0)).resolves.toEqual({
+      editedAt: fixedNow.toISOString(),
+      revision: 1,
+    });
+    expect(client.getSnapshot().inputQueues[thread.id]?.items[0]).toMatchObject({
+      lease: null,
+      message: { content, edit: { revision: 1 } },
+    });
+    expect(
+      client.getSnapshot().transcripts[thread.id]?.find(({ id }) => id === queued.message.id),
+    ).toMatchObject({ body: "Draft a shorter reply", edit: { revision: 1 } });
+    const { revisions } = await client.listMessageRevisions(thread.id, queued.message.id);
+    expect(revisions.map(({ deviceLabel, revision }) => [revision, deviceLabel])).toEqual([
+      [1, "Chrome on Mac"],
+      [0, null],
+    ]);
+    await first;
+    client.dispose();
+  });
+
+  it("holds the queue at a message another device is editing until its lease ends", async () => {
+    const client = createClient();
+    try {
+      const thread = await client.createThread(threadInput(client));
+      vi.useFakeTimers();
+      const first = sendMessage(client, thread.id, "First turn");
+      const queued = unwrapSend(await sendMessage(client, thread.id, "Then this"));
+      client.mockOtherDeviceEdit(thread.id, queued.message.id, "iPhone");
+      // The first turn's scripted reply plays out well inside the lease's two minutes.
+      await vi.advanceTimersByTimeAsync(60_000);
+      await first;
+      expect(client.getSnapshot().inputQueues[thread.id]?.items).toHaveLength(1);
+      await client.releaseWaitingMessage(thread.id, queued.message.id);
+      expect(client.getSnapshot().inputQueues[thread.id]?.items ?? []).toHaveLength(0);
+    } finally {
+      client.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it("dispatches thread.input.steer and thread.input.cancel with typed results and refusals", async () => {
     const client = createClient();
     const thread = await client.createThread(threadInput(client));

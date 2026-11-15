@@ -32,6 +32,18 @@ resent automatically, even after Run termination or Host restart. A Run uses its
 authority, never later work's. Reports must match requester and reply target,
 and are not exactly-once: only provider acceptance confirms consumption.
 
+Waiting owner messages and personal copies of team asks may be edited until a Run reserves or
+claims them. Generated inputs are immutable. Saves append revisions (including the original on
+the first edit), preserve enqueue identity and never publish a waiting message into the transcript.
+Only existing non-text parts may be retained or removed. History remains on the personal Host.
+
+An edit lease belongs to one device session for two minutes after its last renewal. Every implicit
+take stops at the first live lease; explicit owner steer and move may pass it but cannot take its
+message from another session. Expiry counts as absence at every decision, using the execution
+clock; reconciliation resumes otherwise idle queues. Approval freezes a team ask's reviewed
+revision until acceptance either releases that exact revision or terminates the ask. See
+[Teams](teams.md#one-agent-owned-by-one-person) for consent and task lifetime.
+
 In work Threads, Stop pauses admission before interrupting, cancels the Run's live Requests and
 settles it as interrupted even if another outcome races it. Recovery never restarts stopped work.
 Only the owner can Resume, and Resume grants no execution: each input keeps its requester's

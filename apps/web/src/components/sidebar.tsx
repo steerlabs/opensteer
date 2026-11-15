@@ -1,6 +1,4 @@
-import { NeedsYouRow } from "./needs-you-row.js";
 import { NeedsYouList } from "./needs-you-list.js";
-import { TeamAskReview } from "./team-ask-review.js";
 import { placeByKey } from "@opensteer/client/host";
 import { DesktopUpdateButton } from "./desktop-update-button.js";
 import { PendingBrowserTabRows } from "./workspace/pending-browser-tab.js";
@@ -41,7 +39,6 @@ import {
   describeHostConnection,
   listedRowThreadId,
   doneDays,
-  needsYouEntryKey,
   doneTaskList,
   quietlyMoved,
   quietSeenScope,
@@ -418,10 +415,7 @@ export function Sidebar({
     [onCloseMobile],
   );
   const [needsYouOpen, setNeedsYouOpen] = useState(false);
-  const [reviewAskKey, setReviewAskKey] = useState<string | null>(null);
   const needsYouPage = useHostSelector(hostClient, (current) => current.needsYou);
-  const teamAsks = needsYouPage?.entries.filter((entry) => entry.kind === "team-ask") ?? [];
-  const reviewAsk = teamAsks.find((entry) => needsYouEntryKey(entry) === reviewAskKey);
   const needsYouCount = needsYouPage?.count ?? 0;
   const openNeedsYou = useCallback(() => setNeedsYouOpen(true), []);
   const handledNeedsYouNotification = useRef<string | null>(null);
@@ -491,7 +485,6 @@ export function Sidebar({
         ...(doneMore ? ["show-more"] : []),
       ]
     : [
-        ...teamAsks.map(needsYouEntryKey),
         ...rows.map((row) => row.threadId),
         ...(list.hasMore ? ["show-more"] : []),
         ...(doneLine ? ["done-shelf"] : []),
@@ -511,7 +504,11 @@ export function Sidebar({
   const taskRow = (row: TaskRow) => (
     <TaskRowItem
       hostClient={hostClient}
-      ask={directory.attentionByThread.get(row.threadId)?.title ?? null}
+      ask={
+        directory.attentionByThread.get(row.threadId)?.title ??
+        // A teammate's ask waiting in the task: who asked, and what.
+        (row.tone === "needs-you" && row.line ? row.line : null)
+      }
       key={row.threadId}
       onDiscardDraft={discardDraft}
       onNavigate={onCloseMobile}
@@ -671,33 +668,23 @@ export function Sidebar({
       onKeyDown={handleKeyDown}
       ref={sidebarRef}
     >
-      {needsYouOpen && !reviewAsk ? (
+      {needsYouOpen ? (
         <NeedsYouList
           client={hostClient}
           onClose={() => setNeedsYouOpen(false)}
           onOpen={(entry) => {
-            if (entry.kind === "team-ask") setReviewAskKey(needsYouEntryKey(entry));
-            else {
-              setNeedsYouOpen(false);
-              onCloseMobile();
+            setNeedsYouOpen(false);
+            onCloseMobile();
+            // A teammate's ask waits in its task, where it is answered.
+            if (entry.kind === "team-ask") {
+              if (entry.task) nav.openConversation(nav.threadPath(entry.task.threadId));
+            } else
               nav.openConversation(nav.threadPath(entry.navigationThreadId), {
                 focusRequest: entry.request.id,
               });
-            }
           }}
         />
       ) : null}
-      {reviewAsk
-        ? createPortal(
-            <TeamAskReview
-              key={needsYouEntryKey(reviewAsk)}
-              entry={reviewAsk}
-              client={hostClient}
-              onClose={() => setReviewAskKey(null)}
-            />,
-            document.body,
-          )
-        : null}
       <div className="sidebar__header">
         <h1 className="sidebar__title">Opensteer</h1>
         <VoiceButton onOpen={openVoice} />
@@ -851,13 +838,6 @@ export function Sidebar({
                         ...(doneMore ? [showMore] : []),
                       ]
                     : [
-                        ...teamAsks.map((entry) => (
-                          <NeedsYouRow
-                            entry={entry}
-                            key={needsYouEntryKey(entry)}
-                            onOpen={() => setReviewAskKey(needsYouEntryKey(entry))}
-                          />
-                        )),
                         ...rows.map((row) => taskRow(row)),
                         ...(list.hasMore ? [showMore] : []),
                         ...(doneLine

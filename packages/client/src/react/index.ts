@@ -1,6 +1,7 @@
 export * from "./use-host-snapshot.js";
 export * from "./use-computer-use-stop.js";
 export * from "./use-thread-input-queue.js";
+export * from "./use-waiting-inputs.js";
 export * from "./use-conversation-surfaces.js";
 export * from "./use-browser-popup-follow.js";
 export * from "./use-places.js";

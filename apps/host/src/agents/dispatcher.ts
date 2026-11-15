@@ -718,6 +718,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       inputs: context.inputs.map((message) =>
         HarnessInputSchema.parse({
           author: message.author,
+          ...(message.ownerEdited ? { ownerEdited: true } : {}),
           content: message.content,
           createdAt: message.createdAt,
           kind: message.kind,
@@ -733,6 +734,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         messages: context.reports.messages.map((message) =>
           HarnessInputSchema.parse({
             author: message.author,
+            ...(message.ownerEdited ? { ownerEdited: true } : {}),
             content: message.content,
             createdAt: message.createdAt,
             kind: message.kind,
@@ -1008,6 +1010,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           ...base,
           input: HarnessInputSchema.parse({
             author: steer.message.author,
+            ...(steer.message.ownerEdited ? { ownerEdited: true } : {}),
             content: steer.message.content,
             createdAt: steer.message.createdAt,
             kind: steer.message.kind,

@@ -209,8 +209,10 @@ function queuedItem(text: string): ThreadInputQueue["items"][number] {
   const messageId = createId("message");
   return {
     canCancel: true,
+    canEdit: true,
     canMove: true,
     canSteer: true,
+    lease: null,
     input: {
       teamRequestId: null,
       teamSource: null,
@@ -304,3 +306,24 @@ function baseSnapshot(): HostSnapshot {
     user: null,
   };
 }
+
+it.each([0, 1, 2])(
+  "preserves a newer lease when a delayed revision %i save is acknowledged",
+  (revision) => {
+    const item = queuedItem("Edited on phone");
+    const edit = { revision: 1, editedAt: now, ownerEdited: true as const };
+    const lease = { leaseId: "newer-lease", deviceLabel: "Phone", expiresAt: now };
+    const snapshot = withQueue(baseSnapshot(), {
+      steerRunId: null,
+      items: [{ ...item, message: { ...item.message, edit }, lease }],
+    });
+    const result = applyOptimisticCommandPatch(snapshot, {
+      type: "thread.input.edit",
+      threadId,
+      leaseId: "saved-under-old-lease",
+      message: item.message,
+      edit: { ...edit, revision },
+    });
+    expect(result.inputQueues[threadId]!.items[0]!.lease).toEqual(lease);
+  },
+);

@@ -58,6 +58,8 @@ function AttachedThread(props: {
         onHeader={props.onHeader}
         messageId={props.messageId ?? null}
         onAnchorReleased={() => navigation.setParams({ messageId: undefined })}
+        // Home is under every task, so a task that isn't there always has somewhere to go back to.
+        onGone={() => navigation.dispatch(StackActions.pop())}
         // Pushed: navigating to Thread from a Thread would replace this one,
         // and Back would skip past it.
         onOpenThread={(id) =>

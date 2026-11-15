@@ -13,6 +13,8 @@ export interface HoldMenuProps {
   readonly actions: readonly LinkAction[];
   readonly children: ReactNode;
   readonly onAction: (id: string) => void;
+  /** A tap, where the bubble does something of its own, such as open to be edited. */
+  readonly onPress?: (() => void) | undefined;
   /** The corner the lifted view is cut to, on a platform that lifts it. */
   readonly previewRadius: number;
   readonly previewBottomEndRadius?: number | undefined;
@@ -56,6 +58,7 @@ export function HoldMenu(props: HoldMenuProps): ReactNode {
       android_disableSound
       delayLongPress={300}
       onAccessibilityAction={(event) => onAction(event.nativeEvent.actionName)}
+      onPress={props.onPress}
       onLongPress={() => {
         if (props.actions.length === 0) return;
         void Haptics.selectionAsync();

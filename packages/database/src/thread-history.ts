@@ -13,7 +13,7 @@ import type { ThreadMessagePage } from "@opensteer/protocol";
 import { sql, type Kysely } from "kysely";
 import { z } from "zod";
 import type { DatabaseSchema } from "./schema.js";
-import { messageFromRow } from "./thread-row-mappers.js";
+import { messageViewFromRow } from "./thread-row-mappers.js";
 import { boundedSerializedPrefix, serializedArrayBytes } from "./message-window.js";
 const historyCursorSchema = z.strictObject({
   threadId: z.string(),
@@ -128,7 +128,7 @@ export async function readThreadHistory(
       }
       const window = boundedSerializedPrefix(
         rows.map(({ policy, ...row }) => ({
-          ...messageFromRow(row),
+          ...messageViewFromRow(row),
           ...(row.addressedToUserId
             ? {
                 addressedToUserId: row.addressedToUserId,

@@ -25,8 +25,10 @@ import type {
   IntegrationCallSubject,
   MarkColor,
   MessageAuthor,
+  MessageEdit,
   MessageKind,
   MessageQuote,
+  MessageRevisionView,
   ModelSelection,
   NotificationView,
   PhoneContentPart,
@@ -327,6 +329,11 @@ export interface MessageEntry {
   places?: readonly (ComputerAppContentPart | PhoneContentPart)[];
   body: string;
   createdAt: string;
+  /**
+   * Set once a person edited the message while it waited; the content above
+   * is already the edit. Its mark opens the history (`listMessageRevisions`).
+   */
+  edit?: MessageEdit;
   /** Why a sent message did not, or may not, reach the Run it was sent to. */
   delivery?: {
     reason: string;
@@ -1063,6 +1070,33 @@ export interface MachineAccessHistoryPage {
 export type MachineAccessUpdateOutcome =
   { readonly outcome: "conflict" } | { readonly outcome: "updated"; readonly revision: number };
 
+/**
+ * One device editing one waiting message. `revision` is the version the
+ * lease was taken at. `touch` on every keystroke; renewals go out at most
+ * every half minute. `save` replaces the message in place and ends the edit,
+ * if the message is still at `expectedRevision`: the version the person's
+ * words were written against (`WaitingDraft.baseRevision`). It rejects with
+ * code `conflict` when the message was already taken or changed elsewhere,
+ * leaving the person's text with them.
+ */
+export interface WaitingMessageEditor {
+  readonly leaseId: string;
+  readonly revision: number;
+  touch(): void;
+  save(content: readonly ContentPart[], expectedRevision: number): Promise<MessageEdit>;
+  cancel(): Promise<void>;
+}
+
+/** A person's answer to a teammate's ask; approval names the revision they saw. */
+export type TeamAskDecision =
+  | {
+      readonly decision: "approve";
+      readonly expectedRevision: number;
+      readonly requestId: string;
+      readonly teamId: string;
+    }
+  | { readonly decision: "decline"; readonly requestId: string; readonly teamId: string };
+
 export interface HostClient {
   readonly browserTabs: import("./browser-tab-store.js").BrowserTabStore;
   /**
@@ -1208,6 +1242,40 @@ export interface HostClient {
    * under the same key rather than as a second cancellation.
    */
   cancelThreadInput(threadId: string, messageId: string): Promise<void>;
+  /**
+   * Starts editing one waiting message in place on this device: takes its
+   * edit lease (another device's only with `takeOver`), so no Run takes it
+   * while the person types. The editor renews the lease as `touch` is called
+   * and ends it on `save` or `cancel`; a lease that lapsed is not an error
+   * until a save finds the message already taken.
+   */
+  editWaitingMessage(
+    threadId: string,
+    messageId: string,
+    options?: { readonly takeOver?: boolean },
+  ): Promise<WaitingMessageEditor>;
+  /** Ends whichever device's edit lease holds a waiting message, so its queue can move. */
+  releaseWaitingMessage(threadId: string, messageId: string): Promise<void>;
+  /**
+   * Whether this device holds that edit lease: an editor open here, rather
+   * than another device. Settled before the Host reports the take, so a
+   * queue read never shows this device's own edit as someone else's.
+   */
+  ownsEditLease(leaseId: string): boolean;
+  /**
+   * Answers a teammate's ask awaiting this person. Approving names the
+   * version of the task's copy the person saw (`WaitingAsk.revision`, or the
+   * Needs-you entry's `task.revision`); the Host refuses it with `conflict`
+   * if that copy changed since. Until the team confirms, the ask stays in
+   * its task as approving; a decline cancels it there.
+   */
+  decideTeamAsk(decision: TeamAskDecision): Promise<void>;
+  /** One page of a message's versions, newest first. */
+  listMessageRevisions(
+    threadId: string,
+    messageId: string,
+    before?: number,
+  ): Promise<{ readonly revisions: readonly MessageRevisionView[]; readonly hasMore: boolean }>;
   /**
    * Reads the Host's durable pending-input truth into `snapshot.inputQueues`;
    * transcript pagination is not authoritative. Activating a Thread reads its

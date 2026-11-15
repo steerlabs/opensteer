@@ -28,12 +28,7 @@ import {
   type ContentPart,
   type PlaceContentPart,
 } from "@opensteer/core";
-import {
-  HostClientRequestError,
-  mutationIdempotencyKey,
-  type HostClient,
-  type PlaceItem,
-} from "@opensteer/client/host";
+import { mutationIdempotencyKey, type HostClient, type PlaceItem } from "@opensteer/client/host";
 import { AttachmentTray } from "./attachments/attachment-tray.js";
 import type { ComposerContext, ContextChip } from "./workspace/composer-context.js";
 import {
@@ -51,6 +46,7 @@ import {
   type AttachmentTarget,
 } from "./attachments/use-staged-attachments.js";
 import { composerDrafts, type ReturnedToDraft } from "./composer-drafts.js";
+import { forgetPending, unanswered } from "./pending-sends.js";
 import { composerFold, FoldRow, FoldToFit } from "./fold-to-fit.js";
 import { Icon } from "./icon.js";
 import { textWidth } from "./text-width.js";
@@ -1443,21 +1439,4 @@ function readHeld(pendingSends: PendingSends | null): {
       value: null,
     };
   }
-}
-
-/**
- * The Host has answered, so the record has done its job. Failing to erase it
- * leaves a replay of an answered key, which the Host answers the same way.
- */
-function forgetPending(pendingSends: PendingSends | null, idempotencyKey: string): void {
-  try {
-    pendingSends?.clear(idempotencyKey);
-  } catch {
-    // The answer stands either way; see above.
-  }
-}
-
-/** The Host may or may not have taken it: the answer was lost, not a refusal. */
-function unanswered(error: unknown): boolean {
-  return !(error instanceof HostClientRequestError) || error.status >= 500 || error.status === 408;
 }

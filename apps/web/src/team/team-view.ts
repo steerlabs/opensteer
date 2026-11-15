@@ -1,10 +1,11 @@
 import { teamPeopleDirectory } from "@opensteer/client/team";
-import { useEffect, useMemo, useState } from "react";
-import type { TeamMember } from "@opensteer/protocol";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import type { NeedsYouPage, TeamMember } from "@opensteer/protocol";
 import type { TeamSessionClient, TeamSessionSnapshot } from "@opensteer/client/team";
 import { useTeamAttachment, useTeamSession, type TeamAttachment } from "./team-attachments.js";
 import { useTeamMembers, type PeopleState } from "./team-people.js";
 import type { TeamWords } from "./team-view-models.js";
+import { useOptionalShell } from "../components/app-shell.js";
 
 /** One team, as a screen in it needs it: the session, its members and this viewer's words. */
 export interface TeamView {
@@ -28,10 +29,13 @@ export function useTeamView(teamId: string | undefined, previews: ReadonlyMap<st
     sidebar ? `${sidebar.accessRevision}:${sidebar.namesRevision ?? ""}` : null,
   );
   const linkPresence = snapshot?.channel?.linkPresence;
+  const needsYou = usePersonalNeedsYou();
+  const attachedTeamId = team?.teamId;
   const words = useMemo<TeamWords | null>(() => {
     const member = snapshot?.bootstrap?.member;
     if (!member) return null;
     return {
+      ...(attachedTeamId ? { asks: { needsYou, teamId: attachedTeamId } } : {}),
       viewerUserId: member.userId,
       members: teamPeopleDirectory(
         members.size > 0 ? members.values() : [member],
@@ -59,6 +63,8 @@ export function useTeamView(teamId: string | undefined, previews: ReadonlyMap<st
   }, [
     linkPresence,
     members,
+    needsYou,
+    attachedTeamId,
     previews,
     snapshot?.bootstrap?.member,
     snapshot?.people,
@@ -82,6 +88,19 @@ export function useTeamView(teamId: string | undefined, previews: ReadonlyMap<st
     me: snapshot.bootstrap?.member ?? null,
     words,
   } satisfies TeamView;
+}
+
+/**
+ * What waits on the viewer in their own Opensteer, beside which a team screen
+ * is open; null where the team is opened on its own.
+ */
+function usePersonalNeedsYou(): NeedsYouPage | null {
+  const hostClient = useOptionalShell()?.hostClient ?? null;
+  const subscribe = useCallback(
+    (listener: () => void) => hostClient?.subscribe(listener) ?? (() => undefined),
+    [hostClient],
+  );
+  return useSyncExternalStore(subscribe, () => hostClient?.getSnapshot().needsYou ?? null);
 }
 
 /** A team read that runs once per key; its answer, its failure, and a way to read again. */

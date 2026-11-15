@@ -88,6 +88,8 @@ export const PersonalTeamRequestMirrorSchema = z.strictObject({
   consentExpiresAt: IsoDateTimeSchema.nullable().default(null),
   localDecision: TeamAskDecisionSchema.nullable().default(null),
   decisionAt: IsoDateTimeSchema.nullable().default(null),
+  approvedRevision: z.number().int().nonnegative().nullable().optional(),
+  releasedAt: IsoDateTimeSchema.nullable().optional(),
   returnPayload: TeamAgentReturnPayloadSchema.nullable().default(null),
   returnAdmission: TeamReturnAdmissionSchema.nullable().default(null),
   answerMessageId: MessageIdSchema.nullable().default(null),

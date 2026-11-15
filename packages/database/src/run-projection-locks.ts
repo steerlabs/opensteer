@@ -3,12 +3,31 @@ import { sql, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
 type ProjectionScope = {
+  /**
+   * The caller may delete the task: every input and its message, retired ones included,
+   * is locked for deletion here, in rank order, rather than upgraded later.
+   */
+  readonly forRemoval?: boolean;
   readonly runIds: readonly RunId[];
   readonly requestIds?: readonly RequestId[];
   readonly threadIds: readonly ThreadId[];
   readonly assignmentIds?: readonly AssignmentId[];
   readonly causalChainIds?: readonly CausalChainId[];
 };
+
+function projectionInputs(transaction: Transaction<DatabaseSchema>, input: ProjectionScope) {
+  return transaction
+    .selectFrom("threadInputs")
+    .where("threadId", "in", [...input.threadIds])
+    .$if(!input.forRemoval, (q) =>
+      q.where((eb) =>
+        eb.or([
+          eb("state", "in", ["awaiting-approval", "pending", "claimed", "unknown"]),
+          eb("editLeaseId", "is not", null),
+        ]),
+      ),
+    );
+}
 
 /**
  * A Thread can hold several provider sessions (fresh context, engine switches), and projection
@@ -69,15 +88,7 @@ export async function lockThreadProjectionParents(
     .select("id")
     .where((eb) =>
       eb.or([
-        eb(
-          "id",
-          "in",
-          eb
-            .selectFrom("threadInputs")
-            .select("causalChainId")
-            .where("threadId", "in", [...input.threadIds])
-            .where("state", "in", ["pending", "claimed", "unknown"]),
-        ),
+        eb("id", "in", projectionInputs(transaction, input).select("causalChainId")),
         ...(runIds.length
           ? [
               eb(
@@ -88,10 +99,24 @@ export async function lockThreadProjectionParents(
             ]
           : []),
         ...(input.causalChainIds?.length ? [eb("id", "in", [...input.causalChainIds])] : []),
+        // A removed task takes the chains rooted at its messages with it.
+        ...(input.forRemoval
+          ? [
+              eb(
+                "rootMessageId",
+                "in",
+                eb
+                  .selectFrom("messages")
+                  .select("messages.id")
+                  .where("messages.threadId", "in", [...input.threadIds]),
+              ),
+            ]
+          : []),
       ]),
     )
     .orderBy("id", "asc")
-    .forNoKeyUpdate()
+    // FOR UPDATE: Removing an ask task deletes the chains rooted at its messages.
+    .$call((query) => (input.forRemoval ? query.forUpdate() : query.forNoKeyUpdate()))
     .execute();
   {
     await transaction
@@ -124,15 +149,7 @@ export async function lockThreadProjectionParents(
     .where((eb) =>
       eb.or([
         eb.and([eb("childThreadId", "in", [...input.threadIds]), eb("status", "=", "open")]),
-        eb(
-          "id",
-          "in",
-          eb
-            .selectFrom("threadInputs")
-            .select("assignmentId")
-            .where("threadId", "in", [...input.threadIds])
-            .where("state", "in", ["pending", "claimed", "unknown"]),
-        ),
+        eb("id", "in", projectionInputs(transaction, input).select("assignmentId")),
         ...(runIds.length
           ? [eb("id", "in", eb.selectFrom("runs").select("assignmentId").where("id", "in", runIds))]
           : []),
@@ -152,34 +169,40 @@ export async function lockRunProjectionRows(
 ): Promise<void> {
   if (!input.threadIds.length) return;
   const runIds = await lockThreadProjectionParents(transaction, input);
-  if (runIds.length) {
+  if (runIds.length || input.forRemoval) {
     await transaction
       .selectFrom("commands")
       .select("id")
-      .where("runId", "in", [...runIds])
+      .where((eb) =>
+        input.forRemoval
+          ? eb("threadId", "in", [...input.threadIds])
+          : eb("runId", "in", [...runIds]),
+      )
       .orderBy("id", "asc")
       .forNoKeyUpdate()
       .execute();
   }
-  await transaction
-    .selectFrom("threadInputs")
+  await projectionInputs(transaction, input)
     .select("messageId")
-    .where("threadId", "in", [...input.threadIds])
-    .where("state", "in", ["pending", "claimed", "unknown"])
     .orderBy("messageId", "asc")
-    .forNoKeyUpdate()
+    // FOR UPDATE: Removing an ask task deletes its inputs.
+    .$call((query) => (input.forRemoval ? query.forUpdate() : query.forNoKeyUpdate()))
     .execute();
   await transaction
     .selectFrom("messages")
     .select("id")
-    .where("id", "in", (eb) =>
-      eb
-        .selectFrom("threadInputs")
-        .select("messageId")
-        .where("threadId", "in", [...input.threadIds])
-        .where("state", "in", ["pending", "claimed", "unknown"]),
-    )
+    .where("id", "in", projectionInputs(transaction, input).select("messageId"))
     .orderBy("id", "asc")
+    // FOR UPDATE: Removing an ask task deletes its messages with the thread.
+    .$call((query) => (input.forRemoval ? query.forUpdate() : query.forNoKeyUpdate()))
+    .execute();
+  await transaction
+    .selectFrom("personalTeamRequests")
+    .select("requestId")
+    .where("localTaskId", "in", [...input.threadIds])
+    .where("localInputId", "in", projectionInputs(transaction, input).select("messageId"))
+    .orderBy("teamDeploymentId")
+    .orderBy("requestId")
     .forNoKeyUpdate()
     .execute();
 }

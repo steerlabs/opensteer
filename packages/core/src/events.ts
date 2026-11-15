@@ -29,6 +29,8 @@ import {
   MessageContentSchema,
   MessageAuthorSchema,
   MessageAuthorViewSchema,
+  MessageEditSchema,
+  MessageEditViewSchema,
   MessageSchema,
   MessageViewSchema,
   RunFailureViewSchema,
@@ -41,6 +43,7 @@ import {
   ThreadAccessModeSchema,
   ThreadRunQueueEntrySchema,
   ThreadRunQueueEntryViewSchema,
+  ThreadInputEditLeaseViewSchema,
   ThreadInputSchema,
   ThreadInputViewSchema,
   ThreadSchema,
@@ -246,6 +249,16 @@ const eventDataSchemas = {
    */
   "message.placed": z.object({
     message: MessageSchema,
+    edit: MessageEditSchema.optional(),
+  }),
+  /**
+   * A person edited a waiting message in place. It replaces the content where
+   * the message stands; it never creates or publishes a transcript entry.
+   */
+  "message.updated": z.object({
+    input: ThreadInputSchema,
+    message: MessageSchema,
+    edit: MessageEditSchema.optional(),
   }),
   "reasoning.completed": z.object({
     blockId: z.string().min(1).max(255),
@@ -271,7 +284,17 @@ const eventDataSchemas = {
     pendingDeviceAccessRequests: z.number().int().nonnegative().optional(),
   }),
   "thread-input.updated": z.object({ input: ThreadInputSchema }),
+  /** A waiting message's edit lease was taken, handed over, released or lapsed. Renewals are silent. */
+  "thread-input.lease-changed": z.strictObject({
+    messageId: MessageIdSchema,
+    lease: ThreadInputEditLeaseViewSchema.nullable(),
+  }),
   "thread.input-queue-updated": z.strictObject({ paused: z.boolean() }),
+  /**
+   * A task that only ever held a teammate's ask that never ran was removed
+   * after the ask ended. Stored without a Thread reference, which no longer exists.
+   */
+  "task.removed": z.strictObject({}),
   /**
    * A Thread's absolute list state at this sequence. `title` is its title then;
    * the Host includes it on every state change it writes, and a title change is
@@ -522,7 +545,15 @@ const eventDataViewSchemas = {
     addressedToUserId: UserIdSchema.optional(),
   }),
   "message.injected": eventDataSchemas["message.injected"],
-  "message.placed": z.object({ message: MessageViewSchema }),
+  "message.placed": z.object({
+    message: MessageViewSchema,
+    edit: MessageEditViewSchema.optional(),
+  }),
+  "message.updated": z.object({
+    input: ThreadInputViewSchema,
+    message: MessageViewSchema,
+    edit: MessageEditViewSchema.optional(),
+  }),
   "reasoning.completed": eventDataSchemas["reasoning.completed"],
   "run.queued": z.object({ run: ThreadRunQueueEntryViewSchema }),
   "thread.created": z.object({
@@ -535,7 +566,9 @@ const eventDataViewSchemas = {
     thread: ThreadViewSchema,
   }),
   "thread-input.updated": z.object({ input: ThreadInputViewSchema }),
+  "thread-input.lease-changed": z.object(eventDataSchemas["thread-input.lease-changed"].shape),
   "thread.input-queue-updated": z.object(eventDataSchemas["thread.input-queue-updated"].shape),
+  "task.removed": z.object({}),
   "thread.state-changed": z.object({
     ...eventDataSchemas["thread.state-changed"].shape,
     // A reason a newer Host added reads as a person's Done rather than failing the event.
@@ -655,6 +688,7 @@ export const AgentEventSchema = z
     makeEventVariant("message.created"),
     makeEventVariant("message.injected"),
     makeEventVariant("message.placed"),
+    makeEventVariant("message.updated"),
     makeEventVariant("reasoning.completed"),
     makeEventVariant("run.delivery-updated").extend({ runId: RunIdSchema }),
     makeEventVariant("run.queued"),
@@ -678,7 +712,9 @@ export const AgentEventSchema = z
     makeEventVariant("thread.execution-updated"),
     makeEventVariant("thread.listed"),
     makeEventVariant("thread-input.updated"),
+    makeEventVariant("thread-input.lease-changed"),
     makeEventVariant("thread.input-queue-updated"),
+    makeEventVariant("task.removed"),
     makeEventVariant("thread.state-changed"),
     makeEventVariant("thread.continuation-established"),
     makeEventVariant("thread.access-mode-updated"),
@@ -711,6 +747,7 @@ export const AgentEventViewSchema = z
     makeEventViewVariant("message.created"),
     makeEventViewVariant("message.injected"),
     makeEventViewVariant("message.placed"),
+    makeEventViewVariant("message.updated"),
     makeEventViewVariant("reasoning.completed"),
     makeEventViewVariant("run.delivery-updated").extend({ runId: RunIdSchema }),
     makeEventViewVariant("run.queued"),
@@ -734,7 +771,9 @@ export const AgentEventViewSchema = z
     makeEventViewVariant("thread.execution-updated"),
     makeEventViewVariant("thread.listed"),
     makeEventViewVariant("thread-input.updated"),
+    makeEventViewVariant("thread-input.lease-changed"),
     makeEventViewVariant("thread.input-queue-updated"),
+    makeEventViewVariant("task.removed"),
     makeEventViewVariant("thread.state-changed"),
     makeEventViewVariant("thread.continuation-established"),
     makeEventViewVariant("thread.access-mode-updated"),

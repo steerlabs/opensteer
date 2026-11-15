@@ -91,6 +91,7 @@ export function projectSavedTasks(snapshot: HostSnapshot): SavedTask[] {
   const list = taskList({
     ...snapshot,
     waitingRequests: [],
+    needsYou: null,
     requests: {},
     runQueue: [],
     browserSessions: [],

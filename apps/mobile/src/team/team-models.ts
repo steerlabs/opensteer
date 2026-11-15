@@ -7,6 +7,8 @@
  * component only lays out what it is handed.
  */
 
+import type { TeamAskOwnerControl } from "@opensteer/client/team";
+
 /** A team's square mark: its initial on its own colour. */
 export interface TeamTileView {
   readonly id: string;
@@ -106,8 +108,19 @@ export type MessageAuthor =
   | { readonly kind: "person"; readonly person: PersonView; readonly mine: boolean }
   | { readonly kind: "agent"; readonly agent: AgentView };
 
+/**
+ * Where an ask of someone's agent stands, under the message that asked. The
+ * owner gets a control in place of "Waiting for <them>": answer from chat, or
+ * open the task when they already edited its copy there.
+ */
+export interface AskStatusView {
+  readonly id: string;
+  readonly label: string;
+  readonly control: TeamAskOwnerControl;
+}
+
 export interface MessageView {
-  readonly askStatuses?: readonly { id: string; label: string }[];
+  readonly askStatuses?: readonly AskStatusView[];
   readonly id: string;
   /** Bumps on every edit, pin or summary change; a row redraws only when this does. */
   readonly version: number;

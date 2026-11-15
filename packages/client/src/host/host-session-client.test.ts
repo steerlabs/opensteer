@@ -36,6 +36,7 @@ import {
   type NotificationView,
   type Request as OpensteerRequest,
   type Thread,
+  type ThreadInputQueue,
 } from "@opensteer/core";
 import { apiVersionQueryParameter, hostApiVersion } from "@opensteer/deployment-authority";
 import { createIntegrationId } from "@opensteer/integration-core";
@@ -6253,6 +6254,73 @@ describe("HttpHostClient durable realtime", () => {
 });
 
 describe("HttpHostClient input queue", () => {
+  it("an older queue read cannot undo a newer edit and lease event", async () => {
+    const host = await queueHost(true);
+    try {
+      host.client.activateThread(host.thread.id);
+      await vi.waitFor(
+        () =>
+          expect(
+            host.client.getSnapshot().inputQueues[host.thread.id],
+            "Initial queue never loaded",
+          ).toBeDefined(),
+        { timeout: 1000 },
+      );
+      host.holdReads();
+      const loading = host.client.loadThreadInputQueue(host.thread.id);
+      await vi.waitFor(() => expect(host.reads(), "Older queue read never started").toBe(2), {
+        timeout: 1000,
+      });
+      const edit = { revision: 1, editedAt: now, ownerEdited: true as const };
+      const message = {
+        ...host.queued,
+        content: [{ type: "text" as const, text: "Edited on phone" }],
+        edit,
+      };
+      const lease = { leaseId: "other-device", deviceLabel: "Phone", expiresAt: now };
+      host.items = [{ ...host.items[0]!, message, lease }];
+      host.socket.receive(
+        eventsFrame({
+          type: "host.events",
+          events: [
+            agentEvent(host.workspace.id, host.thread.id, null, "1", "message.updated", {
+              message,
+              edit,
+              input: pendingInput(message),
+            }),
+            agentEvent(host.workspace.id, host.thread.id, null, "2", "thread-input.lease-changed", {
+              messageId: message.id,
+              lease,
+            }),
+          ],
+        }),
+      );
+      const current = () => host.client.getSnapshot().inputQueues[host.thread.id]!.items[0]!;
+      expect(current()).toMatchObject({ message, lease });
+      const seen: ThreadInputQueue["items"][number][] = [];
+      const stop = host.client.subscribe(() => seen.push(current()));
+      try {
+        host.releaseReads();
+        await loading;
+        expect(current()).toMatchObject({ message, lease });
+        await vi.waitFor(() => expect(host.reads(), "Fresh queue read never started").toBe(3), {
+          timeout: 1000,
+        });
+        await host.client.loadThreadInputQueue(host.thread.id);
+        expect(seen.length).toBeGreaterThan(0);
+        expect(
+          seen.every(
+            (item) => item.message.edit?.revision === 1 && item.lease?.leaseId === lease.leaseId,
+          ),
+        ).toBe(true);
+      } finally {
+        stop();
+      }
+    } finally {
+      host.releaseReads();
+      host.client.dispose();
+    }
+  });
   it("keeps a fresh-context send unsteerable while the confirming queue read waits", async () => {
     const host = await queueHost();
     try {
@@ -6530,8 +6598,10 @@ describe("HttpHostClient input queue", () => {
     expect(queue?.items).toEqual([
       {
         canCancel: true,
+        canEdit: true,
         canMove: true,
         canSteer: true,
+        lease: null,
         input: expect.objectContaining({ messageId: held.id, state: "pending" }),
         message: expect.objectContaining({ id: held.id }),
       },
@@ -6806,7 +6876,7 @@ describe("HttpHostClient input queue", () => {
  * queue it answers with is whatever the test last said it holds, so a test
  * moves the Host's truth and watches the client follow.
  */
-async function queueHost() {
+async function queueHost(captureBeforeGate = false) {
   const workspace = makeDeployment();
   const thread = makeThread(workspace.id);
   const runId = createId("run");
@@ -6838,13 +6908,16 @@ async function queueHost() {
           );
         }
         reads += 1;
+        const response = () =>
+          json({
+            items: state.items,
+            paused: state.paused,
+            steerRunId: state.steerRunId,
+            threadId: thread.id,
+          });
+        const captured = captureBeforeGate ? response() : null;
         if (gate) await gate;
-        return json({
-          items: state.items,
-          paused: state.paused,
-          steerRunId: state.steerRunId,
-          threadId: thread.id,
-        });
+        return captured ?? response();
       }
       case "/v1/rpc/thread.events.list":
         return json({
@@ -6944,8 +7017,16 @@ function pendingInput(message: Message) {
   return { ...makeThreadInput(message), deliveredAt: null, runId: null, state: "pending" as const };
 }
 
-function queueItem(message: Message, canSteer: boolean) {
-  return { canCancel: true, canMove: true, canSteer, input: pendingInput(message), message };
+function queueItem(message: Message, canSteer: boolean): ThreadInputQueue["items"][number] {
+  return {
+    canCancel: true,
+    canEdit: true,
+    canMove: true,
+    canSteer,
+    input: pendingInput(message),
+    lease: null,
+    message,
+  };
 }
 
 describe("HttpHostClient hosted browser", () => {

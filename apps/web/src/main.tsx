@@ -125,6 +125,7 @@ async function renderOpensteer(): Promise<void> {
           import("./host/browser-host-client.js"),
           import("./host/browser-lifecycle.js"),
           import("@opensteer/client/team"),
+          import("./team/mock-team-ask.js"),
         ]).then(
           ([
             { MockHostClient, mockSubagentScenes },
@@ -138,11 +139,14 @@ async function renderOpensteer(): Promise<void> {
               busyTeamIds,
               seedBusyTeam,
             },
+            { seedMockTeamAsk },
           ]) => {
             const search = new URLSearchParams(window.location.search);
             const world = search.get("mock-world");
-            // `?mock-team` puts one live mock team beside the person's own tasks;
-            // `?mock-team=busy` two teams full of people, threads, files and asks.
+            // `?mock-team` puts one live mock team beside the person's own tasks,
+            // with a teammate's ask to the person's agent waiting in #general and
+            // in its task; `?mock-team=busy` two teams full of people, threads,
+            // files and asks.
             const attach = (team: InstanceType<typeof MockTeamHost>, origin: string) => ({
               teamId: team.teamId,
               name: team.bootstrap.teamName,
@@ -175,6 +179,7 @@ async function renderOpensteer(): Promise<void> {
               // For journeys that play another member's change on the busy teams.
               Object.assign(window, { opensteerMockTeams: seeded });
             }
+            const teamAsk = seeded.length === 1 ? seedMockTeamAsk(seeded[0]!) : null;
             // Every preview can create and join hosted teams in memory; the seeded teams are
             // part of that world, so connecting an agent or leaving reaches them the same way.
             preview = {
@@ -218,6 +223,7 @@ async function renderOpensteer(): Promise<void> {
                   : {}),
                 ...(subagents ? { subagents } : {}),
               });
+              if (teamAsk) client.mockTeamAsk(teamAsk);
               // The preview's own client, for journeys that count what the page sends.
               Object.assign(window, { opensteerMock: client });
               if (desktopScenario) return attachMockDesktop(client, desktopScenario);

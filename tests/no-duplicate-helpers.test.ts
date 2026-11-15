@@ -127,6 +127,17 @@ const helperHomes: Readonly<Record<string, string | readonly string[]>> = {
   isRecord: "packages/shared/src/isRecord.ts",
   integrationToolEffect: "packages/integration-core/src/effect.ts",
   messageAuthorName: "packages/client/src/host/conversation-presentation.ts",
+  /**
+   * What waits for the agent at a task's foot, and who may approve an ask
+   * from chat. Web and mobile each grew their own queue rules before; these
+   * are the one reading of a queue, a revision history and an ask's owner.
+   */
+  waitingInputs: "packages/client/src/host/waiting-inputs.ts",
+  waitingAskConsent: "packages/client/src/host/waiting-inputs.ts",
+  messageRevisionRows: "packages/client/src/host/waiting-inputs.ts",
+  isWaitingInputState: "packages/client/src/host/transcript.ts",
+  openWaitingMessageEditor: "packages/client/src/host/waiting-message-editor.ts",
+  teamAskOwnerControl: "packages/client/src/team/ask-status.ts",
   HarnessSessionRegistry: "packages/harness/src/session-registry.ts",
   MutationQueue: "packages/shared/src/mutationQueue.ts",
   digestSecret: "packages/shared/src/secretDigest.ts",

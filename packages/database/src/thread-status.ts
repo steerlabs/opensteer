@@ -76,7 +76,13 @@ export async function projectThreadState(
     .where("originatingThreadId", "=", threadId)
     .where("status", "=", "pending")
     .executeTakeFirstOrThrow();
-  const pendingRequests = Number(pending.count);
+  const asks = await transaction
+    .selectFrom("threadInputs")
+    .select(({ fn }) => fn.countAll<string>().as("count"))
+    .where("threadId", "=", threadId)
+    .where("state", "=", "awaiting-approval")
+    .executeTakeFirstOrThrow();
+  const pendingRequests = Number(pending.count) + Number(asks.count);
   const changed =
     status !== thread.status ||
     pendingRequests !== thread.pendingRequestCount ||

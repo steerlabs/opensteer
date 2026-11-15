@@ -201,6 +201,7 @@ vi.mock("react-native", async () => {
     ),
     Keyboard: {
       addListener: () => ({ remove: () => undefined }),
+      dismiss: vi.fn(),
       isVisible: () => false,
       metrics: () => undefined,
     },
@@ -618,6 +619,12 @@ vi.mock("./message-hold.js", async () => {
       </>
     ),
     MessageMore: () => null,
+    // A tap opens a waiting bubble to edit; its held menu is the ellipsis's, drawn there.
+    WaitingHold: (props: { children: ReactNode; onPress?: () => void }) => (
+      <div aria-label="Waiting bubble" onClick={props.onPress} role="button">
+        {props.children}
+      </div>
+    ),
   };
 });
 vi.mock("./task-line.js", async () => {
@@ -1004,6 +1011,7 @@ function chatAtWork() {
 function waitingInput(message: MessageEntry, threadId: string): ThreadInputQueue["items"][number] {
   return {
     canCancel: true,
+    canEdit: true,
     canMove: true,
     canSteer: true,
     input: {
@@ -1017,9 +1025,12 @@ function waitingInput(message: MessageEntry, threadId: string): ThreadInputQueue
       replyTarget: null,
       runId: null,
       state: "pending",
+      teamRequestId: null,
+      teamSource: null,
       threadId: threadId as ThreadInputQueue["threadId"],
       updatedAt: at,
     },
+    lease: null,
     message: {
       author: human,
       content: [{ text: message.body, type: "text" }],
@@ -1133,6 +1144,14 @@ function fakeHost(initial: HostSnapshot) {
     data: {},
     ok: true,
   }));
+  // The one waiting message open in place, as the client's editor holds it.
+  const editor = {
+    cancel: vi.fn(async () => undefined),
+    leaseId: "lease-here",
+    revision: 0,
+    save: vi.fn(async (_content: readonly object[]) => ({ editedAt: at, revision: 1 })),
+    touch: vi.fn(),
+  };
   const client = {
     acceptBrowserWatchFrame: vi.fn(),
     activateThread: vi.fn(),
@@ -1148,7 +1167,11 @@ function fakeHost(initial: HostSnapshot) {
     subscribeRunPlace: runPlaces.subscribe,
     browserWatchState: () => connectingWatch,
     cancelThreadInput: vi.fn(async () => undefined),
+    decideTeamAsk: vi.fn(async (_decision: object) => undefined),
+    editWaitingMessage: vi.fn(async (_threadId: string, _messageId: string) => editor),
     latestPlaceOfThread: () => null,
+    ownsEditLease: (leaseId: string) => leaseId === editor.leaseId,
+    releaseWaitingMessage: vi.fn(async (_threadId: string, _messageId: string) => undefined),
     retainBrowserWatch: vi.fn(() => watchRelease),
     subscribeBrowserWatch: () => () => undefined,
     subscribeLatestPlace: () => () => undefined,
@@ -1176,7 +1199,11 @@ function fakeHost(initial: HostSnapshot) {
   };
   return {
     client: client as unknown as HostClient,
+    decideTeamAsk: client.decideTeamAsk,
     dispatch,
+    editWaitingMessage: client.editWaitingMessage,
+    editor,
+    releaseWaitingMessage: client.releaseWaitingMessage,
     runPlaces,
     watchRelease,
     picture(next: BrowserFrameView | null) {
@@ -1223,6 +1250,8 @@ async function mount(
     readonly withPage?: import("./thread-pane.js").PageCompanion;
     /** A page Ask put on this reader's draft for the Thread. */
     readonly draftPage?: import("@opensteer/core").BrowserPageContentPart;
+    /** Where the screen holding the pane takes the reader once its task is gone. */
+    readonly onGone?: () => void;
   } = {},
 ) {
   const drafts = createThreadDraftStore({
@@ -1245,6 +1274,7 @@ async function mount(
       hostClient={host.client}
       messageId={options.messageId ?? null}
       onAnchorReleased={() => undefined}
+      onGone={options.onGone ?? (() => undefined)}
       onHeader={onHeader}
       onOpenThread={() => undefined}
       withPage={options.withPage}
@@ -1328,6 +1358,91 @@ async function type(container: HTMLElement, label: string, words: string): Promi
     field.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await settle();
+}
+
+/** The field a waiting message opens into, or null while none is open. */
+function editField(container: HTMLElement): HTMLTextAreaElement | null {
+  return container.querySelector<HTMLTextAreaElement>(
+    'textarea[aria-label="Edit message"], textarea[aria-label="Edit Maya’s ask"]',
+  );
+}
+
+/** A tap on the waiting bubble holding these words. */
+async function tapWaiting(container: HTMLElement, words: string): Promise<void> {
+  const bubble = [...container.querySelectorAll<HTMLElement>('[aria-label="Waiting bubble"]')].find(
+    (node) => node.textContent?.includes(words),
+  );
+  if (bubble === undefined) throw new Error(`No waiting bubble saying ${words}`);
+  await act(async () => bubble.click());
+  await settle();
+}
+
+/** Maya's ask of the reader's agent, waiting in the task for the reader's answer. */
+function teammateAsk(body: string) {
+  const teamId = "dep_0192f4a1-1111-4000-8000-0000000000aa";
+  const requestId = "treq_0192f4a1-5555-4000-8000-000000000001";
+  const author = {
+    actor: "human",
+    displayName: "Maya",
+    kind: "team-member",
+    teamId,
+    teamUserId: "usr_0192f4a1-6666-4000-8000-000000000001",
+  } as const;
+  const entry: MessageEntry = { ...said(body, null), author } as MessageEntry;
+  const base = waitingInput(entry, workId);
+  const item = {
+    ...base,
+    canCancel: false,
+    canMove: false,
+    canSteer: false,
+    input: {
+      ...base.input,
+      state: "awaiting-approval",
+      teamRequestId: requestId,
+      teamSource: {
+        audience: {
+          channelKind: "public",
+          channelName: "general",
+          memberCount: 12,
+          peopleOnly: false,
+          teamName: "Acme",
+        },
+        channelId: "tch_0192f4a1-7777-4000-8000-000000000001",
+        messageId: null,
+        teamId,
+        threadRootId: null,
+      },
+    },
+    message: { ...base.message, author },
+  } as ThreadInputQueue["items"][number];
+  return { entry, item, requestId, teamId };
+}
+
+/** The waiting item as the Host reports it once another device saved `words` as `revision`. */
+function savedElsewhere(
+  item: ThreadInputQueue["items"][number],
+  words: string,
+  revision: number,
+): ThreadInputQueue["items"][number] {
+  return {
+    ...item,
+    message: {
+      ...item.message,
+      content: [{ text: words, type: "text" }],
+      edit: { editedAt: at, revision },
+    },
+  } as ThreadInputQueue["items"][number];
+}
+
+/** `snapshot` with `item` as the task's only waiting input. */
+function withWaiting(
+  snapshot: HostSnapshot,
+  item: ThreadInputQueue["items"][number],
+): HostSnapshot {
+  return {
+    ...snapshot,
+    inputQueues: { [workId]: { ...snapshot.inputQueues[workId]!, items: [item] } },
+  };
 }
 
 function sent(dispatch: ReturnType<typeof fakeHost>["dispatch"]): readonly string[] {
@@ -3011,7 +3126,7 @@ describe("a task", () => {
     ).toBeNull();
   });
 
-  it("shows the first two waiting bubbles, expands the rest, and restores a draft for Edit", async () => {
+  it("shows the first two waiting bubbles, expands the rest, and edits one in place", async () => {
     const task = taskAtWork();
     const waiting = [
       "First queued ask",
@@ -3036,14 +3151,371 @@ describe("a task", () => {
     expect(text(container)).toContain(waiting[3]!.body);
     await press(container, "Show fewer");
     expect(text(container)).not.toContain(waiting[2]!.body);
-    const edit = Array.from(container.querySelectorAll("button")).find(
-      (node) => node.textContent === "Edit",
+
+    await press(container, "Edit");
+    expect(host.editWaitingMessage).toHaveBeenCalledWith(workId, waiting[0]!.id);
+    expect(editField(container)?.value).toBe(waiting[0]!.body);
+    await type(container, "Edit message", "First queued ask, but shorter");
+    expect(host.editor.touch).toHaveBeenCalled();
+    await press(container, "Save");
+    expect(host.editor.save).toHaveBeenCalledWith(
+      [{ text: "First queued ask, but shorter", type: "text" }],
+      0,
     );
-    expect(edit).toBeDefined();
-    await act(async () => edit!.click());
+    // The message is changed where it waits; nothing is taken back or sent anew.
+    expect(host.client.cancelThreadInput).not.toHaveBeenCalled();
+    expect(sent(host.dispatch)).not.toContain("thread.sendMessage");
+    expect(editField(container)).toBeNull();
+  });
+
+  it("lets a waiting message go on as it was when its edit is cancelled", async () => {
+    const task = taskAtWork();
+    const waiting = said("Include the card fees", null);
+    const host = fakeHost(
+      snapshotFor({
+        entries: [...task.entries, waiting],
+        queue: [waitingInput(waiting, workId)],
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
+    );
+    const { container } = await mount(host, workId);
+    await tapWaiting(container, waiting.body);
+    await type(container, "Edit message", "Leave out the card fees");
+    await press(container, "Cancel");
+    expect(host.editor.cancel).toHaveBeenCalled();
+    expect(host.editor.save).not.toHaveBeenCalled();
+    expect(editField(container)).toBeNull();
+    expect(text(container)).toContain(waiting.body);
+  });
+
+  it("keeps an edit the agent took first, and hands it to the composer as a new message", async () => {
+    const task = taskAtWork();
+    const waiting = said("Include the card fees", null);
+    const queued = snapshotFor({
+      entries: [...task.entries, waiting],
+      queue: [waitingInput(waiting, workId)],
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost(queued);
+    const { container } = await mount(host, workId);
+    await tapWaiting(container, waiting.body);
+    await type(container, "Edit message", "Include the card fees and the FX rate");
+    // The edit's lease lapsed and a Run took the message meanwhile.
+    await act(async () =>
+      host.move(
+        snapshotFor({
+          entries: [...task.entries, { ...waiting, runId: task.runId }],
+          queue: [],
+          run: { id: task.runId, status: "running" },
+          threadId: workId,
+        }),
+      ),
+    );
+    // Said as soon as it is gone, so Save is never offered for words with nowhere to go.
+    expect(editField(container)?.value).toBe("Include the card fees and the FX rate");
+    expect(text(container)).toContain("Your agent already took this message");
+    expect(hasButton(container, "Save")).toBe(false);
+    await press(container, "Send as new message…");
+    expect(host.editor.save).not.toHaveBeenCalled();
+    expect(editField(container)).toBeNull();
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+    ).toBe("Include the card fees and the FX rate");
+  });
+
+  it("shows a message another device is editing, and lets it go from here", async () => {
+    const task = taskAtWork();
+    const waiting = said("Include the card fees", null);
+    const host = fakeHost(
+      snapshotFor({
+        entries: [...task.entries, waiting],
+        queue: [
+          {
+            ...waitingInput(waiting, workId),
+            lease: {
+              deviceLabel: "Alex's iPad",
+              expiresAt: "2026-10-09T10:02:00.000Z",
+              leaseId: "lease-elsewhere",
+            },
+          },
+        ],
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
+    );
+    const { container } = await mount(host, workId);
+    expect(text(container)).toContain("Being edited on Alex's iPad");
+    expect(hasButton(container, "Edit")).toBe(false);
+    await tapWaiting(container, waiting.body);
+    expect(host.editWaitingMessage).not.toHaveBeenCalled();
+    await press(container, "Release");
+    expect(host.releaseWaitingMessage).toHaveBeenCalledWith(workId, waiting.id);
+  });
+
+  it("answers a teammate's ask with the words just saved, naming that version", async () => {
+    const ask = teammateAsk("@My agent is CI green yet?");
+    const host = fakeHost(
+      snapshotFor({ entries: [ask.entry], queue: [ask.item], run: null, threadId: workId }),
+    );
+    const { container } = await mount(host, workId);
+    expect(text(container)).toContain("Maya is asking your agent");
+    expect(text(container)).toContain("Replies in #general · 12 people");
+    await tapWaiting(container, ask.entry.body);
+    expect(hasButton(container, "Save and answer")).toBe(false);
+    await type(container, "Edit Maya’s ask", "@My agent is the integration shard green yet?");
+    await press(container, "Save and answer");
+    expect(host.editor.save).toHaveBeenCalledWith(
+      [{ text: "@My agent is the integration shard green yet?", type: "text" }],
+      0,
+    );
+    expect(host.decideTeamAsk).toHaveBeenCalledWith({
+      decision: "approve",
+      expectedRevision: 1,
+      requestId: ask.requestId,
+      teamId: ask.teamId,
+    });
+    expect(host.editor.save.mock.invocationCallOrder[0]!).toBeLessThan(
+      host.decideTeamAsk.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("ignores a decision tapped as the ask docks, then declines it", async () => {
+    const ask = teammateAsk("@My agent can you check what's on your machine");
+    const host = fakeHost(
+      snapshotFor({ entries: [ask.entry], queue: [ask.item], run: null, threadId: workId }),
+    );
+    const { container } = await mount(host, workId);
+    await press(container, "Decline");
+    expect(host.decideTeamAsk).not.toHaveBeenCalled();
+    const later = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
+    try {
+      await press(container, "Decline");
+    } finally {
+      later.mockRestore();
+    }
+    expect(host.decideTeamAsk).toHaveBeenCalledWith({
+      decision: "decline",
+      requestId: ask.requestId,
+      teamId: ask.teamId,
+    });
+  });
+
+  it("never saves or answers over a version saved elsewhere since the words were written", async () => {
+    const ask = teammateAsk("Original ask");
+    const initial = snapshotFor({
+      entries: [ask.entry],
+      queue: [ask.item],
+      run: null,
+      threadId: workId,
+    });
+    const host = fakeHost(initial);
+    let acquire!: (editor: typeof host.editor) => void;
+    host.editWaitingMessage.mockImplementationOnce(
+      () => new Promise((resolve) => (acquire = resolve)),
+    );
+    const { container } = await mount(host, workId);
+    await tapWaiting(container, ask.entry.body);
+    await type(container, "Edit Maya’s ask", "A local change to the original ask");
+    // The iPad saved its own version while this phone was still opening the ask.
+    await act(async () =>
+      host.move(withWaiting(initial, savedElsewhere(ask.item, "From iPad", 1))),
+    );
+    host.editor.revision = 1;
+    await act(async () => acquire(host.editor));
     await settle();
-    expect(host.client.cancelThreadInput).toHaveBeenCalledWith(workId, waiting[0]!.id);
-    expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe(waiting[0]!.body);
+    expect(text(container)).toContain("This ask changed elsewhere");
+    expect(button(container, "Save and answer").disabled).toBe(true);
+    expect(editField(container)?.value).toBe("A local change to the original ask");
+
+    await press(container, "Reload");
+    expect(editField(container)?.value).toBe("From iPad");
+    await type(container, "Edit Maya’s ask", "From iPad, by tonight");
+    host.editor.save.mockResolvedValueOnce({ editedAt: at, revision: 2 });
+    await press(container, "Save and answer");
+    expect(host.editor.save).toHaveBeenCalledWith(
+      [{ text: "From iPad, by tonight", type: "text" }],
+      1,
+    );
+    expect(host.decideTeamAsk).toHaveBeenCalledWith(
+      expect.objectContaining({ decision: "approve", expectedRevision: 2 }),
+    );
+  });
+
+  it("follows a version saved elsewhere until words are typed, then offers them as a new message", async () => {
+    const task = taskAtWork();
+    const waiting = said("Include the card fees", null);
+    const initial = snapshotFor({
+      entries: [...task.entries, waiting],
+      queue: [waitingInput(waiting, workId)],
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost(initial);
+    const { container } = await mount(host, workId);
+    await tapWaiting(container, waiting.body);
+    const first = savedElsewhere(waitingInput(waiting, workId), "Card fees and FX", 1);
+    await act(async () => host.move(withWaiting(initial, first)));
+    expect(editField(container)?.value).toBe("Card fees and FX");
+
+    await type(container, "Edit message", "Card fees, FX and the wire charge");
+    await act(async () => host.move(withWaiting(initial, savedElsewhere(first, "Only FX", 2))));
+    expect(text(container)).toContain("This message changed elsewhere");
+    expect(hasButton(container, "Save")).toBe(false);
+    await press(container, "Send as new message…");
+    expect(host.editor.save).not.toHaveBeenCalled();
+    expect(editField(container)).toBeNull();
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+    ).toBe("Card fees, FX and the wire charge");
+  });
+
+  it("draws the ask the dock answers however many messages wait ahead of it", async () => {
+    const task = taskAtWork();
+    const own = ["First in line", "Second in line", "Third in line"].map((body) =>
+      said(body, null),
+    );
+    const ask = teammateAsk("@My agent is the release branch cut?");
+    const host = fakeHost(
+      snapshotFor({
+        entries: [...task.entries, ...own, ask.entry],
+        queue: [...own.map((entry) => waitingInput(entry, workId)), ask.item],
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
+    );
+    const { container } = await mount(host, workId);
+    expect(text(container)).toContain("Maya is asking your agent");
+    expect(text(container)).toContain(ask.entry.body);
+    expect(text(container)).not.toContain("Third in line");
+    await press(container, "Show 1 more");
+    expect(text(container)).toContain("Third in line");
+  });
+
+  it("keeps words typed while the message was opening when it can't be held, and tries again", async () => {
+    const task = taskAtWork();
+    const waiting = said("Original", null);
+    const host = fakeHost(
+      snapshotFor({
+        entries: [...task.entries, waiting],
+        queue: [waitingInput(waiting, workId)],
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
+    );
+    let refuse!: (error: Error) => void;
+    host.editWaitingMessage.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => (refuse = reject)),
+    );
+    const { container } = await mount(host, workId);
+    await tapWaiting(container, waiting.body);
+    await type(container, "Edit message", "Words typed on a slow connection");
+    await act(async () =>
+      refuse(
+        new HostClientRequestError({
+          code: "conflict",
+          message: "Being edited on Alex's iPad",
+          status: 409,
+        }),
+      ),
+    );
+    await settle();
+    expect(editField(container)?.value).toBe("Words typed on a slow connection");
+    expect(text(container)).toContain("Being edited on Alex's iPad");
+    expect(hasButton(container, "Discard")).toBe(true);
+
+    await press(container, "Try again");
+    expect(host.editWaitingMessage).toHaveBeenCalledTimes(2);
+    await press(container, "Save");
+    expect(host.editor.save).toHaveBeenCalledWith(
+      [{ text: "Words typed on a slow connection", type: "text" }],
+      0,
+    );
+  });
+
+  it("answers an ask the Host still offers in an archived task", async () => {
+    const ask = teammateAsk("@My agent is CI green yet?");
+    const initial = snapshotFor({
+      entries: [ask.entry],
+      queue: [ask.item],
+      run: null,
+      threadId: workId,
+    });
+    const host = fakeHost({
+      ...initial,
+      threads: initial.threads.map((thread) =>
+        thread.id === workId ? { ...thread, status: "archived" as const } : thread,
+      ),
+    });
+    const { container } = await mount(host, workId);
+    expect(button(container, "Answer").disabled).toBe(false);
+  });
+
+  it("lets a waiting message go while its task is out of sight, keeping the words for the return", async () => {
+    const task = taskAtWork();
+    const waiting = said("Include the card fees", null);
+    const initial = snapshotFor({
+      entries: [...task.entries, waiting],
+      queue: [waitingInput(waiting, workId)],
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost(initial);
+    const { container, root, pane } = await mount(host, workId);
+    await tapWaiting(container, waiting.body);
+    await type(container, "Edit message", "Include the card fees and the FX rate");
+
+    // Another task pushed over this one.
+    harness.focused = false;
+    await act(async () => root.render(pane(() => undefined)));
+    expect(host.editor.cancel).toHaveBeenCalledTimes(1);
+    harness.focused = true;
+    await act(async () => root.render(pane(() => undefined)));
+    await settle();
+    expect(host.editWaitingMessage).toHaveBeenCalledTimes(2);
+    expect(editField(container)?.value).toBe("Include the card fees and the FX rate");
+
+    // The app goes to the background, and the iPad saves meanwhile.
+    await act(() => harness.appListeners.forEach((listener) => listener("background")));
+    expect(host.editor.cancel).toHaveBeenCalledTimes(2);
+    await act(async () =>
+      host.move(withWaiting(initial, savedElsewhere(waitingInput(waiting, workId), "Fees", 1))),
+    );
+    await act(() => harness.appListeners.forEach((listener) => listener("active")));
+    await settle();
+    expect(host.editWaitingMessage).toHaveBeenCalledTimes(3);
+    expect(editField(container)?.value).toBe("Include the card fees and the FX rate");
+    expect(text(container)).toContain("This message changed elsewhere");
+  });
+
+  it("leaves a task removed while it is open, once it is in front again", async () => {
+    const ask = teammateAsk("@My agent is CI green yet?");
+    const initial = snapshotFor({
+      entries: [ask.entry],
+      queue: [ask.item],
+      run: null,
+      threadId: workId,
+    });
+    const host = fakeHost(initial);
+    const onGone = vi.fn();
+    const { root, pane } = await mount(host, workId, { onGone });
+    harness.focused = false;
+    await act(async () => root.render(pane(() => undefined)));
+    await act(async () =>
+      host.move({
+        ...initial,
+        inputQueues: {},
+        threadLookups: { [workId]: "missing" },
+        threads: initial.threads.filter((thread) => thread.id !== workId),
+        transcripts: {},
+      }),
+    );
+    expect(onGone).not.toHaveBeenCalled();
+    harness.focused = true;
+    await act(async () => root.render(pane(() => undefined)));
+    await act(async () => root.render(pane(() => undefined)));
+    expect(onGone).toHaveBeenCalledTimes(1);
   });
 
   it("pins footer growth and removal only while the reader stays at the tail", async () => {
@@ -3108,7 +3580,7 @@ describe("a task", () => {
     expect(host.resumeThreadInputQueue).toHaveBeenCalledWith(workId);
   });
 
-  it("renders an empty task's queued bubble alongside its empty state", async () => {
+  it("shows an empty task's waiting message without the new-task prompt, and the prompt once it goes", async () => {
     const waiting = said("Start with these statements", null);
     const host = fakeHost(
       snapshotFor({
@@ -3120,8 +3592,12 @@ describe("a task", () => {
     );
     const { container } = await mount(host, workId);
     expect(container.querySelector('[aria-label="Queued message 1 of 1, up next"]')).not.toBeNull();
-    expect(text(container)).toContain("What would you like to do?");
     expect(text(container)).toContain(waiting.body);
+    expect(text(container)).not.toContain("What would you like to do?");
+    await act(async () =>
+      host.move(snapshotFor({ entries: [], queue: [], run: null, threadId: workId })),
+    );
+    expect(text(container)).toContain("What would you like to do?");
   });
 
   it("says its messages are loading, not that nothing was said, while it opens", async () => {
@@ -4309,6 +4785,7 @@ it("hands a new task to its transcript, with the page Ask started it from, witho
       <ThreadPane
         deploymentId={deploymentId}
         hostClient={host.client}
+        onGone={vi.fn()}
         onOpenThread={vi.fn()}
         requestId={null}
         threadId={workId}

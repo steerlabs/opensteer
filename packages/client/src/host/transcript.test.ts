@@ -1363,8 +1363,10 @@ describe("visibleTranscript", () => {
   function queued(id: typeof queuedId): ThreadInputQueue["items"][number] {
     return {
       canCancel: true,
+      canEdit: true,
       canMove: true,
       canSteer: true,
+      lease: null,
       input: {
         teamRequestId: null,
         teamSource: null,
@@ -1470,8 +1472,10 @@ describe("a conversation's waiting messages", () => {
         ),
       queued: (): ThreadInputQueue["items"][number] => ({
         canCancel: true,
+        canEdit: true,
         canMove: true,
         canSteer: false,
+        lease: null,
         input,
         message,
       }),
@@ -1514,6 +1518,50 @@ describe("a conversation's waiting messages", () => {
     { replyMessageId: replyId, status: "completed" },
     { runId: firstRun },
   );
+
+  it("redraws an edited waiting message where it stands, and the Run that takes it keeps the edit", () => {
+    const first = sent("Check Thursday", "1");
+    const second = sent("And Friday?", "2");
+    const edit = { editedAt: now, ownerEdited: true as const, revision: 1 };
+    const content = [{ text: "Check Thursday afternoon", type: "text" as const }];
+    const updated = event(
+      "message.updated",
+      { edit, input: first.input, message: { ...first.message, content } },
+      { runId: null },
+    );
+    const entries = fold([first.created, second.created, updated]);
+    expect(entries.map((entry) => entry.id)).toEqual([first.id, second.id]);
+    expect(entries[0]).toMatchObject({ body: "Check Thursday afternoon", edit, runId: null });
+    // An edit never draws a message this page does not hold.
+    expect(fold([updated])).toEqual([]);
+    // A gated ask waits like any queued message; it has not failed to send.
+    const gated = foldTranscriptEvent(
+      entries,
+      event(
+        "thread-input.updated",
+        { input: { ...second.input, state: "awaiting-approval" } },
+        { runId: null },
+      ),
+    );
+    expect(gated.find((entry) => entry.id === second.id)).not.toHaveProperty("delivery");
+    const placed = foldTranscriptEvent(
+      entries,
+      event(
+        "message.placed",
+        {
+          edit,
+          message: {
+            ...first.message,
+            content,
+            runId: firstRun,
+            sequence: SequenceSchema.parse("3"),
+          },
+        },
+        { runId: firstRun },
+      ),
+    );
+    expect(placed.at(-1)).toMatchObject({ edit, id: first.id, runId: firstRun });
+  });
 
   it("draws a person's waiting message as a sent bubble after everything else, once", () => {
     const followUp = sent("And Friday?", "2");

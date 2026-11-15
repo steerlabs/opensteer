@@ -539,6 +539,31 @@ function ChannelScreenFor({
           }),
     onOpenFile: openFile,
     onOpenTask: links ? (messageId: string) => void openTask(threadRoot(messageId)) : undefined,
+    onDecideAsk: hostClient
+      ? async (
+          control: { readonly teamId: string; readonly requestId: string } & {
+            readonly expectedRevision: number;
+          },
+          decision: "approve" | "decline",
+        ) => {
+          const { requestId, teamId } = control;
+          try {
+            await hostClient.decideTeamAsk(
+              decision === "approve"
+                ? { decision, expectedRevision: control.expectedRevision, requestId, teamId }
+                : { decision, requestId, teamId },
+            );
+          } catch (error) {
+            report(error);
+            throw error;
+          }
+        }
+      : undefined,
+    onReviewAsk: (threadId: string) =>
+      void navigate(
+        { pathname: `/tasks/${encodeURIComponent(threadId)}`, search },
+        { state: { teamReturn: { pathname: location.pathname, search } } },
+      ),
   };
   const availableMessageActions = {
     ...messageActions,

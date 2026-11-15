@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { AgentEventViewSchema, createId } from "@opensteer/core";
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
@@ -219,3 +220,105 @@ it("keeps a visit and a newer active projection when an older task page arrives 
   );
   expect(f.client.getSnapshot().threadVisits[thread.id]).toBe("2026-01-03T00:00:00.000Z");
 });
+
+it.each(["recent", "active", "done"] as const)(
+  "does not resurrect a removed task from an in-flight %s page",
+  async (scope) => {
+    const f = await fixture(
+      1,
+      (host) =>
+        (...args) =>
+          host.fetch(...args),
+    );
+    const thread = f.mock.getSnapshot().threads[0]!;
+    if (scope === "done") await f.mock.setTaskDone(thread.id, true);
+    if (scope === "active") {
+      const event = AgentEventViewSchema.parse({
+        type: "thread.state-changed",
+        threadId: thread.id,
+        environmentId: thread.environmentId,
+        runId: null,
+        eventId: createId("event"),
+        sequence: "1000",
+        createdAt: new Date().toISOString(),
+        data: { status: "running", pendingRequests: 0, inputQueuePaused: false },
+      });
+      if (event.type !== "thread.state-changed") throw new Error("Wrong event");
+      f.mock.applyThreadStateChanged(event);
+    }
+    await f.client.load();
+    await f.client.loadDoneTasks();
+    const entries = () =>
+      scope === "recent"
+        ? f.client.getSnapshot().tasks!.entries
+        : scope === "active"
+          ? f.client.getSnapshot().activeTasks
+          : Object.values(f.client.getSnapshot().doneTasks)[0]!.entries;
+    await vi.waitFor(
+      () =>
+        expect(
+          entries().some((entry) => entry.thread.id === thread.id),
+          "Task never appeared in its page",
+        ).toBe(true),
+      { timeout: 1000 },
+    );
+    const captured = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const original = f.host.fetch;
+    let held = false;
+    vi.spyOn(f.host, "fetch").mockImplementation(async (...args) => {
+      const response = await original(...args);
+      const url = new URL(String(args[0]));
+      const input = JSON.parse(url.searchParams.get("input") ?? "{}");
+      const matches =
+        scope === "active"
+          ? input.active
+          : scope === "done"
+            ? input.done
+            : !input.active && !input.done;
+      if (!held && url.pathname.endsWith("/tasks.list") && matches) {
+        held = true;
+        captured.resolve();
+        await withTimeout(release.promise, 1000, {
+          timeoutError: () => new Error("Held task page never released"),
+        });
+      }
+      return response;
+    });
+    for (const socket of f.host.sockets) socket.deliver({ type: "host.tasks-changed" });
+    await withTimeout(captured.promise, 1000, {
+      timeoutError: () => new Error("Task page never reached its gate"),
+    });
+    f.host.publish(
+      [
+        AgentEventViewSchema.parse({
+          type: "task.removed",
+          threadId: thread.id,
+          environmentId: thread.environmentId,
+          runId: null,
+          eventId: createId("event"),
+          sequence: "100000",
+          createdAt: new Date().toISOString(),
+          data: {},
+        }),
+      ],
+      "100000",
+    );
+    expect(entries().some((entry) => entry.thread.id === thread.id)).toBe(false);
+    const beforeMerge = entries();
+    const merged = Promise.withResolvers<void>();
+    const stop = f.client.subscribe(() => {
+      if (entries() !== beforeMerge) merged.resolve();
+    });
+    try {
+      release.resolve();
+      await withTimeout(merged.promise, 1000, {
+        timeoutError: () => new Error("Task page never merged"),
+      });
+      expect(entries().some((entry) => entry.thread.id === thread.id)).toBe(false);
+    } finally {
+      release.resolve();
+      stop();
+    }
+  },
+);

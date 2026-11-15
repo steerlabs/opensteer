@@ -60,6 +60,8 @@ export async function personalTeamRunOutcome(
       const runId = run?.id ?? null;
       if (input.state === "cancelled" || receipt.terminalState === "cancelled")
         return { runId, state: "cancelled", finalMessage: null, answerMessageId: null };
+      if (receipt.kind === "ask" && !receipt.releasedAt)
+        return { runId: null, state: "needs_you", finalMessage: null, answerMessageId: null };
       if (!run) return { runId, state: "pending", finalMessage: null, answerMessageId: null };
       const state =
         run.status === "completed"

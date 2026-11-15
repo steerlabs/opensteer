@@ -1,6 +1,10 @@
 import { runDeliverySelection } from "./thread-row-mappers.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { lockDeploymentEvents, withPersonalTransaction } from "./personal-transaction.js";
+import {
+  inheritExecutionClock,
+  lockDeploymentEvents,
+  withPersonalTransaction,
+} from "./personal-transaction.js";
 import { failNodeStop } from "./node-control.js";
 import {
   assertThreadCaller,
@@ -529,10 +533,12 @@ async function succeedCommandInTransaction(
         .where("status", "=", "waiting")
         .executeTakeFirst();
       if (resumed.numUpdatedRows === 1n) {
+        // The resumed state is projected before a hand-off can restart the attempt:
+        // thread state ranks ahead of run attempts, and a restart leaves the Run running.
+        events.push(...(await projectThreadState(transaction, observed.threadId)));
         const handed = await deliverConversationInputsInTransaction(transaction, observed.runId);
         events.push(...handed.events);
         revokedGrants = handed.revokedGrants;
-        events.push(...(await projectThreadState(transaction, observed.threadId)));
       }
     }
     events.push(...(await assignmentActivityEventsForRun(transaction, observed.runId)));
@@ -1224,6 +1230,7 @@ export async function dispatchRequestResponse(
   try {
     // Non-retrying: the Runner send/acknowledgement gate cannot safely be replayed.
     const events = await database.transaction().execute(async (transaction) => {
+      inheritExecutionClock(database, transaction);
       await lockDeploymentEvents(transaction);
       const observed = await transaction
         .selectFrom("commands")
@@ -1362,6 +1369,7 @@ export async function dispatchChannelCommand(
   try {
     // Non-retrying: the Runner send/acknowledgement gate cannot safely be replayed.
     const events = await database.transaction().execute(async (transaction) => {
+      inheritExecutionClock(database, transaction);
       await lockDeploymentEvents(transaction);
       const observed = await transaction
         .selectFrom("commands")

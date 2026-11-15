@@ -67,6 +67,7 @@ export function initialContinuationContextPrompt(
   if (!initial) return undefined;
   const records = initial.messages.map((message) => ({
     author: message.author,
+    ...(message.ownerEdited ? { ownerEdited: true } : {}),
     content: message.content,
     createdAt: message.createdAt,
     id: message.id,
