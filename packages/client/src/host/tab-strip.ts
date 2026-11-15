@@ -100,6 +100,16 @@ export function tabAfterClose(
   return null;
 }
 
+/**
+ * The tab that takes over when `tabId` leaves the list, whoever closed it:
+ * its neighbour in `before`, skipping every tab `after` no longer lists, as
+ * when a group closes at once.
+ */
+export function tabSuccessor(before: TabStrip, after: TabStrip, tabId: string): TabId | null {
+  const listed = new Set(after.ordered);
+  return tabAfterClose(before, tabId, new Set(before.ordered.filter((id) => !listed.has(id))));
+}
+
 /** The group holding this tab in the layout, or null. */
 export function tabGroupOf(layout: TabLayout, tabId: string): TabGroup | null {
   for (const item of layout.items)

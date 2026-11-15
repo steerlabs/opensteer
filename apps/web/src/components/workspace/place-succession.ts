@@ -1,8 +1,7 @@
 import { useLayoutEffect, useRef } from "react";
-import type { TabId } from "@opensteer/core";
 import {
   placeDestinationEnded,
-  tabAfterClose,
+  tabSuccessor,
   type HostClient,
   type HostSnapshot,
   type TabDestination,
@@ -16,17 +15,6 @@ import {
 } from "@opensteer/client/react";
 import { placeAddress } from "./navigation.js";
 import { useWorkspace } from "./workspace-context.js";
-
-/**
- * The tab that takes the middle when the one it showed leaves the list, as a
- * browser picks a tab after one closes: the next visible entry in the one
- * layout, else the one before it. Null falls back to the task or home.
- */
-export function placeSuccessor(before: TabStrip, after: TabStrip, tabId: string): TabId | null {
-  const listed = new Set(after.ordered);
-  const gone = new Set(before.ordered.filter((id) => !listed.has(id)));
-  return tabAfterClose(before, tabId, gone);
-}
 
 /**
  * One rule for the tab in the middle going away, whoever closed it — ×, a
@@ -72,7 +60,7 @@ export function usePlaceSuccession(hostClient: HostClient): void {
     const last = shown.current;
     shown.current = null;
     if (last?.address !== address || last.viewer !== viewer) return;
-    const next = placeSuccessor(last.strip, strip, destination.tabId);
+    const next = tabSuccessor(last.strip, strip, destination.tabId);
     nav.succeedPlace(next ? { kind: "tab", tabId: next } : null);
   }, [destination, hostClient, known, nav, strip, viewer]);
 }

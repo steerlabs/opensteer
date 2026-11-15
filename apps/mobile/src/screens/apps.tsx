@@ -1,4 +1,9 @@
-import { threadInDirectory, type HostClient, type HostSnapshot } from "@opensteer/client/host";
+import {
+  appNoticeTitle,
+  threadInDirectory,
+  type HostClient,
+  type HostSnapshot,
+} from "@opensteer/client/host";
 import type { AppsList } from "@opensteer/client/host";
 import { useAppsList, useHostSelector } from "@opensteer/client/react";
 import type { App } from "@opensteer/core";
@@ -107,13 +112,33 @@ function AppsForReader(props: {
           )
         }
         ListHeaderComponent={
-          state.error === null ? undefined : (
+          state.error === null && state.notices.length === 0 ? undefined : (
             <View style={styles.notices}>
-              <Notice
-                action={{ label: "Try again", onPress: () => void list.reload() }}
-                detail={state.error}
-                title="Apps could not be loaded"
-              />
+              {state.error === null ? null : (
+                <Notice
+                  action={{ label: "Try again", onPress: () => void list.reload() }}
+                  detail={state.error}
+                  title="Apps could not be loaded"
+                />
+              )}
+              {/* An app the Host stopped listing still says how its last action went. */}
+              {state.notices.map((notice) =>
+                notice.message === null ? (
+                  <Notice
+                    detail="Waiting for its computer to answer."
+                    key={notice.appId}
+                    title={appNoticeTitle(notice)}
+                    tone="neutral"
+                  />
+                ) : (
+                  <Notice
+                    action={{ label: "Dismiss", onPress: () => list.dismissFailure(notice.appId) }}
+                    detail={notice.message}
+                    key={notice.appId}
+                    title={appNoticeTitle(notice)}
+                  />
+                ),
+              )}
             </View>
           )
         }
@@ -340,7 +365,7 @@ const styles = StyleSheet.create({
     minWidth: touchTarget,
   },
   naming: { gap: space[8] },
-  notices: { paddingBottom: space[8] },
+  notices: { gap: space[8], paddingBottom: space[8] },
   origin: { alignSelf: "flex-start", justifyContent: "center", minHeight: touchTarget },
   row: {
     backgroundColor: color.surface,

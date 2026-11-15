@@ -15,7 +15,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
  * What can go wrong:
  * - the list is read before anyone opens the page, or on an apps change while
  *   it is out of view, costing a round trip on cellular;
- * - an answer read before a newer change overwrites the newer list;
+ * - an answer read before a newer change overwrites the newer list, or each
+ *   change while a read is out sends another;
  * - an app whose chat was deleted vanishes or links to nothing;
  * - Open publishes nothing but also opens nothing, or opens another tab;
  * - Start/Stop/Rename/Delete hide their pending state or their failure, or a
@@ -163,12 +164,14 @@ describe("the Apps page", () => {
     await waitFor(() => reads() === 2, "the held read began");
     await host.renameApp(app("Ferry tracker").appId, "Renamed elsewhere");
     await act(async () => changed());
+    // Changes while a read is out queue one more read behind it, not one each.
+    expect(reads()).toBe(2);
+    await act(async () => release());
     await waitFor(
       () => container.textContent?.includes("Renamed elsewhere") === true,
       "the newest read showed",
     );
-    await act(async () => release());
-    expect(container.textContent).toContain("Renamed elsewhere");
+    expect(reads()).toBe(3);
     expect(container.textContent).not.toContain("Ferry tracker");
   });
 
@@ -183,6 +186,9 @@ describe("the Apps page", () => {
       },
     ]);
     expect(() => button(container, "Start Trip budget")).toThrow();
+    // An HTML app has no server, so it never says it is running; a server does.
+    expect(rowText(container, "Trip budget")).not.toContain("Running");
+    expect(rowText(container, "Ferry tracker")).toContain("Running");
   });
 
   it("opens an app as its one tab, then shows that tab", async () => {
@@ -253,8 +259,21 @@ describe("the Apps page", () => {
       () => rowText(container, "Groceries").includes("The computer is offline."),
       "the failure was shown",
     );
+    // The Host withdraws the app before it can say its server stopped.
+    const withdraw = host.deleteApp;
+    vi.spyOn(host, "deleteApp").mockImplementationOnce(async (appId) => {
+      await withdraw(appId);
+      throw new Error("Its computer did not confirm the server stopped.");
+    });
     await press(menuChoice(container, "Groceries actions", "Delete app"));
-    await waitFor(() => !container.textContent?.includes("Groceries"), "the app left");
+    await waitFor(
+      () => container.textContent?.includes("Its computer did not confirm") === true,
+      "the outcome was shown",
+    );
+    expect(() => button(container, "Open Groceries")).toThrow();
+    expect(container.textContent).toContain("“Groceries” could not be deleted");
     expect((await host.listApps()).map(({ name }) => name)).not.toContain("Groceries");
+    await press(button(container, "Dismiss"));
+    expect(container.textContent).not.toContain("Groceries");
   });
 });
