@@ -17,7 +17,7 @@ import {
   teamScopeKey,
   type TeamTimeline,
 } from "@opensteer/client/team";
-import { useTeamShareParticipants } from "@opensteer/client/react";
+import { useTeamReferenceCandidates, useTeamShareParticipants } from "@opensteer/client/react";
 import { ChannelShares } from "./channel-shares.js";
 import { TeamPreviewUrls } from "./preview-urls.js";
 import type { z } from "zod";
@@ -134,13 +134,20 @@ export function ChannelRoute({
   useEffect(() => {
     if (client && channelId) client.selectThread(channelId, threadRoot);
   }, [channelId, client, threadRoot]);
+  const [invalidLink, setInvalidLink] = useState(false);
   useEffect(() => {
+    setInvalidLink(false);
     if (!client || !channelId || !place.messageId) return;
     let live = true;
     void client
       .landMessage(channelId, TeamMessageIdSchema.parse(place.messageId))
       .then((message) => {
-        if (!live || !message?.threadRootId || message.threadRootId === threadRoot) return;
+        if (!live) return;
+        if (!message || (threadRoot !== null && message.threadRootId !== threadRoot)) {
+          setInvalidLink(true);
+          return;
+        }
+        if (!message.threadRootId || message.threadRootId === threadRoot) return;
         void navigate(
           {
             pathname: channelPath(teamId, channelId, {
@@ -152,7 +159,9 @@ export function ChannelRoute({
           { replace: true },
         );
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (live) setInvalidLink(true);
+      });
     return () => {
       live = false;
     };
@@ -167,6 +176,7 @@ export function ChannelRoute({
       ),
     );
   }, [channelTimeline, threadTimeline, view, want]);
+  if (invalidLink) return <p className="team-empty">This message is no longer available here.</p>;
   if (!channelId) return <p className="team-empty">This channel link isn’t valid.</p>;
   if (!view) return <TeamUnavailable teamId={teamId} />;
   return (
@@ -267,6 +277,14 @@ function ChannelScreenFor({
     client,
     channelId,
     (timeline?.channel ?? entry?.channel)?.share ? mentionQuery : null,
+  );
+  const references = useTeamReferenceCandidates(
+    client,
+    {
+      origin: team.origin,
+      channels: (snapshot.sidebar?.channels ?? []).map((entry) => entry.channel),
+    },
+    mentionQuery,
   );
   const go = (path: string, keepPlace = true) =>
     void navigate({ pathname: path, search: keepPlace ? search : "" });
@@ -707,6 +725,7 @@ function ChannelScreenFor({
           client.typing(channelId, rootId ? TeamMessageIdSchema.parse(rootId) : null, true)
         }
         people={people}
+        references={references}
         placeholder={
           rootId
             ? "Reply…"

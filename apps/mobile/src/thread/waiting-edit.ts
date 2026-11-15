@@ -11,10 +11,11 @@ import {
   type WaitingInput,
   type WaitingMessageEditor,
 } from "@opensteer/client/host";
+import type { ComposerEditorHandle } from "@opensteer/client/references";
 import type { ContentPart } from "@opensteer/core";
 import * as Haptics from "expo-haptics";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Keyboard } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { dismissKeyboard } from "../ui/composer-editor.js";
 import { operationDetail } from "../client/mobile-client.js";
 
 /** One waiting message open in place on this phone. */
@@ -43,6 +44,8 @@ export interface WaitingEdit {
 
 export interface WaitingEditController {
   readonly edit: WaitingEdit | null;
+  /** The open editor's field; Save reads its last keystroke from it before saving. */
+  readonly field: RefObject<ComposerEditorHandle | null>;
   open(item: WaitingInput): void;
   change(text: string): void;
   removePart(index: number): void;
@@ -86,6 +89,7 @@ export function useWaitingEdit(
 ): WaitingEditController {
   const [kept, setKept] = useState<WaitingEdit | null>(null);
   const lease = useRef<Lease | null>(null);
+  const field = useRef<ComposerEditorHandle>(null);
   const activeRef = useRef(active);
   activeRef.current = active;
 
@@ -156,7 +160,7 @@ export function useWaitingEdit(
     // field lets go first: Android hands the focus of a field that disappears
     // to the composer, which keeps the keyboard up as if a message were still
     // being written.
-    if (editRef.current !== null) Keyboard.dismiss();
+    if (editRef.current !== null) dismissKeyboard();
     setKept(null);
   }, [letGo]);
 
@@ -229,25 +233,57 @@ export function useWaitingEdit(
 
   const save = useCallback(async (): Promise<number | null> => {
     const held = lease.current;
+    const opened = editRef.current;
+    if (
+      held?.editor == null ||
+      held.saving ||
+      opened === null ||
+      opened.phase !== "open" ||
+      opened.gone
+    )
+      return null;
+    const editor = held.editor;
+    // Held from here, so a second Save waits and closing keeps the lease for this one.
+    held.saving = true;
+    // The field's last keystroke can still be on its way to React: save what it holds now.
+    const input = field.current;
+    const flushed =
+      input === null
+        ? null
+        : await input.flushPendingInput(input.readSnapshot().generation).catch(() => null);
     const shown = editRef.current;
-    if (held?.editor == null || shown === null || shown.phase !== "open" || shown.gone) return null;
-    const plan = waitingDraftSave(shown.draft);
-    if (plan === null) return null;
-    if (plan.kind === "unchanged") {
+    if (
+      flushed?.composing === true ||
+      lease.current !== held ||
+      shown === null ||
+      shown.messageId !== opened.messageId ||
+      shown.phase !== "open" ||
+      shown.gone
+    ) {
+      held.saving = false;
+      if (held.ended) void editor.cancel();
+      return null;
+    }
+    const draft =
+      flushed === null || flushed.text === shown.draft.text
+        ? shown.draft
+        : setWaitingDraftText(shown.draft, flushed.text);
+    const plan = waitingDraftSave(draft);
+    if (plan === null || plan.kind === "unchanged") {
+      held.saving = false;
+      if (plan === null) return null;
       // Nothing changed: let the message go on as it was.
       close();
       return plan.revision;
     }
-    const editor = held.editor;
-    held.saving = true;
-    setKept({ ...shown, failure: null, phase: "saving" });
+    setKept({ ...shown, draft, failure: null, phase: "saving" });
     try {
       const saved = await editor.save(plan.content, plan.expectedRevision);
       held.saving = false;
       // Only the edit this save came from closes; it ended the lease itself.
       if (lease.current === held) {
         lease.current = null;
-        Keyboard.dismiss();
+        dismissKeyboard();
         setKept(null);
       }
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -287,7 +323,7 @@ export function useWaitingEdit(
   }, [close]);
 
   return useMemo(
-    () => ({ cancel: close, change, edit, open, reload, removePart, retry, save, takeBack }),
+    () => ({ cancel: close, change, edit, field, open, reload, removePart, retry, save, takeBack }),
     [change, close, edit, open, reload, removePart, retry, save, takeBack],
   );
 }

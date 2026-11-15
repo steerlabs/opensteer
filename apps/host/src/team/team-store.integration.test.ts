@@ -505,6 +505,31 @@ describe("team transaction authority", () => {
     await expect(chat.setAccess(admin, dm.id, access.revision, [])).rejects.toThrow();
     await expect(chat.addDmPeople(admin, dm.id, [admin.userId], true)).rejects.toThrow();
   });
+  it("keeps reference labels and sanitation adjacency out of agent admission on send and edit", async () => {
+    const c = await channel();
+    const l = await link();
+    const member = await fixture.database
+      .selectFrom("teamMembers")
+      .select("handle")
+      .where("userId", "=", owner.userId)
+      .executeTakeFirstOrThrow();
+    const handle = `@${member.handle}-agent`;
+    const body = `[see ${handle}](https://team.example/c/${c.id}) [word ](opensteer:future)${handle}`;
+    const sent = await send(c.id, body);
+    expect(sent.message.mentions).toEqual([]);
+    expect(await requests.pending(l)).toHaveLength(0);
+    await chat.editOrDelete(owner, c.id, sent.message.id, {
+      bodyMarkdown: body,
+      mentions: [{ kind: "agent", userId: owner.userId }],
+    });
+    expect((await chat.message(owner, c.id, sent.message.id)).mentions).toEqual([]);
+    expect(await requests.pending(l)).toHaveLength(0);
+    const asked = await send(c.id, `${handle} Please check`);
+    expect(asked.message.mentions).toEqual([{ kind: "agent", userId: owner.userId }]);
+    expect(asked.wake).toBe("queued");
+    expect(await requests.pending(l)).toHaveLength(1);
+  });
+
   it("admits only human own-agent mentions, only once, with an active link; edits never wake", async () => {
     const c = await channel();
     const events: { kind: string; state: string | undefined }[] = [];

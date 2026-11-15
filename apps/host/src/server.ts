@@ -1,3 +1,7 @@
+import { createAssetUrlHandlers } from "./assets/asset-service.js";
+import { createReferenceHandlers, createThreadRequestHandler } from "./references/resolve.js";
+import { resolvePersonalReferences } from "@opensteer/database";
+import { createTranscriptFileHandlers, type TranscriptFiles } from "./threads/transcript-files.js";
 import { describeSessionDevice } from "@opensteer/shared/sessionDevice";
 import type { AssetService } from "./assets/asset-service.js";
 import type { DeviceAccessService } from "./administration/device-access-service.js";
@@ -363,6 +367,7 @@ const machinePageLimit = 100;
 
 export interface HostServerDependencies {
   readonly assets?: AssetService;
+  readonly transcriptFiles?: TranscriptFiles;
   readonly execution: Pick<PersonalExecution, "canExecute">;
   readonly teamLinks: () => Promise<PersonalTeamLinks>;
   readonly connections?: ConnectionOAuth;
@@ -1114,6 +1119,9 @@ export async function createHostServer(
     });
 
   const coreRpcHandlers = {
+    ...createReferenceHandlers(dependencies.store, resolvePersonalReferences),
+    ...createAssetUrlHandlers(dependencies.assets),
+    ...createTranscriptFileHandlers(dependencies.transcriptFiles),
     ...createVoiceHandlers({ ...dependencies, publishDeploymentEvent, threads: threadService }),
     "agentPhone.target.get": async (_input, context) => {
       requireRpcSession(context);
@@ -1331,11 +1339,6 @@ export async function createHostServer(
         }),
       );
     },
-    "asset.urls": async (input, context) => {
-      if (!dependencies.assets)
-        throw new OpensteerError({ code: "not_found", message: "Images unavailable" });
-      return rpcSuccess(await dependencies.assets.urls(input, requireRpcSession(context).user.id));
-    },
     "tool.output.get": async (input, context) => {
       const output = await dependencies.store.toolOutputForOwner({
         ...input,
@@ -1527,20 +1530,7 @@ export async function createHostServer(
           }),
         ),
       ),
-    "thread.requests.list": async (input, context) => {
-      const ownerId = requireRpcSession(context).user.id;
-      const thread = await dependencies.store.getThreadForOwner(input.threadId, ownerId);
-      if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-      const page = await dependencies.store.requests.originatingPendingPage({
-        ...(input.before ? { before: input.before } : {}),
-        limit: Math.min(input.limit ?? threadPageMaxItems, threadPageMaxItems),
-        ...(input.deviceAccessRequests ? { deviceAccessRequests: input.deviceAccessRequests } : {}),
-        threadId: input.threadId,
-      });
-      return rpcSuccess(
-        hostApi["thread.requests.list"].success.parse({ ...page, threadId: input.threadId }),
-      );
-    },
+    "thread.requests.list": createThreadRequestHandler(dependencies.store),
     "attention.get": async (input, context) => {
       const [attention, homeName] = await Promise.all([
         dependencies.store.notificationState.attention(
@@ -1635,6 +1625,7 @@ export async function createHostServer(
     | "thread.message.revisions.list"
     | "thread.live.get"
     | "thread.requests.list"
+    | "references.resolve"
   >;
 
   const executeCoreCommand = async (command: CoreCommand, context: HostApiServerContext) => {

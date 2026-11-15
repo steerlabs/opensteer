@@ -3,6 +3,8 @@ import { TeamScreenLayout } from "./team/team-screen-gate.js";
 import { screenPresentations } from "./navigation-presentations.js";
 import type { ReactNode } from "react";
 import { SheetAnchor } from "./ui/sheet.js";
+import { PersonalReferenceProvider } from "./markdown/reference-navigation.js";
+import { useAttachedHostOf } from "./screens/deployment-gate.js";
 import { SettingsAiSharingScreen } from "./screens/settings-ai-sharing.js";
 import { isRecord } from "@opensteer/shared/isRecord";
 import {
@@ -55,6 +57,7 @@ import { TabsScreen } from "./screens/tabs.js";
 import { TaskSearchScreen } from "./screens/task-search.js";
 import { ThreadFindScreen } from "./screens/thread-find.js";
 import { RequestSheetScreen } from "./thread/request-sheet.js";
+import { FileViewerScreen, type FileViewerParams } from "./thread/file-viewer.js";
 import { NewThreadScreen, ThreadSettingsScreen } from "./screens/thread-settings.js";
 import { RunningNowScreen } from "./screens/running-now.js";
 import { SubagentScreen } from "./screens/subagent.js";
@@ -127,15 +130,41 @@ import { thisPhoneNoun } from "./computers/phone-noun.js";
  * platform's large title; a thread's title is the person's words and keeps the
  * bar-height title that truncates gracefully.
  */
-function ScreenLayout(props: { readonly children: ReactNode; readonly modal: boolean }) {
+function ScreenLayout(props: {
+  readonly children: ReactNode;
+  readonly modal: boolean;
+  readonly route: { readonly params?: unknown };
+}) {
   const focused = useIsFocused();
   useTeamSideBack();
+  const content = <RouteReferences route={props.route}>{props.children}</RouteReferences>;
   return (
     <>
-      {props.modal ? <Pane>{props.children}</Pane> : props.children}
+      {props.modal ? <Pane>{content}</Pane> : content}
       {props.modal ? null : <TopLevelMenu />}
       <SheetAnchor active={focused} level={1} />
     </>
+  );
+}
+
+/**
+ * A personal Deployment's screen reads its links as that Deployment's: the
+ * route names the owner, so a link drawn here never asks the selection whose
+ * it is. A team's screens get their own context from the team's gate.
+ */
+function RouteReferences(props: {
+  readonly children: ReactNode;
+  readonly route: { readonly params?: unknown };
+}): ReactNode {
+  const params = isRecord(props.route.params) ? props.route.params : {};
+  const deploymentId = typeof params["deploymentId"] === "string" ? params["deploymentId"] : null;
+  const threadId = typeof params["threadId"] === "string" ? params["threadId"] : null;
+  const client = useAttachedHostOf(deploymentId);
+  if (deploymentId === null || client === null || "teamId" in params) return props.children;
+  return (
+    <PersonalReferenceProvider client={client} deploymentId={deploymentId} threadId={threadId}>
+      {props.children}
+    </PersonalReferenceProvider>
   );
 }
 
@@ -149,7 +178,10 @@ const RootStack = createNativeStackNavigator({
   // where it was presented, not the stack's or the sidebar's beside it, and no
   // region the shell measured lies over it.
   screenLayout: ({ children, options, route }) => (
-    <ScreenLayout modal={options.presentation !== undefined && options.presentation !== "card"}>
+    <ScreenLayout
+      modal={options.presentation !== undefined && options.presentation !== "card"}
+      route={route}
+    >
       <TeamScreenLayout route={route}>{children}</TeamScreenLayout>
     </ScreenLayout>
   ),
@@ -296,6 +328,16 @@ const RootStack = createNativeStackNavigator({
         sheetGrabberVisible: true,
         title: "Request",
       }),
+    },
+    // A file a link named: its lines, its image or its download, over everything,
+    // with its own bar. Close returns to the words that named it.
+    FileViewer: {
+      screen: FileViewerScreen,
+      options: {
+        headerShown: false,
+        presentation: screenPresentations.FileViewer,
+        title: "File",
+      },
     },
     // One step of an agent's work. Its own content names it, so the sheet has
     // no bar; it opens part-way so the transcript it came from stays in view.
@@ -724,7 +766,11 @@ type OpensteerRootParamList = {
     readonly threadId: string;
     /** The reply's turn, by its key. Absent, the reply under way or else the latest. */
     readonly turnKey?: string | undefined;
+    /** A Run a link named, found once the transcript around its first message is loaded. */
+    readonly runId?: string | undefined;
+    readonly anchorMessageId?: string | undefined;
   };
+  readonly FileViewer: FileViewerParams;
   readonly Deployments: undefined;
   readonly DeploymentSwitcher: undefined;
   readonly Home: { readonly deploymentId: string };
@@ -787,6 +833,8 @@ type OpensteerRootParamList = {
   };
   readonly RequestSheet: {
     readonly deploymentId: string;
+    /** Opened from a link: a settled Request is shown as it ended rather than closed. */
+    readonly opened?: "reference";
     readonly full?: boolean;
     readonly reason?: boolean;
     readonly requestId: string;

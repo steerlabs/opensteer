@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import type { MessageEdit, MessageRevisionView } from "@opensteer/core";
 import { formatClockTime, messageRevisionRows, type HostClient } from "@opensteer/client/host";
 import { Popover } from "./popover.js";
+import { readableMarkdown } from "./references/readable-markdown.js";
+
+const Markdown = lazy(() => import("./markdown.js"));
 
 /**
  * "Edited", which opens the message's versions, newest first: while it waits
@@ -115,7 +118,17 @@ function RevisionHistory({
                   {formatClockTime(row.at)}
                 </time>
               </p>
-              <p className="revisions__text">{row.text}</p>
+              <div className="revisions__text">
+                <Suspense
+                  fallback={
+                    <p className="md-prose md-prose--plain md-prose--person">
+                      {readableMarkdown(row.text)}
+                    </p>
+                  }
+                >
+                  <Markdown profile="person" text={row.text} />
+                </Suspense>
+              </div>
             </li>
           ))}
         </ol>

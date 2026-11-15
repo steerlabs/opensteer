@@ -77,7 +77,7 @@ it.each([
   expect(appendImageEmbeds(result, saved)).toBe(result);
 });
 
-import { classifyMarkdownImageSource, stripLocalImageEmbeds } from "./markdownImages.js";
+import { classifyMarkdownImageSource } from "./markdownImages.js";
 it.each([
   ["/tmp/a.png", "local"],
   ["~/a.png", "local"],
@@ -105,11 +105,4 @@ it("decodes a renderer's percent-encoded destination exactly once", () => {
     kind: "local",
     path: "/Users/me/Application Support/a%25.png",
   });
-});
-it("strips local inline and reference images while preserving code and remote images", () => {
-  const text =
-    "![chart](</tmp/a%20b.png>) ![ref][img] `![](/tmp/a.png)` ![web](https://example.com/a.png)\n\n[img]: file:///tmp/b.png";
-  expect(stripLocalImageEmbeds(text)).toBe(
-    "chart ref `![](/tmp/a.png)` ![web](https://example.com/a.png)\n\n",
-  );
 });

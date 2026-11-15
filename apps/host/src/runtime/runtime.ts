@@ -1,4 +1,11 @@
-import { AssetService } from "../assets/asset-service.js";
+import { createTranscriptFileServices } from "../threads/transcript-files.js";
+import { TranscriptFileAccess } from "../threads/transcript-file-access.js";
+import {
+  admitTranscriptFiles,
+  resolveThreadOutputImages,
+  readThreadOutputImage,
+} from "@opensteer/database";
+import { AuthSessionIdSchema } from "@opensteer/core";
 import { IdleCompactionService } from "../agents/idle-compaction-service.js";
 import { admitIdleCompaction, idleCompactionCandidates } from "@opensteer/database/idle-compaction";
 import { DeviceAccessService } from "../administration/device-access-service.js";
@@ -2563,6 +2570,34 @@ export async function createHostRuntime(
       });
       return linkStarting;
     }
+    const transcriptFileServices = createTranscriptFileServices({
+      authSecret: config.authSecret,
+      dataDirectory,
+      deploymentId: deployment.id,
+      access: new TranscriptFileAccess({
+        home: files,
+        attachments,
+        imagesRoot: resolve(config.runnerDataDirectory, "images"),
+        helperPath: personalConfig.nativeFsHelperPath,
+        admit: ({ userId, threadId }) =>
+          admitTranscriptFiles(database, { ownerId: userId, threadId }),
+        outputImages: (input) => resolveThreadOutputImages(database, input),
+        outputImage: (input) => readThreadOutputImage(database, input),
+      }),
+      authorizeMedia: async ({ sessionId, userId }) =>
+        Boolean(
+          await database
+            .selectFrom("authSessions")
+            .innerJoin("users", "users.id", "authSessions.userId")
+            .select("authSessions.id")
+            .where("authSessions.id", "=", AuthSessionIdSchema.parse(sessionId))
+            .where("authSessions.userId", "=", userId)
+            .where("authSessions.expiresAt", ">", new Date())
+            .where("authSessions.absoluteExpiresAt", ">", new Date())
+            .where("users.disabledAt", "is", null)
+            .executeTakeFirst(),
+        ),
+    });
     const app = await createHostServer(
       {
         connections,
@@ -2576,14 +2611,8 @@ export async function createHostRuntime(
             }
           : {}),
         attachments,
-        assets: new AssetService({
-          authSecret: config.authSecret,
-          dataDirectory,
-          runnerDataDirectory: config.runnerDataDirectory,
-          agentHome: async () => (await personalExecution()).options.agentHome.path,
-          owns: async (threadId, ownerId) =>
-            Boolean(await store.getThreadForOwner(threadId, ownerId)),
-        }),
+        assets: transcriptFileServices.assets,
+        transcriptFiles: transcriptFileServices.files,
         runFiles: runFileRelay,
         apps,
         appOriginSigningKey: createHmac("sha256", config.authSecret)
@@ -2976,7 +3005,7 @@ export async function createHostRuntime(
         await step("quiet tasks", () => quietTasks.stop());
         await step("coordinator", () => coordinator.stop());
         await step("task questions", () => taskQuestions?.close());
-        files.close();
+        transcriptFileServices.close();
         await step("HTTP server", () => app.close());
         await step("admission", () => admission.close());
         await step("thread state loop", () => threadStateLoop?.close());

@@ -1,20 +1,33 @@
-import { useState } from "react";
-import { Modal, Pressable, Text, View } from "react-native";
+import { useContext, useState } from "react";
+import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { Image } from "expo-image";
 import { useAssetImage } from "@opensteer/client/react";
+import { color, radius } from "../theme.js";
+import { ReferenceVisibility, useReferenceNavigation } from "./reference-context.js";
 
+/**
+ * An image an agent embedded. Nothing is asked of the Host until it can be
+ * seen; until then it holds its place at the shape it will take. A tap opens
+ * it in the file viewer, where Original and Download are.
+ */
 export function AssetImage({ path, alt = "" }: { path: string; alt?: string }) {
-  const preview = useAssetImage(path);
+  const visible = useContext(ReferenceVisibility);
+  const preview = useAssetImage(path, "preview", { enabled: visible });
+  const navigation = useReferenceNavigation();
   const [open, setOpen] = useState(false);
   if (preview.failed) return <Text>{alt || "Image unavailable"}</Text>;
   if (!preview.available) return <Text>{alt || path}</Text>;
   const image = preview.image;
+  const viewer =
+    navigation?.ports !== undefined && "openFile" in navigation.ports ? navigation.ports : null;
   return (
     <View>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={alt || "Open image"}
-        onPress={() => setOpen(true)}
+        onPress={() =>
+          viewer ? void viewer.openFile({ source: { kind: "path", path } }) : setOpen(true)
+        }
       >
         <Image
           key={preview.retry}
@@ -29,10 +42,12 @@ export function AssetImage({ path, alt = "" }: { path: string; alt?: string }) {
           cachePolicy="memory-disk"
           contentFit="contain"
           accessibilityLabel={alt}
-          style={{
-            width: "100%",
-            aspectRatio: image?.width && image.height ? image.width / image.height : 4 / 3,
-          }}
+          style={[
+            styles.image,
+            {
+              aspectRatio: image?.width && image.height ? image.width / image.height : 4 / 3,
+            },
+          ]}
           onError={preview.onError}
         />
       </Pressable>
@@ -72,3 +87,13 @@ function OriginalImage({ path, close }: { path: string; close: () => void }) {
     </Modal>
   );
 }
+
+const styles = StyleSheet.create({
+  // A bounded place held before the image's own shape is known.
+  image: {
+    backgroundColor: color.surfaceElevated,
+    borderRadius: radius.md,
+    maxHeight: 420,
+    width: "100%",
+  },
+});

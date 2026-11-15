@@ -1,3 +1,9 @@
+import {
+  TranscriptFileOpenInputSchema,
+  TranscriptFileOpenSchema,
+  TranscriptFileContentInputSchema,
+  TranscriptFileContentSchema,
+} from "./transcript-files.js";
 import { TeamCommandResultViewSchema, teamReadViews } from "./team-views.js";
 import { NeedsYouPageSchema } from "./needs-you.js";
 import {
@@ -163,6 +169,7 @@ import {
   UpdateTriggerHttpBodySchema,
 } from "@opensteer/triggers/models";
 import { z } from "zod";
+import { ReferenceResolveInputSchema, ReferenceResolveResultSchema } from "./references.js";
 import { AppIdSchema, AppSchema } from "@opensteer/core";
 import { AgentPhoneHostTargetViewSchema } from "./android-phone.js";
 import { AssetUrlsInputSchema, AssetUrlsSchema } from "./assets.js";
@@ -2132,6 +2139,13 @@ export const hostApi = defineRpc({
   ),
   /** Personal only: signed addresses for image files on the hosting computer. */
   "asset.urls": declaration("POST", AssetUrlsInputSchema, AssetUrlsSchema),
+  "file.open": declaration("POST", TranscriptFileOpenInputSchema, TranscriptFileOpenSchema),
+  "file.content": declaration(
+    "GET",
+    TranscriptFileContentInputSchema,
+    TranscriptFileContentSchema,
+    true,
+  ),
   "tool.output.get": declaration(
     "GET",
     z.strictObject({
@@ -2255,14 +2269,24 @@ export const hostApi = defineRpc({
       ),
     ThreadMessagePageSchema,
   ),
+  "references.resolve": declaration(
+    "POST",
+    ReferenceResolveInputSchema,
+    ReferenceResolveResultSchema,
+  ),
   "thread.requests.list": declaration(
     "GET",
     z
       .strictObject({
         threadId: ThreadIdSchema,
+        requestId: RequestIdSchema.optional(),
         deviceAccessRequests: z.literal("include").optional(),
       })
-      .extend(durablePageInputSchema.shape),
+      .extend(durablePageInputSchema.shape)
+      .refine(
+        (input) => !input.requestId || (input.before === undefined && input.limit === undefined),
+        "A targeted Request read cannot page",
+      ),
     z.object({
       requests: readableRequestList(RequestViewSchema, 100),
       threadId: ThreadIdSchema,

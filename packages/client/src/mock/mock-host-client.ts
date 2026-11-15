@@ -1,9 +1,13 @@
+import { localReference } from "../references/local.js";
+import { parseReferenceHref, type ReferenceId } from "@opensteer/core";
 import { AssetUrlStore } from "../host/asset-urls.js";
+import { ReferenceStore } from "../references/store.js";
+import { TranscriptFileController } from "../host/transcript-files.js";
 import { openWaitingMessageEditor } from "../host/waiting-message-editor.js";
 import { isDeviceAccessRequestEvent } from "@opensteer/protocol";
 import { deviceAccess } from "@opensteer/protocol";
 import { hostsDeployment } from "../computers/computers.js";
-import { listedRowThreadId } from "../host/task-list.js";
+import { heldThread, listedRowThreadId } from "../host/task-list.js";
 import { familyAutomations } from "../host/task-family.js";
 import {
   DeploymentSnapshotSchema,
@@ -408,6 +412,7 @@ const mockTmdbReason =
  * person at that Mac.
  */
 const mockComputerUseThreadId = "thr_00000000-0000-4000-8000-000000000001";
+export const mockReferenceFailureId = ThreadIdSchema.parse(mockComputerUseThreadId);
 const mockstorageThreadId = "thr_00000000-0000-4000-8000-000000000002";
 const mockComputerUseRequestId = RequestIdSchema.parse("req_0192f4a1-6666-4000-8000-000000000006");
 const mockComputerUseSetupRequestId = "0192f4a1-4444-4000-8000-000000000004";
@@ -1752,6 +1757,8 @@ export interface MockPhoneJoin {
 }
 
 export interface MockHostClientOptions {
+  /** Fail the first metadata batch containing this ID, then resolve normally. */
+  referenceResolveFailureId?: ReferenceId;
   teamAsks?: readonly import("@opensteer/protocol").NeedsYouTeamAskEntry[];
   /** `seeded`, or one task holding a single scene of the subagent design. */
   subagents?: "seeded" | "absent" | MockSubagentScene;
@@ -1932,8 +1939,48 @@ function mockReaderThread<Thread extends { readonly id: string; readonly pending
   return { ...thread, pendingRequests: Math.max(0, thread.pendingRequests - hidden) };
 }
 
-function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
+function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): HostApiHandlers {
+  let referenceFailurePending = failureId !== undefined;
   const handlers: Partial<HostApiHandlers> = {
+    "references.resolve": async ({ ids }) => {
+      const snapshot = client.getSnapshot();
+      if (snapshot.session !== "authenticated")
+        return {
+          ok: false,
+          error: { code: "unauthorized", message: "Authentication required", retryable: false },
+        };
+      if (referenceFailurePending && failureId && ids.includes(failureId)) {
+        referenceFailurePending = false;
+        return {
+          ok: false,
+          error: {
+            code: "internal",
+            message: "Reference lookup temporarily unavailable",
+            retryable: true,
+          },
+        };
+      }
+      return rpcSuccess(
+        hostApi["references.resolve"].success.parse({
+          results: [...new Set(ids)].map((id) => {
+            const reference = parseReferenceHref(`opensteer:${id}`)!;
+            if (reference.kind === "request") {
+              const request = client.referenceRequest(id);
+              if (request && heldThread(snapshot, request.originatingThreadId))
+                return {
+                  status: "available",
+                  kind: "request",
+                  id: reference.id,
+                  threadId: request.originatingThreadId,
+                  requestStatus: request.status,
+                  title: plainTextExcerpt(requestTitleText(request.presentation), 256) || "Request",
+                };
+            }
+            return localReference(snapshot, reference) ?? { status: "unavailable", id };
+          }),
+        }),
+      );
+    },
     "asset.urls": async ({ assets }) => ({
       ok: true,
       data: {
@@ -1997,6 +2044,69 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       rpcSuccess(await client.uploadAttachment(attachmentId, context.binaryBody)),
     "attachment.content": async ({ attachmentId }) =>
       rpcSuccess(client.readAttachment(attachmentId)),
+    "file.open": async ({ threadId, source }) => {
+      if (threadId !== null && !client.getSnapshot().threads.some((t) => t.id === threadId))
+        return rpcSuccess(hostApi["file.open"].success.parse({ status: "unavailable" }));
+      // The mock has no filesystem. Only real fixture attachments can supply bytes.
+      if (source.kind !== "attachment") return rpcSuccess({ status: "unavailable" as const });
+      try {
+        const a = client.getAttachment(source.attachmentId);
+        if (
+          a.state !== "ready" ||
+          !a.sha256 ||
+          (!a.messageId && Date.parse(a.expiresAt) <= Date.now())
+        )
+          return rpcSuccess({ status: "unavailable" as const });
+        const content = client.readAttachment(a.id);
+        const bytes = content.bytes.subarray(0, 512 * 1024);
+        let preview: { kind: "download" } | { kind: "text"; text: string; truncated: boolean } = {
+          kind: "download",
+        };
+        if (!bytes.includes(0))
+          try {
+            preview = {
+              kind: "text",
+              text: new TextDecoder("utf-8", { fatal: true }).decode(bytes, {
+                stream: bytes.length < content.bytes.length,
+              }),
+              truncated: bytes.length < content.bytes.length,
+            };
+          } catch {
+            /* Binary fixture. */
+          }
+        return rpcSuccess(
+          hostApi["file.open"].success.parse({
+            status: "ok",
+            resource: { kind: "attachment", attachmentId: a.id, revision: a.sha256 },
+            name: a.name,
+            sizeBytes: a.sizeBytes,
+            mediaType: a.mediaType,
+            preview,
+          }),
+        );
+      } catch {
+        return rpcSuccess({ status: "unavailable" as const });
+      }
+    },
+    "file.content": async ({ threadId, resource }) => {
+      if (
+        (threadId !== null && !client.getSnapshot().threads.some((t) => t.id === threadId)) ||
+        resource.kind !== "attachment"
+      )
+        throw new HostClientRequestError({
+          code: "not_found",
+          message: "File unavailable",
+          status: 404,
+        });
+      const a = client.getAttachment(resource.attachmentId);
+      if (a.sha256 !== resource.revision || (!a.messageId && Date.parse(a.expiresAt) <= Date.now()))
+        throw new HostClientRequestError({
+          code: "not_found",
+          message: "File unavailable",
+          status: 404,
+        });
+      return rpcSuccess(hostApi["file.content"].success.parse(client.readAttachment(a.id)));
+    },
     "browser.password-sign-in.get": async ({ requestId }) =>
       rpcSuccess(client.passwordSignInCard(requestId)),
     "browser.sources.get": async () => rpcSuccess(client.chrome.state()),
@@ -2572,8 +2682,27 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       rpcSuccess(client.messageRevisionPage(input.messageId, input.before)),
     "thread.live.get": async (input) => rpcSuccess(client.liveStreams(input.threadId)),
     "thread.requests.list": async (input) => {
-      const requests = (client.getSnapshot().requests[input.threadId] ?? []).filter(
-        (request) => input.deviceAccessRequests === "include" || request.kind !== "device.access",
+      const snapshot = client.getSnapshot();
+      if (!heldThread(snapshot, input.threadId))
+        return mockRefusal(
+          new HostClientRequestError({
+            code: "not_found",
+            message: "Thread not found",
+            status: 404,
+          }),
+        );
+      const target = input.requestId ? client.referenceRequest(input.requestId) : undefined;
+      const requests = (
+        input.requestId
+          ? target
+            ? [target]
+            : []
+          : (client.getSnapshot().requests[input.threadId] ?? [])
+      ).filter(
+        (request) =>
+          request.originatingThreadId === input.threadId &&
+          (input.requestId !== undefined || request.status === "pending") &&
+          (input.deviceAccessRequests === "include" || request.kind !== "device.access"),
       );
       return rpcSuccess(
         hostApi["thread.requests.list"].success.parse({
@@ -3850,6 +3979,8 @@ export class MockHostClient implements HostClient {
   readonly browserFrames: BrowserFrameStore;
   readonly browserWatchFrames: BrowserFrameStore;
   readonly assetUrls: AssetUrlStore;
+  readonly references: ReferenceStore;
+  readonly transcriptFiles: TranscriptFileController;
   readonly rpc: HostApiClient;
   get cardUseMockStates() {
     return this.#state.cardUseMockStates;
@@ -3996,8 +4127,50 @@ export class MockHostClient implements HostClient {
       editing: this.#places.input.editing,
     };
     this.browserWatchFrames = frames;
-    this.rpc = createInMemoryHostApiClient(mockHostApiHandlers(this.#state), mockRpcContext());
-    this.assetUrls = new AssetUrlStore(this.rpc, { origin: async () => "http://mock.invalid" });
+    this.rpc = createInMemoryHostApiClient(
+      mockHostApiHandlers(this.#state, options.referenceResolveFailureId),
+      mockRpcContext(),
+    );
+    this.assetUrls = new AssetUrlStore(
+      async (input, signal) =>
+        unwrapRpcResult(await this.rpc["asset.urls"](input, signal ? { signal } : undefined)),
+      { origin: async () => "http://mock.invalid" },
+    );
+    this.transcriptFiles = new TranscriptFileController({
+      images: { store: this.assetUrls, deploymentId: () => this.#state.getSnapshot().deploymentId },
+      rpc: {
+        openFile: async (input, signal) =>
+          unwrapRpcResult(await this.rpc["file.open"](input, signal ? { signal } : undefined)),
+        readFile: async (input, signal) =>
+          unwrapRpcResult(await this.rpc["file.content"](input, signal ? { signal } : undefined)),
+      },
+    });
+    const referenceOwner = (snapshot: PublicHostSnapshot) =>
+      JSON.stringify([
+        snapshot.deploymentId,
+        snapshot.user?.id,
+        snapshot.sessionId,
+        snapshot.session,
+      ]);
+    let owner = referenceOwner(this.#state.getSnapshot());
+    this.references = new ReferenceStore({
+      getSnapshot: this.#state.getSnapshot,
+      resolveReferences: async (input, signal) =>
+        unwrapRpcResult(
+          await this.rpc["references.resolve"](input, signal ? { signal } : undefined),
+        ),
+      subscribe: (listener) =>
+        this.#state.subscribe(() => {
+          const next = referenceOwner(this.#state.getSnapshot());
+          if (next !== owner) {
+            owner = next;
+            this.assetUrls.reset();
+            this.transcriptFiles.reset();
+          }
+          listener();
+        }),
+    });
+    this.#state.onReferenceEvent = (event) => this.references.accept(event);
     this.#nodeDetails = new NodeDetailStore({
       available: () => true,
       nodes: (threadId) =>
@@ -4855,6 +5028,16 @@ export class MockHostClient implements HostClient {
   async loadEarlierNeedsYou(): Promise<void> {
     this.#state.loadEarlierNeedsYou();
   }
+  async readRequest(threadId: string, requestId: string): Promise<Request | null> {
+    const { requests } = unwrapRpcResult(
+      await this.rpc["thread.requests.list"]({
+        deviceAccessRequests: "include",
+        requestId: RequestIdSchema.parse(requestId),
+        threadId: ThreadIdSchema.parse(threadId),
+      }),
+    );
+    return requests.find(({ id }) => id === requestId) ?? null;
+  }
 
   async loadDoneTasks(deploymentId?: string): Promise<void> {
     if (this.#state.getSnapshot().quietTasksAvailable) this.#state.loadDoneTasks(deploymentId);
@@ -4985,6 +5168,8 @@ export class MockHostClient implements HostClient {
   }
 
   dispose(): void {
+    this.references.dispose();
+    this.transcriptFiles.dispose();
     this.assetUrls.dispose();
     this.#nodeDetails.clear();
     this.#personShowListeners.clear();
@@ -5274,6 +5459,7 @@ interface MockPlugin {
   updatedAt: string;
 }
 class MockHostState {
+  onReferenceEvent: ((event: AgentEvent) => void) | undefined;
   teamAsks: import("@opensteer/protocol").NeedsYouTeamAskEntry[] = [];
   readonly teamLinks = new Map<string, PersonalTeamLink>();
   nodeEvents: readonly import("@opensteer/core").AgentEventView[] = [];
@@ -5679,6 +5865,7 @@ class MockHostState {
   }
 
   applyThreadStateChanged(event: Extract<AgentEvent, { type: "thread.state-changed" }>): void {
+    this.onReferenceEvent?.(event);
     const previous = this.snapshot.threads.find(({ id }) => id === event.threadId);
     this.sequence = Math.max(this.sequence, Number(event.sequence));
     this.#threadState.record(event);
@@ -6077,6 +6264,18 @@ class MockHostState {
     }
   }
   private readonly computerAppSetupRequests = new Map<string, ComputerAppSetupRequest>();
+  private readonly referenceRequests = new Map<string, Request>();
+  referenceRequest(requestId: string): Request | undefined {
+    return (
+      Object.values(this.snapshot.requests)
+        .flat()
+        .find((request) => request.id === requestId) ?? this.referenceRequests.get(requestId)
+    );
+  }
+  private referenceRequestReceipt(request: Exclude<Request, { status: "pending" }>) {
+    this.referenceRequests.set(request.id, request);
+    return requestReceipt(request);
+  }
   /** Enrollments retired here, which the preview, like the Host, keeps no row for. */
   private readonly retiredEnrollments = new Set<string>();
   private readonly phoneEnrollments = new Map<
@@ -9377,7 +9576,10 @@ class MockHostState {
       ),
       transcripts: {
         ...snapshot.transcripts,
-        [threadId]: [...(snapshot.transcripts[threadId] ?? []), requestReceipt(resolved)],
+        [threadId]: [
+          ...(snapshot.transcripts[threadId] ?? []),
+          this.referenceRequestReceipt(resolved),
+        ],
       },
     };
   }
@@ -9403,7 +9605,10 @@ class MockHostState {
       ),
       transcripts: {
         ...this.snapshot.transcripts,
-        [threadId]: [...(this.snapshot.transcripts[threadId] ?? []), requestReceipt(resolved)],
+        [threadId]: [
+          ...(this.snapshot.transcripts[threadId] ?? []),
+          this.referenceRequestReceipt(resolved),
+        ],
       },
     });
   }
@@ -11268,7 +11473,7 @@ class MockHostState {
       {
         requests: (this.snapshot.requests[workerId] ?? []).filter(({ id }) => id !== request.id),
       },
-      requestReceipt(resolved),
+      this.referenceRequestReceipt(resolved),
     );
     if (!assignment || !script?.decision || !run) return;
     const outcome = accepted
@@ -11903,7 +12108,7 @@ class MockHostState {
     const joined = this.answerHeldMessages(request.originatingThreadId, runId, timestamp);
     const transcript = [
       ...(this.snapshot.transcripts[request.originatingThreadId] ?? []),
-      requestReceipt(resolved),
+      this.referenceRequestReceipt(resolved),
       ...joined,
     ];
     const originating = transcript.find((entry) => entry.kind === "run" && entry.runId === runId);
@@ -12369,8 +12574,10 @@ class MockHostState {
       snapshot.deploymentId !== this.snapshot.deploymentId ||
       snapshot.user?.id !== this.snapshot.user?.id ||
       snapshot.session !== "authenticated"
-    )
+    ) {
       this.runPlaces.clear();
+      this.referenceRequests.clear();
+    }
     for (const run of this.snapshot.runQueue)
       if (!snapshot.runQueue.some((next) => next.id === run.id)) this.runPlaces.end(run.id, false);
 

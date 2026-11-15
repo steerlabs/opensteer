@@ -1,14 +1,7 @@
-import {
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-  type ClipboardEvent,
-  type DragEvent,
-  type KeyboardEvent,
-} from "react";
+import { useEffect, useId, useMemo, useRef, useState, type DragEvent } from "react";
 import { attachmentDetail } from "../attachments/attachment-parts.js";
+import { ComposerEditor, type ComposerEditorControl } from "../composer-editor.js";
+import { referenceGroup, type ComposerLinkCandidate } from "../composer-reference-picker.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { AgentOrb } from "../workspace/task-mark.js";
@@ -25,7 +18,8 @@ import {
 type PickerItem =
   | { readonly kind: "my-agent"; readonly available: boolean }
   | { readonly kind: "person"; readonly person: PersonView }
-  | { readonly kind: "agent-reference"; readonly owner: PersonView };
+  | { readonly kind: "agent-reference"; readonly owner: PersonView }
+  | { readonly kind: "page"; readonly candidate: ComposerLinkCandidate };
 
 interface MentionQuery {
   /** Where the "@" is in the text. */
@@ -34,6 +28,7 @@ interface MentionQuery {
 }
 
 const pickerLimit = 7;
+const pageLimit = 5;
 
 /**
  * The team composer: words, files, @ mentions and the viewer's own agent.
@@ -59,6 +54,7 @@ export function TeamComposer({
   onTyping,
   people,
   placeholder,
+  references,
   staged = [],
   typing = [],
 }: {
@@ -83,6 +79,11 @@ export function TeamComposer({
   /** Members of this channel, for the @ list. */
   readonly people: readonly PersonView[];
   readonly placeholder: string;
+  /**
+   * Team pages `@` can write into the words — channels, knowledge — for a
+   * query. They are links only: they never ask anyone or wake an agent.
+   */
+  readonly references?: readonly ComposerLinkCandidate[] | undefined;
   readonly staged?: readonly StagedFileView[];
   readonly typing?: readonly PersonView[];
 }) {
@@ -110,21 +111,21 @@ export function TeamComposer({
   const [active, setActive] = useState(0);
   const [why, setWhy] = useState(false);
   const [dropping, setDropping] = useState(false);
-  const field = useRef<HTMLTextAreaElement | null>(null);
+  const field = useRef<ComposerEditorControl | null>(null);
   const pill = useRef<HTMLButtonElement | null>(null);
   const files = useRef<HTMLInputElement | null>(null);
   const listId = useId();
 
-  useEffect(() => {
-    const element = field.current;
-    if (!element) return;
-    element.style.height = "auto";
-    element.style.height = `${Math.min(element.scrollHeight, 240)}px`;
-  }, [text]);
-
   const items = useMemo(
-    () => pickerItems(mention, agent, me, people),
-    [agent, me, mention, people],
+    () => [
+      ...pickerItems(mention, agent, me, people),
+      ...(mention && references
+        ? references
+            .slice(0, pageLimit)
+            .map((candidate): PickerItem => ({ kind: "page", candidate }))
+        : []),
+    ],
+    [agent, me, mention, people, references],
   );
   const uploading = staged.some((file) => file.status === "uploading");
   const failedFile = staged.some((file) => file.status === "failed");
@@ -146,8 +147,16 @@ export function TeamComposer({
     sendingRef.current = true;
     setSending(true);
     try {
+      // What the field holds now, including input the browser has not yet reported.
+      const editor = field.current;
+      const now = editor
+        ? await editor.flushPendingInput(editor.readSnapshot().generation).catch(() => null)
+        : null;
+      if (now?.composing) return;
+      const body = (now?.text ?? text).trim();
+      if (!body && staged.length === 0) return;
       await onSend({
-        body: text.trim(),
+        body,
         toMyAgent: ready && (forceAgent || (!onAgentRecipient && toAgent)),
       });
       setText("");
@@ -162,86 +171,81 @@ export function TeamComposer({
   };
 
   const pick = (item: PickerItem) => {
-    if (!mention) return;
-    const before = text.slice(0, mention.start);
-    const after = text.slice(mention.start + 1 + mention.query.length);
+    const editor = field.current;
+    if (!mention || !editor) return;
+    // The "@query", and one space after it, give way to what was picked.
+    const end = mention.start + 1 + mention.query.length;
+    const range = { start: mention.start, end: text.charAt(end) === " " ? end + 1 : end };
+    setMention(null);
     if (item.kind === "my-agent") {
-      setText(`${before}${after.replace(/^ /u, "")}`);
-      setMention(null);
+      editor.replace(range, "", { historyGroup: "edit" });
       if (item.available) askAgent();
       else setWhy(true);
       return;
     }
-    const handle = item.kind === "person" ? item.person.handle : `${item.owner.handle}-agent`;
-    const next = `${before}@${handle} ${after.replace(/^ /u, "")}`;
-    setText(next);
-    setMention(null);
-    requestAnimationFrame(() => {
-      const caret = before.length + handle.length + 2;
-      field.current?.setSelectionRange(caret, caret);
-    });
+    const inserted =
+      item.kind === "page"
+        ? item.candidate.markdown
+        : `@${item.kind === "person" ? item.person.handle : `${item.owner.handle}-agent`}`;
+    editor.replace(range, `${inserted} `, { historyGroup: "edit" });
+    editor.focus();
   };
 
-  const readMention = (element: HTMLTextAreaElement) => {
-    const upto = element.value.slice(0, element.selectionStart);
-    const query = /(?:^|\s)@([\w-]*)$/u.exec(upto)?.[1];
-    setMention(query === undefined ? null : { start: upto.length - query.length - 1, query });
+  const readMention = () => {
+    const run = field.current?.caretRun() ?? null;
+    const match = run ? /(?:^|\s)@([\w-]*)$/u.exec(run.text) : null;
+    const query = match?.[1];
+    setMention(
+      run && query !== undefined
+        ? { start: run.start + run.text.length - query.length - 1, query }
+        : null,
+    );
     setActive(0);
   };
 
-  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.nativeEvent.isComposing) return;
+  const onKeyDown = (event: KeyboardEvent): boolean => {
     if (mention && items.length > 0) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        event.preventDefault();
         const step = event.key === "ArrowDown" ? 1 : -1;
         setActive((index) => (index + step + items.length) % items.length);
-        return;
+        return true;
       }
       if (event.key === "Enter" || event.key === "Tab") {
-        event.preventDefault();
         const item = items[active];
         if (item) pick(item);
-        return;
+        return true;
       }
       if (event.key === "Escape") {
-        event.preventDefault();
         event.stopPropagation();
         setMention(null);
-        return;
+        return true;
       }
     }
     if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !event.ctrlKey) {
-      event.preventDefault();
       void send(false);
-      return;
+      return true;
     }
     if (event.key === "ArrowUp" && text === "" && onEditLast) {
-      event.preventDefault();
       onEditLast();
-      return;
+      return true;
     }
-    const element = event.currentTarget;
-    if (
-      event.key === "Backspace" &&
-      toAgent &&
-      element.selectionStart === 0 &&
-      element.selectionEnd === 0
-    ) {
-      event.preventDefault();
+    const selection = field.current?.readSnapshot().selection;
+    if (event.key === "Backspace" && toAgent && selection?.start === 0 && selection.end === 0) {
       setToAgent(false);
+      return true;
     }
+    return false;
   };
 
-  const takeFiles = (list: FileList | null) => {
+  const takeFiles = (list: FileList | null | undefined) => {
     const chosen = [...(list ?? [])];
     if (chosen.length > 0) onAddFiles?.(chosen);
   };
 
-  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    if (!onAddFiles || event.clipboardData.files.length === 0) return;
-    event.preventDefault();
+  const onPaste = (event: ClipboardEvent): boolean => {
+    if (!onAddFiles || !event.clipboardData?.files.length) return false;
     takeFiles(event.clipboardData.files);
+    return true;
   };
   const onDrag = (event: DragEvent<HTMLDivElement>) => {
     if (!onAddFiles || !event.dataTransfer.types.includes("Files")) return;
@@ -290,28 +294,30 @@ export function TeamComposer({
               @My agent
             </button>
           ) : null}
-          <textarea
-            aria-activedescendant={mention && items.length > 0 ? `${listId}-${active}` : undefined}
-            aria-autocomplete="list"
-            aria-controls={mention && items.length > 0 ? listId : undefined}
-            aria-expanded={mention !== null && items.length > 0}
-            aria-label={toAgent ? "Message to your agent" : "Message"}
+          <ComposerEditor
             autoFocus={autoFocus}
             className="composer__input team-composer__input"
-            onBlur={() => setMention(null)}
-            onChange={(event) => {
-              setText(event.target.value);
-              readMention(event.target);
-              onTyping?.();
+            fieldAttributes={{
+              "aria-activedescendant":
+                mention && items.length > 0 ? `${listId}-${active}` : undefined,
+              "aria-autocomplete": "list",
+              "aria-controls": mention && items.length > 0 ? listId : undefined,
+              "aria-expanded": String(mention !== null && items.length > 0),
+              "aria-label": toAgent ? "Message to your agent" : "Message",
+              role: "combobox",
             }}
-            onClick={(event) => readMention(event.currentTarget)}
+            onBlur={() => setMention(null)}
+            onChange={(value, change) => {
+              setText(value);
+              if (change === "user") onTyping?.();
+            }}
             onKeyDown={onKeyDown}
             onPaste={onPaste}
+            onSelectionChange={readMention}
             placeholder={shownPlaceholder}
+            readOnly={sending}
             ref={field}
-            role="combobox"
-            rows={1}
-            disabled={sending}
+            scope="team"
             value={text}
           />
         </div>
@@ -345,17 +351,13 @@ export function TeamComposer({
             aria-label="Mention someone"
             className="composer__attach"
             onClick={() => {
-              const element = field.current;
-              if (!element) return;
-              const caret = element.selectionStart;
+              const editor = field.current;
+              if (!editor) return;
+              const { selection } = editor.readSnapshot();
+              const caret = selection.end;
               const spacer = caret > 0 && !/\s$/u.test(text.slice(0, caret)) ? " " : "";
-              const next = `${text.slice(0, caret)}${spacer}@${text.slice(caret)}`;
-              setText(next);
-              setMention({ start: caret + spacer.length, query: "" });
-              requestAnimationFrame(() => {
-                element.focus();
-                element.setSelectionRange(caret + spacer.length + 1, caret + spacer.length + 1);
-              });
+              editor.focus();
+              editor.replace({ start: caret, end: caret }, `${spacer}@`, { historyGroup: "edit" });
             }}
             title="Mention someone · @"
             type="button"
@@ -477,6 +479,10 @@ function MentionList({
   readonly onPick: (item: PickerItem) => void;
 }) {
   const firstPerson = items.findIndex((item) => item.kind === "person");
+  const firstPage = (group: string) =>
+    items.findIndex(
+      (item) => item.kind === "page" && referenceGroup(item.candidate).group === group,
+    );
   return (
     <div className="at-list" id={id} role="listbox">
       {items.map((item, index) => {
@@ -504,6 +510,25 @@ function MentionList({
               People here
             </p>
           ) : null;
+        if (item.kind === "page") {
+          const { glyph, group } = referenceGroup(item.candidate);
+          return [
+            index === firstPage(group) ? (
+              <p className="at-list__heading" key={`heading-${group}`}>
+                {group}
+              </p>
+            ) : null,
+            <div key={item.candidate.key} {...common}>
+              <span aria-hidden className="at-list__glyph">
+                <Icon name={glyph} />
+              </span>
+              <span className="at-list__text">
+                <span className="at-list__name">{item.candidate.label}</span>
+              </span>
+              {selected ? <Icon className="at-list__enter" name="corner-down-right" /> : null}
+            </div>,
+          ];
+        }
         if (item.kind === "my-agent")
           return (
             <div key="my-agent" {...common}>

@@ -497,7 +497,7 @@ describe("task titles", () => {
         return timeout(callback, milliseconds, ...args);
       });
       const message = "Prepare a launch plan for the new mobile application with milestones";
-      await write(element<HTMLTextAreaElement>("[data-composer-input]"), message);
+      await write(element<HTMLElement>("[data-composer-input]"), message);
       await click(element(".composer__send"));
       for (let tries = 0; tries < 40 && !history.at(-1)!.path.startsWith("/tasks/"); tries += 1)
         await settle(25);
@@ -770,7 +770,7 @@ describe("a conversation's page above it at phone width", () => {
     [
       "typing",
       async () => {
-        await act(async () => element<HTMLTextAreaElement>(".composer-dock textarea").focus());
+        await act(async () => element<HTMLElement>(".composer-dock [data-composer-input]").focus());
       },
     ],
     [

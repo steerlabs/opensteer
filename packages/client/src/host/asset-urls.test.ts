@@ -1,8 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
-import type { AssetUrlsInput, HostApiClient } from "@opensteer/protocol";
+import type { AssetUrlsInput } from "@opensteer/protocol";
 import { AssetUrlStore, assetImageUrl } from "./asset-urls.js";
-import { MockHostClient } from "../mock/mock-host-client.js";
 
 const stores: AssetUrlStore[] = [];
 afterEach(() => {
@@ -20,9 +19,9 @@ function setup() {
   const read = vi.fn(async (input: AssetUrlsInput) => ({
     ok: true as const,
     data: {
-      assets: input.assets.map(({ path, variant }) => ({
+      assets: input.assets.map(({ path, source = { kind: "path", path: path! }, variant }) => ({
         status: "ok" as const,
-        url: `/media/token-${revision}/${variant}-${encodeURIComponent(path)}`,
+        url: `/media/token-${revision}/${variant}-${encodeURIComponent(source.kind === "path" ? source.path : source.attachmentId)}`,
         expiresAt: new Date(Date.now() + 8 * 60 * 60_000).toISOString(),
         revision: String(revision),
         width: 100,
@@ -31,7 +30,7 @@ function setup() {
       })),
     },
   }));
-  const store = new AssetUrlStore({ "asset.urls": read } as unknown as HostApiClient, {
+  const store = new AssetUrlStore(async (input) => (await read(input)).data, {
     origin: async () => origin,
     subscribe: (listener) => {
       invalidate = listener;
@@ -145,8 +144,12 @@ it("renders a cached address at once and re-confirms it in the background after 
   overwrite();
   await vi.advanceTimersByTimeAsync(11_000);
   expect(await store.get("d", thread, "/a.png", "preview")).toMatchObject({ revision: "1" });
-  await vi.waitFor(() => expect(changed).toHaveBeenCalled(), { timeout: 1_000 });
-  expect(await store.get("d", thread, "/a.png", "preview")).toMatchObject({ revision: "2" });
+  await vi.waitFor(
+    async () =>
+      expect(await store.get("d", thread, "/a.png", "preview")).toMatchObject({ revision: "2" }),
+    { timeout: 1_000 },
+  );
+  expect(changed).toHaveBeenCalled();
   expect(read).toHaveBeenCalledTimes(2);
 });
 it("invalidates and re-mints only once on load failure, allowing another attempt for new output", async () => {
@@ -188,30 +191,6 @@ it("binds desktop URLs to the minting Deployment", () => {
     assetImageUrl("deployment-a", "/media/token/photo%20one.png", "https://ignored.example", true),
   ).toBe("app://opensteer/media/deployment-a/token/photo%20one.png");
 });
-it("implements ordered unavailable asset results in the mock", async () => {
-  const mock = new MockHostClient({ latencyMs: 0 });
-  try {
-    expect(
-      await mock.rpc["asset.urls"]({
-        threadId: createId("thread"),
-        assets: [
-          { path: "/missing.png", variant: "preview" },
-          { path: "/missing.png", variant: "original" },
-        ],
-      }),
-    ).toEqual({
-      ok: true,
-      data: {
-        assets: [
-          { status: "unavailable", reason: "missing" },
-          { status: "unavailable", reason: "missing" },
-        ],
-      },
-    });
-  } finally {
-    mock.dispose();
-  }
-});
 
 it("re-mints when time jumps past expiry and isolates Deployment metadata", async () => {
   const { store, read, thread } = setup();
@@ -228,4 +207,87 @@ it("settles every item when the RPC fails, and asks again on the next use", asyn
   read.mockRejectedValueOnce(new Error("offline"));
   expect(await store.image("d", thread, "/a.png", "preview")).toBeNull();
   expect(await store.image("d", thread, "/a.png", "preview")).toMatchObject({ revision: "1" });
+});
+
+it("mints nothing for invisible rows or rows released before the batch, preserving legacy image paths", async () => {
+  const { store, read, thread } = setup();
+  await store.get("d", thread, "~/legacy%20image.png", "preview", false, { enabled: false });
+  const controller = new AbortController();
+  const cancelled = store.get("d", thread, "relative/image.png", "preview", false, {
+    signal: controller.signal,
+  });
+  controller.abort();
+  await cancelled;
+  await Promise.resolve();
+  expect(read).not.toHaveBeenCalled();
+  await store.get("d", thread, "file:///home/a%2520b.png", "preview");
+  // Paths go in the shape every Host in the API window reads.
+  expect(read.mock.calls[0]![0].assets[0]).toEqual({
+    path: "file:///home/a%2520b.png",
+    variant: "preview",
+  });
+});
+it("includes FileSource kind and variant in identity and only notifies the affected image", async () => {
+  const { store, read, thread } = setup();
+  const id = createId("attachment");
+  const path = { kind: "path" as const, path: id },
+    attachment = { kind: "attachment" as const, attachmentId: id };
+  const changedPath = vi.fn(),
+    changedAttachment = vi.fn();
+  store.subscribeImage("d", thread, path, "preview", changedPath);
+  store.subscribeImage("d", thread, attachment, "preview", changedAttachment);
+  await store.get("d", thread, path, "preview");
+  expect(changedPath).toHaveBeenCalledTimes(1);
+  expect(changedAttachment).not.toHaveBeenCalled();
+  await Promise.all([
+    store.get("d", thread, attachment, "preview"),
+    store.get("d", thread, path, "original"),
+  ]);
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(read.mock.calls[1]![0].assets).toEqual([
+    { source: attachment, variant: "preview" },
+    { path: path.path, variant: "original" },
+  ]);
+});
+it("drops late mint answers after ownership reset and preserves retained subscriptions", async () => {
+  const { store, read, thread } = setup();
+  const response = Promise.withResolvers<Awaited<ReturnType<typeof read>>>();
+  read.mockReturnValueOnce(response.promise);
+  const listener = vi.fn();
+  store.subscribeImage("d", thread, "/old.png", "preview", listener);
+  const old = store.get("d", thread, "/old.png", "preview");
+  await vi.advanceTimersByTimeAsync(0);
+  store.reset();
+  expect(await old).toEqual({ status: "unavailable", reason: "missing" });
+  response.resolve({
+    ok: true,
+    data: {
+      assets: [
+        {
+          status: "ok",
+          url: "/media/late/old.png",
+          expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+          revision: "old-owner",
+          width: 100,
+          height: 80,
+          mediaType: "image/png",
+        },
+      ],
+    },
+  });
+  await store.get("d", thread, "/old.png", "preview");
+  expect(listener).toHaveBeenCalledTimes(2);
+  expect(await store.get("d", thread, "/old.png", "preview")).toMatchObject({ status: "ok" });
+});
+it("coalesces simultaneous stale-image failures into one explicit refresh", async () => {
+  const { store, read, thread } = setup();
+  await store.get("d", thread, "/image.png", "preview");
+  const [one, two] = await Promise.all([
+    store.loadFailed("d", thread, "/image.png", "preview"),
+    store.loadFailed("d", thread, "/image.png", "preview"),
+  ]);
+  expect(one && two).toBe(true);
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(await store.loadFailed("d", thread, "/image.png", "preview")).toBe(false);
+  expect(read).toHaveBeenCalledTimes(2);
 });

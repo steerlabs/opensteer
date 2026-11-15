@@ -33,6 +33,29 @@ const clientPolicyDerivations: Record<string, { count: number; reason: string }>
   },
 };
 const exceptions: Record<string, { counts: Record<string, number>; reason: string }> = {
+  "apps/mobile/src/markdown/reference-link.tsx": {
+    counts: { "navigation?.context.kind": 2, "navigation.context.kind": 1, "context.kind": 2 },
+    reason:
+      "A reference's render scope says whether words sit in personal or team text, not Deployment policy.",
+  },
+  "apps/web/src/components/composer-editor-document.ts": {
+    counts: { "attrs.kind": 1 },
+    reason: "A composer token's kind says which link form it holds, not a Deployment kind.",
+  },
+  "apps/web/src/components/references/reference-scope.tsx": {
+    counts: { "scope?.context.kind": 1 },
+    reason:
+      "A reference's render scope says whether words sit in personal or team text, not Deployment policy.",
+  },
+  "apps/web/src/references-visual.tsx": {
+    counts: { scenario: 1 },
+    reason: "A visual fixture scenario chooses which captured surface to draw.",
+  },
+  "packages/client/src/references/composer.ts": {
+    counts: { "options?.scope": 1, kind: 1 },
+    reason:
+      "A composer's scope and token kind decide which links become chips, not Deployment policy.",
+  },
   "apps/host/src/runtime/machines.ts": {
     counts: { "runner.device?.form": 1 },
     reason: "The runner hardware form labels a headless device, not a Deployment.",

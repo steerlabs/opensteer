@@ -18,7 +18,7 @@ export const opensteer_automation_list = defineAgentTool({
   name: "opensteer_automation_list",
   title: "List automations",
   description:
-    "List reachable schedule, reminder, cron, webhook and watch automations. Seeing one is not authority to change it.",
+    "List reachable schedule, reminder, cron, webhook and watch automations. Seeing one is not authority to change it. Mention returned items by their `link`, verbatim.",
   input: z.strictObject({
     systemRole: TriggerSystemRoleSchema.optional(),
     limit: z.number().int().min(1).max(100).default(50),
@@ -31,7 +31,7 @@ export const opensteer_automation_read = defineAgentTool({
   name: "opensteer_automation_read",
   title: "Read an automation",
   description:
-    "Read an automation's current revision and recent occurrences. Seeing one is not authority to change it.",
+    "Read an automation's current revision and recent occurrences. Seeing one is not authority to change it. Mention returned items by their `link`, verbatim.",
   input: z.strictObject({
     automationId: TriggerIdSchema,
     occurrenceLimit: z.number().int().min(1).max(100).default(25),

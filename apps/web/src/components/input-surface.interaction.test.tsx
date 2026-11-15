@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router";
 import { mockTmdbProposal } from "@opensteer/client/mock";
 import { BrowserTabStore } from "@opensteer/client/host";
 import { InputSurface } from "./input-surface.js";
+import { composerField, rewrite, textareaView } from "./composer-editor.test-support.js";
 
 const noPlaces = vi.hoisted(() => ({ browserSessions: [], connection: "connected", machines: [] }));
 const shell = vi.hoisted(() => ({
@@ -192,14 +193,10 @@ describe("request surface connectivity", () => {
         </MemoryRouter>,
       );
     });
-    const field = node.querySelector<HTMLTextAreaElement>(".composer textarea")!;
+    const field = textareaView(composerField(node));
     expect(field.placeholder).toBe("Ask anything…");
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
-        field,
-        "Make it friendlier",
-      );
-      field.dispatchEvent(new Event("input", { bubbles: true }));
+      rewrite(field.element, "Make it friendlier");
     });
     await act(async () => {
       node.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.click();
@@ -270,19 +267,15 @@ describe("request surface connectivity", () => {
         ),
       );
     render([]);
-    const field = node.querySelector("textarea")!;
+    const field = textareaView(composerField(node));
     act(() => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
-        field,
-        "Still my draft",
-      );
-      field.dispatchEvent(new Event("input", { bubbles: true }));
+      rewrite(field.element, "Still my draft");
     });
     render([form]);
     expect(field.closest("[hidden]")).not.toBeNull();
     expect(node.querySelector("fieldset")?.disabled).toBe(true);
     render([]);
-    expect(node.querySelector("textarea")).toBe(field);
+    expect(composerField(node)).toBe(field.element);
     expect(field.closest("[hidden]")).toBeNull();
     expect(field.value).toBe("Still my draft");
   });

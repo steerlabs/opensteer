@@ -252,6 +252,7 @@ function Knowledge({
           <NotePanel
             key={noteId}
             noteId={noteId}
+            expectedTopicId={topicId}
             onChanged={refreshList}
             round={round}
             onClose={() => show(null)}
@@ -662,6 +663,7 @@ function NearEnd({
 /* ---- The open note ---- */
 
 function NotePanel({
+  expectedTopicId,
   noteId,
   onChanged,
   onClose,
@@ -670,6 +672,7 @@ function NotePanel({
   topics,
   view,
 }: {
+  readonly expectedTopicId: KnowledgeTopicId | null;
   readonly noteId: KnowledgeNoteId;
   readonly onChanged: () => void;
   readonly onClose: () => void;
@@ -716,6 +719,13 @@ function NotePanel({
       onChanged();
       toast.success("Note deleted.");
     }, failed);
+
+  if (note && expectedTopicId !== null && note.topicId !== expectedTopicId)
+    return (
+      <aside aria-label="Note" className="kb-note">
+        <p className="team-empty">This note is not available in this topic.</p>
+      </aside>
+    );
 
   return (
     <aside aria-label="Note" className="kb-note">

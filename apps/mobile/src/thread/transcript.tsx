@@ -47,6 +47,7 @@ import { memo, useContext, useMemo, useRef, useState, type ReactNode } from "rea
 import { Pressable, StyleSheet, View, useWindowDimensions } from "react-native";
 import Animated, { LayoutAnimationConfig } from "react-native-reanimated";
 import { CodeLines, Markdown, PlainProse } from "../markdown/markdown.js";
+import { ReferenceVisibility } from "../markdown/reference-context.js";
 import { color, material, radius, space, touchTarget, type } from "../theme.js";
 import { CopyMark } from "../ui/copy-mark.js";
 import { appear, bubblePop, bubbleRise, exit } from "../ui/motion.js";
@@ -78,7 +79,7 @@ import { ComputerUseLine, KeptComputerStopLine, useComputerLine } from "./comput
 import { EditedMark } from "./edited-mark.js";
 import type { LinkAction } from "./link-context.js";
 import { MessageHold, MessageMore, WaitingHold } from "./message-hold.js";
-import { MessagePages, ReplySurfaces, TracePlace } from "./surface-chips.js";
+import { MessagePages, MessagePlaces, ReplySurfaces, TracePlace } from "./surface-chips.js";
 import { trace as traceStyle } from "./trace-styles.js";
 
 /**
@@ -1363,10 +1364,15 @@ export function Message(props: {
       onToggle={props.onToggle}
       open={open}
     >
-      {/* Only an agent or a trigger writes Markdown into a Thread; a person
-          typed exactly what is shown, so it is shown exactly. */}
+      {/* A person's words are Markdown too, read as a person writes it: their
+          line breaks stand, and the links they wrote are chips. */}
       {author.kind === "human" ? (
-        <PlainProse text={message.body} tone={mine && !props.queued ? "bubble" : "default"} />
+        <Markdown
+          look={mine && !props.queued ? "bubble" : "reading"}
+          mine={mine && !props.queued}
+          profile="person"
+          text={message.body}
+        />
       ) : (
         <Markdown text={body} />
       )}
@@ -1408,6 +1414,7 @@ export function Message(props: {
         />
       )}
       <MessagePages pages={message.pages ?? []} />
+      <MessagePlaces places={message.places ?? []} />
       <MessageAttachments attachments={message.attachments ?? []} />
       {!message.body ? null : mine && !props.queued ? (
         <MessageHold
@@ -1417,7 +1424,12 @@ export function Message(props: {
         >
           <Bubble
             fill={color.bubble}
-            fit={message.body}
+            // Lists, headings and code take the bubble's whole measure, as a reply's do.
+            fit={
+              notOnlyParagraphs.test(message.body) || /^ {0,3}(?:`{3}|~{3})/mu.test(message.body)
+                ? null
+                : message.body
+            }
             side="mine"
             // Messages' tail is a conversation's; a task keeps the bubble's corner instead.
             style={props.conversation ? undefined : styles.bubbleCorner}
@@ -1496,11 +1508,13 @@ function MessageFold(props: {
   const fold = props.lines * type.body.lineHeight * fontScale;
   const [height, setHeight] = useState<number | null>(null);
   const overflowing = height !== null && height > fold + 1;
+  // Words folded out of sight look nothing up until the reader opens them.
+  const visible = props.open || (height !== null && !overflowing);
   return (
     <>
       <View style={props.open ? undefined : [styles.fold, { maxHeight: fold }]}>
         <View onLayout={(event) => setHeight(event.nativeEvent.layout.height)}>
-          {props.children}
+          <ReferenceVisibility value={visible}>{props.children}</ReferenceVisibility>
         </View>
       </View>
       {overflowing || props.more ? (

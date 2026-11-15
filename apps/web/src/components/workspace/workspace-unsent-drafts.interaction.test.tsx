@@ -18,8 +18,9 @@ import {
   setRoot,
   write,
 } from "./workspace.interaction.test-support.js";
+import { composerText } from "../composer-editor.test-support.js";
 
-const field = () => element<HTMLTextAreaElement>("[data-composer-input]");
+const field = () => element<HTMLElement>("[data-composer-input]");
 const openTask = (threadId: string) =>
   click(element(`.side-task[data-thread-id="${threadId}"] .side-task__main`));
 const newTask = () => click(element('[aria-label="New task"]'));
@@ -84,7 +85,7 @@ describe("what a person has written and not sent", () => {
     await remount(`${path}${search}`);
     await settle();
 
-    expect(field().value).toBe("Survive a reload");
+    expect(composerText(field())).toBe("Survive a reload");
   });
 
   it("keeps Home's one unsent draft and shows it again on every return", async () => {
@@ -96,7 +97,7 @@ describe("what a person has written and not sent", () => {
 
     await newTask();
     await settle();
-    expect(field().value).toBe("Not sent yet");
+    expect(composerText(field())).toBe("Not sent yet");
     expect(savedDrafts()).toHaveLength(1);
   });
 
@@ -117,7 +118,7 @@ describe("what a person has written and not sent", () => {
     expect(element(".composer__error").textContent).toContain(
       "This folder is on another computer.",
     );
-    expect(field().value).toBe("Start over there");
+    expect(composerText(field())).toBe("Start over there");
   });
 
   it("removes the draft once it starts a task", async () => {
@@ -131,21 +132,21 @@ describe("what a person has written and not sent", () => {
     expect(savedDrafts()).toEqual([]);
     await newTask();
     await settle();
-    expect(field().value).toBe("");
+    expect(composerText(field())).toBe("");
   });
 
   it("gives each conversation its own reply, and marks the ones waiting", async () => {
     const { first, second } = await replyLeftIn("A reply to the first");
     await openTask(second);
     await settle();
-    expect(field().value).toBe("");
+    expect(composerText(field())).toBe("");
     expect(
       element(`.side-task[data-thread-id="${first}"]`).querySelector(".side-unsent"),
     ).not.toBeNull();
 
     await openTask(first);
     await settle();
-    expect(field().value).toBe("A reply to the first");
+    expect(composerText(field())).toBe("A reply to the first");
     expect(
       element(`.side-task[data-thread-id="${first}"]`).querySelector(".side-unsent"),
     ).toBeNull();
@@ -165,7 +166,7 @@ describe("what a person has written and not sent", () => {
     await settle();
     await openTask(first);
     await settle();
-    expect(field().value).toBe("Maybe not");
+    expect(composerText(field())).toBe("Maybe not");
   });
 
   it("returns a task refused after leaving to its own draft, and says why there", async () => {
@@ -191,7 +192,7 @@ describe("what a person has written and not sent", () => {
     await settle(50);
 
     await back();
-    expect(field().value).toBe("Do the thing");
+    expect(composerText(field())).toBe("Do the thing");
     expect(element(".composer__error").textContent).toContain("That is not allowed here.");
   });
 
@@ -214,13 +215,13 @@ describe("what a person has written and not sent", () => {
       refused.resolve();
     });
     await settle(50);
-    expect(field().value).toBe("Do the thing\nWritten meanwhile");
+    expect(composerText(field())).toBe("Do the thing\nWritten meanwhile");
 
     await write(field(), "Do the thing\nWritten meanwhile, and more");
     const { path, search } = place();
     await remount(`${path}${search}`);
     await settle();
-    expect(field().value).toBe("Do the thing\nWritten meanwhile, and more");
+    expect(composerText(field())).toBe("Do the thing\nWritten meanwhile, and more");
   });
 
   it("finishes an upload after leaving, and the file is there on return", async () => {
@@ -252,7 +253,7 @@ describe("what a person has written and not sent", () => {
     await remount(`/${search()}`);
     await settle();
 
-    expect(field().value).toBe("With a file");
+    expect(composerText(field())).toBe("With a file");
     expect(document.body.textContent).toContain("added again");
     expect(document.querySelector(".composer__send")?.hasAttribute("disabled")).toBe(true);
   });
@@ -264,7 +265,7 @@ describe("what a person has written and not sent", () => {
     await openTask(firstTaskId());
     await settle();
     await back();
-    expect(field().value).toBe("Strict words");
+    expect(composerText(field())).toBe("Strict words");
     expect(savedDrafts()).toHaveLength(1);
   });
 
@@ -275,6 +276,6 @@ describe("what a person has written and not sent", () => {
     await openTask(firstTaskId());
     await settle();
     await back();
-    expect(field().value).toBe("Back to me");
+    expect(composerText(field())).toBe("Back to me");
   });
 });

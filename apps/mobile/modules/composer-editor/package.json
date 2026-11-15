@@ -1,0 +1,7 @@
+{
+  "name": "opensteer-composer-editor",
+  "license": "MIT",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.ts"
+}

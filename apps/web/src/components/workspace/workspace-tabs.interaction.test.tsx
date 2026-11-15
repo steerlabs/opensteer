@@ -37,6 +37,7 @@ import {
   setRoot,
   deferred,
 } from "./workspace.interaction.test-support.js";
+import { composerText } from "../composer-editor.test-support.js";
 describe("workspace tab commands", () => {
   it("closes a pending row immediately and never selects its exact late tab", async () => {
     const gate = deferred<void>();
@@ -118,7 +119,7 @@ describe("workspace tab commands", () => {
   it("the web app leaves browser-reserved chords and field editing to the browser", async () => {
     await mount("/");
     const before = history.length;
-    const field = element<HTMLTextAreaElement>("[data-composer-input]");
+    const field = element<HTMLElement>("[data-composer-input]");
     field.focus();
     for (const init of [
       { key: "1", metaKey: true },
@@ -180,13 +181,13 @@ describe("workspace tab commands", () => {
           )?.attachedRunIds.length === 0,
     )!;
     await click(element(`.side-tab[data-place-key="${quiet.key}"] .side-tab__main`));
-    const field = element<HTMLTextAreaElement>("[data-composer-input]");
+    const field = element<HTMLElement>("[data-composer-input]");
     await write(field, "Keep this draft");
     field.focus();
     const close = vi.spyOn(client, "closeBrowserTab");
     await command({ type: "close-tab" });
     expect(close).toHaveBeenCalledOnce();
-    expect(field.value).toBe("Keep this draft");
+    expect(composerText(field)).toBe("Keep this draft");
     expect(element(".place").getAttribute("data-place-key")).toBe(
       places[places.indexOf(quiet) + 1]!.key,
     );

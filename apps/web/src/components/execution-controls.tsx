@@ -70,7 +70,7 @@ interface ExecutionControlsProps {
    */
   required?: boolean;
   /** Focused after an applied change, so the reader carries on writing. */
-  returnFocusRef?: React.RefObject<HTMLTextAreaElement | null> | undefined;
+  returnFocusRef?: React.RefObject<HTMLElement | null> | undefined;
   selection: ExecutionSelection | null;
 }
 

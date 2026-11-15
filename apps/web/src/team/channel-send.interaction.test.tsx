@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { TeamChannelIdSchema, OpensteerError } from "@opensteer/core";
+import { TeamChannelIdSchema, OpensteerError, createId } from "@opensteer/core";
 import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -15,8 +15,15 @@ import {
   write,
 } from "../components/workspace/workspace.interaction.test-support.js";
 import { seedMockTeamAsk } from "./mock-team-ask.js";
+import {
+  composerField,
+  composerText,
+  textareaView,
+  typeInto,
+} from "../components/composer-editor.test-support.js";
 
-const field = () => element<HTMLTextAreaElement>(".team-composer__input");
+const field = () =>
+  textareaView(element<HTMLElement>(".team-composer__input .composer-editor__field"));
 const rowsSaying = (text: string) =>
   [...document.querySelectorAll<HTMLElement>(".channel .tmsg")].filter((row) =>
     row.textContent?.includes(text),
@@ -36,6 +43,49 @@ async function send(text: string) {
 }
 
 describe("sending in a channel", () => {
+  it("writes a knowledge topic and a note the team lists for this reader as links", async () => {
+    await openChannel();
+    const topicId = teamHost!.knowledge.starterTopicId,
+      noteId = createId("knowledgeNote");
+    teamHost!.knowledge.addVersion({
+      noteId,
+      topicId,
+      title: "Refunds policy",
+      body: "Ask Maya.",
+      writer: { kind: "human", userId: teamHost!.userId, name: "Me" },
+    });
+    const pickRow = async (name: string) => {
+      const row = await act(() =>
+        vi.waitFor(
+          () => {
+            const found = [
+              ...document.querySelectorAll<HTMLElement>(".channel .at-list [role='option']"),
+            ].find((option) => option.querySelector(".at-list__name")?.textContent === name);
+            if (!found) throw new Error(`The @ list never offered ${name}`);
+            return found;
+          },
+          { timeout: 2_000 },
+        ),
+      );
+      await act(async () => {
+        row.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+      });
+    };
+    typeInto(field().element, "@Refunds");
+    await pickRow("Refunds policy");
+    expect(field().value).toMatch(
+      new RegExp(
+        `^\\[Refunds policy\\]\\(https?://[^)]+/knowledge/${topicId}\\?note=${noteId}\\) $`,
+        "u",
+      ),
+    );
+    typeInto(field().element, "@Gener");
+    await pickRow("General");
+    expect(field().value).toMatch(
+      new RegExp(`\\) \\[General\\]\\(https?://[^)]+/knowledge/${topicId}\\) $`, "u"),
+    );
+  });
+
   it("shows a message whose answer was lost once, and still once after reconnecting", async () => {
     await openChannel();
     const stored = teamHost!.messages.size;
@@ -96,7 +146,7 @@ describe("sending in a channel", () => {
         { timeout: 1000 },
       );
     });
-    const threadField = element<HTMLTextAreaElement>(".thread-pane .team-composer__input");
+    const threadField = element<HTMLElement>(".thread-pane .team-composer__input");
     await write(threadField, "Thread draft");
     await act(async () => goTo!(path));
     expect(field().value).toBe("Channel draft");
@@ -110,7 +160,7 @@ describe("sending in a channel", () => {
     await act(async () => {
       await vi.waitFor(
         () =>
-          expect(element<HTMLTextAreaElement>(".thread-pane .team-composer__input").value).toBe(
+          expect(composerText(composerField(element(".thread-pane .team-composer__input")))).toBe(
             "Thread draft",
           ),
         { timeout: 1000 },

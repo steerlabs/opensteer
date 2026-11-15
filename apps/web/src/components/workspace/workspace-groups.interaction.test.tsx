@@ -172,12 +172,14 @@ describe("personal browser tab groups", () => {
     )
       .ordered.filter((place) => place.availability !== "unavailable")
       .map((place) => place.title);
-    const field = element<HTMLTextAreaElement>("[data-composer-input]");
+    const field = element<HTMLElement>("[data-composer-input]");
     await write(field, "@");
     expect(
-      [...document.querySelectorAll(".mention-list .place-pick__title")].map(
-        (node) => node.textContent,
-      ),
+      [
+        ...document.querySelectorAll(
+          ".mention-list .place-pick:not(.reference-pick) .place-pick__title",
+        ),
+      ].map((node) => node.textContent),
     ).toEqual(expected);
     const option = [
       ...document.querySelectorAll<HTMLButtonElement>(".mention-list .place-pick"),

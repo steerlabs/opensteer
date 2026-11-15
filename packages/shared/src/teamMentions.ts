@@ -1,3 +1,5 @@
+import { markdownSourceTree, visitMarkdownSource } from "./markdownParser.js";
+
 export interface TeamMention<UserId extends string = string> {
   readonly userId: UserId;
   readonly kind: "person" | "agent";
@@ -11,10 +13,8 @@ export function teamMessage<UserId extends string>(
   members: ReadonlyMap<string, { readonly userId: UserId; readonly handle: string }>,
 ): { readonly bodyMarkdown: string; readonly mentions: readonly TeamMention<UserId>[] } {
   const ownAgent = `@${me.handle}-agent`;
-  // Handles are [a-z0-9-], so the handle needs no escaping in a pattern.
-  const named = new RegExp(`(^|\\s)${ownAgent}(?=$|[\\s.,;:!?])`, "u");
-  const bodyMarkdown =
-    input.toMyAgent && !named.test(input.body) ? `${ownAgent} ${input.body}`.trim() : input.body;
+  const named = teamMentionHandles(input.body).includes(`${me.handle}-agent`);
+  const bodyMarkdown = input.toMyAgent && !named ? `${ownAgent} ${input.body}`.trim() : input.body;
   return { bodyMarkdown, mentions: teamMentions(bodyMarkdown, [...members.values(), me]) };
 }
 
@@ -38,7 +38,34 @@ export function teamMentions<UserId extends string>(
 }
 
 export function teamMentionHandles(bodyMarkdown: string): readonly string[] {
-  return [...bodyMarkdown.matchAll(/(?:^|\s)@([a-z0-9]+(?:-[a-z0-9]+)*)/gu)].map(
-    (match) => match[1]!,
-  );
+  return teamMentionHandleRanges(bodyMarkdown).map(({ handle }) => handle);
+}
+
+/** Source offsets keep escapes and replacement boundaries meaningful to sanitation. */
+export function teamMentionHandleRanges(
+  bodyMarkdown: string,
+): readonly { handle: string; start: number; end: number }[] {
+  if (!bodyMarkdown.includes("@")) return [];
+  const ranges: { start: number; end: number }[] = [];
+  visitMarkdownSource(markdownSourceTree(bodyMarkdown), (node) => {
+    if (["link", "linkReference", "image", "imageReference", "definition"].includes(node.type))
+      return false;
+    if (node.type === "text") {
+      const start = node.position?.start.offset,
+        end = node.position?.end.offset;
+      if (start !== undefined && end !== undefined) ranges.push({ start, end });
+    }
+    return true;
+  });
+  const matches: { handle: string; start: number; end: number }[] = [];
+  let rangeIndex = 0;
+  for (const match of bodyMarkdown.matchAll(/(?:^|\s)@([a-z0-9]+(?:-[a-z0-9]+)*)/gu)) {
+    const start = match.index + match[0].indexOf("@");
+    const end = start + match[1]!.length + 1;
+    while (ranges[rangeIndex] && ranges[rangeIndex]!.end <= start) rangeIndex++;
+    const range = ranges[rangeIndex];
+    if (range && start >= range.start && end <= range.end)
+      matches.push({ handle: match[1]!, start, end });
+  }
+  return matches;
 }

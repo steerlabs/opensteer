@@ -3,6 +3,7 @@ import {
   TeamKnowledgeReadInputSchema,
   TeamKnowledgeReadResultSchema,
   TeamKnowledgeTopicViewSchema,
+  TeamNoteSchema,
   TeamKnowledgeWriteResultSchema,
   TeamNoteBodySchema,
   TeamNoteTitleSchema,
@@ -12,6 +13,27 @@ import {
 import { z } from "zod";
 import { OperationKeySchema, CursorSchema } from "./inputs.js";
 import { defineAgentTool } from "../registry.js";
+
+import { AgentLinkSchema } from "./agent-links.js";
+
+export const AgentKnowledgeTopicSchema = TeamKnowledgeTopicViewSchema.extend({
+  link: AgentLinkSchema.optional(),
+});
+export const AgentKnowledgeNoteSchema = TeamNoteSchema.extend({ link: AgentLinkSchema.optional() });
+export const AgentKnowledgeReadResultSchema = TeamKnowledgeReadResultSchema.extend({
+  topics: z.array(AgentKnowledgeTopicSchema).max(teamKnowledgeLimits.pageSize),
+  notes: z.array(AgentKnowledgeNoteSchema).max(teamKnowledgeLimits.pageSize),
+});
+const [written, conflict] = TeamKnowledgeWriteResultSchema.options;
+export const AgentKnowledgeWriteResultSchema = z.discriminatedUnion("written", [
+  written.extend({ link: AgentLinkSchema.optional() }),
+  conflict.extend({ current: AgentKnowledgeNoteSchema }),
+]);
+
+export type AgentKnowledgeTopic = z.infer<typeof AgentKnowledgeTopicSchema>;
+export type AgentKnowledgeNote = z.infer<typeof AgentKnowledgeNoteSchema>;
+export type AgentKnowledgeReadResult = z.infer<typeof AgentKnowledgeReadResultSchema>;
+export type AgentKnowledgeWriteResult = z.infer<typeof AgentKnowledgeWriteResultSchema>;
 
 const team = DeploymentIdSchema.optional().describe(
   "The team's id; needed only outside a team thread when your owner is in more than one team.",
@@ -26,7 +48,7 @@ export const opensteer_knowledge_topic_list = defineAgentTool({
   input: z.strictObject({ team }),
   output: z.strictObject({
     team: TeamNameSchema,
-    topics: z.array(TeamKnowledgeTopicViewSchema).max(teamKnowledgeLimits.agentTopics),
+    topics: z.array(AgentKnowledgeTopicSchema).max(teamKnowledgeLimits.agentTopics),
   }),
   access: "read",
   knowledge: true,
@@ -44,7 +66,7 @@ export const opensteer_knowledge_read = defineAgentTool({
     history: z.boolean().optional(),
     cursor: CursorSchema.optional(),
   }),
-  output: TeamKnowledgeReadResultSchema.omit({ nextBefore: true }).extend({
+  output: AgentKnowledgeReadResultSchema.omit({ nextBefore: true }).extend({
     team: TeamNameSchema,
     nextCursor: TeamKnowledgeReadResultSchema.shape.nextBefore,
   }),
@@ -82,7 +104,7 @@ export const opensteer_knowledge_save = defineAgentTool({
   description:
     "Add a note with topicId, title and body, or change a note you read with noteId and its version. If someone changed it since you read it, nothing is saved and the current note comes back to reconcile. Every version is kept.",
   input: KnowledgeWriteInputSchema,
-  output: TeamKnowledgeWriteResultSchema,
+  output: AgentKnowledgeWriteResultSchema,
   access: "write",
   knowledge: true,
   callers: ["run"],
@@ -98,7 +120,7 @@ export const opensteer_knowledge_search = defineAgentTool({
     .omit({ noteId: true, history: true, before: true })
     .safeExtend({ team, cursor: CursorSchema.optional() })
     .refine((i) => i.query !== undefined || i.topicId !== undefined, "Provide query or topicId"),
-  output: TeamKnowledgeReadResultSchema.omit({ nextBefore: true }).extend({
+  output: AgentKnowledgeReadResultSchema.omit({ nextBefore: true }).extend({
     team: TeamNameSchema,
     nextCursor: TeamKnowledgeReadResultSchema.shape.nextBefore,
   }),
@@ -112,7 +134,7 @@ export const opensteer_knowledge_remove = defineAgentTool({
   description:
     "Remove a note you read, using its version; its versions stay in history. If someone changed it since you read it, nothing is removed and the current note comes back.",
   input: z.strictObject({ team, noteId: KnowledgeNoteIdSchema, version: TeamNoteVersionSchema }),
-  output: TeamKnowledgeWriteResultSchema,
+  output: AgentKnowledgeWriteResultSchema,
   access: "write",
   knowledge: true,
   callers: ["run"] as const,

@@ -60,7 +60,11 @@ describe("NotificationPublicationClient", () => {
   it.each([false, true])(
     "seals each recipient installation's decided text with the publication routing bytes (taskless: %s)",
     async (taskless) => {
-      const published = entry(taskless ? { threadId: null, requestId: null } : {});
+      const published = entry({
+        ...(taskless ? { threadId: null, requestId: null } : {}),
+        title: "[Private title](opensteer:future)",
+        body: "[Private body](/private/secret.txt)",
+      });
       const key = randomBytes(32).toString("base64url");
       const keys = ["preview-installation-a", "preview-installation-b"].map((installationId) => ({
         accountId,
@@ -128,8 +132,8 @@ describe("NotificationPublicationClient", () => {
           ),
         ).toEqual({
           version: 1,
-          title: published.title,
-          body: published.body,
+          title: "Private title",
+          body: "Private body",
         });
       }
       expect(

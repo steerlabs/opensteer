@@ -143,7 +143,7 @@ describe("AgentTranscript", () => {
     expect(markup).not.toContain('class="msg--user"');
   });
 
-  it("renders a collaborator's message as plain labeled input, not agent output", () => {
+  it("renders a collaborator's message as their own labeled words, not agent output", () => {
     const viewerUserId = createId("user");
     const entries: MessageEntry[] = [
       {
@@ -169,11 +169,11 @@ describe("AgentTranscript", () => {
     );
 
     expect(markup).toContain("msg--input");
-    expect(markup).toContain("input-card__plain");
+    // A person's words read with the person profile, never as an agent's Markdown.
+    expect(markup).toContain("md-prose--person");
     expect(markup).toContain('<span class="input-card__name">Alex</span>');
     // Another person is not a place to go: their name is not a link.
     expect(markup).not.toContain('<a class="input-card__sender"');
-    expect(markup).not.toContain("md-prose");
     expect(markup).not.toContain("msg--assistant");
   });
 

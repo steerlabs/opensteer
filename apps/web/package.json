@@ -33,6 +33,7 @@
     "test:computer-windows": "tsx scripts/computer-windows-journey.ts"
   },
   "dependencies": {
+    "@floating-ui/dom": "1.8.0",
     "@fontsource-variable/fraunces": "^5.3.0",
     "@fontsource-variable/inter": "^5.3.0",
     "@opensteer/agent-phone-setup": "workspace:*",
@@ -44,6 +45,9 @@
     "@opensteer/protocol": "workspace:*",
     "@opensteer/shared": "workspace:*",
     "@opensteer/triggers": "workspace:*",
+    "@tiptap/core": "3.31.3",
+    "@tiptap/pm": "3.31.3",
+    "@tiptap/react": "3.31.3",
     "heic-to": "1.5.2",
     "react": "catalog:",
     "react-dom": "catalog:",

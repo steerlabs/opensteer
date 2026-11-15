@@ -1,9 +1,10 @@
-import { splitMarkdownBlocks } from "@opensteer/shared/markdown";
+import { punctuateLinks, splitMarkdownBlocks } from "@opensteer/shared/markdown";
 import type { PhrasingContent, RootContent } from "mdast";
 import { memo, useMemo, type ReactNode } from "react";
-import { Linking, StyleSheet, Text, View } from "react-native";
-import { Markdown } from "../markdown/markdown.js";
+import { StyleSheet, Text, View } from "react-native";
+import { holdsChip, Markdown, plainWords } from "../markdown/markdown.js";
 import { markdownTree } from "../markdown/markdown-tree.js";
+import { ChipProse, chipRoom, ReferenceLink } from "../markdown/reference-link.js";
 import { color, radius, space, type } from "../theme.js";
 import { monoFontFamily } from "../ui/primitives.js";
 import { mentionFinder, mentionRuns, type MentionFinder } from "./mentions.js";
@@ -76,8 +77,10 @@ function BlockNode(props: {
   switch (node.type) {
     case "paragraph":
       return (
-        <Text selectable style={styles.text}>
-          <Spans finder={finder} nodes={node.children} />
+        <Text selectable style={[styles.text, holdsChip(node.children) && chipRoom]}>
+          <ChipProse value={styles.text}>
+            <Spans finder={finder} nodes={node.children} />
+          </ChipProse>
         </Text>
       );
     case "blockquote":
@@ -114,12 +117,15 @@ function Spans(props: {
   readonly finder: MentionFinder;
   readonly nodes: readonly PhrasingContent[];
 }): ReactNode {
-  return props.nodes.map((node, index) => <Span finder={props.finder} key={index} node={node} />);
+  return punctuateLinks(props.nodes).map(({ node, trailing }, index) => (
+    <Span finder={props.finder} key={index} node={node} trailing={trailing} />
+  ));
 }
 
 function Span(props: {
   readonly finder: MentionFinder;
   readonly node: PhrasingContent;
+  readonly trailing?: string;
 }): ReactNode {
   const { finder, node } = props;
   switch (node.type) {
@@ -149,13 +155,9 @@ function Span(props: {
       return "\n";
     case "link":
       return (
-        <Text
-          accessibilityRole="link"
-          onPress={() => void Linking.openURL(node.url).catch(() => undefined)}
-          style={styles.link}
-        >
+        <ReferenceLink href={node.url} label={plainWords(node.children)} trailing={props.trailing}>
           <Spans finder={finder} nodes={node.children} />
-        </Text>
+        </ReferenceLink>
       );
     default:
       return "value" in node && typeof node.value === "string" ? node.value : null;
@@ -205,7 +207,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   emphasis: { fontStyle: "italic" },
-  link: { color: color.ember, textDecorationLine: "underline" },
   list: { gap: space[4] },
   listBody: { flexShrink: 1, gap: space[4] },
   listItem: { flexDirection: "row", gap: space[8] },

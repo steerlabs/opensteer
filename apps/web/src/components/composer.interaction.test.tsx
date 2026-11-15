@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Composer } from "./composer.js";
+import { composerField, rewrite, textareaView } from "./composer-editor.test-support.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root;
@@ -25,18 +26,14 @@ describe("composer connection transitions", () => {
         ),
       );
     render(false);
-    const field = node.querySelector("textarea")!;
+    const field = textareaView(composerField(node));
     field.focus();
     render(true);
     expect(field.disabled).toBe(false);
     expect(field.readOnly).toBe(false);
-    expect(document.activeElement).toBe(field);
+    expect(document.activeElement).toBe(field.element);
     act(() => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
-        field,
-        "Keep this draft",
-      );
-      field.dispatchEvent(new Event("input", { bubbles: true }));
+      rewrite(field.element, "Keep this draft");
     });
     await act(async () =>
       field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })),
@@ -103,18 +100,17 @@ describe("composer connection transitions", () => {
     const render = (readOnly: boolean) =>
       act(() => root.render(<Composer onSend={send} placeholder="Reply…" readOnly={readOnly} />));
     render(false);
-    const field = node.querySelector("textarea")!;
+    const field = textareaView(composerField(node));
+    // A refused message comes back as the exact Markdown it was sent as.
+    const words = "Preserve [the plan](opensteer:thr_12345678-1234-4234-8234-123456789abc) me";
     act(() => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
-        field,
-        "Preserve me",
-      );
-      field.dispatchEvent(new Event("input", { bubbles: true }));
+      rewrite(field.element, words);
     });
     await act(async () =>
       node.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click(),
     );
-    expect(field.value).toBe("Preserve me");
+    expect(send).toHaveBeenCalledWith(words, expect.anything());
+    expect(field.value).toBe(words);
     expect(node.textContent).toContain("Not sent");
     render(true);
     expect(field.readOnly).toBe(true);

@@ -1,3 +1,5 @@
+import { stripRefs } from "./stripRefs.js";
+
 /**
  * The start of a Markdown text as one plain line, for lists: no markup, list items and
  * paragraphs joined with " · ", at most `maxChars` UTF-16 units ending in "…" when cut.
@@ -5,7 +7,7 @@
 export function markdownPreview(markdown: string, maxChars: number): string {
   const parts: string[] = [];
   let fenced = false;
-  for (const raw of markdown.split(/\r?\n/u)) {
+  for (const raw of stripRefs(markdown).split(/\r?\n/u)) {
     if (/^\s*(?:```|~~~)/u.test(raw)) {
       fenced = !fenced;
       continue;

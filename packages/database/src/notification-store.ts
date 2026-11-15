@@ -158,10 +158,11 @@ export class NotificationStore {
       runId: null,
       messageId: row.localInputId,
       title: "Your agent was asked",
-      body: `${row.presentation.asker.displayName}${row.presentation.asker.actor === "agent" ? "'s agent" : ""} asks in ${row.presentation.audience.channelName}.`.slice(
-        0,
-        180,
-      ),
+      body:
+        plainTextExcerpt(
+          `${row.presentation.asker.displayName}${row.presentation.asker.actor === "agent" ? "'s agent" : ""} asks in ${row.presentation.audience.channelName}.`,
+          notificationBodyMaxCharacters,
+        ) ?? "Your agent was asked",
       occurredAt: this.#now(),
       expiresAt: new Date(this.#now().getTime() + notificationPushWindowMilliseconds),
       teamAsk: { teamId, requestId },

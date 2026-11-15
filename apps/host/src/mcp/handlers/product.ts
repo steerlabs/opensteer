@@ -26,6 +26,7 @@ import {
   itemText,
 } from "../thread-items.js";
 import { sql } from "kysely";
+import { stripRefs } from "@opensteer/shared/stripRefs";
 import { isDeepStrictEqual } from "node:util";
 import { ThreadService } from "../../threads/thread-service.js";
 import { ThreadWaitService } from "../../threads/thread-wait.js";
@@ -48,7 +49,10 @@ import {
   refused,
   placeContentLabel,
   provisionalThreadTitle,
+  threadTitleMaxLength,
   requestTitleText,
+  formatReferenceLink,
+  RequestIdSchema,
   requestIsAgentAnswerable,
   type Request,
   type AssignmentSummary,
@@ -382,7 +386,10 @@ export class ProductToolHandlers {
       admission: runAdmission(caller, "person_notify", input, requestId),
       message: input.message,
     });
-    return { messageId: result.message.id };
+    return {
+      messageId: result.message.id,
+      link: formatReferenceLink(result.message.id, "Message"),
+    };
   }
 
   async opensteer_ai_account_list({ caller, input }: ToolCall<"opensteer_ai_account_list">) {
@@ -462,7 +469,8 @@ export class ProductToolHandlers {
     const page = await this.#store.agentThreadPageForOwner({
       ...(parentThreadId ? { parentThreadId } : {}),
       ...(input.cursor ? { before: input.cursor } : {}),
-      maxBytes: 128 * 1_024,
+      // Reserve escaped link bytes before the database chooses the page's cursor.
+      maxBytes: 128 * 1_024 - input.limit * (6 * threadTitleMaxLength + 128),
       maxItems: input.limit,
       ownerId: claims.requestedBy,
       ...(input.query ? { query: input.query } : {}),
@@ -476,6 +484,7 @@ export class ProductToolHandlers {
         environmentConnected: this.#isEnvironmentConnected(summary.environmentId),
         environmentId: summary.environmentId,
         id: summary.id,
+        link: formatReferenceLink(summary.id, summary.title ?? "Task"),
         parentThreadId: summary.parentThreadId,
         pendingRequests: summary.pendingRequests,
         status: summary.status,
@@ -522,9 +531,10 @@ export class ProductToolHandlers {
       .slice(0, 10)
       .map(({ runId, place, title, site }) => ({ runId, place, title, site }));
     const context = {
-      thread: thread,
+      thread: { ...thread, link: formatReferenceLink(thread.id, thread.title) },
       recentRuns: recent.runs.map(({ modelSelection, ...run }) => ({
         ...run,
+        link: formatReferenceLink(run.runId, `Run · ${thread.title}`),
         modelId: modelSelection.modelId,
       })),
       recentPlaces,
@@ -653,7 +663,7 @@ export class ProductToolHandlers {
     if (input.itemId && !items.length) throw forbidden("Item is unavailable in this subagent");
     const hasMore = items.length < mapped.length || page.window.hasMore;
     return {
-      thread: thread,
+      thread: { ...thread, link: formatReferenceLink(thread.id, thread.title) },
       subagent: page.node,
       recentRuns: [],
       recentPlaces: [],
@@ -773,7 +783,7 @@ export class ProductToolHandlers {
       throw badRequest("Connected agents must name taskId");
 
     const threadId = input.taskId ?? callerThread(caller).id;
-    await this.#threads.assertTarget(caller, threadId);
+    const thread = await this.#threads.assertTarget(caller, threadId);
     const interruptKey = idempotencyKey(
       caller,
       operationId(caller, operationKey, "opensteer_task_interrupt"),
@@ -803,7 +813,10 @@ export class ProductToolHandlers {
         runId: active.id,
         idempotencyKey: interruptKey,
       });
-    return { interruptedRunId: active?.id ?? null };
+    return {
+      interruptedRunId: active?.id ?? null,
+      link: formatReferenceLink(threadId, thread.title),
+    };
   }
 
   async opensteer_task_update({ caller, input, operationKey }: ToolCall<"opensteer_task_update">) {
@@ -835,6 +848,7 @@ export class ProductToolHandlers {
       const result = await this.#threads.write(caller, write);
       return {
         title: result.thread.title,
+        link: formatReferenceLink(result.thread.id, result.thread.title),
         doneAt: result.thread.doneAt,
         doneWhenRunEnds: result.doneWhenRunEnds,
       };
@@ -861,6 +875,7 @@ export class ProductToolHandlers {
       });
       return {
         title: result.thread.title,
+        link: formatReferenceLink(result.thread.id, result.thread.title),
         doneAt: result.thread.doneAt,
         doneWhenRunEnds: result.doneWhenRunEnds,
       };
@@ -872,6 +887,7 @@ export class ProductToolHandlers {
     });
     return {
       title: result.thread.title,
+      link: formatReferenceLink(result.thread.id, result.thread.title),
       doneAt: result.thread.doneAt,
       doneWhenRunEnds: false,
     };
@@ -1275,6 +1291,7 @@ export class ProductToolHandlers {
       const thread = (await this.#store.getThreadForOwner(created.id, caller.userId))!;
       return {
         assignmentId: null,
+        link: formatReferenceLink(thread.id, thread.title),
         threadId: thread.id,
         runId: delivered.run?.id ?? null,
         runStatus: delivered.run?.status ?? null,
@@ -1379,7 +1396,7 @@ export class ProductToolHandlers {
 
   async card_request({ caller, input, operationKey }: ToolCall<"card_request">) {
     const claims = requireRun(caller).claims;
-    return await this.#savedLogins.useCard({
+    const result = await this.#savedLogins.useCard({
       deploymentId: this.#deploymentId,
       callId: operationId(caller, operationKey, "card_request"),
       ownerId: claims.requestedBy,
@@ -1389,11 +1406,12 @@ export class ProductToolHandlers {
       site: input.site,
       threadId: claims.threadId,
     });
+    return result.status === "pending" ? requestResult(result, "Card access") : result;
   }
 
   async saved_login_request({ caller, input, operationKey }: ToolCall<"saved_login_request">) {
     const claims = requireRun(caller).claims;
-    return await this.#savedLogins.useSavedLogin({
+    const result = await this.#savedLogins.useSavedLogin({
       deploymentId: this.#deploymentId,
       loginFill: this.#supportsLoginFill(claims),
       callId: operationId(caller, operationKey, "saved_login_request"),
@@ -1404,6 +1422,9 @@ export class ProductToolHandlers {
       site: input.site,
       threadId: claims.threadId,
     });
+    return result.status === "pending" || result.status === "declined"
+      ? requestResult(result, "Saved login")
+      : result;
   }
 
   async chrome_cookies_request({
@@ -1412,7 +1433,7 @@ export class ProductToolHandlers {
     operationKey,
   }: ToolCall<"chrome_cookies_request">) {
     const claims = requireRun(caller).claims;
-    return await this.#browserSources.agentCopyChromeCookies({
+    const result = await this.#browserSources.agentCopyChromeCookies({
       deploymentId: this.#deploymentId,
       callId: operationId(caller, operationKey, "chrome_cookies_request"),
       ownerId: claims.requestedBy,
@@ -1422,6 +1443,9 @@ export class ProductToolHandlers {
       site: input.site,
       threadId: claims.threadId,
     });
+    return result.status === "pending" || result.status === "declined"
+      ? requestResult(result, "Browser sign-in")
+      : result;
   }
 
   async computer_access_request({
@@ -1431,23 +1455,26 @@ export class ProductToolHandlers {
   }: ToolCall<"computer_access_request">) {
     const claims = requireRun(caller).claims;
     const callId = operationId(caller, operationKey, "computer_access_request");
-    if (input.access === "full_disk_access")
-      return await this.#machineFullDiskAccess.request({
+    if (input.access === "full_disk_access") {
+      const result = await this.#machineFullDiskAccess.request({
         callId,
         computerId: input.computerId,
         reason: input.reason,
         claims,
       });
+      return requestResult(result, "Full Disk Access");
+    }
     await this.#store.admitRunToolCall(
       runAdmission(caller, "computer_access_request", input, callId),
     );
-    return this.#deviceAccess.request({
+    const result = await this.#deviceAccess.request({
       callId,
       machineId: input.computerId,
       access: input.access,
       reason: input.reason,
       claims,
     });
+    return requestResult(result, "Computer access");
   }
 
   async browser_profile_request({
@@ -1458,7 +1485,7 @@ export class ProductToolHandlers {
     const claims = requireRun(caller).claims;
     const requestId = operationId(caller, operationKey, "browser_profile_request");
 
-    return await this.#browser.requestAccess({
+    const result = await this.#browser.requestAccess({
       callId: requestId,
       ownerId: claims.requestedBy,
       reason: input.reason,
@@ -1466,6 +1493,7 @@ export class ProductToolHandlers {
       suggestion: input.suggestion,
       threadId: claims.threadId,
     });
+    return requestResult(result, "Browser profile");
   }
 
   async opensteer_task_send({ caller, input, operationKey }: ToolCall<"opensteer_task_send">) {
@@ -1505,6 +1533,7 @@ export class ProductToolHandlers {
     );
     return {
       assignmentId: delivered.input.assignmentId,
+      link: formatReferenceLink(delivered.message.id, `Message · ${thread.title}`),
       disposition: delivered.disposition,
       messageId: delivered.message.id,
       runId: delivered.run?.id ?? null,
@@ -1637,6 +1666,7 @@ export class ProductToolHandlers {
         : target;
     return {
       providerSessionId: thread.providerSessionId,
+      link: formatReferenceLink(thread.id, thread.title),
       threadId: thread.id,
       environmentId: thread.environmentId,
       harnessInstanceId: thread.harnessInstanceId,
@@ -1653,7 +1683,7 @@ export class ProductToolHandlers {
     };
   }) {
     const target = await this.#reachableThread(caller, input.taskId);
-    if (input.action === "list") return this.#queue(caller, target.id);
+    if (input.action === "list") return this.#queue(caller, target);
     await this.#threads.assertTarget(caller, target.id);
     const command = {
       threadId: target.id,
@@ -1691,11 +1721,11 @@ export class ProductToolHandlers {
         await this.#threads.resume(caller, { ...command, type: "thread.inputQueue.resume" });
         break;
     }
-    return this.#queue(caller, target.id);
+    return this.#queue(caller, target);
   }
-  async #queue(caller: AgentCaller, threadId: Thread["id"]) {
+  async #queue(caller: AgentCaller, thread: Thread) {
     const queue = await this.#store.getThreadInputQueue({
-      threadId,
+      threadId: thread.id,
       requestedBy: caller.userId,
       authority: threadCallerAuthority(caller),
     });
@@ -1704,17 +1734,20 @@ export class ProductToolHandlers {
       queue.items.map(({ message }) => message),
     );
     return {
+      link: formatReferenceLink(thread.id, thread.title),
       paused: queue.paused,
       items: queue.items.map((item, index) => {
         const message = messages[index]!;
         const text = message.content
           .map((part) => (part.type === "text" ? part.text : `[${part.type}]`))
           .join("\n");
+        const preview = stripRefs(text);
         return {
           messageId: message.id,
+          link: formatReferenceLink(message.id, `Message · ${thread.title}`),
           author: toolMessageAuthor(message.author),
-          preview: text.slice(0, 500),
-          truncated: text.length > 500,
+          preview: preview.slice(0, 500),
+          truncated: preview.length > 500,
           canCancel: item.canCancel,
           canMove: item.canMove,
           canSteer: item.canSteer,
@@ -1858,8 +1891,25 @@ export class ProductToolHandlers {
       return {
         status: result.status,
         ...(task ? { task: taskItem(task.assignment, task.result) } : {}),
-        ...(result.run ? { run: result.run } : {}),
-        ...(result.pendingRequest ? { pendingRequest: result.pendingRequest } : {}),
+        ...(result.run
+          ? {
+              run: {
+                ...result.run,
+                link: formatReferenceLink(result.run.id, `Run · ${target.title}`),
+              },
+            }
+          : {}),
+        ...(result.pendingRequest
+          ? {
+              pendingRequest: {
+                ...result.pendingRequest,
+                link: formatReferenceLink(
+                  RequestIdSchema.parse(result.pendingRequest.id),
+                  "Request",
+                ),
+              },
+            }
+          : {}),
         items,
         hasMore: result.hasMore === true || items.length < result.messages.length,
       };
@@ -1953,6 +2003,7 @@ function conflict(message: string, retryable = false): OpensteerError {
 function agentRequest(request: Request) {
   return {
     id: request.id,
+    link: formatReferenceLink(request.id, requestTitleText(request.presentation)),
     kind: request.kind,
     status: request.status,
     title: requestTitleText(request.presentation),
@@ -1968,4 +2019,9 @@ function agentRequest(request: Request) {
         )
       : request.settlementProvenance,
   };
+}
+
+function requestResult<T extends { readonly requestId: string | null }>(result: T, title: string) {
+  const id = RequestIdSchema.safeParse(result.requestId);
+  return id.success ? { ...result, link: formatReferenceLink(id.data, title) } : result;
 }

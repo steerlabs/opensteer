@@ -439,47 +439,6 @@
   color: var(--text);
 }
 
-/* The field grows with its words, in both directions, inside the bubble's
-   own limit: a hidden copy of the text sizes the cell the field fills. */
-.waiting-edit__grow {
-  display: grid;
-  min-width: 2ch;
-}
-
-.waiting-edit__grow::after {
-  content: attr(data-value) " ";
-  visibility: hidden;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.waiting-edit__grow::after,
-.waiting-edit .waiting-edit__grow > textarea {
-  grid-area: 1 / 1;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  font: inherit;
-  line-height: inherit;
-  letter-spacing: inherit;
-}
-
-.waiting-edit .waiting-edit__grow > textarea {
-  width: 100%;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  background: none;
-  color: inherit;
-  caret-color: var(--ember);
-  resize: none;
-  contain: inline-size;
-}
-
-.waiting-edit .waiting-edit__grow > textarea:focus {
-  outline: none;
-}
-
 /* What it carries beside its words, each with a way to take it off. */
 .waiting-edit__parts {
   display: flex;
@@ -574,8 +533,7 @@
 
 /* Below 16px, mobile Safari zooms the page to a field; the copy follows. */
 @media (any-pointer: coarse) {
-  .waiting-edit__bubble,
-  .waiting-edit--card .waiting-edit__grow {
+  .waiting-edit__bubble {
     font-size: var(--text-input);
     line-height: 1.4;
   }

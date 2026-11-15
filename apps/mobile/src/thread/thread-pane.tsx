@@ -112,6 +112,7 @@ import {
 import { TranscriptHostClientContext } from "./attachment-views.js";
 import { Composer } from "./composer.js";
 import { ConversationLinksProvider } from "./conversation-links.js";
+import { PersonalReferenceProvider } from "../markdown/reference-navigation.js";
 import { ComposerDockLayout, DockScrollView, OverDock } from "./composer-dock.js";
 import { AgentEngine } from "./agent-mark.js";
 import { AgentListNestedContext, AgentMemoryContext } from "./subagent-rows.js";
@@ -1579,15 +1580,21 @@ function ThreadPaneForUser(
                 <TranscriptSurfacesContext.Provider value={surfaces}>
                   <TranscriptAppTabsContext.Provider value={appTabs}>
                     {/* Beside a page, the screen already keeps the keyboard clear. */}
-                    <ConversationLinksProvider
+                    <PersonalReferenceProvider
+                      client={hostClient}
                       deploymentId={deploymentId}
-                      hostClient={hostClient}
                       threadId={threadId}
                     >
-                      <ComposerDockLayout avoidKeyboard={companion === null} dock={dock}>
-                        {transcript}
-                      </ComposerDockLayout>
-                    </ConversationLinksProvider>
+                      <ConversationLinksProvider
+                        deploymentId={deploymentId}
+                        hostClient={hostClient}
+                        threadId={threadId}
+                      >
+                        <ComposerDockLayout avoidKeyboard={companion === null} dock={dock}>
+                          {transcript}
+                        </ComposerDockLayout>
+                      </ConversationLinksProvider>
+                    </PersonalReferenceProvider>
                   </TranscriptAppTabsContext.Provider>
                 </TranscriptSurfacesContext.Provider>
               </TranscriptComputersContext.Provider>

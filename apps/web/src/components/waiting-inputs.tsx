@@ -5,7 +5,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type KeyboardEvent,
   type MouseEvent,
   type RefObject,
 } from "react";
@@ -29,6 +28,8 @@ import {
 } from "@opensteer/client/host";
 import { TranscriptMessage } from "./agent-activity.js";
 import type { PendingSubmission } from "./composer.js";
+import { ComposerEditor, type ComposerEditorControl } from "./composer-editor.js";
+import { personalReferenceCandidates, useReferencePicker } from "./composer-reference-picker.js";
 import { Icon, type IconName } from "./icon.js";
 import { EditedMark } from "./message-revisions.js";
 import {
@@ -217,6 +218,7 @@ function useInPlaceEdit(
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<Exclude<EditNotice, "taken"> | null>(null);
   const session = useRef<EditSession | null>(null);
+  const field = useRef<ComposerEditorControl | null>(null);
   const returnFocus = useRef(false);
   const row = useRef<HTMLLIElement | null>(null);
   const draft =
@@ -272,11 +274,27 @@ function useInPlaceEdit(
   };
   const close = () => finish(session.current);
 
+  /**
+   * The draft with the words the field holds right now, including input it
+   * has not reported yet; null while an IME is still composing them.
+   */
+  const typed = async (): Promise<WaitingDraft | null> => {
+    const editor = field.current;
+    if (!draft || !editor) return draft;
+    const now = await editor.flushPendingInput(editor.readSnapshot().generation).catch(() => null);
+    if (now?.composing) return null;
+    return now && now.text !== draft.text ? setWaitingDraftText(draft, now.text) : draft;
+  };
+
   /** Saves the edit in place; an unchanged one just ends. Resolves to the version now waiting. */
   const save = async (): Promise<number | null> => {
     const held = session.current;
     if (!held || !draft || held.saving) return null;
-    const plan = waitingDraftSave(draft);
+    held.saving = true;
+    const current = await typed();
+    held.saving = false;
+    if (!current || session.current !== held) return null;
+    const plan = waitingDraftSave(current);
     if (plan === null) return null;
     if (plan.kind === "unchanged") {
       finish(held);
@@ -286,7 +304,7 @@ function useInPlaceEdit(
     setSaving(true);
     setNotice(null);
     // The words as sent, kept through the save, so a refusal hands them back unchanged.
-    setKept(draft);
+    setKept(current);
     try {
       const editor = await held.opening.catch(() => {
         held.opening = client.editWaitingMessage(input.threadId, input.messageId);
@@ -320,11 +338,13 @@ function useInPlaceEdit(
     const { sends } = pendingSends;
     let submission = held.sending;
     if (!submission) {
-      const content = waitingDraftContent(draft);
+      const current = await typed();
+      if (!current || session.current !== held || held.sending) return;
+      const content = waitingDraftContent(current);
       if (content.length === 0) return;
       submission = {
         attachments: [],
-        body: draft.text.trim(),
+        body: current.text.trim(),
         content,
         idempotencyKey: mutationIdempotencyKey("message"),
       };
@@ -353,6 +373,7 @@ function useInPlaceEdit(
   return {
     close,
     draft,
+    field,
     notice: shownNotice,
     open,
     reload: () => {
@@ -500,7 +521,9 @@ function WaitingRow({
               ? null
               : messageAuthorName(input.entry.author))
           }
+          client={client}
           draft={edit.draft}
+          field={edit.field}
           locked={edit.saving || edit.notice === "unconfirmed"}
           source={input.entry.teamSource ?? null}
           onCancel={edit.close}
@@ -688,7 +711,9 @@ function ReleaseAction({
  */
 function InPlaceEditor({
   asker,
+  client,
   draft,
+  field,
   locked,
   onCancel,
   onRemovePart,
@@ -698,7 +723,9 @@ function InPlaceEditor({
 }: {
   /** Someone else's words, a teammate's ask, are edited inside their card, under their name. */
   readonly asker: string | null;
+  readonly client: HostClient;
   readonly draft: WaitingDraft;
+  readonly field: RefObject<ComposerEditorControl | null>;
   /** The words are on their way, as an edit or a new message, and stay as sent. */
   readonly locked: boolean;
   /** Where a teammate's ask came from, kept under its card while it is edited. */
@@ -708,24 +735,28 @@ function InPlaceEditor({
   readonly onSave: () => void;
   readonly onText: (text: string) => void;
 }) {
-  const field = useRef<HTMLTextAreaElement | null>(null);
   const hint = useId();
-  useEffect(() => {
-    const element = field.current;
-    if (!element) return;
-    element.focus({ preventScroll: true });
-    element.setSelectionRange(element.value.length, element.value.length);
-  }, []);
-  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.nativeEvent.isComposing) return;
+  const frame = useRef<HTMLElement | null>(null);
+  // A link is words: `@` offers references, never places or files, which an edit cannot add.
+  const picker = useReferencePicker({
+    editor: field,
+    frame,
+    hostClient: null,
+    links: (query) => personalReferenceCandidates(client, query),
+    places: null,
+  });
+  const onKeyDown = (event: KeyboardEvent): boolean => {
+    if (picker.keyDown(event)) return true;
     if (event.key === "Escape") {
-      event.preventDefault();
       event.stopPropagation();
       onCancel();
-    } else if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      if (!locked) onSave();
+      return true;
     }
+    if (event.key === "Enter" && !event.shiftKey) {
+      if (!locked) onSave();
+      return true;
+    }
+    return false;
   };
   const body = (
     <>
@@ -752,16 +783,25 @@ function InPlaceEditor({
           })}
         </div>
       ) : null}
-      <div className="waiting-edit__grow" data-value={draft.text}>
-        <textarea
-          aria-describedby={hint}
-          aria-keyshortcuts="Enter Escape"
-          aria-label={asker ? `Edit ${asker}’s ask` : "Edit message"}
-          onChange={(event) => onText(event.target.value)}
+      <div className="waiting-edit__entry">
+        {picker.list}
+        <ComposerEditor
+          autoFocus
+          className="waiting-edit__field"
+          fieldAttributes={{
+            "aria-describedby": hint,
+            "aria-keyshortcuts": "Enter Escape",
+            "aria-label": asker ? `Edit ${asker}’s ask` : "Edit message",
+            "aria-expanded": String(picker.expanded),
+          }}
+          frameRef={frame}
+          onBlur={picker.close}
+          onChange={onText}
           onKeyDown={onKeyDown}
+          onSelectionChange={picker.read}
           readOnly={locked}
           ref={field}
-          rows={1}
+          scope="personal"
           value={draft.text}
         />
       </div>

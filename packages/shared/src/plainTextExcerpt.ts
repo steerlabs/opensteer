@@ -1,10 +1,12 @@
+import { stripRefs } from "./stripRefs.js";
+
 /**
  * Text as one readable line within `limit` UTF-16 units: Markdown punctuation
  * that would show up literally in a banner or a list row is dropped, links keep
  * their words, and whitespace collapses. Null when nothing readable is left.
  */
 export function plainTextExcerpt(text: string, limit: number): string | null {
-  const plain = text
+  const plain = stripRefs(text)
     .replace(/```[^\n]*\n?/gu, " ")
     .replace(/!\[([^\]]*)\]\([^)]*\)/gu, "$1")
     .replace(/\[([^\]]+)\]\([^)]*\)/gu, "$1")

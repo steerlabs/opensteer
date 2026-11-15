@@ -570,6 +570,8 @@ describe("conversation Activity", () => {
     const chosen = conversationActivityTurn(groups, { key: "turn:run:run-a", kind: "turn" });
     expect(chosen?.steps.map(({ id }) => id)).toEqual([firstThought.id, firstLookup.id]);
     expect(chosen?.turn.reply).toBe(firstReply);
+    expect(conversationActivityTurn(groups, { kind: "run", runId: "run-a" })).toEqual(chosen);
+    expect(conversationActivityTurn(groups, { kind: "run", runId: "missing-run" })).toBeNull();
     expect(conversationActivityTurn(groups, { key: "turn:gone", kind: "turn" })).toBeNull();
     expect(conversationActivityTurn([], { kind: "latest" })).toBeNull();
   });

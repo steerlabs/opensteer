@@ -3,15 +3,7 @@ import type { HostClient, WaitingInput } from "@opensteer/client/host";
 import type { ContentPart } from "@opensteer/core";
 import * as Haptics from "expo-haptics";
 import { memo, useEffect, useRef, useState, type ReactNode } from "react";
-import {
-  ActivityIndicator,
-  Platform,
-  Pressable,
-  StyleSheet,
-  TextInput,
-  View,
-  type TextInputInstance,
-} from "react-native";
+import { ActivityIndicator, Platform, Pressable, StyleSheet, View } from "react-native";
 import Animated, { LinearTransition } from "react-native-reanimated";
 import { operationDetail } from "../client/mobile-client.js";
 import {
@@ -25,6 +17,7 @@ import {
   touchTarget,
   type,
 } from "../theme.js";
+import { ComposerEditor } from "../ui/composer-editor.js";
 import { duration, enter, exit } from "../ui/motion.js";
 import { AppText, StatusDot } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
@@ -342,7 +335,7 @@ function WaitingEditor(props: {
 }): ReactNode {
   const { edit, editing } = props;
   const { draft } = edit;
-  const input = useRef<TextInputInstance>(null);
+  const input = editing.field;
   const locked = edit.phase === "saving";
   const notice = editNotice(edit);
   // Android drops a keyboard asked for while the menu that opened this still
@@ -351,7 +344,7 @@ function WaitingEditor(props: {
   useEffect(() => {
     const focus = setTimeout(() => input.current?.focus(), duration.enter);
     return () => clearTimeout(focus);
-  }, []);
+  }, [input]);
   return (
     <View style={styles.editColumn}>
       {edit.asker === null ? null : (
@@ -372,20 +365,18 @@ function WaitingEditor(props: {
         </View>
       )}
       <View style={[styles.editBubble, locked && styles.editBubbleLocked]}>
-        <TextInput
-          accessibilityHint="Save or cancel below"
+        {/* No image paste: a waiting message can lose parts in an edit, never gain them. */}
+        <ComposerEditor
           accessibilityLabel={edit.asker === null ? "Edit message" : `Edit ${edit.asker}’s ask`}
           autoFocus={Platform.OS === "ios"}
-          cursorColor={color.ember}
           editable={!locked}
-          maxFontSizeMultiplier={controlFontScaleLimit}
-          multiline
+          maxHeight={editMaxHeight}
           onChangeText={editing.change}
-          placeholder={draft.parts.length > 0 ? "No words, just what’s attached" : "Message"}
-          placeholderTextColor={color.muted}
-          ref={input}
-          selectionColor={color.ember}
+          paddingVertical={editPadding}
           style={styles.editInput}
+          placeholder={draft.parts.length > 0 ? "No words, just what’s attached" : "Message"}
+          ref={input}
+          scope="personal"
           value={draft.text}
         />
       </View>
@@ -530,6 +521,10 @@ function TextAction(props: {
   );
 }
 
+/** Inside the bubble's 1.5-point rim, the words sit where the transcript's bubble puts them. */
+const editPadding = space[12] - 1.5;
+const editMaxHeight = type.body.lineHeight * 8 + editPadding * 2;
+
 const styles = StyleSheet.create({
   section: { gap: space[12], paddingTop: space[16] },
   controls: {
@@ -561,17 +556,7 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
   },
   editBubbleLocked: { borderColor: color.emberLine },
-  editInput: {
-    color: color.text,
-    fontSize: type.body.fontSize,
-    fontWeight: type.body.fontWeight,
-    includeFontPadding: false,
-    maxHeight: type.body.lineHeight * 8,
-    paddingHorizontal: space[16] - 1.5,
-    paddingTop: space[12] - 1.5,
-    paddingBottom: space[12] - 1.5,
-    textAlignVertical: "top",
-  },
+  editInput: { marginHorizontal: space[16] - 1.5 },
   editFoot: { alignItems: "center", flexDirection: "row", gap: space[12], minHeight: touchTarget },
   notice: { flexShrink: 1 },
   parts: {

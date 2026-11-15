@@ -44,6 +44,7 @@ import {
   setRoot,
   resetHistory,
 } from "./workspace.interaction.test-support.js";
+import { composerText } from "../composer-editor.test-support.js";
 describe("the review's findings", () => {
   it("F4 connection Retry explicitly retries the refused realtime channel", async () => {
     await mount((source) => {
@@ -81,7 +82,7 @@ describe("the review's findings", () => {
       await answer.promise;
       return real(...args);
     });
-    const field = element<HTMLTextAreaElement>("[data-composer-input]");
+    const field = element<HTMLElement>("[data-composer-input]");
     await write(field, "First");
     await click(element(".composer__send"));
     await settle(100);
@@ -99,7 +100,7 @@ describe("the review's findings", () => {
     expect(history.at(-1)!.path).toMatch(/^\/tasks\//u);
     await act(async () => goTo!(-1));
     await settle(100);
-    expect(element<HTMLTextAreaElement>("[data-composer-input]").value).toBe(
+    expect(composerText(element("[data-composer-input]"))).toBe(
       "Second draft typed before acknowledgement",
     );
     expect(document.querySelector(".context-chip")).toBeNull();
@@ -119,7 +120,7 @@ describe("the review's findings", () => {
     );
     const reading = deferred<typeof candidate>();
     vi.spyOn(client, "readBrowserContextCandidate").mockImplementationOnce(() => reading.promise);
-    const field = element<HTMLTextAreaElement>("[data-composer-input]");
+    const field = element<HTMLElement>("[data-composer-input]");
     await write(field, "Compare these");
     await click(element('.composer__attach[aria-label="Attach"]'));
     await click(
@@ -230,7 +231,7 @@ describe("the review's findings", () => {
       },
       { width: 390 },
     );
-    const field = element<HTMLTextAreaElement>("[data-composer-input]");
+    const field = element<HTMLElement>("[data-composer-input]");
     await write(field, "Keep this");
     const before = history.length;
     await click(element('.thread__sheet-row [aria-label="Hide computer"]'));
@@ -238,7 +239,7 @@ describe("the review's findings", () => {
     expect(new URLSearchParams(history.at(-1)!.search).has("panel")).toBe(false);
     expect(document.querySelector(".place")).toBeNull();
     expect(element("[data-composer-input]")).toBe(field);
-    expect(field.value).toBe("Keep this");
+    expect(composerText(field)).toBe("Keep this");
   });
 
   it("6 · putting the conversation away lets go of its viewfinder's picture", async () => {
@@ -322,7 +323,7 @@ describe("the review's findings", () => {
 
   it("8 · ⌘K below the drawer breakpoint opens the drawer with Search focused", async () => {
     await mount("/", { width: 820 });
-    element<HTMLTextAreaElement>("[data-composer-input]").focus();
+    element<HTMLElement>("[data-composer-input]").focus();
     await act(async () => {
       window.dispatchEvent(
         new KeyboardEvent("keydown", { bubbles: true, key: "k", metaKey: true }),
@@ -453,14 +454,22 @@ describe("the review's findings", () => {
   });
 
   it("11 · a place-only choice keeps the conversation's message anchor", async () => {
+    let anchor = "";
     await mount((source) => {
       const snapshot = source.getSnapshot();
-      const task = snapshot.threads.find((thread) => thread.listed && thread.purpose === "task")!;
-      return `/tasks/${task.id}?messageId=msg_anchor`;
+      // A message the task holds: one it no longer holds says so and leaves the address.
+      const [task, message] = snapshot.threads.flatMap((thread) => {
+        const held = (snapshot.transcripts[thread.id] ?? []).find(
+          (entry) => entry.kind === "message" && entry.published !== false && !entry.streaming,
+        );
+        return thread.listed && thread.purpose === "task" && held ? [[thread, held] as const] : [];
+      })[0]!;
+      anchor = message.id;
+      return `/tasks/${task.id}?messageId=${anchor}`;
     });
     const place = pageTab();
     await click(element(`.side-tab[data-place-key="${place.key}"] .side-tab__main`));
-    expect(new URLSearchParams(history.at(-1)!.search).get("messageId")).toBe("msg_anchor");
+    expect(new URLSearchParams(history.at(-1)!.search).get("messageId")).toBe(anchor);
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
     // Changing conversation leaves it behind.
     await click(element('[aria-label="New task"]'));
@@ -488,7 +497,7 @@ describe("stopping a task and finishing it: one Stop", () => {
   async function startOwnTask(text: string): Promise<string> {
     // Paced so its scripted run is still working while the person acts on it.
     await mount("/", { latencyMs: 3_000 });
-    await write(element<HTMLTextAreaElement>("[data-composer-input]"), text);
+    await write(element<HTMLElement>("[data-composer-input]"), text);
     await click(element(".composer__send"));
     for (let tries = 0; tries < 40 && !history.at(-1)!.path.startsWith("/tasks/"); tries += 1)
       await settle(50);

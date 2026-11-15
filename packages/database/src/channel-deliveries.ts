@@ -1,4 +1,4 @@
-import { stripLocalImageEmbeds } from "@opensteer/shared/markdownImages";
+import { stripRefs } from "@opensteer/shared/stripRefs";
 import { placeContentLabel } from "@opensteer/core";
 import {
   ChannelConversationIdSchema,
@@ -48,7 +48,7 @@ export async function insertStatusDelivery(
       claimExpiresAt: null,
       claimOwner: null,
       claimTokenHash: null,
-      content: jsonValue([{ text: input.text, type: "text" }]),
+      content: jsonValue([{ text: stripRefs(input.text), type: "text" }]),
       conversationId: input.conversationId,
       id: createChannelId("delivery"),
       ingressId: input.ingressId,
@@ -360,6 +360,6 @@ export function channelReplyMarkdown(content: readonly ContentPart[], threadUrl:
           ? `${part.type === "phone" ? "📱" : "🖥️"} ${placeContentLabel(part)} — [Open in Opensteer](${threadUrl})`
           : `📎 ${part.name} — [Open in Opensteer](${threadUrl})`,
   );
-  const text = stripLocalImageEmbeds(blocks.join("\n\n")).trim();
+  const text = stripRefs(blocks.join("\n\n")).trim();
   return text.length > 0 ? text : "(No text content)";
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import type { HostClient, PlaceItem } from "@opensteer/client/host";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
@@ -163,88 +163,4 @@ export function mentionRoom(frame: HTMLElement): {
   }
   const box = frame.getBoundingClientRect();
   return { above: box.top - top, below: bottom - box.bottom };
-}
-
-/** `@` at a word start: the same list, inline at the caret. */
-export function MentionList({
-  active,
-  below,
-  hostClient,
-  left,
-  onPick,
-  places,
-}: {
-  readonly active: number;
-  /** Opens under the words, when there is no room above them. */
-  readonly below: boolean;
-  readonly hostClient: HostClient;
-  /** The caret's offset in the field, so the list opens where the words are. */
-  readonly left: number;
-  readonly onPick: (place: PlaceItem) => void;
-  readonly places: readonly PlaceItem[];
-}) {
-  const listRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    listRef.current
-      ?.querySelector<HTMLElement>(".place-pick.is-active")
-      ?.scrollIntoView({ block: "nearest" });
-  }, [active]);
-  if (places.length === 0) return null;
-  return (
-    <div
-      aria-label="Attach a place"
-      className={below ? "mention-list mention-list--below" : "mention-list"}
-      id="composer-mention-list"
-      ref={listRef}
-      role="listbox"
-      style={{ left }}
-    >
-      {places.map((place, index) => (
-        <PlaceRow
-          active={index === active}
-          hostClient={hostClient}
-          key={place.key}
-          onPick={onPick}
-          place={place}
-          role="option"
-        />
-      ))}
-    </div>
-  );
-}
-
-/**
- * Where the caret sits in a textarea, measured with a mirror of its text so
- * the inline list can open there rather than at the field's edge.
- */
-export function caretLeft(textarea: HTMLTextAreaElement, index: number): number {
-  const style = getComputedStyle(textarea);
-  const mirror = document.createElement("div");
-  for (const property of [
-    "fontFamily",
-    "fontSize",
-    "fontWeight",
-    "letterSpacing",
-    "lineHeight",
-    "paddingLeft",
-    "paddingRight",
-    "paddingTop",
-    "borderLeftWidth",
-    "boxSizing",
-    "whiteSpace",
-    "wordWrap",
-  ] as const)
-    mirror.style[property] = style[property];
-  mirror.style.position = "absolute";
-  mirror.style.visibility = "hidden";
-  mirror.style.width = `${textarea.clientWidth}px`;
-  mirror.style.whiteSpace = "pre-wrap";
-  mirror.textContent = textarea.value.slice(0, index);
-  const marker = document.createElement("span");
-  marker.textContent = "​";
-  mirror.append(marker);
-  document.body.append(mirror);
-  const left = marker.offsetLeft;
-  mirror.remove();
-  return textarea.offsetLeft + left - textarea.scrollLeft;
 }

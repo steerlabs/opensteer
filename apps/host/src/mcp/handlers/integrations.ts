@@ -27,6 +27,7 @@ import {
 } from "../../computer-use/computer-use-service.js";
 import {
   RunnerIdSchema,
+  formatReferenceLink,
   UserIdSchema,
   OpensteerError,
   refused,
@@ -1283,6 +1284,7 @@ function integrationRequestResult(
     kind: request.kind,
     replayed,
     requestId: request.id,
+    link: formatReferenceLink(request.id, "Request"),
     status: request.status,
   };
   return {
@@ -1304,6 +1306,7 @@ function computerAppPendingResult(
   const output = {
     kind: request.kind,
     requestId: request.id,
+    link: formatReferenceLink(request.id, "Request"),
     status: request.status,
     replayed,
     nextAction,

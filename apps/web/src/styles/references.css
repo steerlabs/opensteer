@@ -1,0 +1,500 @@
+/* A reference in words: the place chip (see `.surface-chip`) at the size of the
+   line it sits in, so it never changes the line's height. The composer's token
+   is this same chip. */
+.ref-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  min-width: 0;
+  max-width: min(24em, 100%);
+  height: 1.45em;
+  padding: 0 0.5em 0 0.32em;
+  margin-inline: 0.06em;
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-full);
+  color: var(--text);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
+  font-size: 0.92em;
+  font-weight: inherit;
+  line-height: 1;
+  vertical-align: -0.18em;
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.md-prose a.ref-chip {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.ref-chip:hover {
+  border-color: var(--line-hover);
+  background-color: var(--fill-plate-hover);
+  text-decoration: none;
+}
+
+.ref-chip:focus-visible {
+  border-radius: var(--radius-full);
+}
+
+.ref-chip > .icon {
+  flex: none;
+  width: 1em;
+  height: 1em;
+  color: var(--text-soft);
+}
+
+.ref-chip__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A file's place in it: `http.ts` `:42`. */
+.ref-chip__position {
+  flex: none;
+  margin-left: -0.3em;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ref-chip--unavailable,
+.ref-chip--unavailable:hover {
+  border-style: dashed;
+  color: var(--muted);
+  background: transparent;
+  box-shadow: none;
+  cursor: default;
+}
+
+.ref-chip--unavailable > .icon {
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+.ref-chip--inert {
+  cursor: default;
+}
+
+.ref-chip--inert:hover {
+  border-color: var(--rim-plate);
+  background-color: var(--fill-plate);
+}
+
+/* On the reader's own bubble the plate is the bubble's ink, thinned, so it
+   reads on the accent in either theme. */
+.md-prose--person .ref-chip,
+.md-prose--person a.ref-chip {
+  border-color: color-mix(in srgb, currentColor 24%, transparent);
+  color: inherit;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  box-shadow: none;
+}
+
+.md-prose--person .ref-chip:hover {
+  background: color-mix(in srgb, currentColor 16%, transparent);
+}
+
+.md-prose--person .ref-chip > .icon,
+.md-prose--person .ref-chip__position {
+  color: inherit;
+  opacity: 0.75;
+}
+
+.md-prose--person .ref-chip--unavailable {
+  background: transparent;
+  opacity: 0.7;
+}
+
+/* ---- A person's own words, as Markdown inside their bubble ---- */
+
+.md-prose--person {
+  gap: 0.45em;
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: normal;
+}
+
+.md-prose--person :is(p, h1, h2, h3, h4, h5, h6, td, th) {
+  white-space: pre-wrap;
+}
+
+.md-prose--person :is(h1, h2, h3, h4, h5, h6) {
+  margin-top: 0.2em;
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+  letter-spacing: 0;
+}
+
+.md-prose--person h1 {
+  font-size: var(--text-root);
+}
+
+.md-prose--person ul,
+.md-prose--person ol {
+  gap: 0.15em;
+  padding-left: 1.3em;
+}
+
+.md-prose--person a {
+  color: inherit;
+  text-decoration-color: color-mix(in srgb, currentColor 55%, transparent);
+}
+
+.md-prose--person blockquote {
+  border-left-color: color-mix(in srgb, currentColor 40%, transparent);
+  color: inherit;
+  opacity: 0.85;
+}
+
+.md-prose--person code {
+  border-color: transparent;
+  color: inherit;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.md-prose--person pre {
+  max-width: 100%;
+  overflow-x: auto;
+  border-color: transparent;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.md-prose--person .md-block {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.md-prose--person .md-block pre {
+  background: none;
+}
+
+.md-prose--person .md-block__copy {
+  color: inherit;
+  background: none;
+}
+
+.md-prose--person pre code {
+  color: inherit;
+  background: transparent;
+}
+
+.md-prose--person hr {
+  border-top-color: color-mix(in srgb, currentColor 25%, transparent);
+}
+
+.md-prose--person :is(th, td) {
+  border-color: color-mix(in srgb, currentColor 25%, transparent);
+}
+
+.md-prose--person th {
+  background: transparent;
+}
+
+/* ---- Where a reference led, when it is gone ---- */
+
+.ref-unavailable {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-6);
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-22);
+  text-align: center;
+}
+
+.ref-unavailable > .icon {
+  width: 28px;
+  height: 28px;
+  margin-bottom: var(--space-6);
+  color: var(--muted);
+}
+
+.ref-unavailable__title {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--text-root);
+  font-weight: var(--weight-bold);
+}
+
+.ref-unavailable__body {
+  max-width: 22rem;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-xl);
+}
+
+.ref-unavailable__actions {
+  display: flex;
+  gap: var(--space-8);
+  margin-top: var(--space-10);
+}
+
+/* The same state, standing over a conversation it could not find a message in. */
+.ref-unavailable--inline {
+  flex: none;
+  margin: var(--space-12) auto;
+  padding: var(--space-14) var(--space-18);
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-lg);
+  background: var(--sheen) var(--surface-elevated);
+  box-shadow: var(--edge-plate);
+}
+
+/* ---- A finished Request, read-only ---- */
+
+.ref-request {
+  display: grid;
+  gap: var(--space-6);
+}
+
+.ref-request__status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  color: var(--muted);
+  font-size: var(--text-xl);
+}
+
+.ref-request__status > .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.ref-request__title {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--text-2xl);
+  overflow-wrap: anywhere;
+}
+
+/* ---- File viewer: a drawer from the right on wide screens, the whole screen on narrow ---- */
+
+.file-viewer-layer {
+  position: fixed;
+  inset: 0;
+  z-index: var(--layer-dialog);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.file-viewer-layer > .dialog-scrim {
+  background: var(--scrim-light);
+}
+
+.file-viewer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(720px, 60vw);
+  height: 100%;
+  border-left: 1px solid var(--rim-plate);
+  background: var(--surface-elevated);
+  box-shadow: var(--edge-plate), var(--lift-float);
+  animation: file-viewer-in var(--duration-med) var(--ease-out);
+}
+
+@keyframes file-viewer-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .file-viewer {
+    animation: none;
+  }
+}
+
+@media (max-width: 700px) {
+  .file-viewer {
+    width: 100%;
+    border-left: 0;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+}
+
+.file-viewer__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-height: 52px;
+  padding: var(--space-8) var(--space-10) var(--space-8) var(--space-16);
+  border-bottom: 1px solid var(--line);
+}
+
+.file-viewer__header > .icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  color: var(--text-soft);
+}
+
+.file-viewer__name {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.file-viewer__title {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The folder, shortened in its middle so both its root and its last folder show. */
+.file-viewer__dir {
+  display: flex;
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.file-viewer__dir-head {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-viewer__dir-tail {
+  flex: none;
+  max-width: 60%;
+  overflow: hidden;
+  direction: rtl;
+  text-align: left;
+  text-overflow: ellipsis;
+}
+
+.file-viewer__body {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.file-viewer__banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-6) var(--space-16);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  background: var(--surface-raised);
+  font-size: var(--text-sm);
+}
+
+.file-viewer__banner > .icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.file-viewer__text {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--surface-code);
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  line-height: 20px;
+}
+
+.file-viewer__lines {
+  position: relative;
+  min-width: 100%;
+}
+
+.file-line {
+  position: absolute;
+  left: 0;
+  display: flex;
+  min-width: 100%;
+  height: 20px;
+  white-space: pre;
+}
+
+.file-line__number {
+  position: sticky;
+  left: 0;
+  flex: none;
+  width: calc(var(--gutter-digits, 3) * 1ch + 2.2ch);
+  padding-right: 1.2ch;
+  color: var(--muted-dim);
+  background: var(--surface-code);
+  text-align: right;
+  user-select: none;
+}
+
+.file-line__text {
+  padding-right: 2ch;
+  color: var(--text-soft);
+}
+
+.file-line--target,
+.file-line--target > .file-line__number {
+  background: color-mix(in srgb, var(--ember) 14%, var(--surface-code));
+}
+
+.file-line--target > .file-line__number {
+  color: var(--ember);
+}
+
+.file-viewer__image {
+  display: grid;
+  flex: 1;
+  place-items: center;
+  min-height: 0;
+  padding: var(--space-16);
+  overflow: auto;
+}
+
+.file-viewer__image img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+}
+
+.file-viewer__image--original img {
+  max-width: none;
+  max-height: none;
+}
+
+.file-viewer__skeleton {
+  display: grid;
+  gap: 10px;
+  padding: var(--space-16);
+}
+
+.file-viewer__skeleton > span {
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--fill-plate);
+}
+
+/* A chip and the punctuation closing on it share a line; the chip gives way first. */
+.ref-chip-group {
+  white-space: nowrap;
+}
+
+.ref-chip-group > .ref-chip {
+  max-width: min(24em, calc(100% - 1em));
+}
