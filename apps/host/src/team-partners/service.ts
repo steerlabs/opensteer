@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { sql } from "kysely";
 import type { TeamBus } from "@opensteer/database/team-bus";
 import type { TeamPartnerOfferVault } from "./offer-vault.js";
@@ -189,6 +190,8 @@ export class TeamPartners {
     );
 
   async #authorize(linkId: string, operation: TeamShareOperation) {
+    // A partner chooses the share id; one that cannot exist must not reach a uuid column.
+    if (!z.uuid().safeParse(operation.shareId).success) throw partnerError("not-found");
     return this.store.access.database.transaction().execute(async (t) => {
       const row = await this.store.get(linkId, t);
       if (!row || row.state !== "active" || (await this.store.policy(t)) === "off")
