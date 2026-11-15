@@ -9,20 +9,23 @@ import { createAppHandlers, registerAppRoutes } from "./app-routes.js";
 import { testHostApiContext } from "../server/test-host-api-context.js";
 
 const appId = "app_11111111-1111-4111-8111-111111111111";
-it("declares authenticated app reads and passes only the signed-in reader to the service", async () => {
-  const get = vi.fn(async () => ({ id: appId }));
+it("reads apps only as the signed-in person", async () => {
+  const get = vi.fn(async () => ({ appId }));
+  const list = vi.fn(async () => []);
   const view = vi.fn(async () => ({ path: "/view" }));
-  const handlers = createAppHandlers({ get, view } as unknown as AppService);
+  const handlers = createAppHandlers({ get, list, view } as unknown as AppService);
   const userId = createId("user");
   const context = testHostApiContext(userId);
-  await handlers["apps.legacy.get"]({ appId }, context);
+  await handlers["apps.get"]({ appId }, context);
+  await handlers["apps.list"]({ query: "notes" }, context);
   await handlers["apps.view"]({ appId, theme: "dark" }, context);
-  expect(get).toHaveBeenCalledWith(appId, userId);
-  expect(view).toHaveBeenCalledWith(appId, userId, "dark");
+  expect(get).toHaveBeenCalledWith(userId, appId);
+  expect(list).toHaveBeenCalledWith(userId, "notes");
+  expect(view).toHaveBeenCalledWith(userId, appId, "dark");
   await expect(
-    handlers["apps.legacy.get"]({ appId }, { ...context, session: null }),
+    handlers["apps.get"]({ appId }, { ...context, session: null }),
   ).rejects.toMatchObject({ code: "unauthorized" });
-  for (const name of ["apps.legacy.get", "apps.view"] as const) {
+  for (const name of ["apps.get", "apps.view"] as const) {
     expect(hostApi[name].payload.safeParse({ appId: "wrong" }).success).toBe(false);
     expect(hostApi[name].payload.safeParse({}).success).toBe(false);
   }

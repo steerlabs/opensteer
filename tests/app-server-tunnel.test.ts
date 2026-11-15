@@ -5,9 +5,9 @@ import WebSocket, { WebSocketServer } from "ws";
 import { createId } from "../packages/core/src/index.js";
 import {
   RunnerConnectionFenceSchema,
-  type LegacyAppRuntimeSpec as AppRuntimeSpec,
+  type AppRuntimeSpec,
+  type RunnerConnectionId,
 } from "../packages/protocol/src/index.js";
-import type { RunnerIdentity } from "../packages/orchestration/src/index.js";
 import { closeHttpServerNow } from "@opensteer/shared/httpServer";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { expect, it } from "vitest";
@@ -15,7 +15,7 @@ import { openAppTunnel } from "../apps/runner/src/apps/app-tunnel.js";
 import { AppTunnelHub } from "../apps/host/src/apps/app-tunnel-hub.js";
 import { requestAppHttp } from "../apps/host/src/apps/app-proxy.js";
 
-it("pipes HTTP POST and incremental SSE over one-use WebSocket tickets, fences reconnects and closes upstream on abort", async () => {
+it("pipes HTTP POST and incremental SSE over one-use WebSocket tickets, fences reconnects and closes tunnels on abort and stop", async () => {
   const upstream = createServer((req, res) => {
     req.resume();
     req.once("end", () => {
@@ -45,12 +45,7 @@ it("pipes HTTP POST and incremental SSE over one-use WebSocket tickets, fences r
     connectionLeaseId: `rls_${crypto.randomUUID()}`,
   });
   const environmentId = createId("environment");
-  let identity = {
-    ...fence,
-    fence,
-    environmentId,
-    environmentIds: [environmentId],
-  } as unknown as RunnerIdentity;
+  let connectionId: RunnerConnectionId = fence.connectionId;
   let connection = new AbortController();
   let replaceBeforeDial = false;
   const lifetime = new AbortController();
@@ -58,14 +53,14 @@ it("pipes HTTP POST and incremental SSE over one-use WebSocket tickets, fences r
   let origin: URL;
   let usedTicket = "";
   const hub = new AppTunnelHub({
-    identityForEnvironment: () => identity,
-    identityForRunner: () => identity,
-    appConnectionSignal: () => connection.signal,
-    requestApp: async (_environment, request, signal) => {
+    appConnection: () => ({ connectionId, signal: connection.signal }),
+    syncApps: async () => {
+      throw new Error("Unexpected sync");
+    },
+    requestApp: async (_computer, _connection, request, signal) => {
       if (request.type !== "host.app.connect") throw new Error("Unexpected control request");
       usedTicket = request.ticket;
-      if (replaceBeforeDial)
-        identity = { ...identity, fence: { ...fence, connectionGeneration: 2 } };
+      if (replaceBeforeDial) connectionId = `rcn_${crypto.randomUUID()}` as RunnerConnectionId;
       const tunnel = await openAppTunnel(
         { hostUrl: origin, mode: "development", controlCaPath: undefined },
         request.ticket,
@@ -78,13 +73,10 @@ it("pipes HTTP POST and incremental SSE over one-use WebSocket tickets, fences r
         type: "runner.app.result",
         ok: true,
         appId: request.spec.appId,
+        generation: request.spec.generation,
         requestId: request.requestId,
-        fence: {
-          ...fence,
-          environmentId,
-          bindingGeneration: 1,
-        },
-        port: address.port,
+        fence: { ...fence, environmentId, bindingGeneration: request.spec.generation },
+        port: request.spec.port,
       };
     },
   });
@@ -97,9 +89,12 @@ it("pipes HTTP POST and incremental SSE over one-use WebSocket tickets, fences r
   const hostAddress = host.address();
   if (!hostAddress || typeof hostAddress === "string") throw new Error("Missing Host port");
   origin = new URL(`http://127.0.0.1:${hostAddress.port}`);
+  // The fixed port is the app's real listener; the Runner opens exactly that port.
   const spec: AppRuntimeSpec = {
     appId: `app_${crypto.randomUUID()}`,
     version: 1,
+    generation: 1,
+    port: address.port,
     folder: { computerId: fence.runnerId, path: "/tmp/app-tunnel-test" },
     agentHome: { computerId: fence.runnerId, path: "/tmp" },
     command: "node server.js",
@@ -151,8 +146,17 @@ it("pipes HTTP POST and incremental SSE over one-use WebSocket tickets, fences r
     );
     connection.abort();
     await ended;
-    // Replacing the connection after ticket minting cannot spend its old ticket.
     connection = new AbortController();
+    // Stop and Delete close an app's open tunnels at once.
+    const third = await hub.connect(spec, AbortSignal.timeout(3_000));
+    const closedByStop = withTimeout(
+      new Promise<void>((resolve) => third.stream.once("close", resolve)),
+      2_000,
+      { timeoutError: () => new Error("Closing the app did not close its tunnel") },
+    );
+    hub.close(spec.appId);
+    await closedByStop;
+    // Replacing the connection after ticket minting cannot spend its old ticket.
     replaceBeforeDial = true;
     await expect(hub.connect(spec, AbortSignal.timeout(300))).rejects.toThrow();
   } finally {

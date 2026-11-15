@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { expect, it } from "vitest";
 import { ExecutionContainment } from "../runtime/execution-containment.js";
 import { AppServerManager } from "./app-server-manager.js";
+import { freePort } from "./free-port.test-support.js";
 
 it("starts a server from a cmd start string, serves it, and leaves nothing behind when stopped", async () => {
   const root = await mkdtemp(join(tmpdir(), "opensteer app server "));
@@ -31,7 +32,9 @@ it("starts a server from a cmd start string, serves it, and leaves nothing behin
       command: `set "GREETING=hello from cmd" && "${process.execPath}" server.cjs`,
       folder: { computerId: createId("runner"), path: root },
       version: 1,
-    } as Parameters<typeof manager.start>[0]);
+      generation: 1,
+      port: await freePort(),
+    });
     const served = (await (await fetch(`http://127.0.0.1:${port}/`)).json()) as {
       child: number;
       greeting: string;
@@ -40,7 +43,7 @@ it("starts a server from a cmd start string, serves it, and leaves nothing behin
     expect(served.greeting).toBe("hello from cmd");
     expect(() => process.kill(served.child, 0)).not.toThrow();
 
-    await manager.stop("app_windows");
+    await manager.stop("app_windows", 1);
 
     expect(() => process.kill(served.child, 0)).toThrow();
     await expect(fetch(`http://127.0.0.1:${port}/`)).rejects.toThrow();

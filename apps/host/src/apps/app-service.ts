@@ -1,57 +1,86 @@
-import type { RunToolScope } from "../agents/run-tool-tokens.js";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import {
-  LegacyAppPublishInputSchema as AppPublishInputSchema,
-  AppFetchInputSchema,
-  appFolderSegments,
-  utf8Prefix,
-  type AppServerSpec,
+  AppIdSchema,
+  AppPublishInputSchema,
   OpensteerError,
+  appFolderSegments,
   appMaxBytes,
   type AgentEvent,
+  type App,
+  type AppId,
+  type AppListItem,
+  type AppPublishInput,
+  type AppServerSpec,
   type ComputerFolder,
+  type RunnerId,
   type UserId,
 } from "@opensteer/core";
-import type { AppStore } from "@opensteer/database";
+import type { AppRecord, AppStore, PublishedApp } from "@opensteer/database";
+import type { AppRuntimeSpec, RunnerAppState, RunnerConnectionId } from "@opensteer/protocol";
 import { createPrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
-import { prepareAppHtml, type AppTheme } from "@opensteer/shared/appFrame";
-import { Readable } from "node:stream";
+import { appFrameHeaders, prepareAppHtml, type AppTheme } from "@opensteer/shared/appFrame";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
-import type { LegacyAppRuntimeSpec as AppRuntimeSpec } from "@opensteer/protocol";
-import { AppTunnelError, type AppTunnelHub } from "./app-tunnel-hub.js";
+import type { RunToolScope, RunToolTokenService } from "../agents/run-tool-tokens.js";
+import type { AppTabPort } from "../tabs/ports.js";
+import type { AgentHomeFiles } from "../threads/agent-home-files.js";
 import {
-  requestAppHttp,
   appCorsHeaders,
-  appRequestPath,
+  appOriginHeaders,
+  requestAppHttp,
   type AppHttpResponse,
   type AppOriginMode,
-  appOriginHeaders,
 } from "./app-proxy.js";
-import { appFrameHeaders } from "@opensteer/shared/appFrame";
-import type { RunToolTokenService } from "../agents/run-tool-tokens.js";
-import type { AgentHomeFiles } from "../threads/agent-home-files.js";
-import type { z } from "zod";
+import { AppTunnelError, type AppRunnerConnection, type AppTunnelHub } from "./app-tunnel-hub.js";
 
-const unavailable = () =>
-  new OpensteerError({ code: "not_found", message: "App content is unavailable" });
+/** Who asks: the person from a client, or an agent from its Run. */
+export type AppActor =
+  | { readonly kind: "person"; readonly ownerId: UserId }
+  | { readonly kind: "run"; readonly claims: RunToolScope };
+
 interface AppServiceOptions {
-  readonly tunnels?: Pick<AppTunnelHub, "start" | "stop" | "connect" | "accept">;
   readonly dataDirectory: string;
   readonly apps: AppStore;
   readonly files: Pick<AgentHomeFiles, "list" | "download">;
+  /** The hosting computer's Agent home, which every server folder lives in. */
   readonly agentHome: () => Promise<ComputerFolder>;
-  readonly tokens: Pick<RunToolTokenService, "authenticate" | "reauthorize">;
-  readonly tabsChanged?: () => Promise<void>;
+  readonly tokens: Pick<RunToolTokenService, "reauthorize">;
+  readonly tunnels: Pick<
+    AppTunnelHub,
+    "connection" | "start" | "stop" | "sync" | "close" | "connect" | "accept"
+  >;
+  readonly tabs: Pick<AppTabPort, "removeTabs">;
+  /** The owner's Apps page and app tabs reread these apps. */
+  readonly changed: (ownerId: UserId, appIds: AppId[]) => void;
   readonly publishEvent: (event: AgentEvent) => void;
 }
 
+interface Actual {
+  readonly connectionId: RunnerConnectionId;
+  readonly generation: number;
+  readonly state: "running" | "stopped" | "failed";
+}
+interface Computer {
+  readonly connection: AppRunnerConnection;
+  /** Settles once the complete-set sync answered; false means connects stay unavailable. */
+  readonly synced: Promise<boolean>;
+}
+
+const unavailable = () =>
+  new OpensteerError({ code: "not_found", message: "App content is unavailable" });
+const missing = () => new OpensteerError({ code: "not_found", message: "App not found" });
+const startTimeoutMs = 30_000;
+
 export class AppService {
-  readonly #views = new Map<string, { appId: string; userId: UserId }>();
+  readonly #views = new Map<string, { appId: AppId; userId: UserId }>();
   readonly #tokensByPair = new Map<string, string>();
   readonly #locks = new KeyedMutationQueue();
+  readonly #computers = new Map<RunnerId, Computer>();
+  readonly #actual = new Map<AppId, Actual>();
+  readonly #revocations = new Set<(appId: AppId) => void>();
   readonly #directory: string;
   readonly #options: AppServiceOptions;
   constructor(options: AppServiceOptions) {
@@ -59,189 +88,193 @@ export class AppService {
     this.#directory = join(options.dataDirectory, "apps");
   }
 
-  listTabs(userId: UserId) {
-    return this.#options.apps.listTabs(userId);
-  }
-  async setTabOpen(appId: string, userId: UserId, open: boolean) {
-    const result = await this.#options.apps.setTabOpen(appId, userId, open);
-    await this.#notifyTabs();
-    return { appTabs: result.appTabs };
-  }
-  async #publishedTabsChanged(appId: string) {
-    if (await this.#options.apps.tabIsOpen(appId)) await this.#notifyTabs();
-  }
-  async #notifyTabs() {
-    try {
-      await this.#options.tabsChanged?.();
-    } catch {
-      return;
-    }
-  }
-
+  /** Publishes HTML, or starts and verifies a server on its fixed port before committing. */
   async publish(
     scope: RunToolScope,
-    publishKey: string,
-    input: z.infer<typeof AppPublishInputSchema>,
-  ) {
+    operationKey: string,
+    input: AppPublishInput,
+  ): Promise<{ appId: AppId; version: number }> {
     input = AppPublishInputSchema.parse(input);
-    return this.#locks.run(input.appId ?? `${scope.runId}:${publishKey}`, async () => {
-      const { app: previous, agentHome } = await this.#options.apps.authorize({
-        ...scope,
-        userId: scope.requestedBy,
-        ...(input.appId ? { appId: input.appId } : {}),
-        fullAccess: input.start !== undefined,
-      });
-      const replay = await this.#options.apps.publication(scope.runId, publishKey);
-      if (replay) return publicationResult(replay);
-      if (input.start !== undefined) {
-        try {
-          appFolderSegments(input.path);
-        } catch {
-          throw new OpensteerError({
-            code: "bad_request",
-            message: "Use an app folder inside Agent home, without traversal",
-          });
-        }
-        const server: AppServerSpec = {
-          folder: {
-            computerId: agentHome.computerId,
-            path: join(agentHome.path, ...appFolderSegments(input.path)),
-          },
-          command: input.start,
-        };
-        const appId = input.appId ?? `app_${randomUUID()}`;
-        const version = (previous?.latestVersion ?? 0) + 1;
-        const spec = await this.#runtimeSpec(appId, version, server);
-        try {
-          await this.#tunnels().start(spec, AbortSignal.timeout(30_000));
-        } catch (error) {
-          await this.#tunnels()
-            .stop(spec)
-            .catch(() => undefined);
-          throw new OpensteerError({
-            code: "bad_request",
-            message:
-              error instanceof AppTunnelError
-                ? `${error.message}\n${error.logTail}`
-                : "App server failed to start",
-          });
-        }
-        try {
-          await this.#options.tokens.reauthorize(scope);
-          const result = await this.#options.apps.publish({
-            ...scope,
-            userId: scope.requestedBy,
-            ...(input.appId ? { appId: input.appId } : { id: appId }),
-            title: input.title,
-            publishKey,
-            server,
-            expectedVersion: version,
-          });
-          if (result.event) {
-            this.#options.publishEvent(result.event);
-            await this.#publishedTabsChanged(result.appId);
-          }
-          return publicationResult(result);
-        } catch (error) {
-          await this.#tunnels()
-            .stop(spec)
-            .catch(() => undefined);
-          throw error;
-        }
-      }
-      if (!/\.html?$/iu.test(input.path))
-        throw new OpensteerError({
-          code: "bad_request",
-          message: "Publish an HTML file (.html or .htm)",
-        });
-      // The file service resolves these opaque path segments inside Agent home.
-      const segments = input.path.replace(/^\.\//u, "").split("/");
-      if (
-        segments.some(
-          (part) =>
-            !part || part === "." || part === ".." || part.includes("\\") || part.includes("\0"),
-        )
-      )
-        throw new OpensteerError({
-          code: "bad_request",
-          message: "Use an HTML file path inside Agent home",
-        });
-      const signal = AbortSignal.timeout(30_000);
-      let key = "";
-      for (const [index, name] of segments.entries()) {
-        let cursor: string | undefined;
-        let found = false;
-        do {
-          const page = await this.#options.files.list(
-            { parentKey: key, limit: 500, ...(cursor ? { cursor } : {}) },
-            signal,
-          );
-          const entry = page.entries.find((entry) => entry.name === name);
-          if (entry) {
-            if (entry.kind !== (index === segments.length - 1 ? "file" : "directory"))
-              throw unavailable();
-            key = entry.key;
-            found = true;
-            break;
-          }
-          cursor = page.cursor ?? undefined;
-        } while (cursor);
-        if (!found) throw unavailable();
-      }
-      const response = await this.#options.files.download(key, signal);
-      if (!response.ok) {
-        await response.body?.cancel();
-        throw unavailable();
-      }
-      const bytes = await readBoundedResponse(response, {
-        maximumBytes: appMaxBytes,
-        signal,
-        sizeError: () =>
-          new OpensteerError({ code: "bad_request", message: "App HTML exceeds the 5 MiB limit" }),
-      });
-      if (!bytes.byteLength)
-        throw new OpensteerError({ code: "bad_request", message: "App HTML is empty" });
-      try {
-        new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      } catch {
-        throw new OpensteerError({ code: "bad_request", message: "App HTML must be UTF-8" });
-      }
-      await this.#options.tokens.reauthorize(scope);
-      const sha256 = createHash("sha256").update(bytes).digest("hex");
-      // A digest names complete immutable bytes; interrupted writes cannot replace another version.
-      const file = join(this.#directory, sha256);
-      await createPrivateFileAtomically(file, Buffer.from(bytes).toString("utf8"));
-      const previousVersion = previous
-        ? await this.#options.apps.latest(previous.id, scope.requestedBy)
-        : null;
-      const result = await this.#options.apps.publish({
-        ...(input.appId ? { appId: input.appId } : {}),
-        title: input.title,
-        sha256,
-        sizeBytes: bytes.byteLength,
-        publishKey,
-        threadId: scope.threadId,
-        runId: scope.runId,
-        environmentId: scope.environmentId,
-        userId: scope.requestedBy,
-      });
-      if (previous) {
-        const old = previousVersion!;
-        // The old server's generation is the one replaced by this publication.
-        if (old.version.server)
-          await this.#stop(
-            await this.#runtimeSpec(previous.id, result.version - 1, old.version.server),
-          );
-      }
-      if (result.event) {
-        this.#options.publishEvent(result.event);
-        await this.#publishedTabsChanged(result.appId);
-      }
-      return publicationResult(result);
+    return this.#locks.run(input.appId ?? `${scope.runId}:${operationKey}`, async () => {
+      const replay = await this.#options.apps.publication(scope.runId, operationKey);
+      if (replay) return { appId: AppIdSchema.parse(replay.appId), version: replay.version };
+      const run = runScope(scope);
+      const { agentHome } = await this.#options.apps.authorizeRun(run, input.start !== undefined);
+      const previous = input.appId
+        ? await this.#options.apps.get(scope.requestedBy, input.appId)
+        : undefined;
+      const result =
+        input.start === undefined
+          ? await this.#publishHtml(scope, operationKey, input, previous)
+          : await this.#publishServer(scope, operationKey, input, input.start, agentHome, previous);
+      this.#options.publishEvent(result.event);
+      this.#options.changed(scope.requestedBy, [result.appId]);
+      return { appId: result.appId, version: result.version };
     });
   }
 
+  async #publishServer(
+    scope: RunToolScope,
+    operationKey: string,
+    input: AppPublishInput,
+    start: string,
+    agentHome: ComputerFolder,
+    previous: PublishedApp | undefined,
+  ) {
+    let segments: string[];
+    try {
+      segments = appFolderSegments(input.path);
+    } catch {
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Use an app folder inside Agent home, without traversal",
+      });
+    }
+    const server: AppServerSpec = {
+      folder: { computerId: agentHome.computerId, path: join(agentHome.path, ...segments) },
+      command: start,
+    };
+    const run = runScope(scope);
+    const reservation = previous
+      ? await this.#options.apps.prepareServer({
+          scope: run,
+          appId: previous.id,
+          computerId: agentHome.computerId,
+        })
+      : await this.#options.apps.reserve({
+          scope: run,
+          creationKey: `${scope.runId}:${operationKey}`,
+          name: input.name,
+          computerId: agentHome.computerId,
+        });
+    if (previous) this.#options.changed(scope.requestedBy, [previous.id]);
+    const spec: AppRuntimeSpec = {
+      appId: reservation.appId,
+      version: (previous?.version.version ?? 0) + 1,
+      generation: reservation.generation,
+      port: reservation.port,
+      folder: server.folder,
+      agentHome,
+      command: server.command,
+    };
+    // A first publication that never commits leaves nothing behind but its contained process.
+    const abandon = async () => {
+      if (reservation.published) return;
+      await this.#halt(spec.folder.computerId, spec.appId, spec.generation).catch(() => undefined);
+      await this.#options.apps.remove(spec.appId, this.#options.tabs.removeTabs);
+    };
+    try {
+      await this.#launch(scope.requestedBy, spec);
+    } catch (error) {
+      await abandon();
+      throw startFailure(error);
+    }
+    try {
+      await this.#options.tokens.reauthorize(scope);
+      return await this.#options.apps.commit({
+        scope: run,
+        appId: spec.appId,
+        name: input.name,
+        publishKey: operationKey,
+        expectedVersion: spec.version,
+        server,
+        serverGeneration: spec.generation,
+      });
+    } catch (error) {
+      await abandon();
+      throw error;
+    }
+  }
+
+  async #publishHtml(
+    scope: RunToolScope,
+    operationKey: string,
+    input: AppPublishInput,
+    previous: PublishedApp | undefined,
+  ) {
+    if (!/\.html?$/iu.test(input.path))
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Publish an HTML file (.html or .htm), or give start to publish a server folder",
+      });
+    // The file service resolves these opaque path segments inside Agent home.
+    const segments = input.path.replace(/^\.\//u, "").split("/");
+    if (
+      segments.some(
+        (part) =>
+          !part || part === "." || part === ".." || part.includes("\\") || part.includes("\0"),
+      )
+    )
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Use an HTML file path inside Agent home",
+      });
+    const signal = AbortSignal.timeout(30_000);
+    let key = "";
+    for (const [index, name] of segments.entries()) {
+      let cursor: string | undefined;
+      let found = false;
+      do {
+        const page = await this.#options.files.list(
+          { parentKey: key, limit: 500, ...(cursor ? { cursor } : {}) },
+          signal,
+        );
+        const entry = page.entries.find((candidate) => candidate.name === name);
+        if (entry) {
+          if (entry.kind !== (index === segments.length - 1 ? "file" : "directory"))
+            throw unavailable();
+          key = entry.key;
+          found = true;
+          break;
+        }
+        cursor = page.cursor ?? undefined;
+      } while (cursor);
+      if (!found) throw unavailable();
+    }
+    const response = await this.#options.files.download(key, signal);
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw unavailable();
+    }
+    const bytes = await readBoundedResponse(response, {
+      maximumBytes: appMaxBytes,
+      signal,
+      sizeError: () =>
+        new OpensteerError({ code: "bad_request", message: "App HTML exceeds the 5 MiB limit" }),
+    });
+    if (!bytes.byteLength)
+      throw new OpensteerError({ code: "bad_request", message: "App HTML is empty" });
+    try {
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new OpensteerError({ code: "bad_request", message: "App HTML must be UTF-8" });
+    }
+    await this.#options.tokens.reauthorize(scope);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    // A digest names complete immutable bytes; interrupted writes cannot replace another version.
+    await createPrivateFileAtomically(
+      join(this.#directory, sha256),
+      Buffer.from(bytes).toString("utf8"),
+    );
+    const result = await this.#options.apps.commit({
+      scope: runScope(scope),
+      ...(previous ? { appId: previous.id } : {}),
+      name: input.name,
+      publishKey: operationKey,
+      html: { sha256, sizeBytes: bytes.byteLength },
+    });
+    // Publishing HTML over a server stops it; its port stays reserved for the app.
+    if (previous && result.retiredServer)
+      await this.#halt(previous.computerId, previous.id, result.retiredServer.generation).catch(
+        () => undefined,
+      );
+    return result;
+  }
+
+  /** Retires abandoned reservations, then deletes HTML bytes no version references. */
   async collectGarbage(): Promise<void> {
+    for (const reservation of await this.#options.apps.abandonedReservations())
+      await this.#options.apps.remove(reservation.id, this.#options.tabs.removeTabs);
     await mkdir(this.#directory, { recursive: true, mode: 0o700 });
     const referenced = new Set(await this.#options.apps.referencedDigests());
     for (const name of await readdir(this.#directory)) {
@@ -250,23 +283,148 @@ export class AppService {
     }
   }
 
-  get(appId: string, userId: UserId) {
-    return this.#options.apps.get(appId, userId);
+  async get(ownerId: UserId, appId: string): Promise<App> {
+    return this.#view(await this.#options.apps.get(ownerId, appId));
   }
 
-  async view(appId: string, userId: UserId, theme: AppTheme) {
-    const app = await this.get(appId, userId);
-    const pair = `${appId}:${userId}`;
+  async list(ownerId: UserId, query?: string): Promise<App[]> {
+    return (await this.#options.apps.list(ownerId, query)).map((app) => this.#view(app));
+  }
+
+  async rename(ownerId: UserId, appId: string, name: string): Promise<App> {
+    const id = parseAppId(appId);
+    await this.#options.apps.rename(ownerId, id, name);
+    this.#options.changed(ownerId, [id]);
+    return this.get(ownerId, id);
+  }
+
+  /**
+   * Persists running intent, then starts on the saved computer and fixed port. Offline,
+   * the intent waits for reconnect. A failure stays failed until an explicit retry.
+   */
+  async start(actor: AppActor, appId: string): Promise<App> {
+    const id = parseAppId(appId);
+    const ownerId = ownerOf(actor);
+    return this.#locks.run(id, async () => {
+      if (actor.kind === "run") await this.#options.apps.authorizeRun(runScope(actor.claims), true);
+      const record = await this.#options.apps.setDesiredState(ownerId, id, "running");
+      this.#options.changed(ownerId, [id]);
+      const spec = await this.#spec(record);
+      try {
+        await this.#launch(ownerId, spec);
+      } catch (error) {
+        const current = await this.#options.apps.get(ownerId, id);
+        // A Stop or Delete that overtook this start owns the outcome.
+        if (
+          actor.kind === "run" &&
+          current.server?.generation === spec.generation &&
+          !(error instanceof ComputerOfflineError)
+        )
+          throw startFailure(error);
+        return this.#view(current);
+      }
+      return this.get(ownerId, id);
+    });
+  }
+
+  /** Persists stopped intent before any I/O, so it beats a pending start and survives reconnect. */
+  async stop(actor: AppActor, appId: string): Promise<App> {
+    const id = parseAppId(appId);
+    const ownerId = ownerOf(actor);
+    const record = await this.#options.apps.setDesiredState(ownerId, id, "stopped");
+    this.#options.changed(ownerId, [id]);
+    try {
+      await this.#halt(record.computerId, id, record.server.generation);
+    } catch {
+      throw outcomeUnknown(
+        "Opensteer could not confirm this app's server stopped. It stays stopped and its computer stops it on reconnect.",
+      );
+    }
+    return this.get(ownerId, id);
+  }
+
+  /**
+   * Withdraws viewing first, stops the exact process tree, then removes the records and
+   * the app's tabs together. The folder stays on disk.
+   */
+  async delete(actor: AppActor, appId: string): Promise<void> {
+    const id = parseAppId(appId);
+    const ownerId = ownerOf(actor);
+    const record = await this.#options.apps.markDeleting(ownerId, id);
+    this.#revoke(id);
+    if (record.server)
+      try {
+        await this.#halt(record.computerId, id, record.server.generation);
+      } catch {
+        this.#options.changed(ownerId, [id]);
+        throw outcomeUnknown(
+          "Opensteer could not confirm this app's server stopped. The app is hidden and its deletion finishes when its computer reconnects.",
+        );
+      }
+    await this.#locks.run(id, () => this.#remove(record));
+  }
+
+  /** Lets a viewer channel close its connections the moment an app's viewing ends. */
+  onRevoked(listener: (appId: AppId) => void): () => void {
+    this.#revocations.add(listener);
+    return () => this.#revocations.delete(listener);
+  }
+
+  /**
+   * Reconciles the computer's complete desired set before app connects are allowed.
+   * A fresh Runner holds no trusted state, so running intent restarts here.
+   */
+  async onRunnerConnected(computerId: RunnerId): Promise<void> {
+    const connection = this.#options.tunnels.connection(computerId);
+    if (!connection) return;
+    const computer: Computer = { connection, synced: this.#reconcile(computerId, connection) };
+    this.#computers.set(computerId, computer);
+    await computer.synced;
+  }
+
+  /** Servers on a lost connection are offline; the Runner's own cleanup stops them. */
+  async onRunnerDisconnected(
+    computerId: RunnerId,
+    connectionId: RunnerConnectionId,
+  ): Promise<void> {
+    const computer = this.#computers.get(computerId);
+    if (computer?.connection.connectionId !== connectionId) return;
+    this.#computers.delete(computerId);
+    for (const [appId, actual] of this.#actual)
+      if (actual.connectionId === connectionId) this.#actual.delete(appId);
+    await this.#announceComputer(computerId);
+  }
+
+  /** Actual state from the current connection, including exits nobody asked for. */
+  async onAppState(
+    computerId: RunnerId,
+    connectionId: RunnerConnectionId,
+    report: Pick<RunnerAppState, "appId" | "generation" | "state" | "error">,
+  ): Promise<void> {
+    const appId = parseAppId(report.appId);
+    if (!this.#observe(computerId, connectionId, appId, report.generation, report.state)) return;
+    await this.#options.apps.setLastError(
+      appId,
+      report.generation,
+      report.state === "failed" ? (report.error ?? "App server failed") : null,
+    );
+    const record = await this.#options.apps.record(appId);
+    if (record) this.#options.changed(record.ownerId, [appId]);
+  }
+
+  async view(ownerId: UserId, appId: string, theme: AppTheme) {
+    const app = await this.get(ownerId, appId);
+    const pair = `${app.appId}:${ownerId}`;
     const token = this.#tokensByPair.get(pair) ?? randomBytes(32).toString("base64url");
     this.#tokensByPair.set(pair, token);
-    this.#views.set(token, { appId, userId });
-    return { app, path: `/v1/apps/${appId}/${theme}/${token}/` };
+    this.#views.set(token, { appId: app.appId, userId: ownerId });
+    return { app, path: `/v1/apps/${app.appId}/${theme}/${token}/` };
   }
 
-  async authorizeView(appId: string, token: string) {
+  async authorizeView(appId: string, token: string): Promise<PublishedApp> {
     const view = this.#views.get(token);
     if (!view || view.appId !== appId) throw unavailable();
-    return this.#options.apps.latest(appId, view.userId);
+    return this.#options.apps.get(view.userId, appId);
   }
 
   async response(input: {
@@ -282,19 +440,19 @@ export class AppService {
     body?: Readable;
     signal: AbortSignal;
   }): Promise<AppHttpResponse> {
-    // The lock covers only the connection decision, never the streaming lifetime.
     const userId = input.originMode ? input.userId : this.#views.get(input.token ?? "")?.userId;
     if (!userId) throw unavailable();
-    const latest = input.originMode
-      ? await this.#options.apps.latest(input.appId, userId)
+    const app = input.originMode
+      ? await this.#options.apps.get(userId, input.appId)
       : await this.authorizeView(input.appId, input.token ?? "");
-    if (!latest.version.server) {
+    const wantsHtml = input.headers.accept?.includes("text/html") ?? input.path === "/";
+    if (!app.version.server) {
       if (
         (input.originMode ? input.path.split("?")[0] : input.path) !== "/" ||
         !["GET", "HEAD"].includes(input.method)
       )
         throw unavailable();
-      const html = await this.#content(latest.version, input.theme, !!input.originMode);
+      const html = await this.#content(app.version, input.theme, !!input.originMode);
       return {
         status: 200,
         headers: {
@@ -310,6 +468,16 @@ export class AppService {
         body: Readable.from(input.method === "HEAD" ? [] : [html]),
       };
     }
+    // Viewing never starts a server.
+    const state = this.#view(app).state;
+    if (state !== "running")
+      return this.#errorResponse(
+        503,
+        stateMessage[state],
+        input.theme,
+        wantsHtml,
+        input.originMode,
+      );
     try {
       return await requestAppHttp({
         ...input,
@@ -325,143 +493,221 @@ export class AppService {
           false,
           input.originMode,
         );
-      // Personal admission is checked again before opening a tunnel.
       if (error instanceof OpensteerError && error.code === "not_found")
         return this.#errorResponse(
           404,
           "This app is no longer available.",
           input.theme,
-          input.headers.accept?.includes("text/html") ?? input.path === "/",
+          wantsHtml,
           input.originMode,
         );
       return this.#errorResponse(
         503,
-        "This app's server is unavailable. Try again after its computer reconnects or the app is republished.",
+        "This app's server did not answer. Try again, or restart it from Apps.",
         input.theme,
-        input.headers.accept?.includes("text/html") ?? input.path === "/",
+        wantsHtml,
         input.originMode,
       );
     }
   }
 
-  connect(appId: string, userId: UserId, signal: AbortSignal) {
-    return this.#locks.run(appId, async () => {
-      const current = await this.#options.apps.latest(appId, userId);
-      if (!current.version.server) throw new AppTunnelError("This app no longer runs a server");
-      return this.#tunnels().connect(
-        await this.#runtimeSpec(appId, current.version.version, current.version.server),
-        signal,
-      );
-    });
-  }
-
-  async list(scope: RunToolScope) {
-    return { apps: await this.#options.apps.list({ ...scope, userId: scope.requestedBy }) };
-  }
-
-  async listForCaller(scope: { readonly requestedBy: UserId }) {
-    return {
-      apps: await this.#options.apps.listOwned(scope.requestedBy),
-    };
-  }
-
-  async fetch(scope: RunToolScope, input: z.infer<typeof AppFetchInputSchema>) {
-    input = AppFetchInputSchema.parse(input);
-    await this.#options.apps.authorize({
-      ...scope,
-      userId: scope.requestedBy,
-      appId: input.appId,
-      fullAccess: true,
-    });
-    const controller = new AbortController();
-    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]);
-    try {
-      const view = await this.view(input.appId, scope.requestedBy, "light");
-      const response = await requestAppHttp({
-        method: input.method,
-        path: appRequestPath(input.path),
-        headers: input.headers ?? {},
-        ...(input.body === undefined ? {} : { body: Readable.from([input.body]) }),
-        prefix: view.path.slice(0, -1),
-        signal,
-        connect: (signal) =>
-          this.#locks.run(input.appId, async () => {
-            const { app, version } = await this.#options.apps.latest(
-              input.appId,
-              scope.requestedBy,
-            );
-            if (!version.server)
-              throw new OpensteerError({
-                code: "bad_request",
-                message: "opensteer_app_call requires a server app",
-              });
-            const spec = await this.#runtimeSpec(app.id, version.version, version.server);
-            return this.#tunnels().connect(spec, signal);
-          }),
-      });
-      const chunks: Buffer[] = [];
-      let size = 0;
-      let truncated = false;
-      for await (const chunk of response.body) {
-        const bytes = Buffer.from(chunk);
-        const remaining = 256 * 1_024 - size;
-        chunks.push(bytes.subarray(0, remaining));
-        size += Math.min(bytes.length, remaining);
-        if (bytes.length >= remaining) {
-          truncated = true;
-          controller.abort();
-          break;
-        }
-      }
-      const text = Buffer.concat(chunks).toString("utf8");
-      truncated ||= Buffer.byteLength(text) > 256 * 1_024;
-      const note = "\n[Response truncated at 256 KiB]";
-      return {
-        status: response.status,
-        contentType: response.headers["content-type"],
-        body: truncated ? utf8Prefix(text, 256 * 1_024 - Buffer.byteLength(note)) + note : text,
-        truncated,
-      };
-    } catch (error) {
-      if (error instanceof OpensteerError) throw error;
-      return {
-        status: 503,
-        contentType: "text/plain",
-        body:
-          error instanceof AppTunnelError
-            ? `${error.message}\n${error.logTail}`
-            : "App request failed or exceeded 30 seconds",
-        truncated: false,
-      };
-    } finally {
-      controller.abort();
-    }
+  /** A tunnel to the exact running generation, never a start. */
+  async connect(appId: string, userId: UserId, signal: AbortSignal) {
+    const app = await this.#options.apps.get(userId, appId);
+    if (!app.version.server || !app.server)
+      throw new AppTunnelError("This app no longer runs a server");
+    if (app.server.desiredState !== "running") throw new AppTunnelError(stateMessage.stopped);
+    const computer = this.#computers.get(app.computerId);
+    if (!computer) throw new AppTunnelError(stateMessage.offline);
+    if (!(await computer.synced))
+      throw new AppTunnelError("This app's computer could not reconcile its app servers");
+    return this.#options.tunnels.connect(await this.#spec(app), signal);
   }
 
   acceptTunnel(ticket: string, socket: import("ws").WebSocket): void {
-    this.#tunnels().accept(ticket, socket);
+    this.#options.tunnels.accept(ticket, socket);
   }
 
-  async #stop(spec: AppRuntimeSpec): Promise<void> {
+  async content(appId: string, token: string, theme: AppTheme): Promise<string> {
+    const { version } = await this.authorizeView(appId, token);
+    return this.#content(version, theme, false);
+  }
+
+  /** The App read model: actual state from the current connection, intent otherwise. */
+  #view(app: PublishedApp): App {
+    const server = app.version.server && app.server ? app.server : null;
+    const state = !server
+      ? "running"
+      : !this.#computers.has(app.computerId)
+        ? "offline"
+        : this.#actualState(app.id, server.generation, server.desiredState, server.lastError);
+    return {
+      appId: app.id,
+      name: app.name,
+      kind: server ? "server" : "html",
+      state,
+      ...(server && app.version.server
+        ? {
+            localUrl: `http://127.0.0.1:${server.port}`,
+            folder: app.version.server.folder.path,
+            start: app.version.server.command,
+          }
+        : {}),
+      computerId: app.computerId,
+      taskId: app.threadId,
+      version: app.version.version,
+      server: server
+        ? {
+            desiredState: server.desiredState,
+            state,
+            port: server.port,
+            generation: server.generation,
+            lastError: server.lastError,
+          }
+        : null,
+      createdAt: app.createdAt.toISOString(),
+      updatedAt: app.updatedAt.toISOString(),
+    };
+  }
+
+  #actualState(
+    appId: AppId,
+    generation: number,
+    desiredState: "running" | "stopped",
+    lastError: string | null,
+  ): App["state"] {
+    const actual = this.#actual.get(appId);
+    if (actual?.generation === generation) return actual.state;
+    if (desiredState === "stopped") return "stopped";
+    return lastError ? "failed" : "stopped";
+  }
+
+  async #spec(app: PublishedApp): Promise<AppRuntimeSpec> {
+    if (!app.version.server || !app.server)
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "This app is HTML and has no server to start or stop.",
+      });
+    return {
+      appId: app.id,
+      version: app.version.version,
+      generation: app.server.generation,
+      port: app.server.port,
+      folder: app.version.server.folder,
+      agentHome: await this.#options.agentHome(),
+      command: app.version.server.command,
+    };
+  }
+
+  async #launch(ownerId: UserId, spec: AppRuntimeSpec): Promise<void> {
+    const computer = this.#computers.get(spec.folder.computerId);
+    if (!computer) throw new ComputerOfflineError();
+    // Reconnect reconciliation goes first; its own start of this app may already be done.
+    await computer.synced;
+    const { connection } = computer;
     try {
-      await this.#tunnels().stop(spec);
-    } catch {
-      /* The runtime also retires a replaced app generation. */
+      await this.#options.tunnels.start(connection, spec, AbortSignal.timeout(startTimeoutMs));
+      this.#observe(
+        spec.folder.computerId,
+        connection.connectionId,
+        spec.appId,
+        spec.generation,
+        "running",
+      );
+      if (await this.#options.apps.setLastError(spec.appId, spec.generation, null))
+        this.#options.changed(ownerId, [spec.appId]);
+    } catch (error) {
+      if (connection.signal.aborted) throw new ComputerOfflineError();
+      this.#observe(
+        spec.folder.computerId,
+        connection.connectionId,
+        spec.appId,
+        spec.generation,
+        "failed",
+      );
+      await this.#options.apps.setLastError(
+        spec.appId,
+        spec.generation,
+        error instanceof Error ? error.message : "App server failed to start",
+      );
+      this.#options.changed(ownerId, [spec.appId]);
+      throw error;
     }
   }
 
-  async #runtimeSpec(
-    appId: string,
-    version: number,
-    server: AppServerSpec,
-  ): Promise<AppRuntimeSpec> {
-    const agentHome = await this.#options.agentHome();
-    return { appId, version, folder: server.folder, agentHome, command: server.command };
+  /** Stops the exact generation on a connected computer; offline, the Runner already stopped it. */
+  async #halt(computerId: RunnerId, appId: AppId, generation: number): Promise<void> {
+    this.#options.tunnels.close(appId);
+    const computer = this.#computers.get(computerId);
+    if (!computer) return;
+    try {
+      await this.#options.tunnels.stop(computerId, computer.connection, appId, generation);
+      this.#observe(computerId, computer.connection.connectionId, appId, generation, "stopped");
+    } catch (error) {
+      // A lost connection's own cleanup owns termination.
+      if (computer.connection.signal.aborted) return;
+      throw error;
+    }
   }
-  #tunnels() {
-    if (!this.#options.tunnels) throw new AppTunnelError("App servers are unavailable");
-    return this.#options.tunnels;
+
+  async #reconcile(computerId: RunnerId, connection: AppRunnerConnection): Promise<boolean> {
+    try {
+      const deleting = await this.#options.apps.deleting(computerId);
+      const apps = await this.#options.apps.runtimeSet(computerId);
+      const specs = await Promise.all(apps.map((app) => this.#spec(app)));
+      const result = await this.#options.tunnels.sync(
+        computerId,
+        connection,
+        apps.map((app, index) => ({ spec: specs[index]!, desiredState: app.server.desiredState })),
+      );
+      if (!result.ok) return false;
+      // The complete set omitted them, so the Runner has stopped whatever they left.
+      for (const app of deleting) await this.#locks.run(app.id, () => this.#remove(app));
+      return true;
+    } catch {
+      return false;
+    } finally {
+      await this.#announceComputer(computerId).catch(() => undefined);
+    }
   }
+
+  async #announceComputer(computerId: RunnerId): Promise<void> {
+    const apps = await this.#options.apps.runtimeSet(computerId);
+    const byOwner = new Map<UserId, AppId[]>();
+    for (const app of apps) byOwner.set(app.ownerId, [...(byOwner.get(app.ownerId) ?? []), app.id]);
+    for (const [ownerId, appIds] of byOwner) this.#options.changed(ownerId, appIds);
+  }
+
+  #observe(
+    computerId: RunnerId,
+    connectionId: RunnerConnectionId,
+    appId: AppId,
+    generation: number,
+    state: Actual["state"],
+  ): boolean {
+    if (this.#computers.get(computerId)?.connection.connectionId !== connectionId) return false;
+    const previous = this.#actual.get(appId);
+    if (previous?.connectionId === connectionId && previous.generation > generation) return false;
+    this.#actual.set(appId, { connectionId, generation, state });
+    return true;
+  }
+
+  async #remove(record: AppRecord): Promise<void> {
+    await this.#options.apps.remove(record.id, this.#options.tabs.removeTabs);
+    this.#actual.delete(record.id);
+    this.#options.changed(record.ownerId, [record.id]);
+  }
+
+  #revoke(appId: AppId): void {
+    for (const [token, view] of this.#views)
+      if (view.appId === appId) {
+        this.#views.delete(token);
+        this.#tokensByPair.delete(`${appId}:${view.userId}`);
+      }
+    this.#options.tunnels.close(appId);
+    for (const listener of this.#revocations) listener(appId);
+  }
+
   #errorResponse(
     status: number,
     message: string,
@@ -489,10 +735,6 @@ export class AppService {
     };
   }
 
-  async content(appId: string, token: string, theme: AppTheme): Promise<string> {
-    const { version } = await this.authorizeView(appId, token);
-    return this.#content(version, theme, false);
-  }
   async #content(
     version: { sha256: string | null; sizeBytes: number | null },
     theme: AppTheme,
@@ -511,11 +753,80 @@ export class AppService {
   }
 }
 
-function publicationResult(result: { readonly appId: string; readonly version: number }) {
+/** The agent-sized list entry: no server detail beyond what calling it needs. */
+export function appListItem(app: App): AppListItem {
+  const { server: _server, createdAt: _createdAt, ...item } = app;
+  return item;
+}
+
+const stateMessage = {
+  stopped: "This app's server is stopped. Start it from Apps.",
+  failed: "This app's server failed. Start it again from Apps.",
+  offline: "This app's computer is offline. The app comes back when that computer reconnects.",
+} as const;
+
+class ComputerOfflineError extends Error {
+  constructor() {
+    super("The app's computer is not connected");
+  }
+}
+
+function startFailure(error: unknown): OpensteerError {
+  if (error instanceof OpensteerError) return error;
+  if (error instanceof ComputerOfflineError)
+    return new OpensteerError({
+      code: "runner_offline",
+      message: "The app's computer is not connected, so its server cannot start now.",
+      next: "Publish again once that computer is online.",
+    });
+  if (error instanceof AppTunnelError && error.portInUse)
+    return new OpensteerError({
+      code: "conflict",
+      reason: "port_in_use",
+      message: error.message,
+      next: "Stop the program using that port, then call app_start. The app keeps its port.",
+    });
+  const message = (error instanceof Error ? error.message : "App server failed to start").slice(
+    0,
+    1_000,
+  );
+  const tail = error instanceof AppTunnelError ? error.logTail.trim() : "";
+  // Keep the newest output: the end of a log explains the failure.
+  const room = 1_970 - message.length;
+  return new OpensteerError({
+    code: "conflict",
+    reason: "app_start_failed",
+    message: tail
+      ? `${message}\nServer output:\n${tail.length > room ? `…${tail.slice(-room)}` : tail}`
+      : message,
+    next: "Fix the server so it listens on 127.0.0.1 at PORT, then publish again or call app_start.",
+  });
+}
+
+function outcomeUnknown(message: string): OpensteerError {
+  return new OpensteerError({
+    code: "conflict",
+    reason: "outcome_unknown",
+    message,
+    next: "Check app_list before acting again.",
+  });
+}
+
+function parseAppId(appId: string): AppId {
+  const parsed = AppIdSchema.safeParse(appId);
+  if (!parsed.success) throw missing();
+  return parsed.data;
+}
+
+function ownerOf(actor: AppActor): UserId {
+  return actor.kind === "person" ? actor.ownerId : actor.claims.requestedBy;
+}
+
+function runScope(scope: RunToolScope) {
   return {
-    appId: result.appId,
-    version: result.version,
-    message:
-      "The app is shown inline in this task. Do not restate its contents; refer to it by title or appId.",
+    threadId: scope.threadId,
+    runId: scope.runId,
+    userId: scope.requestedBy,
+    environmentId: scope.environmentId,
   };
 }

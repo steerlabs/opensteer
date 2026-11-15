@@ -125,8 +125,13 @@ async function fixture() {
     if (!member) throw new Error("Membership ended");
     return {} as never;
   });
+  const revocations = new Set<(appId: string) => void>();
   const apps = {
     get,
+    onRevoked: (listener: (appId: string) => void) => {
+      revocations.add(listener);
+      return () => revocations.delete(listener);
+    },
     connect: async (_appId: string, _userId: string, signal: AbortSignal) => dial(signal),
     response: (input: Parameters<import("./app-service.js").AppService["response"]>[0]) =>
       requestAppHttp({ ...input, connect: dial }),
@@ -214,6 +219,9 @@ async function fixture() {
     makeGateway,
     removeMember: () => {
       member = false;
+    },
+    revoke: (id: string) => {
+      for (const listener of revocations) listener(id);
     },
     inheritedUpgrades: () => inheritedUpgrades,
     close: async () => {
@@ -453,7 +461,7 @@ it("enforces Fetch Metadata and Origin isolation and emits Connect and Safari-aw
 
 it("gives a shared Deployment no real origin, which would hold one person's logins", () => {
   const gateway = new AppGateway({
-    apps: { get: vi.fn(), response: vi.fn(), connect: vi.fn() },
+    apps: { get: vi.fn(), response: vi.fn(), connect: vi.fn(), onRevoked: vi.fn() },
     identity: { isSessionCurrent: async () => true },
     signingKey,
     canonicalOrigin: "http://127.0.0.1:1234",
@@ -615,6 +623,32 @@ it("tracks every active response when requests share a pipelined socket", async 
     );
     await streaming;
     await deadline(f.app.close());
+  } finally {
+    tcp?.destroy();
+    await f.close();
+  }
+});
+
+it("ends an app's live responses as soon as its viewing is revoked", async () => {
+  const f = await fixture();
+  let tcp: ReturnType<typeof connect> | undefined;
+  try {
+    const url = new URL(f.entry());
+    const cookie = cookieOf(await f.inject(url.pathname + url.search));
+    tcp = connect({ host: "127.0.0.1", port: f.hostPort });
+    tcp.on("error", () => undefined);
+    const streaming = deadline(
+      new Promise<void>((resolve) => {
+        tcp!.on("data", (chunk: Buffer) => {
+          if (chunk.includes("data: ready")) resolve();
+        });
+      }),
+    );
+    const closed = deadline(new Promise<void>((resolve) => tcp!.once("close", resolve)));
+    tcp.write(`GET /events HTTP/1.1\r\nHost: ${authority}\r\nCookie: ${cookie}\r\n\r\n`);
+    await streaming;
+    f.revoke(appId);
+    await closed;
   } finally {
     tcp?.destroy();
     await f.close();
