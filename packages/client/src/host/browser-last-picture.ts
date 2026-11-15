@@ -134,7 +134,7 @@ export function reconcileBrowserLastPictures(
   sessionForTab?: (tabId: string) => string | undefined,
 ): void {
   listedDocuments.set(frames, document);
-  for (const [key, entry] of [...(caches.get(frames) ?? [])]) {
+  for (const [key, entry] of Array.from(caches.get(frames) ?? [])) {
     if (!current(frames, entry.sessionId, entry.tabId)) continue;
     const sessionId = sessionForTab?.(entry.tabId) ?? entry.sessionId;
     const documentId = document(sessionId, entry.tabId);
