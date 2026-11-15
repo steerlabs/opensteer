@@ -1,5 +1,5 @@
 name: CI changes
-description: Fail-open workspace change plan
+description: Fail-open plan of the lanes and test files a change can affect
 outputs:
   tests-shards:
     value: ${{ steps.detect.outputs.tests-shards }}
@@ -7,10 +7,16 @@ outputs:
     value: ${{ steps.detect.outputs.integration-shards }}
   native-mac-tasks:
     value: ${{ steps.detect.outputs.native-mac-tasks }}
+  typecheck-filters:
+    value: ${{ steps.detect.outputs.typecheck-filters }}
+  build-filters:
+    value: ${{ steps.detect.outputs.build-filters }}
   lint:
     value: ${{ steps.detect.outputs.lint }}
   build-types:
     value: ${{ steps.detect.outputs.build-types }}
+  build:
+    value: ${{ steps.detect.outputs.build }}
   tests:
     value: ${{ steps.detect.outputs.tests }}
   integration:

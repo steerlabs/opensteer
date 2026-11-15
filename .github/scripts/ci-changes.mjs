@@ -1,17 +1,22 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, appendFileSync, writeFileSync } from "node:fs";
 import {
+  darwinOnlyTests,
   defaultTestInclude,
   defaultTestExclude,
   integrationTestInclude,
+  optInIntegrationBenchmarks,
   realBrowserTests,
   windowsTestInclude,
 } from "./ci-test-files.mjs";
+import { importClosure, importEdges, importers, reverseEdges } from "./ci-imports.mjs";
+import { unknownDuration } from "./ci-sharding.mjs";
 import { matchesGlob, basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 export const lanes = [
   "lint",
   "build-types",
+  "build",
   "tests",
   "integration",
   "native-mac",
@@ -106,25 +111,53 @@ const docs = (p) =>
 // Contributor guidance: agent instructions and skills for working on this repo.
 // Nothing builds, ships or tests them, so they select no lane beyond lint.
 const guidance = (p) => /^\.(agents|claude)\//.test(p);
-const global = (p) =>
-  /(^|\/)(package\.json|tsconfig[^/]*|vitest[^/]*|.*config\.[^/]+)$/.test(p) ||
-  /^(\.github\/|scripts\/|tests\/|patches\/|pnpm-|\.npmrc|\.pnpmfile|go\.(work|mod|sum)|Cargo\.)/.test(
+// Lint runs actionlint and the CI scripts' own tests; the scheduled full run backs them up.
+const ciDefinition = (p) => p.startsWith(".github/") || /^scripts\/ci-[^/]+$/.test(p);
+// Every workspace compiles or installs with these: typecheck everything, run every unit test.
+const rootConfig = (p) =>
+  /^(package\.json|tsconfig[^/]*\.json|\.npmrc|pnpm-workspace\.yaml|\.pnpmfile\.cjs)$/.test(p) ||
+  p.startsWith("patches/");
+// Outside any workspace: the files that import or name them decide their lanes.
+const loose = (p) =>
+  /^(scripts|tests|deploy|tooling)\//.test(p) ||
+  /^(vitest(\.[\w-]+)?\.config\.ts|\.oxlintrc\.json|\.prettierrc\.json|\.prettierignore|\.gitignore|\.dockerignore|\.env\.example)$/.test(
+    p,
+  );
+const code = (p) => /\.[cm]?[jt]sx?$/.test(p);
+const isTest = (p) => /\.test\.[cm]?[jt]sx?$/.test(p);
+// A lane's runner: a change to these, or to what they import, reruns the lane's whole suite.
+const harness = {
+  tests: ["vitest.config.ts"],
+  integration: ["vitest.integration.config.ts", "scripts/test-integration.ts", "deploy/compose"],
+  "browser-journeys": ["vitest.browser.config.ts"],
+};
+// This standalone Gradle project intentionally has no Node workspace manifest; the
+// Kotlin modules beside it and the shared fixtures its tests read select it too.
+const androidSource = (p) =>
+  p.startsWith("apps/agent-phone/") ||
+  /^apps\/mobile\/modules\/(notification-preview|phone-connection|phone-browser|remote-text-input)\/android\//.test(
     p,
   ) ||
-  /(^|\/)(go\.(mod|sum)|gradle[^/]*|.*\.gradle(\.kts)?|.*lock[^/]*)$/.test(p);
+  p === "packages/core/src/fixtures/notification-preview-v1.json" ||
+  p === "packages/runner-auth/fixtures/device-proofs.v1.json" ||
+  p.startsWith("packages/browser-core/test-vectors/") ||
+  p === "apps/mobile/modules/phone-browser/index.ts" ||
+  p === "apps/mobile/modules/phone-browser/types.ts";
 const nativeMac = JSON.parse(
   readFileSync(new URL("./ci-native-mac.json", import.meta.url), "utf8"),
 );
 const nativeInputs = JSON.parse(
   readFileSync(new URL("./ci-native-inputs.json", import.meta.url), "utf8"),
 );
+const shardLimits = JSON.parse(readFileSync(new URL("./ci-shards.json", import.meta.url), "utf8"));
+const durations = JSON.parse(readFileSync(new URL("./ci-durations.json", import.meta.url), "utf8"));
 const under = (file, prefix) => file === prefix || file.startsWith(`${prefix}/`);
 /**
  * What can change a native-mac task's result: its Swift packages, the CI definition,
  * files its Swift tests read, and for a task that runs node (scripts or Vitest
  * files) what that code imports (ci-native-inputs.json) and the installed packages.
  * The iphone task's Vitest runs also prove it reads and launches nothing else
- * (ci-native-access.mjs).
+ * (ci-native-access.mjs). Main pushes select with these.
  */
 export function nativeMacInputs(name) {
   const task = nativeMac.tasks.find((entry) => entry.task === name);
@@ -139,14 +172,30 @@ export function nativeMacInputs(name) {
   ];
 }
 /**
- * The tasks whose inputs `files` touch, so a global edit elsewhere runs none of
- * them. Scheduled and manual runs, and detector errors, select every task.
+ * A PR selects a native-mac task only for its own sources, test files, and scripts with the
+ * desktop build tooling they import; shared packages and installs wait for main.
  */
-export function nativeMacTasks(files, { full = false } = {}) {
+export function nativeMacOwnInputs(name) {
+  const task = nativeMac.tasks.find((entry) => entry.task === name);
+  if (!task) throw new Error(`Unknown native-mac task: ${name}`);
+  return [
+    ...task.swift,
+    ...(task.extra ?? []),
+    ...(task.scripts ?? []),
+    ...(task.vitest ?? []),
+    ...(task.lane ? darwinOnlyTests : []),
+    ...(nativeInputs[task.task] ?? []).filter((input) => input.startsWith("apps/desktop/scripts/")),
+  ];
+}
+/**
+ * The tasks whose inputs `files` touch. Scheduled and manual runs, and detector errors,
+ * select every task.
+ */
+export function nativeMacTasks(files, { full = false, narrow = false } = {}) {
   return nativeMac.tasks
     .filter(({ task }) => {
       if (full) return true;
-      const inputs = nativeMacInputs(task);
+      const inputs = narrow ? nativeMacOwnInputs(task) : nativeMacInputs(task);
       return files.some((file) => inputs.some((input) => under(file, input)));
     })
     .map(({ task }) => task);
@@ -171,8 +220,21 @@ const nativeWindows = JSON.parse(
  * What can change the native-windows result: the CI definition, its Go modules,
  * the installed packages, what its build scripts and Windows-real Vitest files
  * import (ci-native-inputs.json), and any Windows-real test file, new ones included.
+ * Main pushes select with these; a PR uses only the lane's own files.
  */
-export function nativeWindowsInputs() {
+export function nativeWindowsInputs({ narrow = false } = {}) {
+  const shared = new Set([
+    ...nativeMac.ciInputs,
+    ".github/scripts/ci-test-files.mjs",
+    "scripts/ci-inventory-reporter.ts",
+  ]);
+  if (narrow)
+    return [
+      ...nativeWindows.ciInputs.filter((input) => !shared.has(input)),
+      ...nativeWindows.go,
+      ...nativeWindows.scripts,
+      ...nativeWindows.vitest,
+    ];
   return [
     ...nativeWindows.ciInputs,
     ...nativeWindows.go,
@@ -181,9 +243,9 @@ export function nativeWindowsInputs() {
   ];
 }
 /** Scheduled and manual runs, and detector errors, always run it. */
-export function nativeWindowsSelected(files, { full = false } = {}) {
+export function nativeWindowsSelected(files, { full = false, narrow = false } = {}) {
   if (full) return true;
-  const inputs = nativeWindowsInputs();
+  const inputs = nativeWindowsInputs({ narrow });
   return files.some(
     (file) =>
       inputs.some((input) => under(file, input)) ||
@@ -192,18 +254,93 @@ export function nativeWindowsSelected(files, { full = false } = {}) {
 }
 /** The task that runs the Darwin-only files and uploads their inventory. */
 export const darwinTask = nativeMac.tasks.find((task) => task.lane).task;
-// A root test edit needs its own lane, the repo-wide test guards in `tests` and the
-// test typecheck in build-types, not every lane. Other files under tests/ (support
-// modules, fixtures, quarantine) stay global.
-const rootTest = (p) => /^tests\/.*\.test\.tsx?$/.test(p);
+/** Every file the Linux unit and integration lanes discover, as their Vitest configs do. */
+export function laneUniverse(tracked) {
+  const matches = (file, globs) => globs.some((glob) => matchesGlob(file, glob));
+  return {
+    tests: tracked.filter(
+      (file) =>
+        matches(file, defaultTestInclude) &&
+        !matches(file, defaultTestExclude) &&
+        !realBrowserTests.includes(file) &&
+        !darwinOnlyTests.includes(file) &&
+        !file.split("/").includes("node_modules"),
+    ),
+    integration: tracked.filter(
+      (file) =>
+        matches(file, integrationTestInclude) &&
+        !optInIntegrationBenchmarks.includes(file) &&
+        !file.split("/").includes("node_modules"),
+    ),
+  };
+}
+/** Importer directories whose lockfile entries differ, and whether anything else differs. */
+export function lockfileChanges(base, head) {
+  const split = (text) => {
+    const importers = new Map();
+    let rest = "";
+    let section;
+    let key;
+    for (const line of text.split("\n")) {
+      if (/^\S/.test(line)) {
+        section = line;
+        key = undefined;
+      }
+      const entry = section === "importers:" && /^ {2}(\S.*):\s*$/.exec(line);
+      if (entry) key = entry[1].replace(/^['"]|['"]$/g, "");
+      if (section === "importers:" && key !== undefined)
+        importers.set(key, (importers.get(key) ?? "") + line + "\n");
+      else rest += line + "\n";
+    }
+    return { importers, rest };
+  };
+  const before = split(base);
+  const after = split(head);
+  const keys = new Set([...before.importers.keys(), ...after.importers.keys()]);
+  return {
+    importers: [...keys].filter((k) => before.importers.get(k) !== after.importers.get(k)).sort(),
+    other: before.rest !== after.rest,
+  };
+}
+// Vitest treats each path argument as a substring filter; name everything it will match.
+function expandFilters(selected, universe) {
+  const lower = new Map(universe.map((file) => [file, file.toLowerCase()]));
+  const chosen = new Set(selected);
+  for (let grew = true; grew;) {
+    grew = false;
+    const filters = [...chosen].map((file) => file.toLowerCase());
+    for (const file of universe)
+      if (!chosen.has(file) && filters.some((filter) => lower.get(file).includes(filter))) {
+        chosen.add(file);
+        grew = true;
+      }
+  }
+  return universe.filter((file) => chosen.has(file));
+}
+/** Shards in proportion to the selected files' recorded duration, up to the full count. */
+export function shardCount(lane, selected, universe) {
+  if (!selected.length) return 0;
+  const weight = (files) =>
+    files.reduce((sum, file) => sum + (durations[lane][file] ?? unknownDuration[lane]), 0);
+  const limit = shardLimits[lane];
+  return Math.max(1, Math.min(limit, Math.ceil((limit * weight(selected)) / weight(universe))));
+}
+const emptyRepo = { tracked: [], read: () => undefined, readBase: () => undefined };
 /**
- * `full` runs every lane, as main does; `fullNative` also runs every native-mac task
- * and native-windows, as scheduled and manual runs do. A main push picks its native
- * work from `files`.
+ * `event` is "pull_request", "push" (main, against the previous head) or "full"
+ * (scheduled and manual runs). Pull requests and main pushes run only the unit and
+ * integration files the change can reach; a PR runs native and Android work only for
+ * their own sources, a main push for everything they import.
  */
-export function decide(files, graph, baseGraph = graph, full = false, { fullNative = full } = {}) {
+export function decide(
+  files,
+  graph,
+  baseGraph = graph,
+  { event = "pull_request", repo = emptyRepo } = {},
+) {
+  const full = event === "full";
+  const narrow = event === "pull_request";
   const reasons = [];
-  const affected = new Set();
   const combined = new Map();
   for (const p of [...baseGraph, ...graph]) {
     const old = combined.get(p.name);
@@ -213,120 +350,223 @@ export function decide(files, graph, baseGraph = graph, full = false, { fullNati
       coverage: [...new Set([...(old?.coverage ?? []), ...(p.coverage ?? [])])],
     });
   }
-  let all = full;
-  const rootTests = { any: false, integration: false, browser: false };
-  let androidSource = false;
-  if (full) reasons.push("main/manual full run");
+  const packages = [...combined.values()];
+  const ownerOf = (file) => packages.filter((p) => file.startsWith(p.dir + "/"));
+  const affected = new Set();
+  // Packages whose own files changed, including test-only edits that select no dependents.
+  const touched = new Set();
+  const direct = new Set();
+  const whole = { tests: full, integration: full, "browser-journeys": full };
+  let everything = full;
+  let typecheckAll = full;
+  let typecheckTests = false;
+  let android = false;
+  if (full) reasons.push("full run");
+  let scan;
+  const index = () => {
+    if (scan) return scan;
+    const edges = importEdges(repo.tracked, repo.read);
+    const reverse = reverseEdges(edges.files);
+    const universe = laneUniverse(repo.tracked);
+    const tests = new Set([...universe.tests, ...universe.integration, ...realBrowserTests]);
+    const texts = new Map();
+    const text = (file) => {
+      if (!texts.has(file)) texts.set(file, repo.read(file) ?? "");
+      return texts.get(file);
+    };
+    const runners = Object.fromEntries(
+      Object.entries(harness).map(([lane, roots]) => [
+        lane,
+        { roots, files: importClosure(roots, edges.files) },
+      ]),
+    );
+    scan = { edges, reverse, universe, tests, text, runners };
+    return scan;
+  };
+  const mentions = (body, file) =>
+    new RegExp(`(?<![\\w./-])${file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w/-])`).test(body);
   for (const file of files) {
     if (docs(file) || guidance(file)) continue;
-    if (rootTest(file)) {
-      rootTests.any = true;
-      if (realBrowserTests.includes(file)) rootTests.browser = true;
-      if (/\.integration\.test\./.test(file)) rootTests.integration = true;
+    if (ciDefinition(file)) {
+      reasons.push(`CI definition: ${file}`);
       continue;
     }
-    if (global(file)) {
-      all = true;
-      reasons.push(`global input: ${file}`);
+    if (file === "pnpm-lock.yaml") {
+      const base = repo.readBase(file);
+      const head = repo.read(file);
+      const lock =
+        base === undefined || head === undefined ? undefined : lockfileChanges(base, head);
+      const dirs = lock?.importers ?? [];
+      for (const dir of dirs) {
+        const owner = packages.find((p) => p.dir === dir);
+        if (owner) {
+          affected.add(owner.name);
+          touched.add(owner.name);
+        }
+      }
+      if (!lock || dirs.includes(".") || dirs.some((d) => !packages.some((p) => p.dir === d))) {
+        typecheckAll = whole.tests = true;
+        reasons.push("lockfile: root or unreadable importer changed");
+      } else if (!dirs.length && lock.other) {
+        typecheckAll = whole.tests = true;
+        reasons.push("lockfile: shared dependencies changed");
+      }
       continue;
     }
-    // This standalone Gradle project intentionally has no Node workspace
-    // manifest. It is the sole APK producer named by the Android lane.
+    if (rootConfig(file)) {
+      typecheckAll = whole.tests = true;
+      reasons.push(`root config: ${file}`);
+      continue;
+    }
+    if (androidSource(file)) {
+      android = true;
+      if (file.startsWith("apps/agent-phone/") || file.includes("/android/")) continue;
+    }
+    const owners = ownerOf(file);
+    if (!owners.length && !loose(file)) {
+      everything = true;
+      reasons.push(`unknown path: ${file}`);
+      continue;
+    }
     if (
-      file.startsWith("apps/agent-phone/") ||
-      file.startsWith("apps/mobile/modules/notification-preview/android/") ||
-      file.startsWith("apps/mobile/modules/phone-connection/android/") ||
-      file.startsWith("apps/mobile/modules/phone-browser/android/") ||
-      file.startsWith("apps/mobile/modules/remote-text-input/android/")
-    ) {
-      androidSource = true;
-      continue;
-    }
-    // The Android tests read these too; their packages still own them.
-    if (
-      file === "packages/core/src/fixtures/notification-preview-v1.json" ||
-      file === "packages/runner-auth/fixtures/device-proofs.v1.json" ||
-      file.startsWith("packages/browser-core/test-vectors/") ||
-      file === "apps/mobile/modules/phone-browser/index.ts" ||
-      file === "apps/mobile/modules/phone-browser/types.ts"
+      owners.some((p) => p.name.includes("agent-phone")) ||
+      basename(file).startsWith("agent-phone-")
     )
-      androidSource = true;
-    const owners = [...baseGraph, ...graph].filter((p) => file.startsWith(p.dir + "/"));
-    if (!owners.length) {
-      all = true;
-      reasons.push(`unknown owner: ${file}`);
-    } else owners.forEach((p) => affected.add(p.name));
-    // Non-manifest consumers: generators, embedded native sources, shipped skills and build inputs.
-    if (/\/(scripts|agent-skills)\/|\.(go|sh|proto)$/.test(file)) {
-      all = true;
-      reasons.push(`non-manifest build/runtime consumers: ${file}`);
+      android = true;
+    const { reverse, tests, text, runners } = index();
+    for (const p of owners) {
+      touched.add(p.name);
+      // A changed test file runs itself and its importers, not its package's dependents.
+      if (!isTest(file)) affected.add(p.name);
+    }
+    if (!owners.length && code(file)) typecheckTests = true;
+    if (tests.has(file)) direct.add(file);
+    for (const importer of importers(file, reverse)) {
+      if (tests.has(importer)) direct.add(importer);
+      for (const p of ownerOf(importer)) affected.add(p.name);
+    }
+    for (const test of tests) if (mentions(text(test), file)) direct.add(test);
+    for (const [lane, runner] of Object.entries(runners)) {
+      if (runner.roots.some((root) => under(file, root)) || runner.files.has(file)) {
+        whole[lane] = true;
+        reasons.push(`${lane} runner: ${file}`);
+      }
     }
   }
-  if (affected.size && [...baseGraph, ...graph].some((p) => !Array.isArray(p.coverage))) {
-    all = true;
-    reasons.push("missing lane discovery metadata");
+  if (everything) {
+    for (const p of packages) affected.add(p.name);
+    whole.tests = whole.integration = whole["browser-journeys"] = typecheckAll = true;
   }
-  if (all) for (const p of combined.values()) affected.add(p.name);
   for (let grew = true; grew;) {
     grew = false;
-    for (const p of combined.values())
+    for (const p of packages)
       if (!affected.has(p.name) && p.deps.some((d) => affected.has(d))) {
         affected.add(p.name);
         grew = true;
       }
   }
-  const dirs = [...combined.values()].filter((p) => affected.has(p.name)).map((p) => p.dir);
-  // A suite owner and all its transitive workspace dependencies can affect
-  // that suite. Union base/head ownership so deletions cannot erase coverage.
-  const reaches = (lane) => {
-    const pending = [...combined.values()]
-      .filter((p) => p.coverage.includes(lane))
-      .map((p) => p.name);
-    const seen = new Set();
-    while (pending.length) {
-      const name = pending.pop();
-      if (seen.has(name)) continue;
-      seen.add(name);
-      if (affected.has(name)) return true;
-      pending.push(...combined.get(name).deps);
+  const reaches = (lane) => packages.some((p) => p.coverage.includes(lane) && affected.has(p.name));
+  const selection = { tests: [], integration: [] };
+  let rootBrowser = false;
+  if (repo.tracked.length && (affected.size || direct.size || whole.tests || whole.integration)) {
+    const { edges, universe } = index();
+    const names = new Set(packages.map((p) => p.name));
+    // Root tests import across workspaces without a manifest. A changed file in their import
+    // closure already selected them; otherwise they run when a workspace package that closure
+    // imports by name is affected. One that reaches no workspace at all is a repository guard.
+    const reach = (file) => {
+      const reached = { owned: false, names: new Set() };
+      for (const found of importClosure([file], edges.files)) {
+        if (ownerOf(found).length) reached.owned = true;
+        for (const name of edges.packages.get(found) ?? [])
+          if (names.has(name)) reached.names.add(name);
+      }
+      return reached;
+    };
+    const rootSelected = (file) => [...reach(file).names].some((name) => affected.has(name));
+    const isGuard = (file) => {
+      const reached = reach(file);
+      return !reached.owned && !reached.names.size;
+    };
+    const guards = [];
+    for (const lane of ["tests", "integration"]) {
+      for (const file of universe[lane]) {
+        const owners = ownerOf(file);
+        if (whole[lane] || direct.has(file)) selection[lane].push(file);
+        else if (owners.length) {
+          if (owners.some((p) => affected.has(p.name))) selection[lane].push(file);
+        } else if (lane === "tests" && isGuard(file)) guards.push(file);
+        else if (rootSelected(file)) selection[lane].push(file);
+      }
     }
-    return false;
-  };
-  const macTasks = nativeMacTasks(files, { full: fullNative });
+    // Root guards that import no workspace scan the repository's files; they run whenever
+    // the unit lane does.
+    if (selection.tests.length) selection.tests.push(...guards);
+    for (const lane of ["tests", "integration"])
+      selection[lane] = expandFilters(selection[lane], universe[lane]).sort();
+    rootBrowser = realBrowserTests.some(
+      (file) => direct.has(file) || (!ownerOf(file).length && rootSelected(file)),
+    );
+  }
+  const universe = repo.tracked.length ? index().universe : { tests: [], integration: [] };
+  const macTasks = nativeMacTasks(files, { full, narrow });
+  const unit = selection.tests.length > 0;
+  const integration = selection.integration.length > 0;
+  const build = full
+    ? "all"
+    : event === "push"
+      ? typecheckAll
+        ? "all"
+        : [...affected].sort()
+      : [];
+  const typecheck = typecheckAll
+    ? "all"
+    : [...new Set([...affected, ...touched])].sort().filter((name) => combined.has(name));
   return {
-    version: 1,
-    full: all,
+    version: 2,
+    full: everything,
     reasons,
     affected: [...affected].sort(),
     nativeMac: macTasks,
+    files: selection,
+    whole: { tests: whole.tests && unit, integration: whole.integration && integration },
+    shards: {
+      tests: shardCount("tests", selection.tests, universe.tests),
+      integration: shardCount("integration", selection.integration, universe.integration),
+    },
+    typecheck,
+    // Nothing downstream consumes these builds; main proves them for what it changed.
+    build,
     lanes: {
       lint: true,
-      "build-types": all || dirs.some((d) => d !== "apps/agent-phone") || rootTests.any,
-      // Root tests have no workspace manifest and can read any workspace;
-      // keep their default-test coverage conservative for every workspace edit.
-      tests: all || reaches("tests") || affected.size > 0 || rootTests.any,
-      integration: all || reaches("integration") || rootTests.integration,
+      "build-types": typecheckAll || typecheckTests || typecheck.length > 0 || unit || integration,
+      build: build.length > 0,
+      tests: unit,
+      integration,
       "native-mac": macTasks.length > 0,
-      "native-windows": nativeWindowsSelected(files, { full: fullNative }),
-      android: all || androidSource || reaches("android"),
-      // Root browser tests have no manifest and import across workspaces, like root unit guards.
-      "browser-journeys":
-        all ||
-        reaches("browser-journeys") ||
-        rootTests.browser ||
-        (affected.size > 0 && realBrowserTests.some((file) => file.startsWith("tests/"))),
+      "native-windows": nativeWindowsSelected(files, { full, narrow }),
+      android: full || android || (!narrow && reaches("android")),
+      "browser-journeys": whole["browser-journeys"] || reaches("browser-journeys") || rootBrowser,
     },
   };
 }
+const idle = () => ({
+  files: { tests: [], integration: [] },
+  whole: { tests: false, integration: false },
+  shards: { tests: 0, integration: 0 },
+  typecheck: [],
+  build: [],
+});
 /** A scheduled run with nothing new on main since the last full run. */
 export function unchangedPlan(sha) {
   return {
-    version: 1,
+    version: 2,
     full: false,
     unchangedSince: sha,
     reasons: [`main has not changed since the full run of ${sha}`],
     affected: [],
     nativeMac: [],
+    ...idle(),
     // Time-based quarantine expiry and published Stable compatibility still gate an idle main.
     lanes: Object.fromEntries(lanes.map((lane) => [lane, lane === "lint"])),
   };
@@ -340,26 +580,49 @@ export function detect({
 } = {}) {
   try {
     const graph = readGraph(root);
+    const repo = {
+      tracked: parseDiff(git(root, ["ls-files", "-z"])),
+      read: (file) => {
+        try {
+          return readFileSync(resolve(root, file), "utf8");
+        } catch {
+          return undefined;
+        }
+      },
+      readBase: (file) => {
+        try {
+          return git(root, ["show", `${base}:${file}`]);
+        } catch {
+          return undefined;
+        }
+      },
+    };
     const changed = () =>
       parseDiff(git(root, ["diff", "--name-only", "-z", "--no-renames", base, "HEAD"]));
-    if (event === "pull_request") return decide(changed(), graph, readGraph(root, base));
+    if (event === "pull_request")
+      return decide(changed(), graph, readGraph(root, base), { event, repo });
     if (event === "push") {
-      // A push of one commit, as a merge is, picks native work from that commit;
-      // anything else (several commits, a new branch) runs them all.
+      // A push of one commit, as a merge is, checks what that commit changed; anything
+      // else (several commits, a new branch, a force push) runs everything.
       const single = before === git(root, ["rev-parse", "HEAD^1"]).trim();
-      if (!single) return decide([], graph, graph, true);
-      return decide(changed(), graph, readGraph(root, base), true, { fullNative: false });
+      if (!single) return decide([], graph, graph, { event: "full", repo });
+      return decide(changed(), graph, readGraph(root, base), { event, repo });
     }
     if (event === "schedule" && unchangedSince) return unchangedPlan(unchangedSince);
-    return decide([], graph, graph, true);
+    return decide([], graph, graph, { event: "full", repo });
   } catch (error) {
     return {
-      version: 1,
+      version: 2,
       full: true,
       detectionError: true,
       affected: [],
       reasons: [`detector fail-open: ${error.message}`],
       nativeMac: allNativeMacTasks,
+      ...idle(),
+      whole: { tests: true, integration: true },
+      shards: { ...shardLimits },
+      typecheck: "all",
+      build: "all",
       lanes: Object.fromEntries(lanes.map((k) => [k, true])),
     };
   }
@@ -406,17 +669,20 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   }
   const plan = detect({ unchangedSince });
   writeFileSync(process.env.CI_PLAN_PATH ?? "ci-plan.json", JSON.stringify(plan, null, 2) + "\n");
-  const shards = JSON.parse(readFileSync(new URL("./ci-shards.json", import.meta.url), "utf8"));
-  for (const [lane, count] of Object.entries(shards)) {
-    if (!Number.isInteger(count) || count < 1) throw new Error(`Invalid shard count: ${lane}`);
-    const line = `${lane}-shards=${JSON.stringify(Array.from({ length: count }, (_, i) => i + 1))}\n`;
-    process.stdout.write(line);
-    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, line);
-  }
-  const matrix = `native-mac-tasks=${JSON.stringify(nativeMacMatrix(plan.nativeMac))}\n`;
-  process.stdout.write(matrix);
-  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, matrix);
-  for (const [key, value] of Object.entries(plan.lanes)) {
+  const filters = (scope, suffix = "") =>
+    scope === "all" ? "all" : scope.map((name) => `--filter=${name}${suffix}`).join(" ");
+  const outputs = {
+    "tests-shards": JSON.stringify(Array.from({ length: plan.shards.tests }, (_, i) => i + 1)),
+    "integration-shards": JSON.stringify(
+      Array.from({ length: plan.shards.integration }, (_, i) => i + 1),
+    ),
+    "native-mac-tasks": JSON.stringify(nativeMacMatrix(plan.nativeMac)),
+    "typecheck-filters": filters(plan.typecheck),
+    // An app's build may read its workspace dependencies' builds.
+    "build-filters": filters(plan.build, "..."),
+    ...plan.lanes,
+  };
+  for (const [key, value] of Object.entries(outputs)) {
     const line = `${key}=${value}\n`;
     process.stdout.write(line);
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, line);

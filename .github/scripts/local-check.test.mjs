@@ -22,11 +22,11 @@ test("unknown keeps CI's full flag and reason without full local commands", () =
   assert.ok(p.reasons.length);
   assert.ok(!runsFullSuite(p));
 });
-test("a global input runs the changed-file checks and every workspace typecheck, not CI's full suite", () => {
-  const file = "tests/mobile-network/runner.test-support.ts";
+test("an unknown input runs the changed-file checks and every workspace typecheck, not CI's full suite", () => {
+  const file = "mystery.txt";
   const p = localPlan([file], [{ name: "a", dir: "packages/a", deps: [], coverage: [] }], [file]);
   assert.ok(p.full);
-  assert.ok(p.reasons.includes(`global input: ${file}`));
+  assert.ok(p.reasons.includes(`unknown path: ${file}`));
   assert.ok(!runsFullSuite(p));
   assert.ok(p.commands.some((c) => c.includes("prettier") && c.includes(file)));
   assert.ok(

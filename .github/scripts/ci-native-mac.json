@@ -16,7 +16,7 @@
   "tasks": [
     {
       "task": "computer-helper",
-      "timeout": 6,
+      "timeout": 9,
       "swift": [
         "apps/desktop/native/computer-use",
         "packages/apple-data",
@@ -39,7 +39,7 @@
     },
     {
       "task": "iphone",
-      "timeout": 6,
+      "timeout": 11,
       "swift": [
         "packages/apple-data",
         "apps/mobile/modules/iphone-apps/ios",
@@ -88,7 +88,7 @@
     },
     {
       "task": "computer-tests",
-      "timeout": 6,
+      "timeout": 10,
       "swift": [
         "apps/desktop/native/computer-use",
         "packages/apple-data",
@@ -100,7 +100,7 @@
     },
     {
       "task": "passwords-tests",
-      "timeout": 14,
+      "timeout": 25,
       "swift": ["apps/desktop/native/passwords", "packages/macos-signing"],
       "tests": ["apps/desktop/native/passwords", "packages/macos-signing"],
       "extra": ["apps/desktop/src/passwords/paths.ts", "packages/client/src/host/passwords.ts"]
@@ -127,7 +127,7 @@
     },
     {
       "task": "release-native",
-      "timeout": 20,
+      "timeout": 28,
       "runner": "macos-26",
       "xcode": "/Applications/Xcode_26.6.app/Contents/Developer",
       "swift": [
@@ -145,7 +145,7 @@
         "apps/desktop/scripts/build-passwords-broker.ts",
         "apps/desktop/scripts/build-dictation-helper.ts"
       ],
-      "extra": ["apps/desktop/native/passkeys", ".github/workflows/release.yml"]
+      "extra": ["apps/desktop/native/passkeys"]
     }
   ]
 }

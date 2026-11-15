@@ -12,12 +12,17 @@ focused journey across any boundary you change. Empty selections and skipped, bl
 
 ## Selecting checks
 
-Import selection misses runtime reads and launches. Declare those in the native task's
-[extra inputs](../.github/scripts/ci-native-mac.json) or the
-[Windows lane's inputs](../.github/scripts/ci-native-windows.json). CI inventories and the merged lock graph
-must fail closed when incomplete or inconsistent. Selection and scheduling live in
-[local-check.mjs](../.github/scripts/local-check.mjs) and
-[ci-changes.mjs](../.github/scripts/ci-changes.mjs); procedures belong in the testing skill.
+PRs and main pushes run only the unit and integration files a change reaches: its packages and
+their dependents, plus root tests whose relative imports reach a changed file or whose imports name
+an affected package. Import selection misses runtime reads and launches: a test that reads another
+package's files should import or name the path, or only the scheduled full run covers it. Declare
+native reads in the task's [extra inputs](../.github/scripts/ci-native-mac.json) or the
+[Windows lane's inputs](../.github/scripts/ci-native-windows.json). CI edits run lint alone, so
+the scheduled run is the first full proof of a workflow change. `Check` fails when a shard's
+discovery differs from the planned files, and CI inventories and the merged lock graph must fail
+closed when incomplete or inconsistent. Selection lives in
+[ci-changes.mjs](../.github/scripts/ci-changes.mjs) and
+[local-check.mjs](../.github/scripts/local-check.mjs); procedures belong in the testing skill.
 
 ## Suites
 
