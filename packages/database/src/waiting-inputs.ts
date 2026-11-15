@@ -111,12 +111,12 @@ export async function lockInputQueueProjection(
     .forNoKeyUpdate()
     .execute();
   await lockThreadRow(transaction, threadId);
-  // Deleting the task needs the row's strongest lock, taken before anything ranked after it.
   if (forRemoval)
     await transaction
       .selectFrom("threads")
       .select("id")
       .where("id", "=", threadId)
+      // FOR UPDATE: Removing an ask task deletes this row; take it before anything ranked after it.
       .forUpdate()
       .execute();
   await lockRunProjectionRows(transaction, {

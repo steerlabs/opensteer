@@ -115,6 +115,7 @@ export async function lockThreadProjectionParents(
       ]),
     )
     .orderBy("id", "asc")
+    // FOR UPDATE: Removing an ask task deletes the chains rooted at its messages.
     .$call((query) => (input.forRemoval ? query.forUpdate() : query.forNoKeyUpdate()))
     .execute();
   {
@@ -184,6 +185,7 @@ export async function lockRunProjectionRows(
   await projectionInputs(transaction, input)
     .select("messageId")
     .orderBy("messageId", "asc")
+    // FOR UPDATE: Removing an ask task deletes its inputs.
     .$call((query) => (input.forRemoval ? query.forUpdate() : query.forNoKeyUpdate()))
     .execute();
   await transaction
@@ -191,6 +193,7 @@ export async function lockRunProjectionRows(
     .select("id")
     .where("id", "in", projectionInputs(transaction, input).select("messageId"))
     .orderBy("id", "asc")
+    // FOR UPDATE: Removing an ask task deletes its messages with the thread.
     .$call((query) => (input.forRemoval ? query.forUpdate() : query.forNoKeyUpdate()))
     .execute();
   await transaction
