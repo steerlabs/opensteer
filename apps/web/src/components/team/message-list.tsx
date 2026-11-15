@@ -131,13 +131,18 @@ export function MessageList({
 
   /** Keeps a follower at the end, unless the list has moved up since it was last read. */
   const keepEnd = (list: HTMLElement): boolean => {
+    const followed = tail.current.follows;
     tail.current = readTail(
       tail.current,
       list.scrollTop,
       list.scrollHeight - list.clientHeight,
       false,
     );
-    if (!tail.current.follows) return false;
+    if (!tail.current.follows) {
+      // A scroll up not yet read: the row under the eye is where it took them, not where it was.
+      if (followed) measure(false);
+      return false;
+    }
     list.scrollTop = list.scrollHeight;
     tail.current = { follows: true, offset: list.scrollTop };
     return true;

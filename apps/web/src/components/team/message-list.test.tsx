@@ -54,6 +54,16 @@ function timelineGeometry(geometry: { content: number }) {
   ) {
     tops.set(this, Math.max(0, Math.min(top, max())));
   });
+  // Message n stands 200n down the timeline, under the scroller's top at 0.
+  const real = Element.prototype.getBoundingClientRect;
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element,
+  ) {
+    const id = this.getAttribute("data-row-id");
+    const scroller = this.closest(".tlist__scroller");
+    if (id === null || !scroller) return real.call(this);
+    return new DOMRect(0, Number(id) * 200 - scroller.scrollTop, 300, 200);
+  });
 }
 
 it("follows new messages at the end, and never pulls back a reader who scrolled up near it", () => {
@@ -85,4 +95,17 @@ it("follows new messages at the end, and never pulls back a reader who scrolled 
   geometry.content = 2200;
   act(() => root!.render(list(10)));
   expect(scroller.scrollTop, "A reader 30px up was pulled back to the end").toBe(1670);
+
+  // Back at the end; a scroll up whose event has not landed when the next message renders.
+  act(() => {
+    scroller.scrollTop = 1800;
+    scroller.dispatchEvent(new Event("scroll"));
+  });
+  geometry.content = 2300;
+  act(() => root!.render(list(11)));
+  expect(scroller.scrollTop).toBe(1900);
+  scroller.scrollTop = 1850;
+  geometry.content = 2400;
+  act(() => root!.render(list(12)));
+  expect(scroller.scrollTop, "A scroll up not yet read was undone").toBe(1850);
 });
