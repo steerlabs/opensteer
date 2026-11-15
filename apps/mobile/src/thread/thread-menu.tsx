@@ -28,6 +28,8 @@ interface ThreadMenuProps {
   /** The native menu sizes its trigger to its content; a width keeps long titles inside the bar. */
   readonly maxWidth: number;
   readonly onFind: () => void;
+  /** Hears the task after this one once it is marked Done here. */
+  readonly onMarkedDone?: (next: string | null) => void;
   readonly onOpenThread: (threadId: string) => void;
   /** Where the task works or the channel that asked, under its name in the menu's heading. */
   readonly placeName?: string | null;
@@ -92,7 +94,13 @@ function Menu(
                 : ("arrow.uturn.backward" as const),
             id: "done",
             label: doneThread.doneAt === null ? "Mark Done" : "Reopen",
-            onPress: () => setTaskDone(hostClient, doneThread.id, doneThread.doneAt === null),
+            onPress: () =>
+              setTaskDone(
+                hostClient,
+                doneThread.id,
+                doneThread.doneAt === null,
+                props.onMarkedDone,
+              ),
           },
         ]),
     ...(canRename

@@ -345,17 +345,26 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
     },
     [actions, deploymentId],
   );
-  const moveTask = useCallback(
-    (task: TaskRow, done: boolean) => {
-      if (hostClient !== null) setTaskDone(hostClient, task.threadId, done);
-    },
-    [hostClient],
-  );
-
   const selectedRowId = useMemo(() => {
     if (hostClient === null || selectedThreadId === null) return selectedThreadId;
     return listedRowThreadId(hostClient.getSnapshot(), selectedThreadId);
   }, [hostClient, selectedThreadId]);
+  const selectedRow = useRef(selectedRowId);
+  selectedRow.current = selectedRowId;
+  // Done on the task in view moves on to the next one, if it is still in view.
+  const moveTask = useCallback(
+    (task: TaskRow, done: boolean) => {
+      if (hostClient === null) return;
+      const { threadId } = task;
+      if (selectedRow.current !== threadId) return setTaskDone(hostClient, threadId, done);
+      setTaskDone(hostClient, threadId, done, (next) => {
+        if (selectedRow.current !== threadId) return;
+        if (next === null) actions.onHome();
+        else openTask(next);
+      });
+    },
+    [actions, hostClient, openTask],
+  );
   const loadEarlier = useCallback(() => {
     if (hostClient === null || loadingEarlier) return;
     setLoadingEarlier(true);

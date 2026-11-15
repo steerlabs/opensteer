@@ -294,9 +294,16 @@ export function Sidebar({
   };
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const doneActive = !doneView && doneRows.some((row) => row.threadId === openRowThreadId);
+  // Opening a Done task brings its shelf into view; the open task moving to
+  // Done later leaves the list where the reader put it.
+  const openListed =
+    openRowThreadId !== null && (doneActive || directory.rows.has(openRowThreadId));
+  const shelfShownFor = useRef<string | null>(null);
   useEffect(() => {
+    if (!openListed || shelfShownFor.current === openRowThreadId) return;
+    shelfShownFor.current = openRowThreadId;
     if (doneActive && doneShelf.current) revealInList(doneShelf.current);
-  }, [doneActive, openRowThreadId]);
+  }, [doneActive, openListed, openRowThreadId]);
 
   const allTasks = useMemo(() => [...list.working, ...list.ready, ...list.done], [list]);
   const searchSources = useMemo<SidebarSearchSources>(
