@@ -7,7 +7,14 @@ import {
 import type { MessageRevisionView } from "@opensteer/core";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  useWindowDimensions,
+  View,
+} from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
 import { PlainProse } from "../markdown/markdown.js";
 import { color, space, touchTarget } from "../theme.js";
@@ -51,6 +58,7 @@ function History(props: {
   const { hostClient, messageId, threadId } = props;
   const insets = useContentInsets();
   const gutter = useGutter();
+  const { height } = useWindowDimensions();
   const [revisions, setRevisions] = useState<readonly MessageRevisionView[] | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -99,7 +107,9 @@ function History(props: {
           paddingRight: gutter + insets.right,
         },
       ]}
-      style={styles.sheet}
+      // The sheet is as tall as this list, so a long history stops short of
+      // the screen's top and scrolls inside it.
+      style={[styles.sheet, { maxHeight: height * 0.85 }]}
     >
       <View style={styles.head}>
         <AppText role="title">Edit history</AppText>
@@ -216,5 +226,5 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     paddingTop: space[16],
   },
-  sheet: { backgroundColor: color.surfaceElevated, flex: 1 },
+  sheet: { backgroundColor: color.surfaceElevated },
 });
