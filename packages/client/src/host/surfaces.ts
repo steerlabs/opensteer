@@ -1,4 +1,4 @@
-import type { BrowserPageContentPart, TabId } from "@opensteer/core";
+import { TabIdSchema, type BrowserPageContentPart, type TabId } from "@opensteer/core";
 import { computerAppIdentityKey, type ComputerAppIdentity } from "@opensteer/protocol";
 import type { Turn } from "./agent-activity-model.js";
 import type { BrowserSessionUseSummary, HostSnapshot, PlaceEntry } from "./client.js";
@@ -9,7 +9,7 @@ import { threadsWaitingOnReader } from "./waiting-requests.js";
 /** Where navigation goes: one tab in the person's list, by its stable ID. */
 export interface TabDestination {
   readonly kind: "tab";
-  readonly tabId: string;
+  readonly tabId: TabId;
 }
 
 /** Exactly which native picture a display socket reads: the person's own view, or a task's session. */
@@ -161,7 +161,7 @@ function usedPages(
   const pages = new Map<string, RunPage & { readonly firstUsedAt: string }>();
   for (const use of uses) {
     if (use.runId === null || !runs.has(use.runId) || !use.tabId) continue;
-    const tabId = use.tabId;
+    const tabId = TabIdSchema.parse(use.tabId);
     const held = pages.get(tabId);
     if (held && held.firstUsedAt <= use.firstUsedAt) continue;
     const place = liveTab(source, tabId);

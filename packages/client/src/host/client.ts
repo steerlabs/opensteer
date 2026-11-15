@@ -385,7 +385,7 @@ export interface PlaceEntry {
   createdAt: string;
   id: string;
   kind: "place";
-  tabId: string;
+  tabId: import("@opensteer/core").TabId;
   runId: string;
   site: string | null;
   title: string;

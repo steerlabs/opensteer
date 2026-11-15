@@ -261,8 +261,8 @@ export function nextGroupColor(groups: readonly TabGroup[]): TabGroupColor {
       : least,
   );
 }
-function groupOf(groups: readonly TabGroup[], tabId: string): string | null {
-  return groups.find((group) => group.tabIds.includes(tabId as TabId))?.groupId ?? null;
+function groupOf(groups: readonly TabGroup[], tabId: TabId): string | null {
+  return groups.find((group) => group.tabIds.includes(tabId))?.groupId ?? null;
 }
 
 /**

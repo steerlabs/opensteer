@@ -1,5 +1,5 @@
 import { OmniboxResults, useOmnibox, omniboxChoosable as choosable } from "../browser/omnibox.js";
-import { ownerViewDestination, threadMark } from "@opensteer/client/host";
+import { threadMark } from "@opensteer/client/host";
 import {
   memo,
   useCallback,
@@ -15,10 +15,12 @@ import {
 } from "react";
 import { useNavigate } from "react-router";
 import { z } from "zod";
+import { RunnerIdSchema } from "@opensteer/core";
 import {
   HostClientRequestError,
-  mutationIdempotencyKey,
+  approvedAppTarget,
   newTabTarget,
+  pageOpenTarget,
   profileAwayWords,
   replyLinkTarget,
   sameIdentity,
@@ -27,7 +29,7 @@ import {
   placeList,
   webSearchUrl,
   type BrowserIdentityChoice,
-  type BrowserTabOpenInput,
+  type BrowserIdentityOpenInput,
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
@@ -47,7 +49,6 @@ import type {
   OwnerWindowInfo,
 } from "@opensteer/protocol";
 import { actionErrorMessage } from "../../ui-utils.js";
-import { browserTargetViewport } from "../browser/browser-viewport.js";
 import { AppMark } from "../computer-apps/computer-use-section.js";
 import { computerIcon } from "../computers/device-art.js";
 import { DeviceLabel } from "../computers/device-label.js";
@@ -126,28 +127,11 @@ export function openWorkspaceWebLink(
     sourcePlace: key ? (placeList(snapshot).find((place) => place.key === key) ?? null) : null,
     lastChoice: lastBrowsingChoice(scope),
   });
-  const viewport = browserTargetViewport(
-    document.querySelector(".place")?.getBoundingClientRect() ?? null,
-    window.matchMedia("(max-width: 700px)").matches,
-  );
-  const opening = hostClient.beginBrowserTabOpen(replyLinkTarget(snapshot, choice, hereId, url), {
-    url,
-    typed: true,
-    ...(viewport ? { viewport } : {}),
-    idempotencyKey: mutationIdempotencyKey("reply-link"),
-  });
   rememberBrowsingChoice(scope, choice);
-  nav.showPendingBrowserTab(opening.idempotencyKey, { address: url });
-  void opening.result.then(
-    (opened) => {
-      nav.replacePendingBrowserTab(opening.idempotencyKey, {
-        kind: "browser",
-        sessionId: opened.sessionId,
-        tabId: opened.tabId,
-      });
-    },
-    () => undefined,
-  );
+  const show = nav.beginPlaceOperation();
+  void hostClient
+    .openTab(pageOpenTarget(replyLinkTarget(snapshot, choice, hereId, url), url))
+    .then((tab) => show({ kind: "tab", tabId: tab.tabId }), () => undefined);
 }
 
 /* ---- New tab ---- */
@@ -230,7 +214,7 @@ export const StartPage = memo(function StartPage({
   readonly link: StartPageLink | null;
   readonly trailing: ReactNode;
 }) {
-  const { nav, phone, startPage } = useWorkspace();
+  const { nav, startPage } = useWorkspace();
   const localMachineId = useHereId();
   const toolbarRef = useToastToolbar();
   const navigate = useNavigate();
@@ -401,8 +385,9 @@ export const StartPage = memo(function StartPage({
           machine:
             snapshot.machines.find(
               (machine) =>
-                result.action.kind === "open-computer-view" &&
-                machine.id === result.action.machineId,
+                result.action.kind === "open-tab" &&
+                "computerId" in result.action.target &&
+                machine.id === result.action.target.computerId,
             )?.name ?? "This computer",
           phone: result.kind === "phone",
           target: result.title,
@@ -420,8 +405,8 @@ export const StartPage = memo(function StartPage({
     setRefusal(null);
     if (result.notReady) {
       // Its row already says why; one its owner can fix opens the computer's page, with the steps.
-      if (choosable(result) && action.kind === "open-computer-view")
-        void navigate(computerPage(action.machineId));
+      if (choosable(result) && action.kind === "open-tab" && "computerId" in action.target)
+        void navigate(computerPage(action.target.computerId ?? ""));
       return;
     }
     if (!result.available) {
@@ -435,34 +420,18 @@ export const StartPage = memo(function StartPage({
     const show = nav.beginPlaceOperation({ replace: true });
     setPending(result.key);
     try {
-      if (action.kind === "open-computer-view") {
-        const view = await hostClient.openComputerView(action.machineId, action.target);
-        show(ownerViewDestination(view));
+      if (action.kind === "open-tab") {
+        const tab = await hostClient.openTab(action.target);
+        show({ kind: "tab", tabId: tab.tabId });
         return;
       }
       const url = action.kind === "open-url" ? action.url : webSearchUrl(action.query);
-      // The page starts at the size it will be shown at, floor and all.
-      const viewport = browserTargetViewport(
-        stageRef.current?.getBoundingClientRect() ?? null,
-        phone,
-      );
-      const target: BrowserTabOpenInput = placement
+      const target: BrowserIdentityOpenInput = placement
         ? { ...action.target, placement }
         : newTabTarget(hostClient.getSnapshot(), action.target.identity, localMachineId);
-      const opening = hostClient.beginBrowserTabOpen(target, {
-        url,
-        typed: result.kind === "address",
-        ...(viewport ? { viewport } : {}),
-        idempotencyKey: mutationIdempotencyKey("start-page-open"),
-      });
       rememberBrowsingChoice(scope, choice);
-      nav.showPendingBrowserTab(opening.idempotencyKey, { replace: true, address: url });
-      const opened = await opening.result;
-      nav.replacePendingBrowserTab(opening.idempotencyKey, {
-        kind: "browser",
-        sessionId: opened.sessionId,
-        tabId: opened.tabId,
-      });
+      const tab = await hostClient.openTab(pageOpenTarget(target, url));
+      show({ kind: "tab", tabId: tab.tabId });
     } catch (error) {
       fail(error, result);
     } finally {
@@ -513,7 +482,7 @@ export const StartPage = memo(function StartPage({
   const browsing = snapshot.browserAvailable && snapshot.browserPlacements.length > 0;
   const occupants = useMemo(() => {
     const byKey = new Map<string, PlaceItem>();
-    for (const place of places) if (place.kind !== "browser") byKey.set(place.key, place);
+    for (const place of places) if (place.kind !== "page") byKey.set(place.key, place);
     return byKey;
   }, [places]);
 
@@ -893,7 +862,6 @@ function AppWindows({
     };
   }, [app, hostClient]);
   if (windows.length < 2 || app.target.kind !== "app") return null;
-  const target = app.target;
   return (
     <div className="start-app-windows-toggle">
       <button
@@ -919,13 +887,13 @@ function AppWindows({
         >
           <ul>
             {windows.map((window) => (
-              <li key={window.id}>
+              <li key={window.windowId}>
                 <button
                   aria-label={`${app.name} — ${window.title || "Untitled window"}`}
                   data-start-tile=""
                   onClick={() =>
                     onOpen({
-                      key: `window:${app.connectionId}:${window.id}`,
+                      key: `window:${app.connectionId}:${window.windowId}`,
                       kind: "app",
                       title: `${app.name} — ${window.title || "Untitled window"}`,
                       detail: machineName,
@@ -933,20 +901,18 @@ function AppWindows({
                       available: true,
                       app,
                       action: {
-                        kind: "open-computer-view",
-                        machineId: app.machineId,
-                        target: { ...target, window: window.id },
+                        kind: "open-tab",
+                        target: {
+                          kind: "window",
+                          computerId: RunnerIdSchema.parse(app.machineId),
+                          windowId: window.windowId,
+                        },
                       },
                     })
                   }
                   type="button"
                 >
                   <span>{window.title || "Untitled window"}</span>
-                  {window.minimized ? (
-                    <small>Minimized</small>
-                  ) : !window.onScreen ? (
-                    <small>Other Space</small>
-                  ) : null}
                 </button>
               </li>
             ))}
@@ -1003,13 +969,13 @@ function AppRow({
           const held =
             [...occupants.values()].find(
               (place) =>
-                place.device?.machineId === app.machineId &&
-                (place.icon.kind === "app" && app.target.kind === "app"
-                  ? place.icon.app.bundleId.toLowerCase() === app.target.app.bundleId.toLowerCase()
+                place.device.machineId === app.machineId &&
+                (place.kind === "window" && app.target.kind === "app"
+                  ? place.tab.bundleId?.toLowerCase() === app.target.app.bundleId.toLowerCase()
                   : place.kind === "phone" && app.target.kind === "phone"),
             ) ?? null;
-          // The person's own view switches; a task's hold on the app opens the person's own view.
-          const open = phone && held?.ownerView ? held : null;
+          // A phone has one tab, which this switches to; an app opens another window tab.
+          const open = phone ? held : null;
           const occupant = held?.occupants[0] ?? null;
           const available = open
             ? open.availability !== "unavailable"
@@ -1036,11 +1002,7 @@ function AppRow({
                 detail: phone ? null : group.label,
                 label: phone ? `Open ${app.name}` : `Open ${app.name} · ${group.label}`,
                 available,
-                action: {
-                  kind: "open-computer-view",
-                  machineId: app.machineId,
-                  target: app.target,
-                },
+                action: { kind: "open-tab", target: approvedAppTarget(app) },
                 app,
               };
           return (

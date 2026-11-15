@@ -3,7 +3,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 
 import { useLocation } from "react-router";
 import type { ReactNode } from "react";
 import type { HostClient, PlaceItem } from "@opensteer/client/host";
-import { BrowserSurfaceIdSchema } from "@opensteer/core";
+import { BrowserSurfaceIdSchema, type TabId } from "@opensteer/core";
 import { useHostSelector, usePlace, usePlaceList } from "@opensteer/client/react";
 import { usePageVisible } from "../../ui-utils.js";
 import { PlaceBrowserView, type BrowserChromeSignIn } from "../browser/browser-view.js";
@@ -138,7 +138,7 @@ function SelectedPlace({
   const pageSession = viewer?.kind === "page" ? viewer.sessionId : null;
   const dockedThread = !phone && dock.open ? conversationAt(pathname) : null;
   const showBrowserTab = useCallback(
-    (destination: { readonly tabId: string }, options: { replace: boolean }) =>
+    (destination: { readonly tabId: TabId }, options: { replace: boolean }) =>
       nav.showPlace({ kind: "tab", tabId: destination.tabId }, options),
     [nav],
   );
@@ -173,7 +173,7 @@ function SelectedPlace({
     if (!needsActivation || placeKey === null) return;
     let cancelled = false;
     setActivation({ tabId: placeKey, state: "activating" });
-    hostClient.activateTab(placeKey as never).then(
+    hostClient.activateTab(placeKey).then(
       () => {
         if (!cancelled) setActivation(null);
       },
@@ -195,7 +195,7 @@ function SelectedPlace({
       ? (activation.message ?? null)
       : null;
   const reopenView = useCallback(async () => {
-    if (placeKey !== null) await hostClient.activateTab(placeKey as never);
+    if (placeKey !== null) await hostClient.activateTab(placeKey);
   }, [hostClient, placeKey]);
   if (live && placeKey) known.current.set(placeKey, live);
   // A tab just closed keeps its chrome until its successor takes the middle.

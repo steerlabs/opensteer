@@ -57,8 +57,8 @@ export class TabStore implements TabsReadModel {
     this.#stripOf = { layout: this.#layout, rows: this.#rows };
     return this.#strip;
   }
-  get(tabId: TabId): Tab | undefined {
-    return this.#rows.get(tabId);
+  get(tabId: string): Tab | undefined {
+    return this.#rows.get(tabId as TabId);
   }
   subscribe(listener: Listener): () => void {
     this.#listeners.add(listener);
@@ -69,13 +69,13 @@ export class TabStore implements TabsReadModel {
     this.#structure.add(listener);
     return () => this.#structure.delete(listener);
   }
-  subscribeTab(tabId: TabId, listener: Listener): () => void {
-    let listeners = this.#tabs.get(tabId);
-    if (!listeners) this.#tabs.set(tabId, (listeners = new Set()));
+  subscribeTab(tabId: string, listener: Listener): () => void {
+    let listeners = this.#tabs.get(tabId as TabId);
+    if (!listeners) this.#tabs.set(tabId as TabId, (listeners = new Set()));
     listeners.add(listener);
     return () => {
       listeners.delete(listener);
-      if (!listeners.size) this.#tabs.delete(tabId);
+      if (!listeners.size) this.#tabs.delete(tabId as TabId);
     };
   }
 

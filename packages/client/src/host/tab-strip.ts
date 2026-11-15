@@ -67,10 +67,10 @@ export function tabAtShortcut(strip: TabStrip, digit: number): TabId | null {
 }
 
 /** ⌃Tab and ⌃⇧Tab: the visible tab after or before this one, wrapping. */
-export function tabBeside(strip: TabStrip, tabId: TabId | null, step: 1 | -1): TabId | null {
+export function tabBeside(strip: TabStrip, tabId: string | null, step: 1 | -1): TabId | null {
   const tabs = strip.visible;
   if (!tabs.length) return null;
-  const index = tabId === null ? -1 : tabs.indexOf(tabId);
+  const index = tabId === null ? -1 : tabs.indexOf(tabId as TabId);
   if (index < 0) return step === 1 ? tabs[0]! : tabs.at(-1)!;
   return tabs[(index + step + tabs.length) % tabs.length]!;
 }
@@ -82,12 +82,12 @@ export function tabBeside(strip: TabStrip, tabId: TabId | null, step: 1 | -1): T
  */
 export function tabAfterClose(
   strip: TabStrip,
-  closing: TabId,
-  alsoClosing: ReadonlySet<TabId> = new Set(),
+  closing: string,
+  alsoClosing: ReadonlySet<string> = new Set(),
 ): TabId | null {
   const gone = (id: TabId) => id === closing || alsoClosing.has(id);
   const visible = new Set(strip.visible);
-  const index = strip.ordered.indexOf(closing);
+  const index = strip.ordered.indexOf(closing as TabId);
   if (index < 0) return null;
   for (let i = index + 1; i < strip.ordered.length; i++) {
     const id = strip.ordered[i]!;
@@ -101,8 +101,8 @@ export function tabAfterClose(
 }
 
 /** The group holding this tab in the layout, or null. */
-export function tabGroupOf(layout: TabLayout, tabId: TabId): TabGroup | null {
+export function tabGroupOf(layout: TabLayout, tabId: string): TabGroup | null {
   for (const item of layout.items)
-    if (item.kind === "group" && item.group.tabIds.includes(tabId)) return item.group;
+    if (item.kind === "group" && item.group.tabIds.includes(tabId as TabId)) return item.group;
   return null;
 }

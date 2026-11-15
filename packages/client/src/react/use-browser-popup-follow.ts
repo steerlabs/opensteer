@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { HostClient } from "../host/client.js";
+import { TabIdSchema, type TabId } from "@opensteer/core";
 import { useTab } from "./use-tabs.js";
 
 /**
@@ -11,7 +12,7 @@ import { useTab } from "./use-tabs.js";
 export function useBrowserPopupFollow(
   hostClient: HostClient,
   tab: { readonly sessionId: string; readonly tabId: string } | null,
-  follow: (tabId: string) => void,
+  follow: (tabId: TabId) => void,
 ): void {
   const sessionId = tab?.sessionId ?? null;
   const tabId = tab?.tabId ?? null;
@@ -37,6 +38,6 @@ export function useBrowserPopupFollow(
   useEffect(() => {
     if (!listed || popupId === null) return;
     setOpened(null);
-    latest.current(popupId);
+    latest.current(TabIdSchema.parse(popupId));
   }, [listed, popupId]);
 }

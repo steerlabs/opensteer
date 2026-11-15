@@ -2,13 +2,16 @@ import { useEffect, useRef } from "react";
 import type { DesktopPersonalTabCommand } from "@opensteer/protocol/desktop";
 import { desktopBridge } from "../../desktop/desktop-bridge.js";
 import { useLocation } from "react-router";
-import { taskList, type HostClient } from "@opensteer/client/host";
-import { placeList } from "@opensteer/client/host";
+import {
+  tabAtShortcut,
+  tabBeside,
+  taskList,
+  type HostClient,
+} from "@opensteer/client/host";
 import { actionErrorMessage, fromLivePage } from "../../ui-utils.js";
 import { Dialog } from "../dialog.js";
 import { destinationPlaceKey, taskAt } from "./navigation.js";
 import { useTabCloser } from "./tab-closer.js";
-import { tabOrder } from "./tab-order.js";
 import { useToast } from "../toast.js";
 import { useWorkspace } from "./workspace-context.js";
 
@@ -46,10 +49,8 @@ export function useWorkspaceShortcuts({
   useEffect(() => {
     const execute = (command: DesktopPersonalTabCommand) => {
       const { nav, onNewTab, requestClose, selection, startPage } = state.current;
-      const places = tabOrder(
-        placeList(hostClient.getSnapshot()),
-        hostClient.getSnapshot().browserTabGroups,
-      );
+      // Every shortcut walks the one visible layout order, whatever each tab's kind.
+      const strip = hostClient.getSnapshot().tabs.strip;
       const shownKey =
         selection.kind === "place" ? destinationPlaceKey(selection.destination) : null;
       switch (command.type) {
@@ -57,49 +58,32 @@ export function useWorkspaceShortcuts({
           onNewTab();
           return;
         case "reopen-closed-tab": {
-          if (!hostClient.getSnapshot().tabReopenAvailable || !hostClient.reopenPersonalTab) return;
           const show = nav.beginPlaceOperation();
-          void hostClient.reopenPersonalTab().then(
-            (result) =>
-              show({
-                kind: "browser",
-                sessionId: result.sessionId!,
-                tabId: result.tabId,
-              }),
-            (error) => toast.error(actionErrorMessage(error)),
+          void hostClient.reopenTab().then(
+            (tab) => show({ kind: "tab", tabId: tab.tabId }),
+            (error: unknown) => toast.error(actionErrorMessage(error)),
           );
           return;
         }
         case "close-tab": {
           if (selection.kind === "launcher") startPage.leave();
-          else if (selection.kind === "pending") {
-            hostClient.dismissPendingBrowserTab(selection.idempotencyKey);
-            nav.showLauncher({ replace: true });
-          } else {
-            const place = placeList(hostClient.getSnapshot()).find((item) => item.key === shownKey);
-            if (place?.closable) requestClose(place);
-          }
+          else if (shownKey && hostClient.getSnapshot().tabs.get(shownKey))
+            requestClose({ key: shownKey });
           return;
         }
         case "next-tab":
         case "previous-tab": {
-          if (places.length === 0) return;
-          const at = places.findIndex((place) => place.key === shownKey);
-          const step = command.type === "previous-tab" ? -1 : 1;
-          const next =
-            places[
-              at < 0
-                ? step < 0
-                  ? places.length - 1
-                  : 0
-                : (at + step + places.length) % places.length
-            ];
-          if (next) nav.showPlace(next.destination);
+          const next = tabBeside(
+            strip,
+            shownKey,
+            command.type === "previous-tab" ? -1 : 1,
+          );
+          if (next) nav.showPlace({ kind: "tab", tabId: next });
           return;
         }
         case "select-tab": {
-          const place = command.index === 9 ? places.at(-1) : places[command.index - 1];
-          if (place) nav.showPlace(place.destination);
+          const tabId = tabAtShortcut(strip, command.index);
+          if (tabId) nav.showPlace({ kind: "tab", tabId });
         }
       }
     };
@@ -125,11 +109,7 @@ export function useWorkspaceShortcuts({
       if (command && !event.altKey && !event.shiftKey && key === ".") {
         event.preventDefault();
         if (selection.kind === "talk") {
-          const keys = new Set(placeList(snapshot).map((place) => place.key));
-          nav.showComputer((destination) => {
-            const placeKey = destinationPlaceKey(destination);
-            return placeKey !== null && keys.has(placeKey);
-          });
+          nav.showComputer((destination) => !!snapshot.tabs.get(destinationPlaceKey(destination)));
         } else nav.hideComputer();
         return;
       }

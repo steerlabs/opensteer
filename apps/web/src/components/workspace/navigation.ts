@@ -5,6 +5,7 @@ import {
   parseNavigationInput,
   type TabDestination as SurfaceDestination,
 } from "@opensteer/client/host";
+import { TabIdSchema, type TabId } from "@opensteer/core";
 import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import { useTeams } from "../../team/team-attachments.js";
 import type { SidebarSides } from "@opensteer/client/team";
@@ -98,12 +99,12 @@ export function startPageLink(state: unknown): StartPageLink | null {
 let openings = 0;
 
 function placeDestination(params: URLSearchParams): SurfaceDestination | null {
-  const tabId = params.get("tab");
-  return tabId && tabId.length <= 512 ? { kind: "tab", tabId } : null;
+  const tabId = TabIdSchema.safeParse(params.get("tab"));
+  return tabId.success ? { kind: "tab", tabId: tabId.data } : null;
 }
 
 /** The tab catalog's key for a destination. */
-export function destinationPlaceKey(destination: SurfaceDestination): string {
+export function destinationPlaceKey(destination: SurfaceDestination): TabId {
   return destination.tabId;
 }
 
@@ -180,10 +181,7 @@ export function canonicalPlaceSearch(search: string): string | null {
 
 /* ---- The last place the person chose, per deployment and user ---- */
 
-const RememberedPlaceSchema = z.object({
-  kind: z.literal("tab"),
-  tabId: z.string().min(1).max(512),
-});
+const RememberedPlaceSchema = z.object({ kind: z.literal("tab"), tabId: TabIdSchema });
 
 const RememberedTalkSchema = z.object({
   kind: z.literal("talk"),

@@ -1,8 +1,9 @@
+import type { TabId } from "@opensteer/core";
 import type { HostSnapshot } from "./client.js";
 
 /** One page tab, by its stable ID. */
 export interface BrowserTabDestination {
-  readonly tabId: string;
+  readonly tabId: TabId;
 }
 export function sameBrowserTab(
   a: BrowserTabDestination | null,
@@ -16,7 +17,7 @@ export function browserThreadAgentTab(
   source: Pick<HostSnapshot, "tabs">,
   threadId: string,
 ): BrowserTabDestination | null {
-  let best: { readonly tabId: string; readonly at: string } | null = null;
+  let best: { readonly tabId: TabId; readonly at: string } | null = null;
   for (const tab of source.tabs.rows.values())
     if (
       tab.kind === "page" &&

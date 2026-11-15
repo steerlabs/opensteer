@@ -25,7 +25,7 @@ import { useWorkspace } from "./workspace-context.js";
 export function placeSuccessor(before: TabStrip, after: TabStrip, tabId: string): TabId | null {
   const listed = new Set(after.ordered);
   const gone = new Set(before.ordered.filter((id) => !listed.has(id)));
-  return tabAfterClose(before, tabId as TabId, gone);
+  return tabAfterClose(before, tabId, gone);
 }
 
 /**
