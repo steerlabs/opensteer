@@ -26,10 +26,12 @@ final class WindowWireTests: XCTestCase {
   }
 
   func testOwnerWindowInventoryNeverCarriesAnAgentRef() throws {
-    let info = OwnerWindowInfo(windowId: "win_00000000-0000-4000-8000-000000000042", title: "A")
+    let info = OwnerWindowInfo(
+      windowId: "win_00000000-0000-4000-8000-000000000042", title: "A", minimized: false,
+      onScreen: true)
     let value =
       try JSONSerialization.jsonObject(with: JSONCoding.encoder.encode(info)) as! [String: Any]
-    XCTAssertEqual(Set(value.keys), ["windowId", "title"])
+    XCTAssertEqual(Set(value.keys), ["windowId", "title", "minimized", "onScreen"])
   }
 
   func testWindowResolutionAlwaysCarriesNullableState() throws {

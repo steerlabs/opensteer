@@ -276,13 +276,13 @@ const ComputerUseWindowFrameSchema = z.strictObject({
 export const OwnerWindowInfoSchema = z.strictObject({
   windowId: WindowIdSchema,
   title: z.string().max(1_024),
+  minimized: z.boolean(),
+  onScreen: z.boolean(),
 });
 export type OwnerWindowInfo = z.infer<typeof OwnerWindowInfoSchema>;
 const windowStateSchema = OwnerWindowInfoSchema.extend({
   focused: z.boolean(),
   main: z.boolean(),
-  minimized: z.boolean(),
-  onScreen: z.boolean(),
 });
 export const WindowInfoSchema = windowStateSchema.extend({
   ref: ComputerUseWindowRefSchema,

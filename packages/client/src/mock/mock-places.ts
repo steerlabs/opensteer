@@ -901,16 +901,18 @@ export class MockPlaceWorld {
     const session = this.#snapshot().browserSessions.find((s) => s.id === sessionId);
     const tab = session?.surfaces.find((t) => t.id === surfaceId);
     if (!tab || session?.state !== "ready") return undefined;
+    const held = session.catalog?.tabs.find((candidate) => candidate.id === surfaceId);
     return {
+      // A Runtime that does not say keeps both directions offered.
+      canGoBack: held?.canGoBack ?? true,
+      canGoForward: held?.canGoForward ?? true,
       id: tab.id,
       state: "live",
       title: tab.title,
       url: tab.url,
       // The document the page's context reads name, so a chip and its read agree.
       documentId:
-        tab.documentId ??
-        session.catalog?.tabs.find((held) => held.id === surfaceId)?.documentId ??
-        `document-${tab.id}`,
+        tab.documentId ?? held?.documentId ?? `document-${tab.id}`,
       geometryRevision: 1,
       loading: tab.loading ?? false,
       navigationFailed: false,

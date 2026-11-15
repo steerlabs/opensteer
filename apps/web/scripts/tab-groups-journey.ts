@@ -22,13 +22,20 @@ try {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(web.origin);
-  const rows = page.locator('.side-tab[data-group="web"]');
+  const rows = page.locator('.side-tab[data-kind="page"]');
   await rows.first().waitFor();
+  // The mock seeds a group of its own; this journey builds and follows one group alone.
+  await page.evaluate(async () => {
+    const client = Reflect.get(window, "opensteerMock") as MockHostClient;
+    for (const item of client.getSnapshot().tabs.layout.items)
+      if (item.kind === "group") await client.deleteTabGroup(item.group.groupId);
+  });
+  await page.locator(".side-tab-group__main").waitFor({ state: "detached" });
   const firstKey = await rows.first().getAttribute("data-place-key");
   const keys = await rows.evaluateAll((nodes) =>
     nodes.map((node) => node.getAttribute("data-place-key")!),
   );
-  const secondKey = keys.find((key) => key.split(":")[1] !== firstKey?.split(":")[1])!;
+  const secondKey = keys.find((key) => key !== firstKey)!;
   const first = () => page.locator(`.side-tab[data-place-key="${firstKey}"] .side-tab__main`);
   const second = () => page.locator(`.side-tab[data-place-key="${secondKey}"] .side-tab__main`);
   const header = page.locator(".side-tab-group__main");

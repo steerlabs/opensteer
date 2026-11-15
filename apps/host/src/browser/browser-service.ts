@@ -6750,14 +6750,7 @@ export class HostedBrowserBroker {
       outlet.sendSurface(outlet.surfaceId, null);
       return;
     }
-    const {
-      icon: _icon,
-      order: _order,
-      openerId: _opener,
-      canGoBack: _back,
-      canGoForward: _forward,
-      ...surface
-    } = row;
+    const { icon: _icon, order: _order, openerId: _opener, ...surface } = row;
     const icon = this.#surfaceIcon(row);
     outlet.sendSurface(
       row.id,

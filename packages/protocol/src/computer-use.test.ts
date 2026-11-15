@@ -680,7 +680,12 @@ describe("window-addressed computer use", () => {
       { extra: true },
     ])
       expect(WindowInfoSchema.safeParse({ ...window, ...patch }).success).toBe(false);
-    const owner = { windowId: window.windowId, title: window.title };
+    const owner = {
+      windowId: window.windowId,
+      title: window.title,
+      minimized: window.minimized,
+      onScreen: window.onScreen,
+    };
     expect(OwnerWindowInfoSchema.parse(owner)).toEqual(owner);
     expect(OwnerWindowInfoSchema.safeParse({ ...owner, ref: window.ref }).success).toBe(false);
     expect(

@@ -1,7 +1,12 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "./mock-host-client.js";
 import { unwrapRpcResult } from "../host/host-session-client.js";
-import { BrowserProfileIdSchema, type BrowserProfileId } from "@opensteer/core";
+import {
+  BrowserProfileIdSchema,
+  RunnerIdSchema,
+  type BrowserProfileId,
+  type RunnerId,
+} from "@opensteer/core";
 
 let client: MockHostClient | undefined;
 afterEach(() => {
@@ -19,7 +24,7 @@ function setup(now?: () => Date) {
 /** Opens a page tab the way a person does and returns the browser session showing it. */
 async function openPage(
   client: MockHostClient,
-  target: { profileId: BrowserProfileId } | { guest: true },
+  target: { profileId: BrowserProfileId } | { guest: true; computerId: RunnerId },
   url = "https://history.example/start",
   idempotencyKey: string = crypto.randomUUID(),
 ) {
@@ -95,7 +100,11 @@ it("bounds history at 300 entries and 90 days; deleted profiles, signed-out view
   expect(history.entries.at(-1)?.url).toBe("https://history.example/10");
   now = new Date(now.getTime() + 90 * 86_400_000);
   expect(await read()).toEqual({ entries: [], icons: [] });
-  const guest = await openPage(client, { guest: true }, "https://guest.example/");
+  const guest = await openPage(
+    client,
+    { guest: true, computerId: RunnerIdSchema.parse("rnr_11111111-1111-4111-8111-111111111111") },
+    "https://guest.example/",
+  );
   client.sendBrowserCommand(guest.sessionId, {
     type: "navigation.go",
     surfaceId: guest.tabId,

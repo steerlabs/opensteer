@@ -11,6 +11,8 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import type { BrowserContext, Page } from "playwright-core";
+import type { TabId } from "@opensteer/core";
+import type { MockHostClient } from "@opensteer/client/mock";
 import { expectThat, finishJourney, journeyChecks, openMockWeb } from "./mock-web-journey.js";
 
 const artifactDirectory = path.resolve(
@@ -340,18 +342,13 @@ try {
 
   await check("a folded group's tabs are found, by title and by the group's name", async () => {
     const groupId = await page.evaluate(async () => {
-      const client = Reflect.get(window, "opensteerMock") as {
-        groupBrowserTabs(
-          tabIds: string[],
-          target: { title: string; color: string },
-        ): Promise<string>;
-        updateBrowserTabGroup(id: string, update: { collapsed: boolean }): Promise<void>;
-      };
-      const id = await client.groupBrowserTabs(["mock-tab-0-3", "mock-tab-0-4"], {
-        title: "Weekend plans",
-        color: "blue",
+      const client = Reflect.get(window, "opensteerMock") as MockHostClient;
+      const { groups } = await client.organizeTabs({
+        tabIds: ["mock-tab-0-3", "mock-tab-0-4"] as TabId[],
+        group: { name: "Weekend plans", color: "blue" },
       });
-      await client.updateBrowserTabGroup(id, { collapsed: true });
+      const id = groups.find((group) => group.name === "Weekend plans")!.groupId;
+      await client.updateTabGroup({ groupId: id, collapsed: true });
       return id;
     });
     await page.keyboard.press("Escape");
@@ -556,10 +553,8 @@ try {
     await page.keyboard.press("ArrowDown");
     const before = await results(page);
     await page.evaluate(async () => {
-      const client = Reflect.get(window, "opensteerMock") as {
-        closePersonalTabs(ids: string[]): Promise<unknown>;
-      };
-      await client.closePersonalTabs(["mock-tab-1-1"]);
+      const client = Reflect.get(window, "opensteerMock") as MockHostClient;
+      await client.closeTabs(["mock-tab-1-1" as TabId]);
     });
     await page.waitForTimeout(500);
     const after = await results(page);

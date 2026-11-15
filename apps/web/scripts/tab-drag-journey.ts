@@ -317,7 +317,7 @@ async function openWorld(world: "busy" | "stress") {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(`${web.origin}/?mock-world=${world}`);
-  await page.locator('.side-tab[data-group="web"]').first().waitFor();
+  await page.locator('.side-tab[data-kind="page"]').first().waitFor();
   // The world stops moving on its own, so every change during a drag is one a check makes.
   await page.evaluate(() =>
     (Reflect.get(window, "opensteerMock") as { scriptPlaces(): unknown }).scriptPlaces(),

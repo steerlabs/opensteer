@@ -47,4 +47,12 @@ it("renders every app with its origin chat without rereading the snapshot foreve
     { timeout: 2_000 },
   );
   expect(errors).toEqual([]);
+  // Only a server says whether it runs; an HTML app has nothing to run.
+  const badge = (name: string) =>
+    [...node.querySelectorAll(".app-row")]
+      .find((row) => row.textContent?.includes(name))
+      ?.querySelector(".chip")?.textContent ?? null;
+  expect(badge("Trip budget")).toBeNull();
+  expect(badge("Ferry tracker")).toBe("Running");
+  expect(badge("Inventory sync")).toBe("Stopped");
 });

@@ -218,7 +218,7 @@ try {
         )!;
         expectThat({ covered }, !!covered, "the mock has no other profile tab to cover");
         profileId = covered.profileId!;
-        coveredKey = `browser:${covered.sessionId}:${covered.id}`;
+        coveredKey = covered.id;
         await page.locator(`.side-tab[data-place-key="${coveredKey}"] .side-tab__main`).click();
       }
       const beforeTabs = await mockTabs(page);
@@ -283,7 +283,7 @@ try {
         );
         expectThat(
           observed,
-          shown === `browser:${added[0]!.sessionId}:${added[0]!.id}` &&
+          shown === added[0]!.id &&
             address === expected &&
             conversation,
           "the tab or conversation is not shown",
@@ -299,7 +299,7 @@ try {
         await reply.waitFor();
         const back = await documentState(page, document);
         await page.goForward();
-        await page.waitForURL((url) => url.searchParams.get("browserTab") === added[0]!.id);
+        await page.waitForURL((url) => url.searchParams.get("tab") === added[0]!.id);
         await page.locator(".browser-stage").waitFor();
         const forward = await documentState(page, document);
         const historyTabs = await mockTabs(page);
@@ -378,11 +378,9 @@ try {
         .getByRole("alert")
         .filter({ hasText: "Which computer" })
         .waitFor({ timeout: 5_000 });
-      const refusedAddress = await page
-        .locator(".browser-address .browser-address__display")
-        .getAttribute("aria-label");
+      const refusedAddress = await page.locator(".start-page__input").inputValue();
       const consumed = await page.evaluate(() => history.state.usr);
-      const chips = await page.getByRole("button", { name: /^Open on /u }).allTextContents();
+      const chips = await page.locator(".start-page__refusal button").allTextContents();
       const refusalCount = (await mockTabs(page)).length;
       const pendingUrl = page.url();
       await page.goBack();
@@ -390,18 +388,17 @@ try {
       await reply.waitFor();
       await page.goForward();
       await page.waitForURL(pendingUrl);
-      await page.getByRole("alert").filter({ hasText: "Which computer" }).waitFor();
+      await page.locator(".start-page__input").waitFor();
+      const forwardAddress = await page.locator(".start-page__input").inputValue();
       const historyTabs = await mockTabs(page);
       expectThat(
-        { beforeTabs, historyTabs },
-        JSON.stringify(historyTabs) === JSON.stringify(beforeTabs),
-        "Back/Forward retried the refused opening",
+        { beforeTabs, historyTabs, forwardAddress },
+        JSON.stringify(historyTabs) === JSON.stringify(beforeTabs) && forwardAddress === https,
+        "Back/Forward retried the refused opening, or lost its address",
       );
-      // A choice on the pending tab completes that same address.
-      await page
-        .getByRole("button", { name: /^Open on /u })
-        .first()
-        .click();
+      // Asking again explains again, and a computer chosen there completes that same address.
+      await page.locator(".start-page__input").press("Enter");
+      await page.locator(".start-page__refusal button").first().click();
       await page.locator(".browser-address input").waitFor();
       const chosenTabs = await mockTabs(page);
       expectThat(
@@ -446,10 +443,7 @@ try {
         "history or reload reran the refused arrival",
       );
       await page.locator(".start-page__input").press("Enter");
-      await page
-        .getByRole("button", { name: /^Open on /u })
-        .first()
-        .click();
+      await page.locator(".start-page__refusal button").first().click();
       await page.locator(".browser-address input").waitFor();
       const tabs = await mockTabs(page);
       expectThat(

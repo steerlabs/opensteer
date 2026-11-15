@@ -203,9 +203,12 @@ function AppRow({ app, onDelete }: { readonly app: App; readonly onDelete: () =>
         ) : null}
       </span>
       <span className="app-row__side">
-        <span className={`chip chip--${words.tone}`}>
-          {pending ? pendingWords[pending] : words.label}
-        </span>
+        {/* An HTML app has no process to run or stop, so only a server says its state. */}
+        {pending || server ? (
+          <span className={`chip chip--${words.tone}`}>
+            {pending ? pendingWords[pending] : words.label}
+          </span>
+        ) : null}
         <span className="app-row__actions">
           <button
             className="btn btn--small"

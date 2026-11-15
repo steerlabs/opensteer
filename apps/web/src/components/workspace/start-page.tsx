@@ -128,7 +128,10 @@ export function openWorkspaceWebLink(
   const show = nav.beginPlaceOperation();
   void hostClient.openTab(pageOpenTarget(replyLinkTarget(snapshot, choice, hereId, url), url)).then(
     (tab) => show({ kind: "tab", tabId: tab.tabId }),
-    () => undefined,
+    // The start page explains a refusal and offers its way through (a computer, a profile);
+    // an outcome it cannot know is never repeated, only kept for the person to send again.
+    (error: unknown) =>
+      nav.showLauncher({ address: url, open: error instanceof HostClientRequestError }),
   );
 }
 
@@ -911,6 +914,11 @@ function AppWindows({
                   type="button"
                 >
                   <span>{window.title || "Untitled window"}</span>
+                  {window.minimized ? (
+                    <small>Minimized</small>
+                  ) : !window.onScreen ? (
+                    <small>Other Space</small>
+                  ) : null}
                 </button>
               </li>
             ))}

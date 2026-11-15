@@ -229,11 +229,9 @@ integration("Host browser broker vertical", () => {
           frame.type === "browser.surface" && frame.surface ? [frame.surface] : [],
         );
       expect(surfaces.length).toBeGreaterThan(0);
-      for (const surface of surfaces) {
-        expect(surface.id).toBe("page-integration");
-        expect(surface).not.toHaveProperty("canGoBack");
-        expect(surface).not.toHaveProperty("canGoForward");
-      }
+      for (const surface of surfaces) expect(surface.id).toBe("page-integration");
+      // The page's history travels with the surface its viewer shows.
+      expect(surfaces.at(-1)).toMatchObject({ canGoBack: true, canGoForward: false });
       expect(frames.some((frame) => frame.type === "browser.surfaces.changed")).toBe(false);
     }
     const catalog = await browserRows(runtime.browser, owner.id, started.session.id);

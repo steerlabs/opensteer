@@ -173,9 +173,9 @@ export function PlaceBrowserView({
             documentId: viewed?.documentId ?? null,
             loading: viewed?.loading ?? false,
             navigationFailed: viewed?.navigationFailed ?? false,
-            // The viewer's surface does not say whether history exists; both stay offered.
-            canGoBack: true,
-            canGoForward: true,
+            // Until the page is shown, both directions stay offered.
+            canGoBack: viewed?.canGoBack ?? true,
+            canGoForward: viewed?.canGoForward ?? true,
           }
         : undefined,
     [listed, viewed],

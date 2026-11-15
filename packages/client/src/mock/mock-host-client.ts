@@ -5117,16 +5117,9 @@ class MockHostState {
           "profileId" in target
             ? { kind: "profile", profileId: target.profileId }
             : { kind: "guest" },
-        // Guest without a computer browses on the hosting computer.
-        ...("guest" in target
-          ? {
-              placement: {
-                kind: "runner",
-                runnerId:
-                  target.computerId ??
-                  RunnerIdSchema.parse("rnr_11111111-1111-4111-8111-111111111111"),
-              },
-            }
+        // As on the Host, Guest without a computer is placed only when one computer can browse.
+        ...("guest" in target && target.computerId
+          ? { placement: { kind: "runner", runnerId: target.computerId } }
           : {}),
         url: target.url,
         idempotencyKey,
@@ -12559,6 +12552,14 @@ class MockHostState {
    * unarchived Thread, most recently updated first, with its last reply and
    * why its latest Run failed. The same list is kept while nothing in it moved.
    */
+  // Every update rebuilds the list; parsing each reply's Markdown again cost ~0.4ms per task.
+  private readonly lineExcerpts = new Map<string, string>();
+  private lineExcerpt(text: string): string {
+    let excerpt = this.lineExcerpts.get(text);
+    if (excerpt === undefined)
+      this.lineExcerpts.set(text, (excerpt = plainTextExcerpt(text, taskLineMaxLength)));
+    return excerpt;
+  }
   private taskList(held: TaskListState | null): TaskListState | null {
     if (!this.snapshot.user) return null;
     const entries = this.snapshot.threads
@@ -12579,9 +12580,9 @@ class MockHostState {
         return {
           failure:
             latestRun?.status === "failed" && latestRun.error
-              ? plainTextExcerpt(latestRun.error.message, taskLineMaxLength)
+              ? this.lineExcerpt(latestRun.error.message)
               : null,
-          lastReply: reply ? plainTextExcerpt(reply.body, taskLineMaxLength) : null,
+          lastReply: reply ? this.lineExcerpt(reply.body) : null,
           thread,
         };
       });

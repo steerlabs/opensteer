@@ -28,8 +28,8 @@ try {
   await page.goto(`${web.origin}/?panel=browser`);
   await page.waitForFunction(
     () =>
-      (Reflect.get(window, "opensteerMock") as MockHostClient).getSnapshot().connection ===
-      "connected",
+      (Reflect.get(window, "opensteerMock") as MockHostClient | undefined)?.getSnapshot()
+        .connection === "connected",
   );
   // The first activation of the chosen page fails; every later one goes through.
   const tabId = await page.evaluate(() => {
