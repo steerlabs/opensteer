@@ -518,9 +518,11 @@ jobs:
           TAG: ${{ needs.preflight.outputs.tag }}
           SOURCE_SHA: ${{ needs.preflight.outputs.sha }}
         run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG" --source-sha "$SOURCE_SHA"
+  # Builds beside the desktop build: images only deploy through the manual promote-team-servers
+  # workflow, so nothing here waits for the Beta to publish.
   team-provisioner:
-    needs: [preflight, discover, team-images, publish-insider]
-    if: ${{ !cancelled() && needs.preflight.outputs.channel == 'beta' && needs['team-images'].result == 'success' && (needs['publish-insider'].result == 'success' || (needs.discover.result == 'success' && needs.discover.outputs.skip == 'true')) }}
+    needs: [preflight, team-images]
+    if: ${{ !cancelled() && needs.preflight.outputs.channel == 'beta' && needs.preflight.outputs.superseded != 'true' && needs['team-images'].result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -552,4 +554,13 @@ jobs:
             --label "org.opencontainers.image.revision=$SHA" \
             --metadata-file "$RUNNER_TEMP/provisioner.json" --push .
           digest=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/provisioner.json")
-          echo "PROVISIONER_IMAGE=$IMAGE@$digest" >> "$GITHUB_ENV"
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          {
+            echo "### Promote these team servers"
+            echo '```sh'
+            echo "gh workflow run promote-team-servers.yml -R \"$GITHUB_REPOSITORY\" \\"
+            echo "  -f provisioner_image=$IMAGE@$digest \\"
+            echo "  -f host_image=$TEAM_HOST_IMAGE \\"
+            echo "  -f source_revision=$SHA"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

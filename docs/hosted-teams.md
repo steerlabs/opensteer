@@ -101,7 +101,7 @@ and PITR, object soft deletion and installation-Secret backups must be recovered
 
 Hosted teams advance only through the manual `promote-team-servers` workflow, using published
 Host and provisioner digests from the same source. Beta publication builds images but does not
-deploy them. Self-hosted Compose keeps its own Postgres and TLS gateway.
+deploy them; each Beta release run's summary names the exact promotion inputs. Self-hosted Compose keeps its own Postgres and TLS gateway.
 
 A hosted team runs one Host with a surge slot: its replacement must stay Ready for ten seconds
 before the old copy drains, with a ninety-second termination grace. Readiness includes migrations
