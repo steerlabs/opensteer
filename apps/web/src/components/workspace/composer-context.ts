@@ -172,7 +172,7 @@ export function useComposerContext({
   // not the last word. The catalog's raw title is watched, since the list
   // names an untitled page by its site.
   const catalogTitle = useTab(hostClient, tabId)?.title ?? null;
-  const titleSeen = useRef<{ readonly key: string; readonly title: string } | null>(null);
+  const titleSeen = useRef<SeenTitle | null>(null);
   const [titled, setTitled] = useState(0);
   useEffect(() => {
     const seen = titleSeen.current;
@@ -181,11 +181,9 @@ export function useComposerContext({
         ? { key: `${generation}:${candidateKey}`, title: catalogTitle }
         : null;
     titleSeen.current = now;
-    if (!now?.title.trim() || seen?.key !== now.key || seen.title === now.title) return;
     const held = followedRef.current;
-    const part = held?.key === candidateKey ? held.chip.part : null;
-    if (part?.type === "browser-page" && part.title.trim()) return;
-    setTitled((value) => value + 1);
+    if (readsAgainForTitle(seen, now, held?.key === candidateKey ? held.chip.part : null))
+      setTitled((value) => value + 1);
   }, [candidateKey, catalogTitle, generation]);
   useEffect(() => {
     const place = shownRef.current;
@@ -252,10 +250,7 @@ export function useComposerContext({
       const place = listed.get(chip.key) ?? nativeTab(places, chip.part);
       const page = pageKey(chip);
       const gone = !place;
-      const icon =
-        place && showsPage(place, chip)
-          ? place.icon
-          : ((page ? pageIcons.get(page) : undefined) ?? chip.icon);
+      const icon = chipMark(chip, place, page ? pageIcons.get(page) : undefined);
       return chip.gone === gone && chip.icon === icon ? chip : { ...chip, gone, icon };
     });
   }, [candidateKey, followed, frozen, listed, pageIcons, placeState]);
@@ -548,9 +543,38 @@ function pageKey(chip: ContextChip): string | null {
     : null;
 }
 
-/** Whether a place still shows the page a chip carries; any page, until a pick is read. */
-function showsPage(place: PlaceItem, chip: ContextChip): boolean {
-  return chip.part?.type !== "browser-page" || chip.part.tabId === place.key;
+/**
+ * The mark a chip wears: its tab's own while that tab still shows the chip's
+ * page (any page, until a pick is read), else the icon remembered for that
+ * exact page, else the neutral mark its part names.
+ */
+export function chipMark(
+  chip: ContextChip,
+  place: PlaceItem | undefined,
+  remembered: SiteIcon | undefined,
+): PlaceItem["icon"] {
+  const showsPage =
+    chip.part?.type !== "browser-page" ||
+    (place?.kind === "page" && place.tab.url === chip.part.url);
+  return place && showsPage ? place.icon : (remembered ?? chip.icon);
+}
+
+interface SeenTitle {
+  readonly key: string;
+  readonly title: string;
+}
+/**
+ * Whether a followed page is read once more because its tab's title was just
+ * published: only for the same draft and document, and only while what the
+ * draft holds of it is untitled or still being read.
+ */
+export function readsAgainForTitle(
+  seen: SeenTitle | null,
+  now: SeenTitle | null,
+  held: PlacePart | null,
+): boolean {
+  if (!now?.title.trim() || seen?.key !== now.key || seen.title === now.title) return false;
+  return !(held?.type === "browser-page" && held.title.trim());
 }
 
 /** The mark a part names by itself: its app's, its phone's, or a neutral site mark. */
@@ -567,7 +591,11 @@ function partMark(part: PlacePart): PlaceItem["icon"] {
       : { kind: "site", ref: null, url: part.url };
 }
 
-function chipFor(place: PlaceItem, part: PlacePart | null, thumbnail: string | null): ContextChip {
+export function chipFor(
+  place: PlaceItem,
+  part: PlacePart | null,
+  thumbnail: string | null,
+): ContextChip {
   return {
     auto: false,
     destination: place.destination,

@@ -675,6 +675,9 @@ export class HttpHostClient {
       unwrapRpcResult(await this.rpc["apps.list"](query ? { query } : {})).apps as App[],
     getApp: async (appId) => unwrapRpcResult(await this.rpc["apps.get"]({ appId })) as App,
     activated: (tab, viewer, wake) => {
+      // A tab the stream closed while its activation was answering stays closed;
+      // one a still-loading list has not reached yet is bound as answered.
+      if (this.#tabs.complete && !this.#tabs.get(tab.tabId)) return;
       this.#viewers.set(tab.tabId, viewer);
       if (viewer.kind === "page") this.#bindPage(tab, viewer.sessionId);
       else if (viewer.kind !== "app") this.#acceptOwnerView(viewer.view, wake);

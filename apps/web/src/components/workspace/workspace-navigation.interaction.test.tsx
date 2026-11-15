@@ -1,7 +1,9 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, type MockInstance } from "vitest";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import type { MockHostClient } from "@opensteer/client/mock";
 
 import { mockTeamId, mockTeamChannelId, mockTeamUserId } from "@opensteer/client/team";
 import { doneTaskList, placeList, taskList, type HostSnapshot } from "@opensteer/client/host";
@@ -1055,5 +1057,172 @@ describe("a channel and back", () => {
     });
     expect(element(".workspace__conversation .thread-pane")).toBeTruthy();
     expect(element(".place")).toBeTruthy();
+  });
+});
+
+describe("a link arriving at the start page", () => {
+  const address = "https://storage.example/docs/mounts";
+  const state = { startId: "reply-link", startAddress: address, startOpen: true, startFrom: null };
+  const replyTask = "/tasks/thr_00000000-0000-4000-8000-000000000002";
+  function remember(source: MockHostClient, choice: unknown) {
+    const snapshot = source.getSnapshot();
+    localStorage.setItem(
+      `opensteer.browse-with.v1:${encodeURIComponent(snapshot.deploymentId!)}:${encodeURIComponent(snapshot.user!.id)}`,
+      JSON.stringify(choice),
+    );
+  }
+  /** A page tab browsing as a profile, as the place a start page covers. */
+  function profileTab(source: MockHostClient) {
+    const place = placeList(source.getSnapshot()).find(
+      (item) => item.kind === "page" && item.identity?.kind === "profile",
+    );
+    if (place?.identity?.kind !== "profile") throw new Error("The mock lists no profile tab");
+    return { key: place.key, profileId: place.identity.profileId };
+  }
+  async function replyLink() {
+    let link!: HTMLAnchorElement;
+    await vi.waitFor(
+      () => {
+        const found = [...document.querySelectorAll<HTMLAnchorElement>(".md-prose a")].find(
+          (anchor) => anchor.textContent === "storage mount guide",
+        );
+        expect(found, "The reply's website link never appeared").toBeDefined();
+        link = found!;
+      },
+      { timeout: 1_000 },
+    );
+    return link;
+  }
+  /** Every open answers only when the test releases it, in the order asked. */
+  function holdOpens(source: MockHostClient) {
+    const gates: ReturnType<typeof deferred<void>>[] = [];
+    const real = source.openTab;
+    const open = vi.spyOn(source, "openTab").mockImplementation(async (target) => {
+      const gate = deferred<void>();
+      gates.push(gate);
+      await withTimeout(gate.promise, 2_000, {
+        timeoutError: () => new Error("A held tab open was never released."),
+      });
+      return real(target);
+    });
+    return { open, release: (index: number) => act(async () => gates[index]!.resolve()) };
+  }
+
+  it("only the newest of rapid reply links shows its tab, even when an older one answers first", async () => {
+    let held!: ReturnType<typeof holdOpens>;
+    await mount((source) => {
+      remember(source, { kind: "profile", profileId: profileTab(source).profileId });
+      held = holdOpens(source);
+      return replyTask;
+    });
+    const link = await replyLink();
+    // Each click asks in its own turn.
+    act(() => {
+      link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    act(() => {
+      link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    expect(held.open).toHaveBeenCalledTimes(2);
+    const before = history.length;
+    // The older answer lands first: it shows nothing, and it spoils nothing for the newer one.
+    await held.release(0);
+    const older = await held.open.mock.results[0]!.value;
+    await settle();
+    expect(history.length).toBe(before);
+    expect(new URLSearchParams(history.at(-1)!.search).get("tab")).not.toBe(older.tabId);
+    await held.release(1);
+    const newest = await held.open.mock.results[1]!.value;
+    expect(newest.tabId).not.toBe(older.tabId);
+    await vi.waitFor(
+      () =>
+        expect(
+          new URLSearchParams(history.at(-1)!.search).get("tab"),
+          "The newest link's tab was never shown",
+        ).toBe(newest.tabId),
+      { timeout: 1_000 },
+    );
+  });
+
+  it("opens once in StrictMode, consumes only its trigger, and never pulls back a person who left", async () => {
+    let held!: ReturnType<typeof holdOpens>;
+    await mount(
+      (source) => {
+        held = holdOpens(source);
+        return { pathname: "/", search: "?panel=browser", state };
+      },
+      { strict: true },
+    );
+    expect(held.open).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ kind: "page", url: address }),
+    );
+    expect(historyState).toEqual({ ...state, startOpen: false });
+    expect(element<HTMLInputElement>(".start-page__input").value).toBe(address);
+    // Leaving before the answer is a newer choice: the late tab is not shown.
+    await act(async () => goTo!("/"));
+    const before = history.length;
+    await held.release(0);
+    await held.open.mock.results[0]!.value;
+    await settle();
+    expect(history.length).toBe(before);
+    expect(new URLSearchParams(history.at(-1)!.search).has("panel")).toBe(false);
+    // Back to the consumed arrival: its address again, never a second open.
+    await act(async () => goTo!(-1));
+    await settle();
+    expect(element<HTMLInputElement>(".start-page__input").value).toBe(address);
+    expect(held.open).toHaveBeenCalledTimes(1);
+  });
+
+  it("consumes an unavailable arrival but keeps its address and refusal", async () => {
+    let open!: MockInstance<MockHostClient["openTab"]>;
+    await mount((source) => {
+      open = vi.spyOn(source, "openTab");
+      remember(source, { kind: "profile", profileId: "missing-profile" });
+      return { pathname: "/", search: "?panel=browser", state };
+    });
+    expect(open).not.toHaveBeenCalled();
+    expect(element<HTMLInputElement>(".start-page__input").value).toBe(address);
+    expect(document.querySelector(".start-page__refusal")).not.toBeNull();
+    expect(historyState).toEqual({ ...state, startOpen: false });
+  });
+
+  it("browses as the tab the start page covers, ahead of a remembered Guest", async () => {
+    let open!: MockInstance<MockHostClient["openTab"]>;
+    let covered!: ReturnType<typeof profileTab>;
+    await mount((source) => {
+      covered = profileTab(source);
+      remember(source, { kind: "guest" });
+      open = vi.spyOn(source, "openTab");
+      return {
+        pathname: "/",
+        search: "?panel=browser",
+        state: { ...state, startFrom: `panel=browser&tab=${covered.key}` },
+      };
+    });
+    await vi.waitFor(() => expect(open, "The arrival never opened").toHaveBeenCalled(), {
+      timeout: 1_000,
+    });
+    expect(open).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ url: address, profileId: covered.profileId }),
+    );
+  });
+
+  it("a reply link from an open start page browses as the tab it covers", async () => {
+    let open!: MockInstance<MockHostClient["openTab"]>;
+    let covered!: ReturnType<typeof profileTab>;
+    await mount((source) => {
+      covered = profileTab(source);
+      remember(source, { kind: "guest" });
+      open = vi.spyOn(source, "openTab");
+      return {
+        pathname: replyTask,
+        search: "?panel=browser",
+        state: { startId: "new-tab", startFrom: `panel=browser&tab=${covered.key}` },
+      };
+    });
+    await click(await replyLink());
+    expect(open).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ url: address, profileId: covered.profileId }),
+    );
   });
 });

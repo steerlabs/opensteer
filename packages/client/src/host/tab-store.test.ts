@@ -86,6 +86,13 @@ describe("TabStore", () => {
     store.applyCommand({ layout: layout(4, "a", "b"), tabs: [tab("b")] });
     expect(store.get(b_id())).toBeUndefined();
     expect(store.strip.ordered).toEqual(["a"]);
+    // Nor can an older command's answer undo a newer command's close that answered first.
+    store.applyCommand({ layout: layout(6, "a", "c"), tabs: [tab("c")] });
+    store.applyCommand({ layout: layout(8, "a") });
+    store.applyCommand({ layout: layout(7, "c", "a"), tabs: [tab("c", "Moved")] });
+    expect(store.get(tab("c").tabId)).toBeUndefined();
+    expect(store.strip.ordered).toEqual(["a"]);
+    expect(store.layout.revision).toBe(8);
   });
 
   it("shows a command answer ahead of the stream until the stream reaches it", () => {
