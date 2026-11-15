@@ -711,7 +711,7 @@ describe("a channel and back", () => {
     const before = history.at(-1)!;
     const entries = history.length;
     // Switching sides is the sidebar's own business: nothing navigates.
-    await click(element('.side-switch__option:not([data-value="tasks"])'));
+    await click(element('.side-switch [role="radio"]:not([data-value="tasks"])'));
     expect(history.length).toBe(entries);
     await click(element(".team-row[data-channel-id] .team-row__main"));
     expect(history.length).toBe(entries + 1);
@@ -731,9 +731,29 @@ describe("a channel and back", () => {
     expect(element(".thread")).toBeTruthy();
   });
 
+  it("keeps the team last shown named while on Tasks, across a reload", async () => {
+    await mount("/", { team: { second: "Beacon" } });
+    const named = () =>
+      document.querySelector('.side-switch [role="radio"].is-recent')?.getAttribute("aria-label");
+    const choose = (label: string) =>
+      click(element(`.side-switch [role="radio"][aria-label^="${label}"]`));
+    expect(named()).toMatch(/^Acme/u);
+    await choose("Beacon");
+    await click(element('.side-switch [data-value="tasks"]'));
+    expect(element('.side-switch [aria-checked="true"]').getAttribute("data-value")).toBe("tasks");
+    expect(named()).toMatch(/^Beacon/u);
+
+    act(() => root?.unmount());
+    setRoot(null);
+    document.body.replaceChildren();
+    await mount("/", { team: { second: "Beacon" }, sameHost: true });
+    expect(element('.side-switch [aria-checked="true"]').getAttribute("data-value")).toBe("tasks");
+    expect(named()).toMatch(/^Beacon/u);
+  });
+
   it("a tab opened from a channel docks the channel beside its page, and Back fills the window again", async () => {
     await mount("/", { team: true });
-    await click(element('.side-switch__option:not([data-value="tasks"])'));
+    await click(element('.side-switch [role="radio"]:not([data-value="tasks"])'));
     await click(element(".team-row[data-channel-id] .team-row__main"));
     const channel = history.at(-1)!;
     expect(document.querySelector(".place")).toBeNull();

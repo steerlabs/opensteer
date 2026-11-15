@@ -87,7 +87,8 @@ import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import { useCoordinatorSnapshot, useMobileTeams, useTeamsSnapshot } from "../team/team-context.js";
 import { SideSwitch } from "./side-switch.js";
 import type { SidebarSide } from "./sidebar-side.js";
-import { TeamSide, useTeamMenu, type TeamPlace } from "./team-side.js";
+import { recentTeam, type SidebarSides } from "@opensteer/client/team";
+import { TeamSide, type TeamPlace } from "./team-side.js";
 
 /** The root places the drawer switches between. */
 export type SidebarDestination = "Home" | "Schedules" | "Tabs";
@@ -108,8 +109,6 @@ export interface SidebarActions {
   readonly onOpenTask: (deploymentId: string, threadId: string, requestId?: string) => void;
   /** A channel, or another of a team's places, from that team's side. */
   readonly onOpenTeamPlace: (place: TeamPlace) => void;
-  /** Create a team or join with an invite. */
-  readonly onTeams: () => void;
   /** A hosted team still being set up: its progress. */
   readonly onTeamSetup: (hostedTeamId: string) => void;
   readonly onSchedules: () => void;
@@ -280,8 +279,8 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   readonly openTeamId: string | null;
   /** The channel or DM in front, marked as the one open. */
   readonly openChannelId: string | null;
-  /** Which side of the switch shows, kept by the shell across the drawer and the column. */
-  readonly side: SidebarSide;
+  /** Which side of the switch shows and the team last shown, kept by the shell across the drawer and the column. */
+  readonly sides: SidebarSides;
   readonly onSide: (side: SidebarSide) => void;
   readonly visible: boolean;
 }): ReactNode {
@@ -290,7 +289,13 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   const { actions, deploymentId, destination, docked, selectedThreadId, visible } = props;
   const { teams } = useTeamsSnapshot();
   const sideTeam =
-    props.side === "tasks" ? null : (teams.find((team) => team.teamId === props.side) ?? null);
+    props.sides.side === "tasks"
+      ? null
+      : (teams.find((team) => team.teamId === props.sides.side) ?? null);
+  const recent = recentTeam(
+    props.sides,
+    teams.map((team) => team.teamId),
+  );
   const tasksShown = visible && sideTeam === null;
   const row = rows.find((candidate) => candidate.deploymentId === deploymentId);
   const hostClient =
@@ -326,20 +331,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   useEffect(() => {
     if (!visible || teamIds === "") return;
     for (const teamId of teamIds.split(" ")) void mobileTeams.refresh(teamId);
-  }, [mobileTeams, props.side, teamIds, visible]);
-  const { openTeamId } = props;
-  const onLeft = useCallback(
-    (teamId: string) => {
-      if (teamId === openTeamId) actions.onHome();
-    },
-    [actions, openTeamId],
-  );
-  const teamMenu = useTeamMenu(sideTeam, {
-    onLeft,
-    onOpen: actions.onOpenTeamPlace,
-    onTeams: actions.onTeams,
-  });
-
+  }, [mobileTeams, props.sides.side, teamIds, visible]);
   // A screen reader lands on the drawer's own heading as it opens; the drawer
   // isolates it from what it covers while it is there. Docked, it appears with
   // the window and takes nobody's focus.
@@ -461,13 +453,13 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
           </>
         )}
       </View>
-      {teams.length === 0 ? null : (
+      {recent === null ? null : (
         <SideSwitch
           active={sideTeam === null ? "tasks" : sideTeam.teamId}
           ground={docked ? color.background : color.surfaceElevated}
           needsYou={needsYou}
           onSelect={props.onSide}
-          teamMenu={teamMenu}
+          recent={recent}
           teams={teams}
         />
       )}
@@ -476,7 +468,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
         <TeamSide
           key={sideTeam.teamId}
           onOpen={actions.onOpenTeamPlace}
-          openChannelId={sideTeam.teamId === openTeamId ? props.openChannelId : null}
+          openChannelId={sideTeam.teamId === props.openTeamId ? props.openChannelId : null}
           paddingBottom={space[16]}
           team={sideTeam}
         />
@@ -587,11 +579,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
             />
           </View>
 
-          <TeamEntryRows
-            inTeams={teams.length > 0}
-            onSetup={actions.onTeamSetup}
-            onTeams={actions.onTeams}
-          />
+          <TeamSetupRows onSetup={actions.onTeamSetup} />
 
           <View style={styles.tabs}>
             {hostClient === null || model === null ? (
@@ -673,18 +661,13 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
 });
 
 /**
- * The ways into teams that live among the tasks: a hosted team still being set
- * up, and, before the person is in any team, the one row that makes or joins one.
- * Once they are, that lives in a team's menu on the switch.
+ * Hosted teams still being set up, among the tasks until each is ready. Making
+ * or joining a team lives in Settings, out of the way of someone in none.
  */
-function TeamEntryRows(props: {
-  readonly inTeams: boolean;
-  readonly onSetup: (hostedTeamId: string) => void;
-  readonly onTeams: () => void;
-}): ReactNode {
+function TeamSetupRows(props: { readonly onSetup: (hostedTeamId: string) => void }): ReactNode {
   const { hostedTeams } = useCoordinatorSnapshot();
   const settingUp = hostedTeams.filter((team) => team.stage !== "ready");
-  if (props.inTeams && settingUp.length === 0) return null;
+  if (settingUp.length === 0) return null;
   // Between the nav's rule above and the tabs' rule below: no rule of its own.
   return (
     <View style={styles.teams}>
@@ -711,9 +694,6 @@ function TeamEntryRows(props: {
           onPress={() => props.onSetup(team.id)}
         />
       ))}
-      {props.inTeams || settingUp.length > 0 ? null : (
-        <DestinationRow current={false} icon="person.3" label="Teams" onPress={props.onTeams} />
-      )}
     </View>
   );
 }

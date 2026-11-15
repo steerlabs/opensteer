@@ -23,3 +23,4 @@ export * from "./partner-settings.js";
 export * from "./shared-channels.js";
 export * from "./channel-shares.js";
 export * from "./account-profile-relay.js";
+export * from "./side-switch.js";

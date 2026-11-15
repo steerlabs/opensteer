@@ -1,4 +1,22 @@
-import { memo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
+import {
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+  type RefObject,
+} from "react";
+import {
+  moreTeamsKey,
+  sideSwitchLayout,
+  type SidebarSide,
+  type SideSwitchMetrics,
+} from "@opensteer/client/team";
 import { useWindowedRows } from "../workspace/windowed-rows.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
@@ -17,178 +35,337 @@ export interface TeamSideActions {
   readonly onInvite?: (() => void) | undefined;
 }
 
-export interface TeamMenuActions {
-  readonly onInvite?: (() => void) | undefined;
-  readonly onSettings?: (() => void) | undefined;
-  readonly onLeave?: (() => void) | undefined;
-  readonly onCreateTeam?: (() => void) | undefined;
-  readonly onJoinTeam?: (() => void) | undefined;
-}
-
 /** What a segment says while the reader is on the other side. */
 export type SegmentBadge =
-  | { readonly kind: "needs-you"; readonly count: number }
-  | { readonly kind: "new" }
-  | { readonly kind: "mentions"; readonly count: number }
-  | null;
+  { readonly kind: "needs-you"; readonly count: number } | { readonly kind: "new" } | null;
 
-export interface SwitchSegment {
+export interface SwitchTeam {
   readonly id: string;
-  readonly label: string;
-  readonly tile?: TeamTileView | undefined;
-  readonly badge: SegmentBadge;
-  /** A team's menu, opened by the ⌄ on its segment while it is chosen. */
-  readonly menu?: TeamMenuActions | undefined;
+  readonly name: string;
+  readonly tile: TeamTileView;
+  readonly mentions: number;
 }
 
 /**
- * Tasks and each team the computer joined, as one segmented control. A
- * segment holds its badge and, once chosen, its team's ⌄, so the chosen plate
- * carries all three. Both sides always keep their badge, and only the person
- * ever changes the side.
+ * Tasks and each team the computer joined, as one switch. Tasks keeps its own
+ * width, the team last shown takes the rest and says its name, and every
+ * other team is its mark, so a team is always one visible click away and
+ * moving between Tasks and that team moves nothing but the plate. Only the
+ * person ever changes the side.
+ *
+ * Every segment's place comes from `sideSwitchLayout`, so the plate and the
+ * segments it slides over move from the same numbers in the same frame.
  */
 export function SidebarSwitch({
   active,
   onSelect,
-  segments,
+  recent,
+  tasksBadge,
+  teams,
 }: {
-  readonly active: string;
-  readonly onSelect: (id: string) => void;
-  readonly segments: readonly SwitchSegment[];
+  readonly active: SidebarSide;
+  readonly onSelect: (side: SidebarSide) => void;
+  /** The team that owns the named segment, from `recentTeam`. */
+  readonly recent: string;
+  readonly tasksBadge: SegmentBadge;
+  readonly teams: readonly SwitchTeam[];
 }) {
-  const [menuFor, setMenuFor] = useState<string | null>(null);
-  const anchors = useRef(new Map<string, HTMLButtonElement>());
+  const track = useRef<HTMLDivElement | null>(null);
+  const tasks = useRef<HTMLButtonElement | null>(null);
+  const [size, setSize] = useState<Measured>(unmeasured);
+  useLayoutEffect(() => {
+    const measure = () => {
+      if (!track.current || !tasks.current) return;
+      const next = measureSwitch(track.current, tasks.current);
+      setSize((held) => (sameMeasure(held, next) ? held : next));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    if (track.current) observer.observe(track.current);
+    if (tasks.current) observer.observe(tasks.current);
+    return () => observer.disconnect();
+  }, []);
+  const teamIds = useMemo(() => teams.map((team) => team.id), [teams]);
+  const layout = sideSwitchLayout(
+    { teamIds, recent, width: size.width, tasks: size.tasks },
+    size.metrics,
+  );
+  const measured = size.width > 0 && size.tasks > 0 && size.metrics.mark > 0;
+  const moving = useMoving(`${active} ${recent}`);
+  const frame = (key: string) => layout.segments.find((segment) => segment.key === key);
+  // A team folded away is chosen through, and shown chosen on, the folded segment.
+  const plate = frame(active) ?? frame(moreTeamsKey);
+  const byId = new Map(teams.map((team) => [team.id, team]));
+  const radios = layout.segments.flatMap((segment) =>
+    segment.key === moreTeamsKey ? [] : [segment.key],
+  );
+  const select = (side: SidebarSide, focus: boolean) => {
+    onSelect(side);
+    if (focus)
+      track.current?.querySelector<HTMLElement>(`[data-value="${CSS.escape(side)}"]`)?.focus();
+  };
+  const keys = (event: KeyboardEvent<HTMLButtonElement>, side: SidebarSide) => {
+    const index = radios.indexOf(side);
+    const step =
+      event.key === "ArrowRight" || event.key === "ArrowDown"
+        ? 1
+        : event.key === "ArrowLeft" || event.key === "ArrowUp"
+          ? -1
+          : 0;
+    const next =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? radios.length - 1
+          : step
+            ? (index + step + radios.length) % radios.length
+            : null;
+    if (next === null) return;
+    event.preventDefault();
+    select(radios[next]!, true);
+  };
+  const recentTeamView = byId.get(recent);
   return (
-    <div aria-label="Tasks or a team" className="segmented side-switch" role="radiogroup">
-      {segments.map((segment, index) => {
-        const chosen = segment.id === active;
-        const menu = chosen ? segment.menu : undefined;
-        return (
-          <div
-            className={chosen ? "side-switch__segment is-chosen" : "side-switch__segment"}
-            key={segment.id}
-          >
+    <>
+      <div
+        aria-label="Tasks or a team"
+        className="side-switch"
+        data-measured={measured ? "" : undefined}
+        data-moving={moving ? "" : undefined}
+        ref={track}
+        role="radiogroup"
+      >
+        {measured && plate ? (
+          <span
+            aria-hidden
+            className="side-switch__plate"
+            style={{ transform: `translateX(${plate.x}px)`, width: plate.width }}
+          />
+        ) : null}
+        <button
+          aria-checked={active === "tasks"}
+          className="side-switch__segment side-switch__segment--tasks"
+          data-value="tasks"
+          onClick={() => select("tasks", false)}
+          onKeyDown={(event) => keys(event, "tasks")}
+          ref={tasks}
+          role="radio"
+          tabIndex={active === "tasks" ? 0 : -1}
+          type="button"
+        >
+          <span className="side-switch__label">Tasks</span>
+          <TasksBadge badge={tasksBadge} />
+        </button>
+        {layout.segments.map((segment) => {
+          if (segment.key === "tasks") return null;
+          const style = measured ? { width: segment.width } : undefined;
+          if (segment.key === moreTeamsKey)
+            return (
+              <MoreTeams
+                active={active}
+                key={segment.key}
+                onSelect={(side) => select(side, false)}
+                style={style}
+                teams={layout.folded.flatMap((id) => byId.get(id) ?? [])}
+              />
+            );
+          const team = byId.get(segment.key);
+          if (!team) return null;
+          const named = team.id === recent && layout.named;
+          const chosen = team.id === active;
+          return (
             <button
               aria-checked={chosen}
-              className="side-switch__option"
-              data-value={segment.id}
-              onClick={() => onSelect(segment.id)}
-              onKeyDown={(event) => {
-                const step =
-                  event.key === "ArrowRight" || event.key === "ArrowDown"
-                    ? 1
-                    : event.key === "ArrowLeft" || event.key === "ArrowUp"
-                      ? -1
-                      : 0;
-                const nextIndex =
-                  event.key === "Home"
-                    ? 0
-                    : event.key === "End"
-                      ? segments.length - 1
-                      : step
-                        ? (index + step + segments.length) % segments.length
-                        : null;
-                if (nextIndex === null) return;
-                event.preventDefault();
-                const next = segments[nextIndex]!;
-                onSelect(next.id);
-                const group = event.currentTarget.closest('[role="radiogroup"]');
-                group
-                  ?.querySelector<HTMLButtonElement>(`[data-value="${CSS.escape(next.id)}"]`)
-                  ?.focus();
-              }}
+              aria-label={withMentions(team.name, team.mentions)}
+              className={`side-switch__segment${named ? " is-named" : ""}${team.id === recent ? " is-recent" : ""}`}
+              data-value={team.id}
+              key={team.id}
+              onClick={() => select(team.id, false)}
+              onKeyDown={(event) => keys(event, team.id)}
               role="radio"
+              style={style}
               tabIndex={chosen ? 0 : -1}
-              title={segment.label}
+              title={named ? undefined : withMentions(team.name, team.mentions)}
               type="button"
             >
-              {segment.tile ? <TeamTile size={14} tile={segment.tile} /> : null}
-              <span className="side-switch__label">{segment.label}</span>
-              <Badge badge={segment.badge} />
+              <span className="side-switch__face">
+                <TeamTile size={18} tile={team.tile} />
+                <span className="side-switch__label">{team.name}</span>
+                {team.mentions > 0 ? (
+                  <span aria-hidden className="mention-count">
+                    {countText(team.mentions)}
+                  </span>
+                ) : null}
+              </span>
             </button>
-            {menu ? (
-              <button
-                aria-expanded={menuFor === segment.id}
-                aria-haspopup="menu"
-                aria-label={`${segment.label} menu`}
-                className="side-switch__menu"
-                onClick={() => setMenuFor(menuFor === segment.id ? null : segment.id)}
-                ref={(element) => {
-                  if (element) anchors.current.set(segment.id, element);
-                }}
-                type="button"
-              >
-                <Icon name="chevron-down" />
-              </button>
-            ) : null}
-            {menuFor === segment.id && menu && anchors.current.get(segment.id) ? (
-              <TeamMenu
-                actions={menu}
-                anchor={anchors.current.get(segment.id)!}
-                name={segment.label}
-                onClose={() => setMenuFor(null)}
-              />
-            ) : null}
-          </div>
-        );
-      })}
-    </div>
+          );
+        })}
+      </div>
+      {!layout.named && active !== "tasks" && recentTeamView ? (
+        <p className="side-switch__title">
+          <TeamTile size={20} tile={recentTeamView.tile} />
+          <span className="side-switch__title-name">{recentTeamView.name}</span>
+        </p>
+      ) : null}
+    </>
   );
 }
 
-function Badge({ badge }: { readonly badge: SegmentBadge }) {
+interface Measured {
+  readonly width: number;
+  readonly tasks: number;
+  readonly metrics: SideSwitchMetrics;
+}
+
+const unmeasured: Measured = {
+  width: 0,
+  tasks: 0,
+  metrics: { padding: 0, gap: 0, mark: 0, named: 0 },
+};
+
+/** The track as drawn, with the measures `.side-switch` declares for the layout. */
+function measureSwitch(track: HTMLElement, tasks: HTMLElement): Measured {
+  const style = getComputedStyle(track);
+  const px = (name: string) => Number.parseFloat(style.getPropertyValue(name)) || 0;
+  return {
+    width: track.clientWidth,
+    tasks: tasks.offsetWidth,
+    metrics: {
+      padding: px("--switch-padding"),
+      gap: px("--switch-gap"),
+      mark: px("--switch-mark"),
+      named: px("--switch-named"),
+    },
+  };
+}
+
+function sameMeasure(left: Measured, right: Measured): boolean {
+  return (
+    left.width === right.width &&
+    left.tasks === right.tasks &&
+    left.metrics.padding === right.metrics.padding &&
+    left.metrics.gap === right.metrics.gap &&
+    left.metrics.mark === right.metrics.mark &&
+    left.metrics.named === right.metrics.named
+  );
+}
+
+/**
+ * True for as long as the plate and segments take to settle after the side or
+ * the recent team changes, so only those move; a sidebar being resized follows
+ * the pointer at once.
+ */
+function useMoving(key: string): boolean {
+  const [last, setLast] = useState(key);
+  const [moving, setMoving] = useState(false);
+  // Set in the same render that moves the segments, so their transition is in
+  // place when the new widths are.
+  if (last !== key) {
+    setLast(key);
+    setMoving(true);
+  }
+  useEffect(() => {
+    if (!moving) return;
+    const settle = window.setTimeout(() => setMoving(false), 450);
+    return () => window.clearTimeout(settle);
+  }, [key, moving]);
+  return moving;
+}
+
+/** The teams past what the track holds, behind one segment that lists them. */
+function MoreTeams({
+  active,
+  onSelect,
+  style,
+  teams,
+}: {
+  readonly active: SidebarSide;
+  readonly onSelect: (side: SidebarSide) => void;
+  readonly style: CSSProperties | undefined;
+  readonly teams: readonly SwitchTeam[];
+}) {
+  const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
+  const [open, setOpen] = useState(false);
+  const mentions = teams.reduce((sum, team) => sum + team.mentions, 0);
+  const label = `${teams.length} more ${teams.length === 1 ? "team" : "teams"}`;
+  return (
+    <>
+      <button
+        aria-expanded={open}
+        aria-haspopup="menu"
+        aria-label={withMentions(label, mentions)}
+        className="side-switch__segment side-switch__more"
+        onClick={() => setOpen((value) => !value)}
+        ref={setAnchor}
+        style={style}
+        title={label}
+        type="button"
+      >
+        <span className="side-switch__face">
+          <Icon name="more" />
+          {mentions > 0 ? (
+            <span aria-hidden className="mention-count">
+              {countText(mentions)}
+            </span>
+          ) : null}
+        </span>
+      </button>
+      {open && anchor ? (
+        <Popover align="end" anchor={anchor} below label={label} onClose={() => setOpen(false)}>
+          {teams.map((team) => (
+            <button
+              aria-current={team.id === active ? "true" : undefined}
+              className="picker__row"
+              key={team.id}
+              onClick={() => {
+                setOpen(false);
+                onSelect(team.id);
+              }}
+              role="menuitem"
+              type="button"
+            >
+              <TeamTile size={18} tile={team.tile} />
+              <span className="picker__label">{team.name}</span>
+              {team.id === active ? <Icon name="check" /> : null}
+              {team.mentions > 0 ? (
+                <span
+                  aria-label={mentionPhrase(team.mentions)}
+                  className="mention-count"
+                  role="img"
+                >
+                  {countText(team.mentions)}
+                </span>
+              ) : null}
+            </button>
+          ))}
+        </Popover>
+      ) : null}
+    </>
+  );
+}
+
+function TasksBadge({ badge }: { readonly badge: SegmentBadge }) {
   if (!badge) return null;
   if (badge.kind === "new")
     return <span aria-label="new result" className="task-row__unread" role="img" />;
   if (badge.count === 0) return null;
-  return badge.kind === "needs-you" ? (
+  return (
     <span aria-label={`${badge.count} need you`} className="side-needs__bang" role="img">
       !
-    </span>
-  ) : (
-    <span aria-label={`${badge.count} mentions`} className="mention-count" role="img">
-      {badge.count}
     </span>
   );
 }
 
-function TeamMenu({
-  actions,
-  anchor,
-  name,
-  onClose,
-}: {
-  readonly actions: TeamMenuActions;
-  readonly anchor: HTMLElement;
-  readonly name: string;
-  readonly onClose: () => void;
-}) {
-  const item = (label: string, run: (() => void) | undefined, danger = false) =>
-    run ? (
-      <button
-        className={danger ? "picker__row picker__row--danger" : "picker__row"}
-        key={label}
-        onClick={() => {
-          onClose();
-          run();
-        }}
-        role="menuitem"
-        type="button"
-      >
-        {label}
-      </button>
-    ) : null;
-  return (
-    <Popover anchor={anchor} below label={`${name} menu`} onClose={onClose}>
-      {item("Invite people", actions.onInvite)}
-      {item("Team settings", actions.onSettings)}
-      {actions.onCreateTeam || actions.onJoinTeam ? <hr className="picker__divider" /> : null}
-      {item("Create a team", actions.onCreateTeam)}
-      {item("Join with an invite", actions.onJoinTeam)}
-      {actions.onLeave ? <hr className="picker__divider" /> : null}
-      {item(`Leave ${name}`, actions.onLeave, true)}
-    </Popover>
-  );
+function mentionPhrase(mentions: number): string {
+  return mentions === 1 ? "1 mention" : `${mentions} mentions`;
+}
+
+function withMentions(label: string, mentions: number): string {
+  return mentions === 0 ? label : `${label}, ${mentionPhrase(mentions)}`;
+}
+
+function countText(count: number): string {
+  return count > 99 ? "99+" : String(count);
 }
 
 /**

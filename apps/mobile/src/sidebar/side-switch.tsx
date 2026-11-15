@@ -1,4 +1,9 @@
-import type { TeamSessionClient } from "@opensteer/client/team";
+import {
+  moreTeamsKey,
+  sideSwitchLayout,
+  type SideSwitchMetrics,
+  type TeamSessionClient,
+} from "@opensteer/client/team";
 import {
   memo,
   useCallback,
@@ -9,7 +14,15 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from "react-native";
+import {
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  type LayoutChangeEvent,
+  type StyleProp,
+  type TextStyle,
+} from "react-native";
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import type { MobileTeam } from "../team/mobile-teams.js";
 import { TeamTile } from "../team/team-marks.js";
@@ -23,24 +36,36 @@ import {
   touchTarget,
   type,
 } from "../theme.js";
-import { NativeMenu, type NativeMenuSection } from "../thread/composer-menu.js";
+import { NativeMenu } from "../thread/composer-menu.js";
 import { duration, move } from "../ui/motion.js";
 import { Symbol } from "../ui/symbol.js";
-import { markSegmentWidth, segmentGap, switchLayout, trackPadding } from "./side-switch-layout.js";
 import type { SidebarSide } from "./sidebar-side.js";
+
+/** A segment drawn as its mark alone, at a full touch target. */
+const markSegmentWidth = 44;
+const segmentGap = 2;
+const trackPadding = 3;
+
+/** The phone's measures for the shared layout: marks at a full touch target. */
+const metrics: SideSwitchMetrics = {
+  padding: trackPadding,
+  gap: segmentGap,
+  mark: markSegmentWidth,
+  named: markSegmentWidth + 64,
+};
 
 /**
  * Tasks and each of the person's teams, as one segmented control at the head
- * of the sidebar: the same switch the desktop sidebar has.
- *
- * Each segment carries what is waiting on that side, so a mention in another
- * team shows without leaving this one: an amber count for questions on Tasks,
- * an ember count for mentions in a team. The chosen team's segment opens its
- * menu. Teams past what the track holds fold into a last segment that lists
+ * of the sidebar: the same switch, laid out by the same rule, as the desktop
+ * sidebar's. Tasks keeps its own width, the team last shown takes the rest and
+ * says its name, and every other team is its mark, so any team is one visible
+ * tap away. Teams past what the track holds fold into a last segment that lists
  * them; nothing scrolls sideways, so the drawer's own swipe stays the drawer's.
  *
- * Only the person changes the side. The chosen plate slides under the segment
- * as the segments settle into their new widths, on the UI thread.
+ * Each segment carries what is waiting on that side: an amber count for
+ * questions on Tasks, an ember count for mentions in a team. Only the person
+ * changes the side. The chosen plate slides under the segment as the segments
+ * settle into their new widths, on the UI thread.
  */
 export const SideSwitch = memo(function SideSwitch(props: {
   readonly active: SidebarSide;
@@ -48,89 +73,120 @@ export const SideSwitch = memo(function SideSwitch(props: {
   readonly ground: string;
   readonly needsYou: number;
   readonly onSelect: (side: SidebarSide) => void;
-  /** The chosen team's own menu. */
-  readonly teamMenu: readonly NativeMenuSection[];
+  /** The team that owns the named segment, from `recentTeam`. */
+  readonly recent: string;
   readonly teams: readonly MobileTeam[];
 }): ReactNode {
-  const { active, onSelect, teams } = props;
+  const { active, onSelect, recent, teams } = props;
   // Opaque, so a count on a mark's corner can be cut out of it exactly.
   const ground = mix(props.ground, "#ffffff", 0.05);
   const [width, setWidth] = useState(0);
-  const sides = useMemo(
-    (): readonly SidebarSide[] => ["tasks", ...teams.map((team) => team.teamId)],
-    [teams],
+  const [tasksWidth, setTasksWidth] = useState(0);
+  const teamIds = useMemo(() => teams.map((team) => team.teamId), [teams]);
+  const layout = sideSwitchLayout(
+    // Unmeasured until Tasks is, so nothing folds or loses its name on a guess.
+    { teamIds, recent, width: tasksWidth === 0 ? 0 : width, tasks: tasksWidth },
+    metrics,
   );
-  const layout = switchLayout(sides, active, width);
-  const thumb = useThumb(active);
+  // A team folded away is shown chosen on the folded segment.
+  const thumb = useThumb(
+    layout.segments.some((segment) => segment.key === active) ? active : moreTeamsKey,
+  );
   const byId = useMemo(() => new Map(teams.map((team) => [team.teamId, team])), [teams]);
   const foldedKey = layout.folded.join(" ");
   const folded = useMemo(
     () => (foldedKey === "" ? [] : foldedKey.split(" ").flatMap((side) => byId.get(side) ?? [])),
     [byId, foldedKey],
   );
+  const titled = !layout.named && active !== "tasks" ? byId.get(active) : undefined;
 
   return (
-    <View
-      accessibilityRole="tablist"
-      onLayout={(event: LayoutChangeEvent) => {
-        const next = Math.round(event.nativeEvent.layout.width);
-        setWidth((current) => (current === next ? current : next));
-      }}
-      style={[styles.track, { backgroundColor: ground }]}
-    >
-      <Animated.View pointerEvents="none" style={[styles.thumb, thumb.style]} />
-      {layout.shown.map((side) => {
-        const team = side === "tasks" ? null : byId.get(side);
-        if (team === undefined) return null;
-        const chosen = side === active;
-        return (
-          <Animated.View
-            key={side}
-            layout={move}
-            onLayout={(event: LayoutChangeEvent) => thumb.measure(side, event)}
-            style={chosen || layout.named ? styles.grow : styles.markOnly}
-          >
-            {team === null ? (
-              <Segment
-                accessibilityLabel={
-                  props.needsYou === 0 ? "Tasks" : `Tasks, ${needYouPhrase(props.needsYou)}`
+    <>
+      <View
+        accessibilityRole="tablist"
+        onLayout={(event: LayoutChangeEvent) => {
+          const next = Math.round(event.nativeEvent.layout.width);
+          setWidth((current) => (current === next ? current : next));
+        }}
+        style={[styles.track, { backgroundColor: ground }]}
+      >
+        <Animated.View pointerEvents="none" style={[styles.thumb, thumb.style]} />
+        {layout.segments.map(({ key }) => {
+          if (key === moreTeamsKey)
+            return (
+              <Animated.View
+                key={key}
+                layout={move}
+                onLayout={(event: LayoutChangeEvent) => thumb.measure(key, event)}
+                style={styles.markOnly}
+              >
+                <FoldedSegment ground={ground} onSelect={onSelect} teams={folded} />
+              </Animated.View>
+            );
+          const team = key === "tasks" ? null : byId.get(key);
+          if (team === undefined) return null;
+          const chosen = key === active;
+          return (
+            <Animated.View
+              key={key}
+              layout={move}
+              onLayout={(event: LayoutChangeEvent) => {
+                thumb.measure(key, event);
+                if (key === "tasks") {
+                  const next = Math.round(event.nativeEvent.layout.width);
+                  setTasksWidth((current) => (current === next ? current : next));
                 }
-                chosen={chosen}
-                count={props.needsYou}
-                ground={ground}
-                label="Tasks"
-                mark={
-                  <Symbol
-                    name="checklist"
-                    size={16}
-                    tint={chosen ? color.text : color.muted}
-                    weight={chosen ? "semibold" : "medium"}
-                  />
-                }
-                menu={null}
-                named={layout.named}
-                onPress={() => onSelect("tasks")}
-                tone="amber"
-              />
-            ) : (
-              <TeamSegment
-                chosen={chosen}
-                ground={ground}
-                menu={chosen ? props.teamMenu : null}
-                named={layout.named}
-                onSelect={onSelect}
-                team={team}
-              />
-            )}
-          </Animated.View>
-        );
-      })}
-      {folded.length === 0 ? null : (
-        <Animated.View key="folded" layout={move} style={styles.markOnly}>
-          <FoldedSegment ground={ground} onSelect={onSelect} teams={folded} />
-        </Animated.View>
+              }}
+              style={
+                key === "tasks" ? styles.natural : key === recent ? styles.grow : styles.markOnly
+              }
+            >
+              {team === null ? (
+                <Segment
+                  accessibilityLabel={
+                    props.needsYou === 0 ? "Tasks" : `Tasks, ${needYouPhrase(props.needsYou)}`
+                  }
+                  chosen={chosen}
+                  count={props.needsYou}
+                  ground={ground}
+                  label="Tasks"
+                  mark={
+                    <Symbol
+                      name="checklist"
+                      size={16}
+                      tint={chosen ? color.text : color.muted}
+                      weight={chosen ? "semibold" : "medium"}
+                    />
+                  }
+                  named
+                  onPress={() => onSelect("tasks")}
+                  tone="amber"
+                />
+              ) : (
+                <TeamSegment
+                  chosen={chosen}
+                  ground={ground}
+                  named={key === recent && layout.named}
+                  onSelect={onSelect}
+                  team={team}
+                />
+              )}
+            </Animated.View>
+          );
+        })}
+      </View>
+      {titled === undefined ? null : (
+        <View style={styles.title}>
+          <TeamTile size={20} team={{ id: titled.teamId, name: titled.name, imageUri: null }} />
+          <FadingName
+            accessibilityRole="header"
+            ground={props.ground}
+            label={titled.name}
+            style={[type.bodyMedium, styles.titleText]}
+          />
+        </View>
       )}
-    </View>
+    </>
   );
 });
 
@@ -178,7 +234,6 @@ function useThumb(active: SidebarSide) {
 const TeamSegment = memo(function TeamSegment(props: {
   readonly chosen: boolean;
   readonly ground: string;
-  readonly menu: readonly NativeMenuSection[] | null;
   readonly named: boolean;
   readonly onSelect: (side: SidebarSide) => void;
   readonly team: MobileTeam;
@@ -189,7 +244,6 @@ const TeamSegment = memo(function TeamSegment(props: {
   const select = useCallback(() => onSelect(team.teamId), [onSelect, team.teamId]);
   return (
     <Segment
-      accessibilityHint={chosen ? `Opens ${team.name}'s menu` : undefined}
       accessibilityLabel={[team.name, mentionPhrase(mentions), status].filter(Boolean).join(", ")}
       chosen={chosen}
       count={mentions}
@@ -197,7 +251,6 @@ const TeamSegment = memo(function TeamSegment(props: {
       ground={props.ground}
       label={team.name}
       mark={<TeamTile size={20} team={{ id: team.teamId, name: team.name, imageUri: null }} />}
-      menu={props.menu}
       named={props.named}
       onPress={select}
       tone="ember"
@@ -234,11 +287,10 @@ function FoldedSegment(props: {
 }
 
 /**
- * One side's segment: its mark, and its name and count when it is chosen or
- * every segment is named; otherwise its count sits on the mark's corner.
+ * One side's segment: its mark, and its name and count when it is named;
+ * otherwise its count sits on the mark's corner.
  */
 function Segment(props: {
-  readonly accessibilityHint?: string | undefined;
   readonly accessibilityLabel: string;
   readonly chosen: boolean;
   readonly count: number;
@@ -247,57 +299,13 @@ function Segment(props: {
   readonly ground: string;
   readonly label: string;
   readonly mark: ReactNode;
-  readonly menu: readonly NativeMenuSection[] | null;
   readonly named: boolean;
   readonly onPress: () => void;
   readonly tone: "amber" | "ember";
 }): ReactNode {
-  const { chosen, count } = props;
-  const spelled = chosen || props.named;
-  const face = (
-    <>
-      <View style={[styles.mark, props.dim === true && styles.dim]}>
-        {props.mark}
-        {spelled || count === 0 ? null : (
-          <Count corner count={count} ground={props.ground} tone={props.tone} />
-        )}
-      </View>
-      {spelled ? (
-        <Text
-          maxFontSizeMultiplier={controlFontScaleLimit}
-          numberOfLines={1}
-          style={[type.caption, styles.label, chosen && styles.chosenLabel]}
-        >
-          {props.label}
-        </Text>
-      ) : null}
-      {spelled && count > 0 ? (
-        <Count count={count} ground={props.ground} tone={props.tone} />
-      ) : null}
-      {props.menu === null ? null : (
-        <Symbol name="chevron.down" size={10} tint={color.muted} weight="bold" />
-      )}
-    </>
-  );
-  if (props.menu !== null)
-    return (
-      <NativeMenu
-        {...(props.accessibilityHint === undefined
-          ? {}
-          : { accessibilityHint: props.accessibilityHint })}
-        accessibilityLabel={props.accessibilityLabel}
-        accessibilityRole="tab"
-        accessibilityState={{ selected: chosen }}
-        options={props.menu}
-        style={styles.fill}
-        triggerStyle={[styles.face, styles.menuFace, styles.spelled]}
-      >
-        {face}
-      </NativeMenu>
-    );
+  const { chosen, count, named } = props;
   return (
     <Pressable
-      accessibilityHint={props.accessibilityHint}
       accessibilityLabel={props.accessibilityLabel}
       accessibilityRole="tab"
       accessibilityState={{ selected: chosen }}
@@ -305,12 +313,82 @@ function Segment(props: {
       onPress={props.onPress}
       style={({ pressed }) => [
         styles.face,
-        spelled && styles.spelled,
+        named && styles.spelled,
         pressed && !chosen && styles.pressed,
       ]}
     >
-      {face}
+      <View style={[styles.mark, props.dim === true && styles.dim]}>
+        {props.mark}
+        {named || count === 0 ? null : (
+          <Count corner count={count} ground={props.ground} tone={props.tone} />
+        )}
+      </View>
+      {named ? (
+        <FadingName
+          // The name sits on the plate when chosen, on the track otherwise.
+          ground={chosen ? String(material.selected.backgroundColor) : props.ground}
+          label={props.label}
+          style={[type.caption, styles.label, chosen && styles.chosenLabel]}
+        />
+      ) : null}
+      {named && count > 0 ? <Count count={count} ground={props.ground} tone={props.tone} /> : null}
     </Pressable>
+  );
+}
+
+/**
+ * A name on one line that runs to its edge and fades there, as on the desktop,
+ * rather than ending in an ellipsis. The fade shows only while the name is cut.
+ */
+function FadingName(props: {
+  readonly accessibilityRole?: "header";
+  /** The opaque colour behind the name, which the fade blends into. */
+  readonly ground: string;
+  readonly label: string;
+  readonly style: StyleProp<TextStyle>;
+}): ReactNode {
+  const [room, setRoom] = useState(0);
+  const [natural, setNatural] = useState(0);
+  return (
+    <View
+      onLayout={(event: LayoutChangeEvent) => setRoom(event.nativeEvent.layout.width)}
+      style={styles.name}
+    >
+      <Text
+        accessibilityRole={props.accessibilityRole}
+        ellipsizeMode="clip"
+        maxFontSizeMultiplier={controlFontScaleLimit}
+        numberOfLines={1}
+        style={props.style}
+      >
+        {props.label}
+      </Text>
+      {/* The name's own width, laid out where nothing constrains it. */}
+      <View
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        pointerEvents="none"
+        style={styles.measure}
+      >
+        <Text
+          maxFontSizeMultiplier={controlFontScaleLimit}
+          numberOfLines={1}
+          onLayout={(event: LayoutChangeEvent) => setNatural(event.nativeEvent.layout.width)}
+          style={props.style}
+        >
+          {props.label}
+        </Text>
+      </View>
+      {natural > room + 0.5 ? (
+        <View
+          pointerEvents="none"
+          style={[
+            styles.fade,
+            { backgroundImage: `linear-gradient(to right, ${props.ground}00, ${props.ground})` },
+          ]}
+        />
+      ) : null}
+    </View>
   );
 }
 
@@ -424,6 +502,7 @@ const styles = StyleSheet.create({
     top: -7,
   },
   dim: { opacity: 0.45 },
+  fade: { bottom: 0, end: 0, position: "absolute", top: 0, width: space[16] },
   ember: { backgroundColor: color.ember },
   face: {
     alignItems: "center",
@@ -434,10 +513,20 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   fill: { flex: 1 },
-  grow: { flexBasis: 0, flexGrow: 1, minWidth: 0 },
+  grow: { flexBasis: 0, flexGrow: 1, minWidth: markSegmentWidth },
   label: { color: color.textSoft, flexShrink: 1, fontWeight: "600" },
   mark: { alignItems: "center", height: 20, justifyContent: "center", minWidth: 20 },
   markOnly: { width: markSegmentWidth },
+  name: { flexShrink: 1, minWidth: 0, overflow: "hidden" },
+  measure: {
+    alignItems: "flex-start",
+    height: 0,
+    opacity: 0,
+    overflow: "hidden",
+    position: "absolute",
+    width: 4096,
+  },
+  natural: { flexShrink: 0 },
   // A menu's trigger takes no hit slop, so it reaches a full touch target past the plate.
   menuFace: {
     height: touchTarget,
@@ -447,6 +536,14 @@ const styles = StyleSheet.create({
   onEmber: { color: color.inkOnEmber },
   pressed: { ...material.quiet },
   spelled: { paddingHorizontal: space[10] },
+  title: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: space[8],
+    marginBottom: space[8],
+    marginHorizontal: space[16],
+  },
+  titleText: { color: color.text, flexShrink: 1 },
   thumb: {
     ...material.selected,
     borderRadius: radius.full,
