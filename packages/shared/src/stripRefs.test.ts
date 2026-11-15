@@ -28,6 +28,15 @@ describe("stripRefs", () => {
     ["![alt][ref]\n\n[ref]: /tmp/private.png", "alt\n\n"],
     ["<span>[file](/private/secret.txt)</span>", "<span>file</span>"],
     ["<b>see [task](" + href + ")</b>", "<b>see task</b>"],
+    ['<a href="/Users/me/secret.txt">x</a>', '<a href="">x</a>'],
+    ["<img src='file:///Users/me/a.png' alt=\"a\">", '<img src="" alt="a">'],
+    ["<a HREF=" + href + ">task</a>", '<a HREF="">task</a>'],
+    ['<img srcset="https://ok.example/a.png 1x, /tmp/b.png 2x">', '<img srcset="">'],
+    ['<div>\n<a href="//host/share">x</a>\n</div>', '<div>\n<a href="">x</a>\n</div>'],
+    [
+      '<a href="https://team.example/c/abc" title="notes">ok</a>',
+      '<a href="https://team.example/c/abc" title="notes">ok</a>',
+    ],
   ])("sanitizes source and stays idempotent: %s", (source, expected) => {
     expect(stripRefs(source)).toBe(expected);
     expect(stripRefs(stripRefs(source))).toBe(expected);

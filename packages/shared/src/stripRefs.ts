@@ -16,6 +16,21 @@ function privateDestination(url: string): boolean {
   return !/^[a-z][a-z\d+.-]*:/iu.test(decoded) && !/^[#?]/u.test(decoded);
 }
 
+// HTML attributes that name a destination; any other attribute is just text.
+const htmlDestinationAttribute =
+  /(\s(?:href|src|srcset|action|formaction|poster|data|cite|background|longdesc|ping|xlink:href)\s*=\s*)("[^"]*"|'[^']*'|[^\s"'=<>`]+)/giu;
+
+/** Empties every HTML destination naming a private place; the tag and its text stay. */
+function stripHtmlDestinations(html: string): string {
+  return html.replace(htmlDestinationAttribute, (whole, prefix: string, quoted: string) => {
+    const value = /^["']/u.test(quoted) ? quoted.slice(1, -1) : quoted;
+    const destinations = value.split(",").map((entry) => entry.trim().split(/\s+/u)[0] ?? "");
+    return destinations.some((url) => url !== "" && privateDestination(url))
+      ? `${prefix}""`
+      : whole;
+  });
+}
+
 function labelSource(source: string): string {
   const start = source.startsWith("![") ? 2 : 1;
   let depth = 1;
@@ -54,6 +69,12 @@ function stripPrivateLinks(markdown: string, neutralize = false): string {
         end = node.position?.end.offset;
       if (neutralize && node.type === "text" && start !== undefined && end !== undefined) {
         edits.push({ start, end, text: escapeLinkSyntax(source.slice(start, end)) });
+        return false;
+      }
+      if (node.type === "html" && start !== undefined && end !== undefined) {
+        const written = source.slice(start, end);
+        const stripped = stripHtmlDestinations(written);
+        if (stripped !== written) edits.push({ start, end, text: stripped });
         return false;
       }
       const url =

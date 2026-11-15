@@ -83,8 +83,8 @@ export function parseMarkdown(
 }
 
 /**
- * Visits source nodes outside code. Markdown between inline HTML tags is skipped
- * unless `inlineHtml` is "visit": it still renders, so sanitation must see it.
+ * Visits source nodes outside code. Markdown between inline HTML tags, and the HTML
+ * itself, is skipped unless `inlineHtml` is "visit": it still renders, so sanitation must see it.
  */
 export function visitMarkdownSource(
   tree: Root,
@@ -108,11 +108,16 @@ export function visitMarkdownSource(
     "wbr",
   ]);
   const walk = (node: Nodes): void => {
-    if (node.type === "code" || node.type === "inlineCode" || node.type === "html") return;
+    if (node.type === "code" || node.type === "inlineCode") return;
+    if (node.type === "html") {
+      if (options.inlineHtml === "visit") visit(node);
+      return;
+    }
     if (visit(node) === false || !("children" in node)) return;
     const tags: string[] = [];
     for (const child of node.children) {
       if (child.type === "html") {
+        if (options.inlineHtml === "visit") walk(child);
         for (const match of child.value.matchAll(/<\/?([a-z][a-z\d-]*)\b[^>]*>/giu)) {
           const tag = match[1]!.toLowerCase();
           if (match[0].startsWith("</")) {
