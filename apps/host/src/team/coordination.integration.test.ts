@@ -250,3 +250,11 @@ it("closes transports after ten seconds without a healthy bus", async () => {
     vi.useRealTimers();
   }
 });
+it("settles a link presence change that arrives after its copy's database closed", async () => {
+  const userId = await f.member("Linked");
+  const closed = createDatabase({ connectionString: f.databaseUrl, applicationName: "closed" });
+  const hub = new TeamRealtimeHub(new TeamAccessStore(closed), chatA);
+  await sql`select 1`.execute(closed);
+  await closed.destroy();
+  await expect(hub.linkPresenceChanged(userId, true)).resolves.toBeUndefined();
+});
