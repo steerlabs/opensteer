@@ -8,7 +8,7 @@ import {
 } from "@opensteer/client/host";
 import { otherDeviceLine, type OtherDeviceLine } from "@opensteer/client/settings";
 import { maximumNotificationDevicesPerAccount } from "@opensteer/core";
-import type { HarnessInstallation, LegacyMachineSummary, OtherDevice } from "@opensteer/protocol";
+import type { HarnessInstallation, MachineSummary, OtherDevice } from "@opensteer/protocol";
 import type { DesktopAccountAuthState } from "@opensteer/protocol/desktop";
 import { deploymentStatusLabel, type DeploymentRow } from "../client/deployment-rows.js";
 import type {
@@ -329,7 +329,7 @@ export interface PasswordsSettingsModel {
 export function passwordsSettingsModel(input: {
   /** A Personal Opensteer is named after its Mac until that Mac reports itself. */
   readonly deploymentName: string;
-  readonly machines: readonly LegacyMachineSummary[];
+  readonly machines: readonly MachineSummary[];
 }): PasswordsSettingsModel {
   const personal = true;
   const homeName = input.machines.find(hostsDeployment)?.name ?? input.deploymentName;

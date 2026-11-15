@@ -1,10 +1,12 @@
 import {
   conversationComputerId,
   linkPlaces,
+  pageOpenTarget,
   type HostClient,
   type LinkPlace,
 } from "@opensteer/client/host";
-import { classifyHref } from "@opensteer/core";
+import { classifyLink } from "@opensteer/client/references";
+import { PageOpenUrlSchema } from "@opensteer/core";
 import { markdownLink } from "@opensteer/shared/markdownLinks";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import * as Clipboard from "expo-clipboard";
@@ -12,8 +14,6 @@ import * as Haptics from "expo-haptics";
 import { useMemo, type ReactNode } from "react";
 import { Alert, Linking, Platform, StyleSheet } from "react-native";
 import { tabRoute } from "../browser/surface-route.js";
-import { pageTabTarget } from "../tabs/place-tab.js";
-import { tabsClient } from "../tabs/tabs-host.js";
 import { systemBrowserLabel } from "../browser/system-browser.js";
 import { useHereDeviceId } from "../computers/here-device.js";
 import { useReferenceNavigation } from "../markdown/reference-context.js";
@@ -29,8 +29,8 @@ export function openOutside(url: string): void {
 
 /** A link that names something in Opensteer: it opens here, never in a browser or the system. */
 export function isInternalHref(href: string): boolean {
-  const kind = classifyHref(href).kind;
-  return kind === "reference" || kind === "team-page" || kind === "file";
+  const kind = classifyLink(href).kind;
+  return kind === "reference" || kind === "team-page" || kind === "file" || kind === "tab";
 }
 
 /** This phone, as its menu names it beside the computers. */
@@ -61,13 +61,13 @@ export function ConversationLinksProvider(props: {
      * the system's browser instead.
      */
     const openOn = (url: string, place: LinkPlace): void => {
-      const target = pageTabTarget(hostClient.getSnapshot(), place.target, url);
-      if (target === null) {
+      // Only an address a tab can open goes to one; anything else is the system browser's.
+      if (!PageOpenUrlSchema.safeParse(url).success) {
         openOutside(url);
         return;
       }
-      tabsClient(hostClient)
-        .openTab(target)
+      hostClient
+        .openTab(pageOpenTarget(place.target, url))
         .then(
           (tab) => {
             if (navigation.isFocused())

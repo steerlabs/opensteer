@@ -7,7 +7,7 @@ import {
   unwrapRpcResult,
   type AiEngineAction,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { useState, type ReactNode } from "react";

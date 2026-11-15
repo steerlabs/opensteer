@@ -9,7 +9,7 @@ import { createId, PlaceEnteredEventViewSchema } from "@opensteer/core";
 import { FoldedPage } from "../thread/folded-page.js";
 import type {
   HostClient,
-  LegacyHostSnapshot as HostSnapshot,
+  HostSnapshot,
   WebSocketClient,
 } from "@opensteer/client/host";
 import { sharedDisplayStreams, type DisplaySnapshot } from "@opensteer/client/integrations";

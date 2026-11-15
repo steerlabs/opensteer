@@ -11,7 +11,7 @@ import {
   taskList,
   taskTime,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type TaskRow,
 } from "@opensteer/client/host";
 import { useHostSnapshot } from "@opensteer/client/react";

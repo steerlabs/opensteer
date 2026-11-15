@@ -1,9 +1,10 @@
 import {
   threadInDirectory,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
 } from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
+import type { AppsList } from "@opensteer/client/host";
+import { useAppsList, useHostSelector } from "@opensteer/client/react";
 import type { App } from "@opensteer/core";
 import {
   StackActions,
@@ -11,11 +12,9 @@ import {
   useNavigation,
   type StaticScreenProps,
 } from "@react-navigation/native";
-import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useState, type ReactNode } from "react";
 import { FlatList, Pressable, StyleSheet, View } from "react-native";
 import { tabRoute } from "../browser/surface-route.js";
-import { selectAppsRevision, tabsClient } from "../tabs/tabs-host.js";
-import { useOperation } from "../tabs/use-tabs.js";
 import { color, radius, space, touchTarget } from "../theme.js";
 import { NativeMenu } from "../thread/composer-menu.js";
 import { useAppForeground } from "../ui/foreground.js";
@@ -63,68 +62,6 @@ function AttachedApps(props: {
   return <AppsForReader key={reader} {...props} />;
 }
 
-/** The loaded list and the invalidation it answers; a read older than a newer change is dropped. */
-interface Loaded {
-  readonly apps: readonly App[] | null;
-  readonly failure: string | null;
-  readonly loading: boolean;
-}
-
-/**
- * The person's apps, read when the screen is in view and again on each apps
- * change while it stays in view. A change seen during a read makes that
- * read's answer stale: it is dropped and the newer read stands.
- */
-export function useAppsList(hostClient: HostClient, active: boolean) {
-  const revision = useHostSelector(hostClient, selectAppsRevision);
-  const [loaded, setLoaded] = useState<Loaded>({ apps: null, failure: null, loading: false });
-  const latest = useRef({ read: 0, revision });
-  latest.current.revision = revision;
-  const read = useCallback(() => {
-    const ticket = ++latest.current.read;
-    const asOf = latest.current.revision;
-    setLoaded((current) => ({ ...current, failure: null, loading: true }));
-    tabsClient(hostClient)
-      .listApps()
-      .then(
-        (apps) => {
-          if (ticket !== latest.current.read || asOf !== latest.current.revision) return;
-          setLoaded({ apps, failure: null, loading: false });
-        },
-        (error: unknown) => {
-          if (ticket !== latest.current.read) return;
-          setLoaded((current) => ({
-            ...current,
-            failure: error instanceof Error ? error.message : "Your apps could not be loaded.",
-            loading: false,
-          }));
-        },
-      );
-  }, [hostClient]);
-  useEffect(() => {
-    if (active) read();
-  }, [active, read, revision]);
-  /**
-   * One app as a command returned it, ahead of the reread its change notice
-   * brings; a read already in flight began before the change and is dropped.
-   */
-  const settle = useCallback((app: App) => {
-    latest.current.read += 1;
-    setLoaded((current) => ({
-      ...current,
-      apps: current.apps?.map((row) => (row.appId === app.appId ? app : row)) ?? null,
-    }));
-  }, []);
-  const remove = useCallback((appId: App["appId"]) => {
-    latest.current.read += 1;
-    setLoaded((current) => ({
-      ...current,
-      apps: current.apps?.filter((row) => row.appId !== appId) ?? null,
-    }));
-  }, []);
-  return { ...loaded, read, remove, settle };
-}
-
 function AppsForReader(props: {
   readonly deploymentId: string;
   readonly hostClient: HostClient;
@@ -134,7 +71,8 @@ function AppsForReader(props: {
   const foreground = useAppForeground();
   const column = useReadingColumn();
   const insets = useListContentInsets(space[32]);
-  const list = useAppsList(hostClient, focused && foreground);
+  // Read while in view only: a change elsewhere rereads nothing until the screen is back.
+  const { list, state } = useAppsList(hostClient, focused && foreground);
   const navigation = useNavigation();
   const openThread = useCallback(
     (threadId: string) =>
@@ -146,7 +84,7 @@ function AppsForReader(props: {
       navigation.dispatch(StackActions.push("WorkspaceBrowser", tabRoute(deploymentId, tabId))),
     [deploymentId, navigation],
   );
-  const apps = list.apps;
+  const apps = state.apps;
   return (
     <Screen edgeToEdge>
       <FlatList
@@ -156,7 +94,7 @@ function AppsForReader(props: {
         keyExtractor={(app) => app.appId}
         ListEmptyComponent={
           apps === null ? (
-            list.failure === null ? (
+            state.error === null ? (
               <View style={styles.empty}>
                 <AppText role="bodyMedium" tone="muted">
                   Finding apps…
@@ -173,11 +111,11 @@ function AppsForReader(props: {
           )
         }
         ListHeaderComponent={
-          list.failure === null ? undefined : (
+          state.error === null ? undefined : (
             <View style={styles.notices}>
               <Notice
-                action={{ label: "Try again", onPress: list.read }}
-                detail={list.failure}
+                action={{ label: "Try again", onPress: () => void list.reload() }}
+                detail={state.error}
                 title="Apps could not be loaded"
               />
             </View>
@@ -186,11 +124,12 @@ function AppsForReader(props: {
         renderItem={({ item }) => (
           <AppRow
             app={item}
+            failure={state.failures.get(item.appId)?.message ?? null}
             hostClient={hostClient}
-            onDeleted={list.remove}
+            list={list}
             onOpenTab={openTab}
             onOpenThread={openThread}
-            onSettled={list.settle}
+            pending={state.pending.has(item.appId)}
           />
         )}
       />
@@ -207,15 +146,16 @@ const stateWords: Record<App["state"], string> = {
 
 const AppRow = memo(function AppRow(props: {
   readonly app: App;
+  /** The last action's failure, kept until the next action or a dismissal. */
+  readonly failure: string | null;
   readonly hostClient: HostClient;
-  readonly onDeleted: (appId: App["appId"]) => void;
+  readonly list: AppsList;
   readonly onOpenTab: (tabId: Parameters<typeof tabRoute>[1]) => void;
   readonly onOpenThread: (threadId: string) => void;
-  readonly onSettled: (app: App) => void;
+  readonly pending: boolean;
 }): ReactNode {
-  const { app, hostClient } = props;
-  const client = tabsClient(hostClient);
-  const operation = useOperation();
+  const { app, hostClient, list } = props;
+  const busy = props.pending;
   const [naming, setNaming] = useState<string | null>(null);
   const selectComputer = useCallback(
     (snapshot: HostSnapshot) =>
@@ -239,44 +179,21 @@ const AppRow = memo(function AppRow(props: {
     const trimmed = name.trim();
     setNaming(null);
     if (trimmed === "" || trimmed === app.name) return;
-    void operation.run(
-      () => client.renameApp(app.appId, trimmed),
-      "The app could not be renamed.",
-      props.onSettled,
-    );
+    void list.rename(app.appId, trimmed);
   };
   const open = () =>
-    void operation.run(
-      async () => {
-        const tab = await client.openTab({ appId: app.appId, kind: "app" });
-        return tab.tabId;
-      },
-      "The app could not be opened.",
-      props.onOpenTab,
-    );
-  const start = () =>
-    void operation.run(
-      () => client.startApp(app.appId),
-      "The app could not be started.",
-      props.onSettled,
-    );
-  const stop = () =>
-    void operation.run(
-      () => client.stopApp(app.appId),
-      "The app could not be stopped.",
-      props.onSettled,
-    );
+    void list.track(app.appId, "open", async () => {
+      const tab = await hostClient.openTab({ appId: app.appId, kind: "app" });
+      props.onOpenTab(tab.tabId);
+    });
+  const start = () => void list.start(app.appId);
+  const stop = () => void list.stop(app.appId);
   const remove = () =>
     confirmDestructive({
       confirm: "Delete app",
       message:
         "Its server stops, its tabs close and its link stops working. Its folder stays on the computer.",
-      onConfirm: () =>
-        void operation.run(
-          () => client.deleteApp(app.appId),
-          "The app could not be deleted.",
-          () => props.onDeleted(app.appId),
-        ),
+      onConfirm: () => void list.delete(app.appId),
       title: `Delete “${app.name}”?`,
     });
   // Wanted running: Stop records stopped, even offline. Failed: Start tries again.
@@ -299,7 +216,7 @@ const AppRow = memo(function AppRow(props: {
         </View>
         <NativeMenu
           accessibilityLabel={`${app.name} actions`}
-          disabledReason={operation.busy ? "Wait for the last change to finish." : null}
+          disabledReason={busy ? "Wait for the last change to finish." : null}
           options={[
             [{ icon: "pencil", id: "rename", label: "Rename", onPress: () => setNaming(app.name) }],
             [
@@ -365,9 +282,9 @@ const AppRow = memo(function AppRow(props: {
       <View style={styles.actions}>
         <SecondaryButton
           accessibilityLabel={`Open ${app.name}`}
-          busy={operation.busy}
+          busy={busy}
           compact
-          disabled={operation.busy}
+          disabled={busy}
           label="Open"
           onPress={open}
         />
@@ -375,7 +292,7 @@ const AppRow = memo(function AppRow(props: {
           <SecondaryButton
             accessibilityLabel={`Start ${app.name}`}
             compact
-            disabled={operation.busy}
+            disabled={busy}
             label="Start"
             onPress={start}
           />
@@ -384,16 +301,16 @@ const AppRow = memo(function AppRow(props: {
           <SecondaryButton
             accessibilityLabel={`Stop ${app.name}`}
             compact
-            disabled={operation.busy}
+            disabled={busy}
             label="Stop"
             onPress={stop}
           />
         ) : null}
       </View>
-      {operation.failure === null ? null : (
-        <Pressable accessibilityRole="button" onPress={operation.dismiss}>
+      {props.failure === null ? null : (
+        <Pressable accessibilityRole="button" onPress={() => list.dismissFailure(app.appId)}>
           <AppText role="caption" tone="danger">
-            {operation.failure}
+            {props.failure}
           </AppText>
         </Pressable>
       )}

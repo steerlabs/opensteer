@@ -1,7 +1,10 @@
-import type { TabLayout } from "@opensteer/core";
+import { TabGroupIdSchema, TabIdSchema, type TabLayout } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
-import { groupId, tabId } from "../../test-support/mock-tabs.js";
-import { adjacentTabId, moveBefore, moveGroupBefore, tabEntries } from "./tab-entries.js";
+import { moveBefore, moveGroupBefore } from "./tab-entries.js";
+
+const tabId = (name: string) => TabIdSchema.parse(`tab_${name}`);
+const groupId = (n: number) =>
+  TabGroupIdSchema.parse(`tgp_00000000-0000-4000-8000-${String(n).padStart(12, "0")}`);
 
 const [page, window, phone, app, other] = ["page", "window", "phone", "app", "other"].map(tabId);
 const work = (collapsed: boolean) => ({
@@ -19,32 +22,6 @@ const layout = (collapsed = false): TabLayout => ({
     { kind: "tab", tabId: other! },
   ],
   revision: 1,
-});
-
-describe("one mixed list", () => {
-  it("keeps every kind in the Host's order, a collapsed group showing only its head", () => {
-    expect(
-      tabEntries(layout()).map((entry) => (entry.kind === "tab" ? entry.tabId : "group")),
-    ).toEqual([page, "group", window, phone, app, other]);
-    expect(
-      tabEntries(layout(true)).map((entry) => (entry.kind === "tab" ? entry.tabId : "group")),
-    ).toEqual([page, "group", app, other]);
-  });
-});
-
-describe("selection after a close", () => {
-  it("moves to the entry after the closed tab, else the one before, else nowhere", () => {
-    expect(adjacentTabId(layout(), phone!)).toBe(app);
-    expect(adjacentTabId(layout(), other!)).toBe(app);
-    expect(
-      adjacentTabId({ items: [{ kind: "tab", tabId: page! }], revision: 1 }, page!),
-    ).toBeNull();
-  });
-
-  it("never lands inside a collapsed group, even from one of its own tabs", () => {
-    expect(adjacentTabId(layout(true), page!)).toBe(app);
-    expect(adjacentTabId(layout(true), window!)).toBe(app);
-  });
 });
 
 describe("moves where dragging is impractical", () => {

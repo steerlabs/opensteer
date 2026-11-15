@@ -2,7 +2,7 @@ import { hostsDeployment } from "@opensteer/client/computers";
 import {
   passwordsOfferLine,
   passwordsSuggestionKey,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type PasswordsSetupOffer,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";

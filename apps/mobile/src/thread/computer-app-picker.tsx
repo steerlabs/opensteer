@@ -1,4 +1,4 @@
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 import {
   addPhoneSteps,
   computerAppPermissionNotice,
@@ -27,7 +27,7 @@ import { AppText, ChoiceRow, Notice, RowGroup, SectionLabel, SwitchRow } from ".
 export function computerAppChoices(input: {
   readonly connections: readonly IntegrationConnectionSummary[];
   readonly definition: IntegrationDefinitionSummaryView;
-  readonly machines: readonly LegacyMachineSummary[];
+  readonly machines: readonly MachineSummary[];
 }): {
   readonly available: readonly ComputerAppTarget[];
   readonly targets: readonly ComputerAppTarget[];

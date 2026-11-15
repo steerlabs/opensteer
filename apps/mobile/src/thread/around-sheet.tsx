@@ -9,7 +9,7 @@ import {
   threadMark,
   type FamilyTask,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type TaskFamily,
   type ThreadAutomation,
 } from "@opensteer/client/host";
@@ -156,7 +156,7 @@ function Around(props: {
 
   const showTab = useShowTab(deploymentId, threadId);
   const leave = useCallback(() => navigation.goBack(), [navigation]);
-  const openDestination = useOpenPlace(hostClient, deploymentId, threadId, leave);
+  const openDestination = useOpenPlace(deploymentId, threadId, leave);
   const openPlace = useCallback(
     (place: AroundPlace) => {
       if (place.destination.kind !== "tab") return openDestination(place.destination);

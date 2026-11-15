@@ -1,13 +1,16 @@
 import type { HostClient } from "@opensteer/client/host";
 import {
+  classifyLink,
   refTarget,
+  tabReferenceState,
   type FileOpenInput,
   type PersonalReferenceNavigationPorts,
   type ReferenceDestination,
   type ReferenceNavigationPorts,
 } from "@opensteer/client/references";
 import type { TeamSessionClient } from "@opensteer/client/team";
-import { classifyHref, teamPageUrl, type ThreadId } from "@opensteer/core";
+import { teamPageUrl, type ThreadId } from "@opensteer/core";
+import { tabRoute } from "../browser/surface-route.js";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import * as Haptics from "expo-haptics";
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
@@ -125,6 +128,14 @@ export function PersonalReferenceProvider(props: {
           case "computer":
             navigation.navigate("Computer", { deploymentId, machineId: destination.runnerId });
             return;
+          case "tab":
+            navigation.dispatch(
+              StackActions.push(
+                "WorkspaceBrowser",
+                tabRoute(deploymentId, destination.tabId, threadId ?? undefined),
+              ),
+            );
+            return;
           case "attachment":
             // A stored attachment is the person's own, wherever it was sent: its preview and
             // Download are the file viewer's, read without a conversation.
@@ -144,8 +155,14 @@ export function PersonalReferenceProvider(props: {
       },
     };
     const open = async (href: string): Promise<void> => {
-      const link = classifyHref(href);
-      if (link.kind !== "reference" && link.kind !== "team-page" && link.kind !== "file") return;
+      const link = classifyLink(href);
+      if (
+        link.kind !== "reference" &&
+        link.kind !== "team-page" &&
+        link.kind !== "file" &&
+        link.kind !== "tab"
+      )
+        return;
       // As T3 does, a newer tap replaces one still on its way.
       current.current?.abort();
       const controller = new AbortController();
@@ -162,6 +179,12 @@ export function PersonalReferenceProvider(props: {
         if (link.kind === "file") {
           const { path, ...position } = link.file;
           return await ports.openFile({ source: { kind: "path", path }, ...position });
+        }
+        // A tab opens only while it is in the list; a closed one is never reopened by a link.
+        if (link.kind === "tab") {
+          if (tabReferenceState(host.getSnapshot().tabs, link.tabId).state === "available")
+            await ports.openReference({ kind: "tab", tabId: link.tabId });
+          return;
         }
         // Held or recently confirmed answers open at once; anything else is asked for now.
         const answer = await host.references.resolve(link.reference.id);
@@ -216,7 +239,7 @@ export function TeamReferenceProvider(props: {
       context: { kind: "team", client, origin, teamId },
       ports,
       open: async (href) => {
-        const link = classifyHref(href);
+        const link = classifyLink(href);
         if (link.kind !== "team-page") return;
         void Haptics.selectionAsync();
         await ports.openTeamPage(link.page).catch(cannotOpen);

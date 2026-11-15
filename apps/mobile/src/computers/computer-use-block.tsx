@@ -41,7 +41,7 @@ import {
   type PhoneUseView,
 } from "@opensteer/client/integrations";
 import { useComputerUseStop } from "@opensteer/client/react";
-import type { LegacyComputerUseSessionSummary, LegacyMachineSummary } from "@opensteer/protocol";
+import type { ComputerUseSessionSummary, MachineSummary } from "@opensteer/protocol";
 import { type ReactNode } from "react";
 import { StyleSheet } from "react-native";
 import { color, material, radius, space, touchTarget } from "../theme.js";
@@ -52,7 +52,7 @@ import { useBlockActions } from "./block-actions.js";
 export function ComputerUseBlock(props: {
   readonly canRespond: boolean;
   readonly hostClient: HostClient;
-  readonly machine: LegacyMachineSummary;
+  readonly machine: MachineSummary;
   readonly onChanged: () => Promise<void>;
   readonly onOpenThread: (threadId: string) => void;
   readonly view: ComputerUseView;
@@ -270,7 +270,7 @@ export function PhoneUseBlock(props: {
   /** False while the Host is unreachable: nothing is changed on a guess. */
   readonly canRespond: boolean;
   readonly hostClient: HostClient;
-  readonly machine: LegacyMachineSummary;
+  readonly machine: MachineSummary;
   readonly onChanged: () => Promise<void>;
   readonly onOpenThread: (threadId: string) => void;
   readonly view: PhoneUseView;
@@ -379,7 +379,7 @@ function SessionRow(props: {
   readonly hostClient: HostClient;
   readonly machineName: string;
   readonly onOpenThread: (threadId: string) => void;
-  readonly session: LegacyComputerUseSessionSummary;
+  readonly session: ComputerUseSessionSummary;
 }): ReactNode {
   const { hostClient, machineName, session } = props;
   const title = session.threadTitle ?? "Untitled thread";

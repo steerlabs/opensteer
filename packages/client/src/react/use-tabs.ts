@@ -64,12 +64,19 @@ export function appsList(hostClient: HostClient): AppsList {
   }
   return list;
 }
-export function useAppsList(hostClient: HostClient): {
+/** `enabled` false keeps what was read without reading again, as for a screen out of view. */
+export function useAppsList(
+  hostClient: HostClient,
+  enabled = true,
+): {
   readonly list: AppsList;
   readonly state: AppsListState;
 } {
   const list = useMemo(() => appsList(hostClient), [hostClient]);
-  const subscribe = useCallback((listener: () => void) => list.subscribe(listener), [list]);
+  const subscribe = useCallback(
+    (listener: () => void) => (enabled ? list.subscribe(listener) : () => {}),
+    [enabled, list],
+  );
   const get = useCallback(() => list.state, [list]);
   return { list, state: useSyncExternalStore(subscribe, get, get) };
 }

@@ -14,7 +14,7 @@ import {
 import type {
   ActionReview,
   AssignmentEntry,
-  LegacyHostSnapshot as HostSnapshot,
+  HostSnapshot,
 } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "r
 import type { TabId, TabPlaceEnteredEventView } from "@opensteer/core";
 import type { HostClient, HostSnapshot } from "../host/client.js";
 import { placeList, placeByKey, type PlaceItem } from "../host/places.js";
+import { actingOccupants } from "../host/place-activity.js";
+import { placeAgents, samePlaceAgents, type PlaceAgents } from "../host/place-agents.js";
 import { runPlaceDestination, runPlaceSessionId } from "../host/run-place.js";
 import { hostSnapshotStore } from "../host/host-snapshot-store.js";
 import { useHostSelector } from "./use-host-snapshot.js";
@@ -75,6 +77,30 @@ export function usePlaceActivity(hostClient: HostClient, placeKey: string) {
   );
   const get = useCallback(() => hostClient.placeActivity(placeKey), [hostClient, placeKey]);
   return useSyncExternalStore(subscribe, get, get);
+}
+const nobody: PlaceAgents = { agents: [], unnamedActing: false };
+/**
+ * The agents using one tab that the reader can open, each working while the
+ * Host reports its Run acting in that very tab, working first. Redraws only
+ * when who is there, or who works, changes.
+ */
+export function usePlaceAgents(hostClient: HostClient, placeKey: string | null): PlaceAgents {
+  const place = usePlace(hostClient, placeKey);
+  const activity = usePlaceActivity(hostClient, placeKey ?? "");
+  const select = useCallback(
+    (snapshot: HostSnapshot) =>
+      place
+        ? placeAgents(
+            {
+              destination: place.destination,
+              occupants: actingOccupants(place.occupants, activity),
+            },
+            snapshot,
+          )
+        : nobody,
+    [activity, place],
+  );
+  return useHostSelector(hostClient, select, samePlaceAgents);
 }
 /** Retain only while visible; painting a frame returns its exact target's credit. */
 export function useBrowserWatch(

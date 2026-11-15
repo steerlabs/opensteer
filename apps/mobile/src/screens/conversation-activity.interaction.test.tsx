@@ -3,7 +3,7 @@
 import type {
   BrowserSessionSummary,
   HostClient,
-  LegacyHostSnapshot as HostSnapshot,
+  HostSnapshot,
   MessageEntry,
   ReasoningEntry,
   RunEntry,

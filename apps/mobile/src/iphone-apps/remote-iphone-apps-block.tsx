@@ -18,7 +18,7 @@ import {
   type ComputerAppRow,
   type ComputerUseData,
 } from "@opensteer/client/integrations";
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 import { useState, type ReactNode } from "react";
 import { StyleSheet } from "react-native";
 import { useBlockActions } from "../computers/block-actions.js";
@@ -39,7 +39,7 @@ export function RemoteIphoneAppsBlock(props: {
   readonly canRespond: boolean;
   readonly data: ComputerUseData | null;
   readonly hostClient: HostClient;
-  readonly machine: LegacyMachineSummary;
+  readonly machine: MachineSummary;
   readonly onChanged: () => Promise<void>;
 }): ReactNode {
   const { hostClient, machine } = props;

@@ -1,7 +1,7 @@
 import { deviceBrowser, deviceBrowserDetail } from "@opensteer/client/computers";
-import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
+import type { HostClient, HostSnapshot } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 import { useNavigation } from "@react-navigation/native";
 import type { ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
@@ -16,7 +16,7 @@ import { Symbol } from "../ui/symbol.js";
 export function DeviceBrowserRow(props: {
   readonly deploymentId: string;
   readonly hostClient: HostClient;
-  readonly machine: LegacyMachineSummary;
+  readonly machine: MachineSummary;
 }): ReactNode {
   const navigation = useNavigation();
   const profiles = useHostSelector(props.hostClient, selectProfiles);

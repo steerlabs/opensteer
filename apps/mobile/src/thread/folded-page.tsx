@@ -1,4 +1,4 @@
-import { pageSiteLabel, type HostClient, type SurfaceDestination } from "@opensteer/client/host";
+import { pageSiteLabel, type HostClient, type TabDestination } from "@opensteer/client/host";
 import { useRunPlace, useRunPlaceBinding } from "@opensteer/client/react";
 import type { PlaceEnteredEventView } from "@opensteer/core";
 import { placeIdentityKey } from "@opensteer/protocol";
@@ -32,7 +32,7 @@ export const foldedPageWidth = size.width + 2 * inset;
  */
 export const FoldedPage = memo(function FoldedPage(props: {
   readonly hostClient: HostClient;
-  readonly onOpen: (destination: SurfaceDestination) => void;
+  readonly onOpen: (destination: TabDestination) => void;
   readonly onUnfold: () => void;
   /** Whether the page fits above the conversation; without room the tab opens instead. */
   readonly room: boolean;
@@ -47,7 +47,7 @@ export const FoldedPage = memo(function FoldedPage(props: {
 function FoldedPicture(props: {
   readonly entry: PlaceEnteredEventView;
   readonly hostClient: HostClient;
-  readonly onOpen: (destination: SurfaceDestination) => void;
+  readonly onOpen: (destination: TabDestination) => void;
   readonly onUnfold: () => void;
   readonly room: boolean;
   readonly threadId: string;

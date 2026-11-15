@@ -2,7 +2,7 @@ import type {
   BrowserActionErrorCode,
   BrowserActionEvent,
   BrowserActionRequest,
-  LegacyBrowserActionResult,
+  BrowserActionResult,
   BrowserAttachTicketClaims,
   BrowserClientMessage,
   BrowserDialog,
@@ -275,7 +275,7 @@ export interface PhoneBrowserNativePort {
       deadline: number;
       request: BrowserActionRequest;
     },
-  ): Promise<Exclude<LegacyBrowserActionResult, { type: "page.capture" }> | { type: "delivered" }>;
+  ): Promise<Exclude<BrowserActionResult, { type: "page.capture" }> | { type: "delivered" }>;
   applyViewerInput(
     input: NativeDocumentRef & {
       channelId: string;

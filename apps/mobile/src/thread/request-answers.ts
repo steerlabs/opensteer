@@ -1,4 +1,4 @@
-import type { LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
+import type { HostSnapshot } from "@opensteer/client/host";
 import {
   requestOptionDeclines,
   type Request,

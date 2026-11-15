@@ -3,7 +3,7 @@ import {
   applyDeviceAccess,
   type DeviceMembership,
 } from "@opensteer/client/computers";
-import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
+import type { HostClient, HostSnapshot } from "@opensteer/client/host";
 import { RunnerIdSchema } from "@opensteer/core";
 import { deviceAccess, type DeviceInitialAccess } from "@opensteer/protocol";
 import type { NotificationChoice } from "../notifications/push-registration.js";

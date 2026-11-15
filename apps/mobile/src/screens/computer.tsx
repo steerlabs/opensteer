@@ -11,9 +11,9 @@ import { Screen } from "../ui/screen.js";
 import {
   canRespondToRequests,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
 } from "@opensteer/client/host";
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 import {
   computerRole,
   computerRoleLabel,
@@ -301,7 +301,7 @@ function ComputerDetail(props: {
 /** The computer in the Computers page's own words: its role, what it lends, and its state. */
 function ComputerSummary(props: {
   readonly apps: Parameters<typeof computerUses>[1];
-  readonly machine: LegacyMachineSummary;
+  readonly machine: MachineSummary;
 }): ReactNode {
   const uses = computerUses(props.machine, props.apps);
   const role = computerRole(props.machine, uses, props.apps !== null);

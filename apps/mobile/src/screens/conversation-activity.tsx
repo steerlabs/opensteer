@@ -7,7 +7,7 @@ import {
   visibleTranscript,
   withoutOwnAssignment,
   type HostClient,
-  type SurfaceDestination,
+  type TabDestination,
 } from "@opensteer/client/host";
 import { useHostSnapshot, useThreadInputQueue } from "@opensteer/client/react";
 import {
@@ -183,12 +183,12 @@ function ReplyActivity(props: {
   );
   const memory = useRef(new Map<string, boolean>()).current;
   const leave = useCallback(() => navigation.goBack(), [navigation]);
-  const openPlace = useOpenPlace(hostClient, deploymentId, threadId, leave);
+  const openPlace = useOpenPlace(deploymentId, threadId, leave);
   const surfaces = useMemo<TranscriptSurfaces>(
     () => ({
       hostClient,
       threadId,
-      open: (destination: SurfaceDestination) => openPlace(destination),
+      open: (destination: TabDestination) => openPlace(destination),
     }),
     [hostClient, openPlace, threadId],
   );

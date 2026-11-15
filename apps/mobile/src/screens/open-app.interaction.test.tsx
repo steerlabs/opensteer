@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   HostClientRequestError,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
 } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { computerReasonWords } from "@opensteer/client/integrations";

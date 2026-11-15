@@ -8,7 +8,7 @@ import {
   threadInDirectory,
   watchState,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type ScheduleDetail,
 } from "@opensteer/client/host";
 import { useHostSelector, useSchedule } from "@opensteer/client/react";

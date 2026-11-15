@@ -4,18 +4,22 @@ import {
   canRespondToRequests,
   describeHostConnection,
   placeAgentState,
-  samePlaceAgents,
   threadMark,
+  tabAfterClose,
   type BrowserTabDestination,
-  type BrowserTabStore,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type TabStrip,
+  type HostSnapshot,
 } from "@opensteer/client/host";
 import {
   useBrowserAgentFollow,
   useBrowserPopupFollow,
   useHostSelector,
   useHostSnapshot,
+  usePlaceAgents,
+  useTab,
+  useTabStrip,
+  useTabsSyncing,
   useThreadAgentTab,
 } from "@opensteer/client/react";
 import { deviceElsewhere } from "@opensteer/client/computers";
@@ -24,7 +28,6 @@ import {
   type BrowserPageContentPart,
   type Tab,
   type TabId,
-  type TabLayout,
   type TabTarget,
 } from "@opensteer/core";
 import { computerAppIdentityKey, type TabViewer } from "@opensteer/protocol";
@@ -88,16 +91,8 @@ import { useHereDeviceId } from "../computers/here-device.js";
 import { usePhoneBrowserManager } from "../phone-browser/runtime.js";
 import { usePhoneTabPresentation } from "../phone-browser/presentation.js";
 import { ComputerOwnerView } from "../computers/phone-display.js";
-import { adjacentTabId, layoutTabIds, tabTitle } from "../tabs/tab-entries.js";
-import { tabAgents } from "../tabs/tab-agents.js";
-import { tabsClient } from "../tabs/tabs-host.js";
-import {
-  useOperation,
-  useTab,
-  useTabLayout,
-  useTabsModel,
-  useTabsSyncing,
-} from "../tabs/use-tabs.js";
+import { tabTitle } from "../tabs/tab-entries.js";
+import { useOperation } from "../tabs/use-tabs.js";
 import { useTabViewer } from "../tabs/use-tab-viewer.js";
 import { computerSymbols } from "./settings-model.js";
 import { color, space, touchTarget } from "../theme.js";
@@ -250,19 +245,18 @@ interface TabSurfaceProps {
 function TabSurface(props: TabSurfaceProps): ReactNode {
   const { hostClient, route } = props;
   const navigation = useNavigation();
-  const model = useTabsModel(hostClient);
-  const listed = useTab(model, route.tabId);
-  const syncing = useTabsSyncing(model);
-  const layout = useTabLayout(model);
-  // The last layout that held this tab, to find its neighbour once it is gone.
+  const listed = useTab(hostClient, route.tabId);
+  const syncing = useTabsSyncing(hostClient);
+  const strip = useTabStrip(hostClient);
+  // The last strip that held this tab, to find its neighbour once it is gone.
   const held = useRef<{
-    readonly layout: TabLayout;
+    readonly strip: TabStrip;
     readonly tab: Tab;
     readonly tabId: TabId;
   } | null>(null);
   if (held.current !== null && held.current.tabId !== route.tabId) held.current = null;
-  if (listed !== undefined && layoutTabIds(layout).includes(route.tabId))
-    held.current = { layout, tab: listed, tabId: route.tabId };
+  if (listed !== undefined && strip.ordered.includes(route.tabId))
+    held.current = { strip, tab: listed, tabId: route.tabId };
   // While the list catches up after a reconnect, the tab in front stays as it was.
   const tab = listed ?? (syncing ? held.current?.tab : undefined);
   const left = tab === undefined && !syncing && held.current !== null;
@@ -272,7 +266,7 @@ function TabSurface(props: TabSurfaceProps): ReactNode {
     const from = held.current;
     held.current = null;
     const next =
-      route.popup === true || from === null ? null : adjacentTabId(from.layout, from.tabId);
+      route.popup === true || from === null ? null : tabAfterClose(from.strip, from.tabId);
     if (next !== null) navigation.setParams({ editAddress: false, popup: false, tabId: next });
     else if (navigation.canGoBack()) navigation.goBack();
   }, [left, navigation, route.popup, shown]);
@@ -308,7 +302,7 @@ function ClosedTab(props: { readonly hostClient: HostClient; readonly tabId: Tab
         label: reopening.busy ? "Reopening…" : "Reopen",
         onPress: () =>
           void reopening.run(
-            () => tabsClient(hostClient).reopenTab(tabId),
+            () => hostClient.reopenTab(tabId),
             "This tab could not reopen.",
           ),
       }}
@@ -388,10 +382,8 @@ function Focused(
     readonly threadId: string;
   } | null>(null);
 
-  // Who is here: the tasks the Host says use this tab, and nothing nearby.
-  const usedBy = tab.usedBy;
-  const selectAgents = useCallback((current: HostSnapshot) => tabAgents(usedBy, current), [usedBy]);
-  const agents = useHostSelector(hostClient, selectAgents, samePlaceAgents);
+  // Who is here: the tasks the Host says use this tab, working while they act in it, and nothing nearby.
+  const agents = usePlaceAgents(hostClient, tab.tabId);
 
   const [chosen, setChosen] = useState<Companion | null>(null);
   const [remembered, setRemembered] = useState<string | null | undefined>(undefined);
@@ -491,7 +483,7 @@ function Focused(
         ? { kind: "page", profileId: tab.profile.profileId, url }
         : { computerId: tab.computer.computerId, guest: true, kind: "page", url };
       void opening.run(
-        () => tabsClient(hostClient).openTab(target),
+        () => hostClient.openTab(target),
         "A new tab could not be opened.",
         (opened) => {
           if (navigation.isFocused())
@@ -812,17 +804,15 @@ const companionPillWidth = 320;
  */
 function browserShowsPage(
   snapshot: HostSnapshot,
-  store: BrowserTabStore,
+  tab: Tab | undefined,
   sessionId: string,
-  tabId: string,
 ): boolean {
   const session = snapshot.browserSessions.find(({ id }) => id === sessionId);
-  const row = store.sessionTab(sessionId, tabId);
   return (
     session !== undefined &&
     session.state !== "closed" &&
     session.state !== "failed" &&
-    !(session.state === "ready" && (row?.documentId == null || row.state !== "live"))
+    !(session.state === "ready" && tab?.state !== "open")
   );
 }
 
@@ -868,8 +858,8 @@ function BrowserTab(props: {
   const pageKey = `${sessionId}:${tabId}`;
 
   const session = snapshot.browserSessions.find(({ id }) => id === sessionId) ?? null;
-  const live =
-    session !== null && browserShowsPage(snapshot, hostClient.browserTabs, sessionId, tabId);
+  const listed = useTab(hostClient, tabId);
+  const live = session !== null && browserShowsPage(snapshot, listed, sessionId);
   const elsewhere =
     session === null
       ? null
@@ -893,7 +883,7 @@ function BrowserTab(props: {
     tabId,
   });
   if (shown.current.tabId !== tabId) {
-    const order = session === null ? [] : hostClient.browserTabs.sessionList(sessionId).ids;
+    const order = hostClient.getSnapshot().tabs.strip.ordered as readonly string[];
     const from = order.indexOf(shown.current.tabId);
     const to = order.indexOf(tabId);
     shown.current = { arrival: from >= 0 && to >= 0 && to < from ? -1 : 1, tabId };
@@ -1005,7 +995,7 @@ function useTabClose(
   const close = useCallback(() => {
     setAttempted(tabId);
     void run(async () => {
-      const result = await tabsClient(hostClient).closeTabs([tabId]);
+      const result = await hostClient.closeTabs([tabId]);
       const failed = result.failed.find((item) => item.tabId === tabId);
       if (failed) throw new Error(failed.error.message);
     }, "This tab could not be closed.");

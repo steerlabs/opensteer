@@ -4,7 +4,7 @@ import { computerStatus } from "@opensteer/client/computers";
 import {
   mutationIdempotencyKey,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";

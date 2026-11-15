@@ -3,9 +3,9 @@ import {
   placePage,
   replyPlaces,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type PlaceEntry,
-  type SurfaceDestination,
+  type TabDestination,
   type Turn,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
@@ -35,7 +35,7 @@ export interface TranscriptSurfaces {
   /** Each stretch's turn key finds the gathered work of its owning reply. */
   readonly turns?: ReadonlyMap<string, SurfaceTurn>;
   /** Opens exactly this page or app; nothing stands in for one that has gone. */
-  readonly open: (destination: SurfaceDestination) => void;
+  readonly open: (destination: TabDestination) => void;
 }
 
 export const TranscriptSurfacesContext = createContext<TranscriptSurfaces | null>(null);
@@ -342,7 +342,7 @@ function PlaceStop(props: {
 
 interface Chip {
   readonly acting: boolean;
-  readonly destination: SurfaceDestination | null;
+  readonly destination: TabDestination | null;
   readonly ended: boolean;
   readonly favicon: string | null;
   readonly glyph: "globe" | "laptopcomputer" | "smartphone";

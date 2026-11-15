@@ -1,11 +1,8 @@
-import type { HostClient, PersonalSurfaceDestination } from "@opensteer/client/host";
-import { TabIdSchema, type TabId } from "@opensteer/core";
+import type { TabDestination } from "@opensteer/client/host";
+import type { TabId } from "@opensteer/core";
 import { StackActions, useNavigation } from "@react-navigation/native";
-import { useCallback, useEffect, useRef } from "react";
-import { Alert } from "react-native";
+import { useCallback } from "react";
 import { paramsTabId, tabRoute } from "../browser/surface-route.js";
-import { operationDetail } from "../client/mobile-client.js";
-import { placeTabId } from "./place-tab.js";
 
 /**
  * Shows exactly one tab, pushed over the screen that asked so Back returns
@@ -28,48 +25,20 @@ export function useShowTab(deploymentId: string, threadId?: string): (tabId: Tab
 }
 
 /**
- * Opens the tab a task's place names. A page is shown at once; an app or a
- * phone first opens its one tab, and is shown only to a person still here.
- * A place with no tab to name opens nothing. `leave` runs just before the tab
- * is shown, as a sheet that asked closes itself.
+ * Opens the tab a task's place names, whatever its kind. `leave` runs just
+ * before the tab is shown, as a sheet that asked closes itself.
  */
 export function useOpenPlace(
-  hostClient: HostClient,
   deploymentId: string,
   threadId?: string,
   leave?: () => void,
-): (destination: PersonalSurfaceDestination) => void {
-  const navigation = useNavigation();
+): (destination: TabDestination) => void {
   const showTab = useShowTab(deploymentId, threadId);
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
   return useCallback(
-    (destination: PersonalSurfaceDestination) => {
-      if (destination.kind === "browser") {
-        leave?.();
-        showTab(TabIdSchema.parse(destination.tabId));
-        return;
-      }
-      void placeTabId(hostClient, destination).then(
-        (tabId) => {
-          if (tabId === null || !mounted.current || !navigation.isFocused()) return;
-          leave?.();
-          showTab(tabId);
-        },
-        (error: unknown) => {
-          if (mounted.current)
-            Alert.alert(
-              "This couldn’t be opened",
-              operationDetail(error, "Try again in a moment."),
-            );
-        },
-      );
+    (destination: TabDestination) => {
+      leave?.();
+      showTab(destination.tabId);
     },
-    [hostClient, leave, navigation, showTab],
+    [leave, showTab],
   );
 }

@@ -10,7 +10,7 @@ import {
   requesterLink,
   workerAssignment,
   type ConversationSurfaceSource,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type RequesterLink,
   type FamilyTask,
   type SurfaceItem,

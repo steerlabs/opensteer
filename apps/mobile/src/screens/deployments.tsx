@@ -43,7 +43,7 @@ import {
   sameTaskListSource,
   taskList,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { UnreadDot } from "../threads/task-row.js";

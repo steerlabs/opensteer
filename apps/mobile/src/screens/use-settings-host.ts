@@ -1,7 +1,7 @@
 import {
   canRespondToRequests,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
 } from "@opensteer/client/host";
 import { useCallback, useRef, useSyncExternalStore } from "react";
 interface EngineInstallationRow {

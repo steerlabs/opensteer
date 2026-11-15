@@ -9,7 +9,7 @@ import { KeyedStreamReceiver } from "@opensteer/protocol/keyed-stream";
 import type {
   BrowserTabRecord,
   BrowserTabStreamMeta,
-  LegacyHostedBrowserBootstrap as HostedBrowserBootstrap,
+  HostedBrowserBootstrap,
 } from "@opensteer/protocol/browser";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { PagePresence } from "../ui/page-presence.js";

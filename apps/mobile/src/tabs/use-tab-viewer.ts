@@ -6,7 +6,6 @@ import type { TabViewer } from "@opensteer/protocol";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { operationDetail } from "../client/mobile-client.js";
 import { useAppForeground } from "../ui/foreground.js";
-import { tabsClient } from "./tabs-host.js";
 
 export type TabViewerState =
   | { readonly status: "activating" }
@@ -33,27 +32,25 @@ export function useTabViewer(
     readonly tabId: TabId;
     readonly state: TabViewerState;
   } | null>(null);
-  // The person's Open is spent by the first answer for this tab.
+  // The person's Open is spent by the first ask for this tab; Try again renews it.
   const explicit = useRef<{ readonly tabId: TabId; open: boolean }>({ open: true, tabId });
   if (explicit.current.tabId !== tabId) explicit.current = { open: true, tabId };
   useEffect(() => {
     if (!live) return;
     let current = true;
     const opening = explicit.current;
-    void tabsClient(hostClient)
-      .activateTab(tabId)
+    const wake = opening.open;
+    opening.open = false;
+    void hostClient
+      .activateTab(tabId, { wake })
       .then(
         (viewer) => {
+          // An answer for a tab no longer here wakes nothing.
           const source = phoneSource(viewer);
           if (!current) {
-            if (source !== null) sharedDisplayStreams(hostClient).cancelAutoWake(source);
+            if (source !== null && wake) sharedDisplayStreams(hostClient).cancelAutoWake(source);
             return;
           }
-          if (source !== null) {
-            if (opening.open) sharedDisplayStreams(hostClient).armAutoWake(source);
-            else sharedDisplayStreams(hostClient).cancelAutoWake(source);
-          }
-          opening.open = false;
           setAnswer({ state: { status: "ready", viewer }, tabId });
         },
         (error: unknown) => {

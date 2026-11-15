@@ -1,7 +1,7 @@
 import {
   canRespondToRequests,
   deriveSurface,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
 } from "@opensteer/client/host";
 import type { HostClient } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";

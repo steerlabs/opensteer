@@ -1,4 +1,4 @@
-import type { LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
+import type { HostSnapshot } from "@opensteer/client/host";
 
 /** What the subagent model reads of the Host; nothing else moves a card. */
 function readerInputs(snapshot: HostSnapshot): readonly unknown[] {

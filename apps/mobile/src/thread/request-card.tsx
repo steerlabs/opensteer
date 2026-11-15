@@ -1,6 +1,6 @@
 import type {
   HostClient,
-  LegacyHostSnapshot as HostSnapshot,
+  HostSnapshot,
   SurfaceModel,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";

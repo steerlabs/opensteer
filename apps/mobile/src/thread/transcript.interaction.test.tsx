@@ -13,7 +13,7 @@ import {
   groupTranscriptEntries,
   type DelegationEntry,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type MessageEntry,
   type NodeEntry,
   type PlaceEntry,
@@ -971,7 +971,7 @@ describe("native page rail", () => {
           ...client.getSnapshot(),
           tabRestoreVersion: undefined,
           browserSessions: [rawSession],
-        } as import("@opensteer/client/host").LegacyHostSnapshot,
+        } as import("@opensteer/client/host").HostSnapshot,
         undefined,
       ),
     ).browserSessions[0]!;

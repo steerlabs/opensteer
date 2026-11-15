@@ -2,7 +2,7 @@ import {
   browserTabPicture,
   runPlaceActing,
   type HostClient,
-  type SurfaceDestination,
+  type TabDestination,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import type { PlaceEnteredEventView } from "@opensteer/core";
@@ -22,7 +22,7 @@ export type PictureState = "live" | "waiting" | "none";
 
 interface SurfaceProps {
   readonly active: boolean;
-  readonly destination: SurfaceDestination | null;
+  readonly destination: TabDestination | null;
   readonly entry: PlaceEnteredEventView;
   readonly hostClient: HostClient;
   readonly onPageSize?: (size: { readonly height: number; readonly width: number }) => void;

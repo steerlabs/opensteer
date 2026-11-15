@@ -1,7 +1,7 @@
 import {
   composerReferenceCandidates,
   type ComposerLinkCandidate,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
 } from "@opensteer/client/host";
 import { useTeamReferenceCandidates } from "@opensteer/client/react";
 import {

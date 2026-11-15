@@ -5,14 +5,16 @@ import {
   profileAwayWords,
   startPageIndex,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type StartPageGroup,
   type StartPageProfileChoice,
+  pageOpenTarget,
+  type TabStore,
 } from "@opensteer/client/host";
 import { computerNotReadyStatus, computerReasonWords } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
 import { RunnerIdSchema, type TabId, type TabTarget } from "@opensteer/core";
-import type { ApprovedComputerApp } from "@opensteer/protocol";
+import type { ApprovedComputerApp, OwnerWindowInfo } from "@opensteer/protocol";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   memo,
@@ -29,9 +31,6 @@ import { tabRoute } from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { MacAppIcon } from "../computers/app-mark.js";
 import { useHereDeviceId } from "../computers/here-device.js";
-import { pageTabTarget } from "../tabs/place-tab.js";
-import { computerAppWindows, tabsClient, type AppWindowChoice } from "../tabs/tabs-host.js";
-import { useTabsModel } from "../tabs/use-tabs.js";
 import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
 import { NativeMenu } from "../thread/composer-menu.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
@@ -64,7 +63,7 @@ type Approved =
   | { readonly kind: "ready"; readonly apps: readonly ApprovedComputerApp[] };
 
 /** An app's windows as its Mac last said, or null while unknown or unreadable. */
-type Windows = ReadonlyMap<string, readonly AppWindowChoice[] | null>;
+type Windows = ReadonlyMap<string, readonly OwnerWindowInfo[] | null>;
 
 interface Section {
   readonly key: string;
@@ -85,8 +84,7 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
   const insets = useContentInsets();
   const machines = useHostSelector(hostClient, selectMachines);
   const connected = useHostSelector(hostClient, selectConnected);
-  const tabsModel = useTabsModel(hostClient);
-  const openKeys = useOpenTabKeys(tabsModel);
+  const openKeys = useOpenTabKeys(hostClient.getSnapshot().tabs);
   const browserProfiles = useHostSelector(hostClient, selectProfiles);
   const browserProfileHomes = useHostSelector(hostClient, selectHomes);
   const browsing = useHostSelector(hostClient, selectBrowsing);
@@ -142,7 +140,8 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
     );
     for (const app of apps) {
       if (app.target.kind !== "app") continue;
-      void computerAppWindows(hostClient, app.machineId, app.target.app).then(
+      // Each window by its opaque handle, so a pick opens exactly that window.
+      void hostClient.listComputerAppWindows(app.machineId, app.target.app).then(
         (list) => {
           if (current) setWindows((held) => new Map(held).set(app.connectionId, list));
         },
@@ -195,7 +194,7 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
       setOpening(key);
       setFailure(null);
       try {
-        const tab = await tabsClient(hostClient).openTab(target);
+        const tab = await hostClient.openTab(target);
         if (stillHere()) show(tab.tabId, target.kind === "page");
       } catch (error) {
         if (!mounted.current) return;
@@ -219,11 +218,9 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
   const openTab = useCallback(
     (profile: StartPageProfileChoice) => {
       const input = newTabTarget({ browserProfileHomes, machines }, profile.identity, hereId);
-      const target = pageTabTarget(hostClient.getSnapshot(), input, "about:blank");
-      if (target === null) return;
-      void openTarget(target, "new-tab", "The new tab", false);
+      void openTarget(pageOpenTarget(input, "about:blank"), "new-tab", "The new tab", false);
     },
-    [browserProfileHomes, hereId, hostClient, machines, openTarget],
+    [browserProfileHomes, hereId, machines, openTarget],
   );
 
   const sections = useMemo(
@@ -337,10 +334,10 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
  * What a row opens with a tap: a phone, a Mac app's only window when the Mac
  * has handed over its handle, or otherwise the app, for the Host to bind.
  */
-function rowTarget(app: ApprovedComputerApp, window: AppWindowChoice | undefined): TabTarget {
+function rowTarget(app: ApprovedComputerApp, window: OwnerWindowInfo | undefined): TabTarget {
   const computerId = RunnerIdSchema.parse(app.machineId);
   if (app.target.kind === "phone") return { computerId, kind: "phone" };
-  return window?.windowId
+  return window
     ? { computerId, kind: "window", windowId: window.windowId }
     : { bundleId: app.target.app.bundleId, computerId, kind: "window" };
 }
@@ -353,9 +350,8 @@ function openKey(app: ApprovedComputerApp): string {
 }
 
 /** The phones and Mac apps that already have a tab, as `openKey`s; redrawn only when that set changes. */
-function useOpenTabKeys(model: ReturnType<typeof useTabsModel>): ReadonlySet<string> {
+function useOpenTabKeys(model: TabStore): ReadonlySet<string> {
   const read = useCallback(() => {
-    if (model === null) return "";
     const keys: string[] = [];
     for (const tab of model.rows.values()) {
       if (tab.kind === "phone") keys.push(`phone:${tab.computer.computerId}`);
@@ -365,7 +361,7 @@ function useOpenTabKeys(model: ReturnType<typeof useTabsModel>): ReadonlySet<str
     return keys.sort().join("\n");
   }, [model]);
   const subscribe = useCallback(
-    (listener: () => void) => model?.subscribe(listener) ?? (() => undefined),
+    (listener: () => void) => model.subscribeStructure(listener),
     [model],
   );
   const joined = useSyncExternalStore(subscribe, read, read);
@@ -406,7 +402,7 @@ function GroupHead(props: { readonly group: StartPageGroup }): ReactNode {
 
 /** What a row says under the app's name: its windows, or that it's already open. */
 function windowWords(
-  windows: readonly AppWindowChoice[] | null | undefined,
+  windows: readonly OwnerWindowInfo[] | null | undefined,
   open: boolean,
 ): string | null {
   if (open) return "Open";
@@ -426,7 +422,7 @@ const AppRow = memo(function AppRow(props: {
   /** The phone, or one of this app's windows, already has a tab. */
   readonly open: boolean;
   readonly opening: string | null;
-  readonly windows: readonly AppWindowChoice[] | null | undefined;
+  readonly windows: readonly OwnerWindowInfo[] | null | undefined;
 }): ReactNode {
   const { app, windows } = props;
   const busy = props.opening !== null && props.opening.startsWith(app.connectionId);
@@ -487,14 +483,14 @@ const AppRow = memo(function AppRow(props: {
         disabledReason={props.disabled ? `${app.name} can’t be opened right now.` : null}
         onPresent={noop}
         onSettle={noop}
-        options={windows.map((window, index) => ({
-          id: window.windowId ?? `window:${index}`,
+        options={windows.map((window) => ({
+          id: window.windowId,
           label: window.title || "Untitled window",
           onPress: () =>
             props.onOpen(
               app,
               rowTarget(app, window),
-              `${app.connectionId}:${window.windowId ?? index}`,
+              `${app.connectionId}:${window.windowId}`,
             ),
         }))}
         style={styles.menu}

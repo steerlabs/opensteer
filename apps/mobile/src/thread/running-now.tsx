@@ -4,7 +4,7 @@ import {
   sameRunningNow,
   SubagentCache,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type RunningNow,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";

@@ -7,7 +7,7 @@ import {
   formatDuration,
   workerAssignment,
   type AssignmentTone,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
 } from "@opensteer/client/host";
 import type { ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";

@@ -1,5 +1,5 @@
 import { useHostSelector, useRunPageView } from "@opensteer/client/react";
-import { runPageOpened, type HostClient, type SurfaceDestination } from "@opensteer/client/host";
+import { runPageOpened, type HostClient, type TabDestination } from "@opensteer/client/host";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Platform, StyleSheet, View, type LayoutChangeEvent } from "react-native";
@@ -214,7 +214,7 @@ function ThreadTitle(
         : measured.freed.slice(0, yielded).reduce((left, freed) => left - freed, measured.width)),
   );
   const { deploymentId, hostClient, threadId } = props;
-  const openPlace = useOpenPlace(hostClient, deploymentId, threadId);
+  const openPlace = useOpenPlace(deploymentId, threadId);
   useLayoutEffect(() => {
     const openAround = () => navigation.navigate("ThreadAround", { deploymentId, threadId });
     navigation.setOptions(
@@ -224,7 +224,7 @@ function ThreadTitle(
             {foldedRunId === null ? null : (
               <FoldedPage
                 hostClient={hostClient}
-                onOpen={(destination: SurfaceDestination) => openPlace(destination)}
+                onOpen={(destination: TabDestination) => openPlace(destination)}
                 onUnfold={() =>
                   updatePage((value) => ({
                     ...value,

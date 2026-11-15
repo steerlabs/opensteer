@@ -9,7 +9,7 @@ import {
   runPageSize,
   runPageShown,
   type HostClient,
-  type SurfaceDestination,
+  type TabDestination,
 } from "@opensteer/client/host";
 import {
   useHostSelector,
@@ -76,7 +76,7 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
   readonly clearance: number;
   readonly hostClient: HostClient;
   readonly onInset: (inset: number) => void;
-  readonly onOpen: (destination: SurfaceDestination) => void;
+  readonly onOpen: (destination: TabDestination) => void;
   /** The Run a Stop would reach: the conversation's own. */
   readonly runId: string | null;
   readonly scrolledUp: boolean;
@@ -213,14 +213,14 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
  */
 const RunPagePanel = memo(function RunPagePanel(props: {
   readonly active: boolean;
-  readonly destination: SurfaceDestination | null;
+  readonly destination: TabDestination | null;
   readonly column: number;
   readonly entry: PlaceEnteredEventView;
   readonly fullWidth: boolean;
   readonly hostClient: HostClient;
   readonly onFold: (() => void) | null;
   readonly onInset: (inset: number) => void;
-  readonly onOpen: (destination: SurfaceDestination) => void;
+  readonly onOpen: (destination: TabDestination) => void;
   readonly onPageSize: (size: { readonly height: number; readonly width: number }) => void;
   /** The page's height, or null where only the row is drawn. */
   readonly pageHeight: number | null;

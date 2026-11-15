@@ -9,7 +9,7 @@ import {
   BrowserEditingStore,
   browserThreadAgentTab,
   type BrowserSessionSummary,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
 } from "@opensteer/client/host";
 import { Alert } from "react-native";
 import * as Clipboard from "expo-clipboard";

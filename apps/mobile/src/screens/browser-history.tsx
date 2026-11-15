@@ -1,7 +1,7 @@
 import {
   canRespondToRequests,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import type { BrowserHistoryEntry } from "@opensteer/protocol";

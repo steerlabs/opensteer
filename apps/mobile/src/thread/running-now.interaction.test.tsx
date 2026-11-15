@@ -2,7 +2,7 @@
 
 import type {
   HostClient,
-  LegacyHostSnapshot as HostSnapshot,
+  HostSnapshot,
   NodeEntry,
 } from "@opensteer/client/host";
 import { MockHostClient, type MockSubagentScene } from "@opensteer/client/mock";

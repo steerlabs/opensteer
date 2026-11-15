@@ -21,7 +21,7 @@ import {
   usageLimitNotice,
   type ExecutionSelection,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type ThreadPlacementOption,
 } from "@opensteer/client/host";
 import {

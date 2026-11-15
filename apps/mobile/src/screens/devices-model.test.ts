@@ -1,5 +1,5 @@
 import type { AuthSessionSummary } from "@opensteer/core";
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
 import { deviceListSections } from "./devices-model.js";
 
@@ -7,7 +7,7 @@ const home = "rnr_11111111-1111-4111-8111-111111111111";
 const phone = "rnr_22222222-2222-4222-8222-222222222222";
 const laptop = "rnr_33333333-3333-4333-8333-333333333333";
 
-const machine = (overrides: Partial<LegacyMachineSummary>) =>
+const machine = (overrides: Partial<MachineSummary>) =>
   ({
     access: null,
     allowedModules: ["browser", "integrations"],
@@ -21,7 +21,7 @@ const machine = (overrides: Partial<LegacyMachineSummary>) =>
     ownership: "mine",
     status: "online",
     ...overrides,
-  }) as LegacyMachineSummary;
+  }) as MachineSummary;
 
 const machines = [
   machine({

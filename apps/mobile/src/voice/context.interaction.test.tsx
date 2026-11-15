@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 import { placeList } from "@opensteer/client/host";
-import { LegacyPersonShowMessageSchema } from "@opensteer/protocol";
+import { PersonShowMessageSchema } from "@opensteer/protocol";
 import { createId, TabIdSchema } from "@opensteer/core";
 import { attachMockTabs, pageTab, tabId } from "../../test-support/mock-tabs.js";
 import { VoiceController } from "@opensteer/client/voice";
@@ -87,7 +87,7 @@ async function mount() {
       </VoiceProvider>,
     ),
   );
-  const message = LegacyPersonShowMessageSchema.parse({
+  const message = PersonShowMessageSchema.parse({
     type: "host.show",
     runId: createId("run"),
     threadId: source.id,
@@ -120,7 +120,7 @@ async function showPage(f: Awaited<ReturnType<typeof mount>>) {
   const tabId = TabIdSchema.parse(place.destination.tabId);
   await act(async () =>
     f.host.receivePersonShow(
-      LegacyPersonShowMessageSchema.parse({
+      PersonShowMessageSchema.parse({
         ...f.message,
         threadId: f.target.id,
         target: { tabId },
@@ -224,7 +224,7 @@ it("opens what the voice call's agent shows from any screen, and ignores a call 
   let current: typeof call | null = call;
   vi.spyOn(VoiceController.prototype, "call").mockImplementation(() => current);
   const showed = vi.spyOn(VoiceController.prototype, "showed");
-  const message = LegacyPersonShowMessageSchema.parse({ ...f.message, ...call });
+  const message = PersonShowMessageSchema.parse({ ...f.message, ...call });
   // Settings names no conversation, and the call's own Thread is never on screen.
   state.route = { key: "settings", name: "Settings" };
   await act(async () => f.host.receivePersonShow(message));

@@ -1,7 +1,7 @@
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { conversationRoute, show, type ShowTarget } from "./navigation.js";
 import { VoiceController, type VoiceTarget } from "@opensteer/client/voice";
-import { handlePersonShow, type LegacyHostSnapshot } from "@opensteer/client/host";
+import { handlePersonShow, type HostSnapshot } from "@opensteer/client/host";
 import { TabIdSchema } from "@opensteer/core";
 import { selectTabs } from "../tabs/tabs-host.js";
 import { VoiceContext } from "@opensteer/client/react";
@@ -99,7 +99,7 @@ function BackgroundStop({ controller }: { readonly controller: VoiceController }
  * reopened and nothing stands in for it: then nothing is shown.
  * (Delete once the shared client hands shows over as `{tabId}`.)
  */
-function showTarget(snapshot: LegacyHostSnapshot, target: VoiceTarget): ShowTarget | null {
+function showTarget(snapshot: HostSnapshot, target: VoiceTarget): ShowTarget | null {
   if (target.kind === "thread") return target;
   const { destination } = target;
   const tabs = selectTabs(snapshot);
