@@ -208,6 +208,13 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
       ? topParams["threadId"]
       : null;
   const openTeamId = typeof topParams?.["teamId"] === "string" ? topParams["teamId"] : null;
+  // The screen in front, sheets included: Find over a task is not the task.
+  const front = props.state.routes[props.state.index];
+  const frontParams = isRecord(front?.params) ? front.params : null;
+  const viewedThreadId =
+    front?.name === "Thread" && typeof frontParams?.["threadId"] === "string"
+      ? frontParams["threadId"]
+      : null;
   const channelRoute = props.state.routes
     .slice(0, props.state.index + 1)
     .findLast((route) => route.name === "TeamChannel");
@@ -496,6 +503,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                   openChannelId={openChannelId}
                   openTeamId={openTeamId}
                   selectedThreadId={selectedThreadId}
+                  viewedThreadId={viewedThreadId}
                   sides={sides}
                   visible={visible}
                 />
@@ -537,6 +545,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                       openChannelId={openChannelId}
                       openTeamId={openTeamId}
                       selectedThreadId={selectedThreadId}
+                      viewedThreadId={viewedThreadId}
                       sides={sides}
                       visible
                     />

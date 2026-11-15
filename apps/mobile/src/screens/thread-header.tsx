@@ -1,5 +1,10 @@
 import { useHostSelector, useRunPageView } from "@opensteer/client/react";
-import { runPageOpened, type HostClient, type SurfaceDestination } from "@opensteer/client/host";
+import {
+  listedRowThreadId,
+  runPageOpened,
+  type HostClient,
+  type SurfaceDestination,
+} from "@opensteer/client/host";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Platform, StyleSheet, View, type LayoutChangeEvent } from "react-native";
@@ -17,6 +22,7 @@ import { surfaceRoute } from "../browser/surface-route.js";
 import { sameThreadHeader, type ThreadHeaderState } from "../thread/thread-pane.js";
 import { TaskStateIndicator } from "../thread/task-status.js";
 import type { NativeMenuOption } from "../thread/composer-menu.js";
+import { openTopLevel } from "../top-level.js";
 import { ThreadMenu } from "../thread/thread-menu.js";
 import { ThreadName, ThreadSubtitle } from "../thread/thread-subtitle.js";
 import { AppText } from "../ui/primitives.js";
@@ -270,10 +276,28 @@ function ThreadTitle(
     verticalBar,
     yielded,
   ]);
+  // Done on the task in view moves on to the next one, while it is still in view.
+  const onMarkedDone = (next: string | null) => {
+    const state = navigation.getState();
+    if (
+      state === undefined ||
+      !navigation.isFocused() ||
+      listedRowThreadId(hostClient.getSnapshot(), threadId) !== threadId
+    )
+      return;
+    const action = openTopLevel(
+      state,
+      next === null
+        ? { name: "Home", params: { deploymentId } }
+        : { name: "Thread", params: { deploymentId, threadId: next } },
+    );
+    if (action !== null) navigation.dispatch(action);
+  };
   return (
     <ThreadTitlePill
       {...props}
       maxWidth={maxWidth}
+      onMarkedDone={onMarkedDone}
       onNeed={setNeed}
       onFind={() => navigation.navigate("ThreadFind", { deploymentId, threadId })}
     />
@@ -298,6 +322,7 @@ export function ThreadTitlePill(
     readonly hostClient: HostClient;
     readonly maxWidth: number;
     readonly onFind: () => void;
+    readonly onMarkedDone?: (next: string | null) => void;
     /** Hears how wide the title has to be to say the name whole, or to its floor. */
     readonly onNeed?: (width: number) => void;
     readonly onOpenThread: (threadId: string) => void;
@@ -339,6 +364,7 @@ export function ThreadTitlePill(
       hostClient={props.hostClient}
       maxWidth={maxWidth}
       onFind={props.onFind}
+      {...(props.onMarkedDone ? { onMarkedDone: props.onMarkedDone } : {})}
       onOpenThread={props.onOpenThread}
       placeName={props.placeName}
       task={props.task}

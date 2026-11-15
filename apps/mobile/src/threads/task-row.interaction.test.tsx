@@ -2,7 +2,15 @@
 import { act, useEffect, useLayoutEffect, type ReactNode, type Ref } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
-import { taskList, markColorPaint, taskMark, type TaskRow } from "@opensteer/client/host";
+import {
+  heldThread,
+  markColorPaint,
+  taskAfter,
+  taskList,
+  taskMark,
+  taskUnderWay,
+  type TaskRow,
+} from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { iconNames } from "@opensteer/core";
 import { color } from "../theme.js";
@@ -183,7 +191,7 @@ vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileClient: () => ({ signIn: vi.fn() }),
   useMobileState: () => ({ selection: { deploymentId: "test", hostClient: harness.client } }),
 }));
-import { TaskRowState, TaskRowView } from "./task-row.js";
+import { setTaskDone, TaskRowState, TaskRowView } from "./task-row.js";
 import { TaskMark } from "../ui/task-mark.js";
 import { IconChoices } from "../ui/mark-choices.js";
 
@@ -356,4 +364,31 @@ it("offers all 130 searchable icons with accessible selected states and a distin
   expect(container.querySelectorAll('button[role="radio"]').length).toBe(2);
   await act(async () => button("Plane").click());
   expect(choose).toHaveBeenLastCalledWith("plane");
+});
+
+it("hears the task after the one marked Done once the Host agrees, and nothing on Reopen", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  await client.load();
+  const list = taskList(client.getSnapshot());
+  const doneAt = (threadId: string) => heldThread(client.getSnapshot(), threadId)?.doneAt;
+  const row = [...list.working, ...list.ready].find(
+    (item) => item.canBeDone && !taskUnderWay(heldThread(client.getSnapshot(), item.threadId)!),
+  )!;
+  const advance = vi.fn();
+  setTaskDone(client, row.threadId, true, advance);
+  expect(advance).not.toHaveBeenCalled();
+  await vi.waitFor(() => expect(advance).toHaveBeenCalled(), {
+    timeout: 2_000,
+    interval: 10,
+  });
+  expect(advance).toHaveBeenCalledExactlyOnceWith(taskAfter(list, row.threadId));
+  expect(doneAt(row.threadId)).not.toBeNull();
+
+  setTaskDone(client, row.threadId, false, advance);
+  await vi.waitFor(() => expect(doneAt(row.threadId), "the task never reopened").toBeNull(), {
+    timeout: 2_000,
+    interval: 10,
+  });
+  expect(advance).toHaveBeenCalledOnce();
+  client.dispose();
 });

@@ -9,6 +9,7 @@ import {
   placeAgentState,
   placeDestinationEnded,
   samePlaceAgents,
+  listedRowThreadId,
   threadMark,
   type BrowserTabDestination,
   type BrowserTabOpenHandle,
@@ -392,6 +393,19 @@ function Focused(props: {
     setChosen(null);
     setRemembered(null);
   }, []);
+  const shownBeside = useRef(besideId);
+  shownBeside.current = besideId;
+  // Done on the task beside the page moves on to the next one, as on its own screen.
+  const companionDone = (threadId: string) => (next: string | null) => {
+    if (
+      !navigation.isFocused() ||
+      shownBeside.current !== threadId ||
+      listedRowThreadId(hostClient.getSnapshot(), threadId) !== threadId
+    )
+      return;
+    if (next === null) closeCompanion();
+    else showBeside(next);
+  };
   const onStarted = useCallback(
     (threadId: string) => {
       setChosen({ kind: "thread", threadId });
@@ -698,6 +712,7 @@ function Focused(props: {
                       threadId: companion.threadId,
                     })
                   }
+                  onMarkedDone={companionDone(companion.threadId)}
                   onOpenThread={openThread}
                   threadId={companion.threadId}
                 />

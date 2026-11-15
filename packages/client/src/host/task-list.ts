@@ -132,6 +132,20 @@ export function taskList(snapshot: TaskListSource, options: TaskListOptions = {}
 }
 
 /**
+ * The task to show once `threadId` leaves the list: the next one down, or the
+ * one above at the bottom. Null when it is the last task or not listed.
+ */
+export function taskAfter(
+  list: Pick<TaskList, "working" | "ready">,
+  threadId: string,
+): string | null {
+  const order = [...list.working, ...list.ready];
+  const at = order.findIndex((row) => row.threadId === threadId);
+  if (at === -1) return null;
+  return (order[at + 1] ?? order[at - 1])?.threadId ?? null;
+}
+
+/**
  * The freshest copy this client holds of one Thread, whichever of an open
  * conversation or a task list loaded it, so Done works on a task no list holds:
  * delegated work, or a Done task past the loaded pages.

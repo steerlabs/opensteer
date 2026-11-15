@@ -293,10 +293,26 @@ export function Sidebar({
     markQuietSeen(moved);
   };
   const [loadingEarlier, setLoadingEarlier] = useState(false);
-  const doneActive = !doneView && doneRows.some((row) => row.threadId === openRowThreadId);
+  const openInDone = doneRows.some((row) => row.threadId === openRowThreadId);
+  const doneActive = !doneView && openInDone;
+  // Opening a Done task brings its shelf into view, once the shelf is there to
+  // show; the open task moving to Done later leaves the list where it was.
+  const openListed =
+    openRowThreadId !== null && (openInDone || directory.rows.has(openRowThreadId));
+  const opening = useRef<{ readonly threadId: string | null; placed: boolean }>({
+    threadId: null,
+    placed: false,
+  });
   useEffect(() => {
-    if (doneActive && doneShelf.current) revealInList(doneShelf.current);
-  }, [doneActive, openRowThreadId]);
+    if (opening.current.threadId !== openRowThreadId)
+      opening.current = { threadId: openRowThreadId, placed: false };
+    if (opening.current.placed || !openListed) return;
+    if (openInDone) {
+      if (!doneActive || !doneShelf.current) return;
+      revealInList(doneShelf.current);
+    }
+    opening.current.placed = true;
+  }, [collapsed, doneActive, openInDone, openListed, openRowThreadId]);
 
   const allTasks = useMemo(() => [...list.working, ...list.ready, ...list.done], [list]);
   const searchSources = useMemo<SidebarSearchSources>(
