@@ -1,3 +1,9 @@
+import { randomUUID } from "node:crypto";
+import type { NativeTabTargets, NativeReplTabTarget } from "../computer-use/native-tab-targets.js";
+import type { TabServicePort } from "../tabs/ports.js";
+import type { RunToolScope } from "../agents/run-tool-tokens.js";
+import { TabIdSchema, WindowIdSchema, type TabId } from "@opensteer/core";
+import { bindNativeTab } from "../computer-use/computer-repl/native-tab-binding.js";
 import { isNodeError } from "@opensteer/shared/nodeError";
 import { readdir, realpath } from "node:fs/promises";
 import { assertPluginDataId, removePluginData } from "@opensteer/shared/privateFiles";
@@ -144,6 +150,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ErrorCode, McpError, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import {
   HostIntegrationsInvokeSchema,
+  ComputerUseBindParamsSchema,
   androidPhoneDefinitionId,
   computerUseHeadline,
   computerUseActHeadline,
@@ -376,6 +383,10 @@ export class IntegrationPlatformService {
   readonly #onRequestsChanged: () => void;
   readonly #isRunnerConnected: (runnerId: RunnerId) => boolean;
   readonly #computerUse: ComputerUseGateway | null;
+  readonly #nativeTabs: Pick<NativeTabTargets, "acquired"> | undefined;
+  readonly #tabs: Pick<TabServicePort, "get" | "authorizeShow"> | undefined;
+  readonly #nativeTabTarget:
+    ((ownerId: UserId, tabId: TabId) => Promise<NativeReplTabTarget>) | undefined;
   readonly computerRepl: ComputerReplService;
   readonly #computerToolEnabled: (
     context: RunCapabilityClaims<string>,
@@ -415,6 +426,9 @@ export class IntegrationPlatformService {
      * a Host built without it should answer rather than pretending.
      */
     readonly computerUse?: ComputerUseGateway | null;
+    readonly nativeTabs?: Pick<NativeTabTargets, "acquired">;
+    readonly tabs?: Pick<TabServicePort, "get" | "authorizeShow">;
+    readonly nativeTabTarget?: (ownerId: UserId, tabId: TabId) => Promise<NativeReplTabTarget>;
     /**
      * Whether this Run's engine renders MCP image content blocks. An engine
      * that does not gets the tree and a sentence saying the picture is not
@@ -475,6 +489,9 @@ export class IntegrationPlatformService {
     this.#onRequestsChanged = options.onRequestsChanged;
     this.#isRunnerConnected = options.isRunnerConnected;
     this.#computerUse = options.computerUse ?? null;
+    this.#nativeTabs = options.nativeTabs;
+    this.#tabs = options.tabs;
+    this.#nativeTabTarget = options.nativeTabTarget;
     // Silence is not a declaration: an engine that has not said it renders MCP
     // image content is treated as one that does not, exactly as an older
     // Runner's unstated `steering` is treated as unsupported.
@@ -2845,6 +2862,7 @@ export class IntegrationPlatformService {
     args: Readonly<Record<string, unknown>>,
     signal?: AbortSignal,
     deadline?: number,
+    beforeAcquired?: () => Promise<void>,
   ): Promise<ReplReply> {
     const run = caller.run;
     if (!run || !this.#computerUse)
@@ -2919,7 +2937,9 @@ export class IntegrationPlatformService {
     const rawArgs = { ...args };
     delete rawArgs.emit;
     const internalArgs = row === "observe" && mac ? { operation, ...rawArgs } : rawArgs;
-    if (row !== "act") {
+    if (operation === "bind" && mac) {
+      ComputerUseBindParamsSchema.parse(rawArgs);
+    } else if (row !== "act" && operation !== "bind") {
       const [issue] = validateJsonSchema(catalogOperation.inputSchema, internalArgs);
       if (issue)
         throw refused(
@@ -3027,7 +3047,13 @@ export class IntegrationPlatformService {
                       signal,
                       deadline,
                     )
-                  : computerUse.sendObserve(lease!, authorizedTarget, true, signal, deadline),
+                  : computerUse.sendObserve(
+                      lease!,
+                      authorizedTarget,
+                      operation !== "bind",
+                      signal,
+                      deadline,
+                    ),
               );
         audit = dispatch.audit;
         result = await dispatch.settle();
@@ -3051,7 +3077,7 @@ export class IntegrationPlatformService {
         if (event) this.#onDeploymentEvent(event);
       }
       const content: ReplContent[] = performed.map((text) => ({ type: "text", text }));
-      if (result?.observation && args.emit !== false) {
+      if (result?.observation && operation !== "bind" && args.emit !== false) {
         const renderImages = await this.#mcpImageContent({
           ownerUserId,
           runId: run.runId,
@@ -3071,12 +3097,47 @@ export class IntegrationPlatformService {
         operation === "release"
           ? { released }
           : operation === "windows"
-            ? result?.windows
+            ? result?.windows?.map(({ windowId, title }) => ({ windowId, title }))
             : operation === "bind"
               ? { window: result?.window }
               : mac && row === "act"
                 ? { performed }
                 : result;
+      if (operation === "bind") {
+        if (!this.#nativeTabs || run.aud !== "opensteer-run-tools")
+          throw refused("conflict", "The tab service is unavailable.");
+        signal?.throwIfAborted();
+        await beforeAcquired?.();
+        const runClaims: RunToolScope = { ...run, aud: "opensteer-run-tools" };
+        const common = {
+          ownerId: ownerUserId,
+          runClaims,
+          computerId: placement.runnerId,
+          key: randomUUID(),
+        };
+        const tabId = await this.#nativeTabs.acquired(
+          mac
+            ? {
+                ...common,
+                kind: "window",
+                windowId: WindowIdSchema.parse(result?.window?.windowId),
+              }
+            : { ...common, kind: "phone" },
+        );
+        return {
+          value: z.json().parse(
+            mac
+              ? { window: result?.window, tabId }
+              : {
+                  tabId,
+                  connectionId: target,
+                  name: placement.runnerName,
+                  computerId: placement.runnerId,
+                },
+          ),
+          content,
+        };
+      }
       return { value: z.json().parse(JSON.parse(JSON.stringify(value))), content };
     } catch (caught) {
       const error =
@@ -3146,6 +3207,40 @@ export class IntegrationPlatformService {
     request: ComputerReplInvocation,
   ): Promise<ReplReply> {
     if (!caller?.run) throw refused("conflict", "This computer context has ended.");
+    if (request.operation === "tab") {
+      if (!this.#tabs || !this.#nativeTabTarget || caller.run.aud !== "opensteer-run-tools")
+        throw refused("not_found", "This tab is unavailable.");
+      const claims: RunToolScope = { ...caller.run, aud: "opensteer-run-tools" };
+      return bindNativeTab(
+        {
+          tabs: this.#tabs,
+          lookup: this.#nativeTabTarget,
+          connections: async () => {
+            const rows = await this.listCallableTools({
+              ownerUserId: claims.requestedBy,
+              threadId: caller.threadId,
+            });
+            return (await this.#listConnections(claims.requestedBy)).filter((entry) =>
+              rows.some(
+                (row) => row.grant.connectionId === entry.id && row.tool.name === "observe",
+              ),
+            );
+          },
+          bind: (connection, target, beforeAcquired) =>
+            this.callComputerOperation(
+              caller,
+              connection.id,
+              "bind",
+              target.kind === "window" ? { windowId: target.windowId } : {},
+              request.signal,
+              request.deadline,
+              beforeAcquired,
+            ),
+        },
+        claims,
+        TabIdSchema.parse(request.target),
+      );
+    }
     if (request.operation === "apps" || request.operation === "phones") {
       const rows = await this.listCallableTools({
         ownerUserId: caller.run.requestedBy,
@@ -3178,6 +3273,7 @@ export class IntegrationPlatformService {
               name: app?.displayName ?? connection.runnerName,
               ...(app ? { bundleId: app.bundleId } : {}),
               computer: connection.runnerName,
+              computerId: connection.runnerId,
               access:
                 row.grant.access === "read" || connection.access === "read" ? "read" : "read-write",
             };

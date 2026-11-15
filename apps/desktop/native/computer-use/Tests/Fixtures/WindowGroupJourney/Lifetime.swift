@@ -13,7 +13,7 @@ import ApplicationServices
     let listDeadline = Date().addingTimeInterval(2)
     repeat {
       let inventory = try SessionWindows.inventory(app: app, monitor: monitor)
-      listed.append(inventory.map { "\($0.id):\($0.title)" })
+      listed.append(inventory.map { "\($0.serverWindowID):\($0.title)" })
       found = inventory.first(where: { $0.title == "Liveness" })
       if found == nil { try await Task.sleep(nanoseconds: 100_000_000) }
     } while found == nil && Date() < listDeadline

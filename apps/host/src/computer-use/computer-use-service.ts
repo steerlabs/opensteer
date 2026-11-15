@@ -7,6 +7,7 @@ import {
   type RunnerId,
   type ThreadId,
   type UserId,
+  type WindowId,
   type DeploymentId,
 } from "@opensteer/core";
 import { getIntegrationDefinition } from "@opensteer/integration-catalog";
@@ -35,14 +36,14 @@ import {
   androidPhoneDefinitionId,
   ComputerUseActParamsSchema,
   ComputerUseWindowsParamsSchema,
-  LegacyComputerUseBindParamsSchema as ComputerUseBindParamsSchema,
+  ComputerUseBindParamsSchema,
   ComputerUseDispatchObserveParamsSchema,
-  LegacyComputerUseWindowsResultSchema,
-  LegacyComputerUseBindResultSchema,
-  type LegacyWindowInfo as WindowInfo,
+  ComputerUseWindowsResultSchema,
+  ComputerUseBindResultSchema,
+  type WindowInfo,
   ComputerUseActResultSchema,
   ComputerUseInstalledAppsResultSchema,
-  LegacyComputerUseObservationResultSchema,
+  ComputerUseObservationResultSchema,
   ComputerUseResolveAppResultSchema,
   computerAppMaxTimeoutMs,
   computerUseMaxSessionApps,
@@ -55,12 +56,12 @@ import {
   type ComputerUseErrorCode,
   type ComputerUseHelperEvent,
   type ComputerUseInstalledAppsParams,
-  type LegacyComputerUseObservation,
+  type ComputerUseObservation,
   type ComputerUseOperation,
   type HostIntegrationsComputerUse,
   type ComputerUseResolvedApp,
   type ComputerUseSessionId,
-  type LegacyComputerUseSessionSummary,
+  type ComputerUseSessionSummary,
 } from "@opensteer/protocol";
 import { z } from "zod";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -284,7 +285,7 @@ interface DispatchOutcome {
 export type ComputerUseDispatchResult =
   | (DispatchOutcome & {
       readonly kind: "app";
-      readonly observation: LegacyComputerUseObservation | null;
+      readonly observation: ComputerUseObservation | null;
     })
   | (DispatchOutcome & {
       readonly kind: "display";
@@ -320,7 +321,6 @@ export interface ComputerUseServiceOptions {
   readonly passwords?: Pick<PasswordSignInService, "seal" | "validateLease">;
   readonly loginReceiver?: (runnerId: RunnerId) => LoginReceiverKey | null;
   readonly onSessionEnded?: (sessionId: ComputerUseSessionId) => void;
-  readonly onPhoneHeld?: (runnerId: RunnerId) => void;
   readonly onAuthorityRevoked?: (
     context: Pick<ComputerUseContext, "runId" | "bindingGeneration">,
   ) => void;
@@ -410,8 +410,9 @@ interface Session {
   /** The acting apps its owner was last told about. */
   announcedActing: string;
   apps: ComputerAppIdentity[];
-  readonly windows: Map<string, { ref: string; id: number; title: string }>;
-  readonly windowRefs: Map<string, { ref: string; id: number; title: string }>;
+  readonly acquiredWindows: Map<string, Set<WindowId>>;
+  readonly windows: Map<string, { ref: string; windowId: WindowId; title: string }>;
+  readonly windowRefs: Map<string, { ref: string; windowId: WindowId; title: string }>;
   /**
    * The display this session holds, for a phone, from the moment its first
    * call reserved it; null for a Mac's session, which holds apps instead.
@@ -497,7 +498,6 @@ export class ComputerUseService {
   readonly #machineOwners: ComputerUseServiceOptions["machineOwners"];
   readonly #now: () => number;
   readonly #onSessionsChanged: () => void;
-  readonly #onPhoneHeld: ComputerUseServiceOptions["onPhoneHeld"];
   readonly #onAuthorityRevoked: ComputerUseServiceOptions["onAuthorityRevoked"];
   readonly #onSessionEnded: NonNullable<ComputerUseServiceOptions["onSessionEnded"]>;
   readonly #onPresenceChanged: NonNullable<ComputerUseServiceOptions["onPresenceChanged"]>;
@@ -552,7 +552,6 @@ export class ComputerUseService {
     this.#now = options.now ?? (() => Date.now());
     this.#onSessionsChanged = options.onSessionsChanged;
     this.#onSessionEnded = options.onSessionEnded ?? (() => undefined);
-    this.#onPhoneHeld = options.onPhoneHeld;
     this.#onPresenceChanged = options.onPresenceChanged ?? (() => undefined);
     this.#actingWindowMs = options.actingWindowMs ?? computerUseActingWindowMs;
     this.#authorizer = options.authorizer;
@@ -1053,6 +1052,7 @@ export class ComputerUseService {
       this.#publishPlaceActivity(session, appKey, true);
       session.actedAt.delete(appKey);
       session.windows.delete(appKey);
+      session.acquiredWindows.delete(appKey);
       session.apps = session.apps.filter((app) => computerAppIdentityKey(app) !== appKey);
     };
     if (outcome.kind === "error") {
@@ -1101,6 +1101,16 @@ export class ComputerUseService {
     let result: ComputerUseDispatchResult;
     try {
       result = parseComputerUseResult(target, operation, outcome.value);
+      if (
+        operation === "bind" &&
+        !result.error &&
+        typeof params.windowId === "string" &&
+        result.window?.windowId !== params.windowId
+      )
+        throw new ComputerUseError(
+          "failed",
+          "The Mac returned a different window than the one requested.",
+        );
     } catch (error) {
       this.#forgetAfter(session, "failed");
       throw error;
@@ -1132,9 +1142,22 @@ export class ComputerUseService {
           ? session.windowRefs.get(params.window)
           : undefined);
       if (window) {
+        if (operation === "bind" || operation === "observe") {
+          const heldWindows = session.acquiredWindows.get(appKey) ?? new Set<WindowId>();
+          heldWindows.add(window.windowId);
+          session.acquiredWindows.set(appKey, heldWindows);
+        }
         const previous = session.windows.get(appKey);
-        session.windows.set(appKey, { ref: window.ref, id: window.id, title: window.title });
-        session.windowRefs.set(window.ref, { ref: window.ref, id: window.id, title: window.title });
+        session.windows.set(appKey, {
+          ref: window.ref,
+          windowId: window.windowId,
+          title: window.title,
+        });
+        session.windowRefs.set(window.ref, {
+          ref: window.ref,
+          windowId: window.windowId,
+          title: window.title,
+        });
         windowChanged = previous?.ref !== window.ref || previous.title !== window.title;
       } else if (operation === "act" && typeof params.window === "string") {
         // The ref has been bound already. It stays current across input calls.
@@ -1146,7 +1169,6 @@ export class ComputerUseService {
     session.confirmed = true;
     session.lastUsedAt = this.#now();
     if (wasUnconfirmed || addedApp || windowChanged) this.#onSessionsChanged();
-    if (wasUnconfirmed && session.display !== null) this.#onPhoneHeld?.(session.runnerId);
     const owners = this.#appOwners.get(session.runnerId) ?? new Map<string, Session>();
     owners.set(computerUseHolderKey(holdingOf(target)), session);
     this.#appOwners.set(session.runnerId, owners);
@@ -1178,6 +1200,7 @@ export class ComputerUseService {
       actionCount: 0,
       activityTimer: undefined,
       apps: [],
+      acquiredWindows: new Map(),
       windows: new Map(),
       windowRefs: new Map(),
       confirmed: false,
@@ -1450,6 +1473,31 @@ export class ComputerUseService {
 
   threadTitle(threadId: ThreadId, ownerUserId: UserId): Promise<string | null> {
     return this.#threadTitle(threadId, ownerUserId);
+  }
+
+  nativeTargetUsers(
+    ownerId: UserId,
+    runnerId: RunnerId,
+    windowId?: WindowId,
+  ): Array<{ taskId: ThreadId }> {
+    return [
+      ...new Set(
+        this.#snapshot()
+          .filter(
+            (session) =>
+              session.ownerUserId === ownerId &&
+              session.runnerId === runnerId &&
+              session.confirmed &&
+              this.#holds(session) &&
+              (windowId === undefined
+                ? session.display !== null
+                : [...session.acquiredWindows.values()].some((windows) => windows.has(windowId))),
+          )
+          .map((session) => session.threadId),
+      ),
+    ]
+      .sort()
+      .map((taskId) => ({ taskId }));
   }
 
   /** The Run holding each app, or the display, on this computer, keyed by `computerUseHolderKey`. */
@@ -1855,7 +1903,7 @@ export class ComputerUseService {
   // ---- projection ------------------------------------------------------
 
   /** Every live session on one computer. */
-  sessionsForRunner(runnerId: RunnerId): LegacyComputerUseSessionSummary[] {
+  sessionsForRunner(runnerId: RunnerId): ComputerUseSessionSummary[] {
     return [...this.#sessions.values()]
       .filter(
         (session) => session.runnerId === runnerId && session.confirmed && holdsAnything(session),
@@ -2046,7 +2094,7 @@ function summarize(
   session: Session,
   actingAppKeys: string[],
   actingDisplay: boolean,
-): LegacyComputerUseSessionSummary {
+): ComputerUseSessionSummary {
   return {
     actionCount: session.actionCount,
     actingAppKeys,
@@ -2055,7 +2103,7 @@ function summarize(
     apps: session.apps.map((app) => ({ ...app })),
     windows: [...session.windows]
       .filter(([appKey]) => session.apps.some((app) => computerAppIdentityKey(app) === appKey))
-      .map(([appKey, window]) => ({ appKey, id: window.id, title: window.title })),
+      .map(([appKey, window]) => ({ appKey, windowId: window.windowId, title: window.title })),
     display: session.display !== null,
     openedAt: session.openedAt,
     runId: session.runId,
@@ -2118,7 +2166,7 @@ function parseComputerUseResult(
     };
   }
   if (operation === "windows") {
-    const parsed = LegacyComputerUseWindowsResultSchema.safeParse(value);
+    const parsed = ComputerUseWindowsResultSchema.safeParse(value);
     if (!parsed.success) throw unreadableObservation(operation, scope);
     return {
       kind: "app",
@@ -2129,7 +2177,7 @@ function parseComputerUseResult(
     };
   }
   if (operation === "bind") {
-    const parsed = LegacyComputerUseBindResultSchema.safeParse(value);
+    const parsed = ComputerUseBindResultSchema.safeParse(value);
     if (!parsed.success) throw unreadableObservation(operation, scope);
     return {
       kind: "app",
@@ -2140,7 +2188,7 @@ function parseComputerUseResult(
     };
   }
   if (operation === "observe") {
-    const parsed = LegacyComputerUseObservationResultSchema.safeParse(value);
+    const parsed = ComputerUseObservationResultSchema.safeParse(value);
     if (!parsed.success) throw unreadableObservation("observe", scope);
     return { error: null, kind: "app", observation: parsed.data.observation, performed: null };
   }

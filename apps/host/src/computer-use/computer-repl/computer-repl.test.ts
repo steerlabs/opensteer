@@ -230,13 +230,25 @@ describe("computer REPL worker boundary", () => {
           ],
         };
       if (request.operation === "bind")
-        return { value: { window: { ref: "w", id: 7, title: "Doc" } } };
+        return {
+          value: {
+            window: {
+              ref: "w",
+              windowId: "win_00000000-0000-4000-8000-000000000007",
+              title: "Doc",
+            },
+          },
+        };
       if (request.operation === "observe")
         return {
           value: {
             observation: {
               snapshot: "s",
-              window: { ref: "w", id: 7, title: "Doc" },
+              window: {
+                ref: "w",
+                windowId: "win_00000000-0000-4000-8000-000000000007",
+                title: "Doc",
+              },
               tree: "[1] Save",
               screenshot: null,
             },
@@ -250,11 +262,77 @@ describe("computer REPL worker boundary", () => {
       };
     });
     const result = await run(
-      'const a=await app("Notes"); const w=await a.window(7); const alias=await a.window(7); await Promise.all([w.observe(),alias.click(1)]); return "done"',
+      'const a=await app("Notes"); const w=await a.window("win_00000000-0000-4000-8000-000000000007"); const alias=await a.window("win_00000000-0000-4000-8000-000000000007"); await Promise.all([w.observe(),alias.click(1)]); return "done"',
     );
     expect(result.isError).toBeUndefined();
     expect(calls).toEqual(["apps", "bind", "bind", "observe", "click"]);
     expect(output(result)).toBe('observed\nClicked Save\n"done"');
+  });
+  it("returns read-only tab identities and never reacquires during observations", async () => {
+    const acquisitions: string[] = [];
+    const { run } = setup(async (request) => {
+      if (request.operation === "tab") {
+        acquisitions.push(request.target!);
+        return {
+          value:
+            request.target === "phone-tab"
+              ? {
+                  kind: "phone",
+                  connectionId: "p",
+                  tabId: "phone-tab",
+                  name: "Phone",
+                  computerId: "phone",
+                }
+              : {
+                  kind: "window",
+                  connectionId: "a",
+                  tabId: "window-tab",
+                  window: {
+                    windowId: "win_00000000-0000-4000-8000-000000000007",
+                    title: "Note",
+                    ref: "w",
+                  },
+                },
+        };
+      }
+      if (request.operation === "observe")
+        return { value: { observation: { snapshot: "s", observationId: "o" } } };
+      throw new Error("Unexpected operation");
+    });
+    expect(
+      output(
+        await run(
+          'const w=await tab("window-tab"); const p=await tab("phone-tab"); try {w.tabId="other"} catch {} try {p.tabId="other"} catch {} await w.observe(); await p.observe(); return [w.tabId,p.tabId,w.windowId,typeof w.id]',
+        ),
+      ),
+    ).toBe('["window-tab","phone-tab","win_00000000-0000-4000-8000-000000000007","undefined"]');
+    await run("await w.observe(); await p.observe()");
+    expect(acquisitions).toEqual(["window-tab", "phone-tab"]);
+  });
+  it("requires a new observation after explicitly reacquiring a native target", async () => {
+    const snapshots: unknown[] = [];
+    const { run } = setup(async (request) => {
+      if (request.operation === "tab")
+        return {
+          value: {
+            kind: "window",
+            connectionId: "a",
+            tabId: "window-tab",
+            window: {
+              windowId: "win_00000000-0000-4000-8000-000000000007",
+              title: "Note",
+              ref: "w",
+            },
+          },
+        };
+      if (request.operation === "observe") return { value: { observation: { snapshot: "prior" } } };
+      snapshots.push(request.args.snapshot);
+      return { value: { performed: [] } };
+    });
+    await run(
+      'const first=await tab("window-tab"); await first.observe(); const fresh=await tab("window-tab"); await fresh.click(1)',
+    );
+    expect(snapshots).toEqual([null]);
   });
   it("cancels unstarted detached operations at body settlement", async () => {
     const calls: string[] = [];

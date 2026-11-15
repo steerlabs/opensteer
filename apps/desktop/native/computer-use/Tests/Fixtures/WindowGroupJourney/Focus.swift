@@ -7,7 +7,7 @@ import ApplicationServices
     monitor: WindowMonitor, cover: PersonCover
   ) async throws {
         await cover.moveAside()
-    try await personClick(b.id, pid: pid, out: out, fromRight: true)
+    try await personClick(b.serverWindowID, pid: pid, out: out, fromRight: true)
     let otherKey = try await ActionRunner.run(
       actions: [.key(keys: "x")], app: state, window: a.ref, snapshot: nil,
       cancellation: SessionCancellation(), monitor: monitor, overlay: nil)
@@ -15,7 +15,7 @@ import ApplicationServices
       otherKey.performed.isEmpty && otherKey.error?.code == .failed,
       "N6 moved person's key window")
         await cover.moveAside()
-    try await personClick(a.id, pid: pid, out: out)
+    try await personClick(a.serverWindowID, pid: pid, out: out)
     let sameKey = try await ActionRunner.run(
       actions: [.key(keys: "x")], app: state, window: a.ref, snapshot: nil,
       cancellation: SessionCancellation(), monitor: monitor, overlay: nil)
@@ -33,14 +33,14 @@ import ApplicationServices
     try require(personPID != pid, "N6 independent app was not foreground")
         await cover.moveAside()
     try await command(out, "raise", "A")
-    let personInputFrame = try KeyWindow.currentFrame(a.id).unwrap("person input frame")
+    let personInputFrame = try KeyWindow.currentFrame(a.serverWindowID).unwrap("person input frame")
     let personInput = Process()
     personInput.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
         let beforePersonInput = try String(contentsOf: out.appendingPathComponent("events.jsonl"))
           .split(separator: "\n").count
         personInput.arguments = [
           "--person-click", String(Double(personInputFrame.minX + 40)),
-          String(Double(personInputFrame.midY)), String(a.id),
+          String(Double(personInputFrame.midY)), String(a.serverWindowID),
         ]
         personInput.environment = ProcessInfo.processInfo.environment.merging([
           "OPENSTEER_PERSON_WAIT_EVENTS": out.appendingPathComponent("events.jsonl").path,
@@ -86,7 +86,7 @@ import ApplicationServices
       "error": sharedInput.error?.code.rawValue ?? "", "message": sharedInput.error?.message ?? "",
       "performed": sharedInput.performed, "agentKeysInA": agentKeysInA,
       "personKeyInA": personKeyInA, "keysBeforeClick": keysBeforeClick,
-      "keysAfterClick": keysAfterClick, "fixturePID": Int(pid), "windowA": Int(a.id),
+      "keysAfterClick": keysAfterClick, "fixturePID": Int(pid), "windowA": Int(a.serverWindowID),
       "frontAfter": Int(PrivateAPI.focusPID(front: true) ?? 0), "watch": personInputWatch.json,
     ]).write(to: out.appendingPathComponent("N6-person-input.json"))
     try require(
@@ -103,23 +103,23 @@ import ApplicationServices
         && PrivateAPI.focusPID(front: true) == pid,
       "N6 the person was sent back to the app they left")
         await cover.moveAside()
-        try await personClick(a.id, pid: pid, out: out)
+        try await personClick(a.serverWindowID, pid: pid, out: out)
         try await command(out, "raise", "B")
-        let siblingFrame = try KeyWindow.currentFrame(b.id).unwrap("mid-type sibling")
+        let siblingFrame = try KeyWindow.currentFrame(b.serverWindowID).unwrap("mid-type sibling")
         let switchPoint = CGPoint(x: siblingFrame.maxX - 12, y: siblingFrame.midY)
         let hit = await MainActor.run {
           NSWindow.windowNumber(
             at: NSPoint(x: switchPoint.x, y: ScreenGeometry.primaryHeight - switchPoint.y),
             belowWindowWithWindowNumber: 0)
         }
-        try require(hit == Int(b.id), "N6 mid-type B is not exposed")
+        try require(hit == Int(b.serverWindowID), "N6 mid-type B is not exposed")
         let switcher = Process()
         switcher.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
         let switchBaseline = try String(contentsOf: out.appendingPathComponent("events.jsonl"))
           .split(separator: "\n").count
         switcher.arguments = [
           "--person-click", String(Double(switchPoint.x)), String(Double(switchPoint.y)),
-          String(b.id),
+          String(b.serverWindowID),
         ]
         switcher.environment = ProcessInfo.processInfo.environment.merging([
           "OPENSTEER_PERSON_WAIT_EVENTS": out.appendingPathComponent("events.jsonl").path,
@@ -159,7 +159,7 @@ import ApplicationServices
           "error": switched.error?.code.rawValue ?? "", "message": switched.error?.message ?? "",
           "performed": switched.performed, "agentKeysInA": switchKeysInA,
           "agentKeysInB": switchKeysInB, "personKeyInB": personKeyInB,
-          "keyWindowAfter": Int(keyWindowAfter ?? 0), "b": Int(b.id),
+          "keyWindowAfter": Int(keyWindowAfter ?? 0), "b": Int(b.serverWindowID),
           "events": switchEvents.map(String.init), "hit": hit,
         ]).write(to: out.appendingPathComponent("N6-same-app-switch.json"))
         try require(!switcher.isRunning && switcher.terminationStatus == 0, "N6 switch source failed")
@@ -172,7 +172,7 @@ import ApplicationServices
           "N6 the person's switch to B did not land while the agent's keys were going out")
         try require(personKeyInB, "N6 the person's key after switching did not reach B")
         try require(
-          keyWindowAfter == b.id && PrivateAPI.focusPID(front: true) == pid,
+          keyWindowAfter == b.serverWindowID && PrivateAPI.focusPID(front: true) == pid,
           "N6 the keyboard was moved back off the person's window")
     await cover.show()
         try Data("Person-focus cases, physical person input and same-app mid-type switch passed\n".utf8).write(

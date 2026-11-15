@@ -425,6 +425,25 @@ async function handle(input: unknown) {
           context.phones.set(item.request.target ?? "", observation.observationId);
       }
     }
+    if (
+      !message.error &&
+      (item.request.operation === "bind" || item.request.operation === "tab") &&
+      typeof value === "object" &&
+      value !== null &&
+      !Array.isArray(value)
+    ) {
+      const connection =
+        typeof value.connectionId === "string" ? value.connectionId : item.request.target;
+      const window = value.window;
+      if (
+        typeof window === "object" &&
+        window !== null &&
+        !Array.isArray(window) &&
+        typeof window.ref === "string"
+      )
+        context.snapshots.delete(`${connection}:${window.ref}`);
+      else context.phones.delete(connection ?? "");
+    }
     if (item.request.operation === "release") context.phones.delete(item.request.target ?? "");
   }
   const json = context.vm.newString(

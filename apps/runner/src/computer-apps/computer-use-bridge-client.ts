@@ -1,3 +1,4 @@
+import { z } from "zod";
 import {
   ComputerUseBridgeFrameSchema,
   ComputerUseBridgeRequestSchema,
@@ -11,7 +12,6 @@ import {
   type ComputerUseBridgeEvent,
   type ComputerUseBridgeFrame,
   type ComputerUseBridgeMethod,
-  type ComputerUseBridgeRequest,
   type ComputerUseErrorCode,
 } from "@opensteer/protocol";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
@@ -23,6 +23,10 @@ import { delay } from "@opensteer/shared/delay";
  * running. It is short because the target is loopback on this very computer:
  * the answer is a connect or a refusal, never a network.
  */
+const nativeBridgeRequestSchema = ComputerUseBridgeRequestSchema.extend({
+  method: z.union([ComputerUseBridgeRequestSchema.shape.method, z.literal("window.resolve")]),
+});
+type NativeBridgeRequest = z.infer<typeof nativeBridgeRequestSchema>;
 const connectTimeoutMs = 5_000;
 const minimumRetryDelayMs = 250;
 const maximumRetryDelayMs = 5_000;
@@ -78,7 +82,7 @@ export class ComputerUseBridgeError extends Error {
  */
 export class ComputerUseBridgeDeadlineError extends ComputerUseBridgeError {
   /** `mayHaveEffect`: the request was written and may have changed something. */
-  constructor(method: ComputerUseBridgeMethod, mayHaveEffect: boolean) {
+  constructor(method: ComputerUseBridgeMethod | "window.resolve", mayHaveEffect: boolean) {
     super(
       mayHaveEffect ? "outcome-unknown" : "failed",
       !mayHaveEffect
@@ -134,7 +138,7 @@ interface PendingRequest {
   abandoned: boolean;
   /** Whether, once written, this request may change something on the Mac. */
   readonly mayHaveEffect: boolean;
-  readonly method: ComputerUseBridgeMethod;
+  readonly method: ComputerUseBridgeMethod | "window.resolve";
   readonly settle: (outcome: { error: ComputerUseBridgeError } | { value: unknown }) => void;
   /** Whether the frame was handed to the socket, which decides a lost answer. */
   written: boolean;
@@ -186,7 +190,7 @@ export class ComputerUseBridgeClient {
   }
 
   async request(
-    method: ComputerUseBridgeMethod,
+    method: ComputerUseBridgeMethod | "window.resolve",
     params: unknown,
     options: ComputerUseBridgeRequestOptions,
   ): Promise<unknown> {
@@ -199,7 +203,7 @@ export class ComputerUseBridgeClient {
     }
     // Checked with the largest `timeoutMs` a frame can carry, so the one
     // written later, with whatever is left then, is never larger than this.
-    const frame = ComputerUseBridgeRequestSchema.parse({
+    const frame = nativeBridgeRequestSchema.parse({
       id: this.#nextId++,
       kind: "request",
       method,
@@ -213,7 +217,10 @@ export class ComputerUseBridgeClient {
       let settled = false;
       const pending: PendingRequest = {
         abandoned: false,
-        mayHaveEffect: computerUseRequestMayHaveEffect(method, params),
+        mayHaveEffect:
+          method === "window.resolve"
+            ? typeof params === "object" && params !== null && "app" in params
+            : computerUseRequestMayHaveEffect(method, params),
         method,
         settle: (outcome) => {
           if (settled) return;
@@ -301,7 +308,7 @@ export class ComputerUseBridgeClient {
     this.disconnect();
   }
 
-  #send(pending: PendingRequest, frame: ComputerUseBridgeRequest, deadline: number): void {
+  #send(pending: PendingRequest, frame: NativeBridgeRequest, deadline: number): void {
     const id = frame.id;
     this.#pending.set(id, pending);
     void this.#connect().then(

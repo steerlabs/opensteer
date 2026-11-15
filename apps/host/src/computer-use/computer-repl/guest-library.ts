@@ -31,18 +31,18 @@ export const computerGuestLibrary = String.raw`
     constructor(entry) { this.id=entry.id; this.name=entry.name; this.computer=entry.computer; }
     windows() { return call("windows",this.id); }
     async window(id = null) {
-      const result = await call("bind",this.id,{window:id});
+      const result = await call("bind",this.id,{windowId:id});
       const info = result.window;
       const key = this.id + ":" + info.ref;
       let state=windowStates.get(key);
       if(!state) {state={snapshot:null,ref:info.ref};windowStates.set(key,state);}
-      return new Window(this.id,info,state);
+      return new Window(this.id,info,state,result.tabId);
     }
   }
   function target(value) { return typeof value === "number" ? {index:value} : Array.isArray(value) ? {x:value[0],y:value[1]} : value; }
   class Window {
     #app; #state;
-    constructor(app, info, state) { this.#app=app; this.#state=state; this.id=info.id; this.title=info.title; }
+    constructor(app, info, state, tabId) { this.#app=app; this.#state=state; this.windowId=info.windowId; this.title=info.title; Object.defineProperty(this,"tabId",{value:tabId,enumerable:true}); }
     async observe({screenshot=false,emit=true}={}) {
       const result=await call("observe",this.#app,{window:this.#state.ref,includeScreenshot:screenshot,emit});
       this.#state.snapshot=result.observation.snapshot;
@@ -63,7 +63,7 @@ export const computerGuestLibrary = String.raw`
   const phoneStates=new Map();
   class Phone {
     #state;
-    constructor(entry) {this.id=entry.id;this.name=entry.name;let state=phoneStates.get(entry.id);if(!state){state={observationId:null};phoneStates.set(entry.id,state);}this.#state=state;}
+    constructor(entry) {Object.defineProperty(this,"tabId",{value:entry.tabId,enumerable:true});this.id=entry.connectionId ?? entry.id;this.name=entry.name;this.computerId=entry.computerId;let state=phoneStates.get(this.id);if(!state){state={observationId:null};phoneStates.set(this.id,state);}this.#state=state;}
     async observe() {const result=await call("observe",this.id);this.#state.observationId=result.observation.observationId;return result.observation;}
     async act(actions) {try {const result=await call("act",this.id,{actions});this.#state.observationId=result.observation?.observationId ?? null;return result.observation;}catch(error){this.#state.observationId=null;throw error;}}
     async release() {try{return await call("release",this.id);}finally{this.#state.observationId=null;}}
@@ -78,6 +78,18 @@ export const computerGuestLibrary = String.raw`
     scroll(value,direction,amount=1) {return this.act([{type:"scroll",target:target(value),direction,amount}]);}
     wake() {return this.act([{type:"wake"}]);}
   }
-  globalThis.phone = async query => new Phone(await resolve("phones",query));
+  globalThis.phone = async query => {
+    const entry = await resolve("phones",query);
+    return new Phone({...entry,...await call("bind",entry.id)});
+  };
+  globalThis.tab = async tabId => {
+    const result = await call("tab",tabId);
+    if (result.kind === "phone") return new Phone(result);
+    const info = result.window;
+    const key = result.connectionId + ":" + info.ref;
+    let state = windowStates.get(key);
+    if (!state) {state={snapshot:null,ref:info.ref};windowStates.set(key,state);}
+    return new Window(result.connectionId,info,state,result.tabId);
+  };
 })();
 `;

@@ -187,15 +187,17 @@ import Darwin
       try require(NSApp.windows.contains(where: { $0.contentView is AgentCursorView && $0.isVisible && $0.frame == pointerFrame }), "N4 cursor did not follow " + name)
     }
   }
-  func run(app: AppIdentity, a: CGWindowID, b: CGWindowID) async throws {
+  func run(app: AppIdentity, a: WindowInfo, b: WindowInfo) async throws {
+    let aWindowId = a.windowId, bWindowId = b.windowId
+    let a = await a.serverWindowID, b = await b.serverWindowID
     let identity = try JSONSerialization.jsonObject(with: JSONCoding.encoder.encode(app))
     let session = "cus_11111111-1111-4111-8111-111111111111"
     let target: [String: Any] = ["identity": identity, "access": "read-write"]
     try await hello()
     _ = try await request("session.open", ["sessionId": session, "threadTitle": "Window group journey"])
     let listed = try await request("session.windows", ["sessionId": session, "app": target])
-    try require((listed["windows"] as? [[String: Any]])?.contains { ($0["id"] as? NSNumber)?.uint32Value == a } == true, "Wire inventory omitted A")
-    let chosen = try await request("session.bind", ["sessionId": session, "app": target, "window": a])
+    try require((listed["windows"] as? [[String: Any]])?.contains { ($0["windowId"] as? String) == aWindowId } == true, "Wire inventory omitted A")
+    let chosen = try await request("session.bind", ["sessionId": session, "app": target, "windowId": aWindowId])
     let ref = try ((chosen["window"] as? [String: Any])?["ref"] as? String).unwrap("bound ref")
     if ProcessInfo.processInfo.environment["OPENSTEER_WINDOW_GROUP_OVERLAY"] == "1" {
       let source: [String: Any] = ["kind": "task-session", "sessionId": session, "appKey": app.bundleId.lowercased()]
@@ -207,7 +209,7 @@ import Darwin
       _ = try await request("session.act", ["sessionId": session, "app": target, "window": ref, "snapshot": cursorSnapshot, "actions": [["type": "click", "target": ["x": 60 * scale, "y": 100 * scale]]]])
       let cursorOffset = CGPoint(x: 60, y: 100)
       try await assertOutline(a, name: "A", cursorOffset: cursorOffset)
-      _ = try await request("session.bind", ["sessionId": session, "app": target, "window": b])
+      _ = try await request("session.bind", ["sessionId": session, "app": target, "windowId": bWindowId])
       let bSource = try await request("display.resolve", ["source": source])
       try require((aSource["target"] as? [String: Any])?["bindingId"] as? String != (bSource["target"] as? [String: Any])?["bindingId"] as? String, "N4 video binding did not follow B")
       try await assertOutline(b, name: "B", cursorOffset: cursorOffset)
@@ -215,15 +217,15 @@ import Darwin
       let afterFocus = try await request("display.resolve", ["source": source])
       try require((bSource["target"] as? [String: Any])?["bindingId"] as? String == (afterFocus["target"] as? [String: Any])?["bindingId"] as? String, "N4 person focusing C changed task video")
       try await assertOutline(b, name: "B-after-C", cursorOffset: cursorOffset)
-      _ = try await request("session.bind", ["sessionId": session, "app": target, "window": a])
+      _ = try await request("session.bind", ["sessionId": session, "app": target, "windowId": aWindowId])
       try await assertOutline(a, name: "A-again", cursorOffset: cursorOffset)
       try Data("Current-window video and outline assertions passed\n".utf8).write(to: out.appendingPathComponent("N4-passed.txt"))
     }
     let beforeCount = helper.registry.sessions.count
     let picker = try await request("view.windows", ["app": identity])
-    try require(helper.registry.sessions.count == beforeCount && (picker["windows"] as? [[String: Any]])?.contains { ($0["id"] as? NSNumber)?.uint32Value == b } == true, "Owner picker created a session or omitted B")
-    let opened = try await request("view.open", ["viewId": "cvw_22222222-2222-4222-8222-222222222222", "generation": 1, "leaseDurationMs": 30_000, "target": ["kind": "app", "app": identity, "window": b]])
-    try require(((opened["window"] as? [String: Any])?["id"] as? NSNumber)?.uint32Value == b, "Owner B borrowed task A")
+    try require(helper.registry.sessions.count == beforeCount && (picker["windows"] as? [[String: Any]])?.contains { ($0["windowId"] as? String) == bWindowId } == true, "Owner picker created a session or omitted B")
+    let opened = try await request("view.open", ["viewId": "cvw_22222222-2222-4222-8222-222222222222", "generation": 1, "leaseDurationMs": 30_000, "target": ["kind": "app", "app": identity, "windowId": bWindowId]])
+    try require(((opened["window"] as? [String: Any])?["windowId"] as? String) == bWindowId, "Owner B borrowed task A")
     let observed = try await request("session.observe", ["sessionId": session, "app": target, "window": ref, "includeScreenshot": false])
     let snapshot = try ((observed["observation"] as? [String: Any])?["snapshot"] as? String).unwrap("snapshot")
     let next = try await request("session.observe", ["sessionId": session, "app": target, "window": ref, "includeScreenshot": false])
@@ -245,7 +247,9 @@ import Darwin
 }
 
 extension WireJourney {
-  func ownerInput(app: AppIdentity, a: CGWindowID, b: CGWindowID) async throws {
+  func ownerInput(app: AppIdentity, a: WindowInfo, b: WindowInfo) async throws {
+    let aWindowId = a.windowId, bWindowId = b.windowId
+    let a = await a.serverWindowID, b = await b.serverWindowID
     let fixtureEngine = ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_ELECTRON_APP"] == nil ? "appkit" : "electron"
     var cases: [String: String] = [:]
     var active: String?
@@ -289,7 +293,7 @@ extension WireJourney {
     }
     _ = try await agent.request("session.open", ["sessionId": session, "threadTitle": "Owner input native journey"])
     _ = try await agent.request("session.windows", ["sessionId": session, "app": sessionApp])
-    let bound = try await agent.request("session.bind", ["sessionId": session, "app": sessionApp, "window": a])
+    let bound = try await agent.request("session.bind", ["sessionId": session, "app": sessionApp, "windowId": aWindowId])
     let ref = try ((bound["window"] as? [String: Any])?["ref"] as? String).unwrap("agent window ref")
     _ = try await agent.request("session.observe", ["sessionId": session, "app": sessionApp, "window": ref, "includeScreenshot": false])
     let helperApp = await helper.registry.sessions[session]?.app(app.bundleId)
@@ -303,7 +307,7 @@ extension WireJourney {
       let view = "cvw_33333333-3333-4333-8333-333333333333"
       let source: [String: Any] = ["kind": "owner-view", "viewId": view, "generation": 1]
       _ = try await baseline.request("view.open", ["viewId": view, "generation": 1,
-        "leaseDurationMs": 300_000, "target": ["kind": "app", "app": identity, "window": a]])
+        "leaseDurationMs": 300_000, "target": ["kind": "app", "app": identity, "windowId": aWindowId]])
       var targets: [[String: Any]] = []
       for params: [String: Any] in [["source": source], ["source": source, "ownerInputVersion": 1]] {
         let resolved = try await baseline.request("display.resolve", params)
@@ -338,9 +342,9 @@ extension WireJourney {
     }
     func source(_ view: String) -> [String: Any] { ["kind": "owner-view", "viewId": view, "generation": 1] }
     start("capture-ready")
-    for (wire, view, window, stream, media) in [(self, viewA, a, streamA, mediaA), (other, viewB, b, streamB, mediaB)] {
+    for (wire, view, window, stream, media) in [(self, viewA, aWindowId, streamA, mediaA), (other, viewB, bWindowId, streamB, mediaB)] {
       _ = try await wire.request("view.open", ["viewId": view, "generation": 1, "leaseDurationMs": 300_000,
-        "target": ["kind": "app", "app": identity, "window": window]])
+        "target": ["kind": "app", "app": identity, "windowId": window]])
       let resolved = try await wire.request("display.resolve", ["source": source(view), "ownerInputVersion": 2])
       let target = try (resolved["target"] as? [String: Any]).unwrap("video target")
       try require(target["editingVersion"] as? Int == 1, "Video resolution did not confirm editing")
@@ -462,7 +466,7 @@ extension WireJourney {
       _ = try await independent.request("session.open", ["sessionId": otherSession, "threadTitle": "Independent app during owner control"])
       let listed = try await independent.request("session.windows", ["sessionId": otherSession, "app": otherApp])
       let window = try ((listed["windows"] as? [[String: Any]])?.first(where: { $0["title"] as? String == "A" })).unwrap("independent A")
-      let bound = try await independent.request("session.bind", ["sessionId": otherSession, "app": otherApp, "window": window["id"]!])
+      let bound = try await independent.request("session.bind", ["sessionId": otherSession, "app": otherApp, "windowId": window["windowId"]!])
       let independentRef = try ((bound["window"] as? [String: Any])?["ref"] as? String).unwrap("independent ref")
       _ = try await independent.request("session.observe", ["sessionId": otherSession, "app": otherApp,
         "window": independentRef, "includeScreenshot": false])
@@ -782,7 +786,7 @@ extension WireJourney {
 }
 
 extension WireJourney {
-  func ownerViewOnly(app: AppIdentity, window: CGWindowID) async throws {
+  func ownerViewOnly(app: AppIdentity, window: String) async throws {
     let names = ["baseline-hello-does-not-negotiate-input", "baseline-and-probed-resolve",
       "passive-media-decodes", "forged-input-zero-delivery", "passive-media-after-refusal"]
     var cases = Dictionary(uniqueKeysWithValues: names.map { ($0, "not-run") })
@@ -805,7 +809,7 @@ extension WireJourney {
     let stream = "dsp_44444444-4444-4444-8444-444444444444"
     let source: [String: Any] = ["kind": "owner-view", "viewId": view, "generation": 1]
     _ = try await request("view.open", ["viewId": view, "generation": 1,
-      "leaseDurationMs": 300_000, "target": ["kind": "app", "app": identity, "window": window]])
+      "leaseDurationMs": 300_000, "target": ["kind": "app", "app": identity, "windowId": window]])
     start("baseline-and-probed-resolve")
     var targets: [[String: Any]] = []
     for params: [String: Any] in [["source": source], ["source": source, "ownerInputVersion": 1]] {

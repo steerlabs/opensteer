@@ -1037,14 +1037,14 @@ final class PersonStream: @unchecked Sendable {
       // ⌘N returns before Chrome lists its new window: wait for it, up to 5 s.
       let listed = ProcessInfo.processInfo.systemUptime
       var created = try await SessionWindows.windows(app: target, monitor: monitor)
-      while !created.contains(where: { $0.id != observed.window.id }),
+      while !created.contains(where: { $0.serverWindowID != observed.window.serverWindowID }),
         ProcessInfo.processInfo.systemUptime - listed < 5
       {
         try await sleep(0.1)
         created = try await SessionWindows.windows(app: target, monitor: monitor)
       }
-      guard let next = created.first(where: { $0.id != observed.window.id }) else { throw JourneyFailure.invalid("New explicit Chrome window absent") }
-      _ = try SessionWindows.bind(app: target, window: next.id, monitor: monitor)
+      guard let next = created.first(where: { $0.serverWindowID != observed.window.serverWindowID }) else { throw JourneyFailure.invalid("New explicit Chrome window absent") }
+      _ = try SessionWindows.bind(app: target, window: next.windowId, monitor: monitor)
       observed = try await observe(target, monitor)
       let navigation = try await runActions([.key(keys: "cmd+l"), .type(text: page.absoluteString + "?sibling"), .key(keys: "Return")], target, monitor, observed)
       try require(navigation["error"] as? String == "", "Could not load sibling page")
@@ -1086,51 +1086,51 @@ final class PersonStream: @unchecked Sendable {
       var effects: [[String: Any]] = []
       var prior: [CGWindowID: [String: Any]] = [:]
       for window in inventory {
-        _ = try SessionWindows.bind(app: target, window: window.id, monitor: monitor)
+        _ = try SessionWindows.bind(app: target, window: window.windowId, monitor: monitor)
         _ = try await observe(target, monitor)
-        prior[window.id] = webEffects(target, window: window.id)
-        try require(!(prior[window.id]?.isEmpty ?? true), "R3 receiver baseline missing")
+        prior[window.serverWindowID] = webEffects(target, window: window.serverWindowID)
+        try require(!(prior[window.serverWindowID]?.isEmpty ?? true), "R3 receiver baseline missing")
       }
       for window in inventory {
-        _ = try SessionWindows.bind(app: target, window: window.id, monitor: monitor)
+        _ = try SessionWindows.bind(app: target, window: window.windowId, monitor: monitor)
         observed = try await observe(target, monitor)
         guard let snapshot = target.latest else { throw JourneyFailure.invalid("Missing explicit snapshot") }
         let owned = snapshot.elements.filter { $0.attributes.role == "AXButton" && ($0.attributes.title ?? "").hasPrefix("Counter ") }
         try require(owned.count == 1, "Explicit tree includes a sibling counter")
         let currentPlan = try await WindowCapture.plan(processIdentifier: pid,
-          keyWindow: WindowIdentity(windowID: window.id, title: window.title, frame: snapshot.windowFrame))
+          keyWindow: WindowIdentity(windowID: window.serverWindowID, title: window.title, frame: snapshot.windowFrame))
         try require(currentPlan.cropPoints == snapshot.windowFrame, "Overlapping Chrome sibling enlarged crop")
         guard let counter = snapshot.elements.firstIndex(where: { $0.attributes.role == "AXButton" && ($0.attributes.title ?? "").hasPrefix("Counter ") }),
           let field = snapshot.elements.firstIndex(where: { $0.attributes.role == "AXTextField" && ($0.attributes.title ?? "").contains("Journey input") }) else { throw JourneyFailure.invalid("Explicit Chrome controls missing") }
-        clicks.append((window.id, Date().timeIntervalSince1970))
+        clicks.append((window.serverWindowID, Date().timeIntervalSince1970))
         receipts.append(try await runActions([.click(target: .index(counter), button: .left, count: 1),
-          .type(text: "Window-\(window.id)", target: .index(field)), .key(keys: "Control+Alt+j"), .key(keys: "Tab")], target, monitor, observed))
+          .type(text: "Window-\(window.serverWindowID)", target: .index(field)), .key(keys: "Control+Alt+j"), .key(keys: "Tab")], target, monitor, observed))
         observed = try await observe(target, monitor)
-        let effect = webEffects(target, window: window.id)
+        let effect = webEffects(target, window: window.serverWindowID)
         try require((effect["clicks"] as? Int) == 1 && (effect["shortcuts"] as? Int) == 1, "Input did not stay in explicit Chrome window")
         // The known limitation in docs/computer-use.md: the batch's ⌃⌥J also
         // types "j" into the focused field. Asserted as it is, so a fix shows.
-        let typed = "Window-\(window.id)" + "j"
+        let typed = "Window-\(window.serverWindowID)" + "j"
         try require(
-          (effect["input"] as? Int ?? 0) > (prior[window.id]?["input"] as? Int ?? 0)
-            && (effect["change"] as? Int ?? 0) > (prior[window.id]?["change"] as? Int ?? 0)
+          (effect["input"] as? Int ?? 0) > (prior[window.serverWindowID]?["input"] as? Int ?? 0)
+            && (effect["change"] as? Int ?? 0) > (prior[window.serverWindowID]?["change"] as? Int ?? 0)
             && effect["text"] as? String == typed,
           "R3 input/change receiver events missing")
         try require(target.latest?.elements.contains { $0.attributes.value == typed } == true, "Typed text went to a sibling")
-        try observationEvidence(observed, prefix + "-window-\(window.id)")
-        prior[window.id] = effect
-        for sibling in inventory where sibling.id != window.id {
-          _ = try SessionWindows.bind(app: target, window: sibling.id, monitor: monitor)
+        try observationEvidence(observed, prefix + "-window-\(window.serverWindowID)")
+        prior[window.serverWindowID] = effect
+        for sibling in inventory where sibling.serverWindowID != window.serverWindowID {
+          _ = try SessionWindows.bind(app: target, window: sibling.windowId, monitor: monitor)
           _ = try await observe(target, monitor)
-          let actual = webEffects(target, window: sibling.id)
+          let actual = webEffects(target, window: sibling.serverWindowID)
           try require(
-            NSDictionary(dictionary: actual).isEqual(to: prior[sibling.id] ?? [:]),
+            NSDictionary(dictionary: actual).isEqual(to: prior[sibling.serverWindowID] ?? [:]),
             "R3 batch changed its untouched sibling")
           effects.append([
-            "actedWindow": window.id, "sibling": sibling.id, "unchanged": true, "effects": actual,
+            "actedWindow": window.serverWindowID, "sibling": sibling.serverWindowID, "unchanged": true, "effects": actual,
           ])
         }
-        effects.append(["id": window.id, "effects": effect])
+        effects.append(["id": window.serverWindowID, "effects": effect])
       }
       delivered = true
       details = ["windows": effects]
@@ -1284,3 +1284,21 @@ final class PersonStream: @unchecked Sendable {
     await stop(pid)
   }
 }
+
+// OS receipts are test evidence; native requests always use the opaque identity.
+@WorkActor private enum WindowReceipts {
+  static var numbers: [String: CGWindowID] = [:]
+  static func number(_ windowId: String) -> CGWindowID {
+    if let number = numbers[windowId] { return number }
+    guard let identity = try? WindowIdentities.registry.resolve(windowId) else {
+      fatalError("The fixture did not record this window before it closed.")
+    }
+    let number = identity.liveness.windowID
+    numbers[windowId] = number
+    return number
+  }
+}
+extension WindowInfo { @WorkActor var serverWindowID: CGWindowID { WindowReceipts.number(windowId) } }
+extension OwnerWindowInfo { @WorkActor var serverWindowID: CGWindowID { WindowReceipts.number(windowId) } }
+extension Observation.WindowSummary { @WorkActor var serverWindowID: CGWindowID { WindowReceipts.number(windowId) } }
+extension WindowBlocker { @WorkActor var serverWindowID: CGWindowID { WindowReceipts.number(windowId) } }

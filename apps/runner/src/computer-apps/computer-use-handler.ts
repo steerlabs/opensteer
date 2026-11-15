@@ -1,3 +1,4 @@
+import { ComputerAppIdentitySchema, WindowIdSchema } from "@opensteer/core";
 import { WebSocket } from "ws";
 import type { RunId } from "@opensteer/core";
 import {
@@ -6,19 +7,19 @@ import {
   type PasswordSignInAuthorityCommand,
   type PasswordSignInAuthorityEvent,
   type LoginReceiverKey,
-  LegacyComputerViewNativeResultSchema as ComputerViewNativeResultSchema,
+  ComputerViewNativeResultSchema,
   macOwnerViewVersion,
   computerUseUpdateSentence,
-  type LegacyComputerViewNativeResult as ComputerViewNativeResult,
+  type ComputerViewNativeResult,
   type HostIntegrationsComputerView,
   ComputerUseDispatchActParamsSchema,
   ComputerUseWindowsParamsSchema,
-  LegacyComputerUseBindParamsSchema as ComputerUseBindParamsSchema,
+  ComputerUseBindParamsSchema,
   type HostIntegrationsComputerAppWindows,
   ComputerUseDispatchObserveParamsSchema,
   ComputerUseInstalledAppsParamsSchema,
   ComputerUseResolveAppParamsSchema,
-  legacyComputerUseHelperResults,
+  computerUseHelperResults,
   computerUseRequestMayHaveEffect,
   type ComputerUseBridgeEvent,
   type ComputerUseBridgeMethod,
@@ -67,7 +68,7 @@ const imessageReadTimeoutMs = 15_000;
 const imessageSendTimeoutMs = 45_000;
 
 const bridgeResults = {
-  ...legacyComputerUseHelperResults,
+  ...computerUseHelperResults,
   ...computerUseBridgePasswordsResults,
 } satisfies Readonly<Record<ComputerUseBridgeMethod, z.ZodType>>;
 
@@ -326,6 +327,27 @@ export class ComputerUseHandler {
     return this.#readiness?.ownerViewVersion;
   }
 
+  async resolveTabWindow(
+    input: { windowId: string } | { app: import("@opensteer/protocol").ComputerAppIdentity },
+    options: RequestOptions,
+  ) {
+    const params = z
+      .union([
+        z.strictObject({ windowId: WindowIdSchema }),
+        z.strictObject({ app: ComputerAppIdentitySchema }),
+      ])
+      .parse(input);
+    const result = await this.#client.request("window.resolve", params, options);
+    return z
+      .object({
+        windowId: WindowIdSchema.nullable(),
+        app: ComputerAppIdentitySchema.nullable(),
+        title: z.string().max(1024).nullable(),
+        unavailableReason: z.string().nullable(),
+      })
+      .parse(result);
+  }
+
   async runView(
     frame: HostIntegrationsComputerView,
     signal: AbortSignal,
@@ -471,7 +493,7 @@ export class ComputerUseHandler {
         return await this.#onSession(frame.sessionId, session, () =>
           this.#request(
             "session.bind",
-            { app, window: params.data.window, sessionId: frame.sessionId },
+            { app, windowId: params.data.windowId, sessionId: frame.sessionId },
             options(),
           ),
         );
