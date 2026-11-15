@@ -27,7 +27,15 @@ integration("team databases", () => {
     try {
       const url = teamDatabaseUrl(id, "db.example.com");
       await database.ensure(id, url);
+      // A pass that died right after CREATE DATABASE left PUBLIC on it, with connections off.
+      await admin.query(
+        `alter database ${pg.escapeIdentifier(name)} allow_connections false; grant all on database ${pg.escapeIdentifier(name)} to public`,
+      );
       await database.ensure(id, url);
+      expect(
+        (await admin.query("select datallowconn from pg_database where datname=$1", [name])).rows[0]
+          .datallowconn,
+      ).toBe(true);
       const role = await admin.query(
         "select rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls, rolconnlimit, rolpassword like 'SCRAM-SHA-256$%' as scram from pg_authid where rolname=$1",
         [name],

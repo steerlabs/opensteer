@@ -80,9 +80,14 @@ export class PostgresTeamDatabase implements TeamDatabase {
       await client.query(`ALTER ROLE ${identifier} CONNECTION LIMIT ${teamConnectionLimit}`);
       await client.query(`GRANT ${identifier} TO CURRENT_USER WITH SET TRUE`);
       const database = await client.query("select 1 from pg_database where datname=$1", [name]);
+      // PUBLIC may connect to a new database, and a session outlives a later REVOKE, so the
+      // database admits no one until PUBLIC is gone, including after a crash in between.
       if (!database.rowCount)
-        await client.query(`CREATE DATABASE ${identifier} OWNER ${identifier}`);
+        await client.query(
+          `CREATE DATABASE ${identifier} OWNER ${identifier} ALLOW_CONNECTIONS false`,
+        );
       await client.query(`REVOKE ALL ON DATABASE ${identifier} FROM PUBLIC`);
+      await client.query(`ALTER DATABASE ${identifier} ALLOW_CONNECTIONS true`);
     } finally {
       try {
         await client.query("select pg_advisory_unlock(hashtext($1))", [name]);

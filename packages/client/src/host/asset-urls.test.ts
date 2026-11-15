@@ -255,9 +255,7 @@ it("includes FileSource kind and variant in identity and only notifies the affec
     z
       .strictObject({
         threadId: ThreadIdSchema,
-        assets: z.array(
-          z.strictObject({ path: z.string().min(1), variant: AssetVariantSchema }),
-        ),
+        assets: z.array(z.strictObject({ path: z.string().min(1), variant: AssetVariantSchema })),
       })
       .safeParse(pathBatch).success,
   ).toBe(true);
