@@ -64,6 +64,7 @@ import {
   firstTaskId,
   setRoot,
 } from "./workspace.interaction.test-support.js";
+import { composerText, rewrite } from "../composer-editor.test-support.js";
 describe("the draft's places", () => {
   it("follows the sign-in form page and sends its automatic reference on the first press", async () => {
     await mount((source) => {
@@ -80,7 +81,7 @@ describe("the draft's places", () => {
     if (form.destination.kind !== "browser") throw new Error("Missing sign-in form tab");
     expect(element(".context-chip__title").textContent).toBe(form.title);
     const dispatch = vi.spyOn(client, "dispatch");
-    await write(element<HTMLTextAreaElement>("[data-composer-input]"), "Help with this form");
+    await write(element<HTMLElement>("[data-composer-input]"), "Help with this form");
     await click(element(".composer__send"));
     await settle(100);
     const sends = dispatch.mock.calls.filter(([command]) => command.type === "thread.sendMessage");
@@ -116,7 +117,7 @@ describe("the draft's places", () => {
         ),
     ).toBe(true);
     expect(document.querySelector(".composer__error")).toBeNull();
-    expect(element<HTMLTextAreaElement>("[data-composer-input]").value).toBe("");
+    expect(composerText(element("[data-composer-input]"))).toBe("");
   });
 
   it("follows the page while untouched, freezes on typing, and a removal sticks", async () => {
@@ -125,13 +126,9 @@ describe("the draft's places", () => {
     await settle(100);
     expect(element(".context-chip__title").textContent).toBe(place.title);
     // Typing freezes the chip on this page; another tab does not replace it.
-    const field = element<HTMLTextAreaElement>("[data-composer-input]");
+    const field = element<HTMLElement>("[data-composer-input]");
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
-        field,
-        "About this",
-      );
-      field.dispatchEvent(new Event("input", { bubbles: true }));
+      rewrite(field, "About this");
     });
     const other = placeList(client.getSnapshot()).find(
       (item) => item.kind === "browser" && item.key !== place.key && isMockPage(item),
@@ -190,13 +187,9 @@ describe("the draft's places", () => {
       };
     }
     async function type(text: string) {
-      const field = element<HTMLTextAreaElement>("[data-composer-input]");
+      const field = element<HTMLElement>("[data-composer-input]");
       await act(async () => {
-        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
-          field,
-          text,
-        );
-        field.dispatchEvent(new Event("input", { bubbles: true }));
+        rewrite(field, text);
       });
     }
 
@@ -282,7 +275,7 @@ describe("the draft's places", () => {
     const chipTitle = () => document.querySelector(".context-chip__title")?.textContent ?? null;
     const chipPicture = () =>
       document.querySelector(".context-chip__thumb")?.getAttribute("src") ?? null;
-    const field = () => element<HTMLTextAreaElement>("[data-composer-input]");
+    const field = () => element<HTMLElement>("[data-composer-input]");
     function sentPages(dispatch: MockInstance<MockHostClient["dispatch"]>) {
       return dispatch.mock.calls.flatMap(([command]) =>
         command.type === "thread.sendMessage"
@@ -675,7 +668,7 @@ describe("the draft's places", () => {
       if (place.destination.kind !== "browser" || !place.destination.tabId) throw new Error("tab");
       const { sessionId, tabId } = place.destination;
       const frozen = await client.readBrowserContextCandidate(sessionId, tabId);
-      const field = element<HTMLTextAreaElement>("[data-composer-input]");
+      const field = element<HTMLElement>("[data-composer-input]");
       await write(field, "About the page I was reading");
       await act(async () => {
         client.sendBrowserCommand(sessionId, {
@@ -728,7 +721,7 @@ describe("the draft's places", () => {
       if (other.destination.kind !== "browser") throw new Error("Missing another tab");
       const titles = () =>
         [...document.querySelectorAll(".context-chip__title")].map((chip) => chip.textContent);
-      const field = element<HTMLTextAreaElement>("[data-composer-input]");
+      const field = element<HTMLElement>("[data-composer-input]");
       await write(field, "About this");
       await click(element('.composer__attach[aria-label="Attach"]'));
       await click(
@@ -800,7 +793,7 @@ describe("the draft's places", () => {
       await refusal.promise;
       throw new HostClientRequestError({ code: "forbidden", message, status: 403 });
     });
-    const field = element<HTMLTextAreaElement>("[data-composer-input]");
+    const field = element<HTMLElement>("[data-composer-input]");
     await write(field, "First message");
     await click(element(".composer__send"));
     await settle(100);
@@ -821,7 +814,7 @@ describe("the draft's places", () => {
     ).toEqual([other.title, place.title]);
     await act(async () => refusal.resolve());
     await settle(100);
-    expect(field.value).toBe("First message\nNewer draft");
+    expect(composerText(field)).toBe("First message\nNewer draft");
     expect(
       [...document.querySelectorAll(".context-chip__title")].map((chip) => chip.textContent),
     ).toEqual([place.title, other.title]);
@@ -919,7 +912,7 @@ describe("the draft's places", () => {
       );
     }
     const chip = () => document.querySelector(".context-chip__title")?.textContent ?? null;
-    const field = () => element<HTMLTextAreaElement>("[data-composer-input]");
+    const field = () => element<HTMLElement>("[data-composer-input]");
 
     it("carries the app in front on the Mac it is shown from, whichever Mac that is", async () => {
       await mount("/?panel=browser");
@@ -947,7 +940,7 @@ describe("the draft's places", () => {
         )!.value,
       ).resolves.toMatchObject({ type: "thread.sendMessage" });
       expect(document.querySelector(".composer__error")).toBeNull();
-      expect(field().value).toBe("");
+      expect(composerText(field())).toBe("");
     });
 
     it("carries the phone display in front", async () => {
@@ -1117,13 +1110,9 @@ describe("unconfirmed sends keep every place exactly", () => {
       )!,
     );
     await settle(50);
-    const field = element<HTMLTextAreaElement>("[data-composer-input]");
+    const field = element<HTMLElement>("[data-composer-input]");
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
-        field,
-        "Compare these",
-      );
-      field.dispatchEvent(new Event("input", { bubbles: true }));
+      rewrite(field, "Compare these");
     });
     await click(element(".composer__send"));
     await settle(50);

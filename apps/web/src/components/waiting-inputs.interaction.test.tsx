@@ -17,6 +17,7 @@ import { TranscriptHostClientContext } from "./attachments/message-attachments.j
 import { TranscriptMessage } from "./agent-activity.js";
 import type { PendingSends, PendingSubmission } from "./composer.js";
 import { WaitingInputs } from "./waiting-inputs.js";
+import { rewrite, textareaView } from "./composer-editor.test-support.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | null = null;
@@ -210,19 +211,16 @@ async function clickWords(container: HTMLElement, messageId: string) {
   await act(async () => (words as HTMLElement).click());
 }
 
-const field = (container: HTMLElement) => container.querySelector("textarea");
+const field = (container: HTMLElement) => {
+  const element = container.querySelector<HTMLElement>(".composer-editor__field");
+  return element ? textareaView(element) : null;
+};
 
-async function write(target: HTMLTextAreaElement, text: string) {
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
-      target,
-      text,
-    );
-    target.dispatchEvent(new Event("input", { bubbles: true }));
-  });
+async function write(target: { readonly element: HTMLElement }, text: string) {
+  await act(async () => rewrite(target.element, text));
 }
 
-async function press(target: Element, key: string) {
+async function press(target: Pick<Element, "dispatchEvent">, key: string) {
   await act(async () => {
     target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key }));
   });
@@ -409,15 +407,14 @@ describe("WaitingInputs", () => {
     expect(editWaitingMessage).toHaveBeenCalledWith("thread", "mine");
     expect(field(container)?.value).toBe("Check the shard");
 
-    await write(field(container)!, "Check the integration shard");
+    // A reference is words: it saves as its exact Markdown, never as another part.
+    const words = "Check the [integration shard](opensteer:thr_12345678-1234-4234-8234-123456789abc)";
+    await write(field(container)!, words);
     expect(editor.touch).toHaveBeenCalled();
     await act(async () => button(container, "Don’t include photo.png").click());
     await press(field(container)!, "Enter");
 
-    expect(editor.save).toHaveBeenCalledWith(
-      [{ text: "Check the integration shard", type: "text" }, notes],
-      0,
-    );
+    expect(editor.save).toHaveBeenCalledWith([{ text: words, type: "text" }, notes], 0);
     expect(field(container)).toBeNull();
     expect(editor.cancel).not.toHaveBeenCalled();
   });
@@ -685,7 +682,7 @@ describe("WaitingInputs", () => {
     const trigger = () => button(container, "Edit Maya Chen’s ask");
     trigger().focus();
     await act(async () => trigger().click());
-    expect(document.activeElement).toBe(field(container));
+    expect(document.activeElement).toBe(field(container)?.element);
 
     await press(field(container)!, "Escape");
     expect(field(container)).toBeNull();

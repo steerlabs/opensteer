@@ -42,6 +42,7 @@ import {
   setRoot,
   resetHistory,
 } from "./workspace.interaction.test-support.js";
+import { composerText, rewrite } from "../composer-editor.test-support.js";
 /** The task that handed work to another, which the mock's family and task line belong to. */
 function delegating(source: { getSnapshot(): HostSnapshot }): string {
   const assignment = Object.values(source.getSnapshot().assignments)[0];
@@ -428,14 +429,10 @@ describe("the conversation survives layout changes", () => {
   it("keeps the draft, the textarea and its focus through Hide and Show computer", async () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     const place = pageTab();
-    const field = element<HTMLTextAreaElement>("[data-composer-input]");
+    const field = element<HTMLElement>("[data-composer-input]");
     field.focus();
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
-        field,
-        "Keep this",
-      );
-      field.dispatchEvent(new Event("input", { bubbles: true }));
+      rewrite(field, "Keep this");
     });
     await act(async () => {
       field.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: ".", metaKey: true }));
@@ -443,7 +440,7 @@ describe("the conversation survives layout changes", () => {
     await settle();
     expect(document.querySelector(".place")).toBeNull();
     expect(element("[data-composer-input]")).toBe(field);
-    expect(field.value).toBe("Keep this");
+    expect(composerText(field)).toBe("Keep this");
     expect(document.activeElement).toBe(field);
     await act(async () => {
       field.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: ".", metaKey: true }));
@@ -451,7 +448,7 @@ describe("the conversation survives layout changes", () => {
     await settle();
     expect(element(".place").getAttribute("data-place-key")).toBe(place.key);
     expect(element("[data-composer-input]")).toBe(field);
-    expect(field.value).toBe("Keep this");
+    expect(composerText(field)).toBe("Keep this");
   });
 
   it("a docked page without a conversation still expands from its name", async () => {
@@ -476,20 +473,16 @@ describe("breakpoints change layout, never the conversation", () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     const place = pageTab();
     await settle(100);
-    const field = element<HTMLTextAreaElement>("[data-composer-input]");
+    const field = element<HTMLElement>("[data-composer-input]");
     field.focus();
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
-        field,
-        "Still here",
-      );
-      field.dispatchEvent(new Event("input", { bubbles: true }));
+      rewrite(field, "Still here");
     });
     const before = history.length;
     for (const width of [820, 390, 1100, 1440]) {
       await resize(width);
       expect(element("[data-composer-input]")).toBe(field);
-      expect(field.value).toBe("Still here");
+      expect(composerText(field)).toBe("Still here");
       expect(document.activeElement).toBe(field);
       expect(element(".context-chip__title").textContent).toBe(place.title);
       expect(element(".place").getAttribute("data-place-key")).toBe(place.key);
