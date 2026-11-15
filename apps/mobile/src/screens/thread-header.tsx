@@ -240,7 +240,7 @@ function ThreadTitle(
                 onUnfold={() =>
                   updatePage((value) => ({
                     ...value,
-                    memory: runPageOpened(foldedRunId),
+                    memory: runPageOpened(foldedRunId, value.memory),
                   }))
                 }
                 room={room}

@@ -63,15 +63,12 @@ export function ComputerWatchView({
   app = null,
   appKey,
   compact = false,
-  preserveLastFrame = false,
   marks = null,
   hostClient,
   hostConnected,
   leading = null,
   machineId,
   machines,
-  onPictureRatio,
-  onPictureLive,
   sessionId,
   trailing = null,
   visible,
@@ -81,7 +78,6 @@ export function ComputerWatchView({
   appKey: string | null;
   /** A tile: the picture and what it is waiting for, with nothing to press. */
   compact?: boolean;
-  preserveLastFrame?: boolean;
   /** Who is working in it, after its name. */
   marks?: ReactNode;
   hostClient: HostClient;
@@ -91,9 +87,6 @@ export function ComputerWatchView({
   /** The Mac the address names, when it names one. */
   machineId: string | null;
   machines: readonly MachineSummary[];
-  /** Told the shape of each picture shown, so a tile can take that shape. */
-  onPictureRatio?: ((ratio: string) => void) | undefined;
-  onPictureLive?: ((live: boolean) => void) | undefined;
   sessionId: string;
   /** Last in the row: the conversation's button while it is put away. */
   trailing?: ReactNode;
@@ -139,16 +132,14 @@ export function ComputerWatchView({
         ? "stopping"
         : "unavailable",
     hostClient,
-    preserveLastFrame,
     machineId,
-    source:
-      preserveLastFrame || live
-        ? {
-            kind: "task-session",
-            sessionId,
-            ...(appKey === null ? {} : { appKey }),
-          }
-        : null,
+    source: live
+      ? {
+          kind: "task-session",
+          sessionId,
+          ...(appKey === null ? {} : { appKey }),
+        }
+      : null,
     streamable: machine !== null && canStreamComputerDisplay(machine),
   });
   const status = computerWatchStatus({
@@ -163,20 +154,8 @@ export function ComputerWatchView({
     startingWords: display.startingWords,
     stop,
   });
-  const showing =
-    display.picture !== null && (preserveLastFrame || (reading && status?.clear !== true));
-  useEffect(() => {
-    onPictureLive?.(reading && showing && hostConnected);
-    return () => onPictureLive?.(false);
-  }, [hostConnected, onPictureLive, reading, showing]);
+  const showing = display.picture !== null && reading && status?.clear !== true;
   const label = phone ? machineName : `${shownName ?? "App"} on ${machineName}`;
-  const ratio =
-    showing && display.picture ? `${display.picture.width} / ${display.picture.height}` : null;
-  const reportRatio = useRef(onPictureRatio);
-  reportRatio.current = onPictureRatio;
-  useEffect(() => {
-    if (ratio !== null) reportRatio.current?.(ratio);
-  }, [ratio]);
   const [enlarged, setEnlarged] = useState(false);
   useEffect(() => {
     if (!visible) setEnlarged(false);

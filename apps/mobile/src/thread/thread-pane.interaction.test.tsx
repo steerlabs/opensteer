@@ -7,10 +7,10 @@ import { idleVoiceSnapshot, type VoiceSnapshot } from "@opensteer/client/voice";
 import { DictationController } from "@opensteer/client/dictation";
 import type { DictationEvent, DictationPort } from "@opensteer/protocol/dictation";
 import {
+  BrowserWatchStore,
   formatClockTime,
   HostClientRequestError,
   RunPlaceStore,
-  type BrowserFrameView,
   type HostClient,
   type HostSnapshot,
   type MessageEntry,
@@ -85,6 +85,10 @@ import { composerEditorFake } from "../ui/composer-editor.fake.js";
 const harness = vi.hoisted(() => ({
   paneRenders: 0,
   nativeRenders: 0,
+  /** What the last drawn computer screen tells its Run place's picture owner. */
+  displayReport: null as
+    | null
+    | ((report: { kind: "drawn"; width: number; height: number } | { kind: "cleared" }) => void),
   currentRoute: { name: "Thread" } as { name: string; params?: object },
   appListeners: new Set<(state: string) => void>(),
   headerWrites: 0,
@@ -445,10 +449,18 @@ vi.mock("@expo/ui/community/menu", () => ({
     </div>
   ),
 }));
-vi.mock("../computers/phone-display-native.js", () => ({ nativePictureView: () => null }));
+vi.mock("../computers/phone-display-native.js", () => ({
+  macWindowVideoSupported: () => true,
+  nativePictureView: () => null,
+}));
 vi.mock("../computers/phone-display.js", () => ({
-  ComputerDisplay: (props: { active: boolean; source: object }) => {
+  ComputerDisplay: (props: {
+    active: boolean;
+    source: object;
+    runPlace?: { report: NonNullable<typeof harness.displayReport> };
+  }) => {
     harness.nativeRenders++;
+    harness.displayReport = props.runPlace?.report ?? null;
     return (
       <div
         data-native-preview
@@ -535,6 +547,7 @@ vi.mock("../ui/motion.js", () => ({
   bubblePop: undefined,
   bubbleRise: undefined,
   descend: undefined,
+  dim: undefined,
   move: undefined,
   duration: { enter: 0, exit: 0 },
   enter: undefined,
@@ -1124,8 +1137,82 @@ function snapshotFor(input: {
   };
 }
 
-/** One state object, as a store's snapshot must be. */
-const connectingWatch = { error: null, frame: null, status: "connecting" } as const;
+/** One targeted browser socket, as the Host answers a passive watch on it. */
+class WatchSocket {
+  binaryType: "arraybuffer" | "blob" = "blob";
+  readyState = 0;
+  readonly #listeners = new Map<string, Set<(event: never) => void>>();
+  constructor(
+    readonly sessionId: string,
+    readonly surfaceId: string,
+  ) {}
+  addEventListener(type: string, listener: (event: never) => void): void {
+    const listeners = this.#listeners.get(type) ?? new Set();
+    listeners.add(listener);
+    this.#listeners.set(type, listeners);
+  }
+  send(): void {}
+  close(code = 1000, reason = ""): void {
+    if (this.readyState === 3) return;
+    this.readyState = 3;
+    this.#emit("close", { code, reason });
+  }
+  /** Opens, admits the watch and answers its subscription. */
+  admit(): void {
+    this.readyState = 1;
+    this.#emit("open", {});
+    this.#receive(
+      JSON.stringify({
+        type: "browser.snapshot",
+        sessionId: this.sessionId,
+        state: "ready",
+        access: "read-write",
+        targetedStreamingVersion: 1,
+        dialog: null,
+        surfaces: [{ id: this.surfaceId, active: true, title: "Page", url: "about:blank" }],
+      }),
+    );
+    this.#receive(
+      JSON.stringify({ type: "browser.dialog.changed", surfaceId: this.surfaceId, dialog: null }),
+    );
+  }
+  /** One JPEG picture of an 800 by 600 page. */
+  paint(frameId: number): void {
+    const header = new TextEncoder().encode(
+      JSON.stringify({
+        encoding: "jpeg",
+        frameId,
+        geometryRevision: 1,
+        watchToken: `00000000-0000-4000-8000-${String(frameId).padStart(12, "0")}`,
+        surfaceId: this.surfaceId,
+        viewportWidth: 800,
+        viewportHeight: 600,
+        rasterWidth: 800,
+        rasterHeight: 600,
+      }),
+    );
+    const bytes = new Uint8Array(4 + header.length + 4);
+    new DataView(bytes.buffer).setUint32(0, header.length);
+    bytes.set(header, 4);
+    bytes.set([0xff, 0xd8, 0xff, 0xd9], 4 + header.length);
+    this.#receive(bytes.buffer);
+  }
+  #receive(data: string | ArrayBuffer): void {
+    this.#emit("message", { data });
+  }
+  #emit(type: string, event: unknown): void {
+    for (const listener of this.#listeners.get(type) ?? []) listener(event as never);
+  }
+}
+
+/** A display socket that never opens: nothing in these panes draws a computer's screen. */
+const idleDisplaySocket = () => ({
+  binaryType: "arraybuffer",
+  readyState: 0,
+  addEventListener: () => undefined,
+  close: () => undefined,
+  send: () => undefined,
+});
 
 /** A Host whose snapshot the test moves, recording what the phone asks of it. */
 function fakeHost(initial: HostSnapshot) {
@@ -1134,8 +1221,20 @@ function fakeHost(initial: HostSnapshot) {
   let earlierPage: HostSnapshot | null = null;
   const listeners = new Set<() => void>();
   const runPlaces = new RunPlaceStore();
-  let frame: BrowserFrameView | null = null;
-  const frameListeners = new Set<() => void>();
+  // The client's own passive watch store; only its sockets are the test's.
+  const sockets: WatchSocket[] = [];
+  let painted = 0;
+  const watch = new BrowserWatchStore(
+    (sessionId, surfaceId) => {
+      const socket = new WatchSocket(sessionId, surfaceId);
+      sockets.push(socket);
+      return socket;
+    },
+    "watch",
+    undefined,
+    // A dropped socket waits to be tried again, so the gap stays a gap.
+    () => 60_000,
+  );
   const watchRelease = vi.fn();
   const dispatch = vi.fn(async (command: { readonly type: string }) => ({ type: command.type }));
   const stopRun = vi.fn(async (_threadId: string) => undefined);
@@ -1160,27 +1259,43 @@ function fakeHost(initial: HostSnapshot) {
     touch: vi.fn(),
   };
   const client = {
-    acceptBrowserWatchFrame: vi.fn(),
+    acceptBrowserWatchFrame: vi.fn((sessionId: string, token: string, surfaceId: string) =>
+      watch.accept(sessionId, surfaceId, token),
+    ),
     activateThread: vi.fn(),
     // What a mounted tab preview reads: the Host's latest place and a passive picture.
     browserWatchFrames: {
-      get: () => frame,
-      subscribe: (_sessionId: string, listener: () => void) => {
-        frameListeners.add(listener);
-        return () => frameListeners.delete(listener);
-      },
+      accept: (sessionId: string, surfaceId: string, token: string) =>
+        watch.accept(sessionId, surfaceId, token),
+      claim: (sessionId: string, surfaceId: string, token: string) =>
+        watch.claim(sessionId, surfaceId, token),
+      get: (sessionId: string, surfaceId: string) => watch.get(sessionId, surfaceId).frame,
+      invalidationKey: watch.invalidationKey,
+      subscribe: (sessionId: string, listener: () => void, surfaceId: string) =>
+        watch.subscribe(sessionId, surfaceId, listener),
     },
+    // No page is open interactively here.
+    browserFrames: { get: () => null, subscribe: () => () => undefined },
+    connectComputerDisplay: idleDisplaySocket,
     runPlace: runPlaces.get,
     subscribeRunPlace: runPlaces.subscribe,
-    browserWatchState: () => connectingWatch,
+    browserWatchState: watch.get,
     cancelThreadInput: vi.fn(async () => undefined),
     decideTeamAsk: vi.fn(async (_decision: object) => undefined),
     editWaitingMessage: vi.fn(async (_threadId: string, _messageId: string) => editor),
     latestPlaceOfThread: () => null,
     ownsEditLease: (leaseId: string) => leaseId === editor.leaseId,
     releaseWaitingMessage: vi.fn(async (_threadId: string, _messageId: string) => undefined),
-    retainBrowserWatch: vi.fn(() => watchRelease),
-    subscribeBrowserWatch: () => () => undefined,
+    retainBrowserWatch: vi.fn(
+      (sessionId: string, surfaceId: string, options?: Parameters<typeof watch.retain>[2]) => {
+        const release = watch.retain(sessionId, surfaceId, options);
+        return () => {
+          watchRelease();
+          release();
+        };
+      },
+    ),
+    subscribeBrowserWatch: watch.subscribe,
     subscribeLatestPlace: () => () => undefined,
     dispatch,
     get browserTabs() {
@@ -1213,11 +1328,21 @@ function fakeHost(initial: HostSnapshot) {
     releaseWaitingMessage: client.releaseWaitingMessage,
     runPlaces,
     watchRelease,
-    picture(next: BrowserFrameView | null) {
+    /** The newest watch socket admits its subscription, if it has not, and sends a picture. */
+    paint() {
+      const socket = sockets.at(-1)!;
       act(() => {
-        frame = next;
-        frameListeners.forEach((listener) => listener());
+        if (socket.readyState === 0) socket.admit();
+        socket.paint(++painted);
       });
+    },
+    /** How many pictures the Host has sent. */
+    get painted() {
+      return painted;
+    },
+    /** The network drops the watch: the client keeps its picture and waits to try again. */
+    drop() {
+      act(() => sockets.at(-1)!.close(1006));
     },
     /** The transcript the Host has once the phone loads its earlier page. */
     holdEarlier(next: HostSnapshot) {
@@ -1289,22 +1414,22 @@ async function mount(
       threadId={threadId}
     />
   );
-  await act(async () =>
-    root.render(
-      options.header === true ? (
-        <WithNativeHeader
-          hostClient={host.client}
-          onHeader={(header) => headers.push(header)}
-          pane={pane}
-          threadId={threadId}
-        />
-      ) : (
-        pane((header) => headers.push(header))
-      ),
-    ),
-  );
+  const tree = () =>
+    options.header === true ? (
+      <WithNativeHeader
+        hostClient={host.client}
+        onHeader={(header) => headers.push(header)}
+        pane={pane}
+        threadId={threadId}
+      />
+    ) : (
+      pane((header) => headers.push(header))
+    );
+  await act(async () => root.render(tree()));
   await settle();
-  return { container, drafts, headers, root, pane };
+  /** Draws the same screen again, as a change around it would. */
+  const rerender = () => act(async () => root.render(tree()));
+  return { container, drafts, headers, rerender, root, pane };
 }
 
 function text(container: HTMLElement): string {
@@ -5255,8 +5380,15 @@ describe("the Run's page above the conversation", () => {
       }),
     );
 
+  // The page's size as the pane lays it out.
+  const pageSize = (container: HTMLElement) =>
+    JSON.parse(
+      container.querySelector('[data-testid="run-page-picture"]')?.getAttribute("data-style") ??
+        "null",
+    ) as { readonly height?: number; readonly width?: number } | null;
+
   it.each([conversationId, workId])(
-    "keeps %s's card through thinking, Requests and catalog gaps, switches, then hands off to reply chips",
+    "keeps %s's page through thinking, Requests and catalog gaps, switches, then hands off to reply chips",
     async (threadId) => {
       const runId = createId("run");
       const entries = [said("Find the page", runId), ran(runId)];
@@ -5266,22 +5398,11 @@ describe("the Run's page above the conversation", () => {
       await layOut();
       expect(card(container)).toBeNull();
       await act(() => host.runPlaces.accept(entered(runId, threadId)));
+      // It opens by itself once there is a picture to show, not before.
+      expect(card(container)).toBeNull();
+      host.paint();
       const original = card(container);
       expect(original).not.toBeNull();
-      expect(original?.textContent).toContain("Live page 1");
-      expect(original?.textContent).toContain("example.com");
-      host.picture({
-        data: new Uint8Array([1, 2]),
-        header: {
-          surfaceId,
-          frameId: 1,
-          watchToken: "one",
-          rasterWidth: 800,
-          rasterHeight: 600,
-          viewportWidth: 800,
-          viewportHeight: 600,
-        },
-      } as BrowserFrameView);
       const image = container.querySelector<HTMLImageElement>("img[src]")!;
       expect(image).not.toBeNull();
       await act(() => image.dispatchEvent(new Event("load")));
@@ -5302,8 +5423,6 @@ describe("the Run's page above the conversation", () => {
         expect(card(container)).toBe(original);
         expect(container.querySelector("img[src]")).toBe(image);
       }
-      host.picture(null);
-      expect(container.querySelector("img[src]")).toBe(image);
       const replacementSession = "bsn_00000000-0000-4000-8000-000000000002";
       host.move({
         ...host.client.getSnapshot(),
@@ -5322,10 +5441,12 @@ describe("the Run's page above the conversation", () => {
         surfaceId,
         expect.anything(),
       );
+      const size = pageSize(container);
       await act(() => host.runPlaces.accept(entered(runId, threadId, "3", nextSurface)));
-      // Another tab is another page: it starts afresh, with no picture of the last one.
+      // Another tab is another page: no picture of the last one, the same size, and its name.
       expect(card(container)?.textContent).toContain("Live page 3");
       expect(container.querySelector("img[src]")).toBeNull();
+      expect(pageSize(container)).toEqual(size);
       const entry = entered(runId, threadId, "3", nextSurface);
       const reply = wrote("Here is your page", runId, threadId);
       await act(() => {
@@ -5357,7 +5478,7 @@ describe("the Run's page above the conversation", () => {
   );
 
   it.each(["app", "phone"] as const)(
-    "keeps an unresolved %s card and binds only its Run's native session",
+    "opens a %s page once its screen draws, binding only its Run's native session",
     async (kind) => {
       const runId = createId("run");
       const initial = snapshotFor({
@@ -5381,10 +5502,11 @@ describe("the Run's page above the conversation", () => {
           },
         }),
       );
-      const { container } = await mount(host, conversationId);
+      const { container } = await mount(host, conversationId, { header: true });
       await layOut();
-      const original = card(container);
-      expect(original).not.toBeNull();
+      // Unresolved, the bar names the place and nothing draws it.
+      expect(card(container)).toBeNull();
+      expect(container.querySelector('header button[aria-label="Native place"]')).not.toBeNull();
       expect(container.querySelector("[data-native-preview]")).toBeNull();
       const session = {
         ...notesSession(runId),
@@ -5396,13 +5518,27 @@ describe("the Run's page above the conversation", () => {
         sessionId: ComputerUseSessionIdSchema.parse("cus_00000000-0000-4000-8000-0000000000bb"),
       };
       host.move({ ...initial, machines: [...macs(sessions([otherRun, session]))] });
-      expect(card(container)).toBe(original);
-      const preview = container.querySelector("[data-native-preview]");
-      expect(JSON.parse(preview!.getAttribute("data-source")!)).toEqual({
+      const source = {
         kind: "task-session",
         sessionId: session.sessionId,
         ...(kind === "app" ? { appKey: "com.apple.notes" } : {}),
-      });
+      };
+      const folded = container.querySelector("header [data-native-preview]");
+      expect(JSON.parse(folded!.getAttribute("data-source")!)).toEqual(source);
+      expect(card(container)).toBeNull();
+      // Its screen drawn in the bar, the page opens above the conversation at the screen's shape.
+      await act(() => harness.displayReport?.({ kind: "drawn", width: 300, height: 600 }));
+      const original = card(container);
+      expect(original).not.toBeNull();
+      expect(pageSize(container)?.width).toBe(
+        Math.floor((pageSize(container)!.height! * 300) / 600),
+      );
+      // The page's own view starts blank: it stays covered until it draws, never an empty frame.
+      expect(original!.querySelector('[data-testid="run-page-waiting"]')).not.toBeNull();
+      await act(() => harness.displayReport?.({ kind: "drawn", width: 300, height: 600 }));
+      expect(original!.querySelector('[data-testid="run-page-waiting"]')).toBeNull();
+      const preview = original!.querySelector("[data-native-preview]");
+      expect(JSON.parse(preview!.getAttribute("data-source")!)).toEqual(source);
       const renders = harness.nativeRenders;
       const reply = wrote("Still streaming", runId, conversationId);
       host.move({
@@ -5410,7 +5546,8 @@ describe("the Run's page above the conversation", () => {
         transcripts: { [conversationId]: [ran(runId), reply] },
       });
       expect(harness.nativeRenders).toBe(renders);
-      await press(container, "Native place");
+      // Its display socket never opens here, so what it drew is not live.
+      await press(container, "Native place, last picture");
       expect(harness.dispatch).toHaveBeenLastCalledWith(
         expect.objectContaining({
           params: expect.objectContaining({
@@ -5426,13 +5563,10 @@ describe("the Run's page above the conversation", () => {
       host.move({ ...initial, machines: [] });
       expect(card(container)).toBe(original);
       expect(container.querySelector("[data-native-preview]")).toBe(preview);
-      expect(container.querySelector("[data-native-preview]")?.getAttribute("data-active")).toBe(
-        "false",
-      );
     },
   );
 
-  it("opens the exact place, folds away, and releases media while backgrounded or hidden", async () => {
+  it("keeps one picture and its size through fold, unfold and a dropped connection, and lets go only when hidden", async () => {
     const runId = createId("run");
     const initial = snapshotFor({
       entries: [ran(runId)],
@@ -5441,30 +5575,39 @@ describe("the Run's page above the conversation", () => {
     });
     const host = fakeHost(initial);
     host.runPlaces.accept(entered(runId, conversationId));
-    const { container, root, pane } = await mount(host, conversationId);
+    const { container, rerender } = await mount(host, conversationId, { header: true });
     await layOut();
+    host.paint();
+    const size = pageSize(container);
+    expect(size?.height).toBeGreaterThan(0);
+    await press(container, "Fold page");
+    expect(card(container)).toBeNull();
+    // Folded, the bar draws the picture the page held, from the same watch.
+    expect(container.querySelector("header img[src]")).not.toBeNull();
     await press(container, "Live page 1, example.com");
+    expect(card(container)!.querySelector("img[src]")).not.toBeNull();
+    expect(pageSize(container)).toEqual(size);
+    expect(host.painted).toBe(1);
+    expect(host.client.retainBrowserWatch).toHaveBeenCalledOnce();
+    expect(host.watchRelease).not.toHaveBeenCalled();
+    // A dropped connection keeps the page, its size and its last picture, dimmed.
+    expect(card(container)!.querySelector('[data-testid="run-page-stale"]')).toBeNull();
+    host.drop();
+    expect(card(container)!.querySelector("img[src]")).not.toBeNull();
+    expect(pageSize(container)).toEqual(size);
+    expect(card(container)!.querySelector('[data-testid="run-page-stale"]')).not.toBeNull();
+    await press(container, "Live page 1, example.com, last picture");
     expect(harness.dispatch).toHaveBeenLastCalledWith({
       type: "PUSH",
       name: "WorkspaceBrowser",
       params: { deploymentId, threadId: conversationId, sessionId, tabId: surfaceId },
     });
-    expect(host.client.retainBrowserWatch).toHaveBeenCalledOnce();
-    await act(() => harness.appListeners.forEach((listener) => listener("background")));
-    expect(host.watchRelease).toHaveBeenCalledOnce();
-    expect(card(container)).not.toBeNull();
-    await act(() => harness.appListeners.forEach((listener) => listener("active")));
-    expect(host.client.retainBrowserWatch).toHaveBeenCalledTimes(2);
     harness.inView = false;
-    await act(() => root.render(pane(() => undefined)));
-    expect(host.watchRelease).toHaveBeenCalledTimes(2);
+    await rerender();
+    expect(host.watchRelease).toHaveBeenCalledOnce();
     harness.inView = true;
-    await act(() => root.render(pane(() => undefined)));
-    expect(host.client.retainBrowserWatch).toHaveBeenCalledTimes(3);
-    // Folded, the page lets go of its picture; the bar's small one is the bar's.
-    await press(container, "Fold page");
-    expect(card(container)).toBeNull();
-    expect(host.watchRelease).toHaveBeenCalledTimes(3);
+    await rerender();
+    expect(host.client.retainBrowserWatch).toHaveBeenCalledTimes(2);
   });
 
   it("shows its tab in the browser page beside the conversation, in place", async () => {

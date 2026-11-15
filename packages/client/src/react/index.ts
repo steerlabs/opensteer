@@ -6,6 +6,8 @@ export * from "./use-conversation-surfaces.js";
 export * from "./use-browser-popup-follow.js";
 export * from "./use-places.js";
 export * from "./use-run-page-view.js";
+export * from "./use-run-place-picture.js";
+export * from "./use-run-page.js";
 export * from "./use-phone-tab-view.js";
 export * from "./use-action-review.js";
 export * from "./use-browser-presentation-wait.js";

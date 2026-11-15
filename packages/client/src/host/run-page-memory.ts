@@ -1,9 +1,10 @@
 import type { HostClient } from "./client.js";
 import { freshRunPageMemory, type RunPageMemory, type RunPageShown } from "./run-page.js";
+import { emptyRunPlacePicture, type RunPlacePicture } from "./run-place-picture-value.js";
 
 /** The edge between the page and the conversation, which folds the page. */
 export const runPageHandleHeight = 20;
-/** A page with no picture to show is a row this tall, never a large empty box. */
+/** Before its first picture, an open page is a row this tall. */
 export const runPageRowHeight = 52;
 /** Before a picture says otherwise, a page is the shape of a desktop browser. */
 export const runPageDesktopAspect = 1.6;
@@ -17,6 +18,7 @@ export interface RunPageView {
   readonly shown: RunPageShown;
   /** Whether there is room to open it here; without it, the folded picture opens the full tab. */
   readonly room: boolean;
+  readonly picture: RunPlacePicture;
 }
 
 export const freshRunPageView: RunPageView = {
@@ -24,6 +26,7 @@ export const freshRunPageView: RunPageView = {
   runId: null,
   shown: "none",
   room: true,
+  picture: emptyRunPlacePicture,
 };
 
 interface Held {
@@ -59,11 +62,19 @@ export function changeRunPageView(
     next.memory === value.view.memory &&
     next.runId === value.view.runId &&
     next.shown === value.view.shown &&
-    next.room === value.view.room
+    next.room === value.view.room &&
+    next.picture === value.view.picture
   )
     return;
   value.view = next;
   for (const listener of value.listeners) listener();
+}
+
+export function clearRunPageViews(hostClient: HostClient): void {
+  for (const value of held.get(hostClient)?.values() ?? []) {
+    value.view = freshRunPageView;
+    for (const listener of value.listeners) listener();
+  }
 }
 
 export function subscribeRunPageView(

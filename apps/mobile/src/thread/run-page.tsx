@@ -1,21 +1,18 @@
 import {
   pageSiteLabel,
-  runPageActed,
-  runPageDesktopAspect,
-  runPageFolded,
   runPageHandleHeight,
   runPageKeptTranscript,
   runPageRowHeight,
-  runPageSize,
-  runPageShown,
   type HostClient,
+  type RunPlacePicture,
   type SurfaceDestination,
 } from "@opensteer/client/host";
 import {
   useHostSelector,
-  useRunPageView,
+  useRunPage,
   useRunPlace,
   useRunPlaceBinding,
+  useRunPlacePicture,
 } from "@opensteer/client/react";
 import type { PlaceEnteredEventView } from "@opensteer/core";
 import { placeIdentityKey } from "@opensteer/protocol";
@@ -33,7 +30,7 @@ import Animated, { FadeOutUp } from "react-native-reanimated";
 import { agentWorkingLabel } from "../browser/acting-dot.js";
 import { paramsDestination, sameDestination } from "../browser/surface-route.js";
 import { layoutRoute } from "../navigation-presentations.js";
-import { color, radius, space, touchTarget } from "../theme.js";
+import { color, pillHeight, radius, space, touchTarget } from "../theme.js";
 import { useCellular } from "../ui/cellular.js";
 import { useAppForeground } from "../ui/foreground.js";
 import { useKeyboardVisible } from "../ui/keyboard.js";
@@ -43,31 +40,24 @@ import { useLayout } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
 import {
   ActingRing,
-  PlaceGlyph,
+  displayCapable,
+  PictureCover,
   PlaceSurface,
   pictureRadius,
-  usePicture,
+  pictureWords,
+  usePainted,
   useRunPlaceActing,
 } from "./live-place.js";
 
-const rowPicture = { height: 30, width: 46 } as const;
+/** The row's picture: a pill's height, at about a desktop page's shape. */
+const rowPicture = { height: pillHeight, width: 48 } as const;
 
 const selectAuthorized = (snapshot: {
   readonly session: string;
   readonly user: { readonly id: string } | null;
 }) => snapshot.session === "authenticated" && snapshot.user !== null;
 
-/**
- * The page a conversation's Run is in, above the conversation and under its
- * bar, while that Run works there. It follows this conversation's Run only.
- *
- * It opens by itself on the agent's first action unless the person is reading
- * back, typing, on cellular or folded it here, and folds by itself when the
- * conversation would have too little room. Folded, the bar carries a small
- * picture of it. It only watches: a tap opens the full tab. The transcript is
- * told how far down it starts, so it scrolls clear of the page.
- */
-export const RunPageSlot = memo(function RunPageSlot(props: {
+interface SlotProps {
   /** The pane is in front of the person. */
   readonly active: boolean;
   /** Drawn beside a page: only the named row, and only for another place. */
@@ -88,18 +78,18 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
    * message open in place: the page folds as it does when there is no room.
    */
   readonly yielding?: boolean;
-}): ReactNode {
-  const { beside, clearance, hostClient, onInset, threadId, top } = props;
-  const entry = useRunPlace(hostClient, props.runId);
-  const binding = useRunPlaceBinding(hostClient, entry);
-  const authorized = useHostSelector(hostClient, selectAuthorized);
-  const foreground = useAppForeground();
-  const typing = useKeyboardVisible();
-  const cellular = useCellular();
-  const { fontScale } = useWindowDimensions();
-  // As wide as the reading column and its gutters, so it lines up with the words under it.
-  const column = useLayout().readingWidth + 2 * space[16];
-  const [view, update] = useRunPageView(hostClient, threadId);
+}
+
+/**
+ * The page a conversation's Run is in, above the conversation and under its
+ * bar, while that Run works there. It follows this conversation's Run only.
+ *
+ * Whether it shows, and how large, is the shared Run page's to say; this
+ * draws it. Folded, the bar carries a small picture of it. It only watches: a
+ * tap opens the full tab. The transcript is told how far down it starts, so
+ * it scrolls clear of the page.
+ */
+export const RunPageSlot = memo(function RunPageSlot(props: SlotProps): ReactNode {
   const [size, setSize] = useState({ height: 0, width: 0 });
   const measure = useCallback((event: LayoutChangeEvent) => {
     const { height, width } = event.nativeEvent.layout;
@@ -107,75 +97,6 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
       current.height === height && current.width === width ? current : { height, width },
     );
   }, []);
-  const placeKey = entry === null ? null : placeIdentityKey(entry.data.place);
-  const [aspect, setAspect] = useState<{ readonly key: string | null; readonly value: number }>({
-    key: null,
-    value: runPageDesktopAspect,
-  });
-  const pageAspect = aspect.key === placeKey ? aspect.value : runPageDesktopAspect;
-  const onPageSize = useCallback(
-    (page: { readonly height: number; readonly width: number }) => {
-      if (page.width > 0 && page.height > 0)
-        setAspect({ key: placeKey, value: page.width / page.height });
-    },
-    [placeKey],
-  );
-  const current = useNavigationState(layoutRoute);
-  // Beside a page, the page in front already is the place.
-  const inFront =
-    beside &&
-    current?.name === "WorkspaceBrowser" &&
-    binding.destination !== null &&
-    sameDestination(paramsDestination(current.params), binding.destination);
-  const placeRunId = entry !== null && authorized && !inFront ? entry.runId : null;
-  const scrolledUp = props.scrolledUp;
-
-  useEffect(() => {
-    if (beside || placeRunId === null) return;
-    update((value) => {
-      const memory = runPageActed(value.memory, placeRunId, { cellular, scrolledUp, typing });
-      return memory === value.memory ? value : { ...value, memory };
-    });
-  }, [beside, cellular, placeRunId, scrolledUp, typing, update]);
-
-  const page =
-    size.height === 0
-      ? null
-      : runPageSize({
-          aspect: pageAspect,
-          room: size.height - top - clearance - runPageHandleHeight,
-          transcript: Math.round(runPageKeptTranscript * Math.min(fontScale, 2)),
-          width: Math.min(size.width, column),
-        });
-  const fits = page !== null && props.yielding !== true;
-  // The size is whole points; Android lays out in fractions, so a page as wide as the pane
-  // falls short of it by less than one.
-  const fullWidth = page !== null && page.width >= Math.floor(size.width);
-  const shown = beside
-    ? placeRunId === null
-      ? "none"
-      : "open"
-    : runPageShown(view.memory, placeRunId, fits);
-  useEffect(() => {
-    if (beside) return;
-    update((value) => ({ ...value, room: fits, runId: placeRunId, shown }));
-  }, [beside, fits, placeRunId, shown, update]);
-  // Leaving, the bar no longer has a page to stand for.
-  useEffect(
-    () => () => {
-      if (!beside) update((value) => ({ ...value, runId: null, shown: "none" }));
-    },
-    [beside, update],
-  );
-  const open = shown === "open" && entry !== null;
-  useEffect(() => {
-    if (!open) onInset(0);
-  }, [onInset, open]);
-  const fold = useCallback(
-    () => update((value) => ({ ...value, memory: runPageFolded(value.memory) })),
-    [update],
-  );
-
   return (
     <View
       onLayout={measure}
@@ -183,59 +104,158 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
       style={StyleSheet.absoluteFill}
       testID="run-page-slot"
     >
-      {open ? (
-        <RunPagePanel
-          key={placeKey}
-          active={props.active && foreground}
-          destination={binding.destination}
-          entry={entry}
-          column={column}
-          fullWidth={fullWidth}
-          hostClient={hostClient}
-          onFold={beside ? null : fold}
-          onInset={onInset}
-          onOpen={props.onOpen}
-          onPageSize={onPageSize}
-          pageHeight={beside || page === null ? null : page.height}
-          pageWidth={fullWidth ? size.width : (page?.width ?? 0)}
-          sessionId={binding.sessionId}
-          threadId={threadId}
-          top={top}
-        />
-      ) : null}
+      {props.beside ? <BesideRow {...props} /> : <PanePage {...props} size={size} />}
     </View>
   );
 });
 
+function PanePage(
+  props: SlotProps & { readonly size: { readonly height: number; readonly width: number } },
+): ReactNode {
+  const { clearance, hostClient, onInset, size, threadId, top } = props;
+  const authorized = useHostSelector(hostClient, selectAuthorized);
+  const foreground = useAppForeground();
+  const keyboard = useKeyboardVisible();
+  const cellular = useCellular();
+  const { fontScale } = useWindowDimensions();
+  // As wide as the reading column and its gutters, so it lines up with the words under it.
+  const column = useLayout().readingWidth + 2 * space[16];
+  const yielding = props.yielding === true;
+  const runId = authorized ? props.runId : null;
+  const placed = useRunPlace(hostClient, runId);
+  const run = useRunPage({
+    hostClient,
+    threadId,
+    runId,
+    paneVisible: props.active,
+    displayCapable: displayCapable(placed),
+    visible: props.active && foreground,
+    typing: keyboard || yielding,
+    scrolledUp: props.scrolledUp,
+    cellular,
+    room:
+      size.height === 0 || yielding
+        ? null
+        : {
+            height: size.height - top - clearance - runPageHandleHeight,
+            width: Math.min(size.width, column),
+          },
+    headHasRoom: true,
+    transcript: Math.round(runPageKeptTranscript * Math.min(fontScale, 2)),
+  });
+  const { entry, page, shown } = run;
+  const binding = useRunPlaceBinding(hostClient, entry);
+  const open = (shown === "page" || shown === "row") && entry !== null;
+  useEffect(() => {
+    if (!open) onInset(0);
+  }, [onInset, open]);
+  if (!open) return null;
+  // The size is whole points; Android lays out in fractions, so a page as wide as the pane
+  // falls short of it by less than one.
+  const fullWidth = page !== null && page.width >= Math.floor(size.width);
+  return (
+    <RunPagePanel
+      key={placeIdentityKey(entry.data.place)}
+      active={props.active && foreground}
+      column={column}
+      destination={binding.destination}
+      entry={entry}
+      hostClient={hostClient}
+      onFold={run.fold}
+      onInset={onInset}
+      onOpen={props.onOpen}
+      page={
+        shown === "page" && page !== null
+          ? { fullWidth, height: page.height, width: fullWidth ? size.width : page.width }
+          : null
+      }
+      picture={run.picture}
+      sessionId={binding.sessionId}
+      threadId={threadId}
+      top={top}
+    />
+  );
+}
+
 /**
- * One place's page. Its picture is one view through every form: it grows out
- * of the row's small picture once live, so the stream never starts over.
+ * Beside a page there is no bar to fold into and the page in front is the
+ * subject: another place the Run is in is only named, never opened above.
+ */
+function BesideRow(props: SlotProps): ReactNode {
+  const { hostClient, onInset, threadId } = props;
+  const entry = useRunPlace(hostClient, props.runId);
+  const binding = useRunPlaceBinding(hostClient, entry);
+  const authorized = useHostSelector(hostClient, selectAuthorized);
+  const foreground = useAppForeground();
+  const column = useLayout().readingWidth + 2 * space[16];
+  const current = useNavigationState(layoutRoute);
+  const inFront =
+    current?.name === "WorkspaceBrowser" &&
+    binding.destination !== null &&
+    sameDestination(paramsDestination(current.params), binding.destination);
+  const shown = entry !== null && authorized && !inFront;
+  // Nothing else in this pane shows the place, so the row holds its picture itself.
+  const picture = useRunPlacePicture(
+    hostClient,
+    threadId,
+    entry?.runId ?? null,
+    shown && props.active,
+    displayCapable(entry),
+  );
+  useEffect(() => {
+    if (!shown) onInset(0);
+  }, [onInset, shown]);
+  if (!shown) return null;
+  return (
+    <RunPagePanel
+      key={placeIdentityKey(entry.data.place)}
+      active={props.active && foreground}
+      column={column}
+      destination={binding.destination}
+      entry={entry}
+      hostClient={hostClient}
+      onFold={null}
+      onInset={onInset}
+      onOpen={props.onOpen}
+      page={null}
+      picture={picture}
+      sessionId={binding.sessionId}
+      threadId={threadId}
+      top={props.top}
+    />
+  );
+}
+
+/**
+ * One place's page. Its picture is one view through the row and the page: it
+ * grows out of the row's small picture, so nothing draws it over again.
  */
 const RunPagePanel = memo(function RunPagePanel(props: {
   readonly active: boolean;
-  readonly destination: SurfaceDestination | null;
   readonly column: number;
+  readonly destination: SurfaceDestination | null;
   readonly entry: PlaceEnteredEventView;
-  readonly fullWidth: boolean;
   readonly hostClient: HostClient;
   readonly onFold: (() => void) | null;
   readonly onInset: (inset: number) => void;
   readonly onOpen: (destination: SurfaceDestination) => void;
-  readonly onPageSize: (size: { readonly height: number; readonly width: number }) => void;
-  /** The page's height, or null where only the row is drawn. */
-  readonly pageHeight: number | null;
-  readonly pageWidth: number;
+  /** The page's size, or null where only the row is drawn. */
+  readonly page: {
+    readonly fullWidth: boolean;
+    readonly height: number;
+    readonly width: number;
+  } | null;
+  readonly picture: RunPlacePicture;
   readonly sessionId: string | null;
   readonly threadId: string;
   readonly top: number;
 }): ReactNode {
-  const { destination, entry, onFold, onInset, top } = props;
-  const [picture, report] = usePicture();
+  const { destination, entry, onFold, onInset, page, picture, top } = props;
   const acting = useRunPlaceActing(props.hostClient, entry, props.threadId);
-  const asPage = props.pageHeight !== null && picture.seen;
+  const [painted, setPainted] = usePainted(entry);
   const { title, site } = entry.data;
   const siteLabel = site ? pageSiteLabel(site) : null;
-  const corner = asPage ? (props.fullWidth ? 0 : radius.md) : pictureRadius;
+  const corner = page === null ? pictureRadius : page.fullWidth ? 0 : radius.md;
   const folding = useMemo(
     () =>
       onFold === null
@@ -260,7 +280,7 @@ const RunPagePanel = memo(function RunPagePanel(props: {
       <Pressable
         accessibilityActions={onFold === null ? undefined : [{ name: "fold", label: "Fold page" }]}
         accessibilityHint="Opens the page"
-        accessibilityLabel={`${title}${siteLabel && siteLabel !== title ? `, ${siteLabel}` : ""}${acting ? `, ${agentWorkingLabel}` : ""}`}
+        accessibilityLabel={`${title}${siteLabel && siteLabel !== title ? `, ${siteLabel}` : ""}${acting ? `, ${agentWorkingLabel}` : ""}${pictureWords(picture)}`}
         accessibilityRole="button"
         disabled={destination === null}
         onAccessibilityAction={(event) => {
@@ -270,8 +290,8 @@ const RunPagePanel = memo(function RunPagePanel(props: {
           if (destination) props.onOpen(destination);
         }}
         style={({ pressed }) => [
-          asPage ? styles.page : [styles.row, { maxWidth: props.column }],
-          pressed && (asPage ? styles.pagePressed : styles.rowPressed),
+          page === null ? [styles.row, { maxWidth: props.column }] : styles.page,
+          pressed && (page === null ? styles.rowPressed : styles.pagePressed),
         ]}
       >
         <Animated.View
@@ -280,30 +300,28 @@ const RunPagePanel = memo(function RunPagePanel(props: {
           style={[
             styles.picture,
             { borderRadius: corner },
-            asPage && props.pageHeight !== null
-              ? { height: props.pageHeight, width: props.pageWidth }
-              : rowPicture,
+            page === null ? rowPicture : { height: page.height, width: page.width },
           ]}
+          testID="run-page-picture"
         >
           <PlaceSurface
             active={props.active}
             destination={destination}
             entry={entry}
             hostClient={props.hostClient}
-            onPageSize={props.onPageSize}
-            onPicture={report}
+            onPainted={setPainted}
             sessionId={props.sessionId}
+            threadId={props.threadId}
           />
-          {asPage ? (
-            picture.state === "live" ? null : (
-              <View style={styles.waiting} />
-            )
-          ) : (
-            <PlaceGlyph kind={entry.data.place.kind} size={15} />
-          )}
+          <PictureCover
+            entry={entry}
+            glyph={page === null ? 15 : null}
+            painted={painted}
+            picture={picture}
+          />
           {acting ? <ActingRing radius={corner} /> : null}
         </Animated.View>
-        {asPage ? null : (
+        {page === null ? (
           <>
             <View style={styles.words}>
               <AppText numberOfLines={1} role="secondaryMedium">
@@ -317,7 +335,7 @@ const RunPagePanel = memo(function RunPagePanel(props: {
             </View>
             <Symbol name="chevron.right" size={12} tint={color.muted} />
           </>
-        )}
+        ) : null}
       </Pressable>
       {onFold === null || folding === null ? null : (
         <View {...folding.panHandlers} style={styles.handle}>
@@ -325,6 +343,7 @@ const RunPagePanel = memo(function RunPagePanel(props: {
             accessibilityHint="Keeps a small picture of it in the bar"
             accessibilityLabel="Fold page"
             accessibilityRole="button"
+            // The handle is a slim edge; its target reaches the touch minimum.
             hitSlop={{ bottom: space[12], left: space[24], right: space[24], top: space[12] }}
             onPress={onFold}
             style={styles.grip}
@@ -351,11 +370,12 @@ const styles = StyleSheet.create({
   },
   page: { alignSelf: "center" },
   pagePressed: { opacity: 0.85 },
+  // Its picture, words and chevron sit on the transcript's own gutters.
   row: {
     alignItems: "center",
     alignSelf: "center",
     flexDirection: "row",
-    gap: space[10],
+    gap: space[12],
     minHeight: runPageRowHeight,
     paddingHorizontal: space[16],
     paddingVertical: space[8],
@@ -363,7 +383,6 @@ const styles = StyleSheet.create({
   },
   rowPressed: { backgroundColor: color.surfacePressed },
   picture: { backgroundColor: color.surfaceCode, overflow: "hidden" },
-  waiting: { ...StyleSheet.absoluteFill, backgroundColor: "rgba(8, 8, 8, 0.45)" },
   words: { flex: 1, gap: space[2], minWidth: 0 },
   handle: { alignItems: "center", height: runPageHandleHeight, justifyContent: "center" },
   grip: { alignItems: "center", height: runPageHandleHeight, justifyContent: "center", width: 64 },

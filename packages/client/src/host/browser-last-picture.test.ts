@@ -6,6 +6,7 @@ import {
   browserTabPicture,
   getBrowserLastPicture,
   keepBrowserLastPictures,
+  reconcileBrowserLastPictures,
   rememberBrowserLastPicture,
 } from "./browser-last-picture.js";
 
@@ -120,12 +121,34 @@ describe("last presented browser pictures", () => {
     remember(tab(2));
     keepBrowserLastPictures(frames, [place(1, "d1"), place(2, "d2")]);
     expect(getBrowserLastPicture(frames, "session", tab(1))).not.toBeNull();
+    keepBrowserLastPictures(frames, [place(1, null), place(2, "d2")]);
+    expect(getBrowserLastPicture(frames, "session", tab(1))).not.toBeNull();
     keepBrowserLastPictures(frames, [place(1, "d1b"), place(2, "d2")]);
     expect(getBrowserLastPicture(frames, "session", tab(1))).toBeNull();
     expect(listeners.get(`session:${tab(1)}`)?.size).toBe(0);
     keepBrowserLastPictures(frames, [place(1, "d1b")]);
     expect(getBrowserLastPicture(frames, "session", tab(2))).toBeNull();
     expect(listeners.get(`session:${tab(2)}`)?.size).toBe(0);
+  });
+
+  it("moves only an authorized same-reader picture to an explicit replacement binding", () => {
+    const { frames, remember, revoke, listeners } = setup();
+    const first = remember(tab(1));
+    remember(tab(2));
+    revoke(tab(2));
+    const document = (session: string) => (session === "replacement" ? null : undefined);
+    const binding = () => "replacement";
+    const otherReader = setup().frames;
+    reconcileBrowserLastPictures(frames, document, binding);
+    reconcileBrowserLastPictures(otherReader, document, binding);
+    expect(getBrowserLastPicture(otherReader, "replacement", tab(1))).toBeNull();
+    expect(getBrowserLastPicture(frames, "replacement", tab(2))).toBeNull();
+    expect(getBrowserLastPicture(frames, "replacement", tab(1))?.frame).toBe(first);
+    expect(listeners.get(`session:${tab(1)}`)?.size).toBe(0);
+    revoke(tab(1));
+    expect(getBrowserLastPicture(frames, "replacement", tab(1))?.frame).toBe(first);
+    revoke(tab(1), "replacement");
+    expect(getBrowserLastPicture(frames, "replacement", tab(1))).toBeNull();
   });
 
   it("forgets a closed or revoked tab even without a mounted presenter and isolates readers and sessions", () => {

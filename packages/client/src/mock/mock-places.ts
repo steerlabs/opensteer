@@ -1739,9 +1739,13 @@ export class MockPlaceWorld {
           ? session.surfaces.find((tab) => tab.id === surfaceId)
           : undefined;
       if (!tab || snapshot.connection !== "connected" || snapshot.session !== "authenticated") {
-        const frame = snapshot.session === "authenticated" ? watch.state.frame : null;
-        if (watch.state.status !== "unavailable" || watch.state.frame !== frame) {
-          watch.state = { ...emptyWatch, frame };
+        const recoverable =
+          snapshot.session === "authenticated" &&
+          (tab !== undefined || snapshot.connection !== "connected");
+        const frame = recoverable ? watch.state.frame : null;
+        const status = recoverable ? "connecting" : "unavailable";
+        if (watch.state.status !== status || watch.state.frame !== frame) {
+          watch.state = { ...emptyWatch, frame, status };
           watch.awaiting = null;
           this.#notify(key);
         }

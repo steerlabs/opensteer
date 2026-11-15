@@ -1,45 +1,57 @@
 import {
   browserTabPicture,
+  pageSiteLabel,
+  reportRunPlacePicture,
   runPlaceActing,
   type HostClient,
+  type RunPlacePicture,
+  type RunPlacePictureReport,
   type SurfaceDestination,
 } from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
+import { useHostSelector, useRunPlaceDisplay } from "@opensteer/client/react";
 import type { PlaceEnteredEventView } from "@opensteer/core";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { placeIdentityKey } from "@opensteer/protocol";
+import { useCallback, useState, type ReactNode } from "react";
 import { Image, StyleSheet, View } from "react-native";
-import { BrowserStream, useBrowserFeedState } from "../browser/browser-stream.js";
+import Animated from "react-native-reanimated";
+import { BrowserStream } from "../browser/browser-stream.js";
 import { ComputerDisplay } from "../computers/phone-display.js";
-import { color, radius } from "../theme.js";
+import { macWindowVideoSupported } from "../computers/phone-display-native.js";
+import { color, radius, space } from "../theme.js";
+import { appear, dim, exit } from "../ui/motion.js";
+import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
-
-/**
- * Whether a place's picture is live: a picture arriving now, still waiting for
- * the next, or none to be had, such as a tab still restoring, a closed place,
- * an offline computer or no picture credit.
- */
-export type PictureState = "live" | "waiting" | "none";
 
 interface SurfaceProps {
   readonly active: boolean;
   readonly destination: SurfaceDestination | null;
   readonly entry: PlaceEnteredEventView;
   readonly hostClient: HostClient;
-  readonly onPageSize?: (size: { readonly height: number; readonly width: number }) => void;
-  readonly onPicture: (state: PictureState) => void;
+  /**
+   * Whether this view has drawn the place since it mounted. A Mac app's or
+   * phone's view starts blank however long the conversation has had a picture.
+   */
+  readonly onPainted: (painted: boolean) => void;
   /** The Run's session in a Mac app or phone. */
   readonly sessionId: string | null;
+  readonly threadId: string;
 }
 
 /**
  * What draws each kind of place. Each draws at the size it is laid out at, so
- * the pictures it asks for are only as large as what is drawn. Every one is
- * watch-only today; a tab that runs on this phone will bring its own here.
+ * the pictures it asks for are only as large as what is drawn. None holds the
+ * place's stream: the conversation's Run page holds it once, whichever form
+ * shows it, so folding or unfolding never starts the picture over.
  */
 const surfaces: Record<
   PlaceEnteredEventView["data"]["place"]["kind"],
   (props: SurfaceProps) => ReactNode
 > = { browser: BrowserSurface, app: ComputerSurface, phone: ComputerSurface };
+
+/** Whether this binary can decode the place's picture; every binary decodes a phone's. */
+export function displayCapable(entry: PlaceEnteredEventView | null): boolean {
+  return entry?.data.place.kind !== "app" || macWindowVideoSupported();
+}
 
 /** The live picture of the place a conversation's Run is in, by the kind of place. */
 export function PlaceSurface(props: SurfaceProps): ReactNode {
@@ -47,8 +59,17 @@ export function PlaceSurface(props: SurfaceProps): ReactNode {
   return <Surface {...props} />;
 }
 
+/**
+ * Whether a form's own view has drawn its place: a tab's view restores the
+ * picture the conversation kept as it mounts, a Mac app's or phone's only
+ * once its first frame decodes.
+ */
+export function usePainted(entry: PlaceEnteredEventView) {
+  return useState(entry.data.place.kind === "browser");
+}
+
 function BrowserSurface(props: SurfaceProps): ReactNode {
-  const { active, destination, hostClient, onPicture } = props;
+  const { destination } = props;
   const place = props.entry.data.place;
   const tabId = place.kind === "browser" ? place.surfaceId : "";
   const sessionId =
@@ -57,76 +78,51 @@ function BrowserSurface(props: SurfaceProps): ReactNode {
       : place.kind === "browser"
         ? place.sessionId
         : "";
-  const feed = useBrowserFeedState(hostClient, sessionId, tabId, false);
-  // A feed can be live before anything is drawn; only a drawn picture reports a size.
-  const [drawn, setDrawn] = useState(false);
-  const { onPageSize } = props;
-  const sized = useCallback(
-    (size: { readonly height: number; readonly width: number }) => {
-      setDrawn(true);
-      onPageSize?.(size);
-    },
-    [onPageSize],
-  );
-  useEffect(() => {
-    // A stream that is not watched draws nothing, so its picture is not live.
-    if (!active) setDrawn(false);
-    onPicture(
-      !active
-        ? "waiting"
-        : feed.error !== null || feed.status === "unavailable"
-          ? "none"
-          : feed.status === "live" && drawn
-            ? "live"
-            : "waiting",
-    );
-  }, [active, drawn, feed.error, feed.status, onPicture]);
-  const kept = active ? null : browserTabPicture(hostClient, sessionId, tabId);
-  return (
-    <>
-      {kept ? (
-        <Image
-          accessibilityIgnoresInvertColors
-          fadeDuration={0}
-          source={{ uri: kept.uri }}
-          style={StyleSheet.absoluteFill}
-        />
-      ) : null}
-      <BrowserStream
-        active={active}
-        hostClient={hostClient}
-        label={props.entry.data.title}
-        onPageSize={sized}
-        preserveLastFrame
-        previewSessionId={place.kind === "browser" ? place.sessionId : sessionId}
-        session={{ id: sessionId, state: "ready" }}
-        tabId={tabId}
-      />
-    </>
+  // Not drawing live (inactive behind an alert or the app switcher), it shows the kept picture.
+  const kept = props.active ? null : browserTabPicture(props.hostClient, sessionId, tabId);
+  return kept ? (
+    <Image
+      accessibilityIgnoresInvertColors
+      fadeDuration={0}
+      source={{ uri: kept.uri }}
+      style={StyleSheet.absoluteFill}
+    />
+  ) : (
+    <BrowserStream
+      active={props.active}
+      hostClient={props.hostClient}
+      label={props.entry.data.title}
+      preserveLastFrame
+      previewSessionId={place.kind === "browser" ? place.sessionId : sessionId}
+      session={{ id: sessionId, state: "ready" }}
+      sharedWatch
+      tabId={tabId}
+    />
   );
 }
 
 function ComputerSurface(props: SurfaceProps): ReactNode {
-  const { onPicture, sessionId } = props;
-  const place = props.entry.data.place;
-  const shown = useCallback(
-    (picture: boolean) => onPicture(picture ? "live" : "none"),
-    [onPicture],
+  const { entry, hostClient, onPainted, sessionId, threadId } = props;
+  const place = entry.data.place;
+  const placeKey = placeIdentityKey(place);
+  const display = useRunPlaceDisplay(hostClient, threadId, placeKey);
+  const report = useCallback(
+    (picture: RunPlacePictureReport) => {
+      onPainted(picture.kind === "drawn");
+      reportRunPlacePicture(hostClient, threadId, placeKey, picture);
+    },
+    [hostClient, onPainted, placeKey, threadId],
   );
-  useEffect(() => {
-    if (sessionId === null) onPicture("none");
-  }, [onPicture, sessionId]);
   if (sessionId === null || place.kind === "browser") return null;
   return (
     <ComputerDisplay
       active={props.active}
-      hostClient={props.hostClient}
-      label={props.entry.data.title}
+      hostClient={hostClient}
+      label={entry.data.title}
       machineId={place.machineId}
-      onPageSize={props.onPageSize}
-      onShown={shown}
       phone={place.kind === "phone"}
       preserveLastFrame
+      runPlace={{ display, report }}
       source={{
         kind: "task-session",
         sessionId,
@@ -137,25 +133,53 @@ function ComputerSurface(props: SurfaceProps): ReactNode {
 }
 
 /**
- * Whether the picture may stand for the place now. Until it has been live it
- * may not: a picture kept from earlier never stands for the page as it is.
- * Once live, a moment's wait keeps it; a place with no picture to give drops it.
- * Hold one per place: key its owner by the place.
+ * What lies over a place's picture, the same in every form: nothing while it
+ * is live, and the last picture dimmed a little while it waits for the next.
+ * With no picture at all, a small form shows the place's kind; a page keeps
+ * its size and names the place in it, over whatever it last drew. A form
+ * whose own view has not drawn yet is covered as one with no picture.
  */
-export function usePicture(): readonly [
-  { readonly state: PictureState; readonly seen: boolean },
-  (state: PictureState) => void,
-] {
-  const [value, setValue] = useState({ state: "none" as PictureState, seen: false });
-  const report = useCallback(
-    (state: PictureState) =>
-      setValue((current) => {
-        const seen = state === "live" || (state === "waiting" && current.seen);
-        return current.state === state && current.seen === seen ? current : { state, seen };
-      }),
-    [],
+export function PictureCover(props: {
+  readonly entry: PlaceEnteredEventView;
+  readonly painted: boolean;
+  readonly picture: RunPlacePicture;
+  /** The glyph's size in a small form; null for a page. */
+  readonly glyph: number | null;
+}): ReactNode {
+  const { entry } = props;
+  const picture = props.painted ? props.picture : { ...props.picture, usable: false };
+  const kind = entry.data.place.kind;
+  if (!picture.usable && props.glyph !== null) return <PlaceGlyph kind={kind} size={props.glyph} />;
+  if (picture.usable && picture.fresh) return null;
+  const site = entry.data.site ? pageSiteLabel(entry.data.site) : null;
+  return (
+    <Animated.View
+      entering={picture.usable ? dim : appear}
+      exiting={exit}
+      pointerEvents="none"
+      style={[styles.cover, picture.usable ? styles.stale : styles.waiting]}
+      testID={picture.usable ? "run-page-stale" : "run-page-waiting"}
+    >
+      {picture.usable ? null : (
+        <>
+          <Symbol name={placeSymbol(kind)} size={24} tint={color.muted} />
+          <AppText numberOfLines={1} role="secondaryMedium" style={styles.coverTitle}>
+            {entry.data.title}
+          </AppText>
+          {site && site !== entry.data.title ? (
+            <AppText numberOfLines={1} role="caption" tone="muted">
+              {site}
+            </AppText>
+          ) : null}
+        </>
+      )}
+    </Animated.View>
   );
-  return [value, report] as const;
+}
+
+/** How a picture is described while it shows the place as it last was. */
+export function pictureWords(picture: RunPlacePicture): string {
+  return picture.usable && !picture.fresh ? ", last picture" : "";
 }
 
 /** Whether this conversation's agent acts in its Run's place right now. */
@@ -176,19 +200,13 @@ export function PlaceGlyph(props: {
 }): ReactNode {
   return (
     <View pointerEvents="none" style={styles.glyph}>
-      <Symbol
-        name={
-          props.kind === "browser"
-            ? "globe"
-            : props.kind === "phone"
-              ? "smartphone"
-              : "laptopcomputer"
-        }
-        size={props.size}
-        tint={color.muted}
-      />
+      <Symbol name={placeSymbol(props.kind)} size={props.size} tint={color.muted} />
     </View>
   );
+}
+
+function placeSymbol(kind: PlaceEnteredEventView["data"]["place"]["kind"]) {
+  return kind === "browser" ? "globe" : kind === "phone" ? "smartphone" : "laptopcomputer";
 }
 
 /** Green says an agent is acting here, as everywhere else in the app. */
@@ -203,6 +221,18 @@ const styles = StyleSheet.create({
     backgroundColor: color.surfaceRaised,
     justifyContent: "center",
   },
+  cover: {
+    ...StyleSheet.absoluteFill,
+    alignItems: "center",
+    gap: space[4],
+    justifyContent: "center",
+    paddingHorizontal: space[24],
+  },
+  // Enough to read as "not now" on a bright page, never enough to hide it.
+  stale: { backgroundColor: "rgba(8, 8, 8, 0.3)" },
+  // Over a page it last drew, or the empty stage: the place, named, waiting.
+  waiting: { backgroundColor: "rgba(8, 8, 8, 0.72)" },
+  coverTitle: { marginTop: space[6], maxWidth: "100%" },
   ring: {
     ...StyleSheet.absoluteFill,
     borderColor: color.green,

@@ -95,6 +95,11 @@ export interface BrowserStreamProps {
   readonly preserveLastFrame?: boolean;
   /** Original Run session identity when its tab is rebound to a replacement session. */
   readonly previewSessionId?: string;
+  /**
+   * The Run place's picture owner holds this tab's watch: the view only draws
+   * what arrives, with no lease or words of its own; its caller shows the state.
+   */
+  readonly sharedWatch?: boolean;
   readonly style?: StyleProp<ViewStyle>;
   /**
    * How far this phone has pinched the picture in. A drag is measured on the
@@ -165,6 +170,7 @@ function BrowserStreamView({
   dragSelect = false,
   onDragEnd,
   preserveLastFrame = false,
+  sharedWatch = false,
   held = false,
   tabId,
   documentId,
@@ -223,7 +229,7 @@ function BrowserStreamView({
   // The client bounds how many browser targets it holds; past that it refuses, and says so.
   const [leaseError, setLeaseError] = useState<string | null>(null);
   useEffect(() => {
-    if (!active) return;
+    if (!active || (sharedWatch && !interactive)) return;
     try {
       const release = interactive
         ? hostClient.retainBrowserViewer(session.id, tabId, {
@@ -244,7 +250,7 @@ function BrowserStreamView({
       setLeaseError(error instanceof Error ? error.message : "This page can’t be shown.");
       return;
     }
-  }, [active, attempt, awake, hostClient, interactive, native, session.id, tabId]);
+  }, [active, attempt, awake, hostClient, interactive, native, session.id, sharedWatch, tabId]);
   // Held apart from the picture, so the picture coming and going reuses this socket.
   useEffect(() => {
     if (!kept) return;
@@ -397,7 +403,11 @@ function BrowserStreamView({
     ? picture.drawn && { source: picture.drawn }
     : displayedSlot;
   const cached =
-    preserve && active && ready ? getBrowserLastPicture(frames, session.id, tabId) : null;
+    preserve && active && ready
+      ? (getBrowserLastPicture(frames, session.id, tabId) ??
+        // The owner counts a picture the opened page kept as this tab's too.
+        (sharedWatch ? getBrowserLastPicture(hostClient.browserFrames, session.id, tabId) : null))
+      : null;
   const restored = liveDisplayed === null ? cached : null;
   const displayed = liveDisplayed ?? (restored ? { source: restored.frame } : null);
   const cacheInvalidation = useRef(invalidation);
@@ -718,10 +728,11 @@ function BrowserStreamView({
       onPageSize?.({ height: shownHeight, width: shownWidth });
   }, [onPageSize, shownHeight, shownWidth]);
   if (!requestedActive && !kept) return null;
-  const words =
-    presentationError ??
-    leaseError ??
-    (displayed === null ? streamLabel(session.state, feedState, feedError) : null);
+  const words = sharedWatch
+    ? null
+    : (presentationError ??
+      leaseError ??
+      (displayed === null ? streamLabel(session.state, feedState, feedError) : null));
 
   return (
     <View

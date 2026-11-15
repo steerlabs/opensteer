@@ -143,6 +143,8 @@ async function mount(
     hostClient?: (source: MockHostClient) => HostClient;
     strict?: boolean;
     width?: number;
+    /** A touch screen, where focusing a field brings up an on-screen keyboard. */
+    touch?: boolean;
     now?: () => Date;
     /** The mock Host's pace, for a scripted run that must still be working when acted on. */
     latencyMs?: number;
@@ -162,7 +164,7 @@ async function mount(
     >;
   } = {},
 ) {
-  stubLayout(options.width ?? 1440);
+  stubLayout(options.width ?? 1440, options.touch);
   if (!options.sameHost) {
     client = new MockHostClient({
       ...options.mock,
@@ -314,7 +316,7 @@ async function mount(
 }
 
 /** Observers that never fire and media queries that answer to `viewport.width`. */
-function stubLayout(width: number) {
+function stubLayout(width: number, touch = false) {
   vi.stubGlobal(
     "ResizeObserver",
     class {
@@ -339,7 +341,8 @@ function stubLayout(width: number) {
       removeListener: () => undefined,
     });
     Object.defineProperty(media, "matches", {
-      get: () => (max ? viewport.width <= Number(max[1]) : false),
+      get: () =>
+        max ? viewport.width <= Number(max[1]) : touch && query.includes("(pointer: coarse)"),
     });
     viewport.queries.add(media);
     return media as unknown as MediaQueryList;

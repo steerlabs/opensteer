@@ -69,7 +69,7 @@ export const worklets = {
   scheduleOnRN: <A extends unknown[]>(run: (...args: A) => void, ...args: A) => run(...args),
 };
 
-const transition = { duration: () => transition };
+const transition = { delay: () => transition, duration: () => transition };
 
 export const reanimated = {
   default: {

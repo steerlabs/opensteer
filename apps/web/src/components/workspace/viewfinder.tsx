@@ -17,32 +17,27 @@ import {
   useSyncExternalStore,
 } from "react";
 import {
-  getBrowserLastPicture,
-  rememberBrowserLastPicture,
+  browserTabPicture,
   pageSiteLabel,
   placeActivityPoint,
   runPlaceActing,
-  type BrowserFrameView,
   type HostClient,
   type SurfaceDestination,
 } from "@opensteer/client/host";
-import {
-  useBrowserTabAwake,
-  useHostSelector,
-  useRunPlace,
-  useRunPlaceBinding,
-} from "@opensteer/client/react";
+import { useHostSelector, useRunPlace, useRunPlaceBinding } from "@opensteer/client/react";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import { placeIdentityKey } from "@opensteer/protocol";
 import { useMediaQuery } from "../../ui-utils.js";
-import { ComputerWatchView } from "../computer-watch.js";
 import { Icon } from "../icon.js";
 import { AgentCursors } from "./agent-cursors.js";
 import { destinationPlaceKey } from "./navigation.js";
+import { RunPlaceCanvas, useRunPlacePictures } from "./run-place-picture.js";
 import { useWorkspace } from "./workspace-context.js";
 
 export interface RunPlaceView {
   readonly placeKey: string;
+  /** The place as the conversation's shared picture names it. */
+  readonly pictureKey: string;
   readonly destination: SurfaceDestination | null;
   readonly binding?: SurfaceDestination | null;
   /** The Run's session in a native place, whose picture the tile shows. */
@@ -67,6 +62,7 @@ export function useRunPlaceView(hostClient: HostClient, runId: string | null, th
             placeKey:
               (destination ? destinationPlaceKey(destination) : null) ??
               placeIdentityKey(entry.data.place),
+            pictureKey: placeIdentityKey(entry.data.place),
             destination,
             binding,
             sessionId,
@@ -115,9 +111,9 @@ export function LivePlace({
 /**
  * A working Run's live picture of the place it is in, framed on its pointer,
  * with the agents' cursors, ringed in green while it acts. Pressing it shows
- * that place in the middle and changes nothing else. Only a picture arriving
- * now is drawn at full strength; one kept from earlier is dimmed, and with no
- * picture at all it shows the kind of place.
+ * that place in the middle and changes nothing else. It only reads the
+ * conversation's one picture: a fresh one is drawn at full strength, one kept
+ * from earlier is dimmed, and with none it shows the kind of place.
  */
 export const Viewfinder = memo(function Viewfinder({
   acting = false,
@@ -136,11 +132,10 @@ export const Viewfinder = memo(function Viewfinder({
   const rootRef = useRef<HTMLButtonElement | null>(null);
   const inView = useInView(rootRef);
   const { destination } = place;
-  // A conversation put away is not on screen, whatever its geometry says: its
-  // picture lets go of its watch until it is shown again. A hidden page only
-  // pauses it in the client, which keeps the last picture.
+  // Off screen or put away, it draws nothing; the conversation decides what is watched.
   const live = inView && conversationShown;
-  const [pictureLive, setPictureLive] = useState(false);
+  const { usable, fresh } = usePlacePicture(place);
+  const [painted, setPainted] = useState(false);
   const name = placeName(place);
   return (
     <button
@@ -150,7 +145,7 @@ export const Viewfinder = memo(function Viewfinder({
         "viewfinder",
         place.kind === "browser" ? "" : "viewfinder--native",
         acting ? "viewfinder--acting" : "",
-        pictureLive ? "" : "viewfinder--still",
+        usable && painted && !fresh ? "viewfinder--still" : "",
       ]
         .filter(Boolean)
         .join(" ")}
@@ -171,18 +166,15 @@ export const Viewfinder = memo(function Viewfinder({
       type="button"
     >
       <span aria-hidden className="viewfinder__frame">
-        {hasPlacePicture(place) ? (
-          <PlacePicture
-            enabled={live}
-            hiddenReason={!inView ? "not-in-view" : "conversation-hidden"}
-            hostClient={hostClient}
-            onLive={setPictureLive}
-            place={place}
-            threadId={threadId}
-          />
-        ) : (
-          <PlaceGlyph kind={place.kind} />
-        )}
+        <PlacePicture
+          enabled={live}
+          hostClient={hostClient}
+          onPainted={setPainted}
+          place={place}
+          threadId={threadId}
+          usable={usable}
+        />
+        {usable && painted ? null : <PlaceGlyph kind={place.kind} />}
       </span>
     </button>
   );
@@ -202,92 +194,59 @@ export function PlaceGlyph({ kind }: { readonly kind: RunPlaceView["kind"] }) {
   );
 }
 
-function pictureSource(place: RunPlaceView) {
-  const { destination } = place;
-  const binding = place.binding ?? destination;
-  const sessionId =
-    place.sessionId ?? (binding?.kind === "app" ? (binding.computerSessionId ?? null) : null);
-  if (destination?.kind === "browser" && destination.tabId)
-    return { kind: "browser", sessionId: destination.sessionId, tabId: destination.tabId } as const;
-  if (binding && (binding.kind === "app" || binding.kind === "phone") && sessionId !== null)
-    return { kind: "native", binding, sessionId } as const;
-  return null;
-}
-
-/** Whether the place has a picture to ask for: a tab, or a Mac app's or phone's session. */
-export function hasPlacePicture(place: RunPlaceView): boolean {
-  return pictureSource(place) !== null;
+/** The conversation's picture of this place: whether it has pixels, and whether they are current. */
+export function usePlacePicture(place: RunPlaceView | null) {
+  const { picture } = useRunPlacePictures();
+  const usable = place !== null && picture.placeKey === place.pictureKey && picture.usable;
+  return { usable, fresh: usable && picture.fresh, aspect: usable ? picture.aspect : null };
 }
 
 /**
- * A Run place's picture, filling the frame it is put in: the tab's, or the
- * Mac app's or phone's. `onShape` hears the shape of each picture there is to
- * show, kept or live.
+ * A Run place's picture, filling the frame it is put in: the tab's frames
+ * from the watch store, or the Mac app's or phone's from the conversation's
+ * one decoder. It holds no watch of its own. It says whether it has pixels
+ * on screen, which a newly drawn form lacks until its first picture arrives.
  */
 export function PlacePicture({
   enabled,
-  hiddenReason,
   hostClient,
-  onLive,
-  onShape,
+  onPainted,
   place,
   threadId,
+  usable,
 }: {
   readonly enabled: boolean;
-  readonly hiddenReason: "not-in-view" | "conversation-hidden";
   readonly hostClient: HostClient;
-  readonly onLive: (live: boolean) => void;
-  readonly onShape?: (aspect: number) => void;
+  readonly onPainted: (painted: boolean) => void;
   readonly place: RunPlaceView;
   readonly threadId: string;
+  readonly usable: boolean;
 }) {
-  const hostConnected =
-    useHostSelector(hostClient, (snapshot) => snapshot.connection) === "connected";
-  const source = pictureSource(place);
-  const reportRatio = useCallback(
-    (ratio: string) => {
-      const [width, height] = ratio.split("/").map(Number);
-      if (width && height) onShape?.(width / height);
-    },
-    [onShape],
-  );
-  if (source?.kind === "browser")
-    return (
+  const { destination } = place;
+  if (place.kind === "browser")
+    return destination?.kind === "browser" && destination.tabId ? (
       <BrowserFinder
-        key={`${source.sessionId}:${source.tabId}`}
-        onLive={onLive}
-        onShape={onShape}
+        key={`${destination.sessionId}:${destination.tabId}`}
         enabled={enabled}
         hostClient={hostClient}
+        onPainted={onPainted}
         placeKey={place.placeKey}
-        sessionId={source.sessionId}
-        tabId={source.tabId}
+        sessionId={destination.sessionId}
+        tabId={destination.tabId}
         threadId={threadId}
+        usable={usable}
       />
-    );
-  if (source?.kind === "native") {
-    const { binding } = source;
-    return (
-      <span className="viewfinder__native">
-        <ComputerWatchView
-          key={`${binding.machineId}:${binding.kind === "app" ? binding.appKey : "main"}`}
-          appKey={binding.kind === "app" ? binding.appKey : null}
-          compact
-          preserveLastFrame
-          onPictureLive={onLive}
-          onPictureRatio={reportRatio}
-          hostClient={hostClient}
-          hostConnected={hostConnected}
-          machineId={binding.machineId || null}
-          machines={hostClient.getSnapshot().machines}
-          sessionId={source.sessionId}
-          visible={enabled && place.destination !== null}
-          hiddenReason={enabled ? "destination-changed" : hiddenReason}
-        />
-      </span>
-    );
-  }
-  return null;
+    ) : null;
+  return (
+    <span className="viewfinder__native">
+      <RunPlaceCanvas
+        enabled={enabled}
+        mac={place.kind === "app"}
+        onPainted={onPainted}
+        usable={usable}
+      />
+    </span>
+  );
 }
 
 function useViewfinderContext() {
@@ -301,72 +260,53 @@ function useViewfinderContext() {
  * picture's real overflow, and still under reduced motion.
  */
 function BrowserFinder({
-  onLive,
-  onShape,
   enabled,
   hostClient,
+  onPainted,
   placeKey,
   sessionId,
   tabId,
   threadId,
+  usable,
 }: {
-  readonly onLive: (live: boolean) => void;
-  readonly onShape: ((aspect: number) => void) | undefined;
   readonly enabled: boolean;
   readonly hostClient: HostClient;
+  readonly onPainted: (painted: boolean) => void;
   readonly placeKey: string;
   readonly sessionId: string;
   readonly tabId: string;
   readonly threadId: string;
+  /** The conversation still counts this tab's pixels; when it stops, they leave the screen. */
+  readonly usable: boolean;
 }) {
   const surfaceId = BrowserSurfaceIdSchema.safeParse(tabId).data ?? null;
-  const status = useSyncExternalStore(
-    useCallback(
-      (listener: () => void) => hostClient.subscribeBrowserWatch(sessionId, tabId, listener),
-      [hostClient, sessionId, tabId],
-    ),
-    useCallback(
-      () => hostClient.browserWatchState(sessionId, tabId).status,
-      [hostClient, sessionId, tabId],
-    ),
-  );
-  useEffect(() => {
-    onLive(enabled && status === "live");
-    return () => onLive(false);
-  }, [enabled, onLive, status]);
-  // A sleeping tab shows its last picture: watching it would wake it.
-  const awake = useBrowserTabAwake(hostClient, sessionId, tabId);
-  useEffect(
-    () =>
-      enabled && awake && surfaceId
-        ? hostClient.retainBrowserWatch(sessionId, tabId, {
-            captureRegion: true,
-            frameWindow: true,
-            rasterDemand: true,
-          })
-        : undefined,
-    [awake, hostClient, sessionId, tabId, surfaceId, enabled],
-  );
   const frameRef = useRef<HTMLSpanElement | null>(null);
   const imageRef = useRef<HTMLSpanElement | null>(null);
   const [shown, setShown] = useState(false);
+  // The conversation counts a picture either store kept, an opened page's included.
   useSyncExternalStore(
     useCallback(
-      (listener) => hostClient.browserWatchFrames.subscribe(sessionId, listener, tabId),
+      (listener) => {
+        const stops = [hostClient.browserWatchFrames, hostClient.browserFrames].map((frames) =>
+          frames.subscribe(sessionId, listener, tabId),
+        );
+        return () => stops.forEach((stop) => stop());
+      },
       [hostClient, sessionId, tabId],
     ),
     useCallback(
-      () => hostClient.browserWatchFrames.invalidationKey?.(sessionId, tabId) ?? 0,
+      () =>
+        JSON.stringify(
+          [hostClient.browserWatchFrames, hostClient.browserFrames].map(
+            (frames) => frames.invalidationKey?.(sessionId, tabId) ?? 0,
+          ),
+        ),
       [hostClient, sessionId, tabId],
     ),
   );
-  const cached = getBrowserLastPicture(hostClient.browserWatchFrames, sessionId, tabId);
-  const cachedAspect = cached ? frameAspect(cached.frame.header) : 0;
-  useEffect(() => {
-    if (cachedAspect > 0) onShape?.(cachedAspect);
-  }, [cachedAspect, onShape]);
-  const reportShape = useRef(onShape);
-  reportShape.current = onShape;
+  const cached = browserTabPicture(hostClient, sessionId, tabId);
+  const painted = shown || cached !== null;
+  useLayoutEffect(() => onPainted(painted), [onPainted, painted]);
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -378,10 +318,7 @@ function BrowserFinder({
       sessionId,
       tabId,
       canvas,
-      (frame) => {
-        rememberBrowserLastPicture(hostClient.browserWatchFrames, sessionId, tabId, frame);
-        setShown(true);
-      },
+      () => setShown(true),
       true,
       { preservePixels: true, active: enabled },
     );
@@ -404,7 +341,6 @@ function BrowserFinder({
     const frameAt = () => {
       const shown = drawnBrowserFrame(canvasRef.current);
       if (!shown) return;
-      reportShape.current?.(frameAspect(shown.header));
       const width = box.clientWidth;
       const height = box.clientHeight;
       const rect = browserFrameContentRect(
@@ -443,7 +379,10 @@ function BrowserFinder({
   }, [hostClient, placeKey, threadId]);
 
   return (
-    <span className="viewfinder__picture" ref={frameRef}>
+    <span
+      className={usable ? "viewfinder__picture" : "viewfinder__picture place-picture--gone"}
+      ref={frameRef}
+    >
       <span
         className={
           reducedMotion
@@ -473,11 +412,6 @@ function BrowserFinder({
       </span>
     </span>
   );
-}
-
-function frameAspect(header: BrowserFrameView["header"]): number {
-  const region = header.capture ?? { width: header.rasterWidth, height: header.rasterHeight };
-  return region.height > 0 ? region.width / region.height : 0;
 }
 
 /** Whether the element is on screen; nothing off screen holds a live picture. */

@@ -867,7 +867,7 @@ describe("the v7 web review's findings", () => {
     const destination = runPlaceDestination(before, client.getSnapshot());
     expect(before.data.place.kind).toBe("phone");
     expect(destination).toMatchObject({ kind: "phone" });
-    expect(document.querySelector(".viewfinder .computer-watch")).not.toBeNull();
+    expect(document.querySelector(".viewfinder .place-canvas")).not.toBeNull();
     await openTile("Pixel 7");
     expect(element(".owner-view")).toBeTruthy();
     const phones = placeList(client.getSnapshot()).filter((item) => item.kind === "phone");

@@ -1,3 +1,5 @@
+import { clearRunPageViews } from "./run-page-memory.js";
+import { clearRunPlacePictures } from "./run-place-picture.js";
 import { ReferenceStore } from "../references/store.js";
 import { TranscriptFileController } from "./transcript-files.js";
 import { AssetUrlStore, type AssetRoute } from "./asset-urls.js";
@@ -3355,6 +3357,8 @@ export class HttpHostClient {
   }
 
   dispose(): void {
+    clearRunPageViews(this);
+    clearRunPlacePictures(this);
     this.references.dispose();
     this.transcriptFiles.dispose();
     this.assetUrls.dispose();
@@ -5694,6 +5698,8 @@ export class HttpHostClient {
     this.#browserTargetRevision = this.#browserTabs.targetRevision;
     const scope = viewerScopeOf(snapshot);
     if (this.#viewer.change(scope)) {
+      clearRunPageViews(this);
+      clearRunPlacePictures(this);
       for (const check of this.#browserWaiters) check();
       this.#nodeDetails.clear();
       this.#runPlaces.clear();
@@ -5745,9 +5751,14 @@ export class HttpHostClient {
           this.#browserTargetAllowed(sessionId, surfaceId, asleep);
         reconcileBrowserTargets = () => {
           const document = (sessionId: string, tabId: string) =>
-            placeByKey(this.#snapshot, `browser:${sessionId}:${tabId}`)?.browser?.documentId;
-          reconcileBrowserLastPictures(this.browserWatchFrames, document);
-          reconcileBrowserLastPictures(this.browserFrames, document);
+            this.#browserTabs.sessionTab(sessionId, tabId)?.documentId;
+          const sessionForTab = (tabId: string) => {
+            const groupId = this.#browserTabs.groupForTab(tabId);
+            const group = groupId ? this.#browserTabs.group(groupId) : undefined;
+            return group && authorized(group.sessionId, tabId) ? group.sessionId : undefined;
+          };
+          reconcileBrowserLastPictures(this.browserWatchFrames, document, sessionForTab);
+          reconcileBrowserLastPictures(this.browserFrames, document, sessionForTab);
           if (this.#snapshot.connection === "connected")
             this.#placeActivity.reconcile(
               (key) => placeByKey(this.#snapshot, key)?.availability === "ready",

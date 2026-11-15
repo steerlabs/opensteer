@@ -3,9 +3,16 @@ import { MemoryRouter } from "react-router";
 import { HttpHostClient } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { placeList } from "@opensteer/client/host";
+import { useRunPlacePicture } from "@opensteer/client/react";
+import { BrowserSessionIdSchema, BrowserSurfaceIdSchema, createId } from "@opensteer/core";
+import { placeIdentityKey } from "@opensteer/protocol";
 import { browserClientLifecycle } from "../host/browser-lifecycle.js";
 import { pageVisible } from "../page-visibility.js";
 import { Viewfinder } from "../components/workspace/viewfinder.js";
+import {
+  RunPlacePictureScope,
+  useDisplayDecoding,
+} from "../components/workspace/run-place-picture.js";
 import { OwnerView } from "../components/workspace/owner-view.js";
 import { ownerViewDestination } from "@opensteer/client/host";
 import { WorkspaceProvider } from "../components/workspace/workspace-context.js";
@@ -56,16 +63,29 @@ const smoke = {
     const finderThread = snapshot.threads.find((thread) => thread.purpose === "task");
     if (!finderPlace || finderPlace.destination.kind !== "browser" || !finderThread)
       throw Error("No fixture browser viewfinder exists.");
+    // The viewfinder only reads its conversation's picture; the pane holds the watch for it.
+    const finderRef = {
+      kind: "browser" as const,
+      sessionId: BrowserSessionIdSchema.parse(finderPlace.destination.sessionId),
+      surfaceId: BrowserSurfaceIdSchema.parse(finderPlace.destination.tabId),
+    };
     const finder = {
       place: {
         placeKey: finderPlace.key,
+        pictureKey: placeIdentityKey(finderRef),
         kind: "browser" as const,
         destination: finderPlace.destination,
         title: finderPlace.title,
         site: finderPlace.site,
       },
+      runId: createId("run"),
       threadId: finderThread.id,
     };
+    owner.enterPlace(finder.runId, finder.threadId, {
+      place: finderRef,
+      title: finderPlace.title,
+      site: finderPlace.site,
+    });
     const retainWatch = owner.retainBrowserWatch;
     Object.defineProperty(owner, "retainBrowserWatch", {
       value: (...args: Parameters<typeof retainWatch>) => {
@@ -121,6 +141,27 @@ const smoke = {
         return dispatch(...args);
       },
     });
+    function Finder() {
+      const decoding = useDisplayDecoding(true);
+      const picture = useRunPlacePicture(
+        owner,
+        finder.threadId,
+        finder.runId,
+        true,
+        decoding !== null,
+      );
+      return (
+        <RunPlacePictureScope
+          decoding={decoding}
+          enabled
+          hostClient={owner}
+          picture={picture}
+          threadId={finder.threadId}
+        >
+          <Viewfinder hostClient={owner} place={finder.place} threadId={finder.threadId} />
+        </RunPlacePictureScope>
+      );
+    }
     function Owner() {
       const snapshot = owner.getSnapshot();
       const nav = useWorkspaceNavigation({
@@ -130,7 +171,7 @@ const smoke = {
       return (
         <WorkspaceProvider attention={0} nav={nav} openDrawer={() => undefined}>
           <TabCloserProvider hostClient={owner}>
-            <Viewfinder hostClient={owner} place={finder.place} threadId={finder.threadId} />
+            <Finder />
             <OwnerView
               destination={ownerDestination}
               marks={null}

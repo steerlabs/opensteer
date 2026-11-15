@@ -6,8 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 import { sharedDisplayStreams } from "@opensteer/client/integrations";
 import { RunnerIdSchema } from "@opensteer/core";
-import type { HostSnapshot } from "@opensteer/client/host";
+import { runPlacePicture, type HostSnapshot } from "@opensteer/client/host";
+import { useRunPlacePicture } from "@opensteer/client/react";
 import { LivePlace } from "./workspace/viewfinder.js";
+import { RunPlacePictureScope, useDisplayDecoding } from "./workspace/run-place-picture.js";
 import type { WebSocketClient } from "@opensteer/client/host";
 import type { MachineSummary } from "@opensteer/protocol";
 
@@ -1262,6 +1264,32 @@ it.each([
   "denial-before-session-removal",
   "protected",
 ])("keeps live native pixels through binding recovery and clears %s", async (refusal) => {
+  // The pane holds the picture; the folded picture only reads it, as in a conversation.
+  function Pane({
+    folded = false,
+    runId,
+    threadId,
+  }: {
+    /** A second form of the place, as one folding into the head mounts. */
+    readonly folded?: boolean;
+    readonly runId: string;
+    readonly threadId: string;
+  }) {
+    const decoding = useDisplayDecoding(true);
+    const picture = useRunPlacePicture(client, threadId, runId, true, decoding !== null);
+    return (
+      <RunPlacePictureScope
+        decoding={decoding}
+        enabled
+        hostClient={client}
+        picture={picture}
+        threadId={threadId}
+      >
+        <LivePlace hostClient={client} runId={runId} threadId={threadId} />
+        {folded ? <LivePlace hostClient={client} runId={runId} threadId={threadId} /> : null}
+      </RunPlacePictureScope>
+    );
+  }
   const { machine, sessionId } = phone();
   const session = machine.computerUse!.sessions[0]!;
   const runId = session.runId,
@@ -1281,15 +1309,34 @@ it.each([
   const node = document.createElement("div");
   document.body.append(node);
   root = createRoot(node);
-  await act(async () =>
-    root!.render(<LivePlace hostClient={client} runId={runId} threadId={threadId} />),
-  );
+  await act(async () => root!.render(<Pane runId={runId} threadId={threadId} />));
   await vi.waitFor(async () => {
     await act(async () => {});
-    expect(node.querySelector(".phone-display__picture--hidden")).toBeNull();
+    expect(node.querySelector(".place-canvas--hidden")).toBeNull();
     expect(node.querySelector("canvas")?.width).toBe(360);
   });
   const canvas = node.querySelector("canvas");
+  if (refusal === "ownership") {
+    // A network change replaces the socket under the same decoder: the old picture stays
+    // on screen but is not current until the new socket's picture is drawn.
+    await vi.waitFor(() => expect(runPlacePicture(client, threadId, runId).fresh).toBe(true));
+    decoder.blocked = true;
+    decoder.pending.length = 0;
+    await act(async () => sharedDisplayStreams(client).reconnect());
+    await vi.waitFor(() =>
+      expect(decoder.pending.length, "reconnected stream never submitted a frame").toBeGreaterThan(
+        0,
+      ),
+    );
+    await act(async () => {});
+    expect(runPlacePicture(client, threadId, runId).fresh).toBe(false);
+    decoder.blocked = false;
+    await act(async () => decoder.pending.splice(0).forEach((output) => output()));
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(runPlacePicture(client, threadId, runId).fresh).toBe(true);
+    });
+  }
   const move = async (machines: HostSnapshot["machines"]) =>
     act(async () => {
       snapshot = { ...snapshot, machines };
@@ -1304,7 +1351,7 @@ it.each([
         generation: 1,
       }),
     );
-    expect(node.querySelector(".phone-display__picture--hidden")).not.toBeNull();
+    expect(node.querySelector(".place-canvas--hidden")).not.toBeNull();
     return;
   }
   const denied = {
@@ -1318,7 +1365,7 @@ it.each([
   };
   if (refusal === "denial-before-release" || refusal === "denial-before-session-removal") {
     await move([denied]);
-    expect(node.querySelector(".phone-display__picture--hidden")).not.toBeNull();
+    expect(node.querySelector(".place-canvas--hidden")).not.toBeNull();
     expect(sockets.at(-1)?.closed).toBe(true);
     return;
   }
@@ -1328,30 +1375,44 @@ it.each([
   ]) {
     await move([changed]);
     expect(node.querySelector("canvas")).toBe(canvas);
-    expect(node.querySelector(".phone-display__picture--hidden")).toBeNull();
+    expect(node.querySelector(".place-canvas--hidden")).toBeNull();
     expect(sockets.at(-1)?.closed).toBe(true);
     expect(node.querySelector(".viewfinder--still")).not.toBeNull();
   }
+  // A form mounted with no stream to decode draws the picture the conversation kept, at once.
+  await act(async () => root!.render(<Pane folded runId={runId} threadId={threadId} />));
+  const formed = node.querySelectorAll("canvas")[1];
+  expect(formed?.width).toBe(360);
+  expect(formed?.classList.contains("place-canvas--hidden")).toBe(false);
+  expect(node.querySelector(".viewfinder__glyph")).toBeNull();
   if (refusal === "denial-after-release") {
     await move([denied]);
-    expect(node.querySelector(".phone-display__picture--hidden")).not.toBeNull();
+    expect(node.querySelector(".place-canvas--hidden")).not.toBeNull();
     return;
   }
   decoder.blocked = true;
+  // A replacement stream that goes away before it draws leaves the kept picture in place.
+  await move([machine]);
+  await move([{ ...machine, computerUse: { ...machine.computerUse!, sessions: [] } }]);
+  decoder.pending.length = 0;
+  await act(async () => root!.render(<Pane runId={runId} threadId={threadId} />));
+  await act(async () => root!.render(<Pane folded runId={runId} threadId={threadId} />));
+  expect(node.querySelectorAll("canvas")[1]?.width).toBe(360);
+  await act(async () => root!.render(<Pane runId={runId} threadId={threadId} />));
   await move([machine]);
   expect(node.querySelector("canvas")).toBe(canvas);
-  expect(node.querySelector(".phone-display__picture--hidden")).toBeNull();
+  expect(node.querySelector(".place-canvas--hidden")).toBeNull();
   await vi.waitFor(() =>
     expect(decoder.pending.length, "replacement stream never submitted a frame").toBeGreaterThan(0),
   );
   await act(async () => decoder.pending.splice(0).forEach((output) => output()));
   await vi.waitFor(async () => {
     await act(async () => {});
-    expect(node.querySelector(".phone-display__picture--hidden")).toBeNull();
+    expect(node.querySelector(".place-canvas--hidden")).toBeNull();
     expect(node.querySelector(".viewfinder--still")).toBeNull();
   });
   await move([{ ...machine, ownership: "mine", computerUse: null }]);
-  expect(node.querySelector(".phone-display__picture--hidden")).not.toBeNull();
+  expect(node.querySelector(".place-canvas--hidden")).not.toBeNull();
   expect(node.querySelector("canvas")).toBe(canvas);
   expect(sessionId).toBeDefined();
 });
