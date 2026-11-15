@@ -6,7 +6,6 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TabsClient } from "@opensteer/client/host";
 import type { TabTarget } from "@opensteer/core";
-import { attachMockTabs } from "../../test-support/mock-tabs.js";
 import { MockHostClient, mockIphoneRunnerId } from "@opensteer/client/mock";
 
 const linking = vi.hoisted(() => ({ openURL: vi.fn(async () => undefined) }));
@@ -92,7 +91,6 @@ function phone(deploymentId: string, enrolled: boolean): IphoneAppsController {
 
 function conversation(input: { readonly enrolled: boolean }) {
   const host = new MockHostClient({ latencyMs: 0 });
-  const tabs = attachMockTabs(host, { layout: [], tabs: [] });
   const snapshot = host.getSnapshot();
   const deploymentId = snapshot.deploymentId!;
   const threadId = snapshot.threads[0]!.id;
@@ -135,14 +133,14 @@ function conversation(input: { readonly enrolled: boolean }) {
       if (action.type === "POP") navigation.routes.pop();
     },
   );
-  return { deploymentId, host, tabs, tap, threadId };
+  return { deploymentId, host, tap, threadId };
 }
 
 describe("a conversation's links on a phone that lends a browser", () => {
   const opens = (host: MockHostClient) => vi.spyOn(host as unknown as TabsClient, "openTab");
 
   it("opens a web link as a new tab in this phone's own browser, in its recent profile, over the conversation", async () => {
-    const { deploymentId, host, tabs, tap, threadId } = conversation({ enrolled: true });
+    const { deploymentId, host, tap, threadId } = conversation({ enrolled: true });
     const open = opens(host);
     tap("the photo");
     expect(open).toHaveBeenCalledWith({
@@ -153,10 +151,14 @@ describe("a conversation's links on a phone that lends a browser", () => {
     await vi.waitFor(() => {
       if (navigation.routes.length !== 1) throw new Error("The new tab was never shown.");
     });
-    const [tab] = tabs.model.rows.values();
+    const tab = await open.mock.results[0]!.value;
     expect(navigation.routes[0]).toMatchObject({
       name: "WorkspaceBrowser",
-      params: { deploymentId, tabId: tab!.tabId, threadId },
+      params: { deploymentId, tabId: tab.tabId, threadId },
+    });
+    expect(host.getSnapshot().tabs.get(tab.tabId)).toMatchObject({
+      kind: "page",
+      url: "https://unsplash.com/photos/tiger",
     });
     expect(linking.openURL).not.toHaveBeenCalled();
   });
@@ -178,8 +180,8 @@ describe("a conversation's links on a phone that lends a browser", () => {
   });
 
   it("takes the link the way it always went when opening here fails, with no error", async () => {
-    const { tabs, tap } = conversation({ enrolled: true });
-    tabs.failNext("openTab", "This phone's browser is not available.");
+    const { host, tap } = conversation({ enrolled: true });
+    opens(host).mockRejectedValueOnce(new Error("This phone's browser is not available."));
     tap("the photo");
     await vi.waitFor(() => {
       if (linking.openURL.mock.calls.length === 0) throw new Error("The link never left.");
@@ -204,7 +206,6 @@ it("leaves links as they were on a phone that is not one of the Deployment's dev
 
 it("opens a link to something in Opensteer here, never in a browser, and holds Open and Copy", () => {
   const host = new MockHostClient({ latencyMs: 0 });
-  attachMockTabs(host, { layout: [], tabs: [] });
   const snapshot = host.getSnapshot();
   const opened: string[] = [];
   const references = {

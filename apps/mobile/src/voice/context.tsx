@@ -1,7 +1,7 @@
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { conversationRoute, show, type ShowTarget } from "./navigation.js";
 import { VoiceController, type VoiceTarget } from "@opensteer/client/voice";
-import { handlePersonShow, type HostSnapshot } from "@opensteer/client/host";
+import { handlePersonShow } from "@opensteer/client/host";
 import { VoiceContext } from "@opensteer/client/react";
 import { AppState } from "react-native";
 import { randomUUID } from "expo-crypto";
@@ -62,8 +62,7 @@ export function VoiceProvider({ children }: { readonly children: ReactNode }): R
           threadId: here && route?.name === "Thread" ? (params?.threadId ?? null) : null,
         },
         (target) => {
-          const shown = showTarget(hostClient.getSnapshot(), target);
-          return shown !== null && show(client.getSnapshot().selection.deploymentId, shown);
+          return show(client.getSnapshot().selection.deploymentId, showTarget(target));
         },
       );
       if (shown) created.showed(message);
@@ -92,14 +91,7 @@ function BackgroundStop({ controller }: { readonly controller: VoiceController }
   return null;
 }
 
-/**
- * Where a show goes: its conversation, or its tab while it is in the list. A
- * closed tab is never reopened and nothing stands in for it; until the list
- * is complete a tab not yet received is shown as named.
- */
-function showTarget(snapshot: HostSnapshot, target: VoiceTarget): ShowTarget | null {
-  if (target.kind === "thread") return target;
-  const { tabId } = target.destination;
-  const tabs = snapshot.tabs;
-  return tabs.get(tabId) !== undefined || !tabs.complete ? { kind: "tab", tabId } : null;
+/** Where a show goes on this phone: `handlePersonShow` passes only a listed tab, never a closed one. */
+function showTarget(target: VoiceTarget): ShowTarget {
+  return target.kind === "thread" ? target : { kind: "tab", tabId: target.destination.tabId };
 }

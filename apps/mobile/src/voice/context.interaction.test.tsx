@@ -5,8 +5,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 import { placeList } from "@opensteer/client/host";
 import { PersonShowMessageSchema } from "@opensteer/protocol";
-import { createId, TabIdSchema } from "@opensteer/core";
-import { attachMockTabs, pageTab, tabId } from "../../test-support/mock-tabs.js";
+import { createId } from "@opensteer/core";
 import { VoiceController } from "@opensteer/client/voice";
 import { VoiceProvider } from "./context.js";
 
@@ -91,7 +90,7 @@ async function mount() {
     type: "host.show",
     runId: createId("run"),
     threadId: source.id,
-    target: { threadId: target.id },
+    target: { taskId: target.id },
   });
   return { host: state.host, snapshot, source, target, message };
 }
@@ -99,7 +98,7 @@ async function mount() {
 it("routes an authorized unloaded Thread through the existing Thread screen", async () => {
   const f = await mount();
   const threadId = createId("thread");
-  await act(async () => f.host.receivePersonShow({ ...f.message, target: { threadId } }));
+  await act(async () => f.host.receivePersonShow({ ...f.message, target: { taskId: threadId } }));
   expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
     type: "PUSH",
     payload: {
@@ -109,15 +108,14 @@ it("routes an authorized unloaded Thread through the existing Thread screen", as
   });
 });
 
-async function showPage(f: Awaited<ReturnType<typeof mount>>) {
+async function showPage(f: Awaited<ReturnType<typeof mount>>, close = false) {
   state.route = {
     key: "Thread",
     name: "Thread",
     params: { deploymentId: f.snapshot.deploymentId, threadId: f.target.id },
   };
-  const place = placeList(f.snapshot).find((place) => place.destination.kind === "browser")!;
-  if (place.destination.kind !== "browser") throw new Error("Expected a browser tab");
-  const tabId = TabIdSchema.parse(place.destination.tabId);
+  const { tabId } = placeList(f.snapshot).find((place) => place.kind === "page")!.destination;
+  if (close) await act(async () => void (await f.host.closeTabs([tabId])));
   await act(async () =>
     f.host.receivePersonShow(
       PersonShowMessageSchema.parse({
@@ -141,11 +139,9 @@ it("opens the exact requested tab from the active Thread, by its tabId alone", a
 
 it("shows nothing for a tab the complete list no longer has, and never a sibling", async () => {
   const f = await mount();
-  attachMockTabs(f.host, {
-    layout: [{ kind: "tab", tabId: tabId("sibling") }],
-    tabs: [pageTab("sibling", "Sibling")],
-  });
-  await showPage(f);
+  const tabId = await showPage(f, true);
+  expect(f.host.getSnapshot().tabs.get(tabId)).toBeUndefined();
+  expect(f.host.getSnapshot().tabs.complete).toBe(true);
   expect(state.dispatch).not.toHaveBeenCalled();
 });
 

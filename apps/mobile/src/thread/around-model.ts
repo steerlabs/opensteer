@@ -246,6 +246,8 @@ export function sameRequesterLink(
  */
 export interface AroundGlance {
   readonly places: number;
+  /** The open places' tab IDs, whose per-tab activity says which are worked in. */
+  readonly placeKeys: readonly string[];
   readonly placesWorking: number;
   /** The symbol every open place shares, or null when they are of more than one kind. */
   readonly placeGlyph: SurfaceGlyph | null;
@@ -265,6 +267,7 @@ export function aroundGlanceSelector(
     readonly source: ConversationSurfaceSource;
     readonly tabRows: HostSnapshot["tabs"]["rows"];
     readonly places: readonly AroundPlace[];
+    readonly placeKeys: readonly string[];
     readonly placeGlyph: SurfaceGlyph | null;
   } | null = null;
   return (snapshot) => {
@@ -277,6 +280,7 @@ export function aroundGlanceSelector(
       const glyphs = new Set(places.map(({ glyph }) => glyph));
       held = {
         placeGlyph: glyphs.size === 1 ? places[0]!.glyph : null,
+        placeKeys: places.map(({ key }) => key),
         places,
         source: snapshot,
         tabRows: snapshot.tabs.rows,
@@ -294,6 +298,7 @@ export function aroundGlanceSelector(
       family,
       from,
       placeGlyph: held.placeGlyph,
+      placeKeys: held.placeKeys,
       places: held.places.length,
       placesWorking,
     };
@@ -305,6 +310,7 @@ export function sameAroundGlance(left: AroundGlance | null, right: AroundGlance 
   if (left === null || right === null) return left === right;
   return (
     left.places === right.places &&
+    (left.placeKeys === right.placeKeys || left.placeKeys.join() === right.placeKeys.join()) &&
     left.placesWorking === right.placesWorking &&
     left.placeGlyph === right.placeGlyph &&
     sameTaskFamilyGlance(left.family, right.family) &&

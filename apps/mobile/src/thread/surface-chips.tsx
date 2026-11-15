@@ -281,7 +281,8 @@ function PlaceStop(props: {
   const source = useTabSource(surfaces.hostClient);
   const page = useMemo(() => placePage(props.entry, source), [props.entry, source]);
   if (page === null) return null;
-  const acting = props.latest && page.acting && !page.ended;
+  // An agent is in one tab at a time: the live turn's latest stop, while its tab is listed.
+  const acting = props.latest && !page.ended;
   if (props.markOnly)
     return (
       <View style={{ flexDirection: "row" }}>

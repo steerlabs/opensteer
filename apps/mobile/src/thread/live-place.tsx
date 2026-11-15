@@ -95,6 +95,7 @@ function BrowserSurface(props: SurfaceProps): ReactNode {
         label={place.title}
         onPageSize={sized}
         preserveLastFrame
+        previewSessionId={tabId}
         session={{ id: sessionId, state: "ready" }}
         tabId={tabId}
       />

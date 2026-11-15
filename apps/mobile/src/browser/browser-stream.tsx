@@ -93,7 +93,7 @@ export interface BrowserStreamProps {
   readonly session: Pick<BrowserSessionSummary, "id" | "state">;
   /** Passive Run preview: retain the last presented picture of each recently visited tab. */
   readonly preserveLastFrame?: boolean;
-  /** Original Run session identity when its tab is rebound to a replacement session. */
+  /** What a preview stays one picture for while its tab is rebound to another session. */
   readonly previewSessionId?: string;
   readonly style?: StyleProp<ViewStyle>;
   /**

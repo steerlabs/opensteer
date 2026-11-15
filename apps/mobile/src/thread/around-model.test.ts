@@ -1,17 +1,14 @@
 import {
   conversationSurfaces,
-  conversationThreadIds,
-  surfaceDestination,
   taskFamily,
   type FamilyTask,
   type HostSnapshot,
   type TaskFamily,
 } from "@opensteer/client/host";
-import { createId, ThreadIdSchema, type Tab } from "@opensteer/core";
-import { appId, appTab, FakeTabs, tabId } from "../../test-support/mock-tabs.js";
 import { MockHostClient } from "@opensteer/client/mock";
+import { tabFixture, tabStoreFixture } from "@opensteer/client/test-support";
+import { createId, TabIdSchema, ThreadIdSchema, type Tab } from "@opensteer/core";
 import { afterAll, describe, expect, it } from "vitest";
-import { actingFor } from "../browser/agent-surface.js";
 import {
   aroundGlanceSelector,
   aroundFrom,
@@ -23,69 +20,84 @@ import {
   openingSection,
   sameAroundGlance,
   shownSection,
+  type ActivityOf,
   type AroundPlace,
 } from "./around-model.js";
 
-// Loaded and connected, so the Mac apps and phones its Runs hold are listed.
 const client = new MockHostClient({ latencyMs: 0 });
 await client.load();
 afterAll(() => client.dispose());
 const source = client.getSnapshot();
 const home = source.threads[0]!.id;
 const titled = (title: string) => source.threads.find((thread) => thread.title === title)!.id;
-const glance = (snapshot: HostSnapshot, threadId: string) =>
-  aroundGlanceSelector(threadId)(snapshot);
+/** The Host's per-tab activity, as these tests set it: who acts in which tab. */
+const acting =
+  (byTab: Record<string, readonly string[]>): ActivityOf =>
+  (tabId) =>
+    (byTab[tabId] ?? []).map((threadId) => ({ threadId: ThreadIdSchema.parse(threadId) }));
+const nobody = acting({});
+const glance = (snapshot: HostSnapshot, threadId: string, activity = nobody) =>
+  aroundGlanceSelector(threadId, activity)(snapshot);
+const noTabs = tabStoreFixture([]);
 
 describe("around a conversation", () => {
+  const items = conversationSurfaces(source, home);
+  const worker = titled("Book a table for Friday");
+  // Activity in a tab of its own, in one its delegated task uses, and in a
+  // tab it holds that only another conversation acts in.
+  const own = items[2]!;
+  const delegated = items.find(({ tab }) => tab.usedBy.every(({ taskId }) => taskId === worker))!;
+  const shared = items[0]!;
+  const activity = acting({
+    [own.key]: [home],
+    [delegated.key]: [worker],
+    [shared.key]: [titled("Review storage integration")],
+  });
+
   // Failure: a tab another conversation acts in reads as working here, the
   // working ones sink under idle ones, or a row opens a sibling of its place.
   it("lists the places an agent of the conversation works in first, each opening exactly its own", () => {
-    const threadId = home;
-    const items = conversationSurfaces(source, threadId);
-    const threads = conversationThreadIds(source, threadId);
-    const places = aroundPlaces(source, threadId);
-    const working = items.filter((item) => actingFor(item, threads));
-    expect(working.length).toBeGreaterThan(0);
-    expect(working.length).toBeLessThan(items.length);
-    expect(places.map(({ key }) => key)).toEqual([
-      ...working.map(({ key }) => key),
-      ...items.filter((item) => !actingFor(item, threads)).map(({ key }) => key),
+    expect(new Set([own, delegated, shared]).size).toBe(3);
+    const places = aroundPlaces(source, home, activity);
+    expect(places.map(({ key, working }) => [key, working])).toEqual([
+      [own.key, true],
+      [delegated.key, true],
+      ...items.filter((item) => item !== own && item !== delegated).map(({ key }) => [key, false]),
     ]);
-    for (const place of places) {
-      const item = items.find(({ key }) => key === place.key)!;
-      expect(place.destination).toEqual(surfaceDestination(item));
-      expect(place.working).toBe(actingFor(item, threads));
-    }
-    const app = places.find(({ glyph }) => glyph === "laptopcomputer")!;
-    const item = items.find(({ key }) => key === app.key);
-    expect(item?.kind === "app" && [app.title, app.detail]).toEqual([
-      item?.kind === "app" && item.app.displayName,
-      item?.kind === "app" && item.machine.name,
-    ]);
+    for (const place of places)
+      expect(place.destination).toEqual({ kind: "tab", tabId: place.key });
+    const window = items.find(({ kind }) => kind === "window")!;
+    expect(places.find(({ key }) => key === window.key)).toMatchObject({
+      detail: window.device.name,
+      glyph: "laptopcomputer",
+      title: window.title,
+    });
   });
 
   // Failure: a root task counts a parent, counts are wrong, a mixed set of places
   // claims one kind, or schedules a Host never sent appear.
   it("sums places, tasks and schedules, and names the conversation a task works for", () => {
-    const chat = glance(source, home)!;
+    const chat = glance(source, home, activity)!;
     expect(chat).toMatchObject({
       from: null,
-      places: aroundPlaces(source, home).length,
-      placesWorking: aroundPlaces(source, home).filter(({ working }) => working).length,
+      places: items.length,
+      placesWorking: 2,
       placeGlyph: null,
       family: { running: 1, needsYou: true, automations: source.threadAutomations[home]!.length },
     });
-    const worker = titled("Book a table for Friday");
-    const parentOnly = { ...source, browserSessions: [], machines: [] };
+    const parentOnly = { ...source, tabs: noTabs };
     expect(glance(parentOnly, worker)).toEqual({
       family: null,
       from: { threadId: home, title: "Build the new architecture" },
       placeGlyph: null,
+      placeKeys: [],
       places: 0,
       placesWorking: 0,
     });
     expect(aroundLabel(glance(parentOnly, worker)!)).toBe("From Build the new architecture");
-    const phone = glance(source, titled("Check the delivery ETA"))!;
+    const delivery = titled("Check the delivery ETA");
+    const [phoneTab] = conversationSurfaces(source, delivery);
+    const phone = glance(source, delivery, acting({ [phoneTab!.key]: [delivery] }))!;
     expect(phone).toMatchObject({ placeGlyph: "smartphone", places: 1, placesWorking: 1 });
     expect(aroundLabel(phone)).toBe("1 place open, 1 working");
   });
@@ -95,12 +107,7 @@ describe("around a conversation", () => {
   it("has nothing to show for a conversation with nothing around it", () => {
     const threadId = titled("Review storage integration");
     expect(glance(source, threadId)?.family?.automations).toBe(1);
-    const old = {
-      ...source,
-      browserSessions: [],
-      machines: [],
-      threadAutomations: {},
-    };
+    const old = { ...source, tabs: noTabs, threadAutomations: {} };
     expect(glance(old, threadId)).toBeNull();
     const chat = glance({ ...source, threadAutomations: {} }, home)!;
     expect(chat.family?.automations).toBe(0);
@@ -135,6 +142,7 @@ describe("around a conversation", () => {
   it("pluralizes place and earlier-task counts without announcing zero sections", () => {
     const empty = {
       places: 0,
+      placeKeys: [],
       placesWorking: 0,
       placeGlyph: null,
       from: null,
@@ -147,9 +155,11 @@ describe("around a conversation", () => {
     expect(aroundLabel({ ...empty, family: { ...family, earlier: 2 } })).toBe("2 earlier tasks");
   });
 
-  // Failure: a streamed token publishes a snapshot that reads as a new glance.
-  it("reads the same while only a transcript changes", () => {
-    const select = aroundGlanceSelector(home);
+  // Failure: a streamed token publishes a snapshot that reads as a new glance,
+  // or an agent starting in a tab waits for an unrelated snapshot to show.
+  it("reads the same while only a transcript changes, and follows activity without a new snapshot", () => {
+    const byTab: Record<string, readonly string[]> = {};
+    const select = aroundGlanceSelector(home, acting(byTab));
     const before = select(source);
     const after = select({
       ...source,
@@ -157,45 +167,41 @@ describe("around a conversation", () => {
     });
     expect(sameAroundGlance(before, after)).toBe(true);
     expect(sameAroundGlance(before, select({ ...source, threadAutomations: {} }))).toBe(false);
+    byTab[own.key] = [home];
+    expect(select(source)?.placesWorking).toBe(1);
   });
 });
 
 describe("apps open as tabs", () => {
-  const tabsWith = (...tabs: Tab[]) => {
-    const model = new FakeTabs();
-    model.reset(
-      tabs,
-      tabs.map((tab) => ({ kind: "tab" as const, tabId: tab.tabId })),
-    );
-    return model;
-  };
-  const opened = (name: string, threadId: string) =>
-    appTab(name, appId(name.length), { openedBy: { taskId: ThreadIdSchema.parse(threadId) } });
+  const opened = (name: string, threadId: string): Tab =>
+    tabFixture({
+      tabId: TabIdSchema.parse(`tab_${name}`),
+      kind: "app",
+      title: name,
+      openedBy: { taskId: ThreadIdSchema.parse(threadId) },
+    });
 
   // Failure: another conversation's app is listed here, or a row opens something else.
   it("lists the app tabs this thread opened only, each opening exactly its own tab", () => {
-    const tabs = tabsWith(opened("Budget", home), opened("Other", createId("thread")));
-    const apps = aroundPlaces({ ...source, tabs }, home).filter(
-      ({ destination }) => destination.kind === "tab",
-    );
-    expect(apps).toMatchObject([
-      { destination: { kind: "tab", tabId: tabId("Budget") }, title: "Budget", working: false },
+    const tabs = tabStoreFixture([opened("Budget", home), opened("Other", createId("thread"))]);
+    expect(aroundPlaces({ ...source, tabs }, home, nobody)).toMatchObject([
+      { destination: { kind: "tab", tabId: "tab_Budget" }, title: "Budget", working: false },
     ]);
   });
 
   // Failure: the header keeps its old count because no surface source changed.
   it("refreshes the glance when only the app tabs change", () => {
-    const select = aroundGlanceSelector(home);
-    const before = select(source)?.places ?? 0;
-    const tabs = tabsWith(opened("Budget", home));
-    expect(select({ ...source, tabs } as HostSnapshot)?.places).toBe(before + 1);
-    tabs.setLayout([]);
-    expect(select({ ...source, tabs } as HostSnapshot)?.places ?? 0).toBe(before);
+    const select = aroundGlanceSelector(home, nobody);
+    const tabs = tabStoreFixture([opened("Budget", home)]);
+    const snapshot = { ...source, tabs };
+    expect(select(snapshot)?.places).toBe(1);
+    tabs.seed({ tabs: [], layout: { revision: 2, items: [] }, complete: true });
+    expect(select(snapshot)?.places ?? 0).toBe(0);
   });
 });
 
 describe("the sheet's sections", () => {
-  const place = aroundPlaces(source, home)[0]!;
+  const place: AroundPlace = { ...aroundPlaces(source, home, nobody)[0]!, working: true };
   const idle: AroundPlace = { ...place, working: false };
   const family = taskFamily(source, home);
   const running = family.running[0]!;

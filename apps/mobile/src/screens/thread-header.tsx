@@ -1,7 +1,20 @@
 import { useHostSelector, useRunPageView } from "@opensteer/client/react";
-import { runPageOpened, type HostClient, type TabDestination } from "@opensteer/client/host";
+import {
+  conversationThreadIds,
+  runPageOpened,
+  type HostClient,
+  type TabDestination,
+} from "@opensteer/client/host";
 import { StackActions, useNavigation } from "@react-navigation/native";
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { Platform, StyleSheet, View, type LayoutChangeEvent } from "react-native";
 import { headerFontScaleLimit, space } from "../theme.js";
 import {
@@ -11,7 +24,11 @@ import {
   barOverContentOptions,
   type AroundWidths,
 } from "../thread/around-button.js";
-import { aroundGlanceSelector, sameAroundGlance } from "../thread/around-model.js";
+import {
+  aroundGlanceSelector,
+  sameAroundGlance,
+  type AroundGlance,
+} from "../thread/around-model.js";
 import { FoldedPage, foldedPageWidth } from "../thread/folded-page.js";
 import { useOpenPlace } from "../tabs/viewer-open.js";
 import { sameThreadHeader, type ThreadHeaderState } from "../thread/thread-pane.js";
@@ -158,6 +175,42 @@ export function useThreadHeader(props: {
   }, [deploymentId, fallbackTitle, glass, header, hostClient, navigation, threadId, savedSubtitle]);
 }
 
+/**
+ * The glance with its working count kept current: an agent starting or
+ * stopping in a tab changes the Host's per-tab activity, not the snapshot.
+ */
+function useWorkingGlance(
+  hostClient: HostClient,
+  threadId: string,
+  glance: AroundGlance | null,
+): AroundGlance | null {
+  const keys = glance?.placeKeys ?? noKeys;
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      const releases = keys.map((key) => hostClient.subscribePlaceActivity(key, listener));
+      return () => {
+        for (const release of releases) release();
+      };
+    },
+    [hostClient, keys],
+  );
+  const read = useCallback(() => {
+    const threads = conversationThreadIds(hostClient.getSnapshot(), threadId);
+    return keys.filter((key) =>
+      hostClient.placeActivity(key).some((record) => threads.has(record.threadId)),
+    ).length;
+  }, [hostClient, keys, threadId]);
+  const working = useSyncExternalStore(subscribe, read, read);
+  return useMemo(
+    () =>
+      glance === null || glance.placesWorking === working
+        ? glance
+        : { ...glance, placesWorking: working },
+    [glance, working],
+  );
+}
+const noKeys: readonly string[] = [];
+
 /** The standalone screen's title: the pill, and Around beside it in the bar. */
 function ThreadTitle(
   props: ThreadHeaderState & {
@@ -172,7 +225,11 @@ function ThreadTitle(
     () => aroundGlanceSelector(props.threadId, props.hostClient.placeActivity),
     [props.hostClient, props.threadId],
   );
-  const glance = useHostSelector(props.hostClient, selectAround, sameAroundGlance);
+  const glance = useWorkingGlance(
+    props.hostClient,
+    props.threadId,
+    useHostSelector(props.hostClient, selectAround, sameAroundGlance),
+  );
   // A folded page stands beside Around; the title takes what they leave, and
   // when that is short of its name, Around gives up parts until it is not.
   const [page, updatePage] = useRunPageView(props.hostClient, props.threadId);
