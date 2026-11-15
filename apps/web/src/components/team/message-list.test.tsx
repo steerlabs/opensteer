@@ -56,9 +56,7 @@ function timelineGeometry(geometry: { content: number }) {
   });
   // Message n stands 200n down the timeline, under the scroller's top at 0.
   const real = Element.prototype.getBoundingClientRect;
-  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: Element,
-  ) {
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
     const id = this.getAttribute("data-row-id");
     const scroller = this.closest(".tlist__scroller");
     if (id === null || !scroller) return real.call(this);
