@@ -176,14 +176,20 @@ export class NativeTabTargets implements NativeTabTargetsPort {
     if (reason) return unavailable(reason, `This phone is ${reason}.`);
     const usedBy = this.#options.users(ownerId, computerId);
     const views = await this.#options.views.list(ownerId, computerId);
-    return {
-      state:
-        usedBy.length ||
-        views.some((view) => view.state === "ready" && view.target.kind === "phone")
-          ? "open"
-          : "asleep",
-      usedBy,
-    };
+    const viewed = views.some((view) => view.state === "ready" && view.target.kind === "phone");
+    const refusal = views.find(
+      (view) =>
+        view.target.kind === "phone" &&
+        view.state === "unavailable" &&
+        (view.unavailableReason === "paused" || view.unavailableReason === "protected"),
+    );
+    if (
+      !viewed &&
+      refusal &&
+      (refusal.unavailableReason === "paused" || refusal.unavailableReason === "protected")
+    )
+      return unavailable(refusal.unavailableReason, `This phone is ${refusal.unavailableReason}.`);
+    return { state: usedBy.length || viewed ? "open" : "asleep", usedBy };
   }
   openOwnerView(
     ownerId: UserId,

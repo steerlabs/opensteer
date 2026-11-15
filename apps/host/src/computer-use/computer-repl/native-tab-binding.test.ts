@@ -151,3 +151,36 @@ describe("native tab binding", () => {
     ).rejects.toThrow("unavailable");
   });
 });
+
+it.each(["paused", "protected"] as const)(
+  "projects a phone's %s view refusal until a live view is ready",
+  async (reason) => {
+    const phoneConnection = { ...connection, definitionId: "android-phone" };
+    let ready = false;
+    const view = {
+      target: { kind: "phone", display: "main" },
+      state: "unavailable",
+      unavailableReason: reason,
+    } as unknown as import("@opensteer/protocol").ComputerView;
+    const targets = new NativeTabTargets({
+      views: {
+        list: async () =>
+          ready ? [view, { ...view, state: "ready", unavailableReason: null }] : [view],
+        openForTab: vi.fn(),
+        closeTabViews: async () => {},
+      },
+      connections: async () => [phoneConnection],
+      owns: async () => true,
+      connected: () => true,
+      queryWindow: vi.fn(),
+      users: () => [],
+      phoneUnavailable: () => null,
+    });
+    expect(await targets.phoneState(ownerId, computerId)).toMatchObject({
+      state: "unavailable",
+      unavailableCode: reason,
+    });
+    ready = true;
+    expect(await targets.phoneState(ownerId, computerId)).toMatchObject({ state: "open" });
+  },
+);
