@@ -1,17 +1,25 @@
 import { systemClock, type Clock } from "@opensteer/shared/clock";
-import { placeIdentityKey, type AgentEvent, type EventData, type RunId } from "@opensteer/core";
+import {
+  placeIdentityKey,
+  type AgentEvent,
+  type EventData,
+  type RunId,
+  type TabPlaceEnteredEvent,
+} from "@opensteer/core";
 
-interface RunPlaceWrite {
+export type RunPlaceData = EventData<"place.entered"> | TabPlaceEnteredEvent["data"];
+
+interface RunPlaceWrite<Data extends RunPlaceData> {
   readonly runId: RunId;
   readonly bindingGeneration: number;
-  readonly data: EventData<"place.entered">;
+  readonly data: Data;
 }
 
 /** Called once a place is where the Run is, with when it got there and whether it was coalesced. */
 export type RunPlaceSettled = (at: number, coalesced: boolean) => Promise<void>;
 
-interface RunPlaceEntry {
-  readonly input: RunPlaceWrite;
+interface RunPlaceEntry<Data extends RunPlaceData> {
+  readonly input: RunPlaceWrite<Data>;
   readonly settled: RunPlaceSettled | undefined;
 }
 
@@ -19,12 +27,15 @@ interface RunPlaceEntry {
 const runPlaceIntervalMs = 1000;
 
 /** One lane for browser and native activity; the database owns the Run fence and dedup. */
-export class RunPlaceRecorder {
-  readonly #write: (input: RunPlaceWrite) => Promise<AgentEvent | undefined>;
-  readonly #publish: (event: AgentEvent) => void;
+export class RunPlaceRecorder<
+  Data extends RunPlaceData = EventData<"place.entered">,
+  Event extends AgentEvent | TabPlaceEnteredEvent = AgentEvent,
+> {
+  readonly #write: (input: RunPlaceWrite<Data>) => Promise<Event | undefined>;
+  readonly #publish: (event: Event) => void;
   readonly #onError: (error: unknown) => void;
   readonly #clock: Clock;
-  readonly #pending = new Map<string, RunPlaceEntry & { readonly cancel: () => void }>();
+  readonly #pending = new Map<string, RunPlaceEntry<Data> & { readonly cancel: () => void }>();
   #closed = false;
   readonly #tails = new Map<string, Promise<void>>();
   readonly #admissions = new Map<
@@ -37,8 +48,8 @@ export class RunPlaceRecorder {
   >();
 
   constructor(options: {
-    readonly write: (input: RunPlaceWrite) => Promise<AgentEvent | undefined>;
-    readonly publish: (event: AgentEvent) => void;
+    readonly write: (input: RunPlaceWrite<NoInfer<Data>>) => Promise<Event | undefined>;
+    readonly publish: (event: Event) => void;
     readonly onError: (error: unknown) => void;
     readonly clock?: Clock;
   }) {
@@ -49,10 +60,7 @@ export class RunPlaceRecorder {
   }
 
   /** Native calls reserve order at admission, then enter only after a successful answer. */
-  begin(
-    runId: RunId,
-    bindingGeneration: number,
-  ): (data: EventData<"place.entered">, settled?: RunPlaceSettled) => void {
+  begin(runId: RunId, bindingGeneration: number): (data: Data, settled?: RunPlaceSettled) => void {
     if (this.#closed) return () => undefined;
     let admissions = this.#admissions.get(runId);
     if (admissions && admissions.generation > bindingGeneration) return () => undefined;
@@ -70,7 +78,11 @@ export class RunPlaceRecorder {
       const pending = this.#pending.get(runId);
       this.#cancelPending(runId);
       if (previous?.generation === bindingGeneration) {
-        if (previous.key === placeIdentityKey(data.place) && !pending) return;
+        if (
+          previous.key === ("tabId" in data ? data.tabId : placeIdentityKey(data.place)) &&
+          !pending
+        )
+          return;
         const remaining = previous.at + runPlaceIntervalMs - this.#clock.now();
         if (remaining > 0) {
           const cancel = this.#clock.schedule(() => this.#flushPending(runId), remaining);
@@ -95,11 +107,11 @@ export class RunPlaceRecorder {
     this.#enqueue(pending, true);
   }
 
-  #enqueue({ input, settled }: RunPlaceEntry, coalesced: boolean): void {
+  #enqueue({ input, settled }: RunPlaceEntry<Data>, coalesced: boolean): void {
     const { runId, bindingGeneration, data } = input;
     const last = {
       generation: bindingGeneration,
-      key: placeIdentityKey(data.place),
+      key: "tabId" in data ? data.tabId : placeIdentityKey(data.place),
       at: this.#clock.now(),
     };
     const previous = this.#last.get(runId);
@@ -129,12 +141,7 @@ export class RunPlaceRecorder {
     });
   }
 
-  enter(
-    runId: RunId,
-    bindingGeneration: number,
-    data: EventData<"place.entered">,
-    settled?: RunPlaceSettled,
-  ): void {
+  enter(runId: RunId, bindingGeneration: number, data: Data, settled?: RunPlaceSettled): void {
     this.begin(runId, bindingGeneration)(data, settled);
   }
 

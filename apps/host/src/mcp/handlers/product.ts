@@ -1,5 +1,5 @@
-import { LegacyPersonShowTargetSchema as PersonShowTargetSchema } from "@opensteer/core";
-import { z } from "zod";
+import type { TabServicePort } from "../../tabs/ports.js";
+import { PersonShowTargetSchema } from "@opensteer/core";
 type DelegationCall = ToolCall<"opensteer_task_delegate"> & {
   input: ToolCall<"opensteer_task_delegate">["input"] & { create?: true };
 };
@@ -38,7 +38,7 @@ import { withDatabaseTransaction } from "@opensteer/database";
 import { assertThreadCaller } from "@opensteer/database";
 import type { RealtimeHub } from "@opensteer/orchestration";
 import { SpecialistStore } from "@opensteer/database";
-import type { LegacyPersonShowMessage as PersonShowMessage } from "@opensteer/protocol";
+import type { PersonShowMessage, LegacyPersonShowMessage } from "@opensteer/protocol";
 import {
   agentDelegationMaxDepth,
   causalChainMaxDelegations,
@@ -138,8 +138,7 @@ export class ProductToolHandlers {
   readonly #deploymentId: DeploymentId;
   readonly #threads: ThreadService;
   readonly #realtime: Pick<RealtimeHub, "observe" | "sendToUsers">;
-  readonly #computerUse:
-    Pick<ComputerUseService, "sessionsForRunner" | "authorizeDisplay"> | undefined;
+  readonly #tabs: Pick<TabServicePort, "authorizeShow"> | undefined;
   readonly #personShow:
     | ((userId: RunToolScope["requestedBy"], message: PersonShowMessage) => Promise<number>)
     | undefined;
@@ -159,7 +158,6 @@ export class ProductToolHandlers {
     | "openAgentSession"
     | "requestAccess"
   >;
-  readonly #browserTabs: BrowserTabGroupService | undefined;
   readonly #canRunHarness: (environmentId: EnvironmentId, driverKind: HarnessId) => boolean;
   readonly #harnessAccessModes: (
     environmentId: EnvironmentId,
@@ -183,8 +181,10 @@ export class ProductToolHandlers {
     readonly computerUse?: Pick<ComputerUseService, "sessionsForRunner" | "authorizeDisplay">;
     readonly personShow?: (
       userId: RunToolScope["requestedBy"],
-      message: PersonShowMessage,
+      message: LegacyPersonShowMessage,
     ) => Promise<number>;
+    readonly show?: (userId: UserId, message: PersonShowMessage) => Promise<number>;
+    readonly tabs?: Pick<TabServicePort, "authorizeShow">;
     readonly supportsLoginFill?: (scope: RunToolScope) => boolean;
     readonly browserSources: Pick<BrowserSourceService, "agentCopyChromeCookies">;
     readonly savedLogins: Pick<SavedLoginService, "useSavedLogin" | "useCard">;
@@ -223,15 +223,14 @@ export class ProductToolHandlers {
     this.#threads = options.threads;
     this.#memoryPasses = options.memoryPasses;
     this.#realtime = options.realtime;
-    this.#computerUse = options.computerUse;
-    this.#personShow = options.personShow;
+    this.#tabs = options.tabs;
+    this.#personShow = options.show;
     this.#supportsLoginFill = options.supportsLoginFill ?? (() => false);
     this.#browserSources = options.browserSources;
     this.#savedLogins = options.savedLogins;
     this.#deviceAccess = options.deviceAccess;
     this.#machineFullDiskAccess = options.machineFullDiskAccess;
     this.#browser = options.browser;
-    this.#browserTabs = options.browserTabs;
     this.#canRunHarness = options.canRunHarness;
     this.#harnessAccessModes = options.harnessAccessModes;
     this.#commands = options.commands;
@@ -276,87 +275,16 @@ export class ProductToolHandlers {
     }));
   }
   async preparePersonShow({ caller, input }: ToolCall<"person_show">) {
-    const legacyInput = z
-      .strictObject({
-        target: z.union([PersonShowTargetSchema, z.strictObject({ taskId: ThreadIdSchema })]),
-      })
-      .parse(input);
+    const target = PersonShowTargetSchema.parse(input.target);
     const claims = requireRun(caller).claims;
     if (await this.#store.runAssignment(claims.runId))
       throw forbidden(assignedRunRefusal, assignedRunNext);
-
-    if (!this.#personShow) throw badRequest("Showing places is unavailable on this Host.");
-    let target: PersonShowMessage["target"];
-    if ("current" in legacyInput.target || "runId" in legacyInput.target) {
-      const targetRunId = "runId" in legacyInput.target ? legacyInput.target.runId : claims.runId;
-      if (targetRunId !== claims.runId) {
-        const run = await this.#store.database
-          .selectFrom("runs")
-          .select("threadId")
-          .where("id", "=", targetRunId)
-          .executeTakeFirst();
-        const thread = run
-          ? await this.#store.getThreadForOwner(run.threadId, claims.requestedBy)
-          : null;
-        if (!thread) throw forbidden("Run is unavailable to this user");
-      }
-      await this.#browser.drainRunPlaces(targetRunId);
-      const current = await this.#store.latestRunPlace(targetRunId);
-      if (!current)
-        throw badRequest(
-          "This Run has not worked in a place yet.",
-          "current" in legacyInput.target
-            ? "Pass target.tabId from Browser Harness listTabs()."
-            : "Read recentPlaces with opensteer_task_read.",
-        );
-      target = { place: current.data.place, runId: targetRunId };
-      const place = current.data.place;
-      if (place.kind === "phone") {
-        // A phone's tab outlives the Run's hold, and agents release before they reply.
-        const owners = await this.#store.effectiveMachineOwners([place.machineId]);
-        if (owners.get(place.machineId)?.effectiveOwner !== claims.requestedBy)
-          throw forbidden("This Run's current place is unavailable.");
-      } else if (place.kind === "app") {
-        const session = this.#computerUse
-          ?.sessionsForRunner(place.machineId)
-          .find(
-            (session) =>
-              session.runId === targetRunId &&
-              session.apps.some((app) => computerAppIdentityKey(app) === place.appKey),
-          );
-        if (!session || !this.#computerUse) throw forbidden("This Run's app session ended.");
-        await this.#computerUse.authorizeDisplay(
-          session.sessionId,
-          claims.requestedBy,
-          place.appKey,
-        );
-      }
-    } else
-      target =
-        "taskId" in legacyInput.target
-          ? { threadId: legacyInput.target.taskId }
-          : legacyInput.target;
-    const tabId =
-      "tabId" in target
-        ? target.tabId
-        : "place" in target && target.place.kind === "browser"
-          ? target.place.surfaceId
-          : null;
-    if (tabId !== null) {
-      if (!this.#browserTabs) throw badRequest("Saved tabs are unavailable on this Host.");
-      await this.#browserTabs.authorizeShow(
-        {
-          kind: "agent",
-          ownerId: claims.requestedBy,
-          threadId: claims.threadId,
-          agentBindingId: `run:${claims.runId}`,
-        },
-        tabId,
-      );
-    } else if ("threadId" in target) {
-      const targetThread = await this.#store.getThreadForOwner(target.threadId, claims.requestedBy);
-      if (!targetThread) throw forbidden("task is unavailable to this user");
-    }
+    if (!this.#personShow) throw badRequest("Showing tabs is unavailable on this Host.");
+    if ("tabId" in target) {
+      if (!this.#tabs) throw badRequest("Tabs are unavailable on this Host.");
+      await this.#tabs.authorizeShow(claims, target.tabId);
+    } else if (!(await this.#store.getThreadForOwner(target.taskId, claims.requestedBy)))
+      throw new OpensteerError({ code: "not_found", message: "Task not found." });
     return target;
   }
 
@@ -369,6 +297,8 @@ export class ProductToolHandlers {
     const admission = await this.#store.admitRunToolCall(
       runAdmission(caller, "person_show", input, requestId),
     );
+    if (!admission.wasDuplicate && "tabId" in target)
+      await this.#tabs!.authorizeShow(claims, target.tabId);
     const connectedDevices = admission.wasDuplicate
       ? 0
       : await this.#personShow(claims.requestedBy, {

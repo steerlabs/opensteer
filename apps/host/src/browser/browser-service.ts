@@ -1,3 +1,8 @@
+import type { PageTabsPort } from "../tabs/tab-service.js";
+import type { TabActor } from "../tabs/ports.js";
+import type { RunToolScope } from "../agents/run-tool-tokens.js";
+import { TabStore, type TabRecord, type TabWrite } from "@opensteer/database";
+import type { PageBinding, TabOpenedBy, TabTarget, TabPlaceEnteredEvent } from "@opensteer/core";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { BrowserClientStreams, type BrowserLiveRows } from "./browser-client-streams.js";
 import {
@@ -334,6 +339,8 @@ export interface BrowserSessionRepository {
   createBrowserSession(input: {
     readonly ownerId: UserId;
     readonly tabGroupId?: BrowserSessionId;
+    readonly tabGeneration?: number;
+    readonly previousPageBinding?: PageBinding;
     readonly opener?: BrowserSessionOpenerRecord | null;
     readonly id: BrowserSessionId;
     readonly placementKey: string;
@@ -521,6 +528,8 @@ export type StartBrowserSessionInput = {
   readonly initialPageOperationKey?: string;
   readonly sessionId?: BrowserSessionId;
   readonly tabGroupId?: BrowserSessionId;
+  readonly tabGeneration?: number;
+  readonly previousPageBinding?: PageBinding;
   readonly initialSurfaceId?: BrowserSurfaceId;
   readonly dormantSurfaceIds?: readonly BrowserSurfaceId[];
   readonly opener?: BrowserSessionOpenerRecord | null;
@@ -576,6 +585,24 @@ type BrowserCdpWireResponse = Extract<
   { readonly type: "cdp.error" | "cdp.result" }
 >;
 
+export interface TabPlaceHooks {
+  write(input: {
+    runId: RunId;
+    bindingGeneration: number;
+    data: TabPlaceEnteredEvent["data"];
+  }): Promise<TabPlaceEnteredEvent | undefined>;
+  publish(event: TabPlaceEnteredEvent): void;
+  notice(
+    ownerId: UserId,
+    notice:
+      | z.infer<typeof import("@opensteer/protocol").TabPlaceActivityNoticeSchema>
+      | {
+          type: "host.thread-place-changed";
+          reference: import("@opensteer/protocol").ThreadPlaceReference;
+        },
+  ): void;
+}
+
 interface BrowserServiceOptions {
   readonly requireAgentAccess?: (runnerId: RunnerId) => Promise<void>;
   /** Whether agents may see this computer's tabs, online or not; refuses like `requireAgentAccess`. */
@@ -590,6 +617,9 @@ interface BrowserServiceOptions {
   readonly passkeys?: boolean;
   readonly passkeyOwnOrigins?: () => readonly string[];
   readonly onProfilesChanged?: (ownerId: UserId) => void;
+  readonly tabs?: TabStore;
+  readonly tabPlaces?: TabPlaceHooks;
+  readonly onTabsChanged?: (ownerId?: UserId) => void;
   readonly personalTabs?: PersonalTabStore;
   readonly tabGroups?: BrowserTabGroupStore;
   readonly onMissingActor?: (sessionId: BrowserSessionId, agentBindingId: string) => void;
@@ -668,6 +698,10 @@ export class BrowserService {
   readonly #history: BrowserHistoryStore | undefined;
   readonly #historyTails = new Map<BrowserProfileId, Promise<unknown>>();
   readonly #onHistoryChanged: NonNullable<BrowserServiceOptions["onHistoryChanged"]>;
+  readonly #workspaceTabs: TabStore | undefined;
+  readonly #onTabsChanged: (ownerId?: UserId) => void;
+  readonly #restoringPages = new Set<BrowserSurfaceId>();
+  readonly #workspacePageGenerations = new Map<string, number>();
   readonly #personalTabs: PersonalTabStore | undefined;
   readonly #tabGroups: BrowserTabGroupStore | undefined;
   readonly #closeResults = new Map<
@@ -685,6 +719,8 @@ export class BrowserService {
   readonly #actorResolutions = new Map<string, Promise<void>>();
   readonly #sessionOperations = new Map<string, Promise<unknown>>();
   readonly #runPlaces: RunPlaceRecorder;
+  readonly #tabRunPlaces:
+    RunPlaceRecorder<TabPlaceEnteredEvent["data"], TabPlaceEnteredEvent> | undefined;
   readonly #tabDescriptorTimers = new Map<BrowserSessionId, NodeJS.Timeout>();
   readonly #brokers = new Map<BrowserSessionId, HostedBrowserBroker>();
   readonly #personUseGroups = new Map<
@@ -818,19 +854,56 @@ export class BrowserService {
         ? options.repository.browserHistory
         : undefined);
     this.#onHistoryChanged = options.onHistoryChanged ?? (() => undefined);
+    this.#workspaceTabs = options.tabs;
+    this.#onTabsChanged = options.onTabsChanged ?? (() => undefined);
     this.#personalTabs = options.personalTabs;
     this.#tabGroups = options.tabGroups;
     this.#onMissingActor = options.onMissingActor ?? (() => undefined);
-    this.#onPlaceNotice = options.onPlaceNotice ?? (() => undefined);
+    if (options.tabs && !options.tabPlaces)
+      throw new Error("Workspace tabs require tab-place persistence and publication hooks.");
+    this.#onPlaceNotice = (ownerId, notice) => {
+      if (!options.tabs) {
+        options.onPlaceNotice?.(ownerId, notice);
+        return;
+      }
+      if (notice.type === "host.thread-place-changed") {
+        const { place, threadId, ...reference } = notice.reference;
+        if (place.kind !== "browser" || !reference.runId) return;
+        options.tabPlaces!.notice(ownerId, {
+          type: notice.type,
+          reference: {
+            ...reference,
+            runId: reference.runId,
+            taskId: threadId,
+            tabId: place.surfaceId,
+          },
+        });
+      } else if (notice.type === "host.place-activity") {
+        const { place, ...activity } = notice.activity;
+        if (place.kind === "browser")
+          options.tabPlaces!.notice(ownerId, {
+            type: notice.type,
+            activity: { ...activity, tabId: place.surfaceId },
+          });
+      } else {
+        const { place, ...cleared } = notice;
+        if (place.kind === "browser")
+          options.tabPlaces!.notice(ownerId, { ...cleared, tabId: place.surfaceId });
+      }
+    };
     this.#connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
     this.#onSessionsChanged = (sessionIds, source) => {
       for (const id of sessionIds) this.#brokers.get(id)?.refreshSessionState();
       void Promise.all(sessionIds.map((id) => this.clientStreams.source.groupChanged(id))).catch(
         (error) => this.#onError(error),
       );
+      this.#onTabsChanged();
       options.onSessionsChanged(sessionIds, source);
     };
-    this.#onProfilesChanged = options.onProfilesChanged ?? (() => {});
+    this.#onProfilesChanged = (ownerId) => {
+      this.#onTabsChanged(ownerId);
+      options.onProfilesChanged?.(ownerId);
+    };
     this.#onUsageChanged = options.onUsageChanged ?? (() => undefined);
     this.#onError = options.onError ?? (() => undefined);
     this.#activityClock = options.activityClock ?? systemClock;
@@ -843,6 +916,14 @@ export class BrowserService {
       publish: (event) => this.#onDeploymentEvent(event),
       onError: (error) => this.#onError(error),
     });
+    this.#tabRunPlaces = options.tabPlaces
+      ? new RunPlaceRecorder<TabPlaceEnteredEvent["data"], TabPlaceEnteredEvent>({
+          clock: this.#activityClock,
+          write: (input) => options.tabPlaces!.write(input),
+          publish: (event) => options.tabPlaces!.publish(event),
+          onError: (error) => this.#onError(error),
+        })
+      : undefined;
     this.#repository = options.repository;
     this.#signer = options.signer;
     this.#targetResolver = options.targetResolver;
@@ -927,6 +1008,27 @@ export class BrowserService {
     for (const event of failed.events) this.#onDeploymentEvent(event);
   }
 
+  async workspaceBootstrap(
+    ownerId: UserId,
+  ): Promise<import("@opensteer/protocol").HostedBrowserBootstrap> {
+    const [profiles, homes] = await Promise.all([
+      this.#repository.listBrowserProfiles(ownerId),
+      this.#repository.listEligibleBrowserRunners(ownerId),
+    ]);
+    if (profiles.length > maxBrowserProfiles)
+      throw new OpensteerError({ code: "conflict", message: "Browser catalog limit exceeded." });
+    return {
+      profileHomes: homes.map((home) => home.id),
+      profiles: profiles.map(publicProfile),
+      available:
+        !this.#closed && this.#eligiblePlacements(homes).some((placement) => placement.available),
+      placements: this.#eligiblePlacements(homes).map(publicPlacement),
+      ...(this.#localProfiles
+        ? { profileDeletions: await this.#localProfiles.pendingDeletions(ownerId) }
+        : {}),
+    };
+  }
+
   async bootstrap(ownerId: UserId): Promise<HostedBrowserBootstrap> {
     const [profiles, homes, tabGroups] = await Promise.all([
       this.#repository.listBrowserProfiles(ownerId),
@@ -967,7 +1069,7 @@ export class BrowserService {
       ownerIds: [input.ownerId],
     });
     const data = this.#placeData(sessionId, tabId);
-    if (actor && data) this.#runPlaces.enter(actor.runId, actor.generation, data);
+    if (actor && data) this.#enterRunPlace(actor.runId, actor.generation, data);
     return { tabId, sessionId: restored.session.id };
   }
 
@@ -1513,6 +1615,16 @@ export class BrowserService {
     ownerId: UserId,
     input: BrowserTabIconInput,
   ): Promise<{ favicon: string | null }> {
+    if (this.#workspaceTabs) {
+      const { rows } = await this.#workspaceTabs.snapshot(ownerId);
+      const row = rows.find(
+        (row) =>
+          row.kind === "page" &&
+          row.pageBinding?.sessionId === input.sessionId &&
+          row.iconRef === input.iconRef,
+      );
+      return { favicon: row?.favicon ?? null };
+    }
     if (this.#personalTabs) {
       const groupId = await this.#personalTabs.lineageForSession(input.sessionId);
       const session = groupId ? await this.#personalTabs.session(ownerId, groupId) : null;
@@ -2254,6 +2366,45 @@ export class BrowserService {
     });
   }
 
+  #enterRunPlace(
+    runId: RunId,
+    generation: number,
+    data: EventData<"place.entered">,
+    settled?: import("../agents/run-place-recorder.js").RunPlaceSettled,
+  ): void {
+    if (this.#workspaceTabs) {
+      if (data.place.kind === "browser")
+        this.#tabRunPlaces!.enter(
+          runId,
+          generation,
+          { tabId: data.place.surfaceId, title: data.title, site: data.site },
+          settled,
+        );
+    } else this.#runPlaces.enter(runId, generation, data, settled);
+  }
+  beginRunTabPlace(runId: RunId, generation: number) {
+    if (!this.#tabRunPlaces) throw new Error("Tab place persistence is not configured.");
+    return this.#tabRunPlaces.begin(runId, generation);
+  }
+  latestTabPlaces(ownerId: UserId): import("@opensteer/protocol").ThreadPlaceReference[] {
+    return [...(this.#latestPlaces.get(ownerId)?.values() ?? [])].flatMap((reference) =>
+      reference.place.kind === "browser" && reference.runId
+        ? [
+            {
+              taskId: reference.threadId,
+              runId: reference.runId,
+              tabId: reference.place.surfaceId,
+              title: reference.title,
+              site: reference.site,
+              iconRef: reference.iconRef,
+              order: reference.order,
+              at: reference.at,
+            },
+          ]
+        : [],
+    );
+  }
+
   beginRunPlace(runId: RunId, bindingGeneration: number) {
     return this.#runPlaces.begin(runId, bindingGeneration);
   }
@@ -2617,6 +2768,7 @@ export class BrowserService {
         sessionId,
         holdings.flatMap((holding) => (holding.tabId ? [holding.tabId] : [])),
       );
+      this.#onTabsChanged();
     });
   }
 
@@ -2678,7 +2830,17 @@ export class BrowserService {
     if (timer) clearTimeout(timer);
     this.#tabDescriptorTimers.delete(sessionId);
     return this.#serializeKey(`catalog:${sessionId}`, async () => {
-      if (broker && this.#personalTabs) {
+      if (broker && this.#workspaceTabs) {
+        const changes = broker.tabChanges();
+        const ownerId = (await this.#repository.listBrowserSessionViewers(sessionId))?.userIds[0];
+        const record = ownerId
+          ? await this.#repository.getBrowserSessionForOwner(sessionId, ownerId)
+          : null;
+        if (record)
+          await this.#writeWorkspacePages(record, broker.groupId, changes.tabs, changes.closed);
+        broker.acknowledgeTabChanges(changes);
+        this.#onTabsChanged();
+      } else if (broker && this.#personalTabs) {
         const changes = broker.tabChanges();
         if (changes.tabs.length || changes.closed.length) {
           const written = await this.#personalTabs.recordChanges(
@@ -2759,7 +2921,7 @@ export class BrowserService {
     // The Run's settled tab is its latest use, even after it stopped, so the
     // actor is held here rather than looked up when the place lands.
     if (data)
-      this.#runPlaces.enter(actor.runId, actor.generation, data, async (at, coalesced) => {
+      this.#enterRunPlace(actor.runId, actor.generation, data, async (at, coalesced) => {
         const recorded = actor.surfaces.get(surfaceId)?.recordedPage;
         if (!coalesced && recorded && recorded.at >= at) return;
         await this.#recordActorUse(actor, surfaceId, true);
@@ -2965,6 +3127,320 @@ export class BrowserService {
     return { tabId: opened.tabId, sessionId: opened.sessionId, backend };
   }
 
+  readonly pageTabs: PageTabsPort = {
+    open: (actor, target, key) => this.#openWorkspacePage(actor, target, key),
+    state: async (ownerId, row) => {
+      const binding = row.pageBinding;
+      const session = binding
+        ? await this.#repository.getBrowserSessionForOwner(binding.sessionId, ownerId)
+        : null;
+      if (
+        row.profileId &&
+        !(await this.#repository.listBrowserProfiles(ownerId)).some(
+          (profile) => profile.id === row.profileId,
+        )
+      )
+        return {
+          state: "unavailable",
+          unavailableCode: "profile-unavailable",
+          unavailableReason: "This browser profile is unavailable.",
+          usedBy: [],
+        };
+      const broker = session ? this.#brokers.get(session.id) : undefined;
+      const usedBy = binding
+        ? this.#occupants(ownerId, binding.sessionId, row.id).map((holder) => ({
+            taskId: holder.threadId,
+          }))
+        : [];
+      return {
+        state:
+          broker?.live && broker.pageOf(row.id) && broker.surfaceStateOf(row.id) !== "suspended"
+            ? "open"
+            : "asleep",
+        usedBy,
+      };
+    },
+    activate: async (ownerId, row) => {
+      const session = await this.#restoreWorkspacePage(ownerId, row);
+      const broker = this.#brokers.get(session.id);
+      if (broker?.surfaceStateOf(row.id) === "suspended")
+        await broker.requestCdp({
+          type: "cdp.command",
+          requestId: randomUUID(),
+          command: { method: browserHostMethods.resumeTab, parameters: { surfaceId: row.id } },
+        });
+      await this.#requireWorkspaceGeneration(ownerId, row);
+      await broker?.markPersonUsed(row.id);
+      return { kind: "page", sessionId: session.id, surfaceId: row.id };
+    },
+    bind: (claims, row) => this.bindPage(claims, row),
+    closeViewers: async (_ownerId, row) => {
+      if (row.pageBinding)
+        this.#brokers.get(row.pageBinding.sessionId)?.removePersonTab(row.id, row.generation);
+    },
+  };
+
+  async #requireWorkspaceGeneration(ownerId: UserId, row: TabRecord) {
+    const current = await this.#workspaceTabs?.get(ownerId, row.id);
+    if (!current || current.generation !== row.generation)
+      throw new OpensteerError({ code: "not_found", message: "This tab has closed." });
+    return current;
+  }
+  async #openWorkspacePage(
+    actor: TabActor,
+    target: Extract<TabTarget, { kind: "page" }>,
+    key: string,
+  ): Promise<TabWrite> {
+    const ownerId =
+      actor.kind === "person"
+        ? actor.ownerId
+        : actor.kind === "run"
+          ? actor.claims.requestedBy
+          : actor.caller.userId;
+    if (actor.kind === "connection")
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Opening a page requires a Run or the person.",
+      });
+    const agent =
+      actor.kind === "run"
+        ? {
+            ownerId,
+            agentBindingId: `run:${actor.claims.runId}`,
+            threadId: actor.claims.threadId,
+            environmentId: actor.claims.environmentId,
+          }
+        : undefined;
+    const profiles = await this.#repository.listBrowserProfiles(ownerId);
+    const profile =
+      "profileId" in target ? profiles.find((profile) => profile.id === target.profileId) : null;
+    if ("profileId" in target && !profile)
+      throw new OpensteerError({ code: "not_found", message: "Browser profile not found." });
+    const opened = await this.openTab(
+      ownerId,
+      {
+        type: "browser.tab.open",
+        idempotencyKey: key,
+        identity: profile ? { kind: "profile", profileId: profile.id } : { kind: "guest" },
+        ...("computerId" in target && target.computerId
+          ? { placement: { kind: "runner" as const, runnerId: target.computerId } }
+          : {}),
+        url: target.url,
+      },
+      agent,
+    );
+    const record = await this.#repository.getBrowserSessionForOwner(opened.sessionId, ownerId);
+    if (!record)
+      throw new OpensteerError({
+        code: "not_found",
+        message: "The browser ended before opening its tab.",
+      });
+    if (agent) {
+      await this.#admitAgentBackend({ ...agent, sessionId: record.id }, undefined, true);
+      await this.#recordAgentTabPlace(agent, record, opened.tabId);
+    }
+    const descriptor = this.#brokers
+      .get(record.id)
+      ?.clientRows(this.#presence(record.id))
+      .records.get(opened.tabId);
+    const openedBy: TabOpenedBy =
+      actor.kind === "run" ? { taskId: actor.claims.threadId } : "person";
+    this.#workspacePageGenerations.set(`${record.id}:${opened.tabId}`, 1);
+    return {
+      id: opened.tabId,
+      ownerId,
+      kind: "page",
+      computerId: record.runnerId,
+      title: descriptor?.title ?? target.url,
+      url:
+        descriptor?.url === "about:blank" && target.url !== "about:blank"
+          ? target.url
+          : (descriptor?.url ?? target.url),
+      favicon: (() => {
+        const broker = this.#brokers.get(record.id);
+        const ref = broker?.clientRows(this.#presence(record.id)).iconRef(opened.tabId);
+        return ref ? (broker?.icon(ref) ?? null) : null;
+      })(),
+      profileId: record.profileId,
+      profileName: profile?.name ?? null,
+      openedBy,
+      pageBinding: {
+        lineageId: opened.groupId ?? record.id,
+        sessionId: record.id,
+        surfaceId: opened.tabId,
+      },
+    };
+  }
+  async #restoreWorkspacePage(
+    ownerId: UserId,
+    initial: TabRecord,
+    claims?: RunToolScope,
+  ): Promise<BrowserSessionRecord> {
+    if (!this.#workspaceTabs)
+      throw new OpensteerError({ code: "not_found", message: "Workspace tabs are unavailable." });
+    const tabs = this.#workspaceTabs;
+    return this.#serializeKey(
+      `workspace-restore:${initial.pageBinding?.lineageId ?? initial.id}`,
+      async () => {
+        let row = await this.#requireWorkspaceGeneration(ownerId, initial);
+        const binding = row.pageBinding;
+        if (!binding)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "This page has no restorable browser identity.",
+          });
+        const previous = await this.#repository.getBrowserSessionForOwner(
+          binding.sessionId,
+          ownerId,
+        );
+        const agent = claims ? { ownerId, agentBindingId: `run:${claims.runId}` } : undefined;
+        if (agent && previous) await this.admitAgentBrowser(agent, "read-write", [previous]);
+        const broker = this.#brokers.get(binding.sessionId);
+        if (previous && broker?.live && broker.pageOf(row.id)) {
+          this.#workspacePageGenerations.set(`${previous.id}:${row.id}`, row.generation);
+          return previous;
+        }
+        // A restore remains on its saved computer and profile, including Guest.
+        const homes = await this.#repository.listEligibleBrowserRunners(ownerId);
+        if (!homes.some((home) => home.id === row.computerId))
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "This browser computer is unavailable.",
+          });
+        const sessionId = createBrowserSessionId();
+        this.#workspacePageGenerations.set(`${sessionId}:${row.id}`, row.generation);
+        const dormant = (await tabs.snapshot(ownerId)).rows
+          .filter(
+            (other) =>
+              other.kind === "page" &&
+              other.id !== row.id &&
+              other.pageBinding?.lineageId === binding.lineageId,
+          )
+          .map((other) => other.id);
+        this.#restoringPages.add(row.id);
+        const finish = await this.#prepareStart({
+          ownerId,
+          sessionId,
+          tabGroupId: binding.lineageId,
+          initialSurfaceId: row.id,
+          tabGeneration: row.generation,
+          previousPageBinding: binding,
+          dormantSurfaceIds: dormant,
+          initialUrl: row.url!,
+          placement: { kind: "runner", runnerId: row.computerId },
+          ...(row.profileId ? { profileId: row.profileId } : { fresh: true }),
+          origin: claims ? "agent" : "person",
+          ...(agent ? { agentBindingId: agent.agentBindingId } : {}),
+          opener:
+            previous?.opener ??
+            (claims
+              ? { kind: "task", threadId: claims.threadId, runId: claims.runId }
+              : { kind: "person", userId: ownerId }),
+        });
+        await finish();
+        row = await this.#requireWorkspaceGeneration(ownerId, initial);
+        const record = row.pageBinding
+          ? await this.#repository.getBrowserSessionForOwner(row.pageBinding.sessionId, ownerId)
+          : null;
+        if (!record)
+          throw new OpensteerError({ code: "not_found", message: "The restored browser ended." });
+        if (agent)
+          await this.#admitAgentBackend({ ...agent, sessionId: record.id }, undefined, true);
+        return record;
+      },
+    );
+  }
+  async bindPage(claims: RunToolScope, row: TabRecord) {
+    const agent = { ownerId: claims.requestedBy, agentBindingId: `run:${claims.runId}` };
+    await this.admitAgentBrowser(agent);
+    const current = await this.#requireWorkspaceGeneration(claims.requestedBy, row);
+    const old = current.pageBinding;
+    const live =
+      old &&
+      this.#brokers.get(old.sessionId)?.live &&
+      this.#brokers.get(old.sessionId)?.pageOf(row.id);
+    const session = await this.#restoreWorkspacePage(claims.requestedBy, current, claims);
+    const { backend } = await this.#admitAgentBackend(
+      { ...agent, sessionId: session.id },
+      undefined,
+      true,
+    );
+    await this.#requireWorkspaceGeneration(claims.requestedBy, row);
+    await this.#recordAgentTabPlace(agent, session, row.id);
+    return { tabId: row.id, sessionId: session.id, backend, reloaded: !live };
+  }
+  async #writeWorkspacePages(
+    record: BrowserSessionRecord,
+    lineageId: BrowserSessionId,
+    descriptors: readonly PersonalTabDescriptor[],
+    closed: readonly BrowserSurfaceId[],
+  ) {
+    const tabs = this.#workspaceTabs;
+    if (!tabs || record.origin === "trigger" || record.opener?.kind === "automation") return;
+    const ownerId = (await this.#repository.listBrowserSessionViewers(record.id))?.userIds[0];
+    if (!ownerId) return;
+    for (const descriptor of descriptors) {
+      const row = await tabs.get(ownerId, descriptor.id, true);
+      const binding: PageBinding = { lineageId, sessionId: record.id, surfaceId: descriptor.id };
+      if (row && !row.closedAt) {
+        const generation = this.#workspacePageGenerations.get(`${record.id}:${row.id}`);
+        if (generation === undefined) continue;
+        await tabs.updatePage(
+          ownerId,
+          row.id,
+          generation,
+          binding,
+          descriptor,
+          this.#restoringPages.has(row.id),
+        );
+        if (descriptor.url !== "about:blank") this.#restoringPages.delete(row.id);
+      } else if (!row && descriptor.openerId) {
+        const opener = await tabs.get(ownerId, descriptor.openerId, true);
+        if (!opener || opener.pageBinding?.sessionId !== record.id) continue;
+        await tabs.open(
+          {
+            id: descriptor.id,
+            ownerId,
+            kind: "page",
+            computerId: record.runnerId,
+            title: descriptor.title,
+            url: descriptor.url,
+            profileId: opener.profileId,
+            profileName: opener.profileName,
+            openedBy: opener.openedBy,
+            openerTabId: descriptor.openerId,
+            pageBinding: binding,
+            ...(descriptor.favicon !== undefined ? { favicon: descriptor.favicon } : {}),
+          },
+          `popup:${record.id}:${descriptor.id}`,
+        );
+        this.#workspacePageGenerations.set(`${record.id}:${descriptor.id}`, 1);
+      }
+    }
+    for (const tabId of closed) {
+      const row = await tabs.get(ownerId, tabId);
+      if (
+        row?.pageBinding?.sessionId !== record.id ||
+        this.#workspacePageGenerations.get(`${record.id}:${tabId}`) !== row.generation
+      )
+        continue;
+      await tabs.close(
+        ownerId,
+        [tabId],
+        `physical-close:${record.id}:${tabId}:${row.generation}`,
+        async (_tx, rows) => {
+          const current = rows.find((row) => row.id === tabId);
+          if (
+            !current ||
+            current.generation !== row.generation ||
+            current.pageBinding?.sessionId !== record.id
+          )
+            throw new OpensteerError({ code: "conflict", message: "The page binding changed." });
+        },
+      );
+    }
+  }
+
   async useAgentTab(
     agent: { ownerId: UserId; agentBindingId: string },
     tabId: BrowserSurfaceId,
@@ -2975,28 +3451,17 @@ export class BrowserService {
     if (!row)
       throw new OpensteerError({
         code: "not_found",
-        message: "This tab has closed. Use Browser Harness listTabs().",
+        message: "This tab has closed. Use tab_list to find an open page tab.",
       });
     const record = await this.#personalTabs!.session(agent.ownerId, row.groupId);
     const broker = record ? this.#brokers.get(record.id) : undefined;
     if (record && broker?.live && broker.pageOf(tabId)) {
       await this.#admitAgentBackend({ ...agent, sessionId: record.id }, undefined, true);
-      let reloaded = false;
-      if (broker.surfaceStateOf(tabId) === "suspended") {
-        const response = await this.#sendAdmitted(agent, record, () =>
-          broker.requestCdp({
-            type: "cdp.command",
-            requestId: randomUUID(),
-            command: { method: browserHostMethods.resumeTab, parameters: { surfaceId: tabId } },
-          }),
-        );
-        reloaded = z.object({ reloaded: z.boolean() }).parse(response.result).reloaded;
-      }
       const { backend } = await this.#admitAgentBackend({ ...agent, sessionId: record.id });
       if (!broker.pageOf(tabId))
         throw new OpensteerError({ code: "not_found", message: "This tab has closed." });
       await this.#recordAgentTabPlace(agent, record, tabId);
-      return { tabId, sessionId: record.id, backend, reloaded };
+      return { tabId, sessionId: record.id, backend, reloaded: false };
     }
     const restored = await this.restoreAgentPersonalTab(agent, tabId);
     const { backend, record: active } = await this.#admitAgentBackend({
@@ -3018,7 +3483,7 @@ export class BrowserService {
       ownerIds: [agent.ownerId],
     });
     const data = this.#placeData(record.id, tabId);
-    if (actor && data) this.#runPlaces.enter(actor.runId, actor.generation, data);
+    if (actor && data) this.#enterRunPlace(actor.runId, actor.generation, data);
     this.announceUsage(
       await this.#repository.recordAgentBrowserUse({
         ...agent,
@@ -3181,6 +3646,7 @@ export class BrowserService {
   async drainRunPlaces(runId: RunId): Promise<void> {
     // A refused write was reported where it failed; it must not hold up the Run's end.
     await this.#runPlaces.drain(runId);
+    await this.#tabRunPlaces?.drain(runId);
   }
 
   /**
@@ -3198,7 +3664,9 @@ export class BrowserService {
       if (agentBindingId.startsWith("run:")) {
         const runId = agentBindingId.slice(4);
         await this.#runPlaces.drain(runId);
+        await this.#tabRunPlaces?.drain(runId);
         this.#runPlaces.forget(runId);
+        this.#tabRunPlaces?.forget(runId);
       }
       const records =
         await this.#repository.listActiveBrowserSessionsForAgentBinding(agentBindingId);
@@ -3250,7 +3718,7 @@ export class BrowserService {
     const broker = this.#brokers.get(record.id);
     if (!broker)
       throw new BrowserCdpConnectionEnded(
-        "This tab lost its browser connection. Use Browser Harness listTabs() and switchTab(tabId) to reconnect.",
+        "This tab lost its browser connection. Use tab_list and Browser Harness openPage(tabId) to reconnect.",
       );
     const backend: "cdp" | "actions" | undefined = broker.cdpBoundary
       ? "cdp"
@@ -3539,7 +4007,7 @@ export class BrowserService {
         const admitted = await this.#admitAgentBackend(input, "cdp");
         if (admitted.record.id !== record.id)
           throw new BrowserCdpConnectionEnded(
-            "This Run selected another browser. Use Browser Harness switchTab(tabId) to select the tab again.",
+            "This Run selected another browser. Bind the exact tab with Browser Harness openPage(tabId).",
           );
         if (command.method === "Opensteer.stageFile" && !broker.fileStaging) {
           throw new OpensteerError({
@@ -3660,7 +4128,7 @@ export class BrowserService {
       throw new OpensteerError({
         code: "conflict",
         message:
-          "This browser profile is already available. Open a tab with Browser Harness newTab(url, { profile: profileId }).",
+          "This browser profile is already available. Open a page with tab_open and its profileId.",
       });
     const created = await this.#repository.requests.create({
       callId: input.callId,
@@ -3699,9 +4167,26 @@ export class BrowserService {
     readonly sessionId?: BrowserSessionId;
     readonly agentBindingId?: string;
   }): Promise<BrowserSignInTarget | null> {
-    const row = input.tabId ? await this.#personalTabs?.get(input.ownerId, input.tabId) : null;
-    const bound = row ? await this.#personalTabs?.session(input.ownerId, row.groupId) : null;
-    if (input.tabId && (!row || !bound || (input.sessionId && input.sessionId !== bound.id))) {
+    const workspaceRow =
+      input.tabId && this.#workspaceTabs
+        ? await this.#workspaceTabs.get(input.ownerId, input.tabId)
+        : null;
+    const row =
+      input.tabId && !this.#workspaceTabs
+        ? await this.#personalTabs?.get(input.ownerId, input.tabId)
+        : null;
+    const bound = workspaceRow?.pageBinding
+      ? await this.#repository.getBrowserSessionForOwner(
+          workspaceRow.pageBinding.sessionId,
+          input.ownerId,
+        )
+      : row
+        ? await this.#personalTabs?.session(input.ownerId, row.groupId)
+        : null;
+    if (
+      input.tabId &&
+      (!(workspaceRow ?? row) || !bound || (input.sessionId && input.sessionId !== bound.id))
+    ) {
       if (input.agentBindingId === undefined) return null;
       throw new OpensteerError({
         code: "conflict",
@@ -3754,11 +4239,23 @@ export class BrowserService {
     }
     if (input.agentBindingId) await this.admitAgentBrowser(input, "read-write", [record]);
     if (input.tabId) {
-      const current = await this.#personalTabs?.get(input.ownerId, input.tabId);
-      const latest = current
-        ? await this.#personalTabs?.session(input.ownerId, current.groupId)
+      const currentWorkspace = this.#workspaceTabs
+        ? await this.#workspaceTabs.get(input.ownerId, input.tabId)
         : null;
-      if (!latest || latest.id !== record.id || !broker?.pageOf(input.tabId)) {
+      const current = !this.#workspaceTabs
+        ? await this.#personalTabs?.get(input.ownerId, input.tabId)
+        : null;
+      const latest = currentWorkspace?.pageBinding
+        ? { id: currentWorkspace.pageBinding.sessionId }
+        : current
+          ? await this.#personalTabs?.session(input.ownerId, current.groupId)
+          : null;
+      if (
+        !latest ||
+        latest.id !== record.id ||
+        (workspaceRow && currentWorkspace?.generation !== workspaceRow.generation) ||
+        !broker?.pageOf(input.tabId)
+      ) {
         if (input.agentBindingId === undefined) return null;
         throw new OpensteerError({
           code: "conflict",
@@ -4119,6 +4616,7 @@ export class BrowserService {
     this.#authConsumers.clear();
     this.#closePromise = (async () => {
       await this.#runPlaces.close();
+      await this.#tabRunPlaces?.close();
       await Promise.allSettled(this.#sessionOperations.values());
       await this.#operationTail;
       await Promise.all(
@@ -4277,6 +4775,23 @@ export class BrowserService {
         runtimeId: target.runtimeId,
         ownerId: input.ownerId,
       });
+      if (input.initialSurfaceId && this.#workspaceTabs) {
+        const row = await this.#workspaceTabs.get(input.ownerId, input.initialSurfaceId);
+        if (row?.pageBinding && input.tabGroupId === row.pageBinding.lineageId) {
+          const bound = await this.#workspaceTabs.bindPage(
+            input.ownerId,
+            row.id,
+            input.tabGeneration ?? row.generation,
+            input.previousPageBinding ?? row.pageBinding,
+            { lineageId: input.tabGroupId, sessionId, surfaceId: row.id },
+          );
+          if (!bound)
+            throw new OpensteerError({
+              code: "conflict",
+              message: "The page closed during restoration.",
+            });
+        }
+      }
       if (input.tabGroupId && input.initialSurfaceId)
         await this.#personalTabs?.bind(input.tabGroupId, sessionId, input.initialSurfaceId);
       if (input.tabGroupId) await this.clientStreams.source.groupChanged(sessionId, { tabs: true });
@@ -4340,7 +4855,9 @@ export class BrowserService {
       const correlationId = sessionId;
       let stage = "runtime-connection";
       const restoredTab = input.initialSurfaceId
-        ? await this.#personalTabs?.get(input.ownerId, input.initialSurfaceId)
+        ? this.#workspaceTabs
+          ? await this.#workspaceTabs.get(input.ownerId, input.initialSurfaceId)
+          : await this.#personalTabs?.get(input.ownerId, input.initialSurfaceId)
         : null;
       let socket: BrowserRuntimeConnection;
       try {
@@ -4386,7 +4903,7 @@ export class BrowserService {
               }).catch(() => this.#onError(new Error("Browser history persistence failed")));
             },
             groupId: input.tabGroupId ?? sessionId,
-            ...(input.initialSurfaceId && restoredTab?.favicon
+            ...(input.initialSurfaceId && restoredTab?.favicon && restoredTab.url
               ? {
                   restoredIcon: {
                     id: input.initialSurfaceId,
@@ -4397,6 +4914,18 @@ export class BrowserService {
               : {}),
             readSessionState: () => this.#sessionState(sessionId),
             onPageChanged: () => this.#announcePresence(sessionId),
+            ...(this.#workspaceTabs
+              ? {
+                  personTabGeneration: async (surfaceId: BrowserSurfaceId) => {
+                    let row = await this.#workspaceTabs!.get(input.ownerId, surfaceId);
+                    if (!row) {
+                      await this.#flushTabDescriptors(sessionId);
+                      row = await this.#workspaceTabs!.get(input.ownerId, surfaceId);
+                    }
+                    return row?.pageBinding?.sessionId === sessionId ? row.generation : null;
+                  },
+                }
+              : {}),
             onTabsChanged: () => this.#queueTabDescriptors(sessionId),
             onRecordsChanged: (ids) => {
               this.clientStreams.source.markTabs(sessionId, ids);
@@ -4451,6 +4980,7 @@ export class BrowserService {
               this.#sessionProfiles.delete(sessionId);
               this.#holdings.delete(sessionId);
               this.#announcedPresence.delete(sessionId);
+              this.#onTabsChanged();
               if (!tabRestore) this.#endPersonUse(groupId);
             },
             sessionId,
@@ -4526,7 +5056,7 @@ export class BrowserService {
         )))
     )
       throw new BrowserCdpConnectionEnded(
-        "This tab has ended or is unavailable. Use Browser Harness listTabs() and switchTab(tabId).",
+        "This tab has ended or is unavailable. Use tab_list and Browser Harness openPage(tabId).",
       );
     return record;
   }
@@ -4543,7 +5073,7 @@ export class BrowserService {
     );
     if (!latest) {
       throw new BrowserCdpConnectionEnded(
-        "This Run has no selected tab. Use Browser Harness listTabs() and switchTab(tabId), or newTab(url, { guest: true }).",
+        "This Run has no selected tab. Use tab_list and Browser Harness openPage(tabId), or tab_open with a Guest page target.",
       );
     }
     return this.#usableAgentSession(input, latest.id, authorize);
@@ -4611,7 +5141,7 @@ export class BrowserService {
       if (records.some((record) => !owned.has(record.id)))
         throw new OpensteerError({
           code: "forbidden",
-          message: "This tab is unavailable to this task. Use Browser Harness listTabs().",
+          message: "This tab is unavailable to this task. Use tab_list to find an open page tab.",
         });
       await Promise.all(
         [...new Set(records.map((record) => record.runnerId))].map((runnerId) =>
@@ -5006,6 +5536,7 @@ interface HostedBrowserBrokerOptions {
     readonly url: string;
     readonly favicon: string;
   };
+  readonly personTabGeneration?: (surfaceId: BrowserSurfaceId) => Promise<number | null>;
   readonly onTabsChanged: () => void;
   readonly onRecordsChanged: (ids: readonly string[]) => void;
   readonly onActivity: (activity: BrowserRuntimeActivity) => void;
@@ -5178,6 +5709,7 @@ export class HostedBrowserBroker {
     for (const id of changes.closed) this.#closedTabs.delete(id);
     this.#storedTabStateRevision = changes.stateRevision;
   }
+  readonly #personTabGeneration: HostedBrowserBrokerOptions["personTabGeneration"];
   readonly #onTabsChanged: () => void;
   readonly #onRecordsChanged: (ids: readonly string[]) => void;
   readonly #onActivity: (activity: BrowserRuntimeActivity) => void;
@@ -5319,6 +5851,7 @@ export class HostedBrowserBroker {
         })
       : undefined;
     this.#navigation = options.navigation;
+    this.#personTabGeneration = options.personTabGeneration;
     this.#onTabsChanged = options.onTabsChanged;
     this.#onRecordsChanged = options.onRecordsChanged;
     this.#onActivity = options.onActivity;
@@ -5353,6 +5886,32 @@ export class HostedBrowserBroker {
     this.#readyPromise = this.#waitUntilReady();
   }
 
+  removePersonTab(surfaceId: BrowserSurfaceId, generation?: number): void {
+    const newerViewer =
+      generation !== undefined &&
+      [...this.#consumers.values()].some(
+        (outlet) =>
+          outlet.surfaceId === surfaceId &&
+          outlet.tabGeneration !== null &&
+          outlet.tabGeneration > generation,
+      );
+    if (!newerViewer) {
+      this.#personUse.tabs.delete(surfaceId);
+      this.#pendingPersonUse.delete(surfaceId);
+    }
+    for (const outlet of this.#consumers.values())
+      if (
+        outlet.surfaceId === surfaceId &&
+        (generation === undefined ||
+          outlet.tabGeneration === null ||
+          outlet.tabGeneration <= generation)
+      ) {
+        outlet.peer.close(1000, "Tab closed");
+        outlet.close();
+      }
+    this.#onPersonUseChanged();
+    this.refreshSessionState();
+  }
   async markPersonUsed(surfaceId: BrowserSurfaceId): Promise<void> {
     if (!this.live || !this.#tabs.rows.has(surfaceId) || this.#personUse.ended) return;
     if (!this.#personUse.tabs.has(surfaceId)) {
@@ -5597,7 +6156,13 @@ export class HostedBrowserBroker {
       throw new OpensteerError({ code: "conflict", message: "Browser consumer already attached." });
     }
     let outlet: BrowserConsumerOutlet;
-    outlet = new BrowserConsumerOutlet(peer, mode, stillVisible, () => {
+    const visible = async () =>
+      (await stillVisible()) &&
+      (!this.#personTabGeneration ||
+        !outlet.surfaceId ||
+        (await this.#personTabGeneration(BrowserSurfaceIdSchema.parse(outlet.surfaceId))) ===
+          outlet.tabGeneration);
+    outlet = new BrowserConsumerOutlet(peer, mode, visible, () => {
       onClose();
       const wasSubscribed = outlet.subscription !== null;
       this.#consumers.delete(peer.id);
@@ -5622,7 +6187,7 @@ export class HostedBrowserBroker {
     outlet.passkeys = this.passkeys ? passkeys : undefined;
     outlet.popups = popups && mode === "control";
     outlet.autofill = mode === "control" ? (negotiation.autofill ?? 0) : 0;
-    outlet.authorized = async () => (await stillVisible()) && (await signedIn());
+    outlet.authorized = async () => (await visible()) && (await signedIn());
     this.#consumers.set(peer.id, outlet);
     try {
       outlet.basicInput = negotiation.basicInput === 1 && this.#snapshot.basicInput === 1;
@@ -6488,7 +7053,7 @@ export class HostedBrowserBroker {
     );
   }
 
-  #handleConsumerFrame(
+  async #handleConsumerFrame(
     outlet: BrowserConsumerOutlet,
     frame: Buffer,
     isBinary: boolean,
@@ -6565,6 +7130,28 @@ export class HostedBrowserBroker {
           cause: error,
         }),
       );
+    }
+    const requestedSurface =
+      message.type === "stream.unsubscribe"
+        ? null
+        : "surfaceId" in message && typeof message.surfaceId === "string"
+          ? message.surfaceId
+          : outlet.surfaceId;
+    if (this.#personTabGeneration && requestedSurface) {
+      const generation = await this.#personTabGeneration(
+        BrowserSurfaceIdSchema.parse(requestedSurface),
+      );
+      if (
+        generation === null ||
+        (outlet.surfaceId === requestedSurface &&
+          outlet.tabGeneration !== null &&
+          outlet.tabGeneration !== generation)
+      )
+        throw new OpensteerError({
+          code: "not_found",
+          message: "This tab has closed or its viewer was replaced.",
+        });
+      if (message.type === "stream.subscribe") outlet.tabGeneration = generation;
     }
     if (
       message.type === "passkey.claim" ||
@@ -7330,6 +7917,7 @@ export class BrowserConsumerOutlet {
   #accessRead = false;
   subscription: null | "frames" | "control" = null;
   surfaceId: string | null = null;
+  tabGeneration: number | null = null;
   captureRegion = false;
   rasterDensity: BrowserRasterDensity = 2;
   basicInput = false;

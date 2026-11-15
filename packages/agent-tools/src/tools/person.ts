@@ -1,5 +1,5 @@
 import { defineAgentTool } from "../registry.js";
-import { PersonMessageSchema, ThreadIdSchema, BrowserSurfaceIdSchema } from "@opensteer/core";
+import { PersonMessageSchema, ThreadIdSchema, TabIdSchema } from "@opensteer/core";
 
 import { z } from "zod";
 
@@ -23,7 +23,7 @@ export const person_show = defineAgentTool({
   input: z.strictObject({
     target: z.union([
       z.strictObject({
-        tabId: BrowserSurfaceIdSchema.describe(
+        tabId: TabIdSchema.describe(
           "Tab ID(s) from tab_list, tab_open, or a bound computer_use handle.",
         ),
       }),
