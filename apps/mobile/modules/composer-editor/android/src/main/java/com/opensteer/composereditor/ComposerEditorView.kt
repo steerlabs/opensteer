@@ -39,7 +39,7 @@ private data class ComposerToken(
   val end: Int,
   val source: String,
   val label: String,
-  val glyph: String,
+  val art: String,
   val accessibilityLabel: String,
 )
 
@@ -248,7 +248,7 @@ class ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(co
     val text = editor.text ?: return
     val valid = ComposerDocument.validChips(text, tokens.map { ChipRange(it.start, it.end) to it.source })
     val drawn = tokens.filter { token -> valid.any { it.start == token.start && it.end == token.end } }
-    val key = drawn.joinToString("\u0000") { "${it.start}:${it.end}:${it.label}:${it.glyph}" }
+    val key = drawn.joinToString("\u0000") { "${it.start}:${it.end}:${it.label}:${it.art}" }
     // Re-spanning on every keystroke would redraw for nothing; spans move with the text.
     if (!force && key == appliedSpans && currentChips() == valid) return
     appliedSpans = key
@@ -260,7 +260,7 @@ class ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(co
       text.setSpan(
         ComposerChipSpan(
           label = token.label,
-          glyph = token.glyph,
+          art = token.art,
           textSize = textSize,
           lineHeight = if (lineHeightPx > 0) lineHeightPx.toFloat() else textSize * 1.4f,
           maximumWidth = width,
@@ -377,7 +377,7 @@ class ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(co
         end = token.optInt("end"),
         source = token.optString("source"),
         label = token.optString("label"),
-        glyph = token.optString("glyph"),
+        art = token.optString("art"),
         accessibilityLabel = token.optString("accessibilityLabel"),
       )
     }

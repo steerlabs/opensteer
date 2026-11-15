@@ -152,6 +152,13 @@ const paths = {
       <path d="M13.5 3v5.5H19" />
     </>
   ),
+  note: (
+    <>
+      <path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5L13.5 3Z" />
+      <path d="M13.5 3v5.5H19M8.5 13h7M8.5 16.5h5" />
+    </>
+  ),
+  quote: <path d="M17 6H3M21 12H8M21 18H8M3 12v6" />,
   fit: (
     <>
       <path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" />

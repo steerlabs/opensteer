@@ -489,3 +489,12 @@
   border-radius: var(--radius-full);
   background: var(--fill-plate);
 }
+
+/* A chip and the punctuation closing on it share a line; the chip gives way first. */
+.ref-chip-group {
+  white-space: nowrap;
+}
+
+.ref-chip-group > .ref-chip {
+  max-width: min(24em, calc(100% - 1em));
+}

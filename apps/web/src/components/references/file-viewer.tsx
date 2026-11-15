@@ -11,14 +11,14 @@ import {
 import type { HostClient } from "@opensteer/client/host";
 import type { TranscriptFileState } from "@opensteer/client/host";
 import { TranscriptImageContext, useAssetImage } from "@opensteer/client/react";
-import type { FileOpenInput } from "@opensteer/client/references";
+import { fileIcon, type FileOpenInput } from "@opensteer/client/references";
 import type { ThreadId } from "@opensteer/core";
 import type { FileResource, FileSource } from "@opensteer/protocol";
 import { attachmentDetail } from "../attachments/attachment-parts.js";
 import { handleModalKeyDown } from "../dialog.js";
 import { Icon } from "../icon.js";
 import { NativeBrowserOverlay } from "../native-browser-overlays.js";
-import { fileGlyph } from "./reference-glyphs.js";
+import { referenceGlyphs } from "./reference-glyphs.js";
 
 /** Each line's height in the text view; lines are drawn only near the screen. */
 export const fileLineHeight = 20;
@@ -104,7 +104,7 @@ export function FileViewer({
           role="dialog"
         >
           <header className="file-viewer__header">
-            <Icon name={fileGlyph(name)} />
+            <Icon name={referenceGlyphs[fileIcon(name)]} />
             <div className="file-viewer__name">
               <h2 className="file-viewer__title" id={titleId} title={name}>
                 {name}

@@ -3,7 +3,7 @@ import { classifyHref } from "@opensteer/core";
 import { classifyMarkdownImageSource } from "@opensteer/shared/markdownImages";
 import type { MarkdownProfile } from "@opensteer/shared/personMarkdown";
 import { AssetImage } from "./asset-image.js";
-import { splitMarkdownBlocks } from "@opensteer/shared/markdown";
+import { punctuateLinks, splitMarkdownBlocks } from "@opensteer/shared/markdown";
 import type { List, PhrasingContent, RootContent, Table as TableNode } from "mdast";
 import { memo, useContext, useMemo, useState, type ReactNode } from "react";
 import {
@@ -20,7 +20,7 @@ import { CopyMark } from "../ui/copy-mark.js";
 import { monoFontFamily } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { markdownTree } from "./markdown-tree.js";
-import { ChipInk, ReferenceLink } from "./reference-link.js";
+import { ChipInk, ChipProse, chipRoom, ReferenceLink } from "./reference-link.js";
 import { TextLines } from "./text-lines.js";
 
 /**
@@ -104,7 +104,7 @@ function Node(props: { readonly look: MarkdownLook; readonly node: RootContent }
         );
       return (
         <LinkHold look={look} nodes={node.children}>
-          <Prose look={look}>
+          <Prose chips={holdsChip(node.children)} look={look}>
             <Spans nodes={node.children} />
           </Prose>
         </LinkHold>
@@ -116,9 +116,15 @@ function Node(props: { readonly look: MarkdownLook; readonly node: RootContent }
         <Text
           accessibilityRole="header"
           selectable={look === "reading"}
-          style={[headingStyle(look, node.depth), accent && styles.bubbleInk]}
+          style={[
+            headingStyle(look, node.depth),
+            accent && styles.bubbleInk,
+            holdsChip(node.children) && chipRoom,
+          ]}
         >
-          <Spans nodes={node.children} />
+          <ChipProse value={[headingStyle(look, node.depth), accent && styles.bubbleInk]}>
+            <Spans nodes={node.children} />
+          </ChipProse>
         </Text>
       );
     case "list":
@@ -147,19 +153,24 @@ function headingStyle(look: MarkdownLook, depth: number): TextStyle {
   return depth === 1 ? styles.heading1 : depth === 2 ? styles.heading2 : styles.heading3;
 }
 
-function Prose(props: { readonly children: ReactNode; readonly look: MarkdownLook }): ReactNode {
+function Prose(props: {
+  readonly children: ReactNode;
+  readonly chips?: boolean;
+  readonly look: MarkdownLook;
+}): ReactNode {
   const lines = useContext(TextLines);
   const ink = useContext(ChipInk);
+  const style = [
+    props.look === "bubble" ? styles.bubbleText : styles.readingText,
+    ink === "accent" && styles.bubbleInk,
+  ];
   return (
     <Text
       onTextLayout={lines ?? undefined}
       selectable={props.look === "reading"}
-      style={[
-        props.look === "bubble" ? styles.bubbleText : styles.readingText,
-        ink === "accent" && styles.bubbleInk,
-      ]}
+      style={[style, props.chips === true && chipRoom]}
     >
-      {props.children}
+      <ChipProse value={style}>{props.children}</ChipProse>
     </Text>
   );
 }
@@ -299,10 +310,12 @@ function Table(props: { readonly look: MarkdownLook; readonly table: TableNode }
 }
 
 function Spans(props: { readonly nodes: readonly PhrasingContent[] }): ReactNode {
-  return props.nodes.map((node, index) => <Span key={index} node={node} />);
+  return punctuateLinks(props.nodes).map(({ node, trailing }, index) => (
+    <Span key={index} node={node} trailing={trailing} />
+  ));
 }
 
-function Span(props: { readonly node: PhrasingContent }): ReactNode {
+function Span(props: { readonly node: PhrasingContent; readonly trailing?: string }): ReactNode {
   const { node } = props;
   switch (node.type) {
     case "text":
@@ -336,7 +349,7 @@ function Span(props: { readonly node: PhrasingContent }): ReactNode {
       return <MarkdownImage src={node.url} alt={node.alt ?? ""} />;
     case "link":
       return (
-        <ReferenceLink href={node.url} label={plainWords(node.children)}>
+        <ReferenceLink href={node.url} label={plainWords(node.children)} trailing={props.trailing}>
           <Spans nodes={node.children} />
         </ReferenceLink>
       );
@@ -365,6 +378,17 @@ function holdsLink(nodes: readonly PhrasingContent[]): boolean {
     (node) =>
       (node.type === "link" && classifyHref(node.url).kind !== "none") ||
       ("children" in node && holdsLink(node.children as readonly PhrasingContent[])),
+  );
+}
+
+const chipKinds = new Set(["reference", "file", "team-page"]);
+
+/** Whether a link in `nodes` may draw as a chip. */
+export function holdsChip(nodes: readonly PhrasingContent[]): boolean {
+  return nodes.some(
+    (node) =>
+      (node.type === "link" && chipKinds.has(classifyHref(node.url).kind)) ||
+      ("children" in node && holdsChip(node.children as readonly PhrasingContent[])),
   );
 }
 

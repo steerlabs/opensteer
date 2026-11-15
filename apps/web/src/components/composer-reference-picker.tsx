@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { classifyHref } from "@opensteer/core";
-import { collectComposerTokens } from "@opensteer/client/references";
+import { collectComposerTokens, hrefIcon } from "@opensteer/client/references";
 import {
   composerReferenceCandidates,
   type ComposerLinkCandidate as HostLinkCandidate,
@@ -8,6 +8,7 @@ import {
   type PlaceItem,
 } from "@opensteer/client/host";
 import { Icon, type IconName } from "./icon.js";
+import { referenceGlyphs } from "./references/reference-glyphs.js";
 import type { ComposerEditorControl } from "./composer-editor.js";
 import { PlaceMark } from "./workspace/place-mark.js";
 import { mentionListHeight, mentionRoom } from "./workspace/place-picker.js";
@@ -30,22 +31,24 @@ export function referenceGroup(candidate: ComposerLinkCandidate): {
 } {
   const href = collectComposerTokens(candidate.markdown, { commitTrailing: true })[0]?.href ?? "";
   const target = classifyHref(href);
+  const glyph = referenceGlyphs[hrefIcon(href)];
   if (target.kind === "reference")
     switch (target.reference.kind) {
       case "task":
-        return { group: "Recent tasks", glyph: "message" };
+        return { group: "Recent tasks", glyph };
       case "automation":
-        return { group: "Automations", glyph: "clock" };
+        return { group: "Automations", glyph };
       case "computer":
-        return { group: "Computers", glyph: "desktop" };
+        return { group: "Computers", glyph };
       default:
-        return { group: "References", glyph: "link" };
+        return { group: "References", glyph };
     }
   if (target.kind === "team-page")
-    return target.page.target.kind.startsWith("knowledge")
-      ? { group: "Knowledge", glyph: "folder" }
-      : { group: "Channels", glyph: "hash" };
-  return { group: "References", glyph: target.kind === "file" ? "file" : "link" };
+    return {
+      group: target.page.target.kind.startsWith("knowledge") ? "Knowledge" : "Channels",
+      glyph,
+    };
+  return { group: "References", glyph };
 }
 
 const groupOrder = ["Recent tasks", "Automations", "Computers", "References"];

@@ -4,13 +4,19 @@ import {
   type HostSnapshot,
 } from "@opensteer/client/host";
 import { useTeamReferenceCandidates } from "@opensteer/client/react";
-import { collectComposerTokens, type ComposerEditorHandle } from "@opensteer/client/references";
+import {
+  collectComposerTokens,
+  hrefIcon,
+  referenceIcon,
+  type ComposerEditorHandle,
+} from "@opensteer/client/references";
 import type { TeamSessionClient, TeamSidebar } from "@opensteer/client/team";
-import { classifyHref, type ClassifiedHref } from "@opensteer/core";
+import { classifyHref } from "@opensteer/core";
 import type { ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
 import { AppText } from "./primitives.js";
+import { referenceSymbols } from "./reference-symbols.js";
 import { Symbol, type SFSymbolName } from "./symbol.js";
 
 export interface ReferenceRow {
@@ -70,12 +76,12 @@ export function personalReferenceSections(
     computer: [],
   };
   for (const candidate of composerReferenceCandidates(snapshot, query)) {
-    const target = candidateTarget(candidate);
+    const target = classifyHref(candidateHref(candidate));
     if (target.kind !== "reference" || target.reference.id === threadId) continue;
     const kind = target.reference.kind;
     if (kind !== "task" && kind !== "automation" && kind !== "computer") continue;
     groups[kind].push({
-      icon: kind === "task" ? "bubble.left" : kind === "automation" ? "clock" : "desktopcomputer",
+      icon: referenceSymbols[referenceIcon(kind)],
       key: candidate.key,
       label: candidate.label,
       markdown: candidate.markdown,
@@ -106,25 +112,21 @@ export function useTeamReferenceSections(
     query,
   );
   if (candidates.length === 0) return [];
-  const row = (candidate: ComposerLinkCandidate): ReferenceRow => {
-    const target = candidateTarget(candidate);
-    const kind = target.kind === "team-page" ? target.page.target.kind : null;
-    return {
-      icon: kind === "channel" ? "number" : kind === "knowledge-note" ? "doc.text" : "folder",
-      key: candidate.key,
-      label: candidate.label,
-      markdown: candidate.markdown,
-    };
-  };
+  const row = (candidate: ComposerLinkCandidate): ReferenceRow => ({
+    icon: referenceSymbols[hrefIcon(candidateHref(candidate))],
+    key: candidate.key,
+    label: candidate.label,
+    markdown: candidate.markdown,
+  });
   return (["Channels", "Knowledge"] as const).map((title) => ({
     title,
     rows: candidates.filter(({ category }) => category === title).map(row),
   }));
 }
 
-function candidateTarget(candidate: ComposerLinkCandidate): ClassifiedHref {
+function candidateHref(candidate: ComposerLinkCandidate): string {
   const [link] = collectComposerTokens(candidate.markdown, { commitTrailing: true });
-  return classifyHref(link?.href ?? "");
+  return link?.href ?? "";
 }
 
 /**

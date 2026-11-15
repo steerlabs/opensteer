@@ -3,6 +3,7 @@ import ReactMarkdown, { type Components, type UrlTransform } from "react-markdow
 import remarkGfm from "remark-gfm";
 import { classifyHref } from "@opensteer/core";
 import { Icon, type IconName } from "../icon.js";
+import { remarkChipPunctuation } from "../references/chip-punctuation.js";
 import { TeamMessageLink } from "../references/reference-link.js";
 import { attachmentDetail, isInlineImage } from "../attachments/attachment-parts.js";
 import { MentionChip } from "./team-marks.js";
@@ -110,7 +111,7 @@ export const MessageBody = memo(function MessageBody({
     [mentions],
   );
   const plugins = useMemo(
-    () => [remarkGfm, remarkTeamText(new Set(byHandle.keys()), highlight)],
+    () => [remarkGfm, remarkChipPunctuation, remarkTeamText(new Set(byHandle.keys()), highlight)],
     [byHandle, highlight],
   );
   const components = useMemo<Components>(

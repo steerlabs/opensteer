@@ -4,11 +4,13 @@ package com.opensteer.composereditor
 
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.text.TextPaint
 import android.text.TextUtils
 import android.text.style.ReplacementSpan
+import androidx.core.graphics.PathParser
 import kotlin.math.ceil
 import kotlin.math.min
 
@@ -28,7 +30,8 @@ data class ChipColors(
  */
 class ComposerChipSpan(
   label: String,
-  private val glyph: String,
+  /** The glyph as one 24×24 SVG stroke path, the art the transcript's chip draws. */
+  art: String,
   textSize: Float,
   lineHeight: Float,
   maximumWidth: Float,
@@ -41,11 +44,13 @@ class ComposerChipSpan(
     typeface = Typeface.DEFAULT
     color = colors.text
   }
-  private val glyphPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-    this.textSize = textSize * 0.82f
-    typeface = Typeface.DEFAULT
+  private val glyphPath = glyphPath(art)
+  private val glyphPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    style = Paint.Style.STROKE
+    strokeWidth = 1.8f
+    strokeCap = Paint.Cap.ROUND
+    strokeJoin = Paint.Join.ROUND
     color = colors.glyph
-    textAlign = Paint.Align.CENTER
   }
   private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = colors.fill }
   private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
@@ -105,13 +110,15 @@ class ComposerChipSpan(
     rimPaint.color = if (selected) colors.selectedRim else colors.rim
     rimPaint.strokeWidth = stroke
     canvas.drawRoundRect(plate, radius, radius, rimPaint)
-    val glyphMetrics = glyphPaint.fontMetrics
-    canvas.drawText(
-      glyph,
-      x + left + glyphSlot / 2,
-      chipTop + height / 2 - (glyphMetrics.ascent + glyphMetrics.descent) / 2,
-      glyphPaint,
-    )
+    glyphPath?.let { path ->
+      // The art's 24-unit box at 0.9 of the label's size, centred in the glyph's slot.
+      val side = em * 0.9f
+      canvas.save()
+      canvas.translate(x + left + (glyphSlot - side) / 2, chipTop + (height - side) / 2)
+      canvas.scale(side / 24f, side / 24f)
+      canvas.drawPath(path, glyphPaint)
+      canvas.restore()
+    }
     val labelMetrics = labelPaint.fontMetrics
     canvas.drawText(
       title,
@@ -121,3 +128,9 @@ class ComposerChipSpan(
     )
   }
 }
+
+private val glyphPaths = HashMap<String, Path?>()
+
+/** Parsed once per path: chips are re-spanned as the person types. */
+private fun glyphPath(art: String): Path? =
+  if (art.isEmpty()) null else glyphPaths.getOrPut(art) { runCatching { PathParser.createPathFromPathData(art) }.getOrNull() }

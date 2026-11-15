@@ -1,6 +1,11 @@
 import type { PhrasingContent, RootContent } from "mdast";
 import { describe, expect, it } from "vitest";
-import { hideIncompleteLinkTail, replyParts, splitMarkdownBlocks } from "./markdown.js";
+import {
+  hideIncompleteLinkTail,
+  punctuateLinks,
+  replyParts,
+  splitMarkdownBlocks,
+} from "./markdown.js";
 import { parseMarkdown } from "./markdownParser.js";
 
 /** The tree as short tagged text, so a case reads as what a person sees. */
@@ -270,5 +275,28 @@ describe("person Markdown profile", () => {
     expect(tree.children[2]?.type).toBe("list");
     expect(JSON.stringify(tree)).not.toContain('"type":"html"');
     expect(JSON.stringify(tree)).toContain("<div>literal</div>");
+  });
+});
+
+describe("punctuateLinks", () => {
+  const words = (markdown: string) => {
+    const [paragraph] = parseMarkdown(markdown).children;
+    if (paragraph?.type !== "paragraph") throw new Error("expected a paragraph");
+    return punctuateLinks(paragraph.children).map(({ node, trailing }) =>
+      node.type === "text" ? node.value : `[${node.type}${trailing ? ` ${trailing}` : ""}]`,
+    );
+  };
+
+  it.each([
+    ["See [a](opensteer:x).", ["See ", "[link .]"]],
+    ["See [a](opensteer:x), then.", ["See ", "[link ,]", " then."]],
+    ["([a](opensteer:x)). Next", ["(", "[link ).]", " Next"]],
+    ["[a](opensteer:x)?!” she said", ["[link ?!”]", " she said"]],
+    ["[a](opensteer:x)」と", ["[link 」]", "と"]],
+    ["[a](opensteer:x) and.", ["[link]", " and."]],
+    ["[a](opensteer:x)'s notes", ["[link]", "'s notes"]],
+    ["[a](opensteer:x)**.**", ["[link]", "[strong]"]],
+  ])("%j", (markdown, expected) => {
+    expect(words(markdown)).toEqual(expected);
   });
 });

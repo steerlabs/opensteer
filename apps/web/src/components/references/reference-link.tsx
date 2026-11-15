@@ -11,7 +11,13 @@ import {
 import { classifyHref, teamPageUrl, type Reference, type TeamPageLink } from "@opensteer/core";
 import type { FileLinkTarget } from "@opensteer/shared/fileHref";
 import { useReference } from "@opensteer/client/react";
-import { localTeamReference, refTarget } from "@opensteer/client/references";
+import {
+  fileIcon,
+  localTeamReference,
+  referenceIcon,
+  refTarget,
+  teamPageIcon,
+} from "@opensteer/client/references";
 import { desktopBridge } from "../../desktop/desktop-bridge.js";
 import { useTeams, useTeamSessionValue } from "../../team/team-attachments.js";
 import { ExternalLink } from "../external-link.js";
@@ -19,7 +25,7 @@ import { Icon, type IconName } from "../icon.js";
 import { useToast } from "../toast.js";
 import { useNearViewport } from "../use-near-viewport.js";
 import { useOptionalWorkspace } from "../workspace/workspace-context.js";
-import { fileGlyph, referenceGlyphs, teamPageGlyphs } from "./reference-glyphs.js";
+import { referenceGlyphs } from "./reference-glyphs.js";
 import {
   attachedTeam,
   isPersonalScope,
@@ -35,51 +41,69 @@ import {
  * workspace tab for a transcript, the reader's browser for a team message);
  * anything else keeps its words.
  */
-export function ReferenceLink(props: ComponentProps<"a">) {
+export function ReferenceLink(props: LinkProps) {
   return <Link {...props} web="workspace" />;
 }
 
-export function TeamMessageLink(props: ComponentProps<"a">) {
+export function TeamMessageLink(props: LinkProps) {
   return <Link {...props} web="external" />;
 }
+
+type LinkProps = ComponentProps<"a"> & {
+  /** Punctuation that followed the link in the source (`remarkChipPunctuation`). */
+  readonly "data-trailing"?: string;
+};
 
 function Link({
   children,
   href,
   web,
-}: ComponentProps<"a"> & { readonly web: "workspace" | "external" }) {
+  "data-trailing": trailing,
+}: LinkProps & { readonly web: "workspace" | "external" }) {
   const scope = useReferenceScope();
   const target = useMemo(() => classifyHref(href ?? ""), [href]);
+  // A chip keeps the punctuation after it on its line; words wrap as words do.
+  const chip = (element: ReactNode) =>
+    trailing ? (
+      <span className="ref-chip-group">
+        {element}
+        {trailing}
+      </span>
+    ) : (
+      element
+    );
+  const words = (element: ReactNode) => (
+    <>
+      {element}
+      {trailing}
+    </>
+  );
   switch (target.kind) {
     case "reference":
-      return isPersonalScope(scope) ? (
-        <PersonalChip label={textOf(children)} reference={target.reference} scope={scope} />
-      ) : (
-        <span>{children}</span>
-      );
+      return isPersonalScope(scope)
+        ? chip(<PersonalChip label={textOf(children)} reference={target.reference} scope={scope} />)
+        : words(<span>{children}</span>);
     case "team-page":
-      return target.page.target.kind === "invite" ? (
-        <WebLink href={teamPageUrl(target.page)} web={web}>
-          {children}
-        </WebLink>
-      ) : (
-        <TeamPageChip label={textOf(children)} page={target.page} scope={scope} />
-      );
+      return target.page.target.kind === "invite"
+        ? words(
+            <WebLink href={teamPageUrl(target.page)} web={web}>
+              {children}
+            </WebLink>,
+          )
+        : chip(<TeamPageChip label={textOf(children)} page={target.page} scope={scope} />);
     case "file":
-      return isPersonalScope(scope) ? (
-        <FileChip file={target.file} scope={scope} />
-      ) : (
-        <span>{children}</span>
-      );
+      return isPersonalScope(scope)
+        ? chip(<FileChip file={target.file} scope={scope} />)
+        : words(<span>{children}</span>);
     case "web":
     case "mail":
-      return (
+      return words(
         <WebLink href={target.url} web={web}>
           {children}
-        </WebLink>
+        </WebLink>,
       );
     case "none":
-      return <span>{children}</span>;
+      return words(<span>{children}</span>);
   }
 }
 
@@ -157,7 +181,7 @@ function PersonalChip({
   const state = useReference(client, reference, { enabled: near });
   const toast = useToast();
   const written = label.trim() || kindLabels[reference.kind];
-  const glyph = referenceGlyphs[reference.kind];
+  const glyph = referenceGlyphs[referenceIcon(reference.kind)];
   if (state.state === "unavailable")
     return (
       <span
@@ -224,7 +248,7 @@ function TeamPageChip({
   );
   const title = held ?? (label.trim() || "Team page");
   const url = teamPageUrl(page);
-  const glyph = teamPageGlyphs[page.target.kind];
+  const glyph = referenceGlyphs[teamPageIcon(page.target.kind)];
   const open = (event: MouseEvent<HTMLAnchorElement>) => {
     const desktop = desktopBridge() !== null;
     const gesture = event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
@@ -282,7 +306,7 @@ function FileChip({
       className="ref-chip ref-chip--file"
       title={file.path + position}
     >
-      <ChipFace glyph={fileGlyph(file.path)} position={position} title={name} />
+      <ChipFace glyph={referenceGlyphs[fileIcon(file.path)]} position={position} title={name} />
     </a>
   );
 }
