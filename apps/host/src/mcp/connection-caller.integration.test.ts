@@ -468,7 +468,10 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       name: "opensteer_task_interrupt",
       arguments: { taskId: threadId },
     });
-    expect(stopReplay.structuredContent).toEqual({ interruptedRunId: null });
+    expect(stopReplay.structuredContent).toEqual({
+      interruptedRunId: null,
+      link: expect.stringMatching(new RegExp(`\\]\\(opensteer:${threadId}\\)$`, "u")),
+    });
   });
 
   it("returns a connection's original task on retry after the person's defaults change", async ({

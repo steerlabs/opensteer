@@ -1162,6 +1162,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@floating-ui/dom':
+        specifier: 1.8.0
+        version: 1.8.0
       '@fontsource-variable/fraunces':
         specifier: ^5.3.0
         version: 5.3.0
@@ -10756,16 +10759,13 @@ snapshots:
   '@floating-ui/core@1.8.0':
     dependencies:
       '@floating-ui/utils': 0.2.12
-    optional: true
 
   '@floating-ui/dom@1.8.0':
     dependencies:
       '@floating-ui/core': 1.8.0
       '@floating-ui/utils': 0.2.12
-    optional: true
 
-  '@floating-ui/utils@0.2.12':
-    optional: true
+  '@floating-ui/utils@0.2.12': {}
 
   '@fontsource-variable/fraunces@5.3.0': {}
 

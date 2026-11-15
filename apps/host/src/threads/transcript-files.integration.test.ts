@@ -31,7 +31,7 @@ async function fixture() {
     await mkdir(homePath, { recursive: true });
     await mkdir(imagesRoot, { recursive: true });
     const helperPath = fileURLToPath(
-      new URL("../../../runner/native-fs-helper/opensteer-native-fs", import.meta.url),
+      new URL("../../../runner/native-fs-helper/opensteer-native-fs-test", import.meta.url),
     );
     const home = new AgentHomeFiles({
       agentHome: async () => ({ ...task.agentHome, path: homePath }),

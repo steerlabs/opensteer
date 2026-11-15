@@ -4,7 +4,8 @@
  * it, driven in headless Chromium with real clicks.
  *
  * Ways this journey can fail, each checked below:
- *  1. A file-path link replaces the app document or opens a page.
+ *  1. An absolute file link replaces the app document, opens a page, or fails
+ *     to open the in-app file viewer.
  *  2. A relative file link navigates instead of staying words.
  *  3. A plain HTTPS click fails to open exactly one tab beside the task
  *     at the exact address, loses the conversation, or opens a device page.
@@ -114,15 +115,17 @@ try {
   await check("an absolute file link keeps the app on its task", async () => {
     const { document, reply } = await open(storageTaskPath, sourcesReplyText);
     const label = reply.getByText("mount-sequence.png", { exact: true });
-    const isLink = await label.evaluate((element) => element.closest("a") !== null);
+    const isChip = await label.evaluate((element) => element.closest(".ref-chip") !== null);
     await label.scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(artifactDirectory, "task-reply.png") });
     const before = requests.length;
     const opened = await clickWithoutOpening(page, label);
+    const viewer = page.locator(".file-viewer");
+    await viewer.waitFor();
     const after = await documentState(page, document);
     const navigations = appNavigations(requests.slice(before));
     await page.screenshot({ path: path.join(artifactDirectory, "task-after-click.png") });
-    const observed = { after, isLink, navigations, opened };
+    const observed = { after, isChip, navigations, opened, viewer: await viewer.isVisible() };
     expectThat(observed, navigations.length === 0, "the click navigated the app's document");
     expectThat(
       observed,
@@ -130,7 +133,10 @@ try {
       "the app document changed",
     );
     expectThat(observed, after.rendered, "the app is no longer on screen");
-    expectThat(observed, !isLink && !opened, "a file path was offered as a link");
+    expectThat(observed, isChip && !opened, "a file link opened a page instead of the viewer");
+    expectThat(observed, observed.viewer, "the file viewer did not open in the app");
+    await page.keyboard.press("Escape");
+    await viewer.waitFor({ state: "detached" });
     return observed;
   });
 

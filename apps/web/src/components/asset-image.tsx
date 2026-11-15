@@ -34,8 +34,10 @@ export function AssetImage({ path, alt = "" }: { path: string; alt?: string }) {
         ) : (
           <span
             style={{ display: "inline-block", width: 320, height: 240 }}
-            aria-label="Loading image"
-          />
+            aria-label={alt ? undefined : "Loading image"}
+          >
+            {alt}
+          </span>
         )}
       </button>
       {open ? <OriginalImage path={path} alt={alt} close={() => setOpen(false)} /> : null}
