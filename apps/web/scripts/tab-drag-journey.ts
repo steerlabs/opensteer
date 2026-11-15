@@ -323,13 +323,19 @@ async function openWorld(world: "busy" | "stress") {
   await page.evaluate(() =>
     (Reflect.get(window, "opensteerMock") as { scriptPlaces(): unknown }).scriptPlaces(),
   );
-  // The world seeds a group of its own; this journey builds, and follows, one group alone.
-  await page.evaluate(async () => {
+  // This journey moves page tabs: window, phone and app tabs leave the list (closing a tab
+  // only takes it off the list). The busy world's checks build their own one group.
+  await page.evaluate(async (ungroup) => {
     const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-    for (const item of client.getSnapshot().tabs.layout.items)
-      if (item.kind === "group") await client.deleteTabGroup(item.group.groupId);
-  });
-  await page.locator(".side-tab-group").waitFor({ state: "detached" });
+    if (ungroup)
+      for (const item of client.getSnapshot().tabs.layout.items)
+        if (item.kind === "group") await client.deleteTabGroup(item.group.groupId);
+    const others = [...client.getSnapshot().tabs.rows.values()]
+      .filter((tab) => tab.kind !== "page")
+      .map((tab) => tab.tabId);
+    if (others.length) await client.closeTabs(others);
+  }, world === "busy");
+  await settle(page);
   return { context, page, errors };
 }
 

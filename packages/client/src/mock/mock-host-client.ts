@@ -3454,8 +3454,28 @@ async function executeMockCommand(
       });
       return rpcSuccess({ type: command.type });
     }
-    case "browser.profile.rename":
-      return unsupportedMockRpc();
+    case "browser.profile.rename": {
+      const snapshot = client.getSnapshot();
+      const held = snapshot.browserProfiles.find((profile) => profile.id === command.profileId);
+      if (!held)
+        return mockRefusal(
+          new HostClientRequestError({
+            code: "not_found",
+            message: "Browser profile not found.",
+            status: 404,
+          }),
+        );
+      const profile = { ...held, name: command.name };
+      client.updatePlaces({
+        ...snapshot,
+        browserProfiles: snapshot.browserProfiles.map((value) =>
+          value.id === profile.id ? profile : value,
+        ),
+      });
+      return rpcSuccess(
+        hostApi["commands.dispatch"].success.parse({ type: command.type, profile }),
+      );
+    }
     case "computer.view.close":
     case "computer.view.renew":
       if (!client.computerViews) return unsupportedMockRpc();

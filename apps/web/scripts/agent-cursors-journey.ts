@@ -189,9 +189,13 @@ try {
         .filter((row) => row.kind === "page")
         .map((row) => ({
           id: row.tabId as string,
+          // The mock's sessions carry their pages, which the published type leaves unnamed.
           sessionId:
-            snapshot.browserSessions.find((session) =>
-              session.surfaces.some((surface) => surface.id === row.tabId),
+            snapshot.browserSessions.find(
+              (session) =>
+                "surfaces" in session &&
+                Array.isArray(session.surfaces) &&
+                session.surfaces.some((surface: { id: string }) => surface.id === row.tabId),
             )?.id ?? "",
           title: row.title,
         })),
