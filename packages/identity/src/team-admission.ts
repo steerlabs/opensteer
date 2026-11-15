@@ -85,7 +85,10 @@ export class TeamIdentityAdmission {
   readonly invites: TeamInvitesStore;
   readonly #authority: AccountAdoptionAuthority;
   readonly #verifier: AccountAdoptionGrantVerifier;
-  readonly #install: (bundle: HostAccountAdoptionBundle) => Promise<void>;
+  readonly #install: (
+    bundle: HostAccountAdoptionBundle,
+    transaction: Transaction<DatabaseSchema>,
+  ) => Promise<void>;
   readonly #hosted:
     | {
         readonly createGeneralChannel: (
@@ -105,7 +108,10 @@ export class TeamIdentityAdmission {
     identityVerifier?: TeamIdentityAssertionVerifier;
     /** Applies an Account-signed name receipt to the user that Account signs in as here. */
     applyProfile?: (userId: UserId, receipt: string) => Promise<boolean>;
-    installAccountBundle: (bundle: HostAccountAdoptionBundle) => Promise<void>;
+    installAccountBundle: (
+      bundle: HostAccountAdoptionBundle,
+      transaction: Transaction<DatabaseSchema>,
+    ) => Promise<void>;
     /** Enables Account's hosted bootstrap (`team-hosted-bootstrap-v1`). */
     hosted?: {
       createGeneralChannel: (
@@ -570,13 +576,13 @@ export class TeamIdentityAdmission {
         const receipt = hosted
           ? await this.#bootstrapOwner(t, durableAdmission, verified.proofId, hosted, providerId)
           : undefined;
+        await this.#install(bundle, t);
         return { value: { receipt, fresh: true }, effects: emptyTeamAccessEffects };
       },
       async (t, value) => {
         if (value.fresh && value.receipt) await publishTeamMember(t, value.receipt.ownerUserId);
       },
     );
-    await this.#install(bundle);
     return {
       provider: {
         providerId: "opensteer-account",

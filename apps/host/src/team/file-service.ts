@@ -1,12 +1,12 @@
+import { LocalTeamFileStore, type TeamFileStore } from "./file-store.js";
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { link, mkdir, open, readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, open, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import type { TeamActor, TeamAgentRequestId, TeamBlobId, TeamChannelId } from "@opensteer/core";
 import type { TeamUploadMetadataSchema } from "@opensteer/protocol";
 import { teamPreviewMaxBytes, teamUploadMaxBytes } from "@opensteer/protocol";
-import { TeamFilesStore, type TeamFileAgent } from "@opensteer/database/team-files";
+import { TeamFilesStore, teamFileView, type TeamFileAgent } from "@opensteer/database/team-files";
 import { shareNotFound } from "@opensteer/database/team-shares";
 import { requireTeam, type TeamAccessStore } from "@opensteer/database/team-access";
 import type { z } from "zod";
@@ -55,14 +55,20 @@ export class TeamFileService {
   readonly #directory: string;
   readonly #active = new Set<ActiveFileTransfer>();
   readonly #caching = new Map<string, CachedFileTransfer>();
-  readonly #uploads = new Set<TeamBlobId>();
+  readonly files: TeamFileStore;
   readonly #unsubscribe: () => void;
   readonly store: TeamFilesStore;
   readonly access: TeamAccessStore;
-  constructor(store: TeamFilesStore, access: TeamAccessStore, dataDirectory: string) {
+  constructor(
+    store: TeamFilesStore,
+    access: TeamAccessStore,
+    dataDirectory: string,
+    files?: TeamFileStore,
+  ) {
     this.store = store;
     this.access = access;
     this.#directory = join(dataDirectory, "team-files");
+    this.files = files ?? new LocalTeamFileStore(this.#directory);
     this.#unsubscribe = access.onRevoke(async (effects) => {
       await Promise.all(
         [...this.#active].map(async (transfer) => {
@@ -86,10 +92,9 @@ export class TeamFileService {
     signal?: AbortSignal,
     agent?: TeamFileAgent,
   ) {
-    const row = await this.store.begin(actor, channelId, metadata, requestId, agent);
-    requireTeam(row.state !== "deleting");
-    requireTeam(!this.#uploads.has(row.id), "Upload already in progress");
-    this.#uploads.add(row.id);
+    const begun = await this.store.begin(actor, channelId, metadata, requestId, agent);
+    if (begun.state === "ready") return teamFileView(begun);
+    const row = await this.store.claimUpload(begun.id, (old) => this.#removeRow(old));
     const controller = new AbortController();
     const authorize = () =>
       this.access.database.transaction().execute(async (t) => {
@@ -111,9 +116,8 @@ export class TeamFileService {
     const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     const pending = join(this.#directory, `pending-${randomUUID()}`);
     const pendingPreview = `${pending}-preview`;
-    const final = join(this.#directory, row.storageKey),
-      previewFinal = `${final}-preview`;
-    let installed = false;
+    let generation: string | undefined;
+    let previewGeneration: string | undefined;
     try {
       await mkdir(this.#directory, { recursive: true, mode: 0o700 });
       const original = await this.#write(
@@ -142,19 +146,14 @@ export class TeamFileService {
       } else requireTeam(!parts.preview, "Unexpected preview");
       combined.throwIfAborted();
       requireTeam(await authorize());
-      try {
-        await link(pending, final);
-        installed = true;
-      } catch (error) {
-        if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
-      }
+      requireTeam(original.sha256 === metadata.sha256, "File digest mismatch");
+      generation = await this.files.put(row.storageKey, pending);
       if (metadata.previewSizeBytes)
-        try {
-          await link(pendingPreview, previewFinal);
-        } catch (error) {
-          if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
-        }
+        previewGeneration = await this.files.put(`${row.storageKey}-preview`, pendingPreview);
       return await this.store.complete(actor, row.id, {
+        uploadLease: row.uploadLease!,
+        generation,
+        previewGeneration: previewGeneration ?? null,
         receivedBytes: original.size,
         sha256: original.sha256,
         verifiedType: metadata.mediaType,
@@ -164,13 +163,12 @@ export class TeamFileService {
         previewStorageKey: metadata.previewSizeBytes ? `${row.storageKey}-preview` : null,
       });
     } catch (error) {
-      if (installed) {
-        await rm(final, { force: true });
-        await rm(previewFinal, { force: true });
-      }
+      if (generation) await this.files.delete(row.storageKey, generation);
+      if (previewGeneration)
+        await this.files.delete(`${row.storageKey}-preview`, previewGeneration);
+      await this.store.releaseUpload(row.id, row.uploadLease!);
       throw error;
     } finally {
-      this.#uploads.delete(row.id);
       this.#active.delete(transfer);
       await rm(pending, { force: true });
       await rm(pendingPreview, { force: true });
@@ -227,7 +225,7 @@ export class TeamFileService {
     signal?: AbortSignal,
     agent?: TeamFileAgent,
   ): Promise<{ body: Readable; sizeBytes: number; headers: Record<string, string> }> {
-    const revision = this.access.revision;
+    const revision = await this.access.current();
     const row = await this.store.authorized(actor, id, agent, true);
     requireTeam(part === "original" || row.previewStorageKey, "No image preview");
     const controller = new AbortController();
@@ -250,10 +248,9 @@ export class TeamFileService {
       if (row.remoteShareId) await transfer.authorize();
       return await this.access.handoff(revision, transfer.authorize, () => {
         combined.throwIfAborted();
-        stream = createReadStream(
-          join(this.#directory, part === "original" ? row.storageKey : row.previewStorageKey!),
-          { highWaterMark: 64 * 1024, signal: combined },
-        );
+        stream = this.files.read(part === "original" ? row.storageKey : row.previewStorageKey!, {
+          signal: combined,
+        });
         stream.once("close", () => {
           controller.abort();
           this.#active.delete(transfer);
@@ -322,16 +319,11 @@ export class TeamFileService {
     }
   }
   async #cache(row: FileRow, part: "original" | "preview", transfer: CachedFileTransfer) {
-    const final = join(
-      this.#directory,
-      part === "original" ? row.storageKey : row.previewStorageKey!,
+    const key = part === "original" ? row.storageKey : row.previewStorageKey!;
+    const cached = await this.store.cacheWrite(row.id, async (_t, current) =>
+      part === "original" ? current.generation : current.previewGeneration,
     );
-    try {
-      await stat(final);
-      return;
-    } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
-    }
+    if (cached) return;
     requireTeam(this.remote, "Partner file transfer unavailable");
     const signal = transfer.controller.signal;
     const authorize = async () => {
@@ -344,10 +336,15 @@ export class TeamFileService {
       shareNotFound();
     };
     const pending = join(this.#directory, `pending-${randomUUID()}`);
-    let installed = false,
-      complete = false;
+    let generation: string | undefined;
+    let complete = false;
+    let lease: string | undefined;
     try {
-      await this.store.reserveCache(row.id, part);
+      lease = await this.store.reserveCache(row.id, part, async (old, expiredPart) => {
+        const expiredKey = expiredPart === "original" ? old.storageKey : old.previewStorageKey!;
+        for await (const object of this.files.list(expiredKey))
+          if (object.key === expiredKey) await this.files.delete(object.key, object.generation);
+      });
       signal.throwIfAborted();
       await mkdir(this.#directory, { recursive: true, mode: 0o700 });
       const size = Number(part === "original" ? row.sizeBytes : row.previewSizeBytes);
@@ -367,18 +364,24 @@ export class TeamFileService {
         shareNotFound();
       signal.throwIfAborted();
       await authorize();
-      await this.store.cacheWrite(row.id, async () => {
+      await this.store.cacheWrite(row.id, async (t, current) => {
         signal.throwIfAborted();
-        await link(pending, final);
-        installed = true;
-        signal.throwIfAborted();
+        requireTeam(lease && this.store.cacheLeaseValid(current, lease), "Cache lease expired");
+        const column = part === "original" ? "generation" : "previewGeneration";
+        if (current[column]) return;
+        generation = await this.files.put(key, pending);
+        await t
+          .updateTable("teamBlobs")
+          .set({ [column]: generation })
+          .where("id", "=", row.id)
+          .execute();
       });
       signal.throwIfAborted();
       complete = true;
     } finally {
-      if (!complete && installed) await rm(final, { force: true });
+      if (!complete && generation) await this.files.delete(key, generation);
       await rm(pending, { force: true });
-      if (!complete) await this.store.releaseCache(row.id, part);
+      if (lease) await this.store.releaseCache(row.id, part, lease);
     }
   }
   async prepareShare(channelId: TeamChannelId) {
@@ -392,7 +395,7 @@ export class TeamFileService {
       .where("previewSha256", "is", null)
       .execute();
     for (const row of rows) {
-      const bytes = await readFile(join(this.#directory, row.previewStorageKey!));
+      const bytes = await this.#readBytes(row.previewStorageKey!, teamPreviewMaxBytes);
       requireTeam(
         bytes.length === Number(row.previewSizeBytes) && bytes.length <= teamPreviewMaxBytes,
       );
@@ -411,17 +414,22 @@ export class TeamFileService {
   ) {
     const key = part === "original" ? row.storageKey : row.previewStorageKey;
     requireTeam(key);
-    const file = await open(join(this.#directory, key), "r");
-    try {
-      const size = Number(part === "original" ? row.sizeBytes : row.previewSizeBytes);
-      requireTeam(offset <= size);
-      const bytes = Buffer.alloc(Math.min(maximum, size - offset));
-      const { bytesRead } = await file.read(bytes, 0, bytes.length, offset);
-      requireTeam(bytesRead === bytes.length, "File size mismatch");
-      return bytes.toString("base64");
-    } finally {
-      await file.close();
+    const size = Number(part === "original" ? row.sizeBytes : row.previewSizeBytes);
+    requireTeam(offset <= size);
+    if (offset === size) return "";
+    const bytes = await this.#readBytes(key, Math.min(maximum, size - offset), offset);
+    return bytes.toString("base64");
+  }
+  async #readBytes(key: string, maximum: number, start = 0) {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of this.files.read(key, { start, end: start + maximum - 1 })) {
+      const bytes = Buffer.from(chunk);
+      size += bytes.length;
+      requireTeam(size <= maximum);
+      chunks.push(bytes);
     }
+    return Buffer.concat(chunks);
   }
   /** Removes every file no message can reach, so freed space counts again once this returns. */
   async collectGarbage() {
@@ -435,37 +443,19 @@ export class TeamFileService {
         if (transfer.controller.signal.aborted) await transfer.done.catch(() => {});
       }),
     );
-    await this.store.evictInactiveCaches((row) =>
-      this.#removeBytes(row.storageKey, row.previewStorageKey),
-    );
+    await this.store.evictInactiveCaches((row) => this.#removeRow(row));
     await this.store.abandonUnsent();
-    for (;;) {
-      const rows = await this.access.database
+    while ((await this.store.collectDeleting((row) => this.#removeRow(row))) === 100) {}
+    for await (const object of this.files.list("")) {
+      if (object.key.startsWith("pending-")) continue;
+      const retained = await this.access.database
         .selectFrom("teamBlobs")
-        .selectAll()
-        .where("state", "=", "deleting")
-        .orderBy("id")
-        .limit(100)
-        .execute();
-      for (const row of rows) {
-        // Re-shared local files keep their bytes until the last channel releases them.
-        const retained = await this.access.database
-          .selectFrom("teamBlobs")
-          .select("id")
-          .where("storageKey", "=", row.storageKey)
-          .where("id", "!=", row.id)
-          .where("state", "!=", "deleting")
-          .executeTakeFirst();
-        if (!retained) {
-          await this.#removeBytes(row.storageKey, row.previewStorageKey);
-        }
-        await this.access.database
-          .deleteFrom("teamBlobs")
-          .where("id", "=", row.id)
-          .where("state", "=", "deleting")
-          .execute();
-      }
-      if (rows.length < 100) break;
+        .select("id")
+        .where((e) =>
+          e.or([e("storageKey", "=", object.key), e("previewStorageKey", "=", object.key)]),
+        )
+        .executeTakeFirst();
+      if (!retained) await this.files.delete(object.key, object.generation);
     }
     await mkdir(this.#directory, { recursive: true, mode: 0o700 });
     for (const name of await readdir(this.#directory))
@@ -474,9 +464,19 @@ export class TeamFileService {
         if ((await stat(path)).mtimeMs < Date.now() - 86400000) await rm(path, { force: true });
       }
   }
-  async #removeBytes(key: string, preview: string | null) {
-    await rm(join(this.#directory, key), { force: true });
-    if (preview) await rm(join(this.#directory, preview), { force: true });
+  async #removeRow(row: {
+    storageKey: string;
+    previewStorageKey: string | null;
+    generation: string | null;
+    previewGeneration: string | null;
+  }) {
+    for (const key of [row.storageKey, row.previewStorageKey ?? `${row.storageKey}-preview`]) {
+      const generation = key === row.storageKey ? row.generation : row.previewGeneration;
+      if (generation) await this.files.delete(key, generation);
+      else
+        for await (const object of this.files.list(key))
+          if (object.key === key) await this.files.delete(key, object.generation);
+    }
   }
   async close() {
     this.#unsubscribe();
