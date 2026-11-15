@@ -30,11 +30,8 @@ import {
   type SurfaceModel,
 } from "@opensteer/client/host";
 import { computerAppAccessApproval, computerUseAccessLabel } from "@opensteer/client/integrations";
-import { unwrapRpcResult } from "@opensteer/client/host";
 import { useHostSelector, useHostSnapshot } from "@opensteer/client/react";
 import {
-  RequestIdSchema,
-  ThreadIdSchema,
   requestAgentProposedDetail,
   requestAgentProposedLabel,
   requestOptionDeclines,
@@ -219,23 +216,14 @@ function ReferencedRequest(props: {
   useEffect(() => {
     let current = true;
     setRead({ state: "loading" });
-    hostClient.rpc["thread.requests.list"]({
-      requestId: RequestIdSchema.parse(requestId),
-      threadId: ThreadIdSchema.parse(threadId),
-    })
-      .then(unwrapRpcResult)
-      .then(
-        ({ requests }) =>
-          current &&
-          setRead({ state: "read", request: requests.find(({ id }) => id === requestId) ?? null }),
-        (error: unknown) => {
-          if (!current) return;
-          const failure = readFailure(error);
-          setRead(
-            failure === "unavailable" ? { state: "read", request: null } : { state: failure },
-          );
-        },
-      );
+    hostClient.readRequest(threadId, requestId).then(
+      (request) => current && setRead({ state: "read", request }),
+      (error: unknown) => {
+        if (!current) return;
+        const failure = readFailure(error);
+        setRead(failure === "unavailable" ? { state: "read", request: null } : { state: failure });
+      },
+    );
     return () => {
       current = false;
     };

@@ -6,6 +6,7 @@ import type {
   TranscriptFileOpenInput,
   TranscriptFileContent,
 } from "@opensteer/protocol";
+import { AssetUrlStore } from "./asset-urls.js";
 import { HostClientRequestError } from "./client.js";
 import { TranscriptFileController } from "./transcript-files.js";
 
@@ -167,4 +168,47 @@ it("downloads schema-checked bytes on demand and coalesces identical resource re
   expect(openFile).not.toHaveBeenCalled();
   readFile.mockRejectedValueOnce(new OpensteerError({ code: "not_found", message: "Missing" }));
   expect(await controller.download(threadId, resource)).toEqual({ status: "unavailable" });
+});
+it("shows an opened image from the preview its open minted, without minting it again", async () => {
+  const assetUrls = vi.fn(async () => ({ assets: [] }));
+  const store = new AssetUrlStore(assetUrls, { origin: async () => "https://host.example" }, true);
+  const deploymentId = "dep_1";
+  const threadId = createId("thread");
+  const image = { kind: "path" as const, path: "/home/plot.png" };
+  const minted = {
+    status: "ok" as const,
+    url: "/media/token/plot.png",
+    expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+    revision: "r1",
+    mediaType: "image/webp" as const,
+    width: 640,
+    height: 480,
+  };
+  const controller = new TranscriptFileController({
+    images: { store, deploymentId: () => deploymentId },
+    rpc: {
+      openFile: async () => ({
+        status: "ok",
+        name: "plot.png",
+        sizeBytes: 10,
+        mediaType: "image/png",
+        resource: { kind: "home", key: "opaque", revision: "r1" },
+        preview: { kind: "image", image: minted },
+      }),
+      readFile: vi.fn(),
+    },
+  });
+  controllers.push(controller);
+  try {
+    await controller.open(threadId, image);
+    expect(await store.image(deploymentId, threadId, image, "preview")).toMatchObject({
+      revision: "r1",
+      source: "app://opensteer/media/dep_1/token/plot.png",
+    });
+    store.confirm(deploymentId, threadId, image, "preview");
+    await Promise.resolve();
+    expect(assetUrls).not.toHaveBeenCalled();
+  } finally {
+    store.dispose();
+  }
 });

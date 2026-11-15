@@ -83,7 +83,7 @@ export function TeamComposer({
    * Team pages `@` can write into the words — channels, knowledge — for a
    * query. They are links only: they never ask anyone or wake an agent.
    */
-  readonly references?: ((query: string) => readonly ComposerLinkCandidate[]) | undefined;
+  readonly references?: readonly ComposerLinkCandidate[] | undefined;
   readonly staged?: readonly StagedFileView[];
   readonly typing?: readonly PersonView[];
 }) {
@@ -120,7 +120,7 @@ export function TeamComposer({
     () => [
       ...pickerItems(mention, agent, me, people),
       ...(mention && references
-        ? references(mention.query)
+        ? references
             .slice(0, pageLimit)
             .map((candidate): PickerItem => ({ kind: "page", candidate }))
         : []),

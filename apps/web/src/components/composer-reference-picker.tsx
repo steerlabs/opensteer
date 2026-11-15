@@ -1,73 +1,26 @@
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
-import { classifyHref, teamPageUrl } from "@opensteer/core";
-import { markdownLink } from "@opensteer/shared/markdownLinks";
+import { classifyHref } from "@opensteer/core";
 import { collectComposerTokens } from "@opensteer/client/references";
 import {
   composerReferenceCandidates,
+  type ComposerLinkCandidate as HostLinkCandidate,
   type HostClient,
   type PlaceItem,
 } from "@opensteer/client/host";
-import type { TeamChannelSummary, TeamTopic } from "@opensteer/protocol";
 import { Icon, type IconName } from "./icon.js";
 import type { ComposerEditorControl } from "./composer-editor.js";
 import { PlaceMark } from "./workspace/place-mark.js";
 import { mentionListHeight, mentionRoom } from "./workspace/place-picker.js";
 
-/** Something the `@` list can write into the words: a Markdown link the Host or team built. */
-export interface ComposerLinkCandidate {
-  readonly key: string;
-  readonly label: string;
-  readonly markdown: string;
-}
+/** Something the `@` list can write into the words; its group is read from where it links. */
+export type ComposerLinkCandidate = Pick<HostLinkCandidate, "key" | "label" | "markdown">;
 
 /** Personal links for an `@` query, from what this Host already holds. */
 export function personalReferenceCandidates(
   hostClient: HostClient,
   query: string,
 ): readonly ComposerLinkCandidate[] {
-  return composerReferenceCandidates(hostClient.getSnapshot(), query).flatMap((candidate) =>
-    candidate.kind === "link" ? [candidate] : [],
-  );
-}
-
-/** Team pages for an `@` query: the channels the sidebar holds, and knowledge topics read for it. */
-export function teamReferenceCandidates(
-  team: {
-    readonly origin: string;
-    readonly channels: readonly TeamChannelSummary[];
-    readonly topics: readonly TeamTopic[];
-  },
-  query: string,
-): readonly ComposerLinkCandidate[] {
-  const needle = query.trim().toLocaleLowerCase();
-  if (!needle) return [];
-  const matches = (name: string) => name.toLocaleLowerCase().includes(needle);
-  return [
-    ...team.channels
-      .filter((channel) => channel.kind !== "dm" && channel.kind !== "group_dm")
-      .filter((channel) => channel.archivedAt === null && matches(channel.name))
-      .map((channel) => ({
-        key: `channel:${channel.id}`,
-        label: channel.name,
-        markdown: markdownLink(
-          channel.name,
-          teamPageUrl({ origin: team.origin, target: { kind: "channel", channelId: channel.id } }),
-        ),
-      })),
-    ...team.topics
-      .filter((topic) => topic.archivedAt === null && matches(topic.name))
-      .map((topic) => ({
-        key: `topic:${topic.id}`,
-        label: topic.name,
-        markdown: markdownLink(
-          topic.name,
-          teamPageUrl({
-            origin: team.origin,
-            target: { kind: "knowledge-topic", topicId: topic.id },
-          }),
-        ),
-      })),
-  ];
+  return composerReferenceCandidates(hostClient.getSnapshot(), query);
 }
 
 /** The heading a candidate is listed under, and its glyph, from where its link goes. */

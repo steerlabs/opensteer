@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { TeamChannelIdSchema, OpensteerError } from "@opensteer/core";
+import { TeamChannelIdSchema, OpensteerError, createId } from "@opensteer/core";
 import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -19,6 +19,7 @@ import {
   composerField,
   composerText,
   textareaView,
+  typeInto,
 } from "../components/composer-editor.test-support.js";
 
 const field = () =>
@@ -42,6 +43,49 @@ async function send(text: string) {
 }
 
 describe("sending in a channel", () => {
+  it("writes a knowledge topic and a note the team lists for this reader as links", async () => {
+    await openChannel();
+    const topicId = teamHost!.knowledge.starterTopicId,
+      noteId = createId("knowledgeNote");
+    teamHost!.knowledge.addVersion({
+      noteId,
+      topicId,
+      title: "Refunds policy",
+      body: "Ask Maya.",
+      writer: { kind: "human", userId: teamHost!.userId, name: "Me" },
+    });
+    const pickRow = async (name: string) => {
+      const row = await act(() =>
+        vi.waitFor(
+          () => {
+            const found = [
+              ...document.querySelectorAll<HTMLElement>(".channel .at-list [role='option']"),
+            ].find((option) => option.querySelector(".at-list__name")?.textContent === name);
+            if (!found) throw new Error(`The @ list never offered ${name}`);
+            return found;
+          },
+          { timeout: 2_000 },
+        ),
+      );
+      await act(async () => {
+        row.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+      });
+    };
+    typeInto(field().element, "@Refunds");
+    await pickRow("Refunds policy");
+    expect(field().value).toMatch(
+      new RegExp(
+        `^\\[Refunds policy\\]\\(https?://[^)]+/knowledge/${topicId}\\?note=${noteId}\\) $`,
+        "u",
+      ),
+    );
+    typeInto(field().element, "@Gener");
+    await pickRow("General");
+    expect(field().value).toMatch(
+      new RegExp(`\\) \\[General\\]\\(https?://[^)]+/knowledge/${topicId}\\) $`, "u"),
+    );
+  });
+
   it("shows a message whose answer was lost once, and still once after reconnecting", async () => {
     await openChannel();
     const stored = teamHost!.messages.size;

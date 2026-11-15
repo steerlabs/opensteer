@@ -1221,6 +1221,11 @@ export interface HostClient {
 
   loadEarlierTasks(): Promise<void>;
   loadEarlierNeedsYou(): Promise<void>;
+  /**
+   * One Request of a task by id, settled or not; null once the Host has none.
+   * Asks for device Requests as the rest of this client's Request reads do.
+   */
+  readRequest(threadId: string, requestId: string): Promise<Request | null>;
 
   loadDoneTasks(deploymentId?: string): Promise<void>;
   loadEarlierDoneTasks(deploymentId?: string): Promise<void>;

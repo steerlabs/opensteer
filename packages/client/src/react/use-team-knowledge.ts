@@ -10,6 +10,10 @@ import {
   type TeamNotePreview,
   type TeamTopic,
 } from "@opensteer/protocol";
+import {
+  teamReferenceCandidates,
+  type ComposerLinkCandidate,
+} from "../host/composer-references.js";
 import { unwrapRpcResult } from "../host/host-session-client.js";
 import { isNoteChangedConflict, noteDeleteCommand, noteRestoreCommand } from "../team/knowledge.js";
 import type { TeamSessionClient } from "../team/team-session-client.js";
@@ -113,6 +117,31 @@ export function useKnowledgeNotes(
     more: list.more,
     reload: list.reload,
   };
+}
+
+/**
+ * Team pages an `@` list offers for `query`, null while the list is closed: the channels
+ * the reader holds, and knowledge read through the team's own authorized lists only while
+ * the list is open. Notes are searched once typing settles.
+ */
+export function useTeamReferenceCandidates(
+  session: TeamSessionClient | null,
+  team: Omit<Parameters<typeof teamReferenceCandidates>[0], "topics" | "notes"> | null,
+  query: string | null,
+): readonly ComposerLinkCandidate[] {
+  const open = query !== null && team !== null ? session : null;
+  const settled = useSettledText(query ?? "");
+  const { topics } = useKnowledgeTopics(open);
+  const notes = useKnowledgeNotes(open, { topicId: null, query: settled });
+  if (open === null || team === null || query === null) return [];
+  return teamReferenceCandidates(
+    {
+      ...team,
+      topics: topics ?? [],
+      notes: notes.answered === settled ? (notes.notes ?? []) : [],
+    },
+    query,
+  );
 }
 
 interface NoteHistory {

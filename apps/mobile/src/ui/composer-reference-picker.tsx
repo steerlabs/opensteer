@@ -1,13 +1,15 @@
-import type { HostSnapshot } from "@opensteer/client/host";
-import { useKnowledgeNotes, useKnowledgeTopics, useSettledText } from "@opensteer/client/react";
+import {
+  composerReferenceCandidates,
+  type ComposerLinkCandidate,
+  type HostSnapshot,
+} from "@opensteer/client/host";
+import { useTeamReferenceCandidates } from "@opensteer/client/react";
 import { collectComposerTokens, type ComposerEditorHandle } from "@opensteer/client/references";
 import type { TeamSessionClient, TeamSidebar } from "@opensteer/client/team";
-import { classifyHref, teamPageUrl } from "@opensteer/core";
-import { markdownLink } from "@opensteer/shared/markdownLinks";
+import { classifyHref, type ClassifiedHref } from "@opensteer/core";
 import type { ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
-import { composerReferenceCandidates } from "./composer-reference-candidates.js";
 import { AppText } from "./primitives.js";
 import { Symbol, type SFSymbolName } from "./symbol.js";
 
@@ -68,8 +70,7 @@ export function personalReferenceSections(
     computer: [],
   };
   for (const candidate of composerReferenceCandidates(snapshot, query)) {
-    const [link] = collectComposerTokens(candidate.markdown, { commitTrailing: true });
-    const target = classifyHref(link?.href ?? "");
+    const target = candidateTarget(candidate);
     if (target.kind !== "reference" || target.reference.id === threadId) continue;
     const kind = target.reference.kind;
     if (kind !== "task" && kind !== "automation" && kind !== "computer") continue;
@@ -97,49 +98,33 @@ export function useTeamReferenceSections(
   sidebar: TeamSidebar | null,
   query: string | null,
 ): readonly ReferenceSection[] {
-  const open = query !== null && origin !== null ? session : null;
-  const settled = useSettledText(query ?? "");
-  const topics = useKnowledgeTopics(open);
-  const notes = useKnowledgeNotes(open, { topicId: null, query: settled });
-  if (open === null || origin === null || query === null) return [];
-  const wanted = query.toLowerCase();
-  const matches = (name: string) => wanted === "" || name.toLowerCase().includes(wanted);
-  const link = (label: string, target: Parameters<typeof teamPageUrl>[0]["target"]) =>
-    markdownLink(label, teamPageUrl({ origin, target }));
-  const channels = (sidebar?.channels ?? [])
-    .map((entry) => entry.channel)
-    .filter((channel) => channel.kind !== "dm" && channel.kind !== "group_dm")
-    .filter((channel) => channel.archivedAt === null && matches(channel.name))
-    .map((channel): ReferenceRow => ({
-      icon: "number",
-      key: channel.id,
-      label: channel.name,
-      markdown: link(channel.name, { kind: "channel", channelId: channel.id }),
-    }));
-  const knowledge = [
-    ...(topics.topics ?? [])
-      .filter((topic) => topic.archivedAt === null && matches(topic.name))
-      .map((topic): ReferenceRow => ({
-        icon: "folder",
-        key: topic.id,
-        label: topic.name,
-        markdown: link(topic.name, { kind: "knowledge-topic", topicId: topic.id }),
-      })),
-    ...(notes.answered === settled ? (notes.notes ?? []) : []).map((note): ReferenceRow => ({
-      icon: "doc.text",
-      key: note.id,
-      label: note.title,
-      markdown: link(note.title, {
-        kind: "knowledge-note",
-        topicId: note.topicId,
-        noteId: note.id,
-      }),
-    })),
-  ];
-  return [
-    { title: "Channels", rows: channels },
-    { title: "Knowledge", rows: knowledge },
-  ];
+  const candidates = useTeamReferenceCandidates(
+    session,
+    origin === null
+      ? null
+      : { origin, channels: (sidebar?.channels ?? []).map((entry) => entry.channel) },
+    query,
+  );
+  if (candidates.length === 0) return [];
+  const row = (candidate: ComposerLinkCandidate): ReferenceRow => {
+    const target = candidateTarget(candidate);
+    const kind = target.kind === "team-page" ? target.page.target.kind : null;
+    return {
+      icon: kind === "channel" ? "number" : kind === "knowledge-note" ? "doc.text" : "folder",
+      key: candidate.key,
+      label: candidate.label,
+      markdown: candidate.markdown,
+    };
+  };
+  return (["Channels", "Knowledge"] as const).map((title) => ({
+    title,
+    rows: candidates.filter(({ category }) => category === title).map(row),
+  }));
+}
+
+function candidateTarget(candidate: ComposerLinkCandidate): ClassifiedHref {
+  const [link] = collectComposerTokens(candidate.markdown, { commitTrailing: true });
+  return classifyHref(link?.href ?? "");
 }
 
 /**
