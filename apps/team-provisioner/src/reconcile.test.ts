@@ -3,14 +3,14 @@ import type {
   DesiredHostedTeam,
   HostedTeamStatusReport,
 } from "@opensteer/control-plane-protocol/hosted-teams";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   Reconciler,
   rolloutDeadlineMilliseconds,
   type AccountApi,
   type KubernetesApi,
   type ManagedNamespace,
-  type ManagedStatefulSet,
+  type ManagedDeployment,
 } from "./reconcile.js";
 import { AccountRequestError } from "./account.js";
 import { KubernetesRequestError } from "./kubernetes.js";
@@ -26,12 +26,9 @@ const pinned = (name: string, digit: string) =>
   `ghcr.io/steerlabs/${name}@sha256:${digit.repeat(64)}`;
 const oldRelease = {
   host: pinned("opensteer-team-host", "1"),
-  gateway: pinned("opensteer-team-gateway", "1"),
 };
 const release: TeamImages = {
   host: pinned("opensteer-team-host", "2"),
-  gateway: pinned("opensteer-team-gateway", "2"),
-  postgres: pinned("postgres", "3"),
 };
 const digest = (digit: string) => digit.repeat(64);
 const teamId = (slug: string) => {
@@ -53,7 +50,7 @@ function team(slug: string, overrides: Partial<DesiredHostedTeam> = {}): Desired
 /** A cluster that remembers what was applied and lets the test decide when pods are ready. */
 class FakeCluster implements KubernetesApi {
   readonly calls: string[] = [];
-  readonly statefulSets = new Map<string, KubernetesObject>();
+  readonly deployments = new Map<string, KubernetesObject>();
   readonly settled = new Set<string>();
   readonly namespaces = new Map<string, ManagedNamespace>();
   readonly secrets = new Map<string, Record<string, string>>();
@@ -62,8 +59,8 @@ class FakeCluster implements KubernetesApi {
     return [...this.namespaces.values()];
   }
 
-  async listStatefulSets(): Promise<readonly ManagedStatefulSet[]> {
-    return [...this.statefulSets.values()].map((set) => {
+  async listDeployments(): Promise<readonly ManagedDeployment[]> {
+    return [...this.deployments.values()].map((set) => {
       const spec = set.spec as {
         replicas: number;
         template: {
@@ -77,7 +74,6 @@ class FakeCluster implements KubernetesApi {
         teamId: set.metadata.labels![teamIdLabel]!,
         appliedHash: set.metadata.annotations![appliedHashAnnotation]!,
         hostImage: image("host"),
-        gatewayImage: image("gateway"),
         replicas: spec.replicas,
         setupGeneration: Number(spec.template.metadata.annotations[setupGenerationAnnotation]),
         settled: this.settled.has(set.metadata.namespace!),
@@ -89,13 +85,17 @@ class FakeCluster implements KubernetesApi {
     this.calls.push(`apply ${object.kind} ${object.metadata.namespace ?? object.metadata.name}`);
     if (object.kind === "Namespace")
       this.namespaces.set(object.metadata.name, { name: object.metadata.name, terminating: false });
-    if (object.kind === "StatefulSet") {
+    if (object.kind === "Deployment") {
       const namespace = object.metadata.namespace!;
-      const previous = this.statefulSets.get(namespace);
+      const previous = this.deployments.get(namespace);
       if (JSON.stringify(previous?.spec) !== JSON.stringify(object.spec))
         this.settled.delete(namespace);
-      this.statefulSets.set(namespace, object);
+      this.deployments.set(namespace, object);
     }
+  }
+
+  async readDatabaseUrl(namespace: string) {
+    return this.secrets.get(namespace)?.["database-url"];
   }
 
   async readSetupTokenDigest(namespace: string) {
@@ -120,17 +120,16 @@ class FakeCluster implements KubernetesApi {
   }
 
   /** Puts a team on a release as though an earlier provisioner had rolled it there. */
-  runs(slugs: readonly string[], images: Pick<TeamImages, "gateway" | "host">) {
+  runs(slugs: readonly string[], images: TeamImages) {
     for (const slug of slugs) {
       const namespace = `team-${slug}`;
-      const set = this.statefulSets.get(namespace)!;
+      const set = this.deployments.get(namespace)!;
       const spec = structuredClone(set.spec) as {
         template: { spec: { containers: { name: string; image: string }[] } };
       };
       for (const container of spec.template.spec.containers)
-        if (container.name === "host" || container.name === "gateway")
-          container.image = images[container.name];
-      this.statefulSets.set(namespace, {
+        if (container.name === "host") container.image = images[container.name];
+      this.deployments.set(namespace, {
         ...set,
         spec,
         metadata: { ...set.metadata, annotations: { [appliedHashAnnotation]: `old-${slug}` } },
@@ -140,7 +139,7 @@ class FakeCluster implements KubernetesApi {
   }
 
   image(slug: string): string {
-    const spec = this.statefulSets.get(`team-${slug}`)!.spec as {
+    const spec = this.deployments.get(`team-${slug}`)!.spec as {
       template: { spec: { containers: { name: string; image: string }[] } };
     };
     return spec.template.spec.containers.find((container) => container.name === "host")!.image;
@@ -167,17 +166,70 @@ class FakeAccount implements AccountApi {
 function setup(now = { value: 0 }) {
   const cluster = new FakeCluster();
   const account = new FakeAccount();
+  const database = {
+    exists: vi.fn(async () => false),
+    ensure: vi.fn(async () => {}),
+    delete: vi.fn(async () => {}),
+  };
+  const storage = { ensure: vi.fn(async () => {}), delete: vi.fn(async () => {}) };
   const reconciler = new Reconciler({
     account,
     kubernetes: cluster,
     images: release,
+    platform: {
+      databaseIp: "10.1.1.1",
+      databaseHost: "db.example.com",
+      databaseCa: "CA",
+      bucket: "teams",
+    },
+    database,
+    storage,
     log: () => undefined,
     now: () => now.value,
   });
-  return { account, cluster, reconciler, now };
+  return { account, cluster, reconciler, now, database, storage };
 }
 
 describe("Reconciler", () => {
+  it("resumes after folder failure using the persisted identity before starting the Host", async () => {
+    const { account, cluster, reconciler, database, storage } = setup();
+    account.teams = [team("acme")];
+    storage.ensure.mockRejectedValueOnce(new Error("storage unavailable"));
+    await reconciler.pass();
+    const secret = structuredClone(cluster.secrets.get("team-acme"));
+    expect(cluster.deployments.size).toBe(0);
+    expect(database.ensure).toHaveBeenCalledWith(teamId("acme"), secret!["database-url"]);
+    await reconciler.pass();
+    expect(cluster.secrets.get("team-acme")).toEqual(secret);
+    expect(cluster.deployments.size).toBe(1);
+  });
+
+  it("refuses to invent a replacement installation for an orphaned database", async () => {
+    const { account, cluster, reconciler, database } = setup();
+    account.teams = [team("acme")];
+    database.exists.mockResolvedValue(true);
+    await reconciler.pass();
+    expect(cluster.secrets.size).toBe(0);
+    expect(cluster.deployments.size).toBe(0);
+  });
+
+  it("retains the namespace and withholds deletion until external cleanup succeeds", async () => {
+    const { account, cluster, reconciler, database, storage } = setup();
+    account.teams = [team("acme", { state: "deleted" })];
+    cluster.namespaces.set("team-acme", { name: "team-acme", terminating: false });
+    storage.delete.mockRejectedValueOnce(new Error("cleanup incomplete"));
+    await reconciler.pass();
+    expect(database.delete).toHaveBeenCalled();
+    expect(cluster.namespaces.get("team-acme")?.terminating).toBe(false);
+    expect(account.last(teamId("acme"))).toBeUndefined();
+    await reconciler.pass();
+    expect(cluster.namespaces.get("team-acme")?.terminating).toBe(true);
+    expect(account.last(teamId("acme"))).toBeUndefined();
+    cluster.namespaces.clear();
+    await reconciler.pass();
+    expect(account.last(teamId("acme"))?.phase).toBe("deleted");
+  });
+
   it("creates a team once, keeps its generated secret, and reports it ready when its pod is", async () => {
     const { account, cluster, reconciler } = setup();
     const acme = team("acme");
@@ -186,12 +238,14 @@ describe("Reconciler", () => {
     await reconciler.pass();
     expect(cluster.calls).toEqual([
       "apply Namespace team-acme",
+      "apply RoleBinding team-acme",
+      "create Secret team-acme",
+      "apply ServiceAccount team-acme",
       "apply ResourceQuota team-acme",
       "apply LimitRange team-acme",
       "apply NetworkPolicy team-acme",
       "apply Service team-acme",
-      "create Secret team-acme",
-      "apply StatefulSet team-acme",
+      "apply Deployment team-acme",
     ]);
     expect(cluster.secrets.get("team-acme")?.["setup-token-digest"]).toBe(digest("a"));
     expect(cluster.image("acme")).toBe(release.host);
@@ -216,7 +270,7 @@ describe("Reconciler", () => {
     account.teams = [team("acme")];
     await reconciler.pass();
     cluster.settled.add("team-acme");
-    const password = cluster.secrets.get("team-acme")!["postgres-password"];
+    const password = cluster.secrets.get("team-acme")!["host-private.pem"];
     cluster.calls.length = 0;
 
     account.teams = [team("acme", { setupTokenDigest: digest("b"), setupGeneration: 2 })];
@@ -224,7 +278,7 @@ describe("Reconciler", () => {
     expect(cluster.calls).toContain("write digest team-acme");
     expect(cluster.calls).not.toContain("create Secret team-acme");
     expect(cluster.secrets.get("team-acme")).toMatchObject({
-      "postgres-password": password,
+      "host-private.pem": password,
       "setup-token-digest": digest("b"),
     });
     // Says which generation it judged, so Account never applies it to a later one.
@@ -285,6 +339,14 @@ describe("Reconciler", () => {
       account,
       kubernetes: cluster,
       images: release,
+      platform: {
+        databaseIp: "10.1.1.1",
+        databaseHost: "db.example.com",
+        databaseCa: "CA",
+        bucket: "teams",
+      },
+      database: { exists: async () => false, ensure: async () => {}, delete: async () => {} },
+      storage: { ensure: async () => {}, delete: async () => {} },
       log: () => undefined,
     });
     await restarted.pass();
@@ -300,7 +362,7 @@ describe("Reconciler", () => {
     account.teams = [team("acme", { state: "suspended" })];
     await reconciler.pass();
     const replicas = () =>
-      (cluster.statefulSets.get("team-acme")!.spec as { replicas: number }).replicas;
+      (cluster.deployments.get("team-acme")!.spec as { replicas: number }).replicas;
     expect(replicas()).toBe(0);
     expect(account.last(account.teams[0]!.id)).toMatchObject({ phase: "provisioning" });
     cluster.settled.add("team-acme");
@@ -319,6 +381,7 @@ describe("Reconciler", () => {
     account.teams = [team("acme", { state: "deleted", setupTokenDigest: null })];
 
     await reconciler.pass();
+    cluster.settled.add("team-acme");
     await reconciler.pass();
     expect(cluster.calls.filter((call) => call.startsWith("delete"))).toEqual([
       "delete Namespace team-acme",
@@ -356,7 +419,7 @@ describe("Reconciler", () => {
     const { account, cluster, reconciler } = setup();
     account.teams = [team("broken", { setupTokenDigest: null }), team("fine")];
     await reconciler.pass();
-    expect(cluster.statefulSets.has("team-broken")).toBe(false);
-    expect(cluster.statefulSets.has("team-fine")).toBe(true);
+    expect(cluster.deployments.has("team-broken")).toBe(false);
+    expect(cluster.deployments.has("team-fine")).toBe(true);
   });
 });

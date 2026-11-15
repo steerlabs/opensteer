@@ -1,3 +1,7 @@
+import pg from "pg";
+import { Storage } from "@google-cloud/storage";
+import { PostgresTeamDatabase } from "./database.js";
+import { GcsTeamStorage } from "./storage.js";
 import { createServer } from "node:http";
 import { AccountClient, workloadIdentityToken } from "./account.js";
 import { loadProvisionerConfig } from "./config.js";
@@ -15,6 +19,12 @@ function log(event: string, fields: Readonly<Record<string, unknown>> = {}): voi
 
 async function main(): Promise<void> {
   const config = loadProvisionerConfig(process.env);
+  const pool = new pg.Pool({
+    connectionString: config.databaseUrl,
+    max: 2,
+    connectionTimeoutMillis: 15_000,
+    query_timeout: 30_000,
+  });
   const reconciler = new Reconciler({
     account: new AccountClient({
       origin: config.accountOrigin,
@@ -22,11 +32,19 @@ async function main(): Promise<void> {
     }),
     kubernetes: new KubernetesClient(config.kubernetes),
     images: config.images,
+    replicas: config.replicas,
+    platform: config.platform,
+    database: new PostgresTeamDatabase(pool),
+    storage: new GcsTeamStorage(
+      new Storage(),
+      config.platform.bucket,
+      config.project,
+      config.projectNumber,
+    ),
     log,
   });
   log("provisioner.started", {
     hostImage: config.images.host,
-    gatewayImage: config.images.gateway,
   });
   let lastPassAt = 0;
   const readiness = createServer((request, response) => {
@@ -45,8 +63,8 @@ async function main(): Promise<void> {
     try {
       await reconciler.pass();
       lastPassAt = Date.now();
-    } catch (error) {
-      log("pass.failed", { error: error instanceof Error ? error.message : String(error) });
+    } catch {
+      log("pass.failed", { error: "Provisioner operation failed" });
     }
     await new Promise<void>((resolve) => {
       wake = resolve;
@@ -54,10 +72,11 @@ async function main(): Promise<void> {
     });
   }
   readiness.close();
+  await pool.end();
   log("provisioner.stopped");
 }
 
-main().catch((error: unknown) => {
-  log("provisioner.crashed", { error: error instanceof Error ? error.message : String(error) });
+main().catch(() => {
+  log("provisioner.crashed", { error: "Provisioner operation failed" });
   process.exitCode = 1;
 });

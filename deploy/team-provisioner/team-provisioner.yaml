@@ -1,14 +1,3 @@
-# The namespace and the provisioner's cluster permissions are platform objects owned by
-# opensteer-infra (kubernetes/prod/teams-1); this deploy changes only the provisioner itself.
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: team-provisioner
-  namespace: opensteer-teams
-  annotations:
-    # The one Google identity Account's OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL admits.
-    iam.gke.io/gcp-service-account: team-provisioner@opensteer-prod.iam.gserviceaccount.com
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -36,6 +25,7 @@ spec:
         runAsNonRoot: true
         runAsUser: 10001
         runAsGroup: 10001
+        fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -44,12 +34,10 @@ spec:
           env:
             - { name: OPENSTEER_ACCOUNT_URL, value: https://accounts.opensteer.com }
             - { name: OPENSTEER_TEAM_HOST_IMAGE, value: "@TEAM_HOST_IMAGE@" }
-            - { name: OPENSTEER_TEAM_GATEWAY_IMAGE, value: "@TEAM_GATEWAY_IMAGE@" }
-            # The same Postgres as deploy/team/compose.yaml.
-            - {
-                name: OPENSTEER_TEAM_POSTGRES_IMAGE,
-                value: "docker.io/library/postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15",
-              }
+          envFrom:
+            - configMapRef: { name: team-platform }
+          volumeMounts:
+            - { name: database, mountPath: /run/secrets/database, readOnly: true }
           ports:
             - { name: readiness, containerPort: 8081 }
           # Ready only after a whole reconcile pass succeeds, so a release that cannot reach
@@ -65,3 +53,6 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
+      volumes:
+        - name: database
+          secret: { secretName: team-provisioner-database, defaultMode: 0440 }
