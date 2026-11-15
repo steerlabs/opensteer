@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { request } from "node:https";
 import { z } from "zod";
-import type { KubernetesApi, ManagedNamespace, ManagedStatefulSet } from "./reconcile.js";
+import type { KubernetesApi, ManagedNamespace, ManagedDeployment } from "./reconcile.js";
 import {
   appliedHashAnnotation,
   managedBy,
@@ -20,12 +20,14 @@ const maximumResponseBytes = 16 * 1024 * 1024;
 const managedSelector = `${managedByLabel}=${managedBy}`;
 
 const collectionPaths: Readonly<Record<string, string>> = {
+  RoleBinding: "/apis/rbac.authorization.k8s.io/v1/namespaces/{namespace}/rolebindings",
   LimitRange: "/api/v1/namespaces/{namespace}/limitranges",
   NetworkPolicy: "/apis/networking.k8s.io/v1/namespaces/{namespace}/networkpolicies",
   ResourceQuota: "/api/v1/namespaces/{namespace}/resourcequotas",
+  ServiceAccount: "/api/v1/namespaces/{namespace}/serviceaccounts",
   Secret: "/api/v1/namespaces/{namespace}/secrets",
   Service: "/api/v1/namespaces/{namespace}/services",
-  StatefulSet: "/apis/apps/v1/namespaces/{namespace}/statefulsets",
+  Deployment: "/apis/apps/v1/namespaces/{namespace}/deployments",
 };
 
 const NamespaceListSchema = z.object({
@@ -37,7 +39,7 @@ const NamespaceListSchema = z.object({
   ),
 });
 
-const StatefulSetListSchema = z.object({
+const DeploymentListSchema = z.object({
   items: z.array(
     z.object({
       metadata: z.object({
@@ -62,9 +64,9 @@ const StatefulSetListSchema = z.object({
           observedGeneration: z.number().optional(),
           replicas: z.number().optional(),
           readyReplicas: z.number().optional(),
+          availableReplicas: z.number().optional(),
+          terminatingReplicas: z.number().optional(),
           updatedReplicas: z.number().optional(),
-          currentRevision: z.string().optional(),
-          updateRevision: z.string().optional(),
         })
         .optional(),
     }),
@@ -111,13 +113,30 @@ export class KubernetesClient implements KubernetesApi {
     }));
   }
 
-  async listStatefulSets(): Promise<readonly ManagedStatefulSet[]> {
-    const list = StatefulSetListSchema.parse(
+  async listDeployments(): Promise<readonly ManagedDeployment[]> {
+    const list = DeploymentListSchema.parse(
       await this.#call(
         "GET",
-        `/apis/apps/v1/statefulsets?labelSelector=${encodeURIComponent(managedSelector)}`,
+        `/apis/apps/v1/deployments?labelSelector=${encodeURIComponent(managedSelector)}`,
       ),
     );
+    const pods = z
+      .object({
+        items: z.array(
+          z.object({
+            metadata: z.object({
+              labels: z.record(z.string(), z.string()).optional(),
+              deletionTimestamp: z.string().optional(),
+            }),
+          }),
+        ),
+      })
+      .parse(
+        await this.#call(
+          "GET",
+          `/api/v1/pods?labelSelector=${encodeURIComponent(managedSelector)}`,
+        ),
+      );
     return list.items.flatMap((item) => {
       const teamId = item.metadata.labels?.[teamIdLabel];
       if (!teamId || item.metadata.name !== teamObjectName) return [];
@@ -126,23 +145,26 @@ export class KubernetesClient implements KubernetesApi {
         null;
       const replicas = item.spec.replicas ?? 1;
       const status = item.status ?? {};
-      const observed = (status.observedGeneration ?? 0) >= (item.metadata.generation ?? 0);
+
       return [
         {
           teamId,
           appliedHash: item.metadata.annotations?.[appliedHashAnnotation] ?? null,
           hostImage: image("host"),
-          gatewayImage: image("gateway"),
           replicas,
           setupGeneration: Number(
             item.spec.template.metadata?.annotations?.[setupGenerationAnnotation] ?? 0,
           ),
-          settled:
-            observed &&
-            (status.replicas ?? 0) === replicas &&
-            (status.readyReplicas ?? 0) === replicas &&
-            (status.updatedReplicas ?? 0) === replicas &&
-            status.currentRevision === status.updateRevision,
+          settled: deploymentSettled(
+            item.metadata.generation ?? 0,
+            replicas,
+            status,
+            pods.items.some(
+              (pod) =>
+                pod.metadata.labels?.[teamIdLabel] === teamId &&
+                Boolean(pod.metadata.deletionTimestamp),
+            ),
+          ),
         },
       ];
     });
@@ -163,6 +185,19 @@ export class KubernetesClient implements KubernetesApi {
       );
       const value = secret.data?.["setup-token-digest"];
       return value === undefined ? "" : Buffer.from(value, "base64").toString("utf8");
+    } catch (error) {
+      if (error instanceof KubernetesRequestError && error.status === 404) return undefined;
+      throw error;
+    }
+  }
+
+  async readDatabaseUrl(namespace: string): Promise<string | undefined> {
+    try {
+      const secret = SecretSchema.parse(
+        await this.#call("GET", `/api/v1/namespaces/${namespace}/secrets/${teamSecretName}`),
+      );
+      const value = secret.data?.["database-url"];
+      return value === undefined ? undefined : Buffer.from(value, "base64").toString("utf8");
     } catch (error) {
       if (error instanceof KubernetesRequestError && error.status === 404) return undefined;
       throw error;
@@ -231,13 +266,10 @@ export class KubernetesClient implements KubernetesApi {
             const text = Buffer.concat(chunks).toString("utf8");
             const status = response.statusCode ?? 0;
             if (status < 200 || status >= 300) {
-              // A Kubernetes Status message names the object and the rule, never Secret data.
-              const message = z.object({ message: z.string() }).safeParse(safeJson(text))
-                .data?.message;
               reject(
                 new KubernetesRequestError(
                   status,
-                  `${method} ${path.split("?")[0]} failed with ${status}${message ? `: ${message.slice(0, 300)}` : ""}`,
+                  `${method} ${path.split("?")[0]} failed with ${status}`,
                 ),
               );
               return;
@@ -270,4 +302,28 @@ function safeJson(text: string): unknown {
   } catch {
     return null;
   }
+}
+
+export function deploymentSettled(
+  generation: number,
+  replicas: number,
+  status: {
+    observedGeneration?: number | undefined;
+    replicas?: number | undefined;
+    readyReplicas?: number | undefined;
+    updatedReplicas?: number | undefined;
+    availableReplicas?: number | undefined;
+    terminatingReplicas?: number | undefined;
+  },
+  terminating: boolean,
+): boolean {
+  return (
+    !terminating &&
+    (status.observedGeneration ?? 0) >= generation &&
+    (status.replicas ?? 0) === replicas &&
+    (status.readyReplicas ?? 0) === replicas &&
+    (status.updatedReplicas ?? 0) === replicas &&
+    (status.availableReplicas ?? 0) === replicas &&
+    (status.terminatingReplicas ?? 0) === 0
+  );
 }

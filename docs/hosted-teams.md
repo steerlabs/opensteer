@@ -2,7 +2,7 @@
 
 A hosted team is the self-hosted [team server](teams.md), run by Opensteer from the same published
 images: one namespace `team-<slug>` in the `teams-1` cluster (`opensteer-prod`) holding the team
-Host, its own Postgres and its gateway in one pod, at `https://<slug>.teams.opensteer.com`.
+Host as a Deployment, a private Cloud SQL database and a managed folder in Cloud Storage, at `https://<slug>.teams.opensteer.com`.
 Everyone's agents still run on their own computers. Opensteer's operators can technically read what
 a hosted team stores, and the create page says so. The platform (cluster, edge, DNS, the
 provisioner's permissions) lives in the private `opensteer-infra` repo under `kubernetes/prod/teams-1`.
@@ -13,7 +13,7 @@ Account decides which teams exist; [apps/team-provisioner](../apps/team-provisio
 and makes the cluster match, so Account never holds cluster credentials. Account admits only a
 Google-signed ID token for `OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL` with its own public URL as
 audience, and offers no hosted teams without that setting. Turn it on in
-[account.env](../deploy/account/account.env) only after a published Beta has deployed the
+[account.env](../deploy/account/account.env) only after an explicit hosted-team promotion has deployed the
 provisioner, or teams wait at `starting`. Also wait until every Account replica runs a release
 that refuses Account deletion while it holds a hosted team: an older replica deletes a creator's
 hosted teams with their Account, even teams other people now own.
@@ -84,24 +84,42 @@ in the team's bootstrap, never by matching its origin.
 
 ## Isolation
 
-Team namespaces run `restricted` Pod Security with no service-account token. The NetworkPolicy
-admits only the edge namespace and lets pods reach DNS and the public internet, never private ranges;
-the link-local DNS addresses (NodeLocal DNSCache and the metadata server) are open on port 53 only.
-The provisioner may read or change only objects named `team`, and an admission policy confines its
-writes to `team-*` namespaces. The release deployer can change only the provisioner's Deployment.
+Team namespaces run `restricted` Pod Security. Each Host uses the namespace's `team` service
+account through Workload Identity without a mounted Kubernetes API token. Its managed folder grants
+object access only to that principal. The NetworkPolicy admits the edge on Host port 4310 and allows
+DNS, the Cloud SQL private address, GKE metadata and public Account/OIDC/partner endpoints; other
+private ranges remain blocked. Service port 80 still faces the edge.
+
+Cloud SQL uses a separate database and restricted LOGIN role per team. Connections verify the
+instance's DNS name against the mounted CA root bundle. Installation keys, instance id, auth secret,
+setup digest and database credentials live in a read-only Kubernetes Secret protected by GKE
+application-layer encryption. A lost Secret cannot be replaced by generating a new identity for an
+existing team. Scratch space is disposable; durable files live in Cloud Storage. Database backups
+and PITR, object soft deletion and installation-Secret backups must be recovered together.
 
 ## Releases
 
-Hosted teams follow Beta: publishing an insider deploys the provisioner with that release's team
-image digests. Stable promotion never redeploys hosted teams: it can reuse older images, and team
-database migrations are forward-only. The deploy refuses a source older than its recorded
-`opensteer.dev/source-revision`; reruns can finish the same source. The provisioner moves teams
-one at a time. A team on the new release that is not ready holds
-the rest and is reported failed after ten minutes; restarts a team asked for (a setup retry,
-suspension) are never held. The provisioner is Ready only after a whole reconcile pass succeeds, so a
-release that cannot reach Account or list teams fails its rollout and holds for a forward fix,
-without restoring older team images. The GHCR packages must be public,
-because the cluster pulls without credentials.
+Hosted teams advance only through the manual `promote-team-servers` workflow, using published
+Host and provisioner digests from the same source. Beta publication builds images but does not
+deploy them. Self-hosted Compose keeps its own Postgres and TLS gateway.
+
+A hosted team runs one Host with a surge slot: its replacement must stay Ready for ten seconds
+before the old copy drains, with a ninety-second termination grace. Readiness includes migrations
+and the database bus; liveness does not depend on database availability. Copies share one database
+and immutable object store, so schema changes must remain compatible with the previous image while
+both run. Destructive migrations require a separately planned contract step.
+
+Promotion is forward-only against the recorded source revision; an older rerun leaves the fleet
+alone. Teams roll one at a time. An unready replacement holds the fleet and is reported failed after
+ten minutes. A forward fix resolves a failed rollout; reverting images after migrations is unsafe.
+The provisioner is Ready only after a whole reconcile pass succeeds. Images must be public because
+the cluster pulls without credentials.
+
+Creation persists installation material before provisioning external resources so an interrupted
+pass can resume with the same credentials. No workload starts until its database and folder access
+exist. Deletion stops the Host, disables SQL login, force-drops its database, removes its role,
+cleans up live folder objects and removes the namespace. Completion waits for verification; retained
+soft-deleted objects and backups follow their retention policies.
 
 ## Abuse
 

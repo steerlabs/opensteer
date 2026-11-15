@@ -519,26 +519,18 @@ jobs:
           SOURCE_SHA: ${{ needs.preflight.outputs.sha }}
         run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG" --source-sha "$SOURCE_SHA"
   team-provisioner:
-    # Stable may reuse older images after teams have migrated; only Beta advances the fleet.
-    # A rerun finds its Beta already published (discover verified it) and still deploys.
     needs: [preflight, discover, team-images, publish-insider]
     if: ${{ !cancelled() && needs.preflight.outputs.channel == 'beta' && needs['team-images'].result == 'success' && (needs['publish-insider'].result == 'success' || (needs.discover.result == 'success' && needs.discover.outputs.skip == 'true')) }}
     runs-on: ubuntu-latest
-    environment: teams
     timeout-minutes: 30
     permissions:
       contents: read
-      id-token: write
       packages: write
     env:
       IMAGE: ghcr.io/steerlabs/opensteer-team-provisioner
       SHA: ${{ needs.preflight.outputs.sha }}
       VERSION: ${{ needs.preflight.outputs.version }}
       TEAM_HOST_IMAGE: ${{ needs.team-images.outputs.host_image }}
-      TEAM_GATEWAY_IMAGE: ${{ needs.team-images.outputs.gateway_image }}
-      # Made outside this repo for the `teams` environment; see docs/hosted-teams.md.
-      TEAMS_WORKLOAD_IDENTITY_PROVIDER: projects/920572344872/locations/global/workloadIdentityPools/github/providers/github-teams-deployer
-      TEAMS_DEPLOYER: gha-teams-deployer@opensteer-admin.iam.gserviceaccount.com
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -557,17 +549,7 @@ jobs:
           docker buildx build --file deploy/container/Containerfile --target team-provisioner \
             --platform linux/amd64 --build-arg OPENSTEER_RELEASE_VERSION="$VERSION" \
             --build-arg OPENSTEER_SOURCE_REVISION="$SHA" --tag "$IMAGE:$VERSION" \
+            --label "org.opencontainers.image.revision=$SHA" \
             --metadata-file "$RUNNER_TEMP/provisioner.json" --push .
           digest=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/provisioner.json")
           echo "PROVISIONER_IMAGE=$IMAGE@$digest" >> "$GITHUB_ENV"
-      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
-        with:
-          workload_identity_provider: ${{ env.TEAMS_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ env.TEAMS_DEPLOYER }}
-      - uses: google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395
-        with:
-          cluster_name: teams-1
-          location: us-west1
-          project_id: opensteer-prod
-          use_dns_based_endpoint: true
-      - run: bash .github/scripts/deploy-team-provisioner.sh "$PROVISIONER_IMAGE" "$TEAM_HOST_IMAGE" "$TEAM_GATEWAY_IMAGE" "$SHA"
