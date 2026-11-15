@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import {
+  sameTaskMark,
   threadInDirectory,
   threadMark,
   type AppAction,
@@ -123,7 +124,11 @@ function AppRow({ app, onDelete }: { readonly app: App; readonly onDelete: () =>
     hostClient,
     (snapshot) => snapshot.machines.find((machine) => machine.id === app.computerId)?.name ?? null,
   );
-  const origin = useHostSelector(hostClient, (snapshot) => originOf(snapshot, app.taskId));
+  const origin = useHostSelector(
+    hostClient,
+    (snapshot) => originOf(snapshot, app.taskId),
+    sameOrigin,
+  );
   const pending = state.pending.get(app.appId) ?? null;
   const failure = state.failures.get(app.appId) ?? null;
   const words = stateWords[app.state];
@@ -261,6 +266,17 @@ function AppRow({ app, onDelete }: { readonly app: App; readonly onDelete: () =>
 }
 
 /** The chat that published an app, while it exists; null once it was deleted. */
+type Origin = ReturnType<typeof originOf>;
+// A selection must stay equal across reads of an unchanged snapshot, or React rereads forever.
+function sameOrigin(left: Origin, right: Origin): boolean {
+  if (left === null || right === null) return left === right;
+  return (
+    left.threadId === right.threadId &&
+    left.title === right.title &&
+    sameTaskMark(left.mark, right.mark)
+  );
+}
+
 function originOf(
   snapshot: HostSnapshot,
   threadId: string | null,
