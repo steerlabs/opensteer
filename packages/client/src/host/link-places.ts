@@ -1,13 +1,22 @@
 import { computerGlyph, orderDevices, type ComputerGlyph } from "../computers/computers.js";
-import type {
-  BrowserIdentityOpenInput,
-  BrowserTabOpenInput,
-  LegacyHostSnapshot as HostSnapshot,
-} from "./client.js";
+import type { TabTarget } from "@opensteer/core";
+import type { BrowserIdentityOpenInput, HostSnapshot } from "./client.js";
 import type { BrowserIdentityChoice, StartPageProfileChoice } from "./start-page-model.js";
 
 type DeviceSource = Pick<HostSnapshot, "browserProfileHomes" | "machines">;
-type BrowsingSource = Pick<HostSnapshot, "browserProfiles" | "browserSessions" | "browserTabs">;
+type BrowsingSource = Pick<HostSnapshot, "browserProfiles" | "tabs">;
+
+/** The Host's tab.open target for a page at this address. */
+export function pageOpenTarget(input: BrowserIdentityOpenInput, url: string): TabTarget {
+  return input.identity.kind === "profile"
+    ? ({ kind: "page", url, profileId: input.identity.profileId } as TabTarget)
+    : ({
+        kind: "page",
+        url,
+        guest: true,
+        ...(input.placement ? { computerId: input.placement.runnerId } : {}),
+      } as TabTarget);
+}
 
 /**
  * Whether the device the reader is at lends a browser in this Deployment now,
@@ -95,15 +104,12 @@ export function recentProfileOn(snapshot: BrowsingSource, deviceId: string): str
       .map((profile) => [profile.id, profile]),
   );
   const latest = new Map<string, number>();
-  const sessions = [
-    ...snapshot.browserSessions,
-    ...(snapshot.browserTabs?.groups().ids ?? []).map((id) => snapshot.browserTabs!.group(id)!),
-  ];
-  for (const session of sessions) {
-    if (session.placement.runnerId !== deviceId || session.profileId === null) continue;
-    if (!homed.has(session.profileId)) continue;
-    const at = Date.parse(session.updatedAt ?? session.createdAt ?? "") || 0;
-    latest.set(session.profileId, Math.max(latest.get(session.profileId) ?? -1, at));
+  for (const tab of snapshot.tabs.rows.values()) {
+    if (tab.kind !== "page" || !tab.profile || tab.computer.computerId !== deviceId) continue;
+    const profileId = tab.profile.profileId;
+    if (!homed.has(profileId)) continue;
+    const at = Date.parse(tab.updatedAt) || 0;
+    latest.set(profileId, Math.max(latest.get(profileId) ?? -1, at));
   }
   const [chosen] = [...latest].sort(
     ([leftId, left], [rightId, right]) =>
@@ -115,7 +121,7 @@ export function recentProfileOn(snapshot: BrowsingSource, deviceId: string): str
 }
 
 /** A new tab on a device: in its most recent profile, else a Guest there. */
-export function browsingOn(snapshot: BrowsingSource, deviceId: string): BrowserTabOpenInput {
+export function browsingOn(snapshot: BrowsingSource, deviceId: string): BrowserIdentityOpenInput {
   const profileId = recentProfileOn(snapshot, deviceId);
   return profileId === null
     ? { identity: { kind: "guest" }, placement: { kind: "runner", runnerId: deviceId } }
@@ -129,7 +135,7 @@ export interface LinkPlace {
   readonly here: boolean;
   readonly name: string;
   readonly glyph: ComputerGlyph;
-  readonly target: BrowserTabOpenInput;
+  readonly target: BrowserIdentityOpenInput;
 }
 
 export interface LinkPlaces {

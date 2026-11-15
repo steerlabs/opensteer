@@ -1,7 +1,7 @@
 import { NeedsYouList } from "./needs-you-list.js";
 import { placeByKey } from "@opensteer/client/host";
+import type { TabGroupColor, TabId } from "@opensteer/core";
 import { DesktopUpdateButton } from "./desktop-update-button.js";
-import { PendingBrowserTabRows } from "./workspace/pending-browser-tab.js";
 import { taskMark, taskMarkQuiet } from "@opensteer/client/host";
 import { TaskIconEditor } from "./task-icon-editor.js";
 import { ThreadTitleEditor } from "./thread-title-editor.js";
@@ -19,15 +19,13 @@ import {
   type RefObject,
 } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
-import type { BrowserTabGroupColor } from "@opensteer/protocol";
-import type { BrowserTabStrip } from "@opensteer/client/host";
+import type { TabStrip, TabStripEntry } from "@opensteer/client/host";
 import type {
   DeploymentAccessSnapshot,
   DesktopDeploymentSummary,
 } from "@opensteer/protocol/desktop";
 import {
   allTabs,
-  browserTabStrip,
   browserSiteLabel,
   devicesElsewhere,
   placeDeviceLabels,
@@ -43,18 +41,21 @@ import {
   quietlyMoved,
   quietSeenScope,
   taskList,
+  actingOccupants,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type PlaceItem,
-  type PlaceDescriptor,
   type TaskRow,
 } from "@opensteer/client/host";
 import {
-  useBrowserGroups,
   useHostSelector,
   usePlace,
-  usePlaceStructure,
+  usePlaceActivity,
+  usePlaceList,
   useSyncingPlaceholder,
+  useTabLayout,
+  useTabStrip,
+  useTabsSyncing,
   useTabDeviceChoice,
   useTabFilterMatches,
   useVoiceValue,
@@ -109,13 +110,13 @@ import {
 import { revealInList, useScrollEdges } from "./workspace/scroll-edges.js";
 import { useTabCloser } from "./workspace/tab-closer.js";
 import { TabGroupHeader, tabGroupStyle } from "./workspace/tab-group.js";
-import { NativeTabMenu, TabMenu, nativeTabMenuOffered } from "./workspace/tab-menu.js";
+import { TabMenu } from "./workspace/tab-menu.js";
 import { RowMotion } from "./workspace/row-motion.js";
 import { fullHeightOf, SideSplit, useTabsHeight } from "./workspace/side-split.js";
 import { DoneLine, useQuietSeen } from "./workspace/done-line.js";
 import { SidebarSearch, type SidebarSearchSources } from "./sidebar-search.js";
 import { TabFilterControl } from "./workspace/tab-filter.js";
-import type { SortRow } from "./workspace/tab-sort.js";
+import { organizeInput, type SortRow } from "./workspace/tab-sort.js";
 import { useTabSort, type TabSortHandle } from "./workspace/use-tab-sort.js";
 import { useTaskSnapshot } from "./task-rows.js";
 import { useDesktopPlaces } from "../desktop/places-context.js";
@@ -166,10 +167,10 @@ export function Sidebar({
   const deploymentId = useHostSelector(hostClient, (current) => current.deploymentId);
   const userId = useHostSelector(hostClient, (current) => current.user?.id ?? null);
   const drafts = useComposerDraftIndex(deploymentId, userId);
-  // The list arranges slots; each row reads its own place, so a title repaints one row.
-  const slots = usePlaceStructure(hostClient);
-  const groupList = useBrowserGroups(hostClient);
-  const layout = useHostSelector(hostClient, (snapshot) => snapshot.browserTabGroups);
+  // The list arranges the layout's tab IDs; each row reads its own tab, so a title repaints one row.
+  const fullStrip = useTabStrip(hostClient);
+  const layout = useTabLayout(hostClient);
+  const tabCount = fullStrip.ordered.length;
   const hereId = useHereId();
   const selectHome = useCallback(
     (snapshot: HostSnapshot) => tabListHomeId(snapshot, hereId),
@@ -182,9 +183,8 @@ export function Sidebar({
   );
   // Labels keep their identity while their devices stay the same, so rows stay undrawn.
   const elsewhere = useHostSelector(hostClient, selectElsewhere, sameDevicesElsewhere);
-  const pendingTabs = useHostSelector(hostClient, (snapshot) => snapshot.pendingBrowserTabs);
   // A list still syncing with nothing to show shows its skeleton, never an empty state.
-  const tabsSyncing = useSyncingPlaceholder(groupList.syncing, slots.length);
+  const tabsSyncing = useSyncingPlaceholder(useTabsSyncing(hostClient), tabCount);
   const [chosenFilter, setFilter] = useState<TabFilter>(allTabs);
   const deviceChoice = useTabDeviceChoice(hostClient, hereId, homeId, chosenFilter);
   const filter = deviceChoice.filter;
@@ -204,7 +204,7 @@ export function Sidebar({
   const filterTabs = (next: TabFilter) => {
     if (!tabFilterActive(next)) setHeldTabs(null);
     else if (!tabFilterActive(filter) && tabsSection.current)
-      setHeldTabs({ height: fullHeightOf(tabsSection.current), rows: slots.length });
+      setHeldTabs({ height: fullHeightOf(tabsSection.current), rows: tabCount });
     setFilter(next);
   };
   const shownPlaceKey =
@@ -213,17 +213,13 @@ export function Sidebar({
       : null;
   const matched = useTabFilterMatches(hostClient, filter);
   // The tab in front stays listed whatever the filter, so opening one never hides where you are.
-  const filteredSlots = useMemo(
+  const liveStrip = useMemo(
     () =>
-      matched ? slots.filter((slot) => slot.key === shownPlaceKey || matched.has(slot.key)) : slots,
-    [slots, matched, shownPlaceKey],
+      matched
+        ? filterStrip(fullStrip, (tabId) => tabId === shownPlaceKey || matched.has(tabId))
+        : fullStrip,
+    [fullStrip, matched, shownPlaceKey],
   );
-  const liveStrip = browserTabStrip(filteredSlots, layout);
-  const deviceLabels = useMemo(
-    () => placeDeviceLabels(filteredSlots, elsewhere),
-    [filteredSlots, elsewhere],
-  );
-  const searchDeviceLabels = useMemo(() => placeDeviceLabels(slots, elsewhere), [slots, elsewhere]);
   const toast = useToast();
   const tabsList = useRef<HTMLUListElement | null>(null);
   const motion = useRef<RowMotion | null>(null);
@@ -232,14 +228,16 @@ export function Sidebar({
   const sort = useTabSort({
     strip: liveStrip,
     rows: sortRows,
-    // Only a Host that keeps each person's order takes moves.
-    movable: layout?.order !== undefined,
+    movable: true,
     list: tabsList,
     motion,
-    move: (move) =>
-      void hostClient
-        .moveBrowserTabs(move)
-        .catch((error: unknown) => toast.error(actionErrorMessage(error))),
+    move: (move) => {
+      const input = organizeInput(move, layout);
+      if (input)
+        void hostClient
+          .organizeTabs(input)
+          .catch((error: unknown) => toast.error(actionErrorMessage(error)));
+    },
     announce: (words) => {
       if (announcer.current) announcer.current.textContent = words;
     },
@@ -250,7 +248,7 @@ export function Sidebar({
   // Until the drop the list stands as it was when the row lifted.
   const strip = sort.lift?.strip ?? liveStrip;
   const tabIndices = useMemo(
-    () => new Map(strip.ordered.map((place, index) => [place.key, index])),
+    () => new Map(strip.ordered.map((tabId, index) => [tabId, index])),
     [strip.ordered],
   );
   const [editingGroup, editGroup] = useState<string | null>(null);
@@ -259,6 +257,12 @@ export function Sidebar({
   const connection = describeHostConnection(snapshot);
   const placeName = deploymentNameFrom(deployment, snapshot) ?? "Opensteer";
   const [searching, setSearching] = useState(false);
+  // Search reads every tab's words, so the list is held only while it is open.
+  const places = usePlaceList(hostClient, searching);
+  const searchDeviceLabels = useMemo(
+    () => placeDeviceLabels(places, elsewhere),
+    [places, elsewhere],
+  );
   const sidebarRef = useRef<HTMLElement | null>(null);
   const listsRef = useRef<HTMLDivElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
@@ -522,41 +526,37 @@ export function Sidebar({
   const startPageOpen = workspace.selection.kind === "launcher";
   // The order the tab list shows; a change slides its rows to their new places.
   const motionSignature = [
-    ...strip.web.map((row) =>
-      row.kind === "place"
-        ? row.place.key
-        : row.group.collapsed || row.group.id === sort.lift?.groupId
-          ? row.group.id
-          : `${row.group.id}:${row.places.map((place) => place.key).join(",")}`,
+    ...strip.entries.map((row) =>
+      row.kind === "tab"
+        ? row.tabId
+        : row.group.collapsed || row.group.groupId === sort.lift?.groupId
+          ? row.group.groupId
+          : `${row.group.groupId}:${row.tabIds.join(",")}`,
     ),
-    ...strip.native.map((place) => place.key),
     startPageOpen ? "start" : "new",
   ].join("|");
   const newTab = () => {
     onCloseMobile();
     onNewTab();
   };
-  const tabRow = (slot: PlaceDescriptor, index: number, groupColor?: BrowserTabGroupColor) => (
+  const tabRow = (tabId: TabId, index: number, groupColor?: TabGroupColor) => (
     <TabRowItem
-      sort={slot.personalTab ? sort.handle : null}
+      sort={sort.handle}
       groupColor={groupColor}
       onEditGroup={editGroup}
-      active={slot.key === shownPlaceKey}
+      active={tabId === shownPlaceKey}
       badges={presentations.badges}
       directory={directory}
+      elsewhere={elsewhere}
       hostClient={hostClient}
       index={index}
-      device={deviceLabels.get(slot.key) ?? null}
       hereId={hereId}
-      key={slot.key}
+      key={tabId}
       onOpen={openPlace}
       onOpenMark={openMark}
-      placeKey={slot.key}
+      placeKey={tabId}
       highlight={workspace.highlight}
-      localMachine={workspace.localMachine}
-      presentation={
-        slot.browser ? (presentations.bySession.get(slot.browser.sessionId) ?? null) : null
-      }
+      presentation={presentations.byTab.get(tabId) ?? null}
     />
   );
   // Every row the tab list has, in order; the window draws those in view.
@@ -580,47 +580,33 @@ export function Sidebar({
         <LoadingRows label="Loading tabs" />
       </li>
     ));
-  for (const row of strip.web) {
-    if (row.kind === "place") {
-      const slot = row.place;
-      entry(slot.key, rowSize, () => tabRow(slot, tabIndices.get(slot.key)!));
+  for (const row of strip.entries) {
+    if (row.kind === "tab") {
+      const tabId = row.tabId;
+      entry(tabId, rowSize, () => tabRow(tabId, tabIndices.get(tabId)!));
       continue;
     }
     // A group on the move folds its tabs under its header until it lands.
-    const moving = row.group.id === sort.lift?.groupId;
-    entry(row.group.id, rowSize, () => (
+    const { group, tabIds } = row;
+    const moving = group.groupId === sort.lift?.groupId;
+    entry(group.groupId, rowSize, () => (
       <TabGroupHeader
-        active={row.places.some((place) => place.key === shownPlaceKey)}
+        active={tabIds.some((tabId) => tabId === shownPlaceKey)}
         directory={directory}
-        editing={editingGroup === row.group.id}
-        group={moving ? { ...row.group, collapsed: true } : row.group}
+        editing={editingGroup === group.groupId}
+        group={moving ? { ...group, collapsed: true } : group}
         hostClient={hostClient}
-        key={row.group.id}
+        key={group.groupId}
         onEdit={editGroup}
         onOpenMark={openMark}
-        places={row.places}
+        tabIds={tabIds}
         sort={sort.handle}
       />
     ));
-    if (!row.group.collapsed && !moving)
-      for (const slot of row.places)
-        entry(slot.key, rowSize, () => tabRow(slot, tabIndices.get(slot.key)!, row.group.color));
+    if (!group.collapsed && !moving)
+      for (const tabId of tabIds)
+        entry(tabId, rowSize, () => tabRow(tabId, tabIndices.get(tabId)!, group.color));
   }
-  for (const pending of pendingTabs ?? [])
-    entry(`pending:${pending.idempotencyKey}`, rowSize, () => (
-      <PendingBrowserTabRows
-        hostClient={hostClient}
-        key={`pending:${pending.idempotencyKey}`}
-        onOpen={onCloseMobile}
-        rows={[pending]}
-      />
-    ));
-  if (strip.native.length > 0 && strip.web.length > 0)
-    entry("divider", 0, () => (
-      <li aria-hidden className="side-divider" data-motion-key="divider" key="divider" />
-    ));
-  for (const slot of strip.native)
-    entry(slot.key, rowSize, () => tabRow(slot, tabIndices.get(slot.key)!));
   entry(startPageOpen ? "start" : "new", rowSize, () =>
     startPageOpen ? (
       <li className="side-tab side-tab--start is-active" data-motion-key="start" key="start">
@@ -869,7 +855,7 @@ export function Sidebar({
           aria-labelledby="sidebar-tabs"
           className="side-section side-section--tabs"
           ref={tabsSection}
-          style={{ ...sectionFloor(heldTabs?.rows ?? slots.length), maxHeight: heldTabs?.height }}
+          style={{ ...sectionFloor(heldTabs?.rows ?? tabCount), maxHeight: heldTabs?.height }}
         >
           <div className="side-head">
             <h2 className="side-head__title" id="sidebar-tabs" tabIndex={-1}>
@@ -881,7 +867,7 @@ export function Sidebar({
               onChange={filterTabs}
               value={filter}
             />
-            {slots.length > 0 ? (
+            {tabCount > 0 ? (
               <button
                 aria-label="New tab"
                 className="icon-btn icon-btn--small side-head__action"
@@ -907,9 +893,6 @@ export function Sidebar({
                 pinned={[
                   shownPlaceKey ?? "",
                   editingGroup ?? "",
-                  workspace.selection.kind === "pending"
-                    ? `pending:${workspace.selection.idempotencyKey}`
-                    : "",
                   "filter-empty",
                   "syncing",
                   startPageOpen ? "start" : "new",
@@ -1299,16 +1282,25 @@ const TaskRowItem = memo(function TaskRowItem({
 
 /* ---- Tabs ---- */
 
-type TabRowProps = Omit<Parameters<typeof TabRow>[0], "badge" | "place"> & {
+type TabRowProps = Omit<Parameters<typeof TabRow>[0], "badge" | "place" | "device"> & {
   /** Two or more identities are in use: site icons wear profile badges. */
   readonly badges: boolean;
   readonly placeKey: string;
+  /** Devices the list names beside a title, by machine. */
+  readonly elsewhere: ReadonlyMap<string, DeviceElsewhere>;
 };
 
-/** A tab row reads its own place, so one tab's title or loading repaints only it. */
-const TabRowItem = memo(function TabRowItem({ badges, placeKey, ...props }: TabRowProps) {
+/** A tab row reads its own tab, so one tab's title or state repaints only it. */
+const TabRowItem = memo(function TabRowItem({
+  badges,
+  elsewhere,
+  placeKey,
+  ...props
+}: TabRowProps) {
   const place = usePlace(props.hostClient, placeKey);
-  return place ? <TabRow {...props} badge={badges ? place.identity : null} place={place} /> : null;
+  if (!place) return null;
+  const device = place.kind === "phone" ? null : (elsewhere.get(place.device.machineId) ?? null);
+  return <TabRow {...props} badge={badges ? place.identity : null} device={device} place={place} />;
 });
 
 const TabRow = memo(function TabRow({
@@ -1323,7 +1315,6 @@ const TabRow = memo(function TabRow({
   highlight,
   hostClient,
   index,
-  localMachine,
   onOpen,
   onOpenMark,
   place,
@@ -1331,7 +1322,7 @@ const TabRow = memo(function TabRow({
 }: {
   /** Drag-and-drop and ⌘↑/⌘↓, for a saved web tab. */
   readonly sort: TabSortHandle | null;
-  readonly groupColor?: BrowserTabGroupColor | undefined;
+  readonly groupColor?: TabGroupColor | undefined;
   readonly onEditGroup: (id: string | null) => void;
   /** The place in the middle: it wears the place card's material. */
   readonly active: boolean;
@@ -1345,8 +1336,6 @@ const TabRow = memo(function TabRow({
   readonly highlight: WorkspaceState["highlight"];
   readonly hostClient: HostClient;
   readonly index: number;
-  /** This Mac, for a menu that can bring one of its apps forward. */
-  readonly localMachine: WorkspaceState["localMachine"];
   readonly onOpen: (place: PlaceItem) => void;
   readonly onOpenMark: (place: PlaceItem, threadId: string) => void;
   readonly place: PlaceItem;
@@ -1375,46 +1364,42 @@ const TabRow = memo(function TabRow({
     if (active && mainRef.current) revealInList(mainRef.current.closest("li") ?? mainRef.current);
   }, [active]);
   useEffect(() => () => window.clearTimeout(press.current?.timer), []);
-  // Only a web tab has a browser's menu; a Mac app's Stop stays in its own bar.
-  const browserTab = place.kind === "browser";
-  const group = browserTab ? "web" : "native";
-  const fallbackRef = useRef(() => neighbourRow(index, group));
+  const fallbackRef = useRef(() => neighbourRow(index));
   // The tab in the middle leaving hands the middle to its successor: focus follows it there.
-  fallbackRef.current = () => (active ? activeRow() : null) ?? neighbourRow(index, group);
+  fallbackRef.current = () => (active ? activeRow() : null) ?? neighbourRow(index);
   useFocusRescue(mainRef, fallbackRef);
   const unavailable = place.availability === "unavailable";
+  const activity = usePlaceActivity(hostClient, placeKey);
+  const occupants = useMemo(
+    () => actingOccupants(place.occupants, activity),
+    [place.occupants, activity],
+  );
   const site = place.site ? browserSiteLabel(place.site) : null;
   // A phone's row is its name already.
   const elsewhere =
-    place.kind !== "phone" && place.device && place.device.machineId !== hereId
-      ? place.device.name
-      : null;
+    place.kind !== "phone" && place.device.machineId !== hereId ? place.device.name : null;
   // The whole destination in words, label or not: "Q4 numbers – Notion — Work · Mac mini · Offline".
   const where =
     [
       presentation ? browserWords(presentation, hereId) : elsewhere,
       // Marked though it is this device (not the main computer): the label overrides the mark's name.
       device?.id === hereId ? device.name : null,
-      !presentation && place.ownerView ? "View only" : null,
-      device && !device.online ? "Offline" : null,
+      place.unavailableReason,
+      device && !device.online && !place.unavailableReason ? "Offline" : null,
     ]
       .filter(Boolean)
       .join(" · ") || null;
   const tip = where ? `${place.title} — ${where}` : place.title;
-  const label = [tip, place.loading ? "loading" : null, unavailable ? "unavailable" : null]
-    .filter(Boolean)
-    .join(", ");
+  const label = [tip, place.asleep ? "asleep" : null].filter(Boolean).join(", ");
   const classes = [
     "side-tab",
     groupColor ? "side-tab--grouped" : "",
     active ? "is-active" : "",
     lit ? "is-match" : "",
     unavailable ? "is-unavailable" : "",
+    place.asleep ? "is-asleep" : "",
   ];
-  const nativeMenu = !browserTab && nativeTabMenuOffered(place, localMachine);
-  const openMenu = (at: { readonly x: number; readonly y: number }) => {
-    if (browserTab || nativeMenu) setMenuAt(at);
-  };
+  const openMenu = (at: { readonly x: number; readonly y: number }) => setMenuAt(at);
   const cancelPress = () => {
     window.clearTimeout(press.current?.timer);
     press.current = null;
@@ -1423,14 +1408,14 @@ const TabRow = memo(function TabRow({
     <li
       className={classes.filter(Boolean).join(" ")}
       style={groupColor ? tabGroupStyle(groupColor) : undefined}
-      data-group={group}
+      data-kind={place.kind}
       data-motion-key={placeKey}
       data-place-key={placeKey}
       data-row-index={index}
       data-voice-row={voiceRowKey({ kind: "place", destination: place.destination })}
       // The wheel button closes a tab, as on a browser's tab strip, and never starts autoscroll.
       onAuxClick={(event) => {
-        if (event.button === 1 && place.closable) requestClose(place);
+        if (event.button === 1) requestClose(place);
       }}
       onClickCapture={(event) => {
         // A long press opened the menu; the finger lifting is not a click on the row.
@@ -1440,7 +1425,6 @@ const TabRow = memo(function TabRow({
         event.stopPropagation();
       }}
       onContextMenu={(event) => {
-        if (!browserTab && !nativeMenu) return;
         event.preventDefault();
         openMenu({ x: event.clientX, y: event.clientY });
       }}
@@ -1452,7 +1436,7 @@ const TabRow = memo(function TabRow({
       onPointerDown={(event) => {
         sort?.press(event, placeKey);
         pressed.current = false;
-        if (event.pointerType !== "touch" || (!browserTab && !nativeMenu)) return;
+        if (event.pointerType !== "touch") return;
         const { clientX: x, clientY: y } = event;
         // Under a finger the menu hangs below the row, never under the finger itself.
         const row = event.currentTarget.getBoundingClientRect();
@@ -1478,7 +1462,7 @@ const TabRow = memo(function TabRow({
     >
       <button
         aria-current={active ? "true" : undefined}
-        aria-haspopup={browserTab || nativeMenu ? "menu" : undefined}
+        aria-haspopup="menu"
         aria-label={label}
         className="side-tab__main"
         data-tip={tip}
@@ -1487,7 +1471,6 @@ const TabRow = memo(function TabRow({
         onFocus={() => highlight.set({ placeKey, threadId: null, threadIds: occupantIds })}
         onKeyDown={(event) => {
           if (!(event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey))) return;
-          if (!browserTab && !nativeMenu) return;
           event.preventDefault();
           const box = event.currentTarget.getBoundingClientRect();
           openMenu({ x: box.left + 12, y: box.bottom });
@@ -1510,34 +1493,23 @@ const TabRow = memo(function TabRow({
       <OccupantMarks
         className="side-tab__marks"
         directory={directory}
-        fallbackFocus={() =>
-          mainRef.current?.isConnected ? mainRef.current : neighbourRow(index, group)
-        }
+        fallbackFocus={() => (mainRef.current?.isConnected ? mainRef.current : neighbourRow(index))}
         onOpen={(threadId) => onOpenMark(place, threadId)}
-        occupants={place.occupants}
+        occupants={occupants}
         placeTitle={place.title}
         size={16}
       />
-      {place.closable ? <CloseTabButton fallback={fallbackRef} place={place} /> : null}
+      <CloseTabButton fallback={fallbackRef} place={place} />
       {menuAt && mainRef.current ? (
-        browserTab ? (
-          <TabMenu
-            anchor={mainRef.current}
-            at={menuAt}
-            hostClient={hostClient}
-            onEditGroup={onEditGroup}
-            onClose={() => setMenuAt(null)}
-            place={place}
-            presentation={presentation}
-          />
-        ) : (
-          <NativeTabMenu
-            anchor={mainRef.current}
-            at={menuAt}
-            onClose={() => setMenuAt(null)}
-            place={place}
-          />
-        )
+        <TabMenu
+          anchor={mainRef.current}
+          at={menuAt}
+          hostClient={hostClient}
+          onEditGroup={onEditGroup}
+          onClose={() => setMenuAt(null)}
+          place={place}
+          presentation={presentation}
+        />
       ) : null}
     </li>
   );
@@ -1594,9 +1566,9 @@ function activeRow(): HTMLElement | null {
 }
 
 /** The row that takes focus when the focused one leaves the list. */
-function neighbourRow(index: number, group: "web" | "native"): HTMLElement | null {
-  // A browser's next tab, else its previous one; never across into the Mac apps.
-  const rows = [...document.querySelectorAll<HTMLElement>(`.side-tab[data-group="${group}"]`)];
+function neighbourRow(index: number): HTMLElement | null {
+  // The next tab, else the previous one, in the one list.
+  const rows = [...document.querySelectorAll<HTMLElement>(".side-tab[data-place-key]")];
   const next =
     rows.find((row) => Number(row.dataset.rowIndex) >= index) ?? rows[rows.length - 1] ?? null;
   return (
@@ -1606,8 +1578,8 @@ function neighbourRow(index: number, group: "web" | "native"): HTMLElement | nul
 }
 
 /**
- * Closes exactly this tab; the Host decides what the last tab takes with it.
- * Its row leaves with it, so focus on it goes on to the neighbouring row.
+ * Takes exactly this tab off the list; it quits and stops nothing. Its row
+ * leaves with it, so focus on it goes on to the neighbouring row.
  */
 function CloseTabButton({
   fallback,
@@ -1673,6 +1645,7 @@ function SidebarFooter({
       ? [{ icon: "check-circle" as const, label: "Setup", onSelect: () => go(setupPath, false) }]
       : []),
     { icon: "bolt", label: "Automations", onSelect: () => go("/automations", true) },
+    { icon: "app", label: "Apps", onSelect: () => go("/apps", true) },
     { icon: "settings", label: "Settings", onSelect: () => go("/settings", false) },
     // Once in a team, this lives under Settings → Teams instead.
     ...(inTeams
@@ -1762,45 +1735,52 @@ function SidebarFooter({
   );
 }
 
-/** The tab list's saved web tabs and group headers, as drag-and-drop sees them. */
-function sortRowsOf(strip: BrowserTabStrip<PlaceDescriptor>): SortRow[] {
-  const tab = (place: PlaceDescriptor, group: (SortRow & { kind: "group" }) | null): SortRow[] =>
-    place.personalTab && place.destination.kind === "browser" && place.destination.tabId
-      ? [
-          {
-            kind: "tab",
-            key: place.key,
-            tabId: place.destination.tabId,
-            group: group ? { id: group.groupId, color: group.color } : null,
-          },
-        ]
-      : [];
-  return strip.web.flatMap((row): SortRow[] => {
-    if (row.kind === "place") return tab(row.place, null);
+/** Every tab row and group header in layout order, as drag-and-drop sees them. */
+function sortRowsOf(strip: TabStrip): SortRow[] {
+  return strip.entries.flatMap((row): SortRow[] => {
+    if (row.kind === "tab") return [{ kind: "tab", key: row.tabId, tabId: row.tabId, group: null }];
     const header = {
       kind: "group",
-      key: row.group.id,
-      groupId: row.group.id,
+      key: row.group.groupId,
+      groupId: row.group.groupId,
       color: row.group.color,
       collapsed: row.group.collapsed,
     } as const;
     return [
       header,
-      ...(row.group.collapsed ? [] : row.places.flatMap((place) => tab(place, header))),
+      ...(row.group.collapsed
+        ? []
+        : row.tabIds.map((tabId): SortRow => ({
+            kind: "tab",
+            key: tabId,
+            tabId,
+            group: { id: header.groupId, color: header.color },
+          }))),
     ];
   });
 }
 
-function rowTitle(
-  hostClient: HostClient,
-  strip: BrowserTabStrip<PlaceDescriptor>,
-  row: SortRow,
-): string {
+/** The strip with only these tabs; a group keeps its header while any member shows. */
+function filterStrip(strip: TabStrip, shown: (tabId: TabId) => boolean): TabStrip {
+  const entries = strip.entries.flatMap((row): TabStripEntry[] => {
+    if (row.kind === "tab") return shown(row.tabId) ? [row] : [];
+    const tabIds = row.tabIds.filter(shown);
+    return tabIds.length ? [{ ...row, tabIds }] : [];
+  });
+  const ordered = entries.flatMap((row) => (row.kind === "tab" ? [row.tabId] : row.tabIds));
+  const visible = entries.flatMap((row) =>
+    row.kind === "tab" ? [row.tabId] : row.group.collapsed ? [] : row.tabIds,
+  );
+  return { entries, ordered, visible };
+}
+
+function rowTitle(hostClient: HostClient, strip: TabStrip, row: SortRow): string {
   if (row.kind === "group") {
-    const group = strip.web.find(
-      (entry) => entry.kind === "group" && entry.group.id === row.groupId,
+    const group = strip.entries.find(
+      (entry) => entry.kind === "group" && entry.group.groupId === row.groupId,
     );
-    return (group?.kind === "group" && group.group.title) || "Untitled group";
+    return group?.kind === "group" ? group.group.name : "group";
   }
   return placeByKey(hostClient.getSnapshot(), row.key)?.title ?? "tab";
 }
+/** The tab list's saved web tabs and group headers, as drag-and-drop sees them. */

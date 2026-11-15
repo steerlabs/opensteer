@@ -2,24 +2,21 @@ import { WebTabNotice } from "../devices/web-tab-notice.js";
 import {
   browserSiteForTab,
   browserSiteLabel,
-  browserTabCloseImpact,
   type BrowserCommand,
   type BrowserFrameView,
   type BrowserSessionSummary,
   type BrowserTabSummary,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type PlaceItem,
 } from "@opensteer/client/host";
 import {
   useBrowserPresentationWait,
-  useBrowserSessionGroupId,
-  useBrowserTab,
-  useBrowserTabs,
   useBrowserViewerSurface,
   useHostSelector,
+  useTab,
 } from "@opensteer/client/react";
-import type { BrowserSurfaceId } from "@opensteer/core";
+import type { BrowserSurfaceId, TabTarget } from "@opensteer/core";
 import {
   useCallback,
   useEffect,
@@ -39,7 +36,7 @@ import { AgentCursors } from "../workspace/agent-cursors.js";
 import type { BrowserPresentation } from "../workspace/identity.js";
 import { PlaceMark } from "../workspace/place-mark.js";
 import { ProfileChip } from "../workspace/profile-chip.js";
-import { useTabCloseAsking, useTabCloser } from "../workspace/tab-closer.js";
+import { useTabCloser } from "../workspace/tab-closer.js";
 import { BrowserToolbar } from "./browser-chrome.js";
 import { useBrowserCommandKeys } from "./browser-command-keys.js";
 import { BrowserDownloads } from "./browser-downloads.js";
@@ -144,27 +141,41 @@ export function PlaceBrowserView({
   );
   const reads = useHostSelector(hostClient, select, sameReads);
   const { session } = reads;
-  // This tab's own row, its group's list and the exact page a viewer holds: nothing else.
-  const groupId =
-    useBrowserSessionGroupId(hostClient, sessionId) ?? hostClient.browserTabs.groupForTab(tabId);
-  const row = useBrowserTab(hostClient, groupId, tabId);
-  const whole = useBrowserTabs(hostClient, groupId ?? "").whole && groupId !== undefined;
+  // This tab's own row and the exact page a viewer holds: nothing else.
+  const listed = useTab(hostClient, tabId);
+  const whole = useHostSelector(hostClient, (snapshot) => snapshot.tabs.complete);
   const viewed = useBrowserViewerSurface(hostClient, sessionId, tabId);
   const toast = useToast();
   const navigate = useNavigate();
   const [signInOpen, setSignInOpen] = useState(false);
   const [menuButton, setMenuButton] = useState<HTMLButtonElement | null>(null);
   const closeTab = useTabCloser();
-  const askingClose = useTabCloseAsking();
   const [keyboardOffered, setKeyboardOffered] = useState(false);
   const [fitAvailable, setFitAvailable] = useState(false);
   const stageRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<HTMLDivElement>(null);
   const keyboardRef = useRef<BrowserKeyboardHandle | null>(null);
-  // Asleep, restoring or not yet started: selecting it wakes it, and nothing is retained meanwhile.
-  const dormant = row
-    ? row.state !== "live"
-    : !!place?.personalTab && place.personalTab.state !== "live";
+  // The catalog row as the page chrome reads it: the viewer's surface adds what the page shows now.
+  const row = useMemo(
+    () =>
+      listed
+        ? {
+            id: listed.tabId,
+            state: listed.state === "open" ? ("live" as const) : ("suspended" as const),
+            title: listed.title,
+            site: listed.url ?? "",
+            documentId: viewed?.documentId ?? null,
+            loading: viewed?.loading ?? false,
+            navigationFailed: viewed?.navigationFailed ?? false,
+            // The viewer's surface does not say whether history exists; both stay offered.
+            canGoBack: true,
+            canGoForward: true,
+          }
+        : undefined,
+    [listed, viewed],
+  );
+  // Asleep or not yet started: selecting it wakes it, and nothing is retained meanwhile.
+  const dormant = listed ? listed.state !== "open" : true;
   const sessionReady = !dormant && session?.state === "ready";
   const mode = useBrowserPresentationMode(hostClient, sessionId, sessionReady);
   const native = mode.mode === "native";
@@ -191,7 +202,7 @@ export function PlaceBrowserView({
       ? retentionFailure.message
       : null;
 
-  const tabListed = row !== undefined && row.documentId !== null;
+  const tabListed = listed !== undefined;
   // Held while the page is hidden as well: the client pauses its picture then and
   // keeps the last one, so showing the page again shows the tab at once.
   const watchable = sessionReady && tabListed;
@@ -490,10 +501,10 @@ export function PlaceBrowserView({
   const site = browserSiteForTab({ navigationFailed, url });
   const dialog = session?.dialog && session.dialog.surfaceId === tabId ? session.dialog : null;
   const signIn = chromeSignIn && signInOpen && site !== null && live ? chromeSignIn : null;
-  const blocked = signIn !== null || askingClose;
+  const blocked = signIn !== null;
   const pageReachable = live && !dialog;
   const pageFollowsView = tab?.sizedByAgent !== undefined;
-  const loading = place?.loading === true;
+  const loading = viewed?.loading === true;
   useBrowserCommandKeys({
     autofillShown,
     visible,
@@ -604,11 +615,7 @@ export function PlaceBrowserView({
         },
         {
           danger: true,
-          detail:
-            session && browserTabCloseImpact(session).discardsFreshSignIns
-              ? "Its sign-ins are discarded"
-              : undefined,
-          disabled: !place?.closable,
+          disabled: !place,
           icon: "close",
           label: "Close tab",
           onSelect: () => {
@@ -849,7 +856,18 @@ export function PlaceBrowserView({
                 occluded={blocked}
                 onCommand={send}
                 onOpenLink={(url) => {
-                  void hostClient.openBrowserTab(sessionId, { url }).catch(onReportError);
+                  void hostClient
+                    .openTab(
+                      (listed?.profile
+                        ? { kind: "page", url, profileId: listed.profile.profileId }
+                        : {
+                            kind: "page",
+                            url,
+                            guest: true,
+                            ...(listed ? { computerId: listed.computer.computerId } : {}),
+                          }) as TabTarget,
+                    )
+                    .catch(onReportError);
                 }}
                 onFitAvailable={setFitAvailable}
                 onFramePresented={acceptFrame}

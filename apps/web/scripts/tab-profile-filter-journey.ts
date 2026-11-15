@@ -39,11 +39,9 @@ const inventory = (page: Page) =>
       window,
       "opensteerMock",
     ) as import("@opensteer/client/host").HostClient;
-    const store = client.browserTabs;
-    return store.structure().map((tab) => ({
-      key: `browser:${tab.sessionId}:${tab.tabId}`,
-      profileId: store.group(tab.groupId)!.profileId,
-    }));
+    return [...client.getSnapshot().tabs.rows.values()]
+      .filter((tab) => tab.kind === "page")
+      .map((tab) => ({ key: tab.tabId as string, profileId: tab.profile?.profileId ?? null }));
   });
 async function choose(page: Page, name: string) {
   await trigger(page).click();
@@ -168,12 +166,10 @@ try {
           window,
           "opensteerMock",
         ) as import("@opensteer/client/host").HostClient;
-        const store = client.browserTabs;
-        const ids = store
-          .structure()
-          .filter((tab) => store.group(tab.groupId)!.profileId?.endsWith("000000000002"))
+        const ids = [...client.getSnapshot().tabs.rows.values()]
+          .filter((tab) => tab.profile?.profileId.endsWith("000000000002"))
           .map((tab) => tab.tabId);
-        await client.closePersonalTabs(ids);
+        await client.closeTabs(ids);
       });
       await page.waitForTimeout(250);
       const remaining = await rows(page);
@@ -218,11 +214,11 @@ try {
       await page.evaluate(
         async (ids) => {
           const client = Reflect.get(window, "opensteerMock") as {
-            closePersonalTabs(ids: string[]): Promise<unknown>;
+            closeTabs(ids: string[]): Promise<unknown>;
           };
-          await client.closePersonalTabs(ids);
+          await client.closeTabs(ids);
         },
-        otherTabs.map((tab) => tab.key.split(":").at(-1)!),
+        otherTabs.map((tab) => tab.key),
       );
       await page.getByRole("button", { name: "Clear profile filter" }).click();
       await trigger(page).waitFor({ state: "hidden" });

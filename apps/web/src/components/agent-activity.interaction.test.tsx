@@ -1,6 +1,5 @@
-import { seedBrowserSession } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
-import { seedBrowserSnapshot } from "@opensteer/client/test-support";
+import { tabFixture, tabStoreFixture } from "@opensteer/client/test-support";
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -9,7 +8,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   MessageEntry,
   PlaceEntry,
-  BrowserSessionSummary,
   ReasoningEntry,
   RunEntry,
   ToolEntry,
@@ -21,7 +19,7 @@ import {
   mockComputerUseTurn,
 } from "@opensteer/client/mock";
 import {
-  BrowserSessionIdSchema,
+  TabIdSchema,
   createId,
   defaultTaskSymbol,
   ThreadIdSchema,
@@ -29,7 +27,11 @@ import {
 } from "@opensteer/core";
 import { computerUseStops } from "@opensteer/client/integrations";
 import { mcpPresentationScenarios, mcpPresentationTool } from "@opensteer/client/test-support";
-import { AgentTranscript, ConversationActivity } from "./agent-activity.js";
+import {
+  AgentTranscript,
+  ConversationActivity,
+  type TranscriptTabSource,
+} from "./agent-activity.js";
 import type { WorkspaceNavigation } from "./workspace/navigation.js";
 import { useWorkspaceNavigation } from "./workspace/navigation.js";
 import { WorkspaceProvider } from "./workspace/workspace-context.js";
@@ -631,19 +633,25 @@ it("opens the exact phone from its conversation chip and keeps Stop and the step
               entry.kind === "run" ? { ...entry, status: "completed" } : entry,
             )}
             computers={{ hostClient: client, machines: [machine] }}
+            browserSessions={{
+              tabs: tabStoreFixture([
+                tabFixture({
+                  tabId: TabIdSchema.parse("phone-tab"),
+                  kind: "phone",
+                  computer: { computerId: RunnerIdSchema.parse(machine.id), name: machine.name },
+                }),
+              ]),
+              browserProfiles: [],
+            }}
           />
         </TestWorkspace>
       </MemoryRouter>,
     ),
   );
-  const chip = container.querySelector<HTMLAnchorElement>(
-    `a[aria-label="Open ${machine.name}, agent working"]`,
-  );
+  const chip = container.querySelector<HTMLAnchorElement>(`a[aria-label="Open ${machine.name}"]`);
   expect(chip).not.toBeNull();
-  const params = new URL(chip!.href).searchParams;
-  expect(params.has("computerSession")).toBe(false);
-  expect(params.get("phone")).toBe(machine.id);
-  expect(params.has("app")).toBe(false);
+  // The chip opens the phone's one tab.
+  expect(new URL(chip!.href).searchParams.get("tab")).toBe("phone-tab");
   click(chip);
 });
 
@@ -752,61 +760,30 @@ it("keeps a silent automatic turn through pending Stop and its kept window", asy
 describe("page rail", () => {
   function fixture() {
     const client = new MockHostClient({ latencyMs: 0 });
-    const original = client
-      .getSnapshot()
-      .browserSessions.find(
-        (session) => (session.browserTabs?.sessionTabs(session?.id) ?? []).length,
-      )!;
-    const tab = (original.browserTabs?.sessionTabs(original?.id) ?? [])[0]!;
+    const page = tabFixture({
+      tabId: TabIdSchema.parse("page-1"),
+      title: "Recorded page",
+      url: "https://recorded.example/",
+      usedBy: [{ taskId: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000001") }],
+    });
+    const source = { tabs: tabStoreFixture([page]), browserProfiles: [] };
+    const closed = { tabs: tabStoreFixture([]), browserProfiles: [] };
     const browserUses = [
       {
-        sessionId: original.id,
+        sessionId: "bsn_00000000-0000-4000-8000-000000000001",
         runId: run.runId!,
-        tabId: tab.id,
+        tabId: page.tabId,
         threadId: "thread-1",
         firstUsedAt: run.createdAt,
         lastUsedAt: run.createdAt,
       },
     ];
-    const rawSession: BrowserSessionSummary = seedBrowserSession(
-      { ...original, attachedRunIds: [run.runId!] },
-      {
-        ...original.browserTabs!.inventory(original?.id)!,
-        rows: [
-          {
-            ...tab,
-            occupants: [
-              {
-                threadId: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000001"),
-                holding: true,
-                acting: true,
-                lastActiveAt: run.createdAt,
-              },
-            ],
-          },
-        ],
-      },
-    );
-    const session = seedBrowserSnapshot(
-      seedBrowserSnapshot(
-        {
-          ...client.getSnapshot(),
-          tabRestoreVersion: undefined,
-          browserSessions: [rawSession],
-        } as import("@opensteer/client/host").LegacyHostSnapshot,
-        undefined,
-      ),
-    ).browserSessions[0]!;
     const stop: PlaceEntry = {
       kind: "place",
       id: "first-stop",
       createdAt: run.createdAt,
       runId: run.runId!,
-      place: {
-        kind: "browser",
-        sessionId: BrowserSessionIdSchema.parse(session.id),
-        surfaceId: tab.id,
-      },
+      tabId: page.tabId,
       title: "Recorded page",
       site: "https://recorded.example",
     };
@@ -817,7 +794,7 @@ describe("page rail", () => {
     const show = vi.fn();
     const draw = (
       entries: TranscriptEntry[],
-      sessions = [session],
+      sessions: TranscriptTabSource = source,
       conversation = false,
       uses = browserUses,
     ) =>
@@ -836,7 +813,7 @@ describe("page rail", () => {
           </MemoryRouter>,
         ),
       );
-    return { client, container, show, draw, stop, session };
+    return { client, container, show, draw, stop, source, closed };
   }
   it("opens the exact recorded stop, preserves modifier clicks and makes ended stops non-links", async () => {
     const f = fixture();
@@ -856,12 +833,8 @@ describe("page rail", () => {
       }
       expect(f.show).not.toHaveBeenCalled();
       click(link);
-      expect(f.show).toHaveBeenCalledExactlyOnceWith({
-        kind: "browser",
-        sessionId: f.session.id,
-        tabId: f.stop.place.kind === "browser" ? f.stop.place.surfaceId : "",
-      });
-      f.draw([{ ...run, status: "running" }, f.stop], [{ ...f.session, state: "closed" }]);
+      expect(f.show).toHaveBeenCalledExactlyOnceWith({ kind: "tab", tabId: f.stop.tabId });
+      f.draw([{ ...run, status: "running" }, f.stop], f.closed);
       expect(f.container.querySelector("a.trace-place")).toBeNull();
       expect(f.container.querySelector('.trace-place--ended[role="img"]')).not.toBeNull();
     } finally {
@@ -871,26 +844,37 @@ describe("page rail", () => {
   it("renders app and phone place entries in the trace and keeps their chips at Run end without usage reads", () => {
     const f = fixture();
     try {
+      const windowTab = tabFixture({
+        tabId: TabIdSchema.parse("window-1"),
+        kind: "window",
+        title: "Notes",
+      });
+      const phoneTab = tabFixture({
+        tabId: TabIdSchema.parse("phone-1"),
+        kind: "phone",
+        title: "Pixel 7",
+      });
+      const native = { tabs: tabStoreFixture([windowTab, phoneTab]), browserProfiles: [] };
       const app: PlaceEntry = {
         ...f.stop,
         id: "native-app",
         title: "Notes",
         site: null,
-        place: { kind: "app", machineId: createId("runner"), appKey: "com.apple.notes" },
+        tabId: windowTab.tabId,
       };
       const phone: PlaceEntry = {
         ...f.stop,
         id: "native-phone",
         title: "Pixel 7",
         site: null,
-        place: { kind: "phone", machineId: createId("runner"), display: "main" },
+        tabId: phoneTab.tabId,
       };
-      f.draw([{ ...run, status: "running" }, app, phone], [], false, []);
+      f.draw([{ ...run, status: "running" }, app, phone], native, false, []);
       const stops = f.container.querySelectorAll(".trace-place");
       expect(stops).toHaveLength(2);
       expect(stops[0]!.textContent).toContain("Notes");
       expect(stops[1]!.textContent).toContain("Pixel 7");
-      f.draw([run, app, phone], [], false, []);
+      f.draw([run, app, phone], native, false, []);
       expect(
         [...f.container.querySelectorAll(".surface-chip__title")].map((node) => node.textContent),
       ).toEqual(["Notes", "Pixel 7"]);
@@ -946,9 +930,9 @@ describe("page rail", () => {
   it.each([false, true])("shows page chips only once settled (Chat: %s)", (conversation) => {
     const f = fixture();
     try {
-      f.draw([{ ...run, status: "running" }, note], [f.session], conversation);
+      f.draw([{ ...run, status: "running" }, note], f.source, conversation);
       expect(f.container.querySelector(".surface-chip")).toBeNull();
-      f.draw([{ ...run, replyMessageId: note.id }, note], [f.session], conversation);
+      f.draw([{ ...run, replyMessageId: note.id }, note], f.source, conversation);
       expect(f.container.querySelector(".surface-chip")).not.toBeNull();
     } finally {
       f.client.dispose();

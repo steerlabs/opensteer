@@ -7,7 +7,7 @@ import type {
   IntegrationConnectionSummary,
   IntegrationDefinitionSummary,
 } from "@opensteer/integration-core";
-import type { ComputerAppRemedy, LegacyMachineSummary } from "@opensteer/protocol";
+import type { ComputerAppRemedy, MachineSummary } from "@opensteer/protocol";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { ComputerAppsSection } from "./components/computer-apps/computer-apps-section.js";
@@ -82,7 +82,7 @@ const machine = {
   pinnedThreads: 0,
   revocable: true,
   status: online ? "online" : "offline",
-} as LegacyMachineSummary;
+} as MachineSummary;
 const connections = access
   ? [
       {

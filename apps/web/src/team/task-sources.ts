@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { useHostSelector } from "@opensteer/client/react";
-import type { LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
+import type { HostSnapshot } from "@opensteer/client/host";
 import type { TaskSourceView } from "../components/home/home-models.js";
 import { useShell } from "../components/app-shell.js";
 import { useTeams } from "./team-attachments.js";

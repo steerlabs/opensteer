@@ -11,10 +11,13 @@ it("reads the ready shown page as automatic context and leaves blank tabs out", 
     url: "https://example.com/path",
   };
   const readBrowserContextCandidate = vi.fn().mockResolvedValue(candidate);
-  const host = { readBrowserContextCandidate } as unknown as HostClient;
+  // A page is read through the session this device was shown it in.
+  const tabViewer = () => ({ kind: "page", sessionId: candidate.sessionId, surfaceId: "tab:test" });
+  const host = { readBrowserContextCandidate, tabViewer } as unknown as HostClient;
   const place = {
     availability: "ready",
-    destination: { kind: "browser", sessionId: candidate.sessionId, tabId: candidate.tabId },
+    kind: "page",
+    key: candidate.tabId,
   } as unknown as PlaceItem;
   expect(await autoPlacePart(host, place)).toEqual({
     ...candidate,
@@ -31,12 +34,8 @@ it("reads the ready shown page as automatic context and leaves blank tabs out", 
 });
 
 it("keeps app tabs out of a draft's choices and its automatic context", async () => {
-  const page = { kind: "browser" } as unknown as PlaceItem;
-  const app = {
-    availability: "ready",
-    destination: { kind: "opensteer-app", appId: "app_11111111-1111-4111-8111-111111111111" },
-    kind: "opensteer-app",
-  } as unknown as PlaceItem;
+  const page = { kind: "page" } as unknown as PlaceItem;
+  const app = { availability: "ready", kind: "app" } as unknown as PlaceItem;
   expect(attachablePlaces([page, app])).toEqual([page]);
   expect(await autoPlacePart({} as unknown as HostClient, app)).toBeNull();
 });

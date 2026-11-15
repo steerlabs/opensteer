@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import type { BrowserFrameStore, BrowserFrameView } from "./client.js";
-import type { PlaceItem } from "./places.js";
 import {
   browserTabPicture,
   getBrowserLastPicture,
-  keepBrowserLastPictures,
+  reconcileBrowserLastPictures,
   rememberBrowserLastPicture,
 } from "./browser-last-picture.js";
 
@@ -110,20 +109,17 @@ describe("last presented browser pictures", () => {
 
   it("forgets a picture once its tab closes or loads another page", () => {
     const { frames, remember, listeners } = setup();
-    const place = (n: number, documentId: string | null) =>
-      ({
-        destination: { kind: "browser", sessionId: "session", tabId: tab(n) },
-        browser: { sessionId: "session", documentId },
-      }) as unknown as PlaceItem;
-    keepBrowserLastPictures(frames, [place(1, "d1"), place(2, "d2")]);
+    const keep = (documents: Readonly<Record<string, string>>) =>
+      reconcileBrowserLastPictures(frames, (_sessionId, tabId) => documents[tabId]);
+    keep({ [tab(1)]: "d1", [tab(2)]: "d2" });
     remember(tab(1));
     remember(tab(2));
-    keepBrowserLastPictures(frames, [place(1, "d1"), place(2, "d2")]);
+    keep({ [tab(1)]: "d1", [tab(2)]: "d2" });
     expect(getBrowserLastPicture(frames, "session", tab(1))).not.toBeNull();
-    keepBrowserLastPictures(frames, [place(1, "d1b"), place(2, "d2")]);
+    keep({ [tab(1)]: "d1b", [tab(2)]: "d2" });
     expect(getBrowserLastPicture(frames, "session", tab(1))).toBeNull();
     expect(listeners.get(`session:${tab(1)}`)?.size).toBe(0);
-    keepBrowserLastPictures(frames, [place(1, "d1b")]);
+    keep({ [tab(1)]: "d1b" });
     expect(getBrowserLastPicture(frames, "session", tab(2))).toBeNull();
     expect(listeners.get(`session:${tab(2)}`)?.size).toBe(0);
   });

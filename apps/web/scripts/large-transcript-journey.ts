@@ -19,7 +19,7 @@
 import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { LegacyHostSnapshot as HostSnapshot, TranscriptEntry } from "@opensteer/client/host";
+import type { HostSnapshot, TranscriptEntry } from "@opensteer/client/host";
 import type { MockHostClient } from "@opensteer/client/mock";
 import type { ThreadId } from "@opensteer/core";
 import type { BrowserContext, Page } from "playwright-core";

@@ -1,6 +1,6 @@
 import {
   compareSequence,
-  type AgentEventView as AgentEvent,
+  type TabAgentEventView as AgentEvent,
   type Run,
   type Sequence,
 } from "@opensteer/core";

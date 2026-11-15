@@ -3,7 +3,7 @@ import type {
   IntegrationConnectionSummary,
   IntegrationDefinitionSummaryView,
 } from "@opensteer/integration-core";
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 import { computerGlyph } from "@opensteer/client/computers";
 import {
   computerAppPlatformTargetLabel,
@@ -40,7 +40,7 @@ export function ComputerAppPicker({
   readonly busy: boolean;
   readonly connections: readonly IntegrationConnectionSummary[];
   readonly definition: IntegrationDefinitionSummaryView;
-  readonly machines: readonly LegacyMachineSummary[];
+  readonly machines: readonly MachineSummary[];
   readonly onTurnOn: (input: {
     readonly access: IntegrationAccess;
     readonly runnerId: string;

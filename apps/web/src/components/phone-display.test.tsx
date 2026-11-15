@@ -5,11 +5,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 import { sharedDisplayStreams } from "@opensteer/client/integrations";
-import { RunnerIdSchema } from "@opensteer/core";
-import type { LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
+import { RunnerIdSchema, type TabTarget } from "@opensteer/core";
+import type { HostSnapshot } from "@opensteer/client/host";
 import { LivePlace } from "./workspace/viewfinder.js";
 import type { WebSocketClient } from "@opensteer/client/host";
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 
 /*
  * Ways the live phone Watch can fail in a page, each answered below:
@@ -106,7 +106,14 @@ vi.mock("./workspace/workspace-context.js", () => ({
 vi.mock("./workspace/tab-closer.js", () => ({ useTabCloser: () => () => undefined }));
 const { ComputerWatchView } = await import("./computer-watch.js");
 const { OwnerView } = await import("./workspace/owner-view.js");
-const { ownerViewDestination } = await import("@opensteer/client/host");
+
+/** Opens a window or phone tab the way a person does and answers this device's view of it. */
+async function ownView(target: TabTarget) {
+  const tab = await client.openTab(target);
+  const viewer = await client.activateTab(tab.tabId);
+  if (viewer.kind !== "window" && viewer.kind !== "phone") throw new Error("Expected a view");
+  return viewer.view;
+}
 
 let root: Root | null = null;
 let client: MockHostClient;
@@ -200,7 +207,7 @@ afterEach(() => {
   Reflect.deleteProperty(window, "opensteerDesktop");
 });
 
-function phone(): { machine: LegacyMachineSummary; sessionId: string } {
+function phone(): { machine: MachineSummary; sessionId: string } {
   const machine = client.getSnapshot().machines.find((item) => item.device?.form === "phone");
   const sessionId = machine?.computerUse?.sessions[0]?.sessionId;
   if (!machine || !sessionId) throw new Error("Missing phone fixture");
@@ -908,29 +915,31 @@ describe("negotiated phone viewer wire", () => {
 });
 
 async function macOwner() {
-  const machine = client
-    .getSnapshot()
-    .machines.find((machine) =>
-      machine.computerUse?.sessions.some((session) => !session.display && session.apps.length),
-    );
-  const app = machine?.computerUse?.sessions.find((session) => !session.display)?.apps[0];
-  if (!machine || !app) throw new Error("No Mac fixture");
-  const view = await client.openComputerView(machine.id, { kind: "app", app });
+  const approved = (await client.listApprovedComputerApps()).find(
+    (app) => app.target.kind === "app",
+  );
+  if (approved?.target.kind !== "app") throw new Error("No Mac fixture");
+  const view = await ownView({
+    kind: "window",
+    computerId: RunnerIdSchema.parse(approved.machineId),
+    bundleId: approved.target.app.bundleId,
+  });
   await settle();
-  const destination = ownerViewDestination(view);
-  if (destination.kind !== "app") throw new Error("No owner app destination");
   const container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
   act(() =>
     root!.render(
       <OwnerView
-        destination={destination}
         hostClient={client}
         hostConnected
+        machineId={view.machineId}
         marks={null}
         leading={null}
+        onReopen={async () => undefined}
+        phone={false}
         place={null}
+        source={{ kind: "owner-view", viewId: view.viewId, generation: view.generation }}
         trailing={null}
       />,
     ),
@@ -1188,20 +1197,20 @@ describe("phone owner controls", () => {
       (app) => app.machineId === machine.id && app.target.kind === "phone",
     )?.target;
     if (!target) throw new Error("Missing approved phone");
-    const view = await client.openComputerView(machine.id, target);
-    const destination = ownerViewDestination(view);
-    if (destination.kind !== "phone") throw new Error("Missing phone destination");
+    const view = await ownView({ kind: "phone", computerId: RunnerIdSchema.parse(machine.id) });
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
     act(() =>
       root!.render(
         <OwnerView
-          destination={destination}
           hostClient={client}
           hostConnected
+          machineId={view.machineId}
           marks={null}
           leading={null}
+          onReopen={async () => undefined}
+          phone
           trailing={null}
           place={null}
           source={{ kind: "owner-view", viewId: view.viewId, generation: view.generation }}

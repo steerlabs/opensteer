@@ -1,4 +1,4 @@
-import type { LegacyPersonShowMessage } from "@opensteer/protocol";
+import type { PersonShowMessage } from "@opensteer/protocol";
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
 import { VoiceContext } from "@opensteer/client/react";
 import { VoiceAsk } from "./voice-ask.js";
@@ -61,10 +61,9 @@ import {
   unwrapRpcResult,
   type ExecutionChoice,
   type ExecutionSelection,
-  type PendingBrowserTabDestination,
-  type PersonalSurfaceDestination,
+  type TabDestination,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type LocalRunnerIdentity,
   type ThreadPlacementOption,
   type ThreadSummary,
@@ -282,10 +281,7 @@ export function AppShell({
     const selection = placeSelection(new URLSearchParams(location.search));
     return {
       threadId: match ? decodeURIComponent(match[1]!) : null,
-      tabId:
-        selection.kind === "place" && selection.destination.kind === "browser"
-          ? selection.destination.tabId
-          : null,
+      tabId: selection.kind === "place" ? selection.destination.tabId : null,
     };
   });
   useEffect(() => {
@@ -298,14 +294,12 @@ export function AppShell({
     key: location.key,
     revision: 0,
     changedAt: 0,
-    pendingBrowserTab: new URLSearchParams(location.search).get("pendingBrowserTab"),
   });
   if (webLinkView.current.key !== location.key)
     webLinkView.current = {
       key: location.key,
       revision: webLinkView.current.revision + 1,
       changedAt: Date.now(),
-      pendingBrowserTab: new URLSearchParams(location.search).get("pendingBrowserTab"),
     };
   const [webLinkFailure, setWebLinkFailure] = useState<{
     message: string;
@@ -447,15 +441,8 @@ export function AppShell({
           ),
       },
       () => {
-        let pendingKey: string | null = null;
-        const select = selection(
-          (destination: PendingBrowserTabDestination | PersonalSurfaceDestination) => {
-            if (destination.kind === "pending-browser") {
-              pendingKey = destination.idempotencyKey;
-              webLinkNavigation.current.showPendingBrowserTab(pendingKey);
-            } else if (pendingKey)
-              webLinkNavigation.current.replacePendingBrowserTab(pendingKey, destination);
-          },
+        const select = selection((destination: TabDestination) =>
+          webLinkNavigation.current.showPlace(destination),
         );
         return (link, acknowledge) =>
           openDesktopWebLink(link, hostClient, link.request!, select(link.receivedAt), acknowledge);
@@ -1146,18 +1133,16 @@ function WorkspaceKeys({
   usePlaceSuccession(hostClient);
   const navigate = useNavigate();
   const { key, pathname, search } = useLocation();
-  const sessions = useHostSelector(hostClient, selectBrowserSessions);
   const known = useHostSelector(hostClient, selectBrowsersKnown);
   const deploymentId = useHostSelector(hostClient, selectDeploymentId);
   const userId = useHostSelector(hostClient, selectUserId);
   const canonicalized = useRef<string | null>(null);
-  const restoreVersion = useHostSelector(hostClient, (snapshot) => snapshot.tabRestoreVersion);
   // The restore answers after a read; by then the address may have moved on
   // (Home names its draft), and the place joins that address, not the old one.
   const address = useRef({ pathname, search });
   address.current = { pathname, search };
   useEffect(() => {
-    if (!known || !deploymentId || !userId || restoreVersion !== 1) return;
+    if (!known || !deploymentId || !userId) return;
     const viewer = `${deploymentId}:${userId}`;
     if (restored.current === viewer) return;
     restored.current = viewer;
@@ -1165,63 +1150,33 @@ function WorkspaceKeys({
     // A remembered place belongs to Tasks; a team or full-window page keeps its own address.
     if (
       workspaceSide(opened.pathname) !== "tasks" ||
-      new URLSearchParams(opened.search).has("panel") ||
-      new URLSearchParams(opened.search).has("browser")
+      new URLSearchParams(opened.search).has("panel")
     )
       return;
     const scope = { deploymentId, userId };
     if (rememberedTalk(scope)) return;
     const remembered = rememberedPlace(scope);
-    let cancelled = false;
-    if (remembered?.kind === "browser") {
-      void (async () => {
-        const store = hostClient.browserTabs;
-        const groupId = store.group(remembered.sessionId)
-          ? remembered.sessionId
-          : (store.groupForSession(remembered.sessionId) ??
-            (remembered.tabId ? store.groupForTab(remembered.tabId) : undefined));
-        let sessionId =
-          groupId && remembered.tabId && store.tab(groupId, remembered.tabId)
-            ? store.group(groupId)!.sessionId
-            : null;
-        // A group the client holds only part of cannot say the tab is gone; the Host can.
-        if (sessionId === null && !(groupId && store.tabs(groupId).whole)) {
-          const read = await hostClient.readPersonalTabs?.(remembered.sessionId);
-          if (read?.tabs?.some((tab) => tab.id === remembered.tabId)) sessionId = read.session.id;
-        }
-        if (cancelled) return;
-        const now = address.current;
-        if (workspaceSide(now.pathname) !== "tasks") return;
-        const params = new URLSearchParams(now.search);
-        params.set("panel", "browser");
-        if (sessionId !== null) {
-          params.set("browser", sessionId);
-          params.set("browserTab", remembered.tabId ?? "");
-        }
-        void navigate({ pathname: now.pathname, search: `?${params}` }, { replace: true });
-      })().catch(() => undefined);
+    if (remembered) {
+      // The remembered tab returns while it is listed; a closed one leaves only the panel.
+      const now = address.current;
+      const params = new URLSearchParams(now.search);
+      params.set("panel", "browser");
+      if (hostClient.getSnapshot().tabs.get(remembered.tabId)) params.set("tab", remembered.tabId);
+      void navigate({ pathname: now.pathname, search: `?${params}` }, { replace: true });
     } else if (rememberedNewTab(scope)) {
       const params = new URLSearchParams(opened.search);
       params.set("panel", "browser");
       void navigate({ pathname: opened.pathname, search: `?${params}` }, { replace: true });
     }
-    return () => {
-      cancelled = true;
-    };
-  }, [deploymentId, hostClient, known, navigate, restoreVersion, userId]);
+  }, [deploymentId, hostClient, known, navigate, userId]);
   useEffect(() => {
     // A redirect owns its own address change; nothing else rewrites it meanwhile.
     if (canonicalized.current === key || pathname === "/live") return;
-    const next = canonicalPlaceSearch(search, (sessionId) => {
-      const session = sessions.find((candidate) => candidate.id === sessionId);
-      if (!session) return known ? null : undefined;
-      const groupId = hostClient.browserTabs.groupForSession(sessionId);
-      return (groupId && hostClient.browserTabs.tabs(groupId).ids[0]) ?? null;
-    });
+    const next = canonicalPlaceSearch(search);
     if (next === null) return;
     canonicalized.current = key;
     void navigate({ pathname, search: next }, { replace: true });
-  }, [hostClient, key, known, navigate, pathname, search, sessions]);
+  }, [key, navigate, pathname, search]);
   // The place the person put in the middle — by a row, a link, Back or a
   // typed address — is the one Show computer returns to.
   useEffect(() => {
@@ -1231,14 +1186,11 @@ function WorkspaceKeys({
       return;
     }
     if (selection.kind !== "place") return;
-    const { destination } = selection;
-    if (destination.kind !== "browser" || destination.tabId)
-      rememberPlace({ deploymentId, userId }, destination);
+    rememberPlace({ deploymentId, userId }, selection.destination);
   }, [deploymentId, search, userId]);
   return null;
 }
 
-const selectBrowserSessions = (snapshot: HostSnapshot) => snapshot.browserSessions;
 const selectBrowsersKnown = (snapshot: HostSnapshot) =>
   snapshot.deploymentShape !== null && snapshot.connection === "connected";
 const selectDeploymentId = (snapshot: HostSnapshot) => snapshot.deploymentId;
@@ -1304,7 +1256,7 @@ function PersonShowNavigation({
   const location = useLocation();
   const { nav } = useWorkspace();
   const cursor = useVoiceCursor();
-  const personShowPort = useRef<(message: LegacyPersonShowMessage) => void>(() => undefined);
+  const personShowPort = useRef<(message: PersonShowMessage) => void>(() => undefined);
   personShowPort.current = (message) => {
     const match = /^\/tasks\/([^/]+)/.exec(location.pathname);
     // The composer is where the person asked; any other field is work in progress.

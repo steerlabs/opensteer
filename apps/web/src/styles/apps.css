@@ -180,3 +180,54 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* Apps: every app the person published, with what runs it and its controls. */
+.app-row {
+  cursor: default;
+}
+
+.app-row__side {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-8);
+}
+
+.app-row__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.app-row__origin--gone {
+  color: var(--muted-dim);
+}
+
+.app-row__rename input {
+  width: 100%;
+  min-width: 0;
+  font: inherit;
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-strong);
+}
+
+.app-row__failure {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  color: var(--red-text);
+  font-size: var(--text-md);
+}
+
+/* A narrow page puts the controls under the words. */
+@container automations (max-width: 520px) {
+  .app-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .app-row__side {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+}

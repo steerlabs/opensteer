@@ -1,4 +1,4 @@
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -25,13 +25,12 @@ afterEach(() => {
 const macId = "rnr_11111111-1111-4111-8111-111111111111";
 const ready = { checkedAt: null, detail: null, readiness: "ready" } as const;
 
-function machine(overrides: Partial<LegacyMachineSummary> = {}): LegacyMachineSummary {
+function machine(overrides: Partial<MachineSummary> = {}): MachineSummary {
   return {
     access: null,
     allowedModules: ["integrations", "shell"],
     apps: null,
     computerUse: null,
-    tabOpenedAt: null,
     detail: null,
     device: null,
     enrollmentId: "ren_fixture",
@@ -54,7 +53,7 @@ function machine(overrides: Partial<LegacyMachineSummary> = {}): LegacyMachineSu
 }
 
 /** One folder open to the owner's agents. */
-function reachable(commands = false): NonNullable<LegacyMachineSummary["access"]> {
+function reachable(commands = false): NonNullable<MachineSummary["access"]> {
   return {
     activeSessions: [],
     ownerReachAvailable: true,
@@ -323,10 +322,8 @@ describe("computerStatus", () => {
 });
 
 describe("what a device lends besides running agents", () => {
-  const phone = (
-    modules: LegacyMachineSummary["modules"],
-    status: LegacyMachineSummary["status"] = "online",
-  ) => machine({ allowedModules: ["browser", "integrations"], modules, status });
+  const phone = (modules: MachineSummary["modules"], status: MachineSummary["status"] = "online") =>
+    machine({ allowedModules: ["browser", "integrations"], modules, status });
   const profiles = [{ homeRunnerId: macId }, { homeRunnerId: macId }, { homeRunnerId: null }];
 
   it("takes apps and the browser from what the device advertises, never its platform", () => {

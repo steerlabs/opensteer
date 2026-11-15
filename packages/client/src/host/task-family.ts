@@ -6,7 +6,7 @@ import {
   type AssignmentReader,
   type AssignmentTone,
 } from "./assignment-presentation.js";
-import type { LegacyHostSnapshot as HostSnapshot, ThreadAutomation } from "./client.js";
+import type { HostSnapshot, ThreadAutomation } from "./client.js";
 import type { TaskMark } from "./task-marks.js";
 import { requestWaitingOnAssignment } from "./waiting-requests.js";
 

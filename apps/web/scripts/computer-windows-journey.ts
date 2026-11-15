@@ -38,107 +38,45 @@ try {
   await check("two owner tabs survive independent closing", async () => {
     await page.getByRole("button", { name: "Notes — Shopping list", exact: true }).click();
     await page.locator(".owner-view").waitFor();
+    // Two windows of one app are two tabs; closing one leaves the other.
     const opened = await page.evaluate(async () => {
       const client = Reflect.get(window, "opensteerMock") as MockHostClient;
       const app = (await client.listApprovedComputerApps()).find((a) => a.name === "Notes")!;
       if (app.target.kind !== "app") throw Error("Expected Notes");
-      const a = await client.openComputerView(app.machineId, { ...app.target, window: 101 });
-      const b = await client.openComputerView(app.machineId, { ...app.target, window: 102 });
-      return { a, b };
+      const windows = await client.listComputerAppWindows(app.machineId, app.target.app);
+      // The page reads plain JSON; the Host parses its own branded ids.
+      const computerId = app.machineId as never;
+      const [a, b] = await Promise.all(
+        windows
+          .slice(0, 2)
+          .map((held) => client.openTab({ kind: "window", computerId, windowId: held.windowId })),
+      );
+      return { a: a!.tabId as string, b: b!.tabId as string };
     });
-    await page
-      .locator(`.side-tab[data-place-key="app:${opened.b.machineId}:com.apple.notes:102"]`)
-      .waitFor();
-    await page
-      .locator(`.side-tab[data-place-key="app:${opened.a.machineId}:com.apple.notes:101"]`)
-      .waitFor();
+    await page.locator(`.side-tab[data-place-key="${opened.b}"]`).waitFor();
+    await page.locator(`.side-tab[data-place-key="${opened.a}"]`).waitFor();
     await page.screenshot({
       animations: "disabled",
       path: path.join(directory, "two-owner-tabs.png"),
     });
     await page.evaluate(async ({ a }) => {
       const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-      await client.closeComputerView(a.viewId, a.generation);
+      await client.closeTabs([a as never]);
     }, opened);
-    const remaining = await page.evaluate(() => {
-      const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-      return client
-        .getSnapshot()
-        .machines.flatMap((m) => m.computerUse?.ownerViews ?? [])
-        .filter((v) => v.state === "ready")
-        .map((v) => v.window?.id);
-    });
-    const observed = { different: opened.a.viewId !== opened.b.viewId, remaining };
+    await page.locator(`.side-tab[data-place-key="${opened.a}"]`).waitFor({ state: "detached" });
+    const observed = {
+      different: opened.a !== opened.b,
+      remaining: await page.locator(`.side-tab[data-place-key="${opened.b}"]`).count(),
+    };
     expectThat(
       observed,
-      observed.different && observed.remaining.includes(102) && !observed.remaining.includes(101),
-      "owner tabs did not close independently",
+      observed.different && observed.remaining === 1,
+      "window tabs did not close independently",
     );
     await page.screenshot({
       animations: "disabled",
       path: path.join(directory, "one-owner-closed.png"),
     });
-    return observed;
-  });
-  await check("task Watch follows window titles and task end never substitutes owner", async () => {
-    const target = await page.evaluate(() => {
-      const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-      const machine = client.getSnapshot().machines.find((m) => m.name === "Mac mini")!;
-      const session = machine.computerUse!.sessions.find((s) =>
-        s.apps.some((a) => a.displayName === "Notes"),
-      )!;
-      return { machineId: machine.id, sessionId: session.sessionId };
-    });
-    await page.goto(
-      `${web.origin}/?panel=browser&mac=${target.machineId}&app=com.apple.notes&computerSession=${target.sessionId}`,
-    );
-    await page.locator(".computer-watch__app", { hasText: "Notes" }).waitFor();
-    await page.evaluate(async ({ machineId, sessionId }) => {
-      const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-      const app = (await client.listApprovedComputerApps()).find((a) => a.name === "Notes")!;
-      if (app.target.kind !== "app") throw Error("Expected Notes");
-      await client.openComputerView(machineId, { ...app.target, window: 102 });
-      client.setComputerSessionWindow(machineId, sessionId, "com.apple.notes", {
-        id: 102,
-        title: "Work plan",
-      });
-    }, target);
-    await page.locator(".computer-watch__app", { hasText: "Notes — Work plan" }).waitFor();
-    await page
-      .locator(
-        `.side-tab[data-place-key="app:${target.machineId}:com.apple.notes:task:${target.sessionId}"] .side-tab__title`,
-        { hasText: "Notes — Work plan" },
-      )
-      .waitFor();
-    await page.screenshot({
-      animations: "disabled",
-      path: path.join(directory, "watch-window-change.png"),
-    });
-    const before = page.url();
-    await page.evaluate(async ({ sessionId }) => {
-      const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-      await client.rpc["integration.computer.session.stop"]({ sessionId });
-    }, target);
-    await page
-      .locator(
-        `.side-tab[data-place-key="app:${target.machineId}:com.apple.notes:task:${target.sessionId}"]`,
-      )
-      .waitFor({ state: "detached" });
-    const observed = {
-      before,
-      after: page.url(),
-      owner: await page.locator(".owner-view").count(),
-      ownerStillListed: await page
-        .locator(`.side-tab[data-place-key="app:${target.machineId}:com.apple.notes:102"]`)
-        .count(),
-    };
-    expectThat(
-      observed,
-      observed.owner === 0 &&
-        observed.ownerStillListed === 1 &&
-        !new URL(page.url()).searchParams.has("computerView"),
-      "task end substituted an owner view",
-    );
     return observed;
   });
   await check(

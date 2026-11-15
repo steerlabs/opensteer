@@ -1,8 +1,15 @@
 import { copyText } from "@opensteer/shared/clipboard";
 import type { BrowserCommand, HostClient, PlaceItem } from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
+import { useHostSelector, useTabLayout } from "@opensteer/client/react";
 import { deviceElsewhere } from "@opensteer/client/computers";
-import { BrowserSurfaceIdSchema } from "@opensteer/core";
+import {
+  TabGroupColorSchema,
+  type TabGroup,
+  type TabGroupColor,
+  type TabId,
+  type TabTarget,
+} from "@opensteer/core";
+import type { TabOrganizeInput } from "@opensteer/protocol";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { DeviceLabel } from "../computers/device-label.js";
 import { useHereId } from "../computers/here.js";
@@ -14,14 +21,12 @@ import { ProfileAvatar, browserWords, type BrowserPresentation } from "./identit
 import { OpenInRow } from "./open-in.js";
 import { useTabCloser } from "./tab-closer.js";
 import { tabGroupStyle } from "./tab-group.js";
-import { useWorkspace, type LocalMachine } from "./workspace-context.js";
+import { useWorkspace } from "./workspace-context.js";
 
 /**
- * A web tab's own menu, as a browser's tab has, under a line naming its
- * profile: Reload, Duplicate tab, Open this page in…, Copy link, Close tab.
- * The full address comes from the tab's candidate read; the catalog only knows
- * its site. Nothing here moves the middle except what opens a page, which shows
- * it as a browser does.
+ * One menu for every kind of tab: a page's own actions (Reload, Duplicate,
+ * Open this page in…, Copy link) while this device views it, a window's Use on
+ * this Mac, grouping, Close and Reopen. Closing only takes the tab off the list.
  */
 export function TabMenu({
   anchor,
@@ -41,65 +46,98 @@ export function TabMenu({
   readonly place: PlaceItem;
   readonly presentation: BrowserPresentation | null;
 }) {
-  const { nav } = useWorkspace();
-  const layout = useHostSelector(hostClient, (snapshot) => snapshot.browserTabGroups);
+  const { nav, localMachine } = useWorkspace();
+  const layout = useTabLayout(hostClient);
   const machines = useHostSelector(hostClient, (snapshot) => snapshot.machines);
+  const viewer = useHostSelector(hostClient, () => hostClient.tabViewer(place.key));
   const hereId = useHereId();
-  const reopenAvailable = useHostSelector(hostClient, (snapshot) => snapshot.tabReopenAvailable);
   const toast = useToast();
   const requestClose = useTabCloser();
-  if (place.destination.kind !== "browser" || !place.destination.tabId) return null;
-  const { sessionId, tabId } = place.destination;
-  const surfaceId = BrowserSurfaceIdSchema.parse(tabId);
-  const currentGroup = layout?.groups.find((group) => group.tabIds.includes(surfaceId));
-  const otherGroups = layout?.groups.filter((group) => group.id !== currentGroup?.id) ?? [];
+  const tabId = place.key;
+  const groups = layout.items.flatMap((item) => (item.kind === "group" ? [item.group] : []));
+  const currentGroup = groups.find((group) => group.tabIds.includes(tabId));
+  const otherGroups = groups.filter((group) => group.groupId !== currentGroup?.groupId);
   const failed = (error: unknown) => toast.error(actionErrorMessage(error));
-  const address = () =>
-    hostClient.readBrowserContextCandidate(sessionId, tabId).then((candidate) => candidate.url);
+  const ready = place.availability === "ready";
+  const page = place.kind === "page" ? place.tab : null;
+  const pageSession = viewer?.kind === "page" ? viewer.sessionId : null;
+  const url = page?.url && /^https?:\/\//iu.test(page.url) ? page.url : null;
   // The clipboard exists only in a secure context; a Host over plain HTTP has no Copy link.
   const clipboard = globalThis.navigator?.clipboard;
-  const ready = place.availability === "ready";
-  const opening: readonly SurfaceMenuItem[] = [
-    {
-      disabled: !ready,
-      icon: "reload",
-      label: "Reload",
-      onSelect: () =>
-        void sendToTab(hostClient, sessionId, tabId, {
-          surfaceId,
-          type: "navigation.reload",
-        }).catch(() => toast.error("The tab didn’t reload. Try again.")),
-    },
-    {
-      disabled: !ready,
-      icon: "browser",
-      label: "Duplicate tab",
-      onSelect: () => {
-        const show = nav.beginPlaceOperation();
-        void address()
-          .then((url) =>
-            hostClient.openBrowserTab(sessionId, /^https?:\/\//iu.test(url) ? { url } : {}),
-          )
-          .then((opened) => show({ kind: "browser", sessionId, tabId: opened.tabId }), failed);
-      },
-    },
-  ];
-  const copying: readonly SurfaceMenuItem[] = clipboard
+  const view = viewer?.kind === "window" ? viewer.view : null;
+  const useHere =
+    place.kind === "window" &&
+    view !== null &&
+    view.target.kind === "app" &&
+    localMachine?.useApp != null &&
+    localMachine.machineId === place.device.machineId
+      ? { use: localMachine.useApp, app: view.target.app, view }
+      : null;
+  const pageItems: readonly SurfaceMenuItem[] = page
     ? [
         {
-          disabled: !ready,
-          icon: "copy",
-          label: "Copy link",
+          disabled: !ready || !pageSession,
+          icon: "reload",
+          label: "Reload",
           onSelect: () =>
-            void address()
-              .then(copyText)
-              .then(
+            pageSession &&
+            void sendToTab(hostClient, pageSession, tabId, {
+              surfaceId: tabId,
+              type: "navigation.reload",
+            }).catch(() => toast.error("The tab didn’t reload. Try again.")),
+        },
+        {
+          disabled: !url,
+          icon: "browser",
+          label: "Duplicate tab",
+          onSelect: () => {
+            if (!url) return;
+            const show = nav.beginPlaceOperation();
+            void hostClient
+              .openTab(
+                (page.profile
+                  ? { kind: "page", url, profileId: page.profile.profileId }
+                  : {
+                      kind: "page",
+                      url,
+                      guest: true,
+                      computerId: page.computer.computerId,
+                    }) as TabTarget,
+              )
+              .then((opened) => show({ kind: "tab", tabId: opened.tabId }), failed);
+          },
+        },
+      ]
+    : [];
+  const copying: readonly SurfaceMenuItem[] =
+    clipboard && url
+      ? [
+          {
+            icon: "copy",
+            label: "Copy link",
+            onSelect: () =>
+              void copyText(url).then(
                 (success) =>
                   success
                     ? toast.success("Link copied")
                     : toast.error("Copy was blocked. Select the link to copy it."),
                 failed,
               ),
+          },
+        ]
+      : [];
+  const nativeItems: readonly SurfaceMenuItem[] = useHere
+    ? [
+        {
+          icon: "external-link",
+          label: "Use on this Mac",
+          onSelect: () =>
+            void useHere
+              .use(
+                { viewId: useHere.view.viewId, generation: useHere.view.generation },
+                useHere.app,
+              )
+              .catch(failed),
         },
       ]
     : [];
@@ -108,18 +146,16 @@ export function TabMenu({
     label: "Reopen closed tab",
     onSelect: () => {
       const show = nav.beginPlaceOperation();
-      void hostClient.reopenPersonalTab?.().then(
-        (result) =>
-          show({
-            kind: "browser",
-            sessionId: result.sessionId!,
-            tabId: result.tabId,
-          }),
-        failed,
-      );
+      void hostClient.reopenTab().then((tab) => show({ kind: "tab", tabId: tab.tabId }), failed);
     },
   };
   const closing: SurfaceMenuItem = {
+    detail:
+      place.kind === "page"
+        ? undefined
+        : place.occupants.length > 0
+          ? "Work there carries on"
+          : undefined,
     icon: "close",
     label: "Close tab",
     onSelect: () => requestClose(place),
@@ -133,6 +169,10 @@ export function TabMenu({
   };
   const words = presentation ? browserWords(presentation, hereId) : null;
   const device = presentation ? deviceElsewhere(machines, presentation.computerId, hereId) : null;
+  const organize = (group: TabOrganizeInput["group"]) => {
+    onClose();
+    return hostClient.organizeTabs({ tabIds: [tabId], group });
+  };
   return (
     <Popover
       anchor={anchor}
@@ -148,174 +188,86 @@ export function TabMenu({
           {device ? <DeviceLabel device={device} /> : null}
         </div>
       ) : null}
-      <div className="picker__section">
-        {opening.map((item) => (
-          <SurfaceMenuRow item={item} key={item.label} onChoose={choose(item)} />
-        ))}
-        <OpenInRow
-          disabled={!ready}
-          hostClient={hostClient}
-          onDone={() => {
-            onClose();
-            anchor.focus();
-          }}
-          place={place}
-          presentation={presentation}
-        />
-        {copying.map((item) => (
-          <SurfaceMenuRow item={item} key={item.label} onChoose={choose(item)} />
-        ))}
-      </div>
-      {layout && place.personalTab ? (
+      {pageItems.length || nativeItems.length ? (
         <div className="picker__section">
-          <SurfaceSubmenuRow icon="plus" label="Add to group">
-            <div className="picker__section">
-              <SurfaceMenuRow
-                item={{ icon: "plus", label: "New group" }}
-                onChoose={() => {
-                  onClose();
-                  void hostClient.groupBrowserTabs([tabId], {}).then(onEditGroup, failed);
-                }}
-              />
-            </div>
-            {otherGroups.length > 0 ? (
-              <div className="picker__section">
-                {otherGroups.map((group) => (
-                  <button
-                    className="picker__row"
-                    key={group.id}
-                    onClick={() => {
-                      onClose();
-                      void hostClient
-                        .groupBrowserTabs([tabId], { groupId: group.id })
-                        .catch(failed);
-                    }}
-                    role="menuitem"
-                    type="button"
-                  >
-                    <span className="picker__check">
-                      <span className="tab-group-dot" style={tabGroupStyle(group.color)} />
-                    </span>
-                    <span className="picker__label">{group.title || "Untitled"}</span>
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </SurfaceSubmenuRow>
-          {currentGroup ? (
-            <SurfaceMenuRow
-              item={{ icon: "browser", label: "Remove from group" }}
-              onChoose={() => {
+          {[...pageItems, ...nativeItems].map((item) => (
+            <SurfaceMenuRow item={item} key={item.label} onChoose={choose(item)} />
+          ))}
+          {page ? (
+            <OpenInRow
+              disabled={!url}
+              hostClient={hostClient}
+              onDone={() => {
                 onClose();
-                void hostClient.ungroupBrowserTabs([tabId]).catch(failed);
+                anchor.focus();
               }}
+              place={place}
+              presentation={presentation}
             />
           ) : null}
+          {copying.map((item) => (
+            <SurfaceMenuRow item={item} key={item.label} onChoose={choose(item)} />
+          ))}
         </div>
       ) : null}
       <div className="picker__section">
-        <SurfaceMenuRow item={closing} onChoose={choose(closing)} />
-        {reopenAvailable && hostClient.reopenPersonalTab ? (
-          <SurfaceMenuRow item={reopen} onChoose={choose(reopen)} />
+        <SurfaceSubmenuRow icon="plus" label="Add to group">
+          <div className="picker__section">
+            <SurfaceMenuRow
+              item={{ icon: "plus", label: "New group" }}
+              onChoose={() =>
+                void organize({ name: "New group", color: nextGroupColor(groups) }).then(
+                  (result) => onEditGroup(groupOf(result.groups, tabId)),
+                  failed,
+                )
+              }
+            />
+          </div>
+          {otherGroups.length > 0 ? (
+            <div className="picker__section">
+              {otherGroups.map((group) => (
+                <button
+                  className="picker__row"
+                  key={group.groupId}
+                  onClick={() => void organize({ groupId: group.groupId }).catch(failed)}
+                  role="menuitem"
+                  type="button"
+                >
+                  <span className="picker__check">
+                    <span className="tab-group-dot" style={tabGroupStyle(group.color)} />
+                  </span>
+                  <span className="picker__label">{group.name}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </SurfaceSubmenuRow>
+        {currentGroup ? (
+          <SurfaceMenuRow
+            item={{ icon: "browser", label: "Remove from group" }}
+            onChoose={() => void organize(null).catch(failed)}
+          />
         ) : null}
       </div>
-    </Popover>
-  );
-}
-
-/** Whether an app's or phone's row has anything to offer in a menu of its own. */
-export function nativeTabMenuOffered(place: PlaceItem, local: LocalMachine | null): boolean {
-  return (
-    place.kind === "opensteer-app" ||
-    place.ownerClose !== null ||
-    (place.phoneTab === true && place.closable) ||
-    (place.kind === "app" &&
-      place.ownerView !== null &&
-      local?.useApp != null &&
-      local.machineId === place.device?.machineId)
-  );
-}
-
-/**
- * An app's or phone's own menu: bring the app forward on this Mac (only the
- * desktop app, only for this Mac), or close the person's view — which never
- * quits the app and never stops a task. A published app's menu closes its tab.
- */
-export function NativeTabMenu({
-  anchor,
-  at,
-  onClose,
-  place,
-}: {
-  readonly anchor: HTMLElement;
-  readonly at: { readonly x: number; readonly y: number };
-  readonly onClose: () => void;
-  readonly place: PlaceItem;
-}) {
-  const { localMachine } = useWorkspace();
-  const toast = useToast();
-  const requestClose = useTabCloser();
-  const view = place.ownerView;
-  const app = place.icon.kind === "app" ? place.icon.app : null;
-  const useHere =
-    place.kind === "app" &&
-    view !== null &&
-    app !== null &&
-    localMachine?.useApp != null &&
-    localMachine.machineId === place.device?.machineId
-      ? localMachine.useApp
-      : null;
-  const items: SurfaceMenuItem[] = [
-    ...(useHere && view && app
-      ? [
-          {
-            icon: "external-link" as const,
-            label: "Use on this Mac",
-            onSelect: () =>
-              void useHere({ viewId: view.viewId, generation: view.generation }, app).catch(
-                (error: unknown) => toast.error(actionErrorMessage(error)),
-              ),
-          },
-        ]
-      : []),
-    ...(place.ownerClose && !(place.phoneTab && place.closable)
-      ? [
-          {
-            detail:
-              place.occupants.length > 0 ? "The task keeps working" : `${place.title} stays open`,
-            icon: "close" as const,
-            label: "Close view",
-            onSelect: () => requestClose(place),
-          },
-        ]
-      : []),
-    ...(place.kind === "opensteer-app" || (place.phoneTab && place.closable)
-      ? [{ icon: "close" as const, label: "Close tab", onSelect: () => requestClose(place) }]
-      : []),
-  ];
-  return (
-    <Popover
-      anchor={anchor}
-      at={at}
-      className="popover--surface popover--tab-menu"
-      label={place.title}
-      onClose={onClose}
-    >
       <div className="picker__section">
-        {items.map((item) => (
-          <SurfaceMenuRow
-            item={item}
-            key={item.label}
-            onChoose={() => {
-              onClose();
-              anchor.focus();
-              item.onSelect?.();
-            }}
-          />
-        ))}
+        <SurfaceMenuRow item={closing} onChoose={choose(closing)} />
+        <SurfaceMenuRow item={reopen} onChoose={choose(reopen)} />
       </div>
     </Popover>
   );
+}
+
+/** The colour used least so far, as a new group's. */
+export function nextGroupColor(groups: readonly TabGroup[]): TabGroupColor {
+  return TabGroupColorSchema.options.reduce((least, color) =>
+    groups.filter((group) => group.color === color).length <
+    groups.filter((group) => group.color === least).length
+      ? color
+      : least,
+  );
+}
+function groupOf(groups: readonly TabGroup[], tabId: TabId): string | null {
+  return groups.find((group) => group.tabIds.includes(tabId))?.groupId ?? null;
 }
 
 /**

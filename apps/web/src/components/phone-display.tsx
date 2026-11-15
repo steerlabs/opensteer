@@ -14,11 +14,7 @@ import {
   type MouseEvent,
   type PointerEvent,
 } from "react";
-import type {
-  NativeViewerSource,
-  HostClient,
-  LegacyHostSnapshot as HostSnapshot,
-} from "@opensteer/client/host";
+import type { NativeViewerSource, HostClient, HostSnapshot } from "@opensteer/client/host";
 import {
   DisplayEditingSession,
   displayEditingAbilities,

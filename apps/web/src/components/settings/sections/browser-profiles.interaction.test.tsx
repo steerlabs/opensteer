@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import type { LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
+import type { HostSnapshot } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";

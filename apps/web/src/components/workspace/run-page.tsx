@@ -176,11 +176,11 @@ export const RunPage = memo(function RunPage({
   // page hand it over without the watch ever closing between them.
   const destination = place?.destination ?? null;
   const tab =
-    destination?.kind === "browser" && destination.tabId
-      ? { sessionId: destination.sessionId, tabId: destination.tabId }
+    place?.kind === "page" && destination && place.pageSession
+      ? { sessionId: place.pageSession, tabId: destination.tabId }
       : null;
   // A sleeping tab shows its last picture: watching it would wake it.
-  const awake = useBrowserTabAwake(hostClient, tab?.sessionId, tab?.tabId);
+  const awake = useBrowserTabAwake(hostClient, tab?.tabId);
   useEffect(
     () =>
       tab && awake

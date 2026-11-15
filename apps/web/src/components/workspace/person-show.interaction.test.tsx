@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { expect, it, vi } from "vitest";
-import { LegacyPersonShowMessageSchema, computerAppIdentityKey } from "@opensteer/protocol";
+import { PersonShowMessageSchema } from "@opensteer/protocol";
 import { createId } from "@opensteer/core";
 import { VoiceController } from "@opensteer/client/voice";
 import {
@@ -16,8 +16,8 @@ import {
   tabSearch,
 } from "./workspace.interaction.test-support.js";
 
-it.each(["app", "phone"] as const)(
-  "opens the Run's current %s through shared navigation",
+it.each(["window", "phone"] as const)(
+  "opens the requested %s tab through shared navigation",
   async (kind) => {
     await mount(
       (host) =>
@@ -28,35 +28,22 @@ it.each(["app", "phone"] as const)(
     element<HTMLElement>("[data-composer-input]").focus();
     const snapshot = client.getSnapshot();
     const source = snapshot.threads.find((thread) => thread.purpose === "task")!;
-    const machine = snapshot.machines.find((machine) =>
-      machine.computerUse?.sessions.some((session) => session.display === (kind === "phone")),
+    const tab = [...snapshot.tabs.rows.values()].find(
+      (row) => row.kind === kind && row.state !== "unavailable",
     )!;
-    const session = machine.computerUse!.sessions.find(
-      (session) => session.display === (kind === "phone"),
-    )!;
-    const place =
-      kind === "app"
-        ? { kind, machineId: machine.id, appKey: computerAppIdentityKey(session.apps[0]!) }
-        : { kind, machineId: machine.id, display: "main" };
     await act(async () =>
       client.receivePersonShow(
-        LegacyPersonShowMessageSchema.parse({
+        PersonShowMessageSchema.parse({
           type: "host.show",
           threadId: source.id,
-          runId: session.runId,
-          target: { place, runId: session.runId },
+          runId: createId("run"),
+          target: { tabId: tab.tabId },
         }),
       ),
     );
     const params = new URLSearchParams(history.at(-1)!.search);
-    if (kind === "app") {
-      expect(params.get("computerSession")).toBe(session.sessionId);
-      expect(params.get("mac")).toBe(machine.id);
-      expect(params.get("app")).toBe("appKey" in place ? place.appKey : null);
-    } else {
-      expect(params.get("computerSession")).toBeNull();
-      expect(params.get("phone")).toBe(machine.id);
-    }
+    expect(params.get("panel")).toBe("browser");
+    expect(params.get("tab")).toBe(tab.tabId);
   },
 );
 
@@ -73,11 +60,11 @@ it("routes an authorized unloaded Thread through the existing Thread route", asy
   const threadId = createId("thread");
   await act(async () =>
     client.receivePersonShow(
-      LegacyPersonShowMessageSchema.parse({
+      PersonShowMessageSchema.parse({
         type: "host.show",
         runId: createId("run"),
         threadId: source.id,
-        target: { threadId },
+        target: { taskId: threadId },
       }),
     ),
   );
@@ -93,18 +80,17 @@ it.each(["task"])("shows a requested tab from a %s while its composer has focus"
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   const threadId = history.at(-1)!.path.split("/").at(-1)!;
   const place = pageTab();
-  if (place.destination.kind !== "browser") throw new Error("Expected a browser tab");
   const composer = element<HTMLElement>("[data-composer-input]");
   composer.focus();
   expect(document.activeElement).toBe(composer);
   const before = history.length;
   await act(async () =>
     client.receivePersonShow(
-      LegacyPersonShowMessageSchema.parse({
+      PersonShowMessageSchema.parse({
         type: "host.show",
         runId: createId("run"),
         threadId,
-        target: { tabId: place.destination.kind === "browser" ? place.destination.tabId : null },
+        target: { tabId: place.key },
       }),
     ),
   );
@@ -122,11 +108,11 @@ it("leaves other focused work, hidden windows and other conversations alone with
   const snapshot = client.getSnapshot();
   const source = snapshot.threads.find((thread) => thread.purpose === "task")!;
   const target = snapshot.threads.find((thread) => thread.id !== source.id)!;
-  const message = LegacyPersonShowMessageSchema.parse({
+  const message = PersonShowMessageSchema.parse({
     type: "host.show",
     runId: createId("run"),
     threadId: source.id,
-    target: { threadId: target.id },
+    target: { taskId: target.id },
   });
   const deliverIgnored = async () => {
     const before = history.length;
@@ -183,7 +169,7 @@ it("keeps following its Run with a place over the conversation and the dock clos
   const show = (target: object) =>
     act(async () =>
       client.receivePersonShow(
-        LegacyPersonShowMessageSchema.parse({
+        PersonShowMessageSchema.parse({
           type: "host.show",
           runId: createId("run"),
           threadId: source.id,
@@ -192,11 +178,10 @@ it("keeps following its Run with a place over the conversation and the dock clos
       ),
     );
   const place = pageTab();
-  if (place.destination.kind !== "browser") throw new Error("Expected a browser tab");
-  await show({ tabId: place.destination.tabId });
+  await show({ tabId: place.key });
   await click(element('[aria-label="Hide the conversation"]'));
   const threadId = createId("thread");
-  await show({ threadId });
+  await show({ taskId: threadId });
   expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
 });
 
@@ -219,10 +204,10 @@ it("opens what the voice call's agent shows from any screen, and ignores a call 
   vi.spyOn(VoiceController.prototype, "call").mockImplementation(() => current);
   const showed = vi.spyOn(VoiceController.prototype, "showed");
   const show = (from: typeof call) =>
-    LegacyPersonShowMessageSchema.parse({
+    PersonShowMessageSchema.parse({
       type: "host.show",
       ...from,
-      target: { threadId: target.id },
+      target: { taskId: target.id },
     });
   await act(async () => goTo!("/settings/ai-engines"));
   await act(async () => client.receivePersonShow(show(call)));

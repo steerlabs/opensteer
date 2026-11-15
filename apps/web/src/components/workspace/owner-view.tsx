@@ -1,18 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   HostClientRequestError,
-  ownerViewDestination,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type NativeViewerSource,
   type PlaceItem,
-  type PersonalSurfaceDestination,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
-import {
-  computerAppIdentityKey,
-  type LegacyComputerView as ComputerView,
-} from "@opensteer/protocol";
+import type { ComputerView } from "@opensteer/protocol";
 import { actionErrorMessage, usePageVisible } from "../../ui-utils.js";
 import { AppMark } from "../computer-apps/computer-use-section.js";
 import { ComputerStopButton } from "../computer-watch.js";
@@ -29,71 +24,69 @@ import { ownerViewReadiness } from "./owner-views.js";
 import { useTabCloser } from "./tab-closer.js";
 import { useWorkspace } from "./workspace-context.js";
 
-type OwnerDestination = Extract<PersonalSurfaceDestination, { kind: "app" | "phone" }>;
-
 const renewSoonMs = 90_000;
 
 /**
- * The person's independent view: a phone display or negotiated Mac app control.
- * Visible retainers renew its authority independently of tasks and transport
- * recovery. Closing it ends this generation without closing the app or task.
- * A phone's tab with no view yet is the same page, while its view opens or,
- * when that was refused, waiting for a press of Open.
+ * The person's own view of a window or phone tab, as activating the tab
+ * opened it. Visible retainers renew its authority independently of tasks and
+ * transport recovery. A lapsed view leaves the tab asleep; Open activates the
+ * tab again for a fresh view of the same window. Closing the tab quits nothing.
  */
 export function OwnerView({
-  destination,
+  machineId,
   marks,
   hostClient,
   hostConnected,
   leading,
+  onReopen,
   opening = false,
+  phone,
   place,
-  source: phoneSource,
+  source,
   trailing,
 }: {
-  readonly destination: OwnerDestination;
+  readonly machineId: string;
   readonly marks: ReactNode;
   readonly hostClient: HostClient;
   readonly hostConnected: boolean;
   readonly leading: ReactNode;
-  /** A phone's tab is opening its view by itself. */
+  /** Activates the tab again, for a fresh view. */
+  readonly onReopen: () => Promise<void>;
+  /** The tab is opening its view. */
   readonly opening?: boolean;
+  readonly phone: boolean;
   readonly place: PlaceItem | null;
-  /** A phone's address names no view: its tab says which one is live. */
-  readonly source?: Extract<NativeViewerSource, { kind: "owner-view" }> | null;
+  readonly source: Extract<NativeViewerSource, { kind: "owner-view" }> | null;
   readonly trailing: ReactNode;
 }) {
   const visible = usePageVisible();
-  const source =
-    destination.kind === "phone"
-      ? (phoneSource ?? null)
-      : destination.source?.kind === "owner-view"
-        ? destination.source
-        : null;
   const viewId = source?.viewId ?? "";
   const generation = source?.generation ?? 0;
-  const { localMachine, nav } = useWorkspace();
+  const { localMachine } = useWorkspace();
   const toast = useToast();
   const toolbarRef = useToastToolbar();
   const requestClose = useTabCloser();
   const select = useCallback(
     (snapshot: HostSnapshot) => {
-      const machine = snapshot.machines.find((candidate) => candidate.id === destination.machineId);
+      const machine = snapshot.machines.find((candidate) => candidate.id === machineId);
       return {
         machine: machine ?? null,
         view: machine?.computerUse?.ownerViews?.find((view) => view.viewId === viewId) ?? null,
       };
     },
-    [destination.machineId, viewId],
+    [machineId, viewId],
   );
   const { machine, view } = useHostSelector(hostClient, select, sameOwnerView);
   const current = view && view.generation === generation ? view : null;
-  const phone = destination.kind === "phone";
   const appIdentity =
     current?.target.kind === "app"
       ? current.target.app
-      : place?.icon.kind === "app"
-        ? place.icon.app
+      : place?.kind === "window"
+        ? {
+            bundleId: place.tab.bundleId ?? "",
+            displayName: place.tab.appName ?? place.title,
+            teamId: null,
+          }
         : null;
   const machineName = machine?.name ?? (phone ? "Your phone" : "Your Mac");
   const targetName = phone
@@ -146,34 +139,9 @@ export function OwnerView({
     };
   }, []);
   const reopen = async () => {
-    // Fenced at the press: a place chosen while this waits keeps the middle.
-    const show = nav.beginPlaceOperation({ replace: true });
     setReopening(true);
     try {
-      const target =
-        current?.target ??
-        (await (async () => {
-          const apps = await hostClient.listApprovedComputerApps();
-          return (
-            apps.find(
-              (app) =>
-                app.machineId === destination.machineId &&
-                (destination.kind === "phone"
-                  ? app.target.kind === "phone"
-                  : app.target.kind === "app" &&
-                    computerAppIdentityKey(app.target.app) === destination.appKey),
-            )?.target ?? null
-          );
-        })());
-      if (!target) throw new Error(`${targetName} is no longer approved for viewing.`);
-      const boundTarget =
-        target.kind === "app" && destination.kind === "app" && destination.windowId !== undefined
-          ? { ...target, window: destination.windowId }
-          : target;
-      const opened = await hostClient.openComputerView(destination.machineId, boundTarget);
-      if (mounted.current) {
-        show(ownerViewDestination(opened));
-      }
+      await onReopen();
     } catch (error) {
       toast.error(
         error instanceof HostClientRequestError && error.reason
@@ -188,7 +156,7 @@ export function OwnerView({
   const local =
     !phone &&
     localMachine?.useApp != null &&
-    localMachine.machineId === destination.machineId &&
+    localMachine.machineId === machineId &&
     readiness === null &&
     appIdentity !== null;
   const useHere = async () => {
@@ -215,7 +183,13 @@ export function OwnerView({
   };
 
   const held = (place?.occupants.length ?? 0) > 0;
-  const closesTab = place?.phoneTab === true && place.closable;
+  // The task holding this exact window or phone now, which its Stop ends.
+  const task =
+    machine?.computerUse?.sessions.find((session) =>
+      phone
+        ? session.display
+        : appIdentity !== null && session.apps.some((app) => app.bundleId === appIdentity.bundleId),
+    ) ?? null;
   const menu: SurfaceMenuItem[] = [
     ...(shown
       ? [
@@ -226,18 +200,16 @@ export function OwnerView({
           },
         ]
       : []),
-    ...(closesTab
-      ? [{ icon: "close" as const, label: "Close tab", onSelect: () => requestClose(place) }]
-      : place?.ownerClose
-        ? [
-            {
-              detail: held ? "The task keeps working" : `${targetName} stays open`,
-              icon: "close" as const,
-              label: "Close view",
-              onSelect: () => requestClose(place),
-            },
-          ]
-        : []),
+    ...(place
+      ? [
+          {
+            detail: held ? "The task keeps working" : `${targetName} stays open`,
+            icon: "close" as const,
+            label: "Close tab",
+            onSelect: () => requestClose(place),
+          },
+        ]
+      : []),
   ];
 
   const computer = ownerViewComputerReadiness(machine, phone);
@@ -291,7 +263,7 @@ export function OwnerView({
         {leading}
         <span className="computer-watch__source">
           {appIdentity ? (
-            <AppMark identity={appIdentity} machineId={destination.machineId} />
+            <AppMark identity={appIdentity} machineId={machineId} />
           ) : (
             <span aria-hidden className="computer-watch__glyph">
               <Icon name="phone" />
@@ -308,14 +280,14 @@ export function OwnerView({
         ) : null}
         {marks}
         <span className="computer-watch__spacer" />
-        {place?.task ? (
+        {task ? (
           <ComputerStopButton
             hostClient={hostClient}
             hostConnected={hostConnected}
             label={`Stop the agent using ${machineName}`}
             machineName={machineName}
-            runId={place.task.runId}
-            sessionId={place.task.sessionId}
+            runId={task.runId}
+            sessionId={task.sessionId}
           />
         ) : null}
         {local ? (

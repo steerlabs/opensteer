@@ -2,7 +2,7 @@ import type {
   IntegrationConnectionSummary,
   IntegrationDefinitionSummary,
 } from "@opensteer/integration-core";
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
 import {
   computerAppConnectionLabel,
@@ -516,7 +516,7 @@ function messages(): IntegrationDefinitionSummary {
   } as unknown as IntegrationDefinitionSummary;
 }
 
-function appStatus(): NonNullable<LegacyMachineSummary["apps"]>[number] {
+function appStatus(): NonNullable<MachineSummary["apps"]>[number] {
   return {
     definitionId: "apple-messages",
     operations: [
@@ -553,7 +553,7 @@ function connection(
   } as unknown as IntegrationConnectionSummary;
 }
 
-function machine(overrides: Partial<LegacyMachineSummary> = {}): LegacyMachineSummary {
+function machine(overrides: Partial<MachineSummary> = {}): MachineSummary {
   return {
     access: null,
     allowedModules: ["integrations", "shell"],
@@ -573,5 +573,5 @@ function machine(overrides: Partial<LegacyMachineSummary> = {}): LegacyMachineSu
     status: "online",
     unlinkedLocalFolders: 0,
     ...overrides,
-  } as LegacyMachineSummary;
+  } as MachineSummary;
 }

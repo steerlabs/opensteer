@@ -7,35 +7,28 @@ import {
   openWaitingMessageEditor,
   type WaitingMessageEditorPort,
 } from "./waiting-message-editor.js";
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 import type { PersonalStreamCache, PersonalCacheScope } from "./personal-stream-cache.js";
-import { withTimeout } from "@opensteer/shared/withTimeout";
-import { browserOpeningTimeoutMs } from "./browser-presentation-wait.js";
-import { BrowserTabStore } from "./browser-tab-store.js";
 import { familyAutomations } from "./task-family.js";
-import { BrowserSnapshotDerivation, personalTabLineage } from "./browser-snapshot.js";
 import { catalogModelDisplayName } from "./model-catalog.js";
 import { NodeDetailStore, type NodeDetailSubscription } from "./node-detail.js";
 import { executionNodeEntry } from "./subagent-model.js";
-import { AppTabSchema } from "@opensteer/protocol";
-import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { invalidateScheduleAnchor } from "./schedule-anchor-invalidation.js";
 import { BrowserCursorStore } from "./browser-cursor.js";
-import type { LegacyPersonShowMessage as PersonShowMessage } from "@opensteer/protocol";
+import type { PersonShowMessage } from "@opensteer/protocol";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import { drawnTranscriptRowKeys } from "./transcript-projection.js";
-import { PendingBrowserTabs } from "./pending-browser-tabs.js";
 import type { BootstrapReason } from "@opensteer/shared/bootstrapDiagnostics";
 import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import { BrowserPasskeys, type BrowserPasskeyPort } from "./browser-passkeys.js";
 import { emptySavedViewReadiness } from "./saved-host-view.js";
 import { BrowserEditingStore } from "./browser-editing.js";
 import { BrowserPreferences } from "./browser-preferences.js";
-import { PersonalTabActivations } from "./personal-tab-activations.js";
-import { browserTabOrderTabs } from "./browser-tab-order.js";
-import { BrowserTabGroupClient } from "./browser-tab-groups.js";
 import type { HostCapability as AuthorityHostCapability } from "@opensteer/deployment-authority";
 import type { NativeViewerSource } from "./surfaces.js";
+import { TabStore } from "./tab-store.js";
+import { createTabsClient, type TabsClientPort } from "./tabs-client.js";
+import type { App, Tab, TabId } from "@opensteer/core";
 import { BrowserHistoryClient } from "./browser-history.js";
 import type { BrowserPreferencesStorage } from "./browser-preferences.js";
 import { computerViewMethods } from "./computer-views.js";
@@ -43,6 +36,9 @@ import { OwnerViewRecords } from "./owner-view-records.js";
 import { ViewerScope, viewerScopeOf } from "./viewer-scope.js";
 import {
   DeploymentIdSchema,
+  EnvironmentIdSchema,
+  EventIdSchema,
+  IsoDateTimeSchema,
   MessageIdSchema,
   RunnerIdSchema,
   ExecutionNodeIdSchema,
@@ -51,8 +47,7 @@ import {
   nodeDetailEventNodeId,
   type QuietTaskDays,
   type PersonName,
-  AgentEventViewSchema,
-  BrowserSurfaceIdSchema,
+  TabAgentEventViewSchema,
   LiveItemViewSchema,
   LiveRunProgressViewSchema,
   RunIdSchema,
@@ -71,7 +66,7 @@ import {
   liveStreamKeyOf,
   requestTitleText,
   zeroSequence,
-  type AgentEventView as AgentEvent,
+  type TabAgentEventView as AgentEvent,
   type AssignmentSummary,
   type AssignmentView,
   type Attachment,
@@ -94,14 +89,12 @@ import {
   setApiVersionQuery,
 } from "@opensteer/deployment-authority";
 import {
-  BrowserSessionIdSchema,
   DisplaySourceSchema,
   HarnessModelSettingsMapSchema,
-  LegacyHostToClientMessageSchema as HostToClientMessageSchema,
-  LegacyDeploymentSnapshotSchema as DeploymentSnapshotSchema,
+  HostToClientMessageSchema,
+  DeploymentSnapshotSchema,
   browserUsageRunBatchSize,
   hostApi,
-  realtimeEnvelopeTypes,
   threadPageMaxItems,
   deploymentSnapshotMaxThreads,
   type BrowserSessionUsageProjection,
@@ -110,36 +103,29 @@ import {
   type HostApiCommand,
   type HostApiCommandInput,
   type HostApiCommandOutput,
-  type LegacyHostToClientMessage as HostToClientMessage,
+  type HostToClientMessage,
   type MachineAccessPolicy,
   type RealtimeFrameDiagnostic,
   type RpcResult,
-  type LegacyDeploymentSnapshot as DeploymentSnapshot,
+  type DeploymentSnapshot,
 } from "@opensteer/protocol";
 import { z } from "zod";
 import { BrowserWatchStore, browserCommandNeedsNoView } from "./browser-watch.js";
 import type {
   BrowserCommand,
   BrowserFrameStore,
-  BrowserPlacementSummary,
   BrowserSessionSummary,
-  BrowserStartIdentity,
-  BrowserInventory,
-  BrowserTabOpenInput,
-  BrowserTabOpenOptions,
   CreateThreadInput,
   EnvironmentSummary,
   HarnessSummary,
   HostConnectionState,
-  LegacyHostSnapshot as HostSnapshot,
+  HostSnapshot,
   MachineAccessHistoryPage,
   MachineAccessUpdateOutcome,
   HostClient as OwnerViewHostClient,
   TaskListState,
   ThreadSummary,
   TranscriptEntry,
-  PersonalTabActivationOptions,
-  PersonalTabLineage,
   TeamAskDecision,
   WaitingMessageEditor,
 } from "./client.js";
@@ -191,6 +177,7 @@ import {
   describeRealtimeFrameFailure,
   maxInboundFrameCharacters,
   realtimeEnvelopeType,
+  realtimeEnvelopeTypes,
   realtimeFrameLoss,
 } from "./realtime-frames.js";
 
@@ -226,28 +213,33 @@ type RealtimeEvent = AgentEvent | (z.infer<typeof realtimeEventPositionSchema> &
 
 const realtimeHeaderSchema = z.object({ type: z.string().min(1) });
 const realtimeEventTypes = new Set<string>(
-  AgentEventViewSchema.options.map((schema) => schema.shape.type.value),
+  TabAgentEventViewSchema.options.map((schema) => schema.shape.type.value),
 );
 const realtimeSnapshotFrameSchema = z.object({
   snapshot: z.looseObject({ threads: z.array(z.unknown()).max(deploymentSnapshotMaxThreads) }),
 });
-const realtimeThreadStateEventSchema = AgentEventViewSchema.options[0]
-  .omit({ type: true, data: true })
-  .extend({
-    type: z.literal("thread.state-changed"),
-    data: z.object({
-      ...eventDataSchemas["thread.state-changed"].shape,
-      status: z.string().min(1),
-    }),
-  });
-const realtimeThreadEventSchema = AgentEventViewSchema.options[0]
-  .omit({ type: true, data: true })
-  .extend({
-    type: z.enum(["thread.created", "thread.execution-updated", "thread.listed"]),
-    data: z.object({
-      thread: ThreadViewSchema.extend({ status: z.string().min(1) }),
-    }),
-  });
+/** Any event's envelope, whose Run may be null; place entries alone always name one. */
+const realtimeEventEnvelopeSchema = z.object({
+  createdAt: IsoDateTimeSchema,
+  environmentId: EnvironmentIdSchema,
+  eventId: EventIdSchema,
+  runId: RunIdSchema.nullable(),
+  sequence: SequenceSchema,
+  threadId: ThreadIdSchema,
+});
+const realtimeThreadStateEventSchema = realtimeEventEnvelopeSchema.extend({
+  type: z.literal("thread.state-changed"),
+  data: z.object({
+    ...eventDataSchemas["thread.state-changed"].shape,
+    status: z.string().min(1),
+  }),
+});
+const realtimeThreadEventSchema = realtimeEventEnvelopeSchema.extend({
+  type: z.enum(["thread.created", "thread.execution-updated", "thread.listed"]),
+  data: z.object({
+    thread: ThreadViewSchema.extend({ status: z.string().min(1) }),
+  }),
+});
 const realtimeResyncSchema = z.object({
   type: z.literal("host.resync-required"),
   // The reason explains the reset; every present or future reason requires it.
@@ -458,7 +450,6 @@ export class HttpHostClient {
     clear: () => undefined,
     setConnected: () => undefined,
   };
-  readonly openComputerView: OwnerViewHostClient["openComputerView"];
   readonly closeComputerView: OwnerViewHostClient["closeComputerView"];
   readonly renewComputerView: OwnerViewHostClient["renewComputerView"];
   readonly listComputerAppWindows: OwnerViewHostClient["listComputerAppWindows"];
@@ -509,25 +500,20 @@ export class HttpHostClient {
   readonly #presenceMarks = new Map<string, number>();
   #presenceCounter = 0;
   #browserCarrier: DeploymentChannel | null = null;
-  #browserContinuation: string | undefined;
-  readonly #browserWaiters = new Set<() => void>();
-  readonly #browserTabs = new BrowserTabStore(
-    (groupId) => this.#resyncBrowser(groupId),
-    (sessionId, tabId) =>
-      this.#targetedControl.surface(sessionId, tabId) ??
-      this.#targetedWatch.surface(sessionId, tabId),
-  );
-  readonly browserTabs = this.#browserTabs;
-  #browserStructure: ReturnType<BrowserTabStore["structure"]> = [];
-  #browserTargetRevision = -1;
-  #browserTabIds = new Map<string, readonly string[]>();
+  readonly #tabs = new TabStore();
+  /** The page session each tab's viewer was bound to by this device's own activation. */
+  readonly #pageSessions = new Map<string, string>();
+  readonly #viewers = new Map<string, import("@opensteer/protocol").TabViewer>();
+  tabViewer(tabId: string) {
+    return this.#viewers.get(tabId) ?? null;
+  }
+  #tabRows: ReadonlyMap<TabId, Tab> | null = null;
   browserViewerSurface(sessionId: string, surfaceId: string) {
     return (
       this.#targetedControl.surface(sessionId, surfaceId) ??
       this.#targetedWatch.surface(sessionId, surfaceId)
     );
   }
-  readonly #browserSnapshot = new BrowserSnapshotDerivation();
   readonly #placeActivity = new PlaceActivityStore();
   readonly #runPlaces = new RunPlaceStore();
   readonly #targetedControl = new BrowserWatchStore(
@@ -606,15 +592,13 @@ export class HttpHostClient {
     url.searchParams.set("editing", "2");
     return this.#webSocketFactory(url.toString());
   }
+  /** A page viewer may attach only to a listed page tab this device activated into that session. */
   #browserTargetAllowed(sessionId: string, surfaceId: string, asleep: boolean): boolean {
-    const groupId = this.#browserTabs.groupForSession(sessionId);
-    const group = groupId ? this.#browserTabs.group(groupId) : undefined;
-    const tab = groupId ? this.#browserTabs.tab(groupId, surfaceId) : undefined;
+    const tab = this.#tabs.get(surfaceId as TabId);
     return (
-      group?.state === "ready" &&
-      tab?.availability === "ready" &&
-      tab.documentId !== null &&
-      (tab.state === "live" || asleep)
+      tab?.kind === "page" &&
+      this.#pageSessions.get(surfaceId) === sessionId &&
+      (tab.state === "open" || (asleep && tab.state === "asleep"))
     );
   }
   readonly #browserPopups = new Map<string, Set<(popupId: string) => void>>();
@@ -674,157 +658,82 @@ export class HttpHostClient {
   async readBrowserContextCandidate(sessionId: string, tabId: string) {
     return unwrapRpcResult(await this.rpc["browser.contextCandidate.get"]({ sessionId, tabId }));
   }
-  readonly #pendingBrowserTabs = new PendingBrowserTabs({
-    admitted: () => viewerScopeOf(this.#snapshot) !== null,
-    open: (target, options) => this.#openBrowserTab(target, options),
-    close: (result) =>
-      this.closeBrowserTab(
-        result.sessionId,
-        result.tabId,
-        this.browserTabs.inventory(result.sessionId) ?? { generation: 0, revision: 0 },
-      ),
-    changed: (pendingBrowserTabs) => this.#update({ ...this.#snapshot, pendingBrowserTabs }),
-  });
-  readonly beginBrowserTabOpen: OwnerViewHostClient["beginBrowserTabOpen"] = (target, options) => {
-    if (typeof target !== "string" && "identity" in target)
-      this.browserPreferences.lastBrowsingChoice = target.identity;
-    return this.#pendingBrowserTabs.begin(target, options);
-  };
-  readonly browserPresentationDeadline = this.#pendingBrowserTabs.presentationDeadline;
-  readonly markBrowserPagePresented = this.#pendingBrowserTabs.markPresented;
-  readonly dismissPendingBrowserTab = this.#pendingBrowserTabs.dismiss;
-  async openBrowserTab(target: string | BrowserTabOpenInput, options: BrowserTabOpenOptions = {}) {
-    if (!viewerScopeOf(this.#snapshot))
-      return this.#openBrowserTab(
-        typeof target === "string" ? { sessionId: target } : target,
-        options,
-      );
-    return this.beginBrowserTabOpen(target, options).result;
-  }
-  async #openBrowserTab(target: BrowserTabOpenInput, options: BrowserTabOpenOptions) {
-    const started = this.#viewer.generation;
-    const result = unwrapRpcResult(
-      await this.rpc["commands.dispatch"](
-        {
-          type: "browser.tab.open",
-          ...(typeof target === "string" ? { sessionId: target } : target),
-          ...(options.url === undefined ? {} : { url: options.url }),
-          ...(options.typed === undefined ? {} : { typed: options.typed }),
-          ...(options.viewport ? { viewport: options.viewport } : {}),
-          idempotencyKey: options.idempotencyKey ?? mutationIdempotencyKey("open-tab"),
-        },
-        options.signal ? { signal: options.signal } : undefined,
-      ),
-    );
-    if (started !== this.#viewer.generation)
-      throw new HostClientRequestError({
-        code: "unauthorized",
-        status: 401,
-        message: "The signed-in account changed while the browser was opening.",
-      });
-    if (result.type !== "browser.tab.open") throw new Error("Unexpected browser command result.");
-    if (this.#snapshot.session === "authenticated")
-      await this.#waitBrowser(() => {
-        const groupId = result.groupId ?? this.#browserTabs.groupForSession(result.sessionId);
-        return groupId && this.#browserTabs.tab(groupId, result.tabId);
-      }, options.signal);
-    return result;
-  }
-  async readPersonalTabs(sessionId: string): Promise<PersonalTabLineage | null> {
-    await this.#waitBrowser(() => {
-      const groupId =
-        this.#browserTabs.group(sessionId)?.id ?? this.#browserTabs.groupForSession(sessionId);
-      return groupId ? this.#browserTabs.tabs(groupId).whole : this.#browserTabs.groups().whole;
-    });
-    const groupId =
-      this.#browserTabs.group(sessionId)?.id ?? this.#browserTabs.groupForSession(sessionId);
-    return groupId ? personalTabLineage(this.#browserTabs, groupId) : null;
-  }
-
-  readonly #personalTabActivations: PersonalTabActivations;
-  activatePersonalTab(tabId: string, options?: PersonalTabActivationOptions) {
-    return this.#personalTabActivations.activate(tabId, options);
-  }
-
-  async reopenPersonalTab() {
-    if (!this.#snapshot.tabReopenAvailable) throw new Error("This Host cannot reopen closed tabs.");
-    const viewer = this.#viewer.generation;
-    const result = unwrapRpcResult(
-      await this.rpc["commands.dispatch"]({
-        type: "legacy.tab.reopen",
-        idempotencyKey: mutationIdempotencyKey("reopen-tab"),
-      }),
-    );
-    if (viewer !== this.#viewer.generation)
-      throw new Error("The signed-in account changed while reopening the tab.");
-    if (result.type !== "legacy.tab.reopen") throw new Error("Unexpected tab reopen result.");
-    this.#update({ ...this.#snapshot, browserTabGroups: this.#tabGroups.receive(result.layout) });
-    await this.#waitBrowser(() => this.#browserTabs.tab(result.groupId!, result.tabId));
-    return result;
-  }
-  readonly #tabGroups: BrowserTabGroupClient;
-  readonly groupBrowserTabs: OwnerViewHostClient["groupBrowserTabs"] = (ids, target) =>
-    this.#tabGroups.groupBrowserTabs(ids, target);
-  readonly moveBrowserTabs: OwnerViewHostClient["moveBrowserTabs"] = (move) =>
-    this.#tabGroups.moveBrowserTabs(move);
-  readonly ungroupBrowserTabs: OwnerViewHostClient["ungroupBrowserTabs"] = (ids) =>
-    this.#tabGroups.ungroupBrowserTabs(ids);
-  readonly updateBrowserTabGroup: OwnerViewHostClient["updateBrowserTabGroup"] = (id, update) =>
-    this.#tabGroups.updateBrowserTabGroup(id, update);
-  readonly closePersonalTabs: OwnerViewHostClient["closePersonalTabs"] = async (tabIds) => {
-    const viewer = this.#viewer.generation;
-    const result = unwrapRpcResult(
-      await this.rpc["commands.dispatch"]({
-        type: "tabs.close",
-        tabIds: tabIds.map((id) => BrowserSurfaceIdSchema.parse(id)),
-        idempotencyKey: mutationIdempotencyKey("close-tabs"),
-      }),
-    );
-    if (viewer !== this.#viewer.generation)
-      throw new Error("The signed-in account changed while closing tabs.");
-    if (result.type !== "tabs.close") throw new Error("Unexpected tabs close result.");
-    this.#tabGroups.removeClosed(result.closed);
-    return result;
-  };
-  async closeBrowserTab(sessionId: string, surfaceId: string, expected: BrowserInventory) {
-    const viewer = this.#viewer.generation;
-    const groupId = this.#browserTabs.groupForSession(sessionId);
-    const tab = groupId ? this.#browserTabs.tab(groupId, surfaceId) : undefined;
-    if (tab?.documentId === null) {
-      const result = unwrapRpcResult(
-        await this.rpc["commands.dispatch"]({
-          type: "legacy.tab.close",
-          tabId: surfaceId,
-          idempotencyKey: `close:${surfaceId}`,
-        }),
-      );
+  readonly #tabsClient = createTabsClient({
+    store: this.#tabs,
+    dispatch: async (command) => {
+      const viewer = this.#viewer.generation;
+      const result = unwrapRpcResult(await this.rpc["commands.dispatch"](command));
       if (viewer !== this.#viewer.generation)
-        throw new Error("The signed-in account changed while closing the tab.");
-      if (result.type !== "legacy.tab.close") throw new Error("Unexpected tab close result.");
-      return {
-        type: "browser.tab.close" as const,
-        sessionId: BrowserSessionIdSchema.parse(sessionId),
-        outcome: "tab-closed" as const,
-      };
-    }
-    const inventoryRevision = expected.inventoryRevision ?? expected.revision;
-    const result = unwrapRpcResult(
-      await this.rpc["commands.dispatch"]({
-        type: "browser.tab.close",
-        sessionId,
-        surfaceId,
-        inventoryRevision,
-        idempotencyKey: `close-tab:${sessionId}:${surfaceId}:${inventoryRevision}`,
-      }),
-    );
-    if (viewer !== this.#viewer.generation)
-      throw new HostClientRequestError({
-        code: "unauthorized",
-        status: 401,
-        message: "The signed-in account changed while closing the tab.",
+        throw new HostClientRequestError({
+          code: "unauthorized",
+          status: 401,
+          message: "The signed-in account changed while the tab command was under way.",
+        });
+      return result as Awaited<ReturnType<TabsClientPort["dispatch"]>>;
+    },
+    listApps: async (query) =>
+      unwrapRpcResult(await this.rpc["apps.list"](query ? { query } : {})).apps as App[],
+    activated: (tab, viewer) => {
+      this.#viewers.set(tab.tabId, viewer);
+      if (viewer.kind === "page") this.#bindPage(tab, viewer.sessionId);
+      else if (viewer.kind !== "app") this.#acceptOwnerView(viewer.view);
+      else this.#update(this.#snapshot);
+    },
+  });
+  readonly openTab = this.#tabsClient.openTab;
+  readonly closeTabs = this.#tabsClient.closeTabs;
+  readonly reopenTab = this.#tabsClient.reopenTab;
+  readonly activateTab = this.#tabsClient.activateTab;
+  readonly organizeTabs = this.#tabsClient.organizeTabs;
+  readonly updateTabGroup = this.#tabsClient.updateTabGroup;
+  readonly deleteTabGroup = this.#tabsClient.deleteTabGroup;
+  readonly listApps = this.#tabsClient.listApps;
+  readonly renameApp = this.#tabsClient.renameApp;
+  readonly startApp = this.#tabsClient.startApp;
+  readonly stopApp = this.#tabsClient.stopApp;
+  readonly deleteApp = this.#tabsClient.deleteApp;
+  /** A person's own view of a window or phone, opened by activating its tab. */
+  #acceptOwnerView(view: import("@opensteer/protocol").ComputerView): void {
+    this.#update({
+      ...this.#snapshot,
+      machines: [...this.#ownerViews.accept(this.#snapshot.machines, view)],
+    });
+    // Only a person's own activation may wake a phone, and only once.
+    if (view.target.kind === "phone" && view.state === "ready")
+      sharedDisplayStreams(this).armAutoWake({
+        kind: "owner-view",
+        viewId: view.viewId,
+        generation: view.generation,
       });
-    if (result.type !== "browser.tab.close") throw new Error("Unexpected browser command result.");
-    return result;
+  }
+  /**
+   * The page session a tab's activation bound: viewers attach to it, and the
+   * snapshot names it so the page's view can follow its dialog and viewer state.
+   */
+  #bindPage(tab: Tab, sessionId: string): void {
+    this.#pageSessions.set(tab.tabId, sessionId);
+    if (this.#snapshot.browserSessions.some((session) => session.id === sessionId)) {
+      this.#update(this.#snapshot);
+      return;
+    }
+    const session: BrowserSessionSummary = {
+      id: sessionId,
+      access: "read-write",
+      attachedRunIds: [],
+      dialog: null,
+      error: null,
+      origin: "person",
+      placement: { kind: "runner", runnerId: tab.computer.computerId },
+      profileId: tab.profile?.profileId ?? null,
+      runtimeId: sessionId,
+      state: "ready",
+      viewerError: null,
+      viewerState: "disconnected",
+    };
+    this.#update({
+      ...this.#snapshot,
+      browserSessions: [...this.#snapshot.browserSessions, session],
+    });
   }
   async readBrowserTabIcon(sessionId: string, iconRef: string): Promise<string | null> {
     return unwrapRpcResult(await this.rpc["browser.tabIcon.get"]({ sessionId, iconRef })).favicon;
@@ -892,7 +801,7 @@ export class HttpHostClient {
       (this.#snapshot.transcripts[threadId] ?? []).filter((entry) => entry.kind === "node"),
     readNodes: (runId) => this.#readRunNodes(runId),
     read: async (input) => {
-      const page = unwrapRpcResult(
+      const page = tabEventPage(
         await this.rpc["node.events.list"]({
           ...(this.#supportsDeviceAccessRequests()
             ? { deviceAccessRequests: "include" as const }
@@ -964,7 +873,7 @@ export class HttpHostClient {
   #disposed = false;
   #refreshTimer: Timer | null = null;
 
-  #snapshot: HostSnapshot = emptySnapshot();
+  #snapshot: HostSnapshot = emptySnapshot(this.#tabs);
 
   readonly #deviceAccessRequests: boolean;
   readonly #viewerPlatform: "mac" | "pc" | null;
@@ -998,7 +907,7 @@ export class HttpHostClient {
         });
       },
     });
-    this.#browserTabs.subscribe(() => {
+    this.#tabs.subscribe(() => {
       if (!this.#applyingSnapshot) this.#update(this.#snapshot);
     });
     this.#baseUrl = new URL(options.baseUrl);
@@ -1070,36 +979,6 @@ export class HttpHostClient {
           listener();
         }),
     });
-    this.#personalTabActivations = new PersonalTabActivations({
-      snapshot: () => this.#snapshot,
-      subscribe: (listener) => this.subscribe(listener),
-      changed: () => this.#update(this.#snapshot),
-      dispatch: async (tabId) => {
-        const result = unwrapRpcResult(
-          await this.rpc["commands.dispatch"]({
-            type: "legacy.tab.activate",
-            tabId,
-            idempotencyKey: `restore:${tabId}`,
-          }),
-        );
-        if (result.type !== "legacy.tab.activate")
-          throw new Error("Unexpected tab activation result.");
-        return result;
-      },
-      resolved: (result) => {
-        const groupId =
-          result.groupId ??
-          this.#browserTabs.groupForSession(result.sessionId ?? result.session.id);
-        const row = groupId ? this.#browserTabs.tab(groupId, result.tabId) : undefined;
-        return row?.documentId !== null && row?.state === "live";
-      },
-    });
-    this.#tabGroups = new BrowserTabGroupClient(
-      this.rpc,
-      (browserTabGroups) => this.#update({ ...this.#snapshot, browserTabGroups }),
-      () => this.#viewer.generation,
-      () => browserTabOrderTabs(this.browserTabs),
-    );
     this.#random = options.random ?? Math.random;
     this.#livenessIdleMs = Math.max(1, options.realtimeLiveness?.idleMs ?? realtimeIdleProbeMs);
     this.#livenessDeadlineMs = Math.max(
@@ -1168,16 +1047,6 @@ export class HttpHostClient {
     );
     this.#computerViews = views;
     this.retainComputerView = views.retainComputerView;
-    this.openComputerView = async (...args) => {
-      const view = await views.openComputerView(...args);
-      if (view.target.kind === "phone" && view.state === "ready" && args[2]?.wake !== false)
-        sharedDisplayStreams(this).armAutoWake({
-          kind: "owner-view",
-          viewId: view.viewId,
-          generation: view.generation,
-        });
-      return view;
-    };
     this.closeComputerView = (...args) => {
       sharedDisplayStreams(this).cancelAutoWake({
         kind: "owner-view",
@@ -1340,9 +1209,6 @@ export class HttpHostClient {
           ...this.#snapshot,
           assignments: mergeAssignments(this.#snapshot.assignments, [result.assignment]),
         });
-        break;
-      case "browser.session.start":
-        await this.#waitBrowser(() => this.#browserTabs.groupForSession(result.session.id));
         break;
       case "browser.profile.create":
         this.#update(
@@ -1552,122 +1418,6 @@ export class HttpHostClient {
         { body: input.source, ...(input.signal ? { signal: input.signal } : {}) },
       ),
     );
-  }
-
-  #appTabGeneration = 0;
-  readonly #appTabWrites = new KeyedMutationQueue();
-  readonly #appTabPending = new Map<
-    string,
-    { token: symbol; tab: import("@opensteer/protocol").AppTab | null; opening: boolean }
-  >();
-  #overlayAppTabs(tabs: readonly import("@opensteer/protocol").AppTab[]) {
-    const result = new Map(tabs.map((tab) => [tab.appId, tab]));
-    for (const [id, { tab }] of this.#appTabPending) {
-      if (tab) result.set(id, tab);
-      else result.delete(id);
-    }
-    return [...result.values()].sort((a, b) => b.openedAt.localeCompare(a.openedAt));
-  }
-  #applyAppTabs(tabs: readonly import("@opensteer/protocol").AppTab[]) {
-    const appVersions = { ...this.#snapshot.appVersions };
-    for (const tab of tabs)
-      appVersions[tab.appId] = Math.max(appVersions[tab.appId] ?? 0, tab.latestVersion);
-    return {
-      appTabs: tabs,
-      appVersions,
-      openingAppTabs: [...this.#appTabPending]
-        .filter(([, pending]) => pending.opening && !pending.tab)
-        .map(([id]) => id),
-    };
-  }
-  openAppTab(appId: string): Promise<void> {
-    return this.#setAppTab(appId, true);
-  }
-  closeAppTab(appId: string): Promise<void> {
-    return this.#setAppTab(appId, false);
-  }
-  async #setAppTab(appId: string, open: boolean): Promise<void> {
-    const viewer = this.#viewerGeneration;
-    const token = Symbol();
-    const previous = this.#snapshot.appTabs?.find((tab) => tab.appId === appId);
-    const mutation = ++this.#appTabGeneration;
-    this.#appTabPending.set(appId, { token, tab: previous ?? null, opening: open });
-    this.#update({
-      ...this.#snapshot,
-      ...this.#applyAppTabs(this.#overlayAppTabs(this.#snapshot.appTabs ?? [])),
-    });
-    try {
-      let tab = previous;
-      if (open && !tab) {
-        const entry = Object.entries(this.#snapshot.transcripts).flatMap(([threadId, entries]) =>
-          entries
-            .filter((entry) => entry.kind === "app" && entry.appId === appId)
-            .map((entry) => ({ threadId, entry })),
-        )[0];
-        const thread = this.#snapshot.threads.find((thread) => thread.id === entry?.threadId);
-        if (entry?.entry.kind === "app" && thread)
-          tab = AppTabSchema.parse({
-            appId,
-            title: entry.entry.title,
-            threadId: thread.id,
-
-            latestVersion: entry.entry.version,
-            openedAt: new Date().toISOString(),
-          });
-        else {
-          const app = unwrapRpcResult(await this.rpc["apps.legacy.get"]({ appId }));
-          if (viewer !== this.#viewerGeneration || this.#appTabPending.get(appId)?.token !== token)
-            return;
-          tab = {
-            appId,
-            title: app.title,
-            threadId: app.threadId,
-            latestVersion: app.latestVersion,
-            openedAt: new Date().toISOString(),
-          };
-        }
-      }
-      this.#appTabPending.set(appId, { token, tab: open ? tab! : null, opening: open });
-      this.#update({
-        ...this.#snapshot,
-        ...this.#applyAppTabs(this.#overlayAppTabs(this.#snapshot.appTabs ?? [])),
-      });
-      const result = await this.#appTabWrites.run(appId, async () =>
-        viewer === this.#viewerGeneration && !this.#disposed
-          ? this.dispatch({
-              type: open ? "app.tab.open" : "app.tab.close",
-              appId,
-              idempotencyKey: crypto.randomUUID(),
-            })
-          : null,
-      );
-      if (result === null || viewer !== this.#viewerGeneration) return;
-      if (result.type !== "app.tab.open" && result.type !== "app.tab.close")
-        throw new Error("Unexpected app tab result");
-      if (this.#appTabPending.get(appId)?.token !== token) return;
-      this.#appTabPending.delete(appId);
-      const tabs =
-        mutation === this.#appTabGeneration
-          ? result.appTabs
-          : [
-              ...(this.#snapshot.appTabs ?? []).filter((tab) => tab.appId !== appId),
-              ...result.appTabs.filter((tab) => tab.appId === appId),
-            ];
-      this.#update({ ...this.#snapshot, ...this.#applyAppTabs(this.#overlayAppTabs(tabs)) });
-    } catch (error) {
-      if (viewer === this.#viewerGeneration && this.#appTabPending.get(appId)?.token === token) {
-        this.#appTabPending.delete(appId);
-        const restored = (this.#snapshot.appTabs ?? []).filter((tab) => tab.appId !== appId);
-        if (previous) restored.push(previous);
-        this.#update({ ...this.#snapshot, ...this.#applyAppTabs(this.#overlayAppTabs(restored)) });
-      }
-      throw error;
-    } finally {
-      if (viewer === this.#viewerGeneration) {
-        this.#appTabGeneration++;
-        this.#reread("host.app-tabs-changed");
-      }
-    }
   }
 
   async viewApp(appId: string, theme: "light" | "dark", signal?: AbortSignal) {
@@ -2391,7 +2141,7 @@ export class HttpHostClient {
     await this.#threadHydrations.get(threadId);
     await this.#latestTranscriptLoads.get(threadId);
     await scan?.promise;
-    const page = unwrapRpcResult(
+    const page = tabEventPage(
       await this.rpc["thread.events.list"]({
         ...(this.#capabilities?.includes("tool-output-detail-v1")
           ? { toolOutputs: "preview" as const }
@@ -2741,7 +2491,7 @@ export class HttpHostClient {
   }
 
   async #readThreadHistory(threadId: string, before?: string) {
-    const page = unwrapRpcResult(
+    const page = tabEventPage(
       await this.rpc["thread.events.list"]({
         ...(this.#capabilities?.includes("tool-output-detail-v1")
           ? { toolOutputs: "preview" as const }
@@ -2760,43 +2510,6 @@ export class HttpHostClient {
     if (page.threadId !== threadId || page.thread.id !== threadId)
       throw new Error("Thread event page mismatch.");
     return page;
-  }
-
-  async startBrowser(
-    deploymentId: string,
-    identity: BrowserStartIdentity,
-    placement?: BrowserPlacementSummary,
-    threadId?: string,
-    viewport?: Extract<BrowserCommand, { type: "surface.open" }>["viewport"],
-  ): Promise<BrowserSessionSummary> {
-    // catalog page. Command admission, not this cache, checks access.
-    if (!this.#snapshot.browserAvailable) {
-      throw new Error("This Host does not have a connected Browser Runtime.");
-    }
-    this.#ensureDeploymentChannel(deploymentId);
-    const result = await this.dispatch({
-      idempotencyKey: mutationIdempotencyKey("browser"),
-      input: {
-        reuseExisting: false,
-        ...(viewport ? { viewport } : {}),
-        ...(threadId ? { threadId: ThreadIdSchema.parse(threadId) } : {}),
-        ...(placement
-          ? { placement: { kind: "runner" as const, runnerId: placement.runnerId } }
-          : {}),
-        ...(identity.kind === "fresh"
-          ? { fresh: true as const }
-          : { profileId: identity.profileId }),
-      },
-      type: "browser.session.start",
-    });
-    if (result.type !== "browser.session.start") {
-      throw new Error("Browser session command mismatch.");
-    }
-    const summary = this.#snapshot.browserSessions.find(
-      (session) => session.id === result.session.id,
-    );
-    if (!summary) throw new Error("The Browser Session was not projected.");
-    return summary;
   }
 
   #capabilities: readonly HostCapability[] | null;
@@ -3352,23 +3065,19 @@ export class HttpHostClient {
     this.transcriptFiles.dispose();
     this.assetUrls.dispose();
     this.#nodeDetails.clear();
-    this.#pendingBrowserTabs.dispose();
     if (this.#disposed) return;
     this.#clearInterruptionHold();
     this.#clearAttachmentReads();
     this.#cancelLostFrameReread();
     this.browserHistory.dispose();
-    this.#personalTabActivations.dispose();
-    this.#snapshot = { ...this.#snapshot, activatingPersonalTabs: [] };
     this.#disposed = true;
-    for (const check of this.#browserWaiters) check();
     this.#computerViews.clear();
     this.#browserUsageRead.clear();
     this.#browserUsageReads.clear();
     this.#browserUsageRunSources.clear();
     this.#browserUses.clear();
-    this.#browserTabs.clear();
-    this.#browserContinuation = undefined;
+    this.#tabs.clear();
+    this.#pageSessions.clear();
     this.#placeActivity.clear();
     this.#runPlaces.clear();
     this.#targetedWatch.clear();
@@ -3834,8 +3543,7 @@ export class HttpHostClient {
 
   async #performBootstrap(reason: BootstrapReason, revalidateCapabilities: boolean): Promise<void> {
     let generation = this.#viewerGeneration;
-    const appTabMark = this.#appTabGeneration,
-      presenceMark = this.#presenceCounter,
+    const presenceMark = this.#presenceCounter,
       ownerViewRevision = this.#ownerViews.revision;
     if (
       this.#snapshot.session === "checking" ||
@@ -3848,7 +3556,7 @@ export class HttpHostClient {
       await this.#refreshCapabilities(revalidateCapabilities ? { revalidate: true } : undefined);
     if (generation !== this.#viewerGeneration || this.#disposed) return;
     bootstrapReadDiagnostics.start(reason);
-    const response = await this.rpc["bootstrap.legacy.get"]({});
+    const response = await this.rpc["bootstrap.get"]({});
     if (!response.ok && response.error.code === "unauthorized") {
       if (generation === this.#viewerGeneration) this.#expireSession();
       const authGeneration = this.#viewerGeneration,
@@ -3903,13 +3611,6 @@ export class HttpHostClient {
         browserProfiles: payload.browser.profiles,
         browserProfileHomes: payload.browser.profileHomes,
         browserProfileDeletions: payload.browser.profileDeletions,
-        tabRestoreVersion: payload.browser.tabRestoreVersion,
-        browserTabGroups: this.#tabGroups.receive(payload.browser.tabGroups),
-        ...this.#applyAppTabs(
-          appTabMark === this.#appTabGeneration
-            ? this.#overlayAppTabs(payload.appTabs)
-            : (this.#snapshot.appTabs ?? []),
-        ),
         executionPreferences: payload.executionPreferences,
         quietTaskDays: payload.quietTaskDays,
         identityConfig: payload.identityConfig,
@@ -3928,8 +3629,8 @@ export class HttpHostClient {
         user: payload.user,
       }),
     });
-    if (this.#browserTabs.seed({ groups: payload.browser.groups, tabs: payload.browser.tabs }))
-      this.#browserContinuation = payload.browser.continuation;
+    // The stream, once running, is newer than any bootstrap prefix.
+    this.#tabs.seed(payload.tabs);
     if (!this.#cacheLoaded && this.#streamCache) {
       this.#cacheLoaded = true;
       await this.#checkpointWrite.catch(() => undefined);
@@ -4021,7 +3722,6 @@ export class HttpHostClient {
   #enterForeground(): void {
     if (this.#disposed || this.#visibility === "foreground") return;
     const backgroundedForMs = Date.now() - (this.#backgroundedAt ?? Date.now());
-    this.#pendingBrowserTabs.checkDeadlines();
     this.#visibility = "foreground";
     this.#targetedControl.suspend(this.#network === "offline");
     this.#targetedWatch.suspend(this.#network === "offline");
@@ -4207,43 +3907,16 @@ export class HttpHostClient {
     this.#connect(channel);
   }
 
-  async #waitBrowser(read: () => unknown, signal?: AbortSignal): Promise<void> {
-    if (read()) return;
-    const viewer = this.#viewer.generation;
-    let release = () => {};
-    let check = () => {};
-    const ready = new Promise<void>((resolve, reject) => {
-      check = () => {
-        if (this.#disposed || viewer !== this.#viewer.generation)
-          reject(new Error("The browser viewer changed."));
-        else if (read()) resolve();
-      };
-      release = this.#browserTabs.subscribe(check);
-      this.#browserWaiters.add(check);
-      check();
-    });
-    try {
-      await withTimeout(ready, browserOpeningTimeoutMs, {
-        ...(signal ? { signal } : {}),
-        timeoutError: () => new Error("The browser tab did not arrive."),
-      });
-    } finally {
-      release();
-      this.#browserWaiters.delete(check);
-    }
+  /** Apps pages reread on this; nothing else is read again. */
+  #invalidateApps(): void {
+    this.#update({ ...this.#snapshot, appsRevision: this.#snapshot.appsRevision + 1 });
   }
-
-  #resyncBrowser(groupId?: string, continuation?: string): void {
+  /** Asks the carrier's Host to restart the tab stream from a fresh snapshot. */
+  #resyncTabs(): void {
     const carrier = this.#browserCarrier;
     if (!carrier?.socket || carrier.socket.readyState !== 1) return;
     try {
-      carrier.socket.send(
-        JSON.stringify({
-          type: "client.browser.resync",
-          ...(groupId ? { groupId } : {}),
-          ...(continuation ? { continuation } : {}),
-        }),
-      );
+      carrier.socket.send(JSON.stringify({ type: "client.browser.resync" }));
     } catch {
       this.#closeChannel(carrier, true, 1000, "Browser resync unsendable");
     }
@@ -4253,13 +3926,12 @@ export class HttpHostClient {
       return;
     this.#browserCarrier =
       [...this.#channels.values()].find((channel) => channel.socket?.readyState === 1) ?? null;
-    this.#resyncBrowser(undefined, this.#browserContinuation);
-    this.#browserContinuation = undefined;
+    this.#resyncTabs();
   }
   #releaseBrowserCarrier(channel: DeploymentChannel): void {
     if (channel !== this.#browserCarrier) return;
     this.#browserCarrier = null;
-    this.#browserTabs.disconnected();
+    this.#tabs.disconnected();
     this.#electBrowserCarrier();
   }
 
@@ -4442,8 +4114,8 @@ export class HttpHostClient {
             const { thread } = realtimeThreadEventSchema.parse(raw).data;
             skip = !ThreadStatusSchema.safeParse(thread.status).success;
           }
-          if (!skip) return AgentEventViewSchema.parse(raw);
-          const parsed = AgentEventViewSchema.safeParse(raw);
+          if (!skip) return TabAgentEventViewSchema.parse(raw);
+          const parsed = TabAgentEventViewSchema.safeParse(raw);
           if (!parsed.success)
             ignoredIssues.push(
               ...parsed.error.issues.map((issue) => ({
@@ -4570,11 +4242,14 @@ export class HttpHostClient {
       return;
     }
     switch (loss) {
-      case "browser-stream":
+      case "tabs":
         if (channel === this.#browserCarrier) {
-          this.#browserTabs.disconnected();
-          this.#resyncBrowser();
+          this.#tabs.disconnected();
+          this.#resyncTabs();
         }
+        return;
+      case "apps":
+        this.#invalidateApps();
         return;
       case "none":
         return;
@@ -4732,11 +4407,12 @@ export class HttpHostClient {
       this.browserHistory.changed(message.profileId);
       return;
     }
-    if (
-      message.type === "host.app-tabs-changed" ||
-      message.type === "host.browser-sessions-changed"
-    ) {
+    if (message.type === "host.browser-sessions-changed") {
       this.#reread(message.type);
+      return;
+    }
+    if (message.type === "host.apps.changed") {
+      this.#invalidateApps();
       return;
     }
     if (message.type === "host.thread-place-changed") {
@@ -4785,10 +4461,9 @@ export class HttpHostClient {
       this.#reread(message.type);
       return;
     }
-    if (message.type === "host.browser-groups" || message.type === "host.browser-tabs") {
+    if (message.type === "host.tabs") {
       if (channel !== this.#browserCarrier) return;
-      if (message.type === "host.browser-groups") this.#browserTabs.applyGroups(message.stream);
-      else this.#browserTabs.applyTabs(message.groupId, message.stream);
+      if (this.#tabs.apply(message.stream) === "resync") this.#resyncTabs();
       return;
     }
     // What this socket sent was read at the version it names, whatever bootstrap last said.
@@ -4932,10 +4607,7 @@ export class HttpHostClient {
     });
     this.#applyingSnapshot = true;
     try {
-      this.#browserTabs.seed({
-        groups: snapshot.resources.browser.groups,
-        tabs: snapshot.resources.browser.tabs,
-      });
+      this.#tabs.seed(snapshot.resources.tabs);
     } finally {
       this.#applyingSnapshot = false;
     }
@@ -4957,7 +4629,8 @@ export class HttpHostClient {
       browserProfileHomes: snapshot.resources.browser.profileHomes,
       browserProfileDeletions: snapshot.resources.browser.profileDeletions,
       browserPlacements: snapshot.resources.browser.placements,
-      ...this.#applyAppTabs(snapshot.resources.appTabs),
+      // A new subscription may follow changes this client never heard of.
+      appsRevision: this.#snapshot.appsRevision + 1,
     });
     this.#refreshInputQueues(threads.map(({ id }) => id));
     for (const threadId of inFlight) {
@@ -5461,13 +5134,12 @@ export class HttpHostClient {
     this.#cancelLostFrameReread();
     this.#savedViewReadiness = emptySavedViewReadiness();
     this.#viewerGeneration += 1;
-    this.#appTabPending.clear();
     this.#browserUsageRead.clear();
     this.#browserUsageReads.clear();
     this.#browserUsageRunSources.clear();
     this.#browserUses.clear();
-    this.#browserTabs.clear();
-    this.#browserContinuation = undefined;
+    this.#tabs.clear();
+    this.#pageSessions.clear();
     this.#placeActivity.clear();
     this.#runPlaces.clear();
     this.#targetedWatch.clear();
@@ -5498,7 +5170,7 @@ export class HttpHostClient {
     for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
     this.#channels.clear();
     this.#update({
-      ...emptySnapshot(),
+      ...emptySnapshot(this.#tabs),
       connection: "connected",
       identityConfig: this.#snapshot.identityConfig,
       revision: this.#snapshot.revision,
@@ -5515,14 +5187,11 @@ export class HttpHostClient {
     );
   }
 
+  /** A listed page tab, still bound to that session on this device. */
   #browserTargetAuthorized(sessionId: string, surfaceId: string): boolean {
-    const groupId = this.#browserTabs.groupForSession(sessionId);
-    const group = groupId ? this.#browserTabs.group(groupId) : undefined;
     return (
-      !!group &&
-      group.state !== "closed" &&
-      group.state !== "failed" &&
-      (!this.#browserTabs.tabs(group.id).whole || !!this.#browserTabs.tab(group.id, surfaceId))
+      this.#tabs.get(surfaceId as TabId)?.kind === "page" &&
+      this.#pageSessions.get(surfaceId) === sessionId
     );
   }
 
@@ -5661,52 +5330,36 @@ export class HttpHostClient {
       Object.keys(snapshot.threadAutomations).length > 0
     )
       snapshot = { ...snapshot, threadAutomations: {} };
-    if (snapshot.session === "authenticated")
-      snapshot = {
-        ...snapshot,
-        ...this.#browserSnapshot.derive(snapshot, this.#browserTabs),
-      };
-    const structure = this.#browserTabs.structure();
-    const browserStructureChanged = structure !== this.#browserStructure;
-    const browserTargetsChanged = this.#browserTargetRevision !== this.#browserTabs.targetRevision;
-    const closedBrowserTabs: string[] = [];
-    if (browserStructureChanged) {
-      const tabIds = new Map<string, readonly string[]>();
-      for (const groupId of this.#browserTabs.groups().ids) {
-        const list = this.#browserTabs.tabs(groupId);
-        const previous = this.#browserTabIds.get(groupId);
-        tabIds.set(groupId, list.ids);
-        if (list.whole && previous && previous !== list.ids) {
-          const open = new Set(list.ids);
-          for (const id of previous) if (!open.has(id)) closedBrowserTabs.push(id);
-        }
-      }
-      this.#browserTabIds = tabIds;
+    const tabRows = this.#tabs.rows;
+    const tabsChanged = tabRows !== this.#tabRows;
+    if (tabsChanged) {
+      this.#tabRows = tabRows;
+      // A page binding lasts while its tab is listed; a closed tab's session is no longer this device's.
+      for (const tabId of this.#pageSessions.keys())
+        if (!tabRows.has(tabId as TabId)) this.#pageSessions.delete(tabId);
+      for (const tabId of this.#viewers.keys())
+        if (!tabRows.has(tabId as TabId)) this.#viewers.delete(tabId);
+      const bound = new Set(this.#pageSessions.values());
+      if (snapshot.browserSessions.some((session) => !bound.has(session.id)))
+        snapshot = {
+          ...snapshot,
+          browserSessions: snapshot.browserSessions.filter((session) => bound.has(session.id)),
+        };
     }
-    this.#browserStructure = structure;
-    this.#browserTargetRevision = this.#browserTabs.targetRevision;
     const scope = viewerScopeOf(snapshot);
     if (this.#viewer.change(scope)) {
-      for (const check of this.#browserWaiters) check();
       this.#nodeDetails.clear();
       this.#runPlaces.clear();
       this.#targetedWatch.clear();
       this.#targetedControl.clear();
-      this.#pendingBrowserTabs.clear();
       this.#clearAttachmentReads();
-      this.#personalTabActivations.clear(false);
       this.#computerViews.clear();
       this.#ownerViews.clear();
-      snapshot = {
-        ...snapshot,
-        browserTabGroups: this.#tabGroups.receive(snapshot.browserTabGroups),
-      };
+      this.#pageSessions.clear();
+      this.#viewers.clear();
+      this.#tabs.clear();
+      snapshot = { ...snapshot, browserSessions: [] };
     }
-    snapshot = {
-      ...snapshot,
-      activatingPersonalTabs: this.#personalTabActivations.ids,
-      pendingBrowserTabs: this.#pendingBrowserTabs.rows,
-    };
     // A dropped connection pauses the views being watched; it does not end them.
     this.#computerViews.setConnected(scope !== null && snapshot.connection === "connected");
     this.browserHistory.setScope(scope);
@@ -5727,8 +5380,7 @@ export class HttpHostClient {
         snapshot.browserSessions !== this.#snapshot.browserSessions ||
         snapshot.machines !== this.#snapshot.machines ||
         snapshot.connection !== this.#snapshot.connection ||
-        browserTargetsChanged ||
-        snapshot.appTabs !== this.#snapshot.appTabs ||
+        tabsChanged ||
         snapshot.browserPlacements !== this.#snapshot.browserPlacements ||
         snapshot.browserProfiles !== this.#snapshot.browserProfiles
       ) {
@@ -5738,7 +5390,9 @@ export class HttpHostClient {
           this.#browserTargetAllowed(sessionId, surfaceId, asleep);
         reconcileBrowserTargets = () => {
           const document = (sessionId: string, tabId: string) =>
-            placeByKey(this.#snapshot, `browser:${sessionId}:${tabId}`)?.browser?.documentId;
+            this.#browserTargetAuthorized(sessionId, tabId)
+              ? (this.browserViewerSurface(sessionId, tabId)?.documentId ?? null)
+              : undefined;
           reconcileBrowserLastPictures(this.browserWatchFrames, document);
           reconcileBrowserLastPictures(this.browserFrames, document);
           if (this.#snapshot.connection === "connected")
@@ -5826,9 +5480,6 @@ export class HttpHostClient {
       network: this.#network,
       revision: this.#snapshot.revision + 1,
     };
-    if (closedBrowserTabs.length) this.#tabGroups.removeClosed(closedBrowserTabs);
-    if (browserStructureChanged)
-      this.#snapshot = { ...this.#snapshot, browserTabGroups: this.#tabGroups.project() };
     this.#runPlaces.flush();
     reconcileBrowserTargets?.();
     this.#nodeDetails.refreshNodes();
@@ -5876,10 +5527,10 @@ function shareBootstrapData(previous: unknown, next: unknown): unknown {
 }
 
 function withNewerComputerPresence(
-  machine: LegacyMachineSummary,
-  previous: readonly LegacyMachineSummary[],
+  machine: MachineSummary,
+  previous: readonly MachineSummary[],
   patchedSince: (sessionId: string) => boolean,
-): LegacyMachineSummary {
+): MachineSummary {
   const computerUse = machine.computerUse;
   if (!computerUse?.sessions.some((session) => patchedSince(session.sessionId))) {
     return { ...machine };
@@ -6309,8 +5960,21 @@ function knownPendingRequestCount(snapshot: HostSnapshot, threadId: string): num
     .length;
 }
 
-function emptySnapshot(): HostSnapshot {
+/**
+ * History pages and the realtime stream share one event shape, whose
+ * place.entered names a tab.
+ */
+function tabEventPage<Page extends { readonly events: readonly unknown[] }>(
+  result: Parameters<typeof unwrapRpcResult<Page>>[0],
+): Omit<Page, "events"> & { readonly events: AgentEvent[] } {
+  const page = unwrapRpcResult(result);
+  return { ...page, events: z.array(TabAgentEventViewSchema).parse(page.events) };
+}
+
+function emptySnapshot(tabs: TabStore): HostSnapshot {
   return {
+    tabs,
+    appsRevision: 0,
     personalSettings: null,
     can: null,
     needsYou: null,

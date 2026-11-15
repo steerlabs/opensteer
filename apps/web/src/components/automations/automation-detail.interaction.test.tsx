@@ -164,8 +164,8 @@ it("uses authorized hidden-worker events on the real page and HTTP client, ignor
       const path = new URL(String(input)).pathname;
       const data = path.endsWith("triggers.get")
         ? read()
-        : path.endsWith("bootstrap.legacy.get")
-          ? unwrapRpcResult(await client.rpc["bootstrap.legacy.get"]({}))
+        : path.endsWith("bootstrap.get")
+          ? unwrapRpcResult(await client.rpc["bootstrap.get"]({}))
           : {};
       return new Response(JSON.stringify({ ok: true, data }), {
         headers: { "content-type": "application/json" },

@@ -3,7 +3,6 @@ import { pageSiteLabel } from "./surfaces.js";
 import {
   imageGenerationToolName,
   isIntegrationGatewayTool,
-  placeIdentityKey,
   type AssignmentSummary,
   type BrowserTabWriteInput,
   type WaitingRequest,
@@ -1224,7 +1223,8 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
   };
   for (const entry of work) {
     if (entry.kind === "place") {
-      if (entry.place.kind !== "browser") {
+      // Only a page has a site; a window or phone place stands on its own row.
+      if (entry.site === null) {
         flushPlaces();
         result.push({ entry, key: `place:${entry.id}`, kind: "place" });
         continue;
@@ -1342,8 +1342,7 @@ function rowPlaces(
   const places = new Map<string, PlaceEntry>();
   for (const entry of entries) {
     if (entry.kind !== "place") continue;
-    const key = placeIdentityKey(entry.place);
-    if (!places.has(key)) places.set(key, entry);
+    if (!places.has(entry.tabId)) places.set(entry.tabId, entry);
   }
   return [...places.values()];
 }

@@ -5,13 +5,13 @@ import {
   type DesktopWebLinkDelivery,
   type OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
-import type {
-  BrowserIdentityChoice,
-  BrowserIdentityOpenInput,
-  HostClient,
-  LegacyHostSnapshot as HostSnapshot,
-  PersonalSurfaceDestination,
-  PendingBrowserTabDestination,
+import {
+  pageOpenTarget,
+  type BrowserIdentityChoice,
+  type BrowserIdentityOpenInput,
+  type HostClient,
+  type HostSnapshot,
+  type TabDestination,
 } from "@opensteer/client/host";
 
 /** Who browses a link and, for Guest, on which computer: bound once, so a retry or reload replays it. */
@@ -20,29 +20,22 @@ interface LinkTarget {
   readonly placement?: BrowserIdentityOpenInput["placement"] | undefined;
 }
 
-/** Uses the same person-owned command as the start page, with a replay-safe key. */
+/** The same tab.open the start page sends, under a key the link fixes, so a retry replays it. */
 export async function openDesktopWebLink(
   value: unknown,
   client: HostClient,
   { identity, placement }: LinkTarget,
-  show: (destination: PersonalSurfaceDestination | PendingBrowserTabDestination) => void,
+  show: (destination: TabDestination) => void,
   acknowledge: (id: string) => Promise<void>,
 ): Promise<void> {
   const link = DesktopWebLinkSchema.parse(value);
-  const opening = client.beginBrowserTabOpen(placement ? { identity, placement } : { identity }, {
-    url: link.url,
+  const result = await client.dispatch({
+    type: "tab.open",
+    target: pageOpenTarget(placement ? { identity, placement } : { identity }, link.url),
     idempotencyKey: `desktop-web-link:${link.id}`,
   });
-  show({ kind: "pending-browser", idempotencyKey: opening.idempotencyKey });
-  let opened;
-  try {
-    opened = await opening.result;
-  } catch (error) {
-    // Closing the opening is the person's answer to this link, not a failure.
-    if (error instanceof Error && error.name === "AbortError") return acknowledge(link.id);
-    throw error;
-  }
-  show({ kind: "browser", sessionId: opened.sessionId, tabId: opened.tabId });
+  if (result.type !== "tab.open") throw new Error("Unexpected tab open result.");
+  show({ kind: "tab", tabId: result.tab.tabId });
   await acknowledge(link.id);
 }
 
@@ -167,7 +160,6 @@ export interface WebLinkView {
   readonly revision: number;
   /** Wall-clock time of the change that produced this revision. */
   readonly changedAt: number;
-  readonly pendingBrowserTab?: string | null;
 }
 
 /**
@@ -177,26 +169,16 @@ export interface WebLinkView {
  */
 export function webLinkSelection(
   view: () => WebLinkView,
-): <Destination extends PersonalSurfaceDestination | PendingBrowserTabDestination>(
+): <Destination extends TabDestination>(
   show: (destination: Destination) => void,
 ) => (receivedAt: number | undefined) => (destination: Destination) => void {
   let leftAt = Number.NEGATIVE_INFINITY;
   return (show) => {
     const arrival = view().revision;
-    let pending: string | null = null;
     return (receivedAt) => (destination) => {
       const current = view();
-      if (current.revision !== arrival && (!pending || current.pendingBrowserTab !== pending))
-        leftAt = Math.max(leftAt, current.changedAt);
-      else if (receivedAt === undefined || receivedAt >= leftAt) {
-        if (
-          "kind" in destination &&
-          destination.kind === "pending-browser" &&
-          "idempotencyKey" in destination
-        )
-          pending = destination.idempotencyKey;
-        show(destination);
-      }
+      if (current.revision !== arrival) leftAt = Math.max(leftAt, current.changedAt);
+      else if (receivedAt === undefined || receivedAt >= leftAt) show(destination);
     };
   };
 }

@@ -94,11 +94,7 @@ try {
       await message.fill("@");
       const firstTitle = await page.evaluate((key) => {
         const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-        const tabId = key!.split(":").slice(2).join(":");
-        return client
-          .getSnapshot()
-          .browserSessions.flatMap((session) => session.browserTabs?.sessionTabs(session?.id) ?? [])
-          .find((tab) => tab.id === tabId)!.title;
+        return client.getSnapshot().tabs.get(key!)!.title;
       }, firstKey);
       await page
         .getByRole("option")

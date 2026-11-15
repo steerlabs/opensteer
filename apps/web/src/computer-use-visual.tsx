@@ -14,7 +14,7 @@ import type {
   IntegrationConnectionSummary,
   IntegrationDefinitionSummary,
 } from "@opensteer/integration-core";
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 import type {
   DesktopComputerAppSetup,
   DesktopComputerAppSetupStep,
@@ -141,7 +141,7 @@ const machine = {
   revocable: true,
   status: online ? "online" : "offline",
   unlinkedLocalFolders: 0,
-} as unknown as LegacyMachineSummary;
+} as unknown as MachineSummary;
 
 const connection = (
   id: string,

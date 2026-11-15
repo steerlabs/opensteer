@@ -1,6 +1,6 @@
 import { defaultTaskSymbol } from "@opensteer/core";
 import type { MarkColor, IconName } from "@opensteer/core";
-import type { LegacyHostSnapshot as HostSnapshot } from "./client.js";
+import type { HostSnapshot } from "./client.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
 
 /**

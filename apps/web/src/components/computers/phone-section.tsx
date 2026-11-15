@@ -11,7 +11,7 @@ import type {
   IntegrationConnectionSummary,
   IntegrationDefinitionSummaryView,
 } from "@opensteer/integration-core";
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 import { useState } from "react";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { Icon } from "../icon.js";
@@ -34,7 +34,7 @@ export function PhoneSection({
   readonly definitions: readonly IntegrationDefinitionSummaryView[];
   readonly hostClient: HostClient;
   readonly hostConnected: boolean;
-  readonly machine: LegacyMachineSummary;
+  readonly machine: MachineSummary;
   readonly onChanged: () => Promise<void>;
   /** Opens setup over USB for this phone or updates its app. */
   readonly onPlugIn: () => void;

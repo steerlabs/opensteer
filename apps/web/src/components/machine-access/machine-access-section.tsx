@@ -1,4 +1,4 @@
-import { machineAccessSharePathMaxBytes, type LegacyMachineSummary } from "@opensteer/protocol";
+import { machineAccessSharePathMaxBytes, type MachineSummary } from "@opensteer/protocol";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import {
   useCallback,
@@ -52,7 +52,7 @@ const shareLimit = 32;
 const liveSessionTickMs = 30_000;
 
 export interface MachineAccessSectionProps {
-  readonly access: NonNullable<LegacyMachineSummary["access"]>;
+  readonly access: NonNullable<MachineSummary["access"]>;
   readonly client: HostClient;
   readonly deploymentName: string;
   /** The desktop this page runs in, when it runs in one. */
@@ -61,7 +61,7 @@ export interface MachineAccessSectionProps {
   readonly machineName: string;
   /** Bumped by the Host when this computer's sessions change. */
   readonly machineRevision: number;
-  readonly ownership: LegacyMachineSummary["ownership"];
+  readonly ownership: MachineSummary["ownership"];
   /** Under a device's Files and commands switch, which owns reach, so no second switch. */
   readonly embedded?: boolean;
 }
@@ -571,7 +571,7 @@ function SavedReachChip({
   reach,
 }: {
   readonly deploymentName: string;
-  readonly reach: NonNullable<LegacyMachineSummary["access"]>["policy"]["reach"];
+  readonly reach: NonNullable<MachineSummary["access"]>["policy"]["reach"];
 }) {
   if (reach === "nobody") return <span className="chip">Off</span>;
   return (
@@ -581,9 +581,7 @@ function SavedReachChip({
   );
 }
 
-function draftGrantsAnything(
-  policy: NonNullable<LegacyMachineSummary["access"]>["policy"],
-): boolean {
+function draftGrantsAnything(policy: NonNullable<MachineSummary["access"]>["policy"]): boolean {
   return policy.commands || policy.forwarding || policy.shares.length > 0;
 }
 

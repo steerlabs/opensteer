@@ -6,7 +6,6 @@ export * from "./use-conversation-surfaces.js";
 export * from "./use-browser-popup-follow.js";
 export * from "./use-places.js";
 export * from "./use-run-page-view.js";
-export * from "./use-phone-tab-view.js";
 export * from "./use-action-review.js";
 export * from "./use-browser-presentation-wait.js";
 export * from "./use-schedules.js";
@@ -29,6 +28,7 @@ export * from "./use-mounted.js";
 export * from "./use-tool-output.js";
 
 export * from "./use-browser-tabs.js";
+export * from "./use-tabs.js";
 export * from "./use-browser-tab-icon.js";
 export * from "./use-syncing-placeholder.js";
 export * from "./use-tab-filter.js";

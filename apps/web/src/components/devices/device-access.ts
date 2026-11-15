@@ -1,9 +1,5 @@
 export { cancelDeviceSetup } from "@opensteer/client/computers";
-import {
-  deviceAccess,
-  type DeviceInitialAccess,
-  type LegacyMachineSummary,
-} from "@opensteer/protocol";
+import { deviceAccess, type DeviceInitialAccess, type MachineSummary } from "@opensteer/protocol";
 import {
   deviceAccessRows,
   hostsDeployment,
@@ -46,7 +42,7 @@ export type DeviceSwitch =
     };
 
 export function deviceSwitches(
-  machine: LegacyMachineSummary,
+  machine: MachineSummary,
   devicesAvailable: boolean,
 ): readonly DeviceSwitch[] {
   return deviceAccessRows(machine, devicesAvailable).flatMap((row): DeviceSwitch[] => {
@@ -57,14 +53,14 @@ export function deviceSwitches(
   });
 }
 
-function needsMacos(machine: LegacyMachineSummary, capability: DeviceCapability): boolean {
+function needsMacos(machine: MachineSummary, capability: DeviceCapability): boolean {
   if (machine.device?.platform !== "macos") return false;
   if (capability === "apps") return machine.computerUse?.state === "permission-required";
   if (capability === "files") return machine.fullDiskAccess === false;
   return false;
 }
 
-function appsDetail(machine: LegacyMachineSummary): string {
+function appsDetail(machine: MachineSummary): string {
   if (isAgentPhone(machine)) return "See and control the phone";
   if (machine.device?.platform === "ios") return "Calendar, Contacts and other iPhone apps";
   if (machine.device?.platform === "macos") return capabilityDetail.apps;
@@ -73,7 +69,7 @@ function appsDetail(machine: LegacyMachineSummary): string {
 
 export function deviceSwitchDetail(
   item: DeviceSwitch,
-  machine: LegacyMachineSummary,
+  machine: MachineSummary,
   thisDevice: boolean,
 ): string {
   if (item.kind === "fixed") return item.reason === "home" ? homeFixedDetail : olderHostDetail;
@@ -88,7 +84,7 @@ export function deviceSwitchDetail(
  * while that is unknown, so Ready never claims a choice an older Host dropped.
  */
 export function appliedSetupAccess(input: {
-  readonly machine: LegacyMachineSummary | null;
+  readonly machine: MachineSummary | null;
   readonly chosen: DeviceInitialAccess | null;
   readonly devicesAvailable: boolean;
 }): DeviceInitialAccess | null {
@@ -98,10 +94,7 @@ export function appliedSetupAccess(input: {
 }
 
 /** A one-line summary for a Devices row: what the agent can use there. */
-export function deviceUsesLine(
-  machine: LegacyMachineSummary,
-  devicesAvailable: boolean,
-): string | null {
+export function deviceUsesLine(machine: MachineSummary, devicesAvailable: boolean): string | null {
   if (pendingEnrollmentId(machine)) return null;
   const items = deviceSwitches(machine, devicesAvailable).filter(
     (item) => item.kind === "fixed" || item.on,
@@ -117,7 +110,7 @@ export function deviceUsesLine(
 }
 
 /** "Online", "Offline · last seen Tuesday", or Home's role, in one line. */
-export function deviceStatusLine(machine: LegacyMachineSummary, now = new Date()): string {
+export function deviceStatusLine(machine: MachineSummary, now = new Date()): string {
   if (hostsDeployment(machine)) return "Home · your agent runs here";
   if (machine.status === "online") return "Online";
   if (machine.status === "pending")
@@ -136,7 +129,7 @@ function expiryWords(at: Date, now: Date): string {
 }
 
 /** A row the Host lists before any device redeemed its token: only its setup can be cancelled. */
-export function pendingEnrollmentId(machine: LegacyMachineSummary): string | null {
+export function pendingEnrollmentId(machine: MachineSummary): string | null {
   return machine.status === "pending" ? machine.enrollmentId : null;
 }
 

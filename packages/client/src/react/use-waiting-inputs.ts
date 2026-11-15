@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from "react";
-import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
+import type { HostClient, HostSnapshot } from "../host/client.js";
 import { waitingInputs, type WaitingInput } from "../host/waiting-inputs.js";
 import { useHostSelector } from "./use-host-snapshot.js";
 

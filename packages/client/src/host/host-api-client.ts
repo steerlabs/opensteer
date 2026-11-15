@@ -164,8 +164,7 @@ async function request<Name extends keyof typeof hostApi>(
   if (declaration.method === "GET" || "binaryRequest" in declaration) {
     url.searchParams.set("input", serialized);
   }
-  const diagnostic =
-    name === "bootstrap.legacy.get" ? bootstrapReadDiagnostics.takeSummary() : undefined;
+  const diagnostic = name === "bootstrap.get" ? bootstrapReadDiagnostics.takeSummary() : undefined;
   const deadline = new HostResponseDeadline(call?.signal);
   const maximumBytes = declaration.stream
     ? name === "file.content"

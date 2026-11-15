@@ -1,3 +1,4 @@
+import { RunnerIdSchema } from "@opensteer/core";
 import { hostApiVersion, minimumHostApiVersion } from "@opensteer/deployment-authority";
 import type { NativeViewerSource } from "../host/surfaces.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,7 +12,7 @@ import {
 import { HttpHostClient, type WebSocketClient } from "../host/host-session-client.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { MockPhoneDisplaySocket } from "../mock/mock-phone-display.js";
-import type { LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
+import type { HostSnapshot } from "../host/client.js";
 import {
   DisplayStreams,
   sharedDisplayStreams,
@@ -1404,7 +1405,13 @@ it("mock phone views cancel a hidden Open intent and withdraw write access live"
     const phone = (await client.listApprovedComputerApps()).find(
       (item) => item.target.kind === "phone",
     )!;
-    const view = await client.openComputerView(phone.machineId, phone.target);
+    const tab = await client.openTab({
+      kind: "phone",
+      computerId: RunnerIdSchema.parse(phone.machineId),
+    });
+    const viewer = await client.activateTab(tab.tabId);
+    if (viewer.kind !== "phone") throw new Error("Expected a phone viewer");
+    const { view } = viewer;
     const retained = client.retainComputerView(view.viewId, view.generation);
     retained.setVisible(false);
     const lease = pool.retain({

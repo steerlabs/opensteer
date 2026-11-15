@@ -1,15 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { TabId } from "@opensteer/core";
 import {
   BrowserAgentFollow,
-  type BrowserAgentFollowInput,
-  type BrowserAgentFollowTimers,
-} from "../host/browser-agent-follow.js";
-import {
   browserThreadAgentTab,
   sameBrowserTab,
+  type BrowserAgentFollowInput,
+  type BrowserAgentFollowTimers,
   type BrowserTabDestination,
-} from "../host/browser-thread-tabs.js";
-import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
+} from "../host/browser-agent-follow.js";
+import type { HostClient, HostSnapshot } from "../host/client.js";
 import { threadInDirectory } from "../host/host-snapshot-selectors.js";
 import { threadStopTarget } from "../host/thread-activity.js";
 import { useHostSelector } from "./use-host-snapshot.js";
@@ -51,14 +50,23 @@ export function useThreadAgentTab(
   );
   const selectOccupied = useCallback(
     (snapshot: HostSnapshot) =>
-      threadId === null ? null : browserThreadAgentTab(snapshot.browserSessions, threadId),
+      threadId === null ? null : browserThreadAgentTab(snapshot, threadId),
     [threadId],
   );
   const runId = useHostSelector(hostClient, selectRunId);
   const runPlace = useRunPlace(hostClient, runId);
   const { destination } = useRunPlaceBinding(hostClient, runPlace);
-  const occupied = useHostSelector(hostClient, selectOccupied, sameOccupied);
-  return destination?.kind === "browser" ? destination : occupied;
+  const tabs = hostClient.getSnapshot().tabs;
+  const subscribeTabs = useCallback((listener: () => void) => tabs.subscribe(listener), [tabs]);
+  const held = useRef<BrowserTabDestination | null>(null);
+  const readOccupied = useCallback(() => {
+    const next = selectOccupied(hostClient.getSnapshot());
+    if (!sameOccupied(held.current, next)) held.current = next;
+    return held.current;
+  }, [hostClient, selectOccupied]);
+  const occupied = useSyncExternalStore(subscribeTabs, readOccupied, readOccupied);
+  const destinationTab = destination ? tabs.get(destination.tabId as TabId) : undefined;
+  return destinationTab?.kind === "page" ? { tabId: destinationTab.tabId } : occupied;
 }
 
 export function useBrowserAgentFollow(input: UseBrowserAgentFollowInput): BrowserAgentFollowResult {
@@ -70,24 +78,16 @@ export function useBrowserAgentFollow(input: UseBrowserAgentFollowInput): Browse
     [input.timers],
   );
   const { threadId, shownTab, agentTab, held = false } = input;
-  const shownSessionId = shownTab?.sessionId;
   const shownTabId = shownTab?.tabId;
-  const agentSessionId = agentTab?.sessionId;
   const agentTabId = agentTab?.tabId;
   useEffect(() => {
     controller.update({
       threadId,
-      shownTab:
-        shownSessionId !== undefined && shownTabId !== undefined
-          ? { sessionId: shownSessionId, tabId: shownTabId }
-          : null,
-      agentTab:
-        agentSessionId !== undefined && agentTabId !== undefined
-          ? { sessionId: agentSessionId, tabId: agentTabId }
-          : null,
+      shownTab: shownTabId !== undefined ? { tabId: shownTabId } : null,
+      agentTab: agentTabId !== undefined ? { tabId: agentTabId } : null,
       held,
     });
-  }, [controller, threadId, shownSessionId, shownTabId, agentSessionId, agentTabId, held]);
+  }, [controller, threadId, shownTabId, agentTabId, held]);
   useEffect(() => () => controller.dispose(), [controller]);
   return { following, steer: controller.steer };
 }

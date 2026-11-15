@@ -7,7 +7,7 @@ import { triggerOccurrenceErrorMessage } from "@opensteer/triggers/models";
 import {
   HostClientRequestError,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type TriggerDetail,
 } from "./client.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "./host-session-client.js";

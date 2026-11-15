@@ -10,8 +10,8 @@ import type {
 import type { DesktopOpenComputerUsePermissionsPanelResult } from "@opensteer/protocol/desktop";
 import type {
   ComputerUseInstalledApp,
-  LegacyComputerUseSessionSummary,
-  LegacyMachineSummary,
+  ComputerUseSessionSummary,
+  MachineSummary,
 } from "@opensteer/protocol";
 import {
   askForEachComputerUseApp,
@@ -94,7 +94,7 @@ export function ComputerUseBlock({
 }: {
   readonly hostClient: HostClient;
   readonly local: ComputerUseLocalActions | null;
-  readonly machine: LegacyMachineSummary;
+  readonly machine: MachineSummary;
   readonly onChanged: () => Promise<void>;
   readonly owned: boolean;
   readonly view: ComputerUseView;
@@ -597,7 +597,7 @@ function AddAppDialog({
 }: {
   readonly existing: readonly ComputerUseAppRow[];
   readonly hostClient: HostClient;
-  readonly machine: LegacyMachineSummary;
+  readonly machine: MachineSummary;
   readonly onApprove: (input: {
     readonly access: IntegrationAccess;
     readonly app: ComputerAppIdentity;
@@ -822,7 +822,7 @@ function ComputerUseSessionRow({
   hostClient: HostClient;
   machineName: string;
   owned: boolean;
-  session: LegacyComputerUseSessionSummary;
+  session: ComputerUseSessionSummary;
 }) {
   const stop = useComputerUseStop(hostClient, session.sessionId);
   const stopping = stop?.phase === "stopping" || stop?.phase === "stopped";

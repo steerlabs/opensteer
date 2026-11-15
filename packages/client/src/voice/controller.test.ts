@@ -1,5 +1,5 @@
 import { BrowserSurfaceIdSchema, ThreadIdSchema, createId } from "@opensteer/core";
-import { LegacyPersonShowMessageSchema as PersonShowMessageSchema } from "@opensteer/protocol";
+import { PersonShowMessageSchema } from "@opensteer/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolEntry } from "../host/client.js";
 import { VoiceStartError, type VoiceCall, type VoiceSnapshot as Snapshot } from "./contract.js";
@@ -466,7 +466,7 @@ describe("what the person sees", () => {
       PersonShowMessageSchema.parse({
         type: "host.show",
         ...call,
-        target: { threadId: chat },
+        target: { taskId: chat },
       });
     f.controller.showed(message(first));
     expect(shown).toHaveBeenCalledTimes(1);

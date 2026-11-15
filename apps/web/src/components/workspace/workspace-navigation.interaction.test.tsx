@@ -1,27 +1,17 @@
-import { seedBrowserSession } from "@opensteer/client/test-support";
-import { seedBrowserSnapshot } from "@opensteer/client/test-support";
-import type { PersonalTabLineage, HostClient } from "@opensteer/client/host";
 // @vitest-environment happy-dom
 import { act } from "react";
 
 import { describe, expect, it, vi } from "vitest";
 
 import { mockTeamId, mockTeamChannelId, mockTeamUserId } from "@opensteer/client/team";
+import { doneTaskList, placeList, taskList, type HostSnapshot } from "@opensteer/client/host";
 import {
-  doneTaskList,
-  placeList,
-  taskList,
-  type LegacyHostSnapshot as HostSnapshot,
-} from "@opensteer/client/host";
-import {
-  BrowserSurfaceIdSchema,
-  BrowserSessionIdSchema,
   createId,
   TeamAgentRequestIdSchema,
   ThreadIdSchema,
   TeamMessageIdSchema,
+  type Tab,
 } from "@opensteer/core";
-import { createBrowserSessionId } from "@opensteer/protocol";
 
 import { rememberPlace } from "./navigation.js";
 
@@ -65,23 +55,16 @@ describe("Settings returns to the workspace exactly as it was", () => {
     await click(settings);
   }
 
-  it("returns to the canonical browser tab and conversation with one push", async () => {
+  it("returns to the tab and conversation with one push", async () => {
     let threadId = "";
     await mount((source) => {
       const snapshot = source.getSnapshot();
       threadId = snapshot.threads.find((thread) => thread.purpose === "task")!.id;
-      const place = pageTab(source);
-      if (place.destination.kind !== "browser") throw new Error("Missing browser place");
-      return `/tasks/${threadId}?panel=browser&browser=${place.destination.sessionId}`;
+      return `/tasks/${threadId}${tabSearch(pageTab(source))}`;
     });
     const canonical = history.at(-1)!;
-    expect(canonical).toMatchObject({ path: `/tasks/${threadId}`, type: "REPLACE" });
-    const selectedTab = new URLSearchParams(canonical.search).get("browserTab");
-    expect(selectedTab).toBeTruthy();
-    const place = placeList(client.getSnapshot()).find(
-      (item) => item.destination.kind === "browser" && item.destination.tabId === selectedTab,
-    );
-    if (!place) throw new Error("Canonical browser tab is missing from places");
+    expect(canonical).toMatchObject({ path: `/tasks/${threadId}` });
+    const place = pageTab();
     expect(element(".place").getAttribute("data-place-key")).toBe(place.key);
 
     await openSettingsFromWorkspace();
@@ -126,23 +109,11 @@ describe("Settings returns to the workspace exactly as it was", () => {
   it("returns to a conversation-only address without reopening the remembered browser", async () => {
     let threadId = "";
     await mount((source) => {
-      const read = source.getSnapshot.bind(source);
-      let base: HostSnapshot | undefined;
-      let restoring: HostSnapshot | undefined;
-      vi.spyOn(source, "getSnapshot").mockImplementation(() => {
-        const current = read();
-        if (current !== base || !restoring) {
-          base = current;
-          restoring = { ...current, tabRestoreVersion: 1 };
-        }
-        return restoring;
-      });
       const snapshot = source.getSnapshot();
       threadId = snapshot.threads.find((thread) => thread.purpose === "task")!.id;
       return `/tasks/${threadId}${tabSearch(pageTab(source))}`;
     });
     const place = pageTab();
-    if (place.destination.kind !== "browser") throw new Error("Missing browser place");
     const snapshot = client.getSnapshot();
     rememberPlace(
       { deploymentId: snapshot.deploymentId, userId: snapshot.user!.id },
@@ -186,108 +157,6 @@ describe("Settings returns to the workspace exactly as it was", () => {
 });
 
 describe("selection actions own exactly their axis, one history entry each", () => {
-  it.each([false, true])(
-    "recovers a selected browser outside the bounded catalog (remembered: %s)",
-    async (remembered) => {
-      let destination: { kind: "browser"; sessionId: string; tabId: string };
-      const read = vi.fn();
-      await mount((source) => {
-        const original = source.getSnapshot();
-        const selected = pageTab(source);
-        if (selected.destination.kind !== "browser" || !selected.destination.tabId)
-          throw new Error("Expected browser tab");
-        destination = {
-          kind: "browser",
-          sessionId: selected.destination.sessionId,
-          tabId: selected.destination.tabId,
-        };
-        const group: PersonalTabLineage = {
-          id: createBrowserSessionId(),
-          revision: 1,
-          createdAt: "2026-10-19T12:00:00.000Z",
-          session: {
-            id: destination.sessionId as PersonalTabLineage["session"]["id"],
-            access: "read-write",
-            createdAt: "2026-10-19T12:00:00.000Z",
-            updatedAt: "2026-10-19T12:00:00.000Z",
-            origin: "person",
-            placement: {
-              kind: "runner",
-              runnerId: selected.device!
-                .machineId as PersonalTabLineage["session"]["placement"]["runnerId"],
-            },
-            profileId: null,
-            runtimeId: "test",
-            state: "failed",
-          },
-          tabs: [
-            {
-              kind: "browser",
-              id: BrowserSurfaceIdSchema.parse(destination.tabId),
-              sessionId: destination.sessionId as PersonalTabLineage["session"]["id"],
-              title: selected.title,
-              site: selected.site ?? "",
-              order: 0,
-              openerId: null,
-              state: "suspended",
-            },
-          ],
-        };
-        let snapshot: HostSnapshot = seedBrowserSnapshot(
-          {
-            ...original,
-            browserSessions: original.browserSessions
-              .filter((session) => session.id === destination.sessionId)
-              .map((session) =>
-                seedBrowserSession(
-                  { ...session, state: "failed" as const },
-                  { generation: 0, revision: 0, rows: [] },
-                ),
-              ),
-            tabRestoreVersion: 1,
-          } as HostSnapshot,
-          [],
-        );
-        vi.spyOn(source, "getSnapshot").mockImplementation(() => snapshot);
-        Object.defineProperty(source, "browserTabs", { get: () => snapshot.browserTabs });
-        // Outside the bounded catalog, the client holds none of this browser's rows.
-        source.browserTabs.clear();
-        const listeners = new Set<() => void>();
-        vi.spyOn(source, "subscribe").mockImplementation((listener) => {
-          listeners.add(listener);
-          return () => {
-            listeners.delete(listener);
-          };
-        });
-        read.mockImplementation(async () => {
-          snapshot = seedBrowserSnapshot(
-            seedBrowserSnapshot({ ...snapshot } as HostSnapshot, [group]),
-          );
-          for (const listener of listeners) listener();
-          return group;
-        });
-        Object.assign(source, { readPersonalTabs: read });
-        if (remembered) {
-          rememberPlace(
-            { deploymentId: original.deploymentId, userId: original.user!.id },
-            destination,
-          );
-          return "/";
-        }
-        return `/?panel=browser&browser=${destination.sessionId}&browserTab=${destination.tabId}`;
-      });
-      await settle(60);
-      expect(read).toHaveBeenCalledWith(destination!.sessionId);
-      const params = new URLSearchParams(history.at(-1)!.search);
-      expect(params.get("browserTab")).toBe(destination!.tabId);
-      expect(
-        placeList(client.getSnapshot()).some(
-          (place) =>
-            place.destination.kind === "browser" && place.destination.tabId === destination!.tabId,
-        ),
-      ).toBe(true);
-    },
-  );
   it("task row: the conversation changes, the place stays, the middle is not remounted", async () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     const place = pageTab();
@@ -399,11 +268,7 @@ describe("nothing but the person navigates", () => {
   });
 
   it("legacy /live opens Home, keeps an explicit place and invents none", async () => {
-    await mount((source) => {
-      const target = pageTab(source);
-      if (target.destination.kind !== "browser") throw new Error("browser");
-      return `/live?browser=${target.destination.sessionId}&browserTab=${target.destination.tabId}`;
-    });
+    await mount((source) => `/live${tabSearch(pageTab(source))}`);
     const place = pageTab();
     expect(history.at(-1)).toMatchObject({ path: "/", type: "REPLACE" });
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
@@ -417,16 +282,16 @@ describe("nothing but the person navigates", () => {
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(""));
   });
 
-  it("a browser address without its tab is canonicalised by one replace", async () => {
-    await mount((source) => {
-      const target = pageTab(source);
-      if (target.destination.kind !== "browser") throw new Error("browser");
-      return `/tasks/${delegating(source)}?panel=browser&browser=${target.destination.sessionId}`;
-    });
+  it("an older browser address is canonicalised by one replace, naming no tab it cannot", async () => {
+    await mount(
+      (source) => `/tasks/${delegating(source)}?panel=browser&browser=bsn_old&browserTab=old`,
+    );
     await settle(100);
     const replaces = history.filter((step) => step.type === "REPLACE");
     expect(replaces).toHaveLength(1);
-    expect(new URLSearchParams(history.at(-1)!.search).get("browserTab")).not.toBeNull();
+    const params = new URLSearchParams(history.at(-1)!.search);
+    expect(params.has("browser")).toBe(false);
+    expect(params.has("browserTab")).toBe(false);
   });
 });
 
@@ -866,17 +731,6 @@ describe("a channel and back", () => {
           { deploymentId: snapshot.deploymentId, userId: snapshot.user!.id },
           pageTab(source).destination,
         );
-        const read = source.getSnapshot.bind(source);
-        let held: HostSnapshot | null = null;
-        let published: HostSnapshot | null = null;
-        vi.spyOn(source, "getSnapshot").mockImplementation(() => {
-          const next = read();
-          if (next !== held) {
-            held = next;
-            published = { ...next, tabRestoreVersion: 1 };
-          }
-          return published!;
-        });
         return `/teams/${mockTeamId}/c/${mockTeamChannelId}`;
       },
       { team: true },
@@ -890,7 +744,7 @@ describe("a channel and back", () => {
   it.each(["team", "settings", "task"])(
     "fences a deferred place result when navigating to %s, preserving same-side task changes",
     async (target) => {
-      const gate = deferred<Awaited<ReturnType<NonNullable<HostClient["reopenPersonalTab"]>>>>();
+      const gate = deferred<Tab>();
       const reopen = vi.fn(() => gate.promise);
       vi.stubGlobal("opensteerDesktop", {
         getLocalVisibility: async () => true,
@@ -900,18 +754,7 @@ describe("a channel and back", () => {
       await mount((source) => `/tasks/${delegating(source)}`, {
         team: true,
         hostClient: (source) => {
-          const read = source.getSnapshot.bind(source);
-          let held: HostSnapshot | null = null;
-          let published: HostSnapshot | null = null;
-          vi.spyOn(source, "getSnapshot").mockImplementation(() => {
-            const next = read();
-            if (next !== held) {
-              held = next;
-              published = { ...next, tabReopenAvailable: true };
-            }
-            return published!;
-          });
-          Object.assign(source, { reopenPersonalTab: reopen });
+          Object.assign(source, { reopenTab: reopen });
           return source;
         },
       });
@@ -931,16 +774,7 @@ describe("a channel and back", () => {
       const channel = history.at(-1)!;
       const entries = history.length;
       const place = pageTab();
-      const destination = place.destination;
-      if (destination.kind !== "browser") throw new Error("Expected browser place");
-      await act(async () =>
-        gate.resolve({
-          type: "legacy.tab.reopen",
-          sessionId: BrowserSessionIdSchema.parse(destination.sessionId),
-          tabId: BrowserSurfaceIdSchema.parse(destination.tabId),
-          layout: { revision: 0, groups: [] },
-        }),
-      );
+      await act(async () => gate.resolve(place.tab));
       if (target === "task") {
         expect(history).toHaveLength(entries + 1);
         expect(history.at(-1)!.path).toBe(pathname);
@@ -1016,7 +850,7 @@ describe("a channel and back", () => {
           `.side-switch [role="radio"][data-value="${changed === "team-viewer" ? mockTeamId : "tasks"}"]`,
         ),
       );
-      expect(history.at(-1)!.search).not.toContain("browserTab");
+      expect(history.at(-1)!.search).not.toContain("tab=");
       expect(history.at(-1)!.search).not.toContain("private");
       expect(history.at(-1)!.path).toBe(
         changed === "team-viewer" ? `/teams/${mockTeamId}/c/${mockTeamChannelId}` : "/",

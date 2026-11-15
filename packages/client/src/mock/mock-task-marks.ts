@@ -5,7 +5,7 @@ import {
   type MarkColor,
   type IconName,
 } from "@opensteer/core";
-import type { LegacyHostSnapshot as HostSnapshot, ThreadSummary } from "../host/client.js";
+import type { HostSnapshot, ThreadSummary } from "../host/client.js";
 
 /** The mock's one naming reply: an unclassified subject settles to `none`/document. */
 export function mockGeneratedTaskIcon(text: string): IconName {

@@ -3,14 +3,15 @@ import {
   browserPagePart,
   type BrowserFrameView,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type PlaceItem,
 } from "@opensteer/client/host";
 import {
-  useBrowserSessionGroupId,
-  useBrowserTab,
-  useBrowserTabStrip,
+  useBrowserViewerSurface,
   useHostSelector,
+  usePlaceList,
+  useTab,
+  useTabsRevision,
 } from "@opensteer/client/react";
 import {
   PlaceContentPartSchema,
@@ -110,8 +111,8 @@ export function useComposerContext({
   readonly hostClient: HostClient;
 }): ComposerContext {
   const workspace = useOptionalWorkspace();
-  const { ordered } = useBrowserTabStrip(hostClient);
-  const places = useMemo(() => attachablePlaces(ordered), [ordered]);
+  const listedPlaces = usePlaceList(hostClient);
+  const places = useMemo(() => attachablePlaces(listedPlaces), [listedPlaces]);
   const [frozen, setFrozen] = useState<readonly ContextChip[] | null>(() => {
     const saved = draftKey ? composerDrafts.read(draftKey)?.places : undefined;
     return saved ? saved.map(restoredChip) : auto ? null : [];
@@ -145,10 +146,16 @@ export function useComposerContext({
   const selection = workspace?.selection;
   const shownKey = selection?.kind === "place" ? destinationPlaceKey(selection.destination) : null;
   const shown = shownKey ? (places.find((place) => place.key === shownKey) ?? null) : null;
-  const documentId = shown?.browser?.documentId ?? null;
+  const target = useHostSelector(
+    hostClient,
+    () => (shown ? pageTarget(hostClient, shown) : null),
+    samePageTarget,
+  );
+  const documentId =
+    useBrowserViewerSurface(hostClient, target?.sessionId, target?.tabId)?.documentId ?? null;
   const candidateKey =
     frozen === null && shown?.availability === "ready"
-      ? shown.kind !== "browser"
+      ? shown.kind !== "page"
         ? `${shown.key}:${JSON.stringify(nativePart(shown))}`
         : documentId
           ? `${shown.key}:${documentId}`
@@ -157,10 +164,6 @@ export function useComposerContext({
 
   const shownRef = useRef(shown);
   shownRef.current = shown;
-  const target =
-    shown?.destination.kind === "browser" && shown.destination.tabId
-      ? { sessionId: shown.destination.sessionId, tabId: shown.destination.tabId }
-      : null;
   const sessionId = target?.sessionId ?? null;
   const tabId = target?.tabId ?? null;
   // A page's title is read after the page itself. A followed page read before
@@ -168,8 +171,7 @@ export function useComposerContext({
   // during a read starts a new read, so the older read's untitled answer is
   // not the last word. The catalog's raw title is watched, since the list
   // names an untitled page by its site.
-  const groupId = useBrowserSessionGroupId(hostClient, sessionId ?? undefined);
-  const catalogTitle = useBrowserTab(hostClient, groupId, tabId ?? undefined)?.title ?? null;
+  const catalogTitle = useTab(hostClient, tabId)?.title ?? null;
   const titleSeen = useRef<{ readonly key: string; readonly title: string } | null>(null);
   const [titled, setTitled] = useState(0);
   useEffect(() => {
@@ -192,7 +194,7 @@ export function useComposerContext({
       return;
     }
     // A Mac app or phone is named by the place itself; only a page is read.
-    if (place.kind !== "browser") {
+    if (place.kind !== "page") {
       setFollowed({
         chip: { ...chipFor(place, nativePart(place), null), auto: true },
         key: candidateKey,
@@ -237,12 +239,17 @@ export function useComposerContext({
   }, [candidateKey, generation, hostClient, sessionId, tabId, titled]);
 
   // A frozen pick that leaves the catalog greys out; nothing takes its place.
-  const listed = useMemo(() => new Map(places.map((place) => [place.key, place])), [places]);
+  const listed = useMemo(
+    () => new Map<string, PlaceItem>(places.map((place) => [place.key, place])),
+    [places],
+  );
   const placeState = useHostSelector(hostClient, selectSnapshot, samePlaceEndSource);
+  // The tab list is one live store: its revision says when a tab came or went.
+  const tabsRevision = useTabsRevision(hostClient);
   const chips = useMemo(() => {
     const base = frozen ?? (followed && candidateKey === followed.key ? [followed.chip] : []);
     return standing(base, placeState).map((chip) => {
-      const place = listed.get(chip.key);
+      const place = listed.get(chip.key) ?? nativeTab(places, chip.part);
       const page = pageKey(chip);
       const gone = !place;
       const icon =
@@ -302,7 +309,7 @@ export function useComposerContext({
     if (!held) return;
     const kept = standing(held, placeState);
     if (kept.length < held.length) hold(kept);
-  }, [frozen, hold, placeState]);
+  }, [frozen, hold, placeState, tabsRevision]);
   /**
    * An explicit pick freezes the draft at once and stands as a chip while its
    * exact reference is read; the answer replaces that chip only if it is still
@@ -413,7 +420,44 @@ export function useComposerContext({
 
 /** What a draft can name: a published app has no place reference an agent could read. */
 export function attachablePlaces(places: readonly PlaceItem[]): readonly PlaceItem[] {
-  return places.filter((place) => place.kind !== "opensteer-app");
+  return places.filter((place) => place.kind !== "app");
+}
+
+/** The page session this device's view of a page tab is bound to, once it has been shown here. */
+function pageTarget(
+  hostClient: HostClient,
+  place: PlaceItem,
+): { readonly sessionId: string; readonly tabId: string } | null {
+  if (place.kind !== "page") return null;
+  const viewer = hostClient.tabViewer(place.key);
+  return viewer?.kind === "page" ? { sessionId: viewer.sessionId, tabId: place.key } : null;
+}
+async function boundPage(
+  hostClient: HostClient,
+  place: PlaceItem,
+): Promise<{ readonly sessionId: string; readonly tabId: string }> {
+  const viewer = await hostClient.activateTab(place.tab.tabId);
+  if (viewer.kind !== "page") throw new Error("This page is unavailable.");
+  return { sessionId: viewer.sessionId, tabId: place.key };
+}
+function samePageTarget(
+  left: { readonly sessionId: string; readonly tabId: string } | null,
+  right: { readonly sessionId: string; readonly tabId: string } | null,
+): boolean {
+  return left?.sessionId === right?.sessionId && left?.tabId === right?.tabId;
+}
+
+/** The listed window or phone tab a handed-back native part names, if any. */
+function nativeTab(places: readonly PlaceItem[], part: PlacePart | null): PlaceItem | undefined {
+  if (!part || part.type === "browser-page") return undefined;
+  return places.find(
+    (place) =>
+      place.device.machineId === part.machineId &&
+      (part.type === "phone"
+        ? place.kind === "phone"
+        : place.kind === "window" &&
+          place.tab.bundleId?.toLowerCase() === part.app.bundleId.toLowerCase()),
+  );
 }
 
 /** The shown place's automatic composer reference, read at the time it is asked for. */
@@ -421,11 +465,11 @@ export async function autoPlacePart(
   hostClient: HostClient,
   place: PlaceItem | null,
 ): Promise<PlacePart | null> {
-  if (place?.availability !== "ready" || place.kind === "opensteer-app") return null;
-  if (place.destination.kind !== "browser") return nativePart(place);
-  const { sessionId, tabId } = place.destination;
-  if (!tabId) return null;
-  const candidate = await hostClient.readBrowserContextCandidate(sessionId, tabId);
+  if (place?.availability !== "ready" || place.kind === "app") return null;
+  if (place.kind !== "page") return nativePart(place);
+  const target = pageTarget(hostClient, place);
+  if (!target) return null;
+  const candidate = await hostClient.readBrowserContextCandidate(target.sessionId, target.tabId);
   if (!/^https?:\/\//iu.test(candidate.url)) return null;
   return browserPagePart({ auto: true, ...candidate });
 }
@@ -441,13 +485,10 @@ function parsePlacePart(value: unknown): PlacePart {
  * from the origin-only catalog, and never by opening a view of it.
  */
 async function placePart(hostClient: HostClient, place: PlaceItem): Promise<PlacePart> {
-  const { destination } = place;
-  if (destination.kind === "browser") {
-    if (!destination.tabId) throw new Error("This page is unavailable.");
-    const candidate = await hostClient.readBrowserContextCandidate(
-      destination.sessionId,
-      destination.tabId,
-    );
+  if (place.kind === "page") {
+    // A page not shown here yet is bound to this device's view first, so it can be read.
+    const target = pageTarget(hostClient, place) ?? (await boundPage(hostClient, place));
+    const candidate = await hostClient.readBrowserContextCandidate(target.sessionId, target.tabId);
     return browserPagePart({
       auto: false,
       documentId: candidate.documentId,
@@ -462,11 +503,10 @@ async function placePart(hostClient: HostClient, place: PlaceItem): Promise<Plac
 
 /** A Mac app's or phone's exact reference: the place names it, with its computer. */
 function nativePart(place: PlaceItem): PlacePart {
-  const { destination } = place;
-  if (destination.kind === "opensteer-app") throw new Error("App tabs cannot be attached.");
-  if (destination.kind === "browser") throw new Error("A page is read, not named.");
-  const machineId = RunnerIdSchema.parse(destination.machineId);
-  if (destination.kind === "phone") {
+  if (place.kind === "app") throw new Error("App tabs cannot be attached.");
+  if (place.kind === "page") throw new Error("A page is read, not named.");
+  const machineId = RunnerIdSchema.parse(place.device.machineId);
+  if (place.kind === "phone") {
     return parsePlacePart({
       display: "main",
       machineId,
@@ -474,9 +514,13 @@ function nativePart(place: PlaceItem): PlacePart {
       type: "phone",
     });
   }
-  if (place.icon.kind !== "app") throw new Error("This app is unavailable.");
+  if (!place.tab.bundleId) throw new Error("This app is unavailable.");
   return parsePlacePart({
-    app: place.icon.app,
+    app: {
+      bundleId: place.tab.bundleId,
+      displayName: place.tab.appName ?? place.title,
+      teamId: null,
+    },
     machineId,
     name: place.title,
     type: "computer-app",
@@ -506,16 +550,21 @@ function pageKey(chip: ContextChip): string | null {
 
 /** Whether a place still shows the page a chip carries; any page, until a pick is read. */
 function showsPage(place: PlaceItem, chip: ContextChip): boolean {
-  return chip.part?.type !== "browser-page" || chip.part.documentId === place.browser?.documentId;
+  return chip.part?.type !== "browser-page" || chip.part.tabId === place.key;
 }
 
 /** The mark a part names by itself: its app's, its phone's, or a neutral site mark. */
 function partMark(part: PlacePart): PlaceItem["icon"] {
   return part.type === "computer-app"
-    ? { app: part.app, kind: "app", machineId: part.machineId }
+    ? {
+        kind: "app",
+        bundleId: part.app.bundleId,
+        name: part.app.displayName,
+        machineId: part.machineId,
+      }
     : part.type === "phone"
       ? { kind: "phone" }
-      : { kind: "site", ref: null, sessionId: part.sessionId };
+      : { kind: "site", ref: null, url: part.url };
 }
 
 function chipFor(place: PlaceItem, part: PlacePart | null, thumbnail: string | null): ContextChip {
@@ -557,14 +606,14 @@ function pageLabel(part: Extract<PlacePart, { readonly type: "browser-page" }>):
 function restoredChip(part: PlacePart): ContextChip {
   const key =
     part.type === "browser-page"
-      ? `browser:${part.sessionId}:${part.tabId}`
+      ? part.tabId
       : part.type === "phone"
         ? `phone:${part.machineId}:${part.display}`
         : `app:${part.machineId}:${part.app.bundleId.toLowerCase()}`;
   const page = part.type === "browser-page" ? part : null;
   return {
     auto: page?.auto === true,
-    destination: page ? { kind: "browser", sessionId: page.sessionId, tabId: page.tabId } : null,
+    destination: page ? { kind: "tab", tabId: page.tabId } : null,
     gone: false,
     icon: partMark(part),
     key,

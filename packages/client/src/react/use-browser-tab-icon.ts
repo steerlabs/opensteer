@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
-import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
+import type { HostClient, HostSnapshot } from "../host/client.js";
 import { useHostSelector } from "./use-host-snapshot.js";
 
 interface Icon {

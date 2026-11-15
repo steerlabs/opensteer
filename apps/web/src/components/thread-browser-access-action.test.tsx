@@ -4,7 +4,7 @@ import {
   type BrowserAccessChoices,
   type BrowserAccessSelection,
   type BrowserProfileSummary,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
 } from "@opensteer/client/host";
 import { createId } from "@opensteer/core";
 import { renderToStaticMarkup } from "react-dom/server";

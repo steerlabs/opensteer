@@ -1,10 +1,10 @@
 // @vitest-environment happy-dom
-import type { LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
+import type { HostSnapshot } from "@opensteer/client/host";
 import type { VoiceTarget } from "@opensteer/client/voice";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { useVoiceCursor, voiceRowKey, type VoiceCursor } from "./voice-cursor.js";
+import { useVoiceCursor, type VoiceCursor } from "./voice-cursor.js";
 import { CursorMotion } from "./workspace/cursor-motion.js";
 import { ownCursor } from "./workspace/task-mark.js";
 
@@ -103,7 +103,7 @@ it("never reaches for a browser tab across a desktop's native page", async () =>
   document.documentElement.classList.add("electron-shell");
   try {
     const navigate = vi.fn();
-    const target = { kind: "place", destination: { kind: "browser" } } as VoiceTarget;
+    const target = { kind: "place", destination: { kind: "tab", tabId: "page" } } as VoiceTarget;
     cursor.show(target, true, navigate);
     await runFrames();
     expect(navigate).toHaveBeenCalledTimes(1);
@@ -111,23 +111,6 @@ it("never reaches for a browser tab across a desktop's native page", async () =>
   } finally {
     document.documentElement.classList.remove("electron-shell");
   }
-});
-
-it("names a place's row the same way however its destination was spelled", () => {
-  const row = { appKey: "numbers", computerSessionId: "s1", kind: "app", machineId: "mac" };
-  const show = {
-    kind: "app",
-    machineId: "mac",
-    source: null,
-    appKey: "numbers",
-    computerSessionId: "s1",
-  };
-  const key = (destination: unknown) => voiceRowKey({ kind: "place", destination } as VoiceTarget);
-  expect(key(show)).toBe(key(row));
-  expect(key({ ...row, appKey: "pages" })).not.toBe(key(row));
-  expect(key({ kind: "browser", sessionId: "a", tabId: "t" })).toBe(
-    key({ kind: "browser", sessionId: "b", tabId: "t" }),
-  );
 });
 
 it("keeps opening shows when one arrives mid-glide, and gives up on one it can't follow", async () => {

@@ -1,4 +1,4 @@
-import { seedBrowserSession } from "../test-support/browser-snapshot.js";
+import { tabStoreFixture } from "../test-support/tab-fixtures.js";
 import {
   SequenceSchema,
   createId,
@@ -7,12 +7,7 @@ import {
 } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
-import type {
-  BrowserSessionSummary,
-  LegacyHostSnapshot as HostSnapshot,
-  MessageEntry,
-  ThreadSummary,
-} from "./client.js";
+import type { BrowserSessionSummary, HostSnapshot, MessageEntry, ThreadSummary } from "./client.js";
 import { applyOptimisticCommandPatch, withThreadNames } from "./optimistic-command-patches.js";
 
 const now = "2026-08-09T20:00:00.000Z";
@@ -21,24 +16,20 @@ const runId = createId("run");
 
 describe("independent browser creation", () => {
   it("keeps another session in the same workspace when a new browser starts", () => {
-    const original: BrowserSessionSummary = seedBrowserSession(
-      {
-        access: "read-write",
-        attachedRunIds: [],
-        dialog: null,
-        error: null,
-        id: "original",
-        origin: "person",
-        placement: { kind: "runner", runnerId: "runner" },
-        profileId: null,
-        runtimeId: "runtime",
-        state: "ready",
-        viewerError: null,
-        viewerState: "synchronized",
-      },
-      undefined,
-      [],
-    );
+    const original: BrowserSessionSummary = {
+      access: "read-write",
+      attachedRunIds: [],
+      dialog: null,
+      error: null,
+      id: "original",
+      origin: "person",
+      placement: { kind: "runner", runnerId: "runner" },
+      profileId: null,
+      runtimeId: "runtime",
+      state: "ready",
+      viewerError: null,
+      viewerState: "synchronized",
+    };
     const opened: BrowserSessionSummary = { ...original, id: "opened" };
     const snapshot = { ...baseSnapshot(), browserSessions: [original] };
     const result = applyOptimisticCommandPatch(snapshot, {
@@ -259,6 +250,8 @@ function withQueue(
 
 function baseSnapshot(): HostSnapshot {
   return {
+    tabs: tabStoreFixture([]),
+    appsRevision: 0,
     doneTasks: {},
     quietTaskDays: null,
     threadRenameAvailable: true,

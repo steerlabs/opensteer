@@ -1,4 +1,4 @@
-import type { LegacyComputerView as ComputerView, LegacyMachineSummary } from "@opensteer/protocol";
+import type { ComputerView, MachineSummary } from "@opensteer/protocol";
 
 /** Enough to outlast any answer in flight; the oldest is forgotten first. */
 const removedLimit = 256;
@@ -33,10 +33,7 @@ export class OwnerViewRecords {
     );
   }
 
-  accept(
-    machines: readonly LegacyMachineSummary[],
-    view: ComputerView,
-  ): readonly LegacyMachineSummary[] {
+  accept(machines: readonly MachineSummary[], view: ComputerView): readonly MachineSummary[] {
     if (this.#gone(view)) return machines;
     return machines.map((machine) => {
       if (machine.id !== view.machineId || !machine.computerUse) return machine;
@@ -55,14 +52,13 @@ export class OwnerViewRecords {
   }
 
   remove(
-    machines: readonly LegacyMachineSummary[],
+    machines: readonly MachineSummary[],
     removal: {
       readonly machineId: string;
       readonly viewId: string;
       readonly generation: number;
-      readonly tabClosed?: true | undefined;
     },
-  ): readonly LegacyMachineSummary[] {
+  ): readonly MachineSummary[] {
     if (!this.#gone(removal)) {
       this.#removed.delete(removal.viewId);
       this.#removed.set(removal.viewId, removal.generation);
@@ -74,7 +70,6 @@ export class OwnerViewRecords {
         ? machine
         : {
             ...machine,
-            tabOpenedAt: removal.tabClosed ? null : machine.tabOpenedAt,
             computerUse: {
               ...machine.computerUse,
               ownerViews: (machine.computerUse.ownerViews ?? []).filter(
@@ -87,10 +82,10 @@ export class OwnerViewRecords {
 
   /** A reread cannot undo command answers or notices accepted after it began. */
   reread(
-    machine: LegacyMachineSummary,
-    current: LegacyMachineSummary | undefined,
+    machine: MachineSummary,
+    current: MachineSummary | undefined,
     revision: number,
-  ): LegacyMachineSummary {
+  ): MachineSummary {
     if (!machine.computerUse) return machine;
     const views = machine.computerUse.ownerViews;
     const updates = (current?.computerUse?.ownerViews ?? []).filter(

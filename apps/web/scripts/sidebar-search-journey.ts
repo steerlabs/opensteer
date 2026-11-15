@@ -217,11 +217,10 @@ async function closeTabs(page: Page, titles: readonly string[]) {
       window,
       "opensteerMock",
     ) as import("@opensteer/client/host").HostClient;
-    const store = client.browserTabs;
-    const tabs = store.structure().map((key) => store.tab(key.groupId, key.tabId)!);
-    const ids = wanted.map((title) => tabs.find((tab) => tab.title === title)?.id);
+    const tabs = [...client.getSnapshot().tabs.rows.values()];
+    const ids = wanted.map((title) => tabs.find((tab) => tab.title === title)?.tabId);
     if (ids.some((id) => !id)) throw new Error(`No tab titled ${wanted.join(", ")}`);
-    await client.closePersonalTabs(ids as string[]);
+    await client.closeTabs(ids as NonNullable<(typeof ids)[number]>[]);
   }, titles);
 }
 

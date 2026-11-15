@@ -22,6 +22,7 @@ import { TeamDialogsProvider } from "./team/hosted-teams.js";
 import { AutomationDetailPage } from "./components/automations/automation-detail.js";
 import { AutomationEditorPage } from "./components/automations/automation-editor.js";
 import { AutomationsPage } from "./components/automations/automations-page.js";
+import { AppsPage } from "./components/apps/apps-page.js";
 import {
   SettingsShell,
   SettingsSectionRoute,
@@ -521,6 +522,7 @@ export function App({
                   element={<SettingsRedirect from="/triggers" to="/automations" />}
                 />
                 <Route path="automations" element={<AutomationsPage />} />
+                <Route path="apps" element={<AppsPage />} />
                 <Route path="automations/:triggerId" element={<AutomationDetailPage />} />
                 <Route path="automations/:triggerId/edit" element={<AutomationEditorPage />} />
                 <Route path="settings" element={<SettingsShell />}>

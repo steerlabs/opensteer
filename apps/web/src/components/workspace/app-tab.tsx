@@ -1,17 +1,10 @@
-import { useCallback } from "react";
 import { useLocation } from "react-router";
 import type { ReactNode } from "react";
-import {
-  threadMark,
-  type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
-  type PlaceItem,
-} from "@opensteer/client/host";
-import { useAppView, useHostSelector } from "@opensteer/client/react";
+import { threadMark, type HostClient, type PlaceItem } from "@opensteer/client/host";
+import { useAppView } from "@opensteer/client/react";
 import { AppFrame, AppLoadFailure, AppLoading, useAppTheme } from "../apps/app-frame.js";
 import { Icon } from "../icon.js";
 import { useToastToolbar } from "../toast.js";
-import { placeEnded } from "./place-succession.js";
 import { useTabCloser } from "./tab-closer.js";
 import { conversationAt, type TaskDirectory } from "./task-directory.js";
 import { TaskMark } from "./task-mark.js";
@@ -32,9 +25,11 @@ export function AppTab({
   readonly selected: boolean;
   readonly trailing: ReactNode;
 }) {
-  const appId = place.opensteerApp?.appId ?? "";
+  const appId = place.tab.appId ?? "";
   const theme = useAppTheme();
-  const { view, failed, retry } = useAppView(hostClient, appId, theme);
+  const unavailable = place.unavailableReason;
+  // A stopped or failed server is never started by viewing it; its tab says why.
+  const { view, failed, retry } = useAppView(hostClient, appId, theme, !unavailable);
   return (
     <section
       aria-label={place.title}
@@ -43,9 +38,20 @@ export function AppTab({
       hidden={!selected}
     >
       {selected ? (
-        <AppTabBar directory={directory} leading={leading} place={place} trailing={trailing} />
+        <AppTabBar
+          directory={directory}
+          leading={leading}
+          originTaskId={view?.app.threadId ?? null}
+          place={place}
+          trailing={trailing}
+        />
       ) : null}
-      {view ? (
+      {unavailable ? (
+        <div className="place-state" role="status">
+          <p className="place-state__title">{unavailable}</p>
+          <p className="place-state__detail">Start it from Apps to use it here.</p>
+        </div>
+      ) : view ? (
         <AppFrame
           fill
           key={view.url}
@@ -66,11 +72,13 @@ export function AppTab({
 function AppTabBar({
   directory,
   leading,
+  originTaskId,
   place,
   trailing,
 }: {
   readonly directory: TaskDirectory;
   readonly leading: ReactNode;
+  readonly originTaskId: string | null;
   readonly place: PlaceItem;
   readonly trailing: ReactNode;
 }) {
@@ -85,7 +93,7 @@ function AppTabBar({
         </span>
         <span className="computer-watch__app">{place.title}</span>
       </span>
-      <AppOrigin directory={directory} place={place} />
+      <AppOrigin directory={directory} place={place} threadId={originTaskId} />
       <span className="computer-watch__spacer" />
       <button
         aria-label="Close tab"
@@ -105,13 +113,15 @@ function AppTabBar({
 function AppOrigin({
   directory,
   place,
+  threadId,
 }: {
   readonly directory: TaskDirectory;
   readonly place: PlaceItem;
+  /** The chat that published it; null once that chat was deleted. */
+  readonly threadId: string | null;
 }) {
   const { dock, nav, phone } = useWorkspace();
   const { pathname } = useLocation();
-  const threadId = place.opensteerApp?.threadId;
   if (!threadId || conversationAt(pathname) === threadId) return null;
   const title =
     directory.rows.get(threadId)?.title ??
@@ -135,41 +145,5 @@ function AppOrigin({
       <TaskMark size={16} mark={threadMark(threadId, directory.snapshot)} />
       <span>{title}</span>
     </button>
-  );
-}
-
-/** An address naming an app that is not open: a typed or old link, or Back to a closed tab. */
-export function AppTabGone({
-  destination,
-  hostClient,
-  leading,
-  trailing,
-}: {
-  readonly destination: PlaceItem["destination"];
-  readonly hostClient: HostClient;
-  readonly leading: ReactNode;
-  readonly trailing: ReactNode;
-}) {
-  const toolbarRef = useToastToolbar();
-  const ended = useHostSelector(
-    hostClient,
-    useCallback((snapshot: HostSnapshot) => placeEnded(snapshot, destination), [destination]),
-  );
-  return (
-    <>
-      <div className="surface-row" ref={toolbarRef}>
-        {leading}
-        <span className="launcher__spacer" />
-        {trailing}
-      </div>
-      {ended ? (
-        <div className="place-state" role="status">
-          <p className="place-state__title">This app isn’t open</p>
-          <p className="place-state__detail">Open it from the conversation that made it.</p>
-        </div>
-      ) : (
-        <AppLoading fill />
-      )}
-    </>
   );
 }

@@ -4,7 +4,7 @@ import type {
   IntegrationConnectionSummary,
   IntegrationDefinitionSummary,
 } from "@opensteer/integration-core";
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
@@ -163,7 +163,7 @@ async function click(element: HTMLElement): Promise<void> {
 async function mount(input: {
   readonly connections: readonly IntegrationConnectionSummary[];
   readonly definition?: IntegrationDefinitionSummary;
-  readonly machines: readonly LegacyMachineSummary[];
+  readonly machines: readonly MachineSummary[];
   readonly onTurnOn?: (input: { readonly access: string; readonly runnerId: string }) => void;
 }) {
   const container = document.createElement("div");
@@ -235,7 +235,7 @@ function calendar(): IntegrationDefinitionSummary {
   };
 }
 
-function machine(id: string, name: string): LegacyMachineSummary {
+function machine(id: string, name: string): MachineSummary {
   return {
     access: null,
     allowedModules: ["integrations", "shell"],
@@ -270,5 +270,5 @@ function machine(id: string, name: string): LegacyMachineSummary {
     pinnedThreads: 0,
     revocable: true,
     status: "online",
-  } as LegacyMachineSummary;
+  } as MachineSummary;
 }

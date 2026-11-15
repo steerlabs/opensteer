@@ -1,10 +1,10 @@
-import { SequenceSchema, ThreadIdSchema, type AgentEventView } from "@opensteer/core";
+import { SequenceSchema, ThreadIdSchema, type TabAgentEventView } from "@opensteer/core";
 import {
   ClientToHostMessageSchema,
   hostApi,
   isDeviceAccessRequestEvent,
   projectDeviceAccessRequestEvent,
-  type LegacyHostToClientMessage as HostToClientMessage,
+  type HostToClientMessage,
 } from "@opensteer/protocol";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import type { WebSocketClient } from "../host/host-session-client.js";
@@ -53,7 +53,7 @@ export class MockPersonalHost {
   readonly #subscribed = new Map<MockPersonalSocket, boolean>();
   readonly #release: () => void;
   #through = SequenceSchema.parse("0");
-  #rows: AgentEventView[] = [];
+  #rows: TabAgentEventView[] = [];
   constructor(client = new MockHostClient({ latencyMs: 0 })) {
     this.client = client;
     this.#through = this.#highWater();
@@ -128,10 +128,8 @@ export class MockPersonalHost {
         socket.deliver({
           type: "host.events",
           events: rows
-            .filter((event) => this.#subscribed.get(socket) || !isDeviceAccessRequestEvent(event))
-            .map((event) =>
-              projectDeviceAccessRequestEvent(event, this.#subscribed.get(socket) === true),
-            ),
+            .filter((event) => this.#subscribed.get(socket) || !deviceAccessEvent(event))
+            .map((event) => projected(event, this.#subscribed.get(socket) === true)),
           throughSequence: this.#through,
         });
       else this.#snapshot(socket);
@@ -165,7 +163,7 @@ export class MockPersonalHost {
       ),
     });
   }
-  publish(events: readonly AgentEventView[], throughSequence: string): void {
+  publish(events: readonly TabAgentEventView[], throughSequence: string): void {
     const through = SequenceSchema.parse(throughSequence);
     if (
       BigInt(through) < BigInt(this.#through) ||
@@ -178,8 +176,8 @@ export class MockPersonalHost {
       socket.deliver({
         type: "host.events",
         events: events
-          .filter((event) => supportsDeviceAccess || !isDeviceAccessRequestEvent(event))
-          .map((event) => projectDeviceAccessRequestEvent(event, supportsDeviceAccess)),
+          .filter((event) => supportsDeviceAccess || !deviceAccessEvent(event))
+          .map((event) => projected(event, supportsDeviceAccess)),
         throughSequence: through,
       });
   }
@@ -188,4 +186,14 @@ export class MockPersonalHost {
     for (const socket of this.sockets) socket.close();
     this.client.dispose();
   }
+}
+
+/** Tab place events carry no Request; only the rest pass through the device projection. */
+function deviceAccessEvent(event: TabAgentEventView): boolean {
+  return event.type !== "place.entered" && isDeviceAccessRequestEvent(event);
+}
+function projected(event: TabAgentEventView, include: boolean): TabAgentEventView {
+  return event.type === "place.entered"
+    ? event
+    : (projectDeviceAccessRequestEvent(event, include) as TabAgentEventView);
 }

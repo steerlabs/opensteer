@@ -1,7 +1,7 @@
 import {
   ReferenceIdSchema,
   parseLegacyReferenceHref,
-  type AgentEventView,
+  type TabAgentEventView,
   type LegacyReference as Reference,
   type ReferenceId,
 } from "@opensteer/core";
@@ -11,7 +11,7 @@ import {
   type AvailableReference,
   type ReferenceResolution,
 } from "@opensteer/protocol";
-import type { LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
+import type { HostSnapshot } from "../host/client.js";
 import type { ReferenceReadPorts, ReferenceState } from "./contracts.js";
 import { localReference } from "./local.js";
 import { heldThread } from "../host/task-list.js";
@@ -287,7 +287,7 @@ export class ReferenceStore {
     this.#sync();
     this.#invalidate(this.#entry(id), true);
   }
-  accept(event: AgentEventView | { readonly type: null }): void {
+  accept(event: TabAgentEventView | { readonly type: null }): void {
     if (this.#disposed || event.type === null) return;
     this.#sync();
     const ids = new Set<string>();

@@ -1,13 +1,9 @@
-import {
-  BrowserSessionIdSchema,
-  BrowserSurfaceIdSchema,
-  TeamMessageIdSchema,
-} from "@opensteer/core";
+import { BrowserSurfaceIdSchema, TeamMessageIdSchema } from "@opensteer/core";
 import {
   RunnerIdSchema,
   SequenceSchema,
   createId,
-  type AgentEventView as AgentEvent,
+  type TabAgentEventView as AgentEvent,
   type MessageId,
   type Request,
   type RunId,
@@ -121,11 +117,7 @@ it("keeps one app card at its latest publication, including across history pages
     event("app.published", { appId, version, title: `Budget ${version}` });
   const first = publish(1);
   const between = event("place.entered", {
-    place: {
-      kind: "browser",
-      sessionId: BrowserSessionIdSchema.parse("bsn_11111111-1111-4111-8111-111111111111"),
-      surfaceId: BrowserSurfaceIdSchema.parse("tab-between"),
-    },
+    tabId: BrowserSurfaceIdSchema.parse("tab-between"),
     title: "Between",
     site: "https://example.com",
   });
@@ -1920,19 +1912,12 @@ it("keeps addressed publication separate from a live final reply across page mer
 describe("durable place markers", () => {
   it("keeps point markers in order and deduplicates replay and overlapping history pages", () => {
     const data = {
-      place: {
-        kind: "browser" as const,
-        sessionId: BrowserSessionIdSchema.parse("bsn_11111111-1111-4111-8111-111111111111"),
-        surfaceId: BrowserSurfaceIdSchema.parse("tab-1"),
-      },
+      tabId: BrowserSurfaceIdSchema.parse("tab-1"),
       title: "Page",
       site: "https://example.com",
     };
     const a = event("place.entered", data);
-    const b = event("place.entered", {
-      ...data,
-      place: { ...data.place, surfaceId: BrowserSurfaceIdSchema.parse("tab-2") },
-    });
+    const b = event("place.entered", { ...data, tabId: BrowserSurfaceIdSchema.parse("tab-2") });
     const c = event("place.entered", data);
     const entries = fold([a, b, c]);
     expect(entries.map(({ id }) => id)).toEqual([a, b, c].map(({ eventId }) => `place:${eventId}`));
@@ -2033,7 +2018,7 @@ it("projects history without changing stored output and keeps whole live output 
   const { previewToolOutput } = await import("@opensteer/core");
   const text = `Looked at Notes\nObservation a of Notes — 10 elements. Screenshot a\n${"🙂".repeat(4000)}`;
   const completed = event("tool.completed", { callId: "lazy", isError: false, output: { text } });
-  const projected = previewToolOutput(completed);
+  const projected = previewToolOutput(completed) as AgentEvent;
   expect(completed.data.output.text).toBe(text);
   expect(projected.type === "tool.completed" && projected.data.outputPreview).toEqual({
     bytes: new TextEncoder().encode(text).byteLength,

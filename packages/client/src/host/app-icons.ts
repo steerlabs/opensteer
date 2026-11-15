@@ -1,10 +1,10 @@
-import type { ComputerAppIdentity, LegacyMachineSummary } from "@opensteer/protocol";
+import type { ComputerAppIdentity, MachineSummary } from "@opensteer/protocol";
 import type { HostClient } from "./client.js";
 import { unwrapRpcResult } from "./host-session-client.js";
 
 const retryAfterMs = 60_000;
 
-function canReadAppIcons(machine: LegacyMachineSummary): boolean {
+function canReadAppIcons(machine: MachineSummary): boolean {
   return (
     machine.status === "online" &&
     machine.device?.platform !== "android" &&
