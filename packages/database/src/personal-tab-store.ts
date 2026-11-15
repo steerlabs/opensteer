@@ -1,3 +1,4 @@
+export * from "./tab-store.js";
 import { retryDatabaseTransaction, withDatabaseTransaction } from "./connection.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { OpensteerError, browserTabOrderMaxTabs, type UserId } from "@opensteer/core";
