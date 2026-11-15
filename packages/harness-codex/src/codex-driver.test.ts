@@ -3299,7 +3299,7 @@ describe("one Codex app-server per account", () => {
   });
 
   it("stops a Run's turns before the app-server it owns ends with the Run's lifetime", async () => {
-    const fixture = await setup("subagents-hold", { sharedEngine: false });
+    const fixture = await setup("subagents-late-start", { sharedEngine: false });
     try {
       const lifetime = new AbortController();
       const session = await fixture.adapter.startSession({
@@ -3308,15 +3308,7 @@ describe("one Codex app-server per account", () => {
       });
       const observer = observe(session.events);
       const running = session.execute(fixture.turn("Delegate the release notes"));
-      // A spawn announcement can precede the child's interruptible turn.
-      await vi.waitFor(() =>
-        expect(
-          observer.events.some(
-            (event) => event.type === "node.updated" && event.data.stopSupported,
-          ),
-          "Codex child never became interruptible",
-        ).toBe(true),
-      );
+      await observer.waitFor("node.started");
       lifetime.abort(new Error("Stop"));
       await running;
       await session.stop();
