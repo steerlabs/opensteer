@@ -4262,6 +4262,8 @@ export class MockHostClient implements HostClient {
   }
   /** For journeys: cursors move only for the notices applied through the returned script. */
   readonly scriptPlaces = (): MockPlaceScript => this.#places.script();
+  /** The Host's `host.apps.changed` notice, as an app changing elsewhere sends it. */
+  readonly appsChanged = (): void => this.#state.appsChanged();
   readonly subscribeRunPlace = (runId: string, listener: () => void) => {
     this.#places.start();
     return this.#state.runPlaces.subscribe(runId, listener);
@@ -5233,6 +5235,11 @@ class MockHostState {
           });
     return done({ kind: tab.kind, view });
   }
+  /** As the real client does on `host.apps.changed`: an Apps page reads again. */
+  appsChanged(): void {
+    this.snapshot = { ...this.snapshot, appsRevision: this.snapshot.appsRevision + 1 };
+    this.emit();
+  }
   /** The mock Host's person-side app lifecycle; servers start and stop at once. */
   appCommand(command: AppCommand): AppCommandResult {
     const index = this.apps.findIndex((app) => app.appId === command.appId);
@@ -5246,7 +5253,7 @@ class MockHostState {
     const at = this.now().toISOString();
     const put = (next: App) => {
       this.apps = this.apps.map((held) => (held.appId === next.appId ? next : held));
-      this.emit();
+      this.appsChanged();
       return next;
     };
     switch (command.type) {
@@ -5280,7 +5287,7 @@ class MockHostState {
       case "app.delete":
         this.apps = this.apps.filter((held) => held.appId !== app.appId);
         this.tabCatalog.removeApp(app.appId);
-        this.emit();
+        this.appsChanged();
         return { type: command.type, appId: app.appId, deleted: true };
     }
   }

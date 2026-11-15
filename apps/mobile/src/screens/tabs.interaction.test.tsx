@@ -1,31 +1,21 @@
 // @vitest-environment happy-dom
 
-import type { HostClient } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
-import type { TabLayout } from "@opensteer/core";
+import type { TabId } from "@opensteer/core";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  appId,
-  appTab,
-  attachMockTabs,
-  groupId,
-  pageTab,
-  phoneTab,
-  tabId,
-  usedBy,
-  windowTab,
-  type MockTabs,
-} from "../../test-support/mock-tabs.js";
 
 /*
  * The one tab list on a phone, driven the way a person drives it: rows, row
- * menus, group heads and the bar menu, over the real MockHostClient carrying
- * the frozen tabs contract.
+ * menus, group heads and the bar menu, over the mock Host's seeded tabs (a
+ * group mixing a page, a Mac window, the Agent Phone and an app; pages; a
+ * closed window; a stopped app).
  *
  * What can go wrong:
  * - a kind is sorted into its own section, left out, or drawn outside its group;
+ * - an agent is marked working because its task runs, not because the Host
+ *   reports it acting in that very tab;
  * - a row opens something other than exactly its tabId, or opens while a move
  *   is being placed;
  * - a move, group, ungroup or close sends a different layout change than the
@@ -35,7 +25,7 @@ import {
  */
 
 const harness = vi.hoisted(() => ({
-  client: null as HostClient | null,
+  client: null as import("@opensteer/client/host").HostClient | null,
   dispatch: [] as { type: string; payload?: unknown; source?: string }[],
   goBack: 0,
   options: {} as { headerRight?: () => ReactNode },
@@ -63,8 +53,18 @@ vi.mock("../browser/acting-dot.js", () => ({
   agentWorkingLabel: "Agent working",
 }));
 vi.mock("../browser/agent-marks.js", () => ({
-  AgentMarks: (props: { readonly agents: readonly { readonly title: string }[] }) => (
-    <i data-agents={props.agents.map(({ title }) => title).join(",")} />
+  AgentMarks: (props: {
+    readonly agents: readonly { readonly title: string; readonly acting: boolean }[];
+  }) => (
+    <i
+      data-acting={props.agents.map(({ acting }) => String(acting)).join(",")}
+      data-agents={props.agents.map(({ title }) => title).join(",")}
+    />
+  ),
+}));
+vi.mock("../computers/app-mark.js", () => ({
+  MacAppIcon: (props: { readonly app: { readonly bundleId: string } }) => (
+    <i data-app-icon={props.app.bundleId} />
   ),
 }));
 vi.mock("../threads/task-row.js", () => ({ NeedsYouTag: () => <i>needs you</i> }));
@@ -104,49 +104,39 @@ const { BrowserTabsScreen } = await import("./browser-tabs.js");
 
 const deploymentId = "dep_0192f4a1-1111-4000-8000-000000000001";
 const roots: Root[] = [];
+const hosts: MockHostClient[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) act(() => root.unmount());
+  for (const host of hosts.splice(0)) host.dispose();
   harness.dispatch = [];
   harness.goBack = 0;
   harness.options = {};
+  harness.state = { index: 0, routes: [{ key: "page", name: "WorkspaceBrowser" }] };
   document.body.replaceChildren();
 });
 
-const work = groupId(1);
-const tabs = (agentThread: string) => [
-  pageTab("news", "Morning news"),
-  windowTab("notes", "Shopping list"),
-  phoneTab("pixel"),
-  appTab("budget", appId(1), {
-    state: "unavailable",
-    title: "Budget",
-    unavailableCode: "app-stopped",
-    unavailableReason: "This app's server is stopped.",
-  }),
-  pageTab("docs", "Docs", { usedBy: usedBy(agentThread) }),
-];
-const layout = (): TabLayout["items"] => [
-  { kind: "tab", tabId: tabId("news") },
-  {
-    group: {
-      collapsed: false,
-      color: "blue",
-      groupId: work,
-      name: "Errands",
-      tabIds: [tabId("notes"), tabId("pixel")],
-    },
-    kind: "group",
-  },
-  { kind: "tab", tabId: tabId("budget") },
-  { kind: "tab", tabId: tabId("docs") },
+/** The seeded tabs in the Host's one order: the Launch prep group first, then the rest. */
+const launchPrep = ["Your reading list", "Launch plan", "Pixel 7", "Ferry tracker"];
+const outside = [
+  "Le Petit Jardin",
+  "Confirm your reservation",
+  "Friday dinner",
+  "storage documentation",
+  "Launch brief",
+  "Coffee shortlist",
+  "Flight award alerts",
+  "Q4 roadmap – Linear",
+  "Running shoes – Allbirds",
+  "Old draft",
+  "Inventory sync",
 ];
 
 async function mount(screen: "tabs" | "sheet" = "tabs") {
   const host = new MockHostClient({ automations: "absent", latencyMs: 0 });
+  hosts.push(host);
   await host.load();
-  // A task this reader can open is using Docs.
-  const thread = host.getSnapshot().threads[0]!.id;
-  const mock = attachMockTabs(host, { layout: layout(), tabs: tabs(thread) });
+  // The world holds still: an agent acts in a tab only when this test says so.
+  const places = host.scriptPlaces();
   harness.client = host;
   const container = document.createElement("div");
   document.body.append(container);
@@ -157,13 +147,27 @@ async function mount(screen: "tabs" | "sheet" = "tabs") {
       screen === "tabs" ? (
         <TabsScreen route={{ params: { deploymentId } } as never} />
       ) : (
-        <BrowserTabsScreen route={{ params: { deploymentId, tabId: tabId("news") } } as never} />
+        <BrowserTabsScreen
+          route={{ params: { deploymentId, tabId: idOf(host, "Your reading list") } } as never}
+        />
       ),
     ),
   );
-  return { container, host, mock };
+  return { container, host, places };
 }
 
+function idOf(host: MockHostClient, title: string): TabId {
+  const tab = [...host.getSnapshot().tabs.rows.values()].find((row) => row.title === title);
+  if (!tab) throw new Error(`No seeded tab ${title}`);
+  return tab.tabId;
+}
+function groupOf(host: MockHostClient, name: string) {
+  const item = host
+    .getSnapshot()
+    .tabs.layout.items.find((entry) => entry.kind === "group" && entry.group.name === name);
+  if (item?.kind !== "group") throw new Error(`No group ${name}`);
+  return item.group;
+}
 /** The rows in the order drawn, by title. */
 function rowTitles(container: HTMLElement): string[] {
   return [...container.querySelectorAll<HTMLButtonElement>('button[data-testid^="tab:"]')].map(
@@ -206,96 +210,162 @@ async function waitFor(condition: () => boolean, what: string): Promise<void> {
 function pushes(): unknown[] {
   return harness.dispatch.filter(({ type }) => type === "PUSH").map(({ payload }) => payload);
 }
-function organizeCalls(mock: MockTabs): unknown[] {
-  return mock.calls.filter(({ method }) => method === "organizeTabs").map(({ args }) => args[0]);
+async function barMenu(): Promise<HTMLElement> {
+  const bar = document.createElement("div");
+  document.body.append(bar);
+  const barRoot = createRoot(bar);
+  roots.push(barRoot);
+  await act(async () => barRoot.render(<>{harness.options.headerRight?.()}</>));
+  return bar;
 }
 
 describe("one mixed list", () => {
   it("keeps every kind in the Host's one order, inside its group, and says why a tab can't open", async () => {
     const { container } = await mount();
-    expect(rowTitles(container)).toEqual([
-      "Morning news",
-      "Shopping list",
-      "Pixel",
-      "Budget",
-      "Docs",
-    ]);
-    expect(button(container, "Errands, group of 2 tabs")).toBeDefined();
-    expect(row(container, "Budget").getAttribute("aria-label")).toContain(
-      "This app's server is stopped.",
+    expect(rowTitles(container)).toEqual([...launchPrep, ...outside]);
+    expect(button(container, "Launch prep, group of 4 tabs")).toBeDefined();
+    expect(row(container, "Inventory sync").getAttribute("aria-label")).toContain("App stopped");
+    expect(row(container, "Old draft").getAttribute("aria-label")).toContain("Window closed");
+    expect(row(container, "Launch plan").querySelector("[data-app-icon]")).toMatchObject({
+      dataset: { appIcon: "com.apple.Notes" },
+    });
+  });
+
+  it("marks an agent working only while the Host reports it acting in that very tab", async () => {
+    const { container, host, places } = await mount();
+    // Build the new architecture is running and uses both pages; it acts in neither yet.
+    const marks = (title: string) => row(container, title).querySelector("i[data-agents]");
+    expect(marks("Le Petit Jardin")).toMatchObject({
+      dataset: { acting: "false", agents: "Build the new architecture" },
+    });
+    expect(marks("Confirm your reservation")).toMatchObject({ dataset: { acting: "false" } });
+    const run = host
+      .getSnapshot()
+      .runQueue.find(
+        ({ status, threadId }) =>
+          status === "running" && threadId === "thr_00000000-0000-4000-8000-000000000001",
+      )!;
+    const now = Date.now();
+    await act(async () =>
+      places.apply({
+        activity: {
+          at: now,
+          expiresAt: now + 15_000,
+          generation: 1,
+          geometryRevision: 1,
+          order: 1,
+          pointer: null,
+          runId: run.id,
+          seq: 1,
+          tabId: idOf(host, "Confirm your reservation"),
+          threadId: run.threadId,
+        },
+        type: "host.place-activity",
+      }),
     );
-    expect(row(container, "Docs").querySelector("[data-agents]")).not.toBeNull();
+    expect(marks("Confirm your reservation")).toMatchObject({ dataset: { acting: "true" } });
+    expect(marks("Le Petit Jardin")).toMatchObject({ dataset: { acting: "false" } });
   });
 
   it("opens exactly the tab chosen, by its tabId, whatever its kind", async () => {
-    const { container } = await mount();
-    await press(row(container, "Pixel"));
-    await press(row(container, "Shopping list"));
-    expect(pushes()).toEqual([
-      { name: "WorkspaceBrowser", params: { deploymentId, tabId: tabId("pixel") } },
-      { name: "WorkspaceBrowser", params: { deploymentId, tabId: tabId("notes") } },
-    ]);
+    const { container, host } = await mount();
+    await press(row(container, "Pixel 7"));
+    await press(row(container, "Launch plan"));
+    await press(row(container, "Ferry tracker"));
+    expect(pushes()).toEqual(
+      ["Pixel 7", "Launch plan", "Ferry tracker"].map((title) => ({
+        name: "WorkspaceBrowser",
+        params: { deploymentId, tabId: idOf(host, title) },
+      })),
+    );
   });
 
   it("folds a collapsed group to its head, through the Host's shared layout", async () => {
-    const { container, mock } = await mount();
-    await press(button(container, "Errands, group of 2 tabs"));
-    await waitFor(() => !rowTitles(container).includes("Pixel"), "the group folded");
-    expect(mock.calls.at(-1)).toEqual({
-      args: [{ collapsed: true, groupId: work }],
-      method: "updateTabGroup",
-    });
-    expect(rowTitles(container)).toEqual(["Morning news", "Budget", "Docs"]);
+    const { container, host } = await mount();
+    const update = vi.spyOn(host, "updateTabGroup");
+    await press(button(container, "Launch prep, group of 4 tabs"));
+    await waitFor(() => !rowTitles(container).includes("Pixel 7"), "the group folded");
+    expect(update.mock.calls).toEqual([
+      [{ collapsed: true, groupId: groupOf(host, "Launch prep").groupId }],
+    ]);
+    expect(rowTitles(container)).toEqual(outside);
   });
 
-  it("narrows to the tabs agents use from the bar menu", async () => {
+  it("narrows to the tabs agents use, or to one computer, from the bar menu", async () => {
     const { container } = await mount();
-    const bar = document.createElement("div");
-    document.body.append(bar);
-    const barRoot = createRoot(bar);
-    roots.push(barRoot);
-    await act(async () => barRoot.render(<>{harness.options.headerRight?.()}</>));
-    await press(menuChoice(bar, "More", "Tabs with agents"));
-    await waitFor(() => rowTitles(container).length === 1, "the list narrowed");
-    expect(rowTitles(container)).toEqual(["Docs"]);
+    await press(menuChoice(await barMenu(), "More", "Tabs with agents"));
+    await waitFor(() => !rowTitles(container).includes("Ferry tracker"), "the list narrowed");
+    expect(rowTitles(container)).toEqual([
+      "Launch plan",
+      "Pixel 7",
+      "Le Petit Jardin",
+      "Confirm your reservation",
+      "Friday dinner",
+      "storage documentation",
+      "Launch brief",
+      "Flight award alerts",
+    ]);
+    await press(menuChoice(await barMenu(), "More: Tabs with agents", "All tabs"));
+    await press(menuChoice(await barMenu(), "More", "Alex's iPhone"));
+    await waitFor(() => rowTitles(container).length === 1, "the list narrowed to one computer");
+    expect(rowTitles(container)).toEqual(["Running shoes – Allbirds"]);
   });
 });
 
 describe("moving and grouping without dragging", () => {
   it("moves a tab before another, into that tab's group, and opens nothing while placing it", async () => {
-    const { container, mock } = await mount();
-    await press(menuChoice(container, "Morning news actions", "Move…"));
-    await press(row(container, "Pixel"));
+    const { container, host } = await mount();
+    const organize = vi.spyOn(host, "organizeTabs");
+    await press(menuChoice(container, "Le Petit Jardin actions", "Move…"));
+    await press(row(container, "Pixel 7"));
     expect(pushes()).toEqual([]);
-    expect(organizeCalls(mock)).toEqual([
-      { beforeTabId: tabId("pixel"), group: { groupId: work }, tabIds: [tabId("news")] },
+    expect(organize.mock.calls).toEqual([
+      [
+        {
+          beforeTabId: idOf(host, "Pixel 7"),
+          group: { groupId: groupOf(host, "Launch prep").groupId },
+          tabIds: [idOf(host, "Le Petit Jardin")],
+        },
+      ],
     ]);
-    await waitFor(() => rowTitles(container)[0] === "Shopping list", "the move applied");
-    expect(rowTitles(container)).toEqual([
-      "Shopping list",
-      "Morning news",
-      "Pixel",
-      "Budget",
-      "Docs",
+    await waitFor(() => rowTitles(container)[2] === "Le Petit Jardin", "the move applied");
+    expect(rowTitles(container).slice(0, 6)).toEqual([
+      "Your reading list",
+      "Launch plan",
+      "Le Petit Jardin",
+      "Pixel 7",
+      "Ferry tracker",
+      "Confirm your reservation",
     ]);
   });
 
   it("moves a whole group before an outside tab as one block", async () => {
-    const { container, mock } = await mount();
-    await press(menuChoice(container, "Errands actions", "Move group…"));
-    await press(row(container, "Morning news"));
-    expect(organizeCalls(mock)).toEqual([
-      {
-        beforeTabId: tabId("news"),
-        group: { groupId: work },
-        tabIds: [tabId("notes"), tabId("pixel")],
-      },
+    const { container, host } = await mount();
+    const organize = vi.spyOn(host, "organizeTabs");
+    await press(menuChoice(container, "Launch prep actions", "Move group…"));
+    await press(row(container, "Coffee shortlist"));
+    expect(organize.mock.calls).toEqual([
+      [
+        {
+          beforeTabId: idOf(host, "Coffee shortlist"),
+          group: { groupId: groupOf(host, "Launch prep").groupId },
+          tabIds: launchPrep.map((title) => idOf(host, title)),
+        },
+      ],
+    ]);
+    await waitFor(() => rowTitles(container)[0] === "Le Petit Jardin", "the group moved");
+    expect(rowTitles(container)).toEqual([
+      ...outside.slice(0, 5),
+      ...launchPrep,
+      ...outside.slice(5),
     ]);
   });
 
-  it("puts any kind in a new named group, takes it out again, and closes it without stopping anything", async () => {
-    const { container, mock } = await mount();
-    await press(menuChoice(container, "Budget actions", "New group"));
+  it("puts any kind in a new named group, takes it out again, and closes it", async () => {
+    const { container, host } = await mount();
+    const organize = vi.spyOn(host, "organizeTabs");
+    const close = vi.spyOn(host, "closeTabs");
+    await press(menuChoice(container, "Inventory sync actions", "New group"));
     const name = container.querySelector<HTMLInputElement>('input[aria-label="New group name"]')!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
@@ -305,48 +375,45 @@ describe("moving and grouping without dragging", () => {
       name.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await press(button(container, "Save"));
-    expect(organizeCalls(mock).at(-1)).toEqual({
-      group: { color: "grey", name: "Money" },
-      tabIds: [tabId("budget")],
-    });
-    await press(menuChoice(container, "Pixel actions", "Remove from group"));
-    expect(organizeCalls(mock).at(-1)).toEqual({ group: null, tabIds: [tabId("pixel")] });
-    await press(menuChoice(container, "Shopping list actions", "Close tab"));
-    expect(mock.calls.at(-1)).toEqual({ args: [[tabId("notes")]], method: "closeTabs" });
-    await waitFor(() => !rowTitles(container).includes("Shopping list"), "the closed tab left");
+    // The first tint no group has yet: Launch prep is cyan.
+    expect(organize.mock.calls.at(-1)).toEqual([
+      { group: { color: "grey", name: "Money" }, tabIds: [idOf(host, "Inventory sync")] },
+    ]);
+    await waitFor(
+      () => container.querySelector('[aria-label="Money, group of 1 tab"]') !== null,
+      "the new group was drawn",
+    );
+    await press(menuChoice(container, "Pixel 7 actions", "Remove from group"));
+    expect(organize.mock.calls.at(-1)).toEqual([{ group: null, tabIds: [idOf(host, "Pixel 7")] }]);
+    const notes = idOf(host, "Launch plan");
+    await press(menuChoice(container, "Launch plan actions", "Close tab"));
+    expect(close.mock.calls).toEqual([[[notes]]]);
+    await waitFor(() => !rowTitles(container).includes("Launch plan"), "the closed tab left");
   });
 
   it("says when a change fails, and leaves the list as the Host has it", async () => {
-    const { container, mock } = await mount();
-    mock.failNext("organizeTabs", "That group was removed on another device.");
-    await press(menuChoice(container, "Morning news actions", "Move…"));
-    await press(row(container, "Docs"));
+    const { container, host } = await mount();
+    vi.spyOn(host, "organizeTabs").mockRejectedValueOnce(
+      new Error("That group was removed on another device."),
+    );
+    await press(menuChoice(container, "Le Petit Jardin actions", "Move…"));
+    await press(row(container, "Launch brief"));
     await waitFor(
       () => container.textContent?.includes("That group was removed on another device.") === true,
       "the failure was shown",
     );
-    expect(rowTitles(container)).toEqual([
-      "Morning news",
-      "Shopping list",
-      "Pixel",
-      "Budget",
-      "Docs",
-    ]);
+    expect(rowTitles(container)).toEqual([...launchPrep, ...outside]);
   });
 
   it("reopens the last closed tab from the bar menu", async () => {
-    const { container, host, mock } = await mount();
-    await press(menuChoice(container, "Docs actions", "Close tab"));
-    await waitFor(() => !rowTitles(container).includes("Docs"), "the tab closed");
-    const bar = document.createElement("div");
-    document.body.append(bar);
-    const barRoot = createRoot(bar);
-    roots.push(barRoot);
-    await act(async () => barRoot.render(<>{harness.options.headerRight?.()}</>));
-    await press(menuChoice(bar, "More", "Reopen closed tab"));
-    await waitFor(() => rowTitles(container).includes("Docs"), "the tab came back");
-    expect(mock.calls.at(-1)?.method).toBe("reopenTab");
-    expect(host).toBeDefined();
+    const { container, host } = await mount();
+    const reopen = vi.spyOn(host, "reopenTab");
+    await press(menuChoice(container, "Coffee shortlist actions", "Close tab"));
+    await waitFor(() => !rowTitles(container).includes("Coffee shortlist"), "the tab closed");
+    await press(menuChoice(await barMenu(), "More", "Reopen closed tab"));
+    await waitFor(() => rowTitles(container).includes("Coffee shortlist"), "the tab came back");
+    expect(reopen.mock.calls).toEqual([[]]);
+    expect(rowTitles(container)).toEqual([...launchPrep, ...outside]);
   });
 });
 
@@ -359,12 +426,12 @@ describe("the tab sheet over a tab", () => {
         { key: "sheet", name: "BrowserTabs" },
       ],
     };
-    const { container } = await mount("sheet");
-    expect(row(container, "Morning news").getAttribute("aria-selected")).toBe("true");
-    await press(row(container, "Pixel"));
+    const { container, host } = await mount("sheet");
+    expect(row(container, "Your reading list").getAttribute("aria-selected")).toBe("true");
+    await press(row(container, "Pixel 7"));
     expect(harness.dispatch).toEqual([
       {
-        payload: { params: { editAddress: false, popup: false, tabId: tabId("pixel") } },
+        payload: { params: { editAddress: false, popup: false, tabId: idOf(host, "Pixel 7") } },
         source: "page",
         type: "SET_PARAMS",
       },

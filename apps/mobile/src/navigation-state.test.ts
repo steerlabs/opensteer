@@ -7,8 +7,9 @@ import {
 } from "@react-navigation/native";
 import { SideMemory } from "./side-memory.js";
 import { personalRouteInvalid } from "./side-memory-validity.js";
-import { FakeTabs, pageTab, tabId } from "../test-support/mock-tabs.js";
 import type { HostSnapshot } from "@opensteer/client/host";
+import { tabFixture, tabStoreFixture } from "@opensteer/client/test-support";
+import { TabIdSchema } from "@opensteer/core";
 
 // Use the real stack router without importing the native rendering layer in Node.
 vi.mock("@react-navigation/native", async () => {
@@ -235,10 +236,11 @@ describe("a pairing link at startup", () => {
 });
 
 describe("warm mobile sides on the native stack router", () => {
+  const pageTabId = TabIdSchema.parse("tab_page");
   const task = { name: "Thread", params: { deploymentId: "d", threadId: "task" } };
   const page = {
     name: "WorkspaceBrowser",
-    params: { deploymentId: "d", threadId: "task", tabId: tabId("page") },
+    params: { deploymentId: "d", threadId: "task", tabId: pageTabId },
   };
   const channel = { name: "TeamChannel", params: { teamId: "a", channelId: "general" } };
   const reply = { name: "TeamThread", params: { ...channel.params, rootId: "root" } };
@@ -427,27 +429,30 @@ describe("warm mobile sides on the native stack router", () => {
       "Thread",
       "WorkspaceBrowser",
     ]);
-    const tabs = new FakeTabs();
-    tabs.reset([pageTab("page", "Page")], [{ kind: "tab", tabId: tabId("page") }]);
-    tabs.syncing = true;
-    const live = {
-      ...unavailable,
-      connection: "connected",
-      session: "authenticated",
-      can: {
-        createTasks: true,
-        useVoice: true,
-        manageComputers: true,
-        managePrivateResources: true,
-      },
-      tabs,
-    } as unknown as HostSnapshot;
+    const live = (tabs: HostSnapshot["tabs"]) =>
+      ({
+        ...unavailable,
+        connection: "connected",
+        session: "authenticated",
+        can: {
+          createTasks: true,
+          useVoice: true,
+          manageComputers: true,
+          managePrivateResources: true,
+        },
+        tabs,
+      }) as unknown as HostSnapshot;
+    const listed = tabStoreFixture([tabFixture({ tabId: pageTabId })]);
+    const syncing = tabStoreFixture([]);
+    syncing.disconnected();
     // Still syncing, then listed: neither is closure.
-    expect(f.memory.trim(f.state(), (route) => personalRouteInvalid(route, live))).toBeNull();
-    tabs.syncing = false;
-    expect(f.memory.trim(f.state(), (route) => personalRouteInvalid(route, live))).toBeNull();
-    tabs.setLayout([]);
-    f.apply(f.memory.trim(f.state(), (route) => personalRouteInvalid(route, live)));
+    for (const tabs of [syncing, listed])
+      expect(
+        f.memory.trim(f.state(), (route) => personalRouteInvalid(route, live(tabs))),
+      ).toBeNull();
+    f.apply(
+      f.memory.trim(f.state(), (route) => personalRouteInvalid(route, live(tabStoreFixture([])))),
+    );
     expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "Thread"]);
     f.push(page);
     f.resume("a");
