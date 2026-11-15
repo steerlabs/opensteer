@@ -227,6 +227,11 @@ interface ThreadPaneProps {
   readonly onAnchorReleased?: (() => void) | undefined;
   /** Opens another Thread on this deployment: a delegation, or a sender. */
   readonly onOpenThread: (threadId: string) => void;
+  /**
+   * Takes the reader away from a task that isn't on its Host, removed here or
+   * on another device or never there, once the pane is in front of them.
+   */
+  readonly onGone: () => void;
   /** What the navigation bar should say, when there is one to say it. */
   readonly onHeader?: (header: ThreadHeaderState) => void;
   readonly requestId: string | null;
@@ -1124,6 +1129,19 @@ function ThreadPaneForUser(
   };
 
   useThreadVisits(hostClient, threadId, focused && appForeground);
+
+  // A task removed while open, here or on another device, is left as soon as
+  // it is in front again; one never on this Host is left at once.
+  const gone = thread === null && snapshot.lookup === "missing";
+  const leftGone = useRef(false);
+  const onGone = props.onGone;
+  useEffect(() => {
+    if (!gone) leftGone.current = false;
+    else if (navigationFocused && !leftGone.current) {
+      leftGone.current = true;
+      onGone();
+    }
+  }, [gone, navigationFocused, onGone]);
 
   const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>): void => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;

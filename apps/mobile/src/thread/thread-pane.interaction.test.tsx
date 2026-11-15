@@ -1250,6 +1250,8 @@ async function mount(
     readonly withPage?: import("./thread-pane.js").PageCompanion;
     /** A page Ask put on this reader's draft for the Thread. */
     readonly draftPage?: import("@opensteer/core").BrowserPageContentPart;
+    /** Where the screen holding the pane takes the reader once its task is gone. */
+    readonly onGone?: () => void;
   } = {},
 ) {
   const drafts = createThreadDraftStore({
@@ -1272,6 +1274,7 @@ async function mount(
       hostClient={host.client}
       messageId={options.messageId ?? null}
       onAnchorReleased={() => undefined}
+      onGone={options.onGone ?? (() => undefined)}
       onHeader={onHeader}
       onOpenThread={() => undefined}
       withPage={options.withPage}
@@ -3486,6 +3489,35 @@ describe("a task", () => {
     expect(text(container)).toContain("This message changed elsewhere");
   });
 
+  it("leaves a task removed while it is open, once it is in front again", async () => {
+    const ask = teammateAsk("@My agent is CI green yet?");
+    const initial = snapshotFor({
+      entries: [ask.entry],
+      queue: [ask.item],
+      run: null,
+      threadId: workId,
+    });
+    const host = fakeHost(initial);
+    const onGone = vi.fn();
+    const { root, pane } = await mount(host, workId, { onGone });
+    harness.focused = false;
+    await act(async () => root.render(pane(() => undefined)));
+    await act(async () =>
+      host.move({
+        ...initial,
+        inputQueues: {},
+        threadLookups: { [workId]: "missing" },
+        threads: initial.threads.filter((thread) => thread.id !== workId),
+        transcripts: {},
+      }),
+    );
+    expect(onGone).not.toHaveBeenCalled();
+    harness.focused = true;
+    await act(async () => root.render(pane(() => undefined)));
+    await act(async () => root.render(pane(() => undefined)));
+    expect(onGone).toHaveBeenCalledTimes(1);
+  });
+
   it("pins footer growth and removal only while the reader stays at the tail", async () => {
     const task = taskAtWork();
     const waiting = said("A queued footer", null);
@@ -4731,6 +4763,7 @@ it("hands a new task to its transcript, with the page Ask started it from, witho
       <ThreadPane
         deploymentId={deploymentId}
         hostClient={host.client}
+        onGone={vi.fn()}
         onOpenThread={vi.fn()}
         requestId={null}
         threadId={workId}
