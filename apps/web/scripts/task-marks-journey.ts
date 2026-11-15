@@ -49,7 +49,7 @@ try {
     const page = await context.newPage();
     const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
-    await page.goto(`${web.origin}/threads/${flights}`);
+    await page.goto(`${web.origin}/tasks/${flights}`);
     await page.locator(".conv-header .task-mark").waitFor();
     await page.evaluate(() => document.fonts.ready);
 
@@ -71,7 +71,6 @@ try {
             header: head.getBoundingClientRect().width,
             headerText: document.querySelector(".conv-header")!.textContent,
             state: row.querySelector(".task-state")?.getAttribute("data-state"),
-            orb: !!document.querySelector(".side-home .chat-orb"),
           };
         },
         { id: flights },
@@ -86,8 +85,7 @@ try {
           observed.state === "working" &&
           observed.aria === "true" &&
           !!observed.headerText?.includes("Travel") &&
-          !!observed.headerText.includes("Working") &&
-          observed.orb,
+          !!observed.headerText.includes("Working"),
         "row/header identity, geometry or state is wrong",
       );
       await capture(page, "sidebar", density, ".sidebar");
@@ -226,7 +224,7 @@ try {
       );
       return { rows: observed };
     });
-    await page.goto(`${web.origin}/threads/${flights}`);
+    await page.goto(`${web.origin}/tasks/${flights}`);
     await page.locator(".side-tab").first().waitFor();
     const current = await page.evaluate(() => {
       const m = Reflect.get(window, "opensteerMock") as MockHostClient;

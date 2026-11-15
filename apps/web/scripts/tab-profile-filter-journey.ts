@@ -47,6 +47,14 @@ const inventory = (page: Page) =>
       .filter((tab) => tab.kind === "page")
       .map((tab) => ({ key: tab.tabId as string, profileId: tab.profile?.profileId ?? null }));
   });
+/** Every listed tab in the Host's layout order; the drawn list holds only the rows in view. */
+const layoutOrder = (page: Page) =>
+  page.evaluate(() =>
+    (Reflect.get(window, "opensteerMock") as import("@opensteer/client/host").HostClient)
+      .getSnapshot()
+      .tabs.strip.visible.map((id) => id as string),
+  );
+const keysOf = (shown: readonly { readonly key: string }[]) => shown.map(({ key }) => key);
 async function choose(page: Page, name: string) {
   await trigger(page).click();
   await page.getByRole("menuitemradio", { name, exact: true }).click();
@@ -127,10 +135,10 @@ try {
       const work = new Set(
         identities.filter((tab) => tab.profileId?.endsWith("000000000002")).map((tab) => tab.key),
       );
-      const expected = before.filter(({ key }) => work.has(key));
+      const expected = (await layoutOrder(page)).filter((key) => work.has(key));
       expectThat(
         { filtered, expected },
-        JSON.stringify(filtered) === JSON.stringify(expected),
+        JSON.stringify(keysOf(filtered)) === JSON.stringify(expected),
         "wrong profile rows",
       );
       expectThat(
@@ -157,10 +165,10 @@ try {
       const guest = new Set(
         identities.filter((tab) => tab.profileId === null).map((tab) => tab.key),
       );
-      const expected = before.filter(({ key }) => guest.has(key));
+      const expected = (await layoutOrder(page)).filter((key) => guest.has(key));
       expectThat(
         { filtered, expected },
-        JSON.stringify(filtered) === JSON.stringify(expected),
+        JSON.stringify(keysOf(filtered)) === JSON.stringify(expected),
         "Guest matches are wrong",
       );
       await clear(page).click();
@@ -171,6 +179,7 @@ try {
   await check(
     "mixed-profile groups retain only matching members and their collapse state",
     async () => {
+      await choose(page, "Work");
       await page.evaluate(async () => {
         const client = Reflect.get(
           window,
@@ -273,11 +282,19 @@ try {
         try {
           await sample.goto(`${web.origin}/?mock-world=busy`);
           await sample.locator(".side-section--tabs [data-place-key]").first().waitFor();
-          await sample.evaluate((profileName) => {
-            const client = Reflect.get(window, "opensteerMock") as {
-              scriptDormantBrowser(options: { profileName: string }): unknown;
-            };
-            client.scriptDormantBrowser({ profileName });
+          // The Work profile, renamed as a person would.
+          await sample.evaluate(async (profileName) => {
+            const client = Reflect.get(
+              window,
+              "opensteerMock",
+            ) as import("@opensteer/client/host").HostClient;
+            await client.dispatch({
+              type: "browser.profile.rename",
+              profileId:
+                "bpr_00000000-0000-4000-8000-000000000002" as import("@opensteer/core").BrowserProfileId,
+              name: profileName,
+              idempotencyKey: `rename-${profileName.length}`,
+            });
           }, name);
           await choose(sample, name);
 
