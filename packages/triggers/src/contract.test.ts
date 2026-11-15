@@ -14,7 +14,7 @@ describe("Trigger program contract", () => {
     const content = readFileSync(
       resolve(
         repositoryRoot,
-        "apps/runner/agent-skills/skills/triggers/references/program-contract.md",
+        "apps/runner/agent-skills/skills/automations/references/program-contract.md",
       ),
       "utf8",
     );
@@ -28,7 +28,7 @@ describe("Trigger program contract", () => {
 
   it("keeps the shipped watch example async-iterable and its proof rule watch-specific", () => {
     const content = readFileSync(
-      resolve(repositoryRoot, "apps/runner/agent-skills/skills/triggers/references/watches.md"),
+      resolve(repositoryRoot, "apps/runner/agent-skills/skills/automations/references/watches.md"),
       "utf8",
     );
     expect(content).toMatch(/import \{[^}]*\bwatch\b[^}]*\} from "node:fs\/promises";/);
@@ -39,10 +39,10 @@ describe("Trigger program contract", () => {
     const verification = readFileSync(
       resolve(
         repositoryRoot,
-        "apps/runner/agent-skills/skills/triggers/references/verification.md",
+        "apps/runner/agent-skills/skills/automations/references/verification.md",
       ),
       "utf8",
     );
-    expect(verification).toContain("An occurrence-based Trigger works only after");
+    expect(verification).toContain("An occurrence-based automation works only after");
   });
 });

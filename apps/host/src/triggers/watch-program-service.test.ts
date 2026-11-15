@@ -18,12 +18,12 @@ describe("WatchProgramService", () => {
       jti: crypto.randomUUID(),
       revisionId,
       triggerId: createId("trigger"),
-      toolContractVersion: 3,
+      toolContractVersion: 4,
     };
     const program = {
       language: "javascript",
       source: "export default async () => {}",
-      toolContractVersion: 3,
+      toolContractVersion: 4,
     } as const;
     const watchProgram = vi.fn(async () => program);
     const service = new WatchProgramService({
@@ -37,7 +37,7 @@ describe("WatchProgramService", () => {
     await expect(service.get("token", revisionId)).resolves.toEqual(program);
     expect(watchProgram).toHaveBeenCalledWith(claims);
     await expect(service.get("token", createId("triggerRevision"))).rejects.toThrow(
-      "does not grant this Trigger revision",
+      "does not grant this automation revision",
     );
   });
 });

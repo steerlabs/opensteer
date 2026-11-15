@@ -9,6 +9,7 @@ import {
   type Thread,
 } from "@opensteer/core";
 import { createMemoryPass, needsYouPage, type MemoryPassExecution } from "@opensteer/database";
+import { writeAgentHomeSettings } from "@opensteer/database/test-support/personal";
 import { HarnessIdSchema, ModelSelectionSchema } from "@opensteer/core";
 import {
   describeStore,
@@ -53,7 +54,7 @@ async function fixture(
   await f.database
     .updateTable("runners")
     .set({
-      capabilities: sql`'["trigger-program-v3"]'::jsonb`,
+      capabilities: sql`'["trigger-program-v4"]'::jsonb`,
     })
     .where("id", "=", base.runnerId)
     .execute();
@@ -347,6 +348,33 @@ function wakeText(admitted: Awaited<ReturnType<typeof wake>>) {
   return admitted.message.content.flatMap((part) => (part.type === "text" ? [part.text] : []));
 }
 describeStore("managed memory passes", (it) => {
+  it("regenerates changed system programs through a new revision on start", async ({
+    storeFixture: f,
+  }) => {
+    const base = await fixture(f, "regenerate");
+    const instance = service(f).instance;
+    await instance.ensureForPersonal();
+    const prior = await role(f, base.userId);
+    await f.database
+      .updateTable("triggerRevisions")
+      .set({
+        program: {
+          ...memoryPassProgram("memory-light"),
+          toolContractVersion: 3 as unknown as 4,
+          source: "export default () => {}",
+        },
+      })
+      .where("id", "=", prior.revision.id)
+      .execute();
+    await instance.reconcileMissing();
+    const current = await role(f, base.userId);
+    expect(current.revision.id).not.toBe(prior.revision.id);
+    expect(current.revision.ordinal).toBe(prior.revision.ordinal + 1);
+    expect(current.revision.program).toEqual(memoryPassProgram("memory-light"));
+    await instance.reconcileMissing();
+    expect((await role(f, base.userId)).revision.id).toBe(current.revision.id);
+  });
+
   it("creates exactly one atomic pair under concurrent provisioning in the personal agent home, and never recreates paused/Done identities", async ({
     storeFixture: f,
   }) => {
@@ -1113,7 +1141,7 @@ describeStore("managed memory passes", (it) => {
     });
     const shared = await thread("Shared channel", {});
     const first = await wake(f, light, (await tick(f, base, light)).occurrence.id, "activity-1");
-    expect(wakeText(first).join("\n")).toContain("No new conversations");
+    expect(wakeText(first).join("\n")).toContain("No new tasks");
     await finish(f, first.run!, "completed");
     await expect(
       wake(f, light, (await tick(f, base, light)).occurrence.id, "activity-idle"),
@@ -1135,8 +1163,8 @@ describeStore("managed memory passes", (it) => {
     const next = await tick(f, base, light);
     const second = await wake(f, light, next.occurrence.id, "activity-2");
     const text = wakeText(second).join("\n");
-    expect(text).toContain(`"Voice": threadId ${voice.id}, 1 new messages`);
-    expect(text).toContain(`threadId ${base.thread.id}, 1 new messages`);
+    expect(text).toContain(`"Voice": taskId ${voice.id}, 1 new messages`);
+    expect(text).toContain(`taskId ${base.thread.id}, 1 new messages`);
     expect(text).toContain(shared.id);
     expect(text).not.toContain("Waiting");
     expect(text).not.toContain(light.anchorThreadId);
@@ -1181,7 +1209,7 @@ describeStore("managed memory passes", (it) => {
     });
     await finish(f, other.run!, "completed");
     const retried = await wake(f, light, (await tick(f, base, light)).occurrence.id, "activity-3");
-    expect(wakeText(retried).join("\n")).toContain(`"Voice": threadId ${voice.id}, 2 new messages`);
+    expect(wakeText(retried).join("\n")).toContain(`"Voice": taskId ${voice.id}, 2 new messages`);
 
     // A published report is readable before any Run consumes it.
     await finish(f, retried.run!, "completed");
@@ -1203,7 +1231,7 @@ describeStore("managed memory passes", (it) => {
     });
     const after = await wake(f, light, (await tick(f, base, light)).occurrence.id, "activity-4");
     expect(wakeText(after).join("\n")).toContain(
-      `"Reported": threadId ${reported.id}, 1 new messages`,
+      `"Reported": taskId ${reported.id}, 1 new messages`,
     );
   });
   it("replays an accepted pass's wake without choosing its model again", async ({
@@ -1235,12 +1263,12 @@ describeStore("managed memory passes", (it) => {
         .execute(),
     });
 
-    // This retry reads the person's config only after the other retry's pass commits.
-    const read = f.store.getAutomaticModelConfig.bind(f.store);
+    // This retry reads the person's settings only after the other retry's pass commits.
+    const read = f.store.getAgentHomeSettings.bind(f.store);
     let release!: () => void;
     const released = new Promise<void>((resolve) => (release = resolve));
     const held = vi
-      .spyOn(f.store, "getAutomaticModelConfig")
+      .spyOn(f.store, "getAgentHomeSettings")
       .mockImplementationOnce(async (userId) => {
         await released;
         return read(userId);
@@ -1257,9 +1285,8 @@ describeStore("managed memory passes", (it) => {
       },
     ]);
     // Nothing is usable any more, but this occurrence's pass is already decided.
-    await f.store.setAutomaticModelConfig(base.userId, {
-      roles: {},
-      excludedAccounts: [claude.id],
+    await writeAgentHomeSettings(f.database, {
+      backgroundModels: { excludedAccounts: [claude.id] },
     });
     release();
     await expect(retry).resolves.toBeUndefined();
@@ -1297,9 +1324,8 @@ describeStore("managed memory passes", (it) => {
     await s.instance.ensureForPersonal();
     const light = await role(f, base.userId);
     const { occurrence } = await tick(f, base, light.trigger);
-    await f.store.setAutomaticModelConfig(base.userId, {
-      roles: {},
-      excludedAccounts: [base.harnessInstance.id],
+    await writeAgentHomeSettings(f.database, {
+      backgroundModels: { excludedAccounts: [base.harnessInstance.id] },
     });
     // Admission holds the occurrence until the personal mutation fence is released.
     await holdingRow(f, "personalSettings", "personal", async (release) => {
@@ -1321,9 +1347,8 @@ describeStore("managed memory passes", (it) => {
     await s.instance.ensureForPersonal();
     const light = await role(f, base.userId);
     const { occurrence } = await tick(f, base, light.trigger);
-    await f.store.setAutomaticModelConfig(base.userId, {
-      roles: {},
-      excludedAccounts: [base.harnessInstance.id],
+    await writeAgentHomeSettings(f.database, {
+      backgroundModels: { excludedAccounts: [base.harnessInstance.id] },
     });
     await expect(s.instance.admissionSelection(occurrence.id, light.anchorThread!)).rejects.toThrow(
       MANAGED_MEMORY_WAKE_SKIPPED,
@@ -1424,10 +1449,7 @@ describeStore("managed memory passes", (it) => {
     const light = await role(f, base.userId);
     const nightly = await role(f, base.userId, "memory-nightly");
     const exclude = (...excludedAccounts: HarnessInstanceId[]) =>
-      f.store.setAutomaticModelConfig(base.userId, {
-        roles: {},
-        excludedAccounts,
-      });
+      writeAgentHomeSettings(f.database, { backgroundModels: { excludedAccounts } });
 
     // The Trigger's creator, personal owner, is the principal. Light has no remembered
     // fallback: with Claude excluded by them, it waits.
@@ -1504,9 +1526,9 @@ describeStore("managed memory passes", (it) => {
       memoryPassWaitingReason,
     );
     await exclude();
-    // A person's deep list replaces the maintained one and comes before the remembered choice.
-    await f.store.setAutomaticModelConfig(base.userId, {
-      roles: {
+    // A person's deep list comes before the recommended order and the remembered choice.
+    await writeAgentHomeSettings(f.database, {
+      backgroundModels: {
         deep: [
           {
             engine: HarnessIdSchema.parse("claude"),
@@ -1514,7 +1536,6 @@ describeStore("managed memory passes", (it) => {
           },
         ],
       },
-      excludedAccounts: [],
     });
     expect(
       await instance.admissionSelection(nightlyTick.occurrence.id, nightly.anchorThread!),
@@ -1529,10 +1550,7 @@ describeStore("managed memory passes", (it) => {
         options: {},
       },
     });
-    await f.store.setAutomaticModelConfig(base.userId, {
-      roles: {},
-      excludedAccounts: [],
-    });
+    await writeAgentHomeSettings(f.database, {});
 
     // Memory turned off stays off while models come and go.
     await f.database

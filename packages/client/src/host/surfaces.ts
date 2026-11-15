@@ -524,7 +524,7 @@ export function turnApps(
 ): TurnApp[] {
   const apps = new Map<string, TurnApp>();
   for (const entry of turn.work) {
-    if (entry.kind !== "tool" || entry.tool?.name === "computer") continue;
+    if (entry.kind !== "tool" || entry.tool?.name === "computer_use") continue;
     const place = entry.integration?.computerApp;
     if (!place) continue;
     const app: ComputerAppIdentity = {
@@ -584,7 +584,7 @@ export function turnPhones(
 ): TurnPhone[] {
   const phones = new Map<string, TurnPhone>();
   for (const entry of turn.work) {
-    if (entry.kind !== "tool" || entry.tool?.name === "computer" || !entry.integration?.phone)
+    if (entry.kind !== "tool" || entry.tool?.name === "computer_use" || !entry.integration?.phone)
       continue;
     const place = entry.integration.phone;
     const key = `phone:${place.runnerId}`;

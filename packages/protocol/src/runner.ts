@@ -3,6 +3,7 @@ export { TeamTurnContextSchema, type TeamTurnContext } from "@opensteer/core";
 import { DelegationModelChoiceSchema } from "@opensteer/core";
 import { ComputerFolderSchema } from "@opensteer/core";
 import { RunnerSkillMetadataReportSchema } from "./runner-skill-metadata.js";
+import { RunnerSettingsReportSchema } from "./runner-agent-home-settings.js";
 import { HostAppRequestSchema, RunnerAppResultSchema } from "./apps.js";
 import { HostRunFileRequestSchema, RunnerRunFileResultSchema } from "./run-files.js";
 import { ChannelRuntimeCapabilitySchema } from "@opensteer/channel-core";
@@ -1729,6 +1730,7 @@ export const RunnerBackgroundTextResultSchema = z.strictObject({
 export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
   RunnerBackgroundTextResultSchema,
   RunnerSkillMetadataReportSchema,
+  RunnerSettingsReportSchema,
   RunnerAppResultSchema,
   RunnerRunFileResultSchema,
   z.strictObject({
@@ -1946,6 +1948,8 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
     connectionLeaseExpiresAt: IsoDateTimeSchema,
     environmentIds: z.array(EnvironmentIdSchema).max(100),
     heartbeatIntervalMs: z.number().int().min(1_000).max(300_000),
+    /** The hosting computer's Agent home, sent only to a Runner advertising `agent-home-settings-v1`. */
+    agentHome: ComputerFolderSchema.optional(),
     serverTime: IsoDateTimeSchema,
     type: z.literal("host.welcome"),
   }),

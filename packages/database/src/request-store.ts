@@ -320,7 +320,7 @@ export class RequestStore {
         .where("id", "=", input.machineId)
         .executeTakeFirst();
       if (!machine)
-        throw new OpensteerError({ code: "forbidden", message: "Owned device not found" });
+        throw new OpensteerError({ code: "forbidden", message: "Owned computer not found" });
       const label = { browser: "Browser", apps: "Apps", files: "Files and commands" }[input.access];
       return createRequestInTransaction(
         this.#links,
@@ -371,17 +371,20 @@ export class RequestStore {
         .where("id", "=", input.requestId)
         .executeTakeFirst();
       if (!row || row.kind !== "device.access" || row.payload.kind !== "device.access")
-        throw new OpensteerError({ code: "not_found", message: "Device access Request not found" });
+        throw new OpensteerError({
+          code: "not_found",
+          message: "Computer access Request not found",
+        });
       const ownership = await machineOwnershipIn(transaction, row.payload.machineId);
       if (!ownership || !machineIsManagedBy(ownership, input.resolvedBy))
         throw new OpensteerError({
           code: "forbidden",
-          message: "Only this device's owner can answer its access Request.",
+          message: "Only this computer's owner can answer its access Request.",
         });
       if (row.status !== "pending")
         throw new OpensteerError({
           code: "conflict",
-          message: "Device access Request is no longer pending",
+          message: "Computer access Request is no longer pending",
         });
       await lockActiveDurableRequestAuthority(transaction, requestFromRow(row));
       const now = new Date();
@@ -2786,7 +2789,7 @@ export class RequestStore {
       if (pending.mode !== "durable" || pending.originatingThreadId !== input.threadId) {
         throw new OpensteerError({
           code: "forbidden",
-          message: "Only the originating Thread may withdraw its pending durable Request",
+          message: "Only the task that opened a pending Request may withdraw it",
         });
       }
       if (pending.requestedBy !== input.withdrawnBy) {
@@ -3224,7 +3227,7 @@ async function createRequestInTransaction(
     )
       throw new OpensteerError({
         code: "bad_request",
-        message: "Use device_access_request for device access.",
+        message: "Use computer_access_request for device access.",
       });
     const payload = input.payload;
     const runner = await transaction
@@ -3243,13 +3246,13 @@ async function createRequestInTransaction(
     )
       throw new OpensteerError({
         code: "forbidden",
-        message: "Only an owned active device can receive an access Request.",
+        message: "Only an owned active computer can receive an access Request.",
       });
     if (!deviceOnline())
       throw new OpensteerError({
         code: "runner_offline",
         reason: "device-offline",
-        message: "That device is offline. Do not request access while it is offline.",
+        message: "That computer is offline. Do not request access while it is offline.",
         details: { machineId: payload.machineId, capability: payload.access },
       });
     const duplicate = await transaction
@@ -4317,7 +4320,7 @@ function requestOriginOf(input: RequestOriginSelector): RequestOriginInput {
   }
   throw new OpensteerError({
     code: "bad_request",
-    message: "A Request must originate from a Run or a Trigger Occurrence",
+    message: "A Request must originate from a Run or an automation occurrence",
   });
 }
 

@@ -481,7 +481,7 @@ function answeredWith(reply: string | null): string[] {
       .slice("Answered: ".length)
       .split(" | ")
       // Every Run opens with its thread context; the answer is about the messages.
-      .filter((input) => !input.startsWith("[Opensteer thread context]"))
+      .filter((input) => !input.startsWith("[Opensteer task context]"))
       .map((input) => input.split("\n").at(-1) ?? "")
   );
 }

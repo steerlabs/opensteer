@@ -105,7 +105,7 @@ describe("OpenCode access modes", () => {
 
   it("translates approval-required into an ask-by-default permission table", () => {
     const permission = opencodeAccessModeConfiguration("approval-required", [
-      "opensteer_thread_read",
+      "opensteer_opensteer_task_read",
     ]);
     expect(Object.entries(permission)[0]).toEqual(["*", "ask"]);
     expect(permission).toMatchObject({
@@ -118,7 +118,7 @@ describe("OpenCode access modes", () => {
       grep: "allow",
       list: "allow",
       lsp: "allow",
-      opensteer_thread_read: "allow",
+      opensteer_opensteer_task_read: "allow",
       question: "allow",
       read: "allow",
       skill: "allow",
@@ -131,14 +131,14 @@ describe("OpenCode access modes", () => {
 
   it("translates auto-accept-edits into edits allowed and everything else asked", () => {
     const permission = opencodeAccessModeConfiguration("auto-accept-edits", [
-      "opensteer_thread_read",
+      "opensteer_opensteer_task_read",
     ]);
     expect(permission).toMatchObject({
       "*": "ask",
       bash: "ask",
       edit: "allow",
       external_directory: "ask",
-      opensteer_thread_read: "allow",
+      opensteer_opensteer_task_read: "allow",
       task: "allow",
       webfetch: "ask",
       websearch: "ask",
@@ -146,7 +146,9 @@ describe("OpenCode access modes", () => {
   });
 
   it("translates full-access into an allow-everything table", () => {
-    const permission = opencodeAccessModeConfiguration("full-access", ["opensteer_thread_read"]);
+    const permission = opencodeAccessModeConfiguration("full-access", [
+      "opensteer_opensteer_task_read",
+    ]);
     const { task, ...rest } = permission;
     expect(task).toBe("allow");
     for (const action of Object.values(rest)) expect(action).toBe("allow");
@@ -155,7 +157,10 @@ describe("OpenCode access modes", () => {
   });
 
   it("approves Opensteer's own tools without a prompt in every mode", () => {
-    const openSteerTools = ["opensteer_thread_read", "opensteer_integrations_integration_call"];
+    const openSteerTools = [
+      "opensteer_opensteer_task_read",
+      "opensteer_integrations_integration_call",
+    ];
     for (const mode of ["approval-required", "auto-accept-edits", "full-access"] as const) {
       const permission = opencodeAccessModeConfiguration(mode, openSteerTools);
       for (const tool of openSteerTools) expect(permission[tool]).toBe("allow");
@@ -203,8 +208,8 @@ describe("OpenCode child permission copying (T3 Code, MIT)", () => {
 
 describe("OpenCode tool identity", () => {
   it("splits the flat tool id on the longest Opensteer server name", () => {
-    expect(opencodeToolIdentity("opensteer_thread_read")).toEqual({
-      name: "thread_read",
+    expect(opencodeToolIdentity("opensteer_opensteer_task_read")).toEqual({
+      name: "opensteer_task_read",
       namespace: "opensteer",
     });
     expect(opencodeToolIdentity("opensteer_integrations_integration_call")).toEqual({
@@ -826,7 +831,7 @@ describe("OpenCode sessions", () => {
     };
     expect(prompt.model).toEqual({ modelID: "union-alpha", providerID: "opencode" });
     expect(prompt.variant).toBe("high");
-    expect(prompt.parts[0]?.text).toMatch(/^\[Opensteer thread context\]/u);
+    expect(prompt.parts[0]?.text).toMatch(/^\[Opensteer task context\]/u);
     expect(prompt.parts[1]?.text).toContain("Go");
     expect(prompt.parts[1]?.text).toContain("[Opensteer input]");
   });
@@ -920,7 +925,7 @@ describe("OpenCode sessions", () => {
     expect(instructions).toContain("Opensteer tools");
     // The model is told the names it must type, not just the servers: OpenCode
     // renames every MCP tool to `<server>_<tool>`.
-    expect(instructions).toContain("opensteer_thread_read");
+    expect(instructions).toContain("opensteer_opensteer_task_read");
     expect(instructions).toContain("opensteer_integration_call");
   });
 
@@ -2052,7 +2057,7 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
       ],
       toolsRevision: "test-tools-v1",
       instructions: "Host Opensteer instructions",
-      skills: ["opensteer:threads"],
+      skills: ["opensteer:tasks"],
       token: "test-agent-tools-token",
       url: "https://host.example/internal/v1/mcp",
     },

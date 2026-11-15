@@ -171,7 +171,7 @@ a notice about one of its automations; any other agent work is refused. The Host
 read, idle tasks to Done after the days the person chose, through the same command
 ([quiet tasks](../packages/database/src/quiet-tasks.ts)).
 
-An automation can run in its own task (`trigger_write` `ownTask`): a child of the asking task by
+An automation can run in its own task (`opensteer_automation_create` `ownTask`): a child of the asking task by
 parent link only, with no Assignment, so nothing returns automatically and no card appears in the
 parent. Visibility follows that structure: the child is off the task list and reached through the
 parent's family, which also keeps its ended automations. Being outside the Assignment subtree, it
@@ -179,10 +179,10 @@ keeps running when the parent is Done. Its Requests, failure notices and the par
 restriction follow parent links to the nearest listed task
 ([lineage](../packages/database/src/thread-lineage.ts)), and the Inbox validates a notice's
 destination when it admits it. A task that should stand on its own, such as one per scheduled run,
-is a `delegate_task` `standalone` task: listed, with no parent and no Assignment.
+is one `opensteer_task_create` starts: listed, with no parent and no Assignment.
 
-Giving a finished task more work is a separate `delegate_task`, never an effect of
-`thread_send`: choosing delegate or join must be one atomic decision, and a retry after the
+Giving a finished task more work is a separate `opensteer_task_delegate`, never an effect of
+`opensteer_task_send`: choosing delegate or join must be one atomic decision, and a retry after the
 Assignment finishes could start the work twice. For the same reason a message result carries no hint
 to resubmit, since an unassigned queue may already have started a Run.
 

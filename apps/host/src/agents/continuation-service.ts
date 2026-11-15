@@ -171,7 +171,7 @@ export class ContinuationService {
         } catch (error) {
           this.#onError(error);
           messages.push(
-            `Request ${request.id} settled as ${request.status}. pending_request shows status, not the answer.`,
+            `Request ${request.id} settled as ${request.status}. opensteer_request_answer shows status, not the answer.`,
           );
         }
       }
@@ -302,7 +302,7 @@ export async function continuationMessage(
   loginRef?: string,
 ): Promise<string> {
   if (request.mode === "durable" && request.status === "cancelled") {
-    return `Request ${request.id} was cancelled (${request.cancellationReason}). The requested resource or authority is no longer available. Continue without it; pending_request shows status, not the answer.`;
+    return `Request ${request.id} was cancelled (${request.cancellationReason}). The requested resource or authority is no longer available. Continue without it; opensteer_request_answer shows status, not the answer.`;
   }
   if (
     request.mode !== "durable" ||
@@ -316,7 +316,7 @@ export async function continuationMessage(
         throw new Error("Device access Request payload is invalid");
       const { machineId, machineName, access } = request.payload;
       return request.status === "fulfilled"
-        ? `Request ${request.id} was fulfilled. ${access} access is now on for ${machineName} (${machineId}). This continuation Run rebuilds device routes. Per-app, profile or OS authorization may still be needed. Continue the task using this Run's inventory.`
+        ? `Request ${request.id} was fulfilled. ${access} access is now on for ${machineName} (${machineId}). This continuation Run rebuilds computer routes. Per-app, profile or OS authorization may still be needed. Continue the task using this Run's inventory.`
         : `Request ${request.id} was declined (Not now). Continue without ${access} on ${machineName} (${machineId}); do not request it again in this task.`;
     }
     case "integration.input":
@@ -355,7 +355,7 @@ export async function continuationMessage(
         case "not-signed-in":
           return `Request ${request.id} ended: no connected Chrome is signed in to ${site}, so nothing was copied. The user did not decline.`;
         case "session-closed":
-          return `Request ${request.id} was allowed, but the browser tab had closed. Call copy_chrome_cookies again with your current tabId.`;
+          return `Request ${request.id} was allowed, but the browser tab had closed. Call chrome_cookies_request again with your current tabId.`;
       }
     }
     case "browser.password-sign-in": {
@@ -371,13 +371,13 @@ export async function continuationMessage(
         const action =
           response.outcome === "authorized" && loginRef
             ? `Focus each required checkout field and call fillCard("${loginRef}", field). Never read back, print, log, copy or save card values. This approval covers filling only; the person's request must cover any purchase.`
-            : "The card use ended. Call use_card again only if the task still requires it.";
+            : "The card use ended. Call card_request again only if the task still requires it.";
         return `Request ${request.id} for card use on ${site} ended. ${action}`;
       }
       if (response.outcome === "authorized") {
         const action = loginRef
           ? `Saved login ${loginRef} for ${site} is ready as ${response.account}: in a browser, focus each field and call fillLogin("${loginRef}", field); in a genuine phone or Mac app, type {loginRef: "${loginRef}", field}. Fields are "username", "password" and "code". Submit and check the account. Never reveal or read back saved fields.`
-          : `The saved login for ${site} ended. Call use_saved_login again if the task still needs it.`;
+          : `The saved login for ${site} ended. Call saved_login_request again if the task still needs it.`;
         return `Request ${request.id} was approved. ${action}`;
       }
       return `Request ${request.id} ended. ${passwordSignInContinuation({ site, computerName }, response)}`;
@@ -548,7 +548,7 @@ async function computerAppContinuation(
     app.connectionId,
   );
   if (!refs.observe) return unavailable;
-  return `Request ${request.id} was fulfilled. ${displayName} on ${mac} is ready. Use app(${JSON.stringify(displayName)}, {computer: ${JSON.stringify(mac)}}) in the computer tool. Continue.`;
+  return `Request ${request.id} was fulfilled. ${displayName} on ${mac} is ready. Use app(${JSON.stringify(displayName)}, {computer: ${JSON.stringify(mac)}}) in computer_use. Continue.`;
 }
 
 /** A fulfilled ask names the phone exactly as the computer library accepts it. */
@@ -567,7 +567,7 @@ async function phoneContinuation(
     phone.connection.connectionId,
   );
   if (!refs.observe) return unavailable;
-  return `Request ${request.id} was fulfilled. ${phone.name} is ready. Use phone(${JSON.stringify(phone.name)}) in the computer tool. Release it when you are done so another task can use it. Continue.`;
+  return `Request ${request.id} was fulfilled. ${phone.name} is ready. Use phone(${JSON.stringify(phone.name)}) in computer_use. Release it when you are done so another task can use it. Continue.`;
 }
 function inventoryFor(
   request: Request,
@@ -715,7 +715,7 @@ function passwordSignInContinuation(
   const { computerName, site } = payload;
   switch (response.outcome) {
     case "expired":
-      return `Nobody answered on ${computerName} within an hour, so no saved login for ${site} was released. Call use_saved_login again if the task still needs it.`;
+      return `Nobody answered on ${computerName} within an hour, so no saved login for ${site} was released. Call saved_login_request again if the task still needs it.`;
     case "unavailable":
       switch (response.reason) {
         case "no-saved-login":
@@ -725,10 +725,10 @@ function passwordSignInContinuation(
         case "not-set-up":
           return `Opensteer Passwords is not set up on ${computerName}.`;
         case "not-responding":
-          return `Opensteer Passwords did not respond on ${computerName}. Call use_saved_login again later if the task still needs ${site}.`;
+          return `Opensteer Passwords did not respond on ${computerName}. Call saved_login_request again later if the task still needs ${site}.`;
       }
     case "interrupted":
-      return `The saved-login release for ${site} stopped on ${computerName} before anything was released. Call use_saved_login again if the task still needs it.`;
+      return `The saved-login release for ${site} stopped on ${computerName} before anything was released. Call saved_login_request again if the task still needs it.`;
     case "session-closed":
       return `The browser tab closed before the saved login for ${site} was released.`;
   }

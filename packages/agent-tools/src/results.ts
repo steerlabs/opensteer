@@ -1,6 +1,6 @@
 /** A refused or failed call, as its caller should read it. */
 export interface AgentToolFailure {
-  readonly machineId?: string | undefined;
+  readonly computerId?: string | undefined;
   readonly capability?: "browser" | "apps" | "files" | undefined;
   readonly code: string;
   readonly message: string;
@@ -17,8 +17,8 @@ export interface AgentToolFailure {
  */
 export function agentToolFailureResult(failure: AgentToolFailure) {
   const device =
-    failure.machineId && failure.capability
-      ? `${failure.reason ?? failure.code}: machineId=${failure.machineId}, capability=${failure.capability}.`
+    failure.computerId && failure.capability
+      ? `${failure.reason ?? failure.code}: computerId=${failure.computerId}, capability=${failure.capability}.`
       : undefined;
   const text = [
     device,
@@ -31,7 +31,7 @@ export function agentToolFailureResult(failure: AgentToolFailure) {
     content: [{ type: "text" as const, text }],
     structuredContent: {
       error: {
-        ...(failure.machineId === undefined ? {} : { machineId: failure.machineId }),
+        ...(failure.computerId === undefined ? {} : { computerId: failure.computerId }),
         ...(failure.capability === undefined ? {} : { capability: failure.capability }),
         code: failure.code,
         message: text,

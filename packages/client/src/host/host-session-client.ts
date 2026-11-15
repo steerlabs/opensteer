@@ -1318,7 +1318,6 @@ export class HttpHostClient {
           );
         }
         break;
-      case "automaticModels.set":
       case "harness.model.configure":
       case "harness.create":
         // The Host reports a new harness only through bootstrap, so without

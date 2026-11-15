@@ -240,13 +240,13 @@ export function passwordSignInReceipt(request: Request): string {
  * Sign-in steps in the transcript
  * ------------------------------------------------------------------------- */
 
-/** What `use_saved_login` returned, read from the text every engine records, or null. */
+/** What `saved_login_request` returned, read from the text every engine records, or null. */
 export function readSavedLoginResult(text: string): SavedLoginResult | null {
   const parsed = SavedLoginResultSchema.safeParse(toolOutputRecord(text));
   return parsed.success ? parsed.data : null;
 }
 
-/** What `copy_chrome_cookies` returned, read from the text every engine records, or null. */
+/** What `chrome_cookies_request` returned, read from the text every engine records, or null. */
 export function readChromeCookiesResult(text: string): ChromeCookiesResult | null {
   const parsed = ChromeCookiesResultSchema.safeParse(toolOutputRecord(text));
   return parsed.success ? parsed.data : null;
@@ -261,7 +261,7 @@ export interface SignInStep {
 
 const notAllowed: SignInStep = { hint: "", label: "Not allowed", succeeded: false };
 
-/** What one `use_saved_login` call came to, in the words its Request card uses. */
+/** What one `saved_login_request` call came to, in the words its Request card uses. */
 export function savedLoginStep(result: SavedLoginResult): SignInStep {
   const domain = browserSiteLabel(result.site);
   switch (result.status) {
@@ -288,7 +288,7 @@ export function savedLoginStep(result: SavedLoginResult): SignInStep {
   }
 }
 
-/** What one `copy_chrome_cookies` call came to. */
+/** What one `chrome_cookies_request` call came to. */
 export function chromeCookiesStep(result: ChromeCookiesResult): SignInStep {
   const domain = browserSiteLabel(result.site);
   switch (result.status) {

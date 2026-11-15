@@ -19,7 +19,7 @@ export class DeviceAccessRefusal extends OpensteerError {
       message:
         reason === "device-offline"
           ? "Device is offline. Do not request access."
-          : `${capability} is off. Use device_access_request if needed.`,
+          : `${capability} is off. Use computer_access_request if needed.`,
       details: { machineId, capability },
     });
     this.reason = reason;
@@ -39,7 +39,7 @@ export async function requireDeviceAccess(
     .where("id", "=", machineId)
     .executeTakeFirst();
   if (!runner || runner.revokedAt)
-    throw new OpensteerError({ code: "not_found", message: "Active device not found" });
+    throw new OpensteerError({ code: "not_found", message: "Active computer not found" });
   if (!online) throw new DeviceAccessRefusal("device-offline", machineId, capability);
   if (!deviceAccess(runner.accessPolicy)[capability])
     throw new DeviceAccessRefusal("device-access-off", machineId, capability);

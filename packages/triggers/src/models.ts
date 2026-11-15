@@ -18,43 +18,62 @@ export const TriggerStatusSchema = z.enum(["active", "paused", "archived"]);
 
 /**
  * The runtime contract for Trigger programs. Agents read it in the
- * opensteer:triggers skill, which must contain it verbatim; the automation
+ * opensteer:automations skill, which must contain it verbatim; the automation
  * editor shows it to people. Tool metadata does not repeat it.
  */
 export const triggerProgramContract = [
-  "Trigger programs execute as Node.js ESM modules (Node 24 or newer) on the anchor Thread's Runner,",
+  "Automation programs execute as Node.js ESM modules (Node 24 or newer) on the hosting computer,",
   "with Agent home as the working directory, so relative paths and relative imports",
   "resolve from Agent home. The source must export one default function (async or not):",
-  "The program object must declare toolContractVersion: use 3 for new programs. Use environment_list for computers and orchestrator_capabilities for engines and models.",
+  "The program object must declare toolContractVersion: use 4. Use computer_list for computers, opensteer_ai_account_list for AI accounts, and opensteer_task_send or opensteer_task_delegate for tasks.",
   "`export default async function ({ event, capabilities, opensteer }) { ... }`.",
   "`event` is frozen ({ id, payload, receivedAt, source, trigger });",
   '`event.source.kind` is "schedule" (with scheduledFor), "webhook" (with method, headers, and optional deliveryId),',
   '"manual" (a manual run carries only the payload), or "watch" (the single startup event for a continuous watch).',
-  "A watch program runs continuously on the anchor Thread's machine and must not resolve; Opensteer restarts unexpected exits with exponential backoff and pauses the Trigger after three consecutive unexpected exits.",
+  "A watch program runs continuously and must not resolve; Opensteer restarts unexpected exits with exponential backoff and pauses the automation after three consecutive unexpected exits.",
   "`capabilities.mcp` is the short-lived Opensteer MCP endpoint ({ url, token });",
   "`capabilities.browserCdp` is a short-lived CDP WebSocket endpoint ({ url, token }) or null when no browser access is available.",
   "For a watch, every non-null capability also has expiresAt.",
   "Watch capabilities rotate while the process runs: call `opensteer.capabilities()` for the current values, and reconnect an expired CDP session with its current browserCdp value.",
   "`opensteer.callTool(name, input)` calls any Opensteer tool, including integration tools already granted to the owner.",
-  "Supply a stable observationId with each watch call to thread_send or delegate_task; when omitted, the request ID is used. Opensteer deduplicates the ID and admits up to 120 independent observations per activation per hour.",
+  "Supply a stable observationId with each watch call to opensteer_task_send or opensteer_task_delegate; when omitted, the request ID is used. Opensteer deduplicates the ID and admits up to 120 independent observations per activation per hour.",
   "Node built-ins (node:fs, node:child_process, ...), fetch, and packages installed in Agent home's node_modules are available;",
   "Deno, Bun, and DOM globals such as window and document do not exist, and nothing installs packages automatically.",
   "TypeScript runs through Node's built-in type transform: type annotations, enums, and namespaces work; tsconfig paths, decorators, and JSX do not.",
   "For schedule, webhook, and manual runs, the awaited return value serialized as JSON (at most 512 KiB) becomes the occurrence result, and a thrown error fails the occurrence with its message and stack.",
   "Their console output is captured as stdout and stderr (512 KiB each); watch stdout and stderr retain only their latest 16 KiB tails.",
-  "A program acts as its anchor Thread: its Opensteer tool calls use its access-mode ceiling, and only a full-access agent can write one.",
+  "A program acts as its task: its Opensteer tool calls use that task's access-mode ceiling, and only a full-access agent can write one.",
 ].join(" ");
 
-export const TriggerProgramSchema = z.strictObject({
+export const TRIGGER_PROGRAM_VERSION_REFUSAL =
+  "Programs require toolContractVersion 4. Use opensteer_task_send and opensteer_task_delegate; older tool names are unavailable.";
+
+/**
+ * A revision's program as stored. Programs written for an older tool contract
+ * stay readable so the owner's agent can replace them; only version 4 runs.
+ */
+export const StoredTriggerProgramSchema = z.strictObject({
   language: z.enum(["javascript", "typescript"]),
   source: z
     .string()
     .min(1)
     .max(512 * 1_024),
-  toolContractVersion: z.literal(3),
+  toolContractVersion: z.number().int().positive(),
 });
-const TriggerProgramViewSchema = z.object(TriggerProgramSchema.shape);
+export type StoredTriggerProgram = z.infer<typeof StoredTriggerProgramSchema>;
+const StoredTriggerProgramViewSchema = z.object(StoredTriggerProgramSchema.shape);
+
+/** A program Opensteer can write and run. */
+export const TriggerProgramSchema = StoredTriggerProgramSchema.extend({
+  toolContractVersion: z.literal(4, { error: TRIGGER_PROGRAM_VERSION_REFUSAL }),
+});
 export type TriggerProgram = z.infer<typeof TriggerProgramSchema>;
+
+export function isExecutableTriggerProgram(
+  program: StoredTriggerProgram,
+): program is TriggerProgram {
+  return program.toolContractVersion === 4;
+}
 
 export const TriggerScheduleSchema = z.discriminatedUnion("kind", [
   z.strictObject({
@@ -125,13 +144,13 @@ export const TriggerRevisionSchema = z.strictObject({
   createdByThreadId: ThreadIdSchema.nullable().default(null),
   id: TriggerRevisionIdSchema,
   ordinal: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  program: TriggerProgramSchema,
+  program: StoredTriggerProgramSchema,
   source: TriggerSourceSchema,
   triggerId: TriggerIdSchema,
 });
 export const TriggerRevisionViewSchema = z.object({
   ...TriggerRevisionSchema.shape,
-  program: TriggerProgramViewSchema,
+  program: StoredTriggerProgramViewSchema,
   source: TriggerSourceViewSchema,
 });
 export type TriggerRevision = z.infer<typeof TriggerRevisionSchema>;
@@ -313,7 +332,7 @@ export const TriggerSourceInputSchema = z
     timezone: z.string().trim().min(1).max(255).optional(),
   })
   .describe(
-    'Trigger source. kind "schedule" requires exactly one of at (a one-shot UTC ISO-8601 instant) or cron (a recurring expression), and cron additionally requires timezone as an IANA name; payload is the constant event payload each occurrence receives. kind "webhook" and kind "watch" accept none of at, cron, timezone, or payload.',
+    'Automation source. kind "schedule" requires exactly one of at (a one-shot UTC ISO-8601 instant) or cron (a recurring expression), and cron additionally requires timezone as an IANA name; payload is the constant event payload each occurrence receives. kind "webhook" and kind "watch" accept none of at, cron, timezone, or payload.',
   );
 export type TriggerSourceInput = z.infer<typeof TriggerSourceInputSchema>;
 

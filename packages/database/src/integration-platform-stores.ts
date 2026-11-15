@@ -2408,7 +2408,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
       ) {
         throw new OpensteerError({
           code: "forbidden",
-          message: "This Runner is not an eligible Android phone.",
+          message: "This computer is not an eligible Android phone.",
         });
       }
       if (input.setupRequestId && (phone || descriptor.device?.platform === "android")) {

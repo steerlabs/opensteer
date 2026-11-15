@@ -57,6 +57,7 @@ import type { EgressService } from "../server/egress-service.js";
 import { computeMachineAccess } from "../shell/machine-access-run-context.js";
 import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
 import { triggerProgramCompatibilityReason } from "../triggers/trigger-program-compatibility.js";
+import { isExecutableTriggerProgram, TRIGGER_PROGRAM_VERSION_REFUSAL } from "@opensteer/triggers";
 import type { RunToolTokenService } from "./run-tool-tokens.js";
 import {
   harnessInspectionDefinition,
@@ -581,7 +582,11 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const requesterTimeZone = await this.#store.notificationState.timeZoneFor(
       context.run.requestedBy,
     );
+    const settingsFile = context.personalContext
+      ? (await this.#store.getAgentHomeSettings(context.run.requestedBy)).file
+      : null;
     const toolsPlan = agentToolsPlanForRun({
+      settingsError: settingsFile?.error,
       voiceCall: Boolean(context.voiceCall),
       token: toolsToken,
       url: this.#agentToolsUrl,
@@ -836,6 +841,10 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       runnerId: identity.runnerId,
     });
     this.#onTriggerChanged();
+    const program = context.revision.program;
+    if (!isExecutableTriggerProgram(program)) {
+      throw new CommandDispatchError(TRIGGER_PROGRAM_VERSION_REFUSAL, "failed");
+    }
     const capabilityToken = this.#triggerControlTokens.issue({
       environmentId: context.anchorThread.environmentId,
       executionGeneration,
@@ -844,7 +853,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       runnerBootId: identity.bootId,
       runnerId: identity.runnerId,
       threadId: context.anchorThread.id,
-      toolContractVersion: context.revision.program.toolContractVersion,
+      toolContractVersion: program.toolContractVersion,
     });
     const hasBrowser = await this.#browser.hasBrowserProfiles(context.trigger.createdBy);
     const runnerCommand: RunnerCommand = {
@@ -864,7 +873,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           url: this.#agentToolsUrl,
         },
         occurrenceId: context.occurrence.id,
-        program: context.revision.program,
+        program,
         revisionId: context.revision.id,
         triggerId: context.trigger.id,
       },

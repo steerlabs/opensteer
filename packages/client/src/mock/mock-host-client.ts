@@ -45,22 +45,21 @@ import {
   storedModelSelection as coreStoredModelSelection,
 } from "@opensteer/core";
 import {
+  EnvironmentIdSchema,
   HarnessIdSchema,
   HarnessInstanceIdSchema,
   ModelIdSchema,
-  AutomaticModelConfigSchema,
-  automaticModelDefaults,
-  automaticModelWants,
-  emptyAutomaticModelConfig,
+  backgroundModelWants,
+  excludedBackgroundAccounts,
   resolveModelCandidates,
-  type AutomaticModelConfig,
-  type AutomaticModelRole,
+  type AgentHomeSettings,
+  type BackgroundModelRole,
   type QuietTaskDays,
   type PersonName,
 } from "@opensteer/core";
 import {
-  automaticModelCatalogView,
   AutomaticModelsViewSchema,
+  type AgentHomeSettingsFileView,
   type AutomaticModelsView,
   type OwnerProfileView,
 } from "@opensteer/protocol";
@@ -1770,8 +1769,8 @@ export interface MockHostClientOptions {
   readonly lifecycle?: ClientLifecycle;
   /** Automations covering every state the Automations page shows; seeded by default. */
   automations?: "seeded" | "absent";
-  /** `none`: no account could run background work, for Settings' empty state. */
-  automaticModels?: "seeded" | "edited" | "excluded" | "none";
+  /** `none`: no account could run background work; `invalid`: settings.json has an error. */
+  automaticModels?: "seeded" | "edited" | "excluded" | "invalid" | "none";
   automaticModelsAvailable?: boolean;
   places?: "seeded" | "absent";
 
@@ -2863,13 +2862,6 @@ async function executeMockCommand(
       return rpcSuccess({ type: command.type });
     case "thread.input.edit":
       return rpcSuccess({ ...client.editWaitingInput(command), type: command.type });
-    case "automaticModels.set":
-      client.automaticModelConfig = AutomaticModelConfigSchema.parse(command.config);
-      client.applyAutomaticEligibility();
-      return rpcSuccess({
-        type: command.type,
-        config: structuredClone(client.automaticModelConfig),
-      });
     case "execution.preferences.remember":
       return rpcSuccess(
         hostApi["commands.dispatch"].success.parse({
@@ -5218,70 +5210,51 @@ export class MockHostClient implements HostClient {
 
 function mockAutomaticModelsView(state: MockHostState): AutomaticModelsView {
   const snapshot = state.getSnapshot();
+  const excludedAccounts = excludedBackgroundAccounts(state.agentHomeSettings);
   const accounts = snapshot.harnesses.map((h) => {
     const env = snapshot.environments.find((e) => e.id === h.environmentId);
     return {
-      harnessInstanceId: h.id,
-      environmentId: h.environmentId,
+      environmentId: EnvironmentIdSchema.parse(h.environmentId),
+      harnessInstanceId: HarnessInstanceIdSchema.parse(h.id),
       harnessRevision: h.runtimeRevision,
-      driverKind: h.driverKind,
+      driverKind: HarnessIdSchema.parse(h.driverKind),
       sourceId: h.sourceId,
       isDefault: h.isDefault,
       enabled: h.enabled,
       removed: false,
       available: state.automaticModels !== "none" && !!env?.connected,
       catalog: env?.harnessCatalogs.find((c) => c.harnessInstanceId === h.id) ?? null,
-      eligible: !state.automaticModelConfig.excludedAccounts.includes(
-        h.id as AutomaticModelConfig["excludedAccounts"][number],
-      ),
-      reason: state.automaticModelConfig.excludedAccounts.includes(
-        h.id as AutomaticModelConfig["excludedAccounts"][number],
-      )
-        ? "excluded"
-        : null,
+      usage: [],
       accountDisplayName: h.name,
       computerDisplayName: env?.name ?? "Computer",
     };
   });
-  const parsed = AutomaticModelsViewSchema.parse({
-    config: state.automaticModelConfig,
-    maintainedDefaults: automaticModelDefaults,
-    accounts: accounts.map((a) => ({ ...a, catalog: automaticModelCatalogView(a.catalog) })),
-    light: { label: "General preference", candidates: [], skipped: [] },
-    deep: { candidates: [], skipped: [] },
-  });
-  const preview = (role: AutomaticModelRole) => {
-    const result = resolveModelCandidates({
-      wants: automaticModelWants(state.automaticModelConfig, role),
-      accounts: parsed.accounts.map((a, index) => ({
-        ...a,
-        catalog: accounts[index]!.catalog,
-        usage: [],
-      })),
-      excludedAccounts: state.automaticModelConfig.excludedAccounts,
+  const inUse = (role: BackgroundModelRole) => {
+    const chosen = resolveModelCandidates({
+      wants: backgroundModelWants(state.agentHomeSettings, role),
+      accounts,
+      excludedAccounts,
       canRun: () => ({ ok: true }),
       now: Date.now(),
-    });
+    }).candidates[0];
+    if (!chosen) return null;
+    const account = accounts.find((a) => a.harnessInstanceId === chosen.harnessInstanceId)!;
+    const { modelId } = chosen.storedModelSelection;
     return {
-      candidates: result.candidates.map((c) => ({
-        ...c,
-        modelSelection: c.storedModelSelection,
-        accountDisplayName:
-          accounts.find((a) => a.harnessInstanceId === c.harnessInstanceId)?.accountDisplayName ??
-          "Account",
-        computerDisplayName: "Home Mac",
-        providerDisplayName: c.storedModelSelection.providerId,
-        modelDisplayName:
-          c.account.catalog?.models.find((m) => m.modelId === c.storedModelSelection.modelId)
-            ?.displayName ?? c.storedModelSelection.modelId,
-      })),
-      skipped: result.skipped,
+      harnessInstanceId: chosen.harnessInstanceId,
+      accountDisplayName: account.accountDisplayName,
+      computerDisplayName: account.computerDisplayName,
+      modelDisplayName:
+        account.catalog?.models.find((m) => m.modelId === modelId)?.displayName ?? modelId,
+      usageLimited: false,
     };
   };
   return AutomaticModelsViewSchema.parse({
-    ...parsed,
-    light: { ...preview("light"), label: "General preference" },
-    deep: preview("deep"),
+    file: state.agentHomeSettingsFile,
+    excludedAccounts,
+    naming: inUse("naming"),
+    light: inUse("light"),
+    deep: inUse("deep"),
   });
 }
 interface MockPlugin {
@@ -5364,8 +5337,9 @@ class MockHostState {
     this.update({ ...this.snapshot, appTabs });
   }
 
-  automaticModelConfig: AutomaticModelConfig = structuredClone(emptyAutomaticModelConfig);
-  readonly automaticModels: "seeded" | "edited" | "excluded" | "none";
+  agentHomeSettings: AgentHomeSettings = {};
+  agentHomeSettingsFile: AgentHomeSettingsFileView = { status: "missing" };
+  readonly automaticModels: NonNullable<MockHostClientOptions["automaticModels"]>;
   private connections: import("@opensteer/protocol").AgentConnection[];
   private pendingConnectionConsent: import("@opensteer/protocol").AgentConnectionConsent | null;
   private connectionDecision: { requestId: string; fingerprint: string } | null = null;
@@ -6219,14 +6193,34 @@ class MockHostState {
 
   constructor(options: MockHostClientOptions = {}) {
     this.automaticModels = options.automaticModels ?? "seeded";
-    if (this.automaticModels === "edited")
-      this.automaticModelConfig.roles.deep = [
-        { engine: HarnessIdSchema.parse("codex"), model: ModelIdSchema.parse("gpt-6.1-sol") },
-      ];
-    if (this.automaticModels === "excluded")
-      this.automaticModelConfig.excludedAccounts = [
-        HarnessInstanceIdSchema.parse(mockClaudeHarnessInstanceId),
-      ];
+    if (this.automaticModels === "edited") {
+      this.agentHomeSettings = {
+        backgroundModels: {
+          deep: [
+            { engine: HarnessIdSchema.parse("codex"), model: ModelIdSchema.parse("gpt-6.1-sol") },
+          ],
+        },
+      };
+      this.agentHomeSettingsFile = { status: "valid" };
+    }
+    if (this.automaticModels === "excluded") {
+      this.agentHomeSettings = {
+        backgroundModels: {
+          excludedAccounts: [HarnessInstanceIdSchema.parse(mockClaudeHarnessInstanceId)],
+        },
+      };
+      this.agentHomeSettingsFile = { status: "valid" };
+    }
+    if (this.automaticModels === "invalid")
+      this.agentHomeSettingsFile = {
+        status: "invalid",
+        error: {
+          path: "/Users/you/Opensteer/settings.json",
+          line: 4,
+          column: 3,
+          message: "Expected double-quoted property name",
+        },
+      };
     this.connections = [...(options.connections ?? [])];
     this.pendingConnectionConsent = options.connectionConsent ?? null;
     for (const p of options.specialistPlugins ?? []) {
@@ -6351,7 +6345,7 @@ class MockHostState {
           name: worker.title,
           program: {
             language: "typescript",
-            toolContractVersion: 3,
+            toolContractVersion: 4,
             source: "export default async () => null",
           },
           source: {
@@ -11401,7 +11395,7 @@ class MockHostState {
         {
           text: [
             `${heading}: ${worker.title}`,
-            `Task Thread: ${worker.id} · Assignment: ${assignment.id}`,
+            `Task: ${worker.id} · Delegation: ${assignment.id}`,
             ...(assignment.resultText ? ["", assignment.resultText] : []),
           ].join("\n"),
           type: "text",
@@ -12358,7 +12352,7 @@ class MockHostState {
 
   /** What a bootstrap tells this viewer about each account, as the Host computes it. */
   applyAutomaticEligibility(): void {
-    const { excludedAccounts } = this.automaticModelConfig;
+    const excludedAccounts = excludedBackgroundAccounts(this.agentHomeSettings);
     this.snapshot = {
       ...this.snapshot,
       harnesses: this.snapshot.harnesses.map(({ automaticEligible: _stale, ...harness }) =>
@@ -12821,7 +12815,7 @@ function mockComputerUseThreadTranscript(
     runId,
     createdAt: "2026-08-06T23:28:10.500Z",
     completedAt: state === "settled" ? "2026-08-06T23:29:32.200Z" : null,
-    tool: { name: "computer", namespace: "opensteer.integrations" },
+    tool: { name: "computer_use", namespace: "opensteer" },
     arguments: { code: "const slack = await app('Slack'); await slack.window().observe();" },
     integration: null,
     isError: false,

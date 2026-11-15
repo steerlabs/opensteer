@@ -25,10 +25,10 @@ const AppSchema = z.object({
   callable: z.boolean().optional(),
   pending: z.string().optional(),
   inUse: z.boolean().optional(),
-  heldByThread: z.string().optional(),
+  heldByTask: z.string().optional(),
 });
 const ComputerSchema = z.object({
-  runnerId: z.string(),
+  computerId: z.string(),
   name: z.string(),
   state: z.string(),
   appApproval: z.string().optional(),
@@ -37,7 +37,7 @@ const ComputerSchema = z.object({
   apps: z.array(AppSchema).optional(),
 });
 const PhoneSchema = z.object({
-  runnerId: z.string(),
+  computerId: z.string(),
   name: z.string(),
   state: z.string(),
   approval: z.string(),
@@ -45,7 +45,7 @@ const PhoneSchema = z.object({
   inUse: z.boolean().optional(),
   callable: z.boolean(),
   computerToolEnabled: z.boolean(),
-  heldByThread: z.string().optional(),
+  heldByTask: z.string().optional(),
 });
 export const IntegrationSearchOutputSchema = z.object({
   guidance: z
@@ -85,7 +85,6 @@ export const IntegrationSearchOutputSchema = z.object({
       }),
     )
     .optional(),
-  operationNextOffset: z.number().nullable().optional(),
   operationTotal: z.number().optional(),
   results: z
     .array(
@@ -129,7 +128,7 @@ export const IntegrationSearchOutputSchema = z.object({
   computer: ComputerSchema.optional(),
   apps: z.array(AppSchema).optional(),
   total: z.number(),
-  nextOffset: z.number().nullable(),
+  nextCursor: z.string().nullable(),
 });
 /** A bounded page of rendered text; models read it as is, so it is never wrapped in JSON. */
 export const IntegrationDescribeOutputSchema = z.string();

@@ -122,6 +122,6 @@ describe("what the agent reads", () => {
     });
     expect(message).toContain(site);
     expect(message).toContain("tab-fixture");
-    expect(message).toContain("use_saved_login again");
+    expect(message).toContain("saved_login_request again");
   });
 });

@@ -232,7 +232,7 @@ export async function readThreadInputQueue(
   if (!thread)
     throw new OpensteerError({
       code: "not_found",
-      message: "Thread not found",
+      message: "Task not found",
     });
   const runs = await transaction
     .selectFrom("runs")
@@ -1118,7 +1118,7 @@ export async function moveThreadInputInTransaction(
   if (!observed)
     throw new OpensteerError({
       code: "not_found",
-      message: "Thread not found",
+      message: "Task not found",
     });
   await lockInputQueueProjection(transaction, request.threadId);
   const thread = await transaction
@@ -1160,7 +1160,7 @@ export async function moveThreadInputInTransaction(
   if (thread.status === "archived")
     throw new OpensteerError({
       code: "conflict",
-      message: "Archived threads cannot run",
+      message: "Archived tasks cannot run",
     });
   const waiting = (await waitingThreadInputs(transaction, thread.id)).filter(
     (row) => row.state === "pending",
@@ -1254,7 +1254,7 @@ export async function cancelThreadInputInTransaction(
   if (!observed)
     throw new OpensteerError({
       code: "not_found",
-      message: "Thread not found",
+      message: "Task not found",
     });
   await lockInputQueueProjection(transaction, request.threadId);
   const thread = await transaction
@@ -1297,7 +1297,7 @@ export async function cancelThreadInputInTransaction(
   if (thread.status === "archived")
     throw new OpensteerError({
       code: "conflict",
-      message: "Archived threads cannot run",
+      message: "Archived tasks cannot run",
     });
   const reserved = await transaction
     .selectFrom("runs")
@@ -1377,7 +1377,7 @@ export async function claimRunInputBatch(
   if (thread.inputQueuePaused)
     throw new OpensteerError({
       code: "conflict",
-      message: "The Thread work queue is paused",
+      message: "The task queue is paused",
     });
   if (run.reportContext !== null) return [];
   const seed = await transaction
@@ -2361,13 +2361,13 @@ export async function assertThreadInputCapacity(
   if (safeCount(pendingUsage.count) >= maxEntries) {
     throw new OpensteerError({
       code: "resource_exhausted",
-      message: `A Thread can hold at most ${maxEntries} undelivered ${policy === "report" ? "reports" : "work inputs"}`,
+      message: `A task can hold at most ${maxEntries} undelivered ${policy === "report" ? "reports" : "work inputs"}`,
     });
   }
   if (safeCount(pendingUsage.bytes) + contentBytes > maxBytes) {
     throw new OpensteerError({
       code: "resource_exhausted",
-      message: "The Thread inbox reached its durable byte limit",
+      message: "The task inbox reached its durable byte limit",
     });
   }
 }
@@ -2465,7 +2465,7 @@ export function deliverTaskQuestionNotice(
       content: [
         {
           type: "text",
-          text: `Task ${JSON.stringify(source.workerTitle)} (${source.request.originatingThreadId}) asked ${JSON.stringify(requestTitleText(source.request.presentation))}. Read it with pending_request action read, requestId ${requestId}. Answer with action respond when the answer follows from the task or the person's instructions, or leave it for the person.`,
+          text: `Task ${JSON.stringify(source.workerTitle)} (${source.request.originatingThreadId}) asked ${JSON.stringify(requestTitleText(source.request.presentation))}. Read it with opensteer_request_read, requestId ${requestId}. Answer with opensteer_request_answer when the answer follows from the task or the person's instructions, or leave it for the person.`,
         },
       ],
     };
@@ -2801,7 +2801,7 @@ export async function enqueueThreadInputInTransaction(
   if (request.requireUnassigned && activeAssignment)
     throw new OpensteerError({
       code: "conflict",
-      message: "Thread already has an open Assignment",
+      message: "Task already has an open delegation",
     });
   const sourceRunId =
     request.source.kind === "agent"
@@ -2850,7 +2850,7 @@ export async function enqueueThreadInputInTransaction(
     if (sourceAssignment.status !== "open") {
       throw new OpensteerError({
         code: "conflict",
-        message: "Source Assignment is terminal",
+        message: "Source delegation is finished",
       });
     }
   }
@@ -2861,7 +2861,7 @@ export async function enqueueThreadInputInTransaction(
   ) {
     throw new OpensteerError({
       code: "conflict",
-      message: "Continuation belongs to an older Assignment",
+      message: "Continuation belongs to an older delegation",
     });
   }
   // Input into a Thread with open work joins that work; otherwise it is unbound.
@@ -3574,7 +3574,7 @@ async function resolveThreadInputFacts(
     if (!origin || origin.createdBy !== input.requestedBy || origin.status !== "running") {
       throw new OpensteerError({
         code: "forbidden",
-        message: "Trigger source is invalid",
+        message: "Automation source is invalid",
       });
     }
     if (origin.systemRole && origin.anchorThreadId === input.targetThread.id) {
@@ -3807,7 +3807,7 @@ export async function ensureSelectedProviderSession(
     if (selected.harnessInstanceId !== thread.harnessInstanceId) {
       throw new OpensteerError({
         code: "conflict",
-        message: "Selected provider session does not match the Thread's AI engine",
+        message: "Selected provider session does not match the task's AI account",
       });
     }
     if (
@@ -3964,7 +3964,7 @@ export async function ensureQueuedRun(
         };
       throw new OpensteerError({
         code: "conflict",
-        message: "This Thread has no selected provider session; choose an AI engine to continue",
+        message: "This task has no selected provider session; choose an AI account to continue",
       });
     }
   }
@@ -4554,9 +4554,9 @@ function assignmentReturnContent(
   maxBytes = assignmentReturnMaxBytes,
 ) {
   const entries = members.map((member) => ({
-    header: `Task ${member.status}: ${member.title}\nTask Thread: ${member.childThreadId} · Assignment: ${member.id}`,
+    header: `Task ${member.status}: ${member.title}\nTask: ${member.childThreadId} · Delegation: ${member.id}`,
     result: member.status === "cancelled" ? "" : (member.resultText ?? ""),
-    pointer: `\n\n[Result shortened. Read the rest with task_status (assignmentId: ${member.id}) or thread_read (threadId: ${member.childThreadId}).]`,
+    pointer: `\n\n[Result shortened. Read the rest with opensteer_delegation_status (delegationId: ${member.id}) or opensteer_task_read (taskId: ${member.childThreadId}).]`,
   }));
   const content = (results: readonly string[]) => [
     {
@@ -4978,7 +4978,7 @@ async function assignmentResultReader(
   if (!locked)
     throw new OpensteerError({
       code: "forbidden",
-      message: "Assignment is unavailable",
+      message: "Delegation is unavailable",
     });
   const { assignment } = locked;
   const authority = input.authority;
@@ -4995,7 +4995,7 @@ async function assignmentResultReader(
   )
     throw new OpensteerError({
       code: "forbidden",
-      message: "Assignment is unavailable",
+      message: "Delegation is unavailable",
     });
   const requester = await transaction
     .selectFrom("runs")
@@ -5593,7 +5593,7 @@ export async function delegateThreadInTransaction(
   if (input.threadId && !observedTarget) {
     throw new OpensteerError({
       code: "not_found",
-      message: "Target work Thread not found",
+      message: "Target task not found",
     });
   }
   if (
@@ -5608,7 +5608,7 @@ export async function delegateThreadInTransaction(
   ) {
     throw new OpensteerError({
       code: "conflict",
-      message: "Target work Thread is not available for this Assignment",
+      message: "Target task is not available for this delegation",
     });
   }
   let parentRunReplyTarget: ReplyTarget | null = null;
@@ -5669,7 +5669,7 @@ export async function delegateThreadInTransaction(
     ) {
       throw new OpensteerError({
         code: "forbidden",
-        message: "Parent Trigger is invalid",
+        message: "Parent automation is invalid",
       });
     }
     parentTriggerId = occurrence.triggerId;
@@ -5728,7 +5728,7 @@ export async function delegateThreadInTransaction(
   if (!parent) {
     throw new OpensteerError({
       code: "conflict",
-      message: "Parent Thread changed during delegation",
+      message: "Parent task changed during delegation",
     });
   }
   // The task's first input re-reads its Trigger under lock. Taking that lock
@@ -5800,7 +5800,7 @@ export async function delegateThreadInTransaction(
     if (parentAssignment.status !== "open") {
       throw new OpensteerError({
         code: "conflict",
-        message: "Parent Assignment is terminal",
+        message: "Parent delegation is finished",
       });
     }
   }
@@ -5849,13 +5849,13 @@ export async function delegateThreadInTransaction(
         details: {
           assignmentId: open.id,
         },
-        message: `Thread ${threadId} is still working on task ${open.id}. Send corrections with thread_send, or cancel that task with task_cancel before giving the Thread new work.`,
+        message: `Task ${threadId} is still working on delegation ${open.id}. Send corrections with opensteer_task_send, or cancel that delegation with opensteer_delegation_cancel before giving the task new work.`,
       });
     }
     if (busy || queuedInput) {
       throw new OpensteerError({
         code: "conflict",
-        message: "Target work Thread is still busy",
+        message: "Target task is still busy",
       });
     }
   }

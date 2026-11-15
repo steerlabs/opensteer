@@ -4930,11 +4930,11 @@ describe("BrowserService", () => {
     ).rejects.toMatchObject({
       code: "conflict",
       // The refusal names the candidates, because the agent's only way out of
-      // it is to call again with one of these environmentIds.
+      // it is to call again with one of these computers.
       message:
         "Choose which connected computer should run this browser: " +
-        `Computer ${first.runnerId} (environmentId ${environmentId}), ` +
-        `Computer ${second.runnerId} (environmentId ${environmentId}).`,
+        `Computer ${first.runnerId} (computerId ${first.runnerId}), ` +
+        `Computer ${second.runnerId} (computerId ${second.runnerId}).`,
     });
     expect(runtime.connectionCount()).toBe(0);
   });
@@ -4947,9 +4947,8 @@ describe("BrowserService", () => {
     const ownerId = createId("user");
 
     const runEnvironmentId = createId("environment");
-    const chosenEnvironmentId = createId("environment");
     const here = testRunner({ environmentIds: [runEnvironmentId] });
-    const there = testRunner({ environmentIds: [chosenEnvironmentId] });
+    const there = testRunner({ environmentIds: [createId("environment")] });
     const service = placementService({
       keys,
       ownerId,
@@ -4959,7 +4958,7 @@ describe("BrowserService", () => {
 
     const opened = await service.openAgentSession({
       agentBindingId: "run:chosen-machine",
-      chosenEnvironmentId,
+      chosenRunnerId: there.runnerId,
       environmentId: runEnvironmentId,
       fresh: true,
       ownerId,
@@ -4970,7 +4969,7 @@ describe("BrowserService", () => {
     // not the one already attached.
     const back = await service.openAgentSession({
       agentBindingId: "run:chosen-machine",
-      chosenEnvironmentId: runEnvironmentId,
+      chosenRunnerId: here.runnerId,
       environmentId: runEnvironmentId,
       fresh: true,
       ownerId,
@@ -4998,7 +4997,7 @@ describe("BrowserService", () => {
     await expect(
       service.openAgentSession({
         agentBindingId: "run:headless-machine",
-        chosenEnvironmentId: createId("environment"),
+        chosenRunnerId: createId("runner"),
         fresh: true,
         ownerId,
       }),
@@ -5006,14 +5005,14 @@ describe("BrowserService", () => {
       code: "bad_request",
       message:
         "That computer does not run a connected browser. These do: " +
-        `Computer ${withBrowser.runnerId} (environmentId ${browserEnvironmentId}).`,
+        `Computer ${withBrowser.runnerId} (computerId ${withBrowser.runnerId}).`,
     });
     expect(runtime.connectionCount()).toBe(0);
 
     await expect(
       service.openAgentSession({
         agentBindingId: "run:headless-machine",
-        chosenEnvironmentId: browserEnvironmentId,
+        chosenRunnerId: withBrowser.runnerId,
         ownerId,
         sessionId: createBrowserSessionId(),
       }),
@@ -5073,7 +5072,7 @@ describe("BrowserService", () => {
               ownerId,
 
               profileId: profile.id,
-              chosenEnvironmentId: environmentId,
+              chosenRunnerId: agent.runnerId,
             })
           : await service.openTab(ownerId, {
               type: "browser.tab.open",
@@ -5336,7 +5335,7 @@ describe("BrowserService", () => {
     expect(reused.session.id).toBe(initial.session.id);
     const profileOpen = await service.openAgentSession({
       agentBindingId: "run:profile-affinity",
-      chosenEnvironmentId: environmentId,
+      chosenRunnerId: bound.runnerId,
       environmentId,
       ownerId,
       profileId: profile.id,

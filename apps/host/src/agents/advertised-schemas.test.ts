@@ -15,7 +15,12 @@ it.each(["run", "program", "connection"] as const)(
     const specs = agentTools.filter(
       (t) =>
         t.callers.some((c) => c === kind) &&
-        !["team_read", "team_search", "team_post"].includes(t.name),
+        ![
+          "opensteer_team_file_download",
+          "opensteer_team_read",
+          "opensteer_team_search",
+          "opensteer_team_post",
+        ].includes(t.name),
     );
     expect(listed.map((t) => t.name)).toEqual(specs.map((t) => t.name));
     for (const spec of specs) {

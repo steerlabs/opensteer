@@ -941,8 +941,8 @@ it("keeps person and Guest placement while Browser is off and continues a pendin
       if (args[1] === "device-access") stopped.resolve();
       return result;
     });
-    const held = callMcpTool(home.origin, run.toolsToken, "device_access_request", {
-      machineId: browser.runnerId,
+    const held = callMcpTool(home.origin, run.toolsToken, "computer_access_request", {
+      computerId: browser.runnerId,
       access: "browser",
       reason: "Use browser",
     });

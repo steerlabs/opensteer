@@ -10,12 +10,12 @@ export function memoryPassProgram(role: TriggerSystemRole): TriggerProgram {
   const reference = role === "memory-light" ? "light-pass" : "nightly";
   return {
     language: "typescript",
-    toolContractVersion: 3,
+    toolContractVersion: 4,
     source: `export default async function ({ event, opensteer }) {
   try {
-    await opensteer.callTool("thread_send", {
+    await opensteer.callTool("opensteer_task_send", {
       delivery: "queue",
-      threadId: event.trigger.anchorThreadId,
+      taskId: event.trigger.anchorThreadId,
       message: ${JSON.stringify(`${label} pass due (`)} + (event.source.scheduledFor ?? event.receivedAt) + ${JSON.stringify(`). Load opensteer:memory and follow its ${reference} reference.`)},
     });
   } catch (error) {

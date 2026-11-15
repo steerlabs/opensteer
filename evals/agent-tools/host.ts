@@ -79,68 +79,80 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     title: "Eval",
     updatedAt: new Date().toISOString(),
   });
-  // Trigger actions expand and validate in their production handler before the
+  // Automation tools expand and validate in their production handler before the
   // fixture replaces the backend.
   const triggers = new TriggerToolHandlers({ manage: async () => unavailable() });
-  const browserHandlers = {
-    browser_tab_read: async () => unavailable(),
-    browser_tab_write: async () => unavailable(),
-    browser_session_list: async () => unavailable(),
-    browser_session_open: async () => unavailable(),
-    browser_session_close: async () => unavailable(),
-  };
   const handlers: AgentToolHandlers = {
-    settings_read: async () => unavailable(),
-    settings_write: async () => unavailable(),
+    opensteer_ai_account_list: async () => unavailable(),
+    opensteer_ai_account_update: async () => unavailable(),
+    opensteer_defaults_read: async () => unavailable(),
+    opensteer_defaults_update: async () => unavailable(),
     computer_list: async () => unavailable(),
-    computer_write: async () => unavailable(),
-    integration_manage: async () => unavailable(),
-    channel_manage: async () => unavailable(),
-    plugin_manage: async () => unavailable(),
-    browser_profile_write: async () => unavailable(),
-    app_publish: async () => unavailable(),
-    app_list: async () => unavailable(),
-    app_fetch: async () => unavailable(),
-    plugin_install: async () => unavailable(),
-    orchestrator_capabilities: async () => unavailable(),
-    environment_list: async () => unavailable(),
-    thread_read: async () => unavailable(),
-    thread_list: async () => unavailable(),
-    delegate_task: async () => unavailable(),
-    thread_send: async () => unavailable(),
-    thread_interrupt: async () => unavailable(),
-    thread_update: async () => unavailable(),
-    thread_wait: async () => unavailable(),
-    thread_configure: async () => unavailable(),
-    thread_queue: async () => unavailable(),
-    task_status: async () => unavailable(),
-    task_cancel: async () => unavailable(),
-    person_message: async () => unavailable(),
+    computer_update: async () => unavailable(),
+    computer_remove: async () => unavailable(),
+    computer_use: async () => unavailable(),
+    computer_access_request: async () => unavailable(),
+    integration_list: async () => unavailable(),
+    integration_remove: async () => unavailable(),
+    opensteer_messaging_bridge_list: async () => unavailable(),
+    opensteer_messaging_bridge_update: async () => unavailable(),
+    opensteer_messaging_bridge_remove: async () => unavailable(),
+    opensteer_plugin_list: async () => unavailable(),
+    opensteer_plugin_install: async () => unavailable(),
+    opensteer_plugin_update: async () => unavailable(),
+    opensteer_plugin_remove: async () => unavailable(),
+    browser_profile_update: async () => unavailable(),
+    browser_profile_remove: async () => unavailable(),
+    opensteer_app_publish: async () => unavailable(),
+    opensteer_app_list: async () => unavailable(),
+    opensteer_app_call: async () => unavailable(),
+    opensteer_task_list: async () => unavailable(),
+    opensteer_task_read: async () => unavailable(),
+    opensteer_task_create: async () => unavailable(),
+    opensteer_task_delegate: async () => unavailable(),
+    opensteer_task_send: async () => unavailable(),
+    opensteer_task_wait: async () => unavailable(),
+    opensteer_task_interrupt: async () => unavailable(),
+    opensteer_task_resume: async () => unavailable(),
+    opensteer_task_queue: async () => unavailable(),
+    opensteer_task_update: async () => unavailable(),
+    opensteer_task_configure: async () => unavailable(),
+    opensteer_delegation_status: async () => unavailable(),
+    opensteer_delegation_wait: async () => unavailable(),
+    opensteer_delegation_cancel: async () => unavailable(),
+    opensteer_subagent_read: async () => unavailable(),
+    opensteer_subagent_stop: async () => unavailable(),
+    person_notify: async () => unavailable(),
     person_show: async () => unavailable(),
-    pending_request: async () => unavailable(),
-    request_withdraw: async () => unavailable(),
+    opensteer_request_list: async () => unavailable(),
+    opensteer_request_read: async () => unavailable(),
+    opensteer_request_answer: async () => unavailable(),
+    opensteer_request_withdraw: async () => unavailable(),
     browser_profile_list: async () => unavailable(),
-    use_saved_login: async () => unavailable(),
-    copy_chrome_cookies: async () => unavailable(),
-    use_card: async () => unavailable(),
+    saved_login_request: async () => unavailable(),
+    chrome_cookies_request: async () => unavailable(),
+    card_request: async () => unavailable(),
     browser_profile_request: async () => unavailable(),
-    device_access_request: async () => unavailable(),
-    machine_full_disk_access_request: async () => unavailable(),
-    ...browserHandlers,
-    trigger_read: (call) => triggers.trigger_read(call),
-    trigger_write: (call) => triggers.trigger_write(call),
+    opensteer_automation_list: (call) => triggers.read(call),
+    opensteer_automation_read: (call) => triggers.read(call),
+    opensteer_automation_create: (call) => triggers.write(call),
+    opensteer_automation_update: (call) => triggers.write(call),
+    opensteer_automation_control: (call) => triggers.write(call),
     integration_search: async () => unavailable(),
     integration_describe: async () => unavailable(),
     integration_call: async () => unavailable(),
-    computer: async () => unavailable(),
     integration_request: async () => unavailable(),
-    integration_propose: async () => unavailable(),
-    team_read: async () => unavailable(),
-    team_search: async () => unavailable(),
-    team_post: async () => unavailable(),
-    knowledge_topics: async () => unavailable(),
-    knowledge_read: async () => unavailable(),
-    knowledge_write: async () => unavailable(),
+    app_access_request: async () => unavailable(),
+    custom_integration_request: async () => unavailable(),
+    opensteer_team_read: async () => unavailable(),
+    opensteer_team_file_download: async () => unavailable(),
+    opensteer_team_search: async () => unavailable(),
+    opensteer_team_post: async () => unavailable(),
+    opensteer_knowledge_topic_list: async () => unavailable(),
+    opensteer_knowledge_search: async () => unavailable(),
+    opensteer_knowledge_read: async () => unavailable(),
+    opensteer_knowledge_save: async () => unavailable(),
+    opensteer_knowledge_remove: async () => unavailable(),
   };
   const agent = new OpensteerMcpService({
     teamsAvailable: async () => testCase.teamBound || testCase.knowledge,
@@ -179,8 +191,8 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
   const clients: Client[] = [];
   const activeCalls = new Map<string, number>();
   const mockOffsets = new Map<string, number>();
-  const triggerWrites = new Map<string, unknown>();
-  const triggerSources = new Map<string, unknown>();
+  const automationWrites = new Map<string, unknown>();
+  const automationSources = new Map<string, unknown>();
   const endpoints = new Map<
     string,
     {
@@ -327,24 +339,31 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
                 retryable: false,
               });
             }
-            // Keep successful Trigger mutations readable; fixed fixture timestamps otherwise
+            // Keep successful automation changes readable; fixed fixture timestamps otherwise
             // contradict the real Run clock and provoke spurious repair attempts.
-            if (name === "trigger_write" && isRecord(result) && typeof result.id === "string") {
-              const triggerId = result.id;
+            if (
+              automationWriteTools.has(name) &&
+              isRecord(result) &&
+              isRecord(result.automation) &&
+              typeof result.automation.id === "string"
+            ) {
+              const automationId = result.automation.id;
+              let automation = result.automation;
               if (
-                args.action === "create" &&
+                name === "opensteer_automation_create" &&
                 isRecord(args.source) &&
                 typeof args.source.at === "string"
               )
-                result = { ...result, nextFireAt: new Date(args.source.at).toISOString() };
-              triggerWrites.set(triggerId, result);
+                automation = { ...automation, nextFireAt: new Date(args.source.at).toISOString() };
+              result = { ...result, automation };
+              automationWrites.set(automationId, automation);
               if (
-                args.action === "update" &&
+                name === "opensteer_automation_update" &&
                 isRecord(args.source) &&
                 args.source.kind === "schedule" &&
                 typeof args.source.cron === "string"
               )
-                triggerSources.set(triggerId, {
+                automationSources.set(automationId, {
                   kind: "schedule",
                   schedule: {
                     kind: "cron",
@@ -353,26 +372,36 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
                   },
                 });
             }
-            if (name === "trigger_read" && isRecord(result)) {
-              if (isRecord(result.trigger) && typeof result.trigger.id === "string") {
-                const triggerId = result.trigger.id;
+            if (name === "opensteer_automation_read" && isRecord(result)) {
+              if (isRecord(result.automation) && typeof result.automation.id === "string") {
+                const automationId = result.automation.id;
                 result = {
                   ...result,
-                  trigger: triggerWrites.get(triggerId) ?? result.trigger,
-                  ...(isRecord(result.revision) && triggerSources.has(triggerId)
-                    ? { revision: { ...result.revision, source: triggerSources.get(triggerId) } }
+                  automation: automationWrites.get(automationId) ?? result.automation,
+                  ...(isRecord(result.revision) && automationSources.has(automationId)
+                    ? {
+                        revision: {
+                          ...result.revision,
+                          source: automationSources.get(automationId),
+                        },
+                      }
                     : {}),
                 };
-              } else if (Array.isArray(result.triggers))
-                result = {
-                  ...result,
-                  triggers: result.triggers.map((trigger) =>
-                    isRecord(trigger) && typeof trigger.id === "string"
-                      ? (triggerWrites.get(trigger.id) ?? trigger)
-                      : trigger,
-                  ),
-                };
+              }
             }
+            if (
+              name === "opensteer_automation_list" &&
+              isRecord(result) &&
+              Array.isArray(result.automations)
+            )
+              result = {
+                ...result,
+                automations: result.automations.map((automation) =>
+                  isRecord(automation) && typeof automation.id === "string"
+                    ? (automationWrites.get(automation.id) ?? automation)
+                    : automation,
+                ),
+              };
             calls[index] = { at: calls[index]?.at ?? Date.now(), tool: name, args, valid, result };
             if (name === "integration_describe" || !isRecord(result)) {
               return { content: [{ type: "text", text: JSON.stringify(result) }] };
@@ -425,20 +454,24 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
   }
 }
 
+const automationWriteTools = new Set([
+  "opensteer_automation_create",
+  "opensteer_automation_update",
+  "opensteer_automation_control",
+]);
+
 function defaultResult(name: string): unknown {
   switch (name) {
     case "integration_search":
       return { operations: [], integrations: [], catalog: [], total: 0 };
-    case "thread_list":
-      return { threads: [], hasMore: false, nextBefore: null };
-    case "pending_request":
+    case "opensteer_task_list":
+      return { tasks: [], nextCursor: null };
+    case "opensteer_request_list":
       return { requests: [] };
     case "browser_profile_list":
-      return { profiles: [] };
-    case "browser_session_list":
-      return { sessions: [] };
-    case "trigger_read":
-      return { triggers: [] };
+      return { profiles: [], sites: [] };
+    case "opensteer_automation_list":
+      return { automations: [] };
     default:
       return {
         status: "unavailable",

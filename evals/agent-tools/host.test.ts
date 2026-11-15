@@ -60,7 +60,7 @@ it("serves the production inventory and validates mocked calls through real MCP 
       turns: ["hi"],
       mocks: {
         integration_search: { $responses: [{ marker: "first" }, { marker: "second" }] },
-        trigger_read: {
+        opensteer_automation_list: {
           $byArgs: [{ args: { systemRole: "memory-light" }, result: { marker: "light" } }],
         },
       },
@@ -79,7 +79,9 @@ it("serves the production inventory and validates mocked calls through real MCP 
         }) as unknown as Transport,
       );
       expect((await client.listTools()).tools).toEqual(host.endpoints.get(name)?.tools);
-      expect(host.endpoints.get(name)?.tools.some(({ name }) => name === "computer")).toBe(true);
+      expect(host.endpoints.get(name)?.tools.some(({ name }) => name === "computer_use")).toBe(
+        true,
+      );
       expect(host.endpoints.get(name)?.tools.some(({ name }) => name === "integration_call")).toBe(
         true,
       );
@@ -102,9 +104,11 @@ it("serves the production inventory and validates mocked calls through real MCP 
     }
     expect(host.endpoints.size).toBe(1);
     const byArgs = async (args: Record<string, unknown>) =>
-      JSON.stringify(await clients[0]!.callTool({ name: "trigger_read", arguments: args }));
-    expect(await byArgs({ action: "list", systemRole: "memory-light" })).toContain("light");
-    expect(await byArgs({ action: "list" })).toContain("No case mock matches these arguments");
+      JSON.stringify(
+        await clients[0]!.callTool({ name: "opensteer_automation_list", arguments: args }),
+      );
+    expect(await byArgs({ systemRole: "memory-light" })).toContain("light");
+    expect(await byArgs({})).toContain("No case mock matches these arguments");
     expect(host.calls.map((call) => call.valid)).toEqual([true, false, true, true, true]);
     const out = await mkdtemp(join(tmpdir(), "opensteer-eval-mcp-evidence-"));
     await writeFile(
@@ -152,7 +156,7 @@ it("validates prompt overhaul case inputs and mocked positive calls with product
             }) as unknown as Transport,
           );
           const args =
-            required.tool === "computer"
+            required.tool === "computer_use"
               ? { code: 'return await app("Notes")' }
               : required.tool === "integration_call"
                 ? { ...required.args, arguments: {} }
@@ -162,7 +166,7 @@ it("validates prompt overhaul case inputs and mocked positive calls with product
           await client.callTool({
             name: required.tool,
             arguments:
-              required.tool === "use_saved_login" || required.tool === "copy_chrome_cookies"
+              required.tool === "saved_login_request" || required.tool === "chrome_cookies_request"
                 ? { ...args, reason: "Check the assigned account" }
                 : args,
           });
@@ -190,7 +194,7 @@ it("validates the new surface cases with each caller's production inventory", as
         }) as unknown as Transport,
       );
       const names = (await client.listTools()).tools.map((t) => t.name);
-      expect(names).toContain("thread_wait");
+      expect(names).toContain("opensteer_task_wait");
       expect(!!client.getInstructions()).toBe(c.caller === "connection");
       for (const required of c.expect.calls) {
         expect(names, c.id).toContain(required.tool);
@@ -198,19 +202,21 @@ it("validates the new surface cases with each caller's production inventory", as
           name: required.tool,
           arguments: {
             ...required.args,
-            ...(["integration_request", "use_saved_login", "copy_chrome_cookies"].includes(
+            ...(["integration_request", "saved_login_request", "chrome_cookies_request"].includes(
               required.tool,
             )
               ? { reason: "Complete the account check" }
               : {}),
-            ...(required.tool === "delegate_task" ? { task: "Compare vendors" } : {}),
+            ...(["opensteer_task_delegate", "opensteer_task_create"].includes(required.tool)
+              ? { message: "Compare vendors" }
+              : {}),
           },
         });
         expect(host.calls.at(-1)?.valid, `${c.id}: ${required.tool}`).toBe(true);
       }
       if (c.caller === "connection") {
         const result = await client.callTool({
-          name: "use_saved_login",
+          name: "saved_login_request",
           arguments: { site: "example.com", reason: "Check account" },
         });
         expect(result.isError).toBe(true);
@@ -234,7 +240,11 @@ it("preserves production action validation before consuming mocks", async () => 
       purpose: "task",
       turns: ["hi"],
       expect: {},
-      mocks: { trigger_write: { marker: "admitted" }, trigger_read: { marker: "admitted" } },
+      mocks: {
+        opensteer_automation_create: { marker: "admitted" },
+        opensteer_automation_control: { marker: "admitted" },
+        opensteer_automation_read: { marker: "admitted" },
+      },
     }),
   )[0]!;
   const host = await startFakeHost(testCase);
@@ -246,19 +256,23 @@ it("preserves production action validation before consuming mocks", async () => 
       }) as unknown as Transport,
     );
     for (const [name, args] of [
-      ["trigger_write", { action: "create" }],
-      ["trigger_write", { action: "set_status", status: "paused" }],
+      ["opensteer_automation_create", {}],
+      ["opensteer_automation_control", { action: "pause" }],
       [
-        "trigger_write",
-        { action: "run", triggerId: "trg_00000000-0000-4000-8000-000000000011", name: "stray" },
-      ],
-      ["trigger_read", { action: "get" }],
-      [
-        "delegate_task",
+        "opensteer_automation_control",
         {
-          task: "Two destinations",
-          harnessInstanceId: "hin_00000000-0000-4000-8000-000000000001",
-          threadId: "thr_00000000-0000-4000-8000-000000000001",
+          action: "run_now",
+          automationId: "trg_00000000-0000-4000-8000-000000000011",
+          name: "stray",
+        },
+      ],
+      ["opensteer_automation_read", {}],
+      [
+        "opensteer_task_delegate",
+        {
+          message: "Two destinations",
+          aiAccountId: "hin_00000000-0000-4000-8000-000000000001",
+          taskId: "thr_00000000-0000-4000-8000-000000000001",
         },
       ],
     ] as const) {
@@ -268,15 +282,14 @@ it("preserves production action validation before consuming mocks", async () => 
       expect(host.calls.at(-1)?.valid).toBe(false);
     }
     const result = await client.callTool({
-      name: "trigger_write",
+      name: "opensteer_automation_create",
       arguments: {
-        action: "create",
-        anchorThreadId: "thr_00000000-0000-4000-8000-000000000011",
+        taskId: "thr_00000000-0000-4000-8000-000000000011",
         name: "Light memory pass",
         source: { kind: "schedule", cron: "*/30 8-22 * * *", timezone: "America/New_York" },
         program: {
           language: "javascript",
-          toolContractVersion: 3,
+          toolContractVersion: 4,
           source: "export default async function () {}",
         },
       },
@@ -322,12 +335,12 @@ it("retains ingress file failures even if the agent recreates memory before late
         requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
       }) as unknown as Transport,
     );
-    const pause = c.expect.calls.find((call) => call.tool === "trigger_write")!;
+    const pause = c.expect.calls.find((call) => call.tool === "opensteer_automation_control")!;
     await client.callTool({ name: pause.tool, arguments: pause.args });
     expect(host.boundaryChecks.some((check) => !check.pass)).toBe(true);
     await mkdir(join(workspace, "memory"));
     await client.callTool({ name: pause.tool, arguments: pause.args });
-    expect(host.calls.at(-1)?.result).toMatchObject({ status: "paused" });
+    expect(host.calls.at(-1)?.result).toMatchObject({ automation: { status: "paused" } });
     expect(host.boundaryChecks.some((check) => !check.pass)).toBe(true);
   } finally {
     await client.close();
@@ -336,7 +349,7 @@ it("retains ingress file failures even if the agent recreates memory before late
   }
 });
 
-it("reads back successful Trigger writes and the requested one-shot time", async () => {
+it("reads back successful automation changes and the requested one-shot time", async () => {
   const c = parseCases(
     await readFile(new URL("./cases/memory.ndjson", import.meta.url), "utf8"),
   ).find((c) => c.id === "memory-stop-while-running")!;
@@ -349,36 +362,35 @@ it("reads back successful Trigger writes and the requested one-shot time", async
       }) as unknown as Transport,
     );
     const pause = c.expect.calls.find(
-      (call) => call.tool === "trigger_write" && call.args.status === "paused",
+      (call) => call.tool === "opensteer_automation_control" && call.args.action === "pause",
     )!;
     await client.callTool({ name: pause.tool, arguments: pause.args });
     await client.callTool({
-      name: "trigger_read",
-      arguments: { action: "get", triggerId: pause.args.triggerId },
+      name: "opensteer_automation_read",
+      arguments: { automationId: pause.args.automationId },
     });
     expect(host.calls.at(-1)?.result).toMatchObject({
-      trigger: { status: "paused", nextFireAt: null },
+      automation: { status: "paused", nextFireAt: null },
     });
     await client.callTool({
-      name: "trigger_write",
+      name: "opensteer_automation_create",
       arguments: {
-        action: "create",
         name: "Reminder: finish deleting memory",
         source: { kind: "schedule", at: "2027-01-01T09:05:00-05:00" },
         program: {
           language: "typescript",
-          toolContractVersion: 3,
+          toolContractVersion: 4,
           source: "export default async function () {}",
         },
       },
     });
-    const created = host.calls.at(-1)?.result;
-    expect(created).toMatchObject({ nextFireAt: "2027-01-01T14:05:00.000Z" });
+    const created = host.calls.at(-1)?.result as { automation: unknown };
+    expect(created).toMatchObject({ automation: { nextFireAt: "2027-01-01T14:05:00.000Z" } });
     await client.callTool({
-      name: "trigger_read",
-      arguments: { action: "get", triggerId: "trg_00000000-0000-4000-8000-000000000099" },
+      name: "opensteer_automation_read",
+      arguments: { automationId: "trg_00000000-0000-4000-8000-000000000099" },
     });
-    expect(host.calls.at(-1)?.result).toMatchObject({ trigger: created });
+    expect(host.calls.at(-1)?.result).toMatchObject({ automation: created.automation });
   } finally {
     await client.close();
     await host.close();
@@ -400,11 +412,11 @@ it("reads back a source-only schedule change while retaining the person's pause"
     const update = c.expect.calls[0]!;
     await client.callTool({ name: update.tool, arguments: update.args });
     await client.callTool({
-      name: "trigger_read",
-      arguments: { action: "get", triggerId: update.args.triggerId },
+      name: "opensteer_automation_read",
+      arguments: { automationId: update.args.automationId },
     });
     expect(host.calls.at(-1)?.result).toMatchObject({
-      trigger: { status: "paused", nextFireAt: null },
+      automation: { status: "paused", nextFireAt: null },
       revision: {
         source: {
           kind: "schedule",

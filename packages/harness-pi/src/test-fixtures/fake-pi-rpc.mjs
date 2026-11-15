@@ -548,7 +548,7 @@ async function runTurn(prompt) {
       toolCallId: "call_a",
       toolName: "bash",
     });
-    const name = extensionTools[0] ?? "thread_read";
+    const name = extensionTools[0] ?? "opensteer_task_read";
     send({
       args: { query: "recent" },
       toolCallId: "call_b",
@@ -584,7 +584,7 @@ async function runTurn(prompt) {
   }
 
   if (scenario === "opensteer-tool" || scenario === "opensteer-tool-error") {
-    const name = extensionTools[0] ?? "thread_read";
+    const name = extensionTools[0] ?? "opensteer_task_read";
     send({
       args: { query: "recent" },
       toolCallId: "call_2",

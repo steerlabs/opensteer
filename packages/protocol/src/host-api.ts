@@ -8,7 +8,6 @@ import {
 import { ToolOutputViewSchema } from "@opensteer/core";
 import { AutomaticModelsViewSchema } from "./automatic-models.js";
 import { TeamCommandSchema, teamReadSchemas } from "./team-api.js";
-import { AutomaticModelConfigSchema, AutomaticModelConfigViewSchema } from "@opensteer/core";
 import {
   AgentConnectionSchema,
   AgentConnectionIdSchema,
@@ -588,11 +587,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     threadId: ThreadIdSchema,
     type: z.literal("thread.access.update"),
-  }),
-  z.strictObject({
-    type: z.literal("automaticModels.set"),
-    idempotencyKey: idempotencyKeySchema,
-    config: AutomaticModelConfigSchema,
   }),
   // A choice a person just made, to start their next Thread from. The Host
   // folds it into the one record it keeps per person, so a phone and a desktop
@@ -1295,7 +1289,6 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     preferences: ExecutionPreferencesViewSchema,
     type: z.literal("execution.preferences.remember"),
   }),
-  z.object({ type: z.literal("automaticModels.set"), config: AutomaticModelConfigViewSchema }),
   z.object({ type: z.literal("run.interrupt"), wasDuplicate: z.boolean() }),
   z.object({ type: z.literal("node.stop"), wasDuplicate: z.boolean() }),
   z.object({ type: z.literal("request.respond") }),
@@ -1926,7 +1919,7 @@ export const hostApi = defineRpc({
     }),
     harnessAuthenticationEnvelopeSchema,
   ),
-  /** Requires automatic-models-v1; automaticModels.set is a person-only commands.dispatch mutation. */
+  /** Requires automatic-models-v1. The choices come from settings.json in Agent home. */
   "automaticModels.get": declaration("GET", z.strictObject({}), AutomaticModelsViewSchema),
   "harness.catalog.refresh": declaration(
     "POST",

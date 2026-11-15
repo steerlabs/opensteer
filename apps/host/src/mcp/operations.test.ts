@@ -25,8 +25,10 @@ describe("domain operation identity", () => {
   });
   it("namespaces a domain key by caller and tool", () => {
     const caller = { kind: "connection", key: "connection:one" } as AgentCaller;
-    const key = operationId(caller, "same", "thread_send");
-    expect(operationId({ ...caller, key: "connection:two" }, "same", "thread_send")).not.toBe(key);
-    expect(operationId(caller, "same", "delegate_task")).not.toBe(key);
+    const key = operationId(caller, "same", "opensteer_task_send");
+    expect(
+      operationId({ ...caller, key: "connection:two" }, "same", "opensteer_task_send"),
+    ).not.toBe(key);
+    expect(operationId(caller, "same", "opensteer_task_delegate")).not.toBe(key);
   });
 });

@@ -886,8 +886,8 @@ describe("machine access notice", () => {
     expect(notice).toContain(
       "commands allowed; port forwarding allowed; macOS Full Disk Access on.",
     );
-    expect(notice).toContain(
-      "port forwarding allowed; macOS Full Disk Access off (some protected data may be unavailable).",
+    expect(notice).toMatch(
+      /port forwarding allowed; macOS Full Disk Access off \(some protected data may be unavailable; computerId \S+\)\./u,
     );
     const lines = notice.split("\n");
     expect(lines.find((line) => line.startsWith("- unknown-mac"))).toMatch(

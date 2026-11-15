@@ -1442,12 +1442,12 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       const row = await phoneRow(agentB, runnerId);
       expect(row).toMatchObject({ access: "read-write", inUse: true });
       expect(row.nextAction).toContain(
-        `${phoneName} is already being used by another task. (Thread: Text the driver)`,
+        `${phoneName} is already being used by another task. (Task: Text the driver)`,
       );
       refsB = row.toolRefs!;
       const busy = refusalOf(await call(agentB, "integration_call", { toolRef: refsB.observe }));
       expect(busy).toContain(
-        `${phoneName} is already being used by another task. (Thread: Text the driver)`,
+        `${phoneName} is already being used by another task. (Task: Text the driver)`,
       );
     });
 
@@ -2040,11 +2040,10 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       expect(narrow).toMatchObject({ access: "read" });
       expect(Object.keys(narrow.toolRefs!).sort()).toEqual(["observe", "release"]);
       const asked = resultJson(
-        await call(agentA3, "integration_request", {
+        await call(agentA3, "app_access_request", {
           access: "read-write",
-          kind: "computer-app",
           reason: "Pay the restaurant bill.",
-          runnerId,
+          computerId: runnerId,
         }),
       );
       expect(asked).toMatchObject({ kind: "computer.app.access", status: "pending" });

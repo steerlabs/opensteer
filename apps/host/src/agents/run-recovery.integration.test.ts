@@ -547,9 +547,9 @@ integration.sequential("Run recovery acceptance", () => {
           }) as Transport,
         );
         const result = await client.callTool({
-          name: "delegate_task",
+          name: "opensteer_task_delegate",
           arguments: {
-            task: "Keep working through a restart",
+            message: "Keep working through a restart",
             title: "Recovery worker",
           },
         });
@@ -568,7 +568,7 @@ integration.sequential("Run recovery acceptance", () => {
       !(await readToolRecords(current.active.host.store, delegated.result)).run!
     )
       throw new Error("No delegated Run");
-    const { assignmentId } = delegated.result;
+    const { delegationId: assignmentId } = delegated.result;
     const { run: child, thread } = await readToolRecords(
       current.active.host.store,
       delegated.result,
@@ -1102,7 +1102,7 @@ integration.sequential("Run recovery acceptance", () => {
         program: {
           language: "javascript",
           source: program,
-          toolContractVersion: 3,
+          toolContractVersion: 4,
         },
         source: {
           kind: "schedule",
@@ -1217,7 +1217,7 @@ integration.sequential("Run recovery acceptance", () => {
             writeFileSync(${JSON.stringify(oneShotStarted)}, process.env.OPENSTEER_OCCURRENCE_ID);
             await new Promise(() => { setInterval(() => {}, 1000); });
           }`,
-          toolContractVersion: 3,
+          toolContractVersion: 4,
         },
         source: {
           kind: "schedule",
@@ -1274,7 +1274,7 @@ integration.sequential("Run recovery acceptance", () => {
           language: "javascript",
           source:
             "export default async function () { await new Promise(() => { setInterval(() => {}, 1000); }); }",
-          toolContractVersion: 3,
+          toolContractVersion: 4,
         },
       },
     });

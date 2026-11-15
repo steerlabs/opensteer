@@ -35,7 +35,7 @@ describe("WatchSupervisor", () => {
       // it; the Host side records what reached it.
       source:
         'export default async ({ opensteer }) => { console.log("holds:" + opensteer.capabilities().mcp.token); await new Promise(() => setInterval(() => { const { mcp } = opensteer.capabilities(); void fetch(mcp.url, { body: "{}", headers: { accept: "application/json, text/event-stream", authorization: "Bearer " + mcp.token, "content-type": "application/json" }, method: "POST" }).catch(() => undefined); }, 30)); }',
-      toolContractVersion: 3,
+      toolContractVersion: 4,
     } as const;
     let fetchCount = 0;
     const toolAuthorizations: string[] = [];
@@ -361,7 +361,7 @@ async function watchHarness(
   const root = await mkdtemp(join(tmpdir(), "opensteer-watch-harness-"));
   const workspace = join(root, "workspace");
   await mkdir(workspace, { recursive: true });
-  const program = { language: "javascript", source, toolContractVersion: 3 } as const;
+  const program = { language: "javascript", source, toolContractVersion: 4 } as const;
   const server = createServer((_request, response) => {
     response.setHeader("content-type", "application/json");
     response.end(JSON.stringify(program));

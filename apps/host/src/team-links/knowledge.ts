@@ -5,9 +5,8 @@ import {
   type TeamAgentRequestId,
 } from "@opensteer/core";
 import type {
-  knowledge_read,
-  knowledge_topics,
-  knowledge_write,
+  opensteer_knowledge_topic_list,
+  opensteer_knowledge_save,
 } from "@opensteer/agent-tools/tools";
 import type { PersonalTeamLink, TeamKnowledgeWrite } from "@opensteer/protocol";
 import type { z } from "zod";
@@ -65,9 +64,9 @@ export class PersonalTeamKnowledge implements TeamKnowledgePort {
 
   async topics(
     caller: TeamKnowledgeCaller,
-    input: z.output<typeof knowledge_topics.input>,
+    input: z.output<typeof opensteer_knowledge_topic_list.input>,
     signal?: AbortSignal,
-  ): Promise<z.output<typeof knowledge_topics.output>> {
+  ): Promise<z.output<typeof opensteer_knowledge_topic_list.output>> {
     const { team, ...request } = await this.#team(caller, input.team);
     signal?.throwIfAborted();
     const result = await this.#rpc(team.id).call({ type: "knowledge.topics", ...request });
@@ -77,9 +76,9 @@ export class PersonalTeamKnowledge implements TeamKnowledgePort {
 
   async read(
     caller: TeamKnowledgeCaller,
-    input: z.output<typeof knowledge_read.input>,
+    input: Parameters<TeamKnowledgePort["read"]>[1],
     signal?: AbortSignal,
-  ): Promise<z.output<typeof knowledge_read.output>> {
+  ): ReturnType<TeamKnowledgePort["read"]> {
     const { team: requested, ...read } = input;
     const { team, ...request } = await this.#team(caller, requested);
     signal?.throwIfAborted();
@@ -94,9 +93,9 @@ export class PersonalTeamKnowledge implements TeamKnowledgePort {
 
   async write(
     caller: TeamKnowledgeCaller,
-    input: z.output<typeof knowledge_write.input>,
+    input: Parameters<TeamKnowledgePort["write"]>[1],
     signal?: AbortSignal,
-  ): Promise<z.output<typeof knowledge_write.output>> {
+  ): Promise<z.output<typeof opensteer_knowledge_save.output>> {
     const { team, ...request } = await this.#team(caller, input.team);
     signal?.throwIfAborted();
     const write: TeamKnowledgeWrite =

@@ -1,11 +1,11 @@
 import { SpecialistRegistrationViewSchema } from "./specialists.js";
 import { describe, expect, it } from "vitest";
 import {
-  AutomaticModelConfigSchema,
-  AutomaticModelWantSchema,
+  AgentHomeSettingsSchema,
+  BackgroundModelChoiceSchema,
   ExactModelWantSchema,
-  automaticModelWants,
-  emptyAutomaticModelConfig,
+  automaticModelDefaults,
+  backgroundModelWants,
   expandModelWants,
   ModelPolicyEntrySchema,
 } from "./background-models.js";
@@ -18,11 +18,7 @@ import {
   type ResolveModelCandidatesInput,
 } from "./model-candidates.js";
 import { SpecialistManifestSchema } from "./specialists.js";
-import {
-  AutomaticModelConfigViewSchema,
-  AutomaticModelRankViewSchema,
-  ModelPolicyEntryViewSchema,
-} from "./background-models.js";
+import { ModelPolicyEntryViewSchema } from "./background-models.js";
 import { catalogDefaultCandidate, catalogDefaultModelSelection } from "./model-candidates.js";
 import { selectionForModelEffort } from "./voice-models.js";
 const selection = (modelId = "gpt-6-luna", options = {}) =>
@@ -89,8 +85,8 @@ function own(account: AuthorizedModelAccountSnapshot): OriginalModelSelection {
 }
 describe("automatic model resolver", () => {
   it("lets a person keep an engine's own small model in their list", () => {
-    const small = AutomaticModelWantSchema.parse({ engine: "codex" });
-    expect(AutomaticModelWantSchema.safeParse({ engine: "codex", options: {} }).success).toBe(
+    const small = BackgroundModelChoiceSchema.parse({ engine: "codex" });
+    expect(BackgroundModelChoiceSchema.safeParse({ engine: "codex", options: {} }).success).toBe(
       false,
     );
     const lightAccount = account("codex", {
@@ -198,7 +194,7 @@ describe("automatic model resolver", () => {
       resolve([account()], { ...past, original: { ...own(account()), fromPastRun: true } })
         .candidates,
     ).toEqual([]);
-    const bound = { ...want(), harnessInstanceId: endpoint.harnessInstanceId };
+    const bound = { ...want(), account: endpoint.harnessInstanceId };
     expect(resolve([endpoint], { ...past, wants: [bound] }).candidates).toMatchObject([
       { harnessInstanceId: endpoint.harnessInstanceId, original: false },
     ]);
@@ -244,12 +240,12 @@ describe("automatic model resolver", () => {
       "endpoint-binding-required",
     ]);
     const result = resolve([a, b], {
-      wants: [{ ...want(), harnessInstanceId: b.harnessInstanceId }],
+      wants: [{ ...want(), account: b.harnessInstanceId }],
     });
     expect(result.candidates.map((c) => c.harnessInstanceId)).toEqual([b.harnessInstanceId]);
     expect(
       resolve([a], {
-        wants: [{ ...want("claude", "claude-haiku-5-5"), harnessInstanceId: a.harnessInstanceId }],
+        wants: [{ ...want("claude", "claude-haiku-5-5"), account: a.harnessInstanceId }],
       }).candidates,
     ).toEqual([]);
   });
@@ -277,24 +273,39 @@ describe("automatic model resolver", () => {
       ]).candidates[0]?.usageLimited,
     ).toBe(false);
   });
-  it("expands roles in place; exact-only lists have no automatic tail; reset follows defaults", () => {
-    const config = AutomaticModelConfigSchema.parse({
-      roles: { light: [want()] },
-      excludedAccounts: [],
+  it("runs the person's list first, then the recommended order, without repeats", () => {
+    const settings = AgentHomeSettingsSchema.parse({
+      backgroundModels: { light: [{ engine: "codex", model: "gpt-6-luna" }] },
     });
     const exact = want("claude", "claude-haiku-5-5");
-    expect(expandModelWants([exact, { role: "light" }, exact], config)).toEqual([
+    const light = [want(), ...automaticModelDefaults.light];
+    expect(expandModelWants([exact, { role: "light" }, exact], settings)).toEqual([
       exact,
-      want(),
+      ...light,
       exact,
     ]);
-    expect(expandModelWants([exact], config)).toEqual([exact]);
-    expect(automaticModelWants(config, "light")).toEqual([want()]);
-    expect(
-      automaticModelWants(emptyAutomaticModelConfig, "light").some(
-        (w) => "kind" in w && w.kind === "catalog-light",
+    expect(expandModelWants([exact], settings)).toEqual([exact]);
+    expect(backgroundModelWants(settings, "light")).toEqual(light);
+    expect(backgroundModelWants(settings, "deep")).toEqual(automaticModelDefaults.deep);
+    expect(backgroundModelWants({}, "naming")).toEqual(automaticModelDefaults.light);
+    const codex = account("codex", {
+      catalog: {
+        ...account().catalog!,
+        models: [
+          ...account().catalog!.models,
+          { ...account().catalog!.models[0]!, modelId: selection("gpt-5.6-luna").modelId },
+        ],
+      },
+    });
+    const ordered = resolve([codex], {
+      wants: backgroundModelWants(
+        AgentHomeSettingsSchema.parse({
+          backgroundModels: { naming: [{ engine: "codex", model: "gpt-5.6-luna" }] },
+        }),
+        "naming",
       ),
-    ).toBe(true);
+    }).candidates.map((c) => c.storedModelSelection.modelId);
+    expect(ordered).toEqual(["gpt-5.6-luna", "gpt-6-luna"]);
     expect(
       resolve([account("opencode")], {
         wants: [{ kind: "catalog-light", driverKind: HarnessIdSchema.parse("opencode") }],
@@ -347,18 +358,36 @@ describe("automatic model resolver", () => {
     expect(pick([{ ...endpoint, isDefault: true }, fallback])).toBe(fallback.harnessInstanceId);
   });
 });
-it("strict executable policies reject mixed/account-bound entries; presentation preserves unknown siblings", () => {
+it("accepts settings.json as written and rejects anything else; manifests stay strict", () => {
+  const account = createId("harnessInstance");
+  for (const valid of [
+    {},
+    { backgroundModels: {} },
+    { backgroundModels: { naming: [], light: [], deep: [], excludedAccounts: [] } },
+    {
+      backgroundModels: {
+        light: [
+          { engine: "codex" },
+          { engine: "claude", model: "anthropic/claude-haiku-5-5", account },
+        ],
+        excludedAccounts: [account],
+      },
+    },
+  ])
+    expect(AgentHomeSettingsSchema.safeParse(valid).success).toBe(true);
+  for (const invalid of [
+    { theme: "dark" },
+    { backgroundModels: { quick: [] } },
+    { backgroundModels: { light: [{ engine: "nope" }] } },
+    { backgroundModels: { light: [{ engine: "codex", options: { effort: "low" } }] } },
+    { backgroundModels: { light: [{ engine: "codex", model: "" }] } },
+    { backgroundModels: { excludedAccounts: ["not-an-account"] } },
+    { backgroundModels: { light: Array.from({ length: 17 }, () => ({ engine: "codex" })) } },
+  ])
+    expect(AgentHomeSettingsSchema.safeParse(invalid).success).toBe(false);
   expect(ModelPolicyEntrySchema.safeParse({ ...want(), role: "light" }).success).toBe(false);
-  expect(
-    ModelPolicyEntrySchema.safeParse({ ...want(), harnessInstanceId: createId("harnessInstance") })
-      .success,
-  ).toBe(false);
-  expect(
-    AutomaticModelConfigSchema.safeParse({ roles: { light: [] }, excludedAccounts: [] }).success,
-  ).toBe(false);
-  expect(
-    AutomaticModelConfigSchema.safeParse({ roles: {}, excludedAccounts: [], consent: [] }).success,
-  ).toBe(false);
+  expect(ModelPolicyEntrySchema.safeParse({ ...want(), account }).success).toBe(false);
+  expect(ModelPolicyEntrySchema.safeParse({ role: "naming" }).success).toBe(false);
   expect(
     SpecialistManifestSchema.parse({ version: 1, models: [{ role: "light" }] }).models,
   ).toEqual([{ role: "light" }]);
@@ -368,24 +397,7 @@ it("strict executable policies reject mixed/account-bound entries; presentation 
     { unknown },
     { role: "deep" },
   ]);
-});
-
-it("reads newer Host responses tolerantly while executable input stays strict", () => {
   expect(ModelPolicyEntryViewSchema.parse({ ...want(), futureField: true })).toEqual(want());
-  expect(AutomaticModelRankViewSchema.parse({ kind: "future-rank", driverKind: "codex" })).toEqual({
-    unknown: { kind: "future-rank", driverKind: "codex" },
-  });
-  expect(
-    AutomaticModelConfigViewSchema.parse({
-      roles: { light: [{ ...want(), futureField: 1 }, { future: true }], newRole: [] },
-      excludedAccounts: [],
-      futureSetting: true,
-    }),
-  ).toEqual({ roles: { light: [want(), { unknown: { future: true } }] }, excludedAccounts: [] });
-  expect(
-    AutomaticModelConfigSchema.safeParse({ roles: {}, excludedAccounts: [], futureSetting: true })
-      .success,
-  ).toBe(false);
 });
 
 it("keeps role-only and unknown entries in the registration presentation", () => {

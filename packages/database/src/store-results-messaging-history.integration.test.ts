@@ -551,7 +551,7 @@ describeStore("PostgreSQL store", (it) => {
     });
     if (resultText?.type !== "text") throw new Error("Expected delegated result text");
     expect(resultText.text).toBe(
-      `Task completed: Evidence worker\nTask Thread: ${delegated.thread.id} · Assignment: ${delegated.assignment.id}\n\n${childResult}`,
+      `Task completed: Evidence worker\nTask: ${delegated.thread.id} · Delegation: ${delegated.assignment.id}\n\n${childResult}`,
     );
     await expect(
       database
@@ -3330,7 +3330,8 @@ describeStore("PostgreSQL store", (it) => {
     storeFixture,
   }) => {
     const { createRunFixture, enqueueHumanTrigger, store, database } = storeFixture;
-    const { environmentId, runnerId, thread, userId } = await createRunFixture("pending_request");
+    const { environmentId, runnerId, thread, userId } =
+      await createRunFixture("opensteer_request_list");
     const turn = await enqueueHumanTrigger({
       content: [
         {

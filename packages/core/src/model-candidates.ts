@@ -239,13 +239,9 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
     for (const account of accounts) {
       const engine = "kind" in want ? want.driverKind : want.engine;
       if (account.driverKind !== engine) continue;
-      if (
-        !("kind" in want) &&
-        want.harnessInstanceId &&
-        want.harnessInstanceId !== account.harnessInstanceId
-      )
-        continue;
-      if (account.sourceId === "openai-compatible" && ("kind" in want || !want.harnessInstanceId)) {
+      const named = "kind" in want || !("account" in want) ? undefined : want.account;
+      if (named && named !== account.harnessInstanceId) continue;
+      if (account.sourceId === "openai-compatible" && !named) {
         skipped.push({
           want,
           harnessInstanceId: account.harnessInstanceId,
@@ -254,7 +250,8 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
         continue;
       }
       let selection: ModelSelection;
-      const exact = "kind" in want || !("model" in want) ? null : want;
+      const exact =
+        "kind" in want || want.model === undefined ? null : { ...want, model: want.model };
       if (exact === null && !("kind" in want && want.kind === "model")) {
         if (!usable(account, want)) continue;
         const light = account.catalog.lightModel;
@@ -285,7 +282,7 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
         selection = {
           providerId: model?.providerId ?? (reference.providerId as ModelSelection["providerId"]),
           modelId: model?.modelId ?? (reference.modelId as ModelSelection["modelId"]),
-          options: exact.options ?? {},
+          options: ("options" in exact ? exact.options : undefined) ?? {},
         };
         if (matches.length > 1) {
           skipped.push({

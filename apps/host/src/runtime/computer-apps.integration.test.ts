@@ -386,7 +386,7 @@ integration("computer apps", () => {
     expect(offRefusal).toMatchObject({
       isError: true,
       structuredContent: {
-        error: { reason: "device-access-off", machineId: computer.runnerId, capability: "apps" },
+        error: { reason: "device-access-off", computerId: computer.runnerId, capability: "apps" },
       },
     });
     const connectionAfterOff = await host.store.database

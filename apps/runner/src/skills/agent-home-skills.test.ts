@@ -147,14 +147,14 @@ describe("Folder Agent Skills", () => {
 
   it("rejects a namespaced loose skill name and an invalid directory name", async () => {
     const workspace = await workspaceDirectory();
-    await writeSkill(workspace, "opensteer:threads", frontmatter("opensteer:threads"));
+    await writeSkill(workspace, "opensteer:tasks", frontmatter("opensteer:tasks"));
     await writeSkill(workspace, "Release_Notes", frontmatter("Release_Notes"));
 
     const discovered = await discoverAgentHomeSkills(workspace);
 
     expect(discovered.skills).toEqual([]);
     expect(discovered.warnings).toEqual([
-      "Agent home skill opensteer:threads was skipped: the directory name is not a valid skill name",
+      "Agent home skill opensteer:tasks was skipped: the directory name is not a valid skill name",
       "Agent home skill Release_Notes was skipped: the directory name is not a valid skill name",
     ]);
   });

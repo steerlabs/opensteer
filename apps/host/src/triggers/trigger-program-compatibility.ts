@@ -1,5 +1,6 @@
 import type { EnvironmentId } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
+import { TRIGGER_PROGRAM_VERSION_REFUSAL } from "@opensteer/triggers";
 
 export type TriggerProgramRunnerStore = Pick<
   OpensteerStore,
@@ -10,14 +11,14 @@ export type TriggerProgramRunnerStore = Pick<
 export async function triggerProgramCompatibilityReason(
   store: TriggerProgramRunnerStore,
   environmentId: EnvironmentId,
-  version: 1 | 2 | 3,
+  version: number,
 ): Promise<string | null> {
-  if (version !== 3) return null;
+  if (version !== 4) return TRIGGER_PROGRAM_VERSION_REFUSAL;
   const environment = await store.getEnvironment(environmentId);
   const capabilities = environment?.runnerId
     ? await store.runnerCapabilities(environment.runnerId)
     : null;
-  return capabilities?.includes("trigger-program-v3")
+  return capabilities?.includes("trigger-program-v4")
     ? null
-    : "This computer's Runner cannot run Trigger program version 3. Use version 2 or update that computer.";
+    : "Update this computer to run automation programs with tool contract version 4.";
 }

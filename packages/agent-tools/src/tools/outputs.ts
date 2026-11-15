@@ -10,13 +10,10 @@ import {
   AssignmentStatusSchema,
   BrowserProfileIdSchema,
   DelegationModelChoiceSchema,
-  EnvironmentIdSchema,
-  ExecutionEnvironmentKindSchema,
   ExecutionNodeViewSchema,
   HarnessIdSchema,
   HarnessInstanceIdSchema,
   MessageIdSchema,
-  MessageSchema,
   ModelIdSchema,
   ModelProviderIdSchema,
   ModelSelectionSchema,
@@ -28,53 +25,26 @@ import {
   RequestStatusSchema,
   RequestPresentationSchema,
   RequestAnswererViewSchema,
+  MessageAuthorViewSchema,
+  TriggerIdSchema,
   RunSchema,
   RunnerIdSchema,
   ThreadIdSchema,
+  TimeZoneSchema,
+  PersonNameSchema,
   TriggerOccurrenceIdSchema,
   ThreadSchema,
   ThreadAccessModeSchema,
 } from "@opensteer/core";
 import {
+  TriggerProgramEventSchema,
   TriggerViewSchema,
   TriggerRevisionViewSchema,
   TriggerOccurrenceViewSchema,
   TriggerSummaryViewSchema,
   TriggerWatchActivationViewSchema,
 } from "@opensteer/triggers";
-export const agentHarnessModelsShown = 20;
-export const agentInspectionModelsShown = 100;
-
-const AgentModelSummarySchema = z.object({
-  modelId: ModelIdSchema,
-  providerId: ModelProviderIdSchema,
-});
-export type AgentModelSummary = z.infer<typeof AgentModelSummarySchema>;
-
-const HarnessSummarySchema = z.object({
-  lightModel: DelegationModelChoiceSchema.optional(),
-  driverKind: HarnessIdSchema,
-  enabled: z.boolean(),
-  environmentId: EnvironmentIdSchema,
-  id: HarnessInstanceIdSchema,
-  /** The models this engine profile offers, as its latest catalog reports them. */
-  models: z.array(AgentModelSummarySchema).max(agentHarnessModelsShown),
-  modelsOmitted: z.number().int().nonnegative(),
-  modelsNextCursor: z.string().min(1).max(2_048).optional(),
-  name: z.string().min(1).max(120),
-});
-export type AgentHarnessSummary = z.infer<typeof HarnessSummarySchema>;
-
-const EnvironmentSummarySchema = z.object({
-  capabilities: z.array(z.string()),
-  connected: z.boolean(),
-  id: EnvironmentIdSchema,
-  kind: ExecutionEnvironmentKindSchema,
-  name: z.string().min(1).max(120),
-  can: z.object({ executeTasks: z.boolean() }),
-});
-
-const EnvironmentModelOptionSchema = z.union([
+const AiAccountModelOptionSchema = z.union([
   z.object({
     id: z.string().min(1).max(100),
     values: z.array(z.string().max(255)).min(1).max(32),
@@ -86,52 +56,56 @@ const EnvironmentModelOptionSchema = z.union([
     default: z.boolean().optional(),
   }),
 ]);
-export const EnvironmentHarnessSummarySchema = HarnessSummarySchema.extend({
-  models: z
-    .array(
-      AgentModelSummarySchema.extend({
-        displayName: z.string().min(1).max(120).optional(),
-        options: z.array(EnvironmentModelOptionSchema).min(1).max(16).optional(),
-      }),
-    )
-    .max(8),
-  status: z.enum([
-    "disabled",
-    "disconnected",
-    "unreported",
-    "ready",
-    "authentication-required",
-    "preparing",
-    "unavailable",
-    "error",
-  ]),
+export const AiAccountModelSchema = z.object({
+  modelId: ModelIdSchema,
+  providerId: ModelProviderIdSchema,
+  displayName: z.string().min(1).max(120).optional(),
+  options: z.array(AiAccountModelOptionSchema).min(1).max(16).optional(),
+});
+export type AiAccountModel = z.infer<typeof AiAccountModelSchema>;
+export const AiAccountStatusSchema = z.enum([
+  "disabled",
+  "disconnected",
+  "unreported",
+  "ready",
+  "authentication-required",
+  "preparing",
+  "unavailable",
+  "error",
+]);
+export type AiAccountStatus = z.infer<typeof AiAccountStatusSchema>;
+const AiAccountModelLimitsSchema = z.object({
+  contextWindow: z.number().int().positive(),
+  maxOutputTokens: z.number().int().positive().optional(),
+});
+const AiAccountSchema = z.object({
+  aiAccountId: HarnessInstanceIdSchema,
+  computerId: RunnerIdSchema,
+  name: z.string().min(1).max(120),
+  engine: HarnessIdSchema,
+  enabled: z.boolean(),
+  isDefault: z.boolean(),
+  status: AiAccountStatusSchema,
   detail: z.string().min(1).max(500).optional(),
+  lightModel: DelegationModelChoiceSchema.optional(),
+  models: z.array(AiAccountModelSchema).max(8),
+  modelsOmitted: z.number().int().nonnegative(),
+  modelLimits: z.record(z.string(), AiAccountModelLimitsSchema).optional(),
 });
-export type EnvironmentHarnessSummary = z.infer<typeof EnvironmentHarnessSummarySchema>;
-const DelegationDefaultSchema = z.object({
-  environmentId: EnvironmentIdSchema,
-  harnessInstanceId: HarnessInstanceIdSchema,
-  model: z.object({
-    modelId: ModelIdSchema,
-    options: ModelSelectionSchema.shape.options,
-    providerId: ModelProviderIdSchema,
-  }),
+const AiAccountModelChoiceSchema = z.object({
+  modelId: ModelIdSchema,
+  providerId: ModelProviderIdSchema,
+  options: ModelSelectionSchema.shape.options,
 });
-export const EngineDiscoverySchema = z.object({
-  delegationDefault: DelegationDefaultSchema.optional(),
-  harnesses: z
-    .array(EnvironmentHarnessSummarySchema)
+export const AiAccountListOutputSchema = z.object({
+  accounts: z
+    .array(AiAccountSchema)
     .max(64)
     .refine((rows) => rows.reduce((count, row) => count + row.models.length, 0) <= 40),
-  harnessesNextCursor: HarnessInstanceIdSchema.optional(),
-});
-export type EngineDiscovery = z.infer<typeof EngineDiscoverySchema>;
-export const EnvironmentDiscoverySchema = z.object({
-  environments: z.array(EnvironmentSummarySchema).max(64),
-  environmentsNextCursor: EnvironmentIdSchema.optional(),
-});
-export type EnvironmentDiscovery = z.infer<typeof EnvironmentDiscoverySchema>;
-export const OrchestratorCapabilitiesSchema = EngineDiscoverySchema.extend({
+  nextCursor: z.string().min(1).max(2_048).optional(),
+  delegationDefault: z
+    .object({ aiAccountId: HarnessInstanceIdSchema, model: AiAccountModelChoiceSchema })
+    .optional(),
   accessCeiling: ThreadAccessModeSchema,
   limits: z.object({
     maxDepth: z.number().int().nullable(),
@@ -144,71 +118,80 @@ export const OrchestratorCapabilitiesSchema = EngineDiscoverySchema.extend({
     taskDeadlineAt: z.string().nullable(),
   }),
 });
+export type AiAccountListOutput = z.infer<typeof AiAccountListOutputSchema>;
+export const DefaultsOutputSchema = z.object({
+  accessMode: ThreadAccessModeSchema,
+  selection: z
+    .object({ aiAccountId: HarnessInstanceIdSchema, model: AiAccountModelChoiceSchema })
+    .nullable(),
+  timeZone: TimeZoneSchema.nullable(),
+});
+export const DefaultsReadOutputSchema = DefaultsOutputSchema.extend({
+  /** Null until the person sets one in Settings → Account. */
+  ownerName: PersonNameSchema.nullable(),
+});
+export const DefaultsUpdateOutputSchema = DefaultsOutputSchema.partial().extend({
+  ok: z.literal(true),
+});
 
 export const WindowSchema = z.object({
   byteCount: z.number(),
   hasMore: z.boolean(),
   itemCount: z.number(),
-  nextBefore: z.string().nullable(),
+  nextCursor: z.string().nullable(),
   totalItems: z.number(),
-  threadId: ThreadIdSchema.optional(),
+  taskId: ThreadIdSchema.optional(),
 });
-const thread = ThreadSchema.shape;
-const PageSchema = { hasMore: z.boolean(), nextBefore: z.string().nullable() };
+const task = ThreadSchema.shape;
+const PageSchema = { hasMore: z.boolean(), nextCursor: z.string().nullable() };
 
 export const ThreadDetailSchema = z.object({
-  id: thread.id,
-  title: thread.title,
-  status: thread.status,
-  purpose: thread.purpose,
-  teamOrigin: thread.teamOrigin,
-  environmentId: thread.environmentId,
-  harnessInstanceId: thread.harnessInstanceId,
-  modelSelection: thread.modelSelection,
-  accessMode: thread.accessMode,
-  parentThreadId: thread.parentThreadId,
-  pendingRequests: thread.pendingRequests,
-  inputQueuePaused: thread.inputQueuePaused,
-  doneAt: thread.doneAt,
-  createdAt: thread.createdAt,
-  updatedAt: thread.updatedAt,
+  id: task.id,
+  title: task.title,
+  status: task.status,
+  purpose: task.purpose,
+  teamOrigin: task.teamOrigin,
+  aiAccountId: task.harnessInstanceId,
+  modelSelection: task.modelSelection,
+  accessMode: task.accessMode,
+  parentTaskId: task.parentThreadId,
+  pendingRequests: task.pendingRequests,
+  inputQueuePaused: task.inputQueuePaused,
+  doneAt: task.doneAt,
+  createdAt: task.createdAt,
+  updatedAt: task.updatedAt,
 });
 export const ThreadSummarySchema = z.object({
-  assignmentId: AssignmentIdSchema.nullable(),
-  doneAt: thread.doneAt.optional(),
-  environmentConnected: z.boolean(),
-  environmentId: EnvironmentIdSchema,
+  delegationId: AssignmentIdSchema.nullable(),
+  doneAt: task.doneAt.optional(),
   id: ThreadIdSchema,
-  parentThreadId: thread.parentThreadId,
-  pendingRequests: thread.pendingRequests,
-  status: thread.status,
+  parentTaskId: task.parentThreadId,
+  pendingRequests: task.pendingRequests,
+  status: task.status,
   taskStatus: AssignmentStatusSchema.nullable(),
   title: z.string().nullable(),
-  updatedAt: thread.updatedAt,
+  updatedAt: task.updatedAt,
 });
 export const ThreadListOutputSchema = z.object({
-  threads: z.array(ThreadSummarySchema).max(50),
+  tasks: z.array(ThreadSummarySchema).max(50),
   ...PageSchema,
 });
-/** One shape for `delegate_task`, `task_status` and `task_cancel`. */
 export const TaskSchema = z.object({
-  /** Null only for a connection's work, which has no Assignment. */
-  assignmentId: AssignmentIdSchema.nullable(),
-  threadId: ThreadIdSchema,
+  delegationId: AssignmentIdSchema.nullable(),
+  taskId: ThreadIdSchema,
   runId: RunSchema.shape.id.nullable(),
   runStatus: RunSchema.shape.status.nullable(),
   status: AssignmentStatusSchema,
   title: z.string(),
   objective: z.string().nullable(),
   result: z.string().nullable(),
-  pendingRequests: thread.pendingRequests,
-  parentThreadId: ThreadIdSchema.nullable(),
-  environmentId: EnvironmentIdSchema,
-  createdAt: thread.createdAt,
+  pendingRequests: task.pendingRequests,
+  parentTaskId: ThreadIdSchema.nullable(),
+  createdAt: task.createdAt,
   finishedAt: z.string().nullable(),
 });
 export const ThreadMessageOutputSchema = z.object({
-  assignmentId: AssignmentIdSchema.nullable(),
+  delegationId: AssignmentIdSchema.nullable(),
   disposition: z.enum(["cancelled", "pending", "steering", "run-queued"]),
   messageId: MessageIdSchema,
   runId: RunSchema.shape.id.nullable(),
@@ -217,8 +200,8 @@ export const ThreadInterruptOutputSchema = z.object({
   interruptedRunId: RunSchema.shape.id.nullable(),
 });
 export const ThreadUpdateOutputSchema = z.object({
-  title: thread.title,
-  doneAt: thread.doneAt,
+  title: task.title,
+  doneAt: task.doneAt,
   doneWhenRunEnds: z.boolean(),
 });
 export const AppPublishOutputSchema = z.object({
@@ -234,7 +217,7 @@ export const AppListOutputSchema = z.object({
       kind: z.enum(["html", "server"]),
       folder: z.string().optional().describe("Server app folder: an absolute path in Agent home."),
       start: z.string().optional(),
-      threadId: ThreadIdSchema,
+      taskId: ThreadIdSchema,
       latestVersion: z.number(),
       updatedAt: z.string(),
     }),
@@ -248,35 +231,85 @@ export const AppFetchOutputSchema = z.object({
 });
 export const PluginInstallOutputSchema = z.object({
   pluginId: z.string().nullable(),
-  issues: z.array(
-    z.object({
-      message: z.string().optional(),
-      component: z.enum(["manifest", "mcp", "skill"]).optional(),
-      entry: z.string().nullable().optional(),
-      severity: z.string().optional(),
-      code: z.string().optional(),
-    }),
-  ),
-  specialist: z.boolean(),
-  registration: z.object({ id: z.string(), status: z.string(), plugin: z.string() }).nullable(),
+  issues: z
+    .array(
+      z.object({
+        message: z.string().optional(),
+        component: z.enum(["manifest", "mcp", "skill"]).optional(),
+        entry: z.string().nullable().optional(),
+        severity: z.string().optional(),
+        code: z.string().optional(),
+      }),
+    )
+    .optional(),
+  specialist: z.boolean().optional(),
+  registration: z
+    .object({ id: z.string(), status: z.string(), plugin: z.string() })
+    .nullable()
+    .optional(),
 });
 export const PersonMessageOutputSchema = z.object({ messageId: MessageIdSchema });
 export const PersonShowOutputSchema = z.object({
   status: z.enum(["sent-unconfirmed", "no-device-connected", "already-requested"]),
   connectedDevices: z.number().int().nonnegative(),
 });
+const [
+  humanAuthor,
+  agentAuthor,
+  triggerAuthor,
+  watchAuthor,
+  platformAuthor,
+  connectionAuthor,
+  memberAuthor,
+] = MessageAuthorViewSchema.options;
+/** Authors as tools present them: an agent names its task, an automation or watch its automation. */
+const ToolMessageAuthorSchema = z.discriminatedUnion("kind", [
+  humanAuthor,
+  agentAuthor.omit({ threadId: true }).extend({ taskId: ThreadIdSchema }),
+  triggerAuthor.omit({ triggerId: true }).extend({ automationId: TriggerIdSchema }),
+  watchAuthor.omit({ triggerId: true }).extend({ automationId: TriggerIdSchema }),
+  platformAuthor,
+  connectionAuthor,
+  memberAuthor,
+]);
+const [deviceAnswerer, agentAnswerer] = RequestAnswererViewSchema.options;
+const ToolRequestAnswererSchema = z.union([
+  deviceAnswerer,
+  agentAnswerer.omit({ threadId: true }).extend({ taskId: ThreadIdSchema }),
+]);
+type ToolMessageAuthor = z.infer<typeof ToolMessageAuthorSchema>;
+export function toolMessageAuthor(
+  author: z.infer<typeof MessageAuthorViewSchema>,
+): ToolMessageAuthor {
+  if (author.kind === "agent") {
+    const { threadId, ...rest } = author;
+    return { ...rest, taskId: threadId };
+  }
+  if (author.kind === "trigger" || author.kind === "watch") {
+    const { triggerId, ...rest } = author;
+    return { ...rest, automationId: triggerId };
+  }
+  return author;
+}
+export function toolRequestAnswerer(
+  answerer: z.infer<typeof RequestAnswererViewSchema>,
+): z.infer<typeof ToolRequestAnswererSchema> {
+  if (!("kind" in answerer)) return answerer;
+  const { threadId, ...rest } = answerer;
+  return { ...rest, taskId: threadId };
+}
 export const RequestOutputSchema = z.object({
   id: RequestIdSchema,
   kind: RequestKindSchema,
   status: RequestStatusSchema,
   reason: z.string().nullable().optional(),
-  originatingThreadId: ThreadIdSchema.nullable().optional(),
+  originatingTaskId: ThreadIdSchema.nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string().optional(),
   title: z.string().optional(),
   revision: z.string().optional(),
   presentation: RequestPresentationSchema.optional(),
-  settlementProvenance: RequestAnswererViewSchema.nullable().optional(),
+  settlementProvenance: ToolRequestAnswererSchema.nullable().optional(),
 });
 export const RequestListOutputSchema = z.object({
   requests: z.array(RequestOutputSchema),
@@ -292,10 +325,13 @@ export const RequestCreationOutputSchema = z.object({
 export const BrowserProfileOutputSchema = z.object({
   id: BrowserProfileIdSchema,
   name: z.string(),
-  home: z.object({ runnerId: RunnerIdSchema, name: z.string(), reachable: z.boolean() }).nullable(),
+  home: z
+    .object({ computerId: RunnerIdSchema, name: z.string(), reachable: z.boolean() })
+    .nullable(),
 });
 export const BrowserProfileListOutputSchema = z.object({
   profiles: z.array(BrowserProfileOutputSchema),
+  sites: z.array(z.object({ site: z.string() })),
 });
 /** A held or pending Request's result also carries what the Host says about it. */
 const heldGuidance = { guidance: z.string().optional() };
@@ -360,24 +396,76 @@ export const BrowserTabWriteOutputSchema = z.object({
   failed: z.array(z.object({ tabId: z.string(), message: z.string() })).optional(),
   restored: z.array(z.object({ tabId: z.string(), sessionId: z.string() })).optional(),
 });
-const SafeTriggerSchema = TriggerViewSchema.omit({ webhookRouteKey: true });
+const SafeTriggerSchema = TriggerViewSchema.omit({
+  webhookRouteKey: true,
+  anchorThreadId: true,
+  createdByThreadId: true,
+}).extend({ taskId: ThreadIdSchema, createdByTaskId: ThreadIdSchema.nullable() });
+const AutomationRevisionSchema = TriggerRevisionViewSchema.omit({
+  triggerId: true,
+  createdByThreadId: true,
+}).extend({ automationId: TriggerViewSchema.shape.id, createdByTaskId: ThreadIdSchema.nullable() });
+const AutomationOccurrenceSchema = TriggerOccurrenceViewSchema.omit({
+  triggerId: true,
+  environmentId: true,
+  event: true,
+}).extend({
+  event: z.object(TriggerProgramEventSchema.omit({ trigger: true }).shape).extend({
+    automation: z
+      .object(TriggerProgramEventSchema.shape.trigger.omit({ anchorThreadId: true }).shape)
+      .extend({ taskId: ThreadIdSchema }),
+  }),
+  automationId: TriggerViewSchema.shape.id,
+});
+const AutomationWatchSchema = TriggerWatchActivationViewSchema.omit({
+  triggerId: true,
+  environmentId: true,
+  anchorThreadId: true,
+}).extend({
+  taskId: ThreadIdSchema,
+  automationId: TriggerViewSchema.shape.id,
+});
+const AutomationSummarySchema = TriggerSummaryViewSchema.omit({
+  webhookRouteKey: true,
+  anchorThreadId: true,
+  anchorThreadTitle: true,
+  createdByThreadId: true,
+}).extend({
+  taskId: ThreadIdSchema,
+  taskTitle: z.string(),
+  createdByTaskId: ThreadIdSchema.nullable(),
+});
 export const TriggerOutputSchema = z.object({
-  trigger: SafeTriggerSchema.optional(),
-  revision: TriggerRevisionViewSchema.optional(),
-  triggers: z.array(TriggerSummaryViewSchema.omit({ webhookRouteKey: true })).optional(),
-  occurrences: z.array(TriggerOccurrenceViewSchema).optional(),
-  occurrence: TriggerOccurrenceViewSchema.optional(),
-  watch: TriggerWatchActivationViewSchema.nullable().optional(),
+  automation: SafeTriggerSchema.optional(),
+  revision: AutomationRevisionSchema.optional(),
+  automations: z.array(AutomationSummarySchema).optional(),
+  occurrences: z.array(AutomationOccurrenceSchema).optional(),
+  occurrence: AutomationOccurrenceSchema.optional(),
+  watch: AutomationWatchSchema.nullable().optional(),
   canceledOccurrenceIds: z.array(TriggerOccurrenceIdSchema).optional(),
-  activation: TriggerWatchActivationViewSchema.nullable().optional(),
-  anchorThreadTitle: z.string().optional(),
-  createdByThreadTitle: z.string().nullable().optional(),
+  activation: AutomationWatchSchema.nullable().optional(),
+  taskTitle: z.string().optional(),
+  createdByTaskTitle: z.string().nullable().optional(),
   downstreamRuns: z
     .array(
       z.object({
         occurrenceId: TriggerOccurrenceIdSchema,
-        run: z.object(RunSchema.shape),
-        threadTitle: z.string(),
+        run: z
+          .object(
+            RunSchema.omit({
+              environmentId: true,
+              harnessInstanceId: true,
+              assignmentId: true,
+              threadId: true,
+              replyTarget: true,
+            }).shape,
+          )
+          .extend({
+            taskId: ThreadIdSchema,
+            aiAccountId: HarnessInstanceIdSchema,
+            delegationId: AssignmentIdSchema.nullable(),
+          }),
+        taskTitle: z.string(),
       }),
     )
     .max(100)
@@ -398,7 +486,7 @@ export const ThreadItemSchema = z.object({
   type: z.string(),
   status: z.string(),
   runId: RunSchema.shape.id.nullable(),
-  author: MessageSchema.shape.author.optional(),
+  author: ToolMessageAuthorSchema.optional(),
   title: z.string().nullable(),
   text: z.string().nullable(),
   textTruncated: z.boolean(),
@@ -417,9 +505,8 @@ export const ThreadWaitOutputSchema = z.object({
   task: TaskSchema.optional(),
 });
 export const ThreadConfigureOutputSchema = z.object({
-  threadId: ThreadIdSchema,
-  environmentId: EnvironmentIdSchema,
-  harnessInstanceId: HarnessInstanceIdSchema,
+  taskId: ThreadIdSchema,
+  aiAccountId: HarnessInstanceIdSchema,
   modelSelection: z.object({
     modelId: ModelIdSchema,
     providerId: ModelProviderIdSchema,
@@ -433,7 +520,7 @@ export const ThreadQueueOutputSchema = z.object({
     .array(
       z.object({
         messageId: MessageIdSchema,
-        author: MessageSchema.shape.author,
+        author: ToolMessageAuthorSchema,
         preview: z.string().max(500),
         truncated: z.boolean(),
         canCancel: z.boolean(),
@@ -452,13 +539,13 @@ export const SubagentCancelOutputSchema = z.object({
 export const ThreadReadOutputSchema = z
   .object({
     subagent: ExecutionNodeViewSchema.optional(),
-    thread: ThreadDetailSchema,
+    task: ThreadDetailSchema,
     recentRuns: z
       .array(
         z.object({
           runId: RunSchema.shape.id,
           status: RunSchema.shape.status,
-          assignmentId: AssignmentIdSchema.nullable(),
+          delegationId: AssignmentIdSchema.nullable(),
           modelId: ModelIdSchema,
           createdAt: z.string(),
           startedAt: z.string().nullable(),
@@ -481,7 +568,7 @@ export const ThreadReadOutputSchema = z
   })
   .refine(
     (result) => new TextEncoder().encode(JSON.stringify(result)).byteLength <= 432 * 1024,
-    "Thread history exceeds the agent output byte limit",
+    "Task history exceeds the agent output byte limit",
   );
 
 export { UseCardResultSchema as UseCardOutputSchema } from "@opensteer/protocol";

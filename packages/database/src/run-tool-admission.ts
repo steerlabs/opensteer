@@ -170,7 +170,7 @@ export async function admitRunToolCallInTransaction(
     if (run.threadId !== input.sourceThreadId) {
       throw new OpensteerError({
         code: "forbidden",
-        message: "The calling Run does not belong to the claimed source Thread",
+        message: "The calling Run does not belong to the claimed source task",
       });
     }
     // The ledger is an active-execution idempotency receipt, not a
@@ -271,7 +271,7 @@ export async function admitTriggerControlRequestInTransaction(
     if (!occurrence) {
       throw new OpensteerError({
         code: "not_found",
-        message: "Trigger-control Occurrence not found",
+        message: "Automation occurrence not found",
       });
     }
     await assertActiveTriggerExecutionBinding(transaction, {
@@ -435,7 +435,7 @@ function triggerRequestIdConflict(requestId: string): OpensteerError {
     details: {
       requestId,
     },
-    message: "Trigger-control request ID was already used with different input",
+    message: "Automation control request ID was already used with different input",
   });
 }
 async function assertOperationTargets(

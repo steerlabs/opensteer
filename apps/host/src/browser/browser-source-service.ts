@@ -1564,7 +1564,7 @@ function unavailable(site: string, reason: ChromeCookiesUnavailableReason): Chro
   return { status: "unavailable", site, reason };
 }
 
-/** What a `copy_chrome_cookies` call learns from its Chrome Request. */
+/** What a `chrome_cookies_request` call learns from its Chrome Request. */
 export function chromeCookiesResult(request: Request, replayed = true): ChromeCookiesResult {
   if (request.payload.kind !== "browser.sign-in") throw new Error("Not a Chrome sign-in Request");
   const { site } = request.payload;

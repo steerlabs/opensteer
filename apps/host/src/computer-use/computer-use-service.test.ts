@@ -1181,7 +1181,7 @@ describe("per-app sessions", () => {
       retryable: false,
     });
     await expect(observe(test.service, callable, third)).rejects.toThrow(
-      "This app is already being used by another task. (Thread: Tidy the notes)",
+      "This app is already being used by another task. (Task: Tidy the notes)",
     );
     expect(test.service.sessionsForRunner(runnerId)).toHaveLength(2);
     // Busy on a new app leaves the existing Calendar session alive.
@@ -1438,7 +1438,7 @@ describe("ComputerUseService call lifecycle", () => {
     ).rejects.toMatchObject({
       code: "failed",
       message: expect.stringMatching(
-        /^Those actions are not usable — actions\[1\]\.[a-z]+: .+\. Correct those fields as the computer tool describes, observe this window again, and act on its snapshot\.$/u,
+        /^Those actions are not usable — actions\[1\]\.[a-z]+: .+\. Correct those fields as computer_use describes, observe this window again, and act on its snapshot\.$/u,
       ),
     });
     expect(test.sent).toEqual([]);

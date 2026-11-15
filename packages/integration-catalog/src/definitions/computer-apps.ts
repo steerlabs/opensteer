@@ -38,7 +38,7 @@ const loginTextSchema = {
   type: "object",
 } as const;
 const loginTextDescription =
-  'Literal text, or {loginRef, field: "username"|"password"|"code"} using the loginRef from use_saved_login.';
+  'Literal text, or {loginRef, field: "username"|"password"|"code"} using the loginRef from saved_login_request.';
 
 const actionSchema = {
   oneOf: [
@@ -963,11 +963,11 @@ export const computerAppIntegrations = [
           "Allows observing the app, and clicking, typing, scrolling, pressing keys and setting values in it, all in the background.",
       },
       kind: "gui",
-      // Approval rows remain the authority units for the computer tool.
+      // Approval rows remain the authority units for computer_use.
       operations: [
         {
           description:
-            "Internal read operation used by the computer tool to list, bind and observe app windows.",
+            "Internal read operation used by computer_use to list, bind and observe app windows.",
           effect: "read",
           inputSchema: {
             additionalProperties: false,
@@ -990,7 +990,7 @@ export const computerAppIntegrations = [
         },
         {
           description:
-            "Internal write operation used by the computer tool to act on a bound app window. Returns completed action receipts without observing.",
+            "Internal write operation used by computer_use to act on a bound app window. Returns completed action receipts without observing.",
           effect: "write",
           inputSchema: {
             additionalProperties: false,

@@ -33,7 +33,7 @@ import { finalizeRunTransaction } from "./run-finalization.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { runReply } from "./run-reply.js";
 const assignmentResultPreviewMaxBytes = 8 * 1_024;
-const truncatedReplyNote = "\n\n[Reply truncated. The full reply is in the task Thread.]";
+const truncatedReplyNote = "\n\n[Reply truncated. The full reply is in the task.]";
 export async function assignmentSummaryInTransaction(
   transaction: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   row: Selectable<DelegationTable>,
@@ -565,7 +565,7 @@ export async function cancelAssignmentInTransaction(
   if (!observed)
     throw new OpensteerError({
       code: "not_found",
-      message: "Assignment not found",
+      message: "Delegation not found",
     });
   await requireCancelOwner(transaction, observed, input.requestedBy, false);
   await requireCancelScope(transaction, input);
@@ -631,7 +631,7 @@ export async function cancelAssignmentInTransaction(
   if (!ids.includes(input.assignmentId)) {
     throw new OpensteerError({
       code: "conflict",
-      message: "Assignment is already terminal",
+      message: "Delegation is already finished",
     });
   }
   const discoveredRunIds = (await treeRuns(ids).execute()).map(({ id }) => id);

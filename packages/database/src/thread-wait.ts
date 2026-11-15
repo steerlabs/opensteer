@@ -39,7 +39,7 @@ export function readThreadWaitSnapshot(
       if (!thread)
         throw new OpensteerError({
           code: "forbidden",
-          message: "Thread is unavailable",
+          message: "Task is unavailable",
         });
       const visible = tx
         .selectFrom("messages")

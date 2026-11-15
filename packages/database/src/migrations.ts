@@ -68,7 +68,7 @@ update personal_team_requests set approved_revision = 0,
   released_at = case when local_task_id is not null then decision_at else null end
   where kind = 'ask' and local_decision = 'approve';
 `;
-export const waitingInputEditsMigrationName = "0023_waiting_input_edits";
+export const waitingInputEditsMigrationName = "0024_waiting_input_edits";
 export const personalTeamBaselineName = "0002_personal_team_baseline";
 export const threadVisitsMigrationName = "0004_thread_visits";
 export const teamKnowledgeNotesMigrationName = "0006_team_knowledge_notes";
@@ -76,6 +76,7 @@ export const teamAgentMigrationName = "0011_team_agent_contracts";
 export const teamAgentAsksMigrationName = "0012_team_agent_asks";
 export const teamPrincipalsMigrationName = "0015_team_principals";
 export const teamPartnerLinksMigrationName = "0016_team_partner_links";
+export const agentHomeSettingsMigrationName = "0023_agent_home_settings";
 export function migrationProvider(): MigrationProvider {
   return {
     async getMigrations() {
@@ -257,6 +258,28 @@ export function migrationProvider(): MigrationProvider {
                   and users.email <> ${sql.lit(localMachineOwnerEmail)};
               alter table users add column name_revision bigint not null default 0
                 check (name_revision >= 0)`.execute(database);
+          },
+        },
+        [agentHomeSettingsMigrationName]: {
+          /**
+           * Background model choices moved to settings.json in Agent home; nothing carries over.
+           * Only databases created before this migration have the column: the baseline no longer does.
+           */
+          async up(database) {
+            await sql`alter table personal_settings drop column if exists background_model_preferences;
+              create table agent_home_settings (
+                computer_id text not null primary key references runners(id) on delete cascade,
+                environment_id text not null references execution_environments(id) on delete cascade,
+                boot_id text not null,
+                connection_generation bigint not null,
+                connection_id text not null,
+                connection_lease_id text not null,
+                read_sequence bigint not null,
+                read_at timestamptz not null,
+                file_status text not null check(file_status in ('valid','missing','invalid')),
+                file_error jsonb,
+                settings jsonb not null
+              )`.execute(database);
           },
         },
         [waitingInputEditsMigrationName]: {

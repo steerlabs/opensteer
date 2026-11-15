@@ -463,10 +463,10 @@ function sessionContext(
   return {
     accessMode: "approval-required",
     agentTools: {
-      tools: ["thread_read", "integration_call", "computer"],
+      tools: ["opensteer_task_read", "integration_call", "computer_use"],
       toolsRevision: "test-tools-v1",
       instructions: "Host Opensteer instructions",
-      skills: ["opensteer:threads"],
+      skills: ["opensteer:tasks"],
       token: "agent",
       url: "https://host/mcp",
     },

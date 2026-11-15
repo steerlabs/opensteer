@@ -35,7 +35,7 @@ const modelSelection = ModelSelectionSchema.parse({
   providerId: "openai",
 });
 describe("TriggerControlService", () => {
-  it("admits a queued Thread message against the Occurrence ledger", async () => {
+  it("admits a queued task message against the Occurrence ledger", async () => {
     const anchor = thread();
     const queued = run(anchor);
     const queuedMessage = message(anchor.id, queued.id);
@@ -70,7 +70,12 @@ describe("TriggerControlService", () => {
         executionGeneration: 1,
         occurrenceId,
         requestFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),
-        requestId: mcpToolCallId(`trigger:${occurrenceId}`, requestId, "operation", "thread_send"),
+        requestId: mcpToolCallId(
+          `trigger:${occurrenceId}`,
+          requestId,
+          "operation",
+          "opensteer_task_send",
+        ),
         requestedBy: ownerId,
         runnerId,
         threadId,
@@ -78,7 +83,7 @@ describe("TriggerControlService", () => {
     );
     expect(enqueueThreadInput).toHaveBeenCalledWith(
       expect.objectContaining({
-        idempotencyKey: `trigger:${occurrenceId}:${mcpToolCallId(`trigger:${occurrenceId}`, requestId, "operation", "thread_send")}:message`,
+        idempotencyKey: `trigger:${occurrenceId}:${mcpToolCallId(`trigger:${occurrenceId}`, requestId, "operation", "opensteer_task_send")}:message`,
         policy: "queue",
         source: {
           kind: "trigger",
@@ -155,9 +160,9 @@ describe("TriggerControlService", () => {
     });
     await expect(
       service.handle("trigger-token", {
-        harnessInstanceId: selectedHarnessId,
+        aiAccountId: selectedHarnessId,
         requestId: crypto.randomUUID(),
-        task: "Run this elsewhere",
+        message: "Run this elsewhere",
         type: "thread.delegate",
       }),
     ).rejects.toThrow("Delegation reached the selected environment");
@@ -187,7 +192,7 @@ describe("TriggerControlService", () => {
         name: "Nightly report",
         operation: "create",
         program: {
-          toolContractVersion: 3,
+          toolContractVersion: 4,
           language: "javascript",
           source: "export default () => {}",
         },
@@ -202,12 +207,12 @@ describe("TriggerControlService", () => {
     expect(manage).toHaveBeenCalledWith(
       ownerId,
       expect.objectContaining({
-        idempotencyKey: `trigger:${occurrenceId}:${mcpToolCallId(`trigger:${occurrenceId}`, requestId, "operation", "trigger_write")}:trigger.create`,
+        idempotencyKey: `trigger:${occurrenceId}:${mcpToolCallId(`trigger:${occurrenceId}`, requestId, "operation", "opensteer_automation_create")}:trigger.create`,
       }),
       threadId,
       {
         accessMode: "full-access",
-        operationKey: `trigger:${occurrenceId}:${mcpToolCallId(`trigger:${occurrenceId}`, requestId, "operation", "trigger_write")}:trigger.write`,
+        operationKey: `trigger:${occurrenceId}:${mcpToolCallId(`trigger:${occurrenceId}`, requestId, "operation", "opensteer_automation_create")}:trigger.write`,
       },
     );
   });
@@ -249,7 +254,7 @@ function makeService(options: {
   ) => Promise<readonly ReturnType<typeof environment>[]>;
   manage?: (owner: typeof ownerId, input: TriggerControlInput) => Promise<unknown>;
   store?: Readonly<Record<string, unknown>>;
-  toolContractVersion?: 3;
+  toolContractVersion?: 4;
 }) {
   const anchor = thread();
   const claims = {
@@ -265,7 +270,7 @@ function makeService(options: {
     runnerBootId: "boot-1",
     runnerId,
     threadId,
-    toolContractVersion: options.toolContractVersion ?? 3,
+    toolContractVersion: options.toolContractVersion ?? 4,
   };
   const listEnvironmentsForUser = vi.fn(
     options.listEnvironmentsForUser ?? (async () => [environment(environmentId)]),
@@ -330,7 +335,7 @@ function makeService(options: {
             }
           | undefined
       )?.delegateThread;
-      if (!delegateThread) throw new Error("Unexpected Thread delegation");
+      if (!delegateThread) throw new Error("Unexpected task delegation");
       return delegateThread(operation.input);
     },
     enqueueAdmittedThreadInput: async (
@@ -346,7 +351,7 @@ function makeService(options: {
             }
           | undefined
       )?.enqueueThreadInput;
-      if (!enqueueThreadInput) throw new Error("Unexpected Thread message");
+      if (!enqueueThreadInput) throw new Error("Unexpected task message");
       return enqueueThreadInput(operation.input);
     },
   } as CommandService;

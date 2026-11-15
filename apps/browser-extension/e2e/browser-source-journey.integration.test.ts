@@ -568,13 +568,13 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
     });
     const parentRun = { token: parentMessage.command.context.agentTools.token };
     const signIn = async (sessionId: string, target: string) => {
-      const response = await callMcpTool(hostOrigin, parentRun.token, "copy_chrome_cookies", {
+      const response = await callMcpTool(hostOrigin, parentRun.token, "chrome_cookies_request", {
         reason: "The account page shows the user signed out.",
         tabId: sessionId === sessionOne ? viewerOne.surfaceId : viewerTwo.surfaceId,
         site: target,
       });
       if (response.isError)
-        throw new Error(`copy_chrome_cookies failed: ${JSON.stringify(response.content)}`);
+        throw new Error(`chrome_cookies_request failed: ${JSON.stringify(response.content)}`);
       const result = ChromeCookiesResultSchema.parse(response.structuredContent);
       agentResults.push(result);
       return result;
@@ -594,7 +594,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
         const request = await vi.waitFor(
           async () => {
             const rows = await signInRequests();
-            expect(rows, "copy_chrome_cookies did not open its Request").toHaveLength(1);
+            expect(rows, "chrome_cookies_request did not open its Request").toHaveLength(1);
             const request = await runtime.store.requests.get(rows[0]!.id);
             expect(request?.payload).toMatchObject({
               kind: "browser.sign-in",
@@ -684,7 +684,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
             const rows = (await signInRequests()).filter(
               (row) => !before.some(({ id }) => id === row.id),
             );
-            expect(rows, "offline copy_chrome_cookies did not open its Request").toHaveLength(1);
+            expect(rows, "offline chrome_cookies_request did not open its Request").toHaveLength(1);
             return rows[0]!;
           },
           { timeout: 10_000 },

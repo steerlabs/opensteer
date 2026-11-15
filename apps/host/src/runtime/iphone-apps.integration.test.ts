@@ -901,7 +901,7 @@ integration.sequential("iPhone integrations Host contract", () => {
     });
     expect(offlineCall).toMatchObject({ isError: true });
     expect(toolText(offlineCall)).toBe(
-      `device-offline: machineId=${phone.runnerId}, capability=apps. Device is offline. Do not request access.`,
+      `device-offline: computerId=${phone.runnerId}, capability=apps. Device is offline. Do not request access.`,
     );
     expect(macCalls).toHaveLength(0);
     await writeFile(

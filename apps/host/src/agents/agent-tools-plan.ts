@@ -9,7 +9,11 @@ import {
   platformGuideForRun,
 } from "@opensteer/agent-tools";
 import type { ThreadAccessMode, TaskPurpose } from "@opensteer/core";
-import type { RunAgentToolsPlan } from "@opensteer/protocol";
+import {
+  agentHomeSettingsErrorText,
+  type AgentHomeSettingsError,
+  type RunAgentToolsPlan,
+} from "@opensteer/protocol";
 
 /** The Host owns the complete engine-facing inventory and startup context. */
 export function agentToolsPlanForRun(input: {
@@ -22,6 +26,8 @@ export function agentToolsPlanForRun(input: {
   readonly personalContext?: boolean;
   /** The owner is in a team and this Run may use their personal context. */
   readonly knowledge?: boolean;
+  /** Why settings.json in Agent home is invalid, for the agent that can fix it. */
+  readonly settingsError?: AgentHomeSettingsError | undefined;
 }): RunAgentToolsPlan {
   const runTools = toolsFor({
     kind: "run",
@@ -42,7 +48,11 @@ export function agentToolsPlanForRun(input: {
       teamsAvailable: input.teamsAvailable === true,
       personalContext: input.personalContext !== false,
       knowledge: input.knowledge === true,
-    }) + (input.voiceCall ? `\n\n${voiceGuide}` : "");
+    }) +
+    (input.voiceCall ? `\n\n${voiceGuide}` : "") +
+    (input.settingsError
+      ? `\n\nsettings.json is invalid, so background models still use its last valid version: ${agentHomeSettingsErrorText(input.settingsError)}`
+      : "");
   const skills = [...opensteerAgentSkillsFor({ personalContext: input.personalContext !== false })];
   const toolsRevision = createHash("sha256")
     .update(JSON.stringify({ catalog: runToolsCatalog, instructions, skills }))

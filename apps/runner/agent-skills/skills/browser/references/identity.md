@@ -18,4 +18,4 @@ A browser error is about that tab or its browser: read its message, which says w
 
 Guest sign-ins cannot be saved into a profile. To keep a sign-in, open the right named profile before signing in. Never offer to convert or copy Guest.
 
-Use `pending_request` to see open Requests and `request_withdraw` for one this Thread no longer needs. Replaying the same tool call returns the same Request; a new call can create another.
+Use `opensteer_request_list` to see open Requests and `opensteer_request_withdraw` for one this task no longer needs. Replaying the same tool call returns the same Request; a new call can create another.

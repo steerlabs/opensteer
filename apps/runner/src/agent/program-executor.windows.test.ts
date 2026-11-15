@@ -173,7 +173,7 @@ function triggerContext(): TriggerExecutionContext {
       source: `export default function ({ event }) {
           return { doubled: event.payload.price * 2 };
         }`,
-      toolContractVersion: 3,
+      toolContractVersion: 4,
     },
     revisionId,
     triggerId,

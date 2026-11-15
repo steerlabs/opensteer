@@ -28,7 +28,7 @@ export function agentToolFailure(error: unknown, access: AgentToolAccess): Agent
         ? DeviceRefusalContextSchema.safeParse(error.details).data
         : undefined;
     return {
-      ...device,
+      ...(device ? { computerId: device.machineId, capability: device.capability } : {}),
       code: error.code,
       message: error.message,
       next: error.next,
