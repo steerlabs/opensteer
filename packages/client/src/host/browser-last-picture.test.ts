@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
+import { BrowserSurfaceIdSchema, type TabViewer } from "@opensteer/protocol";
 import type { BrowserFrameStore, BrowserFrameView } from "./client.js";
 import {
   browserTabPicture,
@@ -90,21 +90,27 @@ describe("last presented browser pictures", () => {
         throw new Error("A row asked for pictures.");
       },
     });
-    const client = { browserWatchFrames: watch.frames, browserFrames: control.frames };
-    expect(browserTabPicture(client, "session", tab(1))).toMatchObject({ width: 1, height: 1 });
-    expect(browserTabPicture(client, "session", tab(9))?.uri).toBe("data:image/jpeg;base64,CQ==");
-    expect(browserTabPicture(client, "session", tab(10))).toBeNull();
+    const tabViewer = (tabId: string) =>
+      ({ kind: "page", sessionId: "session", surfaceId: tabId }) as TabViewer;
+    const client = { browserWatchFrames: watch.frames, browserFrames: control.frames, tabViewer };
+    expect(browserTabPicture(client, tab(1))).toMatchObject({ width: 1, height: 1 });
+    expect(browserTabPicture(client, tab(9))?.uri).toBe("data:image/jpeg;base64,CQ==");
+    expect(browserTabPicture(client, tab(10))).toBeNull();
+    // Only the page this device's viewer of the tab bound has a picture to show.
+    expect(browserTabPicture({ ...client, tabViewer: () => null }, tab(1))).toBeNull();
+    const rebound = (tabId: string) =>
+      ({ kind: "page", sessionId: "restored", surfaceId: tabId }) as TabViewer;
+    expect(browserTabPicture({ ...client, tabViewer: rebound }, tab(1))).toBeNull();
     expect(
       browserTabPicture(
-        { browserWatchFrames: spy(watch.frames), browserFrames: spy(control.frames) },
-        "session",
+        { browserWatchFrames: spy(watch.frames), browserFrames: spy(control.frames), tabViewer },
         tab(10),
       ),
     ).toBeNull();
     expect(asked).toEqual([]);
     // Asking left tab 1 the oldest, so it is the one a new picture replaces.
     watch.remember(tab(11));
-    expect(browserTabPicture(client, "session", tab(1))).toBeNull();
+    expect(browserTabPicture(client, tab(1))).toBeNull();
   });
 
   it("forgets a picture once its tab closes or loads another page", () => {

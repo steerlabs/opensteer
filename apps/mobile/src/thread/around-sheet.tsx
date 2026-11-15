@@ -1,5 +1,6 @@
 import {
   canRespondToRequests,
+  conversationThreadIds,
   familyGlanceMarks,
   formatMoment,
   sameTaskFamily,
@@ -9,11 +10,11 @@ import {
   threadMark,
   type FamilyTask,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type TaskFamily,
   type ThreadAutomation,
 } from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
+import { useHostSelector, useTabIcon } from "@opensteer/client/react";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import * as Haptics from "expo-haptics";
@@ -24,6 +25,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import {
@@ -42,7 +44,6 @@ import {
 } from "react-native";
 import { opensteerAppGlyph } from "../browser/agent-surface.js";
 import { useOpenPlace, useShowTab } from "../tabs/viewer-open.js";
-import { selectTabs } from "../tabs/tabs-host.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { color, radius, space, type } from "../theme.js";
 import { AgentOrb } from "../team/team-marks.js";
@@ -125,15 +126,16 @@ function Around(props: {
     ),
     sameTaskMark,
   );
-  const places = useHostSelector(
+  const listed = useHostSelector(
     hostClient,
     useCallback(
-      (snapshot: HostSnapshot) =>
-        aroundPlaces({ ...snapshot, tabs: selectTabs(snapshot) }, threadId),
+      (snapshot: HostSnapshot) => aroundPlaces(snapshot, threadId, noActivity),
       [threadId],
     ),
     sameAroundPlaces,
   );
+  // Who works where comes from the Host's per-tab activity, which is not part of the snapshot.
+  const places = useAroundWorking(hostClient, listed, threadId);
   const family = useHostSelector(
     hostClient,
     useCallback((snapshot: HostSnapshot) => taskFamily(snapshot, threadId), [threadId]),
@@ -156,7 +158,7 @@ function Around(props: {
 
   const showTab = useShowTab(deploymentId, threadId);
   const leave = useCallback(() => navigation.goBack(), [navigation]);
-  const openDestination = useOpenPlace(hostClient, deploymentId, threadId, leave);
+  const openDestination = useOpenPlace(deploymentId, threadId, leave);
   const openPlace = useCallback(
     (place: AroundPlace) => {
       if (place.destination.kind !== "tab") return openDestination(place.destination);
@@ -613,7 +615,7 @@ const Page = memo(function Page(props: {
           ]}
         >
           {item.kind === "place" ? (
-            <PlaceRow onOpen={rows.openPlace} place={item.place} />
+            <PlaceRow hostClient={rows.hostClient} onOpen={rows.openPlace} place={item.place} />
           ) : item.kind === "task" ? (
             <TaskRow onOpen={rows.openThread} task={item.task} />
           ) : (
@@ -652,10 +654,12 @@ const placeKind = {
 } as const;
 
 const PlaceRow = memo(function PlaceRow(props: {
+  readonly hostClient: HostClient;
   readonly place: AroundPlace;
   readonly onOpen: (place: AroundPlace) => void;
 }): ReactNode {
   const { place } = props;
+  const favicon = useTabIcon(props.hostClient, place.key, place.iconRef);
   const detail = [place.working && "Working here", place.detail].filter(Boolean).join(" · ");
   return (
     <Pressable
@@ -672,7 +676,7 @@ const PlaceRow = memo(function PlaceRow(props: {
       style={({ pressed }) => [styles.row, pressed && styles.pressed]}
     >
       <View style={styles.icon}>
-        {place.favicon === null ? (
+        {favicon === null ? (
           <Symbol
             name={place.glyph}
             size={16}
@@ -681,7 +685,7 @@ const PlaceRow = memo(function PlaceRow(props: {
         ) : (
           <Image
             accessibilityIgnoresInvertColors
-            source={{ uri: place.favicon }}
+            source={{ uri: favicon }}
             style={styles.favicon}
           />
         )}
@@ -951,3 +955,49 @@ const styles = StyleSheet.create({
   state: { alignItems: "flex-end", maxWidth: "40%" },
   empty: { paddingHorizontal: space[4], paddingTop: space[16] },
 });
+
+const noActivity = () => [];
+
+/**
+ * The listed places with each marked working while one of this conversation's
+ * agents acts in that very tab, working ones first; recomputed only when the
+ * activity of a listed tab changes.
+ */
+function useAroundWorking(
+  hostClient: HostClient,
+  listed: readonly AroundPlace[],
+  threadId: string,
+): readonly AroundPlace[] {
+  const keys = useMemo(() => listed.map(({ key }) => key), [listed]);
+  const version = useRef(0);
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      const releases = keys.map((key) =>
+        hostClient.subscribePlaceActivity(key, () => {
+          version.current++;
+          listener();
+        }),
+      );
+      return () => {
+        for (const release of releases) release();
+      };
+    },
+    [hostClient, keys],
+  );
+  const read = useCallback(() => version.current, []);
+  const seen = useSyncExternalStore(subscribe, read, read);
+  return useMemo(() => {
+    void seen;
+    const threads = conversationThreadIds(hostClient.getSnapshot(), threadId);
+    const marked = listed.map((place) => {
+      const working = hostClient
+        .placeActivity(place.key)
+        .some((record) => threads.has(record.threadId));
+      return working === place.working ? place : { ...place, working };
+    });
+    return [
+      ...marked.filter(({ working }) => working),
+      ...marked.filter(({ working }) => !working),
+    ];
+  }, [hostClient, listed, seen, threadId]);
+}

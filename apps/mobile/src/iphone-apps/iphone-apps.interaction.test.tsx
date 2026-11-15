@@ -3,7 +3,7 @@
 import { unwrapRpcResult } from "@opensteer/client/host";
 import type { ComputerUseData } from "@opensteer/client/integrations";
 import { MockHostClient } from "@opensteer/client/mock";
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 import { act, useCallback, useEffect, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -968,11 +968,11 @@ function useAppsData(
   runnerId: string,
 ): {
   readonly data: ComputerUseData | null;
-  readonly machine: LegacyMachineSummary | null;
+  readonly machine: MachineSummary | null;
   readonly reload: () => Promise<void>;
 } {
   const [data, setData] = useState<ComputerUseData | null>(null);
-  const [machine, setMachine] = useState<LegacyMachineSummary | null>(null);
+  const [machine, setMachine] = useState<MachineSummary | null>(null);
   const reload = useCallback(async () => {
     const [dashboard, platform, setup] = await Promise.all([
       host.rpc["integrations.get"]({}).then(unwrapRpcResult),

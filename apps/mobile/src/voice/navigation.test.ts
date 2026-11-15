@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import type { TabRoute } from "../browser/surface-route.js";
-import { tabId } from "../../test-support/mock-tabs.js";
+import { TabIdSchema } from "@opensteer/core";
 import { navigationRef } from "../navigation-ref.js";
 import { show } from "./navigation.js";
 const ref = vi.hoisted(() => ({
@@ -28,6 +28,7 @@ beforeEach(() => {
     routes: [{ key: "home", name: "Home", params: { deploymentId: "d" } }, ref.getCurrentRoute()],
   }));
 });
+const tabId = (name: string) => TabIdSchema.parse(`tab_${name}`);
 const tab = (name: string) => ({ kind: "tab" as const, tabId: tabId(name) });
 
 it("reports failure when navigation is not ready", () => {

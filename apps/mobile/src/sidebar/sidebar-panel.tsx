@@ -11,11 +11,17 @@ import {
   taskTime,
   type DoneTaskList,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type TaskList,
   type TaskRow,
 } from "@opensteer/client/host";
-import { useHostSelector, useSyncingPlaceholder } from "@opensteer/client/react";
+import {
+  usePlaceAgents,
+  useSyncingPlaceholder,
+  useTab,
+  useTabStrip,
+  useTabsSyncing,
+} from "@opensteer/client/react";
 import type { TabId } from "@opensteer/core";
 import {
   memo,
@@ -39,9 +45,7 @@ import {
   View,
 } from "react-native";
 import { ActingDot, agentWorkingLabel } from "../browser/acting-dot.js";
-import { tabAgents } from "../tabs/tab-agents.js";
-import { layoutTabIds, tabKindGlyph, tabTitle, tabWhat } from "../tabs/tab-entries.js";
-import { useTab, useTabLayout, useTabsModel, useTabsSyncing } from "../tabs/use-tabs.js";
+import { tabKindGlyph, tabTitle, tabWhat } from "../tabs/tab-entries.js";
 import { sidebarBottom, sidebarTop } from "../layout.js";
 import { statusTone } from "../screens/deployment-row.js";
 import {
@@ -802,9 +806,8 @@ const SidebarTabs = memo(function SidebarTabs(props: {
   readonly onOpen: (tabId: TabId) => void;
   readonly selectedTabId: TabId | null;
 }): ReactNode {
-  const model = useTabsModel(props.hostClient);
-  const order = layoutTabIds(useTabLayout(model));
-  const syncing = useTabsSyncing(model) && order.length === 0;
+  const order = useTabStrip(props.hostClient).ordered;
+  const syncing = useTabsSyncing(props.hostClient) && order.length === 0;
   const finding = useSyncingPlaceholder(syncing, order.length);
   const shown = order.slice(0, sidebarTabLimit);
   const { selectedTabId } = props;
@@ -818,18 +821,15 @@ const SidebarTabs = memo(function SidebarTabs(props: {
           Finding tabs…
         </AppText>
       ) : null}
-      {model === null
-        ? null
-        : shown.map((tabId) => (
-            <SidebarTabRow
-              current={tabId === selectedTabId}
-              hostClient={props.hostClient}
-              key={tabId}
-              model={model}
-              onOpen={props.onOpen}
-              tabId={tabId}
-            />
-          ))}
+      {shown.map((tabId) => (
+        <SidebarTabRow
+          current={tabId === selectedTabId}
+          hostClient={props.hostClient}
+          key={tabId}
+          onOpen={props.onOpen}
+          tabId={tabId}
+        />
+      ))}
     </>
   );
 });
@@ -838,18 +838,13 @@ const SidebarTabs = memo(function SidebarTabs(props: {
 const SidebarTabRow = memo(function SidebarTabRow(props: {
   readonly current: boolean;
   readonly hostClient: HostClient;
-  readonly model: NonNullable<ReturnType<typeof useTabsModel>>;
   readonly onOpen: (tabId: TabId) => void;
   readonly tabId: TabId;
 }): ReactNode {
-  const tab = useTab(props.model, props.tabId);
-  const usedBy = tab?.usedBy;
-  const selectActing = useCallback(
-    (snapshot: HostSnapshot) =>
-      usedBy !== undefined && tabAgents(usedBy, snapshot).agents.some(({ acting }) => acting),
-    [usedBy],
-  );
-  const acting = useHostSelector(props.hostClient, selectActing);
+  const tab = useTab(props.hostClient, props.tabId);
+  // Working while one of its agents acts in this very tab, not merely while its task runs.
+  const agents = usePlaceAgents(props.hostClient, props.tabId);
+  const acting = agents.unnamedActing || agents.agents.some((agent) => agent.acting);
   if (tab === undefined) return null;
   const unavailable = tab.state === "unavailable";
   const where = tabWhat(tab);

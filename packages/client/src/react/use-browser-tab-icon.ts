@@ -96,3 +96,19 @@ export function useBrowserTabIcon(
   }, [connection, hostClient, iconRef, key, sessionId]);
   return src;
 }
+
+/**
+ * A page tab's site icon, served through the session this device's own view
+ * of the tab is bound to; null until it is bound and the icon is read.
+ */
+export function useTabIcon(
+  hostClient: HostClient,
+  tabId: string | null,
+  iconRef: string | null,
+): string | null {
+  const sessionId = useHostSelector(hostClient, () => {
+    const viewer = tabId === null ? null : hostClient.tabViewer(tabId);
+    return viewer?.kind === "page" ? viewer.sessionId : null;
+  });
+  return useBrowserTabIcon(hostClient, sessionId ?? "", sessionId ? iconRef : null);
+}

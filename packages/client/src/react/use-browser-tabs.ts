@@ -23,7 +23,10 @@ export function useBrowserViewerSurface(
  * never retains it, which would wake it; a tab the client does not list
  * counts as awake.
  */
-export function useBrowserTabAwake(client: HostClient, tabId: string | undefined): boolean {
+export function useBrowserTabAwake(
+  client: Pick<HostClient, "getSnapshot">,
+  tabId: string | undefined,
+): boolean {
   const tabs = client.getSnapshot().tabs;
   const subscribe = useCallback(
     (listener: () => void) =>

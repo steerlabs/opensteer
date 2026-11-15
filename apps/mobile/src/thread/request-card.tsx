@@ -1,8 +1,4 @@
-import type {
-  HostClient,
-  LegacyHostSnapshot as HostSnapshot,
-  SurfaceModel,
-} from "@opensteer/client/host";
+import type { HostClient, HostSnapshot, SurfaceModel } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { requestAgentProposedLabel, requestTitleText, type Request } from "@opensteer/core";
 import { useEffect, useRef, useState, type ReactNode } from "react";

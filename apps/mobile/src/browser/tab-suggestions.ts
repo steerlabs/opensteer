@@ -1,7 +1,6 @@
-import type { HostClient, TabsReadModel } from "@opensteer/client/host";
+import { layoutTabIds, type HostClient, type TabsReadModel } from "@opensteer/client/host";
+import { useHostSelector } from "@opensteer/client/react";
 import { useMemo, useSyncExternalStore } from "react";
-import { layoutTabIds } from "../tabs/tab-entries.js";
-import { useTabsModel } from "../tabs/use-tabs.js";
 import type { OpenTabSuggestion } from "./address-bar.js";
 import { pageSite } from "./surface-route.js";
 
@@ -58,10 +57,9 @@ export function tabSuggestions(model: TabsReadModel) {
 const noSuggestions: readonly OpenTabSuggestion[] = [];
 const inactive = { read: () => noSuggestions, subscribe: () => () => {} };
 export function useTabSuggestions(client: HostClient, enabled = true) {
-  const model = useTabsModel(client);
-  const selection = useMemo(
-    () => (enabled && model !== null ? tabSuggestions(model) : inactive),
-    [enabled, model],
-  );
+  const model = useHostSelector(client, selectTabs);
+  const selection = useMemo(() => (enabled ? tabSuggestions(model) : inactive), [enabled, model]);
   return useSyncExternalStore(selection.subscribe, selection.read, selection.read);
 }
+
+const selectTabs = (snapshot: { readonly tabs: TabsReadModel }) => snapshot.tabs;

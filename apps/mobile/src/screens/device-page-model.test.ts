@@ -1,5 +1,5 @@
 import { withDeviceSwitch as withSwitch } from "@opensteer/client/computers";
-import type { MachineAccessPolicy, LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineAccessPolicy, MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
 import { deviceRemoval, deviceSwitches, homeFixed } from "./device-page-model.js";
 
@@ -11,7 +11,7 @@ const policy: MachineAccessPolicy = {
   reach: "nobody",
   shares: [{ mode: "read", path: "/Users/alex/Projects" }],
 };
-const machine = (overrides: Partial<LegacyMachineSummary>) =>
+const machine = (overrides: Partial<MachineSummary>) =>
   ({
     access: { activeSessions: [], ownerReachAvailable: true, policy, revision: 3 },
     allowedModules: ["browser", "integrations", "shell"],
@@ -26,7 +26,7 @@ const machine = (overrides: Partial<LegacyMachineSummary>) =>
     revocable: true,
     status: "online",
     ...overrides,
-  }) as LegacyMachineSummary;
+  }) as MachineSummary;
 
 describe("a device page's switches", () => {
   it("offers only what the enrollment's ceiling lends, with Home's fixed rows", () => {

@@ -1,4 +1,5 @@
 import { encodeBase64Url } from "@opensteer/shared/base64url";
+import type { TabViewer } from "@opensteer/protocol";
 import type { BrowserFrameStore, BrowserFrameView } from "./client.js";
 
 export interface BrowserLastPicture {
@@ -82,19 +83,22 @@ export function getBrowserLastPicture(
 }
 
 /**
- * What a list row may show for a tab: a picture this device already holds.
- * Asking never streams, requests, subscribes or reorders what is kept.
+ * What a list row may show for a tab: a picture this device already holds of
+ * the page its own viewer bound. Asking never streams, requests, subscribes
+ * or reorders what is kept.
  */
 export function browserTabPicture(
   client: {
     readonly browserWatchFrames: BrowserFrameStore;
     readonly browserFrames: BrowserFrameStore;
+    tabViewer(tabId: string): TabViewer | null;
   },
-  sessionId: string,
   tabId: string,
 ): BrowserTabPicture | null {
+  const viewer = client.tabViewer(tabId);
+  if (viewer?.kind !== "page") return null;
   for (const frames of [client.browserWatchFrames, client.browserFrames]) {
-    const picture = current(frames, sessionId, tabId)?.entry.picture;
+    const picture = current(frames, viewer.sessionId, tabId)?.entry.picture;
     if (picture)
       return {
         get uri() {

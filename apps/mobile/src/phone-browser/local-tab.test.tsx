@@ -41,14 +41,13 @@ test("a returning local screen holds its intent across Host activation and never
   let releasedAdmissions = 0;
   let activations = 0;
   const hostClient = {
-    activatePersonalTab: async (tabId: string, options: unknown) => {
+    activateTab: async (tabId: string) => {
       expect(tabId).toBe("tab");
-      expect(options).toEqual({ asleep: true });
       activations++;
       expect(intents).toBe(1);
       await activated.promise;
       admission = { ...original, sessionId: "readmitted" };
-      return { session: { id: "readmitted" } };
+      return { kind: "page", sessionId: "readmitted", surfaceId: "tab" };
     },
     retainBrowserViewer: (sessionId: string, surfaceId: string, options: unknown) => {
       expect(sessionId).toBe("readmitted");

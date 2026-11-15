@@ -9,6 +9,7 @@ import type { HostedBrowserBootstrap as BrowserWireBootstrap } from "@opensteer/
 import type { TabBootstrap } from "@opensteer/protocol";
 import { tabFixture } from "../test-support/tab-fixtures.js";
 import { schedulesClient } from "./schedules.js";
+import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 
 import {
   ModelSelectionSchema,
@@ -27,7 +28,7 @@ import {
   type Thread,
   type ThreadInputQueue,
 } from "@opensteer/core";
-import { hostApiVersion } from "@opensteer/deployment-authority";
+import { apiVersionQueryParameter, hostApiVersion } from "@opensteer/deployment-authority";
 import { createIntegrationId } from "@opensteer/integration-core";
 import {
   BrowserSurfaceIdSchema,
@@ -211,15 +212,133 @@ describe("HttpHostClient tabs", () => {
         surfaceId: tabId,
       });
       expect(f.client.tabViewer(tabId)).toMatchObject({ kind: "page", sessionId });
-      const release = f.client.retainBrowserViewer(sessionId, tabId, { picture: false });
+      const release = f.client.retainBrowserViewer(sessionId, tabId);
       expect(viewers()).toHaveLength(1);
+      const viewer = viewers()[0]!.socket;
+      viewer.open();
+      viewer.receiveRaw({
+        type: "browser.snapshot",
+        sessionId,
+        access: "read-write",
+        state: "ready",
+        dialog: null,
+        targetedStreamingVersion: 1,
+        surfaces: [{ id: tabId, active: true, title: "Example", url: "https://example.test/" }],
+      });
+      viewer.receiveBinary(browserFrame(tabId));
+      expect(f.client.browserFrames.get(sessionId, tabId)).not.toBeNull();
       f.carrier.receiveRaw({
         type: "host.tabs",
         stream: { op: "change", generation: "g1", base: 0, revision: 1, remove: [tabId] },
       });
       expect(f.client.tabViewer(tabId)).toBeNull();
       expect(f.client.getSnapshot().browserSessions.some(({ id }) => id === sessionId)).toBe(false);
+      // The closed tab's transport and picture go with it, though a viewer still holds them.
+      expect(viewer.readyState).toBe(3);
+      expect(f.client.browserFrames.get(sessionId, tabId)).toBeNull();
       release();
+    } finally {
+      f.client.dispose();
+    }
+  });
+
+  it("closes a page's viewer transport when the Host says its tab became unavailable", async () => {
+    const f = await tabsHost();
+    const { sessionId, tabId } = f.page;
+    try {
+      publishTabs(f.carrier, [f.page.tab], layoutOf([f.page.tab]));
+      await f.client.activateTab(tabId);
+      const release = f.client.retainBrowserViewer(sessionId, tabId, { picture: false });
+      const viewer = f.sockets.find(({ url }) => url.includes("/browser-sessions/"))!.socket;
+      viewer.open();
+      f.carrier.receiveRaw({
+        type: "host.tabs",
+        stream: {
+          op: "change",
+          generation: "g1",
+          base: 0,
+          revision: 1,
+          update: [
+            {
+              tabId,
+              state: "unavailable",
+              unavailableCode: "runtime-failed",
+              unavailableReason: "The browser stopped.",
+            },
+          ],
+        },
+      });
+      expect(viewer.readyState).toBe(3);
+      release();
+    } finally {
+      f.client.dispose();
+    }
+  });
+
+  it("binds nothing for a tab the stream closed while its activation was answering", async () => {
+    const f = await tabsHost();
+    const { sessionId, tabId } = f.page;
+    try {
+      publishTabs(f.carrier, [f.page.tab], layoutOf([f.page.tab]));
+      const answer = deferred<void>();
+      const fetch = f.page.fetch.getMockImplementation()!;
+      f.page.fetch.mockImplementation(async (input, init) => {
+        const url = new URL(input instanceof Request ? input.url : input.toString());
+        if (rpcPayload(url, init).type === "tab.activate") await answer.promise;
+        return fetch(input, init);
+      });
+      const activation = f.client.activateTab(tabId);
+      f.carrier.receiveRaw({
+        type: "host.tabs",
+        stream: { op: "change", generation: "g1", base: 0, revision: 1, remove: [tabId] },
+      });
+      answer.resolve();
+      await activation;
+      expect(f.client.tabViewer(tabId)).toBeNull();
+      expect(f.client.getSnapshot().browserSessions.some(({ id }) => id === sessionId)).toBe(false);
+      expect(() =>
+        f.client.retainBrowserViewer(sessionId, tabId, { picture: false })(),
+      ).not.toThrow();
+      expect(f.sockets.filter(({ url }) => url.includes("/browser-sessions/"))).toEqual([]);
+    } finally {
+      f.client.dispose();
+    }
+  });
+
+  it("lets a tab answer meant for the previous account reach neither its list nor its views", async () => {
+    let signedIn = true;
+    const page = pageTabHost(makeDeployment());
+    const fetch = page.fetch.getMockImplementation()!;
+    const answers = { activate: deferred<void>(), open: deferred<void>() };
+    page.fetch.mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      const type = rpcPayload(url, init).type;
+      if (type === "tab.activate") await answers.activate.promise;
+      if (type === "tab.open") {
+        await answers.open.promise;
+        const tab = tabFixture({ tabId: BrowserSurfaceIdSchema.parse("opened") });
+        return json({ tab, layout: layoutOf([page.tab, tab], 9) });
+      }
+      if (!url.pathname.endsWith("/commands.dispatch") && !signedIn)
+        return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
+      return fetch(input, init);
+    });
+    const f = await tabsHost(page);
+    try {
+      publishTabs(f.carrier, [page.tab], layoutOf([page.tab]));
+      const activation = f.client.activateTab(page.tabId);
+      const opening = f.client.openTab({ kind: "page", url: "https://example.test/", guest: true });
+      signedIn = false;
+      await expect(f.client.refresh()).rejects.toThrow();
+      signedIn = true;
+      await f.client.load();
+      answers.activate.resolve();
+      answers.open.resolve();
+      await expect(activation).rejects.toThrow("signed-in account changed");
+      await expect(opening).rejects.toThrow("signed-in account changed");
+      expect(f.client.tabViewer(page.tabId)).toBeNull();
+      expect(f.client.getSnapshot().browserSessions).toEqual([]);
+      expect(f.client.getSnapshot().tabs.get("opened")).toBeUndefined();
     } finally {
       f.client.dispose();
     }
@@ -8628,8 +8747,10 @@ describe("HttpHostClient owner views", () => {
     const commands: Readonly<Record<string, unknown>>[] = [];
     const host = {
       commandReplies: 0,
+      /** What the bootstrap lists; a view's tab is listed when a case activates it. */
+      tabs: emptyTabs,
       bootstrap: async (): Promise<Response> =>
-        json({ ...bootstrap([workspace]), machines: machines() }),
+        json({ ...bootstrap([workspace], undefined, host.tabs), machines: machines() }),
     };
     const client = createHttpHostClient({
       capabilities: ["ownerViewWindows"],
@@ -8639,7 +8760,10 @@ describe("HttpHostClient owner views", () => {
           const payload = rpcPayload(url, init);
           if (payload.type === "browser.history.clear" || payload.type === "browser.history.remove")
             return json({ type: payload.type });
-          if (typeof payload.type === "string" && payload.type.startsWith("computer.view.")) {
+          if (
+            typeof payload.type === "string" &&
+            (payload.type.startsWith("computer.view.") || payload.type === "tab.activate")
+          ) {
             commands.push(payload);
             const response = await answer(payload);
             host.commandReplies++;
@@ -8810,6 +8934,103 @@ describe("HttpHostClient owner views", () => {
     await vi.advanceTimersByTimeAsync(300_000);
     expect(renewals(host.commands)).toBe(0);
     host.client.dispose();
+  });
+
+  /** A listed tab of `kind` on the view's machine, which the Host activates into `view`. */
+  function viewTab(
+    host: ReturnType<typeof ownerViewHost>,
+    kind: "window" | "phone",
+    view: { readonly machineId: string },
+  ) {
+    const tab = tabFixture({
+      tabId: BrowserSurfaceIdSchema.parse(`${kind}-tab`),
+      kind,
+      computer: { computerId: RunnerIdSchema.parse(view.machineId), name: "Mac" },
+    });
+    host.host.tabs = {
+      tabs: [tab],
+      layout: { revision: 1, items: [{ kind: "tab", tabId: tab.tabId }] },
+      complete: true,
+    };
+    return tab;
+  }
+
+  it("arms a phone's one-shot wake only for the person's explicit Open", async () => {
+    const { machine, view: app } = await ownerViewWorld();
+    const view = ComputerViewSchema.parse({
+      ...app,
+      target: { kind: "phone", display: "main" },
+      window: null,
+    });
+    let tab!: Tab;
+    const host = ownerViewHost(
+      () => [machine],
+      async () => json({ tab, viewer: { kind: "phone", view } }),
+    );
+    tab = viewTab(host, "phone", view);
+    try {
+      await host.client.load();
+      const arm = vi.spyOn(sharedDisplayStreams(host.client), "armAutoWake");
+      // A reactivation is accepted and shown, but never wakes the phone.
+      expect(await host.client.activateTab(tab.tabId)).toEqual({ kind: "phone", view });
+      expect(host.client.tabViewer(tab.tabId)).toEqual({ kind: "phone", view });
+      expect(arm).not.toHaveBeenCalled();
+      await host.client.activateTab(tab.tabId, { wake: true });
+      expect(arm).toHaveBeenCalledExactlyOnceWith({
+        kind: "owner-view",
+        viewId: view.viewId,
+        generation: view.generation,
+      });
+    } finally {
+      host.client.dispose();
+    }
+  });
+
+  it("never brings back a view the Host removed while its tab's activation was answering", async () => {
+    const { machine, view } = await ownerViewWorld();
+    const without = { ...machine, computerUse: { ...machine.computerUse!, ownerViews: [] } };
+    let listed: readonly unknown[] = [without];
+    const answering = deferred<void>();
+    let tab!: Tab;
+    const host = ownerViewHost(
+      () => listed,
+      async () => {
+        await answering.promise;
+        return json({ tab, viewer: { kind: "window", view } });
+      },
+    );
+    tab = viewTab(host, "window", view);
+    const shown = () =>
+      host.client
+        .getSnapshot()
+        .machines.flatMap((candidate) => candidate.computerUse?.ownerViews ?? [])
+        .filter((candidate) => candidate.viewId === view.viewId);
+    try {
+      await host.client.load();
+      const socket = host.connect();
+      const activation = host.client.activateTab(tab.tabId);
+      // Another device closed it; that notice arrives before this device's answer.
+      socket.receive({
+        type: "host.computer-view.removed",
+        viewId: view.viewId,
+        generation: view.generation,
+        machineId: view.machineId,
+        reason: "closed",
+      } as HostToClientMessage);
+      answering.resolve();
+      await activation;
+      expect(shown()).toEqual([]);
+      // Nor does a reread that left before the removal.
+      listed = [machine];
+      await host.client.refresh();
+      expect(shown()).toEqual([]);
+      // A newer generation of the same view is a new open, and is shown.
+      const reopened = { ...view, generation: view.generation + 1 };
+      socket.receive({ type: "host.computer-view.changed", view: reopened });
+      expect(shown()).toEqual([reopened]);
+    } finally {
+      host.client.dispose();
+    }
   });
 });
 
@@ -10492,6 +10713,29 @@ function parseSent(socket: FakeSocket, index: number): Record<string, unknown> {
   return JSON.parse(socket.sent[index] ?? "{}") as Record<string, unknown>;
 }
 
+/** One page picture as a viewer socket carries it. */
+function browserFrame(surfaceId: string): ArrayBuffer {
+  const header = new TextEncoder().encode(
+    JSON.stringify({
+      encoding: "jpeg",
+      frameId: 1,
+      geometryRevision: 1,
+      watchToken: "00000000-0000-4000-8000-000000000001",
+      rasterHeight: 1,
+      rasterWidth: 1,
+      surfaceId,
+      viewportHeight: 720,
+      viewportWidth: 1_280,
+    }),
+  );
+  const image = Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]);
+  const frame = new Uint8Array(4 + header.byteLength + image.byteLength);
+  new DataView(frame.buffer).setUint32(0, header.byteLength, false);
+  frame.set(header, 4);
+  frame.set(image, 4 + header.byteLength);
+  return frame.buffer;
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((settled) => {
@@ -11270,6 +11514,10 @@ it.each([false, true])(
       expect(new URL(connection.url).searchParams.get("passkeys")).toBe(capable ? "notice" : null);
       expect(new URL(connection.url).searchParams.get("popups")).toBe("1");
       expect(new URL(connection.url).searchParams.get("autofill")).toBe("2");
+      expect(new URL(connection.url).searchParams.get("basicInput")).toBe("1");
+      expect(new URL(connection.url).searchParams.get(apiVersionQueryParameter)).toBe(
+        String(hostApiVersion),
+      );
       const popups: string[] = [];
       const stopPopups = client.subscribeBrowserPopups(sessionId, tabId, (id) => popups.push(id));
       connection.socket.open();
@@ -11281,8 +11529,15 @@ it.each([false, true])(
         dialog: null,
         targetedStreamingVersion: 1,
         surfaces: [{ id: tabId, active: true, title: "Example", url: "https://example.test" }],
+        basicInput: 1,
         ...(capable ? { passkeys: "notice" } : {}),
       });
+      // Only what the Host returned is offered; a watcher never asks for input.
+      expect(client.browserViewerState(sessionId, tabId).input).toBe("basic");
+      const releaseWatch = client.retainBrowserWatch(sessionId, tabId);
+      const watch = sockets.find(({ url }) => new URL(url).searchParams.get("mode") === "watch")!;
+      expect(new URL(watch.url).searchParams.has("basicInput")).toBe(false);
+      releaseWatch();
       if (capable) {
         connection.socket.receiveRaw({ type: "browser.passkey.notice", surfaceId: tabId });
         expect(client.browserPasskeys.get(sessionId, tabId)).toEqual({ kind: "notice" });

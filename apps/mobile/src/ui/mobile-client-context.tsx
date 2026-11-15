@@ -1,4 +1,4 @@
-import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
+import type { HostClient, HostSnapshot } from "@opensteer/client/host";
 import {
   createContext,
   useCallback,

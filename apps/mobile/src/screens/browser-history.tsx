@@ -1,8 +1,4 @@
-import {
-  canRespondToRequests,
-  type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
-} from "@opensteer/client/host";
+import { canRespondToRequests, type HostClient, type HostSnapshot } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import type { BrowserHistoryEntry } from "@opensteer/protocol";
 import type { StaticScreenProps } from "@react-navigation/native";

@@ -1,9 +1,7 @@
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { conversationRoute, show, type ShowTarget } from "./navigation.js";
 import { VoiceController, type VoiceTarget } from "@opensteer/client/voice";
-import { handlePersonShow, type LegacyHostSnapshot } from "@opensteer/client/host";
-import { TabIdSchema } from "@opensteer/core";
-import { selectTabs } from "../tabs/tabs-host.js";
+import { handlePersonShow } from "@opensteer/client/host";
 import { VoiceContext } from "@opensteer/client/react";
 import { AppState } from "react-native";
 import { randomUUID } from "expo-crypto";
@@ -64,8 +62,7 @@ export function VoiceProvider({ children }: { readonly children: ReactNode }): R
           threadId: here && route?.name === "Thread" ? (params?.threadId ?? null) : null,
         },
         (target) => {
-          const shown = showTarget(hostClient.getSnapshot(), target);
-          return shown !== null && show(client.getSnapshot().selection.deploymentId, shown);
+          return show(client.getSnapshot().selection.deploymentId, showTarget(target));
         },
       );
       if (shown) created.showed(message);
@@ -94,28 +91,7 @@ function BackgroundStop({ controller }: { readonly controller: VoiceController }
   return null;
 }
 
-/**
- * A show's place as the tab already in the list for it. A closed tab is not
- * reopened and nothing stands in for it: then nothing is shown.
- * (Delete once the shared client hands shows over as `{tabId}`.)
- */
-function showTarget(snapshot: LegacyHostSnapshot, target: VoiceTarget): ShowTarget | null {
-  if (target.kind === "thread") return target;
-  const { destination } = target;
-  const tabs = selectTabs(snapshot);
-  const listed = [...(tabs?.rows.values() ?? [])].find((tab) =>
-    destination.kind === "browser"
-      ? tab.tabId === destination.tabId
-      : destination.kind === "opensteer-app"
-        ? tab.kind === "app" && tab.appId === destination.appId
-        : destination.kind === "phone"
-          ? tab.kind === "phone" && tab.computer.computerId === destination.machineId
-          : false,
-  );
-  if (listed) return { kind: "tab", tabId: listed.tabId };
-  // A page's tab is its own id even before the list has caught up.
-  const page = destination.kind === "browser" ? TabIdSchema.safeParse(destination.tabId) : null;
-  return page?.success === true && (tabs === null || !tabs.complete)
-    ? { kind: "tab", tabId: page.data }
-    : null;
+/** Where a show goes on this phone: `handlePersonShow` passes only a listed tab, never a closed one. */
+function showTarget(target: VoiceTarget): ShowTarget {
+  return target.kind === "thread" ? target : { kind: "tab", tabId: target.destination.tabId };
 }

@@ -6,7 +6,7 @@ import {
   sectionAutomations,
   unwrapRpcResult,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
 } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { createId } from "@opensteer/core";

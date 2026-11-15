@@ -41,7 +41,7 @@ import {
   type WorkRow,
   type WorkSummary,
 } from "@opensteer/client/host";
-import { placeIdentityKey, voiceCallSeed } from "@opensteer/core";
+import { voiceCallSeed } from "@opensteer/core";
 import { replyParts, type ReplyPart } from "@opensteer/shared/markdown";
 import { memo, useContext, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, View, useWindowDimensions } from "react-native";
@@ -1057,8 +1057,7 @@ function StepsRow(props: {
             <View style={{ flexDirection: "row" }}>
               {row.places.slice(0, 3).map((entry) => {
                 const place =
-                  row.currentPlace &&
-                  placeIdentityKey(row.currentPlace.place) === placeIdentityKey(entry.place)
+                  row.currentPlace && row.currentPlace.tabId === entry.tabId
                     ? row.currentPlace
                     : entry;
                 return (

@@ -1,6 +1,15 @@
-import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
-import type { Tab, TabId } from "@opensteer/core";
+import type {
+  HostClient,
+  HostSnapshot,
+  TabFilter as SharedTabFilter,
+} from "@opensteer/client/host";
+import {
+  useHostSelector,
+  useTabDeviceChoice,
+  useTabFilterMatches,
+  useTabsSyncing,
+} from "@opensteer/client/react";
+import type { TabId } from "@opensteer/core";
 import {
   StackActions,
   useIsFocused,
@@ -19,8 +28,7 @@ import {
 import { Pressable, StyleSheet, View } from "react-native";
 import { tabRoute } from "../browser/surface-route.js";
 import { TabList } from "../tabs/tab-list.js";
-import { tabsClient } from "../tabs/tabs-host.js";
-import { useOperation, useTabsModel, useTabsSyncing } from "../tabs/use-tabs.js";
+import { useOperation } from "../tabs/use-tabs.js";
 import { color, space, touchTarget } from "../theme.js";
 import { NativeMenu, type NativeMenuOption } from "../thread/composer-menu.js";
 import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
@@ -80,17 +88,6 @@ export interface TabFilter {
 
 const allTabs: TabFilter = { agents: false, computerId: null };
 
-/** The computers the list spans, by name; the filter is offered only for more than one. */
-function selectComputers(model: ReturnType<typeof useTabsModel>): string {
-  if (model === null) return "";
-  const names = new Map<string, string>();
-  for (const tab of model.rows.values()) names.set(tab.computer.computerId, tab.computer.name);
-  return [...names]
-    .map(([id, name]) => `${id}\t${name}`)
-    .sort()
-    .join("\n");
-}
-
 function TabsForReader(props: {
   readonly deploymentId: string;
   readonly hostClient: HostClient;
@@ -100,20 +97,20 @@ function TabsForReader(props: {
   const focused = useIsFocused();
   const column = useReadingColumn();
   const insets = useListContentInsets(space[32]);
-  const model = useTabsModel(hostClient);
-  const syncing = useTabsSyncing(model);
+  const syncing = useTabsSyncing(hostClient);
   const [filter, setFilter] = useState<TabFilter>(allTabs);
   const reopen = useOperation();
-  const computersKey = useSyncedValue(model, selectComputers);
+  // The shared filter: it reads only what it matches on, so a title arriving recomputes nothing.
+  const shared = useMemo<SharedTabFilter>(
+    () => ({ agents: filter.agents, device: filter.computerId, profile: null }),
+    [filter],
+  );
+  const matches = useTabFilterMatches(hostClient, shared);
+  // The computers the list spans; offered only for more than one.
+  const choice = useTabDeviceChoice(hostClient, null, null, shared);
   const computers = useMemo(
-    () =>
-      computersKey === ""
-        ? []
-        : computersKey.split("\n").map((line) => {
-            const [id, name] = line.split("\t");
-            return { id: id!, name: name! };
-          }),
-    [computersKey],
+    () => choice.devices.map((device) => ({ id: device.id, name: device.name })),
+    [choice],
   );
   const canOpen = useHostSelector(hostClient, selectCanOpen);
   const openApp = useCallback(
@@ -121,11 +118,7 @@ function TabsForReader(props: {
     [deploymentId, navigation],
   );
   const reopenClosed = useCallback(
-    () =>
-      void reopen.run(
-        () => tabsClient(hostClient).reopenTab(),
-        "There is no closed tab to reopen.",
-      ),
+    () => void reopen.run(() => hostClient.reopenTab(), "There is no closed tab to reopen."),
     [hostClient, reopen],
   );
   useTabsBar({
@@ -142,25 +135,6 @@ function TabsForReader(props: {
     [deploymentId, navigation],
   );
   const filtering = filter.agents || filter.computerId !== null;
-  const matches = useMemo(
-    () =>
-      filtering
-        ? (tab: Tab) =>
-            (!filter.agents || tab.usedBy.length > 0) &&
-            (filter.computerId === null || tab.computer.computerId === filter.computerId)
-        : null,
-    [filter, filtering],
-  );
-  if (model === null)
-    return (
-      <Screen>
-        <Notice
-          title="Tabs aren’t available"
-          detail="This Opensteer doesn’t share a tab list with this phone."
-          tone="neutral"
-        />
-      </Screen>
-    );
   const notices =
     reopen.failure === null ? null : (
       <Notice
@@ -200,30 +174,14 @@ function TabsForReader(props: {
             )}
           </View>
         }
-        filter={matches}
         header={notices}
         hostClient={hostClient}
-        model={model}
+        matches={matches}
         onOpen={open}
+        shown={focused}
       />
     </Screen>
   );
-}
-
-/** A value read from the tab model, redrawn only when it changes. */
-function useSyncedValue<T>(
-  model: ReturnType<typeof useTabsModel>,
-  read: (model: ReturnType<typeof useTabsModel>) => T,
-): T {
-  const [value, setValue] = useState(() => read(model));
-  const latest = useRef(read);
-  latest.current = read;
-  useEffect(() => {
-    setValue(latest.current(model));
-    if (model === null) return;
-    return model.subscribe(() => setValue(latest.current(model)));
-  }, [model]);
-  return value;
 }
 
 /**

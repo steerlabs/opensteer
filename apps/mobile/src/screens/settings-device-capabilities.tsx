@@ -6,7 +6,7 @@ import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host"
 import {
   MachineAccessPolicySchema,
   type MachineAccessPolicy,
-  type LegacyMachineSummary,
+  type MachineSummary,
 } from "@opensteer/protocol";
 import { AppText, SecondaryButton, SwitchRow } from "../ui/primitives.js";
 import { useSettingsLease } from "./use-settings-read.js";
@@ -17,7 +17,7 @@ export function SettingsDeviceCapabilities({
   deploymentId,
 }: {
   readonly host: HostClient;
-  readonly machine: LegacyMachineSummary;
+  readonly machine: MachineSummary;
   readonly deploymentId: string;
 }) {
   const navigation = useNavigation();

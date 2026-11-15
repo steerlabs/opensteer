@@ -97,7 +97,7 @@ vi.mock("../ui/symbol.js", () => ({
 
 import type { HostClient } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
-import { RequestIdSchema } from "@opensteer/core";
+import { RequestIdSchema, tabReferenceHref } from "@opensteer/core";
 import type { TeamSessionClient } from "@opensteer/client/team";
 import { Markdown } from "./markdown.js";
 import { PersonalReferenceProvider, TeamReferenceProvider } from "./reference-navigation.js";
@@ -362,6 +362,35 @@ describe("References on a phone", () => {
       ),
     );
     expect(linking.openURL).not.toHaveBeenCalled();
+  });
+
+  it("opens a tab a link names only while the person's list has it", async () => {
+    const owner = await host();
+    selection(deploymentId, owner);
+    const tab = [...owner.getSnapshot().tabs.rows.values()].find(
+      (row) => row.title === "Coffee shortlist",
+    )!;
+    const container = draw(
+      <PersonalReferenceProvider client={owner} deploymentId={deploymentId} threadId={null}>
+        <Markdown text={`See [the cafes](${tabReferenceHref(tab.tabId)}).`} />
+        <Destination />
+      </PersonalReferenceProvider>,
+    );
+    // Listed, it reads as the tab is titled and opens exactly that tab.
+    await act(async () => chip(container, "Coffee shortlist").click());
+    await until(() =>
+      expect(shown(container)).toBe(
+        `WorkspaceBrowser ${JSON.stringify({ deploymentId, tabId: tab.tabId })}`,
+      ),
+    );
+    stack.routes = [];
+    // Closed, the complete list lacks it: the chip opens nothing, never reopening it.
+    await act(async () => owner.closeTabs([tab.tabId]));
+    await until(() =>
+      expect(chip(container, "the cafes").getAttribute("data-hint")).toBe("No longer available"),
+    );
+    await act(async () => chip(container, "the cafes").click());
+    expect(stack.routes).toEqual([]);
   });
 
   it("lets only the Deployment that wrote the words answer for them", async () => {

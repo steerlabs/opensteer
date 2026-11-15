@@ -11,8 +11,7 @@ import {
 } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { opensteerAppGlyph } from "../browser/agent-surface.js";
-import { tabsClient } from "../tabs/tabs-host.js";
-import { useOperation, useTabsModel } from "../tabs/use-tabs.js";
+import { useOperation } from "../tabs/use-tabs.js";
 import { color, radius, space } from "../theme.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
@@ -31,29 +30,30 @@ export const AppCard = memo(function AppCard({ entry }: { readonly entry: AppEnt
   return client === null ? null : <Card client={client} entry={entry} />;
 });
 
-const noSubscription = () => () => undefined;
-
 function Card(props: { readonly client: HostClient; readonly entry: AppEntry }): ReactNode {
   const { client, entry } = props;
   const { appId } = entry;
   const tabs = useContext(TranscriptAppTabsContext);
   const [title, setTitle] = useState(entry.title);
   const operation = useOperation();
-  const model = useTabsModel(client);
-  // The app's one tab, while it is in the list.
+  const model = client.getSnapshot().tabs;
+  // The app's one tab, while it is in the list: only the list's membership changes it.
   const readTab = useCallback((): TabId | null => {
-    if (model === null) return null;
     for (const tab of model.rows.values())
       if (tab.kind === "app" && tab.appId === appId) return tab.tabId;
     return null;
   }, [appId, model]);
-  const tabId = useSyncExternalStore(model?.subscribe ?? noSubscription, readTab, readTab);
+  const subscribe = useCallback(
+    (listener: () => void) => model.subscribeStructure(listener),
+    [model],
+  );
+  const tabId = useSyncExternalStore(subscribe, readTab, readTab);
   const open = () =>
     void operation.run(
       async () => {
         const parsed = AppIdSchema.safeParse(appId);
         if (!parsed.success) throw new Error("This app can no longer be opened.");
-        return (await tabsClient(client).openTab({ appId: parsed.data, kind: "app" })).tabId;
+        return (await client.openTab({ appId: parsed.data, kind: "app" })).tabId;
       },
       "Try again in a moment.",
       (opened) => tabs?.show(opened),

@@ -3,9 +3,10 @@
 import { act, type ReactElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createId, TabIdSchema } from "@opensteer/core";
-import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
+import { createId } from "@opensteer/core";
+import type { HostClient, HostSnapshot } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
+import { tabStoreFixture } from "@opensteer/client/test-support";
 import { headerFontScaleLimit } from "../theme.js";
 import type { ThreadHeaderState } from "./thread-pane.js";
 
@@ -227,7 +228,7 @@ vi.mock("./folded-page.js", () => ({ FoldedPage: () => null, foldedPageWidth: 46
 const { useThreadHeader } = await import("../screens/thread-header.js");
 const { AroundScreen } = await import("./around-sheet.js");
 const { aroundPlaces } = await import("./around-model.js");
-const { taskFamily } = await import("@opensteer/client/host");
+const { conversationSurfaces, taskFamily } = await import("@opensteer/client/host");
 const { tabRoute } = await import("../browser/surface-route.js");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -276,19 +277,51 @@ async function world(options: { readonly automations?: "absent" } = {}) {
     await gate;
     return loaded.dispatch(command);
   });
-  const client = {
+  // The Host's per-tab activity, which the test sets: who acts in which tab now.
+  const activity = new Map<string, readonly { readonly threadId: string }[]>();
+  const activityListeners = new Map<string, Set<() => void>>();
+  const own: Partial<HostClient> = {
     dispatch,
     getSnapshot: () => current,
-    rpc: loaded.rpc,
     subscribe: (listener: () => void) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-  } as unknown as HostClient;
+    placeActivity: (tabId: string) => (activity.get(tabId) ?? []) as never,
+    subscribePlaceActivity: (tabId: string, listener: () => void) => {
+      const held = activityListeners.get(tabId) ?? new Set();
+      activityListeners.set(tabId, held.add(listener));
+      return () => held.delete(listener);
+    },
+  };
+  const client = new Proxy(loaded, {
+    get: (target, key) => {
+      if (key in own) return own[key as keyof HostClient];
+      const value: unknown = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as unknown as HostClient;
   harness.client = client;
+  const acting = (tabId: string, threadIds: readonly string[]) =>
+    act(() => {
+      activity.set(
+        tabId,
+        threadIds.map((threadId) => ({ threadId })),
+      );
+      activityListeners.get(tabId)?.forEach((listener) => listener());
+    });
+  const titled = (title: string) => current.threads.find((thread) => thread.title === title)!.id;
+  // An agent of the anchor conversation acts in its first page, and the
+  // delivery task on its phone; nothing acts anywhere else.
+  const page = conversationSurfaces(current, anchorId).find(({ kind }) => kind === "page")!;
+  acting(page.key, [anchorId]);
+  const delivery = titled("Check the delivery ETA");
+  acting(conversationSurfaces(current, delivery)[0]!.key, [delivery]);
   return {
     client,
     dispatch,
+    acting,
+    activity: (tabId: string) => client.placeActivity(tabId),
     /** Holds the Host's answer to commands until the returned release. */
     hold: () => {
       let release = () => undefined as void;
@@ -302,9 +335,12 @@ async function world(options: { readonly automations?: "absent" } = {}) {
         listeners.forEach((listener) => listener());
       });
     },
-    titled: (title: string) => current.threads.find((thread) => thread.title === title)!.id,
+    titled,
   };
 }
+
+/** No tabs at all, as a Host with none open lists them. */
+const noTabs = tabStoreFixture([]);
 
 const header: ThreadHeaderState = {
   color: null,
@@ -387,7 +423,7 @@ describe("the conversation's bar", () => {
   it("draws nothing for a conversation with nothing around it", async () => {
     const w = await world({ automations: "absent" });
     const threadId = w.titled("Review storage integration");
-    w.move({ ...w.snapshot(), browserSessions: [], machines: [] });
+    w.move({ ...w.snapshot(), tabs: noTabs });
     const { android, ios } = bar(w.client, threadId);
     expect(control(android())).toBeNull();
     expect(ios()).toEqual([]);
@@ -396,7 +432,7 @@ describe("the conversation's bar", () => {
   it("summarizes places, tasks and schedules in one glass item, says which place is worked in, and opens Around", async () => {
     const w = await world();
     const home = anchorId;
-    const places = aroundPlaces(w.snapshot(), home);
+    const places = aroundPlaces(w.snapshot(), home, w.activity);
     const working = places.filter((place) => place.working).length;
     expect(working).toBeGreaterThan(0);
     const automations = w.snapshot().threadAutomations[home]!.length;
@@ -425,6 +461,27 @@ describe("the conversation's bar", () => {
     );
     act(() => button.click());
     expect(harness.navigate).toHaveBeenCalledWith("ThreadAround", { deploymentId, threadId: home });
+  });
+
+  it("says a place is worked in once an agent of the conversation acts there, and not for another's", async () => {
+    const w = await world();
+    const home = anchorId;
+    const [idle] = aroundPlaces(w.snapshot(), home, w.activity).filter(({ working }) => !working);
+    const { android } = bar(w.client, home);
+    const container = sheet(home);
+    const working = () => control(android())!.getAttribute("aria-label")!.split(";")[0];
+    const first = () =>
+      container.querySelector('section[aria-label="Places"] button')!.getAttribute("aria-label");
+    expect(working()).toMatch(/, 1 working$/u);
+    w.acting(idle!.key, [w.titled("Review storage integration")]);
+    expect(working()).toMatch(/, 1 working$/u);
+    expect(first()).not.toContain(idle!.title);
+    w.acting(idle!.key, [home]);
+    expect(working()).toMatch(/, 2 working$/u);
+    expect(first()).toContain(idle!.title);
+    expect(first()).toMatch(/agent working$/u);
+    w.acting(idle!.key, []);
+    expect(working()).toMatch(/, 1 working$/u);
   });
 
   it("is not redrawn by a streamed token, only by a change in what is around", async () => {
@@ -464,8 +521,7 @@ describe("the conversation's bar", () => {
     const original = w.snapshot();
     const empty = {
       ...original,
-      browserSessions: [],
-      machines: [],
+      tabs: noTabs,
       assignments: {},
       threadAutomations: {},
     };
@@ -494,12 +550,12 @@ describe("the conversation's bar", () => {
     const original = w.snapshot();
     const home = anchorId;
     const live = { ...original, assignments: {}, threadAutomations: {} };
-    const empty = { ...live, browserSessions: [], machines: [] };
+    const empty = { ...live, tabs: noTabs };
     w.move(empty);
     const { ios, android } = bar(w.client, home);
     expect(ios()).toEqual([]);
     w.move(live);
-    expect(aroundPlaces(live, home).length).toBeGreaterThan(0);
+    expect(aroundPlaces(live, home, w.activity).length).toBeGreaterThan(0);
     expect(control(android())?.getAttribute("aria-label")).toContain("place");
     w.move(empty);
     expect(ios()).toEqual([]);
@@ -519,12 +575,12 @@ describe("Around this thread", () => {
   it("has a tile for each section with anything in it, and opens on the task that needs the reader", async () => {
     const w = await world();
     const home = anchorId;
-    const places = aroundPlaces(w.snapshot(), home);
+    const places = aroundPlaces(w.snapshot(), home, w.activity);
     const automations = w.snapshot().threadAutomations[home]!.length;
     const container = sheet(home);
     expect(container.querySelector('[role="tablist"]')).not.toBeNull();
     expect(tabs(container)).toEqual([
-      { label: `Places, ${places.length}, 3 working`, selected: false },
+      { label: `Places, ${places.length}, 1 working`, selected: false },
       { label: "Tasks, 1, 1 needs you", selected: true },
       { label: `Schedules, ${automations}`, selected: false },
     ]);
@@ -646,11 +702,8 @@ describe("Around this thread", () => {
       },
     });
     const container = sheet(parent);
-    expect(tabs(container).map(({ label }) => label)).toEqual([
-      `Places, ${aroundPlaces(w.snapshot(), parent).length}`,
-      "Earlier, 5",
-      "Schedules, 2",
-    ]);
+    // It uses no tab, so the sheet has no Places tile.
+    expect(tabs(container).map(({ label }) => label)).toEqual(["Earlier, 5", "Schedules, 2"]);
     const list = container.querySelector('[aria-label="Earlier"]')!;
     expect([...list.querySelectorAll('[role="header"]')].map((node) => node.textContent)).toEqual([
       "Today",
@@ -729,7 +782,7 @@ describe("Around this thread", () => {
   it("opens exactly the place or task pressed, working places first", async () => {
     const w = await world();
     const home = anchorId;
-    const places = aroundPlaces(w.snapshot(), home);
+    const places = aroundPlaces(w.snapshot(), home, w.activity);
     harness.routes = [
       { name: "Home", params: { deploymentId } },
       {
@@ -743,15 +796,14 @@ describe("Around this thread", () => {
       (node) => node.getAttribute("aria-label")!,
     );
     expect(rows[0]).toMatch(/agent working$/u);
-    const page = places.findLastIndex(({ destination }) => destination.kind === "browser");
-    const pressed = places[page]!.destination;
-    if (pressed.kind !== "browser") throw new Error("Expected a page among the places");
+    const page = places.findLastIndex(({ glyph }) => glyph === "globe");
+    expect(page).toBeGreaterThan(0);
     press(container, rows[page]!);
     expect(harness.goBack).toHaveBeenCalledOnce();
     expect(harness.dispatch).toHaveBeenLastCalledWith({
       type: "PUSH",
       name: "WorkspaceBrowser",
-      params: tabRoute(deploymentId, TabIdSchema.parse(pressed.tabId), home),
+      params: tabRoute(deploymentId, places[page]!.destination.tabId, home),
     });
     act(() => named(container, /^Book a table for Friday, Needs you/u).click());
     expect(harness.dispatch).toHaveBeenLastCalledWith({
@@ -764,7 +816,7 @@ describe("Around this thread", () => {
   it("gives a task the way back to the conversation it works for, and nothing else when that is all", async () => {
     const w = await world();
     const worker = w.titled("Book a table for Friday");
-    w.move({ ...w.snapshot(), browserSessions: [], machines: [] });
+    w.move({ ...w.snapshot(), tabs: noTabs });
     const container = sheet(worker);
     expect(tabs(container)).toEqual([]);
     expect(container.querySelector("section")).toBeNull();

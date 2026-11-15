@@ -1,8 +1,4 @@
-import {
-  agentDot,
-  type AgentCard,
-  type LegacyHostSnapshot as HostSnapshot,
-} from "@opensteer/client/host";
+import { agentDot, type AgentCard, type HostSnapshot } from "@opensteer/client/host";
 import { createContext, useContext, type ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
 import { color, radius } from "../theme.js";

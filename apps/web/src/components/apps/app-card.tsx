@@ -145,7 +145,7 @@ function LiveApp({
     return () => observer.disconnect();
   }, [card, near]);
   const { view, failed, retry } = useAppView(client, entry.appId, theme, near);
-  const title = view?.app.title ?? entry.title;
+  const title = view?.title || entry.title;
   return (
     <>
       <header className="app-card__header">

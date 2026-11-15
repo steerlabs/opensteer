@@ -3,7 +3,7 @@ import {
   quietSeenScope,
   seenThroughOf,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navigation/native";

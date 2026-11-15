@@ -1,3 +1,4 @@
+import { TabIdSchema } from "@opensteer/core";
 import { useLayoutEffect, useState, type ReactNode } from "react";
 import type { HostClient } from "@opensteer/client/host";
 import { useBrowserFeedState } from "../browser/browser-stream.js";
@@ -50,11 +51,8 @@ export function LocalPhoneTab(props: {
     let cancelled = false;
     void (async () => {
       if (!liveSession) {
-        if (!hostClient.activatePersonalTab) throw new Error("This Host cannot reopen saved tabs.");
-        const activated = await hostClient.activatePersonalTab(admission.surfaceId, {
-          asleep: true,
-        });
-        if (!activated) throw new Error("This tab could not reopen.");
+        // The Host restores the saved page here and binds this phone's view of it.
+        await hostClient.activateTab(TabIdSchema.parse(admission.surfaceId));
       }
       if (cancelled) return;
       const current = manager.localPresentation(deploymentId, admission.surfaceId);

@@ -4,9 +4,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 import { placeList } from "@opensteer/client/host";
-import { LegacyPersonShowMessageSchema } from "@opensteer/protocol";
-import { createId, TabIdSchema } from "@opensteer/core";
-import { attachMockTabs, pageTab, tabId } from "../../test-support/mock-tabs.js";
+import { PersonShowMessageSchema } from "@opensteer/protocol";
+import { createId } from "@opensteer/core";
 import { VoiceController } from "@opensteer/client/voice";
 import { VoiceProvider } from "./context.js";
 
@@ -87,11 +86,11 @@ async function mount() {
       </VoiceProvider>,
     ),
   );
-  const message = LegacyPersonShowMessageSchema.parse({
+  const message = PersonShowMessageSchema.parse({
     type: "host.show",
     runId: createId("run"),
     threadId: source.id,
-    target: { threadId: target.id },
+    target: { taskId: target.id },
   });
   return { host: state.host, snapshot, source, target, message };
 }
@@ -99,7 +98,7 @@ async function mount() {
 it("routes an authorized unloaded Thread through the existing Thread screen", async () => {
   const f = await mount();
   const threadId = createId("thread");
-  await act(async () => f.host.receivePersonShow({ ...f.message, target: { threadId } }));
+  await act(async () => f.host.receivePersonShow({ ...f.message, target: { taskId: threadId } }));
   expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
     type: "PUSH",
     payload: {
@@ -109,18 +108,17 @@ it("routes an authorized unloaded Thread through the existing Thread screen", as
   });
 });
 
-async function showPage(f: Awaited<ReturnType<typeof mount>>) {
+async function showPage(f: Awaited<ReturnType<typeof mount>>, close = false) {
   state.route = {
     key: "Thread",
     name: "Thread",
     params: { deploymentId: f.snapshot.deploymentId, threadId: f.target.id },
   };
-  const place = placeList(f.snapshot).find((place) => place.destination.kind === "browser")!;
-  if (place.destination.kind !== "browser") throw new Error("Expected a browser tab");
-  const tabId = TabIdSchema.parse(place.destination.tabId);
+  const { tabId } = placeList(f.snapshot).find((place) => place.kind === "page")!.destination;
+  if (close) await act(async () => void (await f.host.closeTabs([tabId])));
   await act(async () =>
     f.host.receivePersonShow(
-      LegacyPersonShowMessageSchema.parse({
+      PersonShowMessageSchema.parse({
         ...f.message,
         threadId: f.target.id,
         target: { tabId },
@@ -141,11 +139,9 @@ it("opens the exact requested tab from the active Thread, by its tabId alone", a
 
 it("shows nothing for a tab the complete list no longer has, and never a sibling", async () => {
   const f = await mount();
-  attachMockTabs(f.host, {
-    layout: [{ kind: "tab", tabId: tabId("sibling") }],
-    tabs: [pageTab("sibling", "Sibling")],
-  });
-  await showPage(f);
+  const tabId = await showPage(f, true);
+  expect(f.host.getSnapshot().tabs.get(tabId)).toBeUndefined();
+  expect(f.host.getSnapshot().tabs.complete).toBe(true);
   expect(state.dispatch).not.toHaveBeenCalled();
 });
 
@@ -224,7 +220,7 @@ it("opens what the voice call's agent shows from any screen, and ignores a call 
   let current: typeof call | null = call;
   vi.spyOn(VoiceController.prototype, "call").mockImplementation(() => current);
   const showed = vi.spyOn(VoiceController.prototype, "showed");
-  const message = LegacyPersonShowMessageSchema.parse({ ...f.message, ...call });
+  const message = PersonShowMessageSchema.parse({ ...f.message, ...call });
   // Settings names no conversation, and the call's own Thread is never on screen.
   state.route = { key: "settings", name: "Settings" };
   await act(async () => f.host.receivePersonShow(message));

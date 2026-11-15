@@ -1,4 +1,4 @@
-import { attentionCount, type LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
+import { attentionCount, type HostSnapshot } from "@opensteer/client/host";
 import { useNavigation, useNavigationState, useRoute } from "@react-navigation/native";
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import { useLayoutEffect, useRef, type ReactNode } from "react";

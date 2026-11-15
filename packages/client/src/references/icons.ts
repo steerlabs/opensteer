@@ -1,8 +1,5 @@
-import {
-  classifyHref,
-  type LegacyReferenceKind as ReferenceKind,
-  type TeamPageTarget,
-} from "@opensteer/core";
+import type { TeamPageTarget } from "@opensteer/core";
+import { classifyLink, type IdReferenceKind as ReferenceKind } from "./links.js";
 
 /**
  * The picture each thing a chip names wears, on every client. Each client
@@ -61,7 +58,7 @@ export function fileIcon(path: string): ReferenceIconName {
 
 /** The icon for wherever a link goes; anything that is not a chip is a link. */
 export function hrefIcon(href: string): ReferenceIconName {
-  const target = classifyHref(href);
+  const target = classifyLink(href);
   switch (target.kind) {
     case "reference":
       return referenceIcons[target.reference.kind];

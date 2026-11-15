@@ -20,7 +20,7 @@ import {
   type IntegrationDefinitionSummaryView,
 } from "@opensteer/client/integrations";
 import { deviceLendsApps, deviceRemovalConfirmation } from "@opensteer/client/computers";
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 import * as Haptics from "expo-haptics";
 import { useState, type ReactNode } from "react";
 import { Alert, Linking, StyleSheet } from "react-native";
@@ -72,7 +72,7 @@ export function IphoneAppsBlock(props: {
     readonly definitions: readonly IntegrationDefinitionSummaryView[];
   } | null;
   readonly hostClient: HostClient;
-  readonly machine: LegacyMachineSummary;
+  readonly machine: MachineSummary;
   readonly onChanged: () => Promise<void>;
   /** The iPhone stopped and left this Opensteer; the page it was on is gone. */
   readonly onRemoved: () => void;

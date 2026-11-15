@@ -1,23 +1,26 @@
-import type { HostClient, LegacyHostSnapshot, TabsReadModel } from "@opensteer/client/host";
-import { samePlaceAgents } from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
+import {
+  browserTabPicture,
+  tabGroupOf,
+  type HostClient,
+  type HostSnapshot,
+  type PlaceItem,
+  type TabStripEntry,
+} from "@opensteer/client/host";
+import {
+  useHostSelector,
+  usePlace,
+  usePlaceAgents,
+  useTabLayout,
+  useTabStrip,
+} from "@opensteer/client/react";
 import {
   TabGroupColorSchema,
-  type Tab,
   type TabGroup,
   type TabGroupColor,
   type TabId,
 } from "@opensteer/core";
 import type { TabOrganizeInput } from "@opensteer/protocol";
-import {
-  memo,
-  useCallback,
-  useMemo,
-  useState,
-  useSyncExternalStore,
-  type ReactElement,
-  type ReactNode,
-} from "react";
+import { memo, useCallback, useMemo, useState, type ReactElement, type ReactNode } from "react";
 import { FlatList, Pressable, StyleSheet, View } from "react-native";
 import { ActingDot } from "../browser/acting-dot.js";
 import { AgentMarks } from "../browser/agent-marks.js";
@@ -26,21 +29,17 @@ import { NativeMenu, type NativeMenuOption } from "../thread/composer-menu.js";
 import { NeedsYouTag } from "../threads/task-row.js";
 import { AppText, Field, Notice, SecondaryButton } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
-import { tabAgents } from "./tab-agents.js";
+import { MacAppIcon } from "../computers/app-mark.js";
+import { TabPicture } from "../screens/tab-picture.js";
 import {
-  layoutGroups,
   moveBefore,
   moveGroupBefore,
   tabDetail,
-  tabEntries,
-  tabGroupOf,
   tabKindGlyph,
   tabKindNoun,
   tabTitle,
-  type TabEntry,
 } from "./tab-entries.js";
-import { tabsClient } from "./tabs-host.js";
-import { useOperation, useTab, useTabLayout, useTabListSpans } from "./use-tabs.js";
+import { useOperation, useTabListSpans } from "./use-tabs.js";
 
 /** Chrome's group tints, as the web draws them. */
 export const tabGroupTint: Record<TabGroupColor, string> = {
@@ -65,11 +64,17 @@ type Naming =
   | { readonly kind: "rename"; readonly groupId: TabGroup["groupId"] }
   | { readonly kind: "new-group"; readonly tabId: TabId };
 
+/** One line of the list: a group's head, or a tab with the group it sits in. */
+type TabEntry =
+  | { readonly kind: "group"; readonly group: TabGroup }
+  | { readonly kind: "tab"; readonly tabId: TabId; readonly group: TabGroup | null };
+
 export interface TabListProps {
   readonly hostClient: HostClient;
-  readonly model: TabsReadModel;
-  /** Which tabs to show; groups with none of them shown are left out. */
-  readonly filter?: ((tab: Tab) => boolean) | null;
+  /** The tabs a filter keeps (`useTabFilterMatches`); groups with none kept are left out. Null keeps all. */
+  readonly matches?: ReadonlySet<string> | null;
+  /** The list is on screen: a row shows a picture this phone already holds, and never asks for one. */
+  readonly shown?: boolean;
   readonly header?: ReactElement | null;
   readonly empty?: ReactElement | null;
   readonly onOpen: (tabId: TabId) => void;
@@ -85,35 +90,21 @@ export interface TabListProps {
  * No kind is set apart or left out; a tab that cannot open says why.
  */
 export function TabList(props: TabListProps): ReactNode {
-  const { hostClient, model } = props;
-  const layout = useTabLayout(model);
-  const spans = useTabListSpans(model);
+  const { hostClient } = props;
+  const client = hostClient;
+  const strip = useTabStrip(hostClient);
+  const layout = useTabLayout(hostClient);
+  const spans = useTabListSpans(hostClient);
   const signIns = useHostSelector(hostClient, selectSignIns);
   const operation = useOperation();
   const [moving, setMoving] = useState<Moving | null>(null);
   const [naming, setNaming] = useState<Naming | null>(null);
-  const client = tabsClient(hostClient);
-  const filter = props.filter ?? null;
-  // The ids the filter keeps, as one string, so only a change in what matches redraws the list.
-  const readMatches = () =>
-    filter === null
-      ? null
-      : [...model.rows.values()]
-          .filter(filter)
-          .map((tab) => tab.tabId)
-          .join("\n");
-  const matchKey = useSyncExternalStore(model.subscribe, readMatches, readMatches);
-  const entries = useMemo(() => {
-    const all = tabEntries(layout);
-    if (matchKey === null) return all;
-    const matched = new Set(matchKey.split("\n"));
-    return all.filter((entry) =>
-      entry.kind === "tab"
-        ? matched.has(entry.tabId)
-        : entry.group.tabIds.some((id) => matched.has(id)),
-    );
-  }, [layout, matchKey]);
-  const groups = useMemo(() => layoutGroups(layout), [layout]);
+  const matches = props.matches ?? null;
+  const entries = useMemo(() => listEntries(strip.entries, matches), [strip, matches]);
+  const groups = useMemo(
+    () => strip.entries.flatMap((entry) => (entry.kind === "group" ? [entry.group] : [])),
+    [strip],
+  );
   const signInSet = useMemo(() => new Set(signIns.split("\n")), [signIns]);
 
   const organize = useCallback(
@@ -128,16 +119,17 @@ export function TabList(props: TabListProps): ReactNode {
     (anchorId: TabId) => {
       if (moving === null) return;
       if (moving.kind === "tab") {
-        if (moving.tabId !== anchorId) organize(moveBefore(model.layout, moving.tabId, anchorId));
+        if (moving.tabId !== anchorId) organize(moveBefore(layout, moving.tabId, anchorId));
         return;
       }
       organize(moveGroupBefore(moving.group, anchorId));
     },
-    [model, moving, organize],
+    [layout, moving, organize],
   );
   const tabActions = useCallback(
-    (tab: Tab): readonly (readonly NativeMenuOption[])[] => {
-      const current = tabGroupOf(model.layout, tab.tabId);
+    (place: PlaceItem): readonly (readonly NativeMenuOption[])[] => {
+      const tab = place.tab;
+      const current = tabGroupOf(layout, tab.tabId);
       return [
         [
           {
@@ -186,7 +178,7 @@ export function TabList(props: TabListProps): ReactNode {
         ],
       ];
     },
-    [client, groups, model, operation, organize],
+    [client, groups, layout, operation, organize],
   );
   const groupActions = useCallback(
     (group: TabGroup): readonly (readonly NativeMenuOption[])[] => [
@@ -292,7 +284,6 @@ export function TabList(props: TabListProps): ReactNode {
           busy={operation.busy}
           group={item.group}
           menu={tabActions}
-          model={model}
           moving={moving}
           namingGroup={naming?.kind === "new-group" && naming.tabId === item.tabId}
           needsYou={signInSet.has(item.tabId)}
@@ -300,6 +291,7 @@ export function TabList(props: TabListProps): ReactNode {
           onName={submitName}
           onOpen={moving === null ? props.onOpen : placeBefore}
           selected={props.selectedTabId === item.tabId}
+          shown={props.shown ?? true}
           showComputer={spans.showComputer}
           showProfile={spans.showProfile}
           tabId={item.tabId}
@@ -309,13 +301,13 @@ export function TabList(props: TabListProps): ReactNode {
     [
       groupActions,
       hostClient,
-      model,
       moving,
       naming,
       operation.busy,
       placeBefore,
       props.onOpen,
       props.selectedTabId,
+      props.shown,
       signInSet,
       spans.showComputer,
       spans.showProfile,
@@ -359,6 +351,27 @@ export function TabList(props: TabListProps): ReactNode {
   );
 }
 
+/** The strip as list lines: a collapsed group shows its head alone; a filter keeps only its matches. */
+function listEntries(
+  strip: readonly TabStripEntry[],
+  matches: ReadonlySet<string> | null,
+): readonly TabEntry[] {
+  const lines: TabEntry[] = [];
+  for (const entry of strip) {
+    if (entry.kind === "tab") {
+      if (matches === null || matches.has(entry.tabId))
+        lines.push({ group: null, kind: "tab", tabId: entry.tabId });
+      continue;
+    }
+    const kept = matches === null ? entry.tabIds : entry.tabIds.filter((id) => matches.has(id));
+    if (matches !== null && kept.length === 0) continue;
+    lines.push({ group: entry.group, kind: "group" });
+    if (!entry.group.collapsed)
+      for (const tabId of kept) lines.push({ group: entry.group, kind: "tab", tabId });
+  }
+  return lines;
+}
+
 /** A new group takes the first tint no group has yet, as Chrome does. */
 function nextGroupColor(groups: readonly TabGroup[]): TabGroupColor {
   const used = new Set(groups.map((group) => group.color));
@@ -369,7 +382,7 @@ function nextGroupColor(groups: readonly TabGroup[]): TabGroupColor {
  * The tabs a pending sign-in Request names, by tabId. A string, so a streamed
  * token, which leaves it equal, redraws nothing.
  */
-function selectSignIns(snapshot: LegacyHostSnapshot): string {
+function selectSignIns(snapshot: HostSnapshot): string {
   return snapshot.waitingRequests
     .flatMap(({ request: { payload } }) =>
       payload.kind === "browser.sign-in" && payload.tabId !== undefined ? [payload.tabId] : [],
@@ -494,7 +507,7 @@ interface TabRowProps {
   readonly busy: boolean;
   readonly group: TabGroup | null;
   readonly hostClient: HostClient;
-  readonly menu: (tab: Tab) => readonly (readonly NativeMenuOption[])[];
+  readonly menu: (place: PlaceItem) => readonly (readonly NativeMenuOption[])[];
   readonly moving: Moving | null;
   readonly namingGroup: boolean;
   readonly needsYou: boolean;
@@ -502,27 +515,27 @@ interface TabRowProps {
   readonly onName: (name: string) => void;
   readonly onOpen: (tabId: TabId) => void;
   readonly selected: boolean;
+  readonly shown: boolean;
   readonly showComputer: boolean;
   readonly showProfile: boolean;
 }
 
 /** A row reads its own tab, so a title or usage change repaints only it. */
 const KeyedTabRow = memo(function KeyedTabRow({
-  model,
   tabId,
   ...props
-}: TabRowProps & { readonly model: TabsReadModel; readonly tabId: TabId }): ReactNode {
-  const tab = useTab(model, tabId);
-  return tab ? <TabRow {...props} tab={tab} /> : null;
+}: TabRowProps & { readonly tabId: TabId }): ReactNode {
+  const place = usePlace(props.hostClient, tabId);
+  return place ? <TabRow {...props} place={place} /> : null;
 });
 
-const TabRow = memo(function TabRow(props: TabRowProps & { readonly tab: Tab }): ReactNode {
-  const { tab } = props;
-  const selectAgents = useCallback(
-    (snapshot: LegacyHostSnapshot) => tabAgents(tab.usedBy, snapshot),
-    [tab.usedBy],
-  );
-  const agents = useHostSelector(props.hostClient, selectAgents, samePlaceAgents);
+const TabRow = memo(function TabRow(props: TabRowProps & { readonly place: PlaceItem }): ReactNode {
+  const { hostClient, place } = props;
+  const tab = place.tab;
+  // Who uses the tab, each marked working while the Host reports its Run acting in this very tab.
+  const agents = usePlaceAgents(hostClient, place.key);
+  const picture =
+    props.shown && tab.kind === "page" ? browserTabPicture(hostClient, tab.tabId) : null;
   const detail = tabDetail(tab, props);
   const unavailable = tab.state === "unavailable";
   const movingThis =
@@ -558,8 +571,25 @@ const TabRow = memo(function TabRow(props: TabRowProps & { readonly tab: Tab }):
           style={({ pressed }) => [styles.rowPress, pressed && styles.pressed]}
           testID={`tab:${tab.kind}:${tab.state}`}
         >
-          <View style={[styles.glyph, (unavailable || movingThis) && styles.dimmed]}>
-            <Symbol name={tabKindGlyph[tab.kind]} size={17} tint={color.muted} />
+          <View style={(unavailable || movingThis) && styles.dimmed}>
+            {picture ? (
+              <TabPicture picture={picture} size={32} />
+            ) : place.icon.kind === "app" ? (
+              <MacAppIcon
+                app={{
+                  bundleId: place.icon.bundleId,
+                  displayName: place.icon.name,
+                  teamId: null,
+                }}
+                hostClient={hostClient}
+                machineId={place.icon.machineId}
+                size={32}
+              />
+            ) : (
+              <View style={styles.glyph}>
+                <Symbol name={tabKindGlyph[tab.kind]} size={17} tint={color.muted} />
+              </View>
+            )}
           </View>
           <View style={styles.words}>
             <AppText numberOfLines={1} role="bodyMedium" tone={unavailable ? "muted" : "default"}>
@@ -582,7 +612,7 @@ const TabRow = memo(function TabRow(props: TabRowProps & { readonly tab: Tab }):
           <NativeMenu
             accessibilityLabel={`${title} actions`}
             disabledReason={props.busy ? "Wait for the last change to finish." : null}
-            options={props.menu(tab)}
+            options={props.menu(place)}
             style={styles.menu}
           >
             <Symbol name="ellipsis" size={17} tint={color.muted} />

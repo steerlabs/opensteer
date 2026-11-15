@@ -1,6 +1,6 @@
 import {
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type NativeViewerSource,
 } from "@opensteer/client/host";
 import {
@@ -19,7 +19,7 @@ import {
   displayViewerCloseCodes,
   displayViewerWindowFrames,
   type ComputerAppIdentity,
-  type LegacyComputerUseSessionSummary,
+  type ComputerUseSessionSummary,
 } from "@opensteer/protocol";
 import { encodeBase64Url } from "@opensteer/shared/base64url";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -694,7 +694,7 @@ function stopMenuItem(
   hostClient: HostClient,
   label: string,
   phone: boolean,
-  session: Pick<LegacyComputerUseSessionSummary, "runId" | "sessionId">,
+  session: Pick<ComputerUseSessionSummary, "runId" | "sessionId">,
 ): NativeMenuOption {
   return {
     destructive: true,

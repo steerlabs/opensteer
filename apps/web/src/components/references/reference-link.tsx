@@ -8,20 +8,17 @@ import {
   type MouseEvent,
   type ReactNode,
 } from "react";
-import {
-  classifyHref,
-  teamPageUrl,
-  type LegacyReference as Reference,
-  type TeamPageLink,
-} from "@opensteer/core";
+import { teamPageUrl, type TabId, type TeamPageLink } from "@opensteer/core";
 import type { FileLinkTarget } from "@opensteer/shared/fileHref";
-import { useReference } from "@opensteer/client/react";
+import { useReference, useTabReference } from "@opensteer/client/react";
 import {
+  classifyLink,
   fileIcon,
   localTeamReference,
   referenceIcon,
   refTarget,
   teamPageIcon,
+  type IdReference as Reference,
 } from "@opensteer/client/references";
 import { desktopBridge } from "../../desktop/desktop-bridge.js";
 import { useTeams, useTeamSessionValue } from "../../team/team-attachments.js";
@@ -66,7 +63,7 @@ function Link({
   "data-trailing": trailing,
 }: LinkProps & { readonly web: "workspace" | "external" }) {
   const scope = useReferenceScope();
-  const target = useMemo(() => classifyHref(href ?? ""), [href]);
+  const target = useMemo(() => classifyLink(href ?? ""), [href]);
   // A chip keeps the punctuation after it on its line; words wrap as words do.
   const chip = (element: ReactNode) =>
     trailing ? (
@@ -87,6 +84,10 @@ function Link({
     case "reference":
       return isPersonalScope(scope)
         ? chip(<PersonalChip label={textOf(children)} reference={target.reference} scope={scope} />)
+        : words(<span>{children}</span>);
+    case "tab":
+      return isPersonalScope(scope)
+        ? chip(<TabChip label={textOf(children)} scope={scope} tabId={target.tabId} />)
         : words(<span>{children}</span>);
     case "team-page":
       return target.page.target.kind === "invite"
@@ -222,6 +223,41 @@ function PersonalChip({
       ref={(node) => {
         element.current = node;
       }}
+      title={title}
+    >
+      <ChipFace glyph={glyph} title={title} />
+    </a>
+  );
+}
+
+/** A tab in the person's list, opened in place; a closed one is never reopened from a link. */
+function TabChip({
+  label,
+  scope,
+  tabId,
+}: {
+  readonly label: string;
+  readonly scope: PersonalReferenceScope;
+  readonly tabId: string;
+}) {
+  const state = useTabReference(scope.context.client, tabId);
+  const written = label.trim() || "Tab";
+  const glyph = referenceGlyphs.link;
+  if (state.state === "unavailable")
+    return (
+      <span aria-disabled="true" className="ref-chip ref-chip--unavailable" title="Tab closed">
+        <ChipFace glyph={glyph} title={written} />
+      </span>
+    );
+  const title = state.state === "available" ? state.tab.title.trim() || written : written;
+  return (
+    <a
+      {...activation(
+        () => void scope.navigation.openReference({ kind: "tab", tabId: tabId as TabId }),
+      )}
+      aria-label={`Tab, ${title}`}
+      className="ref-chip"
+      data-reference-state={state.state}
       title={title}
     >
       <ChipFace glyph={glyph} title={title} />

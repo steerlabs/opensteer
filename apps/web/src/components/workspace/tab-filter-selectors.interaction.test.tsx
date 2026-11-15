@@ -74,11 +74,23 @@ it("derives tab matches and device counts only when the tab list changes", () =>
     expect(counts).not.toHaveBeenCalled();
     expect(matching).not.toHaveBeenCalled();
     expect(matches).toBe(before);
+    // A title arriving changes no match and no count.
     store.apply({
       op: "change",
       generation: "filter",
       base: 0,
       revision: 1,
+      update: [{ tabId: rows[1]!.tabId, title: "Renamed" }],
+    });
+    publish({ ...snapshot });
+    expect(counts).not.toHaveBeenCalled();
+    expect(matching).not.toHaveBeenCalled();
+    expect(matches).toBe(before);
+    store.apply({
+      op: "change",
+      generation: "filter",
+      base: 1,
+      revision: 2,
       update: [
         { tabId: rows[0]!.tabId, usedBy: [{ taskId: ThreadIdSchema.parse(base.threads[0]!.id) }] },
       ],
@@ -90,8 +102,8 @@ it("derives tab matches and device counts only when the tab list changes", () =>
     store.apply({
       op: "change",
       generation: "filter",
-      base: 1,
-      revision: 2,
+      base: 2,
+      revision: 3,
       remove: [rows[0]!.tabId],
     });
     publish({ ...snapshot });

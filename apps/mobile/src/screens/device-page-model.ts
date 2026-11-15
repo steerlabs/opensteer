@@ -4,7 +4,7 @@ import {
   isHomeDevice,
   type DeviceCapability,
 } from "@opensteer/client/computers";
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 
 export { isHomeDevice as isHome };
 export type { DeviceCapability as DeviceSwitchKey };
@@ -30,7 +30,7 @@ export const homeFixed = "Always on. Your agent runs here.";
 const homeFooter = "Your Opensteer lives on this Mac, so it can't be removed.";
 
 export function deviceSwitches(
-  machine: LegacyMachineSummary,
+  machine: MachineSummary,
   options: { readonly devicesAvailable: boolean; readonly noun?: string },
 ): { readonly rows: readonly DeviceSwitchRow[]; readonly footer: string | null } {
   const rows = deviceAccessRows(machine, options.devicesAvailable).map((row): DeviceSwitchRow => {
@@ -61,7 +61,7 @@ export function deviceSwitches(
 }
 
 export function deviceRemoval(
-  machine: LegacyMachineSummary,
+  machine: MachineSummary,
   options: {
     readonly thisDevice: boolean;
     readonly noun: string;

@@ -43,7 +43,7 @@ export function AppFrame(props: {
   const { onTitle, tab } = props;
   const { view, failed, retry } = useAppView(props.client, props.appId, "dark");
   useEffect(() => {
-    if (view) onTitle?.(view.app.title);
+    if (view) onTitle?.(view.title);
   }, [view, onTitle]);
   if (tab !== undefined)
     return <TabFrame failed={failed} retry={retry} tab={tab} url={view?.url ?? null} />;

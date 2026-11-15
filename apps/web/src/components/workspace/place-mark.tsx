@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { type HostClient, type PlaceItem } from "@opensteer/client/host";
-import { useBrowserTabIcon, useHostSelector } from "@opensteer/client/react";
+import { useTabIcon } from "@opensteer/client/react";
 import { AppMark } from "../computer-apps/computer-use-section.js";
 import { Icon } from "../icon.js";
 import { SiteMark } from "../site-mark.js";
@@ -57,14 +57,5 @@ function SiteIcon({
   readonly iconRef: string | null;
   readonly tabId: string | null;
 }) {
-  // The Host serves a page's icon through the session this device's view is bound to.
-  const sessionId = useHostSelector(hostClient, () => {
-    const viewer = tabId === null ? null : hostClient.tabViewer(tabId);
-    return viewer?.kind === "page" ? viewer.sessionId : null;
-  });
-  return (
-    <SiteMark
-      favicon={useBrowserTabIcon(hostClient, sessionId ?? "", sessionId ? iconRef : null)}
-    />
-  );
+  return <SiteMark favicon={useTabIcon(hostClient, tabId, iconRef)} />;
 }

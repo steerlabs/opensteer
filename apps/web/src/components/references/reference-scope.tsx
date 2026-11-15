@@ -148,6 +148,9 @@ export function useOpenPersonalDestination(
           return openFile({
             source: { kind: "attachment", attachmentId: destination.attachmentId },
           });
+        case "tab":
+          if (nav) return nav.showPlace({ kind: "tab", tabId: destination.tabId });
+          return void navigate(`/?panel=browser&tab=${encodeURIComponent(destination.tabId)}`);
       }
     },
     [nav, navigate, openFile, openPage],

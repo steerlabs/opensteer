@@ -135,6 +135,55 @@ describe("the draft's places", () => {
     expect(document.querySelector(".context-chip")).toBeNull();
   });
 
+  // The followed page's read answers after the draft moved on: the draft shows
+  // what it chose since, never what the late answer brought.
+  it.each(["freeze", "select", "reset"] as const)(
+    "%s drops the late answer of the followed page's read",
+    async (how) => {
+      type Candidate = Awaited<ReturnType<MockHostClient["readBrowserContextCandidate"]>>;
+      const late = deferred<Candidate>();
+      await mount((source) => {
+        vi.spyOn(source, "readBrowserContextCandidate").mockImplementationOnce(() => late.promise);
+        return `/${tabSearch(pageTab(source))}`;
+      });
+      await settle(100);
+      const place = pageTab();
+      const chipTitle = () => document.querySelector(".context-chip__title")?.textContent ?? null;
+      expect(chipTitle()).toBeNull();
+      const field = element<HTMLElement>("[data-composer-input]");
+      const sent = deferred<void>();
+      let expected: string | null = null;
+      if (how === "freeze") {
+        // Typing before the read answered freezes nothing at all.
+        await write(field, "What is this?");
+      } else if (how === "select") {
+        const other = placeList(client.getSnapshot()).find(
+          (item) => item.key !== place.key && isMockPage(item),
+        )!;
+        await click(element(`.side-tab[data-place-key="${other.key}"] .side-tab__main`));
+        expected = other.title;
+      } else {
+        // Sending starts the next draft at the press; it reads the same page for itself.
+        const real = client.dispatch.bind(client);
+        vi.spyOn(client, "dispatch").mockImplementationOnce(async (...args) => {
+          await sent.promise;
+          return real(...args);
+        });
+        await write(field, "What is this?");
+        await click(element(".composer__send"));
+        expected = place.title;
+      }
+      await settle(100);
+      expect(chipTitle()).toBe(expected);
+      const candidate = await client.readBrowserContextCandidate(pageSession(place.key), place.key);
+      await act(async () => late.resolve({ ...candidate, title: "A late answer" }));
+      await settle(100);
+      expect(chipTitle()).toBe(expected);
+      expect(document.body.textContent).not.toContain("A late answer");
+      await act(async () => sent.resolve());
+    },
+  );
+
   it("never picks up a page on a task's reply", async () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     const threadId = firstTaskId();

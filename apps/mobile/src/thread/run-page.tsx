@@ -9,16 +9,14 @@ import {
   runPageSize,
   runPageShown,
   type HostClient,
-  type SurfaceDestination,
+  type TabDestination,
 } from "@opensteer/client/host";
 import {
   useHostSelector,
   useRunPageView,
-  useRunPlace,
-  useRunPlaceBinding,
+  useRunPlaceView,
+  type RunPlaceView,
 } from "@opensteer/client/react";
-import type { PlaceEnteredEventView } from "@opensteer/core";
-import { placeIdentityKey } from "@opensteer/protocol";
 import { useNavigationState } from "@react-navigation/native";
 import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
@@ -41,14 +39,7 @@ import { descend, duration, move } from "../ui/motion.js";
 import { AppText } from "../ui/primitives.js";
 import { useLayout } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
-import {
-  ActingRing,
-  PlaceGlyph,
-  PlaceSurface,
-  pictureRadius,
-  usePicture,
-  useRunPlaceActing,
-} from "./live-place.js";
+import { ActingRing, PlaceGlyph, PlaceSurface, pictureRadius, usePicture } from "./live-place.js";
 
 const rowPicture = { height: 30, width: 46 } as const;
 
@@ -76,7 +67,7 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
   readonly clearance: number;
   readonly hostClient: HostClient;
   readonly onInset: (inset: number) => void;
-  readonly onOpen: (destination: SurfaceDestination) => void;
+  readonly onOpen: (destination: TabDestination) => void;
   /** The Run a Stop would reach: the conversation's own. */
   readonly runId: string | null;
   readonly scrolledUp: boolean;
@@ -90,8 +81,7 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
   readonly yielding?: boolean;
 }): ReactNode {
   const { beside, clearance, hostClient, onInset, threadId, top } = props;
-  const entry = useRunPlace(hostClient, props.runId);
-  const binding = useRunPlaceBinding(hostClient, entry);
+  const { acting, entry, place } = useRunPlaceView(hostClient, props.runId, threadId);
   const authorized = useHostSelector(hostClient, selectAuthorized);
   const foreground = useAppForeground();
   const typing = useKeyboardVisible();
@@ -107,7 +97,7 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
       current.height === height && current.width === width ? current : { height, width },
     );
   }, []);
-  const placeKey = entry === null ? null : placeIdentityKey(entry.data.place);
+  const placeKey = entry === null ? null : entry.data.tabId;
   const [aspect, setAspect] = useState<{ readonly key: string | null; readonly value: number }>({
     key: null,
     value: runPageDesktopAspect,
@@ -125,8 +115,9 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
   const inFront =
     beside &&
     current?.name === "WorkspaceBrowser" &&
-    binding.destination?.kind === "browser" &&
-    paramsTabId(current.params) === binding.destination.tabId;
+    place?.kind === "page" &&
+    place.binding != null &&
+    paramsTabId(current.params) === place.binding.tabId;
   const placeRunId = entry !== null && authorized && !inFront ? entry.runId : null;
   const scrolledUp = props.scrolledUp;
 
@@ -167,7 +158,7 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
     },
     [beside, update],
   );
-  const open = shown === "open" && entry !== null;
+  const open = shown === "open" && place !== null;
   useEffect(() => {
     if (!open) onInset(0);
   }, [onInset, open]);
@@ -187,8 +178,9 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
         <RunPagePanel
           key={placeKey}
           active={props.active && foreground}
-          destination={binding.destination}
-          entry={entry}
+          acting={acting}
+          destination={place.binding ?? null}
+          place={place}
           column={column}
           fullWidth={fullWidth}
           hostClient={hostClient}
@@ -198,7 +190,6 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
           onPageSize={onPageSize}
           pageHeight={beside || page === null ? null : page.height}
           pageWidth={fullWidth ? size.width : (page?.width ?? 0)}
-          sessionId={binding.sessionId}
           threadId={threadId}
           top={top}
         />
@@ -213,27 +204,26 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
  */
 const RunPagePanel = memo(function RunPagePanel(props: {
   readonly active: boolean;
-  readonly destination: SurfaceDestination | null;
+  readonly destination: TabDestination | null;
   readonly column: number;
-  readonly entry: PlaceEnteredEventView;
+  readonly acting: boolean;
+  readonly place: RunPlaceView;
   readonly fullWidth: boolean;
   readonly hostClient: HostClient;
   readonly onFold: (() => void) | null;
   readonly onInset: (inset: number) => void;
-  readonly onOpen: (destination: SurfaceDestination) => void;
+  readonly onOpen: (destination: TabDestination) => void;
   readonly onPageSize: (size: { readonly height: number; readonly width: number }) => void;
   /** The page's height, or null where only the row is drawn. */
   readonly pageHeight: number | null;
   readonly pageWidth: number;
-  readonly sessionId: string | null;
   readonly threadId: string;
   readonly top: number;
 }): ReactNode {
-  const { destination, entry, onFold, onInset, top } = props;
+  const { acting, destination, place, onFold, onInset, top } = props;
   const [picture, report] = usePicture();
-  const acting = useRunPlaceActing(props.hostClient, entry, props.threadId);
   const asPage = props.pageHeight !== null && picture.seen;
-  const { title, site } = entry.data;
+  const { title, site } = place;
   const siteLabel = site ? pageSiteLabel(site) : null;
   const corner = asPage ? (props.fullWidth ? 0 : radius.md) : pictureRadius;
   const folding = useMemo(
@@ -287,19 +277,17 @@ const RunPagePanel = memo(function RunPagePanel(props: {
         >
           <PlaceSurface
             active={props.active}
-            destination={destination}
-            entry={entry}
             hostClient={props.hostClient}
             onPageSize={props.onPageSize}
             onPicture={report}
-            sessionId={props.sessionId}
+            place={place}
           />
           {asPage ? (
             picture.state === "live" ? null : (
               <View style={styles.waiting} />
             )
           ) : (
-            <PlaceGlyph kind={entry.data.place.kind} size={15} />
+            <PlaceGlyph kind={place.kind} size={15} />
           )}
           {acting ? <ActingRing radius={corner} /> : null}
         </Animated.View>

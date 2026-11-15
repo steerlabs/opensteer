@@ -4,14 +4,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { encodeDisplayViewerFrame } from "@opensteer/protocol";
-import { BrowserTabStore, RunPlaceStore } from "@opensteer/client/host";
-import { createId, PlaceEnteredEventViewSchema } from "@opensteer/core";
+import { PlaceActivityStore, RunPlaceStore } from "@opensteer/client/host";
+import { tabFixture, tabStoreFixture } from "@opensteer/client/test-support";
+import { createId, TabIdSchema, TabPlaceEnteredEventViewSchema } from "@opensteer/core";
 import { FoldedPage } from "../thread/folded-page.js";
-import type {
-  HostClient,
-  LegacyHostSnapshot as HostSnapshot,
-  WebSocketClient,
-} from "@opensteer/client/host";
+import type { HostClient, HostSnapshot, WebSocketClient } from "@opensteer/client/host";
 import { sharedDisplayStreams, type DisplaySnapshot } from "@opensteer/client/integrations";
 import type { EditingProxyEvent } from "@opensteer/client/editing";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -290,11 +287,19 @@ async function setup(
   root = createRoot(container);
   const runId = createId("run"),
     threadId = createId("thread");
-  const machineId = screen === "live" ? createId("runner") : "machine";
+  const liveMachine = createId("runner");
+  const machineId = screen === "live" ? liveMachine : "machine";
   const runPlaces = new RunPlaceStore();
+  // The phone's tab, which a live Run's place names.
+  const phoneTab = tabFixture({
+    tabId: TabIdSchema.parse("tab_phone"),
+    kind: "phone",
+    title: "Phone",
+    computer: { computerId: liveMachine, name: "Phone" },
+  });
   if (screen === "live")
     runPlaces.accept(
-      PlaceEnteredEventViewSchema.parse({
+      TabPlaceEnteredEventViewSchema.parse({
         eventId: createId("event"),
         environmentId: createId("environment"),
         threadId,
@@ -302,11 +307,11 @@ async function setup(
         type: "place.entered",
         sequence: "1",
         createdAt: "2026-11-02T12:00:00.000Z",
-        data: { place: { kind: "phone", machineId, display: "main" }, title: "Phone", site: null },
+        data: { tabId: phoneTab.tabId, title: "Phone", site: null },
       }),
     );
   let snapshot = {
-    browserTabs: new BrowserTabStore(),
+    tabs: tabStoreFixture(screen === "live" ? [phoneTab] : []),
     connection: "connected",
     session: "authenticated",
     user: { id: "person" },
@@ -355,11 +360,14 @@ async function setup(
     snapshot = { ...snapshot, ...patch } as typeof snapshot;
     listeners.forEach((listener) => listener());
   };
+  const activity = new PlaceActivityStore();
   const client = {
-    browserTabs: snapshot.browserTabs,
     getSnapshot: () => snapshot,
     runPlace: runPlaces.get,
     subscribeRunPlace: runPlaces.subscribe,
+    placeActivity: activity.get,
+    subscribePlaceActivity: activity.subscribe,
+    tabViewer: () => null,
     subscribe: (listener: () => void) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -378,16 +386,9 @@ async function setup(
             },
       },
     ]),
-    closePhoneTab: vi.fn(async () => undefined),
-    openComputerView: vi.fn(async () => ({
-      viewId: "new-owner",
-      generation: 2,
-      machineId: "machine",
-      target: phone
-        ? { kind: "phone", display: "main" }
-        : { kind: "app", app: { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null } },
-      ...(phone ? {} : { window: { id: 42, title: "Shopping" } }),
-    })),
+    activateTab: vi.fn(async () => {
+      throw new Error("Only the tab's screen opens its view again.");
+    }),
   } as unknown as HostClient;
   const pool = sharedDisplayStreams(client);
   const retain = pool.retain.bind(pool);
@@ -1120,7 +1121,7 @@ it.each([
     expect(container.textContent).toContain("This view has ended");
     await press(label);
     expect(state.reopen).toHaveBeenCalledOnce();
-    expect(client.openComputerView).not.toHaveBeenCalled();
+    expect(client.activateTab).not.toHaveBeenCalled();
     expect(state.dispatch).not.toHaveBeenCalled();
   },
 );

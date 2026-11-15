@@ -2,13 +2,10 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
-import {
-  HostClientRequestError,
-  type LegacyHostSnapshot as HostSnapshot,
-} from "@opensteer/client/host";
+import { HostClientRequestError, type HostSnapshot } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { computerReasonWords } from "@opensteer/client/integrations";
-import { attachMockTabs, windowTab } from "../../test-support/mock-tabs.js";
+import { RunnerIdSchema, WindowIdSchema, type Tab } from "@opensteer/core";
 import { OpenAppScreen } from "./open-app.js";
 
 const state = vi.hoisted(() => ({
@@ -143,17 +140,10 @@ vi.mock("react-native", () => ({
   ),
 }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-const chosenWindow = "win_00000000-0000-4000-8000-000000000042";
-/** A window as the Mac lists it; `windowId` is the opaque handle a current client carries. */
-const windowInfo = (id: number, title: string, windowId?: string) => ({
-  id,
-  title,
-  ...(windowId === undefined ? {} : { windowId }),
-  focused: false,
-  main: true,
-  minimized: false,
-  onScreen: true,
-});
+const chosenWindow = WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000042");
+const otherWindow = WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000001");
+/** A window as the Mac lists it: the handle that opens exactly it, and its title. */
+const windowInfo = (windowId: typeof chosenWindow, title: string) => ({ windowId, title });
 let root: Root | null = null;
 let container: HTMLDivElement;
 afterEach(async () => {
@@ -168,6 +158,11 @@ async function setup() {
   const host = new MockHostClient({ latencyMs: 0 });
   state.host = host;
   await host.load();
+  // No window tabs: whether an app already has one is each case's to say.
+  const windowTabs = [...host.getSnapshot().tabs.rows.values()].filter(
+    (tab) => tab.kind === "window",
+  );
+  await host.closeTabs(windowTabs.map((tab) => tab.tabId));
   const base = host.getSnapshot();
   const snapshot = { ...base, deploymentId: "deployment" };
   vi.spyOn(host, "getSnapshot").mockImplementation(() => snapshot);
@@ -175,8 +170,8 @@ async function setup() {
   const app = approved.find((a) => a.target.kind === "app" && a.name === "Notes")!;
   const list = vi.spyOn(host, "listApprovedComputerApps").mockResolvedValue(approved);
   const windows = vi.spyOn(host, "listComputerAppWindows").mockResolvedValue([]);
-  const tabs = attachMockTabs(host, { layout: [], tabs: [] });
-  const open = vi.spyOn(host as unknown as import("@opensteer/client/host").TabsClient, "openTab");
+  const openTab = host.openTab.bind(host);
+  const open = vi.spyOn(host, "openTab");
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -184,7 +179,11 @@ async function setup() {
     act(async () =>
       root!.render(<OpenAppScreen route={{ params: { deploymentId: "deployment" } }} />),
     );
-  return { host, snapshot, approved, app, list, windows, open, render, tabs };
+  return { host, snapshot, approved, app, list, windows, open, openTab, render };
+}
+/** The tab the last open resolved to. */
+async function openedTab(open: { mock: { results: { value: unknown }[] } }): Promise<Tab> {
+  return (await open.mock.results.at(-1)!.value) as Tab;
 }
 function button(label: string) {
   const found = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
@@ -200,9 +199,9 @@ it("groups own apps by named Mac and Agent Phone, with window counts", async () 
   const w = await setup();
   w.windows.mockImplementation(async (_machine, app) =>
     app.displayName === "Notes"
-      ? [windowInfo(42, "Shopping")]
+      ? [windowInfo(chosenWindow, "Shopping")]
       : app.displayName === "Keynote"
-        ? [windowInfo(1, "One"), windowInfo(2, "Two")]
+        ? [windowInfo(otherWindow, "One"), windowInfo(chosenWindow, "Two")]
         : [],
   );
   await w.render();
@@ -236,7 +235,7 @@ it.each(["offline", "unavailable", "permission-required"])(
 );
 it("opens a window's tab, dismissing the sheet before showing that tab", async () => {
   const w = await setup();
-  w.windows.mockResolvedValue([windowInfo(42, "Shopping", chosenWindow)]);
+  w.windows.mockResolvedValue([windowInfo(chosenWindow, "Shopping")]);
   await w.render();
   await press("Notes, Shopping");
   expect(w.open).toHaveBeenCalledWith({
@@ -244,30 +243,38 @@ it("opens a window's tab, dismissing the sheet before showing that tab", async (
     kind: "window",
     windowId: chosenWindow,
   });
-  const tab = [...w.tabs.model.rows.values()][0]!;
+  const tab = await openedTab(w.open);
   expect(state.goBack.mock.invocationCallOrder[0]).toBeLessThan(
     state.dispatch.mock.invocationCallOrder[0]!,
   );
-  expect(state.dispatch).toHaveBeenCalledWith({
-    type: "PUSH",
-    payload: { name: "WorkspaceBrowser", params: { deploymentId: "deployment", tabId: tab.tabId } },
-  });
+  expect(state.dispatch.mock.calls).toEqual([
+    [
+      {
+        type: "PUSH",
+        payload: {
+          name: "WorkspaceBrowser",
+          params: { deploymentId: "deployment", tabId: tab.tabId },
+        },
+      },
+    ],
+  ]);
 });
-it("offers multiple windows through NativeMenu and opens the chosen one by its handle", async () => {
+it("offers several windows through NativeMenu and opens exactly the one picked", async () => {
   const w = await setup();
   w.list.mockResolvedValue([w.app]);
-  w.windows.mockResolvedValue([windowInfo(1, "First"), windowInfo(42, "Chosen", chosenWindow)]);
+  w.windows.mockResolvedValue([
+    windowInfo(otherWindow, "First"),
+    windowInfo(chosenWindow, "Chosen"),
+  ]);
   await w.render();
   // The native menu adds no layout of its own, so the row inside it lays out its line.
   expect(container.querySelector('[data-native-menu] > [data-row="true"]')).not.toBeNull();
   await press("Chosen");
-  expect(w.open).toHaveBeenCalledWith({
-    computerId: w.app.machineId,
-    kind: "window",
-    windowId: chosenWindow,
-  });
+  expect(w.open.mock.calls).toEqual([
+    [{ computerId: w.app.machineId, kind: "window", windowId: chosenWindow }],
+  ]);
 });
-it("opens through the app's bundle when windows are unknown or carry no handle", async () => {
+it("opens through the app's bundle when its windows are unknown", async () => {
   const w = await setup();
   w.windows.mockRejectedValue(new Error("computer-view-unsupported"));
   await w.render();
@@ -315,10 +322,9 @@ it.each(["unmount", "blur"])(
     const w = await setup();
     let finish!: () => void;
     const opened = new Promise<void>((resolve) => (finish = resolve));
-    const real = w.open.getMockImplementation();
     w.open.mockImplementationOnce(async (target) => {
       await opened;
-      return (real ?? (() => Promise.reject(new Error("no open"))))(target);
+      return w.openTab(target);
     });
     await w.render();
     await press("Notes, No windows open");
@@ -327,20 +333,19 @@ it.each(["unmount", "blur"])(
       root = null;
     } else state.focused = false;
     await act(async () => finish());
+    await openedTab(w.open);
     expect(state.goBack).not.toHaveBeenCalled();
     expect(state.dispatch).not.toHaveBeenCalled();
   },
 );
 it("marks an app that already has a window tab as open", async () => {
   const w = await setup();
-  w.tabs.model.reset(
-    [
-      windowTab("notes", "Shopping", {
-        computer: { computerId: w.app.machineId as never, name: "Mac" },
-      }),
-    ],
-    [{ kind: "tab", tabId: "tab_notes" as never }],
-  );
+  await w.openTab({
+    bundleId: "com.apple.Notes",
+    computerId: RunnerIdSchema.parse(w.app.machineId),
+    kind: "window",
+  });
   await w.render();
   expect(button("Notes, Open")).toBeDefined();
+  expect(button("Calendar, No windows open")).toBeDefined();
 });

@@ -1,16 +1,15 @@
 import type { HostClient } from "@opensteer/client/host";
-import type { Tab, TabId } from "@opensteer/core";
+import type { TabId } from "@opensteer/core";
 import {
   CommonActions,
   StackActions,
   useNavigation,
   type StaticScreenProps,
 } from "@react-navigation/native";
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { TabList } from "../tabs/tab-list.js";
-import { layoutTabIds } from "../tabs/tab-entries.js";
-import { useTabLayout, useTabsModel, useTabsSyncing } from "../tabs/use-tabs.js";
+import { useTabStrip, useTabsSyncing } from "@opensteer/client/react";
 import { space, touchTarget } from "../theme.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { useContentInsets } from "../ui/pane.js";
@@ -56,17 +55,10 @@ function BrowserTabs(props: {
   const { deploymentId, hostClient, tabId, threadId } = props;
   const navigation = useNavigation();
   const insets = useContentInsets();
-  const model = useTabsModel(hostClient);
-  const syncing = useTabsSyncing(model);
+  const syncing = useTabsSyncing(hostClient);
   const [taskOnly, setTaskOnly] = useState(threadId !== null);
-  const filter = useMemo(
-    () =>
-      taskOnly && threadId !== null
-        ? (tab: Tab) => tab.tabId === tabId || tab.usedBy.some(({ taskId }) => taskId === threadId)
-        : null,
-    [tabId, taskOnly, threadId],
-  );
-  const count = layoutTabIds(useTabLayout(model)).length;
+  const matches = useTaskTabs(hostClient, taskOnly ? threadId : null, tabId);
+  const count = useTabStrip(hostClient).ordered.length;
 
   // The tab under this sheet takes the chosen one; it is the screen the sheet
   // was presented over, so it is found by where it is rather than by name.
@@ -122,23 +114,20 @@ function BrowserTabs(props: {
           </AppText>
         </Pressable>
       </View>
-      {model === null ? null : (
-        <TabList
-          contentStyle={[styles.list, { paddingBottom: insets.bottom + space[16] }]}
-          empty={
-            syncing ? (
-              <AppText role="secondary" style={styles.finding} tone="muted">
-                Finding tabs…
-              </AppText>
-            ) : null
-          }
-          filter={filter}
-          hostClient={hostClient}
-          model={model}
-          onOpen={choose}
-          selectedTabId={tabId}
-        />
-      )}
+      <TabList
+        contentStyle={[styles.list, { paddingBottom: insets.bottom + space[16] }]}
+        empty={
+          syncing ? (
+            <AppText role="secondary" style={styles.finding} tone="muted">
+              Finding tabs…
+            </AppText>
+          ) : null
+        }
+        hostClient={hostClient}
+        matches={matches}
+        onOpen={choose}
+        selectedTabId={tabId}
+      />
     </View>
   );
 }
@@ -160,3 +149,27 @@ const styles = StyleSheet.create({
   scope: { justifyContent: "center", minHeight: touchTarget },
   sheet: { flex: 1 },
 });
+
+/**
+ * The tabs a task uses, with the one this sheet covers; null while not
+ * narrowing. A string key, so only a change in who matches redraws the list.
+ */
+function useTaskTabs(
+  hostClient: HostClient,
+  threadId: string | null,
+  tabId: TabId,
+): ReadonlySet<string> | null {
+  const tabs = hostClient.getSnapshot().tabs;
+  const read = () =>
+    threadId === null
+      ? null
+      : [...tabs.rows.values()]
+          .filter(
+            (tab) => tab.tabId === tabId || tab.usedBy.some(({ taskId }) => taskId === threadId),
+          )
+          .map((tab) => tab.tabId)
+          .join("\n");
+  const subscribe = useCallback((listener: () => void) => tabs.subscribe(listener), [tabs]);
+  const key = useSyncExternalStore(subscribe, read, read);
+  return useMemo(() => (key === null ? null : new Set(key.split("\n"))), [key]);
+}

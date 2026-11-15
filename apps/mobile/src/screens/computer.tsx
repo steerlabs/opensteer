@@ -8,12 +8,8 @@ import { RemoteIphoneAppsBlock } from "../iphone-apps/remote-iphone-apps-block.j
 import { AppText, Notice, SecondaryButton, StatusDot } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
 
-import {
-  canRespondToRequests,
-  type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
-} from "@opensteer/client/host";
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import { canRespondToRequests, type HostClient, type HostSnapshot } from "@opensteer/client/host";
+import type { MachineSummary } from "@opensteer/protocol";
 import {
   computerRole,
   computerRoleLabel,
@@ -28,7 +24,6 @@ import { StackActions, useNavigation, type StaticScreenProps } from "@react-navi
 import { useLayoutEffect, useMemo, useState, useRef, useEffect, type ReactNode } from "react";
 import { StyleSheet } from "react-native";
 import { tabRoute } from "../browser/surface-route.js";
-import { tabsClient } from "../tabs/tabs-host.js";
 import { RunnerIdSchema } from "@opensteer/core";
 import { operationDetail } from "../client/mobile-client.js";
 import { useLeaveSheets } from "./leave-sheets.js";
@@ -133,7 +128,7 @@ function ComputerDetail(props: {
     setOpenFailure(null);
     try {
       // The phone's one tab; showing it is the person's Open, which may wake it.
-      const tab = await tabsClient(props.hostClient).openTab({
+      const tab = await props.hostClient.openTab({
         computerId: RunnerIdSchema.parse(props.machineId),
         kind: "phone",
       });
@@ -301,7 +296,7 @@ function ComputerDetail(props: {
 /** The computer in the Computers page's own words: its role, what it lends, and its state. */
 function ComputerSummary(props: {
   readonly apps: Parameters<typeof computerUses>[1];
-  readonly machine: LegacyMachineSummary;
+  readonly machine: MachineSummary;
 }): ReactNode {
   const uses = computerUses(props.machine, props.apps);
   const role = computerRole(props.machine, uses, props.apps !== null);

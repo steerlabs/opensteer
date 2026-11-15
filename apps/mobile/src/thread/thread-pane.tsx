@@ -27,11 +27,11 @@ import {
   withoutOwnAssignment,
   type BrowserTabDestination,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type ConversationRow,
   type MessageEntry,
   type RequesterLink,
-  type SurfaceDestination,
+  type TabDestination,
   type ThreadActivityIndicator,
   type TranscriptGroup,
   type TranscriptVoice,
@@ -835,14 +835,15 @@ function ThreadPaneForUser(
   );
   const showTab = props.withPage?.showTab ?? null;
   const showTabHere = useShowTab(deploymentId, threadId);
-  const openPlace = useOpenPlace(hostClient, deploymentId, threadId);
+  const openPlace = useOpenPlace(deploymentId, threadId);
   // Beside a page, a page chip turns that page rather than stacking another.
   const openSurface = useCallback(
-    (destination: SurfaceDestination) => {
-      if (destination.kind === "browser" && showTab !== null) showTab(destination);
+    (destination: TabDestination) => {
+      const page = hostClient.getSnapshot().tabs.get(destination.tabId)?.kind === "page";
+      if (page && showTab !== null) showTab({ tabId: destination.tabId });
       else openPlace(destination);
     },
-    [openPlace, showTab],
+    [hostClient, openPlace, showTab],
   );
   const appTabs = useMemo<TranscriptAppTabs>(() => ({ show: showTabHere }), [showTabHere]);
   const surfaces = useMemo<TranscriptSurfaces>(

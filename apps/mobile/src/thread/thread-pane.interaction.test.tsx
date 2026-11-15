@@ -1,18 +1,18 @@
-import { seedBrowserSession } from "@opensteer/client/test-support";
-import { aiSharingTestPermission } from "../../test-support/ai-sharing.js";
-import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 
+import { aiSharingTestPermission } from "../../test-support/ai-sharing.js";
 import { idleVoiceSnapshot, type VoiceSnapshot } from "@opensteer/client/voice";
 import { DictationController } from "@opensteer/client/dictation";
 import type { DictationEvent, DictationPort } from "@opensteer/protocol/dictation";
 import {
   formatClockTime,
   HostClientRequestError,
+  PlaceActivityStore,
+  placeList,
   RunPlaceStore,
   type BrowserFrameView,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type MessageEntry,
   type ReasoningEntry,
   type RequestReceiptEntry,
@@ -21,22 +21,31 @@ import {
   type TranscriptEntry,
 } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
-import { conversationHistoryHost, MemoryPrivateFilesystem } from "@opensteer/client/test-support";
+import {
+  conversationHistoryHost,
+  MemoryPrivateFilesystem,
+  tabFixture,
+  tabStoreFixture,
+} from "@opensteer/client/test-support";
 import {
   AssignmentSummarySchema,
   BrowserPageContentPartSchema,
   createId,
-  PlaceEnteredEventViewSchema,
   RunIdSchema,
+  RunnerIdSchema,
+  TabIdSchema,
+  TabPlaceEnteredEventViewSchema,
   ThreadIdSchema,
   voiceCallSeed,
   type Request,
+  type TabId,
   type ThreadInputQueue,
 } from "@opensteer/core";
 import {
   ComputerUseSessionIdSchema,
-  type LegacyComputerUseSessionSummary,
-  type LegacyMachineSummary,
+  type ComputerUseSessionSummary,
+  type MachineSummary,
+  type TabViewer,
 } from "@opensteer/protocol";
 import { act, useState, type ReactElement, type ReactNode, type Ref } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -793,6 +802,15 @@ const base = {
     thread.id === conversationId ? { ...thread, purpose: "voice" as const } : thread,
   ),
 };
+/** A page tab in the mock's list, as a message includes it. */
+const includedPage = () =>
+  BrowserPageContentPartSchema.parse({
+    type: "browser-page",
+    sessionId: "bsn_00000000-0000-4000-8000-0000000000aa",
+    tabId: placeList(base).find(({ kind }) => kind === "page")!.key,
+    title: "Research page",
+    url: "https://example.com",
+  });
 const conversationTitle = base.threads.find(({ id }) => id === conversationId)!.title;
 const viewer = base.user;
 if (viewer === null) throw new Error("The mock Host has no signed-in reader.");
@@ -959,7 +977,7 @@ function clickingInNotes(runId: string, running: boolean): ToolEntry {
     tool: { name: "integration_call", namespace: "opensteer.integrations" },
   } as ToolEntry;
 }
-function notesSession(runId: string): LegacyComputerUseSessionSummary {
+function notesSession(runId: string): ComputerUseSessionSummary {
   return {
     actionCount: 1,
     actingAppKeys: [],
@@ -969,15 +987,15 @@ function notesSession(runId: string): LegacyComputerUseSessionSummary {
     sessionId: "cus_00000000-0000-4000-8000-0000000000aa",
     threadId: conversationId,
     threadTitle: "Chat",
-  } as unknown as LegacyComputerUseSessionSummary;
+  } as unknown as ComputerUseSessionSummary;
 }
 /** This reader's Macs, with the Mac mini as given; null leaves it out, as for a reader who does not own it. */
-function macs(mini: Partial<LegacyMachineSummary> | null): readonly LegacyMachineSummary[] {
+function macs(mini: Partial<MachineSummary> | null): readonly MachineSummary[] {
   return base.machines.flatMap((machine) =>
     machine.id !== macMini?.id ? [machine] : mini === null ? [] : [{ ...machine, ...mini }],
   );
 }
-function sessions(list: readonly LegacyComputerUseSessionSummary[]): Partial<LegacyMachineSummary> {
+function sessions(list: readonly ComputerUseSessionSummary[]): Partial<MachineSummary> {
   const report = macMini?.computerUse;
   if (!report) throw new Error("The Mac mini reports no computer use.");
   return { computerUse: { ...report, sessions: [...list] } };
@@ -1047,7 +1065,7 @@ function snapshotFor(input: {
   readonly entries: readonly TranscriptEntry[];
   /** The Host holds an earlier page of this transcript than the one loaded. */
   readonly earlier?: boolean;
-  readonly machines?: readonly LegacyMachineSummary[];
+  readonly machines?: readonly MachineSummary[];
   /** The Thread's environment has gone offline: nothing live can be confirmed. */
   readonly offline?: boolean;
   readonly paused?: boolean;
@@ -1121,11 +1139,22 @@ const connectingWatch = { error: null, frame: null, status: "connecting" } as co
 
 /** A Host whose snapshot the test moves, recording what the phone asks of it. */
 function fakeHost(initial: HostSnapshot) {
-  let snapshot = seedBrowserSnapshot(initial);
+  let snapshot = initial;
   // What the Host answers the next "Load earlier" with: the transcript with that page merged in.
   let earlierPage: HostSnapshot | null = null;
   const listeners = new Set<() => void>();
   const runPlaces = new RunPlaceStore();
+  const placeActivity = new PlaceActivityStore();
+  // This device's view of each page tab, bound once it is activated here.
+  const viewers = new Map<string, TabViewer>();
+  const activateTab = vi.fn(async (tabId: string) => {
+    const tab = snapshot.tabs.get(tabId as TabId);
+    if (tab?.kind !== "page") throw new Error("Only a listed page binds a viewer here.");
+    const viewer = { kind: "page", sessionId: `session-${tabId}`, surfaceId: tabId } as TabViewer;
+    viewers.set(tabId, viewer);
+    for (const listener of listeners) listener();
+    return viewer;
+  });
   let frame: BrowserFrameView | null = null;
   const frameListeners = new Set<() => void>();
   const watchRelease = vi.fn();
@@ -1135,7 +1164,7 @@ function fakeHost(initial: HostSnapshot) {
   const loadTranscriptAround = vi.fn(async (_threadId: string, _messageId: string) => undefined);
   const loadEarlierTranscript = vi.fn(async (_threadId: string) => {
     if (earlierPage === null) return;
-    snapshot = seedBrowserSnapshot(earlierPage);
+    snapshot = earlierPage;
     earlierPage = null;
     for (const listener of listeners) listener();
   });
@@ -1164,6 +1193,10 @@ function fakeHost(initial: HostSnapshot) {
     },
     runPlace: runPlaces.get,
     subscribeRunPlace: runPlaces.subscribe,
+    placeActivity: placeActivity.get,
+    subscribePlaceActivity: placeActivity.subscribe,
+    tabViewer: (tabId: string) => viewers.get(tabId) ?? null,
+    activateTab,
     browserWatchState: () => connectingWatch,
     cancelThreadInput: vi.fn(async () => undefined),
     decideTeamAsk: vi.fn(async (_decision: object) => undefined),
@@ -1175,9 +1208,6 @@ function fakeHost(initial: HostSnapshot) {
     subscribeBrowserWatch: () => () => undefined,
     subscribeLatestPlace: () => () => undefined,
     dispatch,
-    get browserTabs() {
-      return snapshot.browserTabs!;
-    },
     getSnapshot: () => snapshot,
     load: vi.fn(async () => undefined),
     loadEarlierTranscript,
@@ -1205,6 +1235,13 @@ function fakeHost(initial: HostSnapshot) {
     releaseWaitingMessage: client.releaseWaitingMessage,
     runPlaces,
     watchRelease,
+    /** The Host binds this device's view of a page tab to another browser session. */
+    rebind(tabId: string, sessionId: string) {
+      act(() => {
+        viewers.set(tabId, { kind: "page", sessionId, surfaceId: tabId } as TabViewer);
+        for (const listener of listeners) listener();
+      });
+    },
     picture(next: BrowserFrameView | null) {
       act(() => {
         frame = next;
@@ -1218,7 +1255,7 @@ function fakeHost(initial: HostSnapshot) {
     loadEarlierTranscript,
     loadTranscriptAround,
     move(next: HostSnapshot) {
-      snapshot = seedBrowserSnapshot(next);
+      snapshot = next;
       act(() => {
         for (const listener of listeners) listener();
       });
@@ -1451,15 +1488,7 @@ function sent(dispatch: ReturnType<typeof fakeHost>["dispatch"]): readonly strin
 const queueControls = ["Queued", "Paused", "Resume", "Steer", "Up next", "Edit", "Remove"] as const;
 
 describe("a conversation with a page", () => {
-  const page = () =>
-    BrowserPageContentPartSchema.parse({
-      type: "browser-page",
-      sessionId: base.browserSessions[0]!.id,
-      tabId: (base.browserSessions[0]!.browserTabs?.sessionTabs(base.browserSessions[0]!.id) ??
-        [])[0]!.id,
-      title: "Research page",
-      url: "https://example.com",
-    });
+  const page = includedPage;
   // The page the composer includes: at rest a chip naming its site, open its title above the words.
   const pageChip = (container: HTMLElement) =>
     container.querySelector(
@@ -2449,6 +2478,8 @@ describe("surfaces belonging to one reply", () => {
         run: null,
         threadId,
       }),
+      // None of the places it used is still a tab.
+      tabs: tabStoreFixture([]),
       browserUses: [
         {
           sessionId: "reply-browser",
@@ -2460,26 +2491,6 @@ describe("surfaces belonging to one reply", () => {
           pageTitle: "Shared page",
           pageSite: "https://example.com",
         },
-      ],
-      browserSessions: [
-        seedBrowserSession(
-          {
-            access: "read-write",
-            attachedRunIds: [],
-            dialog: null,
-            error: null,
-            id: "reply-browser",
-            origin: "agent",
-            placement: { kind: "runner", runnerId: createId("runner") },
-            profileId: null,
-            runtimeId: "reply-runtime",
-            state: "closed",
-            viewerError: null,
-            viewerState: "disconnected",
-          },
-          undefined,
-          [],
-        ),
       ],
     };
     const host = fakeHost(initial);
@@ -2608,7 +2619,7 @@ describe("a reply at work on a Mac", () => {
 
   it("keeps the reader's own Mac's line with Stop, then the Stop it leaves for three seconds, then closes the gap", async () => {
     const reply = joinedWhileClicking();
-    const working = (machines: readonly LegacyMachineSummary[]) =>
+    const working = (machines: readonly MachineSummary[]) =>
       snapshotFor({
         entries: reply.entries,
         machines,
@@ -2663,7 +2674,7 @@ describe("a reply at work on a Mac", () => {
       answer,
       filing,
     ];
-    const background = (machines: readonly LegacyMachineSummary[], offline = false) =>
+    const background = (machines: readonly MachineSummary[], offline = false) =>
       snapshotFor({
         entries,
         machines,
@@ -4808,14 +4819,7 @@ it("offers voice on Home's composer but not on a new task's", async () => {
 
 it("hands a new task to its transcript, with the page Ask started it from, without showing the empty starter again", async () => {
   const { NewTaskPane } = await import("../screens/new-task.js");
-  const page = BrowserPageContentPartSchema.parse({
-    type: "browser-page",
-    sessionId: base.browserSessions[0]!.id,
-    tabId: (base.browserSessions[0]!.browserTabs?.sessionTabs(base.browserSessions[0]!.id) ??
-      [])[0]!.id,
-    title: "Research page",
-    url: "https://example.com",
-  });
+  const page = includedPage();
   const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
   const thread = host.client.getSnapshot().threads.find(({ id }) => id === workId)!;
   const createThread = vi.fn(async () => thread);
@@ -4903,14 +4907,7 @@ it("keeps New task creation and message keys when Ask is left after a lost creat
   Object.assign(host.client, { createThread });
   const { container, drafts, root } = await mount(host, workId);
   await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(newDraftId), "Research this page");
-  const included = BrowserPageContentPartSchema.parse({
-    type: "browser-page",
-    sessionId: base.browserSessions[0]!.id,
-    tabId: (base.browserSessions[0]!.browserTabs?.sessionTabs(base.browserSessions[0]!.id) ??
-      [])[0]!.id,
-    title: "Research page",
-    url: "https://example.com",
-  });
+  const included = includedPage();
   await drafts.writeDraftPage(deploymentId, userId, newTaskDraftKey(newDraftId), included);
   const draw = () => (
     <NewTaskPane
@@ -4942,15 +4939,7 @@ it("keeps New task creation and message keys when Ask is left after a lost creat
 });
 
 describe("a new task Ask started", () => {
-  const included = () =>
-    BrowserPageContentPartSchema.parse({
-      type: "browser-page",
-      sessionId: base.browserSessions[0]!.id,
-      tabId: (base.browserSessions[0]!.browserTabs?.sessionTabs(base.browserSessions[0]!.id) ??
-        [])[0]!.id,
-      title: "Research page",
-      url: "https://example.com",
-    });
+  const included = includedPage;
 
   async function open(files: MemoryPrivateFilesystem) {
     const { NewTaskPane } = await import("../screens/new-task.js");
@@ -5049,17 +5038,10 @@ describe("a new task Ask started", () => {
 });
 
 describe("the Run's page above the conversation", () => {
-  const sessionId = "bsn_00000000-0000-4000-8000-000000000001";
-  const surfaceId = "srf_00000000-0000-4000-8000-000000000001";
-  const nextSurface = "srf_00000000-0000-4000-8000-000000000002";
-  const entered = (
-    runId: string,
-    threadId: string,
-    sequence = "1",
-    tab = surfaceId,
-    session = sessionId,
-  ) =>
-    PlaceEnteredEventViewSchema.parse({
+  const pageTab = TabIdSchema.parse("tab_run-page");
+  const nextTab = TabIdSchema.parse("tab_next-page");
+  const entered = (runId: string, threadId: string, sequence = "1", tabId: TabId = pageTab) =>
+    TabPlaceEnteredEventViewSchema.parse({
       type: "place.entered",
       eventId: createId("event"),
       environmentId: createId("environment"),
@@ -5067,12 +5049,13 @@ describe("the Run's page above the conversation", () => {
       threadId,
       sequence,
       createdAt: at,
-      data: {
-        place: { kind: "browser", sessionId: session, surfaceId: tab },
-        title: `Live page ${sequence}`,
-        site: "https://example.com",
-      },
+      data: { tabId, title: `Live page ${sequence}`, site: "https://example.com" },
     });
+  /** The person's tabs with the Run's page among them. */
+  const withPage = (snapshot: HostSnapshot): HostSnapshot => ({
+    ...snapshot,
+    tabs: tabStoreFixture([tabFixture({ tabId: pageTab, url: "https://example.com/" })]),
+  });
   const card = (container: HTMLElement) => container.querySelector('[data-testid="run-page"]');
   // The page takes its height from the room the pane is laid out in.
   const layOut = () =>
@@ -5083,24 +5066,35 @@ describe("the Run's page above the conversation", () => {
     );
 
   it.each([conversationId, workId])(
-    "keeps %s's card through thinking, Requests and catalog gaps, switches, then hands off to reply chips",
+    "keeps %s's card through thinking, Requests and list gaps, switches, then hands off to reply chips",
     async (threadId) => {
       const runId = createId("run");
       const entries = [said("Find the page", runId), ran(runId)];
-      const initial = snapshotFor({ entries, run: { id: runId, status: "running" }, threadId });
+      const initial = withPage(
+        snapshotFor({ entries, run: { id: runId, status: "running" }, threadId }),
+      );
       const host = fakeHost(initial);
       const { container } = await mount(host, threadId);
       await layOut();
       expect(card(container)).toBeNull();
-      await act(() => host.runPlaces.accept(entered(runId, threadId)));
+      await act(async () => host.runPlaces.accept(entered(runId, threadId)));
       const original = card(container);
       expect(original).not.toBeNull();
       expect(original?.textContent).toContain("Live page 1");
       expect(original?.textContent).toContain("example.com");
+      // The page is watched through this device's own binding of its tab.
+      expect(host.client.activateTab).toHaveBeenCalledExactlyOnceWith(pageTab);
+      const session = host.client.tabViewer(pageTab)!;
+      if (session.kind !== "page") throw new Error("Expected a page binding");
+      expect(host.client.retainBrowserWatch).toHaveBeenLastCalledWith(
+        session.sessionId,
+        pageTab,
+        expect.anything(),
+      );
       host.picture({
         data: new Uint8Array([1, 2]),
         header: {
-          surfaceId,
+          surfaceId: pageTab,
           frameId: 1,
           watchToken: "one",
           rasterWidth: 800,
@@ -5113,17 +5107,14 @@ describe("the Run's page above the conversation", () => {
       expect(image).not.toBeNull();
       await act(() => image.dispatchEvent(new Event("load")));
       for (const patch of [
-        seedBrowserSnapshot({ browserSessions: [] } as unknown as HostSnapshot, []),
+        { tabs: tabStoreFixture([]) },
         { connection: "connecting" as const },
-        {
-          ...snapshotFor({
-            entries,
-            requests: [approval(runId, "Continue?")],
-            run: { id: runId, status: "waiting" },
-            threadId,
-          }),
-          browserSessions: [],
-        },
+        snapshotFor({
+          entries,
+          requests: [approval(runId, "Continue?")],
+          run: { id: runId, status: "waiting" },
+          threadId,
+        }),
       ]) {
         host.move({ ...initial, ...patch });
         expect(card(container)).toBe(original);
@@ -5131,29 +5122,19 @@ describe("the Run's page above the conversation", () => {
       }
       host.picture(null);
       expect(container.querySelector("img[src]")).toBe(image);
-      const replacementSession = "bsn_00000000-0000-4000-8000-000000000002";
-      host.move({
-        ...host.client.getSnapshot(),
-        browserSessions: [
-          seedBrowserSession(
-            { id: replacementSession, state: "ready" },
-            { rows: [{ id: surfaceId }] },
-          ),
-        ] as unknown as HostSnapshot["browserSessions"],
-      });
-      expect(host.runPlaces.get(runId)!.data.place).toMatchObject({ sessionId });
+      host.rebind(pageTab, "bsn_00000000-0000-4000-8000-000000000002");
       expect(card(container)).toBe(original);
       expect(container.querySelector("img[src]")).toBe(image);
       expect(host.client.retainBrowserWatch).toHaveBeenLastCalledWith(
-        replacementSession,
-        surfaceId,
+        "bsn_00000000-0000-4000-8000-000000000002",
+        pageTab,
         expect.anything(),
       );
-      await act(() => host.runPlaces.accept(entered(runId, threadId, "3", nextSurface)));
+      await act(async () => host.runPlaces.accept(entered(runId, threadId, "3", nextTab)));
       // Another tab is another page: it starts afresh, with no picture of the last one.
       expect(card(container)?.textContent).toContain("Live page 3");
       expect(container.querySelector("img[src]")).toBeNull();
-      const entry = entered(runId, threadId, "3", nextSurface);
+      const entry = entered(runId, threadId, "3", nextTab);
       const reply = wrote("Here is your page", runId, threadId);
       await act(() => {
         host.move(
@@ -5183,29 +5164,31 @@ describe("the Run's page above the conversation", () => {
     },
   );
 
-  it.each(["app", "phone"] as const)(
-    "keeps an unresolved %s card and binds only its Run's native session",
+  it.each(["window", "phone"] as const)(
+    "keeps a %s card while its session is unresolved, and binds only its Run's native session",
     async (kind) => {
       const runId = createId("run");
-      const initial = snapshotFor({
-        entries: [ran(runId)],
-        run: { id: runId, status: "running" },
-        machines: [],
-        threadId: conversationId,
-      });
+      const nativeTab = TabIdSchema.parse(`tab_native-${kind}`);
+      const initial = {
+        ...snapshotFor({
+          entries: [ran(runId)],
+          run: { id: runId, status: "running" },
+          machines: [],
+          threadId: conversationId,
+        }),
+        tabs: tabStoreFixture([
+          tabFixture({
+            tabId: nativeTab,
+            kind,
+            computer: { computerId: RunnerIdSchema.parse(macMini!.id), name: "Mac mini" },
+          }),
+        ]),
+      };
       const host = fakeHost(initial);
-      const entry = entered(runId, conversationId);
       host.runPlaces.accept(
-        PlaceEnteredEventViewSchema.parse({
-          ...entry,
-          data: {
-            place:
-              kind === "app"
-                ? { kind, machineId: macMini!.id, appKey: "com.apple.notes" }
-                : { kind, machineId: macMini!.id, display: "main" },
-            title: "Native place",
-            site: null,
-          },
+        TabPlaceEnteredEventViewSchema.parse({
+          ...entered(runId, conversationId),
+          data: { tabId: nativeTab, title: "Native place", site: null },
         }),
       );
       const { container } = await mount(host, conversationId);
@@ -5216,7 +5199,7 @@ describe("the Run's page above the conversation", () => {
       const session = {
         ...notesSession(runId),
         display: kind === "phone" ? { state: "live" } : undefined,
-      } as unknown as LegacyComputerUseSessionSummary;
+      } as unknown as ComputerUseSessionSummary;
       const otherRun = {
         ...session,
         runId: createId("run"),
@@ -5228,7 +5211,7 @@ describe("the Run's page above the conversation", () => {
       expect(JSON.parse(preview!.getAttribute("data-source")!)).toEqual({
         kind: "task-session",
         sessionId: session.sessionId,
-        ...(kind === "app" ? { appKey: "com.apple.notes" } : {}),
+        ...(kind === "window" ? { appKey: "com.apple.notes" } : {}),
       });
       const renders = harness.nativeRenders;
       const reply = wrote("Still streaming", runId, conversationId);
@@ -5237,24 +5220,15 @@ describe("the Run's page above the conversation", () => {
         transcripts: { [conversationId]: [ran(runId), reply] },
       });
       expect(harness.nativeRenders).toBe(renders);
-      // A phone opens its one tab; a Mac app named only by the Run's session has no tab to open.
-      const openTab = vi.fn(async () => ({ tabId: "tab_phone" }));
-      Object.assign(host.client, { openTab });
+      // A press opens exactly its tab; only a page binds a viewer here.
       await press(container, "Native place");
-      if (kind === "phone") {
-        expect(openTab).toHaveBeenCalledExactlyOnceWith({ computerId: macMini!.id, kind });
-        expect(harness.dispatch).toHaveBeenLastCalledWith(
-          expect.objectContaining({
-            name: "WorkspaceBrowser",
-            params: expect.objectContaining({ tabId: "tab_phone" }),
-          }),
-        );
-      } else {
-        expect(openTab).not.toHaveBeenCalled();
-        expect(harness.dispatch).not.toHaveBeenCalledWith(
-          expect.objectContaining({ name: "WorkspaceBrowser" }),
-        );
-      }
+      expect(harness.dispatch).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          name: "WorkspaceBrowser",
+          params: expect.objectContaining({ tabId: nativeTab }),
+        }),
+      );
+      expect(host.client.activateTab).not.toHaveBeenCalled();
       await act(() => harness.appListeners.forEach((listener) => listener("background")));
       expect(container.querySelector("[data-native-preview]")?.getAttribute("data-active")).toBe(
         "false",
@@ -5270,11 +5244,13 @@ describe("the Run's page above the conversation", () => {
 
   it("opens the exact place, folds away, and releases media while backgrounded or hidden", async () => {
     const runId = createId("run");
-    const initial = snapshotFor({
-      entries: [ran(runId)],
-      run: { id: runId, status: "running" },
-      threadId: conversationId,
-    });
+    const initial = withPage(
+      snapshotFor({
+        entries: [ran(runId)],
+        run: { id: runId, status: "running" },
+        threadId: conversationId,
+      }),
+    );
     const host = fakeHost(initial);
     host.runPlaces.accept(entered(runId, conversationId));
     const { container, root, pane } = await mount(host, conversationId);
@@ -5283,7 +5259,7 @@ describe("the Run's page above the conversation", () => {
     expect(harness.dispatch).toHaveBeenLastCalledWith({
       type: "PUSH",
       name: "WorkspaceBrowser",
-      params: { deploymentId, threadId: conversationId, tabId: surfaceId },
+      params: { deploymentId, threadId: conversationId, tabId: pageTab },
     });
     expect(host.client.retainBrowserWatch).toHaveBeenCalledOnce();
     await act(() => harness.appListeners.forEach((listener) => listener("background")));
@@ -5305,21 +5281,19 @@ describe("the Run's page above the conversation", () => {
 
   it("shows its tab in the browser page beside the conversation, in place", async () => {
     const runId = createId("run");
-    const initial = snapshotFor({
-      entries: [ran(runId)],
-      run: { id: runId, status: "running" },
-      threadId: workId,
-    });
+    const initial = withPage(
+      snapshotFor({
+        entries: [ran(runId)],
+        run: { id: runId, status: "running" },
+        threadId: workId,
+      }),
+    );
     const host = fakeHost(initial);
     host.runPlaces.accept(entered(runId, workId));
     const showTab = vi.fn();
     const { container } = await mount(host, workId, { withPage: { page: null, showTab } });
     await press(container, "Live page 1, example.com");
-    expect(showTab).toHaveBeenCalledExactlyOnceWith({
-      kind: "browser",
-      sessionId,
-      tabId: surfaceId,
-    });
+    expect(showTab).toHaveBeenCalledExactlyOnceWith({ tabId: pageTab });
     expect(harness.dispatch).not.toHaveBeenCalled();
   });
 });

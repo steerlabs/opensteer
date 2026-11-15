@@ -1,4 +1,4 @@
-import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
+import type { HostClient, HostSnapshot } from "@opensteer/client/host";
 import { useIsFocused, useNavigation } from "@react-navigation/native";
 import { useEffect, type ReactNode } from "react";
 import { Image, Platform, Pressable, StyleSheet, View } from "react-native";

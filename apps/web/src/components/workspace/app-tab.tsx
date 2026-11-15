@@ -1,7 +1,7 @@
 import { useLocation } from "react-router";
 import type { ReactNode } from "react";
 import { threadMark, type HostClient, type PlaceItem } from "@opensteer/client/host";
-import { useAppView } from "@opensteer/client/react";
+import { useApp, useAppView } from "@opensteer/client/react";
 import { AppFrame, AppLoadFailure, AppLoading, useAppTheme } from "../apps/app-frame.js";
 import { Icon } from "../icon.js";
 import { useToastToolbar } from "../toast.js";
@@ -27,6 +27,8 @@ export function AppTab({
 }) {
   const appId = place.tab.appId ?? "";
   const theme = useAppTheme();
+  // The chat that published it, read from the app itself; gone once that chat is deleted.
+  const origin = useApp(hostClient, place.tab.appId ?? null)?.taskId ?? null;
   const unavailable = place.unavailableReason;
   // A stopped or failed server is never started by viewing it; its tab says why.
   const { view, failed, retry } = useAppView(hostClient, appId, theme, !unavailable);
@@ -41,7 +43,7 @@ export function AppTab({
         <AppTabBar
           directory={directory}
           leading={leading}
-          originTaskId={view?.app.threadId ?? null}
+          originTaskId={origin}
           place={place}
           trailing={trailing}
         />

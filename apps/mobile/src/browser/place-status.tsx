@@ -4,7 +4,7 @@ import {
   threadMark,
   threadWatch,
   type HostClient,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type PlaceAgent,
   type PlaceAgents,
   type ThreadWatch,
