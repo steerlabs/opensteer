@@ -117,7 +117,7 @@ export class TeamLinkBinary {
     checkTeamVersion(raw["x-opensteer-team-api-version"]);
     const { link, requestId, actor, runId, operationId } = await this.#authority(raw);
     const headers = TeamBinaryDownloadHeadersSchema.parse(raw);
-    const revision = this.endpoint.options.access.revision;
+    const revision = await this.endpoint.options.access.current();
     const controller = new AbortController();
     const combined = AbortSignal.any([signal, controller.signal]);
     let unregister = this.endpoint.options.lifetimes.register({
@@ -202,7 +202,7 @@ export class TeamLinkBinary {
     const metadata = TeamBinaryUploadMetadataSchema.parse(
       JSON.parse(headers["x-opensteer-team-upload"]),
     );
-    const revision = this.endpoint.options.access.revision;
+    const revision = await this.endpoint.options.access.current();
     const controller = new AbortController();
     const combined = AbortSignal.any([signal, controller.signal]);
     const unregister = this.endpoint.options.lifetimes.register({

@@ -537,7 +537,7 @@ describe("standing team link authority", () => {
     expect(socket.frames.every((frame) => Buffer.byteLength(frame) <= teamLinkMaxFrameBytes)).toBe(
       true,
     );
-    expect(endpoint.isOnline(fixture.userId)).toBe(true);
+    expect(await endpoint.isOnline(fixture.userId)).toBe(true);
     socket.emit("close");
   });
   for (const stuck of ["unacked", "rejected"] as const)

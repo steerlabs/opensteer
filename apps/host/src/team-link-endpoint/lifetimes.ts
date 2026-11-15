@@ -33,8 +33,11 @@ export class TeamLinkLifetimes {
     }
   }
 
-  stop(): void {
+  closeAll(_code = 1012): void {
     for (const entry of this.#entries) entry.cancel(false);
     this.#entries.clear();
+  }
+  stop(): void {
+    this.closeAll(1012);
   }
 }

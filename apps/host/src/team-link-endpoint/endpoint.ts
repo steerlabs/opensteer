@@ -1,3 +1,6 @@
+import { sql } from "kysely";
+import { randomUUID } from "node:crypto";
+import type { TeamBus } from "@opensteer/database/team-bus";
 import { withTeamPeerVersion } from "@opensteer/database/team-access";
 import {
   OpensteerError,
@@ -35,6 +38,8 @@ import type { TeamAccessResolver, TeamAccessLockPort } from "../team/access-port
 const defaultReturnWindowSize = 200;
 
 export interface TeamLinkEndpointOptions {
+  readonly bus?: TeamBus;
+  readonly processId?: string;
   readonly links: TeamEndpointLinks;
   readonly requests: TeamRequestStorePort;
   readonly data: TeamMachineDataPort;
@@ -60,12 +65,26 @@ export class TeamLinkEndpoint {
     Set<{
       ownerUserId: UserId;
       online: boolean;
+      epoch(): string | undefined;
+      close(): void;
+      refresh(): Promise<void>;
       deliver(): Promise<void>;
       cancel(id: TeamAgentRequestId): void;
     }>
   >();
+  readonly #off: (() => void)[] = [];
+  readonly #processId = randomUUID();
   constructor(options: TeamLinkEndpointOptions) {
     this.options = options;
+    if (options.bus)
+      this.#off.push(
+        options.bus.on((event) => {
+          if (event.kind === "link")
+            for (const socket of this.#sockets.get(event.linkId) ?? [])
+              if (socket.epoch() && BigInt(socket.epoch()!) < BigInt(event.epoch)) socket.close();
+          if (event.kind === "request") void this.resync().catch(() => {});
+        }),
+      );
   }
 
   async attach(socket: WebSocket, linkId: TeamLinkId): Promise<void> {
@@ -75,6 +94,7 @@ export class TeamLinkEndpoint {
     const refillThreshold = Math.floor(returnWindowSize / 2);
     let active = true;
     let hello = false;
+    let epoch: string | undefined;
     let peerVersion = 0;
     let work = Promise.resolve();
     let queued = 0;
@@ -85,7 +105,12 @@ export class TeamLinkEndpoint {
       if (count) this.#online.set(link.ownerUserId, count);
       else {
         this.#online.delete(link.ownerUserId);
-        this.options.onPresence?.(link.ownerUserId, false);
+        if (epoch)
+          void links
+            .disconnected(linkId, epoch)
+            .then(() => this.options.onPresence?.(link.ownerUserId, false))
+            .catch(() => {});
+        else this.options.onPresence?.(link.ownerUserId, false);
       }
     };
     const close = (revoked = false) => {
@@ -111,12 +136,14 @@ export class TeamLinkEndpoint {
       socket.send(encoded);
     };
     const send = async (frame: TeamLinkServerFrame) => {
-      const revision = access.revision;
+      const revision = await access.current();
       await links.assertActive(linkId);
+      if (epoch) await links.assertEpoch(linkId, epoch);
       await access.handoff(
         revision,
         async () => {
           await links.assertActive(linkId);
+          if (epoch) await links.assertEpoch(linkId, epoch);
           return true;
         },
         () => write(frame),
@@ -130,6 +157,21 @@ export class TeamLinkEndpoint {
     const subscriber = {
       ownerUserId: link.ownerUserId,
       online: false,
+      epoch: () => epoch,
+      close: () => close(),
+      refresh: async () => {
+        if (delivered.size) {
+          const rows = await links.database
+            .selectFrom("teamAgentRequests")
+            .select(["id", "state"])
+            .where("id", "in", [...delivered])
+            .execute();
+          for (const row of rows)
+            if (!["queued", "working", "needs_you", "awaiting_approval"].includes(row.state))
+              subscriber.cancel(row.id);
+        }
+        await subscriber.deliver();
+      },
       deliver: (refill = false) => {
         if (!refill) deliveryRequested = true;
         if (delivery) return delivery;
@@ -139,9 +181,10 @@ export class TeamLinkEndpoint {
               do {
                 deliveryRequested = false;
                 if (!hello || !active) return;
+                if (epoch) await links.assertEpoch(linkId, epoch);
                 const capacity = returnWindowSize - inFlightReturns.size;
                 if (!capacity) return;
-                const revision = access.revision;
+                const revision = await access.current();
                 const pending = await requests.pending(linkId, [...delivered], capacity);
                 returnBacklog = pending.length === capacity;
                 const batches: (typeof pending)[number][][] = [];
@@ -164,6 +207,7 @@ export class TeamLinkEndpoint {
                   await access.handoff(
                     revision,
                     async () => {
+                      if (epoch) await links.assertEpoch(linkId, epoch);
                       const current = await requests.pending(linkId, [...delivered], capacity);
                       return batch.every((item) =>
                         current.some((entry) => entry.request.id === item.request.id),
@@ -204,6 +248,7 @@ export class TeamLinkEndpoint {
       active = false;
       offline();
       unregister();
+      if (epoch) void links.disconnected(linkId, epoch).catch(() => {});
       sockets.delete(subscriber);
       if (!sockets.size) this.#sockets.delete(linkId);
     });
@@ -226,13 +271,15 @@ export class TeamLinkEndpoint {
           const frame = readTeamFrame(TeamLinkClientFrameViewSchema, raw);
           if (!frame) return;
           await links.assertActive(linkId);
+          if (epoch) await links.assertEpoch(linkId, epoch);
           if (frame.type === "hello") {
             if (hello) throw linkError("bad_request");
             checkTeamVersion(String(frame.teamApiVersion));
             peerVersion = frame.teamApiVersion;
+            epoch = await links.hello(linkId, this.options.processId ?? this.#processId);
             hello = true;
             clearTimeout(deadline);
-            await links.seen(linkId);
+            await links.seen(linkId, epoch!);
             await send({
               type: "ready",
               teamApiVersion,
@@ -248,21 +295,25 @@ export class TeamLinkEndpoint {
             // Personal reconciles these even when they are absent from pending().
             for (const terminal of frame.terminalRequests) {
               if (terminal.terminalState && terminal.publicationState === "pending")
-                await requests.receipt(linkId, terminal.requestId);
+                await access.withLinkEpoch(linkId, epoch!, () =>
+                  requests.receipt(linkId, terminal.requestId),
+                );
             }
             await subscriber.deliver();
           } else if (!hello) {
             throw linkError("bad_request");
           } else if (frame.type === "ping") {
-            await links.seen(linkId);
+            await links.seen(linkId, epoch!);
             await send({ type: "pong" });
           } else {
             try {
               const result = await withTeamPeerVersion(peerVersion, () =>
-                this.call(linkId, frame, (result) => {
-                  write({ type: "result", id: frame.id, result });
-                  return result;
-                }),
+                access.withLinkEpoch(linkId, epoch!, () =>
+                  this.call(linkId, frame, (result) => {
+                    write({ type: "result", id: frame.id, result });
+                    return result;
+                  }),
+                ),
               );
               if (result.kind === "accepted" && result.request.kind === "return") {
                 delivered.delete(result.request.id);
@@ -300,8 +351,11 @@ export class TeamLinkEndpoint {
               });
             }
           }
-        } catch {
-          close();
+        } catch (error) {
+          close(
+            error instanceof OpensteerError &&
+              (error.code === "unauthorized" || error.reason === "api-version-mismatch"),
+          );
         } finally {
           queued--;
         }
@@ -313,8 +367,22 @@ export class TeamLinkEndpoint {
     await Promise.all([...(this.#sockets.get(linkId) ?? [])].map((socket) => socket.deliver()));
   }
 
-  isOnline(ownerUserId: UserId): boolean {
-    return this.#online.has(ownerUserId);
+  isOnline(ownerUserId: UserId): Promise<boolean> {
+    return this.options.links.isOnline(ownerUserId);
+  }
+  async resync() {
+    for (const sockets of this.#sockets.values())
+      for (const socket of sockets) await socket.refresh();
+  }
+  closeAll(code = 1012) {
+    this.options.lifetimes.closeAll(code);
+  }
+  async close() {
+    for (const off of this.#off) off();
+    this.closeAll();
+    await sql`delete from team_link_connections where process_id=${this.options.processId ?? this.#processId}`.execute(
+      this.options.links.database,
+    );
   }
 
   cancel(linkId: TeamLinkId, requestId: TeamAgentRequestId): void {
@@ -333,7 +401,7 @@ export class TeamLinkEndpoint {
     deliver?: (result: TeamLinkResult) => Value,
   ): Promise<Value | TeamLinkResult> {
     const { links, requests, access } = this.options;
-    const revision = access.revision;
+    const revision = await access.current();
     const link = await links.assertActive(linkId);
     const buffered = await this.#perform(linkId, frame);
     const result = TeamLinkResultSchema.parse(buffered.result);

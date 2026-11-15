@@ -1,3 +1,4 @@
+import type { TeamBus } from "@opensteer/database/team-bus";
 import { TeamShares } from "../team-partners/shares.js";
 import type { TeamPartners } from "../team-partners/service.js";
 import {
@@ -63,6 +64,8 @@ export function assertTeamApiVersion(headers: Headers) {
     });
 }
 export interface TeamServiceOptions {
+  readonly bus?: TeamBus;
+  readonly processId?: string;
   readonly partners?: TeamPartners;
   readonly kind: DeploymentKind;
   readonly database: Kysely<DatabaseSchema>;
@@ -82,7 +85,9 @@ export interface TeamServiceOptions {
     deliver(linkId: TeamLinkId): Promise<void>;
     cancel(linkId: TeamLinkId, requestId: TeamAgentRequestId): void;
     close(effects: TeamStoreAccessEffects): Promise<void> | void;
-    isOnline?(ownerUserId: UserId): boolean;
+    isOnline?(ownerUserId: UserId): boolean | Promise<boolean>;
+    resync?(): Promise<void>;
+    closeAll?(code: number): void;
   };
   readonly registerPreviewKey?: (
     session: AuthenticatedSession,
@@ -142,7 +147,20 @@ export async function startTeamServices(options: TeamServiceOptions) {
     shares.files = new TeamShareFiles(shares, fileService);
     fileService.remote = shares.files;
   }
-  const realtime = new TeamRealtimeHub(access, chat);
+  const realtime = new TeamRealtimeHub(access, chat, options.bus, options.processId);
+  const detachAccess = options.bus ? access.attach(options.bus) : () => {};
+  const detachChat = options.bus ? chat.attach(options.bus) : () => {};
+  const closeAll = (code = 1012) => {
+    realtime.closeAll(code);
+    options.machine?.closeAll?.(code);
+  };
+  const detachAll = access.onCloseAll(closeAll);
+  const resync = async () => {
+    await access.sync();
+    await realtime.resync();
+    await options.machine?.resync?.();
+  };
+  const detachResync = options.bus?.onResync(resync) ?? (() => {});
   const outbox = new TeamOutboxStore(access, (userId, channelId) =>
     realtime.visible(userId, channelId),
   );
@@ -162,7 +180,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
   };
   const maintenance = () => {
     if (!stopped && !maintaining)
-      maintaining = Promise.all([requests.expire(), fileService.collectGarbage()])
+      maintaining = Promise.all([requests.expire(), fileService.collectGarbage(), access.prune()])
         .catch(() => options.backgroundError("team-maintenance"))
         .finally(() => {
           maintaining = null;
@@ -693,7 +711,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
               command.type === "notification.preview.register" && options.registerPreviewKey,
               "Preview registration unavailable",
             );
-            const revision = access.revision;
+            const revision = await access.current();
             await options.database.transaction().execute(async (t) => {
               await t
                 .selectFrom("teamAccessState")
@@ -729,7 +747,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
             );
           }
           if (name === "commands.dispatch") {
-            const revision = access.revision;
+            const revision = await access.current();
             const command = TeamCommandSchema.parse(raw);
             const result = await dispatch(actor, command);
             if (
@@ -762,9 +780,9 @@ export async function startTeamServices(options: TeamServiceOptions) {
             );
           }
           for (;;) {
-            const revision = access.revision;
+            const revision = await access.current();
             const result = await read(actor, name, raw);
-            if (revision === access.revision) return result;
+            if (revision === (await access.current())) return result;
             await authenticate();
             await options.database.transaction().execute((t) => access.member(t, actor.userId));
           }
@@ -773,7 +791,13 @@ export async function startTeamServices(options: TeamServiceOptions) {
     },
     dispatch,
     read,
+    resync,
+    closeAll,
     async close() {
+      detachAccess();
+      detachChat();
+      detachAll();
+      detachResync();
       stopped = true;
       clearInterval(pushTimer);
       clearInterval(maintenanceTimer);
@@ -782,6 +806,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
       unsubscribeMachine();
       await shares?.close();
       realtime.close();
+      await realtime.cleanup();
       await fileService.close();
       await Promise.all([pushing, maintaining]);
     },

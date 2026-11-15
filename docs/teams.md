@@ -142,10 +142,11 @@ Access mutations take the team access-state row exclusively before affected rows
 and terminalize affected requests and revoke affected links in that same transaction. Content
 writes take its shared lock before the channel lock, recheck authority and hold it through
 commit. The [lock-order registry](../packages/database/src/lock-order.ts) governs actual ranks.
-Buffered reads compare the authorization revision at handoff and discard the whole answer if
-access was lost. After commit, removal closes affected sockets, link sockets and file streams
-before the command returns. Tests must assert **after the command returns**, not an earlier
-internal point. Removing a person cuts their link; already downloaded data stays on their Mac.
+No action or read commits after the revocation commits on any copy. Open streams on the
+committing copy close before the command returns; on other copies within notification latency.
+A delivery racing a concurrent commit on another copy can complete inside that window — the same
+class of race a single process has between commit and its in-memory revision update.
+Removing a person cuts their link; already downloaded data stays on their Mac.
 The team audits agent reads, searches, posts and knowledge calls as well as admin actions.
 
 ## Invites
