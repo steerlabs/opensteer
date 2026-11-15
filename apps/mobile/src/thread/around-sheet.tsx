@@ -41,7 +41,8 @@ import {
   type ViewStyle,
 } from "react-native";
 import { opensteerAppGlyph } from "../browser/agent-surface.js";
-import { surfaceRoute } from "../browser/surface-route.js";
+import { useOpenPlace, useShowTab } from "../tabs/viewer-open.js";
+import { selectTabs } from "../tabs/tabs-host.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { color, radius, space, type } from "../theme.js";
 import { AgentOrb } from "../team/team-marks.js";
@@ -126,7 +127,11 @@ function Around(props: {
   );
   const places = useHostSelector(
     hostClient,
-    useCallback((snapshot: HostSnapshot) => aroundPlaces(snapshot, threadId), [threadId]),
+    useCallback(
+      (snapshot: HostSnapshot) =>
+        aroundPlaces({ ...snapshot, tabs: selectTabs(snapshot) }, threadId),
+      [threadId],
+    ),
     sameAroundPlaces,
   );
   const family = useHostSelector(
@@ -149,17 +154,16 @@ function Around(props: {
     void Haptics.selectionAsync();
   }, []);
 
+  const showTab = useShowTab(deploymentId, threadId);
+  const leave = useCallback(() => navigation.goBack(), [navigation]);
+  const openDestination = useOpenPlace(hostClient, deploymentId, threadId, leave);
   const openPlace = useCallback(
     (place: AroundPlace) => {
-      navigation.goBack();
-      navigation.dispatch(
-        StackActions.push(
-          "WorkspaceBrowser",
-          surfaceRoute(deploymentId, threadId, place.destination),
-        ),
-      );
+      if (place.destination.kind !== "tab") return openDestination(place.destination);
+      leave();
+      showTab(place.destination.tabId);
     },
-    [deploymentId, navigation, threadId],
+    [leave, openDestination, showTab],
   );
   const openSchedule = useCallback(
     (triggerId: string) => {

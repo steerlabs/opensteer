@@ -1,5 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import { paramsDestination, type SurfacesRoute } from "../browser/surface-route.js";
+import type { TabRoute } from "../browser/surface-route.js";
+import { tabId } from "../../test-support/mock-tabs.js";
 import { navigationRef } from "../navigation-ref.js";
 import { show } from "./navigation.js";
 const ref = vi.hoisted(() => ({
@@ -27,6 +28,8 @@ beforeEach(() => {
     routes: [{ key: "home", name: "Home", params: { deploymentId: "d" } }, ref.getCurrentRoute()],
   }));
 });
+const tab = (name: string) => ({ kind: "tab" as const, tabId: tabId(name) });
+
 it("reports failure when navigation is not ready", () => {
   vi.mocked(navigationRef.isReady).mockReturnValueOnce(false);
   expect(show("d", { kind: "thread", threadId: "t" })).toBe(false);
@@ -43,15 +46,11 @@ it("does not push an already visible task or exact tab", () => {
   vi.mocked(navigationRef.getCurrentRoute).mockReturnValue({
     key: "tab",
     name: "WorkspaceBrowser" as const,
-    params: { deploymentId: "d", scope: "tabs", sessionId: "s", tabId: "one" },
+    params: { deploymentId: "d", tabId: tabId("one") },
   });
-  expect(
-    show("d", { kind: "place", destination: { kind: "browser", sessionId: "s", tabId: "one" } }),
-  ).toBe(false);
+  expect(show("d", tab("one"))).toBe(false);
   expect(navigationRef.dispatch).not.toHaveBeenCalled();
-  expect(
-    show("d", { kind: "place", destination: { kind: "browser", sessionId: "s", tabId: "two" } }),
-  ).toBe(true);
+  expect(show("d", tab("two"))).toBe(true);
   expect(navigationRef.dispatch).toHaveBeenLastCalledWith(
     expect.objectContaining({ type: "SET_PARAMS", source: "tab" }),
   );
@@ -63,18 +62,10 @@ it("changes A to B to C in place, preserving the Thread below and clearing trans
     name: "Thread" as const,
     params: { deploymentId: "d", threadId: "t" },
   };
-  const browser = {
+  const browser: { key: string; name: "WorkspaceBrowser"; params: TabRoute } = {
     key: "browser",
-    name: "WorkspaceBrowser" as const,
-    params: {
-      deploymentId: "d",
-      threadId: "t",
-      sessionId: "s",
-      tabId: "A",
-      popup: true,
-      editAddress: true,
-      pendingBrowserTab: "pending",
-    } as SurfacesRoute,
+    name: "WorkspaceBrowser",
+    params: { deploymentId: "d", editAddress: true, popup: true, tabId: tabId("A"), threadId: "t" },
   };
   const routes = [below, browser];
   vi.mocked(navigationRef.getCurrentRoute).mockImplementation(() => browser);
@@ -84,45 +75,37 @@ it("changes A to B to C in place, preserving the Thread below and clearing trans
     expect(action.source).toBe(browser.key);
     browser.params = {
       ...browser.params,
-      ...(action.payload as { params: Partial<SurfacesRoute> }).params,
-    } as SurfacesRoute;
+      ...(action.payload as { params: Partial<TabRoute> }).params,
+    };
   });
-  for (const tabId of ["B", "C"]) {
-    expect(
-      show("d", { kind: "place", destination: { kind: "browser", sessionId: "s", tabId } }),
-    ).toBe(true);
-    expect(browser.params).toMatchObject({ deploymentId: "d", threadId: "t", tabId });
-    expect(browser.params["scope"]).toBeUndefined();
-    expect(browser.params["popup"]).toBeFalsy();
-    expect(browser.params["editAddress"]).toBeFalsy();
-    expect(browser.params["pendingBrowserTab"]).toBeUndefined();
+  for (const name of ["B", "C"]) {
+    expect(show("d", tab(name))).toBe(true);
+    expect(browser.params).toMatchObject({ deploymentId: "d", tabId: tabId(name), threadId: "t" });
+    expect(browser.params.popup).toBeFalsy();
+    expect(browser.params.editAddress).toBeFalsy();
   }
   expect(routes).toEqual([below, browser]);
-  expect(
-    show("d", { kind: "place", destination: { kind: "browser", sessionId: "s", tabId: "C" } }),
-  ).toBe(false);
+  expect(show("d", tab("C"))).toBe(false);
   expect(navigationRef.dispatch).toHaveBeenCalledTimes(2);
   vi.mocked(navigationRef.dispatch).mockReset();
 });
-it("pushes the first place from a Thread or a different deployment", () => {
+it("pushes the first tab from a Thread or a different deployment", () => {
   for (const route of [
     { key: "thread", name: "Thread" as const, params: { deploymentId: "d", threadId: "t" } },
     {
       key: "browser",
       name: "WorkspaceBrowser" as const,
-      params: { deploymentId: "other", scope: "tabs" as const, sessionId: "s", tabId: "A" },
+      params: { deploymentId: "other", tabId: tabId("A") },
     },
   ]) {
     vi.mocked(navigationRef.getCurrentRoute).mockReturnValue(route);
-    expect(
-      show("d", { kind: "place", destination: { kind: "browser", sessionId: "s", tabId: "B" } }),
-    ).toBe(true);
+    expect(show("d", tab("B"))).toBe(true);
     expect(navigationRef.dispatch).toHaveBeenLastCalledWith(
       expect.objectContaining({ type: "PUSH" }),
     );
   }
 });
-it("opens a task's place from a team's screen through the Tasks side", () => {
+it("opens a task from a team's screen through the Tasks side", () => {
   ref.getCurrentRoute.mockReturnValue({
     key: "channel",
     name: "TeamChannel",
@@ -132,40 +115,4 @@ it("opens a task's place from a team's screen through the Tasks side", () => {
   expect(navigationRef.dispatch).toHaveBeenLastCalledWith(
     expect.objectContaining({ type: "RESET" }),
   );
-});
-
-it("replaces all destination fields when showing a different kind of place", () => {
-  const browser = {
-    key: "browser",
-    name: "WorkspaceBrowser" as const,
-    params: {
-      deploymentId: "d",
-      scope: "tabs",
-      sessionId: "s",
-      tabId: "A",
-      popup: true,
-    } as SurfacesRoute,
-  };
-  vi.mocked(navigationRef.getCurrentRoute).mockImplementation(() => browser);
-  vi.mocked(navigationRef.dispatch).mockImplementation((action) => {
-    if (typeof action === "function") throw new Error("Expected an action");
-    expect(action.type).toBe("SET_PARAMS");
-    browser.params = {
-      ...browser.params,
-      ...(action.payload as { params: Partial<SurfacesRoute> }).params,
-    } as SurfacesRoute;
-  });
-  const destinations = [
-    { kind: "phone", machineId: "phone" },
-    { kind: "app", machineId: "mac", appKey: "notes", computerSessionId: "session" },
-    { kind: "opensteer-app", appId: "app_11111111-1111-4111-8111-111111111111" },
-    { kind: "browser", sessionId: "s", tabId: "B" },
-  ] as const;
-  for (const destination of destinations) {
-    expect(show("d", { kind: "place", destination })).toBe(true);
-    expect(paramsDestination(browser.params)).toEqual(destination);
-    expect(browser.params.scope).toBe("tabs");
-    expect(browser.params.popup).toBe(false);
-    expect(show("d", { kind: "place", destination })).toBe(false);
-  }
 });

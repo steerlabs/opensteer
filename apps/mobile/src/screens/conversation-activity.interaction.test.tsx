@@ -81,6 +81,7 @@ vi.mock("@react-navigation/native", () => ({
   useIsFocused: () => true,
   useNavigation: () => ({
     dispatch: harness.dispatch,
+    getState: () => ({ index: 0, routes: [] }),
     goBack: harness.goBack,
     navigate: harness.navigate,
     setOptions: harness.setOptions,
@@ -394,12 +395,7 @@ describe("Run details", () => {
     expect(harness.goBack).toHaveBeenCalledOnce();
     expect(harness.dispatch).toHaveBeenCalledWith({
       name: "WorkspaceBrowser",
-      params: {
-        deploymentId,
-        sessionId: "exact-browser",
-        tabId: "used-tab",
-        threadId: taskId,
-      },
+      params: { deploymentId, tabId: "used-tab", threadId: taskId },
       type: "PUSH",
     });
   });

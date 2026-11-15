@@ -7,7 +7,8 @@ import {
   type LegacyHostSnapshot as HostSnapshot,
   type TaskFamily,
 } from "@opensteer/client/host";
-import { createId } from "@opensteer/core";
+import { createId, ThreadIdSchema, type Tab } from "@opensteer/core";
+import { appId, appTab, FakeTabs, tabId } from "../../test-support/mock-tabs.js";
 import { MockHostClient } from "@opensteer/client/mock";
 import { afterAll, describe, expect, it } from "vitest";
 import { actingFor } from "../browser/agent-surface.js";
@@ -75,7 +76,7 @@ describe("around a conversation", () => {
       family: { running: 1, needsYou: true, automations: source.threadAutomations[home]!.length },
     });
     const worker = titled("Book a table for Friday");
-    const parentOnly = { ...source, browserSessions: [], machines: [], appTabs: [] };
+    const parentOnly = { ...source, browserSessions: [], machines: [] };
     expect(glance(parentOnly, worker)).toEqual({
       family: null,
       from: { threadId: home, title: "Build the new architecture" },
@@ -98,7 +99,6 @@ describe("around a conversation", () => {
       ...source,
       browserSessions: [],
       machines: [],
-      appTabs: [],
       threadAutomations: {},
     };
     expect(glance(old, threadId)).toBeNull();
@@ -161,26 +161,25 @@ describe("around a conversation", () => {
 });
 
 describe("apps open as tabs", () => {
-  const tab = (appId: string, threadId: string, title: string) =>
-    ({
-      appId,
-      latestVersion: 1,
-      openedAt: "2026-11-04T10:00:00.000Z",
-      threadId,
-      title,
-      workspaceId: "workspace",
-    }) as unknown as NonNullable<HostSnapshot["appTabs"]>[number];
-  const mine = "app_11111111-1111-4111-8111-111111111111";
-  const theirs = "app_22222222-2222-4222-8222-222222222222";
+  const tabsWith = (...tabs: Tab[]) => {
+    const model = new FakeTabs();
+    model.reset(
+      tabs,
+      tabs.map((tab) => ({ kind: "tab" as const, tabId: tab.tabId })),
+    );
+    return model;
+  };
+  const opened = (name: string, threadId: string) =>
+    appTab(name, appId(name.length), { openedBy: { taskId: ThreadIdSchema.parse(threadId) } });
 
   // Failure: another conversation's app is listed here, or a row opens something else.
-  it("lists this thread's app tabs only, each opening exactly its own", () => {
-    const appTabs = [tab(mine, home, "Budget"), tab(theirs, "another-thread", "Other")];
-    const apps = aroundPlaces({ ...source, appTabs }, home).filter(
-      ({ destination }) => destination.kind === "opensteer-app",
+  it("lists the app tabs this thread opened only, each opening exactly its own tab", () => {
+    const tabs = tabsWith(opened("Budget", home), opened("Other", createId("thread")));
+    const apps = aroundPlaces({ ...source, tabs }, home).filter(
+      ({ destination }) => destination.kind === "tab",
     );
     expect(apps).toMatchObject([
-      { destination: { appId: mine, kind: "opensteer-app" }, title: "Budget", working: false },
+      { destination: { kind: "tab", tabId: tabId("Budget") }, title: "Budget", working: false },
     ]);
   });
 
@@ -188,9 +187,10 @@ describe("apps open as tabs", () => {
   it("refreshes the glance when only the app tabs change", () => {
     const select = aroundGlanceSelector(home);
     const before = select(source)?.places ?? 0;
-    const opened = { ...source, appTabs: [tab(mine, home, "Budget")] };
-    expect(select(opened)?.places).toBe(before + 1);
-    expect(select({ ...opened, appTabs: [] })?.places ?? 0).toBe(before);
+    const tabs = tabsWith(opened("Budget", home));
+    expect(select({ ...source, tabs } as HostSnapshot)?.places).toBe(before + 1);
+    tabs.setLayout([]);
+    expect(select({ ...source, tabs } as HostSnapshot)?.places ?? 0).toBe(before);
   });
 });
 

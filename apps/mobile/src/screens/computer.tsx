@@ -27,11 +27,12 @@ import { useHostSelector } from "@opensteer/client/react";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useLayoutEffect, useMemo, useState, useRef, useEffect, type ReactNode } from "react";
 import { StyleSheet } from "react-native";
-import { tabsRoute } from "../browser/surface-route.js";
+import { tabRoute } from "../browser/surface-route.js";
+import { tabsClient } from "../tabs/tabs-host.js";
+import { RunnerIdSchema } from "@opensteer/core";
 import { operationDetail } from "../client/mobile-client.js";
 import { useLeaveSheets } from "./leave-sheets.js";
 
-import { openPhoneOwnerView } from "../computers/open-owner-view.js";
 import { useComputerUseData } from "../computers/use-computer-use-data.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 
@@ -131,17 +132,14 @@ function ComputerDetail(props: {
     setOpeningPhone(true);
     setOpenFailure(null);
     try {
-      const opened = await openPhoneOwnerView(
-        props.hostClient,
-        props.machineId,
-        () => mounted.current && navigation.isFocused(),
-      );
-      if (opened)
+      // The phone's one tab; showing it is the person's Open, which may wake it.
+      const tab = await tabsClient(props.hostClient).openTab({
+        computerId: RunnerIdSchema.parse(props.machineId),
+        kind: "phone",
+      });
+      if (mounted.current && navigation.isFocused())
         navigation.dispatch(
-          StackActions.push(
-            "WorkspaceBrowser",
-            tabsRoute(props.deploymentId, { kind: "phone", machineId: props.machineId }),
-          ),
+          StackActions.push("WorkspaceBrowser", tabRoute(props.deploymentId, tab.tabId)),
         );
     } catch (error) {
       if (mounted.current) setOpenFailure(operationDetail(error, "The phone could not be opened."));

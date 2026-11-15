@@ -1,5 +1,4 @@
 import {
-  phonePlaceKey,
   type HostClient,
   type LegacyHostSnapshot as HostSnapshot,
   type NativeViewerSource,
@@ -7,7 +6,6 @@ import {
 import {
   computerUseStops,
   computerReasonWords,
-  ownerViewComputerReadiness,
   computerDisplayScope,
   computerDisplayAuthorityKey,
   computerDisplayStatus,
@@ -16,7 +14,7 @@ import {
   type DisplaySnapshot,
   type DisplayLease,
 } from "@opensteer/client/integrations";
-import { useHostSelector, usePhoneTabView, usePlaceList } from "@opensteer/client/react";
+import { useHostSelector } from "@opensteer/client/react";
 import {
   displayViewerCloseCodes,
   displayViewerWindowFrames,
@@ -25,20 +23,9 @@ import {
 } from "@opensteer/protocol";
 import { encodeBase64Url } from "@opensteer/shared/base64url";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  Alert,
-  AppState,
-  PixelRatio,
-  Pressable,
-  StyleSheet,
-  View,
-} from "react-native";
-import { StackActions, useNavigation } from "@react-navigation/native";
+import { ActivityIndicator, AppState, PixelRatio, Pressable, StyleSheet, View } from "react-native";
 import Animated, { useAnimatedStyle } from "react-native-reanimated";
-import { tabsRoute } from "../browser/surface-route.js";
 import { MacAppIcon } from "./app-mark.js";
-import { openAppOwnerView, openPhoneOwnerView } from "./open-owner-view.js";
 import { ToolbarAsk, ToolbarLeave, useNativeBarAway } from "../browser/place-bar.js";
 import { PlaceVoiceDock, usePlaceStatus } from "../browser/place-foot.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "../browser/toolbar.js";
@@ -723,162 +710,6 @@ function stopMenuItem(
   };
 }
 
-/**
- * A phone's tab: the person's own view while that can show anything, else the
- * task holding the phone, else one Open. Nothing here opens by itself, so only
- * that press arms the phone's wake.
- */
-export function PhoneTabView(props: {
-  readonly active: boolean;
-  readonly hostClient: HostClient;
-  readonly machineId: string;
-  readonly onClosed: () => void;
-  readonly onTyping: (typing: boolean) => void;
-}) {
-  const { hostClient, machineId, onClosed } = props;
-  const navigation = useNavigation();
-  // The view Open asked for can replace the page that asked before the answer
-  // arrives. That is not leaving, so presence is the tab's, or Open cancels its wake.
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-  const stillHere = useCallback(() => mounted.current && navigation.isFocused(), [navigation]);
-  const key = phonePlaceKey(machineId);
-  const place = usePlaceList(hostClient).find((item) => item.key === key) ?? null;
-  const viewOpening = usePhoneTabView(hostClient, machineId, props.active);
-  const closeTab = () => {
-    hostClient.closePhoneTab(machineId).then(onClosed, (error: unknown) => {
-      Alert.alert(
-        "Couldn’t close this tab",
-        error instanceof Error ? error.message : "Please try again.",
-      );
-    });
-  };
-  const closable = place?.phoneTab === true && place.closable;
-  if (place?.ownerView)
-    return (
-      <ComputerOwnerView
-        active={props.active}
-        appKey={null}
-        generation={place.ownerView.generation}
-        hostClient={hostClient}
-        key={`${place.ownerView.viewId}:${place.ownerView.generation}`}
-        machineId={machineId}
-        menu={[
-          ...(place.task ? [stopMenuItem(hostClient, place.title, true, place.task)] : []),
-          ...(closable
-            ? [
-                {
-                  destructive: true,
-                  icon: "xmark.circle" as const,
-                  id: "close",
-                  label: "Close tab",
-                  onPress: closeTab,
-                },
-              ]
-            : []),
-        ]}
-        onTyping={props.onTyping}
-        stillHere={stillHere}
-        viewId={place.ownerView.viewId}
-      />
-    );
-  if (place?.task)
-    return (
-      <ComputerTaskView
-        active={props.active}
-        appKey={null}
-        computerSessionId={place.task.sessionId}
-        hostClient={hostClient}
-        key={place.task.sessionId}
-        machineId={machineId}
-        onTyping={props.onTyping}
-      />
-    );
-  return (
-    <PhoneTabResting
-      hostClient={hostClient}
-      machineId={machineId}
-      onClose={closable ? closeTab : null}
-      opening={viewOpening}
-      stillHere={stillHere}
-    />
-  );
-}
-
-function PhoneTabResting(props: {
-  readonly hostClient: HostClient;
-  readonly machineId: string;
-  readonly onClose: (() => void) | null;
-  /** The tab is opening its view by itself. */
-  readonly opening: boolean;
-  readonly stillHere: () => boolean;
-}) {
-  const { hostClient, machineId } = props;
-  const [opening, setOpening] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-  const machine = useHostSelector(hostClient, (snapshot) =>
-    snapshot.machines.find((value) => value.id === machineId),
-  );
-  const name = machine?.name ?? "Your phone";
-  const computer = ownerViewComputerReadiness(machine, true);
-  const open = async () => {
-    setOpening(true);
-    setFailure(null);
-    try {
-      const deploymentId = hostClient.getSnapshot().deploymentId;
-      await openPhoneOwnerView(
-        hostClient,
-        machineId,
-        () => props.stillHere() && hostClient.getSnapshot().deploymentId === deploymentId,
-      );
-    } catch (error) {
-      if (mounted.current)
-        setFailure(error instanceof Error ? error.message : `${name} could not be opened.`);
-    } finally {
-      if (mounted.current) setOpening(false);
-    }
-  };
-  return (
-    <View style={styles.stage}>
-      <View style={styles.status}>
-        <AppText role="bodyMedium" style={styles.statusText}>
-          {props.opening
-            ? `Opening ${name}…`
-            : computer === null
-              ? `Open ${name} to see it and use it.`
-              : computerReasonWords(computer, { machine: name, phone: true, target: name })}
-        </AppText>
-        {computer === null && !props.opening ? (
-          <SecondaryButton
-            accessibilityLabel={`Open ${name}`}
-            disabled={opening}
-            label={opening ? "Opening…" : "Open"}
-            onPress={() => void open()}
-          />
-        ) : null}
-        {props.onClose ? <SecondaryButton label="Close tab" onPress={props.onClose} /> : null}
-        {failure ? (
-          <AppText role="secondary" style={styles.statusText} tone="muted">
-            {failure}
-          </AppText>
-        ) : null}
-      </View>
-    </View>
-  );
-}
-
 /** A view this close to its expiry when it comes into sight is renewed at once. */
 const renewSoonMs = 90_000;
 
@@ -927,53 +758,11 @@ export function ComputerOwnerView(props: {
   readonly hostClient: HostClient;
   readonly machineId: string;
   readonly menu?: NativeMenuSection;
-  /** Presence of whatever outlives this view being replaced by a newer generation. */
-  readonly stillHere?: () => boolean;
+  /** Opens the tab again, as the person's own Open, once this view has ended. */
+  readonly onReopen: () => void;
   readonly viewId: string;
-  /** The Mac window the view bound, reopened as the same window. */
-  readonly windowId?: number | undefined;
 }) {
   const { active, generation, hostClient, viewId } = props;
-  const navigation = useNavigation();
-  const [reopening, setReopening] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-  const reopen = async () => {
-    setReopening(true);
-    setFailure(null);
-    try {
-      const deploymentId = hostClient.getSnapshot().deploymentId;
-      const stillHere = () =>
-        (props.stillHere?.() ?? (mounted.current && navigation.isFocused())) &&
-        hostClient.getSnapshot().deploymentId === deploymentId;
-      if (props.appKey === null) {
-        await openPhoneOwnerView(hostClient, props.machineId, stillHere);
-        return;
-      }
-      const destination = await openAppOwnerView(
-        hostClient,
-        props.machineId,
-        props.appKey,
-        props.windowId,
-        stillHere,
-      );
-      if (destination && deploymentId)
-        navigation.dispatch(
-          StackActions.replace("WorkspaceBrowser", tabsRoute(deploymentId, destination)),
-        );
-    } catch (error) {
-      if (mounted.current)
-        setFailure(error instanceof Error ? error.message : `${label} could not be opened.`);
-    } finally {
-      if (mounted.current) setReopening(false);
-    }
-  };
   const machine = useHostSelector(hostClient, (snapshot) =>
     snapshot.machines.find((value) => value.id === props.machineId),
   );
@@ -996,15 +785,9 @@ export function ComputerOwnerView(props: {
           </AppText>
           <SecondaryButton
             accessibilityLabel={phone ? "Reopen phone" : `Reopen ${label}`}
-            disabled={reopening}
-            label={reopening ? "Opening…" : "Reopen"}
-            onPress={() => void reopen()}
+            label="Reopen"
+            onPress={props.onReopen}
           />
-          {failure ? (
-            <AppText role="secondary" style={styles.statusText} tone="muted">
-              {failure}
-            </AppText>
-          ) : null}
         </View>
       </View>
     );
@@ -1023,7 +806,7 @@ export function ComputerOwnerView(props: {
       label={label}
       machineId={props.machineId}
       phone={phone}
-      onReopen={phone ? () => void reopen() : undefined}
+      onReopen={phone ? props.onReopen : undefined}
       source={{ generation, kind: "owner-view", viewId }}
     />
   );

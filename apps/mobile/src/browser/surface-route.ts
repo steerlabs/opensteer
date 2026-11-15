@@ -15,7 +15,7 @@ import { isRecord } from "@opensteer/shared/isRecord";
  * and go under the same tab. Where it was opened from — a conversation, Tabs,
  * the sidebar — decides only where Back goes, which the stack already knows.
  */
-export interface TabRoute {
+export type TabRoute = {
   readonly deploymentId: string;
   readonly tabId: TabId;
   /** The conversation it was opened from, when it was. */
@@ -23,7 +23,7 @@ export interface TabRoute {
   readonly editAddress?: boolean;
   /** A popup the person's input opened: when it ends they return to the page under it. */
   readonly popup?: boolean;
-}
+};
 
 export function tabRoute(deploymentId: string, tabId: TabId, threadId?: string): TabRoute {
   return { deploymentId, tabId, ...(threadId === undefined ? {} : { threadId }) };

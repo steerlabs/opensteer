@@ -24,7 +24,9 @@ import {
   surfaceGlyph,
   type SurfaceGlyph,
 } from "../browser/agent-surface.js";
-import { sameDestination, type OpensteerAppDestination } from "../browser/surface-route.js";
+import type { TabsReadModel } from "@opensteer/client/host";
+import type { TabId } from "@opensteer/core";
+import { selectTabs } from "../tabs/tabs-host.js";
 
 /**
  * What is around a conversation: the places it and the work it handed out
@@ -46,10 +48,16 @@ export interface AroundPlace {
   readonly favicon: string | null;
   /** An agent of this conversation acts in it now. */
   readonly working: boolean;
-  readonly destination: TaskSurfaceDestination | OpensteerAppDestination;
+  readonly destination: TaskSurfaceDestination | AroundTabDestination;
 }
 
-type AroundPlaceSource = ConversationSurfaceSource & Pick<HostSnapshot, "appTabs">;
+/** A tab this conversation opened, such as its app, named by its tabId. */
+export interface AroundTabDestination {
+  readonly kind: "tab";
+  readonly tabId: TabId;
+}
+
+type AroundPlaceSource = ConversationSurfaceSource & { readonly tabs?: TabsReadModel | null };
 
 /** Working places first; each group keeps the order its places opened in. */
 export function aroundPlaces(source: AroundPlaceSource, threadId: string): readonly AroundPlace[] {
@@ -57,15 +65,17 @@ export function aroundPlaces(source: AroundPlaceSource, threadId: string): reado
   const places = conversationSurfaces(source, threadId).map((item) =>
     aroundPlace(item, actingFor(item, threads)),
   );
-  const apps = (source.appTabs ?? [])
-    .filter((tab) => tab.threadId === threadId)
+  const apps = [...(source.tabs?.rows.values() ?? [])]
+    .filter(
+      (tab) => tab.kind === "app" && tab.openedBy !== "person" && tab.openedBy.taskId === threadId,
+    )
     .reverse()
     .map((tab): AroundPlace => ({
-      destination: { appId: tab.appId, kind: "opensteer-app" },
+      destination: { kind: "tab", tabId: tab.tabId },
       detail: null,
       favicon: null,
       glyph: opensteerAppGlyph,
-      key: `opensteer-app:${tab.appId}`,
+      key: `tab:${tab.tabId}`,
       title: tab.title,
       working: false,
     }));
@@ -115,7 +125,7 @@ export function sameAroundPlaces(
         place.detail === other.detail &&
         place.favicon === other.favicon &&
         place.working === other.working &&
-        sameDestination(place.destination, other.destination)
+        JSON.stringify(place.destination) === JSON.stringify(other.destination)
       );
     })
   );
@@ -258,15 +268,17 @@ export function aroundGlanceSelector(
 ): (snapshot: HostSnapshot) => AroundGlance | null {
   let held: {
     readonly source: AroundPlaceSource;
+    readonly tabRows: TabsReadModel["rows"] | undefined;
     readonly places: Pick<AroundGlance, "places" | "placesWorking" | "placeGlyph">;
   } | null = null;
   return (snapshot) => {
     if (
       held === null ||
-      held.source.appTabs !== snapshot.appTabs ||
+      held.tabRows !== selectTabs(snapshot)?.rows ||
       !sameConversationSurfaceSource(held.source, snapshot)
     ) {
-      const places = aroundPlaces(snapshot, threadId);
+      const tabs = selectTabs(snapshot);
+      const places = aroundPlaces({ ...snapshot, tabs }, threadId);
       const glyphs = new Set(places.map(({ glyph }) => glyph));
       held = {
         places: {
@@ -275,6 +287,7 @@ export function aroundGlanceSelector(
           placesWorking: places.filter(({ working }) => working).length,
         },
         source: snapshot,
+        tabRows: tabs?.rows,
       };
     }
     const family = taskFamilyGlance(snapshot, threadId);
