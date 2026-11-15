@@ -1061,18 +1061,18 @@ function ThreadPaneForUser(
     return heldHead === 0 ? rows : rows.slice(heldHead);
   }, [conversational, drawn, groups, heldHead, indicator, outcomes, viewerUserId]);
 
-  const queueCanRespond = canRespond && thread?.status !== "archived";
   const queueFooter = useMemo(
     () =>
       // An open edit stays drawn whatever the queue says, so its words are never lost.
       thread !== null && !conversational && (waiting !== null || editing.edit !== null) ? (
         <TranscriptHostClientContext value={hostClient}>
           <WaitingInputs
-            canRespond={queueCanRespond}
+            canRespond={canRespond}
             editing={editing}
             hostClient={hostClient}
             items={waiting ?? noWaiting}
             paused={inputQueue?.paused ?? false}
+            resumable={thread.status !== "archived"}
             threadId={threadId}
             viewerUserId={viewerUserId}
           />
@@ -1084,15 +1084,16 @@ function ThreadPaneForUser(
       inputQueue,
       waiting,
       editing,
-      queueCanRespond,
+      canRespond,
       hostClient,
       threadId,
       viewerUserId,
     ],
   );
-  // The first ask still waiting for its answer, decided from the dock.
+  // The first ask still waiting for its answer, decided from the dock. What
+  // the reader may do with it is the Host's to say, archived or not.
   const dockedAsk =
-    conversational || !queueCanRespond
+    conversational || !canRespond
       ? null
       : (waiting?.find((item): item is WaitingAsk => item.kind === "ask" && !item.approving) ??
         null);
@@ -1446,7 +1447,7 @@ function ThreadPaneForUser(
             <>
               {editingInPlace ? (
                 <WaitingEditBar
-                  canRespond={queueCanRespond}
+                  canRespond={canRespond}
                   decisions={askDecisions}
                   editing={editing}
                   item={editedItem}
@@ -1456,7 +1457,7 @@ function ThreadPaneForUser(
                 <Animated.View entering={enter} exiting={exit} key={dockedAsk.messageId}>
                   <WaitingAskDock
                     ask={dockedAsk}
-                    canRespond={queueCanRespond}
+                    canRespond={canRespond}
                     decisions={askDecisions}
                   />
                 </Animated.View>

@@ -38,7 +38,8 @@ import type { WaitingEdit, WaitingEditController } from "./waiting-edit.js";
  * will go: the person's own messages, dashed until a Run takes them, and
  * teammates' asks waiting for their answer. A tap opens one to edit in place;
  * a hold, or its ellipsis, offers the rest. An ask is answered from the dock
- * above the composer, which stays in reach however far this list scrolls.
+ * above the composer, which stays in reach however far this list scrolls, so
+ * a long line folds only messages: every ask the dock answers stays drawn.
  */
 export const WaitingInputs = memo(function WaitingInputs(props: {
   readonly canRespond: boolean;
@@ -46,6 +47,8 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
   readonly hostClient: HostClient;
   readonly items: readonly WaitingInput[];
   readonly paused: boolean;
+  /** The Host runs this task's queue again on Resume: not while it is archived. */
+  readonly resumable: boolean;
   readonly threadId: string;
   readonly viewerUserId: string | null;
 }): ReactNode {
@@ -100,11 +103,29 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
       "That edit could not be stopped.",
     );
 
-  // A message being edited stays drawn however the list is folded.
-  const folded = items.length > 3 && !expanded;
-  const shown = folded
-    ? items.filter((item, index) => index < 2 || item.messageId === edit?.messageId)
-    : items;
+  // Asks wait behind every message, so the fold sits between the two. A
+  // message being edited stays drawn however the list is folded.
+  const foldable = (item: WaitingInput, index: number): boolean =>
+    items.length > 3 && index >= 2 && item.kind !== "ask" && item.messageId !== edit?.messageId;
+  const hidden = items.filter(foldable).length;
+  const shown =
+    hidden > 0 && !expanded ? items.filter((item, index) => !foldable(item, index)) : items;
+  const fold =
+    hidden > 0 ? (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded }}
+        hitSlop={8}
+        key="fold"
+        style={[styles.action, styles.expand]}
+        onPress={() => setExpanded(!expanded)}
+      >
+        <AppText role="caption" tone="muted">
+          {expanded ? "Show fewer" : `Show ${hidden} more`}
+        </AppText>
+      </Pressable>
+    ) : null;
+  const firstAsk = shown.findIndex((item) => item.kind === "ask");
   return (
     <View accessibilityLabel="Queued messages" style={styles.section}>
       {props.paused ? (
@@ -119,8 +140,11 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
           )}
           <Pressable
             accessibilityRole="button"
-            accessibilityState={{ disabled: blocked, busy: busyId === "resume" }}
-            disabled={blocked}
+            accessibilityState={{
+              disabled: blocked || !props.resumable,
+              busy: busyId === "resume",
+            }}
+            disabled={blocked || !props.resumable}
             hitSlop={8}
             style={styles.action}
             onPress={() =>
@@ -137,10 +161,10 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
           </Pressable>
         </View>
       ) : null}
-      {shown.map((item) => {
+      {shown.flatMap((item, at) => {
         const index = items.indexOf(item);
         const actions = menuActions(item, editable(item));
-        return (
+        const row = (
           <Animated.View
             key={item.messageId}
             entering={enter}
@@ -208,24 +232,13 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
             )}
           </Animated.View>
         );
+        return at === firstAsk && fold !== null ? [fold, row] : [row];
       })}
+      {firstAsk === -1 ? fold : null}
       {orphan && edit !== null ? (
         <Animated.View entering={enter} exiting={exit}>
           <WaitingEditor edit={edit} editing={editing} />
         </Animated.View>
-      ) : null}
-      {items.length > 3 ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityState={{ expanded }}
-          hitSlop={8}
-          style={[styles.action, styles.expand]}
-          onPress={() => setExpanded(!expanded)}
-        >
-          <AppText role="caption" tone="muted">
-            {expanded ? "Show fewer" : `Show ${items.length - 2} more`}
-          </AppText>
-        </Pressable>
       ) : null}
       {failure === null ? null : (
         <View accessibilityRole="alert">

@@ -3368,6 +3368,28 @@ describe("a task", () => {
     ).toBe("Card fees, FX and the wire charge");
   });
 
+  it("draws the ask the dock answers however many messages wait ahead of it", async () => {
+    const task = taskAtWork();
+    const own = ["First in line", "Second in line", "Third in line"].map((body) =>
+      said(body, null),
+    );
+    const ask = teammateAsk("@My agent is the release branch cut?");
+    const host = fakeHost(
+      snapshotFor({
+        entries: [...task.entries, ...own, ask.entry],
+        queue: [...own.map((entry) => waitingInput(entry, workId)), ask.item],
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
+    );
+    const { container } = await mount(host, workId);
+    expect(text(container)).toContain("Maya is asking your agent");
+    expect(text(container)).toContain(ask.entry.body);
+    expect(text(container)).not.toContain("Third in line");
+    await press(container, "Show 1 more");
+    expect(text(container)).toContain("Third in line");
+  });
+
   it("keeps words typed while the message was opening when it can't be held, and tries again", async () => {
     const task = taskAtWork();
     const waiting = said("Original", null);
@@ -3407,6 +3429,24 @@ describe("a task", () => {
       [{ text: "Words typed on a slow connection", type: "text" }],
       0,
     );
+  });
+
+  it("answers an ask the Host still offers in an archived task", async () => {
+    const ask = teammateAsk("@My agent is CI green yet?");
+    const initial = snapshotFor({
+      entries: [ask.entry],
+      queue: [ask.item],
+      run: null,
+      threadId: workId,
+    });
+    const host = fakeHost({
+      ...initial,
+      threads: initial.threads.map((thread) =>
+        thread.id === workId ? { ...thread, status: "archived" as const } : thread,
+      ),
+    });
+    const { container } = await mount(host, workId);
+    expect(button(container, "Answer").disabled).toBe(false);
   });
 
   it("lets a waiting message go while its task is out of sight, keeping the words for the return", async () => {
