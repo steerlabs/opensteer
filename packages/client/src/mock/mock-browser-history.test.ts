@@ -1,7 +1,12 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "./mock-host-client.js";
 import { unwrapRpcResult } from "../host/host-session-client.js";
-import { BrowserProfileIdSchema, type BrowserProfileId } from "@opensteer/core";
+import {
+  BrowserProfileIdSchema,
+  RunnerIdSchema,
+  type BrowserProfileId,
+  type RunnerId,
+} from "@opensteer/core";
 
 let client: MockHostClient | undefined;
 afterEach(() => {
@@ -19,13 +24,15 @@ function setup(now?: () => Date) {
 /** Opens a page tab the way a person does and returns the browser session showing it. */
 async function openPage(
   client: MockHostClient,
-  target: { profileId: BrowserProfileId } | { guest: true },
+  target: { profileId: BrowserProfileId } | { guest: true; computerId: RunnerId },
   url = "https://history.example/start",
   idempotencyKey: string = crypto.randomUUID(),
+  typed = false,
 ) {
   const opened = await client.dispatch({
     type: "tab.open",
     target: { kind: "page", url, ...target },
+    ...(typed ? { typed: true as const } : {}),
     idempotencyKey,
   });
   if (opened.type !== "tab.open") throw new Error("Expected an opened tab");
@@ -37,11 +44,11 @@ it("records committed opens once, navigation typed intent, and retained favicons
   vi.useFakeTimers();
   const { client, profileId } = setup();
   const input = { url: "https://history.example/first" };
-  const opened = await openPage(client, { profileId }, input.url, "history-open");
-  await openPage(client, { profileId }, input.url, "history-open");
+  const opened = await openPage(client, { profileId }, input.url, "history-open", true);
+  await openPage(client, { profileId }, input.url, "history-open", true);
   let history = unwrapRpcResult(await client.rpc["browser.history.get"]({ profileId }));
-  // Opening a tab is one visit; only an address typed into a shown page counts as typed.
-  expect(history.entries).toMatchObject([{ url: input.url, typedCount: 0, visitCount: 1 }]);
+  // Opening a tab is one visit, typed when the person typed its address in a new tab.
+  expect(history.entries).toMatchObject([{ url: input.url, typedCount: 1, visitCount: 1 }]);
   client.sendBrowserCommand(opened.sessionId, {
     type: "navigation.go",
     surfaceId: opened.tabId,
@@ -52,7 +59,7 @@ it("records committed opens once, navigation typed intent, and retained favicons
   history = unwrapRpcResult(await client.rpc["browser.history.get"]({ profileId }));
   expect(history.entries.map((entry) => [entry.url, entry.typedCount])).toEqual([
     ["https://history.example/second", 1],
-    [input.url, 0],
+    [input.url, 1],
   ]);
   const iconRef = history.icons[0]!.iconRef;
   expect(iconRef).toMatch(/^[a-f\d]{64}$/u);
@@ -95,7 +102,11 @@ it("bounds history at 300 entries and 90 days; deleted profiles, signed-out view
   expect(history.entries.at(-1)?.url).toBe("https://history.example/10");
   now = new Date(now.getTime() + 90 * 86_400_000);
   expect(await read()).toEqual({ entries: [], icons: [] });
-  const guest = await openPage(client, { guest: true }, "https://guest.example/");
+  const guest = await openPage(
+    client,
+    { guest: true, computerId: RunnerIdSchema.parse("rnr_11111111-1111-4111-8111-111111111111") },
+    "https://guest.example/",
+  );
   client.sendBrowserCommand(guest.sessionId, {
     type: "navigation.go",
     surfaceId: guest.tabId,

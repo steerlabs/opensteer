@@ -1412,7 +1412,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     const world = await createWorld(database, { ownerViews: true });
     try {
       expect(await world.hub.ownerWindows(world.macId, apps.notes, { timeoutMs: 1000 })).toEqual([
-        { windowId: windowIds[0], title: "Groceries" },
+        { windowId: windowIds[0], title: "Groceries", minimized: false, onScreen: true },
       ]);
       expect(world.fakeMac.openSessions()).toEqual([]);
       const cancellation = new AbortController();
@@ -4298,7 +4298,9 @@ class FakeMac {
         result: {
           kind: "ok",
           value: {
-            windows: [{ windowId: windowIds[0], title: "Groceries" }],
+            windows: [
+              { windowId: windowIds[0], title: "Groceries", minimized: false, onScreen: true },
+            ],
           },
         },
       });

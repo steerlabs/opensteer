@@ -11,6 +11,7 @@ import {
   RunIdSchema,
   ThreadIdSchema,
   nextMarkColor,
+  type Tab,
 } from "@opensteer/core";
 import type { MachineSummary } from "@opensteer/protocol";
 import {
@@ -810,6 +811,28 @@ export class MockPlaceWorld {
       },
     };
   }
+  /**
+   * As the Host does for a window or phone: the Run's activity in that exact
+   * tab, which also enters it as the Run's place. It stays until the Run lets go.
+   */
+  actInNativeTab(runId: string, threadId: string, tabId: string): void {
+    const at = this.#now().getTime();
+    this.activity.apply({
+      type: "host.place-activity",
+      activity: TabPlaceActivitySchema.parse({
+        tabId,
+        threadId,
+        runId,
+        generation: 1,
+        seq: ++this.#seq,
+        order: ++this.#order,
+        at,
+        expiresAt: at + 15000,
+        pointer: null,
+        geometryRevision: 0,
+      }),
+    });
+  }
   actInPlace(threadId: string, placeKey: string): void {
     const snapshot = this.#snapshot();
     const place = placeList(snapshot).find((item) => item.key === placeKey);
@@ -901,16 +924,17 @@ export class MockPlaceWorld {
     const session = this.#snapshot().browserSessions.find((s) => s.id === sessionId);
     const tab = session?.surfaces.find((t) => t.id === surfaceId);
     if (!tab || session?.state !== "ready") return undefined;
+    const held = session.catalog?.tabs.find((candidate) => candidate.id === surfaceId);
     return {
+      // A Runtime that does not say keeps both directions offered.
+      canGoBack: held?.canGoBack ?? true,
+      canGoForward: held?.canGoForward ?? true,
       id: tab.id,
       state: "live",
       title: tab.title,
       url: tab.url,
       // The document the page's context reads name, so a chip and its read agree.
-      documentId:
-        tab.documentId ??
-        session.catalog?.tabs.find((held) => held.id === surfaceId)?.documentId ??
-        `document-${tab.id}`,
+      documentId: tab.documentId ?? held?.documentId ?? `document-${tab.id}`,
       geometryRevision: 1,
       loading: tab.loading ?? false,
       navigationFailed: false,
@@ -1616,12 +1640,11 @@ export class MockPlaceWorld {
       }
     }
   }
-  async icon(sessionId: string, iconRef: string): Promise<string | null> {
-    BrowserTabIconInputSchema.parse({ sessionId, iconRef });
-    const tab = this.#snapshot()
-      .browserSessions.find((session) => session.id === sessionId)
-      ?.catalog?.tabs.find((tab) => tab.iconRef === iconRef);
-    return BrowserTabIconResultSchema.parse({ favicon: tab ? iconData : null }).favicon;
+  /** As the Host serves it: a listed page tab's stored icon, awake or not. */
+  async icon(tabId: string, iconRef: string, row: Tab | undefined): Promise<string | null> {
+    BrowserTabIconInputSchema.parse({ tabId, iconRef });
+    const stored = row?.kind === "page" && row.iconRef === iconRef;
+    return BrowserTabIconResultSchema.parse({ favicon: stored ? iconData : null }).favicon;
   }
   #notify(key: string): void {
     for (const listener of this.#watchListeners.get(key) ?? []) listener();

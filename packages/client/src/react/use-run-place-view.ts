@@ -3,6 +3,7 @@ import type { TabKind, PlaceEnteredEventView } from "@opensteer/core";
 import { computerAppIdentityKey } from "@opensteer/protocol";
 import type { HostClient } from "../host/client.js";
 import { runPlaceActing } from "../host/run-page.js";
+import { runPlacePictureSession } from "../host/run-place.js";
 import type { TabDestination } from "../host/surfaces.js";
 import { useHostSelector } from "./use-host-snapshot.js";
 import { usePlaceActivity, useRunPlace, useRunPlaceBinding } from "./use-places.js";
@@ -69,7 +70,7 @@ export function useRunPlaceView(
             placeKey: entry.data.tabId,
             destination,
             binding,
-            sessionId,
+            sessionId: runPlacePictureSession(tab?.kind, sessionId, entry.runId, activity),
             pageSession,
             machineId: tab?.computer.computerId ?? null,
             appKey,
@@ -77,7 +78,7 @@ export function useRunPlaceView(
             title: entry.data.title,
             site: entry.data.site,
           },
-    [appKey, binding, destination, entry, pageSession, sessionId, tab],
+    [activity, appKey, binding, destination, entry, pageSession, sessionId, tab],
   );
   return { acting, entry, place };
 }

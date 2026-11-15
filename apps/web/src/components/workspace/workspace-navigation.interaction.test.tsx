@@ -1148,13 +1148,17 @@ describe("a link arriving at the start page", () => {
     let held!: ReturnType<typeof holdOpens>;
     await mount(
       (source) => {
+        // A profile has its own computer; Guest with two to choose from would be asked which.
+        remember(source, { kind: "profile", profileId: profileTab(source).profileId });
         held = holdOpens(source);
         return { pathname: "/", search: "?panel=browser", state };
       },
       { strict: true },
     );
+    // An address the person typed is typed in their history too.
     expect(held.open).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ kind: "page", url: address }),
+      { typed: true },
     );
     expect(historyState).toEqual({ ...state, startOpen: false });
     expect(element<HTMLInputElement>(".start-page__input").value).toBe(address);
@@ -1204,6 +1208,7 @@ describe("a link arriving at the start page", () => {
     });
     expect(open).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ url: address, profileId: covered.profileId }),
+      { typed: true },
     );
   });
 
@@ -1223,6 +1228,7 @@ describe("a link arriving at the start page", () => {
     await click(await replyLink());
     expect(open).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ url: address, profileId: covered.profileId }),
+      { typed: true },
     );
   });
 });

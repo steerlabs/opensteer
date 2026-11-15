@@ -126,9 +126,13 @@ export function openWorkspaceWebLink(
   });
   rememberBrowsingChoice(scope, choice);
   const show = nav.beginPlaceOperation();
-  void hostClient.openTab(pageOpenTarget(replyLinkTarget(snapshot, choice, hereId, url), url)).then(
+  const target = pageOpenTarget(replyLinkTarget(snapshot, choice, hereId, url), url);
+  void hostClient.openTab(target, { typed: true }).then(
     (tab) => show({ kind: "tab", tabId: tab.tabId }),
-    () => undefined,
+    // The start page explains a refusal and offers its way through (a computer, a profile);
+    // an outcome it cannot know is never repeated, only kept for the person to send again.
+    (error: unknown) =>
+      nav.showLauncher({ address: url, open: error instanceof HostClientRequestError }),
   );
 }
 
@@ -428,7 +432,9 @@ export const StartPage = memo(function StartPage({
         ? { ...action.target, placement }
         : newTabTarget(hostClient.getSnapshot(), action.target.identity, localMachineId);
       rememberBrowsingChoice(scope, choice);
-      const tab = await hostClient.openTab(pageOpenTarget(target, url));
+      const tab = await hostClient.openTab(pageOpenTarget(target, url), {
+        typed: result.kind === "address",
+      });
       show({ kind: "tab", tabId: tab.tabId });
     } catch (error) {
       fail(error, result);
@@ -911,6 +917,11 @@ function AppWindows({
                   type="button"
                 >
                   <span>{window.title || "Untitled window"}</span>
+                  {window.minimized ? (
+                    <small>Minimized</small>
+                  ) : window.onScreen === false ? (
+                    <small>Other Space</small>
+                  ) : null}
                 </button>
               </li>
             ))}

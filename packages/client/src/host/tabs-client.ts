@@ -32,6 +32,9 @@ export interface TabsClientPort {
  * the public result drops the envelope fields.
  */
 export function createTabsClient(port: TabsClientPort): TabsClient {
+  // Each tab's newest activation: an older answer arriving after it binds nothing.
+  const activations = new Map<TabId, number>();
+  let activation = 0;
   async function send<Command extends TabsCommand>(
     command: Command,
   ): Promise<ResultOf<Command["type"]>> {
@@ -42,8 +45,12 @@ export function createTabsClient(port: TabsClientPort): TabsClient {
     return result as ResultOf<Command["type"]>;
   }
   return {
-    async openTab(target) {
-      const result = await send({ type: "tab.open", target });
+    async openTab(target, options) {
+      const result = await send({
+        type: "tab.open",
+        target,
+        ...(options?.typed && target.kind === "page" ? { typed: true as const } : {}),
+      });
       port.store.applyCommand({ layout: result.layout, tabs: [result.tab as Tab] });
       return result.tab as Tab;
     },
@@ -58,9 +65,16 @@ export function createTabsClient(port: TabsClientPort): TabsClient {
       return result.tab as Tab;
     },
     async activateTab(tabId, options) {
-      const result = await send({ type: "tab.activate", tabId });
-      port.activated?.(result.tab as Tab, result.viewer, options?.wake === true);
-      return result.viewer;
+      const request = ++activation;
+      activations.set(tabId, request);
+      try {
+        const result = await send({ type: "tab.activate", tabId });
+        if (activations.get(tabId) === request)
+          port.activated?.(result.tab as Tab, result.viewer, options?.wake === true);
+        return result.viewer;
+      } finally {
+        if (activations.get(tabId) === request) activations.delete(tabId);
+      }
     },
     async organizeTabs(input) {
       const result = await send({ type: "tab.organize", ...input });

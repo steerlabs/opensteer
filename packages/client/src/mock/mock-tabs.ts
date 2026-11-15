@@ -227,82 +227,87 @@ export class MockTabCatalog {
       if (this.#closed[i]!.native?.appId === appId) this.#closed.splice(i, 1);
   }
 
+  /**
+   * The Host's organize semantics: a top-level anchor that heads a group (its
+   * first member left once the moved tabs go) stands for that group's place;
+   * a whole group moves as a block, before its anchor's block or to the end;
+   * any other anchor outside the destination is a conflict.
+   */
   organize(input: TabOrganizeInput): void {
-    const ids = [...input.tabIds];
+    const ids = new Set(input.tabIds);
+    if (!ids.size || ids.size !== input.tabIds.length)
+      fail("bad_request", "Supply unique tab IDs within the mutation limit.", 400);
     for (const id of ids) this.tab(id);
-    if (input.beforeTabId && ids.includes(input.beforeTabId))
-      fail("conflict", "A tab cannot be placed before itself.", 409);
-    const items = structuredClone(this.#items);
-    const firstIndex = items.findIndex((item) =>
-      item.kind === "tab"
-        ? ids.includes(item.tabId)
-        : item.group.tabIds.some((id) => ids.includes(id)),
+    const listed = layoutTabIds(this.layout());
+    const before = input.beforeTabId;
+    if (before && (ids.has(before) || !listed.includes(before)))
+      fail("conflict", "The destination tab is no longer a valid anchor.", 409);
+    const groupOf = (id: TabId) =>
+      this.#items.find((item) => item.kind === "group" && item.group.tabIds.includes(id));
+    const targetId = input.group && "groupId" in input.group ? input.group.groupId : null;
+    const target = targetId
+      ? this.#items.find((item) => item.kind === "group" && item.group.groupId === targetId)
+      : undefined;
+    if (targetId && target?.kind !== "group") fail("not_found", "Tab group not found.", 404);
+    const anchorGroup = before ? groupOf(before) : undefined;
+    const wholeGroup =
+      target?.kind === "group" &&
+      target.group.tabIds.length === ids.size &&
+      target.group.tabIds.every((id) => ids.has(id));
+    const outside = !!before && (target ? anchorGroup !== target : anchorGroup !== undefined);
+    const creating = input.group !== null && "name" in input.group;
+    const heads = (item: LayoutItem | undefined) =>
+      item?.kind === "group" && item.group.tabIds.find((id) => !ids.has(id)) === before;
+    const boundary = input.group === null && heads(anchorGroup);
+    if (outside && !creating && !wholeGroup && !boundary)
+      fail("conflict", "The anchor belongs to another destination.", 409);
+    const firstIndex = this.#items.findIndex((item) =>
+      item.kind === "tab" ? ids.has(item.tabId) : item.group.tabIds.some((id) => ids.has(id)),
     );
-    const without = (list: LayoutItem[]) =>
-      list.flatMap((item): LayoutItem[] =>
-        item.kind === "tab"
-          ? ids.includes(item.tabId)
-            ? []
-            : [item]
-          : [
-              {
-                kind: "group",
-                group: {
-                  ...item.group,
-                  tabIds: item.group.tabIds.filter((id) => !ids.includes(id)),
-                },
-              },
-            ],
-      );
-    let next = without(items);
-    const anchorTop = (anchor: TabId) =>
-      next.findIndex((item) =>
-        item.kind === "tab" ? item.tabId === anchor : item.group.tabIds.includes(anchor),
-      );
-    const group = input.group;
-    if (group === null) {
-      const at = input.beforeTabId ? anchorTop(input.beforeTabId) : -1;
-      const block = ids.map((tabId): LayoutItem => ({ kind: "tab", tabId }));
-      if (at < 0) next.push(...block);
-      else next.splice(at, 0, ...block);
-    } else if ("groupId" in group) {
-      const held = next.find(
-        (item) => item.kind === "group" && item.group.groupId === group.groupId,
-      );
-      if (held?.kind !== "group") fail("not_found", "This group no longer exists.", 404);
-      const members = held.group.tabIds;
-      const inside = input.beforeTabId ? members.indexOf(input.beforeTabId) : -1;
-      if (input.beforeTabId && inside < 0) {
-        // A whole-group move: every member comes back, before the anchor's block.
-        if (members.length) fail("conflict", "Move every member of the group to move it.", 409);
-        next = next.filter((item) => item !== held);
-        const at = anchorTop(input.beforeTabId);
-        if (at < 0) fail("not_found", "The anchor tab is no longer listed.", 404);
-        next.splice(at, 0, { kind: "group", group: { ...held.group, tabIds: ids } });
+    this.#remove(ids);
+    // The top-level index of the anchor's block, or the end.
+    const at = () =>
+      before
+        ? this.#items.findIndex((item) =>
+            item.kind === "tab" ? item.tabId === before : item.group.tabIds.includes(before),
+          )
+        : this.#items.length;
+    if (target?.kind === "group") {
+      const current = this.#items.find(
+        (item) => item.kind === "group" && item.group.groupId === targetId,
+      )!;
+      if (current.kind !== "group") fail("conflict", "The destination group changed.", 409);
+      if (wholeGroup && (outside || !before)) {
+        this.#items = this.#items.filter((item) => item !== current);
+        this.#items.splice(at(), 0, {
+          kind: "group",
+          group: { ...current.group, tabIds: [...input.tabIds] },
+        });
       } else {
-        const tabIds = [...members];
-        tabIds.splice(inside < 0 ? tabIds.length : inside, 0, ...ids);
-        next = next.map((item) =>
-          item === held ? { kind: "group" as const, group: { ...held.group, tabIds } } : item,
+        const tabIds = [...current.group.tabIds];
+        tabIds.splice(before ? tabIds.indexOf(before) : tabIds.length, 0, ...input.tabIds);
+        this.#items = this.#items.map((item) =>
+          item === current ? { kind: "group", group: { ...current.group, tabIds } } : item,
         );
       }
-    } else {
+    } else if (input.group && "name" in input.group) {
       const created: LayoutItem = {
         kind: "group",
         group: {
           groupId: createId("tabGroup"),
-          name: group.name,
-          color: group.color,
+          name: input.group.name,
+          color: input.group.color,
           collapsed: false,
-          tabIds: ids,
+          tabIds: [...input.tabIds],
         },
       };
-      const at = input.beforeTabId
-        ? anchorTop(input.beforeTabId)
-        : Math.min(firstIndex, next.length);
-      next.splice(at < 0 ? next.length : at, 0, created);
-    }
-    this.#items = next;
+      this.#items.splice(before ? at() : Math.min(firstIndex, this.#items.length), 0, created);
+    } else
+      this.#items.splice(
+        at(),
+        0,
+        ...input.tabIds.map((tabId) => ({ kind: "tab" as const, tabId })),
+      );
     this.#revision++;
   }
   updateGroup(input: TabGroupUpdateInput): TabGroup {

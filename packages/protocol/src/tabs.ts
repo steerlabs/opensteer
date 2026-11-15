@@ -111,7 +111,12 @@ export type TabStream = z.infer<typeof TabStreamSchema>;
 export const HostTabsSchema = z.object({ type: z.literal("host.tabs"), stream: TabStreamSchema });
 const command = { idempotencyKey: z.string().min(1).max(255) };
 export const TabCommandSchema = z.discriminatedUnion("type", [
-  TabOpenInputSchema.extend({ ...command, type: z.literal("tab.open") }),
+  TabOpenInputSchema.extend({
+    ...command,
+    type: z.literal("tab.open"),
+    /** The person typed this page's address; their browsing history ranks it for completion. */
+    typed: z.literal(true).optional(),
+  }),
   TabCloseInputSchema.extend({ ...command, type: z.literal("tab.close") }),
   z.strictObject({ ...command, type: z.literal("tab.reopen"), tabId: tabId.optional() }),
   z.strictObject({ ...command, type: z.literal("tab.activate"), tabId }),

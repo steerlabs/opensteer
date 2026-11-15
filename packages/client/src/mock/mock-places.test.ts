@@ -235,3 +235,37 @@ it("moves a mixed list of page, window, phone and app tabs through the tab comma
     client.dispose();
   }
 });
+
+// Failure modes: the mock accepts an anchor the Host refuses, or keeps a group in place that
+// the Host moves, so a drop the sidebar offers lands differently against the real Host.
+it("organizes blocks as the Host does: a group's place, a whole group, a foreign anchor", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    const layout = () => client.getSnapshot().tabs.layout;
+    const shape = () =>
+      layout().items.map((item) => (item.kind === "tab" ? item.tabId : item.group.tabIds));
+    const group = layout().items.find((item) => item.kind === "group");
+    if (group?.kind !== "group") throw new Error("Expected a seeded group");
+    const [first, second] = group.group.tabIds;
+    const loose = layoutTabIds(layout()).filter((id) => !group.group.tabIds.includes(id));
+    // A loose tab before the group's first member lands just before the group.
+    await client.organizeTabs({ tabIds: [loose.at(-1)!], group: null, beforeTabId: first });
+    const at = shape().findIndex((item) => Array.isArray(item));
+    expect(shape()[at - 1]).toBe(loose.at(-1));
+    // The group's own first member, out before the group: its next member names the place.
+    await client.organizeTabs({ tabIds: [first!], group: null, beforeTabId: second });
+    expect(shape()[at]).toBe(first);
+    expect(shape()[at + 1]).toEqual(group.group.tabIds.slice(1));
+    // A later member is no top-level anchor.
+    await expect(
+      client.organizeTabs({ tabIds: [first!], group: null, beforeTabId: group.group.tabIds[2]! }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    // A whole group with no anchor goes to the end, as one block.
+    const members = group.group.tabIds.slice(1);
+    await client.organizeTabs({ tabIds: members, group: { groupId: group.group.groupId } });
+    expect(shape().at(-1)).toEqual(members);
+    expect(layoutTabIds(layout())).toHaveLength(new Set(layoutTabIds(layout())).size);
+  } finally {
+    client.dispose();
+  }
+});

@@ -1,4 +1,3 @@
-import { computerAppIdentityKey } from "@opensteer/protocol";
 import type { PlaceEnteredEventView } from "@opensteer/core";
 import type { HostSnapshot } from "./client.js";
 
@@ -96,29 +95,18 @@ export function runPageSize(input: {
 }
 
 /**
- * Whether this conversation's agent is acting in its Run's place right now. A
- * tab is shared, so it counts only when this conversation is the one acting
- * there; a Mac app or phone session is the Run's own.
+ * Whether this conversation's agent is acting in its Run's place right now:
+ * the Host's activity for that exact tab names this conversation. A window
+ * is never inferred from its app, so two windows of one app stay apart.
  */
 export function runPlaceActing(
   entry: PlaceEnteredEventView,
-  snapshot: Pick<HostSnapshot, "tabs" | "machines">,
+  snapshot: Pick<HostSnapshot, "tabs">,
   activity: readonly { readonly threadId: string }[],
   threadId: string,
 ): boolean {
-  const tab = snapshot.tabs.get(entry.data.tabId);
-  if (!tab) return false;
-  if (tab.kind === "page" || tab.kind === "app")
-    return activity.some((record) => record.threadId === threadId);
-  const session = snapshot.machines
-    .find((machine) => machine.id === tab.computer.computerId)
-    ?.computerUse?.sessions.find((session) => session.runId === entry.runId);
-  if (session === undefined) return false;
-  return tab.kind === "phone"
-    ? session.actingDisplay === true
-    : session.apps.some(
-        (app) =>
-          app.bundleId === tab.bundleId &&
-          session.actingAppKeys.includes(computerAppIdentityKey(app)),
-      );
+  return (
+    snapshot.tabs.get(entry.data.tabId) !== undefined &&
+    activity.some((record) => record.threadId === threadId)
+  );
 }

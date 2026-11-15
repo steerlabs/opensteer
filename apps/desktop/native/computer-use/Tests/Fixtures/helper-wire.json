@@ -949,6 +949,8 @@
     "view.windows" : {
       "windows" : [
         {
+          "minimized" : false,
+          "onScreen" : true,
           "title" : "Shopping list",
           "windowId" : "win_00000000-0000-4000-8000-000000000042"
         }

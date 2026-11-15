@@ -273,9 +273,12 @@ const ComputerUseWindowFrameSchema = z.strictObject({
   y: PointSchema,
 });
 
+/** A window the person's picker offers; where it stands is optional for apps inside the API window. */
 export const OwnerWindowInfoSchema = z.strictObject({
   windowId: WindowIdSchema,
   title: z.string().max(1_024),
+  minimized: z.boolean().optional(),
+  onScreen: z.boolean().optional(),
 });
 export type OwnerWindowInfo = z.infer<typeof OwnerWindowInfoSchema>;
 const windowStateSchema = OwnerWindowInfoSchema.extend({

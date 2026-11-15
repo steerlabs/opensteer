@@ -20,11 +20,10 @@ try {
   await context.addInitScript("globalThis.__name = (value) => value;");
   const page = await context.newPage();
   await page.goto(web.origin);
-  const row = page.locator('.side-tab[data-group="web"]').first();
+  const row = page.locator('.side-tab[data-kind="page"]').first();
   await row.waitFor();
   const key = (await row.getAttribute("data-place-key"))!;
-  const sessionId = key.split(":")[1]!;
-  const tabId = key.split(":").slice(2).join(":");
+  const tabId = key;
   await page.evaluate(() => {
     const client = Reflect.get(window, "opensteerMock") as MockHostClient;
     client.scriptPlaces();
@@ -47,8 +46,15 @@ try {
       },
       { sessionId, tabId, support, back, forward },
     );
-  await setNavigation(false);
   await page.locator(`.side-tab[data-place-key="${key}"] .side-tab__main`).click();
+  // The browser session the Host bound for this device's view of the tab.
+  const sessionId = await page
+    .waitForFunction((tabId) => {
+      const viewer = (Reflect.get(window, "opensteerMock") as MockHostClient).tabViewer(tabId);
+      return viewer?.kind === "page" ? viewer.sessionId : null;
+    }, tabId)
+    .then((handle) => handle.jsonValue() as Promise<string>);
+  await setNavigation(false);
   await page
     .locator(`.browser-view[data-browser-session="${sessionId}"][data-browser-tab="${tabId}"]`)
     .waitFor();

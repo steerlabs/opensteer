@@ -33,12 +33,12 @@ function entry(hostClient: HostClient, key: string): Icon {
   return icon;
 }
 
-function read(hostClient: HostClient, icon: Icon, sessionId: string, iconRef: string) {
+function read(hostClient: HostClient, icon: Icon, tabId: string, iconRef: string) {
   if (icon.src !== null || icon.reading || icon.timer !== undefined) return;
   if (hostClient.getSnapshot().connection !== "connected") return;
   icon.reading = true;
   void hostClient
-    .readBrowserTabIcon(sessionId, iconRef)
+    .readBrowserTabIcon(tabId, iconRef)
     .catch(() => null)
     .then((src) => {
       icon.reading = false;
@@ -53,22 +53,24 @@ function read(hostClient: HostClient, icon: Icon, sessionId: string, iconRef: st
       else
         icon.timer = setTimeout(() => {
           icon.timer = undefined;
-          read(hostClient, icon, sessionId, iconRef);
+          read(hostClient, icon, tabId, iconRef);
         }, delay);
     });
 }
 
 /**
- * A tab's site icon, read once per client and reference and shared by every
- * row that shows it; null until it arrives, when a row shows its glyph.
+ * A page tab's stored site icon, read once per client, tab and reference and
+ * shared by every row that shows it; null until it arrives, when a row shows
+ * its glyph. A tab asleep or never shown here is read the same: reading an
+ * icon never wakes or binds the page.
  */
-export function useBrowserTabIcon(
+export function useTabIcon(
   hostClient: HostClient,
-  sessionId: string,
+  tabId: string | null,
   iconRef: string | null,
 ): string | null {
   const connection = useHostSelector(hostClient, selectConnection);
-  const key = iconRef === null ? null : `${sessionId}\u0000${iconRef}`;
+  const key = tabId === null || iconRef === null ? null : `${tabId}\u0000${iconRef}`;
   const subscribe = useCallback(
     (listener: () => void) => {
       if (key === null) return () => {};
@@ -91,24 +93,8 @@ export function useBrowserTabIcon(
   );
   const src = useSyncExternalStore(subscribe, get, get);
   useEffect(() => {
-    if (key !== null && iconRef !== null && connection === "connected")
-      read(hostClient, entry(hostClient, key), sessionId, iconRef);
-  }, [connection, hostClient, iconRef, key, sessionId]);
+    if (key !== null && tabId !== null && iconRef !== null && connection === "connected")
+      read(hostClient, entry(hostClient, key), tabId, iconRef);
+  }, [connection, hostClient, iconRef, key, tabId]);
   return src;
-}
-
-/**
- * A page tab's site icon, served through the session this device's own view
- * of the tab is bound to; null until it is bound and the icon is read.
- */
-export function useTabIcon(
-  hostClient: HostClient,
-  tabId: string | null,
-  iconRef: string | null,
-): string | null {
-  const sessionId = useHostSelector(hostClient, () => {
-    const viewer = tabId === null ? null : hostClient.tabViewer(tabId);
-    return viewer?.kind === "page" ? viewer.sessionId : null;
-  });
-  return useBrowserTabIcon(hostClient, sessionId ?? "", sessionId ? iconRef : null);
 }

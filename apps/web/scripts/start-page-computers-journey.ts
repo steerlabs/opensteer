@@ -293,6 +293,7 @@ try {
       await page.locator(away).waitFor();
       const afterFold = await focused();
       await page.locator(pixel).focus();
+      const onPixel = await focused();
       await setStatus("Studio Mac", "online");
       await page.locator(keynote).waitFor();
       const afterUnfold = await focused();
@@ -309,6 +310,7 @@ try {
       const observed = {
         before,
         afterFold,
+        onPixel,
         afterUnfold,
         afterAboveFolds,
         onLine,
@@ -322,7 +324,9 @@ try {
       );
       expectThat(
         observed,
-        afterUnfold === "Pixel 7" && afterAboveFolds === "Pixel 7",
+        onPixel?.startsWith("Pixel 7") === true &&
+          afterUnfold === onPixel &&
+          afterAboveFolds === onPixel,
         "a row that stayed lost the keyboard",
       );
       expectThat(

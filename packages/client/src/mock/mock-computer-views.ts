@@ -55,9 +55,12 @@ export class MockComputerViews {
     app: Extract<ComputerViewTarget, { kind: "app" }>["app"],
   ): OwnerWindowInfo[] {
     this.#validate(machineId, { kind: "app", app });
+    // Archive is minimized; Ideas sits on another Space.
     return ["Shopping list", "Work plan", "Archive", "Ideas"].map((title, index) => ({
       windowId: mockWindowId(machineId, app.bundleId, index),
       title,
+      minimized: index === 2,
+      onScreen: index < 2,
     }));
   }
   approved(): ApprovedComputerApp[] {

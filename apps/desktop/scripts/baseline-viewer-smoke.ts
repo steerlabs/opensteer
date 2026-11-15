@@ -89,14 +89,7 @@ function heldSurface(): BrowserServerMessage | undefined {
       surfaceId: BrowserSurfaceIdSchema.parse(heldSurfaceId),
       surface: null,
     };
-  const {
-    icon,
-    order: _order,
-    openerId: _opener,
-    canGoBack: _back,
-    canGoForward: _forward,
-    ...surface
-  } = row;
+  const { icon, order: _order, openerId: _opener, ...surface } = row;
   return {
     type: "browser.surface",
     surfaceId: row.id,

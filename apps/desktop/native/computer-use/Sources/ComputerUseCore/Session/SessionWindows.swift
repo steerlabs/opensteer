@@ -5,6 +5,8 @@ import CoreGraphics
 public struct OwnerWindowInfo: Encodable, Sendable {
   let windowId: String
   let title: String
+  let minimized: Bool
+  let onScreen: Bool
 }
 
 public struct WindowInfo: Encodable, Sendable {
@@ -348,7 +350,7 @@ enum SessionWindows {
     return OwnerWindowList(
       windows: listed.map {
         OwnerWindowInfo(
-          windowId: $0.windowId, title: $0.title)
+          windowId: $0.windowId, title: $0.title, minimized: $0.minimized, onScreen: $0.onScreen)
       }, unverified: report.unverified, reason: report.reason)
   }
 }

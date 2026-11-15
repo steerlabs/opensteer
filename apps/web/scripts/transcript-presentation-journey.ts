@@ -311,7 +311,7 @@ async function openTask(
   const page = await context.newPage();
   page.setDefaultTimeout(5_000);
   page.on("pageerror", (error) => pageErrors.push(error.message));
-  await page.goto(`${web.origin}/threads/${threadId}`);
+  await page.goto(`${web.origin}/tasks/${threadId}`);
   await page.locator(`[data-message-id="${id("msg", 1)}"]`).waitFor();
   return { context, page };
 }

@@ -82,7 +82,7 @@ try {
   await check(
     "Host-authored computer steps keep chips, counts and live status; outer code stays compact",
     async () => {
-      await page.goto(`${web.origin}/threads/thr_00000000-0000-4000-8000-000000000006`);
+      await page.goto(`${web.origin}/tasks/thr_00000000-0000-4000-8000-000000000006`);
       await page.locator(".computer-now").waitFor();
       const status = await page.locator(".computer-now").innerText();
       const chip = await page
@@ -99,7 +99,7 @@ try {
         status.includes("Slack") && status.includes("Mac mini") && chip === "Slack",
         "Host operations lost computer status or chip",
       );
-      await page.goto(`${web.origin}/threads/thr_00000000-0000-4000-8000-000000000005`);
+      await page.goto(`${web.origin}/tasks/thr_00000000-0000-4000-8000-000000000005`);
       await page.locator(".work__toggle, .reply__action").first().waitFor();
       await page.screenshot({
         animations: "disabled",

@@ -1,4 +1,9 @@
-import { compareSequence, type Sequence, type PlaceEnteredEventView } from "@opensteer/core";
+import {
+  compareSequence,
+  type Sequence,
+  type TabKind,
+  type PlaceEnteredEventView,
+} from "@opensteer/core";
 import type { HostSnapshot } from "./client.js";
 import type { TabDestination } from "./surfaces.js";
 
@@ -90,4 +95,20 @@ export function runPlaceSessionId(
           : session.apps.some((app) => app.bundleId === tab.bundleId)),
     );
   return session?.sessionId ?? null;
+}
+
+/**
+ * The session whose picture shows a Run's place. A window or phone session
+ * shows its app's current window, which is this tab's only while the Host's
+ * activity for this exact tab is the Run's latest: that record moves with the
+ * Run between windows, so another window's picture never shows under this tab.
+ */
+export function runPlacePictureSession(
+  kind: TabKind | undefined,
+  sessionId: string | null,
+  runId: string,
+  activity: readonly { readonly runId: string }[],
+): string | null {
+  if (kind !== "window" && kind !== "phone") return sessionId;
+  return activity.some((record) => record.runId === runId) ? sessionId : null;
 }

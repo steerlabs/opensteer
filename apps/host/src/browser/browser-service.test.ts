@@ -2779,6 +2779,8 @@ describe("BrowserService", () => {
       geometryRevision: 1,
       loading: false,
       navigationFailed: false,
+      canGoBack: false,
+      canGoForward: false,
       sizedByAgent: false,
     };
     try {

@@ -2776,7 +2776,7 @@ export class BrowserService {
   }
 
   readonly pageTabs: PageTabsPort = {
-    open: (actor, target, key) => this.#openWorkspacePage(actor, target, key),
+    open: (actor, target, key, typed) => this.#openWorkspacePage(actor, target, key, typed),
     admitted: async (write) => {
       const row = await this.#workspaceTabs?.get(write.ownerId, write.id);
       if (row?.pageBinding && row.pageBinding.sessionId === write.pageBinding?.sessionId) {
@@ -2855,6 +2855,7 @@ export class BrowserService {
     actor: TabActor,
     target: Extract<TabTarget, { kind: "page" }>,
     key: string,
+    typed = false,
   ): Promise<TabWrite> {
     const ownerId =
       actor.kind === "person"
@@ -2907,6 +2908,7 @@ export class BrowserService {
             ? { placement: { kind: "runner" as const, runnerId: target.computerId } }
             : {}),
         ...(target.url === "about:blank" ? {} : { url: target.url }),
+        ...(typed && actor.kind === "person" ? { typed: true } : {}),
         ...(target.viewport ? { viewport: target.viewport } : {}),
       },
       agent,
@@ -6766,14 +6768,7 @@ export class HostedBrowserBroker {
       outlet.sendSurface(outlet.surfaceId, null);
       return;
     }
-    const {
-      icon: _icon,
-      order: _order,
-      openerId: _opener,
-      canGoBack: _back,
-      canGoForward: _forward,
-      ...surface
-    } = row;
+    const { icon: _icon, order: _order, openerId: _opener, ...surface } = row;
     const icon = this.#surfaceIcon(row);
     outlet.sendSurface(
       row.id,

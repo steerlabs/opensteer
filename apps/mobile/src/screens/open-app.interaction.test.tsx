@@ -143,7 +143,12 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const chosenWindow = WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000042");
 const otherWindow = WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000001");
 /** A window as the Mac lists it: the handle that opens exactly it, and its title. */
-const windowInfo = (windowId: typeof chosenWindow, title: string) => ({ windowId, title });
+const windowInfo = (windowId: typeof chosenWindow, title: string) => ({
+  windowId,
+  title,
+  minimized: false,
+  onScreen: true,
+});
 let root: Root | null = null;
 let container: HTMLDivElement;
 afterEach(async () => {

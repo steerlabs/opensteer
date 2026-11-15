@@ -184,19 +184,21 @@ try {
       runs: snapshot.runQueue
         .filter((run) => run.status === "running" || run.status === "waiting")
         .map(({ id, status, threadId }) => ({ id, status, threadId })),
-      // A page's session is the one this device was shown it through.
+      // A page's session is the mock world's, which activating the tab binds this device to.
       tabs: [...snapshot.tabs.rows.values()]
         .filter((row) => row.kind === "page")
-        .map((row) => {
-          const viewer = (Reflect.get(window, "opensteerMock") as MockHostClient).tabViewer(
-            row.tabId,
-          );
-          return {
-            id: row.tabId as string,
-            sessionId: viewer?.kind === "page" ? (viewer.sessionId as string) : "",
-            title: row.title,
-          };
-        }),
+        .map((row) => ({
+          id: row.tabId as string,
+          // The mock's sessions carry their pages, which the published type leaves unnamed.
+          sessionId:
+            snapshot.browserSessions.find(
+              (session) =>
+                "surfaces" in session &&
+                Array.isArray(session.surfaces) &&
+                session.surfaces.some((surface: { id: string }) => surface.id === row.tabId),
+            )?.id ?? "",
+          title: row.title,
+        })),
       marks: Object.fromEntries(
         snapshot.threads.map((thread) => [thread.id, { icon: thread.icon, color: thread.color }]),
       ),
@@ -244,7 +246,7 @@ try {
     return {
       type: "host.place-activity",
       activity: {
-        place: { kind: "browser", sessionId: target.sessionId, surfaceId: target.id },
+        tabId: target.id,
         threadId: options.threadId ?? run.threadId,
         runId: run.id,
         generation: 1,
@@ -259,7 +261,7 @@ try {
   };
   const cleared = (run: RunRef, target: TabRef) => ({
     type: "host.place-activity-cleared",
-    place: { kind: "browser", sessionId: target.sessionId, surfaceId: target.id },
+    tabId: target.id,
     runId: run.id,
     generation: 1,
     seq: ++seq,

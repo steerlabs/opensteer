@@ -12,6 +12,7 @@ import { schedulesClient } from "./schedules.js";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 
 import {
+  ComputerViewIdSchema,
   AppSchema,
   ModelSelectionSchema,
   SequenceSchema,
@@ -9021,6 +9022,8 @@ describe("HttpHostClient owner views", () => {
       answering.resolve();
       await activation;
       expect(shown()).toEqual([]);
+      // The tab has no viewer then, so selecting it again acquires a fresh view.
+      expect(host.client.tabViewer(tab.tabId)).toBeNull();
       // Nor does a reread that left before the removal.
       listed = [machine];
       await host.client.refresh();
@@ -9029,6 +9032,55 @@ describe("HttpHostClient owner views", () => {
       const reopened = { ...view, generation: view.generation + 1 };
       socket.receive({ type: "host.computer-view.changed", view: reopened });
       expect(shown()).toEqual([reopened]);
+      expect(host.client.tabViewer(tab.tabId)).toEqual({ kind: "window", view: reopened });
+    } finally {
+      host.client.dispose();
+    }
+  });
+
+  it("follows the tab's owner view as the Host changes it, and binds only the newest activation", async () => {
+    const { machine, view } = await ownerViewWorld();
+    const answers: ReturnType<typeof deferred<Response>>[] = [];
+    let tab!: Tab;
+    const host = ownerViewHost(
+      () => [machine],
+      () => {
+        const answer = deferred<Response>();
+        answers.push(answer);
+        return answer.promise;
+      },
+    );
+    tab = viewTab(host, "window", view);
+    const newer = { ...view, viewId: ComputerViewIdSchema.parse(`cvw_${crypto.randomUUID()}`) };
+    try {
+      await host.client.load();
+      const socket = host.connect();
+      const older = host.client.activateTab(tab.tabId);
+      const newest = host.client.activateTab(tab.tabId);
+      await vi.waitFor(() => expect(answers).toHaveLength(2));
+      answers[1]!.resolve(json({ tab, viewer: { kind: "window", view: newer } }));
+      await newest;
+      answers[0]!.resolve(json({ tab, viewer: { kind: "window", view } }));
+      await older;
+      expect(host.client.tabViewer(tab.tabId)).toMatchObject({ view: { viewId: newer.viewId } });
+      // The lease lapsing shows as the same tab's viewer, ended, never as it was answered.
+      const expired = {
+        ...newer,
+        state: "expired" as const,
+        unavailableReason: "expired" as const,
+      };
+      socket.receive({ type: "host.computer-view.changed", view: expired });
+      expect(host.client.tabViewer(tab.tabId)).toEqual({ kind: "window", view: expired });
+      // And the same object while nothing changed, so a selector stays still.
+      expect(host.client.tabViewer(tab.tabId)).toBe(host.client.tabViewer(tab.tabId));
+      socket.receive({
+        type: "host.computer-view.removed",
+        viewId: newer.viewId,
+        generation: newer.generation,
+        machineId: newer.machineId,
+        reason: "expired",
+      } as HostToClientMessage);
+      expect(host.client.tabViewer(tab.tabId)).toBeNull();
     } finally {
       host.client.dispose();
     }

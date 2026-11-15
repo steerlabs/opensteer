@@ -81,7 +81,5 @@ export const BrowserViewerSurfaceSchema = BrowserTabRecordSchema.omit({
   icon: true,
   order: true,
   openerId: true,
-  canGoBack: true,
-  canGoForward: true,
 }).extend({ favicon: BrowserFaviconSchema.nullable() });
 export type BrowserViewerSurface = z.infer<typeof BrowserViewerSurfaceSchema>;

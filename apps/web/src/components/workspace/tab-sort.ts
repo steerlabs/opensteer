@@ -201,31 +201,34 @@ export function slotMove(
 }
 
 /**
- * The Host's organize command for a drop. A group anchor stands for its
- * first tab, which places the moved block before that group's block; a whole
- * group moves as all its members, in order, back into it.
+ * The Host's organize command for a drop. A group anchor stands for its first
+ * member that is not moving, which the Host reads as that group's place in
+ * the top level; a whole group moves as all its members, in order, as one
+ * block, and with no anchor goes to the end. A drop before a group with no
+ * member left to name it cannot be said, so it moves nothing.
  */
 export function organizeInput(move: TabMove, layout: TabLayout): TabOrganizeInput | null {
-  const group = (groupId: string) =>
-    layout.items.find((item) => item.kind === "group" && item.group.groupId === groupId);
-  const anchor = (before: TabMove["to"]["before"]): TabId | undefined => {
-    if (!before) return undefined;
-    if ("tabId" in before) return before.tabId as TabId;
-    const held = group(before.groupId);
-    return held?.kind === "group" ? held.group.tabIds[0] : undefined;
+  const group = (groupId: string) => {
+    const item = layout.items.find(
+      (item) => item.kind === "group" && item.group.groupId === groupId,
+    );
+    return item?.kind === "group" ? item.group : undefined;
   };
-  const beforeTabId = anchor(move.to.before);
-  if ("groupId" in move.item) {
-    const held = group(move.item.groupId);
-    if (held?.kind !== "group" || !held.group.tabIds.length) return null;
-    return {
-      tabIds: [...held.group.tabIds],
-      group: { groupId: held.group.groupId },
-      ...(beforeTabId ? { beforeTabId } : {}),
-    };
-  }
+  const lifted = "groupId" in move.item ? group(move.item.groupId) : undefined;
+  if ("groupId" in move.item && !lifted?.tabIds.length) return null;
+  const tabIds = ("tabIds" in move.item ? move.item.tabIds : (lifted?.tabIds ?? [])).map(
+    (id) => id as TabId,
+  );
+  const before = move.to.before;
+  const beforeTabId =
+    before && "groupId" in before
+      ? group(before.groupId)?.tabIds.find((id) => !tabIds.includes(id))
+      : (before?.tabId as TabId | undefined);
+  if (before && !beforeTabId) return null;
+  const anchor = beforeTabId ? { beforeTabId } : {};
+  if (lifted) return { tabIds, group: { groupId: lifted.groupId }, ...anchor };
   return {
-    tabIds: move.item.tabIds.map((id) => id as TabId),
+    tabIds,
     group: move.to.groupId
       ? {
           groupId: move.to.groupId as Extract<
@@ -234,7 +237,7 @@ export function organizeInput(move: TabMove, layout: TabLayout): TabOrganizeInpu
           >["groupId"],
         }
       : null,
-    ...(beforeTabId ? { beforeTabId } : {}),
+    ...anchor,
   };
 }
 

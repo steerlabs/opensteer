@@ -189,9 +189,9 @@ export function BrowserPage(props: {
             documentId: viewer?.documentId ?? null,
             loading: viewer?.loading ?? false,
             navigationFailed: viewer?.navigationFailed ?? false,
-            // The viewer's page does not say whether history exists; both stay offered.
-            canGoBack: true,
-            canGoForward: true,
+            // Until the page is shown, both directions stay offered.
+            canGoBack: viewer?.canGoBack ?? true,
+            canGoForward: viewer?.canGoForward ?? true,
           }
         : undefined,
     [listed, viewer],
