@@ -28,6 +28,8 @@ import {
   type TeamSessionOptions,
 } from "@opensteer/client/team";
 import {
+  KnowledgeTopicIdSchema,
+  KnowledgeNoteIdSchema,
   DeploymentIdSchema,
   parseTeamPageLink,
   type DeploymentId,
@@ -104,6 +106,14 @@ export type TeamLinkIntent =
       readonly origin: string;
       readonly channelId: string;
       readonly messageId: string | null;
+      readonly threadRootId?: string;
+    }
+  | { readonly kind: "knowledge-topic"; readonly origin: string; readonly topicId: string }
+  | {
+      readonly kind: "knowledge-note";
+      readonly origin: string;
+      readonly topicId: string;
+      readonly noteId: string;
     }
   /** A one-time code from a team's web page, carried to the person's own Opensteer. */
   | { readonly kind: "agent-link"; readonly origin: string; readonly text: string };
@@ -133,6 +143,23 @@ export function intentOf(page: TeamPageLink): TeamLinkIntent {
         channelId: page.target.channelId,
         messageId: null,
       };
+    case "thread":
+      return {
+        kind: "open",
+        origin: page.origin,
+        channelId: page.target.channelId,
+        threadRootId: page.target.threadRootId,
+        messageId: page.target.messageId ?? null,
+      };
+    case "knowledge-topic":
+      return { kind: "knowledge-topic", origin: page.origin, topicId: page.target.topicId };
+    case "knowledge-note":
+      return {
+        kind: "knowledge-note",
+        origin: page.origin,
+        topicId: page.target.topicId,
+        noteId: page.target.noteId,
+      };
     case "message":
       return {
         kind: "open",
@@ -151,7 +178,9 @@ export type TeamDestination =
       readonly channelId: string;
       readonly rootId: string;
       readonly replyId: string | null;
-    };
+    }
+  | { readonly kind: "knowledge-topic"; readonly topicId: string }
+  | { readonly kind: "knowledge-note"; readonly topicId: string; readonly noteId: string };
 
 export class TeamAccessError extends Error {
   override readonly name = "TeamAccessError";
@@ -639,9 +668,21 @@ class MobileTeamRuntime {
     teamId: string,
     channelId: string,
     messageId: string | null,
+    threadRootId?: string,
   ): Promise<TeamDestination> {
     const session = await this.session(teamId);
     const channel = TeamChannelIdSchema.parse(channelId);
+    if (threadRootId !== undefined) {
+      const root = unwrapRpcResult(
+        await session.rpc["team.message.get"]({
+          channelId: channel,
+          messageId: TeamMessageIdSchema.parse(threadRootId),
+        }),
+      );
+      if (root.threadRootId !== null || root.channelId !== channel)
+        throw new TeamAccessError("You don't have access to this thread.");
+      if (messageId === null) return { kind: "thread", channelId, rootId: root.id, replyId: null };
+    }
     if (messageId === null) {
       unwrapRpcResult(await session.rpc["team.channel.get"]({ channelId: channel }));
       return { kind: "channel", channelId, messageId: null };
@@ -652,9 +693,34 @@ class MobileTeamRuntime {
         messageId: TeamMessageIdSchema.parse(messageId),
       }),
     );
+    if (
+      message.channelId !== channel ||
+      (threadRootId !== undefined && message.threadRootId !== threadRootId)
+    )
+      throw new TeamAccessError("This message is not in that thread.");
     return message.threadRootId === null
       ? { kind: "channel", channelId, messageId: message.id }
       : { kind: "thread", channelId, rootId: message.threadRootId, replyId: message.id };
+  }
+
+  async pageDestination(
+    teamId: string,
+    intent: Exclude<TeamLinkIntent, { kind: "invite" | "agent-link" }>,
+  ): Promise<TeamDestination> {
+    if (intent.kind === "open")
+      return this.destination(teamId, intent.channelId, intent.messageId, intent.threadRootId);
+    const session = await this.session(teamId);
+    const topicId = KnowledgeTopicIdSchema.parse(intent.topicId);
+    unwrapRpcResult(await session.rpc["team.knowledge.topic.get"]({ topicId }));
+    if (intent.kind === "knowledge-topic") return { kind: "knowledge-topic", topicId };
+    const note = unwrapRpcResult(
+      await session.rpc["team.knowledge.note.get"]({
+        noteId: KnowledgeNoteIdSchema.parse(intent.noteId),
+      }),
+    );
+    if (note.topicId !== topicId || note.deleted)
+      throw new TeamAccessError("This note is not in that topic.");
+    return { kind: "knowledge-note", topicId, noteId: note.id };
   }
 
   /**
@@ -1183,6 +1249,8 @@ export class MobileTeams {
     this.#run((runtime) => runtime.members(...args));
   readonly destination = (...args: Parameters<MobileTeamRuntime["destination"]>) =>
     this.#run((runtime) => runtime.destination(...args));
+  readonly pageDestination = (...args: Parameters<MobileTeamRuntime["pageDestination"]>) =>
+    this.#run((runtime) => runtime.pageDestination(...args));
   readonly locate = (...args: Parameters<MobileTeamRuntime["locate"]>) =>
     this.#run((runtime) => runtime.locate(...args));
   readonly verifyTeam = (...args: Parameters<MobileTeamRuntime["verifyTeam"]>) =>

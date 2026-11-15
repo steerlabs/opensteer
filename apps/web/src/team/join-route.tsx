@@ -5,7 +5,7 @@ import { useOptionalShell } from "../components/app-shell.js";
 import { AreaHeader } from "../components/workspace/conversation-header.js";
 import { TeamsHome, useTeamDialogs } from "./hosted-teams.js";
 import { useTeams } from "./team-attachments.js";
-import { channelPath } from "./team-paths.js";
+import { teamPagePath } from "./team-paths.js";
 
 /** Teams: create one, or join with an invite. */
 export function TeamsRoute() {
@@ -19,7 +19,7 @@ export function TeamsRoute() {
 }
 
 /**
- * A team page the app was asked to open (`/join?link=…`): a channel or message of a team this
+ * A team page the app was asked to open (`/join?link=…`): a page of a team this
  * computer is in opens there, an invite opens the join confirmation, and anything else opens at
  * the team's own address.
  */
@@ -44,7 +44,7 @@ export function JoinTeamRoute() {
   return null;
 }
 
-/** Where a team page link opens in this app, when it names a channel of a team already joined. */
+/** Where a team page link opens in this app, when it names a team already joined. */
 export function joinedTeamPath(
   url: string,
   teams: readonly { readonly origin: string; readonly teamId: string }[],
@@ -52,9 +52,5 @@ export function joinedTeamPath(
   const page = parseTeamPageLink(url);
   if (!page || page.target.kind === "invite") return null;
   const team = teams.find((candidate) => candidate.origin === page.origin);
-  return team
-    ? channelPath(team.teamId, page.target.channelId, {
-        messageId: page.target.kind === "message" ? page.target.messageId : null,
-      })
-    : null;
+  return team ? teamPagePath(team.teamId, page.target) : null;
 }

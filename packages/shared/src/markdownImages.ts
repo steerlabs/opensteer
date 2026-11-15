@@ -1,8 +1,7 @@
 import type { Nodes } from "mdast";
-import type { CompileContext, Token } from "mdast-util-from-markdown";
-import { fromMarkdown } from "mdast-util-from-markdown";
-import { gfmFromMarkdown } from "mdast-util-gfm";
-import { gfm } from "micromark-extension-gfm";
+import { markdownSourceTree as parse } from "./markdownParser.js";
+import { isNetworkPath } from "./fileHref.js";
+export { isNetworkPath } from "./fileHref.js";
 
 /**
  * Markdown image handling shared by the Runner (embedding generated images in
@@ -19,14 +18,6 @@ export type MarkdownImageSource =
   | { readonly kind: "local"; readonly path: string }
   | { readonly kind: "remote"; readonly url: string }
   | { readonly kind: "none" };
-
-/**
- * Two leading separators in any mix is a path Windows opens over the network,
- * which can send the account's NTLM credentials; refuse it before any file access.
- */
-export function isNetworkPath(path: string): boolean {
-  return /^[\\/]{2}/.test(path.trim());
-}
 
 /** Renderers hand over a percent-encoded destination; the file's name is decoded once. */
 export function classifyMarkdownImageSource(source: string): MarkdownImageSource {
@@ -53,25 +44,6 @@ export function classifyMarkdownImageSource(source: string): MarkdownImageSource
   return /^[a-z][a-z\d+.-]*:/i.test(path) ? { kind: "none" } : { kind: "local", path };
 }
 
-function keepPath(this: CompileContext, token: Token): void {
-  const decoded = this.resume();
-  const authored = this.sliceSerialize(token);
-  const node = this.stack.at(-1);
-  if (node && (node.type === "image" || node.type === "link" || node.type === "definition"))
-    node.url =
-      (isWindowsDrivePath(authored) || isUncPath(authored)) && !authored.includes("&")
-        ? authored
-        : decoded;
-}
-function parse(text: string) {
-  return fromMarkdown(text, {
-    extensions: [gfm()],
-    mdastExtensions: [
-      gfmFromMarkdown(),
-      { exit: { resourceDestinationString: keepPath, definitionDestinationString: keepPath } },
-    ],
-  });
-}
 function isWindowsDrivePath(path: string): boolean {
   return /^[a-z]:[\\/]/i.test(path);
 }

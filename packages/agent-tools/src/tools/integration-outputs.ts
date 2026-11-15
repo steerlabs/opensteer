@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AgentLinkSchema } from "./agent-links.js";
 
 const ReadinessSchema = z.object({
   code: z.string(),
@@ -154,6 +155,7 @@ export const IntegrationCallOutputSchema = z.object({
   isError: z.boolean().optional(),
 });
 export const IntegrationRequestOutputSchema = z.object({
+  link: AgentLinkSchema.optional(),
   status: z.string(),
   kind: z.string().optional(),
   replayed: z.boolean().optional(),

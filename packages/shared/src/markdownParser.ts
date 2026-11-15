@@ -1,11 +1,43 @@
 import type { Definition, Nodes, Parents, Root } from "mdast";
+import type { CompileContext, Token } from "mdast-util-from-markdown";
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { gfmFromMarkdown } from "mdast-util-gfm";
 import { gfm } from "micromark-extension-gfm";
-import { repairStrong } from "./markdown.js";
+import {
+  personMarkdownGfmOptions,
+  personMarkdownTree,
+  type MarkdownProfile,
+} from "./personMarkdown.js";
+import { hideIncompleteLinkTail, repairStrong } from "./markdown.js";
 
 const extensions = [gfm()];
-const mdastExtensions = [gfmFromMarkdown()];
+const personExtensions = [gfm(personMarkdownGfmOptions)];
+const mdastExtensions = [
+  gfmFromMarkdown(),
+  { exit: { resourceDestinationString: keepPath, definitionDestinationString: keepPath } },
+];
+export type { Nodes, Root } from "mdast";
+
+function keepPath(this: CompileContext, token: Token): void {
+  const decoded = this.resume();
+  const authored = this.sliceSerialize(token);
+  const node = this.stack.at(-1);
+  if (node && (node.type === "image" || node.type === "link" || node.type === "definition"))
+    node.url =
+      (/^[a-z]:[\\/]/i.test(authored) || authored.startsWith("\\\\")) && !authored.includes("&")
+        ? authored
+        : decoded;
+}
+
+export function markdownSourceTree(
+  text: string,
+  options?: { readonly profile?: MarkdownProfile },
+): Root {
+  return fromMarkdown(text, {
+    extensions: options?.profile === "person" ? personExtensions : extensions,
+    mdastExtensions,
+  });
+}
 
 /** A `[ref]` as the link or image it names, so a renderer only ever meets those two. */
 function resolveReferences(tree: Root): void {
@@ -36,9 +68,53 @@ function resolveReferences(tree: Root): void {
 }
 
 /** An agent's Markdown as a tree: the parser web's renderer uses, for a client that draws its own. */
-export function parseMarkdown(text: string, options?: { readonly streaming?: boolean }): Root {
-  const tree = fromMarkdown(text, { extensions, mdastExtensions });
+export function parseMarkdown(
+  text: string,
+  options?: { readonly streaming?: boolean; readonly profile?: MarkdownProfile },
+): Root {
+  const tree = markdownSourceTree(
+    options?.streaming ? hideIncompleteLinkTail(text) : text,
+    options,
+  );
   resolveReferences(tree);
-  repairStrong(tree, options);
+  if (options?.profile === "person") personMarkdownTree(tree);
+  else repairStrong(tree, options);
   return tree;
+}
+
+/** Visits authored Markdown outside code and raw HTML, retaining original source positions. */
+export function visitMarkdownSource(tree: Root, visit: (node: Nodes) => boolean | void): void {
+  const voidTags = new Set([
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "param",
+    "source",
+    "track",
+    "wbr",
+  ]);
+  const walk = (node: Nodes): void => {
+    if (node.type === "code" || node.type === "inlineCode" || node.type === "html") return;
+    if (visit(node) === false || !("children" in node)) return;
+    const tags: string[] = [];
+    for (const child of node.children) {
+      if (child.type === "html") {
+        for (const match of child.value.matchAll(/<\/?([a-z][a-z\d-]*)\b[^>]*>/giu)) {
+          const tag = match[1]!.toLowerCase();
+          if (match[0].startsWith("</")) {
+            const index = tags.lastIndexOf(tag);
+            if (index !== -1) tags.length = index;
+          } else if (!voidTags.has(tag) && !match[0].endsWith("/>")) tags.push(tag);
+        }
+      } else if (tags.length === 0) walk(child);
+    }
+  };
+  walk(tree);
 }

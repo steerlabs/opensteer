@@ -1,6 +1,20 @@
 import { describe, expect, it } from "vitest";
+import {
+  KnowledgeTopicIdSchema,
+  KnowledgeNoteIdSchema,
+  TeamMessageIdSchema,
+  TeamChannelIdSchema,
+} from "./ids.js";
 import { DeploymentIdSchema, TeamNoticeIdSchema } from "./ids.js";
-import { parseTeamNoticeAppLink, TeamOriginSchema, teamNoticeAppLink } from "./team-links.js";
+import {
+  parseTeamPageLink,
+  teamPageUrl,
+  parseTeamPageAppLink,
+  teamPageAppLink,
+  parseTeamNoticeAppLink,
+  TeamOriginSchema,
+  teamNoticeAppLink,
+} from "./team-links.js";
 
 const scheme = "com.opensteer.mobile";
 const notice = {
@@ -52,4 +66,35 @@ describe("team origins", () => {
     expect(TeamOriginSchema.safeParse("not a url").success).toBe(false);
     expect(TeamOriginSchema.safeParse("https://team.example.com").success).toBe(true);
   });
+});
+
+it("round-trips thread and knowledge targets through public and native links", () => {
+  const channelId = TeamChannelIdSchema.parse("tch_12345678-1234-4234-8234-123456789abc");
+  const topicId = KnowledgeTopicIdSchema.parse("ktp_12345678-1234-4234-8234-123456789abc");
+  const noteId = KnowledgeNoteIdSchema.parse("knt_12345678-1234-4234-8234-123456789abc");
+  const root = TeamMessageIdSchema.parse("123"),
+    reply = TeamMessageIdSchema.parse("124");
+  for (const target of [
+    { kind: "thread", channelId, threadRootId: root },
+    { kind: "thread", channelId, threadRootId: root, messageId: reply },
+    { kind: "knowledge-topic", topicId },
+    { kind: "knowledge-note", topicId, noteId },
+  ] as const) {
+    const page = { origin: "https://team.example", target };
+    expect(parseTeamPageLink(teamPageUrl(page))).toEqual(page);
+    expect(parseTeamPageAppLink(teamPageAppLink(page, "desktop"), "desktop")).toEqual(page);
+  }
+  const note = teamPageUrl({
+    origin: "https://team.example",
+    target: { kind: "knowledge-note", topicId, noteId },
+  });
+  for (const invalid of [
+    note + "&note=" + noteId,
+    note + "&other=1",
+    note + "#fragment",
+    note.replace(noteId, "knt_invalid"),
+    note.replace("https://", "https://user:secret@"),
+    "https://team.example/c/" + channelId + "/t/0",
+  ])
+    expect(parseTeamPageLink(invalid)).toBeNull();
 });

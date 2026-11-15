@@ -20,7 +20,8 @@
     "./test-support": "./src/test-support/index.ts",
     "./voice": "./src/voice/index.ts",
     "./settings": "./src/settings/index.ts",
-    "./ai-sharing": "./src/ai-sharing/index.ts"
+    "./ai-sharing": "./src/ai-sharing/index.ts",
+    "./references": "./src/references/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

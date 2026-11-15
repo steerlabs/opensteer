@@ -2,6 +2,8 @@ import { z } from "zod";
 import { opensteerNativeClient, type OpensteerNativeApplication } from "./identity.js";
 import {
   DeploymentIdSchema,
+  KnowledgeTopicIdSchema,
+  KnowledgeNoteIdSchema,
   TeamChannelIdSchema,
   TeamMessageIdSchema,
   TeamNoticeIdSchema,
@@ -30,7 +32,20 @@ export const TeamPageTargetSchema = z.discriminatedUnion("kind", [
     channelId: TeamChannelIdSchema,
     messageId: TeamMessageIdSchema,
   }),
+  z.strictObject({
+    kind: z.literal("thread"),
+    channelId: TeamChannelIdSchema,
+    threadRootId: TeamMessageIdSchema,
+    messageId: TeamMessageIdSchema.optional(),
+  }),
+  z.strictObject({ kind: z.literal("knowledge-topic"), topicId: KnowledgeTopicIdSchema }),
+  z.strictObject({
+    kind: z.literal("knowledge-note"),
+    topicId: KnowledgeTopicIdSchema,
+    noteId: KnowledgeNoteIdSchema,
+  }),
 ]);
+export type TeamPageTarget = z.infer<typeof TeamPageTargetSchema>;
 export const TeamPageLinkSchema = z.strictObject({
   origin: TeamOriginSchema,
   target: TeamPageTargetSchema,
@@ -45,27 +60,55 @@ export function teamPageUrl(link: TeamPageLink): string {
       return `${origin}/c/${target.channelId}`;
     case "message":
       return `${origin}/c/${target.channelId}/m/${target.messageId}`;
+    case "thread":
+      return `${origin}/c/${target.channelId}/t/${target.threadRootId}${target.messageId ? `/m/${target.messageId}` : ""}`;
+    case "knowledge-topic":
+      return `${origin}/knowledge/${target.topicId}`;
+    case "knowledge-note":
+      return `${origin}/knowledge/${target.topicId}?note=${target.noteId}`;
   }
 }
 export function parseTeamPageLink(value: string): TeamPageLink | null {
   try {
     const url = new URL(value);
     if (
-      url.search ||
+      /[\p{Cc}\s]/u.test(value) ||
       url.username ||
       url.password ||
       !TeamOriginSchema.safeParse(url.origin).success
     )
       return null;
+    const hasQuery = value.includes("?");
+    const hasFragment = value.includes("#");
     const parts = url.pathname.split("/");
-    const target =
-      parts.length === 3 && parts[1] === "invite"
-        ? { kind: "invite", selector: parts[2], verifier: url.hash.slice(1) }
-        : !url.hash && parts.length === 3 && parts[1] === "c"
-          ? { kind: "channel", channelId: parts[2] }
-          : !url.hash && parts.length === 5 && parts[1] === "c" && parts[3] === "m"
-            ? { kind: "message", channelId: parts[2], messageId: parts[4] }
-            : null;
+    let target: unknown = null;
+    if (parts.length === 3 && parts[1] === "knowledge" && !hasFragment) {
+      if (!hasQuery) target = { kind: "knowledge-topic", topicId: parts[2] };
+      else if (url.searchParams.size === 1 && url.searchParams.has("note"))
+        target = {
+          kind: "knowledge-note",
+          topicId: parts[2],
+          noteId: url.searchParams.get("note"),
+        };
+    } else if (!hasQuery) {
+      if (parts.length === 3 && parts[1] === "invite")
+        target = { kind: "invite", selector: parts[2], verifier: url.hash.slice(1) };
+      else if (!hasFragment && parts[1] === "c") {
+        if (parts.length === 3) target = { kind: "channel", channelId: parts[2] };
+        else if (parts.length === 5 && parts[3] === "m")
+          target = { kind: "message", channelId: parts[2], messageId: parts[4] };
+        else if (
+          (parts.length === 5 || (parts.length === 7 && parts[5] === "m")) &&
+          parts[3] === "t"
+        )
+          target = {
+            kind: "thread",
+            channelId: parts[2],
+            threadRootId: parts[4],
+            ...(parts.length === 7 ? { messageId: parts[6] } : {}),
+          };
+      }
+    }
     const parsed = TeamPageLinkSchema.safeParse({ origin: url.origin, target });
     return parsed.success ? parsed.data : null;
   } catch {
@@ -89,7 +132,7 @@ export function teamInviteSignInUrl(authorization: string, invite: TeamInviteSec
 export function teamAppScheme(application: OpensteerNativeApplication): string {
   return opensteerNativeClient(application).applicationId;
 }
-/** `<scheme>:/team?url=<team page URL>`: the one app link for invites, channels and messages. */
+/** `<scheme>:/team?url=<team page URL>`: the one app link for team pages. */
 export function teamPageAppLink(
   link: TeamPageLink,
   application: OpensteerNativeApplication,

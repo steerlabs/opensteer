@@ -15,6 +15,7 @@ afterEach(() => {
   root = null;
   document.body.replaceChildren();
   localStorage.clear();
+  sessionStorage.clear();
   window.history.replaceState(null, "", "/");
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -319,5 +320,79 @@ describe("a team's own web app", () => {
       await vi.waitFor(() => expect(field()?.value).toBe("maya"), { timeout: 2_000 });
     });
     expect(window.location.search).toBe("?q=maya");
+  });
+});
+
+it.each(["thread", "knowledge-topic", "knowledge-note"] as const)(
+  "opens a public %s page through the existing team screen after the landing",
+  async (kind) => {
+    const { team } = serveTeam({ signedIn: true });
+    const topicId = team.knowledge.starterTopicId;
+    const noteId = createId("knowledgeNote");
+    team.knowledge.addVersion({
+      noteId,
+      topicId,
+      title: "Shared note",
+      body: "Shared content",
+      writer: { kind: "human", userId: team.userId, name: "Reader" },
+    });
+    const root = team.post({ channelId: mockTeamChannelId, bodyMarkdown: "Shared thread" });
+    const path =
+      kind === "thread"
+        ? "/c/" + mockTeamChannelId + "/t/" + root.id
+        : "/knowledge/" + topicId + (kind === "knowledge-note" ? "?note=" + noteId : "");
+    window.history.replaceState(null, "", path);
+    const node = await render();
+    const native = button(node, "Open in Opensteer") as HTMLAnchorElement;
+    expect(new URL(native.href).searchParams.get("url")).toBe("https://chat.acme.example" + path);
+    await act(async () => button(node, "Continue in this browser")?.click());
+    await act(async () => {
+      await vi.waitFor(
+        () => {
+          expect(window.location.pathname + window.location.search).toBe(
+            "/teams/" + mockTeamId + path,
+          );
+          expect(node.textContent).toContain(kind === "thread" ? "Shared thread" : "Shared note");
+        },
+        { timeout: 2_000 },
+      );
+    });
+  },
+);
+
+it("keeps a signed-out knowledge link through Account sign-in at the root", async () => {
+  const { requests, team } = serveTeam({ signedIn: false });
+  const topicId = team.knowledge.starterTopicId,
+    noteId = createId("knowledgeNote");
+  const path = `/knowledge/${topicId}?note=${noteId}`;
+  window.history.replaceState(null, "", path);
+  vi.spyOn(window.location, "assign").mockImplementation(() => undefined);
+  let node = await render();
+  await act(async () => button(node, "Sign in here instead")?.click());
+  await act(async () => button(node, "Continue with Opensteer Account")?.click());
+  const signIn = requests.find(({ path }) => path.endsWith("/auth.oidc.begin"));
+  expect(JSON.parse(String(signIn?.init?.body)).returnPath).toBe("/");
+  act(() => root?.unmount());
+  root = null;
+  window.history.replaceState(null, "", "/");
+  const signedIn = serveTeam({ signedIn: true });
+  signedIn.team.knowledge.addVersion({
+    noteId,
+    topicId,
+    title: "Returned note",
+    body: "Still here",
+    writer: { kind: "human", userId: signedIn.team.userId, name: "Reader" },
+  });
+  node = await render();
+  await act(async () => {
+    await vi.waitFor(
+      () => {
+        expect(window.location.pathname + window.location.search).toBe(
+          "/teams/" + mockTeamId + path,
+        );
+        expect(node.querySelector(".kb-note")?.textContent).toContain("Still here");
+      },
+      { timeout: 2_000 },
+    );
   });
 });

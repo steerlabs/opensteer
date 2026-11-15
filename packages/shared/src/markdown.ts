@@ -266,3 +266,120 @@ export function repairStrong(tree: Root, options?: { readonly streaming?: boolea
   };
   visit(tree);
 }
+
+/** Holds only a private link's incomplete trailing token while its destination streams. */
+export function hideIncompleteLinkTail(text: string): string {
+  const brackets: number[] = [];
+  let fence: string | null = null;
+  for (let index = 0; index < text.length; index++) {
+    if (index === 0 || text[index - 1] === "\n") {
+      const rest = text.slice(index);
+      if (fence === null && /^(?: {4}|\t)/u.test(rest)) {
+        const end = text.indexOf("\n", index);
+        index = end === -1 ? text.length : end;
+        continue;
+      }
+      if (
+        fence === null &&
+        /^ {0,3}\[[^\]\r\n]+\]:[ \t]*<(?:opensteer:|file:|[/\\])/iu.test(rest) &&
+        !/[>\r\n]/u.test(rest)
+      )
+        return text.slice(0, index);
+      const marker = /^ {0,3}(`{3,}|~{3,})/u.exec(text.slice(index))?.[1];
+      if (marker) {
+        const lineEnd = text.indexOf("\n", index);
+        const end = lineEnd === -1 ? text.length : lineEnd;
+        if (fence === null) fence = marker;
+        else if (
+          marker[0] === fence[0] &&
+          marker.length >= fence.length &&
+          text.slice(index, end).trim() === marker
+        )
+          fence = null;
+        index = end;
+        continue;
+      }
+    }
+    if (fence !== null) continue;
+    if (text[index] === "\\") {
+      index++;
+      continue;
+    }
+    if (text[index] === "`") {
+      const run = /^`+/u.exec(text.slice(index))![0];
+      let end = index + run.length;
+      while (end < text.length) {
+        const next = text.indexOf("`", end);
+        if (next === -1) {
+          end = text.length;
+          break;
+        }
+        const closer = /^`+/u.exec(text.slice(next))![0];
+        end = next + closer.length;
+        if (closer.length === run.length) break;
+      }
+      index = end - 1;
+      continue;
+    }
+    if (text[index] === "[") {
+      brackets.push(index);
+      continue;
+    }
+    if (text[index] !== "]") continue;
+    const start = brackets.pop();
+    if (start === undefined || text[index + 1] !== "(") continue;
+    let depth = 1;
+    let end = index + 2;
+    while (/\s/u.test(text[end] ?? "") && end < text.length) end++;
+    const destinationStart = end;
+    let angle = false;
+    let quote: string | null = null;
+    for (; end < text.length; end++) {
+      if (text[end] === "\\") {
+        end++;
+        continue;
+      }
+      if (angle) {
+        if (text[end] === ">") angle = false;
+        continue;
+      }
+      if (quote !== null) {
+        if (text[end] === quote) quote = null;
+        continue;
+      }
+      if (end === destinationStart && text[end] === "<") {
+        angle = true;
+        continue;
+      }
+      if ((text[end] === '"' || text[end] === "'") && /\s/u.test(text[end - 1] ?? "")) {
+        quote = text[end]!;
+        continue;
+      }
+      if (text[end] === "(") depth++;
+      else if (text[end] === ")" && --depth === 0) break;
+    }
+    if (depth === 0) {
+      index = end;
+      continue;
+    }
+    let destination = text
+      .slice(index + 2)
+      .trimStart()
+      .replace(/^</u, "");
+    try {
+      destination = decodeURIComponent(destination.replace(/%[0-9a-f]?$/iu, ""));
+    } catch {
+      /* A partial escape still follows the private prefix. */
+    }
+    const image = start > 0 && text[start - 1] === "!" && (start < 2 || text[start - 2] !== "\\");
+    const privateTail =
+      destination === "" ||
+      "opensteer:".startsWith(destination.toLowerCase()) ||
+      /^opensteer:/iu.test(destination) ||
+      /^[/\\~]/u.test(destination) ||
+      /^[a-z](?::|$)/iu.test(destination) ||
+      /^file:/iu.test(destination);
+    if (image || privateTail) return text.slice(0, image ? start - 1 : start);
+  }
+  return text;
+}

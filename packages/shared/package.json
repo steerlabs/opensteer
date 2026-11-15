@@ -69,7 +69,11 @@
     "./test-support/agentSkills": "./src/agentSkills.test-support.ts",
     "./appFrame": "./src/appFrame.ts",
     "./files/models": "./src/files/models.ts",
-    "./files/native-fs-helper": "./src/files/native-fs-helper.ts"
+    "./files/native-fs-helper": "./src/files/native-fs-helper.ts",
+    "./fileHref": "./src/fileHref.ts",
+    "./markdownLinks": "./src/markdownLinks.ts",
+    "./stripRefs": "./src/stripRefs.ts",
+    "./personMarkdown": "./src/personMarkdown.ts"
   },
   "scripts": {
     "clean": "node ../../scripts/clean.mjs dist *.tsbuildinfo",

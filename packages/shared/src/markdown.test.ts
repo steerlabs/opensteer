@@ -1,6 +1,6 @@
 import type { PhrasingContent, RootContent } from "mdast";
 import { describe, expect, it } from "vitest";
-import { replyParts, splitMarkdownBlocks } from "./markdown.js";
+import { hideIncompleteLinkTail, replyParts, splitMarkdownBlocks } from "./markdown.js";
 import { parseMarkdown } from "./markdownParser.js";
 
 /** The tree as short tagged text, so a case reads as what a person sees. */
@@ -217,5 +217,58 @@ describe("parseMarkdown", () => {
         { alt: "chart", type: "image", url: "b.png" },
       ],
     });
+  });
+});
+
+describe("incomplete reference tails", () => {
+  it("holds every growing private destination prefix until it closes", () => {
+    for (const destination of [
+      "opensteer:thr_12345678-1234-4234-8234-123456789abc",
+      "/tmp/result (one).txt",
+      "C:\\work\\result.txt",
+      "C%3A%5Cwork%5Cresult.txt",
+      "</tmp/a (one).txt>",
+      "</tmp/a ) one.txt>",
+      '/tmp/result.txt "title ) text"',
+    ]) {
+      const token = "[result](" + destination + ")";
+      for (let length = "[result](".length; length < token.length; length++) {
+        expect(hideIncompleteLinkTail("before " + token.slice(0, length))).toBe("before ");
+      }
+      expect(hideIncompleteLinkTail("before " + token)).toBe("before " + token);
+    }
+    expect(hideIncompleteLinkTail("before ![image](https://example.test/")).toBe("before ");
+  });
+  it("preserves unfinished prose brackets, escaped syntax and code examples", () => {
+    for (const text of [
+      "before [a thought",
+      "    [literal](opensteer:abc",
+      "before [web](https://example.test/",
+      "\\[literal](opensteer:abc",
+      "`[literal](opensteer:abc`",
+      "```md\n[literal](opensteer:abc",
+      "~~~md\n[literal](/tmp/a\n~~~",
+    ])
+      expect(hideIncompleteLinkTail(text)).toBe(text);
+  });
+});
+
+describe("person Markdown profile", () => {
+  it("keeps soft breaks, normal blocks, literal HTML and authored incomplete emphasis", () => {
+    const tree = parseMarkdown(
+      "# Heading\n\nfirst\nsecond ~literal~ **unfinished\n\n- one\n  - two\n\n<div>literal</div>\n\n`one\ntwo`",
+      { profile: "person", streaming: true },
+    );
+    expect(tree.children[0]?.type).toBe("heading");
+    const paragraph = tree.children[1];
+    if (paragraph?.type !== "paragraph") throw new Error("Missing paragraph");
+    expect(paragraph.children).toMatchObject([
+      { type: "text", value: "first" },
+      { type: "break" },
+      { type: "text", value: "second ~literal~ **unfinished" },
+    ]);
+    expect(tree.children[2]?.type).toBe("list");
+    expect(JSON.stringify(tree)).not.toContain('"type":"html"');
+    expect(JSON.stringify(tree)).toContain("<div>literal</div>");
   });
 });
