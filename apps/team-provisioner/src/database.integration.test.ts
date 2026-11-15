@@ -48,6 +48,11 @@ integration("team databases", () => {
         [name],
       );
       expect(privileges.rows[0].allowed).toBe(false);
+      // A database outside the teams counts as open until PUBLIC loses CONNECT on it.
+      expect(await database.openSharedDatabases([name])).toEqual([]);
+      await admin.query(`grant connect on database ${pg.escapeIdentifier(name)} to public`);
+      expect(await database.openSharedDatabases([name])).toEqual([name]);
+      await admin.query(`revoke connect on database ${pg.escapeIdentifier(name)} from public`);
       // The team logs in with the password whose verifier alone reached the server.
       const connection = new URL(provisionerUrl);
       connection.username = name;

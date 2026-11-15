@@ -36,10 +36,22 @@ export interface TeamDatabase {
   delete(id: string): Promise<void>;
 }
 
+/** Every team login can reach a database PUBLIC may connect to, and read other teams' names there. */
+export const sharedDatabaseNames = ["postgres", "template1"] as const;
+
 export class PostgresTeamDatabase implements TeamDatabase {
   private readonly pool: pg.Pool;
   constructor(pool: pg.Pool) {
     this.pool = pool;
+  }
+
+  /** The databases outside any team that still admit every role. */
+  async openSharedDatabases(names: readonly string[] = sharedDatabaseNames): Promise<string[]> {
+    const result = await this.pool.query<{ datname: string }>(
+      "select datname from pg_database where datname = any($1) and has_database_privilege('public', oid, 'CONNECT') order by datname",
+      [names],
+    );
+    return result.rows.map((row) => row.datname);
   }
 
   async exists(id: string): Promise<boolean> {

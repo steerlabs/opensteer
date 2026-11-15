@@ -40,6 +40,12 @@ async function main(): Promise<void> {
   });
   // The pool drops an idle client the server ends; without a listener that would crash.
   pool.on("error", () => {});
+  const database = new PostgresTeamDatabase(pool);
+  const open = await database.openSharedDatabases();
+  if (open.length)
+    throw new Error(
+      `Revoke CONNECT on ${open.join(", ")} from PUBLIC before hosting teams (opensteer-infra DEPLOYING.md)`,
+    );
   const reconciler = new Reconciler({
     account: new AccountClient({
       origin: config.accountOrigin,
@@ -49,7 +55,7 @@ async function main(): Promise<void> {
     images: config.images,
     replicas: config.replicas,
     platform: config.platform,
-    database: new PostgresTeamDatabase(pool),
+    database,
     storage: new GcsTeamStorage(
       new Storage({ authClient: google }),
       google,
