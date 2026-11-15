@@ -7,8 +7,14 @@ import {
   PersonalHostAccessRouteDocumentSchema,
   PersonalHostAccessRouteEnvelopeSchema,
   HostDescriptorSchema,
+  apiVersionHeaders,
   hostApiCompatibility,
+  hostApiCurrentHeader,
   hostApiVersion,
+  hostApiVersionHeader,
+  minimumHostApiVersion,
+  negotiatedHostApiVersion,
+  statesApiVersion,
   hostDiscoverySigningBytes,
   knownHostCapabilities,
   hostAuthorityIdentityMatches,
@@ -279,31 +285,71 @@ describe("Host descriptor", () => {
     ).not.toHaveProperty("somethingAddedLater");
   });
 
-  it("names which side is behind, and rejects legacy epochs as too old", () => {
+  it("attaches to any Host whose window overlaps, and names the side that is behind", () => {
     const { discovery } = signedFixture();
     const descriptor = {
       kind: "personal",
-      apiVersion: hostApiVersion,
+      apiVersion: minimumHostApiVersion,
+      currentApiVersion: hostApiVersion,
       authority: discovery,
       bootstrapMethods: [],
       capabilities: [],
     };
 
     expect(hostApiCompatibility(descriptor)).toBe("compatible");
+    // A newer Host that still serves this tree's version.
+    expect(hostApiCompatibility({ ...descriptor, currentApiVersion: hostApiVersion + 3 })).toBe(
+      "compatible",
+    );
+    // A Host from before the window states one exact version.
+    const { currentApiVersion: _current, ...legacy } = descriptor;
+    expect(hostApiCompatibility(legacy)).toBe("compatible");
     expect(hostApiCompatibility({ ...descriptor, apiVersion: hostApiVersion + 1 })).toBe(
       "client-too-old",
     );
-    for (const legacyHostApiVersion of Array.from(
-      { length: hostApiVersion - 1 },
+    for (const olderHostApiVersion of Array.from(
+      { length: minimumHostApiVersion - 1 },
       (_, index) => index + 1,
     )) {
-      expect(hostApiCompatibility({ ...descriptor, apiVersion: legacyHostApiVersion })).toBe(
-        "host-too-old",
-      );
+      expect(
+        hostApiCompatibility({
+          ...legacy,
+          apiVersion: olderHostApiVersion,
+        }),
+      ).toBe("host-too-old");
     }
     expect(hostApiCompatibility({ authority: discovery, bootstrapMethods: [] })).toBe(
       "host-too-old",
     );
+  });
+
+  it("serves a personal caller the lower current version while the windows overlap", () => {
+    const own = apiVersionHeaders("personal");
+    expect(negotiatedHostApiVersion(own)).toBe(hostApiVersion);
+    expect(
+      negotiatedHostApiVersion({
+        [hostApiVersionHeader]: String(minimumHostApiVersion),
+        [hostApiCurrentHeader]: String(hostApiVersion + 4),
+      }),
+    ).toBe(hostApiVersion);
+    // A caller from before the window states one exact version.
+    expect(negotiatedHostApiVersion({ [hostApiVersionHeader]: String(hostApiVersion) })).toBe(
+      hostApiVersion,
+    );
+    for (const refused of [
+      {},
+      { [hostApiVersionHeader]: String(minimumHostApiVersion - 1) },
+      { [hostApiVersionHeader]: String(hostApiVersion + 1) },
+      { [hostApiVersionHeader]: String(hostApiVersion), [hostApiCurrentHeader]: "soon" },
+      {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        [hostApiCurrentHeader]: String(hostApiVersion - 1),
+      },
+      { [hostApiVersionHeader]: ["58", "58"] },
+    ])
+      expect(negotiatedHostApiVersion(refused), JSON.stringify(refused)).toBeNull();
+    expect(statesApiVersion(own, "personal")).toBe(true);
+    expect(statesApiVersion({}, "personal")).toBe(false);
   });
 
   it("keeps the capability names it knows and drops the ones it does not", () => {

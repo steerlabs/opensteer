@@ -101,9 +101,8 @@ export const ClientToHostMessageSchema = z.discriminatedUnion("type", [
     ...clientMessageBase,
     type: z.literal("client.subscribe"),
     cursor: DeploymentResumeCursorSchema,
-    // Optional on the wire so that a frame from a client predating negotiation
-    // is answered with the epoch refusal a person can act on, rather than
-    // rejected as malformed JSON. The Host requires it either way.
+    // The socket's URL negotiates the version; a Host from before the window
+    // also compares this for equality.
     apiVersion: z.number().int().positive().optional(),
     /** Requires `snapshot-messages-omit-v1`; absence retains message history. */
     snapshotMessages: z.literal("omit").optional(),
@@ -287,6 +286,8 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     ...clientMessageBase,
     type: z.literal("host.synchronized"),
+    /** The version this subscription is served; a Host from before the window omits it. */
+    apiVersion: z.number().int().positive().optional(),
     sequence: SequenceSchema,
   }),
   /**

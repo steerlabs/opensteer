@@ -14,8 +14,8 @@ fixtures or a VM.
 Self-hosted team servers update through the [deploy/team recipe](../deploy/team/README.md), with hourly
 scheduler-driven pull-before-replace updates. A failed pull leaves the running stack in place;
 there is no desktop team supervisor. Stable and Beta select the corresponding published tags,
-and each tag's version names the images it runs. Personal Host epoch and team API version
-advance independently.
+and each tag's version names the images it runs. The personal and team API windows advance
+independently ([API compatibility](connections.md#api-compatibility)).
 Hosted teams use the [hosted release policy](hosted-teams.md#releases) instead.
 
 ## Build inputs and local proof

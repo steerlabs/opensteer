@@ -1,7 +1,11 @@
 import type { DeploymentId } from "@opensteer/core";
 import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import { HostTransportError } from "@opensteer/client/connections";
-import { hostApiVersionHeader, teamApiVersionHeader } from "@opensteer/protocol";
+import {
+  hostApiCurrentHeader,
+  hostApiVersionHeader,
+  teamApiVersionHeader,
+} from "@opensteer/protocol";
 import type {
   DesktopCloseHostWebSocketInput,
   DesktopHostWebSocketEvent,
@@ -67,6 +71,7 @@ async function binaryHostRequest(
     headers: {
       ...(headers.accept ? { accept: headers.accept } : {}),
       ...(headers.apiVersion ? { apiVersion: headers.apiVersion } : {}),
+      ...(headers.apiCurrent ? { apiCurrent: headers.apiCurrent } : {}),
       ...(upload ? { contentType: "application/octet-stream" as const } : {}),
     },
     method: upload ? "POST" : "GET",
@@ -438,6 +443,7 @@ function hostMethod(value: string): "DELETE" | "GET" | "PATCH" | "POST" | "PUT" 
 function hostRequestHeaders(headers: Headers): {
   accept?: string;
   apiVersion?: string;
+  apiCurrent?: string;
   bootstrapDiagnostics?: string;
   contentType?: "application/json" | "application/octet-stream";
   idempotencyKey?: string;
@@ -445,6 +451,7 @@ function hostRequestHeaders(headers: Headers): {
   const output: {
     accept?: string;
     apiVersion?: string;
+    apiCurrent?: string;
     bootstrapDiagnostics?: string;
     contentType?: "application/json" | "application/octet-stream";
     idempotencyKey?: string;
@@ -455,6 +462,7 @@ function hostRequestHeaders(headers: Headers): {
     // The main process names the header by the Host's signed kind.
     else if (name === hostApiVersionHeader || name === teamApiVersionHeader)
       output.apiVersion = value;
+    else if (name === hostApiCurrentHeader) output.apiCurrent = value;
     else if (
       name === "content-type" &&
       (value === "application/json" || value === "application/octet-stream")

@@ -19,7 +19,7 @@ link frame or a retried phone save safe without an operation key.
 Agents author notes; the apps give people no editor. People see notes as records, delete them,
 and restore a version, which writes its title and body again as the newest through the person
 note write the team API keeps. That write stays because apps and team servers update on their
-own schedules, so removing it would strand older apps ([Teams](teams.md#transport-and-versions)).
+own schedules, so removing it would strand older apps ([API compatibility](connections.md#api-compatibility)).
 
 ## Agents
 

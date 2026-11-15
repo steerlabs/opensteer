@@ -97,6 +97,11 @@ export const OwnerProfileViewSchema = z.object({
 export type OwnerProfileView = z.infer<typeof OwnerProfileViewSchema>;
 
 export const HostBootstrapSchema = z.object({
+  /**
+   * The personal API version this caller is served. A Host from before the
+   * window omits it: it admits a caller only at the caller's minimum.
+   */
+  apiVersion: z.number().int().positive().optional(),
   deploymentId: DeploymentIdSchema,
   sessionId: AuthSessionIdSchema,
   personalSettings: z

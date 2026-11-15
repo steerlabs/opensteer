@@ -39,11 +39,16 @@ export const HostBootstrapMethodSchema = z.enum([
 ]);
 export type HostBootstrapMethod = z.infer<typeof HostBootstrapMethodSchema>;
 
-/** Personal and team transports negotiate their own mandatory contract version. */
-export const hostApiVersion = 58;
 /**
- * The team API this tree speaks, and the oldest peer it still serves. See the
- * compatibility policy in docs/teams.md before changing either; the wire
+ * The personal Host API this tree speaks, and the oldest it still serves. Peers
+ * speak the lower of their two current versions. See "API compatibility" in
+ * docs/connections.md before changing either.
+ */
+export const hostApiVersion = 58;
+export const minimumHostApiVersion = 58;
+/**
+ * The team API this tree speaks, and the oldest peer it still serves. See
+ * "API compatibility" in docs/connections.md before changing either; the wire
  * snapshot test refuses a breaking schema change without a bump.
  */
 // Shared work requires version 6; unshared teams still serve explicit-kind version 5 peers.
@@ -51,7 +56,13 @@ export const teamApiVersion = 6;
 export const minimumTeamApiVersion = 5;
 export const teamOAuthVersionParameter = "opensteer_team_api_version";
 export const teamOidcStatePrefix = "ost-team-api-";
+/**
+ * A personal caller states its minimum here: a Host from before the window
+ * compares it for equality, which admits exactly the Hosts this tree still
+ * serves. Its current version goes in `hostApiCurrentHeader`.
+ */
 export const hostApiVersionHeader = "x-opensteer-api-version";
+export const hostApiCurrentHeader = "x-opensteer-api-current";
 export const teamApiVersionHeader = "x-opensteer-team-api-version";
 export const ApiNegotiationSchema = z.strictObject({
   kind: DeploymentKindSchema,
@@ -68,20 +79,53 @@ export function apiVersionHeader(kind: z.infer<typeof DeploymentKindSchema>): st
 export function apiVersionHeaders(
   kind: z.infer<typeof DeploymentKindSchema>,
 ): Readonly<Record<string, string>> {
-  return { [apiVersionHeader(kind)]: String(apiNegotiation(kind).apiVersion) };
+  return kind === "team"
+    ? { [teamApiVersionHeader]: String(teamApiVersion) }
+    : {
+        [hostApiVersionHeader]: String(minimumHostApiVersion),
+        [hostApiCurrentHeader]: String(hostApiVersion),
+      };
 }
+
+type Headers = Readonly<Record<string, string | readonly string[] | undefined>>;
+
+function statedVersion(stated: unknown): number | null {
+  const version =
+    typeof stated === "number"
+      ? stated
+      : typeof stated === "string" && /^[1-9][0-9]{0,8}$/u.test(stated)
+        ? Number(stated)
+        : Number.NaN;
+  return Number.isSafeInteger(version) ? version : null;
+}
+
+/**
+ * The personal API version a caller is served, or null when the two windows
+ * do not overlap. A caller from before the window states one exact version.
+ */
+export function negotiatedHostApiVersion(headers: Headers): number | null {
+  const minimum = statedVersion(headers[hostApiVersionHeader]);
+  if (minimum === null) return null;
+  const current =
+    headers[hostApiCurrentHeader] === undefined
+      ? minimum
+      : statedVersion(headers[hostApiCurrentHeader]);
+  if (current === null || current < minimum) return null;
+  if (minimum > hostApiVersion || current < minimumHostApiVersion) return null;
+  return Math.min(current, hostApiVersion);
+}
+
 /**
  * The Host's admission test and its callers' tests share this, so a caller
- * that forgets the epoch fails its own test instead of a person's Host.
+ * that forgets the version fails its own test instead of a person's Host.
  */
 export function statesApiVersion(
-  headers: Readonly<Record<string, string | readonly string[] | undefined>>,
+  headers: Headers,
   kind: z.infer<typeof DeploymentKindSchema>,
 ): boolean {
-  const stated = headers[apiVersionHeader(kind)];
   return kind === "team"
-    ? acceptsTeamApiVersion(stated)
-    : stated === String(apiNegotiation(kind).apiVersion);
+    ? acceptsTeamApiVersion(headers[teamApiVersionHeader])
+    : negotiatedHostApiVersion(headers) !== null;
 }
 
 /**
@@ -89,13 +133,8 @@ export function statesApiVersion(
  * is admitted: it knows this side's version and keeps to its own minimum.
  */
 export function acceptsTeamApiVersion(stated: unknown): boolean {
-  const version =
-    typeof stated === "number"
-      ? stated
-      : typeof stated === "string" && /^[1-9][0-9]{0,8}$/u.test(stated)
-        ? Number(stated)
-        : Number.NaN;
-  return Number.isSafeInteger(version) && version >= minimumTeamApiVersion;
+  const version = statedVersion(stated);
+  return version !== null && version >= minimumTeamApiVersion;
 }
 
 /** What a team peer older than this tree serves is told. */
@@ -207,7 +246,14 @@ export type HostCapability = z.infer<typeof HostCapabilitySchema>;
  */
 export const HostDescriptorSchema = z.object({
   kind: DeploymentKindSchema,
+  /**
+   * A team's current version. A personal Host's minimum: a client from before
+   * the window compares it for equality, so it attaches while the Host still
+   * serves it.
+   */
   apiVersion: z.number().int().positive(),
+  /** Personal Hosts only: the version they speak to a caller as new as them. */
+  currentApiVersion: z.number().int().positive().optional(),
   /** Team Hosts only: the oldest team API version they still serve. */
   minimumApiVersion: z.number().int().positive().optional(),
   authority: HostDiscoveryEnvelopeSchema,
@@ -229,6 +275,7 @@ export type HostApiCompatibility = "client-too-old" | "compatible" | "host-too-o
 const NegotiatedDescriptorSchema = z.object({
   kind: DeploymentKindSchema,
   apiVersion: z.number().int().positive().optional(),
+  currentApiVersion: z.number().int().positive().optional(),
   minimumApiVersion: z.number().int().positive().optional(),
 });
 
@@ -236,9 +283,11 @@ export function hostApiCompatibility(descriptor: unknown): HostApiCompatibility 
   const parsed = NegotiatedDescriptorSchema.safeParse(descriptor);
   if (parsed.success && parsed.data.kind === "team")
     return teamApiCompatibility(parsed.data.apiVersion ?? 0, parsed.data.minimumApiVersion);
-  const advertised = parsed.success ? parsed.data.apiVersion : undefined;
-  if (advertised === undefined || advertised < hostApiVersion) return "host-too-old";
-  if (advertised > hostApiVersion) return "client-too-old";
+  // A Host from before the window advertises one exact version.
+  const minimum = parsed.success ? parsed.data.apiVersion : undefined;
+  const current = parsed.success ? (parsed.data.currentApiVersion ?? minimum) : undefined;
+  if (current === undefined || current < minimumHostApiVersion) return "host-too-old";
+  if (minimum === undefined || minimum > hostApiVersion) return "client-too-old";
   return "compatible";
 }
 
@@ -322,3 +371,13 @@ export function hostAuthorityIdentityMatches(
 }
 
 export const apiVersionQueryParameter = "opensteer_api_version";
+export const apiCurrentQueryParameter = "opensteer_api_current";
+
+/** A browser cannot set WebSocket headers, so a socket states its versions in its URL. */
+export function setApiVersionQuery(url: URL, kind: z.infer<typeof DeploymentKindSchema>): URL {
+  const headers = apiVersionHeaders(kind);
+  url.searchParams.set(apiVersionQueryParameter, headers[apiVersionHeader(kind)]!);
+  if (kind === "personal")
+    url.searchParams.set(apiCurrentQueryParameter, headers[hostApiCurrentHeader]!);
+  return url;
+}

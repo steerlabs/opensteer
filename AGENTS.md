@@ -97,9 +97,10 @@ which entries applied:
 - **Agents.** If a person can do it, decide whether agents should reach it
   through the [tool catalog](packages/agent-tools/src/tools/index.ts).
   Model-facing text has behavioral evals in `evals/agent-tools`.
-- **Deployments and versions.** Personal Opensteer and team servers; personal Host
-  epoch and `teamApiVersion` independently. Stable and Beta update channels
-  ([Releases](docs/releases.md)).
+- **Deployments and versions.** Personal Opensteer and team servers; the personal
+  and team API windows, which keep older apps working
+  ([API compatibility](docs/connections.md#api-compatibility)). Stable and Beta update
+  channels ([Releases](docs/releases.md)).
 - **Connections.** Same computer, private network, personal Connect, and a weak cellular
   link; team servers use their own HTTPS origin. Several devices on one Deployment at once
   ([Connections](docs/connections.md)).

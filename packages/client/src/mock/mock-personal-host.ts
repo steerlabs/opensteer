@@ -105,26 +105,25 @@ export class MockPersonalHost {
         : result,
     );
   };
+  /** The version this Host's sockets serve; its bootstrap does not say. */
+  apiVersion = hostApiVersion;
   readonly connect = (): MockPersonalSocket => {
     const socket = new MockPersonalSocket((data) => {
       const frame = ClientToHostMessageSchema.parse(JSON.parse(data));
       if (frame.type !== "client.subscribe") return;
-      if (
-        frame.cursor.deploymentId !== this.client.getSnapshot().deploymentId ||
-        frame.cursor.apiVersion !== hostApiVersion
-      ) {
+      if (frame.cursor.deploymentId !== this.client.getSnapshot().deploymentId) {
         socket.close();
         return;
       }
       this.#subscribed.set(socket, frame.deviceAccessRequests === "include");
-      const rows = this.#rows.filter(
-        (row) => BigInt(row.sequence) > BigInt(frame.cursor.afterSequence),
-      );
+      // Like the Host, state read at another version is replaced, not resumed.
+      const after = frame.cursor.apiVersion === this.apiVersion ? frame.cursor.afterSequence : "0";
+      const rows = this.#rows.filter((row) => BigInt(row.sequence) > BigInt(after));
       if (
-        frame.cursor.afterSequence !== "0" &&
+        after !== "0" &&
         rows.length <= 200 &&
         this.#rows.length > 0 &&
-        BigInt(frame.cursor.afterSequence) >= BigInt(this.#rows[0]!.sequence) - 1n
+        BigInt(after) >= BigInt(this.#rows[0]!.sequence) - 1n
       )
         socket.deliver({
           type: "host.events",
@@ -144,7 +143,11 @@ export class MockPersonalHost {
       );
       for (let start = 0; start < visits.length; start += 100)
         socket.deliver({ type: "host.thread-visits", visits: visits.slice(start, start + 100) });
-      socket.deliver({ type: "host.synchronized", sequence: this.#through });
+      socket.deliver({
+        type: "host.synchronized",
+        apiVersion: this.apiVersion,
+        sequence: this.#through,
+      });
     });
     this.sockets.add(socket);
     socket.addEventListener("close", () => {
