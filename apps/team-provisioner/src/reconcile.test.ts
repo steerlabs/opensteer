@@ -188,6 +188,7 @@ function setup(now = { value: 0 }, databaseCa = "CA", cluster = new FakeCluster(
     storage,
     log: () => undefined,
     now: () => now.value,
+    sleep: async () => {},
   });
   return { account, cluster, reconciler, now, database, storage };
 }
@@ -203,6 +204,20 @@ describe("Reconciler", () => {
     expect(database.ensure).toHaveBeenCalledWith(teamId("acme"), secret!["database-url"]);
     await reconciler.pass();
     expect(cluster.secrets.get("team-acme")).toEqual(secret);
+    expect(cluster.deployments.size).toBe(1);
+  });
+
+  it("waits out a just-applied RoleBinding instead of failing the team's first pass", async () => {
+    const { account, cluster, reconciler, database } = setup();
+    account.teams = [team("acme")];
+    const read = cluster.readTeamSecret.bind(cluster);
+    let denied = 2;
+    cluster.readTeamSecret = async (namespace: string) => {
+      if (denied-- > 0) throw new KubernetesRequestError(403, "secrets is forbidden");
+      return read(namespace);
+    };
+    await reconciler.pass();
+    expect(database.ensure).toHaveBeenCalledTimes(1);
     expect(cluster.deployments.size).toBe(1);
   });
 

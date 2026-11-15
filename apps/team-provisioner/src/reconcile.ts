@@ -81,6 +81,7 @@ export class Reconciler {
   readonly #storage: TeamStorage;
   readonly #log: ReconcilerLog;
   readonly #now: () => number;
+  readonly #sleep: (milliseconds: number) => Promise<void>;
   readonly #unready = new Map<string, { readonly hash: string | null; readonly since: number }>();
   readonly #reported = new Map<string, string>();
 
@@ -94,6 +95,7 @@ export class Reconciler {
     readonly storage: TeamStorage;
     readonly log: ReconcilerLog;
     readonly now?: () => number;
+    readonly sleep?: (milliseconds: number) => Promise<void>;
   }) {
     this.#account = input.account;
     this.#kubernetes = input.kubernetes;
@@ -107,6 +109,9 @@ export class Reconciler {
     this.#storage = input.storage;
     this.#log = input.log;
     this.#now = input.now ?? Date.now;
+    this.#sleep =
+      input.sleep ??
+      ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   }
 
   async pass(): Promise<void> {
@@ -176,7 +181,7 @@ export class Reconciler {
     const namespace = teamNamespace(team.slug);
     await this.#kubernetes.apply(objects[0]!);
     await this.#kubernetes.apply(objects[1]!);
-    let stored = await this.#kubernetes.readTeamSecret(namespace);
+    let stored = await this.#readTeamSecret(namespace);
     if (stored === undefined) {
       if (await this.#database.exists(team.id))
         throw new Error("Existing team installation Secret is missing");
@@ -203,6 +208,19 @@ export class Reconciler {
     await this.#database.ensure(team.id, stored.databaseUrl);
     await this.#storage.ensure(team.id, namespace);
     for (const object of objects.slice(2)) await this.#kubernetes.apply(object);
+  }
+
+  /** The RoleBinding applied just before can take a moment to authorize; a 403 then is not final. */
+  async #readTeamSecret(namespace: string) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.#kubernetes.readTeamSecret(namespace);
+      } catch (error) {
+        if (!(error instanceof KubernetesRequestError && error.status === 403) || attempt === 10)
+          throw error;
+        await this.#sleep(500);
+      }
+    }
   }
 
   /** What the team runs right now, judged against the spec it is meant to be running. */

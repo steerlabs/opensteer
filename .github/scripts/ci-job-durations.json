@@ -1,0 +1,74 @@
+{
+  "android": {
+    "p95": 3.5,
+    "runs": 30
+  },
+  "browser-journeys": {
+    "p95": 6.5,
+    "runs": 30
+  },
+  "build": {
+    "p95": 3.0,
+    "runs": 0
+  },
+  "build-types": {
+    "p95": 6.9,
+    "runs": 30
+  },
+  "changes": {
+    "p95": 0.4,
+    "runs": 30
+  },
+  "Check": {
+    "p95": 0.8,
+    "runs": 30
+  },
+  "integration": {
+    "p95": 8.5,
+    "runs": 30
+  },
+  "lint": {
+    "p95": 4.3,
+    "runs": 30
+  },
+  "native-mac (computer-helper)": {
+    "p95": 3.5,
+    "runs": 30
+  },
+  "native-mac (computer-tests)": {
+    "p95": 3.9,
+    "runs": 30
+  },
+  "native-mac (dictation)": {
+    "p95": 3.1,
+    "runs": 27
+  },
+  "native-mac (dictation-helper)": {
+    "p95": 2.9,
+    "runs": 30
+  },
+  "native-mac (iphone)": {
+    "p95": 4.2,
+    "runs": 30
+  },
+  "native-mac (passwords-helper)": {
+    "p95": 3.1,
+    "runs": 30
+  },
+  "native-mac (passwords-tests)": {
+    "p95": 9.9,
+    "runs": 30
+  },
+  "native-mac (release-native)": {
+    "p95": 10.9,
+    "runs": 30
+  },
+  "native-windows": {
+    "p95": 4.4,
+    "runs": 30
+  },
+  "tests": {
+    "p95": 6,
+    "runs": 30
+  }
+}
