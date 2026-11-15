@@ -1,7 +1,7 @@
 import { ThreadIdSchema } from "@opensteer/core";
 import { z } from "zod";
 import { AssetUrlSchema } from "./assets.js";
-import { FileSourceSchema, FileResourceSchema } from "./file-sources.js";
+import { FileSourceSchema, FileResourceSchema, FileResourceViewSchema } from "./file-sources.js";
 
 export const transcriptFilePreviewMaxBytes = 512 * 1024;
 export const transcriptFileContentMaxBytes = 32 * 1024 * 1024;
@@ -10,15 +10,15 @@ export const TranscriptFileOpenInputSchema = z.strictObject({
   source: FileSourceSchema,
 });
 export const TranscriptFileOpenSchema = z.discriminatedUnion("status", [
-  z.strictObject({ status: z.literal("unavailable") }),
-  z.strictObject({
+  z.object({ status: z.literal("unavailable") }),
+  z.object({
     status: z.literal("ok"),
-    resource: FileResourceSchema,
+    resource: FileResourceViewSchema,
     name: z.string().min(1).max(4096),
     sizeBytes: z.number().int().nonnegative(),
     mediaType: z.string().min(1).max(255),
     preview: z.discriminatedUnion("kind", [
-      z.strictObject({
+      z.object({
         kind: z.literal("text"),
         text: z
           .string()
@@ -27,8 +27,8 @@ export const TranscriptFileOpenSchema = z.discriminatedUnion("status", [
           ),
         truncated: z.boolean(),
       }),
-      z.strictObject({ kind: z.literal("image"), image: AssetUrlSchema }),
-      z.strictObject({ kind: z.literal("download") }),
+      z.object({ kind: z.literal("image"), image: AssetUrlSchema }),
+      z.object({ kind: z.literal("download") }),
     ]),
   }),
 ]);
@@ -36,11 +36,11 @@ export const TranscriptFileContentInputSchema = z.strictObject({
   threadId: ThreadIdSchema.nullable(),
   resource: FileResourceSchema,
 });
-export const TranscriptFileContentSchema = z.strictObject({
+export const TranscriptFileContentSchema = z.object({
   bytes: z
     .instanceof(Uint8Array)
     .refine((value) => value.byteLength <= transcriptFileContentMaxBytes),
-  metadata: z.strictObject({
+  metadata: z.object({
     contentType: z.string().min(1).max(255),
     etag: z.string().min(1).max(255),
     modifiedAt: z.iso.datetime({ offset: true }).nullable(),

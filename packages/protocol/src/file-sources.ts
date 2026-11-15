@@ -8,14 +8,25 @@ export const FileSourceSchema = z.discriminatedUnion("kind", [
 ]);
 export type FileSource = z.infer<typeof FileSourceSchema>;
 const revision = z.string().min(1).max(128);
-export const FileResourceSchema = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("home"), key: z.string().min(1).max(16_384), revision }),
-  z.strictObject({ kind: z.literal("attachment"), attachmentId: AttachmentIdSchema, revision }),
-  z.strictObject({
+const resourceShapes = {
+  home: { kind: z.literal("home"), key: z.string().min(1).max(16_384), revision },
+  attachment: { kind: z.literal("attachment"), attachmentId: AttachmentIdSchema, revision },
+  outputImage: {
     kind: z.literal("output-image"),
     sequence: SequenceSchema,
     index: z.number().int().nonnegative(),
     revision,
-  }),
+  },
+};
+export const FileResourceSchema = z.discriminatedUnion("kind", [
+  z.strictObject(resourceShapes.home),
+  z.strictObject(resourceShapes.attachment),
+  z.strictObject(resourceShapes.outputImage),
 ]);
 export type FileResource = z.infer<typeof FileResourceSchema>;
+/** The same resource as a Host returns it: newer fields are dropped, not refused. */
+export const FileResourceViewSchema = z.discriminatedUnion("kind", [
+  z.object(resourceShapes.home),
+  z.object(resourceShapes.attachment),
+  z.object(resourceShapes.outputImage),
+]);

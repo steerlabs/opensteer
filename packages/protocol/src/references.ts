@@ -17,31 +17,31 @@ export const ReferenceResolveInputSchema = z.strictObject({
 });
 const common = { status: z.literal("available"), title: z.string().min(1).max(256) };
 export const AvailableReferenceSchema = z.discriminatedUnion("kind", [
-  z.strictObject({ ...common, kind: z.literal("task"), id: ThreadIdSchema }),
-  z.strictObject({
+  z.object({ ...common, kind: z.literal("task"), id: ThreadIdSchema }),
+  z.object({
     ...common,
     kind: z.literal("run"),
     id: RunIdSchema,
     threadId: ThreadIdSchema,
     anchorMessageId: MessageIdSchema,
   }),
-  z.strictObject({
+  z.object({
     ...common,
     kind: z.literal("message"),
     id: MessageIdSchema,
     threadId: ThreadIdSchema,
     location: z.enum(["transcript", "input-queue"]),
   }),
-  z.strictObject({
+  z.object({
     ...common,
     kind: z.literal("request"),
     id: RequestIdSchema,
     threadId: ThreadIdSchema,
     requestStatus: RequestStatusSchema,
   }),
-  z.strictObject({ ...common, kind: z.literal("automation"), id: TriggerIdSchema }),
-  z.strictObject({ ...common, kind: z.literal("computer"), id: RunnerIdSchema }),
-  z.strictObject({
+  z.object({ ...common, kind: z.literal("automation"), id: TriggerIdSchema }),
+  z.object({ ...common, kind: z.literal("computer"), id: RunnerIdSchema }),
+  z.object({
     ...common,
     kind: z.literal("attachment"),
     id: AttachmentIdSchema,
@@ -51,9 +51,9 @@ export const AvailableReferenceSchema = z.discriminatedUnion("kind", [
 ]);
 export const ReferenceResolutionSchema = z.union([
   AvailableReferenceSchema,
-  z.strictObject({ status: z.literal("unavailable"), id: ReferenceIdSchema }),
+  z.object({ status: z.literal("unavailable"), id: ReferenceIdSchema }),
 ]);
-export const ReferenceResolveResultSchema = z.strictObject({
+export const ReferenceResolveResultSchema = z.object({
   /** One result per distinct input ID, in first-occurrence order. Failures of the read fail the call. */
   results: z.array(ReferenceResolutionSchema).max(referenceResolveBatchSize),
 });
