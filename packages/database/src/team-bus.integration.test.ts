@@ -1,4 +1,6 @@
 import { createId } from "@opensteer/core";
+import { createServer, connect, type Socket } from "node:net";
+import type { AddressInfo } from "node:net";
 import { sql } from "kysely";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDatabase } from "./connection.js";
@@ -99,4 +101,50 @@ it("reconnects after losing its session and resyncs before trusting notification
     timeout: 5_000,
     interval: 20,
   });
+});
+
+it("stops trusting a listening session that silently stops answering", async () => {
+  // A relay whose traffic can be frozen, like a connection a network path has blackholed.
+  const target = new URL(fixture.databaseUrl);
+  const sockets = new Set<Socket>();
+  let frozen = false;
+  const relay = createServer((client) => {
+    const upstream = connect(Number(target.port || 5432), target.hostname);
+    for (const socket of [client, upstream]) {
+      sockets.add(socket);
+      socket.on("error", () => socket.destroy());
+      socket.on("close", () => sockets.delete(socket));
+    }
+    client.on("data", (chunk) => {
+      if (!frozen) upstream.write(chunk);
+    });
+    upstream.on("data", (chunk) => {
+      if (!frozen) client.write(chunk);
+    });
+  });
+  await new Promise<void>((resolve) => relay.listen(0, "127.0.0.1", resolve));
+  const relayed = new URL(fixture.databaseUrl);
+  relayed.hostname = "127.0.0.1";
+  relayed.port = String((relay.address() as AddressInfo).port);
+  const database = createDatabase({ connectionString: relayed.toString() });
+  const bus = new TeamBus(database, { probeIntervalMs: 100, onError: () => {} });
+  const health: boolean[] = [];
+  bus.onHealth((healthy) => health.push(healthy));
+  try {
+    await bus.start();
+    expect(bus.healthy).toBe(true);
+    frozen = true;
+    await vi.waitFor(
+      () => expect(health, "a stalled session still looked healthy").toEqual([true, false]),
+      {
+        timeout: 5_000,
+        interval: 20,
+      },
+    );
+  } finally {
+    await bus.close();
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => relay.close(() => resolve()));
+    await database.destroy();
+  }
 });

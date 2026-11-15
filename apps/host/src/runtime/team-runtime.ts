@@ -541,7 +541,7 @@ export async function createTeamHostRuntime(input: {
         app.server.closeIdleConnections();
         await delay(drainDelayMs);
         // Clients move to another copy; 1012 tells them it's a restart, not a refusal.
-        team.closeAll(1012);
+        team.relocate(1012);
       },
       close: () =>
         (closing ??= (async () => {
@@ -561,11 +561,12 @@ export async function createTeamHostRuntime(input: {
           };
           detachAccount();
           detachAccountResync();
+          // HTTP first: admitted uploads and downloads finish before their services close.
           for (const [name, close] of [
+            ["http", http],
             ["partner transports", () => partners?.close()],
             ["team transports", () => team.close()],
             ["link endpoint", () => machine?.endpoint.close()],
-            ["http", http],
             ["Account directory", () => directory?.close()],
             ["Account authority", () => authority?.close()],
             ["team bus", () => bus.close()],

@@ -40,7 +40,10 @@ export type TeamBusEphemeralEvent = Extract<TeamBusEvent, { kind: "typing" }>;
 
 export interface TeamBusOptions {
   readonly onError?: (error: unknown) => void;
-  /** Probes the listening session so a silently dropped connection is noticed. */
+  /**
+   * Probes the listening session so a silently stalled connection is noticed; a probe that
+   * does not answer within the interval ends the session, which turns the bus unhealthy.
+   */
   readonly probeIntervalMs?: number;
 }
 
@@ -154,9 +157,21 @@ export class TeamBus {
       this.#session = session;
       this.#end = end;
       this.#attempt = 0;
+      const interval = this.#options.probeIntervalMs ?? 5_000;
+      let probing = false;
       probe = setInterval(() => {
-        session.query("select 1").catch((error: unknown) => lost(error));
-      }, this.#options.probeIntervalMs ?? 30_000);
+        if (probing) {
+          lost(new Error("Team bus probe timed out"));
+          return;
+        }
+        probing = true;
+        session.query("select 1").then(
+          () => {
+            probing = false;
+          },
+          (error: unknown) => lost(error),
+        );
+      }, interval);
       probe.unref();
       this.#setHealthy(true);
       for (const resync of this.#resyncs) await resync().catch((error) => this.#error(error));

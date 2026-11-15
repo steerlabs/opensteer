@@ -153,11 +153,16 @@ export async function startTeamServices(options: TeamServiceOptions) {
   const realtime = new TeamRealtimeHub(access, chat, options.bus, options.processId);
   const detachAccess = options.bus ? access.attach(options.bus) : () => {};
   const detachChat = options.bus ? chat.attach(options.bus) : () => {};
-  const closeAll = (code = 1012) => {
+  /** Moves every socket to another copy; HTTP transfers already admitted keep running. */
+  const relocate = (code = 1012) => {
     realtime.closeAll(code);
     options.machine?.closeAll?.(code);
-    void fileService.abortTransfers();
     void options.partners?.closeSockets();
+  };
+  /** This copy can no longer vouch for access: drop sockets and abort transfers too. */
+  const closeAll = (code = 1012) => {
+    relocate(code);
+    void fileService.abortTransfers();
   };
   const detachAll = access.onCloseAll(closeAll);
   const resync = async () => {
@@ -802,6 +807,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
     dispatch,
     read,
     resync,
+    relocate,
     closeAll,
     async close() {
       detachAccess();

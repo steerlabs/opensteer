@@ -272,3 +272,47 @@ it("reclaims expired upload leases and removes their uncommitted objects", async
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+it("keeps an upload's preview that another copy's collection finds before the upload commits", async () => {
+  const f = await createTeamKnowledgeFixture();
+  const directory = await mkdtemp(join(tmpdir(), "team-files-"));
+  try {
+    const access = new TeamAccessStore(f.database);
+    await access.initialize();
+    const store = new TeamFilesStore(access);
+    const { channelId } = await f.channel({
+      name: "files",
+      kind: "public",
+      peopleOnly: false,
+      access: [{ userId: f.userId, level: "post" }],
+    });
+    const row = await store.begin({ kind: "human", userId: f.userId }, channelId, {
+      clientUploadId: randomUUID(),
+      filename: "photo.png",
+      mediaType: "image/png",
+      sizeBytes: 5,
+      sha256: createHash("sha256").update("hello").digest("hex"),
+      previewSizeBytes: 5,
+    });
+    const claimed = await store.claimUpload(row.id, async () => {});
+    // The uploading copy has published both objects but not yet committed the row.
+    const files = new LocalTeamFileStore(join(directory, "team-files"));
+    const staged = join(directory, "staged");
+    await writeFile(staged, "hello");
+    await files.put(claimed.storageKey, staged);
+    await files.put(`${claimed.storageKey}-preview`, staged);
+
+    const other = new TeamFileService(store, access, directory, files);
+    try {
+      await other.collectGarbage();
+    } finally {
+      await other.close();
+    }
+    const kept: string[] = [];
+    for await (const object of files.list("")) kept.push(object.key);
+    expect(kept.sort()).toEqual([claimed.storageKey, `${claimed.storageKey}-preview`].sort());
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+    await f.close();
+  }
+});

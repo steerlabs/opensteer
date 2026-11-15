@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { LocalTeamFileStore, type TeamFileStore } from "./file-store.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readdir, rm, stat } from "node:fs/promises";
@@ -376,8 +377,9 @@ export class TeamFileService {
           .where("id", "=", row.id)
           .execute();
       });
-      signal.throwIfAborted();
+      // Committed state now references the object; a late cancellation must not delete it.
       complete = true;
+      signal.throwIfAborted();
     } finally {
       if (!complete && generation) await this.files.delete(key, generation);
       await rm(pending, { force: true });
@@ -452,7 +454,12 @@ export class TeamFileService {
         .selectFrom("teamBlobs")
         .select("id")
         .where((e) =>
-          e.or([e("storageKey", "=", object.key), e("previewStorageKey", "=", object.key)]),
+          e.or([
+            e("storageKey", "=", object.key),
+            e("previewStorageKey", "=", object.key),
+            // An upload writes its preview under this key before the row records it.
+            e(sql`storage_key || '-preview'`, "=", object.key),
+          ]),
         )
         .executeTakeFirst();
       if (!retained) await this.files.delete(object.key, object.generation);
