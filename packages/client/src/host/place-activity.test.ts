@@ -1,19 +1,15 @@
-import { createBrowserSessionId } from "@opensteer/protocol/browser";
 import { describe, expect, it, vi } from "vitest";
 import { PlaceActivityStore, placeActivityPoint } from "./place-activity.js";
 import { BrowserSurfaceIdSchema, createId } from "@opensteer/core";
 
-const sessionId = createBrowserSessionId();
 const surfaceId = BrowserSurfaceIdSchema.parse("tab-x");
 const otherSurfaceId = BrowserSurfaceIdSchema.parse("tab-y");
-const place = { kind: "browser" as const, sessionId, surfaceId };
-const key = `browser:${sessionId}:tab-x`;
-const other = { kind: "browser" as const, sessionId, surfaceId: otherSurfaceId };
-const otherKey = `browser:${sessionId}:tab-y`;
+const key = surfaceId;
+const otherKey = otherSurfaceId;
 const threadId = createId("thread");
 const runId = createId("run");
 const activity = {
-  place,
+  tabId: surfaceId,
   threadId,
 
   runId,
@@ -61,7 +57,13 @@ describe("place activity presence", () => {
         activity: { ...activity, seq: 2, order: 2, pointer: null },
       });
       expect(store.get(key)).toEqual([expect.objectContaining({ pointer: null, placeKey: key })]);
-      store.apply({ type: "host.place-activity-cleared", place, runId, generation: 1, seq: 3 });
+      store.apply({
+        type: "host.place-activity-cleared",
+        tabId: surfaceId,
+        runId,
+        generation: 1,
+        seq: 3,
+      });
       store.apply({ type: "host.place-activity", activity: { ...activity, seq: 2, order: 3 } });
       expect(store.get(key)).toEqual([]);
       store.apply({
@@ -87,7 +89,7 @@ describe("place activity presence", () => {
     store.apply({ type: "host.place-activity", activity: { ...activity, order: 5 } });
     store.apply({
       type: "host.place-activity",
-      activity: { ...activity, place: other, seq: 2, order: 6 },
+      activity: { ...activity, tabId: otherSurfaceId, seq: 2, order: 6 },
     });
     expect(store.get(key)).toEqual([]);
     expect(store.get(otherKey)).toEqual([expect.objectContaining({ runId, order: 6 })]);
@@ -110,7 +112,7 @@ describe("place activity presence", () => {
     store.apply({ type: "host.place-activity", activity });
     store.apply({
       type: "host.place-activity",
-      activity: { ...activity, place: other, runId: delegated, order: 2 },
+      activity: { ...activity, tabId: otherSurfaceId, runId: delegated, order: 2 },
     });
     expect(store.get(key)).toEqual([expect.objectContaining({ runId })]);
     expect(store.get(otherKey)).toEqual([expect.objectContaining({ runId: delegated })]);
@@ -134,7 +136,7 @@ describe("place activity presence", () => {
     // A new connection's Host counts again: nothing from before the clear holds it back.
     store.apply({
       type: "host.place-activity",
-      activity: { ...activity, place: other, order: 1 },
+      activity: { ...activity, tabId: otherSurfaceId, order: 1 },
     });
     expect(store.get(otherKey)).toHaveLength(1);
     store.dispose();
@@ -160,20 +162,11 @@ describe("a record's point on a drawn picture", () => {
       placeActivityPoint({ ...record, pointer: { x: 0.6, y: 0.1 } }, { ...header, capture }),
     ).toEqual({ kind: "hidden" });
   });
-  it("says nothing for no pointer, another surface, other geometry or another kind of place", () => {
+  it("says nothing for no pointer, another tab or other geometry", () => {
     const unknown = { kind: "unknown" };
     expect(placeActivityPoint({ ...record, pointer: null }, header)).toEqual(unknown);
     expect(placeActivityPoint(record, { ...header, surfaceId: otherSurfaceId })).toEqual(unknown);
     expect(placeActivityPoint(record, { ...header, geometryRevision: 2 })).toEqual(unknown);
     expect(placeActivityPoint(record, { ...header, geometryRevision: undefined })).toEqual(unknown);
-    expect(
-      placeActivityPoint(
-        {
-          ...record,
-          place: { kind: "app", machineId: createId("runner"), appKey: "com.apple.notes" },
-        },
-        header,
-      ),
-    ).toEqual(unknown);
   });
 });

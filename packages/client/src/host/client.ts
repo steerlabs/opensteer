@@ -99,9 +99,7 @@ import type { WebSocketClient } from "./host-session-client.js";
 import type { SavedViewReadiness } from "./saved-host-view.js";
 import type { NativeViewerSource } from "./surfaces.js";
 
-import type {
-  BrowserContextCandidate,
-} from "@opensteer/protocol";
+import type { BrowserContextCandidate } from "@opensteer/protocol";
 import type { BrowserWatchState } from "./browser-watch.js";
 import type { ClientNetworkState } from "./lifecycle.js";
 import type { PlaceActivity } from "./place-activity.js";
@@ -1330,13 +1328,6 @@ export interface HostClient extends TabsClient {
   /** Lets a queue a Stop paused admit work again. Idempotent on the Host. */
   resumeThreadInputQueue(threadId: string): Promise<void>;
   sendBrowserCommand(sessionId: string, command: BrowserCommand): void;
-  startBrowser(
-    deploymentId: string,
-    identity: BrowserStartIdentity,
-    placement?: BrowserPlacementSummary,
-    threadId?: string,
-    viewport?: Extract<BrowserCommand, { type: "surface.open" }>["viewport"],
-  ): Promise<BrowserSessionSummary>;
   stopMachineAccessSession(sessionId: string): Promise<boolean>;
   /**
    * Promotes one of the reader's own queued messages into the Run the queue

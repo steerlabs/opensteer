@@ -466,7 +466,7 @@ describe("what the person sees", () => {
       PersonShowMessageSchema.parse({
         type: "host.show",
         ...call,
-        target: { threadId: chat },
+        target: { taskId: chat },
       });
     f.controller.showed(message(first));
     expect(shown).toHaveBeenCalledTimes(1);

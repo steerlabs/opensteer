@@ -109,8 +109,10 @@ export class MockTabCatalog {
     if (!this.#snapshot) return;
     const rows = new Map<TabId, Tab>();
     if (source.session === "authenticated") {
-      for (const tab of this.#pageTabs(source)) if (!this.#hiddenPages.has(tab.tabId)) rows.set(tab.tabId, tab);
-      for (const native of this.#native.values()) rows.set(native.tabId, this.#nativeTab(source, native));
+      for (const tab of this.#pageTabs(source))
+        if (!this.#hiddenPages.has(tab.tabId)) rows.set(tab.tabId, tab);
+      for (const native of this.#native.values())
+        rows.set(native.tabId, this.#nativeTab(source, native));
     }
     // New tabs append ungrouped; tabs gone from the world leave the layout.
     const listed = new Set(layoutTabIds(this.layout()));
@@ -126,7 +128,8 @@ export class MockTabCatalog {
     }
     const groups = new Map<TabId, TabGroupId>();
     for (const item of this.#items)
-      if (item.kind === "group") for (const id of item.group.tabIds) groups.set(id, item.group.groupId);
+      if (item.kind === "group")
+        for (const id of item.group.tabIds) groups.set(id, item.group.groupId);
     for (const [id, tab] of rows) {
       const groupId = groups.get(id) ?? null;
       if (tab.groupId !== groupId) rows.set(id, { ...tab, groupId });
@@ -134,7 +137,8 @@ export class MockTabCatalog {
     const previous = this.#rows;
     this.#rows = rows;
     for (const id of new Set([...previous.keys(), ...rows.keys()]))
-      if (JSON.stringify(previous.get(id)) !== JSON.stringify(rows.get(id))) this.#publisher.mark(id);
+      if (JSON.stringify(previous.get(id)) !== JSON.stringify(rows.get(id)))
+        this.#publisher.mark(id);
     this.#publisher.markMeta();
     if (!this.#started) {
       this.#started = true;
@@ -223,7 +227,9 @@ export class MockTabCatalog {
       fail("conflict", "A tab cannot be placed before itself.", 409);
     const items = structuredClone(this.#items);
     const firstIndex = items.findIndex((item) =>
-      item.kind === "tab" ? ids.includes(item.tabId) : item.group.tabIds.some((id) => ids.includes(id)),
+      item.kind === "tab"
+        ? ids.includes(item.tabId)
+        : item.group.tabIds.some((id) => ids.includes(id)),
     );
     const without = (list: LayoutItem[]) =>
       list.flatMap((item): LayoutItem[] =>
@@ -231,7 +237,15 @@ export class MockTabCatalog {
           ? ids.includes(item.tabId)
             ? []
             : [item]
-          : [{ kind: "group", group: { ...item.group, tabIds: item.group.tabIds.filter((id) => !ids.includes(id)) } }],
+          : [
+              {
+                kind: "group",
+                group: {
+                  ...item.group,
+                  tabIds: item.group.tabIds.filter((id) => !ids.includes(id)),
+                },
+              },
+            ],
       );
     let next = without(items);
     const anchorTop = (anchor: TabId) =>
@@ -276,7 +290,9 @@ export class MockTabCatalog {
           tabIds: ids,
         },
       };
-      const at = input.beforeTabId ? anchorTop(input.beforeTabId) : Math.min(firstIndex, next.length);
+      const at = input.beforeTabId
+        ? anchorTop(input.beforeTabId)
+        : Math.min(firstIndex, next.length);
       next.splice(at < 0 ? next.length : at, 0, created);
     }
     this.#items = next;
@@ -321,7 +337,11 @@ export class MockTabCatalog {
         const next = this.#items[index + 1];
         return {
           groupId: null,
-          beforeTabId: next ? (next.kind === "tab" ? next.tabId : (next.group.tabIds[0] ?? null)) : null,
+          beforeTabId: next
+            ? next.kind === "tab"
+              ? next.tabId
+              : (next.group.tabIds[0] ?? null)
+            : null,
         };
       }
       if (item.kind === "group") {
@@ -358,15 +378,29 @@ export class MockTabCatalog {
         ? ids.has(item.tabId)
           ? []
           : [item]
-        : [{ kind: "group", group: { ...item.group, tabIds: item.group.tabIds.filter((id) => !ids.has(id)) } }],
+        : [
+            {
+              kind: "group",
+              group: { ...item.group, tabIds: item.group.tabIds.filter((id) => !ids.has(id)) },
+            },
+          ],
     );
   }
   #computer(source: HostSnapshot, computerId: string): Tab["computer"] {
     const machine = source.machines.find((value) => value.id === computerId);
-    return { computerId: computerId as Tab["computer"]["computerId"], name: machine?.name ?? "Computer" };
+    return {
+      computerId: computerId as Tab["computer"]["computerId"],
+      name: machine?.name ?? "Computer",
+    };
   }
   #pageTabs(source: MockBrowserSource): Tab[] {
     const rows = mockBrowserRows(source);
+    // A live page's own address; a sleeping one is named by its site alone.
+    const urls = new Map(
+      source.browserSessions.flatMap((session) =>
+        session.surfaces.map((surface) => [surface.id, surface.url] as const),
+      ),
+    );
     const tabs: Tab[] = [];
     for (const group of rows.groups) {
       const profile = group.profileId
@@ -380,7 +414,7 @@ export class MockTabCatalog {
             tabId: row.id,
             kind: "page",
             title: row.title,
-            url: row.site || "about:blank",
+            url: urls.get(row.id) || row.site || "about:blank",
             profile:
               group.profileId === null
                 ? null
@@ -394,8 +428,7 @@ export class MockTabCatalog {
                   unavailableReason: reason ?? "Computer offline",
                 }
               : {}),
-            openedBy:
-              group.opener.kind === "task" ? { taskId: group.opener.threadId } : "person",
+            openedBy: group.opener.kind === "task" ? { taskId: group.opener.threadId } : "person",
             usedBy: [...new Set(row.occupants.map((occupant) => occupant.threadId))]
               .sort()
               .map((taskId) => ({ taskId })),
@@ -416,9 +449,7 @@ export class MockTabCatalog {
       unavailableCode: code,
       unavailableReason: reason,
     });
-    let state:
-      | { state: "open" | "asleep" }
-      | ReturnType<typeof unavailable> = { state: "asleep" };
+    let state: { state: "open" | "asleep" } | ReturnType<typeof unavailable> = { state: "asleep" };
     if (native.kind === "app") {
       const app = this.#apps?.().find((value) => value.appId === native.appId);
       state =
@@ -453,7 +484,8 @@ export class MockTabCatalog {
           .filter((session) =>
             native.kind === "phone"
               ? session.display
-              : native.kind === "window" && session.apps.some((app) => app.bundleId === native.bundleId),
+              : native.kind === "window" &&
+                session.apps.some((app) => app.bundleId === native.bundleId),
           )
           .map((session) => session.threadId),
       ),
@@ -484,7 +516,10 @@ export function seedMockApps(input: {
   readonly now: Date;
 }): App[] {
   const at = input.now.toISOString();
-  const app = (id: string, value: Omit<App, "appId" | "createdAt" | "updatedAt" | "computerId">): App => ({
+  const app = (
+    id: string,
+    value: Omit<App, "appId" | "createdAt" | "updatedAt" | "computerId">,
+  ): App => ({
     appId: AppIdSchema.parse(`app_${id}`),
     computerId: input.computerId as App["computerId"],
     createdAt: at,

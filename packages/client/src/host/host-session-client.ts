@@ -36,6 +36,9 @@ import { OwnerViewRecords } from "./owner-view-records.js";
 import { ViewerScope, viewerScopeOf } from "./viewer-scope.js";
 import {
   DeploymentIdSchema,
+  EnvironmentIdSchema,
+  EventIdSchema,
+  IsoDateTimeSchema,
   MessageIdSchema,
   RunnerIdSchema,
   ExecutionNodeIdSchema,
@@ -92,7 +95,6 @@ import {
   DeploymentSnapshotSchema,
   browserUsageRunBatchSize,
   hostApi,
-  realtimeEnvelopeTypes,
   threadPageMaxItems,
   deploymentSnapshotMaxThreads,
   type BrowserSessionUsageProjection,
@@ -112,9 +114,7 @@ import { BrowserWatchStore, browserCommandNeedsNoView } from "./browser-watch.js
 import type {
   BrowserCommand,
   BrowserFrameStore,
-  BrowserPlacementSummary,
   BrowserSessionSummary,
-  BrowserStartIdentity,
   CreateThreadInput,
   EnvironmentSummary,
   HarnessSummary,
@@ -177,6 +177,7 @@ import {
   describeRealtimeFrameFailure,
   maxInboundFrameCharacters,
   realtimeEnvelopeType,
+  realtimeEnvelopeTypes,
   realtimeFrameLoss,
 } from "./realtime-frames.js";
 
@@ -217,23 +218,28 @@ const realtimeEventTypes = new Set<string>(
 const realtimeSnapshotFrameSchema = z.object({
   snapshot: z.looseObject({ threads: z.array(z.unknown()).max(deploymentSnapshotMaxThreads) }),
 });
-const realtimeThreadStateEventSchema = TabAgentEventViewSchema.options[0]
-  .omit({ type: true, data: true })
-  .extend({
-    type: z.literal("thread.state-changed"),
-    data: z.object({
-      ...eventDataSchemas["thread.state-changed"].shape,
-      status: z.string().min(1),
-    }),
-  });
-const realtimeThreadEventSchema = TabAgentEventViewSchema.options[0]
-  .omit({ type: true, data: true })
-  .extend({
-    type: z.enum(["thread.created", "thread.execution-updated", "thread.listed"]),
-    data: z.object({
-      thread: ThreadViewSchema.extend({ status: z.string().min(1) }),
-    }),
-  });
+/** Any event's envelope, whose Run may be null; place entries alone always name one. */
+const realtimeEventEnvelopeSchema = z.object({
+  createdAt: IsoDateTimeSchema,
+  environmentId: EnvironmentIdSchema,
+  eventId: EventIdSchema,
+  runId: RunIdSchema.nullable(),
+  sequence: SequenceSchema,
+  threadId: ThreadIdSchema,
+});
+const realtimeThreadStateEventSchema = realtimeEventEnvelopeSchema.extend({
+  type: z.literal("thread.state-changed"),
+  data: z.object({
+    ...eventDataSchemas["thread.state-changed"].shape,
+    status: z.string().min(1),
+  }),
+});
+const realtimeThreadEventSchema = realtimeEventEnvelopeSchema.extend({
+  type: z.enum(["thread.created", "thread.execution-updated", "thread.listed"]),
+  data: z.object({
+    thread: ThreadViewSchema.extend({ status: z.string().min(1) }),
+  }),
+});
 const realtimeResyncSchema = z.object({
   type: z.literal("host.resync-required"),
   // The reason explains the reset; every present or future reason requires it.
@@ -2504,43 +2510,6 @@ export class HttpHostClient {
     if (page.threadId !== threadId || page.thread.id !== threadId)
       throw new Error("Thread event page mismatch.");
     return page;
-  }
-
-  async startBrowser(
-    deploymentId: string,
-    identity: BrowserStartIdentity,
-    placement?: BrowserPlacementSummary,
-    threadId?: string,
-    viewport?: Extract<BrowserCommand, { type: "surface.open" }>["viewport"],
-  ): Promise<BrowserSessionSummary> {
-    // catalog page. Command admission, not this cache, checks access.
-    if (!this.#snapshot.browserAvailable) {
-      throw new Error("This Host does not have a connected Browser Runtime.");
-    }
-    this.#ensureDeploymentChannel(deploymentId);
-    const result = await this.dispatch({
-      idempotencyKey: mutationIdempotencyKey("browser"),
-      input: {
-        reuseExisting: false,
-        ...(viewport ? { viewport } : {}),
-        ...(threadId ? { threadId: ThreadIdSchema.parse(threadId) } : {}),
-        ...(placement
-          ? { placement: { kind: "runner" as const, runnerId: placement.runnerId } }
-          : {}),
-        ...(identity.kind === "fresh"
-          ? { fresh: true as const }
-          : { profileId: identity.profileId }),
-      },
-      type: "browser.session.start",
-    });
-    if (result.type !== "browser.session.start") {
-      throw new Error("Browser session command mismatch.");
-    }
-    const summary = this.#snapshot.browserSessions.find(
-      (session) => session.id === result.session.id,
-    );
-    if (!summary) throw new Error("The Browser Session was not projected.");
-    return summary;
   }
 
   #capabilities: readonly HostCapability[] | null;

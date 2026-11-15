@@ -29,12 +29,10 @@ it("carries pending profile erasure through the mock catalog and clears complete
     };
     client.setBrowserProfileDeletions([deletion]);
     expect(client.getSnapshot().browserProfileDeletions).toEqual([deletion]);
-    const catalog = unwrap(await client.rpc["bootstrap.legacy.get"]({}));
+    const catalog = unwrap(await client.rpc["bootstrap.get"]({}));
     expect(catalog.browser.profileDeletions).toEqual([deletion]);
     client.setBrowserProfileDeletions([]);
-    expect(unwrap(await client.rpc["bootstrap.legacy.get"]({})).browser.profileDeletions).toEqual(
-      [],
-    );
+    expect(unwrap(await client.rpc["bootstrap.get"]({})).browser.profileDeletions).toEqual([]);
   } finally {
     client.dispose();
   }
@@ -224,7 +222,7 @@ describe("MockHostClient", () => {
             ? {
                 type: kind,
                 sessionId: BrowserSessionIdSchema.parse(session.id),
-                tabId: client.browserTabs.sessionTabs(session.id)[0]!.id,
+                tabId: [...snapshot.tabs.rows.values()].find((row) => row.kind === "page")!.tabId,
                 title: "A page with a different name",
                 url: "https://example.com",
               }

@@ -254,7 +254,6 @@ import type {
   HarnessSummary,
   HostClient,
   HostSnapshot as PublicHostSnapshot,
-  BrowserSessionSummary as PublicBrowserSessionSummary,
   MachineAccessHistoryPage,
   MachineAccessUpdateOutcome,
   MessageEntry,
@@ -4012,7 +4011,10 @@ export class MockHostClient implements HostClient {
             deviceAccessRequests: "include",
           }),
         );
-        return { ...page, events: page.events.map((event) => TabAgentEventViewSchema.parse(event)) };
+        return {
+          ...page,
+          events: page.events.map((event) => TabAgentEventViewSchema.parse(event)),
+        };
       },
       sendWatch: (deploymentId, nodeId) => {
         const sequence = this.#state.nodeEvents.at(-1)?.sequence ?? SequenceSchema.parse("0");
@@ -4043,7 +4045,7 @@ export class MockHostClient implements HostClient {
       });
       return views.closeComputerView(...args);
     };
-      const tabs = createTabsClient({
+    const tabs = createTabsClient({
       store: this.#state.tabCatalog.store,
       dispatch: async (command) => {
         const result = unwrapRpcResult(await this.rpc["commands.dispatch"](command));
@@ -4061,7 +4063,18 @@ export class MockHostClient implements HostClient {
           });
       },
     });
-    this.openTab = tabs.openTab; this.closeTabs = tabs.closeTabs; this.reopenTab = tabs.reopenTab; this.activateTab = tabs.activateTab; this.organizeTabs = tabs.organizeTabs; this.updateTabGroup = tabs.updateTabGroup; this.deleteTabGroup = tabs.deleteTabGroup; this.listApps = tabs.listApps; this.renameApp = tabs.renameApp; this.startApp = tabs.startApp; this.stopApp = tabs.stopApp; this.deleteApp = tabs.deleteApp;
+    this.openTab = tabs.openTab;
+    this.closeTabs = tabs.closeTabs;
+    this.reopenTab = tabs.reopenTab;
+    this.activateTab = tabs.activateTab;
+    this.organizeTabs = tabs.organizeTabs;
+    this.updateTabGroup = tabs.updateTabGroup;
+    this.deleteTabGroup = tabs.deleteTabGroup;
+    this.listApps = tabs.listApps;
+    this.renameApp = tabs.renameApp;
+    this.startApp = tabs.startApp;
+    this.stopApp = tabs.stopApp;
+    this.deleteApp = tabs.deleteApp;
     this.renewComputerView = views.renewComputerView;
     this.listApprovedComputerApps = views.listApprovedComputerApps;
     this.listComputerAppWindows = views.listComputerAppWindows;
@@ -4949,33 +4962,6 @@ export class MockHostClient implements HostClient {
     this.#places.command(sessionId, command);
   }
 
-  async startBrowser(
-    _deploymentId: string,
-    identity: import("../host/client.js").BrowserStartIdentity,
-    placement?: import("../host/client.js").BrowserPlacementSummary,
-    threadId?: string,
-    viewport?: Extract<BrowserCommand, { type: "surface.open" }>["viewport"],
-  ): Promise<PublicBrowserSessionSummary> {
-    const result = await this.dispatch({
-      idempotencyKey: `mock-browser:${crypto.randomUUID()}`,
-      input: {
-        ...(viewport ? { viewport } : {}),
-        ...(threadId ? { threadId: ThreadIdSchema.parse(threadId) } : {}),
-        ...(placement
-          ? { placement: { kind: "runner" as const, runnerId: placement.runnerId } }
-          : {}),
-        ...(identity.kind === "fresh"
-          ? { fresh: true as const }
-          : { profileId: identity.profileId }),
-      },
-      type: "browser.session.start",
-    });
-    if (result.type !== "browser.session.start") throw new Error("Browser command mismatch.");
-    const session = this.getSnapshot().browserSessions.find(({ id }) => id === result.session.id);
-    if (!session) throw new Error("The mock Browser Session was not projected.");
-    return session;
-  }
-
   async stopNode(threadId: string, nodeId: string): Promise<void> {
     await this.#state.stopNode(threadId, nodeId);
   }
@@ -5118,8 +5104,16 @@ class MockHostState {
           "profileId" in target
             ? { kind: "profile", profileId: target.profileId }
             : { kind: "guest" },
-        ...("guest" in target && target.computerId
-          ? { placement: { kind: "runner", runnerId: target.computerId } }
+        // Guest without a computer browses on the hosting computer.
+        ...("guest" in target
+          ? {
+              placement: {
+                kind: "runner",
+                runnerId:
+                  target.computerId ??
+                  RunnerIdSchema.parse("rnr_11111111-1111-4111-8111-111111111111"),
+              },
+            }
           : {}),
         url: target.url,
         idempotencyKey,
@@ -5131,7 +5125,12 @@ class MockHostState {
     if (held) return held.tabId;
     if (target.kind === "app") {
       const app = this.apps.find((value) => value.appId === target.appId);
-      if (!app) throw new HostClientRequestError({ code: "not_found", status: 404, message: "This app is no longer published." });
+      if (!app)
+        throw new HostClientRequestError({
+          code: "not_found",
+          status: 404,
+          message: "This app is no longer published.",
+        });
       const tabId = TabIdSchema.parse(createId("tab"));
       catalog.addNative({
         tabId,
@@ -5146,7 +5145,11 @@ class MockHostState {
     }
     const machine = this.snapshot.machines.find((value) => value.id === target.computerId);
     if (!machine || machine.status !== "online")
-      throw new HostClientRequestError({ code: "conflict", status: 409, message: "This computer is offline." });
+      throw new HostClientRequestError({
+        code: "conflict",
+        status: 409,
+        message: "This computer is offline.",
+      });
     const tabId = TabIdSchema.parse(createId("tab"));
     if (target.kind === "phone")
       catalog.addNative({
@@ -5164,12 +5167,14 @@ class MockHostState {
           (app) =>
             app.machineId === target.computerId &&
             app.target.kind === "app" &&
-            ("bundleId" in target
-              ? app.target.app.bundleId === target.bundleId
-              : true),
+            ("bundleId" in target ? app.target.app.bundleId === target.bundleId : true),
         );
       if (!approved || approved.target.kind !== "app")
-        throw new HostClientRequestError({ code: "access_denied", status: 403, message: "Approve this app first." });
+        throw new HostClientRequestError({
+          code: "access_denied",
+          status: 403,
+          message: "Approve this app first.",
+        });
       catalog.addNative({
         tabId,
         kind: "window",
@@ -5186,7 +5191,11 @@ class MockHostState {
   #activateTab(tabId: TabId): TabCommandResult {
     const tab = this.tabCatalog.tab(tabId);
     if (tab.state === "unavailable")
-      throw new HostClientRequestError({ code: "conflict", status: 409, message: tab.unavailableReason! });
+      throw new HostClientRequestError({
+        code: "conflict",
+        status: 409,
+        message: tab.unavailableReason!,
+      });
     const done = (viewer: Extract<TabCommandResult, { type: "tab.activate" }>["viewer"]) => {
       this.emit();
       return { type: "tab.activate" as const, tab: this.tabCatalog.tab(tabId), viewer };
@@ -5196,13 +5205,16 @@ class MockHostState {
       const lineage = this.snapshot.browserGroups?.find((group) =>
         group.tabs?.some((held) => held.id === tabId),
       );
-      const session = this.snapshot.browserSessions.find(
-        (held) => held.id === lineage?.session.id,
-      );
+      const session = this.snapshot.browserSessions.find((held) => held.id === lineage?.session.id);
       if (!lineage || !session) throw new Error("This page is unavailable.");
-      const live = session.state === "ready" && session.catalog?.tabs.some((held) => held.id === tabId);
+      const live =
+        session.state === "ready" && session.catalog?.tabs.some((held) => held.id === tabId);
       const sessionId = live ? session.id : this.places!.activatePersonalTab(tabId).session.id;
-      return done({ kind: "page", sessionId: BrowserSessionIdSchema.parse(sessionId), surfaceId: tabId });
+      return done({
+        kind: "page",
+        sessionId: BrowserSessionIdSchema.parse(sessionId),
+        surfaceId: tabId,
+      });
     }
     const native = this.tabCatalog.native(tabId)!;
     if (!this.computerViews) throw new Error("This computer cannot show views.");
@@ -5220,7 +5232,11 @@ class MockHostState {
     const index = this.apps.findIndex((app) => app.appId === command.appId);
     const app = this.apps[index];
     if (!app)
-      throw new HostClientRequestError({ code: "not_found", status: 404, message: "This app is no longer published." });
+      throw new HostClientRequestError({
+        code: "not_found",
+        status: 404,
+        message: "This app is no longer published.",
+      });
     const at = this.now().toISOString();
     const put = (next: App) => {
       this.apps = this.apps.map((held) => (held.appId === next.appId ? next : held));
@@ -5233,7 +5249,11 @@ class MockHostState {
       case "app.start":
       case "app.stop": {
         if (!app.server)
-          throw new HostClientRequestError({ code: "invalid_input", status: 400, message: "An HTML app has no server to start or stop." });
+          throw new HostClientRequestError({
+            code: "invalid_input",
+            status: 400,
+            message: "An HTML app has no server to start or stop.",
+          });
         const state = command.type === "app.start" ? "running" : "stopped";
         return {
           type: command.type,
@@ -6611,9 +6631,7 @@ class MockHostState {
       appId: this.apps[2]!.appId,
     });
     this.emit();
-    const firstPage = tabPlaceList(this.publishedSnapshot()).find(
-      (place) => place.kind === "page",
-    );
+    const firstPage = tabPlaceList(this.publishedSnapshot()).find((place) => place.kind === "page");
     this.tabCatalog.group(
       world === "seeded" ? "Launch prep" : "Lisbon trip",
       "cyan",

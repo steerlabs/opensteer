@@ -1,13 +1,18 @@
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
+  HostToClientMessageSchema,
   isRealtimeWireField,
-  realtimeEnvelopeTypes,
   type HostToClientMessage,
   type RealtimeFrameDiagnostic,
 } from "@opensteer/protocol";
 import { z } from "zod";
 
 export const maxInboundFrameCharacters = 2 * 1024 * 1024 + 4 * 1024;
+
+/** Every envelope type this client reads, `host.tabs` and `host.apps.changed` among them. */
+export const realtimeEnvelopeTypes: ReadonlySet<string> = new Set(
+  HostToClientMessageSchema.options.map((schema) => schema.shape.type.value),
+);
 
 /**
  * How long a viewer socket must stay up before its failures are forgotten.

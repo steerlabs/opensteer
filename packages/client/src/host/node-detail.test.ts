@@ -10,6 +10,8 @@ const runId = createId("run");
 const nodeId = createId("executionNode");
 const now = "2026-11-10T14:00:00.000Z";
 const seq = (value: number) => SequenceSchema.parse(String(value));
+/** A node's page as the client reads it: its events in the realtime shape. */
+type Page = Omit<NodeEventPage, "events"> & { readonly events: AgentEvent[] };
 const node: NodeEventPage["node"] = {
   attemptId: createId("runAttempt"),
   effort: null,
@@ -45,7 +47,7 @@ function event<Type extends AgentEvent["type"]>(
     createdAt: now,
   } as AgentEvent;
 }
-function page(events: AgentEvent[], nextBefore: string | null = null): NodeEventPage {
+function page(events: AgentEvent[], nextBefore: string | null = null): Page {
   return {
     nodeId,
     threadId,
@@ -70,7 +72,7 @@ function deferred<T>() {
 
 describe("node detail watch", () => {
   it("holds events and live tool output behind the page, orders them once and clears the watch on release", async () => {
-    const first = deferred<NodeEventPage>();
+    const first = deferred<Page>();
     const sends: (string | null)[] = [];
     const read = vi.fn(() => first.promise);
     const store = new NodeDetailStore({
@@ -235,7 +237,7 @@ describe("node detail watch", () => {
   });
 
   it("loads older work on demand and ignores a replaced watch's late response", async () => {
-    const old = deferred<NodeEventPage>();
+    const old = deferred<Page>();
     const reads = vi.fn(async (input: { nodeId: string; before?: string }) => {
       if (input.nodeId !== nodeId) return old.promise;
       return input.before

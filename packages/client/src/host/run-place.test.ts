@@ -1,9 +1,13 @@
-import { browserStoreFixture } from "../test-support/browser-snapshot.js";
-import type { BrowserGroupRow, BrowserTabRow } from "@opensteer/protocol/browser-tabs";
-import { createId, TabPlaceEnteredEventViewSchema, SequenceSchema } from "@opensteer/core";
+import { tabFixture, tabStoreFixture } from "../test-support/tab-fixtures.js";
+import {
+  createId,
+  RunnerIdSchema,
+  TabIdSchema,
+  TabPlaceEnteredEventViewSchema,
+  SequenceSchema,
+} from "@opensteer/core";
 import type { MachineSummary } from "@opensteer/protocol";
 import { expect, it, vi } from "vitest";
-import type { HostSnapshot } from "./client.js";
 import { runPlaceDestination, runPlaceSessionId, RunPlaceStore } from "./run-place.js";
 
 const threadId = createId("thread");
@@ -13,43 +17,36 @@ function entered(sequence: string, id = runId) {
     type: "place.entered",
     eventId: createId("event"),
     environmentId: createId("environment"),
-
     threadId,
     runId: id,
     sequence,
     createdAt: "2026-11-02T13:00:00.000Z",
-    data: {
-      place: {
-        kind: "browser",
-        sessionId: "bsn_00000000-0000-4000-8000-000000000001",
-        surfaceId: `tab-${sequence}`,
-      },
-      title: `Page ${sequence}`,
-      site: "https://example.com",
-    },
+    data: { tabId: `tab-${sequence}`, title: `Page ${sequence}`, site: "https://example.com" },
   });
 }
-it("names a phone while its tab is open, after the Run has let go of it", () => {
-  const machineId = createId("runner");
-  const entry = {
-    runId,
-    data: { place: { kind: "phone" as const, machineId, display: "main" } },
-  };
-  const phone = (tabOpenedAt: string | null, sessions: readonly unknown[]) => ({
-    machines: [
-      { id: machineId, tabOpenedAt, computerUse: { sessions } } as unknown as MachineSummary,
-    ],
+
+it("names a listed tab and reads the Run's own session at a phone, never a closed tab", () => {
+  const machineId = RunnerIdSchema.parse(createId("runner"));
+  const tabId = TabIdSchema.parse("phone-tab");
+  const entry = { runId, data: { tabId } };
+  const source = (sessions: readonly unknown[], listed = true) => ({
+    tabs: tabStoreFixture(
+      listed
+        ? [tabFixture({ tabId, kind: "phone", computer: { computerId: machineId, name: "Pixel" } })]
+        : [],
+    ),
+    machines: [{ id: machineId, computerUse: { sessions } } as unknown as MachineSummary],
   });
-  const destination = { kind: "phone", machineId };
-  const held = phone(null, [{ runId, display: true, sessionId: "cus_held", apps: [] }]);
-  expect(runPlaceDestination(entry, held)).toEqual(destination);
+  const held = source([{ runId, display: true, sessionId: "cus_held", apps: [] }]);
+  expect(runPlaceDestination(entry, held)).toEqual({ kind: "tab", tabId });
   expect(runPlaceSessionId(entry, held)).toBe("cus_held");
-
-  const released = phone("2026-11-05T12:00:00.000Z", []);
-  expect(runPlaceDestination(entry, released)).toEqual(destination);
+  // A Run that let go of the phone still names its tab; only its session is gone.
+  const released = source([]);
+  expect(runPlaceDestination(entry, released)).toEqual({ kind: "tab", tabId });
   expect(runPlaceSessionId(entry, released)).toBeNull();
-
-  expect(runPlaceDestination(entry, phone(null, []))).toBeNull();
+  const closed = source([{ runId, display: true, sessionId: "cus_held", apps: [] }], false);
+  expect(runPlaceDestination(entry, closed)).toBeNull();
+  expect(runPlaceSessionId(entry, closed)).toBeNull();
 });
 
 it("seeds by Run, accepts only newer sequences and fences terminal Runs against stale seeds", () => {
@@ -89,40 +86,4 @@ it("a resync removes ended Runs without discarding places newer than its cut", (
   expect(store.get(runId)).toBeNull();
   store.seed([current]);
   expect(store.get(runId)).toBeNull();
-});
-
-it("resolves a durable tab from its current ready catalog even while the saved row still names its old session", () => {
-  const event = entered("1");
-  if (event.data.place.kind !== "browser") throw new Error("Expected browser");
-  const original = event.data.place.sessionId;
-  const restored = "bsn_00000000-0000-4000-8000-000000000002";
-  const tabId = event.data.place.surfaceId;
-  const snapshot = {
-    machines: [],
-    browserTabs: browserStoreFixture(
-      [{ id: "group", sessionId: restored, state: "ready" } as BrowserGroupRow],
-      [
-        {
-          groupId: "group",
-          rows: [{ id: tabId, sessionId: restored, occupants: [] }] as unknown as BrowserTabRow[],
-        },
-      ],
-    ),
-    browserSessions: [
-      { id: original, state: "closed" },
-      { id: restored, state: "ready" },
-    ],
-  } as unknown as HostSnapshot;
-  expect(runPlaceDestination(event, snapshot)).toEqual({
-    kind: "browser",
-    tabId,
-    sessionId: restored,
-  });
-  expect(
-    runPlaceDestination(event, { ...snapshot, browserSessions: [], browserTabs: undefined }),
-  ).toEqual({
-    kind: "browser",
-    tabId,
-    sessionId: original,
-  });
 });
