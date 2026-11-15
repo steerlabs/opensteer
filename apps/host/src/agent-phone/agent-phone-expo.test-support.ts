@@ -3,7 +3,7 @@ import { openSync, closeSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
-import { hostApiVersion, minimumHostApiVersion } from "@opensteer/deployment-authority";
+import { hostApiVersion } from "@opensteer/deployment-authority";
 import { ComputerUseSessionIdSchema } from "@opensteer/protocol";
 import { delay } from "@opensteer/shared/delay";
 import { expect } from "vitest";
@@ -458,8 +458,7 @@ export async function runExpoPhoneDisplayJourney(options: {
         stage = "full";
         revision++;
         await visible("reopened");
-        // Either side of the window the Host serves.
-        for (const version of [minimumHostApiVersion - 1, hostApiVersion + 1]) {
+        for (const version of [hostApiVersion - 1, hostApiVersion + 1]) {
           epoch = version;
           revision++;
           await eventually(
