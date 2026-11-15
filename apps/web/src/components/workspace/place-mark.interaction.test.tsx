@@ -35,6 +35,8 @@ function host(read = vi.fn<HostClient["readBrowserTabIcon"]>(async () => blue)) 
   const listeners = new Set<() => void>();
   const client = {
     readBrowserTabIcon: read,
+    // The page's icon is read through the session this device was shown it in.
+    tabViewer: () => ({ kind: "page", sessionId: "same-session", surfaceId: "tab" }),
     getSnapshot: () => ({ connection }),
     subscribe: (listener: () => void) => {
       listeners.add(listener);
@@ -62,7 +64,7 @@ async function mount(client: HostClient, ref: string | null = "same-ref", copies
             <PlaceMark
               key={index}
               hostClient={nextClient}
-              icon={{ kind: "site", sessionId: "same-session", ref: nextRef }}
+              icon={{ kind: "site", ref: nextRef, url: "https://example.com/", tabId: "tab" }}
             />
           ))}
         </>,

@@ -1,10 +1,10 @@
-import { threadMark } from "@opensteer/client/host";
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { actingOccupants, threadMark } from "@opensteer/client/host";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router";
 import type { ReactNode } from "react";
 import type { HostClient, PlaceItem } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema, type TabId } from "@opensteer/core";
-import { useHostSelector, usePlace, usePlaceList } from "@opensteer/client/react";
+import { useHostSelector, usePlace, usePlaceActivity, usePlaceList } from "@opensteer/client/react";
 import { usePageVisible } from "../../ui-utils.js";
 import { PlaceBrowserView, type BrowserChromeSignIn } from "../browser/browser-view.js";
 import { useBrowserThreadPair } from "../browser/browser-thread-pair.js";
@@ -132,6 +132,11 @@ function SelectedPlace({
   const known = useRef(new Map<string, PlaceItem>());
   const placeKey = selection.kind === "place" ? destinationPlaceKey(selection.destination) : null;
   const live = usePlace(hostClient, placeKey) ?? null;
+  const activity = usePlaceActivity(hostClient, placeKey ?? "");
+  const liveOccupants = useMemo(
+    () => (live ? actingOccupants(live.occupants, activity) : null),
+    [live, activity],
+  );
   const viewer = useHostSelector(hostClient, () =>
     placeKey === null ? null : hostClient.tabViewer(placeKey),
   );
@@ -167,13 +172,26 @@ function SelectedPlace({
       ((viewer.kind === "window" || viewer.kind === "phone") &&
         viewer.view.state !== "closed" &&
         viewer.view.state !== "expired"));
-  const needsActivation =
-    placeKey !== null && !!kind && tabState !== "unavailable" && !viewerReady;
+  const needsActivation = placeKey !== null && !!kind && tabState !== "unavailable" && !viewerReady;
+  // A re-render, StrictMode or a second opening while one activation is on its way joins it.
+  const pendingActivation = useRef<{
+    readonly tabId: string;
+    readonly done: Promise<unknown>;
+  } | null>(null);
   useLayoutEffect(() => {
     if (!needsActivation || placeKey === null) return;
     let cancelled = false;
     setActivation({ tabId: placeKey, state: "activating" });
-    hostClient.activateTab(placeKey).then(
+    let pending = pendingActivation.current;
+    if (pending?.tabId !== placeKey) {
+      const done = hostClient.activateTab(placeKey);
+      pending = pendingActivation.current = { tabId: placeKey, done };
+      const settled = () => {
+        if (pendingActivation.current === pending) pendingActivation.current = null;
+      };
+      done.then(settled, settled);
+    }
+    pending.done.then(
       () => {
         if (!cancelled) setActivation(null);
       },
@@ -189,7 +207,7 @@ function SelectedPlace({
     return () => {
       cancelled = true;
     };
-  }, [hostClient, needsActivation, placeKey, retry, nav.placeOpening]);
+  }, [hostClient, needsActivation, placeKey, retry]);
   const activationError =
     activation?.tabId === placeKey && activation.state === "failed"
       ? (activation.message ?? null)
@@ -224,17 +242,18 @@ function SelectedPlace({
     [],
   );
   // Who is there now: an ended place has nobody in it.
-  const marks = live ? (
-    <OccupantMarks
-      className="place__marks"
-      directory={directory}
-      fallbackFocus={markFallback}
-      onOpen={openMark}
-      occupants={live.occupants}
-      placeTitle={live.title}
-      size={20}
-    />
-  ) : null;
+  const marks =
+    live && liveOccupants ? (
+      <OccupantMarks
+        className="place__marks"
+        directory={directory}
+        fallbackFocus={markFallback}
+        onOpen={openMark}
+        occupants={liveOccupants}
+        placeTitle={live.title}
+        size={20}
+      />
+    ) : null;
 
   if (selection.kind === "talk") return null;
   if (selection.kind === "launcher") {
@@ -268,7 +287,11 @@ function SelectedPlace({
           place={place}
           source={
             (viewer?.kind === "window" || viewer?.kind === "phone") && viewer.view
-              ? { kind: "owner-view", viewId: viewer.view.viewId, generation: viewer.view.generation }
+              ? {
+                  kind: "owner-view",
+                  viewId: viewer.view.viewId,
+                  generation: viewer.view.generation,
+                }
               : null
           }
           trailing={trailing}
@@ -284,9 +307,7 @@ function SelectedPlace({
             <div className="place-state" role="status">
               {place.unavailableReason || activationError ? (
                 <>
-                  <p className="place-state__title">
-                    {place.unavailableReason ?? activationError}
-                  </p>
+                  <p className="place-state__title">{place.unavailableReason ?? activationError}</p>
                   {activationError ? (
                     <button
                       className="btn btn--small"

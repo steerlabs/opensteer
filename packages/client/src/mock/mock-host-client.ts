@@ -4053,7 +4053,8 @@ export class MockHostClient implements HostClient {
       },
       listApps: async (query) =>
         unwrapRpcResult(await this.rpc["apps.list"](query ? { query } : {})).apps as App[],
-      activated: (_tab, viewer) => {
+      activated: (tab, viewer) => {
+        this.#viewers.set(tab.tabId, viewer);
         // Only a person's own activation may wake a phone, and only once.
         if (viewer.kind === "phone" && viewer.view.state === "ready")
           sharedDisplayStreams(this).armAutoWake({
@@ -4061,6 +4062,7 @@ export class MockHostClient implements HostClient {
             viewId: viewer.view.viewId,
             generation: viewer.view.generation,
           });
+        this.#state.emit();
       },
     });
     this.openTab = tabs.openTab;
@@ -6562,6 +6564,18 @@ class MockHostState {
         computer: {
           ...template.computer,
           runnerId: RunnerIdSchema.parse(studio.id),
+          app: { bundleId: "com.apple.Keynote", displayName: "Keynote", teamId: null },
+        },
+      });
+    // The seeded Keynote window tab opens on the hosting Mac, so Keynote is approved there too.
+    if (template?.computer)
+      this.integrations.connections.push({
+        ...template,
+        id: createIntegrationId("connection"),
+        displayName: "Keynote on Mac mini",
+        computer: {
+          ...template.computer,
+          runnerId: mockMessagesRunnerId,
           app: { bundleId: "com.apple.Keynote", displayName: "Keynote", teamId: null },
         },
       });
@@ -10593,9 +10607,22 @@ class MockHostState {
     const thread = this.snapshot.threads.find(({ id }) => id === threadId);
     if (!thread) return;
     const transcript = this.snapshot.transcripts[threadId] ?? [];
-    // The mock browser world names pages by surface, which is the page tab's ID.
-    if (data.place.kind !== "browser") return;
-    const tabId = data.place.surfaceId;
+    // The mock world names a page by its surface, which is its tab's ID, and a phone or app by its computer.
+    const place = data.place;
+    const tabId =
+      place.kind === "browser"
+        ? place.surfaceId
+        : this.tabCatalog.nativeAt(place.machineId, (tab) =>
+            place.kind === "phone"
+              ? tab.kind === "phone"
+              : tab.kind === "window" &&
+                computerAppIdentityKey({
+                  bundleId: tab.bundleId ?? "",
+                  displayName: tab.appName ?? "",
+                  teamId: null,
+                }) === place.appKey,
+          );
+    if (!tabId) return;
     const last = this.runPlaces.get(runId);
     if (last?.data.tabId === tabId) return;
     const event = TabPlaceEnteredEventViewSchema.parse({
@@ -12065,7 +12092,7 @@ class MockHostState {
     }
   }
 
-  private emit(): void {
+  emit(): void {
     if (this.#pendingBrowserNotification !== null) clearTimeout(this.#pendingBrowserNotification);
     this.#pendingBrowserNotification = null;
     this.publishBrowser();

@@ -551,6 +551,8 @@ describe("MockHostClient", () => {
         // account an older reconnect made instead of repairing it.
         ["vapi-api", "needs-attention"],
         ["vapi-api", "connected"],
+        // Keynote on Studio Mac, and on Mac mini where the seeded window tab opens.
+        ["macos-app", "connected"],
         ["macos-app", "connected"],
       ],
     );

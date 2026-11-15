@@ -41,6 +41,7 @@ import {
   quietlyMoved,
   quietSeenScope,
   taskList,
+  actingOccupants,
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
@@ -49,6 +50,7 @@ import {
 import {
   useHostSelector,
   usePlace,
+  usePlaceActivity,
   usePlaceList,
   useSyncingPlaceholder,
   useTabLayout,
@@ -1298,14 +1300,7 @@ const TabRowItem = memo(function TabRowItem({
   const place = usePlace(props.hostClient, placeKey);
   if (!place) return null;
   const device = place.kind === "phone" ? null : (elsewhere.get(place.device.machineId) ?? null);
-  return (
-    <TabRow
-      {...props}
-      badge={badges ? place.identity : null}
-      device={device}
-      place={place}
-    />
-  );
+  return <TabRow {...props} badge={badges ? place.identity : null} device={device} place={place} />;
 });
 
 const TabRow = memo(function TabRow({
@@ -1374,6 +1369,11 @@ const TabRow = memo(function TabRow({
   fallbackRef.current = () => (active ? activeRow() : null) ?? neighbourRow(index);
   useFocusRescue(mainRef, fallbackRef);
   const unavailable = place.availability === "unavailable";
+  const activity = usePlaceActivity(hostClient, placeKey);
+  const occupants = useMemo(
+    () => actingOccupants(place.occupants, activity),
+    [place.occupants, activity],
+  );
   const site = place.site ? browserSiteLabel(place.site) : null;
   // A phone's row is its name already.
   const elsewhere =
@@ -1493,11 +1493,9 @@ const TabRow = memo(function TabRow({
       <OccupantMarks
         className="side-tab__marks"
         directory={directory}
-        fallbackFocus={() =>
-          mainRef.current?.isConnected ? mainRef.current : neighbourRow(index)
-        }
+        fallbackFocus={() => (mainRef.current?.isConnected ? mainRef.current : neighbourRow(index))}
         onOpen={(threadId) => onOpenMark(place, threadId)}
-        occupants={place.occupants}
+        occupants={occupants}
         placeTitle={place.title}
         size={16}
       />
@@ -1752,14 +1750,12 @@ function sortRowsOf(strip: TabStrip): SortRow[] {
       header,
       ...(row.group.collapsed
         ? []
-        : row.tabIds.map(
-            (tabId): SortRow => ({
-              kind: "tab",
-              key: tabId,
-              tabId,
-              group: { id: header.groupId, color: header.color },
-            }),
-          )),
+        : row.tabIds.map((tabId): SortRow => ({
+            kind: "tab",
+            key: tabId,
+            tabId,
+            group: { id: header.groupId, color: header.color },
+          }))),
     ];
   });
 }

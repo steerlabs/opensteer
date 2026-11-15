@@ -150,3 +150,17 @@ export function placeActivityPoint(
   const y = (activity.pointer.y * geometry.viewportHeight) / region.height;
   return x <= 1 && y <= 1 ? { kind: "point", x, y } : hiddenPoint;
 }
+
+/** A tab's occupants, each marked acting while the Host reports its Run acting there now. */
+export function actingOccupants<
+  Occupant extends { readonly threadId: string; readonly acting: boolean },
+>(
+  occupants: readonly Occupant[],
+  activity: readonly Pick<PlaceActivity, "threadId">[],
+): readonly Occupant[] {
+  if (activity.length === 0) return occupants;
+  const acting = new Set(activity.map((record) => record.threadId as string));
+  return occupants.map((occupant) =>
+    acting.has(occupant.threadId) && !occupant.acting ? { ...occupant, acting: true } : occupant,
+  );
+}

@@ -166,6 +166,13 @@ export class MockTabCatalog {
         return tab;
     return null;
   }
+  /** The listed phone tab, or first window tab of an app, a scripted Run entered on a computer. */
+  nativeAt(computerId: string, match: (tab: MockNativeTab) => boolean): TabId | null {
+    for (const tab of this.#native.values())
+      if (tab.computerId === computerId && this.#rows.has(tab.tabId) && match(tab))
+        return tab.tabId;
+    return null;
+  }
   revealPage(tabId: TabId): void {
     this.#hiddenPages.delete(tabId);
   }

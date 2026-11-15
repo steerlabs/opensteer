@@ -217,11 +217,12 @@ describe("start page projection", () => {
       expect(keynote.map((row) => [row.kind, row.title, row.label, row.available])).toEqual([
         ["search", "keynote", "Search the web · Guest", true],
         ["recent", "keynote.example", "Go to site · Guest", true],
-        // The Keynote window tab on the Home Mac switches; Studio Mac's Keynote is away.
+        // Mac mini's Keynote window tab switches, its Keynote opens another; Studio Mac's is away.
         ["tab", "Launch plan", "Switch to tab", true],
+        ["app", "Keynote", "Open Keynote · Mac mini", true],
         ["app", "Keynote", "Offline", false],
       ]);
-      expect(keynote[3]).toMatchObject({
+      expect(keynote[4]).toMatchObject({
         notReady: "offline",
         action: { kind: "open-tab", target: { computerId: studio.id } },
       });
