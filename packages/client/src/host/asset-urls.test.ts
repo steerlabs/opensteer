@@ -192,7 +192,6 @@ it("binds desktop URLs to the minting Deployment", () => {
   ).toBe("app://opensteer/media/deployment-a/token/photo%20one.png");
 });
 
-
 it("re-mints when time jumps past expiry and isolates Deployment metadata", async () => {
   const { store, read, thread } = setup();
   await store.get("first", thread, "/a.png", "preview");

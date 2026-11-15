@@ -60,10 +60,7 @@ export interface PersonalReferenceNavigationPorts extends ReferenceNavigationPor
 }
 /** Adapters unwrap RPC results; these ports stay usable before RPC registration. */
 export interface ReferenceReadPorts {
-  readonly assetUrls: (
-    input: AssetUrlsInput,
-    signal?: AbortSignal,
-  ) => Promise<AssetUrls>;
+  readonly assetUrls: (input: AssetUrlsInput, signal?: AbortSignal) => Promise<AssetUrls>;
   readonly resolveReferences: (
     input: ReferenceResolveInput,
     signal?: AbortSignal,

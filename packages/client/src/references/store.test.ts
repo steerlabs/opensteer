@@ -465,4 +465,3 @@ it("holds automatic work while disconnected and sends one batch on connection re
   await called(calls, 1);
   calls[0]!.answer.resolve({ results: [task(id)] });
 });
-

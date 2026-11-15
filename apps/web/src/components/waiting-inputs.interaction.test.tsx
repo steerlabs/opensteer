@@ -408,7 +408,8 @@ describe("WaitingInputs", () => {
     expect(field(container)?.value).toBe("Check the shard");
 
     // A reference is words: it saves as its exact Markdown, never as another part.
-    const words = "Check the [integration shard](opensteer:thr_12345678-1234-4234-8234-123456789abc)";
+    const words =
+      "Check the [integration shard](opensteer:thr_12345678-1234-4234-8234-123456789abc)";
     await write(field(container)!, words);
     expect(editor.touch).toHaveBeenCalled();
     await act(async () => button(container, "Don’t include photo.png").click());
