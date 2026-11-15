@@ -11,7 +11,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { teamPrincipalProfiles } from "./team-principals-store.js";
 
 type Executor = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;

@@ -1,9 +1,9 @@
 import type { RuntimeMode } from "@opensteer/core";
 import {
-  HostToRunnerMessageSchema,
+  LegacyHostToRunnerMessageSchema as HostToRunnerMessageSchema,
   RunnerAuxiliaryRequestIdSchema,
   RunnerAuxiliaryWelcomeSchema,
-  type HostToRunnerMessage,
+  type LegacyHostToRunnerMessage as HostToRunnerMessage,
   type RunnerAuxiliaryFrameFence,
   type RunnerAuxiliaryModule,
   type RunnerBootId,

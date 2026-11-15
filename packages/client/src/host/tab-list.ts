@@ -1,5 +1,5 @@
-import type { MachineSummary } from "@opensteer/protocol";
-import type { HostSnapshot } from "./client.js";
+import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { LegacyHostSnapshot as HostSnapshot } from "./client.js";
 import {
   computerGlyph,
   deviceElsewhere,
@@ -67,7 +67,7 @@ export interface TabDeviceChoice {
  */
 export function tabDeviceChoice(input: {
   readonly places: readonly PlaceFilterItem[];
-  readonly machines: readonly MachineSummary[];
+  readonly machines: readonly LegacyMachineSummary[];
   readonly hereId: string | null;
   readonly homeId: string | null;
   readonly filter: TabFilter;
@@ -155,7 +155,7 @@ export function tabListHomeId(
  * its row stays undrawn, until the device's name, shape or presence changes.
  */
 export function devicesElsewhere(
-  machines: readonly MachineSummary[],
+  machines: readonly LegacyMachineSummary[],
   homeId: string | null,
 ): ReadonlyMap<string, DeviceElsewhere> {
   return new Map(

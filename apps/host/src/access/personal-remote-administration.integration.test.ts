@@ -25,7 +25,7 @@ import { registerPersonalRemoteExecutor } from "./personal-remote-administration
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { generateKeyPairSync } from "node:crypto";
 import { createId, type AuthenticatedSession } from "@opensteer/core";
-import { createDatabase, type DatabaseSchema } from "@opensteer/database";
+import { createDatabase, type LegacyDatabaseSchema as DatabaseSchema } from "@opensteer/database";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { beforeAll, beforeEach, afterAll, describe, expect, it, vi } from "vitest";
 import { PersonalRemoteAccessService } from "./personal-remote-access-service.js";

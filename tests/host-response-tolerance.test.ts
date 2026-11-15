@@ -2,7 +2,7 @@ import { RunnerChallengeSchema } from "../packages/protocol/src/runner.js";
 import { HostApiErrorSchema, hostApi } from "../packages/protocol/src/host-api.js";
 import {
   ClientToHostMessageSchema,
-  HostToClientMessageSchema,
+  LegacyHostToClientMessageSchema as HostToClientMessageSchema,
 } from "../packages/protocol/src/client.js";
 import {
   SessionExchangeRequestSchema,

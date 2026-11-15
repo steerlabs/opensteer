@@ -1,6 +1,6 @@
 import { createId, type DeploymentId, type ComputerFolder, type UserId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { testRunnerDescriptor } from "./runner-fixture.test-support.js";
 import { initializePersonalSettings } from "./personal-settings-store.js";
 

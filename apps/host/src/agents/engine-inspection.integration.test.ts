@@ -95,7 +95,7 @@ await import(${JSON.stringify(new URL(fixture, "file:").href)});
     const read = async () => {
       const bootstrap = await testRpcData(
         active.hostOrigin,
-        "bootstrap.get",
+        "bootstrap.legacy.get",
         {},
         {
           headers,
@@ -249,7 +249,7 @@ await import(${JSON.stringify(new URL(fixture, "file:").href)});
           timeout: 45_000,
         })
         .toBe("ready");
-      const recovered = unwrapRpcResult(await active.api["bootstrap.get"]({}));
+      const recovered = unwrapRpcResult(await active.api["bootstrap.legacy.get"]({}));
       const placement = threadPlacementOptions(recovered.environments, recovered.harnesses).find(
         (candidate) => candidate.harnessInstanceId === active.harnessInstanceId,
       );

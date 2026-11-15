@@ -10,15 +10,15 @@ import { randomUUID } from "node:crypto";
 import {
   BrowserSurfaceIdSchema,
   createBrowserSessionId,
-  HostToClientMessageSchema,
-  type HostToClientMessage,
-  HostToRunnerMessageSchema,
+  LegacyHostToClientMessageSchema as HostToClientMessageSchema,
+  type LegacyHostToClientMessage as HostToClientMessage,
+  LegacyHostToRunnerMessageSchema as HostToRunnerMessageSchema,
 } from "@opensteer/protocol";
 import { resolvedInputParts } from "@opensteer/harness";
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { liveWork, type HostSnapshot } from "@opensteer/client/host";
+import { liveWork, type LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
 import { zeroSequence, HarnessInstanceIdSchema, ModelSelectionSchema } from "@opensteer/core";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { decodeBrowserFrameEnvelope } from "@opensteer/protocol/browser";
@@ -192,7 +192,7 @@ async function reader(
       requests.push(new URL(request.url).pathname);
       const response = await fetch(request);
       note(`response:${new URL(request.url).pathname}`);
-      if (request.url.includes("bootstrap.get") && delayBootstrapMs)
+      if (request.url.includes("bootstrap.legacy.get") && delayBootstrapMs)
         await new Promise((resolve) => setTimeout(resolve, delayBootstrapMs));
       await beforeResponse?.(request);
       return response;
@@ -1084,7 +1084,7 @@ integration("Browser presence and conversation usage", () => {
     );
     const refused = await testRpcRequest(
       host.origin,
-      "bootstrap.get",
+      "bootstrap.legacy.get",
       {},
       { headers: { origin: host.origin.origin } },
     );
@@ -2276,7 +2276,7 @@ integration("Browser presence and conversation usage", () => {
 
     const bootstrap = await testRpcData(
       host.origin,
-      "bootstrap.get",
+      "bootstrap.legacy.get",
       {},
       {
         headers: host.ownerHeaders,
@@ -2378,7 +2378,7 @@ integration("Browser presence and conversation usage", () => {
     );
     const afterEnd = await testRpcData(
       host.origin,
-      "bootstrap.get",
+      "bootstrap.legacy.get",
       {},
       {
         headers: host.ownerHeaders,
@@ -2439,7 +2439,7 @@ integration("Browser presence and conversation usage", () => {
     // Nobody who may not see the browser heard anything about it.
     const privateBootstrap = await testRpcRequest(
       host.origin,
-      "bootstrap.get",
+      "bootstrap.legacy.get",
       {},
       { headers: stranger.headers },
     );
@@ -2610,7 +2610,7 @@ integration("Browser presence and conversation usage", () => {
     expect(usageReads).toEqual([]);
     const catalog = await testRpcData(
       host.origin,
-      "bootstrap.get",
+      "bootstrap.legacy.get",
       {},
       { headers: host.ownerHeaders },
     );

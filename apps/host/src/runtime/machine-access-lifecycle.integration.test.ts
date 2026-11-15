@@ -107,7 +107,7 @@ integration("Machine access session lifecycle", () => {
         runnerId: target.runnerId,
       });
       const list = () =>
-        testRpcData(host.origin, "machines.list", {}, { headers: host.ownerHeaders });
+        testRpcData(host.origin, "machines.legacy.list", {}, { headers: host.ownerHeaders });
       expect(
         (await list()).machines.find((machine) => machine.id === target.runnerId)?.fullDiskAccess,
       ).toBe(false);
@@ -218,7 +218,7 @@ integration("Machine access session lifecycle", () => {
         async () => (await host.store.requests.get(requestId))?.status === "fulfilled",
       );
       const list = () =>
-        testRpcData(host.origin, "machines.list", {}, { headers: host.ownerHeaders });
+        testRpcData(host.origin, "machines.legacy.list", {}, { headers: host.ownerHeaders });
       expect(
         (await list()).machines.find((machine) => machine.id === target.runnerId)?.fullDiskAccess,
       ).toBe(true);
@@ -395,7 +395,7 @@ integration("Machine access session lifecycle", () => {
     await waitForCondition(async () => {
       const inventory = await testRpcData(
         host.origin,
-        "machines.list",
+        "machines.legacy.list",
         {},
         { headers: host.ownerHeaders },
       );
@@ -415,7 +415,7 @@ integration("Machine access session lifecycle", () => {
     await waitForCondition(async () => {
       const inventory = await testRpcData(
         host.origin,
-        "machines.list",
+        "machines.legacy.list",
         {},
         { headers: host.ownerHeaders },
       );

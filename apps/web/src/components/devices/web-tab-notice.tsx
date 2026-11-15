@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { hostsDeployment } from "@opensteer/client/computers";
-import type { HostClient, HostSnapshot } from "@opensteer/client/host";
+import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";

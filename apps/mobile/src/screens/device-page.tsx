@@ -1,7 +1,11 @@
 import { cancelDeviceSetup, withDeviceSwitch } from "@opensteer/client/computers";
 import { computerConnectionsOn } from "@opensteer/client/integrations";
 import { computerStatus } from "@opensteer/client/computers";
-import { mutationIdempotencyKey, type HostClient, type HostSnapshot } from "@opensteer/client/host";
+import {
+  mutationIdempotencyKey,
+  type HostClient,
+  type LegacyHostSnapshot as HostSnapshot,
+} from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";

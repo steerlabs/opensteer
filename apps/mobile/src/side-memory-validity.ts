@@ -1,4 +1,7 @@
-import { placeDestinationEnded, type HostSnapshot } from "@opensteer/client/host";
+import {
+  placeDestinationEnded,
+  type LegacyHostSnapshot as HostSnapshot,
+} from "@opensteer/client/host";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { paramsDestination } from "./browser/surface-route.js";
 

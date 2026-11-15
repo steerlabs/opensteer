@@ -1,5 +1,5 @@
 import type { TeamRunDelivery, TeamSource } from "@opensteer/core";
-import type { PersonShowMessage } from "@opensteer/protocol";
+import type { LegacyPersonShowMessage } from "@opensteer/protocol";
 import type { DesktopUpdates } from "../connections/desktop-updates-contract.js";
 import type {
   ChannelAccessPolicy,
@@ -57,8 +57,8 @@ import type {
   ApprovedComputerApp,
   BrowserRasterDensity,
   BrowserSessionOpener,
-  ComputerView,
-  ComputerViewTarget,
+  LegacyComputerView,
+  LegacyComputerViewTarget,
   DurableWindow,
   HarnessAuthenticationState,
   HarnessInstanceCatalogView,
@@ -69,8 +69,8 @@ import type {
   HostApiCommandOutput,
   HostEnvironmentStatus,
   MachineAccessPolicy,
-  MachineSummary,
-  OwnerWindowInfo,
+  LegacyMachineSummary,
+  LegacyOwnerWindowInfo,
   ShellSessionHistoryEntry,
   ThreadMessagePage,
   ThreadMessageWindow,
@@ -810,7 +810,7 @@ export type HostConnectionState = "connected" | "connecting" | "offline";
 type HostSessionState = "authenticated" | "authentication-required" | "checking";
 export type ThreadLookupState = "failed" | "loading" | "missing";
 
-export interface HostSnapshot {
+export interface LegacyHostSnapshot {
   /** Live tab selectors, shared with HostClient.browserTabs. */
   readonly browserTabs?: import("./browser-tab-store.js").BrowserTabStore;
   readonly openingAppTabs?: readonly string[];
@@ -909,7 +909,7 @@ export interface HostSnapshot {
    * shows every message except the ones held here.
    */
   inputQueues: Record<string, ThreadInputQueue>;
-  machines: MachineSummary[];
+  machines: LegacyMachineSummary[];
   /** Bumped when a machine's access sessions change, so readers refetch. */
   machineRevision: number;
   /** The personal owner's name; null before bootstrap or from a Host that has none. */
@@ -1127,28 +1127,28 @@ export interface HostClient {
   ): ComputerViewRetention;
   listComputerAppWindows(
     machineId: string,
-    app: Extract<ComputerViewTarget, { kind: "app" }>["app"],
-  ): Promise<readonly OwnerWindowInfo[]>;
+    app: Extract<LegacyComputerViewTarget, { kind: "app" }>["app"],
+  ): Promise<readonly LegacyOwnerWindowInfo[]>;
   listApprovedComputerApps(): Promise<readonly ApprovedComputerApp[]>;
   openComputerView(
     machineId: string,
-    target: ComputerViewTarget,
+    target: LegacyComputerViewTarget,
     options?: ComputerViewMutationOptions & {
       /** False when nobody pressed anything: a phone wakes only for a person's Open. */
       readonly wake?: boolean;
     },
-  ): Promise<ComputerView>;
+  ): Promise<LegacyComputerView>;
   closeComputerView(
     viewId: string,
     generation: number,
     options?: ComputerViewMutationOptions,
-  ): Promise<ComputerView>;
+  ): Promise<LegacyComputerView>;
   closePhoneTab(machineId: string): Promise<void>;
   renewComputerView(
     viewId: string,
     generation: number,
     options?: ComputerViewMutationOptions,
-  ): Promise<ComputerView>;
+  ): Promise<LegacyComputerView>;
   readonly browserFrames: BrowserFrameStore;
   readonly browserWatchFrames: BrowserFrameStore;
   readonly assetUrls?: import("./asset-urls.js").AssetUrlStore;
@@ -1214,7 +1214,7 @@ export interface HostClient {
   subscribePersonalRemoteAccess(listener: () => void): () => void;
   /** Told when this person approves or revokes a connected agent on any device. */
   subscribeConnectionsChanged(listener: () => void): () => void;
-  subscribePersonShow(listener: (message: PersonShowMessage) => void): () => void;
+  subscribePersonShow(listener: (message: LegacyPersonShowMessage) => void): () => void;
   visitThread(threadId: string, visitedAt: string): Promise<void>;
   /** Sets shared Done or reopens the task. */
   setTaskDone(threadId: string, done: boolean): Promise<void>;
@@ -1240,7 +1240,7 @@ export interface HostClient {
 
   dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput>;
   dispose(): void;
-  getSnapshot(): HostSnapshot;
+  getSnapshot(): LegacyHostSnapshot;
   load(): Promise<void>;
   loadEarlierTranscript(threadId: string): Promise<void>;
   /**
@@ -1495,3 +1495,15 @@ export function isHostRefusal(error: unknown): boolean {
     error.status !== 429
   );
 }
+
+export type HostSnapshot = Omit<
+  LegacyHostSnapshot,
+  | "browserTabs"
+  | "openingAppTabs"
+  | "appTabs"
+  | "browserTabGroups"
+  | "pendingBrowserTabs"
+  | "activatingPersonalTabs"
+  | "tabRestoreVersion"
+> &
+  import("./tabs-contract.js").TabsHostSnapshot;

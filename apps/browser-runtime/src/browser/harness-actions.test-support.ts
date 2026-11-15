@@ -16,7 +16,7 @@ import {
 } from "@opensteer/protocol/browser-agent";
 import {
   BrowserActionRequestSchema,
-  BrowserActionResponseSchema,
+  LegacyBrowserActionResponseSchema,
 } from "@opensteer/protocol/browser-actions";
 import { SessionCdpRouter, type CdpParameters } from "@opensteer/browser-core";
 import {
@@ -555,7 +555,7 @@ export async function startTabJourney({ phones: phoneCount = 1 } = {}) {
           heldQuery.entered();
           await heldQuery.released;
         }
-        const response = BrowserActionResponseSchema.parse({
+        const response = LegacyBrowserActionResponseSchema.parse({
           id: message.id,
           result:
             type === "session.tabs"

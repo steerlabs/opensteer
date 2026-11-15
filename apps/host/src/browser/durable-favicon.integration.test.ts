@@ -137,7 +137,7 @@ integration("Durable tab icons", () => {
       token: await host.hostingRunnerEnrollmentToken,
     });
     cleanups.push(() => caller.close());
-    await testRpcData(host.origin, "bootstrap.get", {}, { headers: host.ownerHeaders });
+    await testRpcData(host.origin, "bootstrap.legacy.get", {}, { headers: host.ownerHeaders });
     const profile = await host.store.createBrowserProfile({
       homeRunnerId: runtime.runnerId,
       ownerId: host.ownerId,
@@ -804,7 +804,7 @@ integration("Durable tab icons", () => {
     const coldTabs = async (currentHost = host) => {
       const bootstrap = await testRpcData(
         host.origin,
-        "bootstrap.get",
+        "bootstrap.legacy.get",
         {},
         {
           headers: host.ownerHeaders,
@@ -894,10 +894,10 @@ integration("Durable tab icons", () => {
     const closedTab = await testRpcData(
       host.origin,
       "commands.dispatch",
-      { type: "tab.close", tabId: "page-a", idempotencyKey: "icon-close" },
+      { type: "legacy.tab.close", tabId: "page-a", idempotencyKey: "icon-close" },
       { headers: host.ownerHeaders },
     );
-    expect(closedTab.type).toBe("tab.close");
+    expect(closedTab.type).toBe("legacy.tab.close");
     const revoked = await fetchIcon(host.ownerHeaders);
     const revokedBody = await revoked.text();
     expect(revokedBody).not.toContain("data:image");

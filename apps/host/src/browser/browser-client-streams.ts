@@ -6,7 +6,7 @@ import {
   type BrowserGroupRow,
   type BrowserTabRecord,
   type BrowserTabRow,
-  type HostedBrowserBootstrap,
+  type LegacyHostedBrowserBootstrap as HostedBrowserBootstrap,
 } from "@opensteer/protocol/browser";
 import {
   equal,

@@ -4,7 +4,7 @@ import type { BrowserGroupRow, BrowserTabRow } from "@opensteer/protocol/browser
 import { afterEach, expect, it, vi } from "vitest";
 import { createBrowserSessionId } from "@opensteer/protocol";
 import { MockHostClient } from "../mock/mock-host-client.js";
-import type { HostClient, HostSnapshot } from "./client.js";
+import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "./client.js";
 import { PersonalTabActivations } from "./personal-tab-activations.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 
@@ -39,7 +39,7 @@ function fixture(resolved = () => true) {
     browserTabs: browserStoreFixture([group], [{ groupId: group.id, rows }]),
   };
   const result: Result = {
-    type: "tab.activate",
+    type: "legacy.tab.activate",
     tabId,
     groupId: group.id,
     sessionId: group.sessionId,

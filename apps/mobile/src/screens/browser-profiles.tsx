@@ -7,7 +7,7 @@ import {
   profileHomeChoice,
   type BrowserProfileSettingsRow,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";

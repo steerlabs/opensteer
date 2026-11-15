@@ -15,7 +15,7 @@ import {
   threadMark,
   unwrapRpcResult,
   watchState,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type Tone,
 } from "@opensteer/client/host";
 import type { TriggerSummary } from "@opensteer/triggers";

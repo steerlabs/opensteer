@@ -3,7 +3,7 @@ import {
   type MachineAccessPolicy,
   type MachineAccessReach,
   type MachineAccessShare,
-  type MachineSummary,
+  type LegacyMachineSummary,
   type ShellAuditEvent,
   type ShellCloseReason,
   type ShellSessionSummary,
@@ -32,7 +32,7 @@ export interface MachineReachOption {
 export function machineReachOptions(input: {
   readonly deploymentName: string;
   readonly ownerReachAvailable: boolean;
-  readonly ownership: MachineSummary["ownership"];
+  readonly ownership: LegacyMachineSummary["ownership"];
 }): readonly MachineReachOption[] {
   const options: MachineReachOption[] = [
     { detail: "Agents on other computers can't reach this one.", label: "No one", reach: "nobody" },

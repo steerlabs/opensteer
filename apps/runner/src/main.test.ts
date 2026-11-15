@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import {
   RunnerChallengeIdSchema,
-  RunnerToHostMessageSchema,
+  LegacyRunnerToHostMessageSchema as RunnerToHostMessageSchema,
   type RunnerDescriptor,
   type RunnerConnectionFence,
 } from "@opensteer/protocol";

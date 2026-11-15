@@ -61,7 +61,7 @@ import {
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import { PrincipalIdSchema } from "@opensteer/channel-core";
 import type {
-  DatabaseSchema,
+  LegacyDatabaseSchema as DatabaseSchema,
   TriggerOccurrenceTable,
   TriggerWatchActivationTable,
 } from "./schema.js";

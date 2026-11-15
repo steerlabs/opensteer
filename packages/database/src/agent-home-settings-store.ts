@@ -6,7 +6,7 @@ import {
 } from "@opensteer/protocol";
 import { sql, type Kysely } from "kysely";
 import { isDeepStrictEqual } from "node:util";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { assertPersonalOwner } from "./private-resource-owner.js";
 

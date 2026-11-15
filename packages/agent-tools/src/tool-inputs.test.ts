@@ -8,18 +8,17 @@ function tool(name: AgentToolName) {
   return spec;
 }
 describe("Opensteer tool inputs", () => {
-  it("accepts the current Run place without caller-supplied native identities", () => {
+  it("requires an explicit tab or task for Show", () => {
     const schema = tool("person_show").input;
-    expect(schema.parse({ target: { current: true } })).toEqual({ target: { current: true } });
-    expect(schema.safeParse({ target: { current: false } }).success).toBe(false);
-    expect(schema.safeParse({ target: { current: true, tabId: "another-tab" } }).success).toBe(
-      false,
-    );
-    expect(
-      schema.safeParse({
-        target: { place: { kind: "phone", machineId: "arbitrary", display: "main" } },
-      }).success,
-    ).toBe(false);
+    expect(schema.safeParse({ target: { tabId: "tab-from-list" } }).success).toBe(true);
+    expect(schema.safeParse({ target: { taskId: createId("thread") } }).success).toBe(true);
+    for (const target of [
+      { current: true },
+      { runId: createId("run") },
+      { tabId: "one", taskId: createId("thread") },
+      { place: { kind: "phone", machineId: "arbitrary", display: "main" } },
+    ])
+      expect(schema.safeParse({ target }).success).toBe(false);
   });
   it("refuses the removed home alias", () => {
     expect(tool("opensteer_task_read").input.safeParse({ taskId: "home", limit: 1 }).success).toBe(

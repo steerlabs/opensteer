@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { createId, emptyExecutionPreferences } from "@opensteer/core";
-import type { HostSnapshot } from "@opensteer/client/host";
+import type { LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import {
   DeploymentAccessSnapshotSchema,

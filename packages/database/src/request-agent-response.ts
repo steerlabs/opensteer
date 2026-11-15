@@ -16,7 +16,7 @@ import { z } from "zod";
 import type { Kysely, Transaction } from "kysely";
 import "./connection.js";
 import { requestFromRow, requestRevision } from "./request-persistence.js";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { threadExecutionIsAvailableToUser } from "./store-primitives.js";
 import { assertThreadCaller, type ThreadCallerAuthority } from "./thread-caller.js";
 export const AgentRequestResponderSchema = z.object({

@@ -1,10 +1,5 @@
 import { defineAgentTool } from "../registry.js";
-import {
-  PersonMessageSchema,
-  ThreadIdSchema,
-  RunIdSchema,
-  BrowserSurfaceIdSchema,
-} from "@opensteer/core";
+import { PersonMessageSchema, ThreadIdSchema, BrowserSurfaceIdSchema } from "@opensteer/core";
 
 import { z } from "zod";
 
@@ -22,18 +17,23 @@ export const person_notify = defineAgentTool({
 
 export const person_show = defineAgentTool({
   name: "person_show",
-  title: "Show a place",
+  title: "Show a tab or task",
   description:
-    "Bring your work into the person's view without waiting to be asked, on devices viewing this task. {current: true}: the page, Mac app or Agent Phone you are in, without a new browser attach or computer observation. {runId}: where a task's Run last worked, from recentPlaces in opensteer_task_read. {tabId}: a tab, even asleep, from Browser Harness listTabs(). {taskId}: a task. Refused on a delegation: tell the delegating task what to show. sent-unconfirmed is not proof anyone saw it.",
+    "Ask devices viewing this task to bring an explicit tab or task into view. tabId comes from tab_list or tab_open; taskId comes from opensteer_task_list or opensteer_task_read. Asleep tabs may wake. A closed or unavailable target is not replaced. Delegated tasks send the destination to their delegating task. sent-unconfirmed means delivery, not proof the person saw it.",
   input: z.strictObject({
     target: z.union([
-      z.strictObject({ current: z.literal(true) }),
-      z.strictObject({ runId: RunIdSchema }),
-      z.strictObject({ tabId: BrowserSurfaceIdSchema }),
-      z.strictObject({ taskId: ThreadIdSchema }),
+      z.strictObject({
+        tabId: BrowserSurfaceIdSchema.describe(
+          "Tab ID(s) from tab_list, tab_open, or a bound computer_use handle.",
+        ),
+      }),
+      z.strictObject({
+        taskId: ThreadIdSchema.describe("Task ID from opensteer_task_list or opensteer_task_read."),
+      }),
     ]),
   }),
   output: PersonShowOutputSchema,
   access: "write",
   callers: ["run"] as const,
+  capability: "tabs",
 });

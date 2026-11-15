@@ -7,7 +7,10 @@ import {
 } from "@opensteer/protocol/maintenance";
 import type { HostAuthenticator } from "../identity/auth.js";
 import type { PersonalDesktopUpdate } from "./personal-desktop-update.js";
-import { requirePersonalOwner, type DatabaseSchema } from "@opensteer/database";
+import {
+  requirePersonalOwner,
+  type LegacyDatabaseSchema as DatabaseSchema,
+} from "@opensteer/database";
 import type { Kysely } from "kysely";
 
 export function registerDesktopUpdateMaintenance(

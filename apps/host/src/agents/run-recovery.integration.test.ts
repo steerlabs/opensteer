@@ -1485,7 +1485,7 @@ integration.sequential("Run recovery acceptance", () => {
     const pending = await pendingApproval(current.active, runId);
     current.active.network.block();
     await waitFor(async () => {
-      const result = await current.active.api["bootstrap.get"]({});
+      const result = await current.active.api["bootstrap.legacy.get"]({});
       return (
         result.ok &&
         result.data.environments.find((entry) => entry.id === current.active.environmentId)

@@ -15,7 +15,7 @@ import {
   unwrapRpcResult,
   type ExecutionSelection,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type ExecutionRoute,
   type ThreadPlacementOption,
   type ThreadSummary,

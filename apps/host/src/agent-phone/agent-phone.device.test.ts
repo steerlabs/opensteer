@@ -502,7 +502,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
   const owner = () => ({ headers: host.ownerHeaders });
 
   async function phoneMachine(runnerId: RunnerId) {
-    const { machines } = await testRpcData(host.origin, "machines.list", {}, owner());
+    const { machines } = await testRpcData(host.origin, "machines.legacy.list", {}, owner());
     return machines.find((machine) => machine.id === runnerId) ?? null;
   }
 
@@ -2264,9 +2264,9 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
           })
         ).code,
       ).toBe(2);
-      const phones = (await testRpcData(host.origin, "machines.list", {}, owner())).machines.filter(
-        (machine) => machine.device?.form === "phone",
-      );
+      const phones = (
+        await testRpcData(host.origin, "machines.legacy.list", {}, owner())
+      ).machines.filter((machine) => machine.device?.form === "phone");
       expect(phones.map(({ id, status }) => ({ id, status }))).toEqual([
         { id: runnerId, status: "online" },
       ]);

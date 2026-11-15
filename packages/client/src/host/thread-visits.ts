@@ -1,4 +1,4 @@
-import type { HostClient, HostSnapshot, TranscriptEntry } from "./client.js";
+import type { HostClient, LegacyHostSnapshot as HostSnapshot, TranscriptEntry } from "./client.js";
 
 type ReplyProjection = Pick<HostSnapshot, "transcripts" | "publishedReplyAt">;
 

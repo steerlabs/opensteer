@@ -8,7 +8,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import type { Kysely } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { personalDeploymentOwner } from "./machine-store.js";
 import { systemPrincipalId } from "./store-primitives.js";
 

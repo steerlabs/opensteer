@@ -8,7 +8,12 @@ import {
   type MouseEvent,
   type ReactNode,
 } from "react";
-import { classifyHref, teamPageUrl, type Reference, type TeamPageLink } from "@opensteer/core";
+import {
+  classifyHref,
+  teamPageUrl,
+  type LegacyReference as Reference,
+  type TeamPageLink,
+} from "@opensteer/core";
 import type { FileLinkTarget } from "@opensteer/shared/fileHref";
 import { useReference } from "@opensteer/client/react";
 import {

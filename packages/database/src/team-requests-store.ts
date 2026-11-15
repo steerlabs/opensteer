@@ -13,7 +13,7 @@ import { TeamRequestContextSchema } from "@opensteer/protocol";
 import { sql, type Transaction } from "kysely";
 import { appendTeamAudit } from "./team-audit-store.js";
 import { createTeamAskReturn } from "./team-request-returns.js";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import type { TeamRequestStorePort } from "./team-requests-port.js";
 import {
   TeamAccessStore,

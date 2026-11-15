@@ -2,7 +2,7 @@ import { createId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
   BrowserActionRequestSchema,
-  BrowserActionResultSchema,
+  LegacyBrowserActionResultSchema,
   BrowserActionErrorCodeSchema,
   BrowserActionLocatorSchema,
   BrowserAgentBackendSchema,
@@ -141,7 +141,7 @@ describe("typed browser agent wire", () => {
       }).action,
     ).toEqual({ type: "session.tabs", cursor: "42" });
     expect(
-      BrowserActionResultSchema.parse({
+      LegacyBrowserActionResultSchema.parse({
         type: "session.tabs",
         tabs: [binding],
         nextCursor: "43",
@@ -244,7 +244,7 @@ describe("typed browser agent wire", () => {
           .success,
       ).toBe(false);
       expect(
-        BrowserActionResultSchema.safeParse({
+        LegacyBrowserActionResultSchema.safeParse({
           type: action.type,
           ...(result as object),
           unchecked: true,
@@ -326,8 +326,10 @@ describe("typed browser agent wire", () => {
         }).success,
       ).toBe(true);
     expect(
-      BrowserActionResultSchema.safeParse({ type: "dom.snapshot", text: "界".repeat(200_000) })
-        .success,
+      LegacyBrowserActionResultSchema.safeParse({
+        type: "dom.snapshot",
+        text: "界".repeat(200_000),
+      }).success,
     ).toBe(false);
     let deep: unknown = locator;
     for (let depth = 0; depth < 9; depth++) deep = { ...locator, scope: deep };

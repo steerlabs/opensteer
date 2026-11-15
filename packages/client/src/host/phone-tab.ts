@@ -1,6 +1,6 @@
-import type { MachineSummary } from "@opensteer/protocol";
+import type { LegacyMachineSummary } from "@opensteer/protocol";
 
-type PhoneMachine = Pick<MachineSummary, "computerUse" | "tabOpenedAt">;
+type PhoneMachine = Pick<LegacyMachineSummary, "computerUse" | "tabOpenedAt">;
 
 /** The one row and address a phone has, whoever is in it. */
 export function phonePlaceKey(machineId: string): string {

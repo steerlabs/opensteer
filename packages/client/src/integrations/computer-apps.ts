@@ -11,7 +11,7 @@ import type {
   ComputerAppRemedy,
   MachineAppStatus,
   MachineDevice,
-  MachineSummary,
+  LegacyMachineSummary,
 } from "@opensteer/protocol";
 import { androidAccessibilityStep, isAgentPhone } from "./computer-use.js";
 
@@ -83,7 +83,7 @@ export function computerConnectionsOn(
 export function computerAppRows(input: {
   readonly connections: readonly IntegrationConnectionSummary[];
   readonly definitions: readonly IntegrationDefinitionSummaryView[];
-  readonly machine: MachineSummary;
+  readonly machine: LegacyMachineSummary;
   readonly setupRequests?: readonly ComputerAppSetupRequest[];
 }): readonly ComputerAppRow[] {
   const { machine } = input;
@@ -151,7 +151,7 @@ export function computerAppRows(input: {
 function computerAppLiveState(input: {
   readonly access: IntegrationAccess | "write";
   readonly presentation: ComputerAppPresentationView;
-  readonly apps: MachineSummary["apps"];
+  readonly apps: LegacyMachineSummary["apps"];
   readonly entry: MachineAppStatus | null;
   readonly integrationsAdvertised: boolean;
   readonly name: string;
@@ -251,7 +251,7 @@ export const computerAppTurnOffConsequence = "Turning this off removes your agen
 export function computerAppConnectionLabel(input: {
   readonly connection: Pick<IntegrationConnectionSummary, "computer" | "displayName">;
   readonly definition: Pick<IntegrationDefinitionSummaryView, "computerApp" | "name">;
-  readonly machines: readonly MachineSummary[];
+  readonly machines: readonly LegacyMachineSummary[];
 }): string {
   const runnerId = input.connection.computer?.runnerId;
   const machine = input.machines.find((candidate) => candidate.id === runnerId);
@@ -268,7 +268,7 @@ export function computerAppConnectionLabel(input: {
 
 export interface ComputerAppTarget {
   readonly connection: IntegrationConnectionSummary | null;
-  readonly machine: MachineSummary;
+  readonly machine: LegacyMachineSummary;
   readonly state: ComputerAppLiveState;
 }
 
@@ -276,7 +276,7 @@ export interface ComputerAppTarget {
 export function computerAppTargets(input: {
   readonly connections: readonly IntegrationConnectionSummary[];
   readonly definition: IntegrationDefinitionSummaryView;
-  readonly machines: readonly MachineSummary[];
+  readonly machines: readonly LegacyMachineSummary[];
 }): readonly ComputerAppTarget[] {
   return input.machines.flatMap((machine) => {
     const entry =
@@ -309,7 +309,7 @@ export function computerAppTargets(input: {
 export function computerConnectionState(input: {
   readonly connection: IntegrationConnectionSummary;
   readonly definition: IntegrationDefinitionSummaryView;
-  readonly machines: readonly MachineSummary[];
+  readonly machines: readonly LegacyMachineSummary[];
 }): ComputerAppLiveState {
   const machine =
     input.machines.find((candidate) => candidate.id === input.connection.computer?.runnerId) ??
@@ -555,7 +555,7 @@ export function computerAppStateDotClass(state: ComputerAppRowState): string {
 export function ownsComputerApps(input: {
   readonly connections: readonly IntegrationConnectionSummary[];
   readonly hostsDeployment: boolean;
-  readonly machine: MachineSummary;
+  readonly machine: LegacyMachineSummary;
 }): boolean {
   const effectiveOwner = input.machine.ownership === "mine" || input.hostsDeployment;
   return (

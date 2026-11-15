@@ -49,3 +49,6 @@ export * from "./idle-compaction.js";
 
 export * from "./references.js";
 export * from "./hrefs.js";
+
+export * from "./tabs.js";
+export * from "./tool-error.js";

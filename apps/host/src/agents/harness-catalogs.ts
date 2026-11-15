@@ -6,7 +6,10 @@ import {
   type HarnessInstanceId,
 } from "@opensteer/core";
 import type { HarnessInstanceRecord } from "@opensteer/database";
-import type { HarnessInstanceCatalog, HostToRunnerMessage } from "@opensteer/protocol";
+import type {
+  HarnessInstanceCatalog,
+  LegacyHostToRunnerMessage as HostToRunnerMessage,
+} from "@opensteer/protocol";
 import type { RealtimeHub } from "@opensteer/orchestration";
 import { notifyMachinesChanged } from "../shell/machine-access-events.js";
 

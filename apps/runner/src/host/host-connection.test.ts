@@ -38,11 +38,11 @@ import {
   RunnerConnectionIdSchema,
   RunnerConnectionLeaseIdSchema,
   runnerEnvironmentIds,
-  RunnerToHostMessageSchema,
+  LegacyRunnerToHostMessageSchema as RunnerToHostMessageSchema,
   type RunnerCommand,
   type RunnerConnectionFence,
   type RunnerOperationalReport,
-  type RunnerToHostMessage,
+  type LegacyRunnerToHostMessage as RunnerToHostMessage,
 } from "@opensteer/protocol";
 import WebSocket, { WebSocketServer } from "ws";
 import { describe, expect, it, vi } from "vitest";

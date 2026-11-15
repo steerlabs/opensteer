@@ -1,5 +1,5 @@
 import { useCallback, useSyncExternalStore } from "react";
-import type { Reference } from "@opensteer/core";
+import type { LegacyReference as Reference } from "@opensteer/core";
 import type { ReferenceState } from "../references/contracts.js";
 import type { ReferenceStore } from "../references/store.js";
 

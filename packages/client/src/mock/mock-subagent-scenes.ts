@@ -8,7 +8,7 @@ import {
   type Request,
 } from "@opensteer/core";
 import type {
-  HostSnapshot,
+  LegacyHostSnapshot as HostSnapshot,
   MessageEntry,
   NodeEntry,
   ToolEntry,

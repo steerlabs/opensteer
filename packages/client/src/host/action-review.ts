@@ -1,4 +1,8 @@
-import { HostClientRequestError, type HostClient, type HostSnapshot } from "./client.js";
+import {
+  HostClientRequestError,
+  type HostClient,
+  type LegacyHostSnapshot as HostSnapshot,
+} from "./client.js";
 import { assignmentPresentation } from "./assignment-presentation.js";
 import { hostSnapshotStore } from "./host-snapshot-store.js";
 import { heldThread, taskCanBeDone } from "./task-list.js";

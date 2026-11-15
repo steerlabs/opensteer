@@ -4,7 +4,7 @@ import { type UserId } from "@opensteer/core";
 import type { AgentConnection } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
 import type { Kysely, Selectable } from "kysely";
-import type { AgentConnectionTable, DatabaseSchema } from "./schema.js";
+import type { AgentConnectionTable, LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { databaseOperation } from "./operation-budget.js";
 export class AgentConnectionStore {

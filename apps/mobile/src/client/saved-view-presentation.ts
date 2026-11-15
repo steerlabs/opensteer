@@ -4,7 +4,7 @@ import {
   projectSavedTasks,
   savedViewScopeKey,
   sameTaskListSource,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type HostClient,
   type SavedHostView,
   type SavedTask,

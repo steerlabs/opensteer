@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState, type ReactNode } from "react";
-import type { MachineSummary } from "@opensteer/protocol";
+import type { LegacyMachineSummary } from "@opensteer/protocol";
 import { withDeviceSwitch } from "@opensteer/client/computers";
 import type { HostClient } from "@opensteer/client/host";
 import { actionErrorMessage } from "../../ui-utils.js";
@@ -15,7 +15,7 @@ const accessConflictNotice = "This changed on another device. The switches show 
 /** A stale revision means another device changed it first: nothing is written; the page reloads. */
 export function useAccessSwitch(
   hostClient: Pick<HostClient, "refresh" | "updateMachineAccess">,
-  machine: MachineSummary,
+  machine: LegacyMachineSummary,
 ) {
   const [pending, setPending] = useState<DeviceCapability | null>(null);
   const [notice, setNotice] = useState<{
@@ -66,7 +66,7 @@ export function DeviceAccessSwitches({
   thisDevice,
 }: {
   readonly editors: Partial<Record<DeviceCapability, ReactNode>>;
-  readonly machine: MachineSummary;
+  readonly machine: LegacyMachineSummary;
   readonly notice: { readonly conflict: boolean; readonly text: string } | null;
   readonly onSet: (capability: DeviceCapability, on: boolean) => void;
   readonly pending: DeviceCapability | null;

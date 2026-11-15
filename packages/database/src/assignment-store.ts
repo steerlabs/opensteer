@@ -17,7 +17,11 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
-import type { CommandRow, DatabaseSchema, DelegationTable } from "./schema.js";
+import type {
+  CommandRow,
+  LegacyDatabaseSchema as DatabaseSchema,
+  DelegationTable,
+} from "./schema.js";
 import { threadInputFromRow } from "./thread-row-mappers.js";
 import { appendHostDeploymentEvent } from "./deployment-events.js";
 import {

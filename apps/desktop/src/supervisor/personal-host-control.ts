@@ -123,7 +123,7 @@ export class PersonalHostBootstrapRefusedError extends Error {
   }
 }
 
-type PersonalHostBootstrap = z.output<(typeof hostApi)["bootstrap.get"]["success"]>;
+type PersonalHostBootstrap = z.output<(typeof hostApi)["bootstrap.legacy.get"]["success"]>;
 
 const personalVersionHeaders = apiVersionHeaders("personal");
 
@@ -368,7 +368,7 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     signal: AbortSignal,
   ): Promise<PersonalHostBootstrap> {
     const result = await this.#withDeadline(signal, (deadline) =>
-      this.#hostApi(deploymentId, origin)["bootstrap.get"]({}, { signal: deadline }),
+      this.#hostApi(deploymentId, origin)["bootstrap.legacy.get"]({}, { signal: deadline }),
     );
     if (result.ok) return result.data;
     throw bootstrapRefusal(result.error);

@@ -4,7 +4,7 @@ import {
   hostApi,
   isDeviceAccessRequestEvent,
   projectDeviceAccessRequestEvent,
-  type HostToClientMessage,
+  type LegacyHostToClientMessage as HostToClientMessage,
 } from "@opensteer/protocol";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import type { WebSocketClient } from "../host/host-session-client.js";

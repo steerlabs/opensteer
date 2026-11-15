@@ -11,7 +11,7 @@ import {
   taskTime,
   type DoneTaskList,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type PlaceItem,
   type PersonalSurfaceDestination,
   type TaskList,

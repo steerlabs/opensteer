@@ -1,4 +1,4 @@
-import type { HostClient, HostSnapshot } from "@opensteer/client/host";
+import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
 import { useIsFocused, useNavigation } from "@react-navigation/native";
 import { useEffect } from "react";
 import type { IphoneAppsController } from "../iphone-apps/controller.js";

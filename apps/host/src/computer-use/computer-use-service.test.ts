@@ -13,7 +13,7 @@ import {
   computerUseMaxTimeoutMs,
   mintComputerUseSessionId,
   type AndroidPhoneObservation,
-  type ComputerUseObservation,
+  type LegacyComputerUseObservation,
   type MachineAppStatus,
 } from "@opensteer/protocol";
 import { RunPlaceRecorder } from "../agents/run-place-recorder.js";
@@ -91,7 +91,9 @@ const calendar: ComputerAppIdentity = {
   teamId: null,
 };
 
-function observation(overrides: Partial<ComputerUseObservation> = {}): ComputerUseObservation {
+function observation(
+  overrides: Partial<LegacyComputerUseObservation> = {},
+): LegacyComputerUseObservation {
   return {
     app: notes,
     capturedAt: "2026-09-21T10:00:00.000Z",
@@ -312,7 +314,7 @@ async function dispatch(
   target: ComputerUseCallable,
   context: ComputerUseContext,
   send: (lease: ComputerUseLease) => Promise<ComputerUseDispatch>,
-): Promise<ComputerUseObservation> {
+): Promise<LegacyComputerUseObservation> {
   const lease = await service.prepare(target, context);
   let sent;
   try {
@@ -352,7 +354,7 @@ function observe(
   target: ComputerUseCallable,
   context: ComputerUseContext,
   signal?: AbortSignal,
-): Promise<ComputerUseObservation> {
+): Promise<LegacyComputerUseObservation> {
   return dispatch(service, target, context, (lease) =>
     service.sendWindowOperation(
       lease,

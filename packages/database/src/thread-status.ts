@@ -10,7 +10,7 @@ import {
 } from "@opensteer/core";
 import type { Kysely, Transaction } from "kysely";
 import { assignmentStateEventsForThread } from "./assignment-store.js";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { appendHostDeploymentEvent } from "./deployment-events.js";
 
 /** Callers hold the fences in ./lock-order.ts; Run and Request facts are unlocked reads. */

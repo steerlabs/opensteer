@@ -1,9 +1,9 @@
 import {
-  HostedBrowserBootstrapSchema,
+  LegacyHostedBrowserBootstrapSchema as HostedBrowserBootstrapSchema,
   HostedBrowserSessionSchema,
-  type HostedBrowserBootstrap,
+  type LegacyHostedBrowserBootstrap as HostedBrowserBootstrap,
 } from "@opensteer/protocol";
-import type { HostSnapshot, PersonalTabLineage } from "../host/client.js";
+import type { LegacyHostSnapshot as HostSnapshot, PersonalTabLineage } from "../host/client.js";
 import { seedBrowserSession, seedBrowserSnapshot } from "./browser-snapshot.js";
 
 export type BrowserBootstrapFixture = Omit<

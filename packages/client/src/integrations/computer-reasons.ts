@@ -1,4 +1,4 @@
-import type { MachineSummary } from "@opensteer/protocol";
+import type { LegacyMachineSummary } from "@opensteer/protocol";
 
 /** Why no picture of a computer's app or phone can be asked for now, before any is asked. */
 export type ComputerNotReady =
@@ -24,7 +24,7 @@ export type ComputerNotReady =
  * reason: the display socket is admitted on its own and says when it drops.
  */
 export function computerReadiness(input: {
-  readonly machine: MachineSummary | null | undefined;
+  readonly machine: LegacyMachineSummary | null | undefined;
   readonly phone: boolean;
   readonly supported: boolean;
 }): ComputerNotReady | null {
@@ -52,7 +52,7 @@ export function computerReadiness(input: {
  * that offers to open one can say the same before anything is opened.
  */
 export function ownerViewComputerReadiness(
-  machine: MachineSummary | null | undefined,
+  machine: LegacyMachineSummary | null | undefined,
   phone: boolean,
 ): ComputerNotReady | null {
   return computerReadiness({
@@ -75,7 +75,7 @@ export function ownerViewComputerReadiness(
  * and picks up again, but a new one would show nothing.
  */
 export function newOwnerViewReadiness(
-  machine: MachineSummary | null | undefined,
+  machine: LegacyMachineSummary | null | undefined,
   phone: boolean,
 ): ComputerNotReady | null {
   const readiness = ownerViewComputerReadiness(machine, phone);

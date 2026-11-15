@@ -5,12 +5,12 @@ import {
   createId,
 } from "@opensteer/core";
 import {
-  HostAppRequestSchema,
+  LegacyHostAppRequestSchema as HostAppRequestSchema,
   CorrelationIdSchema,
   HarnessInstanceCatalogSchema,
   RunnerCommandSchema,
   type HarnessSourceDescriptor,
-  type HostToRunnerMessage,
+  type LegacyHostToRunnerMessage as HostToRunnerMessage,
   type RunnerAuxiliaryTicketClaims,
   type RunnerCommand,
   type RunnerConnectionFence,

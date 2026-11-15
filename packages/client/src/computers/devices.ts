@@ -2,7 +2,7 @@ import type { AuthSessionSummary } from "@opensteer/core";
 import {
   deviceAccess,
   type DesktopDeviceMembership,
-  type MachineSummary,
+  type LegacyMachineSummary,
   type OtherDevice,
 } from "@opensteer/protocol";
 import { hostsDeployment, isServiceMachine } from "./computers.js";
@@ -50,7 +50,7 @@ export function deviceMembership(input: DeviceMembershipInput): DeviceMembership
 }
 
 export interface DeviceRow {
-  readonly machine: MachineSummary;
+  readonly machine: LegacyMachineSummary;
   readonly sessions: readonly AuthSessionSummary[];
   readonly label: string;
   readonly status: string;
@@ -68,14 +68,14 @@ export interface DevicesView {
   readonly otherDevices: readonly OtherDevice[];
 }
 export function devicesView(input: {
-  readonly machines: readonly MachineSummary[];
+  readonly machines: readonly LegacyMachineSummary[];
   readonly sessions: readonly AuthSessionSummary[];
   readonly hereId: string | null;
   readonly otherDevices?: readonly OtherDevice[];
 }): DevicesView {
   const machines = input.machines.filter((machine) => !isServiceMachine(machine));
   const ids = new Set(machines.map((machine) => machine.id));
-  const rank = (machine: MachineSummary) =>
+  const rank = (machine: LegacyMachineSummary) =>
     machine.id === input.hereId ? 0 : isHomeDevice(machine) ? 1 : 2;
   return {
     devices: [...machines]
@@ -111,7 +111,7 @@ export function devicesView(input: {
   };
 }
 
-export function isHomeDevice(machine: MachineSummary): boolean {
+export function isHomeDevice(machine: LegacyMachineSummary): boolean {
   return machine.kind === "home" || hostsDeployment(machine);
 }
 
@@ -134,11 +134,11 @@ export type DeviceAccessRow =
  * last advertised modules while it is offline.
  */
 export function deviceAccessRows(
-  machine: MachineSummary,
+  machine: LegacyMachineSummary,
   devicesAvailable: boolean,
 ): readonly DeviceAccessRow[] {
   const home = isHomeDevice(machine);
-  const granted = (module: MachineSummary["allowedModules"][number]) =>
+  const granted = (module: LegacyMachineSummary["allowedModules"][number]) =>
     machine.allowedModules.includes(module);
   const offered: Readonly<Record<DeviceCapability, boolean>> = {
     browser: home || granted("browser"),

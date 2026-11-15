@@ -1,6 +1,11 @@
 import { clipText, plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { requestTitleText, type AssignmentSummary, type ExecutionNodeView } from "@opensteer/core";
-import type { AssignmentEntry, HostSnapshot, NodeEntry, TranscriptEntry } from "./client.js";
+import type {
+  AssignmentEntry,
+  LegacyHostSnapshot as HostSnapshot,
+  NodeEntry,
+  TranscriptEntry,
+} from "./client.js";
 import { workSummary, type Turn, type WorkEntry } from "./agent-activity-model.js";
 import {
   assignmentPresentation,

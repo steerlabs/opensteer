@@ -83,7 +83,7 @@ export function createHostApiHandlers(
     | "browser.history.get"
     | "browser.history.icons.get"
     | "thread.browserUsage.get"
-    | "apps.get"
+    | "apps.legacy.get"
     | "apps.view"
     | "attachment.get"
     | "attachment.upload"
@@ -93,7 +93,7 @@ export function createHostApiHandlers(
     | "teams.links.list"
     | "teams.threadTask.get"
     | "teams.replyTask.get"
-    | "bootstrap.get"
+    | "bootstrap.legacy.get"
     | "harness.authentication.get"
     | "automaticModels.get"
     | "harness.catalog.refresh"
@@ -105,7 +105,7 @@ export function createHostApiHandlers(
     | "voice.say"
     | "voice.stop"
     | "machine.access.history"
-    | "machines.list"
+    | "machines.legacy.list"
     | "requests.list"
     | "run.attempts.list"
     | "tasks.list"
@@ -130,6 +130,13 @@ export function createHostApiHandlers(
   phoneTabs?: PhoneTabs,
 ): Omit<
   HostApiHandlers,
+  | "machines.list"
+  | "computer.app.windows"
+  | "bootstrap.get"
+  | "tabs.get"
+  | "tabs.state"
+  | "apps.list"
+  | "apps.get"
   | "personal.remoteAccess.get"
   | "connections.list"
   | "connections.authorization.get"
@@ -137,7 +144,7 @@ export function createHostApiHandlers(
 > {
   return {
     "plugins.overview.get": async (_input, context) => {
-      const machines = await coreHandlers["machines.list"]({}, context);
+      const machines = await coreHandlers["machines.legacy.list"]({}, context);
       if (!machines.ok) return machines;
       const overview = await integrationPlatform.platform.store.settings.overview(
         requireSession(context).user.id,
@@ -150,7 +157,7 @@ export function createHostApiHandlers(
       return rpcSuccess({ ...overview, rows: overview.rows.map(listedPluginRow) });
     },
     "plugins.detail.get": async (input, context) => {
-      const machines = await coreHandlers["machines.list"]({}, context);
+      const machines = await coreHandlers["machines.legacy.list"]({}, context);
       if (!machines.ok) return machines;
       const detail = await integrationPlatform.platform.store.settings.detail(
         requireSession(context).user.id,
@@ -202,9 +209,9 @@ export function createHostApiHandlers(
           userId: owner,
           limit: 100,
         }),
-      machines: coreHandlers["machines.list"],
+      machines: coreHandlers["machines.legacy.list"],
     }),
-    "computer.app.windows": async (input, context) => {
+    "computer.app.legacy.windows": async (input, context) => {
       const owner = requireSession(context).user.id;
       if (!computerViews)
         throw new OpensteerError({
@@ -305,6 +312,13 @@ export function createHostApiHandlers(
     },
   } satisfies Omit<
     HostApiHandlers,
+    | "machines.list"
+    | "computer.app.windows"
+    | "bootstrap.get"
+    | "tabs.get"
+    | "tabs.state"
+    | "apps.list"
+    | "apps.get"
     | "personal.remoteAccess.get"
     | "connections.list"
     | "connections.authorization.get"

@@ -5,7 +5,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import { createId } from "../packages/core/src/index.js";
 import {
   RunnerConnectionFenceSchema,
-  type AppRuntimeSpec,
+  type LegacyAppRuntimeSpec as AppRuntimeSpec,
 } from "../packages/protocol/src/index.js";
 import type { RunnerIdentity } from "../packages/orchestration/src/index.js";
 import { closeHttpServerNow } from "@opensteer/shared/httpServer";

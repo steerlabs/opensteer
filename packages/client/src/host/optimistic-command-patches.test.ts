@@ -7,7 +7,12 @@ import {
 } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
-import type { BrowserSessionSummary, HostSnapshot, MessageEntry, ThreadSummary } from "./client.js";
+import type {
+  BrowserSessionSummary,
+  LegacyHostSnapshot as HostSnapshot,
+  MessageEntry,
+  ThreadSummary,
+} from "./client.js";
 import { applyOptimisticCommandPatch, withThreadNames } from "./optimistic-command-patches.js";
 
 const now = "2026-08-09T20:00:00.000Z";

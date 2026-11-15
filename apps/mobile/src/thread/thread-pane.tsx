@@ -27,7 +27,7 @@ import {
   withoutOwnAssignment,
   type BrowserTabDestination,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type ConversationRow,
   type MessageEntry,
   type RequesterLink,

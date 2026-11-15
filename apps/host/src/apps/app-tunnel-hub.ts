@@ -2,7 +2,10 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type { Duplex } from "node:stream";
 import { createWebSocketStream, type WebSocket } from "ws";
 import type { RunnerRegistry } from "@opensteer/orchestration";
-import type { AppRuntimeSpec, RunnerAppResult } from "@opensteer/protocol";
+import type {
+  LegacyAppRuntimeSpec as AppRuntimeSpec,
+  LegacyRunnerAppResult as RunnerAppResult,
+} from "@opensteer/protocol";
 import { sameRunnerConnectionFence } from "@opensteer/protocol";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 

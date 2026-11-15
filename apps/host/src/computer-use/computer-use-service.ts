@@ -35,14 +35,14 @@ import {
   androidPhoneDefinitionId,
   ComputerUseActParamsSchema,
   ComputerUseWindowsParamsSchema,
-  ComputerUseBindParamsSchema,
+  LegacyComputerUseBindParamsSchema as ComputerUseBindParamsSchema,
   ComputerUseDispatchObserveParamsSchema,
-  ComputerUseWindowsResultSchema,
-  ComputerUseBindResultSchema,
-  type WindowInfo,
+  LegacyComputerUseWindowsResultSchema,
+  LegacyComputerUseBindResultSchema,
+  type LegacyWindowInfo as WindowInfo,
   ComputerUseActResultSchema,
   ComputerUseInstalledAppsResultSchema,
-  ComputerUseObservationResultSchema,
+  LegacyComputerUseObservationResultSchema,
   ComputerUseResolveAppResultSchema,
   computerAppMaxTimeoutMs,
   computerUseMaxSessionApps,
@@ -55,12 +55,12 @@ import {
   type ComputerUseErrorCode,
   type ComputerUseHelperEvent,
   type ComputerUseInstalledAppsParams,
-  type ComputerUseObservation,
+  type LegacyComputerUseObservation,
   type ComputerUseOperation,
   type HostIntegrationsComputerUse,
   type ComputerUseResolvedApp,
   type ComputerUseSessionId,
-  type ComputerUseSessionSummary,
+  type LegacyComputerUseSessionSummary,
 } from "@opensteer/protocol";
 import { z } from "zod";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -284,7 +284,7 @@ interface DispatchOutcome {
 export type ComputerUseDispatchResult =
   | (DispatchOutcome & {
       readonly kind: "app";
-      readonly observation: ComputerUseObservation | null;
+      readonly observation: LegacyComputerUseObservation | null;
     })
   | (DispatchOutcome & {
       readonly kind: "display";
@@ -1855,7 +1855,7 @@ export class ComputerUseService {
   // ---- projection ------------------------------------------------------
 
   /** Every live session on one computer. */
-  sessionsForRunner(runnerId: RunnerId): ComputerUseSessionSummary[] {
+  sessionsForRunner(runnerId: RunnerId): LegacyComputerUseSessionSummary[] {
     return [...this.#sessions.values()]
       .filter(
         (session) => session.runnerId === runnerId && session.confirmed && holdsAnything(session),
@@ -2046,7 +2046,7 @@ function summarize(
   session: Session,
   actingAppKeys: string[],
   actingDisplay: boolean,
-): ComputerUseSessionSummary {
+): LegacyComputerUseSessionSummary {
   return {
     actionCount: session.actionCount,
     actingAppKeys,
@@ -2118,7 +2118,7 @@ function parseComputerUseResult(
     };
   }
   if (operation === "windows") {
-    const parsed = ComputerUseWindowsResultSchema.safeParse(value);
+    const parsed = LegacyComputerUseWindowsResultSchema.safeParse(value);
     if (!parsed.success) throw unreadableObservation(operation, scope);
     return {
       kind: "app",
@@ -2129,7 +2129,7 @@ function parseComputerUseResult(
     };
   }
   if (operation === "bind") {
-    const parsed = ComputerUseBindResultSchema.safeParse(value);
+    const parsed = LegacyComputerUseBindResultSchema.safeParse(value);
     if (!parsed.success) throw unreadableObservation(operation, scope);
     return {
       kind: "app",
@@ -2140,7 +2140,7 @@ function parseComputerUseResult(
     };
   }
   if (operation === "observe") {
-    const parsed = ComputerUseObservationResultSchema.safeParse(value);
+    const parsed = LegacyComputerUseObservationResultSchema.safeParse(value);
     if (!parsed.success) throw unreadableObservation("observe", scope);
     return { error: null, kind: "app", observation: parsed.data.observation, performed: null };
   }

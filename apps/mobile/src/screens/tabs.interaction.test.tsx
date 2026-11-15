@@ -11,7 +11,7 @@ import {
   placeHasAgents,
   placeList,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type PlaceItem,
 } from "@opensteer/client/host";
 import { MockHostClient, mockBrowserSignInRequest } from "@opensteer/client/mock";

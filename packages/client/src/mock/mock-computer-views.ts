@@ -1,17 +1,17 @@
 import {
   computerAppIdentityKey,
-  ComputerViewSchema,
+  LegacyComputerViewSchema as ComputerViewSchema,
   computerViewIdleMs,
   computerViewMaxPerOwner,
   type ApprovedComputerApp,
-  type ComputerView,
-  type ComputerViewTarget,
+  type LegacyComputerView as ComputerView,
+  type LegacyComputerViewTarget as ComputerViewTarget,
   type HostApiCommand,
-  type OwnerWindowInfo,
+  type LegacyOwnerWindowInfo as OwnerWindowInfo,
 } from "@opensteer/protocol";
 import { computerAppIdentitiesEqual } from "@opensteer/integration-core";
 import type { IntegrationConnectionSummary } from "@opensteer/integration-core";
-import { HostClientRequestError, type HostSnapshot } from "../host/client.js";
+import { HostClientRequestError, type LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
 
 export class MockComputerViews {
   readonly #snapshot: () => HostSnapshot;

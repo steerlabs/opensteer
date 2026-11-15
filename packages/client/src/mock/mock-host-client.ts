@@ -1,5 +1,6 @@
+import { NeedsYouPageSchema } from "@opensteer/protocol";
 import { localReference } from "../references/local.js";
-import { parseReferenceHref, type ReferenceId } from "@opensteer/core";
+import { parseLegacyReferenceHref, type ReferenceId } from "@opensteer/core";
 import { AssetUrlStore } from "../host/asset-urls.js";
 import { ReferenceStore } from "../references/store.js";
 import { TranscriptFileController } from "../host/transcript-files.js";
@@ -10,7 +11,7 @@ import { hostsDeployment } from "../computers/computers.js";
 import { heldThread, listedRowThreadId } from "../host/task-list.js";
 import { familyAutomations } from "../host/task-family.js";
 import {
-  DeploymentSnapshotSchema,
+  LegacyDeploymentSnapshotSchema as DeploymentSnapshotSchema,
   parseTeamLinkOffer,
   PersonalTeamLinkSchema,
   type PersonalTeamLink,
@@ -71,7 +72,7 @@ import { MockDesktopUpdates, type MockDesktopUpdateScenario } from "./mock-deskt
 import { MockSettingsFixtures } from "./settings-fixtures.js";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import { BrowserCursorStore } from "../host/browser-cursor.js";
-import type { PersonShowMessage, PluginRow } from "@opensteer/protocol";
+import type { LegacyPersonShowMessage as PersonShowMessage, PluginRow } from "@opensteer/protocol";
 import { RunPlaceStore } from "../host/run-place.js";
 import { compareTaskOrder } from "../host/task-entries.js";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
@@ -190,7 +191,7 @@ import type { PasswordSignInRequestResponse } from "@opensteer/protocol";
 import {
   AgentPhoneHostTargetSchema,
   BrowserTabGroupColorSchema,
-  ComputerUseSessionSummarySchema,
+  LegacyComputerUseSessionSummarySchema,
   HarnessInstanceCatalogSchema,
   type HarnessInstallation,
   HostApiErrorSchema,
@@ -218,7 +219,7 @@ import {
   type HostApiHandlers,
   type HostApiServerContext,
   type MachineAccessPolicy,
-  type MachineSummary,
+  type LegacyMachineSummary,
   type ModelServer,
   type ThreadMessagePage,
 } from "@opensteer/protocol";
@@ -260,7 +261,7 @@ import type {
   HarnessAuthenticationEnvelope,
   HarnessSummary,
   HostClient,
-  HostSnapshot as PublicHostSnapshot,
+  LegacyHostSnapshot as PublicHostSnapshot,
   BrowserSessionSummary as PublicBrowserSessionSummary,
   MachineAccessHistoryPage,
   MachineAccessUpdateOutcome,
@@ -417,7 +418,7 @@ const mockstorageThreadId = "thr_00000000-0000-4000-8000-000000000002";
 const mockComputerUseRequestId = RequestIdSchema.parse("req_0192f4a1-6666-4000-8000-000000000006");
 const mockComputerUseSetupRequestId = "0192f4a1-4444-4000-8000-000000000004";
 const mockComputerUseReason = "Put the architecture decisions into the Q4 planning sheet.";
-const mockComputerUseSession = ComputerUseSessionSummarySchema.parse({
+const mockComputerUseSession = LegacyComputerUseSessionSummarySchema.parse({
   actionCount: 12,
   apps: [mockComputerUseApps.notes],
   display: false,
@@ -437,7 +438,7 @@ const mockSlackOnMacMini = {
   computer: "Mac mini",
   runnerId: mockMessagesRunnerId,
 } as const;
-const mockSlackLiveSession = ComputerUseSessionSummarySchema.parse({
+const mockSlackLiveSession = LegacyComputerUseSessionSummarySchema.parse({
   actionCount: 7,
   apps: [{ bundleId: mockSlackOnMacMini.bundleId, displayName: "Slack", teamId: "BQR82RBBHL" }],
   display: false,
@@ -451,7 +452,7 @@ const mockSlackLiveSession = ComputerUseSessionSummarySchema.parse({
  * The preview's agent phone, held whole by one Thread: a display session names
  * no app, because it has the phone's entire screen.
  */
-const mockAgentPhoneSession = ComputerUseSessionSummarySchema.parse({
+const mockAgentPhoneSession = LegacyComputerUseSessionSummarySchema.parse({
   actionCount: 5,
   apps: [],
   display: true,
@@ -1486,7 +1487,7 @@ function mockEditable(item: PendingMockInput): boolean {
  * joined only so agents can reach it over SSH; and a messaging service that is
  * enrolled but away.
  */
-const mockMachines: readonly MachineSummary[] = [
+const mockMachines: readonly LegacyMachineSummary[] = [
   {
     tabOpenedAt: null,
     // The Mac this deployment runs on: it offers Messages and can read it.
@@ -1913,7 +1914,7 @@ function mockNeedsYou(
     throw new Error("Invalid Needs-you cursor.");
   const entries = rows
       .slice(start, start + limit)
-      .map((entry) => hostApi["needsYou.get"].success.shape.entries.element.parse(entry)),
+      .map((entry) => NeedsYouPageSchema.shape.entries.element.parse(entry)),
     end = start + entries.length;
   return {
     count: rows.length,
@@ -1955,7 +1956,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
           ok: false,
           error: {
             code: "internal",
-            message: "Reference lookup temporarily unavailable",
+            message: "LegacyReference lookup temporarily unavailable",
             retryable: true,
           },
         };
@@ -1963,7 +1964,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       return rpcSuccess(
         hostApi["references.resolve"].success.parse({
           results: [...new Set(ids)].map((id) => {
-            const reference = parseReferenceHref(`opensteer:${id}`)!;
+            const reference = parseLegacyReferenceHref(`opensteer:${id}`)!;
             if (reference.kind === "request") {
               const request = client.referenceRequest(id);
               if (request && heldThread(snapshot, request.originatingThreadId))
@@ -2037,7 +2038,15 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     "connections.authorization.get": async ({ requestId }) =>
       rpcSuccess(client.connectionConsent(requestId)),
     "personal.remoteAccess.get": async () => rpcSuccess(client.remoteAdministration),
+    "apps.legacy.get": unsupportedMockRpc,
+    "tabs.get": unsupportedMockRpc,
+    "tabs.state": async () =>
+      rpcSuccess({ tabs: [], layout: { revision: 0, items: [] }, complete: true }),
+    "apps.list": async () => rpcSuccess({ apps: [] }),
     "apps.get": unsupportedMockRpc,
+    "bootstrap.get": unsupportedMockRpc,
+    "machines.list": async () => rpcSuccess({ machines: [] }),
+    "computer.app.windows": unsupportedMockRpc,
     "apps.view": unsupportedMockRpc,
     "attachment.get": async ({ attachmentId }) => rpcSuccess(client.getAttachment(attachmentId)),
     "attachment.upload": async ({ attachmentId }, context) =>
@@ -2210,8 +2219,8 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       if (!client.places) return unsupportedMockRpc();
       return rpcSuccess({ favicon: await client.places.icon(sessionId, iconRef) });
     },
-    "bootstrap.get": async () =>
-      rpcSuccess(hostApi["bootstrap.get"].success.parse(client.bootstrap())),
+    "bootstrap.legacy.get": async () =>
+      rpcSuccess(hostApi["bootstrap.legacy.get"].success.parse(client.bootstrap())),
     "channel.connection.check": async (input) =>
       rpcSuccess(await client.checkChannelConnection(input.connectionId)),
     "channels.get": async () =>
@@ -2321,7 +2330,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       rpcSuccess({
         grants: await client.loadIntegrationGrants(client.getSnapshot().deploymentId!),
       }),
-    "computer.app.windows": async (input) => {
+    "computer.app.legacy.windows": async (input) => {
       try {
         return rpcSuccess({
           windows: client.computerViews?.windows(input.machineId, input.app) ?? [],
@@ -2374,7 +2383,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       rpcSuccess(hostApi["integrations.get"].success.parse(await client.loadIntegrations())),
     // The preview keeps no durable session history to page back through.
     "machine.access.history": async () => rpcSuccess({ nextCursor: null, sessions: [] }),
-    "machines.list": async () => rpcSuccess({ machines: await client.loadMachines() }),
+    "machines.legacy.list": async () => rpcSuccess({ machines: await client.loadMachines() }),
     // The preview holds every task, so a page is a slice of what it holds.
     "tasks.list": async (input) => {
       const snapshot = client.getSnapshot();
@@ -3594,17 +3603,17 @@ async function executeMockCommand(
         hostApi["commands.dispatch"].success.parse({ type: command.type, closed, failed }),
       );
     }
-    case "tab.reopen": {
+    case "legacy.tab.reopen": {
       if (!client.places) return unsupportedMockRpc();
       const result = client.places.reopen(command.idempotencyKey);
       client.setTabGroups(result.layout);
       return rpcSuccess(result);
     }
-    case "tab.activate":
+    case "legacy.tab.activate":
       return client.places
         ? rpcSuccess(client.places.activatePersonalTab(command.tabId))
         : unsupportedMockRpc();
-    case "tab.close":
+    case "legacy.tab.close":
       return unsupportedMockRpc();
     case "browser.tab.open": {
       if (!client.places) return unsupportedMockRpc();
@@ -4053,7 +4062,7 @@ export class MockHostClient implements HostClient {
           .getSnapshot()
           .browserGroups!.find((value) => value.session.id === dormant.session.id)!;
         return {
-          type: "tab.activate",
+          type: "legacy.tab.activate",
           groupId: group.id,
           sessionId: group.session.id,
           session: group.session,
@@ -4579,11 +4588,11 @@ export class MockHostClient implements HostClient {
   readonly reopenPersonalTab = async () => {
     const result = unwrapRpcResult(
       await this.rpc["commands.dispatch"]({
-        type: "tab.reopen",
+        type: "legacy.tab.reopen",
         idempotencyKey: crypto.randomUUID(),
       }),
     );
-    if (result.type !== "tab.reopen") throw new Error("Unexpected tab reopen result.");
+    if (result.type !== "legacy.tab.reopen") throw new Error("Unexpected tab reopen result.");
     this.#tabGroups.receive(result.layout);
     return result;
   };
@@ -4813,7 +4822,7 @@ export class MockHostClient implements HostClient {
    * A computer going offline or coming back. A real Host hears it from that
    * computer's own connection, never from a client, so the preview takes it here.
    */
-  setMachineStatus(machineId: string, status: MachineSummary["status"]): void {
+  setMachineStatus(machineId: string, status: LegacyMachineSummary["status"]): void {
     this.#state.setMachineStatus(machineId, status);
   }
 
@@ -6945,7 +6954,7 @@ class MockHostState {
   }
 
   /** As the Host hears a computer go and come back: its status alone changes. */
-  setMachineStatus(machineId: string, status: MachineSummary["status"]): void {
+  setMachineStatus(machineId: string, status: LegacyMachineSummary["status"]): void {
     this.update({
       ...this.snapshot,
       machines: this.snapshot.machines.map((machine) =>
@@ -9313,7 +9322,7 @@ class MockHostState {
     };
   }
 
-  private ownedComputer(runnerId: string): MachineSummary {
+  private ownedComputer(runnerId: string): LegacyMachineSummary {
     const machine = this.snapshot.machines.find((candidate) => candidate.id === runnerId);
     if (!machine || (machine.ownership !== "mine" && machine.ownership !== "deployment"))
       throw new Error("Only this computer’s owner can request app setup.");
@@ -9323,8 +9332,8 @@ class MockHostState {
   private updateComputerUse(
     runnerId: string,
     change: (
-      report: NonNullable<MachineSummary["computerUse"]>,
-    ) => NonNullable<MachineSummary["computerUse"]>,
+      report: NonNullable<LegacyMachineSummary["computerUse"]>,
+    ) => NonNullable<LegacyMachineSummary["computerUse"]>,
   ): void {
     this.update({
       ...this.snapshot,

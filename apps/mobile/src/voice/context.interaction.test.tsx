@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 import { placeList } from "@opensteer/client/host";
-import { PersonShowMessageSchema, computerAppIdentityKey } from "@opensteer/protocol";
+import { LegacyPersonShowMessageSchema, computerAppIdentityKey } from "@opensteer/protocol";
 import { createId } from "@opensteer/core";
 import { VoiceController } from "@opensteer/client/voice";
 import { VoiceProvider } from "./context.js";
@@ -86,7 +86,7 @@ async function mount() {
       </VoiceProvider>,
     ),
   );
-  const message = PersonShowMessageSchema.parse({
+  const message = LegacyPersonShowMessageSchema.parse({
     type: "host.show",
     runId: createId("run"),
     threadId: source.id,
@@ -111,7 +111,7 @@ it.each(["app", "phone"] as const)(
         : { kind, machineId: machine.id, display: "main" };
     await act(async () =>
       f.host.receivePersonShow(
-        PersonShowMessageSchema.parse({
+        LegacyPersonShowMessageSchema.parse({
           ...f.message,
           runId: session.runId,
           target: { place, runId: session.runId },
@@ -164,7 +164,7 @@ it("opens the exact requested tab from the active Thread", async () => {
   const { sessionId, tabId } = place.destination;
   await act(async () =>
     f.host.receivePersonShow(
-      PersonShowMessageSchema.parse({
+      LegacyPersonShowMessageSchema.parse({
         ...f.message,
         threadId: source.id,
         target: { tabId },
@@ -260,7 +260,7 @@ it("opens what the voice call's agent shows from any screen, and ignores a call 
   let current: typeof call | null = call;
   vi.spyOn(VoiceController.prototype, "call").mockImplementation(() => current);
   const showed = vi.spyOn(VoiceController.prototype, "showed");
-  const message = PersonShowMessageSchema.parse({ ...f.message, ...call });
+  const message = LegacyPersonShowMessageSchema.parse({ ...f.message, ...call });
   // Settings names no conversation, and the call's own Thread is never on screen.
   state.route = { key: "settings", name: "Settings" };
   await act(async () => f.host.receivePersonShow(message));

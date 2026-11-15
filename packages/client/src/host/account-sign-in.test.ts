@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
 import type { HarnessSetupMethod, HostApiCommandOutput } from "@opensteer/protocol";
-import type { HarnessAuthenticationEnvelope, HostSnapshot } from "./client.js";
+import type {
+  HarnessAuthenticationEnvelope,
+  LegacyHostSnapshot as HostSnapshot,
+} from "./client.js";
 import { startAccountSignIn, type AccountSignInTarget } from "./harness-authentication.js";
 
 const environmentId = createId("environment");

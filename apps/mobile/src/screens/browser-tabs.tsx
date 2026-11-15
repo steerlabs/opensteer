@@ -11,7 +11,7 @@ import {
   transcriptPlaces,
   type BrowserThreadTabs,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type PlaceAgent,
   type PlaceEntry,
 } from "@opensteer/client/host";

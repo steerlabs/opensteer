@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { DeviceInitialAccess, MachineSummary } from "@opensteer/protocol";
+import type { DeviceInitialAccess, LegacyMachineSummary } from "@opensteer/protocol";
 import type {
   DesktopDeploymentSummary,
   DesktopDeviceMembership,
@@ -25,7 +25,7 @@ import {
   mutationIdempotencyKey,
   unwrapRpcResult,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
 } from "@opensteer/client/host";
 import { setUpThisDevice, type DeviceSetupStage, type FinishSetupCause } from "./device-setup.js";
 import {
@@ -51,7 +51,7 @@ export interface ThisDevice {
   readonly hosting: boolean;
   readonly membership: DeviceMembership;
   /** This Mac's own device row, once the Host lists it. */
-  readonly machine: MachineSummary | null;
+  readonly machine: LegacyMachineSummary | null;
   readonly machineId: string | null;
   readonly computerName: string;
   readonly homeName: string;

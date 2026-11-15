@@ -44,7 +44,7 @@ import {
   type DeploymentId,
   type UserId,
 } from "../packages/core/src/index.js";
-import type { DatabaseSchema } from "../packages/database/src/schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "../packages/database/src/schema.js";
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,

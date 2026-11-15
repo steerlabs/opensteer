@@ -1,12 +1,12 @@
 import {
   formatReferenceLink,
-  ReferenceSchema,
+  LegacyReferenceSchema as ReferenceSchema,
   teamPageUrl,
   type TeamPageTarget,
 } from "@opensteer/core";
 import type { TeamChannelSummary, TeamNotePreview, TeamTopic } from "@opensteer/protocol";
 import { markdownLink } from "@opensteer/shared/markdownLinks";
-import type { HostSnapshot } from "./client.js";
+import type { LegacyHostSnapshot as HostSnapshot } from "./client.js";
 import { heldThread } from "./task-list.js";
 import { referenceTitle } from "../references/local.js";
 

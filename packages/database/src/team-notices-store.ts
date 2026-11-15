@@ -1,7 +1,7 @@
 import { createId, type UserId } from "@opensteer/core";
 import { TeamNoticeSchema } from "@opensteer/protocol";
 import type { Kysely, Transaction } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 
 export async function addTeamSelfAddNotices(
   transaction: Transaction<DatabaseSchema>,

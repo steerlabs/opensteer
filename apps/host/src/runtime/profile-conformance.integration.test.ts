@@ -82,7 +82,7 @@ integration("Personal configuration conformance", () => {
     expect(anonymous.statusCode).toBe(401);
     const bootstrap = await testRpcData(
       host.origin,
-      "bootstrap.get",
+      "bootstrap.legacy.get",
       {},
       { headers: host.ownerHeaders },
     );

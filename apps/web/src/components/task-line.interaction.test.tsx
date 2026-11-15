@@ -10,7 +10,11 @@ import {
   type AssignmentSummary,
   type WaitingRequest,
 } from "@opensteer/core";
-import type { AssignmentEntry, HostSnapshot, TranscriptEntry } from "@opensteer/client/host";
+import type {
+  AssignmentEntry,
+  LegacyHostSnapshot as HostSnapshot,
+  TranscriptEntry,
+} from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { AppShell } from "./app-shell.js";
 import { HomeRoute } from "./home/home-route.js";

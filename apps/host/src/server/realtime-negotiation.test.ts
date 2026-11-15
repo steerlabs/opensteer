@@ -2,9 +2,9 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createId, DeclinedRequestSchema, SequenceSchema, zeroSequence } from "@opensteer/core";
 import { apiVersionQueryParameter, hostApiVersion } from "@opensteer/deployment-authority";
 import {
-  HostToClientMessageSchema,
+  LegacyHostToClientMessageSchema as HostToClientMessageSchema,
   unsupportedVersionCloseCode,
-  type HostToClientMessage,
+  type LegacyHostToClientMessage as HostToClientMessage,
 } from "@opensteer/protocol";
 import { generateKeyPairSync } from "node:crypto";
 import type { AddressInfo } from "node:net";

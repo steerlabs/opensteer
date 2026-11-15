@@ -48,7 +48,7 @@ import { revokeComputerConnectionsInTransaction } from "./integration-platform-s
 import { databaseOperationOptions } from "./operation-budget.js";
 import { finalizeRunTransaction } from "./run-finalization.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
-import { type DatabaseSchema } from "./schema.js";
+import { type LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { type ChannelLinks, jsonValue } from "./store-primitives.js";
 export const configuredBootstrapEnrollmentLifetimeMs = 24 * 60 * 60 * 1_000;
 export interface RunnerAuthenticationRecord {

@@ -13,7 +13,7 @@ import {
   nextMarkColor,
   type EventData,
 } from "@opensteer/core";
-import type { MachineSummary } from "@opensteer/protocol";
+import type { LegacyMachineSummary } from "@opensteer/protocol";
 import {
   BrowserContextCandidateSchema,
   BrowserHistoryUrlSchema,
@@ -24,7 +24,7 @@ import {
   BrowserTabIconResultSchema,
   BrowserTabOpenCommandSchema,
   BrowserTabOpenResultSchema,
-  ComputerUseSessionSummarySchema,
+  LegacyComputerUseSessionSummarySchema,
   HostedBrowserSessionSchema,
   PlaceActivitySchema,
   PlaceIdentitySchema,
@@ -339,7 +339,7 @@ export function seedMockPlaces(
         occupants: order === 0 ? [occupant(first.id)] : [],
       })),
     );
-  const machines: MachineSummary[] = snapshot.machines.map((machine) => ({
+  const machines: LegacyMachineSummary[] = snapshot.machines.map((machine) => ({
     ...machine,
     computerUse: machine.computerUse
       ? {
@@ -378,7 +378,7 @@ export function seedMockPlaces(
         computerUse: {
           ...mac.computerUse,
           sessions: [
-            ComputerUseSessionSummarySchema.parse({
+            LegacyComputerUseSessionSummarySchema.parse({
               actionCount: 3,
               apps: [{ bundleId: "com.apple.Keynote", displayName: "Keynote", teamId: null }],
               display: false,
@@ -1478,7 +1478,7 @@ export class MockPlaceWorld {
       browserTabGroups: layout,
     });
     const result = PersonalTabReopenResultSchema.parse({
-      type: "tab.reopen",
+      type: "legacy.tab.reopen",
       tabId: id,
       groupId: group.id,
       sessionId: group.session.id,
@@ -1538,7 +1538,7 @@ export class MockPlaceWorld {
     });
     this.#frames();
     return PersonalTabActivateResultSchema.parse({
-      type: "tab.activate",
+      type: "legacy.tab.activate",
       tabId,
       groupId: lineage.id,
       sessionId: session.id,

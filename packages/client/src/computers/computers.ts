@@ -2,7 +2,7 @@ import type {
   IntegrationConnectionSummary,
   IntegrationDefinitionSummaryView,
 } from "@opensteer/integration-core";
-import type { MachineSummary, RunnerDevicePlatform } from "@opensteer/protocol";
+import type { LegacyMachineSummary, RunnerDevicePlatform } from "@opensteer/protocol";
 import { formatRelativeTime } from "../host/thread-list-model.js";
 import { computerAppRows } from "../integrations/computer-apps.js";
 import {
@@ -24,14 +24,14 @@ import {
 /** Where the Deployment runs: the top of the page, never a row. */
 export interface ComputersHome {
   readonly kind: "mac";
-  readonly machine: MachineSummary | null;
+  readonly machine: LegacyMachineSummary | null;
   readonly name: string;
 }
 export type ComputerGroupId = "others";
 
 export interface ComputerGroup {
   readonly id: ComputerGroupId;
-  readonly machines: readonly MachineSummary[];
+  readonly machines: readonly LegacyMachineSummary[];
   readonly title: string;
 }
 
@@ -41,13 +41,13 @@ export interface ComputersOverview {
   readonly groups: readonly ComputerGroup[];
   readonly home: ComputersHome;
   /** The Deployment's own browser and messaging, drawn with the home. */
-  readonly services: readonly MachineSummary[];
+  readonly services: readonly LegacyMachineSummary[];
 }
 
 export function computersOverview(input: {
   readonly deploymentName: string;
   readonly hereId: string | null;
-  readonly machines: readonly MachineSummary[];
+  readonly machines: readonly LegacyMachineSummary[];
   readonly publicOrigin: string | null;
 }): ComputersOverview {
   const main = input.machines.find(hostsDeployment) ?? null;
@@ -75,7 +75,7 @@ export function computersOverview(input: {
  * settles it, not the grant, because every computer a person adds carries
  * `messaging` too, for the conversations its own apps can carry.
  */
-export function isServiceMachine(machine: MachineSummary): boolean {
+export function isServiceMachine(machine: LegacyMachineSummary): boolean {
   return machine.ownership === "deployment" && !machine.allowedModules.includes("agents");
 }
 
@@ -84,16 +84,16 @@ export function isServiceMachine(machine: MachineSummary): boolean {
  * person, and nothing else on a Personal Deployment is Deployment-owned but a
  * service.
  */
-export function hostsDeployment(machine: MachineSummary): boolean {
+export function hostsDeployment(machine: LegacyMachineSummary): boolean {
   return machine.ownership === "deployment" && !isServiceMachine(machine);
 }
 
 /** The computer you are at, then the ones that are there, away, and expected. */
 export function sortComputers(
-  machines: readonly MachineSummary[],
+  machines: readonly LegacyMachineSummary[],
   hereId: string | null,
-): readonly MachineSummary[] {
-  const rank = (machine: MachineSummary) => {
+): readonly LegacyMachineSummary[] {
+  const rank = (machine: LegacyMachineSummary) => {
     if (hereId !== null && machine.id === hereId) return 0;
     if (machine.status === "online") return 1;
     return machine.status === "offline" ? 2 : 3;
@@ -120,7 +120,7 @@ export interface DeviceElsewhere {
  * cannot say where it is, as a browser cannot, is at none of them.
  */
 export function deviceElsewhere(
-  machines: readonly MachineSummary[],
+  machines: readonly LegacyMachineSummary[],
   deviceId: string | null,
   hereId: string | null,
 ): DeviceElsewhere | null {
@@ -158,7 +158,7 @@ export function orderDevices<Device extends { readonly id: string; readonly name
  * only when it next learns it was removed, so that is all it is promised.
  */
 export function deviceRemovalProfiles(
-  machine: Pick<MachineSummary, "id" | "name" | "status">,
+  machine: Pick<LegacyMachineSummary, "id" | "name" | "status">,
   profiles: readonly { readonly homeRunnerId: string | null; readonly name: string }[],
 ): string | null {
   const held = profiles.filter(({ homeRunnerId }) => homeRunnerId === machine.id);
@@ -174,7 +174,7 @@ export function deviceRemovalProfiles(
 
 /** The question asked before a device is removed, the same for every device. */
 export function deviceRemovalConfirmation(
-  machine: Pick<MachineSummary, "id" | "name" | "status">,
+  machine: Pick<LegacyMachineSummary, "id" | "name" | "status">,
   profiles: Parameters<typeof deviceRemovalProfiles>[1],
 ): { readonly confirm: string; readonly message: string; readonly title: string } {
   return {
@@ -193,7 +193,7 @@ export function deviceRemovalConfirmation(
 /** The picture a computer is drawn with: its own shape, or a plain computer. */
 export type ComputerGlyph = "laptop" | "desktop" | "compact" | "server" | "phone" | "computer";
 
-export function computerGlyph(machine: MachineSummary): ComputerGlyph {
+export function computerGlyph(machine: LegacyMachineSummary): ComputerGlyph {
   return machine.device?.form ?? "computer";
 }
 
@@ -206,7 +206,7 @@ export function phoneNoun(platform: RunnerDevicePlatform | null): "iPhone" | "ph
 }
 
 /** Whether a device lends its apps, as the Host last heard it advertise them. */
-export function deviceLendsApps(machine: Pick<MachineSummary, "modules">): boolean {
+export function deviceLendsApps(machine: Pick<LegacyMachineSummary, "modules">): boolean {
   return machine.modules.integrations !== undefined;
 }
 
@@ -221,7 +221,7 @@ export type DeviceBrowser =
   | { readonly kind: "not-offered" };
 
 export function deviceBrowser(
-  machine: Pick<MachineSummary, "allowedModules" | "id" | "modules" | "status">,
+  machine: Pick<LegacyMachineSummary, "allowedModules" | "id" | "modules" | "status">,
   profiles: readonly { readonly homeRunnerId: string | null }[],
 ): DeviceBrowser | null {
   if (!machine.allowedModules.includes("browser")) return null;
@@ -254,12 +254,12 @@ export function deviceBrowserDetail(browser: DeviceBrowser): string {
 
 export type ServiceGlyph = "browser" | "messaging";
 
-export function serviceGlyph(machine: MachineSummary): ServiceGlyph {
+export function serviceGlyph(machine: LegacyMachineSummary): ServiceGlyph {
   return machine.allowedModules.includes("browser") ? "browser" : "messaging";
 }
 
 /** What a service does, in the words it is listed by. */
-export function serviceLabel(machine: MachineSummary): string {
+export function serviceLabel(machine: LegacyMachineSummary): string {
   return serviceGlyph(machine) === "browser" ? "Web browser" : "Messaging";
 }
 
@@ -286,7 +286,7 @@ export interface ComputerAppsData {
  * commands. `apps` is null while the owner's app list is still loading.
  */
 export function computerUses(
-  machine: MachineSummary,
+  machine: LegacyMachineSummary,
   apps: ComputerAppsData | null,
 ): readonly ComputerUse[] {
   const uses: ComputerUse[] = [];
@@ -347,7 +347,7 @@ export const computerRoleLabel: Readonly<Record<ComputerRole, string>> = {
 };
 
 export function computerRole(
-  machine: MachineSummary,
+  machine: LegacyMachineSummary,
   uses: readonly ComputerUse[],
   appsLoaded: boolean,
 ): ComputerRole | null {
@@ -366,7 +366,7 @@ export interface ComputerStatus {
   readonly tone: ComputerStatusTone;
 }
 
-export function computerStatus(machine: MachineSummary, now = new Date()): ComputerStatus {
+export function computerStatus(machine: LegacyMachineSummary, now = new Date()): ComputerStatus {
   if (
     machine.status === "needs-update" ||
     machine.status === "updating" ||
@@ -407,7 +407,7 @@ export function computerStatus(machine: MachineSummary, now = new Date()): Compu
  * Where a phone reader chooses what agents can use on a computer it cannot
  * manage from here: a computer's own Opensteer, or the iPhone itself.
  */
-export function computerUsesChosenElsewhere(machine: MachineSummary): string {
+export function computerUsesChosenElsewhere(machine: LegacyMachineSummary): string {
   return isIphone(machine)
     ? `Choose which apps agents can use on ${machine.name} in Opensteer on that iPhone.`
     : `Choose which apps, folders and commands agents can use on ${machine.name} in Opensteer on a computer.`;

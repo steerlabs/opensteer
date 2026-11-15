@@ -1,4 +1,4 @@
-import type { HostSnapshot } from "./client.js";
+import type { LegacyHostSnapshot as HostSnapshot } from "./client.js";
 
 type ConnectionState = Pick<HostSnapshot, "connection" | "session" | "network">;
 type ConnectionSnapshot = ConnectionState & Pick<HostSnapshot, "connectionInterrupted">;

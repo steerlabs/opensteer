@@ -1,13 +1,13 @@
 import {
   formatComputerUseResultHead,
   type AndroidPhoneObservation,
-  type ComputerUseObservation,
+  type LegacyComputerUseObservation,
 } from "@opensteer/protocol";
 import type { ReplContent } from "../computer-use/computer-repl/messages.js";
 
 /** The REPL owns emission order; observations have one text header, then a picture. */
 export function computerObservationContent(
-  observation: ComputerUseObservation | AndroidPhoneObservation,
+  observation: LegacyComputerUseObservation | AndroidPhoneObservation,
   renderImages: boolean,
   computer: string,
 ): ReplContent[] {

@@ -50,7 +50,7 @@ const previewPersonalOrigin = "http://127.0.0.1:4310";
  * or reshaped member becomes a compile error here instead of an onboarding
  * preview that answers 501 to the only request the shell makes.
  */
-const bootstrapMember = "bootstrap.get";
+const bootstrapMember = "bootstrap.legacy.get";
 const bootstrapDeclaration = hostApi[bootstrapMember];
 const bootstrapPath = `/v1/rpc/${bootstrapMember}`;
 /** Bridge requests carry an origin-relative path; this base only makes it parseable. */

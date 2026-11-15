@@ -703,7 +703,7 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
       },
       { timeout: 10000 },
     );
-    expect((await personals[1]!.api["bootstrap.get"]({})).ok).toBe(true);
+    expect((await personals[1]!.api["bootstrap.legacy.get"]({})).ok).toBe(true);
   } finally {
     releasePublication.resolve();
     stopReplyRead?.();

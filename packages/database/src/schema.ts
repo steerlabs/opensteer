@@ -1089,7 +1089,7 @@ interface RequestCallJoinTable {
   originatingRunId: RunId;
   callId: string;
   requestId: RequestId;
-  createdAt: Generated<Timestamp>;
+  createdAt: Timestamp;
 }
 
 interface RequestContinuationTable {
@@ -1421,7 +1421,7 @@ interface BrowserHistoryIconTable {
   favicon: string;
 }
 
-interface PersonalTabTable {
+export interface LegacyPersonalTabTable {
   id: string;
   createdAt: Timestamp;
   groupId: BrowserSessionId;
@@ -1907,7 +1907,7 @@ interface ComputerUsePolicyTable {
 interface ComputerUseStopTable {
   runId: RunId;
   runnerId: RunnerId;
-  stoppedAt: Generated<Timestamp>;
+  stoppedAt: Timestamp;
 }
 
 interface ComputerAppSetupRequestTable {
@@ -1933,7 +1933,7 @@ interface ComputerAppSetupRequestTable {
   expiresAt: Timestamp;
 }
 
-export interface AppTable {
+export interface LegacyAppTable {
   tabOpenedAt: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   id: string;
 
@@ -1970,7 +1970,7 @@ export interface AgentConnectionTable {
   revokedAt: NullableTimestamp;
 }
 
-export interface DatabaseSchema {
+export interface LegacyDatabaseSchema {
   deviceSetupRetirements: { runnerId: RunnerId; publicKeyPem: string };
   agentHomeSkillInventory: {
     computerId: RunnerId;
@@ -2110,7 +2110,7 @@ export interface DatabaseSchema {
   deploymentEventState: DeploymentEventStateTable;
 
   agentConnections: AgentConnectionTable;
-  apps: AppTable;
+  apps: LegacyAppTable;
   appVersions: AppVersionTable;
   attachments: AttachmentTable;
   computerUsePolicies: ComputerUsePolicyTable;
@@ -2225,7 +2225,7 @@ export interface DatabaseSchema {
   browserHistoryEntries: BrowserHistoryEntryTable;
   browserHistoryIcons: BrowserHistoryIconTable;
   browserSessions: BrowserSessionTable;
-  personalTabs: PersonalTabTable;
+  personalTabs: LegacyPersonalTabTable;
   browserTabLayouts: {
     ownerId: UserId;
     revision: Generated<string | number | bigint>;
@@ -2295,7 +2295,7 @@ export interface DatabaseSchema {
   runnerPluginDataRemovals: {
     runnerId: RunnerId;
     pluginId: string;
-    createdAt: Generated<Timestamp>;
+    createdAt: Timestamp;
   };
   specialists: {
     removedAt: Generated<Date | null>;
@@ -2689,7 +2689,7 @@ export interface TeamAgentRecipientTable {
   channelId: TeamChannelId;
   rootId: TeamMessageId;
   enabled: boolean;
-  updatedAt: Generated<Timestamp>;
+  updatedAt: Timestamp;
 }
 export interface PersonalTeamRequestTable {
   kind: Generated<TeamAgentRequestKind>;
@@ -2827,3 +2827,68 @@ export interface TeamShareAskTable {
   createdAt: Timestamp;
   changeSeq: string;
 }
+
+export interface PersonalTabTable {
+  id: import("@opensteer/core").TabId;
+  ownerId: UserId;
+  kind: import("@opensteer/core").TabKind;
+  computerId: RunnerId;
+  title: string;
+  url: string | null;
+  profileId: BrowserProfileId | null;
+  profileName: string | null;
+  appId: import("@opensteer/core").AppId | null;
+  windowId: import("@opensteer/core").WindowId | null;
+  windowApp: JsonColumn<ComputerAppIdentity | null>;
+  pageBinding: JsonColumn<import("@opensteer/core").PageBinding | null>;
+  favicon: string | null;
+  iconRef: string | null;
+  openerTabId: import("@opensteer/core").TabId | null;
+  openedBy: JsonColumn<import("@opensteer/core").TabOpenedBy>;
+  generation: Generated<number>;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  closedAt: NullableTimestamp;
+  closedPosition: JsonColumn<import("@opensteer/core").ClosedPosition | null>;
+}
+export interface TabLayoutTable {
+  ownerId: UserId;
+  revision: Generated<number>;
+  items: JsonColumn<import("@opensteer/core").TabLayout["items"]>;
+}
+export interface AppTable {
+  id: import("@opensteer/core").AppId;
+  ownerId: UserId;
+  computerId: RunnerId;
+  threadId: ThreadId | null;
+  runId: RunId | null;
+  name: string;
+  creationKey: string | null;
+  latestVersion: Generated<number>;
+  deleting: Generated<boolean>;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+export interface AppServerTable {
+  appId: import("@opensteer/core").AppId;
+  computerId: RunnerId;
+  port: number;
+  desiredState: "running" | "stopped";
+  generation: Generated<number>;
+  lastError: string | null;
+}
+export type DatabaseSchema = Omit<
+  LegacyDatabaseSchema,
+  | "personalTabs"
+  | "browserTabLayouts"
+  | "browserTabGroups"
+  | "browserTabGroupMembers"
+  | "apps"
+  | "runners"
+> & {
+  personalTabs: PersonalTabTable;
+  tabLayouts: TabLayoutTable;
+  apps: AppTable;
+  appServers: AppServerTable;
+  runners: Omit<RunnerTable, "tabOpenedAt">;
+};

@@ -1,6 +1,9 @@
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import { OpensteerError, type UserId } from "@opensteer/core";
-import { readIntegrationAccountBinding, type DatabaseSchema } from "@opensteer/database";
+import {
+  readIntegrationAccountBinding,
+  type LegacyDatabaseSchema as DatabaseSchema,
+} from "@opensteer/database";
 import type { Kysely } from "kysely";
 import { z } from "zod";
 

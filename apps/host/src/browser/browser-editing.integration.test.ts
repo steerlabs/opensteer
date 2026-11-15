@@ -189,7 +189,7 @@ integration("Host and Chromium editing contract", () => {
         name: "Storage computer",
         token: await machineHost.hostingRunnerEnrollmentToken,
       });
-      await testRpcData(origin, "bootstrap.get", {}, { headers: sessionHeaders });
+      await testRpcData(origin, "bootstrap.legacy.get", {}, { headers: sessionHeaders });
 
       const opened = await testRpcData(
         origin,

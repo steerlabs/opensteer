@@ -6,19 +6,19 @@ import {
   type PasswordSignInAuthorityCommand,
   type PasswordSignInAuthorityEvent,
   type LoginReceiverKey,
-  ComputerViewNativeResultSchema,
+  LegacyComputerViewNativeResultSchema as ComputerViewNativeResultSchema,
   macOwnerViewVersion,
   computerUseUpdateSentence,
-  type ComputerViewNativeResult,
+  type LegacyComputerViewNativeResult as ComputerViewNativeResult,
   type HostIntegrationsComputerView,
   ComputerUseDispatchActParamsSchema,
   ComputerUseWindowsParamsSchema,
-  ComputerUseBindParamsSchema,
+  LegacyComputerUseBindParamsSchema as ComputerUseBindParamsSchema,
   type HostIntegrationsComputerAppWindows,
   ComputerUseDispatchObserveParamsSchema,
   ComputerUseInstalledAppsParamsSchema,
   ComputerUseResolveAppParamsSchema,
-  computerUseHelperResults,
+  legacyComputerUseHelperResults,
   computerUseRequestMayHaveEffect,
   type ComputerUseBridgeEvent,
   type ComputerUseBridgeMethod,
@@ -67,7 +67,7 @@ const imessageReadTimeoutMs = 15_000;
 const imessageSendTimeoutMs = 45_000;
 
 const bridgeResults = {
-  ...computerUseHelperResults,
+  ...legacyComputerUseHelperResults,
   ...computerUseBridgePasswordsResults,
 } satisfies Readonly<Record<ComputerUseBridgeMethod, z.ZodType>>;
 

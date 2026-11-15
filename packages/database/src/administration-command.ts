@@ -3,7 +3,7 @@ import { createId, type UserId } from "@opensteer/core";
 import type { Kysely, Transaction } from "kysely";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import {
   findCommandByIdempotency,
   idempotencyConflict,

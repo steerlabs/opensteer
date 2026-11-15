@@ -75,7 +75,7 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
       image: null,
     },
   };
-  const bootstrap = hostApi["bootstrap.get"].success.parse({
+  const bootstrap = hostApi["bootstrap.legacy.get"].success.parse({
     ...fixture,
     browser: {
       available: true,
@@ -130,7 +130,7 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
     response.setHeader("content-type", "application/json");
     response.end(
       JSON.stringify(
-        request.url?.includes("bootstrap.get")
+        request.url?.includes("bootstrap.legacy.get")
           ? { ok: true, data: bootstrap }
           : { ok: false, error: { code: "not_found", message: "Outside smoke", retryable: false } },
       ),

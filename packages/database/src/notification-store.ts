@@ -35,7 +35,7 @@ import {
 import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { sql, type Kysely, type Transaction } from "kysely";
 import { runWasStopped } from "./run-grants.js";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 
 /** Process-local decided alert; only sealed text crosses the Account boundary. */
 export interface NotificationPublication {

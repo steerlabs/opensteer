@@ -1,5 +1,9 @@
 import { computerGlyph, orderDevices, type ComputerGlyph } from "../computers/computers.js";
-import type { BrowserIdentityOpenInput, BrowserTabOpenInput, HostSnapshot } from "./client.js";
+import type {
+  BrowserIdentityOpenInput,
+  BrowserTabOpenInput,
+  LegacyHostSnapshot as HostSnapshot,
+} from "./client.js";
 import type { BrowserIdentityChoice, StartPageProfileChoice } from "./start-page-model.js";
 
 type DeviceSource = Pick<HostSnapshot, "browserProfileHomes" | "machines">;

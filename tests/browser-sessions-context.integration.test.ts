@@ -732,7 +732,7 @@ run("Browser Sessions through a whole deployment", () => {
     const sessionId = tabs[0]!.sessionId;
     expect(tabs[1]!.sessionId).toBe(sessionId);
     const coldRows = async () => {
-      const result = await stack.api["bootstrap.get"]({});
+      const result = await stack.api["bootstrap.legacy.get"]({});
       if (!result.ok) throw new Error(JSON.stringify(result));
       return (
         ((store) => store.structure().map((key) => store.tab(key.groupId, key.tabId)!))(
@@ -773,14 +773,16 @@ run("Browser Sessions through a whole deployment", () => {
     expect(launches).toBe(launchesAtRestart);
     await browserAvailable(stack);
     const restored = await stack.api["commands.dispatch"]({
-      type: "tab.activate",
+      type: "legacy.tab.activate",
       tabId: tabs[0]!.tabId,
       idempotencyKey: randomUUID(),
     });
     expect(restored, JSON.stringify(restored)).toMatchObject({ ok: true });
     const restoredCatalog = await browserInventory(
       stack,
-      restored.ok && restored.data.type === "tab.activate" ? restored.data.session.id : sessionId,
+      restored.ok && restored.data.type === "legacy.tab.activate"
+        ? restored.data.session.id
+        : sessionId,
     );
     expect(restoredCatalog.tabs.filter((tab) => tab.documentId !== null)).toEqual([
       expect.objectContaining({
@@ -830,7 +832,7 @@ run("Browser Sessions through a whole deployment", () => {
     });
     const pageOrigin = `http://127.0.0.1:${(page.address() as { port: number }).port}`;
     await waitFor(async () => {
-      const bootstrap = await stack.api["bootstrap.get"]({});
+      const bootstrap = await stack.api["bootstrap.legacy.get"]({});
       return bootstrap.ok && bootstrap.data.browser.available;
     }, 30_000);
     const threadId = await stack.createThread({

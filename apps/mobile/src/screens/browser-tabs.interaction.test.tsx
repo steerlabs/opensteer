@@ -5,7 +5,7 @@ import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
-import type { HostSnapshot } from "@opensteer/client/host";
+import type { LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
 import { BrowserTabsScreen } from "./browser-tabs.js";
 
 const state = vi.hoisted(() => ({ dispatch: vi.fn(), goBack: vi.fn() }));

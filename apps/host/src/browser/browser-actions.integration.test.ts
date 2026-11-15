@@ -1,12 +1,12 @@
-import { HostToClientMessageSchema } from "@opensteer/protocol";
+import { LegacyHostToClientMessageSchema as HostToClientMessageSchema } from "@opensteer/protocol";
 import { browserRows } from "./browser-rows.test-support.js";
 import {
   BrowserActionRequestSchema,
-  BrowserActionResponseSchema,
+  LegacyBrowserActionResponseSchema,
   BrowserActionBindingSchema,
   BrowserAgentActionSchema,
   type BrowserAction,
-  type BrowserActionResult,
+  type LegacyBrowserActionResult,
 } from "@opensteer/protocol/browser-actions";
 import { BrowserSurfaceIdSchema, createBrowserSessionId } from "@opensteer/protocol/browser";
 import { zeroSequence } from "@opensteer/core";
@@ -142,7 +142,7 @@ async function setup(surfaceState = true) {
       2_000,
     );
     socket.send(JSON.stringify(request));
-    return BrowserActionResponseSchema.parse(
+    return LegacyBrowserActionResponseSchema.parse(
       await answered.catch((error: unknown) => {
         throw new Error(`No answer to ${action.type} ${JSON.stringify(overrides)}`, {
           cause: error,
@@ -288,7 +288,7 @@ integration("session-scoped browser agent backends", () => {
     const activation = testRpcData(
       f.host.origin,
       "commands.dispatch",
-      { type: "tab.activate", tabId, idempotencyKey: crypto.randomUUID() },
+      { type: "legacy.tab.activate", tabId, idempotencyKey: crypto.randomUUID() },
       { headers: f.host.ownerHeaders },
     );
     const resume = await vi.waitFor(
@@ -309,7 +309,7 @@ integration("session-scoped browser agent backends", () => {
     await publish("live");
     f.phone.sendServer({ type: "cdp.result", requestId: resume.requestId, result: {} });
     expect(await activation).toMatchObject({
-      type: "tab.activate",
+      type: "legacy.tab.activate",
       tabId,
       session: { id: f.sessionId },
     });
@@ -323,7 +323,7 @@ integration("session-scoped browser agent backends", () => {
     const refused = testRpcRequest(
       f.host.origin,
       "commands.dispatch",
-      { type: "tab.activate", tabId, idempotencyKey: crypto.randomUUID() },
+      { type: "legacy.tab.activate", tabId, idempotencyKey: crypto.randomUUID() },
       { headers: f.host.ownerHeaders },
     );
     const refusal = await vi.waitFor(
@@ -448,7 +448,11 @@ integration("session-scoped browser agent backends", () => {
   it("admits focus, empty-session actions and suspended close without resuming or loosening other fences", async () => {
     const f = await setup();
     const socket = await f.actions();
-    const forward = async (action: BrowserAction, result: BrowserActionResult, overrides = {}) => {
+    const forward = async (
+      action: BrowserAction,
+      result: LegacyBrowserActionResult,
+      overrides = {},
+    ) => {
       const start = f.phone.receivedCommands().length;
       const pending = f.act(socket, action, overrides);
       const command = await vi.waitFor(

@@ -28,7 +28,7 @@ import {
   SequenceSchema,
 } from "@opensteer/core";
 import {
-  type DeploymentSnapshot,
+  type LegacyDeploymentSnapshot as DeploymentSnapshot,
   deploymentSnapshotMaxRunQueueEntries,
   deploymentSnapshotMaxThreads,
   deploymentSnapshotMaxMessages,
@@ -57,7 +57,7 @@ import {
   eventFromRow,
 } from "./store-primitives.js";
 import { type Kysely, type Transaction, sql } from "kysely";
-import { type DatabaseSchema } from "./schema.js";
+import { type LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { NotificationStateStore } from "./notification-state.js";
 import {
   threadPendingRequestsForReader,

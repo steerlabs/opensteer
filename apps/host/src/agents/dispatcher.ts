@@ -586,6 +586,14 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       ? (await this.#store.getAgentHomeSettings(context.run.requestedBy)).file
       : null;
     const toolsPlan = agentToolsPlanForRun({
+      capabilities: {
+        tabs: context.personalContext,
+        pages:
+          context.personalContext &&
+          (harness.driverKind !== "codex" || context.thread.accessMode === "full-access"),
+        computerUse: context.personalContext,
+        apps: context.personalContext,
+      },
       settingsError: settingsFile?.error,
       voiceCall: Boolean(context.voiceCall),
       token: toolsToken,

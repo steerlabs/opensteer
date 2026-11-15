@@ -11,7 +11,7 @@ import {
 } from "@opensteer/core";
 import type { Kysely } from "kysely";
 import "./connection.js";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { publishedMessagePredicate } from "./message-visibility.js";
 import { messageFromRow } from "./thread-row-mappers.js";
 import { boundedSerializedPrefix } from "./message-window.js";

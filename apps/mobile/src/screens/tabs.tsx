@@ -16,7 +16,7 @@ import {
   tabFilterEmptyWords,
   tabFilterWords,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type PlaceItem,
   type PlaceKind,
   type PlaceDescriptor,

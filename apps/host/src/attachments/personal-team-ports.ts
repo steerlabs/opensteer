@@ -6,7 +6,11 @@ import {
   type RunId,
   type TeamSource,
 } from "@opensteer/core";
-import type { AttachmentStore, DatabaseSchema, OpensteerStore } from "@opensteer/database";
+import type {
+  AttachmentStore,
+  LegacyDatabaseSchema as DatabaseSchema,
+  OpensteerStore,
+} from "@opensteer/database";
 import { personalTeamRunOutcome } from "@opensteer/database/personal-team-run-store";
 import type { RunnerRegistry } from "@opensteer/orchestration";
 import type { TeamFileSchema } from "@opensteer/protocol";

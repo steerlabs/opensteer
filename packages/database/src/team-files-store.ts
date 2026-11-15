@@ -13,7 +13,11 @@ import {
 import { TeamFileSchema, TeamUploadMetadataSchema, teamPreviewMaxBytes } from "@opensteer/protocol";
 import { sql, type ExpressionBuilder, type Selectable, type Transaction } from "kysely";
 import { z } from "zod";
-import type { DatabaseSchema, TeamBlobTable, TeamMessageTable } from "./schema.js";
+import type {
+  LegacyDatabaseSchema as DatabaseSchema,
+  TeamBlobTable,
+  TeamMessageTable,
+} from "./schema.js";
 import { TeamAccessStore, requireTeam } from "./team-access-store.js";
 import { appendTeamAudit } from "./team-audit-store.js";
 import { shareNotFound } from "./team-share-access.js";

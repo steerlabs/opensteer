@@ -1,6 +1,6 @@
 import { OpensteerError, agentDelegationMaxDepth, type ThreadId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 
 /**
  * Where a person finds a Thread by parent link: itself when it is listed (or a

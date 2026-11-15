@@ -15,7 +15,7 @@ type ComputerAppApprovalList = {
     readonly request: import("@opensteer/integration-core").ComputerAppSetupRequest;
   }[];
 };
-import { placeList, type HostSnapshot } from "@opensteer/client/host";
+import { placeList, type LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
 import {
   createId,
   HarnessIdSchema,
@@ -50,7 +50,7 @@ import {
 } from "@opensteer/orchestration";
 import {
   BrowserSurfaceIdSchema,
-  ComputerUseObservationSchema,
+  LegacyComputerUseObservationSchema,
   ComputerUseSessionIdSchema,
   createBrowserSessionId,
   readComputerUseResultHeadline,
@@ -58,11 +58,11 @@ import {
   RunnerBootIdSchema,
   RunnerConnectionIdSchema,
   RunnerConnectionLeaseIdSchema,
-  WindowInfoSchema,
+  LegacyWindowInfoSchema as WindowInfoSchema,
   type BrowserTabOpenBinding,
   type ComputerUseErrorCode,
   type ComputerUseSessionId,
-  type ComputerViewNativeResult,
+  type LegacyComputerViewNativeResult as ComputerViewNativeResult,
   type HostIntegrationsComputerUse,
   type HostIntegrationsComputerView,
   type HostIntegrationsOperation,
@@ -1476,7 +1476,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       );
       const bootstrap = await testRpcData(
         host.origin,
-        "bootstrap.get",
+        "bootstrap.legacy.get",
         {},
         { headers: host.ownerHeaders },
       );
@@ -4738,7 +4738,7 @@ async function observeMacWindow(
   );
   return {
     sessionId: observe.sessionId,
-    observation: ComputerUseObservationSchema.parse((await observe.settle()).observation),
+    observation: LegacyComputerUseObservationSchema.parse((await observe.settle()).observation),
   };
 }
 

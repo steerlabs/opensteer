@@ -2,7 +2,7 @@
 
 import type { HostClient } from "@opensteer/client/host";
 import type { ComputerUseView } from "@opensteer/client/integrations";
-import type { MachineSummary } from "@opensteer/protocol";
+import type { LegacyMachineSummary } from "@opensteer/protocol";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -319,7 +319,7 @@ async function mount(input: MountInput): Promise<void> {
       <ComputerUseBlock
         canRespond={input.canRespond ?? true}
         hostClient={hostClient}
-        machine={{ id: mac, name: "Studio", status: "online" } as MachineSummary}
+        machine={{ id: mac, name: "Studio", status: "online" } as LegacyMachineSummary}
         onChanged={input.onChanged ?? (async () => undefined)}
         onOpenThread={input.onOpenThread ?? (() => undefined)}
         view={input.view}

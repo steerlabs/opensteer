@@ -127,13 +127,13 @@ export async function startPersonalQueuedRunFixture(store: OpensteerStore, runId
 }
 
 const fixtureOwners = new WeakMap<
-  import("kysely").Kysely<import("./schema.js").DatabaseSchema>,
+  import("kysely").Kysely<import("./schema.js").LegacyDatabaseSchema>,
   Promise<
     Awaited<ReturnType<typeof import("./personal-fixture.test-support.js").seedPersonalFixture>>
   >
 >();
 export function personalFixtureOwner(
-  database: import("kysely").Kysely<import("./schema.js").DatabaseSchema>,
+  database: import("kysely").Kysely<import("./schema.js").LegacyDatabaseSchema>,
   databaseUrl: string,
 ) {
   let owner = fixtureOwners.get(database);

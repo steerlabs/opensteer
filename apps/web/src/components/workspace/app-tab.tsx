@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import {
   threadMark,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type PlaceItem,
 } from "@opensteer/client/host";
 import { useAppView, useHostSelector } from "@opensteer/client/react";

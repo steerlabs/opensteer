@@ -29,7 +29,7 @@ import {
   BrowserResumeTabParametersSchema,
   BrowserActionRequestSchema,
   type BrowserActionRequest,
-  type BrowserActionResult,
+  type LegacyBrowserActionResult,
   type BrowserActionEvent,
   type BrowserActionErrorCode,
   type BrowserAgentBackend,
@@ -112,7 +112,7 @@ import {
   type BrowserTabOpenCommand,
   type BrowserTabOpenRefusalReason,
   type BrowserTabOpenResult,
-  type HostedBrowserBootstrap,
+  type LegacyHostedBrowserBootstrap as HostedBrowserBootstrap,
   type HostedBrowserSession,
   type HostedBrowserSessionState,
   type InitialPageReady,
@@ -123,7 +123,7 @@ import {
   type PlaceOccupant,
   type PersonFillVersion,
   type RequestCreationResult,
-  type ThreadPlaceReference,
+  type LegacyThreadPlaceReference as ThreadPlaceReference,
 } from "@opensteer/protocol";
 import type { PasskeyMode } from "@opensteer/protocol/passkeys";
 import type { BootstrapNoticeSource } from "@opensteer/shared/bootstrapDiagnostics";
@@ -134,7 +134,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { RawData } from "ws";
 import WebSocket from "ws";
 import { z } from "zod";
-import { LegacyBrowserClipboard } from "./browser-legacy-clipboard.js";
+import { LegacyBrowserClipboard as BrowserClipboard } from "./browser-legacy-clipboard.js";
 import type { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import type { BrowserAttachTicketSigner } from "./browser-ticket.js";
 import { browserViewerEditingVersion, browserViewerMessage } from "./browser-viewer-protocol.js";
@@ -1112,7 +1112,7 @@ export class BrowserService {
       if (!agent) await broker.markPersonUsed(tabId);
       await this.clientStreams.source.groupChanged(sessionId, { tabs: true });
       return {
-        type: "tab.activate" as const,
+        type: "legacy.tab.activate" as const,
         groupId: initial.groupId,
         sessionId,
         session: await this.#personSession(session, ownerId),
@@ -1187,7 +1187,7 @@ export class BrowserService {
     await this.clientStreams.source.groupChanged(group.session.id, { tabs: true });
     this.#onSessionsChanged([group.session.id], "browser.tabs");
     return {
-      type: "tab.reopen" as const,
+      type: "legacy.tab.reopen" as const,
       groupId: row.groupId,
       sessionId: group.session.id,
       tabId: BrowserSurfaceIdSchema.parse(row.id),
@@ -1237,7 +1237,7 @@ export class BrowserService {
       }
     });
     return {
-      type: "tab.close" as const,
+      type: "legacy.tab.close" as const,
       groupId: row.groupId,
       sessionId: (await this.#personalTabs!.session(ownerId, row.groupId))?.id,
     };
@@ -3354,7 +3354,7 @@ export class BrowserService {
       close,
       dispatch: async (
         value: BrowserActionRequest,
-      ): Promise<{ readonly result: Promise<BrowserActionResult> }> => {
+      ): Promise<{ readonly result: Promise<LegacyBrowserActionResult> }> => {
         return this.withRunnerAdmission(record.runnerId, async () => {
           const request = BrowserActionRequestSchema.parse(value);
           assertOpen();
@@ -5222,7 +5222,7 @@ export class HostedBrowserBroker {
     {
       readonly attachmentId: string;
       readonly action: string;
-      readonly resolve: (result: BrowserActionResult) => void;
+      readonly resolve: (result: LegacyBrowserActionResult) => void;
       readonly reject: (error: unknown) => void;
       readonly timeout: NodeJS.Timeout;
     }
@@ -5728,14 +5728,14 @@ export class HostedBrowserBroker {
 
   requestAction(
     message: Extract<BrowserClientMessage, { type: "agent.action" }>,
-  ): Promise<BrowserActionResult> {
+  ): Promise<LegacyBrowserActionResult> {
     if (this.#settled || !this.#runtimeReady)
       return Promise.reject(new BrowserCdpConnectionEnded("The browser connection ended."));
     if (this.#pendingActions.size >= maxPendingAgentRequests)
       return Promise.reject(
         browserActionFailure("too-large", "Too many browser actions are pending."),
       );
-    return new Promise<BrowserActionResult>((resolve, reject) => {
+    return new Promise<LegacyBrowserActionResult>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.#pendingActions.delete(message.requestId);
         const observation = [
@@ -7287,7 +7287,7 @@ export class BrowserConsumerOutlet {
   autofill: 0 | PersonFillVersion = 0;
   authorized: () => Promise<boolean> = async () => false;
   readonly clipboardToken = randomUUID();
-  readonly legacyClipboard = new LegacyBrowserClipboard(this.clipboardToken, maxBrowserTextBytes);
+  readonly legacyClipboard = new BrowserClipboard(this.clipboardToken, maxBrowserTextBytes);
   readonly legacyClipboardKeys = new Set<string>();
   readonly clipboardOperations = new Map<string, BrowserSurfaceId>();
   readonly failedClipboardOperations = new Set<string>();

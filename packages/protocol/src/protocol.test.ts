@@ -10,7 +10,7 @@ import {
   DesktopAccountAuthStateSchema,
   HarnessInstanceCatalogSchema,
   HarnessInstanceCatalogViewSchema,
-  HostToRunnerMessageSchema,
+  LegacyHostToRunnerMessageSchema,
   HostedBrowserSessionSchema,
   PendingAgentEventSchema,
   PersonalRemoteAccessStatusSchema,
@@ -19,7 +19,7 @@ import {
   RunnerDescriptorSchema,
   RunnerHarnessDriverSchema,
   RunnerHarnessDriverViewSchema,
-  RunnerToHostMessageSchema,
+  LegacyRunnerToHostMessageSchema,
   StartHostedBrowserBodySchema,
   advertisedRunnerModules,
   decodeBrowserFrameEnvelope,
@@ -139,9 +139,9 @@ describe("wire protocol", () => {
       requestId: "authentication-test",
       type: "host.harness-authentication",
     } as const;
-    expect(HostToRunnerMessageSchema.parse(message)).toEqual(message);
+    expect(LegacyHostToRunnerMessageSchema.parse(message)).toEqual(message);
     expect(
-      HostToRunnerMessageSchema.safeParse({
+      LegacyHostToRunnerMessageSchema.safeParse({
         ...message,
         request: { ...message.request, method: "chatgpt-device-code" },
       }).success,
@@ -196,12 +196,12 @@ describe("wire protocol", () => {
     ] as const;
     for (const type of ["host.reconcile-harnesses", "host.inspect-harnesses"] as const) {
       const message = { ...wireFence, harnesses, requestId: "catalog-test", type } as const;
-      expect(HostToRunnerMessageSchema.parse(message)).toEqual(message);
+      expect(LegacyHostToRunnerMessageSchema.parse(message)).toEqual(message);
       // Authority is carried by the message type, never by a flag on it: a
       // partial list could otherwise be sent as a complete desired set.
-      expect(HostToRunnerMessageSchema.safeParse({ ...message, authoritative: true }).success).toBe(
-        false,
-      );
+      expect(
+        LegacyHostToRunnerMessageSchema.safeParse({ ...message, authoritative: true }).success,
+      ).toBe(false);
     }
 
     const reconciliation = {
@@ -211,19 +211,19 @@ describe("wire protocol", () => {
       type: "host.reconcile-harnesses",
     } as const;
     for (const inspect of [[], [harnesses[0].id]]) {
-      expect(HostToRunnerMessageSchema.parse({ ...reconciliation, inspect })).toEqual({
+      expect(LegacyHostToRunnerMessageSchema.parse({ ...reconciliation, inspect })).toEqual({
         ...reconciliation,
         inspect,
       });
     }
     expect(
-      HostToRunnerMessageSchema.safeParse({
+      LegacyHostToRunnerMessageSchema.safeParse({
         ...reconciliation,
         inspect: [createId("harnessInstance")],
       }).success,
     ).toBe(false);
     expect(
-      HostToRunnerMessageSchema.safeParse({
+      LegacyHostToRunnerMessageSchema.safeParse({
         ...reconciliation,
         type: "host.inspect-harnesses",
         inspect: [],
@@ -239,7 +239,7 @@ describe("wire protocol", () => {
       }),
     );
     expect(
-      HostToRunnerMessageSchema.safeParse({
+      LegacyHostToRunnerMessageSchema.safeParse({
         ...wireFence,
         harnesses: tooManyHarnesses,
         requestId: "oversized-reconcile",
@@ -247,7 +247,7 @@ describe("wire protocol", () => {
       }).success,
     ).toBe(false);
     expect(
-      RunnerToHostMessageSchema.safeParse({
+      LegacyRunnerToHostMessageSchema.safeParse({
         catalogs: tooManyHarnesses.map((harness) => ({
           connections: [],
           detail: "Unavailable",
@@ -387,7 +387,7 @@ describe("wire protocol", () => {
 
   it("rejects unknown fields at trust boundaries", () => {
     expect(() =>
-      RunnerToHostMessageSchema.parse({
+      LegacyRunnerToHostMessageSchema.parse({
         type: "runner.heartbeat",
         activeRunIds: [],
         sentAt: new Date().toISOString(),
@@ -606,10 +606,12 @@ describe("wire protocol", () => {
       stdoutTail: "ready\n",
       type: "runner.watch-status",
     } as const;
-    expect(RunnerToHostMessageSchema.parse(status)).toEqual(status);
+    expect(LegacyRunnerToHostMessageSchema.parse(status)).toEqual(status);
     expect(
-      RunnerToHostMessageSchema.safeParse({ ...status, stdoutTail: "x".repeat(16 * 1_024 + 1) })
-        .success,
+      LegacyRunnerToHostMessageSchema.safeParse({
+        ...status,
+        stdoutTail: "x".repeat(16 * 1_024 + 1),
+      }).success,
     ).toBe(false);
   });
 
@@ -874,7 +876,7 @@ describe("wire protocol", () => {
       type: "runner.enroll",
     };
     expect(() =>
-      RunnerToHostMessageSchema.parse({
+      LegacyRunnerToHostMessageSchema.parse({
         ...base,
         descriptor: {
           ...base.descriptor,
@@ -901,7 +903,7 @@ describe("wire protocol", () => {
       }),
     ).toThrow(/advertised more than once/);
     expect(() =>
-      RunnerToHostMessageSchema.parse({
+      LegacyRunnerToHostMessageSchema.parse({
         ...base,
         descriptor: {
           ...base.descriptor,

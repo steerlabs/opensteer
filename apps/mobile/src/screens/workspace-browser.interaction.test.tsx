@@ -10,13 +10,13 @@ import {
   browserThreadAgentTab,
   placeList,
   type BrowserSessionSummary,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
 } from "@opensteer/client/host";
 import { Alert } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { fitOffer, pictureBox, pinched, slideFor } from "../browser/browser-page.js";
 import { BrowserPageContentPartSchema } from "@opensteer/core";
-import { BrowserSurfaceIdSchema, type MachineSummary } from "@opensteer/protocol";
+import { BrowserSurfaceIdSchema, type LegacyMachineSummary } from "@opensteer/protocol";
 import type { BrowserTabRow } from "@opensteer/protocol/browser-tabs";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
 import type { SurfacesRoute } from "../browser/surface-route.js";
@@ -2980,7 +2980,7 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
               id: "mac-a",
               name: "Mac mini",
               status: "online",
-            } as unknown as MachineSummary,
+            } as unknown as LegacyMachineSummary,
           ],
         },
       },

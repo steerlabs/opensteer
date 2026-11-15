@@ -1,7 +1,7 @@
 import type {
   BrowserActionEvent,
   BrowserActionRequest,
-  BrowserActionResult,
+  LegacyBrowserActionResult,
   BrowserClientMessage,
   BrowserDialog,
   BrowserRuntimeActivity,
@@ -207,7 +207,7 @@ export interface PhoneBrowserNativePort extends Pick<
       deadline: number;
       request: BrowserActionRequest;
     },
-  ): Promise<Exclude<BrowserActionResult, { type: "page.capture" }> | { type: "delivered" }>;
+  ): Promise<Exclude<LegacyBrowserActionResult, { type: "page.capture" }> | { type: "delivered" }>;
   applyViewerInput(
     input: NativeDocumentRef & {
       channelId: string;

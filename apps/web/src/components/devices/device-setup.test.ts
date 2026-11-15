@@ -1,7 +1,7 @@
 import { RunnerIdSchema } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
-import type { MachineSummary } from "@opensteer/protocol";
+import type { LegacyMachineSummary } from "@opensteer/protocol";
 import { setUpThisDevice, type DeviceSetupPorts } from "./device-setup.js";
 import { appliedSetupAccess, deviceSwitchDetail, deviceSwitches } from "./device-access.js";
 import { deviceRemovalCopy } from "./device-page.js";
@@ -127,7 +127,7 @@ describe("access switches", () => {
 
   it("offers Apps wherever the Host granted integrations, with macOS remedies only on a Mac", () => {
     const mac = laptop();
-    const server: MachineSummary = {
+    const server: LegacyMachineSummary = {
       ...mac,
       kind: "server",
       allowedModules: ["integrations", "shell"],
@@ -145,7 +145,7 @@ describe("access switches", () => {
   });
 
   it("shows an older Host's Browser and Apps as always on, keeping only Files a switch", () => {
-    const mac: MachineSummary = {
+    const mac: LegacyMachineSummary = {
       ...laptop(),
       allowedModules: ["browser", "integrations", "shell"],
     };

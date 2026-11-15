@@ -1,6 +1,6 @@
 import type { UserId } from "@opensteer/core";
 import type { Kysely, Nullable, Selectable, SelectQueryBuilder } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 type Database = Kysely<DatabaseSchema>;
 
 export type VisibleLineageDatabase = Omit<DatabaseSchema, "browserSessions" | "browserProfiles"> & {

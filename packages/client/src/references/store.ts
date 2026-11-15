@@ -1,8 +1,8 @@
 import {
   ReferenceIdSchema,
-  parseReferenceHref,
+  parseLegacyReferenceHref,
   type AgentEventView,
-  type Reference,
+  type LegacyReference as Reference,
   type ReferenceId,
 } from "@opensteer/core";
 import {
@@ -11,7 +11,7 @@ import {
   type AvailableReference,
   type ReferenceResolution,
 } from "@opensteer/protocol";
-import type { HostSnapshot } from "../host/client.js";
+import type { LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
 import type { ReferenceReadPorts, ReferenceState } from "./contracts.js";
 import { localReference } from "./local.js";
 import { heldThread } from "../host/task-list.js";
@@ -67,7 +67,7 @@ export class ReferenceStore {
     const canonical = ReferenceIdSchema.parse(id);
     let entry = this.#entries.get(canonical);
     if (!entry) {
-      const ref = parseReferenceHref(`opensteer:${canonical}`)!;
+      const ref = parseLegacyReferenceHref(`opensteer:${canonical}`)!;
       entry = {
         ref,
         listeners: new Set(),

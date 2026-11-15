@@ -7,7 +7,7 @@ import type {
 } from "@opensteer/core";
 import { TeamAuditSchema } from "@opensteer/protocol";
 import { sql, type Kysely, type Transaction } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 
 export interface TeamAgentOperation {
   readonly runId: RunId;

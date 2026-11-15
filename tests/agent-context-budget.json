@@ -1,9 +1,9 @@
 {
-  "opensteer.run.toolsJsonBytes": 52601,
+  "opensteer.run.toolsJsonBytes": 61215,
   "opensteer.run.instructionsBytes": 0,
-  "opensteer.program.toolsJsonBytes": 27527,
+  "opensteer.program.toolsJsonBytes": 28003,
   "opensteer.program.instructionsBytes": 0,
-  "opensteer.connection.toolsJsonBytes": 28463,
+  "opensteer.connection.toolsJsonBytes": 29731,
   "opensteer.connection.instructionsBytes": 836,
   "runGuide.task.personalContext.true.bytes": 6933,
   "runGuide.task.personalContext.false.bytes": 6476,

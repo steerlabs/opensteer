@@ -4,7 +4,7 @@ import type {
   BrowserSessionSummary,
   BrowserInventory,
   BrowserTabSummary,
-  HostSnapshot,
+  LegacyHostSnapshot as HostSnapshot,
   PersonalTabLineage,
 } from "../host/client.js";
 

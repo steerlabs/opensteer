@@ -10,8 +10,8 @@ import {
 } from "./display-stream.js";
 import {
   ComputerViewAuthoritySchema,
-  ComputerViewTargetSchema,
-  ComputerViewNativeResultSchema,
+  LegacyComputerViewTargetSchema,
+  LegacyComputerViewNativeResultSchema,
 } from "./computer-view.js";
 import { RunIdSchema } from "@opensteer/core";
 import {
@@ -36,7 +36,7 @@ import {
   ComputerUseHelperEventSchema,
   ComputerUseOperationSchema,
   ComputerUseViewWindowsParamsSchema,
-  ComputerUseViewWindowsResultSchema,
+  LegacyComputerUseViewWindowsResultSchema,
   ComputerUseSessionIdSchema,
   type ComputerUseOperation,
 } from "./computer-use.js";
@@ -482,7 +482,7 @@ export const HostIntegrationsComputerViewSchema = z
     type: z.literal("host.integrations.computer-view"),
     version: z.union([z.literal(1), z.literal(3)]),
     ...ComputerViewAuthoritySchema.shape,
-    target: ComputerViewTargetSchema,
+    target: LegacyComputerViewTargetSchema,
     operation: z.enum(["open", "renew", "close"]),
     requestId: RunnerAuxiliaryRequestIdSchema,
     timeoutMs: z.number().int().positive().max(computerAppMaxTimeoutMs),
@@ -497,7 +497,7 @@ export const RunnerIntegrationsComputerViewResultSchema = z.strictObject({
   type: z.literal("runner.integrations.computer-view-result"),
   requestId: RunnerAuxiliaryRequestIdSchema,
   result: z.discriminatedUnion("kind", [
-    z.strictObject({ kind: z.literal("ok"), value: ComputerViewNativeResultSchema }),
+    z.strictObject({ kind: z.literal("ok"), value: LegacyComputerViewNativeResultSchema }),
     z.strictObject({
       kind: z.literal("error"),
       code: z.enum([
@@ -530,7 +530,7 @@ export const RunnerIntegrationsComputerAppWindowsResultSchema = z.strictObject({
   requestId: RunnerAuxiliaryRequestIdSchema,
   type: z.literal("runner.integrations.computer-app-windows-result"),
   result: z.discriminatedUnion("kind", [
-    z.strictObject({ kind: z.literal("ok"), value: ComputerUseViewWindowsResultSchema }),
+    z.strictObject({ kind: z.literal("ok"), value: LegacyComputerUseViewWindowsResultSchema }),
     z.strictObject({
       kind: z.literal("error"),
       code: ComputerUseErrorCodeSchema,

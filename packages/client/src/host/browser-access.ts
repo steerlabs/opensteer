@@ -1,7 +1,7 @@
 import type { BrowserAccessSuggestion, RequestResponse } from "@opensteer/core";
 import type { Request } from "@opensteer/core";
 import { profileHomeChoice, type ProfileHomeChoice } from "./browser-profile-settings.js";
-import type { HostSnapshot } from "./client.js";
+import type { LegacyHostSnapshot as HostSnapshot } from "./client.js";
 import type { HostApiCommandInput } from "@opensteer/protocol";
 
 /**

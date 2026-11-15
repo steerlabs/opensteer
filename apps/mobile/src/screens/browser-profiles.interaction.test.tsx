@@ -215,7 +215,7 @@ function host(manage = true, empty = false) {
       browserSessions: [],
       browserPlacements: [],
       machines: [{ id: "computer-delete", name: "Studio Mac" }],
-    } as unknown as import("@opensteer/client/host").HostSnapshot,
+    } as unknown as import("@opensteer/client/host").LegacyHostSnapshot,
     [],
   );
   const dispatch = vi.fn(async (command: { type: string }) => ({ type: command.type }));

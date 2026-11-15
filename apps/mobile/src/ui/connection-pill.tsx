@@ -2,7 +2,7 @@ import {
   describeHostConnection,
   type HostClient,
   type HostConnectionLine,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { useEffect, type ReactNode } from "react";

@@ -35,7 +35,7 @@ import {
 import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { CamelCasePlugin, Kysely, PostgresDialect, sql } from "kysely";
 import { Pool } from "pg";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { describe, expect, it as baseIt, vi } from "vitest";
 import {
   ChannelStore,
@@ -555,7 +555,7 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     const store = new OpensteerStore(database);
     async function stagedRequestRace(
       lock: (
-        transaction: import("kysely").Transaction<import("./schema.js").DatabaseSchema>,
+        transaction: import("kysely").Transaction<import("./schema.js").LegacyDatabaseSchema>,
       ) => Promise<unknown>,
       first: () => Promise<unknown>,
       second: () => Promise<unknown>,

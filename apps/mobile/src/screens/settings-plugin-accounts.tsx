@@ -4,7 +4,7 @@ import {
   mutationIdempotencyKey,
   unwrapRpcResult,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
 } from "@opensteer/client/host";
 import {
   authorizationConnection,

@@ -108,3 +108,11 @@ export { eventFromRow } from "./deployment-events.js";
 export { systemPrincipalId } from "./store-primitives.js";
 
 export * from "./device-store.js";
+
+export type {
+  DatabaseSchema,
+  PersonalTabTable,
+  TabLayoutTable,
+  AppTable,
+  AppServerTable,
+} from "./schema.js";

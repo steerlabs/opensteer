@@ -192,7 +192,7 @@ try {
   await check("mock bootstrap advertises the resulting layout without browser errors", async () => {
     const layout = await page.evaluate(async () => {
       const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-      const result = await client.rpc["bootstrap.get"]({});
+      const result = await client.rpc["bootstrap.legacy.get"]({});
       if (!result.ok) throw new Error(result.error.message);
       return {
         version: result.data.browser.tabGroupsVersion,

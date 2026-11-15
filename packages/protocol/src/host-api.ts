@@ -1,3 +1,19 @@
+import { MachineSummarySchema } from "./machines.js";
+import { OwnerWindowInfoSchema } from "./computer-use.js";
+import { HostBootstrapSchema, type HostBootstrap } from "./bootstrap.js";
+import {
+  TabCommandSchema,
+  TabCommandResultSchema,
+  TabGetInputSchema,
+  TabBootstrapSchema,
+} from "./tabs.js";
+import {
+  AppCommandSchema,
+  AppCommandResultSchema,
+  AppsListInputSchema,
+  AppsListResultSchema,
+} from "./apps.js";
+import { AppSchema, TabViewSchema } from "@opensteer/core";
 import {
   TranscriptFileOpenInputSchema,
   TranscriptFileOpenSchema,
@@ -170,13 +186,13 @@ import {
 } from "@opensteer/triggers/models";
 import { z } from "zod";
 import { ReferenceResolveInputSchema, ReferenceResolveResultSchema } from "./references.js";
-import { AppIdSchema, AppSchema } from "@opensteer/core";
+import { AppIdSchema, LegacyAppSchema } from "@opensteer/core";
 import { AgentPhoneHostTargetViewSchema } from "./android-phone.js";
 import { AssetUrlsInputSchema, AssetUrlsSchema } from "./assets.js";
 import { AttachmentContentSchema, AttachmentReferenceInputSchema } from "./attachments.js";
 import {
   AppTabsSchema,
-  HostBootstrapSchema,
+  LegacyHostBootstrapSchema,
   IdentityConfigViewSchema,
   OwnerProfileViewSchema,
 } from "./bootstrap.js";
@@ -243,7 +259,7 @@ import {
   ComputerUseInstalledAppSchema,
   ComputerUseInstalledAppsParamsSchema,
   ComputerUseSessionIdSchema,
-  OwnerWindowInfoSchema,
+  LegacyOwnerWindowInfoSchema,
   computerUseMaxInstalledApps,
   computerUseMaxWindows,
 } from "./computer-use.js";
@@ -263,7 +279,7 @@ import {
   DeviceRefusalContextSchema,
   DeviceSessionBindingProofSchema,
 } from "./devices.js";
-import { MachineSummarySchema } from "./machines.js";
+import { LegacyMachineSummarySchema } from "./machines.js";
 import { defineRpc, type RpcClient, type RpcHandlers } from "./rpc.js";
 import { RunnerModuleNameSchema } from "./runner-identity.js";
 import {
@@ -1173,6 +1189,8 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
 ]);
 
 const commandInputSchema = z.discriminatedUnion("type", [
+  ...TabCommandSchema.options,
+  ...AppCommandSchema.options,
   ...TeamCommandSchema.options,
   SettingsPluginEnableCommandSchema,
   BrowserTabOpenCommandSchema,
@@ -1188,6 +1206,8 @@ const commandInputSchema = z.discriminatedUnion("type", [
 ]);
 
 const commandOutputSchema = z.discriminatedUnion("type", [
+  ...TabCommandResultSchema.options,
+  ...AppCommandResultSchema.options,
   ...TeamCommandResultViewSchema.options,
   SettingsPluginEnableResultSchema,
   PersonalTabActivateResultSchema,
@@ -1549,7 +1569,9 @@ const declaration = <Payload extends z.ZodType, Success extends z.ZodType>(
   stream?: true,
 ) => ({ error: HostApiErrorSchema, method, payload, success, ...(stream ? { stream } : {}) });
 
-export const hostApi = defineRpc({
+const workspaceBootstrapOutput: z.ZodType<HostBootstrap> = HostBootstrapSchema;
+// Named groups keep TypeScript declaration serialization below its size limit.
+const hostApiGroup1 = defineRpc({
   "attention.get": declaration(
     "POST",
     z.strictObject({ deviceAccessRequests: z.literal("include").optional() }),
@@ -1714,6 +1736,9 @@ export const hostApi = defineRpc({
     teamReadSchemas["team.sharing.policy.get"].input,
     teamReadViews["team.sharing.policy.get"],
   ),
+} as const);
+
+const hostApiGroup2 = defineRpc({
   "team.links.list": declaration(
     "POST",
     teamReadSchemas["team.links.list"].input,
@@ -1764,7 +1789,6 @@ export const hostApi = defineRpc({
     teamReadSchemas["team.knowledge.note.history"].input,
     teamReadViews["team.knowledge.note.history"],
   ),
-
   "browser.searchSuggestions.get": declaration(
     "GET",
     z.strictObject({ query: z.string().trim().min(1).max(200) }),
@@ -1791,12 +1815,12 @@ export const hostApi = defineRpc({
    * `personal-remote-access-off`.
    */
   "agentPhone.target.get": declaration("GET", emptyInputSchema, AgentPhoneHostTargetViewSchema),
-  "apps.get": declaration("GET", z.strictObject({ appId: AppIdSchema }), AppSchema),
+  "apps.legacy.get": declaration("GET", z.strictObject({ appId: AppIdSchema }), LegacyAppSchema),
   "apps.view": declaration(
     "POST",
     z.strictObject({ appId: AppIdSchema, theme: z.enum(["light", "dark"]) }),
     z.object({
-      app: AppSchema,
+      app: LegacyAppSchema,
       path: z.string().regex(/^\/v1\/apps\/app_[0-9a-f-]{36}\/(light|dark)\/[A-Za-z0-9_-]{43}\/$/u),
       /** One-use address on the app's own origin; absent on routes without one. */
       entryUrl: z.url().max(512).optional(),
@@ -1825,7 +1849,6 @@ export const hostApi = defineRpc({
     BrowserSourceInspectionSchema,
   ),
   "auth.config": declaration("GET", emptyInputSchema, IdentityConfigViewSchema),
-
   "auth.native.complete": declaration(
     "POST",
     z.strictObject({ accept: z.boolean(), oauthQuery: oauthQuerySchema }),
@@ -1877,13 +1900,16 @@ export const hostApi = defineRpc({
     ]),
     z.object({ session: AuthenticatedSessionViewSchema }),
   ),
+} as const);
+
+const hostApiGroup3 = defineRpc({
   "auth.setup.exchange": declaration(
     "POST",
     z.strictObject({ token: z.string().trim().min(16).max(4_096) }),
     emptyOutputSchema,
   ),
   "auth.signOut": declaration("POST", emptyInputSchema, emptyOutputSchema),
-  "bootstrap.get": declaration("GET", emptyInputSchema, HostBootstrapSchema),
+  "bootstrap.legacy.get": declaration("GET", emptyInputSchema, LegacyHostBootstrapSchema),
   "channel.connection.check": declaration(
     "POST",
     z.strictObject({ connectionId: IntegrationConnectionIdSchema }),
@@ -2035,11 +2061,14 @@ export const hostApi = defineRpc({
     z.strictObject({ sessionId: ComputerUseSessionIdSchema }),
     emptyOutputSchema,
   ),
-  "computer.app.windows": declaration(
+} as const);
+
+const hostApiGroup4 = defineRpc({
+  "computer.app.legacy.windows": declaration(
     "POST",
     z.strictObject({ machineId: RunnerIdSchema, app: ComputerAppIdentitySchema }),
     z.object({
-      windows: z.array(z.object(OwnerWindowInfoSchema.shape)).max(computerUseMaxWindows),
+      windows: z.array(z.object(LegacyOwnerWindowInfoSchema.shape)).max(computerUseMaxWindows),
     }),
   ),
   "integration.computer.apps.approved": declaration(
@@ -2061,7 +2090,6 @@ export const hostApi = defineRpc({
     z.strictObject({}),
     z.object({ specialists: z.array(SpecialistRegistrationViewSchema) }),
   ),
-
   "plugin.list": declaration(
     "GET",
     z.strictObject({}),
@@ -2078,12 +2106,12 @@ export const hostApi = defineRpc({
     IntegrationRepositoryAccessViewSchema,
   ),
   "integrations.get": declaration("GET", emptyInputSchema, IntegrationDashboardViewSchema),
-  "machines.list": declaration(
+  "machines.legacy.list": declaration(
     "GET",
     emptyInputSchema,
     // Four registry projections feed one list, each read a page of 100 deep: the bound
     // has to admit all of them or a busy Deployment fails its own response.
-    z.object({ machines: z.array(MachineSummarySchema).max(400) }),
+    z.object({ machines: z.array(LegacyMachineSummarySchema).max(400) }),
   ),
   "machine.access.history": declaration(
     "GET",
@@ -2097,7 +2125,6 @@ export const hostApi = defineRpc({
       sessions: z.array(ShellSessionHistoryEntrySchema).max(machineAccessHistoryMaxSessions),
     }),
   ),
-
   "requests.list": declaration(
     "GET",
     durablePageInputSchema.extend({ deviceAccessRequests: z.literal("include").optional() }),
@@ -2106,7 +2133,6 @@ export const hostApi = defineRpc({
       window: DurableWindowSchema,
     }),
   ),
-
   "tasks.list": declaration(
     "GET",
     z
@@ -2330,6 +2356,35 @@ export const hostApi = defineRpc({
     z.object({ triggers: z.array(TriggerSummaryViewSchema).max(100) }),
   ),
 } as const);
+
+const workspaceHostApi = defineRpc({
+  "machines.list": declaration(
+    "GET",
+    emptyInputSchema,
+    z.object({ machines: z.array(MachineSummarySchema).max(400) }),
+  ),
+  "computer.app.windows": declaration(
+    "POST",
+    z.strictObject({ machineId: RunnerIdSchema, app: ComputerAppIdentitySchema }),
+    z.object({ windows: z.array(OwnerWindowInfoSchema).max(computerUseMaxWindows) }),
+  ),
+  "tabs.get": declaration("GET", TabGetInputSchema, TabViewSchema),
+  "tabs.state": declaration("GET", z.strictObject({}), TabBootstrapSchema),
+  "apps.list": declaration("GET", AppsListInputSchema, AppsListResultSchema),
+  "apps.get": declaration("GET", z.strictObject({ appId: AppIdSchema }), z.object(AppSchema.shape)),
+  "bootstrap.get": declaration("GET", z.strictObject({}), workspaceBootstrapOutput),
+});
+export const hostApi: typeof hostApiGroup1 &
+  typeof hostApiGroup2 &
+  typeof hostApiGroup3 &
+  typeof hostApiGroup4 &
+  typeof workspaceHostApi = {
+  ...hostApiGroup1,
+  ...hostApiGroup2,
+  ...hostApiGroup3,
+  ...hostApiGroup4,
+  ...workspaceHostApi,
+};
 
 export type HostApiCommand = z.output<typeof commandInputSchema>;
 export type HostApiCommandInput = z.input<typeof commandInputSchema>;

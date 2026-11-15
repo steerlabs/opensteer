@@ -15,7 +15,7 @@ import {
 import { SessionCdpRouterError } from "@opensteer/browser-core/session-cdp-router";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import {
-  BrowserActionResultSchema,
+  LegacyBrowserActionResultSchema,
   BrowserAttachTicketClaimsSchema,
   BrowserClientMessageSchema,
   BrowserContextCandidateSchema,
@@ -24,7 +24,7 @@ import {
   browserBasicInputAllows,
   browserHostMethods,
   type BrowserActionBindingSchema,
-  type BrowserActionResult,
+  type LegacyBrowserActionResult,
   type BrowserClientMessage,
   type BrowserRuntimeServerMessage,
   type HeldLocalProfile,
@@ -1264,7 +1264,7 @@ export class PhoneBrowserManager {
         ].includes(action.type)
       )
         throw new PhoneBrowserError("forbidden", "Control access is required.");
-      let result: BrowserActionResult;
+      let result: LegacyBrowserActionResult;
       if (action.type === "session.tabs") {
         const records = function* () {
           for (const tab of session.tabs.values())
@@ -1382,7 +1382,7 @@ export class PhoneBrowserManager {
                 "unsupported-operation",
                 "The native action result mismatched.",
               );
-            result = BrowserActionResultSchema.parse(nativeResult);
+            result = LegacyBrowserActionResultSchema.parse(nativeResult);
           }
         }
       }

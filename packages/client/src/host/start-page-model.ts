@@ -10,7 +10,7 @@ import {
   type ComputerNotReady,
 } from "../integrations/computer-reasons.js";
 import { deviceElsewhere, type DeviceElsewhere } from "../computers/computers.js";
-import type { HostSnapshot } from "./client.js";
+import type { LegacyHostSnapshot as HostSnapshot } from "./client.js";
 import type { BrowserHistoryEntry } from "@opensteer/protocol";
 import { placeList, placeSearchFields, type PlaceItem } from "./places.js";
 import { browserTabStrip } from "./browser-tab-strip.js";

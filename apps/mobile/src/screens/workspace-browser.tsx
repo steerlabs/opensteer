@@ -14,7 +14,7 @@ import {
   type BrowserTabOpenHandle,
   type BrowserTabStore,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type PlaceItem,
   type PersonalSurfaceDestination,
 } from "@opensteer/client/host";

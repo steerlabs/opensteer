@@ -252,7 +252,7 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
   const site = await stateSite();
   await vi.waitFor(
     async () => {
-      const bootstrap = await stack.api["bootstrap.get"]({});
+      const bootstrap = await stack.api["bootstrap.legacy.get"]({});
       expect(
         bootstrap.ok && bootstrap.data.browser.available,
         "Runner browser module never became available",
@@ -431,7 +431,7 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
   await expect(
     access(path.join(browser.profileRoot, "profiles", profile.id)),
   ).rejects.toMatchObject({ code: "ENOENT" });
-  const bootstrap = await stack.api["bootstrap.get"]({});
+  const bootstrap = await stack.api["bootstrap.legacy.get"]({});
   expect(
     bootstrap.ok &&
       bootstrap.data.browser.profileDeletions?.some(
@@ -458,7 +458,7 @@ it("advertises exact prepared storage through the reachable Personal browser com
   });
   await vi.waitFor(
     async () => {
-      const bootstrap = await stack.api["bootstrap.get"]({});
+      const bootstrap = await stack.api["bootstrap.legacy.get"]({});
       expect(
         bootstrap.ok && bootstrap.data.browser.available,
         `Standalone browser auxiliary stream never became ready: ${browser.diagnostics()}`,
@@ -466,7 +466,7 @@ it("advertises exact prepared storage through the reachable Personal browser com
     },
     { timeout: 15_000 },
   );
-  const machines = await stack.api["machines.list"]({});
+  const machines = await stack.api["machines.legacy.list"]({});
   if (!machines.ok) throw new Error(machines.error.message);
   const browserComputers = machines.data.machines.filter((machine) => machine.modules.browser);
   expect(browserComputers).toHaveLength(1);

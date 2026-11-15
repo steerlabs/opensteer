@@ -26,7 +26,7 @@ import { lockBrowserTabGroupMembersForTabs } from "./browser-tab-group-locks.js"
 import { BrowserTabGroupStore } from "./browser-tab-group-store.js";
 import { TransactionScopeChanged } from "./connection.js";
 import { databaseOperationOptions } from "./operation-budget.js";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { visiblePersonalTabLineages } from "./personal-tab-visibility.js";
 
 type Database = Kysely<DatabaseSchema>;

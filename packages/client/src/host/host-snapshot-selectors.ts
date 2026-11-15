@@ -1,4 +1,4 @@
-import type { HostSnapshot, ThreadSummary } from "./client.js";
+import type { LegacyHostSnapshot as HostSnapshot, ThreadSummary } from "./client.js";
 
 export function sameAppGateSnapshot(previous: HostSnapshot, next: HostSnapshot): boolean {
   return previous.session === next.session && previous.identityConfig === next.identityConfig;

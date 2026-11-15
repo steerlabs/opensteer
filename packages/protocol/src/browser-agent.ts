@@ -20,6 +20,7 @@ import { BrowserTabWriteResultSchema } from "./browser.js";
  * `/internal/v1/browser-agent/<path>` with the Run's tool token.
  */
 export const browserAgentRoutePaths = {
+  bind: "pages/bind",
   tabs: "tabs",
   open: "tabs/open",
   use: "tabs/use",
@@ -148,3 +149,12 @@ export const BrowserAgentTabOrganizeInputSchema = BrowserTabWriteInputSchema.ext
 });
 export type BrowserAgentTabOrganizeInput = z.infer<typeof BrowserAgentTabOrganizeInputSchema>;
 export const BrowserAgentTabOrganizeResultSchema = BrowserTabWriteResultSchema;
+
+export const PageAgentBindInputSchema = z.strictObject({ tabId: BrowserSurfaceIdSchema });
+export const PageAgentBindingSchema = z.strictObject({
+  tabId: BrowserSurfaceIdSchema,
+  sessionId: BrowserSessionIdSchema,
+  backend: z.enum(["cdp", "actions"]),
+  reloaded: z.boolean(),
+});
+export type PageAgentBinding = z.infer<typeof PageAgentBindingSchema>;

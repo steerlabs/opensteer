@@ -1,5 +1,9 @@
 import type { BrowserGroupRow } from "@opensteer/protocol/browser-tabs";
-import type { BrowserSessionSummary, HostSnapshot, PersonalTabLineage } from "./client.js";
+import type {
+  BrowserSessionSummary,
+  LegacyHostSnapshot as HostSnapshot,
+  PersonalTabLineage,
+} from "./client.js";
 import type { BrowserTabStore } from "./browser-tab-store.js";
 
 function shared<T>(previous: T[] | undefined, next: T[]): T[] {

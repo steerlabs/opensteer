@@ -10,7 +10,7 @@ import type {
 } from "@opensteer/integration-core/ports";
 import type { UserId } from "@opensteer/core";
 import type { Kysely } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 
 /**
  * The auth-attempt payload column is `bytea NOT NULL` with a non-empty length check, so a terminal

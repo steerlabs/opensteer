@@ -1,6 +1,6 @@
 import type { ThreadId } from "@opensteer/core";
 import type { Transaction } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 
 export async function markThreadStatePending(
   transaction: Transaction<DatabaseSchema>,

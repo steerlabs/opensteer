@@ -1,6 +1,6 @@
 import type { ThreadStateProjection } from "./thread-state.js";
 import type { DeploymentResumeCursor } from "@opensteer/core";
-import type { HostSnapshot } from "./client.js";
+import type { LegacyHostSnapshot as HostSnapshot } from "./client.js";
 export interface PersonalCacheScope {
   readonly deploymentId: string;
   readonly userId: string;

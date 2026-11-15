@@ -7,7 +7,7 @@ import {
   OpensteerError,
 } from "@opensteer/core";
 import { type Kysely } from "kysely";
-import { type DatabaseSchema } from "./schema.js";
+import { type LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { jsonValue, boundedLimit } from "./store-primitives.js";
 import { executionEnvironmentIsAvailableToUser } from "./execution-authority.js";
 

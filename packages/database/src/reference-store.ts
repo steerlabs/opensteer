@@ -1,9 +1,9 @@
 import {
   AttachmentIdSchema,
-  parseReferenceHref,
+  parseLegacyReferenceHref,
   requestTitleText,
   RequestPresentationSchema,
-  type Reference,
+  type LegacyReference as Reference,
   type ReferenceId,
   type UserId,
 } from "@opensteer/core";
@@ -14,14 +14,14 @@ import { attachmentUserAdmission } from "./attachment-store.js";
 import { publishedMessagePredicate } from "./message-visibility.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { executionDate, withPersonalReadTransaction } from "./personal-transaction.js";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 
 export async function resolvePersonalReferences(
   database: Kysely<DatabaseSchema>,
   input: { readonly ownerId: UserId; readonly ids: readonly ReferenceId[] },
 ): Promise<readonly ReferenceResolution[]> {
   const ids = [...new Set(ReferenceResolveInputSchema.parse({ ids: input.ids }).ids)];
-  const references = ids.map((id) => parseReferenceHref(`opensteer:${id}`)!);
+  const references = ids.map((id) => parseLegacyReferenceHref(`opensteer:${id}`)!);
   const ofKind = <Kind extends Reference["kind"]>(kind: Kind) =>
     references
       .filter((reference) => reference.kind === kind)

@@ -7,7 +7,7 @@ import {
 } from "@opensteer/core";
 import type { Kysely, Transaction } from "kysely";
 import { requestFromRow } from "./request-persistence.js";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { threadExecutionIsAvailableToUser } from "./store-primitives.js";
 export const taskQuestionCause = "task-question";
 export async function taskQuestionNoticeSource(

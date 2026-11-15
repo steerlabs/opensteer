@@ -1,3 +1,4 @@
+import type { RunToolCapabilities } from "./registry.js";
 import type { TaskPurpose } from "@opensteer/core";
 
 const platformGuide = `Complete the person's request within their authorization. Use available context, instructions and relevant skills. Make routine choices and repair failures you can. Preserve the objective through follow-ups. Verify effects before claiming success; promise future work only after confirming a durable mechanism.
@@ -59,6 +60,7 @@ Each turn says whether its final answer posts to a team thread. opensteer_team_p
 
 export function platformGuideForRun(input: {
   readonly purpose: TaskPurpose;
+  readonly capabilities?: RunToolCapabilities;
   readonly teamsAvailable?: boolean;
   readonly personalContext?: boolean;
   readonly knowledge?: boolean;

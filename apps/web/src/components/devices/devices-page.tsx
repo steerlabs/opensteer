@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router";
-import type { MachineSummary, OtherDevice } from "@opensteer/protocol";
+import type { LegacyMachineSummary, OtherDevice } from "@opensteer/protocol";
 import {
   computerGlyph,
   devicesView,
@@ -147,7 +147,7 @@ export function DevicesSection() {
   );
 }
 
-function deviceBadge(machine: MachineSummary, here: boolean): string | null {
+function deviceBadge(machine: LegacyMachineSummary, here: boolean): string | null {
   if (here || hostsDeployment(machine)) return null;
   if (isAgentPhone(machine) || machine.kind === "agent-phone") return "Agent Phone";
   if (machine.kind === "server") return "Server";

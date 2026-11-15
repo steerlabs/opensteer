@@ -3,12 +3,14 @@ import {
   AndroidPhoneObservationSchema,
   readComputerUseResultHeadline,
   type AndroidPhoneObservation,
-  type ComputerUseObservation,
+  type LegacyComputerUseObservation,
 } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
 import { computerObservationContent } from "./computer-use-tool-result.js";
 
-function observation(overrides: Partial<ComputerUseObservation> = {}): ComputerUseObservation {
+function observation(
+  overrides: Partial<LegacyComputerUseObservation> = {},
+): LegacyComputerUseObservation {
   return {
     app: { bundleId: "com.tinyspeck.slackmacgap", displayName: "Slack", teamId: null },
     capturedAt: "2026-09-22T12:00:00.000Z",

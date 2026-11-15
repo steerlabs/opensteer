@@ -1,5 +1,5 @@
 import { phoneTaskSession } from "./phone-tab.js";
-import type { HostSnapshot } from "./client.js";
+import type { LegacyHostSnapshot as HostSnapshot } from "./client.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
 import type { PlaceItem } from "./places.js";
 import { taskMark, type TaskMark } from "./task-marks.js";

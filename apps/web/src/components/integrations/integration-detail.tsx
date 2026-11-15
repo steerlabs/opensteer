@@ -7,7 +7,7 @@ import type {
   IntegrationDashboard,
   IntegrationPlatformDashboardView,
 } from "@opensteer/integration-core";
-import type { MachineSummary } from "@opensteer/protocol";
+import type { LegacyMachineSummary } from "@opensteer/protocol";
 import {
   canSetUpOwnApp,
   computerAppAccessLabel,
@@ -86,7 +86,7 @@ export function IntegrationDetail({
   /** The computer the desktop app showing this page runs on; null in a browser. */
   readonly localMachineId?: string | null;
   /** Every computer this viewer can see, for an app that runs on one. */
-  readonly machines: readonly MachineSummary[];
+  readonly machines: readonly LegacyMachineSummary[];
   readonly onBack: () => void;
   /** Opens the sign-in sheet on its choice of app rather than going straight to sign-in. */
   readonly onChooseSignIn: () => void;
@@ -706,7 +706,7 @@ function ComputerUseMacs({
   readonly definition: DefinedIntegration["definition"];
   readonly hostConnected: boolean;
   readonly localMachineId: string | null;
-  readonly machines: readonly MachineSummary[];
+  readonly machines: readonly LegacyMachineSummary[];
 }) {
   const macs = machines.flatMap((machine) => {
     const view = computerUseView({
@@ -775,7 +775,7 @@ function AgentPhones({
   readonly dashboard: IntegrationDashboard | null;
   readonly definition: DefinedIntegration["definition"];
   readonly hostConnected: boolean;
-  readonly machines: readonly MachineSummary[];
+  readonly machines: readonly LegacyMachineSummary[];
 }) {
   const phones = machines.flatMap((machine) => {
     const view = phoneUseView({

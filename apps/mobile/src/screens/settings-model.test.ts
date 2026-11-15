@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PushRegistrationState } from "../notifications/push-registration.js";
-import type { MachineSummary, OtherDevice } from "@opensteer/protocol";
+import type { LegacyMachineSummary, OtherDevice } from "@opensteer/protocol";
 import {
   accountSettingsModel,
   engineInstallationUpdateModel,
@@ -151,7 +151,7 @@ describe("Passwords in settings", () => {
     id: "rnr_11111111-1111-4111-8111-111111111111",
     name: "Studio Mac",
     ownership: "deployment",
-  } as MachineSummary;
+  } as LegacyMachineSummary;
 
   it("names the Mac a Personal Opensteer keeps them on", () => {
     expect(

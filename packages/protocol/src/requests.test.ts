@@ -2,8 +2,8 @@ import { createId, SequenceSchema } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
   ClientToHostMessageSchema,
-  HostToClientMessageSchema,
-  DeploymentSnapshotSchema,
+  LegacyHostToClientMessageSchema,
+  LegacyDeploymentSnapshotSchema,
 } from "./index.js";
 
 const now = "2026-08-22T12:00:00.000Z";
@@ -98,16 +98,16 @@ describe("Request protocol", () => {
       threads: [thread],
       deploymentId: createId("deployment"),
     } as const;
-    expect(DeploymentSnapshotSchema.parse(snapshot)).toEqual(snapshot);
-    expect(DeploymentSnapshotSchema.parse({ ...snapshot, messagesOmitted: true })).toEqual({
+    expect(LegacyDeploymentSnapshotSchema.parse(snapshot)).toEqual(snapshot);
+    expect(LegacyDeploymentSnapshotSchema.parse({ ...snapshot, messagesOmitted: true })).toEqual({
       ...snapshot,
       messagesOmitted: true,
     });
     expect(
-      DeploymentSnapshotSchema.safeParse({ ...snapshot, messagesOmitted: false }).success,
+      LegacyDeploymentSnapshotSchema.safeParse({ ...snapshot, messagesOmitted: false }).success,
     ).toBe(false);
     expect(
-      DeploymentSnapshotSchema.safeParse({
+      LegacyDeploymentSnapshotSchema.safeParse({
         ...snapshot,
         messagesOmitted: true,
         messageWindows: [{ ...emptyWindow, threadId: thread.id }],
@@ -127,18 +127,18 @@ describe("Request protocol", () => {
       ClientToHostMessageSchema.safeParse({ ...subscription, snapshotMessages: "unknown" }).success,
     ).toBe(false);
     expect(
-      DeploymentSnapshotSchema.parse({
+      LegacyDeploymentSnapshotSchema.parse({
         ...snapshot,
         unexpectedWindow: snapshot.pendingRequestWindow,
         unexpectedRequests: snapshot.pendingRequests,
       }),
     ).toEqual(snapshot);
     expect(
-      DeploymentSnapshotSchema.safeParse({ ...snapshot, pendingRequests: undefined }).success,
+      LegacyDeploymentSnapshotSchema.safeParse({ ...snapshot, pendingRequests: undefined }).success,
     ).toBe(false);
 
     expect(
-      HostToClientMessageSchema.parse({
+      LegacyHostToClientMessageSchema.parse({
         futureFrameField: true,
         snapshot: { ...snapshot, futureSnapshotField: true },
         type: "host.snapshot",
@@ -161,7 +161,7 @@ describe("Request protocol", () => {
     } as const;
 
     expect(
-      HostToClientMessageSchema.parse({
+      LegacyHostToClientMessageSchema.parse({
         events: [event],
         futureFrameField: true,
         type: "host.events",
@@ -183,9 +183,11 @@ describe("Request protocol", () => {
       type: "host.events",
       throughSequence: "1",
     });
-    expect(HostToClientMessageSchema.safeParse({ type: "host.future-frame" }).success).toBe(false);
+    expect(LegacyHostToClientMessageSchema.safeParse({ type: "host.future-frame" }).success).toBe(
+      false,
+    );
     expect(
-      HostToClientMessageSchema.safeParse({
+      LegacyHostToClientMessageSchema.safeParse({
         reason: "future-reason",
         type: "host.resync-required",
       }).success,

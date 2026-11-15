@@ -39,7 +39,7 @@ run("Browser Sessions through a whole deployment", () => {
     if (!created.ok || created.data.type !== "browser.profile.create")
       throw new Error(JSON.stringify(created));
     const profileId = created.data.profile.id;
-    const bootstrap = await stack.api["bootstrap.get"]({});
+    const bootstrap = await stack.api["bootstrap.legacy.get"]({});
     if (!bootstrap.ok) throw new Error(JSON.stringify(bootstrap));
     const owner = bootstrap.data.user.id;
     // A legacy browser has unknown creation provenance and cannot become the person's reuse candidate.

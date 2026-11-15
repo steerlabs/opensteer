@@ -41,7 +41,7 @@ import {
   type RequestOption,
   type RequestPayload,
 } from "@opensteer/core";
-import type { CardChoice, MachineSummary, PasswordSignInCard } from "@opensteer/protocol";
+import type { CardChoice, LegacyMachineSummary, PasswordSignInCard } from "@opensteer/protocol";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import * as Haptics from "expo-haptics";
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -303,7 +303,7 @@ function SheetForRequest(props: {
   readonly canRespond: boolean;
   readonly deploymentId: string;
   readonly hostClient: HostClient;
-  readonly machines: readonly MachineSummary[];
+  readonly machines: readonly LegacyMachineSummary[];
   readonly onClose: () => void;
   readonly reason: boolean;
   readonly surface: SurfaceModel | null;
@@ -383,7 +383,7 @@ export function RequestSheetContent(props: {
   readonly disabledReason: string | null;
   readonly gate: ThreadMutationGate;
   readonly hostClient: HostClient;
-  readonly machines: readonly MachineSummary[];
+  readonly machines: readonly LegacyMachineSummary[];
   readonly onClose: () => void;
   readonly reason: boolean;
   /** Opens the asking subagent's own view, where it can be answered too. */
@@ -682,7 +682,7 @@ function RequestBody(props: {
   readonly canRespond: boolean;
   readonly computerApproval: ReturnType<typeof useComputerAppApproval>;
   readonly hostClient: HostClient;
-  readonly machines: readonly MachineSummary[];
+  readonly machines: readonly LegacyMachineSummary[];
   readonly reason: string | null;
   readonly responder: RequestResponder;
   readonly surface: SurfaceModel;
@@ -1408,7 +1408,7 @@ function ComputerAppAccessBody(props: {
   readonly canRespond: boolean;
   readonly definitionId: "android-phone" | "macos-app";
   readonly failure: string | null;
-  readonly machines: readonly MachineSummary[];
+  readonly machines: readonly LegacyMachineSummary[];
   readonly onAllow: () => void;
   readonly onDecline: () => void;
   readonly pendingId: string | null;

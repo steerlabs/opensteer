@@ -16,7 +16,7 @@ import {
   type AssignmentTone,
   type DelegationEntry,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type TaskMark as ResolvedTaskMark,
   type Turn,
   type TurnAgents,

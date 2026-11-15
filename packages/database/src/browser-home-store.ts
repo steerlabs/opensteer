@@ -1,7 +1,7 @@
 import { assertPersonalOwner } from "./private-resource-owner.js";
 import { OpensteerError, type RunnerId, type UserId } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { databaseOperationOptions } from "./operation-budget.js";
 
 async function eligibleBrowserRunners(database: Kysely<DatabaseSchema>, ownerId: UserId) {

@@ -5,7 +5,7 @@ import {
   TeamLinkOfferSchema,
   type TeamLinkOffer,
 } from "@opensteer/protocol";
-import type { DatabaseSchema } from "@opensteer/database";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "@opensteer/database";
 import type { PersonalTeamCredential } from "@opensteer/database/personal-team-links-store";
 import { sql, type Kysely } from "kysely";
 import { randomBytes } from "node:crypto";

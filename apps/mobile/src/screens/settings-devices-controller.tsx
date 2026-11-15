@@ -1,7 +1,7 @@
 import { SettingsComputerEnrollment } from "./settings-computer-enrollment.js";
 import { Sheet } from "../ui/sheet.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
-import { unwrapRpcResult, type HostSnapshot } from "@opensteer/client/host";
+import { unwrapRpcResult, type LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
 import { useHostRead } from "@opensteer/client/react";
 import { connectDeviceDraftText } from "@opensteer/client/settings";
 import { useNavigation } from "@react-navigation/native";

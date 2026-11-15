@@ -15,7 +15,7 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
 import "./connection.js";
-import type { DatabaseSchema, DeploymentEventRow } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema, DeploymentEventRow } from "./schema.js";
 import { eventFromRow } from "./store-primitives.js";
 import { messageFromRow } from "./thread-row-mappers.js";
 import { publishedMessagePredicate } from "./message-visibility.js";

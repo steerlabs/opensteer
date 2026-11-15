@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { HostClient, HostSnapshot } from "../host/client.js";
+import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
 import { placeFilterList } from "../host/places.js";
 import {
   sameTabDeviceChoice,

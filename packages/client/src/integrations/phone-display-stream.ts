@@ -17,9 +17,9 @@ import {
   type DisplayViewerFrameHeader,
   type DisplayViewerServerMessage,
   type DisplayViewerState,
-  type MachineSummary,
+  type LegacyMachineSummary,
 } from "@opensteer/protocol";
-import type { HostClient, HostSnapshot } from "../host/client.js";
+import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
 import type { WebSocketClient } from "../host/host-session-client.js";
 import { canStreamComputerDisplay } from "./computer-use.js";
 import type { DisplayUnavailableReason } from "./computer-watch-status.js";
@@ -939,7 +939,7 @@ export function computerDisplayScope(
     : null;
 }
 
-function captureRefused(machine: MachineSummary): boolean {
+function captureRefused(machine: LegacyMachineSummary): boolean {
   return (
     machine.computerUse?.permissions?.screenRecording === "denied" ||
     machine.computerUse?.state === "permission-required"

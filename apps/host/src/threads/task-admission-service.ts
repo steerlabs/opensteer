@@ -15,7 +15,7 @@ import {
   personalSettings,
   requirePersonalOwner,
 } from "@opensteer/database/personal-settings-store";
-import type { DatabaseSchema, RevokedRunGrant } from "@opensteer/database";
+import type { LegacyDatabaseSchema as DatabaseSchema, RevokedRunGrant } from "@opensteer/database";
 import type { Kysely } from "kysely";
 import type {
   TaskAdmissionPort,

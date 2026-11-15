@@ -4,7 +4,7 @@
  * merely has no rows, or keeps narrowing to a device that left the Deployment while a tab it
  * kept still lists it; a label changes identity, redrawing its row, when its device did not. */
 import { describe, expect, it } from "vitest";
-import type { MachineSummary } from "@opensteer/protocol";
+import type { LegacyMachineSummary } from "@opensteer/protocol";
 import type { PlaceItem } from "./places.js";
 import {
   allTabs,
@@ -16,8 +16,8 @@ import {
   tabMatchesFilter,
 } from "./tab-list.js";
 
-const machine = (id: string, name: string, status: MachineSummary["status"] = "online") =>
-  ({ id, name, status, device: { form: "laptop", platform: "macos" } }) as MachineSummary;
+const machine = (id: string, name: string, status: LegacyMachineSummary["status"] = "online") =>
+  ({ id, name, status, device: { form: "laptop", platform: "macos" } }) as LegacyMachineSummary;
 const machines = [
   machine("mini", "Mac mini"),
   machine("studio", "Studio Mac", "offline"),
@@ -65,14 +65,16 @@ describe("the device each row names", () => {
   it("keeps its labels while their devices read the same, and changes them when one does not", () => {
     const before = devicesElsewhere(machines, "mini");
     // A machine's computer use and sessions change often; its name, shape and presence rarely.
-    const busier = machines.map((value) => ({ ...value, computerUse: null }) as MachineSummary);
+    const busier = machines.map(
+      (value) => ({ ...value, computerUse: null }) as LegacyMachineSummary,
+    );
     expect(sameDevicesElsewhere(before, devicesElsewhere(busier, "mini"))).toBe(true);
     const renamed = machines.map((value) =>
       value.id === "studio" ? { ...value, name: "Studio" } : value,
     );
     expect(sameDevicesElsewhere(before, devicesElsewhere(renamed, "mini"))).toBe(false);
     const woke = machines.map((value) =>
-      value.id === "studio" ? ({ ...value, status: "online" } as MachineSummary) : value,
+      value.id === "studio" ? ({ ...value, status: "online" } as LegacyMachineSummary) : value,
     );
     expect(sameDevicesElsewhere(before, devicesElsewhere(woke, "mini"))).toBe(false);
   });
@@ -82,7 +84,7 @@ describe("the device each row names", () => {
       ...machine("mini", "Mac mini"),
       ownership: "deployment",
       allowedModules: ["agents"],
-    } as MachineSummary;
+    } as LegacyMachineSummary;
     const snapshot = {
       can: null,
       deploymentShape: null,

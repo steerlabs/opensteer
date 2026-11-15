@@ -42,7 +42,7 @@ import {
   opensteer_request_answer,
   opensteer_ai_account_list,
 } from "@opensteer/agent-tools/tools";
-import { ThreadReadOutputSchema } from "@opensteer/agent-tools/outputs";
+import { LegacyThreadReadOutputSchema } from "@opensteer/agent-tools/outputs";
 import {
   appendHostDeploymentEvent,
   needsYouPage,
@@ -72,10 +72,10 @@ import {
 import { CommandService, KeyedAdmissionQueue, RealtimeHub } from "@opensteer/orchestration";
 import {
   createBrowserSessionId,
-  ComputerUseSessionSummarySchema,
+  LegacyComputerUseSessionSummarySchema,
   mintComputerUseSessionId,
   type PendingAgentEvent,
-  type PersonShowMessage,
+  type LegacyPersonShowMessage as PersonShowMessage,
 } from "@opensteer/protocol";
 import { BrowserService } from "../browser/browser-service.js";
 import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
@@ -1094,7 +1094,7 @@ describeStore("shaped agent task tools", (it) => {
         operationKey: randomUUID(),
       });
     const page = await read();
-    expect(ThreadReadOutputSchema.parse(productToolOutput(page)).subagent).toMatchObject({
+    expect(LegacyThreadReadOutputSchema.parse(productToolOutput(page)).subagent).toMatchObject({
       id: nodeId,
       title: "Inspect parser",
       model: "child-model",
@@ -1164,7 +1164,9 @@ describeStore("shaped agent task tools", (it) => {
       operationKey: randomUUID(),
     });
     expect(result).toEqual({ subagentId: nodeId, status: "stopping" });
-    expect(ThreadReadOutputSchema.parse(productToolOutput(await read())).subagent).toMatchObject({
+    expect(
+      LegacyThreadReadOutputSchema.parse(productToolOutput(await read())).subagent,
+    ).toMatchObject({
       stopSupported: true,
       stopping: true,
     });
@@ -1925,7 +1927,7 @@ describeStore("shaped agent task tools", (it) => {
     expect(Buffer.byteLength(JSON.stringify(page.items))).toBeLessThanOrEqual(256 * 1024);
     expect(page.hasMore).toBe(true);
     expect(page.nextBefore).not.toBeNull();
-    const shaped = ThreadReadOutputSchema.parse(productToolOutput(page));
+    const shaped = LegacyThreadReadOutputSchema.parse(productToolOutput(page));
     expect(shaped.task.link).toBe(formatReferenceLink(page.thread.id, page.thread.title));
     expect(
       shaped.recentRuns.every(
@@ -2282,7 +2284,7 @@ describeStore("shaped agent task tools", (it) => {
       appKey: "com.apple.finder",
     });
     await expect(s.show({ runId: delegated.run.id })).rejects.toThrow("Run's app session ended");
-    const appSession = ComputerUseSessionSummarySchema.parse({
+    const appSession = LegacyComputerUseSessionSummarySchema.parse({
       sessionId: mintComputerUseSessionId(),
       runId: f.run.id,
       threadId: f.thread.id,

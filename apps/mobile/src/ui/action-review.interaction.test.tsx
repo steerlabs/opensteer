@@ -11,7 +11,7 @@ import {
   HostClientRequestError,
   taskList,
   type ActionReview,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type ReviewedAction,
 } from "@opensteer/client/host";
 import { useActionReview } from "@opensteer/client/react";

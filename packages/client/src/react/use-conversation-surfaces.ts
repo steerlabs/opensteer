@@ -1,5 +1,5 @@
 import { useMemo, useSyncExternalStore } from "react";
-import type { HostClient, HostSnapshot } from "../host/client.js";
+import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
 import { conversationSurfaces, sameConversationSurfaceSource } from "../host/surfaces.js";
 import { useHostSelector } from "./use-host-snapshot.js";
 

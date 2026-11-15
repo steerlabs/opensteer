@@ -1,3 +1,6 @@
+import { MachineSummarySchema } from "./machines.js";
+import { HostedBrowserBootstrapSchema } from "./browser.js";
+import { TabBootstrapSchema } from "./tabs.js";
 import { IdleCompactionPolicyViewSchema, PersonalSettingsSchema } from "@opensteer/core";
 import { AuthSessionIdSchema, PersonNameSchema, QuietTaskDaysSchema } from "@opensteer/core";
 import {
@@ -13,15 +16,15 @@ import {
   IdentityConfigSchema,
 } from "@opensteer/core";
 import { z } from "zod";
-import { ThreadPlaceReferenceSchema } from "./places.js";
-import { HostedBrowserBootstrapSchema } from "./browser.js";
+import { LegacyThreadPlaceReferenceSchema, ThreadPlaceReferenceSchema } from "./places.js";
+import { LegacyHostedBrowserBootstrapSchema } from "./browser.js";
 
 import {
   HarnessModelSettingsMapViewSchema,
   HarnessInstanceCatalogViewSchema,
   RunnerHarnessDriverViewSchema,
 } from "./runner.js";
-import { MachineSummarySchema } from "./machines.js";
+import { LegacyMachineSummarySchema } from "./machines.js";
 
 export const HostEnvironmentStatusSchema = z.enum(["connected", "disconnected"]);
 export type HostEnvironmentStatus = z.infer<typeof HostEnvironmentStatusSchema>;
@@ -96,7 +99,7 @@ export const OwnerProfileViewSchema = z.object({
 });
 export type OwnerProfileView = z.infer<typeof OwnerProfileViewSchema>;
 
-export const HostBootstrapSchema = z.object({
+export const LegacyHostBootstrapSchema = z.object({
   /**
    * The personal API version this caller is served. A Host from before the
    * window omits it: it admits a caller only at the caller's minimum.
@@ -118,8 +121,8 @@ export const HostBootstrapSchema = z.object({
     managePrivateResources: z.boolean(),
   }),
   appTabs: AppTabsSchema,
-  browser: HostedBrowserBootstrapSchema,
-  latestPlaces: z.array(ThreadPlaceReferenceSchema).max(4096),
+  browser: LegacyHostedBrowserBootstrapSchema,
+  latestPlaces: z.array(LegacyThreadPlaceReferenceSchema).max(4096),
   environments: z.array(HostBootstrapEnvironmentSchema).max(400),
   executionPreferences: ExecutionPreferencesViewSchema,
   quietTaskDays: QuietTaskDaysSchema,
@@ -127,7 +130,15 @@ export const HostBootstrapSchema = z.object({
   ownerProfile: OwnerProfileViewSchema.optional(),
   harnesses: z.array(HostBootstrapHarnessSchema).max(400),
   identityConfig: IdentityConfigViewSchema,
-  machines: z.array(MachineSummarySchema).max(400),
+  machines: z.array(LegacyMachineSummarySchema).max(400),
   sessionSurface: z.enum(["canonical", "personal-remote"]),
   user: AuthenticatedUserViewSchema,
 });
+
+export const HostBootstrapSchema = LegacyHostBootstrapSchema.omit({ appTabs: true }).extend({
+  tabs: TabBootstrapSchema,
+  browser: HostedBrowserBootstrapSchema,
+  latestPlaces: z.array(ThreadPlaceReferenceSchema).max(4096),
+  machines: z.array(MachineSummarySchema).max(400),
+});
+export type HostBootstrap = z.infer<typeof HostBootstrapSchema>;

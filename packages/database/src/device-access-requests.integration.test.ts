@@ -208,7 +208,7 @@ describeStore("device access Requests", (it) => {
     ).toBe(2);
     expect(await f.store.notificationState.attention(run.userId)).toMatchObject({ needsYou: 1 });
     const snapshot = await f.store.deploymentSnapshot({ viewerId: run.userId });
-    expect(old.DeploymentSnapshotSchema.safeParse(snapshot).success).toBe(true);
+    expect(old.LegacyDeploymentSnapshotSchema.safeParse(snapshot).success).toBe(true);
     expect(snapshot.threads.find(({ id }) => id === run.thread.id)?.pendingRequests).toBe(1);
     expect(snapshot.pendingRequests.map(({ id }) => id)).toEqual([ordinary.request.id]);
     expect(snapshot.pendingRequestWindow).toMatchObject({ itemCount: 1, totalItems: 1 });
@@ -241,7 +241,7 @@ describeStore("device access Requests", (it) => {
     });
     expect(modern.threads.find(({ id }) => id === run.thread.id)?.pendingRequests).toBe(2);
     expect(modern.pendingRequests.map(({ id }) => id)).toContain(opened.request.id);
-    expect(old.DeploymentSnapshotSchema.safeParse(modern).success).toBe(false);
+    expect(old.LegacyDeploymentSnapshotSchema.safeParse(modern).success).toBe(false);
     expect(await f.store.requests.get(opened.request.id)).toMatchObject({ status: "pending" });
     await f.store.updateMachineAccessPolicy({
       runnerId: target,

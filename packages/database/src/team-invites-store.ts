@@ -15,7 +15,7 @@ import {
   type TeamInviteExpiryDays,
 } from "@opensteer/protocol";
 import { sql, type Selectable, type Transaction } from "kysely";
-import type { DatabaseSchema, TeamInviteTable } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema, TeamInviteTable } from "./schema.js";
 import {
   TeamAccessStore,
   emptyTeamAccessEffects,

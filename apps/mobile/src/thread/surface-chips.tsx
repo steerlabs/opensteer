@@ -4,7 +4,7 @@ import {
   placePage,
   replyPlaces,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type PlaceEntry,
   type SurfaceDestination,
   type Turn,

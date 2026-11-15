@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { isAbsolute, relative } from "node:path";
 import {
   AppIdSchema,
-  AppSchema,
+  LegacyAppSchema as AppSchema,
   AppTitleSchema,
   OpensteerError,
   appMaxBytes,
@@ -16,7 +16,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import type { Kysely } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { assertPersonalOwner } from "./private-resource-owner.js";
 
 import { appendHostDeploymentEvent } from "./deployment-events.js";

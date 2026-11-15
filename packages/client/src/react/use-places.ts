@@ -2,7 +2,7 @@ import { placeIdentityKey, type PlaceEnteredEventView } from "@opensteer/core";
 import { runPlaceDestination, runPlaceSessionId } from "../host/run-place.js";
 import { browserTabStrip } from "../host/browser-tab-strip.js";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
-import type { HostClient, HostSnapshot } from "../host/client.js";
+import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
 import {
   placeList,
   placeStructure,

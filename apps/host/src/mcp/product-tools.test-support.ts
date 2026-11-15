@@ -8,7 +8,7 @@ import {
   computer_access_request,
 } from "@opensteer/agent-tools/tools";
 import {
-  ThreadReadOutputSchema,
+  LegacyThreadReadOutputSchema,
   ThreadListOutputSchema,
   TaskSchema,
   ThreadMessageOutputSchema,
@@ -165,7 +165,10 @@ const RequestCreationResultSchema = z.strictObject({
 });
 
 const ProductToolResultUnionSchema = z.discriminatedUnion("type", [
-  ThreadReadOutputSchema.safeExtend({ ...responseBase, type: z.literal("thread.read.result") }),
+  LegacyThreadReadOutputSchema.safeExtend({
+    ...responseBase,
+    type: z.literal("thread.read.result"),
+  }),
   z.strictObject({
     ...responseBase,
     result: TaskSchema.extend({ delegationId: AssignmentIdSchema, runId: RunIdSchema }),

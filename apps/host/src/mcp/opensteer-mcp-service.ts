@@ -70,7 +70,7 @@ export class OpensteerMcpService {
   readonly #detachObserve: (() => void) | undefined;
   readonly options: {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
-    readonly handlers: AgentToolHandlers;
+    readonly handlers: Partial<AgentToolHandlers>;
     readonly requestHold?: Pick<RequestHold, "admit" | "wait">;
     readonly longRequestHold?: (caller: RunCaller) => Promise<boolean>;
     readonly realtime?: Pick<RealtimeHub, "observe">;
@@ -84,7 +84,7 @@ export class OpensteerMcpService {
   };
   constructor(options: {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
-    readonly handlers: AgentToolHandlers;
+    readonly handlers: Partial<AgentToolHandlers>;
     readonly requestHold?: Pick<RequestHold, "admit" | "wait">;
     readonly longRequestHold?: (caller: RunCaller) => Promise<boolean>;
     readonly realtime?: Pick<RealtimeHub, "observe">;
@@ -473,6 +473,11 @@ export class OpensteerMcpService {
     const tool = found;
     const input = tool.input.parse(value);
     let caller = identity.caller ?? (await this.options.callers.authenticate(bearer));
+    if (!this.options.handlers[tool.name])
+      throw new OpensteerError({
+        code: "not_found",
+        message: "This tool is unavailable on this Host",
+      });
     const key = toolOperationKey(caller, input, identity.operationKey);
     const check = async () => {
       const access = "readsOnly" in tool && tool.readsOnly?.(input as never) ? "read" : tool.access;
@@ -482,7 +487,7 @@ export class OpensteerMcpService {
           code: "forbidden",
           message: "This tool is unavailable to this caller",
         });
-      const authorize = this.options.handlers[tool.name].authorize as
+      const authorize = this.options.handlers[tool.name]?.authorize as
         ((call: ToolCall<typeof tool.name>) => Promise<void>) | undefined;
       await authorize?.({
         caller,
@@ -543,7 +548,7 @@ export class OpensteerMcpService {
       if (id.success) ids.push(id.data);
     };
     for (const field of tool.targetFields ?? []) await add(record[field]);
-    const targets = this.options.handlers[tool.name].targets as
+    const targets = this.options.handlers[tool.name]?.targets as
       ((call: ToolCall<typeof tool.name>) => Promise<readonly string[]>) | undefined;
     if (targets)
       for (const value of await targets({ caller, input } as ToolCall<typeof tool.name>))

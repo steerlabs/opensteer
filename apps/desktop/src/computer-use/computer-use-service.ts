@@ -4,8 +4,8 @@ import type {
 } from "@opensteer/protocol/desktop";
 import { DeploymentIdSchema } from "@opensteer/core";
 import {
-  ComputerViewHelperRequestSchema,
-  ComputerUseHelperRequestSchema,
+  LegacyComputerViewHelperRequestSchema as ComputerViewHelperRequestSchema,
+  LegacyComputerUseHelperRequestSchema,
   computerUseMaxInstalledApps,
   computerUseMaxTimeoutMs,
   computerUseOutOfTimeSentence,
@@ -491,7 +491,7 @@ export class ComputerUseService {
       const client = await this.#connect(deadline);
       if (method === "session.open" || method === "session.act") {
         await client.handshake(deadline);
-        const request = ComputerUseHelperRequestSchema.safeParse({ id: 0, method, params });
+        const request = LegacyComputerUseHelperRequestSchema.safeParse({ id: 0, method, params });
         if (!request.success)
           throw new ComputerUseHelperFailure(
             "failed",

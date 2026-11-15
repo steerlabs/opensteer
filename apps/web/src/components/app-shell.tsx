@@ -1,4 +1,4 @@
-import type { PersonShowMessage } from "@opensteer/protocol";
+import type { LegacyPersonShowMessage } from "@opensteer/protocol";
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
 import { VoiceContext } from "@opensteer/client/react";
 import { VoiceAsk } from "./voice-ask.js";
@@ -64,7 +64,7 @@ import {
   type PendingBrowserTabDestination,
   type PersonalSurfaceDestination,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type LocalRunnerIdentity,
   type ThreadPlacementOption,
   type ThreadSummary,
@@ -1304,7 +1304,7 @@ function PersonShowNavigation({
   const location = useLocation();
   const { nav } = useWorkspace();
   const cursor = useVoiceCursor();
-  const personShowPort = useRef<(message: PersonShowMessage) => void>(() => undefined);
+  const personShowPort = useRef<(message: LegacyPersonShowMessage) => void>(() => undefined);
   personShowPort.current = (message) => {
     const match = /^\/tasks\/([^/]+)/.exec(location.pathname);
     // The composer is where the person asked; any other field is work in progress.

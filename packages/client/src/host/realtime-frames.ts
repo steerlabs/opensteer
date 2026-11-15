@@ -2,7 +2,7 @@ import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
   isRealtimeWireField,
   realtimeEnvelopeTypes,
-  type HostToClientMessage,
+  type LegacyHostToClientMessage as HostToClientMessage,
   type RealtimeFrameDiagnostic,
 } from "@opensteer/protocol";
 import { z } from "zod";

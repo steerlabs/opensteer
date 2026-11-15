@@ -8,7 +8,7 @@ import {
   threadSearchFields,
   type BrowserTabStrip,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type PlaceItem,
   type SearchField,
   type SearchMatch,

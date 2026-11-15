@@ -2,7 +2,7 @@ import { createId, type DeploymentId, type TeamTaskOrigin, type ThreadId } from 
 import { PersonalTeamLinkSchema, type PersonalTeamLink } from "@opensteer/protocol";
 import type { Insertable, Kysely, Selectable } from "kysely";
 import { withPersonalTransaction } from "./personal-transaction.js";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 
 export type StoredPersonalTeamLink = Selectable<DatabaseSchema["personalTeamLinks"]>;
 export type PersonalTeamCredential = Insertable<DatabaseSchema["credentials"]>;

@@ -1,4 +1,4 @@
-import type { HostSnapshot } from "./client.js";
+import type { LegacyHostSnapshot as HostSnapshot } from "./client.js";
 export interface ViewerIdentity {
   readonly deploymentId: string;
   readonly userId: string;

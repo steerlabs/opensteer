@@ -15,7 +15,10 @@ import { WebSocket } from "../apps/host/src/browser/browser-watch-e2e.test-suppo
 import { injectRpcRequest } from "../apps/host/src/server/test-host-api-request.js";
 import { type LaunchedBrowser } from "../packages/browser-runtime-core/src/index.js";
 import { seedBrowserSnapshot } from "../packages/client/src/test-support/browser-snapshot.js";
-import type { BrowserSessionSummary, HostSnapshot } from "../packages/client/src/host/client.js";
+import type {
+  BrowserSessionSummary,
+  LegacyHostSnapshot as HostSnapshot,
+} from "../packages/client/src/host/client.js";
 import {
   HttpHostClient,
   type WebSocketClient,
@@ -1212,7 +1215,7 @@ run("Browser Sessions through a whole deployment", () => {
         // Closing the popup returns them to the opener, which is as it was.
         const closedFrom = viewer.entries.length;
         const closed = await stack.api["commands.dispatch"]({
-          type: "tab.close",
+          type: "legacy.tab.close",
           tabId: popup,
           idempotencyKey: randomUUID(),
         });
@@ -1352,7 +1355,7 @@ run("Browser Sessions through a whole deployment", () => {
               entries: viewer.entries.map((entry) =>
                 entry.kind === "frame" ? { kind: entry.kind, header: entry.header } : entry,
               ),
-              bootstrap: await stack.api["bootstrap.get"]({}),
+              bootstrap: await stack.api["bootstrap.legacy.get"]({}),
             },
             null,
             2,
@@ -1466,7 +1469,7 @@ run("Browser Sessions through a whole deployment", () => {
         pageAnsweredBeforePicture,
         liveAfterAnswer: live?.kind === "frame" ? live.header : null,
       };
-      const bootstrap = await stack.api["bootstrap.get"]({});
+      const bootstrap = await stack.api["bootstrap.legacy.get"]({});
       const sessionState =
         bootstrap.ok &&
         bootstrap.data.browser.groups.rows.find((s) => s.sessionId === sessionId)?.state;
@@ -1624,7 +1627,7 @@ run("Browser Sessions through a whole deployment", () => {
       expect(runtime.protocolErrors()).toEqual([]);
       expect(runtime.streamOpen()).toBe(true);
       expect(control.socket.readyState).toBe(WebSocket.OPEN);
-      const bootstrap = await stack.api["bootstrap.get"]({});
+      const bootstrap = await stack.api["bootstrap.legacy.get"]({});
       expect(
         bootstrap.ok &&
           bootstrap.data.browser.groups.rows.find((s) => s.sessionId === sessionId)?.state,

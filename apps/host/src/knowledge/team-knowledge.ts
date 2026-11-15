@@ -27,7 +27,7 @@ import {
   teamTopicsAfter,
   updateTeamTopic,
   writeTeamNote,
-  type DatabaseSchema,
+  type LegacyDatabaseSchema as DatabaseSchema,
   type TeamNoteRecord,
   type TeamNoteWrite,
   type TeamTopicGrant,

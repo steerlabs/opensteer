@@ -322,7 +322,7 @@ integration("Personal computer membership", () => {
 type MachineRows = Awaited<ReturnType<typeof machineRows>>;
 
 function machineRows(host: ShellAccessScenario["host"]) {
-  return testRpcData(host.origin, "machines.list", {}, { headers: host.ownerHeaders }).then(
+  return testRpcData(host.origin, "machines.legacy.list", {}, { headers: host.ownerHeaders }).then(
     (inventory) => inventory.machines,
   );
 }

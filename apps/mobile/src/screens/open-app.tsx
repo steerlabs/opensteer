@@ -6,7 +6,7 @@ import {
   profileAwayWords,
   startPageIndex,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type PlaceItem,
   type StartPageGroup,
   type StartPageProfileChoice,
@@ -14,7 +14,11 @@ import {
 } from "@opensteer/client/host";
 import { computerNotReadyStatus, computerReasonWords } from "@opensteer/client/integrations";
 import { useHostSelector, usePlaceList } from "@opensteer/client/react";
-import type { ApprovedComputerApp, ComputerViewTarget, OwnerWindowInfo } from "@opensteer/protocol";
+import type {
+  ApprovedComputerApp,
+  LegacyComputerViewTarget as ComputerViewTarget,
+  LegacyOwnerWindowInfo as OwnerWindowInfo,
+} from "@opensteer/protocol";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, SectionList, StyleSheet, View } from "react-native";

@@ -622,7 +622,7 @@ describe("rpc envelope", () => {
       },
     });
     try {
-      const response = await injectRpcRequest(app, "machines.list", {});
+      const response = await injectRpcRequest(app, "machines.legacy.list", {});
       expect(response.statusCode).toBe(401);
       expect(response.json()).toEqual({
         error: { code: "unauthorized", message: "Authentication required", retryable: false },
@@ -645,7 +645,7 @@ describe("rpc envelope", () => {
       )) {
         const legacyEpoch = await injectRpcRequest(
           app,
-          "machines.list",
+          "machines.legacy.list",
           {},
           { [hostApiVersionHeader]: String(legacyHostApiVersion) },
         );
@@ -658,7 +658,7 @@ describe("rpc envelope", () => {
 
       const wrongVersion = await injectRpcRequest(
         app,
-        "machines.list",
+        "machines.legacy.list",
         {},
         { [hostApiVersionHeader]: String(hostApiVersion + 1) },
       );
@@ -691,7 +691,9 @@ describe("rpc envelope", () => {
     const listRunners = vi.fn(async () => ({ nextCursor: null, runners: [] as const }));
     const app = await machinesServer({ listRunners });
     try {
-      const response = await injectRpcRequest(app, "machines.list", { futureClientField: true });
+      const response = await injectRpcRequest(app, "machines.legacy.list", {
+        futureClientField: true,
+      });
       expect(response.statusCode).toBe(400);
       expect(response.json()).toMatchObject({ error: { code: "bad_request" }, ok: false });
       expect(listRunners).not.toHaveBeenCalled();
@@ -707,7 +709,7 @@ describe("rpc envelope", () => {
       },
     });
     try {
-      const response = await injectRpcRequest(app, "machines.list", {});
+      const response = await injectRpcRequest(app, "machines.legacy.list", {});
       expect(response.statusCode).toBe(500);
       expect(response.json()).toEqual({
         error: { code: "internal", message: "Internal server error", retryable: false },
@@ -722,7 +724,7 @@ describe("rpc envelope", () => {
   it("forbids storing a per-user read", async () => {
     const app = await machinesServer();
     try {
-      const response = await injectRpcRequest(app, "machines.list", {});
+      const response = await injectRpcRequest(app, "machines.legacy.list", {});
       expect(response.statusCode).toBe(200);
       expect(response.headers["cache-control"]).toBe("no-store");
     } finally {
@@ -754,7 +756,7 @@ describe("rpc envelope", () => {
       listRunners,
     });
     try {
-      const response = await injectRpcRequest(app, "machines.list", {});
+      const response = await injectRpcRequest(app, "machines.legacy.list", {});
       expect(response.statusCode, response.body).toBe(200);
       expect(rpcData(response)).toMatchObject({
         machines: [
@@ -1023,7 +1025,7 @@ describe("rpc envelope", () => {
       } as never,
     });
     try {
-      const response = await injectRpcRequest(app, "machines.list", {});
+      const response = await injectRpcRequest(app, "machines.legacy.list", {});
 
       expect(response.statusCode, response.body).toBe(200);
       const machines = (rpcData(response) as { machines: { id: string; access: unknown }[] })
@@ -1127,7 +1129,7 @@ describe("rpc envelope", () => {
         } as never,
       });
       try {
-        const response = await injectRpcRequest(app, "machines.list", {});
+        const response = await injectRpcRequest(app, "machines.legacy.list", {});
         expect(response.statusCode, response.body).toBe(200);
         const machines = (
           rpcData(response) as {
@@ -3227,7 +3229,7 @@ describe("durable harness catalogs", () => {
     });
     const app = await server;
     try {
-      const bootstrap = await injectRpcRequest(app, "bootstrap.get", {});
+      const bootstrap = await injectRpcRequest(app, "bootstrap.legacy.get", {});
       expect(bootstrap.statusCode).toBe(200);
       expect(rpcData(bootstrap)).toMatchObject({
         quietTaskDays: 3,
@@ -3272,7 +3274,7 @@ describe("durable harness catalogs", () => {
     });
     const app = await fixture.server;
     try {
-      const bootstrap = rpcData(await injectRpcRequest(app, "bootstrap.get", {})) as {
+      const bootstrap = rpcData(await injectRpcRequest(app, "bootstrap.legacy.get", {})) as {
         environments: EnvironmentSummary[];
         harnesses: HarnessSummary[];
       };
@@ -3303,7 +3305,7 @@ describe("durable harness catalogs", () => {
       environmentKind: "main",
     }).server;
     try {
-      expect(rpcData(await injectRpcRequest(away, "bootstrap.get", {}))).toMatchObject({
+      expect(rpcData(await injectRpcRequest(away, "bootstrap.legacy.get", {}))).toMatchObject({
         environments: [{ connected: false, status: "disconnected" }],
       });
     } finally {
@@ -3317,7 +3319,7 @@ describe("durable harness catalogs", () => {
       environmentKind: "main",
     }).server;
     try {
-      expect(rpcData(await injectRpcRequest(unmanaged, "bootstrap.get", {}))).toMatchObject({
+      expect(rpcData(await injectRpcRequest(unmanaged, "bootstrap.legacy.get", {}))).toMatchObject({
         environments: [{ connected: false, status: "disconnected" }],
       });
     } finally {
@@ -3685,7 +3687,7 @@ describe("durable harness catalogs", () => {
 
       expect(created.statusCode).toBe(200);
       await vi.waitFor(() => expect(fixture.reconcileHarnesses).toHaveBeenCalledTimes(1));
-      const refreshed = await injectRpcRequest(app, "bootstrap.get", {});
+      const refreshed = await injectRpcRequest(app, "bootstrap.legacy.get", {});
       expect(refreshed.statusCode).toBe(200);
       expect(rpcData(refreshed)).toMatchObject({
         harnesses: [expect.objectContaining({ id: harnessInstanceId })],
@@ -3905,7 +3907,7 @@ describe("durable harness catalogs", () => {
       environmentKind: "main",
     }).server;
     try {
-      expect(rpcData(await injectRpcRequest(app, "bootstrap.get", {}))).toMatchObject({
+      expect(rpcData(await injectRpcRequest(app, "bootstrap.legacy.get", {}))).toMatchObject({
         environments: [{ harnessAuthenticationAllowed: true }],
       });
     } finally {

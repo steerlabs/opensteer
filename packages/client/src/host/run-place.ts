@@ -4,8 +4,8 @@ import {
   type Sequence,
   type PlaceEnteredEventView,
 } from "@opensteer/core";
-import { computerAppIdentityKey, type MachineSummary } from "@opensteer/protocol";
-import type { BrowserSessionSummary, HostSnapshot } from "./client.js";
+import { computerAppIdentityKey, type LegacyMachineSummary } from "@opensteer/protocol";
+import type { BrowserSessionSummary, LegacyHostSnapshot as HostSnapshot } from "./client.js";
 import { phoneTabOpen } from "./phone-tab.js";
 import type { SurfaceDestination } from "./surfaces.js";
 
@@ -76,7 +76,7 @@ export class RunPlaceStore {
 export function runPlaceDestination(
   entry: { readonly runId: string; readonly data: Pick<EventData<"place.entered">, "place"> },
   snapshot: {
-    readonly machines: readonly MachineSummary[];
+    readonly machines: readonly LegacyMachineSummary[];
     readonly browserSessions?: readonly BrowserSessionSummary[];
     readonly browserTabs?: HostSnapshot["browserTabs"];
   },
@@ -109,7 +109,7 @@ export function runPlaceDestination(
 /** The Run's own session in a native place, which a picture of its work reads. */
 export function runPlaceSessionId(
   entry: { readonly runId: string; readonly data: Pick<EventData<"place.entered">, "place"> },
-  snapshot: { readonly machines: readonly MachineSummary[] },
+  snapshot: { readonly machines: readonly LegacyMachineSummary[] },
 ): string | null {
   const place = entry.data.place;
   if (place.kind === "browser") return null;

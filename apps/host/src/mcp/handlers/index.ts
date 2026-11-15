@@ -29,11 +29,11 @@ export function agentToolHandlers(options: {
     runId: RunId,
     threadId: ThreadId,
   ) => Promise<TeamAgentRequestId | null>;
-}): AgentToolHandlers {
+}): Partial<AgentToolHandlers> {
   const p = options.product,
     i = options.integrations,
     t = options.triggers;
-  const handlers: AgentToolHandlers = {
+  const handlers: Partial<AgentToolHandlers> = {
     ...administrationToolHandlers(options.administration, options.pluginInstall),
     opensteer_app_publish: async (c) =>
       await options.apps.publish(requireRun(c.caller).claims, c.operationKey, c.input),

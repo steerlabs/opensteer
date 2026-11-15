@@ -77,3 +77,19 @@ export * from "./team-share.js";
 export * from "./references.js";
 export * from "./file-sources.js";
 export * from "./transcript-files.js";
+
+export * from "./tabs.js";
+export * from "./agent-tool-relay.js";
+
+export {
+  PageAgentBindingSchema,
+  PageAgentBindInputSchema,
+  type PageAgentBinding,
+} from "./browser-agent.js";
+
+export {
+  ToolErrorSchema,
+  ToolFailureSchema,
+  type ToolError,
+  type ToolFailure,
+} from "@opensteer/core";

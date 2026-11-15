@@ -1,6 +1,6 @@
-import type { ComputerUseSessionSummary } from "@opensteer/protocol";
+import type { LegacyComputerUseSessionSummary } from "@opensteer/protocol";
 import { clientPublicDetail } from "../connections/operation-error.js";
-import type { HostClient, HostSnapshot } from "../host/client.js";
+import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
 import { stopComputerUseSession } from "./computer-use.js";
 
 /**
@@ -13,7 +13,7 @@ export type ComputerUseStopPhase = "failed" | "stopped" | "stopping";
 export interface ComputerUseStopTarget {
   readonly machineName: string;
   readonly runId: string;
-  readonly sessionId: ComputerUseSessionSummary["sessionId"];
+  readonly sessionId: LegacyComputerUseSessionSummary["sessionId"];
 }
 
 export interface ComputerUseStop extends ComputerUseStopTarget {

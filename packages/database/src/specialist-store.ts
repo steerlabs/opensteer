@@ -6,7 +6,7 @@ import { pluginPolicyAllows } from "./plugin-settings-store.js";
 import { randomUUID } from "node:crypto";
 import { OpensteerError, SpecialistManifestSchema, type UserId } from "@opensteer/core";
 import type { Kysely } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 

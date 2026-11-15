@@ -1,3 +1,5 @@
+import { tabTools } from "./tabs.js";
+import { appTools } from "./apps.js";
 import { aiAccountTools } from "./ai-accounts.js";
 import { opensteer_app_publish, opensteer_app_list, opensteer_app_call } from "./apps.js";
 import {
@@ -52,6 +54,8 @@ import {
 } from "./knowledge.js";
 export const agentTools = [
   ...aiAccountTools,
+  ...tabTools,
+  ...appTools,
   ...computerTools,
   ...browserTools,
   ...pluginTools,
@@ -120,3 +124,5 @@ export * from "./threads.js";
 export * from "./triggers.js";
 export * from "./integrations.js";
 export * from "./knowledge.js";
+
+export * from "./tabs.js";

@@ -5,7 +5,7 @@ import { RunFiles, RunFileError, type RunFilePort } from "../attachments/run-fil
 import type { HostRunFileRequest } from "@opensteer/protocol";
 import { sameRunnerConnectionFence, computerAppMaxTimeoutMs } from "@opensteer/protocol";
 import { openAppTunnel } from "../apps/app-tunnel.js";
-import type { HostAppRequest } from "@opensteer/protocol";
+import type { LegacyHostAppRequest as HostAppRequest } from "@opensteer/protocol";
 import type { RunnerConfig } from "@opensteer/config";
 import type {
   ComputerFolder,
@@ -17,16 +17,16 @@ import type {
 } from "@opensteer/core";
 import { sameStringSet } from "@opensteer/core";
 import {
-  HostToRunnerMessageSchema,
+  LegacyHostToRunnerMessageSchema as HostToRunnerMessageSchema,
   RunnerAuxiliaryRequestIdSchema,
-  RunnerOperationalMessageSchema,
-  RunnerToHostMessageSchema,
+  LegacyRunnerOperationalMessageSchema as RunnerOperationalMessageSchema,
+  LegacyRunnerToHostMessageSchema as RunnerToHostMessageSchema,
   RunnerWireProofSchema,
   parseJsonFrame,
   runnerEnvironmentIds,
   serializeJsonFrame,
   type HarnessInstanceCatalog,
-  type HostToRunnerMessage,
+  type LegacyHostToRunnerMessage as HostToRunnerMessage,
   type RunnerAgentsModule,
   type RunnerAuxiliaryModule,
   type RunnerChallenge,
@@ -36,7 +36,7 @@ import {
   type RunnerEnrollmentCredential,
   type RunnerHarnessDriver,
   type RunnerOperationalReport,
-  type RunnerToHostMessage,
+  type LegacyRunnerToHostMessage as RunnerToHostMessage,
 } from "@opensteer/protocol";
 import { maxBrowserRelayEnvelopeBytes } from "@opensteer/protocol/browser-relay";
 import {

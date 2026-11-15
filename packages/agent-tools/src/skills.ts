@@ -1,3 +1,4 @@
+import type { RunToolCapabilities } from "./registry.js";
 import { z } from "zod";
 
 export const OpensteerAgentSkillNameSchema = z.enum([
@@ -19,7 +20,7 @@ export const opensteerAgentSkillNames: readonly OpensteerAgentSkillName[] = Obje
 ]);
 
 export function opensteerAgentSkillsFor(
-  options: { readonly personalContext?: boolean } = {},
+  options: { readonly personalContext?: boolean; readonly capabilities?: RunToolCapabilities } = {},
 ): readonly OpensteerAgentSkillName[] {
   return opensteerAgentSkillNames.filter(
     (name) => name !== "opensteer:memory" || options.personalContext !== false,

@@ -18,7 +18,7 @@ import { testPersonalHostRuntime } from "./personal-host-runtime-test-support.js
 const hostOrigin = "http://127.0.0.1:4310";
 /** The typed client's GET spelling: the member is the route, the empty payload the query. */
 const bootstrapUrl = `${hostOrigin}/v1/rpc/bootstrap.get?input=${encodeURIComponent(
-  JSON.stringify(hostApi["bootstrap.get"].payload.parse({})),
+  JSON.stringify(hostApi["bootstrap.legacy.get"].payload.parse({})),
 )}`;
 
 describe("NativePersonalHostControl bootstrap", () => {
@@ -531,7 +531,7 @@ function json(value: unknown, status = 200): Response {
 
 /** Success envelope exactly as the Host's rpc registration writes it. */
 function rpcData(data: unknown): Response {
-  return json({ data: hostApi["bootstrap.get"].success.parse(data), ok: true });
+  return json({ data: hostApi["bootstrap.legacy.get"].success.parse(data), ok: true });
 }
 
 function ownerClaimRpcData(): Response {

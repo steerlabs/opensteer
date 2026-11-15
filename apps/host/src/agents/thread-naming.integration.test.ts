@@ -448,7 +448,7 @@ integration("Task naming through the Runner", () => {
       },
     });
     const warmed = await f.watchSettings();
-    const before = await f.active.api["bootstrap.get"]({});
+    const before = await f.active.api["bootstrap.legacy.get"]({});
     if (!before.ok) throw new Error(before.error.message);
     const account = before.data.harnesses[0]!.id;
     await f.writeSettings(
@@ -456,7 +456,7 @@ integration("Task naming through the Runner", () => {
       (view) => view.excludedAccounts.includes(account as HarnessInstanceId),
     );
     expect((await f.preview()).naming).toBeNull();
-    const bootstrap = await f.active.api["bootstrap.get"]({});
+    const bootstrap = await f.active.api["bootstrap.legacy.get"]({});
     if (!bootstrap.ok) throw new Error(bootstrap.error.message);
     expect(bootstrap.data.harnesses).toMatchObject([
       {

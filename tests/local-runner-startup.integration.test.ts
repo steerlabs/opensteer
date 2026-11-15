@@ -255,7 +255,7 @@ integration("local Runner startup with a real credentialed worker", () => {
         expect(retry.runner.state).toBe("running");
         const machines = await testRpcData(
           host.origin,
-          "machines.list",
+          "machines.legacy.list",
           {},
           {
             headers: host.ownerHeaders,

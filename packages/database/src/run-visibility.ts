@@ -1,6 +1,6 @@
 import { sql, type Transaction } from "kysely";
 import type { RunId } from "@opensteer/core";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 
 /** Record direct human participation. Machine fulfilment can set resolvedBy too,
  * so Requests require authenticated settlement provenance. Never reset this fact. */

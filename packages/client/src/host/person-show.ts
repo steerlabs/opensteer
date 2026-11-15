@@ -1,5 +1,5 @@
-import type { PersonShowMessage } from "@opensteer/protocol";
-import type { HostSnapshot } from "./client.js";
+import type { LegacyPersonShowMessage as PersonShowMessage } from "@opensteer/protocol";
+import type { LegacyHostSnapshot as HostSnapshot } from "./client.js";
 import { placeList } from "./places.js";
 import { heldThread } from "./task-list.js";
 import { runPlaceDestination } from "./run-place.js";

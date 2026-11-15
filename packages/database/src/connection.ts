@@ -14,7 +14,7 @@ import {
   databaseOperationOptions,
   inDatabaseOperationTransaction,
 } from "./operation-budget.js";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { applyDatabaseOperationBudget } from "./operation-budget-executor.js";
 
 interface DatabaseConnectionOptions {
@@ -23,28 +23,36 @@ interface DatabaseConnectionOptions {
   readonly applicationName?: string;
 }
 
-const databaseHolders = new WeakMap<Kysely<DatabaseSchema>, () => string>();
-const databasePools = new WeakMap<Kysely<DatabaseSchema>, Pool>();
+const databaseHolders = new WeakMap<object, () => string>();
+const databasePools = new WeakMap<object, Pool>();
 
 /**
  * A raw session from the database's own pool, for a caller that must hold
  * session state and see the session end: Kysely hides its client's events.
  */
-export async function checkoutSession(database: Kysely<DatabaseSchema>): Promise<PoolClient> {
+export async function checkoutSession<Schema>(database: Kysely<Schema>): Promise<PoolClient> {
   const pool = databasePools.get(database);
   if (!pool) throw new Error("This database was not created by createDatabase");
   return pool.connect();
 }
 
 /** Checkout sites only: SQL and connection credentials must never enter shutdown diagnostics. */
-export function databaseShutdownDetails(database: Kysely<DatabaseSchema>): string {
+export function databaseShutdownDetails<Schema>(database: Kysely<Schema>): string {
   return databaseHolders.get(database)?.() ?? "";
 }
 
+export function createDatabase<Schema = DatabaseSchema>(
+  options: DatabaseConnectionOptions,
+  providedPool?: Pool,
+): Kysely<Schema>;
 export function createDatabase(
   options: DatabaseConnectionOptions,
   providedPool?: Pool,
-): Kysely<DatabaseSchema> {
+): Kysely<DatabaseSchema>;
+export function createDatabase<Schema = DatabaseSchema>(
+  options: DatabaseConnectionOptions,
+  providedPool?: Pool,
+): Kysely<Schema> {
   const pool =
     providedPool ??
     new Pool({
@@ -65,7 +73,7 @@ export function createDatabase(
   // An idle client the server ends (restart, failover) is dropped by the pool; without a
   // listener the error would crash the process.
   pool.on("error", () => {});
-  const database = new Kysely<DatabaseSchema>({
+  const database = new Kysely<Schema>({
     dialect: new PostgresDialect({
       controlClient: Client,
       onCreateConnection: async (connection) => {

@@ -19,7 +19,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { app, nativeImage, webContents, type BrowserWindow, type WebContents } from "electron";
 import {
-  HostBootstrapSchema,
+  LegacyHostBootstrapSchema as HostBootstrapSchema,
   BrowserTabOpenResultSchema,
   LocalProfileBindingSchema,
   BrowserSessionIdSchema,
@@ -80,7 +80,7 @@ export async function runTabRestoreTrial(input: {
     const value = HostBootstrapSchema.parse(input);
     return { ...value, browserView: browserSnapshotFromRows(value.browser) };
   };
-  const bootstrap = async () => parseBootstrap(await rpc("bootstrap.get"));
+  const bootstrap = async () => parseBootstrap(await rpc("bootstrap.legacy.get"));
   const rows = (value: Awaited<ReturnType<typeof bootstrap>>) =>
     browserLineages(value.browserView)?.flatMap((group) => group.tabs ?? []) ?? [];
   const targets = (value: Awaited<ReturnType<typeof bootstrap>>) =>

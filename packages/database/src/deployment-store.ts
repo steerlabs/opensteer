@@ -10,7 +10,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { type Kysely, sql } from "kysely";
-import { type DatabaseSchema } from "./schema.js";
+import { type LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { isDeepStrictEqual } from "node:util";
 import { jsonValue } from "./store-primitives.js";
 

@@ -1,5 +1,5 @@
 import { OpensteerError, type ReferenceId, type UserId } from "@opensteer/core";
-import type { DatabaseSchema, OpensteerStore } from "@opensteer/database";
+import type { LegacyDatabaseSchema as DatabaseSchema, OpensteerStore } from "@opensteer/database";
 import {
   hostApi,
   ReferenceResolveInputSchema,

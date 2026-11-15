@@ -69,7 +69,7 @@ import {
   type TaskPage,
   type ThreadEventPage,
   type ThreadMessagePage,
-  type DeploymentSnapshot,
+  type LegacyDeploymentSnapshot as DeploymentSnapshot,
 } from "@opensteer/protocol";
 import type { Clock } from "@opensteer/shared/clock";
 import { type Kysely } from "kysely";
@@ -144,7 +144,11 @@ import {
   type RunnerEnrollmentIssuanceRecord,
   type RunnerInventoryRecord,
 } from "./runner-store.js";
-import { type CommandRow, type DatabaseSchema, type PendingCommandRow } from "./schema.js";
+import {
+  type CommandRow,
+  type LegacyDatabaseSchema as DatabaseSchema,
+  type PendingCommandRow,
+} from "./schema.js";
 import * as snapshotStore from "./snapshot-store.js";
 import {
   type DurableWindowReadOptions,

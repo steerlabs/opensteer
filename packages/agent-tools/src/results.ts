@@ -5,40 +5,60 @@ export interface AgentToolFailure {
   readonly code: string;
   readonly message: string;
   /** What to do about it, naming the tool and parameter. */
-  readonly next?: string | undefined;
+  readonly next?: string | null | undefined;
   readonly reason?: string | undefined;
-  readonly retryable: boolean;
+  readonly retryable?: boolean;
 }
 
-/**
- * Engines read different halves of a result: Codex shows its model only
- * `structuredContent` when there is any, and Pi only `content`. Whatever a
- * model must read goes in both.
- */
-export function agentToolFailureResult(failure: AgentToolFailure) {
-  const device =
-    failure.computerId && failure.capability
-      ? `${failure.reason ?? failure.code}: computerId=${failure.computerId}, capability=${failure.capability}.`
-      : undefined;
-  const text = [
-    device,
-    failure.message,
-    failure.next ?? (failure.retryable ? "Try again." : undefined),
-  ]
-    .filter(Boolean)
-    .join(" ");
+export {
+  ToolErrorSchema,
+  ToolFailureSchema,
+  type ToolError,
+  type ToolFailure,
+} from "@opensteer/core";
+import type { ToolError } from "@opensteer/core";
+const legacyErrorCodes = new Map<string, string>([
+  ["bad_request", "invalid_input"],
+  ["validation", "invalid_input"],
+  ["forbidden", "access_denied"],
+  ["unauthorized", "access_denied"],
+  ["internal", "internal_error"],
+  ["runner_offline", "computer_offline"],
+  ["device-offline", "computer_offline"],
+  ["computer-offline", "computer_offline"],
+  ["outcome-unknown", "outcome_unknown"],
+]);
+const classifiedErrorCodes = new Map<string, string>([
+  ["device-offline", "computer_offline"],
+  ["computer-offline", "computer_offline"],
+  ["outcome-unknown", "outcome_unknown"],
+  ["outcome_unknown", "outcome_unknown"],
+  ["port_in_use", "port_in_use"],
+  ["port-in-use", "port_in_use"],
+  ["unsupported", "unsupported"],
+]);
+export function normalizeToolError(failure: AgentToolFailure): ToolError {
+  const code =
+    classifiedErrorCodes.get(failure.reason ?? "") ??
+    legacyErrorCodes.get(failure.code) ??
+    failure.code;
+  let next = failure.next ?? null;
+  if (failure.computerId && failure.capability && !next?.includes(failure.computerId)) {
+    const target = `computerId=${failure.computerId}, access=${failure.capability}.`;
+    next = `${target} ${next ?? (failure.reason === "device-offline" ? "Check computer_list; do not request access while it is offline." : "Use computer_access_request if needed.")}`;
+  }
   return {
-    content: [{ type: "text" as const, text }],
-    structuredContent: {
-      error: {
-        ...(failure.computerId === undefined ? {} : { computerId: failure.computerId }),
-        ...(failure.capability === undefined ? {} : { capability: failure.capability }),
-        code: failure.code,
-        message: text,
-        ...(failure.reason === undefined ? {} : { reason: failure.reason }),
-        retryable: failure.retryable,
-      },
-    },
+    code: code.slice(0, 100) || "internal_error",
+    message: failure.message.slice(0, 2000) || "Tool call failed.",
+    next: next?.slice(0, 2000) ?? null,
+  };
+}
+/** Both MCP result channels carry exactly the same failure. */
+export function agentToolFailureResult(failure: AgentToolFailure) {
+  const result = { error: normalizeToolError(failure) };
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(result) }],
+    structuredContent: result,
     isError: true,
   };
 }

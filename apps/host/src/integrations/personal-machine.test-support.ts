@@ -21,7 +21,7 @@ import {
   RunnerDescriptorSchema,
   RunnerEnrollmentCredentialSchema,
   runnerProofFormatVersion,
-  type HostToRunnerMessage,
+  type LegacyHostToRunnerMessage as HostToRunnerMessage,
   type MachineAccessRunContext,
   type RunnerBootId,
   type RunnerConnectionFence,
@@ -173,7 +173,7 @@ export async function startPrivateMachineHost(
       { token },
     );
     try {
-      await testRpcData(origin, "bootstrap.get", {}, { headers: ownerHeaders });
+      await testRpcData(origin, "bootstrap.legacy.get", {}, { headers: ownerHeaders });
     } finally {
       primary.socket.close();
       await closed(primary.socket);
@@ -555,7 +555,7 @@ export async function connectCallerMachine(
     async () => {
       const bootstrap = await testRpcData(
         host.origin,
-        "bootstrap.get",
+        "bootstrap.legacy.get",
         {},
         { headers: host.ownerHeaders },
       );

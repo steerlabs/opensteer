@@ -59,7 +59,7 @@ export function sealLoginEnvelope(input: {
 }
 
 /**
- * Reference opener for the shared vectors. Production executors implement this
+ * LegacyReference opener for the shared vectors. Production executors implement this
  * in CryptoKit/JCA and own the same connection-local replay claims.
  */
 export function openLoginEnvelope(input: {

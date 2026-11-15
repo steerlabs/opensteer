@@ -163,7 +163,7 @@ export async function seedPersonal(
 ) {
   const caller = await host.connectHostingCaller();
   cleanup.push(() => caller.close());
-  const boot = await host.api["bootstrap.get"]({});
+  const boot = await host.api["bootstrap.legacy.get"]({});
   if (!boot.ok) throw new Error(boot.error.message);
   const deploymentId = boot.data.deploymentId;
   const createThread = async (key: string) => {

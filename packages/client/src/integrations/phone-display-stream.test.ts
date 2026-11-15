@@ -11,7 +11,7 @@ import {
 import { HttpHostClient, type WebSocketClient } from "../host/host-session-client.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { MockPhoneDisplaySocket } from "../mock/mock-phone-display.js";
-import type { HostSnapshot } from "../host/client.js";
+import type { LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
 import {
   DisplayStreams,
   sharedDisplayStreams,

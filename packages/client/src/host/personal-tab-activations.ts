@@ -1,5 +1,9 @@
 import type { BrowserGroupRow } from "@opensteer/protocol/browser-tabs";
-import type { HostClient, HostSnapshot, PersonalTabActivationOptions } from "./client.js";
+import type {
+  HostClient,
+  LegacyHostSnapshot as HostSnapshot,
+  PersonalTabActivationOptions,
+} from "./client.js";
 import { browserPlaceUnavailableReason } from "./places.js";
 import { browserIdentity } from "./start-page-model.js";
 import { viewerScopeOf } from "./viewer-scope.js";

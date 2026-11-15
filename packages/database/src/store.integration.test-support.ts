@@ -562,7 +562,7 @@ export async function createStoreFixture() {
     }
     async function stagedRequestRace(
       lock: (
-        transaction: import("kysely").Transaction<import("./schema.js").DatabaseSchema>,
+        transaction: import("kysely").Transaction<import("./schema.js").LegacyDatabaseSchema>,
       ) => Promise<unknown>,
       first: () => Promise<unknown>,
       second: () => Promise<unknown>,

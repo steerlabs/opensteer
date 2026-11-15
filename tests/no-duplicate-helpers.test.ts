@@ -27,7 +27,7 @@ const sources = new Map(
  */
 const helperHomes: Readonly<Record<string, string | readonly string[]>> = {
   referenceHref: "packages/core/src/references.ts",
-  parseReferenceHref: "packages/core/src/references.ts",
+  parseLegacyReferenceHref: "packages/core/src/references.ts",
   formatReferenceLink: "packages/core/src/references.ts",
   classifyHref: "packages/core/src/hrefs.ts",
   isNetworkPath: "packages/shared/src/fileHref.ts",

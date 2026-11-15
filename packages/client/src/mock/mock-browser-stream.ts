@@ -11,7 +11,10 @@ import {
 import { KeyedStreamPublisher, type KeyedStreamMessage } from "@opensteer/protocol/keyed-stream";
 import { BrowserTabStore } from "../host/browser-tab-store.js";
 import { BrowserSnapshotDerivation } from "../host/browser-snapshot.js";
-import type { HostSnapshot as PublicHostSnapshot, PersonalTabLineage } from "../host/client.js";
+import type {
+  LegacyHostSnapshot as PublicHostSnapshot,
+  PersonalTabLineage,
+} from "../host/client.js";
 
 class MockRows<Row extends { id: string }> {
   #rows = new Map<string, Row>();

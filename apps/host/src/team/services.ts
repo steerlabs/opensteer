@@ -28,7 +28,7 @@ import {
 import type { HostedTeamId } from "@opensteer/control-plane-protocol/hosted-teams";
 import { sql, type Kysely } from "kysely";
 import type { z } from "zod";
-import type { DatabaseSchema } from "@opensteer/database";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "@opensteer/database";
 import {
   TeamAccessStore,
   requireTeam,

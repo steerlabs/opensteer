@@ -712,7 +712,7 @@ function projectionDatabase(
 ) {
   const link = {
     accountOperation: null as import("kysely").Selectable<
-      import("@opensteer/database").DatabaseSchema["personalRemoteAccountLink"]
+      import("@opensteer/database").LegacyDatabaseSchema["personalRemoteAccountLink"]
     >["accountOperation"],
     challengeId: `phc_${crypto.randomUUID()}`,
     grantId: `phg_${crypto.randomUUID()}`,
@@ -802,7 +802,7 @@ function projectionDatabase(
 function accountLink(issuer: string) {
   return {
     accountOperation: null as import("kysely").Selectable<
-      import("@opensteer/database").DatabaseSchema["personalRemoteAccountLink"]
+      import("@opensteer/database").LegacyDatabaseSchema["personalRemoteAccountLink"]
     >["accountOperation"],
     challengeId: `phc_${crypto.randomUUID()}`,
     grantId: `phg_${crypto.randomUUID()}`,

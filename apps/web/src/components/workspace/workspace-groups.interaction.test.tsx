@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   browserTabStrip,
   placeList,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type PlaceItem,
 } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema, createId } from "@opensteer/core";

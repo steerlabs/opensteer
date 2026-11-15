@@ -2,7 +2,7 @@ import {
   schedulesClient,
   sectionAutomations,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type ScheduleState,
 } from "@opensteer/client/host";
 import { useHostSelector, useSchedules } from "@opensteer/client/react";

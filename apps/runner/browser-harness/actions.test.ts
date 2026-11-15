@@ -5,7 +5,7 @@ import path from "node:path";
 import { BrowserSurfaceIdSchema, createBrowserSessionId } from "@opensteer/protocol";
 import {
   BrowserActionRequestSchema,
-  BrowserActionResponseSchema,
+  LegacyBrowserActionResponseSchema,
   BrowserActionErrorCodeSchema,
 } from "@opensteer/protocol/browser-actions";
 import { describe, expect, it, vi } from "vitest";
@@ -106,7 +106,7 @@ class Socket extends EventEmitter {
       default:
         result = { type: request.action.type };
     }
-    const response = BrowserActionResponseSchema.parse(
+    const response = LegacyBrowserActionResponseSchema.parse(
       this.errorCode
         ? {
             id: request.id,

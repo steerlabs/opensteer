@@ -1,5 +1,5 @@
 import type { TeamBus } from "@opensteer/database/team-bus";
-import type { DatabaseSchema } from "@opensteer/database";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "@opensteer/database";
 import type { TeamRequestStorePort } from "@opensteer/database/team-requests-port";
 import type { Kysely } from "kysely";
 import type { TeamAccessLockPort, TeamAccessResolver } from "../team/access-port.js";

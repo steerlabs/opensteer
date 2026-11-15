@@ -95,7 +95,7 @@ import {
 import { type Kysely, type Selectable, type Transaction, sql } from "kysely";
 import { erasedIntegrationAuthAttemptPayload } from "./integration-auth-attempt-store.js";
 import type {
-  DatabaseSchema,
+  LegacyDatabaseSchema as DatabaseSchema,
   IntegrationConnectionTable,
   IntegrationInstallationTable,
   IntegrationServerTable,

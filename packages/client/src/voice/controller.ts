@@ -1,4 +1,4 @@
-import type { PersonShowMessage } from "@opensteer/protocol";
+import type { LegacyPersonShowMessage as PersonShowMessage } from "@opensteer/protocol";
 import { BrowserSurfaceIdSchema, ThreadIdSchema } from "@opensteer/core";
 import { VoiceSessionIdSchema, type VoiceView } from "@opensteer/protocol/voice";
 import {
@@ -6,7 +6,7 @@ import {
   toolPresentation,
   type ActivityIcon,
 } from "../host/agent-activity-model.js";
-import type { HostClient, HostSnapshot } from "../host/client.js";
+import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
 import { requestsWaitingOn } from "../host/waiting-requests.js";
 import { createCodexVoiceProvider, type CodexVoiceProviderInput } from "./codex-provider.js";
 import {

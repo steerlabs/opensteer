@@ -1452,30 +1452,30 @@ export const AgentBrowserSessionSummarySchema = HostedBrowserSessionSchema.omit(
 export type AgentBrowserSessionSummary = z.infer<typeof AgentBrowserSessionSummarySchema>;
 
 export const PersonalTabActivateCommandSchema = z.strictObject({
-  type: z.literal("tab.activate"),
+  type: z.literal("legacy.tab.activate"),
   tabId: BrowserSurfaceIdSchema,
   idempotencyKey: z.string().min(1).max(255),
 });
 export const PersonalTabActivateResultSchema = z.object({
-  type: z.literal("tab.activate"),
+  type: z.literal("legacy.tab.activate"),
   groupId: BrowserSessionIdSchema.optional(),
   sessionId: BrowserSessionIdSchema.optional(),
   session: HostedBrowserSessionSchema,
   tabId: BrowserSurfaceIdSchema,
 });
 export const PersonalTabCloseCommandSchema = z.strictObject({
-  type: z.literal("tab.close"),
+  type: z.literal("legacy.tab.close"),
   tabId: BrowserSurfaceIdSchema,
   idempotencyKey: z.string().min(1).max(255),
 });
 export const PersonalTabCloseResultSchema = z.object({
-  type: z.literal("tab.close"),
+  type: z.literal("legacy.tab.close"),
   groupId: BrowserSessionIdSchema.optional(),
   sessionId: BrowserSessionIdSchema.optional(),
 });
 
 export const PersonalTabReopenCommandSchema = z.strictObject({
-  type: z.literal("tab.reopen"),
+  type: z.literal("legacy.tab.reopen"),
   idempotencyKey: z.string().min(1).max(255),
 });
 
@@ -1502,7 +1502,7 @@ export const BrowserTabLayoutSchema = z.object({
 });
 export type BrowserTabLayout = z.infer<typeof BrowserTabLayoutSchema>;
 export const PersonalTabReopenResultSchema = z.object({
-  type: z.literal("tab.reopen"),
+  type: z.literal("legacy.tab.reopen"),
   groupId: BrowserSessionIdSchema.optional(),
   sessionId: BrowserSessionIdSchema.optional(),
   tabId: BrowserSurfaceIdSchema,
@@ -1624,7 +1624,7 @@ export const BrowserTabWriteResultSchema = z.object({
 });
 export type BrowserTabWriteResult = z.infer<typeof BrowserTabWriteResultSchema>;
 
-export const HostedBrowserBootstrapSchema = z.object({
+export const LegacyHostedBrowserBootstrapSchema = z.object({
   continuation: z
     .string()
     .regex(/^[a-f0-9]{64}$/u)
@@ -1660,7 +1660,7 @@ export const HostedBrowserBootstrapSchema = z.object({
   profileHomes: z.array(RunnerIdSchema).max(129).optional(),
   profiles: z.array(BrowserProfileSchema).max(128),
 });
-export type HostedBrowserBootstrap = z.infer<typeof HostedBrowserBootstrapSchema>;
+export type LegacyHostedBrowserBootstrap = z.infer<typeof LegacyHostedBrowserBootstrapSchema>;
 
 export const BrowserProfileNameSchema = z.string().trim().min(1).max(120);
 
@@ -1940,3 +1940,13 @@ export const BrowserTabCloseResultSchema = z.object({
 export type BrowserTabCloseCommand = z.infer<typeof BrowserTabCloseCommandSchema>;
 export type BrowserTabCloseResult = z.infer<typeof BrowserTabCloseResultSchema>;
 export const staleBrowserTabInventoryReason = "stale-tab-inventory";
+
+export const HostedBrowserBootstrapSchema = LegacyHostedBrowserBootstrapSchema.omit({
+  groups: true,
+  tabs: true,
+  tabGroups: true,
+  tabGroupsVersion: true,
+  tabRestoreVersion: true,
+  continuation: true,
+});
+export type HostedBrowserBootstrap = z.infer<typeof HostedBrowserBootstrapSchema>;

@@ -17,13 +17,13 @@ import {
   DisplayDemandSchema,
   macWindowVideoParams,
   type DisplaySource,
-  ComputerViewHelperRequestSchema,
-  type ComputerViewNativeRequest,
+  LegacyComputerViewHelperRequestSchema as ComputerViewHelperRequestSchema,
+  type LegacyComputerViewNativeRequest as ComputerViewNativeRequest,
   type DesktopUseComputerViewInput,
   ComputerUseBridgeFrameSchema,
   ComputerUseDataAppIdSchema,
   ComputerUseDataInvokeParamsSchema,
-  ComputerUseHelperRequestSchema,
+  LegacyComputerUseHelperRequestSchema,
   ComputerUseSessionIdSchema,
   computerUseBridgeMaxFrameBytes,
   computerUseBridgeOwnerInputHeader,
@@ -927,7 +927,7 @@ export class ComputerUseBridgeServer {
       return;
     }
     if (method === "view.windows") {
-      const request = ComputerUseHelperRequestSchema.safeParse({ id: 0, method, params });
+      const request = LegacyComputerUseHelperRequestSchema.safeParse({ id: 0, method, params });
       if (!request.success || request.data.method !== "view.windows") {
         refuse("failed", "This Mac could not read that owner window request.");
         return;
@@ -1016,7 +1016,7 @@ export class ComputerUseBridgeServer {
       }
       return;
     }
-    const request = ComputerUseHelperRequestSchema.safeParse({ id: 0, method, params });
+    const request = LegacyComputerUseHelperRequestSchema.safeParse({ id: 0, method, params });
     if (!request.success) {
       refuse("failed", "Opensteer could not read that computer use request.");
       return;

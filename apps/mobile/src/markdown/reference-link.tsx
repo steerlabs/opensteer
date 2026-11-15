@@ -9,7 +9,7 @@ import type { TeamSessionClient } from "@opensteer/client/team";
 import {
   classifyHref,
   type ClassifiedHref,
-  type Reference,
+  type LegacyReference as Reference,
   type TeamPageLink,
 } from "@opensteer/core";
 import {

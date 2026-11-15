@@ -1,3 +1,5 @@
+import { LegacyPersonShowTargetSchema as PersonShowTargetSchema } from "@opensteer/core";
+import { z } from "zod";
 type DelegationCall = ToolCall<"opensteer_task_delegate"> & {
   input: ToolCall<"opensteer_task_delegate">["input"] & { create?: true };
 };
@@ -36,7 +38,7 @@ import { withDatabaseTransaction } from "@opensteer/database";
 import { assertThreadCaller } from "@opensteer/database";
 import type { RealtimeHub } from "@opensteer/orchestration";
 import { SpecialistStore } from "@opensteer/database";
-import type { PersonShowMessage } from "@opensteer/protocol";
+import type { LegacyPersonShowMessage as PersonShowMessage } from "@opensteer/protocol";
 import {
   agentDelegationMaxDepth,
   causalChainMaxDelegations,
@@ -274,14 +276,19 @@ export class ProductToolHandlers {
     }));
   }
   async preparePersonShow({ caller, input }: ToolCall<"person_show">) {
+    const legacyInput = z
+      .strictObject({
+        target: z.union([PersonShowTargetSchema, z.strictObject({ taskId: ThreadIdSchema })]),
+      })
+      .parse(input);
     const claims = requireRun(caller).claims;
     if (await this.#store.runAssignment(claims.runId))
       throw forbidden(assignedRunRefusal, assignedRunNext);
 
     if (!this.#personShow) throw badRequest("Showing places is unavailable on this Host.");
     let target: PersonShowMessage["target"];
-    if ("current" in input.target || "runId" in input.target) {
-      const targetRunId = "runId" in input.target ? input.target.runId : claims.runId;
+    if ("current" in legacyInput.target || "runId" in legacyInput.target) {
+      const targetRunId = "runId" in legacyInput.target ? legacyInput.target.runId : claims.runId;
       if (targetRunId !== claims.runId) {
         const run = await this.#store.database
           .selectFrom("runs")
@@ -298,7 +305,7 @@ export class ProductToolHandlers {
       if (!current)
         throw badRequest(
           "This Run has not worked in a place yet.",
-          "current" in input.target
+          "current" in legacyInput.target
             ? "Pass target.tabId from Browser Harness listTabs()."
             : "Read recentPlaces with opensteer_task_read.",
         );
@@ -324,7 +331,11 @@ export class ProductToolHandlers {
           place.appKey,
         );
       }
-    } else target = "taskId" in input.target ? { threadId: input.target.taskId } : input.target;
+    } else
+      target =
+        "taskId" in legacyInput.target
+          ? { threadId: legacyInput.target.taskId }
+          : legacyInput.target;
     const tabId =
       "tabId" in target
         ? target.tabId

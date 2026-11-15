@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createId,
   OpensteerError,
-  parseReferenceHref,
+  parseLegacyReferenceHref,
   ThreadIdSchema,
   type AgentEventView,
   type ReferenceId,
@@ -12,7 +12,7 @@ import type {
   ReferenceResolveInput,
   ReferenceResolveResult,
 } from "@opensteer/protocol";
-import type { HostSnapshot } from "../host/client.js";
+import type { LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { ReferenceStore } from "./store.js";
 import { localReference, localTeamReference } from "./local.js";
@@ -103,7 +103,7 @@ it("uses genuinely held metadata without RPC, including hidden chips, and keeps 
   const { store, read, update } = setup();
   const thread = { ...base.threads[0]!, id: createId("thread"), title: "Held **title**" };
   update({ threads: [thread] });
-  const ref = parseReferenceHref(`opensteer:${thread.id}`)!;
+  const ref = parseLegacyReferenceHref(`opensteer:${thread.id}`)!;
   const first = store.read(ref.id);
   store.subscribe(ref.id, () => {}, { enabled: false });
   store.subscribe(ref.id, () => {});

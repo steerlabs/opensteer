@@ -1,6 +1,6 @@
 import { BrowserSurfaceIdSchema, BrowserTabGroupIdSchema } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
-import type { HostSnapshot } from "../host/client.js";
+import type { LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
 import { MockHostClient } from "./mock-host-client.js";
 import { placeIdentityKey } from "@opensteer/protocol";
 import { browserTabStrip } from "../host/browser-tab-strip.js";
@@ -96,7 +96,7 @@ it("activates an existing mock surface without replacing its document or duplica
       .browserSessions.find((held) => client.browserTabs.sessionTabs(held.id).length)!;
     const tab = client.browserTabs.sessionTabs(session.id)[0]!;
     const response = await client.rpc["commands.dispatch"]({
-      type: "tab.activate",
+      type: "legacy.tab.activate",
       tabId: BrowserSurfaceIdSchema.parse(tab.id),
       idempotencyKey: "existing-surface",
     });

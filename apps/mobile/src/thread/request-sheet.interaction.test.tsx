@@ -10,7 +10,7 @@ import {
   requestAgentProposedDetail,
   type Request,
 } from "@opensteer/core";
-import type { MachineSummary } from "@opensteer/protocol";
+import type { LegacyMachineSummary } from "@opensteer/protocol";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -670,7 +670,7 @@ describe("RequestSheetContent external requests", () => {
       access: { activeSessions: [], ownerReachAvailable: true, policy, revision: 7 },
       id: "rnr_00000000-0000-4000-8000-000000000001",
       name: "MacBook Pro (2)",
-    } as unknown as MachineSummary;
+    } as unknown as LegacyMachineSummary;
     const dispatch = vi.fn(async (command: { type: string }) => ({
       outcome: "updated",
       revision: 8,
@@ -709,7 +709,7 @@ describe("RequestSheetContent external requests", () => {
         revision: 7,
         policy: { reach: "nobody", commands: false, forwarding: false, shares: [] },
       },
-    } as unknown as MachineSummary;
+    } as unknown as LegacyMachineSummary;
     let succeeds = false;
     const dispatch = vi.fn(async () => ({
       type: "machine.access.update",
@@ -756,7 +756,7 @@ describe("RequestSheetContent external requests", () => {
           shares: [{ path: "/read-only", mode: "read" }],
         },
       },
-    } as unknown as MachineSummary;
+    } as unknown as LegacyMachineSummary;
     const dispatch = vi.fn(async () => ({
       type: "machine.access.update",
       outcome: "updated",
@@ -946,7 +946,7 @@ async function render(
     readonly canRespond?: boolean;
     readonly gate?: ThreadMutationGate;
     readonly inspect?: ReturnType<typeof vi.fn>;
-    readonly machines?: readonly MachineSummary[];
+    readonly machines?: readonly LegacyMachineSummary[];
     readonly passwordRead?: ReturnType<typeof vi.fn>;
     readonly reason?: boolean;
     readonly review?: ReturnType<typeof vi.fn>;
@@ -1211,7 +1211,7 @@ function installRequest(): Request {
 }
 
 const studioId = "rnr_00000000-0000-4000-8000-000000000002";
-const studio = { id: studioId, name: "Studio" } as MachineSummary;
+const studio = { id: studioId, name: "Studio" } as LegacyMachineSummary;
 
 function computerAppRequest(): Request {
   return {

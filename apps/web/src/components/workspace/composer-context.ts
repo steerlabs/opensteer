@@ -3,7 +3,7 @@ import {
   browserPagePart,
   type BrowserFrameView,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type PlaceItem,
 } from "@opensteer/client/host";
 import {

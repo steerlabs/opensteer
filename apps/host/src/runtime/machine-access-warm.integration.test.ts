@@ -958,7 +958,7 @@ async function startRig(
         waitFor(async () => {
           const listed = await testRpcData(
             owner.origin,
-            "machines.list",
+            "machines.legacy.list",
             {},
             { headers: owner.ownerHeaders },
           );

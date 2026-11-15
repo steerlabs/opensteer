@@ -9,7 +9,7 @@ import { SideMemory } from "./side-memory.js";
 import { personalRouteInvalid } from "./side-memory-validity.js";
 import { BrowserTabStore } from "@opensteer/client/host";
 import type { BrowserGroupRow } from "@opensteer/protocol/browser-tabs";
-import type { HostSnapshot } from "@opensteer/client/host";
+import type { LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
 
 // Use the real stack router without importing the native rendering layer in Node.
 vi.mock("@react-navigation/native", async () => {

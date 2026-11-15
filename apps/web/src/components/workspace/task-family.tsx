@@ -5,7 +5,7 @@ import {
   taskFamily,
   type FamilyTask,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type TaskFamilyGlance,
   type ThreadAutomation,
 } from "@opensteer/client/host";

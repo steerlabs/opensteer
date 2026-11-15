@@ -41,7 +41,7 @@ const iphoneName = "Alex's iPhone";
 const iphoneCalendarDetail = "Calendar needs full access for Opensteer in iPhone Settings.";
 
 const responses = {
-  machines: hostApi["machines.list"].success.parse({
+  machines: hostApi["machines.legacy.list"].success.parse({
     machines: [
       machine({
         device: { form: "laptop", platform: "macos" },

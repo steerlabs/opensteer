@@ -15,9 +15,9 @@ import {
   IntegrationInstallManifestSummaryViewSchema,
 } from "@opensteer/integration-core/models";
 import { describe, expect, it } from "vitest";
-import { HostBootstrapSchema } from "./bootstrap.js";
+import { LegacyHostBootstrapSchema } from "./bootstrap.js";
 import { hostApi } from "./host-api.js";
-import { MachineSummarySchema } from "./machines.js";
+import { LegacyMachineSummarySchema } from "./machines.js";
 import { RunnerDeviceSchema } from "./runner-identity.js";
 import { RunnerDescriptorSchema } from "./runner.js";
 
@@ -35,7 +35,7 @@ import { RunnerDescriptorSchema } from "./runner.js";
  * - platform tolerance hides malformed fields, operations or sibling entries;
  * - catalog summaries fail to use the same platform reader as presentations.
  */
-const knownMachine = MachineSummarySchema.parse({
+const knownMachine = LegacyMachineSummarySchema.parse({
   access: null,
   allowedModules: ["integrations"],
   detail: null,
@@ -119,7 +119,7 @@ describe("device platform presentation compatibility", () => {
     });
     expect(RunnerDescriptorSchema.parse(descriptor)).toMatchObject({ device: knownMachine.device });
     expect(
-      hostApi["machines.list"].success.parse({ machines: [{ ...knownMachine, device }] })
+      hostApi["machines.legacy.list"].success.parse({ machines: [{ ...knownMachine, device }] })
         .machines[0]?.device,
     ).toEqual(device);
     expect(
@@ -127,19 +127,19 @@ describe("device platform presentation compatibility", () => {
         ?.app,
     ).toBeUndefined();
     expect(
-      MachineSummarySchema.parse({ ...knownMachine, device: { ...device, app: "future" } }).device
-        ?.app,
+      LegacyMachineSummarySchema.parse({ ...knownMachine, device: { ...device, app: "future" } })
+        .device?.app,
     ).toBeUndefined();
   });
 
   it("keeps the computer list in bootstrap readable beside a future platform", () => {
-    const machines = HostBootstrapSchema.shape.machines.parse([knownMachine, futureMachine]);
+    const machines = LegacyHostBootstrapSchema.shape.machines.parse([knownMachine, futureMachine]);
     expect(machines[0]).toEqual(knownMachine);
     expect(machines[1]).toMatchObject({ id: futureMachine.id, revocable: true });
   });
 
   it("keeps a later computers refresh readable beside a future platform", () => {
-    const result = hostApi["machines.list"].success.parse({
+    const result = hostApi["machines.legacy.list"].success.parse({
       machines: [knownMachine, futureMachine],
     });
     expect(result.machines[0]).toEqual(knownMachine);
@@ -182,7 +182,7 @@ describe("device platform presentation compatibility", () => {
       { form: "phone", platform: 7 },
       { form: "phone" },
     ]) {
-      expect(MachineSummarySchema.safeParse({ ...knownMachine, device }).success).toBe(false);
+      expect(LegacyMachineSummarySchema.safeParse({ ...knownMachine, device }).success).toBe(false);
     }
     expect(
       ComputerAppPresentationViewSchema.safeParse({
@@ -198,13 +198,13 @@ describe("device platform presentation compatibility", () => {
       for (const form of ["laptop", "desktop", "compact", "server", "phone", null]) {
         const device = { form, platform };
         const machine = { ...knownMachine, device };
-        expect(MachineSummarySchema.parse(machine)).toEqual(machine);
-        expect(HostBootstrapSchema.shape.machines.parse([knownMachine, machine])).toEqual([
+        expect(LegacyMachineSummarySchema.parse(machine)).toEqual(machine);
+        expect(LegacyHostBootstrapSchema.shape.machines.parse([knownMachine, machine])).toEqual([
           knownMachine,
           machine,
         ]);
         expect(
-          hostApi["machines.list"].success.parse({ machines: [knownMachine, machine] }),
+          hostApi["machines.legacy.list"].success.parse({ machines: [knownMachine, machine] }),
         ).toEqual({
           machines: [knownMachine, machine],
         });
@@ -215,7 +215,7 @@ describe("device platform presentation compatibility", () => {
   it("forgets only an unknown form on a known platform, including iOS", () => {
     for (const platform of ["macos", "linux", "windows", "android", "ios"]) {
       expect(
-        MachineSummarySchema.parse({
+        LegacyMachineSummarySchema.parse({
           ...knownMachine,
           device: { form: "folding", platform, futureFact: true },
         }).device,
@@ -226,38 +226,39 @@ describe("device platform presentation compatibility", () => {
   it("forgets the whole device for an unknown string platform", () => {
     for (const form of ["phone", "folding", null]) {
       expect(
-        MachineSummarySchema.parse({
+        LegacyMachineSummarySchema.parse({
           ...futureMachine,
           device: { form, platform: "future-phone-os" },
         }),
       ).toEqual({ ...futureMachine, device: null });
     }
-    expect(MachineSummarySchema.parse({ ...knownMachine, device: null }).device).toBeNull();
+    expect(LegacyMachineSummarySchema.parse({ ...knownMachine, device: null }).device).toBeNull();
     const { device: _device, ...olderMachine } = knownMachine;
-    expect(MachineSummarySchema.parse(olderMachine).device).toBeNull();
+    expect(LegacyMachineSummarySchema.parse(olderMachine).device).toBeNull();
   });
 
   it("requires well-formed device fields even when the platform is unknown", () => {
     for (const platform of ["macos", "ios", "future-phone-os"]) {
       for (const form of [undefined, 7, true, {}, []]) {
         expect(
-          MachineSummarySchema.safeParse({ ...knownMachine, device: { form, platform } }).success,
+          LegacyMachineSummarySchema.safeParse({ ...knownMachine, device: { form, platform } })
+            .success,
         ).toBe(false);
       }
       expect(
-        MachineSummarySchema.safeParse({ ...knownMachine, device: { platform } }).success,
+        LegacyMachineSummarySchema.safeParse({ ...knownMachine, device: { platform } }).success,
       ).toBe(false);
     }
     for (const platform of [undefined, null, 7, true, {}, []]) {
       expect(
-        MachineSummarySchema.safeParse({
+        LegacyMachineSummarySchema.safeParse({
           ...knownMachine,
           device: { form: "phone", platform },
         }).success,
       ).toBe(false);
     }
     expect(
-      MachineSummarySchema.safeParse({ ...futureMachine, status: "future-status" }).success,
+      LegacyMachineSummarySchema.safeParse({ ...futureMachine, status: "future-status" }).success,
     ).toBe(false);
   });
 

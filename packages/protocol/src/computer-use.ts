@@ -1,3 +1,4 @@
+import { ComputerViewSchema } from "./computer-view.js";
 import { DeviceRefusalContextSchema } from "./devices.js";
 import {
   macWindowVideoParams,
@@ -8,8 +9,8 @@ import {
   MacOwnerInputVersionSchema,
   MacVideoProfileSchema,
 } from "./mac-window-video.js";
-import { ComputerViewHelperRequestSchema } from "./computer-view-requests.js";
-import { ComputerViewSchema, ComputerViewNativeResultSchema } from "./computer-view.js";
+import { LegacyComputerViewHelperRequestSchema } from "./computer-view-requests.js";
+import { LegacyComputerViewSchema, LegacyComputerViewNativeResultSchema } from "./computer-view.js";
 import {
   ComputerWindowIdSchema,
   IsoDateTimeSchema,
@@ -276,7 +277,7 @@ const ComputerUseWindowFrameSchema = z.strictObject({
   y: PointSchema,
 });
 
-export const OwnerWindowInfoSchema = z.strictObject({
+export const LegacyOwnerWindowInfoSchema = z.strictObject({
   id: ComputerWindowIdSchema,
   title: z.string().max(1_024),
   focused: z.boolean(),
@@ -284,16 +285,16 @@ export const OwnerWindowInfoSchema = z.strictObject({
   minimized: z.boolean(),
   onScreen: z.boolean(),
 });
-export type OwnerWindowInfo = z.infer<typeof OwnerWindowInfoSchema>;
-export const WindowInfoSchema = OwnerWindowInfoSchema.extend({
+export type LegacyOwnerWindowInfo = z.infer<typeof LegacyOwnerWindowInfoSchema>;
+export const LegacyWindowInfoSchema = LegacyOwnerWindowInfoSchema.extend({
   ref: ComputerUseWindowRefSchema,
   modal: z.boolean(),
   current: z.boolean(),
   frame: ComputerUseWindowFrameSchema,
 });
-export type WindowInfo = z.infer<typeof WindowInfoSchema>;
+export type LegacyWindowInfo = z.infer<typeof LegacyWindowInfoSchema>;
 
-export const ComputerUseWindowSchema = z.strictObject({
+export const LegacyComputerUseWindowSchema = z.strictObject({
   ref: ComputerUseWindowRefSchema,
   id: ComputerWindowIdSchema,
   frame: ComputerUseWindowFrameSchema,
@@ -301,7 +302,7 @@ export const ComputerUseWindowSchema = z.strictObject({
   scale: z.number().min(0.1).max(8),
   title: z.string().max(1_024),
 });
-export type ComputerUseWindow = z.infer<typeof ComputerUseWindowSchema>;
+export type LegacyComputerUseWindow = z.infer<typeof LegacyComputerUseWindowSchema>;
 
 /**
  * The bound window and its OS-associated surfaces, never sibling documents.
@@ -321,7 +322,7 @@ export const ComputerUseScreenshotSchema = z
 export type ComputerUseScreenshot = z.infer<typeof ComputerUseScreenshotSchema>;
 
 /** A full snapshot of one bound window; indices are reassigned on each observation. */
-export const ComputerUseObservationSchema = z
+export const LegacyComputerUseObservationSchema = z
   .strictObject({
     app: ComputerAppIdentitySchema,
     capturedAt: IsoDateTimeSchema,
@@ -332,7 +333,7 @@ export const ComputerUseObservationSchema = z
       height: z.number().int().positive().max(10_000),
     }),
     snapshot: ComputerUseSnapshotSchema,
-    windows: z.array(WindowInfoSchema).max(computerUseMaxWindows),
+    windows: z.array(LegacyWindowInfoSchema).max(computerUseMaxWindows),
     blockedBy: z
       .array(
         z.strictObject({
@@ -347,7 +348,7 @@ export const ComputerUseObservationSchema = z
     tree: z.string().max(computerUseTreeMaxBytes),
     /** Whether the element cap cut the tree, which the tree also states. */
     truncated: z.boolean(),
-    window: ComputerUseWindowSchema,
+    window: LegacyComputerUseWindowSchema,
   })
   .superRefine((observation, context) => {
     // Measured in the unit the helper counts in: a tree this side accepted as
@@ -361,7 +362,7 @@ export const ComputerUseObservationSchema = z
       });
     }
   });
-export type ComputerUseObservation = z.infer<typeof ComputerUseObservationSchema>;
+export type LegacyComputerUseObservation = z.infer<typeof LegacyComputerUseObservationSchema>;
 
 function utf8ByteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
@@ -431,10 +432,10 @@ export type ComputerUseOperation = z.infer<typeof ComputerUseOperationSchema>;
 
 export const ComputerUseWindowsParamsSchema = z.strictObject({});
 export type ComputerUseWindowsParams = z.infer<typeof ComputerUseWindowsParamsSchema>;
-export const ComputerUseBindParamsSchema = z.strictObject({
+export const LegacyComputerUseBindParamsSchema = z.strictObject({
   window: ComputerWindowIdSchema.nullable(),
 });
-export type ComputerUseBindParams = z.infer<typeof ComputerUseBindParamsSchema>;
+export type LegacyComputerUseBindParams = z.infer<typeof LegacyComputerUseBindParamsSchema>;
 export const ComputerUseObserveParamsSchema = z.strictObject({
   window: ComputerUseWindowRefSchema,
 });
@@ -461,23 +462,27 @@ export const ComputerUseDispatchActParamsSchema = ComputerUseActParamsSchema.ext
 }).superRefine(validateSealedLoginActionBindings);
 export type ComputerUseDispatchActParams = z.infer<typeof ComputerUseDispatchActParamsSchema>;
 
-export const ComputerUseWindowsResultSchema = z.strictObject({
-  windows: z.array(WindowInfoSchema).max(computerUseMaxWindows),
+export const LegacyComputerUseWindowsResultSchema = z.strictObject({
+  windows: z.array(LegacyWindowInfoSchema).max(computerUseMaxWindows),
 });
-export type ComputerUseWindowsResult = z.infer<typeof ComputerUseWindowsResultSchema>;
-export const ComputerUseBindResultSchema = z.strictObject({ window: WindowInfoSchema });
-export type ComputerUseBindResult = z.infer<typeof ComputerUseBindResultSchema>;
+export type LegacyComputerUseWindowsResult = z.infer<typeof LegacyComputerUseWindowsResultSchema>;
+export const LegacyComputerUseBindResultSchema = z.strictObject({ window: LegacyWindowInfoSchema });
+export type LegacyComputerUseBindResult = z.infer<typeof LegacyComputerUseBindResultSchema>;
 export const ComputerUseViewWindowsParamsSchema = z.strictObject({
   app: ComputerAppIdentitySchema,
 });
-export const ComputerUseViewWindowsResultSchema = z.strictObject({
-  windows: z.array(OwnerWindowInfoSchema).max(computerUseMaxWindows),
+export const LegacyComputerUseViewWindowsResultSchema = z.strictObject({
+  windows: z.array(LegacyOwnerWindowInfoSchema).max(computerUseMaxWindows),
 });
-export type ComputerUseViewWindowsResult = z.infer<typeof ComputerUseViewWindowsResultSchema>;
-export const ComputerUseObservationResultSchema = z.strictObject({
-  observation: ComputerUseObservationSchema,
+export type LegacyComputerUseViewWindowsResult = z.infer<
+  typeof LegacyComputerUseViewWindowsResultSchema
+>;
+export const LegacyComputerUseObservationResultSchema = z.strictObject({
+  observation: LegacyComputerUseObservationSchema,
 });
-export type ComputerUseObservationResult = z.infer<typeof ComputerUseObservationResultSchema>;
+export type LegacyComputerUseObservationResult = z.infer<
+  typeof LegacyComputerUseObservationResultSchema
+>;
 
 /**
  * What one completed action did, in words a person and a model both read:
@@ -508,9 +513,9 @@ export type ComputerUseActResult = z.infer<typeof ComputerUseActResultSchema>;
  * both: `display` says which, and a display session names no app.
  *
  * It is a `z.object` rather than a strict one because it reaches clients
- * inside `MachineSummary`, where every level stays forward tolerant.
+ * inside `LegacyMachineSummary`, where every level stays forward tolerant.
  */
-export const ComputerUseSessionSummarySchema = z
+export const LegacyComputerUseSessionSummarySchema = z
   .object({
     actionCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     actingDisplay: z.boolean().optional(),
@@ -539,7 +544,7 @@ export const ComputerUseSessionSummarySchema = z
     message: "A session holds apps or the whole display, never both and never neither",
     path: ["apps"],
   });
-export type ComputerUseSessionSummary = z.infer<typeof ComputerUseSessionSummarySchema>;
+export type LegacyComputerUseSessionSummary = z.infer<typeof LegacyComputerUseSessionSummarySchema>;
 
 export const ComputerUseMachineStateSchema = z.enum([
   "unavailable",
@@ -553,10 +558,10 @@ export type ComputerUseMachineState = z.infer<typeof ComputerUseMachineStateSche
  * every Mac that has not reported them and for every machine with no helper at
  * all, which is not the same as both grants being denied.
  */
-export const MachineComputerUseSchema = z.object({
+export const LegacyMachineComputerUseSchema = z.object({
   ownerViewVersion: z.number().int().positive().max(1000).optional(),
   ownerViews: z
-    .array(z.lazy(() => ComputerViewSchema))
+    .array(z.lazy(() => LegacyComputerViewSchema))
     .max(64)
     .optional(),
   detail: z.string().nullable(),
@@ -571,10 +576,10 @@ export const MachineComputerUseSchema = z.object({
    * key. This projection is required by Host API epoch 15.
    */
 
-  sessions: z.array(ComputerUseSessionSummarySchema),
+  sessions: z.array(LegacyComputerUseSessionSummarySchema),
   state: ComputerUseMachineStateSchema,
 });
-export type MachineComputerUse = z.infer<typeof MachineComputerUseSchema>;
+export type LegacyMachineComputerUse = z.infer<typeof LegacyMachineComputerUseSchema>;
 
 /**
  * The helper IPC protocol: desktop main to `Opensteer Computer Use`, over a
@@ -892,7 +897,7 @@ export const ComputerUseSessionWindowsParamsSchema = ComputerUseWindowsParamsSch
   app: ComputerUseSessionAppSchema,
   sessionId: ComputerUseSessionIdSchema,
 });
-export const ComputerUseSessionBindParamsSchema = ComputerUseBindParamsSchema.extend({
+export const LegacyComputerUseSessionBindParamsSchema = LegacyComputerUseBindParamsSchema.extend({
   app: ComputerUseSessionAppSchema,
   sessionId: ComputerUseSessionIdSchema,
 });
@@ -920,7 +925,7 @@ const helperRequestIdSchema = z.number().int().nonnegative().max(Number.MAX_SAFE
 export const computerUseMaxTimeoutMs = 120_000;
 const ComputerUseTimeoutMsSchema = z.number().int().positive().max(computerUseMaxTimeoutMs);
 
-export const ComputerUseHelperRequestSchema = z.discriminatedUnion("method", [
+export const LegacyComputerUseHelperRequestSchema = z.discriminatedUnion("method", [
   z.strictObject({
     id: helperRequestIdSchema,
     timeoutMs: ComputerUseTimeoutMsSchema.optional(),
@@ -976,7 +981,7 @@ export const ComputerUseHelperRequestSchema = z.discriminatedUnion("method", [
     method: z.literal("view.windows"),
     params: ComputerUseViewWindowsParamsSchema,
   }),
-  ...ComputerViewHelperRequestSchema.options,
+  ...LegacyComputerViewHelperRequestSchema.options,
   z.strictObject({
     id: helperRequestIdSchema,
     timeoutMs: ComputerUseTimeoutMsSchema.optional(),
@@ -1029,7 +1034,7 @@ export const ComputerUseHelperRequestSchema = z.discriminatedUnion("method", [
     id: helperRequestIdSchema,
     timeoutMs: ComputerUseTimeoutMsSchema.optional(),
     method: z.literal("session.bind"),
-    params: ComputerUseSessionBindParamsSchema,
+    params: LegacyComputerUseSessionBindParamsSchema,
   }),
   z.strictObject({
     id: helperRequestIdSchema,
@@ -1080,14 +1085,14 @@ export const ComputerUseHelperRequestSchema = z.discriminatedUnion("method", [
     params: ComputerUseIMessageSendParamsSchema,
   }),
 ]);
-export type ComputerUseHelperRequest = z.infer<typeof ComputerUseHelperRequestSchema>;
+export type LegacyComputerUseHelperRequest = z.infer<typeof LegacyComputerUseHelperRequestSchema>;
 
 /**
  * An answer carries no method, so the envelope cannot discriminate on one and
  * the caller parses `result` with the schema of the method it asked. This
  * table is the one place that pairing lives.
  */
-export const computerUseHelperResults = {
+export const legacyComputerUseHelperResults = {
   "display.input": z.lazy(() => macWindowVideoResults["display.input"]),
   "display.input-reset": z.lazy(() => macWindowVideoResults["display.input-reset"]),
   "display.resolve": z.lazy(() => macWindowVideoResults["display.resolve"]),
@@ -1096,11 +1101,11 @@ export const computerUseHelperResults = {
   "display.refresh": z.lazy(() => macWindowVideoResults["display.refresh"]),
   "display.stop": z.lazy(() => macWindowVideoResults["display.stop"]),
   "display.attach": z.lazy(() => macWindowVideoResults["display.attach"]),
-  "view.windows": ComputerUseViewWindowsResultSchema,
-  "view.open": z.lazy(() => ComputerViewNativeResultSchema),
-  "view.renew": z.lazy(() => ComputerViewNativeResultSchema),
-  "view.close": z.lazy(() => ComputerViewNativeResultSchema),
-  "view.activate": z.lazy(() => ComputerViewNativeResultSchema),
+  "view.windows": LegacyComputerUseViewWindowsResultSchema,
+  "view.open": z.lazy(() => LegacyComputerViewNativeResultSchema),
+  "view.renew": z.lazy(() => LegacyComputerViewNativeResultSchema),
+  "view.close": z.lazy(() => LegacyComputerViewNativeResultSchema),
+  "view.activate": z.lazy(() => LegacyComputerViewNativeResultSchema),
   "app.resolve": ComputerUseResolveAppResultSchema,
   "apps.installed": ComputerUseInstalledAppsResultSchema,
   "data.invoke": ComputerUseDataInvokeResultSchema,
@@ -1114,9 +1119,9 @@ export const computerUseHelperResults = {
   "permissions.request": ComputerUsePermissionsResultSchema,
   "session.act": ComputerUseActResultSchema,
   "session.close": EmptyParamsSchema,
-  "session.windows": ComputerUseWindowsResultSchema,
-  "session.bind": ComputerUseBindResultSchema,
-  "session.observe": ComputerUseObservationResultSchema,
+  "session.windows": LegacyComputerUseWindowsResultSchema,
+  "session.bind": LegacyComputerUseBindResultSchema,
+  "session.observe": LegacyComputerUseObservationResultSchema,
   "session.open": ComputerUseSessionOpenResultSchema,
 } satisfies Readonly<Record<ComputerUseHelperMethod, z.ZodType>>;
 
@@ -1174,7 +1179,7 @@ export type ComputerUseHelperEvent = z.infer<typeof ComputerUseHelperEventSchema
 /** Everything either end of the socket may read, inside the frame budget. */
 export const ComputerUseHelperEnvelopeSchema = z
   .union([
-    ComputerUseHelperRequestSchema,
+    LegacyComputerUseHelperRequestSchema,
     ComputerUseHelperErrorSchema,
     ComputerUseHelperResponseSchema,
     ComputerUseHelperEventSchema,
@@ -1320,3 +1325,149 @@ export type ComputerUseBridgeFrame = z.infer<typeof ComputerUseBridgeFrameSchema
 function bridgeFrameFits(value: unknown): boolean {
   return utf8ByteLength(JSON.stringify(value)) <= computerUseBridgeMaxFrameBytes;
 }
+
+import { WindowIdSchema, TabIdSchema, RunnerIdSchema } from "@opensteer/core";
+export const OwnerWindowInfoSchema = z.strictObject({
+  windowId: WindowIdSchema,
+  title: z.string().max(1024),
+});
+export type OwnerWindowInfo = z.infer<typeof OwnerWindowInfoSchema>;
+export const WindowInfoSchema = LegacyWindowInfoSchema.omit({ id: true }).extend({
+  windowId: WindowIdSchema,
+});
+export type WindowInfo = z.infer<typeof WindowInfoSchema>;
+export const ComputerUseWindowSchema = LegacyComputerUseWindowSchema.omit({ id: true }).extend({
+  windowId: WindowIdSchema,
+});
+export type ComputerUseWindow = z.infer<typeof ComputerUseWindowSchema>;
+export const ComputerUseBindParamsSchema = z.strictObject({ windowId: WindowIdSchema.nullable() });
+export type ComputerUseBindParams = z.infer<typeof ComputerUseBindParamsSchema>;
+
+import {
+  ComputerViewNativeRequestSchema,
+  ComputerViewNativeResultSchema,
+} from "./computer-view.js";
+export const ComputerUseWindowsResultSchema = z.strictObject({
+  windows: z.array(WindowInfoSchema).max(computerUseMaxWindows),
+});
+export type ComputerUseWindowsResult = z.infer<typeof ComputerUseWindowsResultSchema>;
+export const ComputerUseBindResultSchema = z.strictObject({
+  window: WindowInfoSchema,
+});
+export type ComputerUseBindResult = z.infer<typeof ComputerUseBindResultSchema>;
+export const ComputerUseViewWindowsResultSchema = z.strictObject({
+  windows: z.array(OwnerWindowInfoSchema).max(computerUseMaxWindows),
+});
+export type ComputerUseViewWindowsResult = z.infer<typeof ComputerUseViewWindowsResultSchema>;
+export const ComputerUseObservationSchema = z
+  .strictObject({
+    ...LegacyComputerUseObservationSchema.shape,
+    windows: z.array(WindowInfoSchema).max(computerUseMaxWindows),
+    window: ComputerUseWindowSchema,
+    blockedBy: z
+      .array(
+        z.strictObject({
+          windowId: WindowIdSchema,
+          title: z.string().max(1024),
+          kind: z.enum(["dialog", "menu"]),
+        }),
+      )
+      .max(8),
+  })
+  .refine(
+    (observation) => utf8ByteLength(observation.tree) <= computerUseTreeMaxBytes,
+    `An observation tree must be at most ${computerUseTreeMaxBytes} bytes of UTF-8`,
+  );
+export type ComputerUseObservation = z.infer<typeof ComputerUseObservationSchema>;
+export const ComputerUseObservationResultSchema = z.strictObject({
+  observation: ComputerUseObservationSchema,
+});
+export type ComputerUseObservationResult = z.infer<typeof ComputerUseObservationResultSchema>;
+export const ComputerUseSessionSummarySchema = z
+  .object({
+    ...LegacyComputerUseSessionSummarySchema.shape,
+    windows: z
+      .array(
+        z.object({
+          appKey: z.string().min(1).max(255),
+          windowId: WindowIdSchema,
+          title: z.string().max(1024),
+        }),
+      )
+      .max(computerUseMaxSessionApps)
+      .optional(),
+  })
+  .refine(
+    (session) => session.display === (session.apps.length === 0),
+    "A session holds apps or the whole display, never both and never neither",
+  );
+export type ComputerUseSessionSummary = z.infer<typeof ComputerUseSessionSummarySchema>;
+export const ComputerUseSessionBindParamsSchema = ComputerUseBindParamsSchema.extend({
+  app: ComputerUseSessionAppSchema,
+  sessionId: ComputerUseSessionIdSchema,
+});
+export const ComputerUseHelperRequestSchema = z.discriminatedUnion("method", [
+  z.strictObject({
+    id: helperRequestIdSchema,
+    timeoutMs: ComputerUseTimeoutMsSchema.optional(),
+    method: z.literal("session.bind"),
+    params: ComputerUseSessionBindParamsSchema,
+  }),
+  ...ComputerViewNativeRequestSchema.options.map((schema) =>
+    z.strictObject({
+      id: helperRequestIdSchema,
+      timeoutMs: ComputerUseTimeoutMsSchema.optional(),
+      method: schema.shape.method,
+      params: z.strictObject(schema.shape).omit({ method: true }),
+    }),
+  ),
+  ...LegacyComputerUseHelperRequestSchema.options.filter(
+    (schema) =>
+      (schema.shape.method.value !== "session.bind" &&
+        !schema.shape.method.value.startsWith("view.")) ||
+      schema.shape.method.value === "view.windows",
+  ),
+]);
+export type ComputerUseHelperRequest = z.infer<typeof ComputerUseHelperRequestSchema>;
+export const computerUseHelperResults = {
+  ...legacyComputerUseHelperResults,
+  "session.windows": ComputerUseWindowsResultSchema,
+  "session.bind": ComputerUseBindResultSchema,
+  "session.observe": ComputerUseObservationResultSchema,
+  "view.windows": ComputerUseViewWindowsResultSchema,
+  "view.open": ComputerViewNativeResultSchema,
+  "view.renew": ComputerViewNativeResultSchema,
+  "view.close": ComputerViewNativeResultSchema,
+  "view.activate": ComputerViewNativeResultSchema,
+};
+
+export const MachineComputerUseSchema = LegacyMachineComputerUseSchema.extend({
+  ownerViews: z.array(ComputerViewSchema).max(64).optional(),
+  sessions: z.array(ComputerUseSessionSummarySchema),
+});
+export type MachineComputerUse = z.infer<typeof MachineComputerUseSchema>;
+export const ComputerUseTabRequestSchema = z.strictObject({
+  operation: z.literal("tab"),
+  target: TabIdSchema,
+  args: z.strictObject({}),
+});
+export const ComputerUseTabBindingSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("window"),
+    connectionId: z.string().min(1).max(255),
+    tabId: TabIdSchema,
+    window: z.strictObject({
+      windowId: WindowIdSchema,
+      title: z.string().max(1024),
+      ref: ComputerUseWindowRefSchema,
+    }),
+  }),
+  z.strictObject({
+    kind: z.literal("phone"),
+    connectionId: z.string().min(1).max(255),
+    tabId: TabIdSchema,
+    name: z.string().max(200),
+    computerId: RunnerIdSchema,
+  }),
+]);
+export type ComputerUseTabBinding = z.infer<typeof ComputerUseTabBindingSchema>;

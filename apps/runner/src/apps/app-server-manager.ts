@@ -5,7 +5,7 @@ import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import type { AppRuntimeSpec } from "@opensteer/protocol";
+import type { LegacyAppRuntimeSpec as AppRuntimeSpec } from "@opensteer/protocol";
 import type { HarnessProcessLaunchWrapper } from "@opensteer/harness";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { withTimeout } from "@opensteer/shared/withTimeout";

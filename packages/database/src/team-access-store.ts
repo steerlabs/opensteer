@@ -17,7 +17,7 @@ import {
   type AuthSessionId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction, type RawBuilder } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { createTeamAskReturn } from "./team-request-returns.js";
 import { appendTeamAudit } from "./team-audit-store.js";
 import { addTeamSelfAddNotices } from "./team-notices-store.js";

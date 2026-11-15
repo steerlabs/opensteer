@@ -352,7 +352,7 @@ it("Agent Phone remains available and never duplicates fixture effects during a 
 
     await waitOnline();
     await clearReceipts(device);
-    const bootstrap = await testRpcData(host.origin, "bootstrap.get", {}, owner);
+    const bootstrap = await testRpcData(host.origin, "bootstrap.legacy.get", {}, owner);
     if (!bootstrap.personalSettings) throw new Error("No Main Workspace for the soak agent.");
 
     startedAt = new Date().toISOString();

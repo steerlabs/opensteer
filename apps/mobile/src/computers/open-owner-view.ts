@@ -4,7 +4,10 @@ import {
   type PersonalSurfaceDestination,
 } from "@opensteer/client/host";
 import { sharedDisplayStreams } from "@opensteer/client/integrations";
-import { computerAppIdentityKey, type ComputerViewTarget } from "@opensteer/protocol";
+import {
+  computerAppIdentityKey,
+  type LegacyComputerViewTarget as ComputerViewTarget,
+} from "@opensteer/protocol";
 
 /**
  * Opens the person's own view of a Mac app (or one of its windows) or a phone

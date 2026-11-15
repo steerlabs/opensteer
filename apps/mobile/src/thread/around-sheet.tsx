@@ -9,7 +9,7 @@ import {
   threadMark,
   type FamilyTask,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type TaskFamily,
   type ThreadAutomation,
 } from "@opensteer/client/host";

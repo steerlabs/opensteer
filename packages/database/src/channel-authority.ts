@@ -9,7 +9,7 @@ import {
 import { OpensteerError, type UserId } from "@opensteer/core";
 import { assertPersonalOwner } from "./private-resource-owner.js";
 import type { Selectable, Transaction } from "kysely";
-import type { ChannelAccessGrantTable, DatabaseSchema } from "./schema.js";
+import type { ChannelAccessGrantTable, LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 
 type ChannelConversationType = "dm" | "group" | "channel";
 

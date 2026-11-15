@@ -4,12 +4,12 @@ import {
   androidPhoneDefinitionId,
   runnerIntegrationsCompatibilityReason,
   type ComputerUsePermissions,
-  type ComputerUseSessionSummary,
-  type ComputerView,
+  type LegacyComputerUseSessionSummary,
+  type LegacyComputerView as ComputerView,
   type MachineAppStatus,
-  type MachineComputerUse,
+  type LegacyMachineComputerUse,
   type MachineModuleSummary,
-  type MachineSummary,
+  type LegacyMachineSummary,
   type RunnerDevice,
   type RunnerModuleName,
   type RunnerModuleReadiness,
@@ -18,7 +18,7 @@ import {
 import { browserRuntimeCompatibilityReason } from "../browser/browser-runtime-compatibility.js";
 
 /** The access section of a machine row, as a management viewer sees it. */
-export type MachineAccessView = NonNullable<MachineSummary["access"]>;
+export type MachineAccessView = NonNullable<LegacyMachineSummary["access"]>;
 
 /**
  * The Machines projection.
@@ -94,7 +94,7 @@ export interface MachineProjectionInput {
     { readonly ownerViews: readonly ComputerView[]; readonly ownerViewVersion?: number }
   >;
   readonly computerUseDisplayStreamSupported?: ReadonlyMap<string, boolean>;
-  readonly computerUseSessions?: ReadonlyMap<string, readonly ComputerUseSessionSummary[]>;
+  readonly computerUseSessions?: ReadonlyMap<string, readonly LegacyComputerUseSessionSummary[]>;
   readonly deploymentOwnsMainComputer: boolean;
   readonly pendingRunners: readonly MachinePendingRunnerInput[];
   readonly runners: readonly MachineRunnerInput[];
@@ -137,7 +137,7 @@ type MutableMachineModules = {
   -readonly [Name in RunnerModuleName]?: MachineModuleSummary;
 };
 
-function projectModules(runner: MachineRunnerInput): MachineSummary["modules"] {
+function projectModules(runner: MachineRunnerInput): LegacyMachineSummary["modules"] {
   const modules: MutableMachineModules = {};
   for (const name of RunnerModuleNameSchema.options) {
     if (runner.modules[name] === undefined) continue;
@@ -168,7 +168,9 @@ function projectModules(runner: MachineRunnerInput): MachineSummary["modules"] {
 }
 
 /** A pending enrollment shows what it will be allowed to do once redeemed. */
-function pendingModules(allowedModules: readonly RunnerModuleName[]): MachineSummary["modules"] {
+function pendingModules(
+  allowedModules: readonly RunnerModuleName[],
+): LegacyMachineSummary["modules"] {
   const modules: MutableMachineModules = {};
   for (const name of allowedModules) modules[name] = unreportedModule();
   return modules;
@@ -199,9 +201,9 @@ const computerUseDefinitionId = "macos-app";
  */
 function projectPhoneComputerUse(
   apps: readonly MachineAppStatus[] | undefined,
-  sessions: readonly ComputerUseSessionSummary[],
+  sessions: readonly LegacyComputerUseSessionSummary[],
   displayStreamSupported: boolean,
-): MachineComputerUse {
+): LegacyMachineComputerUse {
   const base = {
     appApproval: null,
     displayStreamSupported,
@@ -240,12 +242,12 @@ function projectPhoneComputerUse(
  */
 function projectComputerUse(
   apps: readonly MachineAppStatus[] | undefined,
-  sessions: readonly ComputerUseSessionSummary[] = [],
+  sessions: readonly LegacyComputerUseSessionSummary[] = [],
   policy: {
     readonly appApproval: "ask" | "automatic";
   } = { appApproval: "ask" },
   displayStreamSupported = false,
-): MachineComputerUse {
+): LegacyMachineComputerUse {
   const { appApproval } = policy;
   const entry = apps?.find(({ definitionId }) => definitionId === computerUseDefinitionId);
   if (!entry) {
@@ -305,8 +307,8 @@ function projectComputerUse(
   };
 }
 
-export function projectMachines(input: MachineProjectionInput): readonly MachineSummary[] {
-  const machines: MachineSummary[] = [];
+export function projectMachines(input: MachineProjectionInput): readonly LegacyMachineSummary[] {
+  const machines: LegacyMachineSummary[] = [];
 
   for (const runner of input.runners) {
     if (runner.revokedAt !== null) continue;

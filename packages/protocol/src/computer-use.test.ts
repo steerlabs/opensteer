@@ -7,10 +7,10 @@ import {
   ComputerUseHelloParamsSchema,
   ComputerUseHelloResultSchema,
   ComputerUsePermissionsResultSchema,
-  WindowInfoSchema,
-  OwnerWindowInfoSchema,
+  LegacyWindowInfoSchema,
+  LegacyOwnerWindowInfoSchema,
   ComputerUseSessionWindowsParamsSchema,
-  ComputerUseSessionBindParamsSchema,
+  LegacyComputerUseSessionBindParamsSchema,
   ComputerUseActResultSchema,
   ComputerUseActionSchema,
   ComputerUseActionsSchema,
@@ -18,7 +18,7 @@ import {
   ComputerUseErrorCodeSchema,
   ComputerUseHelperEnvelopeSchema,
   ComputerUseHelperMethodSchema,
-  ComputerUseObservationSchema,
+  LegacyComputerUseObservationSchema,
   ComputerUseScreenshotSchema,
   ComputerUseSessionActParamsSchema,
   ComputerUseSessionObserveParamsSchema,
@@ -28,7 +28,7 @@ import {
   ComputerUseInstalledAppsResultSchema,
   computerAppIdentityKey,
   computerUseHelperProtocolVersion,
-  computerUseHelperResults,
+  legacyComputerUseHelperResults,
   computerUseMaxActions,
   computerUseMaxTimeoutMs,
   computerUsePerformedMaxLength,
@@ -38,7 +38,7 @@ import {
 } from "./computer-use.js";
 import {
   ComputerViewOpenCommandSchema,
-  ComputerViewSchema,
+  LegacyComputerViewSchema,
   macOwnerViewVersion,
 } from "./computer-view.js";
 import { macWindowVideoParams } from "./mac-window-video.js";
@@ -208,20 +208,20 @@ describe("computer use actions", () => {
 
 describe("computer use observation", () => {
   it("round-trips a full snapshot and refuses a tree measured past its budget", () => {
-    expect(ComputerUseObservationSchema.parse(observation)).toEqual(observation);
-    expect(ComputerUseObservationSchema.safeParse({ ...observation, window: null }).success).toBe(
-      false,
-    );
+    expect(LegacyComputerUseObservationSchema.parse(observation)).toEqual(observation);
+    expect(
+      LegacyComputerUseObservationSchema.safeParse({ ...observation, window: null }).success,
+    ).toBe(false);
 
     // The cap is bytes, not characters: a tree of astral characters is inside
     // the length bound and well past the budget the frame is measured in.
     const astral = "\u{1F5A5}".repeat(computerUseTreeMaxBytes / 4 + 1);
     expect(astral.length).toBeLessThanOrEqual(computerUseTreeMaxBytes);
-    expect(ComputerUseObservationSchema.safeParse({ ...observation, tree: astral }).success).toBe(
-      false,
-    );
     expect(
-      ComputerUseObservationSchema.safeParse({
+      LegacyComputerUseObservationSchema.safeParse({ ...observation, tree: astral }).success,
+    ).toBe(false);
+    expect(
+      LegacyComputerUseObservationSchema.safeParse({
         ...observation,
         tree: "a".repeat(computerUseTreeMaxBytes + 1),
       }).success,
@@ -229,11 +229,11 @@ describe("computer use observation", () => {
 
     // Nothing here is a difference from anything, so the fields that once said
     // so are refused rather than quietly ignored.
-    expect(ComputerUseObservationSchema.safeParse({ ...observation, diff: true }).success).toBe(
-      false,
-    );
     expect(
-      ComputerUseObservationSchema.safeParse({
+      LegacyComputerUseObservationSchema.safeParse({ ...observation, diff: true }).success,
+    ).toBe(false);
+    expect(
+      LegacyComputerUseObservationSchema.safeParse({
         ...observation,
         screenshot: {
           base64: "AAAA",
@@ -312,7 +312,7 @@ describe("action outcomes", () => {
 
 describe("computer use helper protocol", () => {
   it("pairs a result schema with every method the helper answers", () => {
-    expect(Object.keys(computerUseHelperResults).sort()).toEqual(
+    expect(Object.keys(legacyComputerUseHelperResults).sort()).toEqual(
       [...ComputerUseHelperMethodSchema.options].sort(),
     );
   });
@@ -359,7 +359,9 @@ describe("computer use helper protocol", () => {
     for (const frame of [hello, act, nextAct, answer, refusal, stopped]) {
       expect(ComputerUseHelperEnvelopeSchema.parse(frame)).toEqual(frame);
     }
-    expect(computerUseHelperResults["session.act"].parse(answer.result)).toEqual(answer.result);
+    expect(legacyComputerUseHelperResults["session.act"].parse(answer.result)).toEqual(
+      answer.result,
+    );
 
     // A hello whose params belong to another method is not a hello.
     expect(
@@ -646,7 +648,7 @@ describe("computer use discovery and approval push", () => {
 
   it("requires geometry even without a screenshot and rejects the retired event and error", () => {
     expect(
-      ComputerUseObservationSchema.safeParse({ ...observation, geometry: undefined }).success,
+      LegacyComputerUseObservationSchema.safeParse({ ...observation, geometry: undefined }).success,
     ).toBe(false);
     expect(ComputerUseErrorCodeSchema.safeParse("user-intervened").success).toBe(false);
     expect(
@@ -682,22 +684,26 @@ describe("window-addressed computer use", () => {
       { current: undefined },
       { extra: true },
     ])
-      expect(WindowInfoSchema.safeParse({ ...window, ...patch }).success).toBe(false);
+      expect(LegacyWindowInfoSchema.safeParse({ ...window, ...patch }).success).toBe(false);
     const { ref: _ref, frame: _frame, modal: _modal, current: _current, ...owner } = window;
-    expect(OwnerWindowInfoSchema.parse(owner)).toEqual(owner);
-    expect(OwnerWindowInfoSchema.safeParse({ ...owner, ref: window.ref }).success).toBe(false);
+    expect(LegacyOwnerWindowInfoSchema.parse(owner)).toEqual(owner);
+    expect(LegacyOwnerWindowInfoSchema.safeParse({ ...owner, ref: window.ref }).success).toBe(
+      false,
+    );
     expect(
-      computerUseHelperResults["session.windows"].safeParse({ windows: Array(65).fill(window) })
-        .success,
+      legacyComputerUseHelperResults["session.windows"].safeParse({
+        windows: Array(65).fill(window),
+      }).success,
     ).toBe(false);
     expect(
-      ComputerUseObservationSchema.safeParse({
+      LegacyComputerUseObservationSchema.safeParse({
         ...observation,
         blockedBy: Array(9).fill({ id: 1, title: "Save", kind: "dialog" }),
       }).success,
     ).toBe(false);
     expect(
-      ComputerUseObservationSchema.safeParse({ ...observation, observationId: "legacy" }).success,
+      LegacyComputerUseObservationSchema.safeParse({ ...observation, observationId: "legacy" })
+        .success,
     ).toBe(false);
     expect(ComputerUseActionSchema.safeParse({ type: "wait", ms: 1 }).success).toBe(false);
   });
@@ -708,16 +714,19 @@ describe("window-addressed computer use", () => {
     });
     for (const selected of [null, 42])
       expect(
-        ComputerUseSessionBindParamsSchema.parse({ sessionId, app: target, window: selected })
+        LegacyComputerUseSessionBindParamsSchema.parse({ sessionId, app: target, window: selected })
           .window,
       ).toBe(selected);
     for (const selected of [undefined, -1, 1.5, "window-1"])
       expect(
-        ComputerUseSessionBindParamsSchema.safeParse({ sessionId, app: target, window: selected })
-          .success,
+        LegacyComputerUseSessionBindParamsSchema.safeParse({
+          sessionId,
+          app: target,
+          window: selected,
+        }).success,
       ).toBe(false);
-    expect(computerUseHelperResults["session.bind"].parse({ window })).toEqual({ window });
-    expect(computerUseHelperResults["session.windows"].parse({ windows: [window] })).toEqual({
+    expect(legacyComputerUseHelperResults["session.bind"].parse({ window })).toEqual({ window });
+    expect(legacyComputerUseHelperResults["session.windows"].parse({ windows: [window] })).toEqual({
       windows: [window],
     });
   });
@@ -753,8 +762,8 @@ describe("owner window compatibility", () => {
       unavailableReason: null,
       future: true,
     };
-    expect(ComputerViewSchema.parse(view).window).toEqual({ id: 42, title: "Notes" });
-    expect(ComputerViewSchema.parse({ ...view, window: undefined }).window).toBeNull();
+    expect(LegacyComputerViewSchema.parse(view).window).toEqual({ id: 42, title: "Notes" });
+    expect(LegacyComputerViewSchema.parse({ ...view, window: undefined }).window).toBeNull();
     expect(
       runnerSupportsComputerUse({ platform: "darwin", protocolVersion: 6, computerUseVersion: 2 }),
     ).toBe(true);

@@ -6,7 +6,7 @@ import {
   TeamLinkRedeemSchema,
   TeamLinkViewSchema,
 } from "@opensteer/protocol";
-import type { DatabaseSchema } from "@opensteer/database";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "@opensteer/database";
 import { sql, type Kysely, type Transaction } from "kysely";
 import type { TeamAccessLockPort } from "../team/access-port.js";
 import { linkError } from "./contracts.js";

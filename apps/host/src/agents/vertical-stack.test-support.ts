@@ -28,7 +28,10 @@ import type {
   ThreadId,
 } from "@opensteer/core";
 import type { HostApiClient } from "@opensteer/protocol";
-import { HostToClientMessageSchema, type HostToClientMessage } from "@opensteer/protocol";
+import {
+  LegacyHostToClientMessageSchema as HostToClientMessageSchema,
+  type LegacyHostToClientMessage as HostToClientMessage,
+} from "@opensteer/protocol";
 import type { RawData, WebSocket } from "ws";
 
 export interface VerticalTurn {

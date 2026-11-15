@@ -3,13 +3,16 @@ import {
   HostClientRequestError,
   ownerViewDestination,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type NativeViewerSource,
   type PlaceItem,
   type PersonalSurfaceDestination,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
-import { computerAppIdentityKey, type ComputerView } from "@opensteer/protocol";
+import {
+  computerAppIdentityKey,
+  type LegacyComputerView as ComputerView,
+} from "@opensteer/protocol";
 import { actionErrorMessage, usePageVisible } from "../../ui-utils.js";
 import { AppMark } from "../computer-apps/computer-use-section.js";
 import { ComputerStopButton } from "../computer-watch.js";

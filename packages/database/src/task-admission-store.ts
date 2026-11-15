@@ -21,7 +21,7 @@ import { enqueueRunnerControlInTransaction } from "./command-store.js";
 import { appendHostDeploymentEvent } from "./deployment-events.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { lockCommandIdempotency, threadPathLinks } from "./store-primitives.js";
 import { enqueueThreadInputInTransaction, teamReturnUndeliverableReason } from "./thread-inbox.js";
 import { threadInputFromRow } from "./thread-row-mappers.js";

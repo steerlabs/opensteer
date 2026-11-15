@@ -54,7 +54,7 @@ integration("chat attachment delivery through a whole deployment", () => {
         stateKind: "isolated",
       },
     });
-    const bootstrap = await stack.api["bootstrap.get"]({});
+    const bootstrap = await stack.api["bootstrap.legacy.get"]({});
     if (!bootstrap.ok) throw new Error(bootstrap.error.message);
     expect(bootstrap.data.deploymentId).toBe((await stack.host.store.getDeployment())?.id);
     const threadId = await stack.createThread({

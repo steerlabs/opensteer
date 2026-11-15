@@ -1,9 +1,9 @@
 import { ComputerViewRefSchema } from "./computer-view-requests.js";
 import { z } from "zod";
 import {
-  ComputerViewRecordSchema,
-  ComputerViewWindowSchema,
-  ComputerViewTargetSchema,
+  LegacyComputerViewRecordSchema,
+  LegacyComputerViewWindowSchema,
+  LegacyComputerViewTargetSchema,
   ComputerAppIdentityViewSchema,
   RunnerIdSchema,
 } from "@opensteer/core";
@@ -11,12 +11,12 @@ export * from "./computer-view-requests.js";
 
 export {
   ComputerViewIdSchema,
-  ComputerViewTargetSchema,
-  ComputerViewRecordSchema,
+  LegacyComputerViewTargetSchema,
+  LegacyComputerViewRecordSchema,
   ComputerViewUnavailableReasonSchema,
   type ComputerViewId,
-  type ComputerViewTarget,
-  type ComputerViewRecord,
+  type LegacyComputerViewTarget,
+  type LegacyComputerViewRecord,
   type ComputerViewUnavailableReason,
 } from "@opensteer/core";
 export const computerOwnerViewVersion = 1;
@@ -43,27 +43,31 @@ export function computerOwnerViewSupported(
 }
 export const computerViewMaxPerOwner = 64;
 export const computerViewIdleMs = { app: 10 * 60_000, phone: 3 * 60_000 } as const;
-export const ComputerViewTargetViewSchema = z.discriminatedUnion("kind", [
-  z.object({ ...ComputerViewTargetSchema.options[0].shape, app: ComputerAppIdentityViewSchema }),
-  z.object(ComputerViewTargetSchema.options[1].shape),
+export const LegacyComputerViewTargetViewSchema = z.discriminatedUnion("kind", [
+  z.object({
+    ...LegacyComputerViewTargetSchema.options[0].shape,
+    app: ComputerAppIdentityViewSchema,
+  }),
+  z.object(LegacyComputerViewTargetSchema.options[1].shape),
 ]);
 /** Owner-only projection: never carries the owner's identity or a native capture handle. */
-export const ComputerViewSchema = z
+export const LegacyComputerViewSchema = z
   .object({
-    ...z.object(ComputerViewRecordSchema.shape).omit({ ownerUserId: true, captureTargetId: true })
-      .shape,
-    target: ComputerViewTargetViewSchema,
+    ...z
+      .object(LegacyComputerViewRecordSchema.shape)
+      .omit({ ownerUserId: true, captureTargetId: true }).shape,
+    target: LegacyComputerViewTargetViewSchema,
   })
   .refine(
     (view) => view.state !== "ready" || view.unavailableReason === null,
     "A ready view has no refusal.",
   );
-export type ComputerView = z.infer<typeof ComputerViewSchema>;
+export type LegacyComputerView = z.infer<typeof LegacyComputerViewSchema>;
 const idempotencyKey = z.string().min(1).max(255);
 export const ComputerViewOpenCommandSchema = z.strictObject({
   type: z.literal("computer.view.open"),
   machineId: RunnerIdSchema,
-  target: ComputerViewTargetSchema,
+  target: LegacyComputerViewTargetSchema,
   idempotencyKey,
 });
 export const ComputerViewCloseCommandSchema = ComputerViewRefSchema.extend({
@@ -79,15 +83,15 @@ export type ComputerViewCloseCommand = z.infer<typeof ComputerViewCloseCommandSc
 export type ComputerViewRenewCommand = z.infer<typeof ComputerViewRenewCommandSchema>;
 export const ComputerViewOpenResultSchema = z.object({
   type: z.literal("computer.view.open"),
-  view: ComputerViewSchema,
+  view: LegacyComputerViewSchema,
 });
 export const ComputerViewCloseResultSchema = z.object({
   type: z.literal("computer.view.close"),
-  view: ComputerViewSchema,
+  view: LegacyComputerViewSchema,
 });
 export const ComputerViewRenewResultSchema = z.object({
   type: z.literal("computer.view.renew"),
-  view: ComputerViewSchema,
+  view: LegacyComputerViewSchema,
 });
 export const ComputerViewNativeUnavailableSchema = z.object({
   ...ComputerViewRefSchema.shape,
@@ -104,21 +108,21 @@ export const ComputerViewRefusalReasonSchema = z.enum([
   "computer-view-limit",
 ]);
 export type ComputerViewRefusalReason = z.infer<typeof ComputerViewRefusalReasonSchema>;
-export const ComputerViewNativeResultSchema = z.union([
+export const LegacyComputerViewNativeResultSchema = z.union([
   z.object({
     ...ComputerViewRefSchema.shape,
     state: z.enum(["ready", "closed"]),
     captureTargetId: z.string().min(1).max(255).nullable(),
-    window: ComputerViewWindowSchema.nullable().optional(),
+    window: LegacyComputerViewWindowSchema.nullable().optional(),
   }),
   ComputerViewNativeUnavailableSchema,
 ]);
-export type ComputerViewNativeResult = z.infer<typeof ComputerViewNativeResultSchema>;
-export const ComputerViewChangedSchema = z.object({
+export type LegacyComputerViewNativeResult = z.infer<typeof LegacyComputerViewNativeResultSchema>;
+export const LegacyComputerViewChangedSchema = z.object({
   type: z.literal("host.computer-view.changed"),
-  view: ComputerViewSchema,
+  view: LegacyComputerViewSchema,
 });
-export const ComputerViewRemovedSchema = z.object({
+export const LegacyComputerViewRemovedSchema = z.object({
   type: z.literal("host.computer-view.removed"),
   ...ComputerViewRefSchema.shape,
   machineId: RunnerIdSchema,
@@ -130,7 +134,7 @@ export const ComputerViewRemovedSchema = z.object({
 export const ApprovedComputerAppSchema = z.object({
   connectionId: z.string().min(1).max(255),
   machineId: RunnerIdSchema,
-  target: ComputerViewTargetViewSchema,
+  target: LegacyComputerViewTargetViewSchema,
   name: z.string().min(1).max(512),
   iconPng: z
     .string()
@@ -139,3 +143,47 @@ export const ApprovedComputerAppSchema = z.object({
     .nullable(),
 });
 export type ApprovedComputerApp = z.infer<typeof ApprovedComputerAppSchema>;
+
+import {
+  ComputerViewTargetSchema,
+  ComputerViewWindowSchema,
+  ComputerViewRecordSchema,
+} from "@opensteer/core";
+export {
+  ComputerViewTargetSchema,
+  ComputerViewRecordSchema,
+  type ComputerViewTarget,
+  type ComputerViewRecord,
+} from "@opensteer/core";
+export const ComputerViewTargetViewSchema = z.discriminatedUnion("kind", [
+  z.object({ ...ComputerViewTargetSchema.options[0].shape, app: ComputerAppIdentityViewSchema }),
+  z.object(ComputerViewTargetSchema.options[1].shape),
+]);
+export const ComputerViewSchema = z
+  .object({
+    ...ComputerViewRecordSchema.shape,
+    target: ComputerViewTargetViewSchema,
+    window: ComputerViewWindowSchema.nullable(),
+  })
+  .omit({ ownerUserId: true, captureTargetId: true })
+  .refine(
+    (view) => view.state !== "ready" || view.unavailableReason === null,
+    "A ready view has no refusal.",
+  );
+export type ComputerView = z.infer<typeof ComputerViewSchema>;
+export const ComputerViewNativeResultSchema = z.union([
+  z.object({
+    ...ComputerViewRefSchema.shape,
+    state: z.enum(["ready", "closed"]),
+    captureTargetId: z.string().min(1).max(255).nullable(),
+    window: ComputerViewWindowSchema.nullable().optional(),
+  }),
+  ComputerViewNativeUnavailableSchema,
+]);
+export type ComputerViewNativeResult = z.infer<typeof ComputerViewNativeResultSchema>;
+
+export const ComputerViewChangedSchema = z.object({
+  type: z.literal("host.computer-view.changed"),
+  view: ComputerViewSchema,
+});
+export const ComputerViewRemovedSchema = LegacyComputerViewRemovedSchema.omit({ tabClosed: true });

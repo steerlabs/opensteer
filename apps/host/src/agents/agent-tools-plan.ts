@@ -3,6 +3,7 @@ import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-sc
 import { advertisedJsonSchema } from "@opensteer/shared/advertisedJsonSchema";
 import { createHash } from "node:crypto";
 import {
+  type RunToolCapabilities,
   agentToolAnnotations,
   toolsFor,
   opensteerAgentSkillsFor,
@@ -18,6 +19,7 @@ import {
 /** The Host owns the complete engine-facing inventory and startup context. */
 export function agentToolsPlanForRun(input: {
   readonly voiceCall?: boolean;
+  readonly capabilities: RunToolCapabilities;
   readonly url: string;
   readonly token: string;
   readonly purpose: TaskPurpose;
@@ -31,6 +33,7 @@ export function agentToolsPlanForRun(input: {
 }): RunAgentToolsPlan {
   const runTools = toolsFor({
     kind: "run",
+    capabilities: input.capabilities,
     accessMode: input.accessMode,
     teamsAvailable: input.teamsAvailable === true,
     knowledge: input.knowledge === true,
@@ -45,6 +48,7 @@ export function agentToolsPlanForRun(input: {
   const instructions =
     platformGuideForRun({
       purpose: input.purpose,
+      capabilities: input.capabilities,
       teamsAvailable: input.teamsAvailable === true,
       personalContext: input.personalContext !== false,
       knowledge: input.knowledge === true,
@@ -53,9 +57,21 @@ export function agentToolsPlanForRun(input: {
     (input.settingsError
       ? `\n\nsettings.json is invalid, so background models still use its last valid version: ${agentHomeSettingsErrorText(input.settingsError)}`
       : "");
-  const skills = [...opensteerAgentSkillsFor({ personalContext: input.personalContext !== false })];
+  const skills = [
+    ...opensteerAgentSkillsFor({
+      personalContext: input.personalContext !== false,
+      capabilities: input.capabilities,
+    }),
+  ];
   const toolsRevision = createHash("sha256")
-    .update(JSON.stringify({ catalog: runToolsCatalog, instructions, skills }))
+    .update(
+      JSON.stringify({
+        catalog: runToolsCatalog,
+        instructions,
+        skills,
+        capabilities: input.capabilities,
+      }),
+    )
     .digest("hex");
   return { url: input.url, token: input.token, tools, toolsRevision, instructions, skills };
 }

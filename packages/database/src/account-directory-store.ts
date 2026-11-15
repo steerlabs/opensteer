@@ -8,7 +8,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 
 // currently exposes. The Host's signed identity document is not part of this
 // payload: the Host publishes it separately on every start, so nothing here has

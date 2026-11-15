@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createId, type AuthSessionSummary } from "@opensteer/core";
-import { MachineSummarySchema, deviceAccess } from "@opensteer/protocol";
+import { LegacyMachineSummarySchema, deviceAccess } from "@opensteer/protocol";
 import { withDeviceSwitch } from "./device-access-request.js";
 import {
   deviceAccessRows,
@@ -70,7 +70,7 @@ describe("device membership", () => {
   });
 });
 const machine = (id: string, kind: "home" | "computer") =>
-  MachineSummarySchema.parse({
+  LegacyMachineSummarySchema.parse({
     id,
     kind,
     name: id,
@@ -183,7 +183,7 @@ describe("device access rows", () => {
     readonly device: { readonly form: string; readonly platform: string; readonly app?: string };
     readonly status?: "online" | "offline";
   }) =>
-    MachineSummarySchema.parse({
+    LegacyMachineSummarySchema.parse({
       ...machine("rnr_device", "computer"),
       access: {
         activeSessions: [],

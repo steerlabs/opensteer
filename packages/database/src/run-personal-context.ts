@@ -1,7 +1,7 @@
 import { channelAllowsPersonalContext } from "@opensteer/channel-core";
 import type { RunId, ThreadId, UserId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 
 /** Re-evaluate every sender represented in this task, including later admitted batches. */
 export async function runAllowsPersonalContext(

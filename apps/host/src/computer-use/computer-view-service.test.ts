@@ -9,8 +9,8 @@ import { z } from "zod";
 import { RunnerIdSchema, UserIdSchema } from "@opensteer/core";
 import type { IntegrationConnectionSummary } from "@opensteer/integration-core";
 import type {
-  ComputerViewNativeResult,
-  ComputerViewTarget,
+  LegacyComputerViewNativeResult as ComputerViewNativeResult,
+  LegacyComputerViewTarget as ComputerViewTarget,
   ComputerAppIdentity,
 } from "@opensteer/protocol";
 import { createHostApiHandlers } from "../server/host-api-handlers.js";
@@ -110,9 +110,9 @@ function harness(phone = false) {
   const handlers = createHostApiHandlers(...handlerArgs);
   const windows = async (user: typeof owner, runner: typeof machine, identity: typeof app) => {
     const context = { session: { user: { id: user } } } as unknown as Parameters<
-      (typeof handlers)["computer.app.windows"]
+      (typeof handlers)["computer.app.legacy.windows"]
     >[1];
-    return handlers["computer.app.windows"]({ machineId: runner, app: identity }, context);
+    return handlers["computer.app.legacy.windows"]({ machineId: runner, app: identity }, context);
   };
   return {
     notices,
@@ -232,7 +232,7 @@ describe("owner windows", () => {
       await expect(h.service.windows(owner, machine, app)).rejects.toThrow(/approval/);
       expect(h.logs).toEqual([
         {
-          event: "computer.app.windows",
+          event: "computer.app.legacy.windows",
           details: {
             machineId: machine,
             bundleId: app.bundleId,

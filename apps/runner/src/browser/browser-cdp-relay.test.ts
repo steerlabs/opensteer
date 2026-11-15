@@ -27,7 +27,7 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { BrowserCdpRelay } from "./browser-cdp-relay.js";
 import {
   BrowserActionRequestSchema,
-  BrowserActionResponseSchema,
+  LegacyBrowserActionResponseSchema,
 } from "@opensteer/protocol/browser-actions";
 
 import {
@@ -432,7 +432,9 @@ describe("BrowserCdpRelay", () => {
                     dialog: null,
                   }
                 : { type, outcome: "acted", trusted: false };
-        socket.send(JSON.stringify(BrowserActionResponseSchema.parse({ id: message.id, result })));
+        socket.send(
+          JSON.stringify(LegacyBrowserActionResponseSchema.parse({ id: message.id, result })),
+        );
       });
     });
     const relay = new BrowserCdpRelay({

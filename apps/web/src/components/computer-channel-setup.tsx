@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import type { ChannelProviderManifest } from "@opensteer/channel-core";
 import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
-import type { MachineSummary } from "@opensteer/protocol";
+import type { LegacyMachineSummary } from "@opensteer/protocol";
 
 type Created = Extract<
   Awaited<ReturnType<HostClient["dispatch"]>>,
@@ -22,7 +22,7 @@ export function ComputerChannelSetup({
   provider,
 }: {
   readonly hostClient: Pick<HostClient, "dispatch">;
-  readonly machines: readonly MachineSummary[];
+  readonly machines: readonly LegacyMachineSummary[];
   readonly onCancel: () => void;
   readonly onCreated: (created: Created) => void;
   readonly provider: ChannelProviderManifest;

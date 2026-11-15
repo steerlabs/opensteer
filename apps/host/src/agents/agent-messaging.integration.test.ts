@@ -30,7 +30,7 @@ import {
 import { CommandService, KeyedAdmissionQueue, RealtimeHub } from "@opensteer/orchestration";
 import {
   BrowserSurfaceIdSchema,
-  ComputerUseSessionSummarySchema,
+  LegacyComputerUseSessionSummarySchema,
   createBrowserSessionId,
   HarnessInputSchema,
   mintComputerUseSessionId,
@@ -275,8 +275,8 @@ integration("agent-to-agent messaging round trip", () => {
     ).resolves.toMatchObject({
       status: "no-device-connected",
     });
-    const frames: import("@opensteer/protocol").HostToClientMessage[] = [];
-    const legacyFrames: import("@opensteer/protocol").HostToClientMessage[] = [];
+    const frames: import("@opensteer/protocol").LegacyHostToClientMessage[] = [];
+    const legacyFrames: import("@opensteer/protocol").LegacyHostToClientMessage[] = [];
     const subscription = {
       afterSequence: SequenceSchema.parse("0"),
       deploymentId: f.deploymentId,
@@ -413,7 +413,7 @@ integration("agent-to-agent messaging round trip", () => {
         displayName: "Notes",
         teamId: null,
       };
-      const session = ComputerUseSessionSummarySchema.parse({
+      const session = LegacyComputerUseSessionSummarySchema.parse({
         sessionId: mintComputerUseSessionId(),
         runId: f.runA.id,
         threadId: f.threadA.id,
@@ -459,7 +459,7 @@ integration("agent-to-agent messaging round trip", () => {
           site: null,
         },
       });
-      const frames: import("@opensteer/protocol").HostToClientMessage[] = [];
+      const frames: import("@opensteer/protocol").LegacyHostToClientMessage[] = [];
       const release = await realtime.subscribe({
         afterSequence: SequenceSchema.parse("0"),
         deploymentId: f.deploymentId,

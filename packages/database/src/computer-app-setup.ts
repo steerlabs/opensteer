@@ -10,7 +10,7 @@ import {
   type LocalMcpServerSetup,
 } from "@opensteer/integration-core";
 import { sql, type Selectable, type Transaction } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 import { requestFromRow } from "./request-persistence.js";
 

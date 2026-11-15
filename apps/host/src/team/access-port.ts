@@ -8,7 +8,7 @@ import type {
   UserId,
 } from "@opensteer/core";
 import type { Transaction } from "kysely";
-import type { DatabaseSchema } from "@opensteer/database";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "@opensteer/database";
 
 export interface TeamChannelAuthority {
   readonly read: boolean;

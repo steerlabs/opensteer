@@ -99,7 +99,7 @@ integration("Reopen closed personal tab through the Host", () => {
       testRpcRequest(
         host.origin,
         "commands.dispatch",
-        { type: "tab.reopen", idempotencyKey: randomUUID() },
+        { type: "legacy.tab.reopen", idempotencyKey: randomUUID() },
         { headers: host.ownerHeaders },
       );
     const profileRefusal = await command();
@@ -130,21 +130,21 @@ integration("Reopen closed personal tab through the Host", () => {
     const result = await testRpcData(
       host.origin,
       "commands.dispatch",
-      { type: "tab.reopen", idempotencyKey: reopenKey },
+      { type: "legacy.tab.reopen", idempotencyKey: reopenKey },
       { headers: host.ownerHeaders },
     );
     expect(
       await testRpcData(
         host.origin,
         "commands.dispatch",
-        { type: "tab.reopen", idempotencyKey: reopenKey },
+        { type: "legacy.tab.reopen", idempotencyKey: reopenKey },
         { headers: host.ownerHeaders },
       ),
     ).toMatchObject({
-      type: "tab.reopen",
-      tabId: result.type === "tab.reopen" ? result.tabId : "unexpected",
+      type: "legacy.tab.reopen",
+      tabId: result.type === "legacy.tab.reopen" ? result.tabId : "unexpected",
     });
-    if (result.type !== "tab.reopen") throw new Error("Unexpected reopen");
+    if (result.type !== "legacy.tab.reopen") throw new Error("Unexpected reopen");
     expect(result.tabId).not.toBe(first);
     const restored = (await browserRows(host.runtime.browser, ownerId, sessionId)).lineage!;
     expect(restored.session).toMatchObject({

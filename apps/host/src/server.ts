@@ -145,8 +145,8 @@ import {
   ConfigurePersonalRemoteAccessRequestSchema,
   ConsumePersonalHostAccountLinkRequestSchema,
   CorrelationIdSchema,
-  HostBootstrapSchema,
-  HostToClientMessageSchema,
+  LegacyHostBootstrapSchema as HostBootstrapSchema,
+  LegacyHostToClientMessageSchema as HostToClientMessageSchema,
   HostToIntegrationsModuleMessageSchema,
   HostToShellModuleMessageSchema,
   IntegrationsModuleEventSchema,
@@ -156,7 +156,7 @@ import {
   RunnerAuxiliaryHeartbeatSchema,
   RunnerAuxiliaryModuleSchema,
   RunnerModuleNameSchema,
-  RunnerToHostMessageSchema,
+  LegacyRunnerToHostMessageSchema as RunnerToHostMessageSchema,
   RunnerWireProofSchema,
   ShellModuleToHostMessageSchema,
   agentPhoneOutdatedReason,
@@ -170,14 +170,14 @@ import {
   threadPageMaxItems,
   unsupportedVersionCloseCode,
   type AgentPhoneHostTarget,
-  type ComputerUseSessionSummary,
+  type LegacyComputerUseSessionSummary,
   type HarnessAuthenticationState,
   type HarnessSourceDescriptor,
   type HostApiHandlers,
   type HostApiServerContext,
-  type HostToClientMessage,
+  type LegacyHostToClientMessage as HostToClientMessage,
   type HostToIntegrationsModuleMessage,
-  type HostToRunnerMessage,
+  type LegacyHostToRunnerMessage as HostToRunnerMessage,
   type HostToShellModuleMessage,
   type IntegrationsModuleEvent,
   type MachineAppStatus,
@@ -987,7 +987,7 @@ export async function createHostServer(
       string,
       { ownerViews: Awaited<ReturnType<ComputerViewService["list"]>>; ownerViewVersion?: number }
     >();
-    const computerUseSessions = new Map<string, readonly ComputerUseSessionSummary[]>();
+    const computerUseSessions = new Map<string, readonly LegacyComputerUseSessionSummary[]>();
     const computerUseDisplayStreamSupported = new Map<string, boolean>();
     const computerUsePolicies = new Map<string, { readonly appApproval: "ask" | "automatic" }>();
     for (const runner of manageable) {
@@ -1155,7 +1155,7 @@ export async function createHostServer(
           ),
         ),
       ),
-    "bootstrap.get": async (_input, context) => {
+    "bootstrap.legacy.get": async (_input, context) => {
       const session = requireRpcSession(context),
         ownerId = session.user.id;
       await requirePersonalOwner(dependencies.store.database, ownerId);
@@ -1331,10 +1331,10 @@ export async function createHostServer(
         }),
       );
     },
-    "machines.list": async (_input, context) => {
+    "machines.legacy.list": async (_input, context) => {
       const session = requireRpcSession(context);
       return rpcSuccess(
-        hostApi["machines.list"].success.parse({
+        hostApi["machines.legacy.list"].success.parse({
           machines: await machineSummaries(session),
         }),
       );
@@ -1590,7 +1590,7 @@ export async function createHostServer(
     | "browser.history.get"
     | "browser.history.icons.get"
     | "thread.browserUsage.get"
-    | "apps.get"
+    | "apps.legacy.get"
     | "apps.view"
     | "attachment.get"
     | "attachment.upload"
@@ -1600,7 +1600,7 @@ export async function createHostServer(
     | "teams.links.list"
     | "teams.threadTask.get"
     | "teams.replyTask.get"
-    | "bootstrap.get"
+    | "bootstrap.legacy.get"
     | "harness.authentication.get"
     | "automaticModels.get"
     | "harness.catalog.refresh"
@@ -1612,7 +1612,7 @@ export async function createHostServer(
     | "voice.say"
     | "voice.stop"
     | "machine.access.history"
-    | "machines.list"
+    | "machines.legacy.list"
     | "requests.list"
     | "run.attempts.list"
     | "tasks.list"
@@ -2413,11 +2413,11 @@ export async function createHostServer(
             command.tabIds,
           )),
         };
-      case "tab.activate":
+      case "legacy.tab.activate":
         return dependencies.browser.activatePersonalTab(userId, command.tabId);
-      case "tab.reopen":
+      case "legacy.tab.reopen":
         return dependencies.browser.reopenPersonalTab(userId, command.idempotencyKey);
-      case "tab.close":
+      case "legacy.tab.close":
         return dependencies.browser.closePersonalTab(userId, command.tabId);
       case "app.tab.open":
       case "app.tab.close":

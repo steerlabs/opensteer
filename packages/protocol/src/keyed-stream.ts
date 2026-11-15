@@ -5,9 +5,14 @@ const Revision = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const Generation = z.string().min(1).max(64);
 
 export function keyedStreamSchema<
-  Row extends z.ZodRawShape & { id: z.ZodType<string> },
+  Row extends z.ZodRawShape & Record<Key, z.ZodType<string>>,
   Meta extends z.ZodRawShape,
->(row: z.ZodObject<Row>, meta: z.ZodObject<Meta>) {
+  Key extends string = "id",
+>(row: z.ZodObject<Row>, meta: z.ZodObject<Meta>, key: Key = "id" as Key) {
+  const keyShape = Object.fromEntries<z.ZodType<string>>([[key, row.shape[key]!]]) as Record<
+    Key,
+    z.ZodType<string>
+  >;
   return z.discriminatedUnion("op", [
     z.strictObject({ op: z.literal("begin"), generation: Generation, prefix: Revision.optional() }),
     z.strictObject({ op: z.literal("rows"), rows: z.array(row).min(1) }),
@@ -18,22 +23,27 @@ export function keyedStreamSchema<
       base: Revision,
       revision: Revision,
       add: z.array(row).optional(),
-      update: z.array(row.partial().extend({ id: row.shape.id })).optional(),
-      remove: z.array(row.shape.id).optional(),
+      update: z.array(z.object(row.shape).partial().extend(keyShape)).optional(),
+      remove: z.array(keyShape[key]!).optional(),
       meta: meta.partial().optional(),
     }),
   ]);
 }
 
 export function keyedStreamViewSchema<
-  Row extends z.ZodRawShape & { id: z.ZodType<string> },
+  Row extends z.ZodRawShape & Record<Key, z.ZodType<string>>,
   Meta extends z.ZodRawShape,
->(row: z.ZodObject<Row>, meta: z.ZodObject<Meta>) {
-  const [begin, rows, end, change] = keyedStreamSchema(row.strip(), meta.strip()).options;
+  Key extends string = "id",
+>(row: z.ZodObject<Row>, meta: z.ZodObject<Meta>, key: Key = "id" as Key) {
+  const [begin, rows, end, change] = keyedStreamSchema(row.strip(), meta.strip(), key).options;
   return z.discriminatedUnion("op", [begin.strip(), rows.strip(), end.strip(), change.strip()]);
 }
 
-export type KeyedStreamMessage<Row extends { id: string }, Meta extends object> =
+export type KeyedStreamMessage<
+  Row extends Record<Key, string>,
+  Meta extends object,
+  Key extends string = "id",
+> =
   | { op: "begin"; generation: string; prefix?: number | undefined }
   | { op: "rows"; rows: Row[] }
   | { op: "end"; revision: number; count: number; meta: Meta }
@@ -44,7 +54,8 @@ export type KeyedStreamMessage<Row extends { id: string }, Meta extends object> 
       revision: number;
       add?: Row[] | undefined;
       update?:
-        ({ [K in Exclude<keyof Row, "id">]?: Row[K] | undefined } & { id: string })[] | undefined;
+        | ({ [K in Exclude<keyof Row, Key>]?: Row[K] | undefined } & Record<Key, string>)[]
+        | undefined;
       remove?: string[] | undefined;
       meta?: { [K in keyof Meta]?: Meta[K] | undefined } | undefined;
     };
@@ -77,7 +88,8 @@ function patch<T extends object>(before: T, after: T): Partial<T> {
   ) as Partial<T>;
 }
 
-interface PublisherOptions<Row, Meta> {
+interface PublisherOptions<Row, Meta, Key extends string> {
+  key?: Key;
   ids(): Iterable<string>;
   read(id: string): Row | undefined;
   meta(): Meta;
@@ -85,8 +97,13 @@ interface PublisherOptions<Row, Meta> {
   envelopeBytes: number;
   generation?: string;
 }
-export class KeyedStreamPublisher<Row extends { id: string }, Meta extends object> {
-  readonly #options: PublisherOptions<Row, Meta>;
+export class KeyedStreamPublisher<
+  Row extends Record<Key, string>,
+  Meta extends object,
+  Key extends string = "id",
+> {
+  readonly #key: Key;
+  readonly #options: PublisherOptions<Row, Meta, Key>;
   readonly #generation: string;
   readonly #sent = new Map<string, Row>();
   readonly #dirty = new Set<string>();
@@ -102,9 +119,9 @@ export class KeyedStreamPublisher<Row extends { id: string }, Meta extends objec
   } | null = null;
   #reset = true;
   #prefix: number | null = null;
-  #inflight: { frame: KeyedStreamMessage<Row, Meta>; commit(): void } | null = null;
+  #inflight: { frame: KeyedStreamMessage<Row, Meta, Key>; commit(): void } | null = null;
   #retry = false;
-  constructor(options: PublisherOptions<Row, Meta>) {
+  constructor(options: PublisherOptions<Row, Meta, Key>) {
     if (
       !Number.isSafeInteger(options.targetBytes) ||
       !Number.isSafeInteger(options.envelopeBytes) ||
@@ -115,13 +132,14 @@ export class KeyedStreamPublisher<Row extends { id: string }, Meta extends objec
       throw new Error("Invalid keyed stream byte target.");
     this.#generation = Generation.parse(options.generation ?? globalThis.crypto.randomUUID());
     this.#options = options;
+    this.#key = options.key ?? ("id" as Key);
   }
   seed(rows: readonly Row[]): void {
     if (!this.#reset || this.#snapshot || this.#inflight || this.#sent.size)
       throw new Error("A keyed stream prefix must precede its first frame.");
     for (const row of rows) {
-      this.#sent.set(row.id, row);
-      this.#dirty.add(row.id);
+      this.#sent.set(row[this.#key], row);
+      this.#dirty.add(row[this.#key]);
     }
     this.#prefix = rows.length;
   }
@@ -141,9 +159,9 @@ export class KeyedStreamPublisher<Row extends { id: string }, Meta extends objec
     const frame = this.#inflight?.frame;
     const named =
       frame?.op === "rows"
-        ? frame.rows.some((row) => row.id === id)
+        ? frame.rows.some((row) => row[this.#key] === id)
         : frame?.op === "change" &&
-          ([...(frame.add ?? []), ...(frame.update ?? [])].some((row) => row.id === id) ||
+          ([...(frame.add ?? []), ...(frame.update ?? [])].some((row) => row[this.#key] === id) ||
             frame.remove?.includes(id));
     return !this.#reset && !this.#snapshot && !this.#dirty.has(id) && !named;
   }
@@ -156,16 +174,19 @@ export class KeyedStreamPublisher<Row extends { id: string }, Meta extends objec
       this.#metaDirty
     );
   }
-  #fits(frame: KeyedStreamMessage<Row, Meta>, target = this.#options.targetBytes): boolean {
+  #fits(frame: KeyedStreamMessage<Row, Meta, Key>, target = this.#options.targetBytes): boolean {
     return keyedStreamBytes(frame) + this.#options.envelopeBytes <= target;
   }
-  #offer(frame: KeyedStreamMessage<Row, Meta>, commit: () => void): KeyedStreamMessage<Row, Meta> {
+  #offer(
+    frame: KeyedStreamMessage<Row, Meta, Key>,
+    commit: () => void,
+  ): KeyedStreamMessage<Row, Meta, Key> {
     if (!this.#fits(frame, keyedStreamHardCapBytes))
       throw new Error("Keyed stream record exceeds the hard byte cap.");
     this.#inflight = { frame, commit };
     return frame;
   }
-  next(): KeyedStreamMessage<Row, Meta> | null {
+  next(): KeyedStreamMessage<Row, Meta, Key> | null {
     if (this.#inflight) {
       if (!this.#retry) return null;
       this.#retry = false;
@@ -222,7 +243,7 @@ export class KeyedStreamPublisher<Row extends { id: string }, Meta extends objec
       if (rows.length)
         return this.#offer({ op: "rows", rows }, () => {
           snapshot.cursor = cursor;
-          for (const row of rows) this.#sent.set(row.id, row);
+          for (const row of rows) this.#sent.set(row[this.#key], row);
         });
       snapshot.phase = "end";
     }
@@ -237,7 +258,7 @@ export class KeyedStreamPublisher<Row extends { id: string }, Meta extends objec
         },
       );
     }
-    const frame: Extract<KeyedStreamMessage<Row, Meta>, { op: "change" }> = {
+    const frame: Extract<KeyedStreamMessage<Row, Meta, Key>, { op: "change" }> = {
       op: "change",
       generation: this.#generation,
       base: this.#revision,
@@ -253,14 +274,23 @@ export class KeyedStreamPublisher<Row extends { id: string }, Meta extends objec
         continue;
       }
       const operation = !row ? "remove" : !before ? "add" : "update";
-      const entry = !row ? id : !before ? row : { ...patch(before, row), id };
+      const entry = !row
+        ? id
+        : !before
+          ? row
+          : ({ ...patch(before, row), [this.#key]: id } as {
+              [K in Exclude<keyof Row, Key>]?: Row[K] | undefined;
+            } & Record<Key, string>);
       const size =
         keyedStreamBytes(entry) +
         (frame[operation] ? 1 : keyedStreamBytes({ [operation]: [] }) - 1);
       if (accepted.size && bytes + size > this.#options.targetBytes) break;
       if (!row) (frame.remove ??= []).push(id);
       else if (!before) (frame.add ??= []).push(row);
-      else (frame.update ??= []).push({ ...patch(before, row), id });
+      else
+        (frame.update ??= []).push({ ...patch(before, row), [this.#key]: id } as {
+          [K in Exclude<keyof Row, Key>]?: Row[K] | undefined;
+        } & Record<Key, string>);
       bytes += size;
       accepted.set(id, row);
     }
@@ -284,7 +314,7 @@ export class KeyedStreamPublisher<Row extends { id: string }, Meta extends objec
     if (frame.meta) this.#metaDirty = false;
     return offered;
   }
-  settled(frame: KeyedStreamMessage<Row, Meta>, ok: boolean): void {
+  settled(frame: KeyedStreamMessage<Row, Meta, Key>, ok: boolean): void {
     if (this.#inflight?.frame !== frame) throw new Error("Unknown keyed stream frame.");
     if (!ok) {
       this.#retry = true;
@@ -295,7 +325,15 @@ export class KeyedStreamPublisher<Row extends { id: string }, Meta extends objec
   }
 }
 
-export class KeyedStreamReceiver<Row extends { id: string }, Meta extends object> {
+export class KeyedStreamReceiver<
+  Row extends Record<Key, string>,
+  Meta extends object,
+  Key extends string = "id",
+> {
+  readonly #key: Key;
+  constructor(options: { key?: Key } = {}) {
+    this.#key = options.key ?? ("id" as Key);
+  }
   #rows = new Map<string, Row>();
   #meta: Meta | null = null;
   #state: "empty" | "assembling" | "committed" | "resyncing" = "empty";
@@ -328,13 +366,13 @@ export class KeyedStreamReceiver<Row extends { id: string }, Meta extends object
     const changed: KeyedStreamChanges = { added: [], updated: [], removed: [], structural: false };
     const next = new Map<string, Row>();
     for (const row of rows) {
-      const before = this.#rows.get(row.id);
-      if (before && equal(before, row)) next.set(row.id, before);
+      const before = this.#rows.get(row[this.#key]);
+      if (before && equal(before, row)) next.set(row[this.#key], before);
       else {
-        next.set(row.id, row);
-        if (!before) changed.added.push(row.id);
+        next.set(row[this.#key], row);
+        if (!before) changed.added.push(row[this.#key]);
         else {
-          changed.updated.push(row.id);
+          changed.updated.push(row[this.#key]);
           changed.structural ||= Reflect.get(before, "order") !== Reflect.get(row, "order");
         }
       }
@@ -354,7 +392,7 @@ export class KeyedStreamReceiver<Row extends { id: string }, Meta extends object
     this.#staged = null;
     return requested ? "staged" : "resync";
   }
-  apply(message: KeyedStreamMessage<Row, Meta>): "applied" | "staged" | "resync" {
+  apply(message: KeyedStreamMessage<Row, Meta, Key>): "applied" | "staged" | "resync" {
     if (message.op === "begin") {
       if (
         message.prefix !== undefined &&
@@ -370,20 +408,20 @@ export class KeyedStreamReceiver<Row extends { id: string }, Meta extends object
     if (message.op === "rows") {
       if (!this.#staged) return this.#gap();
       for (const row of message.rows) {
-        if (this.#staged.has(row.id)) return this.#gap();
-        this.#staged.set(row.id, row);
+        if (this.#staged.has(row[this.#key])) return this.#gap();
+        this.#staged.set(row[this.#key], row);
       }
       return "staged";
     }
     let changed: KeyedStreamChanges = { added: [], updated: [], removed: [], structural: false };
     const put = (row: Row) => {
-      const before = this.#rows.get(row.id);
+      const before = this.#rows.get(row[this.#key]);
       if (before && equal(before, row)) return before;
       if (!before) {
-        changed.added.push(row.id);
+        changed.added.push(row[this.#key]);
         changed.structural = true;
       } else {
-        changed.updated.push(row.id);
+        changed.updated.push(row[this.#key]);
         if (Reflect.get(before, "order") !== Reflect.get(row, "order")) changed.structural = true;
       }
       return row;
@@ -402,10 +440,14 @@ export class KeyedStreamReceiver<Row extends { id: string }, Meta extends object
         !Number.isSafeInteger(message.revision)
       )
         return this.#gap();
-      for (const row of message.add ?? []) this.#rows.set(row.id, put(row));
+      for (const row of message.add ?? []) this.#rows.set(row[this.#key], put(row));
       for (const update of message.update ?? []) {
-        const before = this.#rows.get(update.id);
-        if (before) this.#rows.set(update.id, put({ ...before, ...update, id: before.id }));
+        const before = this.#rows.get(update[this.#key]);
+        if (before)
+          this.#rows.set(
+            update[this.#key],
+            put({ ...before, ...update, [this.#key]: before[this.#key] }),
+          );
       }
       for (const id of message.remove ?? []) if (this.#rows.delete(id)) changed.removed.push(id);
       changed.structural ||= changed.removed.length > 0;

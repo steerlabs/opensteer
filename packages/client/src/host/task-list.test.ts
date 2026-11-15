@@ -13,7 +13,7 @@ import { MockHostClient } from "../mock/mock-host-client.js";
 import {
   mainDoneTasks,
   type BrowserSessionSummary,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type TaskEntry,
 } from "./client.js";
 import {

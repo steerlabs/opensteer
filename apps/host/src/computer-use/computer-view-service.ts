@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   OpensteerError,
   ComputerViewUnavailableReasonSchema,
-  type ComputerViewRecord,
+  type LegacyComputerViewRecord as ComputerViewRecord,
   type RunnerId,
   type UserId,
 } from "@opensteer/core";
@@ -12,22 +12,22 @@ import {
 } from "@opensteer/integration-core";
 import {
   ComputerViewIdSchema,
-  ComputerViewSchema,
+  LegacyComputerViewSchema as ComputerViewSchema,
   ComputerViewRefusalReasonSchema,
   computerAppIdentityKey,
   computerViewIdleMs,
   computerViewMaxPerOwner,
   type ApprovedComputerApp,
-  type ComputerView,
+  type LegacyComputerView as ComputerView,
   type DisplaySource,
   type DisplayStreamReason,
-  type ComputerViewTarget,
+  type LegacyComputerViewTarget as ComputerViewTarget,
   type ComputerAppIdentity,
-  type OwnerWindowInfo,
+  type LegacyOwnerWindowInfo as OwnerWindowInfo,
   type ComputerViewOpenCommand,
   type ComputerViewCloseCommand,
   type ComputerViewRenewCommand,
-  type HostToClientMessage,
+  type LegacyHostToClientMessage as HostToClientMessage,
   type ComputerViewRefusalReason,
 } from "@opensteer/protocol";
 import type { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
@@ -134,7 +134,7 @@ export class ComputerViewService {
       return windows;
     } catch (error) {
       // A refused list only hides the person's window picker; this is its one trace.
-      this.#options.log?.("computer.app.windows", {
+      this.#options.log?.("computer.app.legacy.windows", {
         machineId: machine,
         bundleId: app.bundleId,
         reason: error instanceof OpensteerError ? (error.reason ?? error.code) : "failed",

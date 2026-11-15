@@ -1,6 +1,6 @@
 import type { AssignmentId, CausalChainId, RunId, ThreadId, RequestId } from "@opensteer/core";
 import { sql, type Transaction } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 
 type ProjectionScope = {
   /**

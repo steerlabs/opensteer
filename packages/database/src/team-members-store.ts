@@ -7,7 +7,7 @@ import {
 } from "@opensteer/core";
 import { TeamMemberSchema } from "@opensteer/protocol";
 import { sql, type Transaction } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { TeamAccessStore, emptyTeamAccessEffects, requireTeam } from "./team-access-store.js";
 import { deleteTeamTopicGrantsFor } from "./team-knowledge-store.js";
 import { appendTeamAudit } from "./team-audit-store.js";

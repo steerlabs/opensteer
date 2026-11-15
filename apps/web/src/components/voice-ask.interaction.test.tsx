@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { expect, it, vi } from "vitest";
-import type { HostSnapshot } from "@opensteer/client/host";
+import type { LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import type { VoiceSnapshot } from "@opensteer/client/voice";
 import { client, mount, settle } from "./workspace/workspace.interaction.test-support.js";

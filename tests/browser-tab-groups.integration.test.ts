@@ -189,7 +189,7 @@ async function deployment() {
   await expect
     .poll(
       async () => {
-        const r = await stack.api["bootstrap.get"]({});
+        const r = await stack.api["bootstrap.legacy.get"]({});
         return r.ok && r.data.browser.available;
       },
       { timeout: 30_000 },
@@ -204,7 +204,7 @@ async function command(stack: VerticalStack, input: CoreCommand) {
   return result.data;
 }
 async function bootstrap(stack: VerticalStack) {
-  const result = await stack.api["bootstrap.get"]({});
+  const result = await stack.api["bootstrap.legacy.get"]({});
   if (!result.ok) throw new Error(result.error.message);
   evidence.push({ layout: result.data.browser.tabGroups });
   const owner = await stack.host.store.firstUser();
@@ -320,7 +320,7 @@ integration("personal tab order", () => {
     expect(outcomes[2].report.calls[0]).toMatchObject({ result: { action: "move" } });
     expect(await resolvedOrder(stack)).toEqual([b.tabId, c.tabId, a.tabId, d.tabId]);
     const one = await bootstrap(stack);
-    const two = await secondClient["bootstrap.get"]({});
+    const two = await secondClient["bootstrap.legacy.get"]({});
     expect(two).toMatchObject({ ok: true, data: { browser: { tabGroups: one.tabGroups } } });
     expect(one.tabGroups?.revision).toBe(3);
     notices.push(...publish.mock.calls);
@@ -801,7 +801,7 @@ integration("agent organization and durable ownership", () => {
         await expect
           .poll(
             async () => {
-              const result = await stack.api["bootstrap.get"]({});
+              const result = await stack.api["bootstrap.legacy.get"]({});
               return result.ok && result.data.browser.available;
             },
             { timeout: 30_000 },
@@ -1219,7 +1219,7 @@ integration("agent organization and durable ownership", () => {
     await expect
       .poll(
         async () => {
-          const r = await stack.api["bootstrap.get"]({});
+          const r = await stack.api["bootstrap.legacy.get"]({});
           return r.ok && r.data.browser.available;
         },
         { timeout: 30_000 },

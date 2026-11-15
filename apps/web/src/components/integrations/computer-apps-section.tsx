@@ -2,7 +2,7 @@ import type {
   IntegrationConnectionSummary,
   IntegrationDashboard,
 } from "@opensteer/integration-core";
-import type { MachineSummary } from "@opensteer/protocol";
+import type { LegacyMachineSummary } from "@opensteer/protocol";
 import {
   computerAppAccessLabel,
   computerAppConnectionLabel,
@@ -31,7 +31,7 @@ export function ComputerAppConnectionsSection({
 }: {
   readonly dashboard: IntegrationDashboard | null;
   readonly integrations: readonly DefinedIntegration[];
-  readonly machines: readonly MachineSummary[];
+  readonly machines: readonly LegacyMachineSummary[];
 }) {
   const rows = (dashboard?.connections ?? []).flatMap((connection) => {
     if (connection.status === "revoked" || !connection.computer) return [];

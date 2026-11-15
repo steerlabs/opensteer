@@ -1,5 +1,5 @@
 import { type Kysely } from "kysely";
-import { type DatabaseSchema } from "./schema.js";
+import { type LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { type RunId, type RunnerId, nonTerminalRunStatuses } from "@opensteer/core";
 
 /**

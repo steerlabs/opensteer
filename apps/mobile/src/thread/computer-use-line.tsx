@@ -9,7 +9,7 @@ import {
   type ComputerUseStop,
 } from "@opensteer/client/integrations";
 import { useComputerUseStop, useComputerUseStopForRun } from "@opensteer/client/react";
-import type { MachineSummary } from "@opensteer/protocol";
+import type { LegacyMachineSummary } from "@opensteer/protocol";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import Animated from "react-native-reanimated";
@@ -28,7 +28,7 @@ export interface TranscriptComputers {
   readonly hostClient: HostClient;
   /** The Stop the Thread's Run at work keeps once its session has gone (`useKeptComputerStop`). */
   readonly kept: ComputerUseStop | null;
-  readonly machines: readonly MachineSummary[];
+  readonly machines: readonly LegacyMachineSummary[];
 }
 
 export const TranscriptComputersContext = createContext<TranscriptComputers | null>(null);

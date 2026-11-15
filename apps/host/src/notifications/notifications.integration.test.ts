@@ -23,7 +23,7 @@ import {
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
-import { HostToClientMessageSchema } from "@opensteer/protocol";
+import { LegacyHostToClientMessageSchema as HostToClientMessageSchema } from "@opensteer/protocol";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import {

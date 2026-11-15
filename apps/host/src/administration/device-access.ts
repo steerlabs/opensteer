@@ -1,5 +1,5 @@
 import { OpensteerError, type RunnerId } from "@opensteer/core";
-import type { DatabaseSchema } from "@opensteer/database";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "@opensteer/database";
 import { deviceAccess } from "@opensteer/protocol";
 import type { Kysely } from "kysely";
 

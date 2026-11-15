@@ -16,8 +16,8 @@ import {
   macOwnerViewVersion,
   macWindowVideoOwnerViewVersions,
   HostIntegrationsComputerAppWindowsSchema,
-  ComputerUseViewWindowsResultSchema,
-  type OwnerWindowInfo,
+  LegacyComputerUseViewWindowsResultSchema,
+  type LegacyOwnerWindowInfo as OwnerWindowInfo,
   type RunnerIntegrationsComputerAppWindowsResult,
   PasswordSignInAuthorityCommandSchema,
   type PasswordSignInAuthorityCommand,
@@ -839,7 +839,7 @@ export class ComputerAppHub {
           reject(new ComputerAppWindowsError(result.code, result.message));
           return;
         }
-        const parsed = ComputerUseViewWindowsResultSchema.safeParse(result.value);
+        const parsed = LegacyComputerUseViewWindowsResultSchema.safeParse(result.value);
         if (!parsed.success) {
           reject(
             new ComputerAppWindowsError(

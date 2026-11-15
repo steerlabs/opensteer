@@ -1,4 +1,8 @@
-import { classifyHref, type ReferenceKind, type TeamPageTarget } from "@opensteer/core";
+import {
+  classifyHref,
+  type LegacyReferenceKind as ReferenceKind,
+  type TeamPageTarget,
+} from "@opensteer/core";
 
 /**
  * The picture each thing a chip names wears, on every client. Each client

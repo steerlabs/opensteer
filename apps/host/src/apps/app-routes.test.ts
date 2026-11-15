@@ -15,14 +15,14 @@ it("declares authenticated app reads and passes only the signed-in reader to the
   const handlers = createAppHandlers({ get, view } as unknown as AppService);
   const userId = createId("user");
   const context = testHostApiContext(userId);
-  await handlers["apps.get"]({ appId }, context);
+  await handlers["apps.legacy.get"]({ appId }, context);
   await handlers["apps.view"]({ appId, theme: "dark" }, context);
   expect(get).toHaveBeenCalledWith(appId, userId);
   expect(view).toHaveBeenCalledWith(appId, userId, "dark");
   await expect(
-    handlers["apps.get"]({ appId }, { ...context, session: null }),
+    handlers["apps.legacy.get"]({ appId }, { ...context, session: null }),
   ).rejects.toMatchObject({ code: "unauthorized" });
-  for (const name of ["apps.get", "apps.view"] as const) {
+  for (const name of ["apps.legacy.get", "apps.view"] as const) {
     expect(hostApi[name].payload.safeParse({ appId: "wrong" }).success).toBe(false);
     expect(hostApi[name].payload.safeParse({}).success).toBe(false);
   }

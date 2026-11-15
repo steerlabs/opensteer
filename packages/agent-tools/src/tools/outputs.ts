@@ -1,3 +1,5 @@
+import { TabIdSchema } from "@opensteer/core";
+import { AppSchema, AppListItemSchema } from "@opensteer/core";
 import {
   AgentBrowserSessionSummarySchema,
   ChromeCookiesResultSchema,
@@ -214,12 +216,12 @@ export const ThreadUpdateOutputSchema = z.object({
   doneAt: task.doneAt,
   doneWhenRunEnds: z.boolean(),
 });
-export const AppPublishOutputSchema = z.object({
+export const LegacyAppPublishOutputSchema = z.object({
   appId: AppIdSchema,
   version: z.number().int(),
   message: z.string(),
 });
-export const AppListOutputSchema = z.object({
+export const LegacyAppListOutputSchema = z.object({
   apps: z.array(
     z.object({
       id: AppIdSchema,
@@ -569,7 +571,7 @@ export const SubagentCancelOutputSchema = z.object({
   status: z.literal("stopping"),
 });
 
-export const ThreadReadOutputSchema = z
+export const LegacyThreadReadOutputSchema = z
   .object({
     subagent: ExecutionNodeViewSchema.optional(),
     task: ThreadDetailSchema,
@@ -613,3 +615,30 @@ export const UseCardOutputSchema = z.discriminatedUnion("status", [
   cardUnavailable,
 ]);
 export type UseCardOutput = z.infer<typeof UseCardOutputSchema>;
+
+export const AppPublishOutputSchema = z.object({
+  appId: AppIdSchema,
+  version: z.number().int().positive(),
+});
+export const AppListOutputSchema = z.object({ apps: z.array(AppListItemSchema).max(500) });
+export const AppLifecycleOutputSchema = z.object({ app: z.object(AppSchema.shape) });
+export const AppDeleteOutputSchema = z.object({ appId: AppIdSchema, deleted: z.literal(true) });
+
+export const ThreadReadOutputSchema = z
+  .object({
+    ...LegacyThreadReadOutputSchema.shape,
+    recentPlaces: z
+      .array(
+        z.object({
+          runId: RunSchema.shape.id,
+          tabId: TabIdSchema,
+          title: z.string().max(1024),
+          site: z.string().nullable(),
+        }),
+      )
+      .max(10),
+  })
+  .refine(
+    (result) => new TextEncoder().encode(JSON.stringify(result)).byteLength <= 432 * 1024,
+    "Task history exceeds the agent output byte limit",
+  );

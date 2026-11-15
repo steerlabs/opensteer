@@ -12,7 +12,7 @@ import {
   type ThreadId,
 } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { appendHostDeploymentEvent } from "./deployment-events.js";
 
 type Started = Extract<AgentEvent, { type: "tool.started" }>;

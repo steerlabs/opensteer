@@ -7,7 +7,11 @@ import {
   type DeploymentId,
   type HostInstanceId,
 } from "@opensteer/core";
-import { createDatabase, OpensteerStore, type DatabaseSchema } from "@opensteer/database";
+import {
+  createDatabase,
+  OpensteerStore,
+  type LegacyDatabaseSchema as DatabaseSchema,
+} from "@opensteer/database";
 import type { Kysely } from "kysely";
 import {
   cloneTestDatabase,

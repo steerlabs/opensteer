@@ -4,7 +4,7 @@ import {
   surfaceDestination,
   taskFamily,
   type FamilyTask,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type TaskFamily,
 } from "@opensteer/client/host";
 import { createId } from "@opensteer/core";

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { HostClient, HostSnapshot } from "../host/client.js";
+import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
 import { phoneOwnerView } from "../host/phone-tab.js";
 import { ownerViewComputerReadiness } from "../integrations/computer-reasons.js";
 import { useHostSelector } from "./use-host-snapshot.js";

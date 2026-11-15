@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import {
   migrationProvider,
+  tabsAndAppsMigrationName,
   personalTeamBaselineName,
   teamKnowledgeNotesMigrationName,
   threadVisitsMigrationName,
@@ -32,6 +33,7 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0023_agent_home_settings",
     "0024_waiting_input_edits",
     "0025_team_copies",
+    "0026_tabs_and_apps",
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());
@@ -63,7 +65,13 @@ it("keeps post-0025 migrations compatible with a running previous Host unless ma
   });
   try {
     for (const [name, migration] of Object.entries(await migrationProvider().getMigrations())) {
-      if (Number(name.slice(0, 4)) <= 25 || /(?:^|_)contract(?:_|$)/u.test(name)) continue;
+      if (
+        // Tabs/apps have an explicitly approved breaking storage migration.
+        name === tabsAndAppsMigrationName ||
+        Number(name.slice(0, 4)) <= 25 ||
+        /(?:^|_)contract(?:_|$)/u.test(name)
+      )
+        continue;
       statements.length = 0;
       await migration.up(db);
       const sql = statements.join("\n").replace(/--[^\n]*|\/\*[\s\S]*?\*\//gu, " ");

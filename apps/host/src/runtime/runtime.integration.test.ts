@@ -41,7 +41,7 @@ import {
   createBrowserSessionId,
   hostApiVersionHeader,
   sessionExchangePath,
-  type HostToRunnerMessage,
+  type LegacyHostToRunnerMessage as HostToRunnerMessage,
   type RunnerAuxiliaryChallenge,
   type RunnerConnectionFence,
   type RunnerDescriptor,
@@ -174,7 +174,7 @@ integration("Host vertical slice", () => {
     const origin = config.runtimeOrigin.origin;
     await initializeOwnerSession(origin);
 
-    const unauthorized = await testRpcRequest(origin, "bootstrap.get", {});
+    const unauthorized = await testRpcRequest(origin, "bootstrap.legacy.get", {});
     expect(unauthorized.status).toBe(401);
 
     const runnerId = createId("runner");
@@ -229,7 +229,7 @@ integration("Host vertical slice", () => {
     );
     const bootstrap = await testRpcData(
       origin,
-      "bootstrap.get",
+      "bootstrap.legacy.get",
       {},
       {
         headers: authorization(accessToken),
@@ -247,7 +247,7 @@ integration("Host vertical slice", () => {
     await waitForCondition(async () => {
       const connectedBootstrap = await testRpcData(
         origin,
-        "bootstrap.get",
+        "bootstrap.legacy.get",
         {},
         {
           headers: authorization(accessToken),
@@ -460,7 +460,7 @@ integration("Host vertical slice", () => {
     expect(snapshot.threads[0]?.status).toBe("idle");
     const inventory = await testRpcData(
       origin,
-      "machines.list",
+      "machines.legacy.list",
       {},
       { headers: authorization(accessToken) },
     );
@@ -504,7 +504,7 @@ integration("Host vertical slice", () => {
 
     const bootstrap = await testRpcData(
       `http://127.0.0.1:${hostPort}`,
-      "bootstrap.get",
+      "bootstrap.legacy.get",
       {},
       {
         headers: authorization(accessToken),
@@ -931,7 +931,7 @@ integration("Host vertical slice", () => {
     await waitForCondition(async () => {
       const candidate = await testRpcData(
         origin,
-        "bootstrap.get",
+        "bootstrap.legacy.get",
         {},
         {
           headers: authorization(accessToken),
@@ -946,7 +946,7 @@ integration("Host vertical slice", () => {
     });
     const bootstrap = await testRpcData(
       origin,
-      "bootstrap.get",
+      "bootstrap.legacy.get",
       {},
       {
         headers: authorization(accessToken),
@@ -1110,7 +1110,7 @@ integration("Host vertical slice", () => {
     await waitForCondition(async () => {
       const refreshed = await testRpcData(
         origin,
-        "bootstrap.get",
+        "bootstrap.legacy.get",
         {},
         {
           headers: authorization(accessToken),
@@ -1583,7 +1583,7 @@ integration("Host vertical slice", () => {
     await waitForCondition(async () => {
       const read = await testRpcData(
         `http://127.0.0.1:${hostPort}`,
-        "bootstrap.get",
+        "bootstrap.legacy.get",
         {},
         { headers: authorization(accessToken) },
       );
@@ -2043,7 +2043,7 @@ integration("Host vertical slice", () => {
 
     const inventory = await testRpcData(
       origin,
-      "machines.list",
+      "machines.legacy.list",
       {},
       { headers: authorization(accessToken) },
     );
@@ -2246,7 +2246,12 @@ integration("Host vertical slice", () => {
       cookie: responseCookies(claimed).join("; "),
       origin,
     };
-    const bootstrap = await testRpcData(origin, "bootstrap.get", {}, { headers: sessionHeaders });
+    const bootstrap = await testRpcData(
+      origin,
+      "bootstrap.legacy.get",
+      {},
+      { headers: sessionHeaders },
+    );
     expect(bootstrap.user.displayName).toBe("You");
     expect(bootstrap.sessionSurface).toBe("canonical");
     expect(bootstrap.sessionId).toMatch(/^ses_/u);
@@ -2412,7 +2417,7 @@ integration("Host vertical slice", () => {
     };
     const remoteBootstrap = await testRpcData(
       origin,
-      "bootstrap.get",
+      "bootstrap.legacy.get",
       {},
       { headers: remoteHeaders },
     );
@@ -2464,7 +2469,7 @@ integration("Host vertical slice", () => {
       authorization: `PersonalRemote ${nativeSession.credential.token}`,
     };
     await expect(
-      testRpcData(origin, "bootstrap.get", {}, { headers: nativeHeaders }),
+      testRpcData(origin, "bootstrap.legacy.get", {}, { headers: nativeHeaders }),
     ).resolves.toMatchObject({
       sessionSurface: "personal-remote",
       user: expect.objectContaining({ id: bootstrap.user.id }),
@@ -2519,7 +2524,7 @@ integration("Host vertical slice", () => {
     // authorization header the Host cannot read never reaches the cookie arm.
     const wrongFamily = await testRpcRequest(
       origin,
-      "bootstrap.get",
+      "bootstrap.legacy.get",
       {},
       {
         headers: {
@@ -2532,7 +2537,7 @@ integration("Host vertical slice", () => {
     const remoteCredential = decodeURIComponent(remoteCookies[0]?.split("=", 2)[1] ?? "");
     const cookieAsHeader = await testRpcRequest(
       origin,
-      "bootstrap.get",
+      "bootstrap.legacy.get",
       {},
       { headers: { authorization: `PersonalRemote ${remoteCredential}` } },
     );
@@ -2552,7 +2557,7 @@ integration("Host vertical slice", () => {
     ] as const) {
       const renamed = await testRpcRequest(
         origin,
-        "bootstrap.get",
+        "bootstrap.legacy.get",
         {},
         { headers: { cookie, origin } },
       );
@@ -2561,7 +2566,7 @@ integration("Host vertical slice", () => {
     for (const authorization of ["Foo x", "PersonalRemote"]) {
       const unreadable = await testRpcRequest(
         origin,
-        "bootstrap.get",
+        "bootstrap.legacy.get",
         {},
         { headers: { ...sessionHeaders, authorization } },
       );
@@ -2588,7 +2593,7 @@ integration("Host vertical slice", () => {
     });
     const revokedBootstrap = await testRpcRequest(
       origin,
-      "bootstrap.get",
+      "bootstrap.legacy.get",
       {},
       {
         headers: remoteHeaders,
@@ -2598,7 +2603,7 @@ integration("Host vertical slice", () => {
     // Rotation is delivery-blind: the phone's credential dies with the cookie.
     const revokedNative = await testRpcRequest(
       origin,
-      "bootstrap.get",
+      "bootstrap.legacy.get",
       {},
       { headers: nativeHeaders },
     );
@@ -3011,7 +3016,7 @@ integration("Host vertical slice", () => {
     expect(connectCookieHeader).toBeDefined();
     const revokedConnect = await testRpcRequest(
       origin,
-      "bootstrap.get",
+      "bootstrap.legacy.get",
       {},
       {
         headers: { cookie: connectCookieHeader!, origin: connectOrigin },
@@ -3815,7 +3820,7 @@ function respondToHarnessInspections(
       { type: "host.reconcile-harnesses" }
     >["harnesses"][number],
   ) => Extract<
-    import("@opensteer/protocol").RunnerOperationalMessage,
+    import("@opensteer/protocol").LegacyRunnerOperationalMessage,
     { type: "runner.harness-catalog" }
   >["catalogs"][number],
   beforePublish?: () => Promise<void>,

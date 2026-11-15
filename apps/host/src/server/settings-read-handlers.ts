@@ -5,7 +5,7 @@ import {
   type DurableWindow,
   type HostApiHandlers,
   type PluginsDirectoryView,
-  type MachineSummary,
+  type LegacyMachineSummary,
   type OtherDevice,
 } from "@opensteer/protocol";
 import { requireSession } from "../integrations/integration-rpc-context.js";
@@ -13,13 +13,13 @@ import { requireSession } from "../integrations/integration-rpc-context.js";
 export function createSettingsReadHandlers(options: {
   readonly otherDevices: (
     owner: UserId,
-    machines: readonly MachineSummary[],
+    machines: readonly LegacyMachineSummary[],
   ) => Promise<readonly OtherDevice[]>;
   readonly catalog: () => Promise<PluginsDirectoryView["catalog"]>;
   readonly requests: (
     owner: UserId,
   ) => Promise<{ readonly requests: readonly WaitingRequest[]; readonly window: DurableWindow }>;
-  readonly machines: HostApiHandlers["machines.list"];
+  readonly machines: HostApiHandlers["machines.legacy.list"];
 }): Pick<HostApiHandlers, "plugins.directory.get" | "devices.overview.get"> {
   return {
     "plugins.directory.get": async (_input, context) => {

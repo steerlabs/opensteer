@@ -1,4 +1,4 @@
-import { computerAppIdentityKey, type MachineSummary } from "@opensteer/protocol";
+import { computerAppIdentityKey, type LegacyMachineSummary } from "@opensteer/protocol";
 import type { PlaceEnteredEventView } from "@opensteer/core";
 import type { BrowserSessionSummary } from "./client.js";
 
@@ -104,7 +104,7 @@ export function runPlaceActing(
   entry: PlaceEnteredEventView,
   snapshot: {
     readonly browserSessions: readonly BrowserSessionSummary[];
-    readonly machines: readonly MachineSummary[];
+    readonly machines: readonly LegacyMachineSummary[];
   },
   threadId: string,
 ): boolean {

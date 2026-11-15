@@ -1,5 +1,5 @@
 import type { DesktopDeploymentSummary } from "@opensteer/protocol/desktop";
-import type { HostSnapshot } from "@opensteer/client/host";
+import type { LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
 import { useShell } from "./app-shell.js";
 
 /** The name a person gave this Deployment, or null while nothing has said it. */

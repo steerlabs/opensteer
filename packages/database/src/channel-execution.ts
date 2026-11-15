@@ -8,7 +8,7 @@ import {
 } from "@opensteer/channel-core";
 import type { MessageId, RunId, ThreadId } from "@opensteer/core";
 import { sql, type Transaction } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { resolveChannelAuthority } from "./channel-authority.js";
 
 /** Fence queued Messaging authority before task/projection rows (./lock-order.ts). */

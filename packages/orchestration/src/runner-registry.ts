@@ -19,9 +19,9 @@ import type {
 } from "@opensteer/core";
 import { createId, OpensteerError, placeInputFailure } from "@opensteer/core";
 import {
-  type HostAppRequest,
+  type LegacyHostAppRequest as HostAppRequest,
   type HostRunFileRequest,
-  type RunnerAppResult,
+  type LegacyRunnerAppResult as RunnerAppResult,
   type RunnerRunFileResult,
   type RunnerVoiceCommand,
   type RunnerVoiceResult,
@@ -29,7 +29,7 @@ import {
   CorrelationIdSchema,
   RunnerCommandSchema,
   sameRunnerConnectionFence,
-  type HostToRunnerMessage,
+  type LegacyHostToRunnerMessage as HostToRunnerMessage,
   type RunnerAuxiliaryFrameFence,
   type RunnerAuxiliaryModule,
   type RunnerAuxiliaryStreamId,
@@ -48,7 +48,7 @@ import {
   type RunnerCommandAccepted,
   type RunnerConnectionId,
   type RunnerDescriptor,
-  type RunnerOperationalMessage,
+  type LegacyRunnerOperationalMessage as RunnerOperationalMessage,
   type WatchReconcileActivation,
   type TaskRuntimeFenceSchema,
 } from "@opensteer/protocol";

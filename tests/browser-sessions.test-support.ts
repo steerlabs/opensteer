@@ -57,7 +57,7 @@ export async function agentJourney(
   });
   const pageOrigin = `http://127.0.0.1:${(page.address() as { port: number }).port}`;
   await waitFor(async () => {
-    const bootstrap = await stack.api["bootstrap.get"]({});
+    const bootstrap = await stack.api["bootstrap.legacy.get"]({});
     return bootstrap.ok && bootstrap.data.browser.available;
   }, 30_000);
 
@@ -208,7 +208,7 @@ export async function agentJourney(
   }
   crashChromium();
   await waitFor(async () => {
-    const bootstrap = await stack.api["bootstrap.get"]({});
+    const bootstrap = await stack.api["bootstrap.legacy.get"]({});
     return (
       bootstrap.ok &&
       bootstrap.data.browser.groups.rows.every(

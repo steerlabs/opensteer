@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from "vitest";
 import { ThreadIdSchema, createId } from "@opensteer/core";
-import type { HostSnapshot } from "@opensteer/client/host";
+import type { LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
 import type { MockHostClient } from "@opensteer/client/mock";
 import { click, element, history, mount, settle } from "./workspace.interaction.test-support.js";
 

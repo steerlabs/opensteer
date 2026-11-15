@@ -13,7 +13,7 @@ import { KeyedStreamPublisher, keyedStreamBytes } from "@opensteer/protocol/keye
 import {
   BrowserGroupRowSchema,
   BrowserTabRecordSchema,
-  type HostedBrowserBootstrap as BrowserWireBootstrap,
+  type LegacyHostedBrowserBootstrap as BrowserWireBootstrap,
 } from "@opensteer/protocol/browser";
 import {
   browserBootstrapWithRows,
@@ -43,11 +43,11 @@ import { createIntegrationId } from "@opensteer/integration-core";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import {
   BrowserSurfaceIdSchema,
-  ComputerViewSchema,
-  HostToClientMessageSchema,
+  LegacyComputerViewSchema as ComputerViewSchema,
+  LegacyHostToClientMessageSchema as HostToClientMessageSchema,
   createBrowserSessionId,
   placeIdentityKey,
-  type HostToClientMessage,
+  type LegacyHostToClientMessage as HostToClientMessage,
   type RealtimeFrameDiagnostic,
 } from "@opensteer/protocol";
 import {
@@ -1065,7 +1065,7 @@ function rpcContractFetch(
         ],
       });
     }
-    if (name === "bootstrap.get") {
+    if (name === "bootstrap.legacy.get") {
       const id = stringValue(data, "deploymentId");
       if (id)
         bootstrapFixtures.set(id, {
@@ -2636,7 +2636,7 @@ describe("HttpHostClient durable realtime", () => {
           webSocketFactory: () => new FakeSocket(),
           fetch: async (input, init) => {
             const request = new Request(input, init);
-            if (new URL(request.url).pathname.endsWith("bootstrap.get"))
+            if (new URL(request.url).pathname.endsWith("bootstrap.legacy.get"))
               summaries.push(request.headers.get(bootstrapDiagnosticHeader));
             return json(bootstrap([]));
           },
@@ -11229,7 +11229,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
       fetch: async (input, init) => {
         const url = new URL(input instanceof Request ? input.url : input.toString());
         if (url.pathname.endsWith("/commands.dispatch")) {
-          expect(rpcPayload(url, init).type).toBe("tab.activate");
+          expect(rpcPayload(url, init).type).toBe("legacy.tab.activate");
           concurrent++;
           const viewer = client.getSnapshot().user!.id;
           const viewerConcurrent = (concurrentByViewer.get(viewer) ?? 0) + 1;
@@ -11292,7 +11292,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
           ],
         });
       return json({
-        type: "tab.activate",
+        type: "legacy.tab.activate",
         tabId,
         catalog: title
           ? {
@@ -11999,7 +11999,7 @@ describe("realtime protocol recovery journey", () => {
       fetch: async (input, init) => {
         const url = new URL(input instanceof Request ? input.url : input.toString());
         const name = url.pathname.split("/").at(-1)!;
-        if (name === "bootstrap.get") bootstrapReads += 1;
+        if (name === "bootstrap.legacy.get") bootstrapReads += 1;
         const answer = reads[name]?.(rpcPayload(url, init));
         if (answer instanceof Response) return answer;
         return json(answer ?? bootstrap([workspace], hostBrowser?.(workspace)));
@@ -12595,7 +12595,7 @@ describe("realtime protocol recovery journey", () => {
 
       it("still repairs the next viewer's lost notices after a Deployment change", async () => {
         let moved: unknown;
-        const f = await losing({ reads: { "bootstrap.get": () => moved } });
+        const f = await losing({ reads: { "bootstrap.legacy.get": () => moved } });
         try {
           moved = {
             ...bootstrap([f.workspace]),
@@ -12631,7 +12631,7 @@ describe("realtime protocol recovery journey", () => {
         const f = await losing({
           reads: {
             "auth.config": () => ({ methods: [] }),
-            "bootstrap.get": () => moved,
+            "bootstrap.legacy.get": () => moved,
           },
         });
         try {
@@ -14663,7 +14663,7 @@ describe("app tab bootstrap races", () => {
     const readStarted = vi.fn();
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
-      if (path.endsWith("bootstrap.get")) {
+      if (path.endsWith("bootstrap.legacy.get")) {
         readStarted();
         if (nextRead) {
           const gate = nextRead;
@@ -14672,7 +14672,7 @@ describe("app tab bootstrap races", () => {
         }
         return json({ ...bootstrap([workspace]), appTabs: tabs });
       }
-      if (path.endsWith("apps.get")) {
+      if (path.endsWith("apps.legacy.get")) {
         if (nextAppRead) {
           const gate = nextAppRead;
           nextAppRead = null;

@@ -10,7 +10,7 @@ import type { Kysely, Transaction } from "kysely";
 import { lockCommandIdempotency } from "./store-primitives.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { assertActiveGrant, admitThreadExecution } from "./execution-authority.js";
 import {
   assertActiveTriggerExecutionBinding,

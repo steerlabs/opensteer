@@ -1,4 +1,4 @@
-import type { ComputerView } from "@opensteer/protocol";
+import type { LegacyComputerView as ComputerView } from "@opensteer/protocol";
 import { HostClientRequestError } from "./client.js";
 export interface ComputerViewRetention {
   setVisible(visible: boolean): void;

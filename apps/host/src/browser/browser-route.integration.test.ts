@@ -91,7 +91,7 @@ integration("Host browser broker vertical", () => {
       name: "Storage computer",
       token: await machineHost.hostingRunnerEnrollmentToken,
     });
-    await testRpcData(origin, "bootstrap.get", {}, { headers: sessionHeaders });
+    await testRpcData(origin, "bootstrap.legacy.get", {}, { headers: sessionHeaders });
 
     // Identity is explicit at open: profiles are never auto-provisioned.
     const createdProfile = await testRpcData(
@@ -271,7 +271,12 @@ integration("Host browser broker vertical", () => {
       (frame) => decodeBrowserFrameEnvelope(frame).header.frameId,
     );
 
-    const bootstrap = await testRpcData(origin, "bootstrap.get", {}, { headers: { cookie } });
+    const bootstrap = await testRpcData(
+      origin,
+      "bootstrap.legacy.get",
+      {},
+      { headers: { cookie } },
+    );
     expect(bootstrap.browser).toMatchObject({
       available: true,
       profiles: [{ name: "Integration browser" }],
@@ -291,7 +296,7 @@ integration("Host browser broker vertical", () => {
     ).resolves.toBe(false);
     const detachedBootstrap = await testRpcData(
       origin,
-      "bootstrap.get",
+      "bootstrap.legacy.get",
       {},
       { headers: { cookie } },
     );
@@ -367,7 +372,12 @@ integration("Host browser broker vertical", () => {
         capability: "browser",
       });
       expect(browserRuntime.streamOpen()).toBe(true);
-      const after = await testRpcData(origin, "bootstrap.get", {}, { headers: sessionHeaders });
+      const after = await testRpcData(
+        origin,
+        "bootstrap.legacy.get",
+        {},
+        { headers: sessionHeaders },
+      );
       expect(after.browser.profileHomes).toContain(browserRuntime.runnerId);
       const person = await runtime.browser.start({
         fresh: true,

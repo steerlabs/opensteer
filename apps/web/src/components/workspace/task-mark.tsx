@@ -3,7 +3,7 @@ import { memo, type CSSProperties } from "react";
 import {
   markColorPaint,
   threadInDirectory,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type TaskMark as ResolvedTaskMark,
   type TaskTone,
 } from "@opensteer/client/host";

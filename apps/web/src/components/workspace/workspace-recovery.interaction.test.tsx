@@ -17,7 +17,7 @@ import {
   placeList,
   taskList,
   workerAssignment,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
 } from "@opensteer/client/host";
 import { staleBrowserTabInventoryReason } from "@opensteer/protocol";
 

@@ -10,7 +10,7 @@ import type {
   BrowserProfileSummary,
   BrowserSessionSummary,
   HarnessSummary,
-  HostSnapshot,
+  LegacyHostSnapshot as HostSnapshot,
   MessageEntry,
   RunQueueEntry,
   TaskEntry,

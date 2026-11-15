@@ -7,7 +7,7 @@ import {
   openWaitingMessageEditor,
   type WaitingMessageEditorPort,
 } from "./waiting-message-editor.js";
-import type { MachineSummary } from "@opensteer/protocol";
+import type { LegacyMachineSummary } from "@opensteer/protocol";
 import type { PersonalStreamCache, PersonalCacheScope } from "./personal-stream-cache.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { browserOpeningTimeoutMs } from "./browser-presentation-wait.js";
@@ -21,7 +21,7 @@ import { AppTabSchema } from "@opensteer/protocol";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { invalidateScheduleAnchor } from "./schedule-anchor-invalidation.js";
 import { BrowserCursorStore } from "./browser-cursor.js";
-import type { PersonShowMessage } from "@opensteer/protocol";
+import type { LegacyPersonShowMessage as PersonShowMessage } from "@opensteer/protocol";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import { drawnTranscriptRowKeys } from "./transcript-projection.js";
 import { PendingBrowserTabs } from "./pending-browser-tabs.js";
@@ -97,8 +97,8 @@ import {
   BrowserSessionIdSchema,
   DisplaySourceSchema,
   HarnessModelSettingsMapSchema,
-  HostToClientMessageSchema,
-  DeploymentSnapshotSchema,
+  LegacyHostToClientMessageSchema as HostToClientMessageSchema,
+  LegacyDeploymentSnapshotSchema as DeploymentSnapshotSchema,
   browserUsageRunBatchSize,
   hostApi,
   realtimeEnvelopeTypes,
@@ -110,11 +110,11 @@ import {
   type HostApiCommand,
   type HostApiCommandInput,
   type HostApiCommandOutput,
-  type HostToClientMessage,
+  type LegacyHostToClientMessage as HostToClientMessage,
   type MachineAccessPolicy,
   type RealtimeFrameDiagnostic,
   type RpcResult,
-  type DeploymentSnapshot,
+  type LegacyDeploymentSnapshot as DeploymentSnapshot,
 } from "@opensteer/protocol";
 import { z } from "zod";
 import { BrowserWatchStore, browserCommandNeedsNoView } from "./browser-watch.js";
@@ -131,7 +131,7 @@ import type {
   EnvironmentSummary,
   HarnessSummary,
   HostConnectionState,
-  HostSnapshot,
+  LegacyHostSnapshot as HostSnapshot,
   MachineAccessHistoryPage,
   MachineAccessUpdateOutcome,
   HostClient as OwnerViewHostClient,
@@ -751,13 +751,13 @@ export class HttpHostClient {
     const viewer = this.#viewer.generation;
     const result = unwrapRpcResult(
       await this.rpc["commands.dispatch"]({
-        type: "tab.reopen",
+        type: "legacy.tab.reopen",
         idempotencyKey: mutationIdempotencyKey("reopen-tab"),
       }),
     );
     if (viewer !== this.#viewer.generation)
       throw new Error("The signed-in account changed while reopening the tab.");
-    if (result.type !== "tab.reopen") throw new Error("Unexpected tab reopen result.");
+    if (result.type !== "legacy.tab.reopen") throw new Error("Unexpected tab reopen result.");
     this.#update({ ...this.#snapshot, browserTabGroups: this.#tabGroups.receive(result.layout) });
     await this.#waitBrowser(() => this.#browserTabs.tab(result.groupId!, result.tabId));
     return result;
@@ -793,14 +793,14 @@ export class HttpHostClient {
     if (tab?.documentId === null) {
       const result = unwrapRpcResult(
         await this.rpc["commands.dispatch"]({
-          type: "tab.close",
+          type: "legacy.tab.close",
           tabId: surfaceId,
           idempotencyKey: `close:${surfaceId}`,
         }),
       );
       if (viewer !== this.#viewer.generation)
         throw new Error("The signed-in account changed while closing the tab.");
-      if (result.type !== "tab.close") throw new Error("Unexpected tab close result.");
+      if (result.type !== "legacy.tab.close") throw new Error("Unexpected tab close result.");
       return {
         type: "browser.tab.close" as const,
         sessionId: BrowserSessionIdSchema.parse(sessionId),
@@ -1077,12 +1077,13 @@ export class HttpHostClient {
       dispatch: async (tabId) => {
         const result = unwrapRpcResult(
           await this.rpc["commands.dispatch"]({
-            type: "tab.activate",
+            type: "legacy.tab.activate",
             tabId,
             idempotencyKey: `restore:${tabId}`,
           }),
         );
-        if (result.type !== "tab.activate") throw new Error("Unexpected tab activation result.");
+        if (result.type !== "legacy.tab.activate")
+          throw new Error("Unexpected tab activation result.");
         return result;
       },
       resolved: (result) => {
@@ -1614,7 +1615,7 @@ export class HttpHostClient {
             openedAt: new Date().toISOString(),
           });
         else {
-          const app = unwrapRpcResult(await this.rpc["apps.get"]({ appId }));
+          const app = unwrapRpcResult(await this.rpc["apps.legacy.get"]({ appId }));
           if (viewer !== this.#viewerGeneration || this.#appTabPending.get(appId)?.token !== token)
             return;
           tab = {
@@ -3847,7 +3848,7 @@ export class HttpHostClient {
       await this.#refreshCapabilities(revalidateCapabilities ? { revalidate: true } : undefined);
     if (generation !== this.#viewerGeneration || this.#disposed) return;
     bootstrapReadDiagnostics.start(reason);
-    const response = await this.rpc["bootstrap.get"]({});
+    const response = await this.rpc["bootstrap.legacy.get"]({});
     if (!response.ok && response.error.code === "unauthorized") {
       if (generation === this.#viewerGeneration) this.#expireSession();
       const authGeneration = this.#viewerGeneration,
@@ -5875,10 +5876,10 @@ function shareBootstrapData(previous: unknown, next: unknown): unknown {
 }
 
 function withNewerComputerPresence(
-  machine: MachineSummary,
-  previous: readonly MachineSummary[],
+  machine: LegacyMachineSummary,
+  previous: readonly LegacyMachineSummary[],
   patchedSince: (sessionId: string) => boolean,
-): MachineSummary {
+): LegacyMachineSummary {
   const computerUse = machine.computerUse;
   if (!computerUse?.sessions.some((session) => patchedSince(session.sessionId))) {
     return { ...machine };

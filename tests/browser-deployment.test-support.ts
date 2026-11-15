@@ -142,7 +142,7 @@ export async function deployment(
 
 export async function browserAvailable(stack: VerticalStack): Promise<void> {
   await waitFor(async () => {
-    const bootstrap = await stack.api["bootstrap.get"]({});
+    const bootstrap = await stack.api["bootstrap.legacy.get"]({});
     return bootstrap.ok && bootstrap.data.browser.available;
   }, 30_000);
 }
@@ -253,7 +253,7 @@ export async function createProfile(
   stack: VerticalStack,
   name = "Marketplace account",
 ): Promise<string> {
-  const machines = await stack.api["machines.list"]({});
+  const machines = await stack.api["machines.legacy.list"]({});
   if (!machines.ok) throw new Error(machines.error.message);
   const browserComputers = machines.data.machines.filter((machine) => machine.modules.browser);
   expect(browserComputers).toHaveLength(1);

@@ -109,9 +109,11 @@ function createMcpClient(plan) {
       }
       const result = response.result;
       if (result?.isError) {
-        const message = Array.isArray(result.content)
-          ? result.content.find((item) => item?.type === "text")?.text
-          : undefined;
+        const message = typeof result.structuredContent?.error?.message === "string"
+          ? result.structuredContent.error.message
+          : Array.isArray(result.content)
+            ? result.content.find((item) => item?.type === "text")?.text
+            : undefined;
         throw new Error(message ?? \`Opensteer tool \${name} failed\`);
       }
       return result?.structuredContent ?? result;

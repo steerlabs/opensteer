@@ -1,6 +1,6 @@
 import { ownerViewComputerReadiness } from "@opensteer/client/integrations";
-import type { ComputerView } from "@opensteer/protocol";
-import type { HostSnapshot } from "@opensteer/client/host";
+import type { LegacyComputerView as ComputerView } from "@opensteer/protocol";
+import type { LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
 
 /**
  * One current-state decision controls both polling and the words when it

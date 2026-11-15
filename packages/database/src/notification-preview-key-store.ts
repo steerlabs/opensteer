@@ -2,7 +2,10 @@ import { OpensteerError, type AuthSessionId, type UserId } from "@opensteer/core
 import type { Kysely, Selectable } from "kysely";
 import { withDatabaseTransaction } from "./connection.js";
 import { accountSubjectsForUsers } from "./notification-store.js";
-import type { DatabaseSchema, NotificationPreviewKeyTable } from "./schema.js";
+import type {
+  LegacyDatabaseSchema as DatabaseSchema,
+  NotificationPreviewKeyTable,
+} from "./schema.js";
 
 export type NotificationPreviewKeyRecord = Selectable<NotificationPreviewKeyTable>;
 

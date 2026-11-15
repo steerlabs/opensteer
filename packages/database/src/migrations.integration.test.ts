@@ -1,8 +1,10 @@
+import { seedPrivatePublisher } from "./private-publisher.test-support.js";
 import { createId, TeamMessageIdSchema } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDatabase } from "./connection.js";
 import {
+  tabsAndAppsMigrationName,
   agentHomeSettingsMigrationName,
   MigrationLineageError,
   migrateToLatest,
@@ -14,7 +16,7 @@ import {
   teamPrincipalsMigrationName,
   waitingInputEditsMigrationName,
 } from "./migrations.js";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { cloneTestDatabase, type TestDatabase } from "./test-database.test-support.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
 import { OpensteerStore } from "./store.js";
@@ -1013,7 +1015,7 @@ describe("fresh personal/team lineage", () => {
     ["integration_connections", "computer_app", "jsonb", "NO"],
     ["plugin_owner_settings", "revision", "integer", "NO"],
     ["delegations", "revision", "integer", "NO"],
-    ["browser_tab_layouts", "tab_order", "jsonb", "NO"],
+    ["tab_layouts", "items", "jsonb", "NO"],
     ["machine_access_events", "id", "bigint", "YES"],
     ["mcp_oauth_credentials", "encrypted_state", "bytea", "NO"],
   ])("preserves the private storage contract for %s.%s", async (table, column, type, identity) => {
@@ -1320,5 +1322,149 @@ it("migrates baseline read positions, including the declared message-only and ne
   ).toEqual([
     { id: "msg_future-read", createdAt: "2099-01-01 00:00:00.000000" },
     { id: "msg_microsecond-unread", createdAt: "2026-01-02 00:00:00.000500" },
+  ]);
+});
+
+it("reaches the same tabs/apps schema fresh and after preserving existing publications", async () => {
+  await migrateToLatest(database, migrationsBefore(tabsAndAppsMigrationName));
+  const publisher = await seedPrivatePublisher(database);
+  const html = `app_${crypto.randomUUID()}`;
+  const server = `app_${crypto.randomUUID()}`;
+  const secondServer = `app_${crypto.randomUUID()}`;
+  for (const appId of [html, server, secondServer]) {
+    await sql`insert into apps(id,thread_id,run_id,title,latest_version) values(${appId},${publisher.threadId},${publisher.runId},'Preserved',1)`.execute(
+      database,
+    );
+    const serverSpec =
+      appId === server || appId === secondServer
+        ? JSON.stringify({
+            folder: { computerId: publisher.runnerId, path: "/tmp/migrated-server" },
+            command: "node server.mjs",
+          })
+        : null;
+    await sql`insert into app_versions(app_id,version,sha256,size_bytes,server,created_by_run,publish_key) values(${appId},1,${serverSpec ? null : "a".repeat(64)},${serverSpec ? null : 10},${serverSpec}::jsonb,${publisher.runId},${appId})`.execute(
+      database,
+    );
+  }
+  await migrateToLatest(database);
+  const rows = (
+    await sql<{
+      id: string;
+      ownerId: string;
+      computerId: string;
+      name: string;
+      threadId: string | null;
+      runId: string | null;
+    }>`select id,owner_id,computer_id,name,thread_id,run_id from apps order by id`.execute(database)
+  ).rows;
+  expect(rows).toHaveLength(3);
+  for (const row of rows)
+    expect(row).toMatchObject({
+      ownerId: publisher.userId,
+      computerId: publisher.runnerId,
+      name: "Preserved",
+      threadId: publisher.threadId,
+      runId: publisher.runId,
+    });
+  const ports = (
+    await sql<{
+      appId: string;
+      port: number;
+      desiredState: string;
+    }>`select app_id,port,desired_state from app_servers order by app_id`.execute(database)
+  ).rows;
+  expect(ports).toHaveLength(2);
+  expect(new Set(ports.map((row) => row.port)).size).toBe(2);
+  for (const row of ports) {
+    expect(row.port).toBeGreaterThanOrEqual(49152);
+    expect(row.port).toBeLessThanOrEqual(65535);
+    expect(row.desiredState).toBe("running");
+  }
+  await sql`delete from runs where id=${publisher.runId}`.execute(database);
+  expect((await sql`select run_id from apps`.execute(database)).rows).toEqual(
+    Array.from({ length: 3 }, () => ({ runId: null })),
+  );
+  await sql`update causal_chains set root_message_id=null where id=${publisher.causalChainId}`.execute(
+    database,
+  );
+  await sql`delete from threads where id=${publisher.threadId}`.execute(database);
+  expect((await sql`select thread_id from apps`.execute(database)).rows).toEqual(
+    Array.from({ length: 3 }, () => ({ threadId: null })),
+  );
+  expect((await sql`select * from app_versions`.execute(database)).rows).toHaveLength(3);
+  await migrateToLatest(database);
+  expect(
+    (await sql`select app_id,port,desired_state from app_servers order by app_id`.execute(database))
+      .rows,
+  ).toEqual(ports);
+  const upgraded = await catalog();
+  await sql`drop schema public cascade;create schema public`.execute(database);
+  await migrateToLatest(database);
+  expect(await catalog()).toEqual(upgraded);
+});
+
+it("enforces generic tab identity, descriptor shape, and fixed server ports on a fresh database", async () => {
+  await migrateToLatest(database);
+  const person = await seedPersonalFixture(database, "/tmp/tabs-contract-migration");
+  const tab = (id: string) =>
+    sql`insert into personal_tabs(id,owner_id,kind,computer_id,title,opened_by) values(${id},${person.userId},'phone',${person.runnerId},'Phone','"person"')`.execute(
+      database,
+    );
+  await tab("first");
+  await expect(tab("second")).rejects.toThrow(/unique/u);
+  await sql`update personal_tabs set closed_at=now() where id='first'`.execute(database);
+  await expect(tab("second")).rejects.toThrow(/unique/u);
+  await expect(
+    sql`insert into personal_tabs(id,owner_id,kind,computer_id,title,opened_by) values('page',${person.userId},'page',${person.runnerId},'Missing URL','"person"')`.execute(
+      database,
+    ),
+  ).rejects.toThrow(/check constraint/u);
+  const columns = (
+    await sql<{
+      tableName: string;
+      columnName: string;
+    }>`select table_name,column_name from information_schema.columns where table_schema='public' and table_name in ('apps','personal_tabs','runners','tab_layouts')`.execute(
+      database,
+    )
+  ).rows;
+  expect(columns.filter((row) => row.columnName === "tab_opened_at")).toEqual([]);
+  expect(
+    (
+      await sql`select to_regclass('browser_tab_layouts') as old_layout,to_regclass('browser_tab_groups') as old_groups,to_regclass('browser_tab_group_members') as old_members`.execute(
+        database,
+      )
+    ).rows,
+  ).toEqual([{ oldLayout: null, oldGroups: null, oldMembers: null }]);
+});
+
+it("keeps a server's recorded home when the publishing computer can no longer be derived", async () => {
+  await migrateToLatest(database, migrationsBefore(tabsAndAppsMigrationName));
+  const publisher = await seedPrivatePublisher(database);
+  const html = `app_${crypto.randomUUID()}`,
+    server = `app_${crypto.randomUUID()}`;
+  for (const appId of [html, server]) {
+    await sql`insert into apps(id,thread_id,run_id,title,latest_version) values(${appId},${publisher.threadId},${publisher.runId},'Existing',1)`.execute(
+      database,
+    );
+    const spec =
+      appId === server
+        ? JSON.stringify({
+            folder: { computerId: publisher.runnerId, path: "/tmp/saved-app" },
+            command: "node server.mjs",
+          })
+        : null;
+    await sql`insert into app_versions(app_id,version,sha256,size_bytes,server,created_by_run,publish_key) values(${appId},1,${spec ? null : "a".repeat(64)},${spec ? null : 10},${spec}::jsonb,${publisher.runId},${appId})`.execute(
+      database,
+    );
+  }
+  await sql`update execution_environments set runner_id=null where id=${publisher.environmentId}`.execute(
+    database,
+  );
+  await migrateToLatest(database);
+  expect((await sql`select id,computer_id from apps`.execute(database)).rows).toEqual([
+    { id: server, computerId: publisher.runnerId },
+  ]);
+  expect((await sql`select app_id from app_versions`.execute(database)).rows).toEqual([
+    { appId: server },
   ]);
 });

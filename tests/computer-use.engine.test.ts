@@ -11,10 +11,10 @@ import {
   type RunId,
 } from "../packages/core/src/index.js";
 import {
-  ComputerUseHelperRequestSchema,
+  LegacyComputerUseHelperRequestSchema,
   type ComputerUseBridgeRequest,
-  type ComputerUseObservation,
-  type WindowInfo,
+  type LegacyComputerUseObservation,
+  type LegacyWindowInfo as WindowInfo,
 } from "../packages/protocol/src/index.js";
 import { nativeUserHarnessRuntimeBoundary } from "../packages/harness/src/index.js";
 import { parseAgentExecutionConfig } from "../apps/runner/src/app-config.js";
@@ -104,7 +104,7 @@ describe("real-engine computer use", () => {
         },
       });
       evidence.catalog = stack.catalog;
-      const machines = await stack.api["machines.list"]({});
+      const machines = await stack.api["machines.legacy.list"]({});
       if (!machines.ok) throw new Error(machines.error.message);
       const mac = machines.data.machines.find((machine) => machine.ownership === "deployment");
       if (!mac) throw new Error("Personal Main Mac was not listed");
@@ -365,7 +365,7 @@ function scriptedNotes() {
             `  [${document.field}] textField "${fieldTitle}" value=${JSON.stringify(document.value)} (150,50 400×30)`,
             `  [${document.save}] button "${buttonTitle}" (150,100 100×30)`,
           ].join("\n");
-          const observation: ComputerUseObservation = {
+          const observation: LegacyComputerUseObservation = {
             app: notes,
             capturedAt: new Date().toISOString(),
             elementCount: document.save + 1,
@@ -484,6 +484,6 @@ function assertHelperJourney(
 
 function helperRequest(frame: ComputerUseBridgeRequest) {
   const { kind: _kind, ...request } = frame;
-  const parsed = ComputerUseHelperRequestSchema.safeParse(request);
+  const parsed = LegacyComputerUseHelperRequestSchema.safeParse(request);
   return parsed.success ? parsed.data : undefined;
 }

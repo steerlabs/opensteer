@@ -1450,7 +1450,7 @@ describe("live Home handoff between native engines", () => {
     });
     const claudeHarnessId = stack.additionalHarnessInstanceIds[0];
     if (!claudeHarnessId) throw new Error("Claude account did not connect");
-    const bootstrap = await stack.api["bootstrap.get"]({});
+    const bootstrap = await stack.api["bootstrap.legacy.get"]({});
     if (!bootstrap.ok) throw new Error(bootstrap.error.message);
     const environment = bootstrap.data.environments.find(
       (candidate) => candidate.id === stack!.environmentId,

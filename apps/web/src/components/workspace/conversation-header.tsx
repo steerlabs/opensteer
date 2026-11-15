@@ -18,7 +18,7 @@ import {
   threadStopTarget,
   workerAssignment,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type RequesterLink,
 } from "@opensteer/client/host";
 import { useActionReview } from "@opensteer/client/react";

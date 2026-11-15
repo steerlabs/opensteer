@@ -7,7 +7,7 @@ import {
   createId,
 } from "@opensteer/core";
 import { type Kysely } from "kysely";
-import { type DatabaseSchema } from "./schema.js";
+import { type LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import {
   type IntegrationConnectionId,
   type ChannelTransportKind,

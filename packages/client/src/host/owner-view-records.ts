@@ -1,4 +1,4 @@
-import type { ComputerView, MachineSummary } from "@opensteer/protocol";
+import type { LegacyComputerView as ComputerView, LegacyMachineSummary } from "@opensteer/protocol";
 
 /** Enough to outlast any answer in flight; the oldest is forgotten first. */
 const removedLimit = 256;
@@ -33,7 +33,10 @@ export class OwnerViewRecords {
     );
   }
 
-  accept(machines: readonly MachineSummary[], view: ComputerView): readonly MachineSummary[] {
+  accept(
+    machines: readonly LegacyMachineSummary[],
+    view: ComputerView,
+  ): readonly LegacyMachineSummary[] {
     if (this.#gone(view)) return machines;
     return machines.map((machine) => {
       if (machine.id !== view.machineId || !machine.computerUse) return machine;
@@ -52,14 +55,14 @@ export class OwnerViewRecords {
   }
 
   remove(
-    machines: readonly MachineSummary[],
+    machines: readonly LegacyMachineSummary[],
     removal: {
       readonly machineId: string;
       readonly viewId: string;
       readonly generation: number;
       readonly tabClosed?: true | undefined;
     },
-  ): readonly MachineSummary[] {
+  ): readonly LegacyMachineSummary[] {
     if (!this.#gone(removal)) {
       this.#removed.delete(removal.viewId);
       this.#removed.set(removal.viewId, removal.generation);
@@ -84,10 +87,10 @@ export class OwnerViewRecords {
 
   /** A reread cannot undo command answers or notices accepted after it began. */
   reread(
-    machine: MachineSummary,
-    current: MachineSummary | undefined,
+    machine: LegacyMachineSummary,
+    current: LegacyMachineSummary | undefined,
     revision: number,
-  ): MachineSummary {
+  ): LegacyMachineSummary {
     if (!machine.computerUse) return machine;
     const views = machine.computerUse.ownerViews;
     const updates = (current?.computerUse?.ownerViews ?? []).filter(

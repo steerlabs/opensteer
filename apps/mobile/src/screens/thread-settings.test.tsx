@@ -7,7 +7,7 @@ import {
   threadPlacementOptions,
   executionAccounts,
   type ExecutionSelection,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type HostClient,
 } from "@opensteer/client/host";
 import { useHostSnapshot } from "@opensteer/client/react";

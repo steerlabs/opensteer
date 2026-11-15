@@ -10,7 +10,7 @@ import {
   resolveExecutionSelection,
   sameStableHostSnapshot,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type ExecutionSelection,
 } from "@opensteer/client/host";
 import { useHostSelector, useHostSnapshot } from "@opensteer/client/react";

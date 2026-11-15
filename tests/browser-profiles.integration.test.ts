@@ -304,7 +304,7 @@ async function fulfillNewProfile(
   } finally {
     limit?.mockRestore();
   }
-  const bootstrap = await stack.api["bootstrap.get"]({});
+  const bootstrap = await stack.api["bootstrap.legacy.get"]({});
   if (!bootstrap.ok) throw new Error(bootstrap.error.message);
   const profile = bootstrap.data.browser.profiles.find((profile) => profile.name === "Brex Ops");
   if (!profile) throw new Error("Request did not create Brex Ops");
@@ -375,7 +375,7 @@ run("Browser profiles through a whole deployment", () => {
     );
     equal(evidence, "replay is identified", report.replayed!.replayed, true);
     expect(report.request).toMatchObject({ status: "fulfilled" });
-    const bootstrap = await stack.api["bootstrap.get"]({});
+    const bootstrap = await stack.api["bootstrap.legacy.get"]({});
     if (!bootstrap.ok) throw new Error(bootstrap.error.message);
     equal(
       evidence,
@@ -531,7 +531,7 @@ run("Browser profiles through a whole deployment", () => {
         continuation!.profiles!.profiles.map((profile) => ({ id: profile.id, name: profile.name })),
         [{ id: result.profile.id, name: "Brex Ops" }],
       );
-      const retained = await stack.api["bootstrap.get"]({});
+      const retained = await stack.api["bootstrap.legacy.get"]({});
       equal(
         evidence,
         "Personal approval retains the profile across restart",
@@ -641,7 +641,7 @@ run("Browser profiles through a whole deployment", () => {
         client.getSnapshot().browserProfiles.some((profile) => profile.id === id),
         true,
       );
-    const bootstrap = await stack.api["bootstrap.get"]({});
+    const bootstrap = await stack.api["bootstrap.legacy.get"]({});
     if (!bootstrap.ok) throw new Error(bootstrap.error.message);
     equal(
       evidence,
@@ -664,7 +664,7 @@ run("Browser profiles through a whole deployment", () => {
           client.getSnapshot().browserProfiles.some((profile) => profile.id === result.profile.id),
           true,
         );
-      const bootstrap = await stack.api["bootstrap.get"]({});
+      const bootstrap = await stack.api["bootstrap.legacy.get"]({});
       if (!bootstrap.ok) throw new Error(bootstrap.error.message);
       equal(evidence, "Request opened no session", bootstrap.data.browser.groups.rows.length, 0);
     },

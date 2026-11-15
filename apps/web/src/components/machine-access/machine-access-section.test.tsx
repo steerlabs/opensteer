@@ -5,7 +5,7 @@ import {
   ShellSessionHistoryEntrySchema,
   ShellSessionSummarySchema,
   machineAccessPolicyDefault,
-  type MachineSummary,
+  type LegacyMachineSummary,
   type ShellSessionHistoryEntry,
   type ShellSessionSummary,
 } from "@opensteer/protocol";
@@ -478,8 +478,8 @@ describe("MachineAccessSection", () => {
 
 function accessWith(
   activeSessions: readonly ShellSessionSummary[],
-  overrides: Partial<NonNullable<MachineSummary["access"]>> = {},
-): NonNullable<MachineSummary["access"]> {
+  overrides: Partial<NonNullable<LegacyMachineSummary["access"]>> = {},
+): NonNullable<LegacyMachineSummary["access"]> {
   return {
     activeSessions: [...activeSessions],
     ownerReachAvailable: true,
@@ -492,7 +492,7 @@ function accessWith(
 /** A computer somebody may already reach, where the grants are on show. */
 function openAccess(
   activeSessions: readonly ShellSessionSummary[] = [],
-): NonNullable<MachineSummary["access"]> {
+): NonNullable<LegacyMachineSummary["access"]> {
   return accessWith(activeSessions, {
     policy: { ...machineAccessPolicyDefault, reach: "owner" },
   });
@@ -544,10 +544,10 @@ function page(
 }
 
 async function mount(input: {
-  readonly access?: NonNullable<MachineSummary["access"]>;
+  readonly access?: NonNullable<LegacyMachineSummary["access"]>;
   readonly client: HostClient;
   readonly desktopBridge?: OpensteerDesktopBridge;
-  readonly ownership?: MachineSummary["ownership"];
+  readonly ownership?: LegacyMachineSummary["ownership"];
 }) {
   const container = document.createElement("div");
   document.body.append(container);
@@ -555,7 +555,7 @@ async function mount(input: {
   mountedRoots.push(root);
   const render = async (
     overrides: {
-      readonly access?: NonNullable<MachineSummary["access"]>;
+      readonly access?: NonNullable<LegacyMachineSummary["access"]>;
       readonly machineRevision?: number;
     } = {},
   ) => {
@@ -568,11 +568,11 @@ async function mount(input: {
 }
 
 function sectionElement(input: {
-  readonly access?: NonNullable<MachineSummary["access"]>;
+  readonly access?: NonNullable<LegacyMachineSummary["access"]>;
   readonly client: HostClient;
   readonly desktopBridge?: OpensteerDesktopBridge;
   readonly machineRevision?: number;
-  readonly ownership?: MachineSummary["ownership"];
+  readonly ownership?: LegacyMachineSummary["ownership"];
 }) {
   return (
     <MachineAccessSection

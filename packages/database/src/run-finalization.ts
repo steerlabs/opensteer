@@ -20,7 +20,7 @@ import { threadInputFromRow } from "./thread-row-mappers.js";
 import { jsonValue, lockThreadRow, type ChannelLinks } from "./store-primitives.js";
 import { enqueueChannelConversationStatus, enqueueChannelReply } from "./channel-deliveries.js";
 import { runReply } from "./run-reply.js";
-import type { CommandRow, DatabaseSchema, RunRow } from "./schema.js";
+import type { CommandRow, LegacyDatabaseSchema as DatabaseSchema, RunRow } from "./schema.js";
 import { appendHostDeploymentEvent } from "./deployment-events.js";
 import { cancelPending } from "./request-store.js";
 import { settleAssignmentAfterRun, threadOrAssignmentHasPendingWork } from "./assignment-store.js";

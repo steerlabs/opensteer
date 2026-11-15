@@ -28,7 +28,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { TransactionScopeChanged } from "./connection.js";
 import { databaseOperationOptions } from "./operation-budget.js";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { safeCount } from "./store-primitives.js";
 import { visiblePersonalTabLineages } from "./personal-tab-visibility.js";
 

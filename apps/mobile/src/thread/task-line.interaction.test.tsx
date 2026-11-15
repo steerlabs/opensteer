@@ -11,7 +11,11 @@ import {
   type AssignmentSummary,
   type WaitingRequest,
 } from "@opensteer/core";
-import type { ActionReview, AssignmentEntry, HostSnapshot } from "@opensteer/client/host";
+import type {
+  ActionReview,
+  AssignmentEntry,
+  LegacyHostSnapshot as HostSnapshot,
+} from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 
 vi.mock("./settings/engine-mark.js", () => ({ EngineMark: () => null }));

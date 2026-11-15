@@ -5,7 +5,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { createId, PlaceEnteredEventViewSchema } from "@opensteer/core";
-import type { HostClient, HostSnapshot } from "@opensteer/client/host";
+import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
 import { RunPlaceStore } from "@opensteer/client/host";
 import { LivePlace } from "./viewfinder.js";
 

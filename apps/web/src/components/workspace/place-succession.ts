@@ -3,7 +3,7 @@ import {
   placeDestinationEnded,
   samePlaceListSource,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type PlaceItem,
   type PlaceListSource,
 } from "@opensteer/client/host";

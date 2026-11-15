@@ -30,7 +30,7 @@ import {
   type PersonalTeamRequest,
 } from "@opensteer/protocol";
 import { sql, type Insertable, type Kysely, type Selectable } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { personalTeamReturnPost } from "./personal-team-return-provenance.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";

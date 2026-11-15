@@ -3,7 +3,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  AppPublishInputSchema,
+  LegacyAppPublishInputSchema as AppPublishInputSchema,
   AppFetchInputSchema,
   appFolderSegments,
   utf8Prefix,
@@ -20,7 +20,7 @@ import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { prepareAppHtml, type AppTheme } from "@opensteer/shared/appFrame";
 import { Readable } from "node:stream";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
-import type { AppRuntimeSpec } from "@opensteer/protocol";
+import type { LegacyAppRuntimeSpec as AppRuntimeSpec } from "@opensteer/protocol";
 import { AppTunnelError, type AppTunnelHub } from "./app-tunnel-hub.js";
 import {
   requestAppHttp,

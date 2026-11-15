@@ -12,7 +12,7 @@ import {
   RunPlaceStore,
   type BrowserFrameView,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type MessageEntry,
   type ReasoningEntry,
   type RequestReceiptEntry,
@@ -35,8 +35,8 @@ import {
 } from "@opensteer/core";
 import {
   ComputerUseSessionIdSchema,
-  type ComputerUseSessionSummary,
-  type MachineSummary,
+  type LegacyComputerUseSessionSummary,
+  type LegacyMachineSummary,
 } from "@opensteer/protocol";
 import { act, useState, type ReactElement, type ReactNode, type Ref } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -958,7 +958,7 @@ function clickingInNotes(runId: string, running: boolean): ToolEntry {
     tool: { name: "integration_call", namespace: "opensteer.integrations" },
   } as ToolEntry;
 }
-function notesSession(runId: string): ComputerUseSessionSummary {
+function notesSession(runId: string): LegacyComputerUseSessionSummary {
   return {
     actionCount: 1,
     actingAppKeys: [],
@@ -968,15 +968,15 @@ function notesSession(runId: string): ComputerUseSessionSummary {
     sessionId: "cus_00000000-0000-4000-8000-0000000000aa",
     threadId: conversationId,
     threadTitle: "Chat",
-  } as unknown as ComputerUseSessionSummary;
+  } as unknown as LegacyComputerUseSessionSummary;
 }
 /** This reader's Macs, with the Mac mini as given; null leaves it out, as for a reader who does not own it. */
-function macs(mini: Partial<MachineSummary> | null): readonly MachineSummary[] {
+function macs(mini: Partial<LegacyMachineSummary> | null): readonly LegacyMachineSummary[] {
   return base.machines.flatMap((machine) =>
     machine.id !== macMini?.id ? [machine] : mini === null ? [] : [{ ...machine, ...mini }],
   );
 }
-function sessions(list: readonly ComputerUseSessionSummary[]): Partial<MachineSummary> {
+function sessions(list: readonly LegacyComputerUseSessionSummary[]): Partial<LegacyMachineSummary> {
   const report = macMini?.computerUse;
   if (!report) throw new Error("The Mac mini reports no computer use.");
   return { computerUse: { ...report, sessions: [...list] } };
@@ -1046,7 +1046,7 @@ function snapshotFor(input: {
   readonly entries: readonly TranscriptEntry[];
   /** The Host holds an earlier page of this transcript than the one loaded. */
   readonly earlier?: boolean;
-  readonly machines?: readonly MachineSummary[];
+  readonly machines?: readonly LegacyMachineSummary[];
   /** The Thread's environment has gone offline: nothing live can be confirmed. */
   readonly offline?: boolean;
   readonly paused?: boolean;
@@ -2601,7 +2601,7 @@ describe("a reply at work on a Mac", () => {
 
   it("keeps the reader's own Mac's line with Stop, then the Stop it leaves for three seconds, then closes the gap", async () => {
     const reply = joinedWhileClicking();
-    const working = (machines: readonly MachineSummary[]) =>
+    const working = (machines: readonly LegacyMachineSummary[]) =>
       snapshotFor({
         entries: reply.entries,
         machines,
@@ -2656,7 +2656,7 @@ describe("a reply at work on a Mac", () => {
       answer,
       filing,
     ];
-    const background = (machines: readonly MachineSummary[], offline = false) =>
+    const background = (machines: readonly LegacyMachineSummary[], offline = false) =>
       snapshotFor({
         entries,
         machines,
@@ -5209,7 +5209,7 @@ describe("the Run's page above the conversation", () => {
       const session = {
         ...notesSession(runId),
         display: kind === "phone" ? { state: "live" } : undefined,
-      } as unknown as ComputerUseSessionSummary;
+      } as unknown as LegacyComputerUseSessionSummary;
       const otherRun = {
         ...session,
         runId: createId("run"),

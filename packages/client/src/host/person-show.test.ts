@@ -1,6 +1,6 @@
 import {
-  PersonShowMessageSchema,
-  type PersonShowMessage,
+  LegacyPersonShowMessageSchema as PersonShowMessageSchema,
+  type LegacyPersonShowMessage as PersonShowMessage,
   BrowserSurfaceIdSchema,
   computerAppIdentityKey,
 } from "@opensteer/protocol";

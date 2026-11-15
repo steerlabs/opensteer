@@ -2,7 +2,10 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
-import { HostClientRequestError, type HostSnapshot } from "@opensteer/client/host";
+import {
+  HostClientRequestError,
+  type LegacyHostSnapshot as HostSnapshot,
+} from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { computerReasonWords } from "@opensteer/client/integrations";
 import { OpenAppScreen } from "./open-app.js";

@@ -5,7 +5,11 @@ import { createRoot } from "react-dom/client";
 import { MemoryRouter, useNavigate } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
-import { placeList, type HostSnapshot, type PlaceItem } from "@opensteer/client/host";
+import {
+  placeList,
+  type LegacyHostSnapshot as HostSnapshot,
+  type PlaceItem,
+} from "@opensteer/client/host";
 
 import { type WorkspaceNavigation } from "./navigation.js";
 import { WorkspaceLayout } from "./workspace-layout.js";

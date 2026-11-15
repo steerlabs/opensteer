@@ -9,7 +9,7 @@ import type {
   BrowserIdentityChoice,
   BrowserIdentityOpenInput,
   HostClient,
-  HostSnapshot,
+  LegacyHostSnapshot as HostSnapshot,
   PersonalSurfaceDestination,
   PendingBrowserTabDestination,
 } from "@opensteer/client/host";

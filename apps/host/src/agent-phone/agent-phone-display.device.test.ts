@@ -406,7 +406,7 @@ it.each([
     const owner = { headers: host.ownerHeaders };
     let runnerId!: RunnerId;
     const machine = async () =>
-      (await testRpcData(host.origin, "machines.list", {}, owner)).machines.find(
+      (await testRpcData(host.origin, "machines.legacy.list", {}, owner)).machines.find(
         (row) => row.id === runnerId,
       );
     const sessions = async () => (await machine())?.computerUse?.sessions ?? [];
@@ -814,7 +814,7 @@ it.each([
     });
     let currentCaller = caller;
     cleanup.push(() => caller.close());
-    const bootstrap = await testRpcData(host.origin, "bootstrap.get", {}, owner);
+    const bootstrap = await testRpcData(host.origin, "bootstrap.legacy.get", {}, owner);
     if (!bootstrap.personalSettings) throw new Error("Owner has no Main Workspace.");
     const agent = await startPhoneAgent(host, caller, {
       key: `display-run-${randomUUID()}`,
@@ -2866,9 +2866,9 @@ it.each([
         await Promise.all([firstFrame(taskView), firstFrame(own.view)]);
         await inputReady(taskView);
         const headers = { ...stranger.headers, origin: host.publicOrigin };
-        await expect(testRpcData(host.origin, "machines.list", {}, { headers })).rejects.toThrow(
-          /HTTP 401/u,
-        );
+        await expect(
+          testRpcData(host.origin, "machines.legacy.list", {}, { headers }),
+        ).rejects.toThrow(/HTTP 401/u);
         const denied = new ComputerDisplayViewer({ ...host, ownerHeaders: headers }, own.source);
         await eventually(
           "non-owner socket refused",

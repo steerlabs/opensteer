@@ -1,11 +1,11 @@
 import type {
-  HostSnapshot,
+  LegacyHostSnapshot as HostSnapshot,
   BrowserSessionSummary,
   BrowserInventory,
   BrowserTabSummary,
   PersonalTabLineage,
 } from "../host/client.js";
-import type { HostedBrowserBootstrap } from "@opensteer/protocol";
+import type { LegacyHostedBrowserBootstrap as HostedBrowserBootstrap } from "@opensteer/protocol";
 import { BrowserTabStore } from "../host/browser-tab-store.js";
 import {
   BrowserSnapshotDerivation,

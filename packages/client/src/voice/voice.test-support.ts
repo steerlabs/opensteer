@@ -1,7 +1,7 @@
 import { vi } from "vitest";
 import { createId } from "@opensteer/core";
 import { MockHostClient } from "../mock/index.js";
-import type { HostSnapshot } from "../host/client.js";
+import type { LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
 import type { VoiceView } from "@opensteer/protocol/voice";
 import type {
   VoiceCallEvent,

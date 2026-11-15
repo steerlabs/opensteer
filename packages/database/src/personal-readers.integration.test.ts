@@ -4,7 +4,7 @@ import { readAgentRequest } from "./request-agent-response.js";
 import { createId } from "@opensteer/core";
 import { sql, type Transaction } from "kysely";
 import { expect } from "vitest";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { describeStore, type StoreFixture } from "./store.integration.test-support.js";
 import {
   agentThreadPageForOwner,

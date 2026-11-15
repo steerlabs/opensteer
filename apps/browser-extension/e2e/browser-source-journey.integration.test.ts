@@ -46,8 +46,8 @@ import {
   hostApiVersionHeader,
   personalWebBuildId,
   type BrowserViewerSurface,
-  type HostToRunnerMessage,
-  HostToRunnerMessageSchema,
+  type LegacyHostToRunnerMessage as HostToRunnerMessage,
+  LegacyHostToRunnerMessageSchema as HostToRunnerMessageSchema,
 } from "@opensteer/protocol";
 import {
   ChromeCookiesResultSchema,
@@ -339,7 +339,12 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
       await waitFor(
         "the hosted runtime to be a Browser placement",
         async () => {
-          const { browser } = await testRpcData(hostOrigin, "bootstrap.get", {}, { headers });
+          const { browser } = await testRpcData(
+            hostOrigin,
+            "bootstrap.legacy.get",
+            {},
+            { headers },
+          );
           return (
             browser.available &&
             browser.placements.some(
@@ -1197,7 +1202,7 @@ class Viewer {
     });
     await once(socket, "open");
     await snapshot;
-    const { browser } = await testRpcData(origin, "bootstrap.get", {}, { headers });
+    const { browser } = await testRpcData(origin, "bootstrap.legacy.get", {}, { headers });
     const group = browser.groups.rows.find((row) => row.sessionId === sessionId);
     const surfaceId = browser.tabs.find((tabs) => tabs.groupId === group?.id)?.rows[0]?.id;
     if (!surfaceId) throw new Error("The browser has no target surface.");

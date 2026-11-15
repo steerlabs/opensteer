@@ -19,7 +19,7 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
 import { TransactionScopeChanged } from "./connection.js";
-import type { DatabaseSchema, ThreadRow } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema, ThreadRow } from "./schema.js";
 import {
   assignmentEventsInTransaction,
   cancelAssignmentRowsInTransaction,

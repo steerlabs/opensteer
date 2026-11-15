@@ -8,10 +8,10 @@ import { ComputerViewRefSchema } from "./computer-view-requests.js";
 import { HostIntegrationsComputerViewSchema } from "./computer-apps.js";
 import {
   ComputerViewOpenCommandSchema,
-  ComputerViewSchema,
+  LegacyComputerViewSchema,
   computerOwnerViewVersion,
 } from "./computer-view.js";
-import { MachineComputerUseSchema, ComputerUseHelloResultSchema } from "./computer-use.js";
+import { LegacyMachineComputerUseSchema, ComputerUseHelloResultSchema } from "./computer-use.js";
 import { RunnerIdSchema, UserIdSchema, ThreadIdSchema, RunIdSchema } from "@opensteer/core";
 const machineId = RunnerIdSchema.parse("rnr_11111111-1111-4111-8111-111111111111");
 const userId = UserIdSchema.parse("usr_11111111-1111-4111-8111-111111111111");
@@ -115,7 +115,7 @@ describe("start-page wire contracts", () => {
         viewId: "cvw_11111111-1111-4111-8111-111111111111",
       }).success,
     ).toBe(false);
-    expect(ComputerViewSchema.safeParse({}).success).toBe(false);
+    expect(LegacyComputerViewSchema.safeParse({}).success).toBe(false);
     expect(
       ComputerUseHelloResultSchema.parse({
         helperVersion: "1",
@@ -124,6 +124,6 @@ describe("start-page wire contracts", () => {
         permissions: { accessibility: "granted", screenRecording: "granted" },
       }).ownerViewVersion,
     ).toBeUndefined();
-    expect(MachineComputerUseSchema.shape.ownerViewVersion.isOptional()).toBe(true);
+    expect(LegacyMachineComputerUseSchema.shape.ownerViewVersion.isOptional()).toBe(true);
   });
 });

@@ -2,7 +2,7 @@ import { withPersonalTransaction } from "./personal-transaction.js";
 import { fulfillDeviceAccessRequestsInTransaction } from "./request-store.js";
 import { type AgentEvent, deploymentPolicy } from "@opensteer/core";
 import { withDatabaseTransaction } from "./connection.js";
-import { type CommandRow, type DatabaseSchema } from "./schema.js";
+import { type CommandRow, type LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import {
   idempotencyConflict,
   principalIdForUser,

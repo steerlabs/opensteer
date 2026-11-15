@@ -94,7 +94,7 @@ describe("live agent-created browser profile", () => {
       });
       evidence.turns = [{ ask, reply: first.assistantText, runId: first.runId }];
 
-      const afterFirst = await stack.api["bootstrap.get"]({});
+      const afterFirst = await stack.api["bootstrap.legacy.get"]({});
       if (!afterFirst.ok) throw new Error(afterFirst.error.message);
       const { profiles } = afterFirst.data.browser;
       const { browserSessions: sessions } = await browserInventory(stack);

@@ -1,3 +1,4 @@
+import { TabIdSchema, PersonShowTargetSchema } from "@opensteer/core";
 import { z } from "zod";
 import {
   RunIdSchema,
@@ -6,7 +7,7 @@ import {
   BrowserSurfaceIdSchema,
 } from "@opensteer/core";
 
-export const PersonShowMessageSchema = z.object({
+export const LegacyPersonShowMessageSchema = z.object({
   type: z.literal("host.show"),
 
   threadId: ThreadIdSchema,
@@ -18,7 +19,7 @@ export const PersonShowMessageSchema = z.object({
     z.object({ place: PlaceIdentityViewSchema, runId: RunIdSchema }),
   ]),
 });
-export type PersonShowMessage = z.infer<typeof PersonShowMessageSchema>;
+export type LegacyPersonShowMessage = z.infer<typeof LegacyPersonShowMessageSchema>;
 
 const revision = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 export {
@@ -81,7 +82,7 @@ export const PlaceActivityNoticeViewSchema = z.discriminatedUnion("type", [
   z.object({ ...PlaceActivityNoticeSchema.options[1].shape, place: PlaceIdentityViewSchema }),
 ]);
 
-export const ThreadPlaceReferenceSchema = z.object({
+export const LegacyThreadPlaceReferenceSchema = z.object({
   threadId: ThreadIdSchema,
   /**
    * The Run that acted there. A reference without one, from an older Host,
@@ -95,8 +96,49 @@ export const ThreadPlaceReferenceSchema = z.object({
   order: revision,
   at: IsoDateTimeSchema,
 });
-export type ThreadPlaceReference = z.infer<typeof ThreadPlaceReferenceSchema>;
+export type LegacyThreadPlaceReference = z.infer<typeof LegacyThreadPlaceReferenceSchema>;
 export const ThreadPlaceChangedSchema = z.object({
+  type: z.literal("host.thread-place-changed"),
+  reference: LegacyThreadPlaceReferenceSchema,
+});
+
+export const PersonShowMessageSchema = z.object({
+  type: z.literal("host.show"),
+  threadId: ThreadIdSchema,
+  runId: RunIdSchema,
+  target: PersonShowTargetSchema,
+});
+export type PersonShowMessage = z.infer<typeof PersonShowMessageSchema>;
+export const ThreadPlaceReferenceSchema = z.object({
+  taskId: ThreadIdSchema,
+  runId: RunIdSchema,
+  tabId: TabIdSchema,
+  title: z.string().max(1024),
+  site: z.string().max(2048).nullable(),
+  iconRef: z.string().max(128).nullable(),
+  order: revision,
+  at: IsoDateTimeSchema,
+});
+export type ThreadPlaceReference = z.infer<typeof ThreadPlaceReferenceSchema>;
+export const TabPlaceActivitySchema = z
+  .strictObject({ ...PlaceActivitySchema.shape, tabId: TabIdSchema })
+  .omit({ place: true })
+  .refine(
+    (activity) => activity.expiresAt > activity.at && activity.expiresAt - activity.at <= 15000,
+    "Activity must expire within the acting window.",
+  );
+export type TabPlaceActivity = z.infer<typeof TabPlaceActivitySchema>;
+export const TabPlaceActivityNoticeSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("host.place-activity"), activity: TabPlaceActivitySchema }),
+  z.object({
+    type: z.literal("host.place-activity-cleared"),
+    tabId: TabIdSchema,
+    runId: RunIdSchema,
+    generation: revision,
+    seq: revision,
+  }),
+]);
+export const TabThreadPlaceChangedSchema = z.object({
   type: z.literal("host.thread-place-changed"),
   reference: ThreadPlaceReferenceSchema,
 });

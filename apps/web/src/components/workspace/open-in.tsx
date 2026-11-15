@@ -6,7 +6,7 @@ import {
   sameIdentity,
   startPageIndex,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type PlaceItem,
   type StartPageProfileChoice,
 } from "@opensteer/client/host";

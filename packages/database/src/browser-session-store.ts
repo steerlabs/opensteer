@@ -37,7 +37,7 @@ import {
   type BrowserTabOpenBinding,
   BrowserTabOpenBindingSchema,
   type HostedBrowserSessionState,
-  type ThreadPlaceReference,
+  type LegacyThreadPlaceReference as ThreadPlaceReference,
   browserPageSite,
   browserSessionMaxAttachedRuns,
   browserSessionMaxThreads,
@@ -59,7 +59,7 @@ import {
 } from "./browser-profile-storage-store.js";
 
 import { databaseOperationOptions } from "./operation-budget.js";
-import { type DatabaseSchema } from "./schema.js";
+import { type LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import {
   findCommandByIdempotency,
   idempotencyConflict,

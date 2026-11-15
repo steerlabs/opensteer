@@ -1,5 +1,8 @@
 import { createId, type UserId } from "@opensteer/core";
-import type { HostToClientMessage, ShellSessionSummary } from "@opensteer/protocol";
+import type {
+  LegacyHostToClientMessage as HostToClientMessage,
+  ShellSessionSummary,
+} from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { machineAccessNotifier } from "./machine-access-events.js";
 

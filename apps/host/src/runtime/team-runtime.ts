@@ -34,7 +34,7 @@ import {
   TeamAccessStore,
   TeamBus,
   appendTeamAudit,
-  type DatabaseSchema,
+  type LegacyDatabaseSchema as DatabaseSchema,
 } from "@opensteer/database";
 import {
   IdentityService,

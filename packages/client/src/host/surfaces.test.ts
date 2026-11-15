@@ -16,7 +16,12 @@ import {
   type ThreadStatus,
 } from "@opensteer/core";
 import { MockHostClient } from "../mock/mock-host-client.js";
-import type { BrowserSessionSummary, HostSnapshot, PlaceEntry, TaskEntry } from "./client.js";
+import type {
+  BrowserSessionSummary,
+  LegacyHostSnapshot as HostSnapshot,
+  PlaceEntry,
+  TaskEntry,
+} from "./client.js";
 import {
   conversationSurfaces,
   sameConversationSurfaceSource,

@@ -4,7 +4,11 @@ import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 import { useTabDeviceChoice, useTabFilterMatches } from "@opensteer/client/react";
-import type { HostClient, HostSnapshot, TabDeviceChoice } from "@opensteer/client/host";
+import type {
+  HostClient,
+  LegacyHostSnapshot as HostSnapshot,
+  TabDeviceChoice,
+} from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema, ThreadIdSchema } from "@opensteer/core";
 import * as tabList from "../../../../../packages/client/src/host/tab-list.js";
 

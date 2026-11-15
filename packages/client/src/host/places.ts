@@ -3,15 +3,15 @@ import { browserIdentity, displayAddress, type PlaceBrowserIdentity } from "./st
 import { searchText, type SearchField } from "./search.js";
 import {
   type BrowserSessionOpener,
-  type ComputerUseSessionSummary,
-  type ComputerView,
+  type LegacyComputerUseSessionSummary,
+  type LegacyComputerView as ComputerView,
   type ComputerViewRef,
   computerAppIdentityKey,
   type ComputerAppIdentity,
   type PlaceOccupant,
 } from "@opensteer/protocol";
 import { BrowserTabStore, type BrowserTabKey } from "./browser-tab-store.js";
-import type { BrowserSessionSummary, HostSnapshot } from "./client.js";
+import type { BrowserSessionSummary, LegacyHostSnapshot as HostSnapshot } from "./client.js";
 import { phoneOwnerView, phonePlaceKey, phoneTabOpen, phoneTaskSession } from "./phone-tab.js";
 import type { PersonalSurfaceDestination as SurfaceDestination } from "./surfaces.js";
 export type { PlaceOccupant } from "@opensteer/protocol";
@@ -54,7 +54,7 @@ export interface PlaceItem {
   readonly key: string;
   readonly destination: SurfaceDestination;
   /** The task session holding this app or phone now. */
-  readonly task: Pick<ComputerUseSessionSummary, "runId" | "sessionId"> | null;
+  readonly task: Pick<LegacyComputerUseSessionSummary, "runId" | "sessionId"> | null;
   /** The Host keeps this phone's tab, so closing it is `phone.tab.close`, not a view's close. */
   readonly phoneTab?: boolean;
   readonly kind: PlaceKind;

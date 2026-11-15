@@ -10,7 +10,7 @@ import {
   IntegrationInstallationIdSchema,
 } from "@opensteer/integration-core";
 import type { Kysely } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import { listEligibleBrowserRunners } from "./browser-home-store.js";
 import { assertPersonalOwner } from "./private-resource-owner.js";
 import type {

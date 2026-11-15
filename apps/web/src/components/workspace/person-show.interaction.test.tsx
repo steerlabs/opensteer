@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { expect, it, vi } from "vitest";
-import { PersonShowMessageSchema, computerAppIdentityKey } from "@opensteer/protocol";
+import { LegacyPersonShowMessageSchema, computerAppIdentityKey } from "@opensteer/protocol";
 import { createId } from "@opensteer/core";
 import { VoiceController } from "@opensteer/client/voice";
 import {
@@ -40,7 +40,7 @@ it.each(["app", "phone"] as const)(
         : { kind, machineId: machine.id, display: "main" };
     await act(async () =>
       client.receivePersonShow(
-        PersonShowMessageSchema.parse({
+        LegacyPersonShowMessageSchema.parse({
           type: "host.show",
           threadId: source.id,
           runId: session.runId,
@@ -73,7 +73,7 @@ it("routes an authorized unloaded Thread through the existing Thread route", asy
   const threadId = createId("thread");
   await act(async () =>
     client.receivePersonShow(
-      PersonShowMessageSchema.parse({
+      LegacyPersonShowMessageSchema.parse({
         type: "host.show",
         runId: createId("run"),
         threadId: source.id,
@@ -100,7 +100,7 @@ it.each(["task"])("shows a requested tab from a %s while its composer has focus"
   const before = history.length;
   await act(async () =>
     client.receivePersonShow(
-      PersonShowMessageSchema.parse({
+      LegacyPersonShowMessageSchema.parse({
         type: "host.show",
         runId: createId("run"),
         threadId,
@@ -122,7 +122,7 @@ it("leaves other focused work, hidden windows and other conversations alone with
   const snapshot = client.getSnapshot();
   const source = snapshot.threads.find((thread) => thread.purpose === "task")!;
   const target = snapshot.threads.find((thread) => thread.id !== source.id)!;
-  const message = PersonShowMessageSchema.parse({
+  const message = LegacyPersonShowMessageSchema.parse({
     type: "host.show",
     runId: createId("run"),
     threadId: source.id,
@@ -183,7 +183,7 @@ it("keeps following its Run with a place over the conversation and the dock clos
   const show = (target: object) =>
     act(async () =>
       client.receivePersonShow(
-        PersonShowMessageSchema.parse({
+        LegacyPersonShowMessageSchema.parse({
           type: "host.show",
           runId: createId("run"),
           threadId: source.id,
@@ -219,7 +219,11 @@ it("opens what the voice call's agent shows from any screen, and ignores a call 
   vi.spyOn(VoiceController.prototype, "call").mockImplementation(() => current);
   const showed = vi.spyOn(VoiceController.prototype, "showed");
   const show = (from: typeof call) =>
-    PersonShowMessageSchema.parse({ type: "host.show", ...from, target: { threadId: target.id } });
+    LegacyPersonShowMessageSchema.parse({
+      type: "host.show",
+      ...from,
+      target: { threadId: target.id },
+    });
   await act(async () => goTo!("/settings/ai-engines"));
   await act(async () => client.receivePersonShow(show(call)));
   expect(history.at(-1)!.path).toBe(`/tasks/${target.id}`);

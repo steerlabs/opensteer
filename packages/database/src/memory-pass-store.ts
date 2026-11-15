@@ -22,7 +22,7 @@ import {
 } from "@opensteer/triggers";
 import { sql, type Kysely, type Transaction } from "kysely";
 import "./connection.js";
-import type { DatabaseSchema, ThreadRow } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema, ThreadRow } from "./schema.js";
 import { jsonValue, lockCommandIdempotency } from "./store-primitives.js";
 import { publishedMessagePredicate } from "./message-visibility.js";
 import { threadFromRow } from "./thread-row-mappers.js";

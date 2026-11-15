@@ -5,7 +5,10 @@ import {
   type HarnessId,
   type HarnessInstanceId,
 } from "@opensteer/core";
-import type { HarnessAuthenticationState, HostToRunnerMessage } from "@opensteer/protocol";
+import type {
+  HarnessAuthenticationState,
+  LegacyHostToRunnerMessage as HostToRunnerMessage,
+} from "@opensteer/protocol";
 
 const defaultMaximumLifetimeMs = 15 * 60_000;
 const runnerNudgeTimeoutMs = 30_000;

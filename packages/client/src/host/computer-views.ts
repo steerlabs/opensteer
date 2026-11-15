@@ -1,7 +1,7 @@
 import { ComputerViewRetainers } from "./computer-view-retention.js";
 import {
-  ComputerViewTargetSchema,
-  type ComputerView,
+  LegacyComputerViewTargetSchema as ComputerViewTargetSchema,
+  type LegacyComputerView as ComputerView,
   type HostApiClient,
 } from "@opensteer/protocol";
 import { HostClientRequestError, type HostClient } from "./client.js";
@@ -110,7 +110,7 @@ export function computerViewMethods(
     listComputerAppWindows: async (machineId, app) => {
       requireWindows();
       const started = authority();
-      const result = unwrapRpcResult(await rpc["computer.app.windows"]({ machineId, app }));
+      const result = unwrapRpcResult(await rpc["computer.app.legacy.windows"]({ machineId, app }));
       requireAuthority(started);
       return result.windows;
     },

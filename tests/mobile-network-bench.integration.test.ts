@@ -160,7 +160,7 @@ integration("phone network performance using the real shared client", () => {
                   expect(sample.resume.snapshots).toBe(1);
                   expect(sample.milestonesMs.taskListRenderable).toBeDefined();
                   expect(sample.milestonesMs.tabsLoaded).toBeDefined();
-                  expect(sample.rpc["bootstrap.get"]?.count).toBeGreaterThan(0);
+                  expect(sample.rpc["bootstrap.legacy.get"]?.count).toBeGreaterThan(0);
                 }
                 if (sample.scenario === "open-task") {
                   expect(sample.milestonesMs.historyFirstPage).toBeDefined();

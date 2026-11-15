@@ -1,5 +1,5 @@
 import { sql, type Transaction } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 
 export async function lockBrowserTabGroupMembersForTabs(
   transaction: Transaction<DatabaseSchema>,

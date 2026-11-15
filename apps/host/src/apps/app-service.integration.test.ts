@@ -270,7 +270,7 @@ describeStore("published app HTML", (it) => {
         expect(second.messages.filter((m) => m.type === "host.app-tabs-changed")).toHaveLength(1);
       });
       expect(
-        (await testRpcData(host.origin, "bootstrap.get", {}, { headers: host.ownerHeaders }))
+        (await testRpcData(host.origin, "bootstrap.legacy.get", {}, { headers: host.ownerHeaders }))
           .appTabs,
       ).toMatchObject([{ appId: published.appId, title: "Wire app", latestVersion: 1 }]);
       expect(await dispatch("app.tab.close")).toMatchObject({ type: "app.tab.close", appTabs: [] });
@@ -278,7 +278,7 @@ describeStore("published app HTML", (it) => {
         expect(active.messages.filter((m) => m.type === "host.app-tabs-changed")).toHaveLength(2),
       );
       expect(
-        (await testRpcData(host.origin, "bootstrap.get", {}, { headers: host.ownerHeaders }))
+        (await testRpcData(host.origin, "bootstrap.legacy.get", {}, { headers: host.ownerHeaders }))
           .appTabs,
       ).toEqual([]);
     } finally {

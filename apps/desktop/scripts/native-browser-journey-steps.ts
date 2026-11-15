@@ -295,7 +295,7 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
       );
       await kit.foregroundApp();
       await kit.focusPage();
-      const beforeBootstrap = await kit.context.api["bootstrap.get"]({});
+      const beforeBootstrap = await kit.context.api["bootstrap.legacy.get"]({});
       assert(beforeBootstrap.ok);
       const tabs = beforeBootstrap.data.browser.tabs.find((group) =>
         group.rows.some((row) => row.sessionId === kit.context.sessionId),
@@ -342,7 +342,7 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
           item.click = originals[i]!;
         });
       }
-      const afterBootstrap = await kit.context.api["bootstrap.get"]({});
+      const afterBootstrap = await kit.context.api["bootstrap.legacy.get"]({});
       assert(afterBootstrap.ok);
       const after = afterBootstrap.data.browser.tabs.find((group) =>
         group.rows.some((row) => row.sessionId === kit.context.sessionId),

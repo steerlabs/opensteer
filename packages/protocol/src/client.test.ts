@@ -1,10 +1,10 @@
-import { HostBootstrapSchema } from "./bootstrap.js";
+import { LegacyHostBootstrapSchema } from "./bootstrap.js";
 import { createId } from "@opensteer/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserPageSite, isBrowserPageSite } from "./browser.js";
 import {
   ClientToHostMessageSchema,
-  HostToClientMessageSchema,
+  LegacyHostToClientMessageSchema,
   ThreadEventPageSchema,
 } from "./client.js";
 
@@ -104,13 +104,14 @@ describe("browser tab sites", () => {
     "reads a Host frame naming %s on a runtime whose URL refuses it",
     (site) => {
       stubUrlThatRefusesEverything();
-      expect(HostToClientMessageSchema.safeParse(catalogFrame(site)).success).toBe(true);
+      expect(LegacyHostToClientMessageSchema.safeParse(catalogFrame(site)).success).toBe(true);
     },
   );
 
   it("reads a site a newer Host may send, since the Host decides what a site is", () => {
     expect(
-      HostToClientMessageSchema.safeParse(catalogFrame("https://example.com/not-today")).success,
+      LegacyHostToClientMessageSchema.safeParse(catalogFrame("https://example.com/not-today"))
+        .success,
     ).toBe(true);
   });
 
@@ -132,7 +133,7 @@ describe("browser tab sites", () => {
 });
 
 it("accepts app tab invalidation and bounds the bootstrap app catalog", () => {
-  expect(HostToClientMessageSchema.parse({ type: "host.app-tabs-changed" })).toEqual({
+  expect(LegacyHostToClientMessageSchema.parse({ type: "host.app-tabs-changed" })).toEqual({
     type: "host.app-tabs-changed",
   });
   const tab = {
@@ -143,8 +144,10 @@ it("accepts app tab invalidation and bounds the bootstrap app catalog", () => {
     openedAt: timestamps.createdAt,
     latestVersion: 2,
   };
-  expect(HostBootstrapSchema.shape.appTabs.parse([tab])).toEqual([tab]);
-  expect(HostBootstrapSchema.shape.appTabs.safeParse(Array(501).fill(tab)).success).toBe(false);
+  expect(LegacyHostBootstrapSchema.shape.appTabs.parse([tab])).toEqual([tab]);
+  expect(LegacyHostBootstrapSchema.shape.appTabs.safeParse(Array(501).fill(tab)).success).toBe(
+    false,
+  );
 });
 
 it("admits opt-in browser streams and per-socket repair", () => {
@@ -158,5 +161,5 @@ it("admits opt-in browser streams and per-socket repair", () => {
     { type: "host.browser-groups", stream: { op: "begin", generation: "g" } },
     { type: "host.browser-tabs", groupId, stream: { op: "begin", generation: "g" } },
   ])
-    expect(HostToClientMessageSchema.parse(frame)).toEqual(frame);
+    expect(LegacyHostToClientMessageSchema.parse(frame)).toEqual(frame);
 });

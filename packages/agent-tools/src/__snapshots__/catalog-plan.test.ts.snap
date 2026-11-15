@@ -339,6 +339,489 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "access": "read",
     "callers": [
       "run",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "description": "nextCursor from tab_list; omit for the first page and keep the same filters.",
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string",
+        },
+        "kind": {
+          "enum": [
+            "page",
+            "window",
+            "phone",
+            "app",
+          ],
+          "type": "string",
+        },
+        "query": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "tab_list",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "page",
+                  "type": "string",
+                },
+                "profileId": {
+                  "description": "Profile ID from browser_profile_list; the profile's home selects its computer.",
+                  "pattern": "^bpr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string",
+                },
+                "url": {
+                  "maxLength": 8192,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "kind",
+                "url",
+                "profileId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "computerId": {
+                  "description": "Computer ID from computer_list; for Guest, omitted means the hosting computer.",
+                  "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string",
+                },
+                "guest": {
+                  "const": true,
+                  "type": "boolean",
+                },
+                "kind": {
+                  "const": "page",
+                  "type": "string",
+                },
+                "url": {
+                  "maxLength": 8192,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "kind",
+                "url",
+                "guest",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "computerId": {
+                  "description": "Computer ID from computer_list; for Guest, omitted means the hosting computer.",
+                  "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string",
+                },
+                "kind": {
+                  "const": "window",
+                  "type": "string",
+                },
+                "windowId": {
+                  "description": "Opaque exact-window handle from computer_use app.windows() or the Host window picker; valid on this computer only.",
+                  "pattern": "^win_[0-9a-f-]{36}$",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "kind",
+                "computerId",
+                "windowId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "bundleId": {
+                  "description": "Installed approved app bundle ID from computer_use apps(); binds one window after opening the app.",
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "computerId": {
+                  "description": "Computer ID from computer_list; for Guest, omitted means the hosting computer.",
+                  "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string",
+                },
+                "kind": {
+                  "const": "window",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "kind",
+                "computerId",
+                "bundleId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "computerId": {
+                  "description": "Computer ID from computer_list; for Guest, omitted means the hosting computer.",
+                  "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string",
+                },
+                "kind": {
+                  "const": "phone",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "kind",
+                "computerId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "appId": {
+                  "description": "App ID from app_list or app_publish.",
+                  "pattern": "^app_[0-9a-f-]{36}$",
+                  "type": "string",
+                },
+                "kind": {
+                  "const": "app",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "kind",
+                "appId",
+              ],
+              "type": "object",
+            },
+          ],
+        },
+      },
+      "required": [
+        "target",
+      ],
+      "type": "object",
+    },
+    "name": "tab_open",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "tabIds": {
+          "description": "Tab ID(s) from tab_list, tab_open, or a bound computer_use handle.",
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string",
+          },
+          "maxItems": 500,
+          "minItems": 1,
+          "type": "array",
+        },
+      },
+      "required": [
+        "tabIds",
+      ],
+      "type": "object",
+    },
+    "name": "tab_close",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "beforeTabId": {
+          "description": "Tab ID from tab_list: a destination member for tab moves, or an outside tab for a whole-group move.",
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string",
+        },
+        "group": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "groupId": {
+                  "description": "Group ID from tab_list.groups.",
+                  "pattern": "^tgp_[0-9a-f-]{36}$",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "groupId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "color": {
+                  "enum": [
+                    "grey",
+                    "blue",
+                    "red",
+                    "yellow",
+                    "green",
+                    "pink",
+                    "purple",
+                    "cyan",
+                    "orange",
+                  ],
+                  "type": "string",
+                },
+                "name": {
+                  "maxLength": 80,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "name",
+                "color",
+              ],
+              "type": "object",
+            },
+            {
+              "type": "null",
+            },
+          ],
+        },
+        "tabIds": {
+          "description": "Tab ID(s) from tab_list, tab_open, or a bound computer_use handle.",
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string",
+          },
+          "maxItems": 500,
+          "minItems": 1,
+          "type": "array",
+        },
+      },
+      "required": [
+        "tabIds",
+        "group",
+      ],
+      "type": "object",
+    },
+    "name": "tab_organize",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "collapsed": {
+          "type": "boolean",
+        },
+        "color": {
+          "enum": [
+            "grey",
+            "blue",
+            "red",
+            "yellow",
+            "green",
+            "pink",
+            "purple",
+            "cyan",
+            "orange",
+          ],
+          "type": "string",
+        },
+        "groupId": {
+          "description": "Group ID from tab_list.groups.",
+          "pattern": "^tgp_[0-9a-f-]{36}$",
+          "type": "string",
+        },
+        "name": {
+          "maxLength": 80,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "groupId",
+      ],
+      "type": "object",
+    },
+    "name": "tab_group_update",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "appId": {
+          "description": "App ID from app_list or app_publish.",
+          "pattern": "^app_[0-9a-f-]{36}$",
+          "type": "string",
+        },
+        "name": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string",
+        },
+        "path": {
+          "description": "HTML file or server folder relative to Agent home, without traversal.",
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string",
+        },
+        "start": {
+          "description": "Hosting-computer shell command; the server reads PORT from its environment.",
+          "maxLength": 16384,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "path",
+        "name",
+      ],
+      "type": "object",
+    },
+    "name": "app_publish",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "query": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "app_list",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "appId": {
+          "description": "App ID from app_list or app_publish.",
+          "pattern": "^app_[0-9a-f-]{36}$",
+          "type": "string",
+        },
+      },
+      "required": [
+        "appId",
+      ],
+      "type": "object",
+    },
+    "name": "app_start",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "appId": {
+          "description": "App ID from app_list or app_publish.",
+          "pattern": "^app_[0-9a-f-]{36}$",
+          "type": "string",
+        },
+      },
+      "required": [
+        "appId",
+      ],
+      "type": "object",
+    },
+    "name": "app_stop",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "appId": {
+          "description": "App ID from app_list or app_publish.",
+          "pattern": "^app_[0-9a-f-]{36}$",
+          "type": "string",
+        },
+      },
+      "required": [
+        "appId",
+      ],
+      "type": "object",
+    },
+    "name": "app_delete",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
       "program",
       "connection",
     ],
@@ -1980,33 +2463,8 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
             {
               "additionalProperties": false,
               "properties": {
-                "current": {
-                  "const": true,
-                  "type": "boolean",
-                },
-              },
-              "required": [
-                "current",
-              ],
-              "type": "object",
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "runId": {
-                  "pattern": "^run_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                  "type": "string",
-                },
-              },
-              "required": [
-                "runId",
-              ],
-              "type": "object",
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
                 "tabId": {
+                  "description": "Tab ID(s) from tab_list, tab_open, or a bound computer_use handle.",
                   "maxLength": 512,
                   "minLength": 1,
                   "type": "string",
@@ -2021,6 +2479,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
               "additionalProperties": false,
               "properties": {
                 "taskId": {
+                  "description": "Task ID from opensteer_task_list or opensteer_task_read.",
                   "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                   "type": "string",
                 },

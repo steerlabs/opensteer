@@ -14,7 +14,7 @@ import {
   resolveIntegrationAccess,
   type LoadedAccessRequest,
 } from "@opensteer/client/integrations";
-import type { HostSnapshot } from "@opensteer/client/host";
+import type { LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
 import type { Request } from "@opensteer/core";
 import { activityStepHead } from "@opensteer/client/host";
 import {

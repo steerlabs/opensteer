@@ -7,7 +7,12 @@ import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { mockTeamId, mockTeamChannelId, mockTeamUserId } from "@opensteer/client/team";
-import { doneTaskList, placeList, taskList, type HostSnapshot } from "@opensteer/client/host";
+import {
+  doneTaskList,
+  placeList,
+  taskList,
+  type LegacyHostSnapshot as HostSnapshot,
+} from "@opensteer/client/host";
 import {
   BrowserSurfaceIdSchema,
   BrowserSessionIdSchema,
@@ -930,7 +935,7 @@ describe("a channel and back", () => {
       if (destination.kind !== "browser") throw new Error("Expected browser place");
       await act(async () =>
         gate.resolve({
-          type: "tab.reopen",
+          type: "legacy.tab.reopen",
           sessionId: BrowserSessionIdSchema.parse(destination.sessionId),
           tabId: BrowserSurfaceIdSchema.parse(destination.tabId),
           layout: { revision: 0, groups: [] },

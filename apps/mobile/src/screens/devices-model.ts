@@ -6,7 +6,7 @@ import {
   hostsDeployment,
   isServiceMachine,
 } from "@opensteer/client/computers";
-import type { MachineSummary, OtherDevice } from "@opensteer/protocol";
+import type { LegacyMachineSummary, OtherDevice } from "@opensteer/protocol";
 import type { SFSymbolName } from "../ui/symbol.js";
 import { computerSymbols } from "./settings-model.js";
 
@@ -39,7 +39,7 @@ export type PhoneHere =
   | { readonly state: "none" };
 
 export function deviceListSections(input: {
-  readonly machines: readonly MachineSummary[];
+  readonly machines: readonly LegacyMachineSummary[];
   readonly sessions: readonly AuthSessionSummary[];
   readonly here: PhoneHere;
   readonly noun: string;
@@ -58,7 +58,7 @@ export function deviceListSections(input: {
     view.devices.find(({ machine }) => machine.kind === "home")?.machine ??
     view.devices.find(({ machine }) => hostsDeployment(machine))?.machine ??
     null;
-  const row = (machine: MachineSummary, thisDevice: boolean): DeviceListRow => {
+  const row = (machine: LegacyMachineSummary, thisDevice: boolean): DeviceListRow => {
     const status =
       machine.id === homeMachine?.id
         ? "Home · your agent runs here"
@@ -129,13 +129,13 @@ export function deviceListSections(input: {
 }
 
 /** What kind of device it is, where its name alone doesn't say: from the Host's kind only. */
-export function deviceKindLabel(machine: Pick<MachineSummary, "kind">): string | null {
+export function deviceKindLabel(machine: Pick<LegacyMachineSummary, "kind">): string | null {
   if (machine.kind === "agent-phone") return "Agent Phone";
   if (machine.kind === "server") return "Server";
   return null;
 }
 
-function deviceSymbol(machine: MachineSummary, thisDevice: boolean): SFSymbolName {
+function deviceSymbol(machine: LegacyMachineSummary, thisDevice: boolean): SFSymbolName {
   if (thisDevice || machine.kind === "phone" || machine.kind === "agent-phone") return "smartphone";
   if (machine.kind === "server") return "server.rack";
   return computerSymbols[computerGlyph(machine)];

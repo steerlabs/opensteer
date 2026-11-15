@@ -9,7 +9,7 @@ import { KeyedStreamReceiver } from "@opensteer/protocol/keyed-stream";
 import type {
   BrowserTabRecord,
   BrowserTabStreamMeta,
-  HostedBrowserBootstrap,
+  LegacyHostedBrowserBootstrap as HostedBrowserBootstrap,
 } from "@opensteer/protocol/browser";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { PagePresence } from "../ui/page-presence.js";
@@ -93,7 +93,7 @@ test.each([false, true])(
     }
     const admission = f.manager.localPresentation(f.deploymentId, f.surfaceId)!;
     const seed = new MockHostClient({ latencyMs: 0 });
-    const bootstrap = await seed.rpc["bootstrap.get"]({});
+    const bootstrap = await seed.rpc["bootstrap.legacy.get"]({});
     if (!bootstrap.ok) throw new Error("The seed Host did not provide bootstrap metadata");
     const base = bootstrap.data;
     const sessionId = BrowserSessionIdSchema.parse(admission.sessionId);
@@ -168,7 +168,7 @@ test.each([false, true])(
         },
       });
       return {
-        type: "tab.activate",
+        type: "legacy.tab.activate",
         tabId: f.surfaceId,
         groupId: sessionId,
         sessionId,
@@ -197,14 +197,18 @@ test.each([false, true])(
       fetch: async (input, init) => {
         const url = new URL(input instanceof Request ? input.url : String(input));
         const name = url.pathname.slice("/v1/rpc/".length) as keyof typeof hostApi;
-        if (name === "bootstrap.get")
+        if (name === "bootstrap.legacy.get")
           return Response.json({
             ok: true,
             data: { ...base, deploymentId: f.deploymentId, browser: browser() },
           });
         const raw = url.searchParams.get("input") ?? init?.body;
         const payload = hostApi[name].payload.parse(typeof raw === "string" ? JSON.parse(raw) : {});
-        if (name === "commands.dispatch" && "type" in payload && payload.type === "tab.activate")
+        if (
+          name === "commands.dispatch" &&
+          "type" in payload &&
+          hostApi["commands.dispatch"].payload.parse(payload).type === "legacy.tab.activate"
+        )
           return Response.json({ ok: true, data: await dispatch() });
         return Response.json(await seed.rpc[name](payload as never));
       },

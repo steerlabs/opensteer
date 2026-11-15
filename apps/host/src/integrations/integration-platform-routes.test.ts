@@ -1,5 +1,8 @@
 import Fastify from "fastify";
-import { IntegrationPlatformStore, type DatabaseSchema } from "@opensteer/database";
+import {
+  IntegrationPlatformStore,
+  type LegacyDatabaseSchema as DatabaseSchema,
+} from "@opensteer/database";
 import type { Kysely } from "kysely";
 import { createId } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core";

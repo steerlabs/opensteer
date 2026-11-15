@@ -14,7 +14,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
 import "./connection.js";
 import { createThreadInTransaction } from "./thread-store.js";
 import { enqueueThreadInputInTransaction } from "./thread-inbox.js";

@@ -18,7 +18,12 @@ import {
 } from "@opensteer/core";
 import { messageRevisionsPageSize } from "@opensteer/protocol";
 import { type Kysely, type Transaction, type Selectable } from "kysely";
-import type { DatabaseSchema, ThreadRow, ThreadInputTable, MessageTable } from "./schema.js";
+import type {
+  LegacyDatabaseSchema as DatabaseSchema,
+  ThreadRow,
+  ThreadInputTable,
+  MessageTable,
+} from "./schema.js";
 import {
   executionDate,
   withPersonalTransaction,

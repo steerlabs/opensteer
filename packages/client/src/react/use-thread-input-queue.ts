@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import type { ThreadInputQueue } from "@opensteer/core";
-import type { HostClient, HostSnapshot } from "../host/client.js";
+import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
 import { useHostSelector } from "./use-host-snapshot.js";
 
 /**

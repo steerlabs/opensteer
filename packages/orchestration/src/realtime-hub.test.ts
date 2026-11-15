@@ -9,8 +9,8 @@ import {
 import type { OpensteerStore } from "@opensteer/database";
 import {
   BrowserSurfaceIdSchema,
-  type HostToClientMessage,
-  type DeploymentSnapshot,
+  type LegacyHostToClientMessage as HostToClientMessage,
+  type LegacyDeploymentSnapshot as DeploymentSnapshot,
 } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { LiveRunRegistry, RealtimeHub, type RealtimeSink } from "./index.js";

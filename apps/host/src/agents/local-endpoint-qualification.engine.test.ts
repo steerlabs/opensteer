@@ -667,7 +667,7 @@ async function stagedPiModelsText(stack: VerticalStack): Promise<string> {
 
 /** The account's catalog as the next bootstrap reports it. */
 async function stackCatalog(stack: VerticalStack) {
-  const bootstrap = await stack.api["bootstrap.get"]({});
+  const bootstrap = await stack.api["bootstrap.legacy.get"]({});
   if (!bootstrap.ok) throw new Error(bootstrap.error.message);
   const catalog = bootstrap.data.environments
     .find((environment) => environment.id === stack.environmentId)

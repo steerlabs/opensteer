@@ -5,7 +5,7 @@ import { hostApiVersion } from "@opensteer/deployment-authority";
 import { MockHostClient } from "@opensteer/client/mock";
 import {
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type SavedHostView,
   type SavedViewScope,
   type SavedViewStore,

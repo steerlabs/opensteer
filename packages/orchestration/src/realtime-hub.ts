@@ -22,7 +22,7 @@ import { requirePersonalOwner } from "@opensteer/database/personal-settings-stor
 import {
   isDeviceAccessRequestEvent,
   projectDeviceAccessRequestEvent,
-  type HostToClientMessage,
+  type LegacyHostToClientMessage as HostToClientMessage,
 } from "@opensteer/protocol";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { LiveFrame, LiveRunRegistry } from "./live-run-registry.js";

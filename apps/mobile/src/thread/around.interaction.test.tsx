@@ -4,7 +4,7 @@ import { act, type ReactElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
-import type { HostClient, HostSnapshot } from "@opensteer/client/host";
+import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { headerFontScaleLimit } from "../theme.js";
 import type { ThreadHeaderState } from "./thread-pane.js";

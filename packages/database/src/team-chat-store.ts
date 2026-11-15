@@ -47,7 +47,11 @@ import { createTeamAskReturn, teamAttachmentRefs } from "./team-request-returns.
 import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type { z } from "zod";
-import type { DatabaseSchema, TeamAgentRequestTable, TeamMessageTable } from "./schema.js";
+import type {
+  LegacyDatabaseSchema as DatabaseSchema,
+  TeamAgentRequestTable,
+  TeamMessageTable,
+} from "./schema.js";
 import {
   TeamAccessStore,
   bumpTeamChannel,

@@ -15,7 +15,7 @@ const ledgerLimit = 4096;
  * Agents present in each place. A record stays until a clear notice, a newer
  * record for its thread there, the same Run acting in another place,
  * `reconcile` or `clear`: an agent that is thinking is still there. High-
- * frequency presence has no dependency on HostSnapshot or its subscribers.
+ * frequency presence has no dependency on LegacyHostSnapshot or its subscribers.
  */
 export class PlaceActivityStore {
   readonly #values = new Map<string, readonly PlaceActivity[]>();

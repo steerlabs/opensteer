@@ -979,7 +979,17 @@ describe("Opensteer MCP spine", () => {
         }),
       ).resolves.toMatchObject({
         isError: true,
-        content: [{ type: "text", text: MANAGED_MEMORY_WAKE_SKIPPED }],
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              error: { code: "conflict", message: MANAGED_MEMORY_WAKE_SKIPPED, next: null },
+            }),
+          },
+        ],
+        structuredContent: {
+          error: { code: "conflict", message: MANAGED_MEMORY_WAKE_SKIPPED, next: null },
+        },
       });
     } finally {
       await client.close();
@@ -998,7 +1008,12 @@ describe("Opensteer MCP spine", () => {
     );
     const client = await connect(f.url, "run");
     try {
-      const text = "That task is busy. Queue it with opensteer_task_send.";
+      const error = {
+        code: "conflict",
+        message: "That task is busy.",
+        next: "Queue it with opensteer_task_send.",
+      };
+      const text = JSON.stringify({ error });
       await expect(
         client.callTool({
           name: "opensteer_task_send",
@@ -1008,7 +1023,7 @@ describe("Opensteer MCP spine", () => {
         isError: true,
         content: [{ type: "text", text }],
         structuredContent: {
-          error: { code: "conflict", message: text, reason: "thread-busy", retryable: false },
+          error,
         },
       });
       expect(f.options.onToolError).not.toHaveBeenCalled();
@@ -1051,7 +1066,13 @@ describe("Opensteer MCP spine", () => {
         });
         expect(result).toMatchObject({
           isError: true,
-          structuredContent: { error: { code: "internal", retryable: false } },
+          structuredContent: {
+            error: {
+              code: "internal_error",
+              message: "Opensteer hit an internal error.",
+              next: expect.stringContaining(advice),
+            },
+          },
         });
         const text = (result.content as [{ text: string }])[0].text;
         expect(text).toContain(advice);
@@ -1167,7 +1188,13 @@ describe("Opensteer MCP spine", () => {
       );
       expect(result).toMatchObject({ isError: true });
       const text = (result.content as [{ text: string }])[0].text;
-      expect(text).toMatch(/^Opensteer hit an internal error\. /u);
+      expect(JSON.parse(text)).toEqual({
+        error: {
+          code: "internal_error",
+          message: "Opensteer hit an internal error.",
+          next: "Try once more, and if it fails again, tell the person.",
+        },
+      });
       expect(text).not.toContain("invalid_arguments");
       // Where the result broke the contract goes to the log, never what it held.
       const [logged] = vi.mocked(f.options.onToolError).mock.calls[0]!;

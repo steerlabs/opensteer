@@ -8,7 +8,7 @@ import {
 import type { NeedsYouTeamAskEntry } from "@opensteer/protocol";
 import {
   mainDoneTasks,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type TaskEntry,
   type TaskListState,
   type ThreadSummary,

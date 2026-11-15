@@ -2,7 +2,7 @@
 
 import type {
   HostClient,
-  HostSnapshot,
+  LegacyHostSnapshot as HostSnapshot,
   NodeDetailSnapshot,
   NodeEntry,
 } from "@opensteer/client/host";

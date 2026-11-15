@@ -1,6 +1,9 @@
 import { readEmptyPersonalResources } from "./store.integration.test-support.js";
 import { BrowserSessionIdSchema, BrowserSurfaceIdSchema } from "@opensteer/core";
-import { PendingAgentEventSchema, DeploymentSnapshotSchema } from "@opensteer/protocol";
+import {
+  PendingAgentEventSchema,
+  LegacyDeploymentSnapshotSchema as DeploymentSnapshotSchema,
+} from "@opensteer/protocol";
 import { expect } from "vitest";
 import { OpensteerStore } from "./store.js";
 import {

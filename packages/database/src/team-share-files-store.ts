@@ -8,7 +8,11 @@ import {
 } from "@opensteer/core";
 import { TeamShareFileSchema, type TeamShareFile } from "@opensteer/protocol";
 import { sql, type Selectable, type Transaction } from "kysely";
-import type { DatabaseSchema, TeamBlobTable, TeamMessageAttachmentTable } from "./schema.js";
+import type {
+  LegacyDatabaseSchema as DatabaseSchema,
+  TeamBlobTable,
+  TeamMessageAttachmentTable,
+} from "./schema.js";
 import { shareNotFound } from "./team-share-access.js";
 
 type Tx = Transaction<DatabaseSchema>;

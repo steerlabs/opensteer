@@ -10,7 +10,7 @@ import {
   transcriptNodes,
   type AgentCard,
   type HostClient,
-  type HostSnapshot,
+  type LegacyHostSnapshot as HostSnapshot,
   type NodeDetailSnapshot,
   type SubagentDetail,
   type SubagentSiblings,

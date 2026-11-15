@@ -7,7 +7,11 @@ import { encodeDisplayViewerFrame } from "@opensteer/protocol";
 import { BrowserTabStore, RunPlaceStore } from "@opensteer/client/host";
 import { createId, PlaceEnteredEventViewSchema } from "@opensteer/core";
 import { FoldedPage } from "../thread/folded-page.js";
-import type { HostClient, HostSnapshot, WebSocketClient } from "@opensteer/client/host";
+import type {
+  HostClient,
+  LegacyHostSnapshot as HostSnapshot,
+  WebSocketClient,
+} from "@opensteer/client/host";
 import { sharedDisplayStreams, type DisplaySnapshot } from "@opensteer/client/integrations";
 import type { EditingProxyEvent } from "@opensteer/client/editing";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });

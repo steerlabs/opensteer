@@ -64,8 +64,8 @@ import {
 const baseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = baseUrl ? describe : describe.skip;
 const methods = [
-  "bootstrap.get",
-  "machines.list",
+  "bootstrap.legacy.get",
+  "machines.legacy.list",
   "integrations.get",
   "integration.platform.get",
   "integration.computer.setup.list",
@@ -954,8 +954,9 @@ async function mint(
   return minted;
 }
 async function machines(host: MachineAccessWireHost) {
-  return (await testRpcData(host.origin, "machines.list", {}, { headers: host.ownerHeaders }))
-    .machines;
+  return (
+    await testRpcData(host.origin, "machines.legacy.list", {}, { headers: host.ownerHeaders })
+  ).machines;
 }
 function iphoneDescriptor(): RunnerDescriptor {
   return RunnerDescriptorSchema.parse({

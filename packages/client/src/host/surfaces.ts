@@ -1,8 +1,8 @@
 import {
   computerAppIdentityKey,
   type ComputerAppIdentity,
-  type ComputerView,
-  type MachineSummary,
+  type LegacyComputerView as ComputerView,
+  type LegacyMachineSummary,
 } from "@opensteer/protocol";
 import { canWatchComputer } from "../integrations/computer-use.js";
 import { browserIdentity, type PlaceBrowserIdentity } from "./start-page-model.js";
@@ -12,7 +12,7 @@ import type { Turn } from "./agent-activity-model.js";
 import type {
   BrowserSessionSummary,
   BrowserSessionUseSummary,
-  HostSnapshot,
+  LegacyHostSnapshot as HostSnapshot,
   PlaceEntry,
 } from "./client.js";
 import { phoneTabOpen } from "./phone-tab.js";
@@ -43,7 +43,7 @@ export interface AppSurfaceItem {
   readonly key: string;
   readonly app: ComputerAppIdentity;
   readonly appKey: string;
-  readonly machine: MachineSummary;
+  readonly machine: LegacyMachineSummary;
   readonly computerSessionId: string;
   /** The conversation whose Run holds the session (a delegated task's own conversation). */
   readonly threadId: string;
@@ -55,7 +55,7 @@ export interface AppSurfaceItem {
 export interface PhoneSurfaceItem {
   readonly kind: "phone";
   readonly key: string;
-  readonly machine: MachineSummary;
+  readonly machine: LegacyMachineSummary;
   readonly computerSessionId: string;
   readonly threadId: string;
   readonly acting: boolean;
@@ -278,7 +278,9 @@ function browserItems(
  * in it now wins, then the newest: a person watching Notes sees Notes as it is.
  */
 function computerItems(
-  snapshot: Pick<HostSnapshot, "connection"> & { readonly machines: readonly MachineSummary[] },
+  snapshot: Pick<HostSnapshot, "connection"> & {
+    readonly machines: readonly LegacyMachineSummary[];
+  },
   include: (session: { readonly runId: string; readonly threadId: string }) => boolean,
 ): (AppSurfaceItem | PhoneSurfaceItem)[] {
   if (snapshot.connection !== "connected") return [];
@@ -520,7 +522,7 @@ export interface TurnApp {
  */
 export function turnApps(
   turn: Pick<Turn, "runId" | "work">,
-  machines: readonly MachineSummary[],
+  machines: readonly LegacyMachineSummary[],
 ): TurnApp[] {
   const apps = new Map<string, TurnApp>();
   for (const entry of turn.work) {
@@ -580,7 +582,7 @@ export interface TurnPhone {
 /** Phones named by the reply's own and delegated steps, one per computer. */
 export function turnPhones(
   turn: Pick<Turn, "runId" | "work">,
-  machines: readonly MachineSummary[],
+  machines: readonly LegacyMachineSummary[],
 ): TurnPhone[] {
   const phones = new Map<string, TurnPhone>();
   for (const entry of turn.work) {
@@ -624,7 +626,7 @@ export type ReplyPlace =
 export function placeReply(
   entry: PlaceEntry,
   sessions: readonly BrowserSessionSummary[],
-  machines: readonly MachineSummary[],
+  machines: readonly LegacyMachineSummary[],
   threadId: string | null,
 ): ReplyPlace {
   const place = entry.place;
@@ -676,7 +678,7 @@ export function replyPlaces(
   turn: Pick<Turn, "runId" | "work">,
   uses: readonly BrowserSessionUseSummary[],
   sessions: readonly BrowserSessionSummary[],
-  machines: readonly MachineSummary[],
+  machines: readonly LegacyMachineSummary[],
 ): ReplyPlace[] {
   const used: { readonly at: string; readonly place: ReplyPlace }[] = [
     ...(turn.runId ? usedPages(uses, sessions, [turn.runId]) : []).map(
@@ -715,7 +717,9 @@ export function replyPlaces(
  * lasts only while its Run uses the Mac, so a finished reply names none.
  */
 export function runApps(
-  snapshot: Pick<HostSnapshot, "connection"> & { readonly machines: readonly MachineSummary[] },
+  snapshot: Pick<HostSnapshot, "connection"> & {
+    readonly machines: readonly LegacyMachineSummary[];
+  },
   runIds: readonly string[],
 ): AppSurfaceItem[] {
   const runs = new Set(runIds);
@@ -726,7 +730,9 @@ export function runApps(
 
 /** Whole phone displays the given Runs hold now, one per phone. */
 export function runPhones(
-  snapshot: Pick<HostSnapshot, "connection"> & { readonly machines: readonly MachineSummary[] },
+  snapshot: Pick<HostSnapshot, "connection"> & {
+    readonly machines: readonly LegacyMachineSummary[];
+  },
   runIds: readonly string[],
 ): PhoneSurfaceItem[] {
   const runs = new Set(runIds);

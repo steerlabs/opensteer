@@ -14,7 +14,7 @@ import type {
   IntegrationPlatformDashboardView,
   ComputerAppSetupSummary as ComputerAppSetupRequest,
 } from "@opensteer/integration-core";
-import type { ComputerAppRemedy, MachineSummary } from "@opensteer/protocol";
+import type { ComputerAppRemedy, LegacyMachineSummary } from "@opensteer/protocol";
 import {
   computerAppAccessLabel,
   computerAppPermissionNotice,
@@ -156,7 +156,7 @@ export function ComputerAppsSection({
   /** False while the Host cannot confirm a cached computer-use session. */
   readonly hostConnected: boolean;
   readonly localApproval?: ComputerAppLocalApproval | null;
-  readonly machine: MachineSummary;
+  readonly machine: LegacyMachineSummary;
   readonly onCancelSetupRequest?: ((request: ComputerAppSetupRequest) => Promise<void>) | null;
   readonly onChanged: () => Promise<void>;
   readonly onRequestSetup?: ((input: ComputerAppRequestInput) => Promise<void>) | null;
@@ -450,7 +450,7 @@ function AppRow({
   readonly hostClient: HostClient;
   readonly installationId: string | null;
   readonly localApproval: ComputerAppLocalApproval | null;
-  readonly machine: MachineSummary;
+  readonly machine: LegacyMachineSummary;
   readonly onApprove: (access: IntegrationAccess) => void;
   readonly onCancelRequest: () => void;
   readonly onClose: () => void;
@@ -739,7 +739,7 @@ function ManagePanel({
   readonly installationId: string | null;
   readonly iphone: boolean;
   readonly localApproval: ComputerAppLocalApproval | null;
-  readonly machine: MachineSummary;
+  readonly machine: LegacyMachineSummary;
   readonly onClose: () => void;
   readonly onReduce: () => void;
   readonly onRequest: (access: IntegrationAccess) => void;
@@ -849,7 +849,7 @@ function SetupPanel({
 }: {
   readonly approvedChoice: boolean;
   readonly localApproval: ComputerAppLocalApproval | null;
-  readonly machine: MachineSummary;
+  readonly machine: LegacyMachineSummary;
   readonly onApprove: (access: IntegrationAccess) => void;
   readonly onClose: () => void;
   readonly onSetupTarget: (access: IntegrationAccess) => void;

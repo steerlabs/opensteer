@@ -16,9 +16,9 @@ import type { AppService } from "./app-service.js";
 export function createAppHandlers(
   apps: Pick<AppService, "get" | "view">,
   gateway?: Pick<AppGateway, "entryUrl">,
-): Pick<HostApiHandlers, "apps.get" | "apps.view"> {
+): Pick<HostApiHandlers, "apps.legacy.get" | "apps.view"> {
   return {
-    "apps.get": async (input, context) =>
+    "apps.legacy.get": async (input, context) =>
       rpcSuccess(await apps.get(input.appId, requireSession(context).user.id)),
     "apps.view": async (input, context) => {
       const session = requireSession(context);

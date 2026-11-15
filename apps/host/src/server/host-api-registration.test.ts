@@ -24,6 +24,8 @@ const session: AuthenticatedSession = {
   },
 };
 const commands = [
+  { type: "tab.close", tabIds: ["tab-from-list"] },
+  { type: "app.delete", appId: `app_${crypto.randomUUID()}` },
   {
     type: "integration.authorization.return",
     attemptId: createIntegrationId("oauthAttempt"),
@@ -119,7 +121,15 @@ it("registers no personal file, media or reference routes on a team Host", async
     },
   );
   try {
-    for (const method of ["asset.urls", "file.open", "references.resolve"])
+    for (const method of [
+      "asset.urls",
+      "file.open",
+      "references.resolve",
+      "tabs.get",
+      "tabs.state",
+      "apps.list",
+      "apps.get",
+    ])
       expect(
         (await app.inject({ method: "POST", url: `/v1/rpc/${method}`, payload: {} })).statusCode,
       ).toBe(404);
