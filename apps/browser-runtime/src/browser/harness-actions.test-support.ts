@@ -1,22 +1,7 @@
 import { createBrowserSessionId, BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import {
-  BrowserAgentTabListQuerySchema,
-  BrowserAgentTabListResultSchema,
-  BrowserAgentTabUseInputSchema,
-  BrowserAgentTabUseResultSchema,
-  BrowserAgentTabOpenInputSchema,
-  BrowserAgentTabOpenResultSchema,
-  BrowserAgentTabCloseInputSchema,
-  BrowserAgentTabCloseResultSchema,
-  BrowserAgentTabOrganizeInputSchema,
-  BrowserAgentTabOrganizeResultSchema,
-  type BrowserAgentTabOpenResult,
-  type BrowserAgentTab,
-  type BrowserAgentTabGroup,
-} from "@opensteer/protocol/browser-agent";
-import {
   BrowserActionRequestSchema,
-  LegacyBrowserActionResponseSchema,
+  BrowserActionResponseSchema,
 } from "@opensteer/protocol/browser-actions";
 import { SessionCdpRouter, type CdpParameters } from "@opensteer/browser-core";
 import {
@@ -206,14 +191,14 @@ export async function startActionJourney(id: string, report: Record<string, unkn
   ) => {
     const record: Record<string, unknown> = {
       program,
-      args: options.inventory ? [] : ["--tab", targetId],
+      args: options.inventory ? [] : ["--tab", options.tab ?? surfaceId],
     };
     runs.push(record);
     try {
       const result = await runHarness(
         bridge.url,
         claims.sessionId,
-        options.inventory ? undefined : (options.tab ?? targetId),
+        options.inventory ? undefined : (options.tab ?? surfaceId),
         programAssertions + program,
         {
           timeoutMs: options.timeoutMs ?? 15_000,
@@ -393,9 +378,8 @@ export async function startTabJourney({ phones: phoneCount = 1 } = {}) {
   const second = await startActionJourney("20", {});
   const kits = [first, second];
   const calls: Array<{ path: string; input: Record<string, unknown> }> = [];
-  const opens = new Map<string, BrowserAgentTabOpenResult>();
-  const groups: BrowserAgentTabGroup[] = [];
-  let uncertainOpen = false;
+  const opened: string[] = [];
+  const closed = new Set<string>();
   const phones = Array.from({ length: phoneCount }, () => {
     const id = BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`);
     return {
@@ -431,119 +415,71 @@ export async function startTabJourney({ phones: phoneCount = 1 } = {}) {
     },
     undefined,
     {
-      agent: async (path, input, query) => {
+      agent: async (path, input) => {
         calls.push({ path, input });
-        const rows: BrowserAgentTab[] = kits.flatMap((kit) =>
-          kit.ledger.snapshot().map((tab) => ({
-            tabId: tab.id,
-            title: tab.title,
-            url: tab.url,
-            profile: null,
-            computer: "Test computer",
-            state: tab.state === "suspended" ? "asleep" : "open",
-            usedByThisTask: true,
-            usedByOtherTask: false,
-            groupId: null,
-          })),
+        if (path !== "pages/bind" || typeof input.tabId !== "string" || closed.has(input.tabId))
+          throw new Error("Tab unavailable");
+        const phone = phones.find((candidate) => candidate.id === input.tabId);
+        if (phone)
+          return { tabId: phone.id, sessionId: phone.session, backend: "actions", reloaded: false };
+        const kit = kits.find((candidate) =>
+          candidate.ledger.snapshot().some((tab) => tab.id === input.tabId),
         );
-        for (const phone of phones)
-          rows.push({
-            tabId: phone.id,
-            title: "Phone",
-            url: phone.binding.url,
-            profile: null,
-            computer: "Phone",
-            state: "open",
-            usedByThisTask: false,
-            usedByOtherTask: false,
-            groupId: null,
-          });
-        if (path === "tabs") {
-          const parsed = BrowserAgentTabListQuerySchema.parse(Object.fromEntries(query));
-          const filtered = rows.filter(
-            (tab) =>
-              (!parsed.query || `${tab.title} ${tab.url}`.includes(parsed.query)) &&
-              (!parsed.state || tab.state === parsed.state),
-          );
-          const offset = Number(parsed.cursor ?? 0);
-          return BrowserAgentTabListResultSchema.parse({
-            tabs: filtered.slice(offset, offset + parsed.limit),
-            groups,
-            total: filtered.length,
-            nextCursor:
-              offset + parsed.limit < filtered.length ? String(offset + parsed.limit) : null,
-          });
+        if (!kit) throw new Error("Tab unavailable");
+        return {
+          tabId: input.tabId,
+          sessionId: kit.claims.sessionId,
+          backend: "cdp",
+          reloaded: false,
+        };
+      },
+      tools: async (request) => {
+        const name = String(request.name);
+        const input = request.input as Record<string, unknown>;
+        calls.push({ path: name, input });
+        const tabs = () =>
+          [
+            ...kits.flatMap((kit) =>
+              kit.ledger.snapshot().map((tab) => ({
+                tabId: tab.id,
+                title: tab.title,
+                kind: "page",
+                state: tab.state === "suspended" ? "asleep" : "open",
+              })),
+            ),
+            ...phones.map((phone) => ({
+              tabId: phone.id,
+              title: "Phone",
+              kind: "page",
+              state: "open",
+            })),
+          ].filter((tab) => !closed.has(tab.tabId));
+        if (name === "tab_list")
+          return {
+            tabs: tabs().filter((tab) => !input.query || tab.title.includes(String(input.query))),
+            groups: [],
+            nextCursor: null,
+          };
+        if (name === "tab_open") {
+          const target = input.target as { url: string; guest?: boolean };
+          const kit = target.guest ? first : second;
+          const created = await kit.ledger.openSurface();
+          if (target.url !== "about:blank")
+            await kit.ledger.binding(created.id)!.cdp.send("Page.navigate", { url: target.url });
+          opened.push(created.id);
+          return { tab: tabs().find((tab) => tab.tabId === created.id) };
         }
-        if (path === "tabs/use") {
-          const { tabId } = BrowserAgentTabUseInputSchema.parse(input);
-          const phone = phones.find((candidate) => candidate.id === tabId);
-          if (phone)
-            return BrowserAgentTabUseResultSchema.parse({
-              tabId,
-              sessionId: phone.session,
-              backend: "actions",
-              reloaded: false,
-            });
-          const kit = kits.find((candidate) =>
-            candidate.ledger.snapshot().some((tab) => tab.id === tabId),
-          );
-          if (!kit) throw new Error("Tab unavailable");
-          return BrowserAgentTabUseResultSchema.parse({
-            tabId,
-            sessionId: kit.claims.sessionId,
-            backend: "cdp",
-            reloaded: false,
-          });
+        if (name === "tab_close") {
+          const tabIds = input.tabIds as string[];
+          for (const id of tabIds) closed.add(id);
+          return { closed: tabIds, failed: [] };
         }
-        if (path === "tabs/open") {
-          const parsed = BrowserAgentTabOpenInputSchema.parse(input);
-          let result = opens.get(parsed.operationKey);
-          if (!result) {
-            const kit = second;
-            await kit.controller.handle({
-              type: "surface.open",
-              ...(parsed.url === "about:blank" ? {} : { url: parsed.url! }),
-            });
-            result = BrowserAgentTabOpenResultSchema.parse({
-              tabId: kit.ledger.active()!.surface.id,
-              sessionId: kit.claims.sessionId,
-              backend: "cdp",
-            });
-            opens.set(parsed.operationKey, result);
-          }
-          if (uncertainOpen) {
-            uncertainOpen = false;
-            // The Host's own uncertain-open refusal: a conflict naming its reason.
-            return Response.json(
-              {
-                error: {
-                  code: "conflict",
-                  message:
-                    "Opening did not confirm its outcome. Retry this request to recover its original page.",
-                  reason: "browser-tab-open-outcome-unknown",
-                  retryable: false,
-                },
-              },
-              { status: 409 },
-            );
-          }
-          return result;
-        }
-        if (path === "tabs/close") {
-          const { tabIds } = BrowserAgentTabCloseInputSchema.parse(input);
-          for (const tabId of tabIds) {
-            const kit = kits.find((candidate) =>
-              candidate.ledger.snapshot().some((tab) => tab.id === tabId),
-            )!;
-            await kit.ledger.closeSurface(tabId);
-          }
-          return BrowserAgentTabCloseResultSchema.parse({ closed: tabIds, failed: [] });
-        }
-        if (path === "tabs/organize") {
-          const parsed = BrowserAgentTabOrganizeInputSchema.parse(input);
-          return BrowserAgentTabOrganizeResultSchema.parse({ action: parsed.action });
-        }
-        throw new Error(`Unknown agent route ${path}`);
+        if (name === "tab_organize")
+          return {
+            tabs: tabs().filter((tab) => (input.tabIds as string[]).includes(tab.tabId)),
+            groups: [],
+          };
+        throw new Error(`Unknown tool ${name}`);
       },
       actions: async (raw) => {
         const message = BrowserActionRequestSchema.parse(raw);
@@ -555,13 +491,13 @@ export async function startTabJourney({ phones: phoneCount = 1 } = {}) {
           heldQuery.entered();
           await heldQuery.released;
         }
-        const response = LegacyBrowserActionResponseSchema.parse({
+        const response = BrowserActionResponseSchema.parse({
           id: message.id,
           result:
             type === "session.tabs"
               ? { type, tabs: [phoneBinding], nextCursor: null }
-              : type === "surface.attach"
-                ? { type, binding: phoneBinding }
+              : type === "surface.resume"
+                ? { type, binding: phoneBinding, dialog: null, reloaded: false }
                 : type === "page.info"
                   ? {
                       type,
@@ -585,8 +521,8 @@ export async function startTabJourney({ phones: phoneCount = 1 } = {}) {
     first,
     second,
     calls,
-    opens,
-    groups,
+    opened,
+    closed,
     phoneId,
     phoneIds: phones.map((phone) => phone.id),
     /** Holds the first phone's next page reads until `release`. */
@@ -595,9 +531,6 @@ export async function startTabJourney({ phones: phoneCount = 1 } = {}) {
       const released = Promise.withResolvers<void>();
       heldQuery = { entered: () => entered.resolve(), released: released.promise };
       return { entered: entered.promise, release: () => released.resolve() };
-    },
-    uncertainOpen: () => {
-      uncertainOpen = true;
     },
     run: (program: string, tab?: string) =>
       runHarness(bridge.url, first.claims.sessionId, tab, programAssertions + program),

@@ -13,6 +13,7 @@ export interface HarnessBridgeOptions {
     input: Record<string, unknown>,
     query: URLSearchParams,
   ) => Promise<unknown>;
+  readonly tools?: (input: Record<string, unknown>) => Promise<unknown>;
   readonly backend?: (sessionId: string) => "cdp" | "actions";
   readonly actions?: (input: Record<string, unknown>, sessionId: string) => Promise<unknown>;
 }
@@ -35,6 +36,8 @@ export async function startHarnessBridge(
     input: Record<string, unknown>,
     query: URLSearchParams,
   ) => {
+    if (path === "pages/bind")
+      return { tabId: input.tabId, sessionId: fixtureSessionId, backend: "cdp", reloaded: false };
     const inventory = (await requestInTest("Opensteer.listTabs")) as {
       tabs: Array<{
         surfaceId?: string;
@@ -100,7 +103,16 @@ export async function startHarnessBridge(
       const url = new URL(request.url ?? "", "http://fixture.invalid");
       const prefix = "/internal/v1/browser-cdp/agent/";
       let result;
-      if (url.pathname.startsWith(prefix)) {
+      if (url.pathname.endsWith("/tools/call")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        if (!options.tools) throw new Error("No tool fixture configured");
+        const output = await options.tools(JSON.parse(Buffer.concat(chunks).toString()));
+        result = {
+          content: [{ type: "text", text: JSON.stringify(output) }],
+          structuredContent: output,
+        };
+      } else if (url.pathname.startsWith(prefix)) {
         const chunks: Buffer[] = [];
         for await (const chunk of request) chunks.push(Buffer.from(chunk));
         const body = Buffer.concat(chunks).toString();
@@ -141,6 +153,17 @@ export async function startHarnessBridge(
   });
   server.on("connection", (socket, request) => {
     const browserSessionId = request.url!.split("/").at(-1)!;
+    const channels = new Set<string>();
+    const attaching = new Set<Promise<unknown>>();
+    socket.once("close", () => {
+      void Promise.allSettled(attaching).then(() =>
+        Promise.allSettled(
+          [...channels].map((sessionId) =>
+            requestInTest("Target.detachFromTarget", { sessionId }, undefined, browserSessionId),
+          ),
+        ),
+      );
+    });
     socket.on("message", (raw) => {
       if (request.url?.includes("/actions/")) {
         const message = JSON.parse(raw.toString()) as Record<string, unknown>;
@@ -180,7 +203,23 @@ export async function startHarnessBridge(
             }),
           );
       };
-      void requestInTest(message.method, message.params, message.sessionId, browserSessionId).then(
+      const pending = requestInTest(
+        message.method,
+        message.params,
+        message.sessionId,
+        browserSessionId,
+      );
+      if (message.method === "Target.attachToTarget") {
+        const bound = pending.then((result) => {
+          channels.add(z.object({ sessionId: z.string() }).parse(result).sessionId);
+        });
+        attaching.add(bound);
+        void bound.then(
+          () => attaching.delete(bound),
+          () => attaching.delete(bound),
+        );
+      }
+      void pending.then(
         (result) => send({ id: message.id, result }),
         (error: unknown) =>
           send({

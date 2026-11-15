@@ -1,14 +1,9 @@
 import {
+  PageAgentBindInputSchema,
   browserAgentHostRoutePrefix,
-  browserAgentRoutePaths,
-  browserAgentRequestMaxBytes,
-  BrowserAgentTabListQuerySchema,
-  BrowserAgentTabUseInputSchema,
-  BrowserAgentTabOpenInputSchema,
-  BrowserAgentTabCloseInputSchema,
-  BrowserAgentTabOrganizeInputSchema,
 } from "@opensteer/protocol/browser-agent";
-import type { BrowserTabGroupService } from "./browser-tab-group-service.js";
+import type { AgentCallerResolver } from "../mcp/agent-caller.js";
+import type { TabServicePort } from "../tabs/ports.js";
 import { normalizeHostError } from "../server/http-errors.js";
 import { DeviceAccessRefusal } from "../administration/device-access.js";
 import type {} from "@fastify/websocket";
@@ -90,7 +85,7 @@ export function registerAgentCdpBridge(
   app: FastifyInstance,
   browser: BrowserService,
   tokens: RunToolTokenService,
-  tabs?: BrowserTabGroupService,
+  _tabs?: unknown,
 ): void {
   const route = {
     authenticate: (token: string) => tokens.authenticate(token),
@@ -104,60 +99,6 @@ export function registerAgentCdpBridge(
     // long Run outlives its first token by.
     reauthorize: (scope: RunToolScope) => tokens.reauthorize(scope),
   };
-  for (const [name, path] of Object.entries(browserAgentRoutePaths)) {
-    app.route({
-      method: name === "tabs" ? "GET" : "POST",
-      url: `${browserAgentHostRoutePrefix}/${path}`,
-      bodyLimit: browserAgentRequestMaxBytes,
-      handler: async (request, reply) => {
-        try {
-          const authenticated = await tokens.authenticate(bearerToken(request.headers));
-          const scope = await tokens.reauthorize(authenticated);
-          const agent = {
-            ...route.authority(scope),
-            threadId: scope.threadId,
-            environmentId: scope.environmentId,
-          };
-          if (name === "use")
-            return await browser.useAgentTab(
-              agent,
-              BrowserAgentTabUseInputSchema.parse(request.body).tabId,
-            );
-          if (name === "open")
-            return await browser.openAgentTab(
-              agent,
-              BrowserAgentTabOpenInputSchema.parse(request.body),
-            );
-          if (!tabs)
-            throw new OpensteerError({
-              code: "conflict",
-              message: "Browser tabs are unavailable on this Host.",
-            });
-          const actor = { ...agent, kind: "agent" as const };
-          if (name === "tabs")
-            return await tabs.read(actor, BrowserAgentTabListQuerySchema.parse(request.query));
-          if (name === "close") {
-            const input = BrowserAgentTabCloseInputSchema.parse(request.body);
-            const result = await tabs.write(
-              actor,
-              { action: "close", tabIds: input.tabIds },
-              `agent:${scope.runId}:${input.operationKey}`,
-            );
-            return { closed: result.closed ?? [], failed: result.failed ?? [] };
-          }
-          const { operationKey, ...input } = BrowserAgentTabOrganizeInputSchema.parse(request.body);
-          return await tabs.write(actor, input, `agent:${scope.runId}:${operationKey}`);
-        } catch (error) {
-          const normalized = normalizeHostError(
-            error instanceof BrowserCdpConnectionEnded
-              ? new OpensteerError({ code: "forbidden", message: error.message })
-              : error,
-          );
-          return reply.code(normalized.status).send({ error: normalized.error });
-        }
-      },
-    });
-  }
   registerCdpRoute<RunToolScope>(app, {
     ...route,
     backend: "actions",
@@ -182,6 +123,38 @@ export function registerAgentCdpBridge(
     ...route,
     path: hostInternalRoutePaths.browserCdp,
   });
+}
+
+export function registerAgentPageBindingRoute(
+  app: FastifyInstance,
+  tokens: Pick<RunToolTokenService, "authenticate" | "reauthorize">,
+  tabs: Pick<TabServicePort, "requireOpenPage">,
+  callers: Pick<AgentCallerResolver, "authenticate">,
+): void {
+  app.post(
+    `${browserAgentHostRoutePrefix}/pages/bind`,
+    { bodyLimit: 16_384 },
+    async (request, reply) => {
+      try {
+        const token = bearerToken(request.headers);
+        const claims = await tokens.authenticate(token);
+        const caller = await callers.authenticate(token);
+        if (caller.kind !== "run" || caller.accessMode !== "full-access")
+          return reply.code(403).send({
+            error: {
+              code: "access_denied",
+              message: "Browser control requires full access for this Run.",
+              next: "Use a full-access Run to control browser tabs.",
+            },
+          });
+        const { tabId } = PageAgentBindInputSchema.parse(request.body);
+        return await tabs.requireOpenPage(await tokens.reauthorize(claims), tabId);
+      } catch (error) {
+        const normalized = normalizeHostError(error);
+        return reply.code(normalized.status).send({ error: normalized.error });
+      }
+    },
+  );
 }
 
 export function registerTriggerCdpBridge(
@@ -286,7 +259,7 @@ function attachCdpSocket<Scope>(
       const parsed = BrowserSessionIdSchema.safeParse(connection.sessionId);
       if (!parsed.success) {
         throw new BrowserCdpConnectionEnded(
-          "This browser binding is invalid. Use Browser Harness listTabs() and switchTab(tabId).",
+          "This browser binding is invalid. Use tab_list and openPage(tabId).",
         );
       }
       sessionId = parsed.data;
@@ -299,7 +272,7 @@ function attachCdpSocket<Scope>(
     if (options.backend === "actions") {
       if (!sessionId)
         throw new BrowserCdpConnectionEnded(
-          "Select a tab with Browser Harness switchTab(tabId) before using actions.",
+          "Bind a tab with Browser Harness openPage(tabId) before using actions.",
         );
       const attached = await options.browser.attachActionsForAgent(
         { ...authority, sessionId },
@@ -322,15 +295,52 @@ function attachCdpSocket<Scope>(
       },
       () => closeSocket(socket, new Error("The browser tab became unavailable."), 1000),
     );
+    const channels = new Set<string>();
+    const attaching = new Set<Promise<unknown>>();
     return {
-      close: () => attached.close(),
-      dispatch: (value: unknown) => {
+      close: () => {
+        // The runtime owns input release; enqueue detach before retiring this Host attachment.
+        void Promise.allSettled(attaching).then(async () => {
+          await Promise.allSettled(
+            [...channels].map(async (sessionId) => {
+              const pending = await attached.dispatch({
+                method: "Target.detachFromTarget",
+                parameters: { sessionId },
+              });
+              void pending.result.catch(() => undefined);
+            }),
+          );
+          attached.close();
+        });
+      },
+      dispatch: async (value: unknown) => {
         const request = CdpRequestSchema.parse(value);
-        return attached.dispatch({
+        const dispatching = attached.dispatch({
           method: request.method,
           ...(request.params ? { parameters: request.params } : {}),
           ...(request.sessionId ? { sessionId: request.sessionId } : {}),
         });
+        if (request.method === "Target.attachToTarget") {
+          const tracked = dispatching
+            .then(({ result }) => result)
+            .then((result) => {
+              const id = z.object({ sessionId: z.string() }).parse(result).sessionId;
+              channels.add(id);
+              return result;
+            });
+          attaching.add(tracked);
+          void tracked.then(
+            () => attaching.delete(tracked),
+            () => attaching.delete(tracked),
+          );
+        }
+        const pending = await dispatching;
+        if (request.method === "Target.detachFromTarget")
+          void pending.result.then(
+            () => channels.delete(String(request.params?.sessionId)),
+            () => undefined,
+          );
+        return pending;
       },
     };
   })();

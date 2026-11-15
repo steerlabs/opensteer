@@ -9,13 +9,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  agentCdpAllowlist,
   defaultBrowserViewport,
-  ExecutionContextInventory,
   SessionCdpRouter,
   type CdpParameters,
 } from "@opensteer/browser-core";
@@ -24,7 +22,6 @@ import {
   BrowserController,
   BrowserRuntime,
   SessionFiles,
-  stageFileMethod,
   SurfaceLedger,
 } from "@opensteer/browser-runtime-core";
 import {
@@ -1359,7 +1356,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     const afterClick = await runHarness(
       harnessBridge.url,
       claims.sessionId,
-      person.targetId,
+      person.surface.id,
       pageInfoProgram,
     );
     expect(afterClick.stderr).toMatch(
@@ -1372,7 +1369,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     const unchanged = await runHarness(
       harnessBridge.url,
       claims.sessionId,
-      person.targetId,
+      person.surface.id,
       pageInfoProgram,
     );
     expect(unchanged.stderr).toBe("");
@@ -1384,7 +1381,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     const waitingRun = runHarness(
       harnessBridge.url,
       claims.sessionId,
-      person.targetId,
+      person.surface.id,
       `await js(${JSON.stringify(`new Promise((resolve) => {
           addEventListener("mousedown", () => resolve(true), { once: true });
           document.body.dataset.waiting = "harness";
@@ -1433,7 +1430,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     const afterTyping = await runHarness(
       harnessBridge.url,
       claims.sessionId,
-      person.targetId,
+      person.surface.id,
       pageInfoProgram,
     );
     expect(afterTyping.stderr).toMatch(/^\[opensteer\] The person typed in this page \d+s ago\./u);
@@ -1521,7 +1518,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     const emulating = await runHarness(
       harnessBridge.url,
       claims.sessionId,
-      person.targetId,
+      person.surface.id,
       `await cdp("Emulation.setDeviceMetricsOverride", { width: 1024, height: 768, deviceScaleFactor: 1, mobile: false });
         console.log(JSON.stringify(await js("({ width: innerWidth, height: innerHeight })")));`,
     );
@@ -2524,7 +2521,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     await browser.close();
   });
 
-  it("gives an agent page-level power and none of a signed-in session's cookies, headers, or storage", async () => {
+  it("gives full CDP to the admitted profile, including cookies, Network, Log, isolated worlds and OOPIFs", async () => {
     const secrets = boundarySecrets();
     const site = createServer((request, response) =>
       serveBoundaryFixture(secrets, request, response),
@@ -2572,583 +2569,110 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     const page = browser.context.pages()[0];
     if (!page) throw new Error("Expected an initial Chromium page.");
     const rootTargetId = await page.targetId();
-    const report: Record<string, unknown> = {
-      engine: "playwright-chromium",
-      executablePath,
-      generatedAt: new Date().toISOString(),
-      secrets: Object.entries(secrets).map(([label, value]) => ({
-        label,
-        sha256: createHash("sha256").update(value).digest("hex"),
-      })),
-    };
 
-    // The person signed in to both sites before the agent arrived.
     const platform = await page.cdp();
-    const platformEvaluate = async (expression: string) =>
-      evaluationValue(
-        await platform.send("Runtime.evaluate", {
-          expression,
-          returnByValue: true,
-        }),
-      );
-    // Observe before navigation: the icon controller also leases Runtime,
-    // and enabling an already-enabled CDP domain does not replay its worlds.
-    const platformContexts = new ExecutionContextInventory();
-    const platformEvents: { method: string; parameters: CdpParameters }[] = [];
-    platform.onEvent((method, parameters) => {
-      platformContexts.observe(method, parameters);
-      platformEvents.push({ method, parameters });
-    });
-    await platform.send("Runtime.enable");
-    for (const url of [`${siteB}/login`, `${siteA}/login`]) {
-      await platform.send("Page.navigate", { url });
-      await waitForAsync(
-        async () =>
-          page.url() === url && (await platformEvaluate("document.readyState")) === "complete",
-      );
-    }
-    const { frameTree: loginTree } = (await platform.send("Page.getFrameTree")) as {
-      frameTree: { frame: { id: string } };
-    };
-    const privateWorld = (await platform.send("Page.createIsolatedWorld", {
-      frameId: loginTree.frame.id,
-      worldName: "existing-private-world",
-    })) as { executionContextId: number };
-    const privateHeld = (await platform.send("Runtime.evaluate", {
-      contextId: privateWorld.executionContextId,
-      expression: `globalThis.privateSecret = ${JSON.stringify(secrets.privateWorld)}; ({ privileged: globalThis.privateSecret })`,
-    })) as { result: { objectId?: string } };
-    if (typeof privateHeld.result.objectId !== "string") {
-      throw new Error("The private world held no object.");
-    }
-    const privateHandle = privateHeld.result.objectId;
-
-    // An unfiltered page channel shows what an agent could take before the boundary.
-    const raw = await browser.cdp.attach(rootTargetId);
-    cleanup.push(() => raw.close());
-    const rawEvents: { method: string; parameters: CdpParameters }[] = [];
-    raw.onEvent((method, parameters) => rawEvents.push({ method, parameters }));
-    const rawCookieRead = foundSecrets(secrets, await raw.send("Network.getAllCookies"));
-    expect(rawCookieRead).toEqual(["sessionA", "sessionB"]);
-    await raw.send("Runtime.enable");
-    await raw.send("Network.enable");
-
+    await loadPage(platform, "Page.navigate", { url: `${siteA}/login` }, browserTestSignal());
+    const router = new SessionCdpRouter(browser.cdp);
+    cleanup.push(() => router.close());
     const files = new SessionFiles(join(tmpdir(), `opensteer-files-${randomUUID()}`));
-    expect(browser.clipboard?.machineClipboardShared).toBe(false);
-    const cdpRouter = new SessionCdpRouter(
-      browser.cdp,
-      undefined,
-      browser.clipboard?.machineClipboardShared !== false,
-    );
-    cdpRouter.registerSession(
+    router.registerSession(
       claims.sessionId,
       rootTargetId,
-      (targetId) => ledger.resolveTarget(targetId),
+      (id) => ledger.resolveTarget(id),
       files.root,
     );
-    cleanup.push(() => cdpRouter.close());
-    const sink = new FakeSink();
-    const controller = new BrowserController({
-      cdpRouter,
-      claims,
-      files,
-      ledger,
-      replaceSiteCookies: (target, cookies, deadline) =>
-        browser.replaceSiteCookies(target, cookies, deadline),
-      signIns: testSignIns(),
-      sink,
-    });
-    await controller.start();
-    cleanup.push(() => controller.close());
-    const agent = (method: string, parameters?: CdpParameters, sessionId?: string) =>
-      sendAsAgent(
-        (message) => controller.handle(message),
-        sink.messages,
-        method,
-        parameters,
-        sessionId,
-      );
-
-    report.browser = await agent("Browser.getVersion");
-    const { sessionId } = (await agent("Target.attachToTarget", {
-      flatten: true,
-      targetId: rootTargetId,
+    const { sessionId } = (await router.send(claims.sessionId, {
+      method: "Target.attachToTarget",
+      parameters: { targetId: rootTargetId },
     })) as { sessionId: string };
-    const outcome = (method: string, parameters: CdpParameters, on?: string) =>
-      agent(method, parameters, on).then(
-        (result) => ({
-          leaked: foundSecrets(secrets, result),
-          outcome: "forwarded",
-        }),
-        (error: unknown) => ({
-          message: (error as Error).message,
-          outcome: (error as { code?: string }).code === "forbidden" ? "forbidden" : "failed",
-        }),
-      );
-    const own = (await agent("Runtime.evaluate", { expression: "({})" }, sessionId)) as {
-      result: { objectId: string };
-    };
-    const useHeldHandle = async () => [
-      await outcome(
-        "Runtime.callFunctionOn",
-        {
-          functionDeclaration: "function(){return globalThis.privateSecret ?? null}",
-          objectId: privateHandle,
-          returnByValue: true,
-        },
-        sessionId,
-      ),
-      await outcome("Runtime.getProperties", { objectId: privateHandle }, sessionId),
-      await outcome(
-        "Runtime.callFunctionOn",
-        {
-          arguments: [{ objectId: privateHandle }],
-          functionDeclaration: "function(held){return held.privileged}",
-          objectId: own.result.objectId,
-          returnByValue: true,
-        },
-        sessionId,
-      ),
-    ];
-    const provenance: Record<string, unknown> = {
-      heldBeforeRuntimeEnable: await useHeldHandle(),
-    };
-    for (const method of ["Page.enable", "Runtime.enable"]) {
-      await agent(method, {}, sessionId);
-    }
-    const reportedToAgent = sink.messages.flatMap((message) =>
-      message.type === "cdp.event" && message.event.method === "Runtime.executionContextCreated"
-        ? [asRecord(message.event.parameters.context).id]
-        : [],
-    );
-    provenance.contexts = platformContexts
-      .entries()
-      .map(({ frameId, id, mainWorld, description }) => ({
-        frameId,
-        id,
-        mainWorld,
-        name: description.name,
-      }));
-    provenance.reportedToAgent = reportedToAgent;
-    provenance.heldAfterRuntimeEnable = await useHeldHandle();
-    expect(reportedToAgent.length).toBeGreaterThan(0);
-    expect(reportedToAgent.every((id) => platformContexts.isMainWorld(id))).toBe(true);
-    for (const attempt of [
-      ...(provenance.heldBeforeRuntimeEnable as { outcome: string }[]),
-      ...(provenance.heldAfterRuntimeEnable as { outcome: string }[]),
-    ]) {
-      expect(attempt.outcome).toBe("forbidden");
-    }
-
-    // The private world logs and throws: the platform hears it, the agent must not.
-    await platform.send("Runtime.evaluate", {
-      contextId: privateWorld.executionContextId,
-      expression: `console.log("FAKE_PRIVATE_CONSOLE", { privateSecret: globalThis.privateSecret }); setTimeout(() => { throw new Error("private-world-exception " + globalThis.privateSecret); }); true`,
-    });
-    await waitFor(() =>
-      platformEvents.some(
-        (event) =>
-          event.method === "Runtime.exceptionThrown" &&
-          asRecord(event.parameters.exceptionDetails).executionContextId ===
-            privateWorld.executionContextId,
-      ),
-    );
-    await delay(200, browserTestSignal());
-    const privateOutput = sink.messages.filter((message) =>
-      JSON.stringify(message).includes(secrets.privateWorld),
-    );
-    provenance.privateWorldOutputToAgent = privateOutput.length;
-    expect(privateOutput).toEqual([]);
-
-    // Handles forged from the agent's own isolate prefix. The private world's
-    // console message bound its objects into the agent's own CDP session.
-    const prefix = own.result.objectId.split(".", 1)[0] ?? "";
-    const highest = Math.max(...platformContexts.entries().map((context) => context.id)) + 2;
-    const tally = {
-      main: { failed: 0, forbidden: 0, forwarded: 0 },
-      other: { failed: 0, forbidden: 0, forwarded: 0 },
-    };
-    const forgedLeaks: string[] = [];
-    for (let contextId = 1; contextId <= highest; contextId += 1) {
-      const kind = platformContexts.isMainWorld(contextId) ? "main" : "other";
-      for (let object = 1; object <= 16; object += 1) {
-        const objectId = `${prefix}.${contextId}.${object}`;
-        const forged = (await outcome(
-          "Runtime.callFunctionOn",
-          {
-            functionDeclaration: "function(){return globalThis.privateSecret ?? null}",
-            objectId,
-            returnByValue: true,
-          },
-          sessionId,
-        )) as {
-          leaked?: string[];
-          outcome: "failed" | "forbidden" | "forwarded";
-        };
-        tally[kind][forged.outcome] += 1;
-        if (forged.leaked?.length) forgedLeaks.push(objectId);
-      }
-    }
-    provenance.forged = { highest, leaks: forgedLeaks, prefix, tally };
-    expect(forgedLeaks).toEqual([]);
-    expect(tally.other).toMatchObject({ failed: 0, forwarded: 0 });
-    expect(tally.other.forbidden).toBeGreaterThan(0);
-    expect(tally.main.forwarded).toBeGreaterThan(0);
-
-    const refusals: { method: string; message: string; scope: string }[] = [];
-    const refuse = async (method: string, parameters?: CdpParameters, on?: string) => {
-      const error = await agent(method, parameters, on).then(
-        () => null,
-        (failure: unknown) => failure,
-      );
-      expect(error, method).toMatchObject({ code: "forbidden" });
-      expect((error as Error).message, method).toContain(method);
-      refusals.push({
-        message: (error as Error).message,
+    const send = (method: string, parameters?: CdpParameters, on = sessionId) =>
+      router.send(claims.sessionId, {
         method,
-        scope: on ? "page" : "browser",
+        ...(parameters ? { parameters } : {}),
+        sessionId: on,
       });
-    };
-    for (const method of ["Network.getAllCookies", "Storage.getCookies", "Target.setAutoAttach"]) {
-      await refuse(method);
-    }
-    for (const [method, parameters] of [
-      ["Network.enable"],
-      ["Network.getAllCookies"],
-      ["Network.getCookies", { urls: [`${siteB}/`] }],
-      [
-        "Network.loadNetworkResource",
-        {
-          options: { disableCache: true, includeCredentials: true },
-          url: `${siteB}/login`,
-        },
-      ],
-      ["Fetch.enable", { patterns: [{ urlPattern: "*" }] }],
-      ["Storage.getCookies"],
-      [
-        "DOMStorage.getDOMStorageItems",
-        { storageId: { isLocalStorage: true, securityOrigin: siteB } },
-      ],
-      ["IndexedDB.requestDatabaseNames", { securityOrigin: siteB }],
-      ["CacheStorage.requestCacheNames", { securityOrigin: siteB }],
-      ["ServiceWorker.enable"],
-      ["Debugger.enable"],
-      ["Page.addScriptToEvaluateOnNewDocument", { source: "window.planted = true" }],
-      ["Page.createIsolatedWorld", { frameId: "main" }],
-      ["Page.setBypassCSP", { enabled: true }],
-      ["Page.reload", { scriptToEvaluateOnLoad: "window.planted = true" }],
-      ["Page.printToPDF", { transferMode: "ReturnAsStream" }],
-      ["Runtime.addBinding", { name: "agentBinding" }],
-      ["Runtime.evaluate", { expression: "copy(document.cookie)", includeCommandLineAPI: true }],
-      ["Runtime.callFunctionOn", { executionContextId: 1, functionDeclaration: "() => 1" }],
-      ["DOM.resolveNode", { backendNodeId: 1, executionContextId: 1 }],
-      ["Page.navigate", { referrer: `${siteB}/`, url: `${siteA}/app` }],
-      ["DOM.getDocument", { depth: 1, unreviewedParameter: true }],
-      ["Log.enable"],
-      ["Log.clear"],
-    ] satisfies [string, CdpParameters?][]) {
-      await refuse(method, parameters, sessionId);
-    }
-
-    // Harness-style page work: navigate, read, click, type, screenshot, files.
-    const evaluate = async (expression: string) =>
-      evaluationValue(
-        await agent(
-          "Runtime.evaluate",
-          { awaitPromise: true, expression, returnByValue: true },
-          sessionId,
-        ),
-      );
-    await agent("Page.navigate", { url: `${siteA}/app` }, sessionId);
-    await waitForAsync(async () => (await evaluate("document.readyState")) === "complete");
-    expect({
-      cookie: await evaluate("document.cookie"),
-      signedIn: await evaluate("document.body.dataset.signedIn"),
-      title: await evaluate("document.title"),
-    }).toEqual({
-      cookie: "visible_a=page-visible",
-      signedIn: "yes",
-      title: "Site A app",
+    const events: Array<{ method: string; parameters: CdpParameters; sessionId?: string }> = [];
+    const child = Promise.withResolvers<string>();
+    router.onEvent(claims.sessionId, (event) => {
+      events.push(event);
+      if (
+        event.method === "Target.attachedToTarget" &&
+        asRecord(event.parameters.targetInfo).type === "iframe"
+      )
+        child.resolve(String(event.parameters.sessionId));
     });
-    const click = async (selector: string) => {
-      const point = (await evaluate(
-        `(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
-      )) as { x: number; y: number };
-      for (const type of ["mousePressed", "mouseReleased"]) {
-        await agent(
-          "Input.dispatchMouseEvent",
-          { button: "left", clickCount: 1, type, ...point },
-          sessionId,
-        );
-      }
-    };
-    await click("#count");
-    await click("#count");
-    await click("#name");
-    await agent("Input.insertText", { text: "hello!" }, sessionId);
-    for (const type of ["keyDown", "keyUp"]) {
-      await agent(
-        "Input.dispatchKeyEvent",
-        {
-          code: "Enter",
-          key: "Enter",
-          modifiers: 0,
-          nativeVirtualKeyCode: 13,
-          type,
-          windowsVirtualKeyCode: 13,
-        },
-        sessionId,
-      );
-    }
+    await send("Network.enable");
+    await send("Log.enable");
+    await send("Runtime.enable");
+    expect(foundSecrets(secrets, await send("Network.getAllCookies"))).toContain("sessionA");
     expect(
-      await evaluate(
-        "[window.clicks, window.keys.includes('Enter'), document.querySelector('#name').value]",
-      ),
-    ).toEqual([2, true, "hello!"]);
-    await evaluate(`
-      globalThis.inputCopies = [];
-      document.querySelector('#name').addEventListener('copy', (event) => {
-        const input = event.target;
-        inputCopies.push({ text: input.value.slice(input.selectionStart, input.selectionEnd), trusted: event.isTrusted });
-        event.preventDefault();
-      });
-    `);
-    for (const [key, code, windowsVirtualKeyCode, nativeVirtualKeyCode] of [
-      ["a", "KeyA", 65, 0],
-      ["c", "KeyC", 67, 8],
-    ] as const) {
-      for (const type of ["keyDown", "keyUp"]) {
-        await agent(
-          "Input.dispatchKeyEvent",
-          {
-            code,
-            key,
-            modifiers: 4,
-            nativeVirtualKeyCode,
-            windowsVirtualKeyCode,
-            type,
-            ...(type === "keyDown" ? { text: key } : {}),
-          },
-          sessionId,
-        );
-      }
-      if (key === "a") {
-        expect(
-          await evaluate(
-            "[document.querySelector('#name').selectionStart, document.querySelector('#name').selectionEnd]",
-          ),
-        ).toEqual([0, 6]);
-      }
-    }
-    expect(await evaluate("inputCopies")).toEqual([{ text: "hello!", trusted: true }]);
-    // Agents never paste the browser computer's clipboard, whatever the engine.
-    await evaluate(
-      "(() => { const input = document.querySelector('#name'); input.setSelectionRange(input.value.length, input.value.length); })()",
-    );
-    await expect(
-      agent(
-        "Input.dispatchKeyEvent",
-        {
-          type: "keyDown",
-          key: "v",
-          code: "KeyV",
-          modifiers: 4,
-          nativeVirtualKeyCode: 9,
-          windowsVirtualKeyCode: 86,
-        },
-        sessionId,
-      ),
-    ).rejects.toThrow(/Pasting is not available to agents/);
-    expect(await evaluate("document.querySelector('#name').value")).toBe("hello!");
-    expect(
-      await evaluate(
-        "[document.querySelector('#name').selectionStart, document.querySelector('#name').selectionEnd]",
-      ),
-    ).toEqual([6, 6]);
-    const screenshot = (await agent("Page.captureScreenshot", { format: "png" }, sessionId)) as {
-      data: string;
-    };
-    expect(Buffer.from(screenshot.data, "base64").subarray(1, 4).toString()).toBe("PNG");
-    const { root } = (await agent("DOM.getDocument", {}, sessionId)) as {
-      root: { nodeId: number };
-    };
-    const { nodeId } = (await agent(
-      "DOM.querySelector",
-      { nodeId: root.nodeId, selector: "#name" },
-      sessionId,
-    )) as { nodeId: number };
-    const node = (await agent("DOM.resolveNode", { nodeId }, sessionId)) as {
-      object: { objectId: string };
-    };
-    expect(
-      evaluationValue(
-        await agent(
-          "Runtime.callFunctionOn",
-          {
-            functionDeclaration: "function(){return this.value}",
-            objectId: node.object.objectId,
-            returnByValue: true,
-          },
-          sessionId,
-        ),
-      ),
-    ).toBe("hello!");
-    const staged = (await agent(stageFileMethod, {
-      data: randomBytes(4_096).toString("base64"),
-      fileId: randomUUID(),
-      name: "boundary.txt",
-      offset: 0,
-      size: 4_096,
-    })) as { path: string };
-    const fileInput = (await agent(
-      "Runtime.evaluate",
-      { expression: "document.querySelector('#file')" },
-      sessionId,
-    )) as { result: { objectId: string } };
-    await agent(
-      "DOM.setFileInputFiles",
-      { files: [staged.path], objectId: fileInput.result.objectId },
-      sessionId,
-    );
-    await agent("Page.setInterceptFileChooserDialog", { enabled: true }, sessionId);
-    await click("#choose");
-    await waitFor(() =>
-      sink.messages.some(
-        (message) =>
-          message.type === "cdp.event" && message.event.method === "Page.fileChooserOpened",
-      ),
-    );
-    const chooser = sink.messages.find(
-      (message) =>
-        message.type === "cdp.event" && message.event.method === "Page.fileChooserOpened",
-    );
-    await agent(
-      "DOM.setFileInputFiles",
-      {
-        backendNodeId: chooser?.type === "cdp.event" ? chooser.event.parameters.backendNodeId : 0,
-        files: [staged.path],
-      },
-      sessionId,
-    );
-    await agent("Page.setInterceptFileChooserDialog", { enabled: false }, sessionId);
-    expect(
-      await evaluate(
-        "[...document.querySelectorAll('input[type=file]')].map((input) => input.files[0]?.name)",
-      ),
-    ).toEqual(["boundary.txt", "boundary.txt"]);
-    const pdf = (await agent("Page.printToPDF", {}, sessionId)) as {
-      data: string;
-    };
-    expect(Buffer.from(pdf.data, "base64").subarray(0, 4).toString()).toBe("%PDF");
-
-    // Chromium's diagnostics for a blocked CORS fetch quote the response
-    // header that the page's own fetch never sees.
-    await raw.send("Log.enable");
-    const corsFetch = await evaluate(
-      `fetch(${JSON.stringify(`${siteB}/cors`)}, { credentials: "include" }).then(() => "read", (error) => error.name)`,
-    );
-    await waitFor(() =>
-      rawEvents.some(
-        (event) =>
-          event.method === "Log.entryAdded" &&
-          JSON.stringify(event.parameters).includes(secrets.corsHeader),
-      ),
-    );
-    await delay(200, browserTestSignal());
-    provenance.cors = {
-      agentMessagesWithHeader: sink.messages.filter((message) =>
-        JSON.stringify(message).includes(secrets.corsHeader),
-      ).length,
-      corsFetch,
-      rawLogCaptured: true,
-    };
-    expect(provenance.cors).toMatchObject({
-      agentMessagesWithHeader: 0,
-      corsFetch: "TypeError",
-    });
-
-    // A script world beside the page's own, holding an object the agent tries to reach.
-    const { frameTree } = (await raw.send("Page.getFrameTree")) as {
-      frameTree: { frame: { id: string } };
-    };
-    const probe = (await raw.send("Page.createIsolatedWorld", {
-      frameId: frameTree.frame.id,
-      worldName: "opensteer-boundary-probe",
+      foundSecrets(secrets, await router.send(claims.sessionId, { method: "Storage.getCookies" })),
+    ).toContain("sessionA");
+    const tree = (await send("Page.getFrameTree")) as { frameTree: { frame: { id: string } } };
+    const world = (await send("Page.createIsolatedWorld", {
+      frameId: tree.frameTree.frame.id,
+      worldName: "agent-isolated",
     })) as { executionContextId: number };
-    const held = (await raw.send("Runtime.evaluate", {
-      contextId: probe.executionContextId,
-      expression: "({ privileged: 'isolated-world-object' })",
-    })) as { result: { objectId?: string } };
-    expect(held.result.objectId).toEqual(expect.any(String));
-    await refuse(
-      "Runtime.evaluate",
-      { contextId: probe.executionContextId, expression: "1" },
-      sessionId,
-    );
-    await refuse(
-      "Runtime.callFunctionOn",
-      {
-        functionDeclaration: "function(){return this}",
-        objectId: held.result.objectId,
-      },
-      sessionId,
-    );
-
-    const isolatedWorlds = rawEvents
-      .filter((event) => event.method === "Runtime.executionContextCreated")
-      .map((event) => asRecord(event.parameters.context))
-      .filter((context) => asRecord(context.auxData).isDefault === false)
-      .map((context) => context.name);
-    const rawHeaderCapture = foundSecrets(
-      secrets,
-      rawEvents.filter((event) => event.method.endsWith("ExtraInfo")),
-    );
-    expect(rawHeaderCapture).toEqual(expect.arrayContaining(["rotatedSessionA", "sessionA"]));
-    const agentEvents: Record<string, number> = {};
-    for (const message of sink.messages) {
-      if (message.type !== "cdp.event") continue;
-      agentEvents[message.event.method] = (agentEvents[message.event.method] ?? 0) + 1;
-      // Page events by reviewed name only; Target events are the router's own.
-      if (!message.event.method.startsWith("Target.")) {
-        expect(agentCdpAllowlist.events.has(message.event.method), message.event.method).toBe(true);
-      }
-      if (message.event.method === "Runtime.executionContextCreated") {
-        expect(asRecord(asRecord(message.event.parameters.context).auxData).isDefault).toBe(true);
-      }
-    }
-    const serialized = sink.messages.map((message) => JSON.stringify(message));
-    const leaks = Object.entries(secrets)
-      .filter(([, value]) => serialized.some((entry) => entry.includes(value)))
-      .map(([label]) => label);
-    Object.assign(report, {
-      agentEvents,
-      provenance,
-      controls: {
-        isolatedWorldsReported: [...new Set(isolatedWorlds)],
-        rawChannelCookieRead: rawCookieRead,
-        rawChannelHeaderCapture: rawHeaderCapture,
-      },
-      passed: leaks.length === 0,
-      refusals,
-      scan: {
-        bytes: serialized.reduce((total, entry) => total + Buffer.byteLength(entry), 0),
-        leaks,
-        messages: serialized.length,
-      },
+    expect(
+      evaluationValue(
+        await send("Runtime.evaluate", {
+          contextId: world.executionContextId,
+          expression: "globalThis.owned = 42",
+          returnByValue: true,
+        }),
+      ),
+    ).toBe(42);
+    const requestSeen = Promise.withResolvers<void>();
+    const logSeen = Promise.withResolvers<void>();
+    const remove = router.onEvent(claims.sessionId, (event) => {
+      if (event.method === "Network.requestWillBeSent") requestSeen.resolve();
+      if (event.method === "Log.entryAdded") logSeen.resolve();
     });
-    const artifactDirectory =
-      process.env.OPENSTEER_CDP_BOUNDARY_E2E_ARTIFACT_DIR ??
-      join(tmpdir(), "opensteer-cdp-boundary-e2e");
-    await mkdir(artifactDirectory, { recursive: true });
-    await writeFile(
-      join(artifactDirectory, "playwright-chromium.json"),
-      `${JSON.stringify(report, null, 2)}\n`,
-    );
-    expect(leaks).toEqual([]);
-    expect(agentEvents).toMatchObject({
-      "Page.fileChooserOpened": 1,
-      "Page.loadEventFired": expect.any(Number),
-      "Runtime.consoleAPICalled": expect.any(Number),
+    await send("Runtime.evaluate", {
+      expression: `fetch(${JSON.stringify(`${siteB}/cors`)}).catch(() => {})`,
+      awaitPromise: true,
     });
-  }, 60_000);
+    await withTimeout(Promise.all([requestSeen.promise, logSeen.promise]), 5000, {
+      timeoutError: () => new Error("Network and Log events did not reach the admitted page"),
+    });
+    remove();
+    await send("Target.setAutoAttach", {
+      autoAttach: true,
+      flatten: true,
+      waitForDebuggerOnStart: false,
+    });
+    await send("Runtime.evaluate", {
+      expression: `document.body.appendChild(Object.assign(document.createElement('iframe'), { src: ${JSON.stringify(`${siteB}/login`)} }))`,
+    });
+    const childId = await withTimeout(child.promise, 5000, {
+      timeoutError: () => new Error("The admitted page's OOPIF did not auto-attach"),
+    });
+    await send("Network.enable", {}, childId);
+    expect(
+      evaluationValue(
+        await send(
+          "Runtime.evaluate",
+          { expression: "location.hostname", returnByValue: true },
+          childId,
+        ),
+      ),
+    ).toBe("site-b.test");
+    await expect(
+      send("Storage.getCookies", { browserContextId: "foreign-profile" }),
+    ).rejects.toThrow("another browser context");
+    await expect(
+      send("Target.attachToTarget", { targetId: "foreign-target" }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(send("Browser.close")).rejects.toMatchObject({ code: "forbidden" });
+    await router.unregisterSession(claims.sessionId);
+    await expect(send("Network.enable")).rejects.toMatchObject({ code: "not_found" });
+    await platform.send("Runtime.evaluate", { expression: "1" });
+    expect(
+      events.some(
+        (event) =>
+          event.method === "Runtime.executionContextCreated" &&
+          asRecord(asRecord(event.parameters.context).auxData).isDefault === false,
+      ),
+    ).toBe(true);
+  });
 });

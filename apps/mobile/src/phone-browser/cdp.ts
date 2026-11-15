@@ -1,5 +1,6 @@
 import {
   SessionCdpRouter,
+  agentObservationMethods,
   type BrowserCdpBackend,
   type CdpChannel,
   type CdpCommand,
@@ -8,7 +9,6 @@ import {
 } from "@opensteer/browser-core/session-cdp-router";
 import type { PhoneBrowserNativePort, NativeDocumentRef } from "./native-port.js";
 import { PhoneBrowserError } from "./native-port.js";
-import { agentObservationMethods } from "@opensteer/browser-core/agent-cdp-policy";
 import {
   BrowserStageFileParametersSchema,
   BrowserListTabsParametersSchema,
@@ -62,6 +62,13 @@ export class PhoneCdpSession {
     this.#owner = owner;
     const backend: BrowserCdpBackend = {
       attach: (targetId) => this.#attach(targetId),
+      assertScope: (_method, params) => {
+        if (params.browserContextId !== undefined)
+          throw new PhoneBrowserError(
+            "forbidden",
+            "CDP browser contexts cannot escape the admitted native profile.",
+          );
+      },
       onEvent: (listener) => {
         this.#backendListeners.add(listener);
         return () => this.#backendListeners.delete(listener);
@@ -148,6 +155,11 @@ export class PhoneCdpSession {
         surfaceId,
         targetId: tab.id,
         documentId: tab.metadata.documentId,
+        dialog: tab.dialog
+          ? { id: tab.dialog.id, type: tab.dialog.type, message: tab.dialog.message }
+          : null,
+        userActivity: null,
+        pageResize: null,
         reloaded: tab.metadata.documentId !== documentId || tab.metadata.generation !== generation,
       };
     }

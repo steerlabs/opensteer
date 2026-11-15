@@ -207,6 +207,7 @@ const screenshotParameters = z.object({
     .optional(),
   format: z.enum(["jpeg", "png", "webp"]).default("png"),
   quality: z.number().int().min(0).max(100).optional(),
+  optimizeForSpeed: z.boolean().optional(),
 });
 
 /**
@@ -3404,7 +3405,13 @@ export class BrowserController {
         "conflict",
         "A JavaScript dialog is open on this page. Answer it with Page.handleJavaScriptDialog, then capture.",
       );
-    const request = screenshotParameters.parse(parameters);
+    const parsedCapture = screenshotParameters.safeParse(parameters);
+    if (!parsedCapture.success)
+      throw new BrowserRuntimeError(
+        "bad_message",
+        `Invalid screenshot parameters: ${parsedCapture.error.issues.map((issue) => issue.path.join(".")).join(", ")}.`,
+      );
+    const request = parsedCapture.data;
     const page = this.ledger.binding(surfaceId)?.page;
     if (!page) throw new BrowserRuntimeError("not_found", "The browser page closed.");
     const stop = new AbortController();
@@ -3521,7 +3528,8 @@ export class BrowserController {
         throw new BrowserRuntimeError("bad_message", "Invalid tab-resume parameters.");
       const reloaded = this.ledger.stateOf(parsed.data.surfaceId) === "suspended";
       const binding = await this.ledger.wake(parsed.data.surfaceId);
-      await this.drainTabs();
+      if (reloaded) await this.drainTabs();
+      const dialog = this.ledger.dialogOf(parsed.data.surfaceId);
       await this.send({
         type: "cdp.result",
         requestId: message.requestId,
@@ -3529,6 +3537,9 @@ export class BrowserController {
           surfaceId: parsed.data.surfaceId,
           targetId: binding.targetId,
           documentId: binding.surface.documentId,
+          dialog: dialog ? { id: dialog.id, message: dialog.message, type: dialog.type } : null,
+          userActivity: this.ledger.targetActivity(binding.targetId) ?? null,
+          pageResize: this.ledger.targetResize(binding.targetId) ?? null,
           reloaded,
         },
       });
