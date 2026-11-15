@@ -39,18 +39,27 @@ fixture label and selects no tools or authority.
   a rename.
 - Mocks are keyed by bare tool name. `{"$responses": [...]}` answers successive calls,
   `{"$byArgs": [{"args": partial, "result": response}]}` answers the first partial match, and
-  `{"$error": "message"}` returns an MCP tool error, recorded as that call's result. An exhausted or unmatched mock returns an
-  explicit unavailable result. Calls reach a mock only after the production MCP service's
-  input and access checks, so semantic errors stay errors even when the flat schema accepts
-  the arguments.
-- `browser` optionally supplies `profiles`, `tabs` (the agent tab rows plus `pageText` and
-  `pageTitle`), `offlineComputers`, and `personActiveTab`. Every case receives a fake
-  `OPENSTEER_BROWSER_HARNESS`; scripts run in a bounded VM with fixture helpers and no
-  filesystem or network APIs. Tab state survives scripts and turns; only the last turn's
-  calls are graded. `expect.harness: [{call: "switchTab", args: {tabId: "receipt"}}]`
-  matches partial normalized arguments, including failed attempts. `notHarness` accepts helper names or partial call
+  `{"$error": "message"}` returns an MCP tool error (`$code` and `$next` fill its `{code, message,
+next}`), recorded as that call's result. An exhausted or unmatched mock returns an explicit
+  unavailable result. Calls reach a mock only after the production MCP service's input and access
+  checks, so semantic errors stay errors even when the flat schema accepts the arguments.
+- `accessMode` and `capabilities` shape the Run as the Host plans it: a missing capability
+  removes its tools, guide section and skill, and `pages: false` makes Browser Harness refuse
+  with the limited-access error.
+- `browser` supplies the person's tabs of every kind (`page`, `window`, `phone`, `app`), groups,
+  profiles, `windows`, `phones` and `apps` that `tab_open` can bind, `offlineComputers`,
+  `accessRequiredComputers` and `personActiveTab`. Unmocked `tab_*` tools and `person_show`
+  answer from that state, and every case receives a fake `OPENSTEER_BROWSER_HARNESS` sharing it:
+  scripts run in a bounded VM with `openPage(tabId)` handles, `--tab`, and
+  `opensteer.callTool`, which reaches the fake Host like an MCP call. Tab state survives scripts
+  and turns; variables do not. Only the last turn's calls are graded.
+  `expect.harness: [{call: "openPage", args: {tabId: "receipt"}}]` matches partial normalized
+  arguments, including failed attempts. `notHarness` accepts helper names or partial call
   objects, including failed attempts. `order`, `minCalls`, and `maxCalls` accept
   `harness:<helper>` alongside tool names; ordinary tool wildcards keep their meaning.
+- `appServers` starts a real loopback server per name, answering `"METHOD /path"` with its JSON
+  (`$status` and `$body` set a non-200 reply). Mocks say `{{appServer:<name>}}` for its URL and
+  `{{agentHome}}` for the Agent home path; each request is graded as `harness:http`.
 - `expect.files` runs before cleanup. A missing path fails a positive match and passes a
   prohibition; a symlink makes the sample incomplete; `.eval-*` directories are never read.
 - `after` chains a case onto an earlier one, moving the producer's actual Agent home files into

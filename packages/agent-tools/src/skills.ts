@@ -19,10 +19,15 @@ export const opensteerAgentSkillNames: readonly OpensteerAgentSkillName[] = Obje
   ...OpensteerAgentSkillNameSchema.options,
 ]);
 
-export function opensteerAgentSkillsFor(
-  options: { readonly personalContext?: boolean; readonly capabilities?: RunToolCapabilities } = {},
-): readonly OpensteerAgentSkillName[] {
-  return opensteerAgentSkillNames.filter(
-    (name) => name !== "opensteer:memory" || options.personalContext !== false,
-  );
+/** A driver's skill is offered only with the capability it explains. */
+export function opensteerAgentSkillsFor(options: {
+  readonly personalContext?: boolean;
+  readonly capabilities: RunToolCapabilities;
+}): readonly OpensteerAgentSkillName[] {
+  return opensteerAgentSkillNames.filter((name) => {
+    if (name === "opensteer:memory") return options.personalContext !== false;
+    if (name === "opensteer:browser") return options.capabilities.pages;
+    if (name === "opensteer:computer-use") return options.capabilities.computerUse;
+    return true;
+  });
 }

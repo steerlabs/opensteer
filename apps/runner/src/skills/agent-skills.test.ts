@@ -36,31 +36,36 @@ describe("Runner Agent Skills", () => {
     expect(catalog).not.toContain("Metadata unavailable");
   });
 
-  it("links only registry tools from the browser skill", async () => {
+  it("names only registry tools in every bundled skill", async () => {
     const bundle = await loadAgentSkillBundle(bundleDirectory);
-    // Check the skill's tool links against the actual registry, not its prose.
-    const skill = (
-      await Promise.all(
-        ["SKILL.md", "references/identity.md", "references/tabs-and-show.md"].map((file) =>
-          readFile(join(bundle.paths["opensteer:browser"], file), "utf8"),
-        ),
-      )
-    ).join("\n");
+    // Check the skills' tool names against the actual registry, not their prose.
+    const files: string[] = [];
+    for (const path of Object.values(bundle.paths)) {
+      files.push(await readFile(join(path, "SKILL.md"), "utf8"));
+      for (const file of await readdir(join(path, "references")))
+        if (file.endsWith(".md"))
+          files.push(await readFile(join(path, "references", file), "utf8"));
+    }
     const runTools = new Set<string>(
       agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
     );
-    const references = [...skill.matchAll(/`((?:browser|opensteer)_[a-z_]+)`/gu)].map(
-      (match) => match[1],
+    const references = files.flatMap((text) =>
+      [
+        ...text.matchAll(
+          /`((?:browser|opensteer|tab|app|person|computer|integration|saved|chrome|card)_[a-z_]+)`/gu,
+        ),
+      ].map((match) => match[1]!),
     );
     expect(references).toEqual(
       expect.arrayContaining([
         "browser_profile_list",
         "browser_profile_request",
-        "opensteer_request_list",
-        "opensteer_request_withdraw",
+        "tab_open",
+        "app_list",
+        "person_show",
       ]),
     );
-    for (const name of references) expect(runTools.has(name!)).toBe(true);
+    for (const name of new Set(references)) expect(runTools.has(name), name).toBe(true);
   });
 
   it("routes app UI work to computer_use in the skill catalog and bodies", async () => {
@@ -77,7 +82,7 @@ describe("Runner Agent Skills", () => {
       "Use Opensteer SSH access for another computer’s files, commands or forwarded ports.",
     );
     expect(computerUseMetadata.description).toBe(
-      "Operate Mac apps and Agent Phones through computer_use when the task needs their interfaces.",
+      "Operate desktop app windows and Agent Phones through computer_use when the task needs their interfaces.",
     );
     for (const metadata of [computerMetadata, computerUseMetadata, integrationMetadata]) {
       expect(Array.from(metadata.description).length).toBeLessThanOrEqual(1_024);
@@ -92,7 +97,7 @@ describe("Runner Agent Skills", () => {
       "Use opensteer:computer-use to see or operate Mac app interfaces and Agent Phones.",
     );
     expect(computerUse).toContain(
-      "never read an app's private data files or use AppleScript, `screencapture`, SSH or synthetic events for that purpose.",
+      "not by reading an app's private data files or using AppleScript, `screencapture`, SSH or synthetic events.",
     );
     expect(integrations).toContain("never with `integration_call`.");
     const api = await readFile(
@@ -101,9 +106,9 @@ describe("Runner Agent Skills", () => {
     );
     expect(api).toContain("`globalThis` persists between `computer_use` calls in this Run.");
     expect(api).toContain(
-      "including a resumed task, reopen `app()`, `window()` or `phone()` handles and observe before acting.",
+      "including a resumed task, bind again with `tab()`, `app()` or `phone()` and observe before acting.",
     );
-    expect(api).toContain("Outside a delegation, if `person_show` is listed");
+    expect(api).toContain("Outside a delegation, show your work without being asked");
     const signIn = await readFile(
       join(bundle.paths["opensteer:computer-use"], "references", "sign-in.md"),
       "utf8",

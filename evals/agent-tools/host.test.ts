@@ -33,7 +33,9 @@ it("returns a fixture refusal as an MCP tool error after validation", async () =
     const result = await client.callTool({ name: call.tool, arguments: call.args });
     expect(result).toMatchObject({
       isError: true,
-      content: [{ type: "text", text: "Service is offline." }],
+      structuredContent: {
+        error: { code: "invalid_input", message: "Service is offline.", next: null },
+      },
     });
     expect(host.calls).toMatchObject([
       { ...call, valid: true, result: { $error: "Service is offline." } },
@@ -133,13 +135,16 @@ it("serves the production inventory and validates mocked calls through real MCP 
 }, 30_000);
 
 it("validates prompt overhaul case inputs and mocked positive calls with production boundaries", async () => {
-  for (const file of ["integrations", "triggers", "browser"]) {
+  // The prompt overhaul and the tabs/apps overhaul.
+  const commits = [
+    "b0efe75413a275f2e4a5cb06d1606fae7cd96713",
+    "0c9e437c0ae12ad1e3ea45f9730996a73d0ce511",
+  ];
+  for (const file of ["integrations", "triggers", "browser", "apps", "computer-use"]) {
     const cases = parseCases(
       await readFile(new URL(`./cases/${file}.ndjson`, import.meta.url), "utf8"),
     );
-    for (const c of cases.filter(
-      (c) => c.source.commit === "b0efe75413a275f2e4a5cb06d1606fae7cd96713",
-    )) {
+    for (const c of cases.filter((c) => commits.includes(c.source.commit))) {
       const host = await startFakeHost(c);
       const clients: Client[] = [];
       try {
@@ -209,6 +214,10 @@ it("validates the new surface cases with each caller's production inventory", as
               : {}),
             ...(["opensteer_task_delegate", "opensteer_task_create"].includes(required.tool)
               ? { message: "Compare vendors" }
+              : {}),
+            // A new group's color is the agent's choice; the case leaves it open.
+            ...(required.tool === "tab_organize"
+              ? { group: { color: "blue", ...(required.args.group as object) } }
               : {}),
           },
         });

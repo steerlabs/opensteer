@@ -102,18 +102,25 @@ export async function runEngine(input: {
   onEvent: (event: HarnessEvent) => Promise<void>;
 }) {
   const { prepared: p, testCase: c, host, signal } = input;
+  const capabilities = {
+    tabs: c.capabilities.tabs ?? true,
+    pages: c.capabilities.pages ?? true,
+    computerUse: c.capabilities.computerUse ?? true,
+    apps: c.capabilities.apps ?? true,
+  };
   const bundlePath = join(p.privateRoot, "bundled-skills");
   await cp(join(input.checkout, "apps/runner/agent-skills"), bundlePath, { recursive: true });
   const bundle = await loadAgentSkillBundle(bundlePath);
   const selected = await Promise.all(
-    planAgentSkills(bundle, c.caller === "run" ? opensteerAgentSkillsFor() : []).map(
-      async (skill) => {
-        const { fullName, path } = skill;
-        const destination = join(p.workspace, ".eval-skills", fullName);
-        await cp(path, destination, { recursive: true });
-        return { ...skill, path: destination };
-      },
-    ),
+    planAgentSkills(
+      bundle,
+      c.caller === "run" ? opensteerAgentSkillsFor({ capabilities }) : [],
+    ).map(async (skill) => {
+      const { fullName, path } = skill;
+      const destination = join(p.workspace, ".eval-skills", fullName);
+      await cp(path, destination, { recursive: true });
+      return { ...skill, path: destination };
+    }),
   );
   const skills = await resolveSkillPlan({
     bundled: selected,
@@ -123,7 +130,8 @@ export async function runEngine(input: {
   const instructions = c.fixtures["AGENTS.md"] ?? "";
   const tools = toolsFor({
     kind: c.caller,
-    accessMode: "full-access",
+    ...(c.caller === "run" ? { capabilities } : {}),
+    accessMode: c.accessMode,
     teamsAvailable: c.teamBound || c.knowledge,
     knowledge: c.knowledge,
   }).map(({ name }) => name);
@@ -133,6 +141,7 @@ export async function runEngine(input: {
       ? [
           platformGuideForRun({
             purpose: c.purpose,
+            capabilities,
             teamsAvailable: c.teamBound || c.knowledge,
             knowledge: c.knowledge,
           }) + (c.voice ? `\n\n${voiceGuide}` : ""),
@@ -162,9 +171,14 @@ export async function runEngine(input: {
   };
   const threadStateDirectory = join(p.privateRoot, "thread");
   await mkdir(threadStateDirectory, { recursive: true });
-  const browser = await prepareBrowserHarness(join(p.workspace, ".eval-browser"), c.browser);
+  const browser = await prepareBrowserHarness(join(p.workspace, ".eval-browser"), c.browser, {
+    toolsUrl: new URL("/harness/tools", host.url).href,
+    token: host.secret,
+    denied: !capabilities.pages,
+  });
+  host.tabs.attach(browser.statePath);
   const context: HarnessSessionContext = {
-    accessMode: "full-access",
+    accessMode: c.accessMode,
     agentTools: {
       tools,
       toolsRevision: "eval-tools-v1",

@@ -17,4 +17,4 @@ Runs and programs get a delegation's final result automatically unless they read
 
 Delegation preserves the access ceiling. On a delegation, `person_notify` and `person_show` are refused even when listed: send what the person should hear or see to the delegating task.
 
-Read [coordination](references/coordination.md) to pick a target, message, delegate or forward places; [lifecycle](references/lifecycle.md) for results, blockers and cancelling; [show](references/show.md) to show places; use `opensteer_task_read` `query`, `cursor` and `itemId` to search and page earlier context; [apps](references/apps.md) to publish or call an app.
+Read [coordination](references/coordination.md) to pick a target, message, delegate or forward places; [lifecycle](references/lifecycle.md) for results, blockers and cancelling; [show](references/show.md) to show a tab or task; use `opensteer_task_read` `query`, `cursor` and `itemId` to search and page earlier context; [apps](references/apps.md) to build, publish or use an app.
