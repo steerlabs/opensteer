@@ -715,7 +715,7 @@ function fakeRunner(computerId: RunnerId, service: () => AppService) {
     syncApps: async (_computer, connectionId, request) => {
       if (current?.connectionId !== connectionId) throw new Error("App connection was replaced");
       const wanted = new Map(request.apps.map((app) => [app.spec.appId, app]));
-      for (const [appId, entry] of [...servers])
+      for (const [appId, entry] of servers)
         if (wanted.get(appId)?.desiredState !== "running") await close(appId, entry.generation);
       for (const app of request.apps) if (app.desiredState === "running") await start(app.spec);
       return { type: "runner.apps.sync.result", requestId: request.requestId, fence, ok: true };
@@ -742,7 +742,7 @@ function fakeRunner(computerId: RunnerId, service: () => AppService) {
       ended.controller.abort();
       // The Runner's own connection-loss cleanup stops everything and forgets its fences.
       stopped.clear();
-      for (const [appId, entry] of [...servers]) {
+      for (const [appId, entry] of servers) {
         servers.delete(appId);
         await closeHttpServerNow(entry.server);
       }
