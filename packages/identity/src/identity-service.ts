@@ -203,10 +203,16 @@ export class IdentityService {
     if (!team)
       throw new OpensteerError({ code: "not_found", message: "Team setup is unavailable" });
     const { provider, receipt } = await team.completeAdoption(null, grant, bundle, hostedBootstrap);
+    await this.reloadAccountProvider(provider);
+    return { completed: true as const, ...(receipt ? { receipt } : {}) };
+  }
+
+  async reloadAccountProvider(
+    provider: NonNullable<IdentityServiceOptions["oidcProviders"]>[number],
+  ) {
     this.#options = { ...this.#options, oidcProviders: [provider] };
     this.#auth = this.#createAuth();
     await this.#ensureNativeOAuthClients();
-    return { completed: true as const, ...(receipt ? { receipt } : {}) };
   }
 
   async initialize(): Promise<void> {

@@ -14,6 +14,7 @@
   "dependencies": {
     "@fastify/compress": "catalog:",
     "@fastify/websocket": "catalog:",
+    "@google-cloud/storage": "^9.0.0",
     "@jitl/quickjs-singlefile-mjs-release-sync": "0.32.0",
     "@modelcontextprotocol/sdk": "1.32.0",
     "@opensteer/access": "workspace:*",
@@ -47,11 +48,9 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@opensteer/agent-phone-setup": "workspace:*",
     "@opensteer/browser-runtime-core": "workspace:*",
     "@opensteer/browser-source-wire": "workspace:*",
-    "@types/pg": "catalog:",
-    "pg": "catalog:",
-    "@opensteer/agent-phone-setup": "workspace:*",
     "@opensteer/channel-runtime": "workspace:*",
     "@opensteer/channel-slack": "workspace:*",
     "@opensteer/client": "workspace:*",
@@ -63,9 +62,11 @@
     "@opensteer/runner": "workspace:*",
     "@pgsql/types": "17.6.2",
     "@types/node": "catalog:",
+    "@types/pg": "catalog:",
     "@types/ws": "catalog:",
     "@yume-chan/adb": "2.6.4",
     "@yume-chan/adb-server-node-tcp": "2.5.2",
+    "pg": "catalog:",
     "tsup": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",

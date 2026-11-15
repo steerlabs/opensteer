@@ -41,6 +41,14 @@ export async function loadOrCreateHostInstance(
     if (!(isNodeError(error) && error.code === "EEXIST")) throw error;
   }
 
+  return loadHostInstance(path, expectedHostInstanceId, false);
+}
+
+export async function loadHostInstance(
+  path: string,
+  expectedHostInstanceId?: HostInstanceId,
+  strict = true,
+): Promise<HostInstanceIdentity> {
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
     handle = await open(path, fsConstants.O_RDONLY | noFollowFlag() | fsConstants.O_NONBLOCK);
@@ -56,7 +64,7 @@ export async function loadOrCreateHostInstance(
     ) {
       throw new Error("Host instance identity does not match the configured Host identity");
     }
-    await setPrivateHandleMode(handle, 0o600);
+    if (!strict) await setPrivateHandleMode(handle, 0o600);
     return { hostInstanceId: identity.hostInstanceId, path };
   } catch (error) {
     throw new Error(`Unable to load Host instance identity at ${path}`, { cause: error });

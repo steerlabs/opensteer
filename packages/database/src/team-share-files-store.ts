@@ -153,8 +153,8 @@ export async function bindTeamShareFiles(
       row = {
         cacheOriginalReserved: false,
         cachePreviewReserved: false,
-        generation: null,
-        previewGeneration: null,
+        generation: source?.generation ?? null,
+        previewGeneration: source?.previewGeneration ?? null,
         uploadLease: null,
         uploadLeaseExpiresAt: null,
         id,
