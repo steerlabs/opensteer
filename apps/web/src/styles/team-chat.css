@@ -259,49 +259,61 @@
 
 /* ---- Sidebar: the `Tasks | Acme` switch and a team's side ---- */
 
-/* Today's segmented control, one segment per side. A segment holds its badge
-   and, once chosen, its team's ⌄, so the chosen plate carries all of them. It
-   sits above the upper list's scroll, so its badges stay in view. */
+/* Tasks at its own width, the team last shown taking the rest, every other
+   team its mark. The measures below are the ones `sideSwitchLayout` lays out
+   with (read from here by SidebarSwitch), so each segment's width and the
+   plate's place come from one set of numbers and move in the same frame. */
 .side-switch {
+  --switch-padding: 3px;
+  --switch-gap: 2px;
+  --switch-mark: 30px;
+  /* The least the team last shown needs to say a few letters of its name. */
+  --switch-named: 76px;
+  --switch-ease: var(--ease-bubble);
+  --switch-duration: var(--duration-slow);
+  position: relative;
   display: flex;
   flex: none;
+  gap: var(--switch-gap);
   margin: 0 var(--space-6) var(--space-2);
+  padding: var(--switch-padding);
+  overflow: hidden;
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-sm);
+  background: var(--fill-quiet);
+  isolation: isolate;
+}
+
+@media (any-pointer: coarse) {
+  .side-switch {
+    --switch-mark: 40px;
+    --switch-named: 96px;
+  }
+}
+
+.side-switch__plate {
+  position: absolute;
+  z-index: -1;
+  top: var(--switch-padding);
+  bottom: var(--switch-padding);
+  left: 0;
+  border: 1px solid var(--rim-selected);
+  border-radius: var(--radius-xs);
+  background: var(--sheen) var(--fill-plate-hover);
+  box-shadow: var(--edge-plate);
+  pointer-events: none;
 }
 
 .side-switch__segment {
+  position: relative;
   display: flex;
-  flex: 1 1 auto;
+  flex: none;
   align-items: center;
   min-width: 0;
-  border: 1px solid transparent;
-  border-radius: var(--radius-xs);
-  transition:
-    background-color var(--duration-fast) var(--ease-out),
-    border-color var(--duration-fast) var(--ease-out);
-}
-
-/* Tasks and the chosen side read whole; the other teams give way first. */
-.side-switch__segment:first-child,
-.side-switch__segment.is-chosen {
-  flex-shrink: 0;
-  max-width: 60%;
-}
-
-.side-switch__segment.is-chosen {
-  border-color: var(--rim-selected);
-  background: var(--sheen) var(--fill-plate-hover);
-  box-shadow: var(--edge-plate);
-}
-
-.side-switch__option {
-  display: flex;
-  flex: 1 1 auto;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-4);
-  min-width: 0;
-  min-height: calc(var(--control-height) - var(--space-6));
-  padding: var(--space-4) var(--space-6);
+  width: var(--switch-mark);
+  height: calc(var(--control-height) - var(--space-6));
+  padding: 0;
+  overflow: hidden;
   border-radius: var(--radius-xs);
   color: var(--muted);
   font-size: var(--text-md);
@@ -311,25 +323,93 @@
   transition: color var(--duration-fast) var(--ease-out);
 }
 
-.side-switch__option:hover,
-.is-chosen > .side-switch__option {
+/* Only a change of side or of the team last shown moves anything; a sidebar
+   being resized follows the pointer at once. */
+.side-switch[data-moving] .side-switch__plate {
+  transition:
+    transform var(--switch-duration) var(--switch-ease),
+    width var(--switch-duration) var(--switch-ease);
+}
+
+.side-switch[data-moving] .side-switch__segment {
+  transition:
+    width var(--switch-duration) var(--switch-ease),
+    color var(--duration-fast) var(--ease-out);
+}
+
+/* Before the track is measured (and in tests), flex stands in for the layout. */
+.side-switch:not([data-measured]) .side-switch__segment.is-recent {
+  flex: 1 1 0;
+  width: auto;
+}
+
+.side-switch:not([data-measured]) .side-switch__segment[aria-checked="true"] {
+  border: 1px solid var(--rim-selected);
+  background: var(--sheen) var(--fill-plate-hover);
+}
+
+.side-switch__segment--tasks {
+  justify-content: center;
+  gap: var(--space-4);
+  width: auto;
+  padding: 0 var(--space-10);
+}
+
+.side-switch__segment:hover,
+.side-switch__segment[aria-checked="true"],
+.side-switch__more[aria-expanded="true"] {
   color: var(--text);
 }
 
-.side-switch__option:focus-visible,
-.side-switch__menu:focus-visible {
+.side-switch__segment:hover:not([aria-checked="true"]) {
+  color: var(--text-soft);
+}
+
+.side-switch__segment:focus-visible {
   outline: none;
   box-shadow: var(--ring-ember);
 }
 
-.side-switch__label {
-  min-width: 3ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* Centred while the name fits; once it doesn't, the face fills the segment
+   from its mark and the name runs out under a fade instead of an ellipsis. */
+.side-switch__face {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  min-width: 0;
+  max-width: 100%;
+  margin-inline: auto;
+  padding-inline: calc((var(--switch-mark) - 18px) / 2);
 }
 
-.side-switch__option > :is(.team-tile, .task-row__unread, .side-needs__bang, .mention-count) {
+.side-switch__face > :is(.team-tile, .mention-count, svg) {
   flex: none;
+}
+
+.side-switch__segment--tasks > :is(.task-row__unread, .side-needs__bang) {
+  flex: none;
+}
+
+.side-switch__face > .side-switch__label {
+  --fade: 14px;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-inline-end: calc(var(--fade) * -1);
+  padding-inline-end: var(--fade);
+  overflow: hidden;
+  mask-image: linear-gradient(to right, #000 calc(100% - var(--fade)), transparent);
+  transition: opacity var(--duration-med) var(--ease-out);
+}
+
+/* A mark alone: its face is just the mark, centred in whatever room it has. */
+.side-switch__segment:not(.is-named) > .side-switch__face {
+  gap: 0;
+}
+
+.side-switch__segment:not(.is-named) > .side-switch__face > .side-switch__label {
+  max-width: 0;
+  opacity: 0;
 }
 
 .side-switch .mention-count {
@@ -338,34 +418,53 @@
   padding: 0 var(--space-4);
 }
 
-/* The ⌄ shares the chosen plate, so the option leaves its right edge to it. */
-.is-chosen > .side-switch__option:has(+ .side-switch__menu) {
-  padding-right: var(--space-2);
+/* A team drawn as its mark says it has mentions with a dot on the mark's
+   corner; the count is in its name and tooltip, as a number there would
+   cover the mark. */
+.side-switch__segment:not(.is-named) > .side-switch__face > .mention-count {
+  position: absolute;
+  top: -2px;
+  left: calc((var(--switch-mark) - 18px) / 2 + 13px);
+  width: 8px;
+  min-width: 0;
+  height: 8px;
+  padding: 0;
+  background: var(--ember);
+  box-shadow: 0 0 0 2px var(--ground);
+  font-size: 0;
 }
 
-.side-switch__menu {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 18px;
-  height: 18px;
-  margin-right: var(--space-2);
-  border-radius: var(--radius-xs);
-  color: var(--muted);
-  transition:
-    background-color var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
+.side-switch__more svg {
+  width: 16px;
+  height: 16px;
 }
 
-.side-switch__menu:hover,
-.side-switch__menu[aria-expanded="true"] {
-  background-color: var(--fill-quiet);
+/* The team's name, said beneath the switch while its segment is only a mark. */
+.side-switch__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+  margin: var(--space-4) var(--space-8) var(--space-2) var(--space-10);
   color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
 }
 
-.side-switch__menu svg {
-  width: 12px;
-  height: 12px;
+.side-switch__title-name {
+  --fade: 14px;
+  min-width: 0;
+  margin-inline-end: calc(var(--fade) * -1);
+  padding-inline-end: var(--fade);
+  overflow: hidden;
+  white-space: nowrap;
+  mask-image: linear-gradient(to right, #000 calc(100% - var(--fade)), transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .side-switch[data-moving] :is(.side-switch__plate, .side-switch__segment) {
+    transition: none;
+  }
 }
 
 /* A team's side fills the upper section and scrolls in it, as the task list
@@ -1639,11 +1738,6 @@ a.team-row__main:hover {
   position: relative;
 }
 
-.team-composer__box--agent {
-  border-color: var(--rim-attention);
-  box-shadow: var(--edge-attention), var(--lift-float), var(--ring-ember);
-}
-
 .team-composer__line {
   display: flex;
   align-items: flex-start;
@@ -1653,10 +1747,12 @@ a.team-row__main:hover {
 .team-composer__chip {
   flex: none;
   margin: 15px 0 0 var(--space-12);
+  font-family: inherit;
   font-size: var(--text-xl);
+  cursor: pointer;
 }
 
-.team-composer__box--agent .team-composer__input {
+.team-composer__chip + .team-composer__input {
   padding-left: var(--space-8);
 }
 
@@ -3479,8 +3575,7 @@ a.kb-note__crumb:hover {
 }
 
 .team-input-source,
-.team-run-delivery,
-.team-composer__recipient {
+.team-run-delivery {
   color: var(--muted);
   font-size: 0.75rem;
 }
@@ -3497,14 +3592,6 @@ a.team-input-source:hover {
 .turn > .team-run-delivery {
   margin-top: calc(4px - var(--space-6));
 }
-.team-composer__recipient {
-  align-self: flex-start;
-  background: none;
-  border: 0;
-  padding: 4px 0;
-  cursor: pointer;
-}
-
 /* ---- Browse channels ----
    The Knowledge page's column: a title, one line saying what the page is for,
    the search, then one compact row per channel. */

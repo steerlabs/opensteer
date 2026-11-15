@@ -590,7 +590,8 @@ export function useAgentConnection(teamId: string): {
   return {
     intent,
     linked,
-    computerName: personal === null ? null : (personal.getSnapshot().ownerName ?? null),
+    computerName:
+      personal === null ? null : (personal.getSnapshot().identityConfig?.deployment.name ?? null),
   };
 }
 
@@ -615,13 +616,10 @@ export function DeleteTeamScreen(props: StaticScreenProps<{ readonly teamId: str
     void coordinator
       .deleteHostedTeam(hostedTeamId)
       .then(() => teams.forget(teamId))
-      .then(
-        () => navigation.popToTop(),
-        (error: unknown) => {
-          setBusy(false);
-          setFailure(failureText(error, "The team wasn't deleted."));
-        },
-      );
+      .catch((error: unknown) => {
+        setBusy(false);
+        setFailure(failureText(error, "The team wasn't deleted."));
+      });
   };
   return (
     <ScrollView

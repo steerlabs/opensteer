@@ -1,4 +1,10 @@
-import { uniqueTeamHandle, type TeamActor, type UserId } from "@opensteer/core";
+import {
+  normalizePersonName,
+  uniqueTeamHandle,
+  type PersonName,
+  type TeamActor,
+  type UserId,
+} from "@opensteer/core";
 import { TeamMemberSchema } from "@opensteer/protocol";
 import { sql, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
@@ -15,6 +21,20 @@ export async function publishTeamMember(transaction: Transaction<DatabaseSchema>
     generation=account_directory_projections.generation+1,next_attempt_at=now(),lease_token=null,lease_expires_at=null,updated_at=now()`.execute(
     transaction,
   );
+}
+
+function memberView(row: {
+  readonly displayName: string;
+  readonly joinedAt: Date;
+  readonly nameRevision: string;
+}) {
+  return TeamMemberSchema.strip().parse({
+    ...row,
+    // Names stored before the canonical form existed are shown in it.
+    displayName: normalizePersonName(row.displayName) ?? row.displayName,
+    joinedAt: row.joinedAt.toISOString(),
+    nameRevision: Number(row.nameRevision),
+  });
 }
 
 export async function admitTeamMember(
@@ -74,10 +94,10 @@ export class TeamMembersStore {
         .selectFrom("teamMembers as m")
         .innerJoin("users as u", "u.id", "m.userId")
         .selectAll("m")
-        .select(["u.displayName", "u.image"])
+        .select(["u.displayName", "u.image", "u.nameRevision"])
         .where("m.userId", "=", actor.userId)
         .executeTakeFirstOrThrow();
-      return TeamMemberSchema.strip().parse({ ...row, joinedAt: row.joinedAt.toISOString() });
+      return memberView(row);
     });
   }
   async page(actor: TeamActor, after?: UserId) {
@@ -87,17 +107,58 @@ export class TeamMembersStore {
         .selectFrom("teamMembers as m")
         .innerJoin("users as u", "u.id", "m.userId")
         .selectAll("m")
-        .select(["u.displayName", "u.image"]);
+        .select(["u.displayName", "u.image", "u.nameRevision"]);
       if (after) query = query.where("m.userId", ">", after);
       const rows = await query.orderBy("m.userId").limit(51).execute();
       return {
-        members: rows
-          .slice(0, 50)
-          .map((row) =>
-            TeamMemberSchema.strip().parse({ ...row, joinedAt: row.joinedAt.toISOString() }),
-          ),
+        members: rows.slice(0, 50).map(memberView),
         hasMore: rows.length > 50,
       };
+    });
+  }
+  /**
+   * A person's name from their Account, already verified by the caller. It applies only to the
+   * user that Account signs in as here, and only when newer than what the team has, so it never
+   * moves backwards; null when nothing changed. Names are presentation, not access: no access
+   * revision moves.
+   */
+  async applyAccountName(input: {
+    readonly userId: UserId;
+    readonly issuer: string;
+    readonly subject: string;
+    readonly name: PersonName;
+    readonly revision: number;
+  }) {
+    return this.access.database.transaction().execute(async (transaction) => {
+      const bound = await transaction
+        .selectFrom("authAccounts as a")
+        .innerJoin("accountDirectoryProvider as p", "p.providerId", "a.providerId")
+        .select("a.userId")
+        .where("a.userId", "=", input.userId)
+        .where("a.accountId", "=", input.subject)
+        .where("p.issuer", "=", input.issuer)
+        .executeTakeFirst();
+      if (!bound) return null;
+      const updated = await transaction
+        .updateTable("users")
+        .set({
+          displayName: input.name,
+          nameRevision: String(input.revision),
+          updatedAt: new Date(),
+        })
+        .where("id", "=", input.userId)
+        .where("nameRevision", "<", String(input.revision))
+        .executeTakeFirst();
+      if (updated.numUpdatedRows === 0n) return null;
+      // A browser sign-in may name someone a moment before their invite admits them.
+      const row = await transaction
+        .selectFrom("teamMembers as m")
+        .innerJoin("users as u", "u.id", "m.userId")
+        .selectAll("m")
+        .select(["u.displayName", "u.image", "u.nameRevision"])
+        .where("m.userId", "=", input.userId)
+        .executeTakeFirst();
+      return { member: row ? memberView(row) : null };
     });
   }
   async change(actor: TeamActor, userId: UserId, change: "remove" | "owner" | "admin" | "member") {

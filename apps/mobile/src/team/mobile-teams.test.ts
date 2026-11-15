@@ -56,6 +56,7 @@ function fixture(
     readonly dispatch?: (command: { readonly type: string }) => unknown;
     /** Teams on this phone beside the mock ones, and whether a credential is held for each. */
     readonly catalog?: readonly { connection: DeploymentConnection; signedIn: boolean }[];
+    readonly onForgotten?: (teamId: string) => void;
   } = {},
 ) {
   let bootstrapFailures = options.bootstrapFailures ?? 0;
@@ -143,6 +144,7 @@ function fixture(
   } as unknown as MobileClient;
   const teams = new MobileTeams({
     client,
+    ...(options.onForgotten ? { onForgotten: options.onForgotten } : {}),
     directory: "/private/teams-test",
     files: options.files ?? new MemoryPrivateFilesystem(),
     previews: (options.previews ?? null) as NotificationPreviews | null,
@@ -347,7 +349,8 @@ describe("the one team socket a phone keeps", () => {
   });
 
   it("never hands back the old person's session once the team's login names someone else", async () => {
-    const f = fixture();
+    const onForgotten = vi.fn();
+    const f = fixture({ onForgotten });
     f.releaseAcme();
     const first = await f.teams.session(mockFamilyTeamId);
     const host = f.hosts.get(mockFamilyTeamId)!;
@@ -361,6 +364,8 @@ describe("the one team socket a phone keeps", () => {
     });
     await first.load(false);
     expect(first.getSnapshot().ended).toBe("viewer-changed");
+    // The previous person's place in the team is not the next person's to resume.
+    expect(onForgotten).toHaveBeenCalledWith(mockFamilyTeamId);
     const next = await f.teams.session(mockFamilyTeamId);
     expect(next).not.toBe(first);
     expect(next.getSnapshot().bootstrap?.member.userId ?? null).toBe(null);

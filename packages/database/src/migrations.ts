@@ -1,3 +1,4 @@
+import { localMachineOwnerEmail } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { Migrator, type MigrationProvider, type MigrationResultSet } from "kysely/migration";
 import { migrateTeamAgentAsks } from "./team-agent-asks-migration.js";
@@ -67,7 +68,7 @@ update personal_team_requests set approved_revision = 0,
   released_at = case when local_task_id is not null then decision_at else null end
   where kind = 'ask' and local_decision = 'approve';
 `;
-export const waitingInputEditsMigrationName = "0022_waiting_input_edits";
+export const waitingInputEditsMigrationName = "0023_waiting_input_edits";
 export const personalTeamBaselineName = "0002_personal_team_baseline";
 export const threadVisitsMigrationName = "0004_thread_visits";
 export const teamKnowledgeNotesMigrationName = "0006_team_knowledge_notes";
@@ -234,6 +235,28 @@ export function migrationProvider(): MigrationProvider {
               alter table team_share_relays add column pending_bodies text[] not null default '{}'`.execute(
               database,
             );
+          },
+        },
+        // A personal owner's name is theirs to set; a team keeps the newest Account revision of each
+        // member's. The seeded placeholder owner keeps no name, so its computer's name can fill it.
+        "0022_person_names": {
+          async up(database) {
+            await sql`alter table personal_settings
+                add column owner_name text,
+                add column owner_name_set_at timestamptz,
+                add column owner_name_revision bigint check (owner_name_revision >= 1),
+                add column owner_name_account jsonb,
+                add constraint personal_settings_owner_name_source
+                  check ((owner_name_revision is null) = (owner_name_account is null)),
+                add constraint personal_settings_owner_name_account_named
+                  check (owner_name_account is null or owner_name is not null);
+              update personal_settings
+                set owner_name = users.display_name, owner_name_set_at = now()
+                from users
+                where users.id = personal_settings.owner_id
+                  and users.email <> ${sql.lit(localMachineOwnerEmail)};
+              alter table users add column name_revision bigint not null default 0
+                check (name_revision >= 0)`.execute(database);
           },
         },
         [waitingInputEditsMigrationName]: {

@@ -292,7 +292,7 @@ function baseSnapshot(): HostSnapshot {
     machineRevision: 0,
     machines: [],
     network: "unknown",
-    ownerName: null,
+    ownerProfile: null,
     requests: {},
     revision: 0,
     runQueue: [],

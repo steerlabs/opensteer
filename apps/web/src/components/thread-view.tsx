@@ -3,6 +3,7 @@ import { useThreadVisits } from "@opensteer/client/react";
 import { ThreadServerApprovals } from "./computer-apps/thread-server-approvals.js";
 import { threadMark, type PasswordsSetupOffer } from "@opensteer/client/host";
 import { observeResize } from "@opensteer/shared/resizeObserver";
+import { readTail, type TailReading } from "@opensteer/shared/tailFollow";
 import {
   useCallback,
   useContext,
@@ -14,7 +15,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { Navigate, useLocation, useParams, useSearchParams } from "react-router";
+import { useLocation, useParams, useSearchParams } from "react-router";
 import { placeContentLabel, type ModelSelection, type Request } from "@opensteer/core";
 import {
   type ConversationActivitySelection,
@@ -101,14 +102,19 @@ export function ThreadRoute() {
 /** One task, wherever it is reached from: a row, a link, Voice. */
 export function ThreadSurface({ threadId }: { readonly threadId: string | null }) {
   const { hostClient, placements, snapshot } = useShell();
+  const { nav } = useWorkspace();
   const thread = snapshot.threads.find((candidate) => candidate.id === threadId) ?? null;
+  const missing =
+    thread === null && threadId !== null && snapshot.threadLookups[threadId] === "missing";
+  useEffect(() => {
+    if (missing) nav.openConversation("/", { replace: true });
+  }, [missing, nav]);
   useEffect(() => {
     if (threadId) hostClient.activateThread(threadId);
   }, [hostClient, threadId, thread?.id]);
 
   if (!thread) {
-    if (threadId && snapshot.threadLookups[threadId] === "missing")
-      return <Navigate replace to="/" />;
+    if (missing) return null;
     if (threadId && snapshot.threadLookups[threadId] === "failed")
       return (
         <div className="thread">
@@ -209,7 +215,8 @@ function ThreadView({
   phoneStageRef.current = phoneStage;
   const currentScroller = () => (phoneStageRef.current ? bodyRef.current : scrollRef.current);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
-  const followsTailRef = useRef(true);
+  // Whether new content keeps the reader at the foot, and where the scroller stood when last read.
+  const tailRef = useRef<TailReading>({ follows: true, offset: 0 });
   const scrollGeometryRef = useRef<{
     readonly scroller: HTMLElement;
     readonly height: number;
@@ -414,15 +421,14 @@ function ThreadView({
     const scroller = currentScroller();
     const saved = readingPositions.get(composerKey);
     if (scroller && saved !== undefined) {
-      followsTailRef.current = false;
-      setAtTail(false);
+      setFollows(false);
       // What had arrived by then was seen; only what came after is new.
       seenSequenceRef.current = saved.seenSequence;
       scroller.scrollTop = saved.scrollTop;
     }
     return () => {
       if (!scroller) return;
-      if (followsTailRef.current) readingPositions.delete(composerKey);
+      if (tailRef.current.follows) readingPositions.delete(composerKey);
       else
         readingPositions.set(composerKey, {
           scrollTop: scroller.scrollTop,
@@ -431,19 +437,51 @@ function ThreadView({
     };
   }, [composerKey]);
 
-  // Pin to the bottom while the reader is already there; never fight a
-  // scroll-up. Requests matter too: a docked request grows the input surface
-  // and would otherwise push the newest activity out of view.
-  const keepTailInView = () => {
+  const setFollows = (follows: boolean) => {
+    tailRef.current = { ...tailRef.current, follows };
+    setAtTail(follows);
+    if (!follows) return;
+    seenSequenceRef.current = observed;
+    setPendingUpdates(0);
+  };
+
+  // Reads where the reader stands and keeps a follower at the foot; a scroll
+  // up lets go at once, so nothing pulls back against it. Only a scroll that
+  // moved nothing but the position is the reader's own: layout can deliver a
+  // scroll before ResizeObserver, and a changed viewport, content height or
+  // scroll owner does not mean the reader moved. Requests matter too: a docked
+  // request grows the input surface and would otherwise push the newest
+  // activity out of view.
+  const readScroller = (scrolled: boolean) => {
     const scroller = currentScroller();
     if (!scroller) return;
-    if (followsTailRef.current) scroller.scrollTop = scroller.scrollHeight;
+    const before = scrollGeometryRef.current;
+    const own =
+      scrolled &&
+      before?.scroller === scroller &&
+      before.height === scroller.scrollHeight &&
+      before.viewport === scroller.clientHeight;
+    const previous =
+      before?.scroller === scroller
+        ? tailRef.current
+        : { ...tailRef.current, offset: scroller.scrollTop };
+    const { follows } = readTail(
+      previous,
+      scroller.scrollTop,
+      scroller.scrollHeight - scroller.clientHeight,
+      own,
+    );
+    if (follows && !own) scroller.scrollTop = scroller.scrollHeight;
+    tailRef.current = { follows, offset: scroller.scrollTop };
     scrollGeometryRef.current = {
       scroller,
       height: scroller.scrollHeight,
       viewport: scroller.clientHeight,
     };
+    if (follows !== previous.follows) setFollows(follows);
   };
+  const keepTailInView = () => readScroller(false);
+  const handleScroll = () => readScroller(true);
   useLayoutEffect(() => {
     keepTailInView();
   }, [conversation, inputQueue, keyboardInset, phoneStage, requests]);
@@ -460,39 +498,9 @@ function ThreadView({
     return observeResize(elements, keepTailInView);
   }, []);
 
-  const handleScroll = () => {
-    const scroller = currentScroller();
-    if (!scroller) return;
-    const previous = scrollGeometryRef.current;
-    // Layout can deliver a scroll before ResizeObserver. A changed viewport,
-    // content height or scroll owner does not mean the reader left the tail.
-    if (
-      followsTailRef.current &&
-      previous !== null &&
-      (previous.scroller !== scroller ||
-        previous.height !== scroller.scrollHeight ||
-        previous.viewport !== scroller.clientHeight)
-    ) {
-      keepTailInView();
-      return;
-    }
-    scrollGeometryRef.current = {
-      scroller,
-      height: scroller.scrollHeight,
-      viewport: scroller.clientHeight,
-    };
-    const tail = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 90;
-    followsTailRef.current = tail;
-    setAtTail(tail);
-    if (tail) {
-      seenSequenceRef.current = observed;
-      setPendingUpdates(0);
-    }
-  };
-
   // Arriving work never moves a reader who is elsewhere; it offers.
   useEffect(() => {
-    if (followsTailRef.current) {
+    if (tailRef.current.follows) {
       seenSequenceRef.current = observed;
       setPendingUpdates(0);
       return;
@@ -512,13 +520,8 @@ function ThreadView({
 
   const goToTail = () => {
     abandonEarlier();
-    const scroller = currentScroller();
-    if (!scroller) return;
-    followsTailRef.current = true;
-    setAtTail(true);
-    seenSequenceRef.current = observed;
-    setPendingUpdates(0);
-    scroller.scrollTop = scroller.scrollHeight;
+    setFollows(true);
+    keepTailInView();
   };
 
   // Restore before paint on every page, including pages that only add Activity.
@@ -612,8 +615,7 @@ function ThreadView({
       };
     if (scroller && button && document.activeElement === button)
       earlierFocus.current = { button, scroller };
-    followsTailRef.current = false;
-    setAtTail(false);
+    setFollows(false);
     setLoadingEarlier(true);
     try {
       await hostClient.loadEarlierTranscript(thread.id);
@@ -641,8 +643,7 @@ function ThreadView({
   /** Moves the reader to one exact message, and leaves them there. */
   const jumpToMessage = async (messageId: string) => {
     setHistorical(true);
-    followsTailRef.current = false;
-    setAtTail(false);
+    setFollows(false);
     setRevealMessage({ id: messageId });
     await hostClient.loadTranscriptAround(thread.id, messageId);
     requestAnimationFrame(() => {
@@ -716,14 +717,8 @@ function ThreadView({
     releaseAnchor();
     setRevealMessage(null);
     setHistorical(false);
-    followsTailRef.current = true;
-    setAtTail(true);
-    seenSequenceRef.current = observed;
-    setPendingUpdates(0);
-    requestAnimationFrame(() => {
-      const scroller = currentScroller();
-      if (scroller) scroller.scrollTop = scroller.scrollHeight;
-    });
+    setFollows(true);
+    requestAnimationFrame(keepTailInView);
   };
 
   // A notification or a link can name the exact update it is about. The router
@@ -874,7 +869,7 @@ function ThreadView({
     thread.id,
     phone && !work ? (stopTarget?.id ?? null) : null,
     () => ({
-      scrolledUp: !followsTailRef.current,
+      scrolledUp: !tailRef.current.follows,
       typing:
         keyboardInset > 0 ||
         (composerInputRef.current !== null && document.activeElement === composerInputRef.current),
@@ -887,8 +882,7 @@ function ThreadView({
   // Choosing a place is choosing to look at it.
   useEffect(() => setSheetOpen(false), [phoneStage, selection]);
   useLayoutEffect(() => {
-    const scroller = currentScroller();
-    if (sheetOpen && scroller && followsTailRef.current) scroller.scrollTop = scroller.scrollHeight;
+    if (sheetOpen) keepTailInView();
   }, [sheetOpen]);
 
   const threadPath = nav.threadPath(thread.id);

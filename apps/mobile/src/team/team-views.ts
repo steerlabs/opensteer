@@ -24,7 +24,6 @@ import type {
   ThreadSummaryView,
   TimelineItem,
 } from "./team-models.js";
-import type { TeamState } from "./mobile-teams.js";
 import { firstName } from "./status-words.js";
 
 /**
@@ -97,15 +96,13 @@ export function agentReach(channel: NonNullable<TeamTimeline["channel"]>): Agent
   return channel.can.wakeOwnAgent ? "available" : "not-connected";
 }
 
-/** One team's drawer section, from its sidebar answer. */
+/** One team's side of the sidebar, from its sidebar answer. */
 export function drawerSection(input: {
   readonly teamId: string;
   readonly name: string;
-  readonly state: TeamState;
-  readonly folded: boolean;
-  readonly sidebar: TeamSidebar | null;
+  readonly sidebar: TeamSidebar;
 }): TeamDrawerSectionView {
-  const rows = input.sidebar?.channels ?? [];
+  const rows = input.sidebar.channels;
   const channels: ChannelRowView[] = rows
     .filter((row) => row.channel.kind === "public" || row.channel.kind === "private")
     .filter((row) => row.channel.archivedAt === null)
@@ -132,19 +129,6 @@ export function drawerSection(input: {
   }));
   return {
     team: { id: input.teamId, name: input.name, imageUri: null },
-    folded: input.folded,
-    mentionTotal: input.sidebar?.totalMentionCount ?? 0,
-    unread: rows.some((row) => row.unread && row.notificationLevel !== "muted"),
-    state:
-      input.state === "update-app"
-        ? "update-app"
-        : input.state === "update-server"
-          ? "update-server"
-          : input.state === "removed"
-            ? "removed"
-            : input.state === "live" || input.state === "loading"
-              ? "live"
-              : "offline",
     channels,
     dms,
   };

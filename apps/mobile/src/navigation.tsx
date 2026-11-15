@@ -1,3 +1,4 @@
+import { useTeamSideBack } from "./side-back.js";
 import { TeamScreenLayout } from "./team/team-screen-gate.js";
 import { screenPresentations } from "./navigation-presentations.js";
 import type { ReactNode } from "react";
@@ -36,6 +37,7 @@ import { NotificationsIntroScreen } from "./screens/notifications-intro.js";
 import { OpenAppScreen } from "./screens/open-app.js";
 import { ScheduleScreen, type ScheduleDestination } from "./screens/schedule.js";
 import { SchedulesScreen } from "./screens/schedules.js";
+import { YourNameScreen, type YourNameParams } from "./screens/your-name.js";
 import {
   SettingsAccountScreen,
   SettingsSessionDetailScreen,
@@ -62,7 +64,6 @@ import { ThreadScreen } from "./screens/thread.js";
 import { WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
 import { SidebarShell } from "./sidebar/sidebar-shell.js";
 import { DoneTasksScreen } from "./screens/done-tasks.js";
-import { TeamHomeScreen } from "./team/team-home-screen.js";
 import {
   TeamChannelScreen,
   TeamThreadScreen,
@@ -116,11 +117,8 @@ import { thisPhoneNoun } from "./computers/phone-noun.js";
  * tap arrive at the same screen by the same path. The header uses the platform
  * face and stays native chrome.
  *
- * Home — the New task composer — is the root of every Deployment's stack and
- * stays mounted under everything. The screen directly on it is top-level, with
- * the Menu where Back would be, and whatever is opened from it is pushed over
- * it with the native Back (`top-level.ts`). Neither is a property of a route:
- * the same task is top-level from the sidebar and a drill-in from another task.
+ * Home keeps its unsent draft mounted beneath the active Tasks or team chain.
+ * The sidebar resumes each side; explicit entries replace only that side.
  *
  * The drawer is the stack's own `layout` (`SidebarShell`): one navigator, one
  * history, with the drawer or docked column around it.
@@ -131,6 +129,7 @@ import { thisPhoneNoun } from "./computers/phone-noun.js";
  */
 function ScreenLayout(props: { readonly children: ReactNode; readonly modal: boolean }) {
   const focused = useIsFocused();
+  useTeamSideBack();
   return (
     <>
       {props.modal ? <Pane>{props.children}</Pane> : props.children}
@@ -197,8 +196,6 @@ const RootStack = createNativeStackNavigator({
         title: "Moved to Done for you",
       },
     },
-    // A team's page from its drawer row: channels, then DMs; its menu is the title.
-    TeamHome: { screen: TeamHomeScreen, options: { title: "" } },
     // Every tab this person may see, from the sidebar. A tab opened from here
     // is shown alone.
     Tabs: { screen: TabsScreen, options: { headerLargeTitle: true, title: "Tabs" } },
@@ -494,6 +491,7 @@ const RootStack = createNativeStackNavigator({
       },
     },
     SettingsAccount: { screen: SettingsAccountScreen, options: { title: "Account" } },
+    YourName: { screen: YourNameScreen, options: { title: "Your name" } },
     SettingsSessionDetail: {
       screen: SettingsSessionDetailScreen,
       options: { title: "Signed-in device" },
@@ -705,7 +703,6 @@ type OpensteerRootParamList = {
   readonly ConnectOpensteer: { readonly teamId: string };
   readonly DoneTasks: { readonly deploymentId: string };
   readonly QuietlyMoved: { readonly deploymentId: string };
-  readonly TeamHome: { readonly teamId: string };
   readonly AddDeployment: undefined;
   readonly SetUpPhone: { readonly deploymentId: string };
   readonly AgentAuthorization: { readonly deploymentId: string; readonly requestId: string };
@@ -743,6 +740,7 @@ type OpensteerRootParamList = {
   readonly SettingsAiSharing: undefined;
   readonly SettingsGeneral: { readonly deploymentId: string };
   readonly SettingsAccount: { readonly deploymentId: string };
+  readonly YourName: YourNameParams;
   readonly SettingsSessionDetail: { readonly deploymentId: string; readonly sessionId: string };
   readonly SettingsDevices: { readonly deploymentId: string };
   readonly SettingsMessaging: { readonly deploymentId: string };

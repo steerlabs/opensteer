@@ -581,3 +581,31 @@ describe("team synchronization", () => {
     }
   });
 });
+
+describe("member names", () => {
+  it("moves a name only forward and never takes role or state from a rename", async () => {
+    const f = fixture();
+    await f.client.load(false);
+    const self = f.client.getSnapshot().bootstrap!.member;
+    const renamed = (displayName: string, nameRevision: number) => ({
+      ...self,
+      role: "member" as const,
+      state: "removed" as const,
+      displayName,
+      nameRevision,
+    });
+    f.client.receive({ type: "team.member.updated", member: renamed("Maya Chen", 5) });
+    // Renames publish after independent commits, so an older one can arrive last.
+    f.client.receive({ type: "team.member.updated", member: renamed("Maya", 4) });
+    const snapshot = f.client.getSnapshot();
+    expect(snapshot.memberUpdates?.[self.userId]).toMatchObject({
+      displayName: "Maya Chen",
+      nameRevision: 5,
+    });
+    expect(snapshot.bootstrap!.member).toEqual({
+      ...self,
+      displayName: "Maya Chen",
+      nameRevision: 5,
+    });
+  });
+});

@@ -21,6 +21,11 @@ export const TeamMemberSchema = z.strictObject({
   state: z.enum(["active", "removed"]),
   generation: SequenceSchema,
   joinedAt: IsoDateTimeSchema,
+  /**
+   * The Account revision of `displayName`; 0 until one is verified. An app holding a newer signed
+   * receipt relays it (`team.member.profile.apply`). Absent from teams before that command.
+   */
+  nameRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
 });
 export type TeamMember = z.infer<typeof TeamMemberSchema>;
 export const TeamAccessSubjectSchema = z.discriminatedUnion("kind", [

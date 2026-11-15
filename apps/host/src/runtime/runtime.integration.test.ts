@@ -2130,6 +2130,14 @@ integration("Host vertical slice", () => {
           linkGeneration: activationExpectation.linkGeneration,
         });
       }
+      if (url.href === `${accountIssuer.origin}/v1/host/owner-profile`) {
+        expect(init?.method).toBe("GET");
+        return Response.json({
+          name: "Ada Lovelace",
+          revision: 2,
+          receipt: `${"a".repeat(24)}.${"b".repeat(24)}.${"c".repeat(24)}`,
+        });
+      }
       throw new Error(`Unexpected Personal Account request: ${url.href}`);
     });
     const baseConfig = testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9"));
@@ -2952,8 +2960,22 @@ integration("Host vertical slice", () => {
       .setJti(`ahs_${crypto.randomUUID()}`)
       .setSubject(accountId)
       .sign(accountSigningKeys.privateKey);
-    // JWKS, activation, and the identity publication that activation ends with.
-    expect(personalAccountGrantFetch).toHaveBeenCalledTimes(3);
+    // Linking adopts the Account's name as the owner's.
+    await vi.waitFor(
+      async () =>
+        expect(
+          (
+            await runtime!.store.database
+              .selectFrom("personalSettings")
+              .select("ownerName")
+              .executeTakeFirstOrThrow()
+          ).ownerName,
+          "The owner never took the linked Account's name",
+        ).toBe("Ada Lovelace"),
+      { timeout: 5_000 },
+    );
+    // JWKS, activation, the identity publication that activation ends with, and the owner's name.
+    expect(personalAccountGrantFetch).toHaveBeenCalledTimes(4);
     expect(hostAuthorityPublications).toHaveLength(1);
     const connectDisabled = await fetch(`${origin}/v1/personal-remote-access`, {
       body: JSON.stringify({ mode: "off", routeOrigin: null, schemaVersion: 1 }),

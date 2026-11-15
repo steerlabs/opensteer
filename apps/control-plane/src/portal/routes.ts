@@ -38,6 +38,11 @@ import {
   UnlinkPersonalHostResponseSchema,
   UpdateAccountDeploymentNameRequestSchema,
   UpdateAccountDeploymentNameResponseSchema,
+  AccountProfileSchema,
+  UpdateAccountProfileRequestSchema,
+  UpdateAccountProfileResponseSchema,
+  accountProfilePath,
+  hostOwnerProfilePath,
 } from "@opensteer/control-plane-protocol";
 import { DeploymentIdSchema } from "@opensteer/core";
 import type { FastifyInstance } from "fastify";
@@ -48,6 +53,7 @@ import { ControlPlaneError } from "../server/errors.js";
 import type { ControlPlaneStore } from "../database/store.js";
 import type { PersonalRemoteAccountService } from "../account/personal-remote-account.js";
 import type { TeamIdentityGrantService } from "../account/team-identity-grants.js";
+import type { AccountProfiles } from "../account/account-profiles.js";
 
 const DeploymentParamsSchema = z.strictObject({ deploymentId: DeploymentIdSchema });
 const AdoptionParamsSchema = z.strictObject({ proofId: HostAccountAdoptionProofIdSchema });
@@ -62,6 +68,7 @@ export function registerControlPlaneRoutes(
   app: FastifyInstance,
   dependencies: {
     readonly accountDeletion: AccountDeletionService;
+    readonly accountProfiles?: AccountProfiles;
     readonly authenticator: ControlPlaneAuthenticator;
     readonly connectLifecycle: ConnectLifecycleService;
     readonly personalRemoteAccount?: PersonalRemoteAccountService;
@@ -69,6 +76,38 @@ export function registerControlPlaneRoutes(
     readonly teamIdentityGrants?: TeamIdentityGrantService;
   },
 ): void {
+  const profiles = () => {
+    if (!dependencies.accountProfiles)
+      throw new ControlPlaneError("unavailable", "Account profiles are not configured");
+    return dependencies.accountProfiles;
+  };
+  // The person's own apps only: a team's sign-in token also carries `openid`, and a team may
+  // read a name through its sign-in but never change it.
+  const profilePrincipal = async (headers: Headers, mutation: boolean) => {
+    const principal = await dependencies.authenticator.authenticate(headers, {
+      mutation,
+      scope: "openid",
+    });
+    if (principal.kind === "bearer" && principal.application === null)
+      throw new ControlPlaneError("forbidden", "Only Opensteer apps can use your profile");
+    return principal;
+  };
+
+  app.get(accountProfilePath, async (request, reply) => {
+    const principal = await profilePrincipal(toWebHeaders(request.headers), false);
+    void reply.header("cache-control", "no-store");
+    return AccountProfileSchema.parse(await profiles().read(principal.accountId));
+  });
+
+  app.put(accountProfilePath, async (request, reply) => {
+    const principal = await profilePrincipal(toWebHeaders(request.headers), true);
+    const body = UpdateAccountProfileRequestSchema.parse(request.body);
+    void reply.header("cache-control", "no-store");
+    return UpdateAccountProfileResponseSchema.parse(
+      await profiles().update(principal.accountId, body),
+    );
+  });
+
   app.get("/v1/account/deployments", async (request, reply) => {
     const principal = await dependencies.authenticator.authenticate(toWebHeaders(request.headers), {
       scope: "deployments:read",
@@ -312,6 +351,25 @@ export function registerControlPlaneRoutes(
     );
     void reply.header("cache-control", "no-store");
     return PublishHostAuthorityResponseSchema.parse(response);
+  });
+
+  app.get(hostOwnerProfilePath, async (request, reply) => {
+    const authority = await dependencies.store.authenticateHostCredential(
+      firstHeader(request.headers.authorization),
+    );
+    void reply.header("cache-control", "no-store");
+    return AccountProfileSchema.parse(await profiles().readHostOwner(authority));
+  });
+
+  app.put(hostOwnerProfilePath, async (request, reply) => {
+    const authority = await dependencies.store.authenticateHostCredential(
+      firstHeader(request.headers.authorization),
+    );
+    const body = UpdateAccountProfileRequestSchema.parse(request.body);
+    void reply.header("cache-control", "no-store");
+    return UpdateAccountProfileResponseSchema.parse(
+      await profiles().updateHostOwner(authority, body),
+    );
   });
 
   app.put("/v1/host/directory/:accountId", async (request, reply) => {

@@ -163,8 +163,8 @@ export interface UserTable {
   image: string | null;
 
   disabledAt: NullableTimestamp;
-  /** The IANA zone this person's clients last reported; null until one does. */
-  /** Days untouched before this person's tasks move to Done; 0 never. */
+  /** On a team, the Account revision of `displayName`; 0 until one is verified. */
+  nameRevision: Generated<string>;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -2306,6 +2306,17 @@ export interface PersonalSettingsTable {
   quietTaskDays: QuietTaskDays;
   executionPreferences: JsonColumn<ExecutionPreferences>;
   backgroundModelPreferences: JsonColumn<AutomaticModelConfig>;
+  /** The owner's own name, or null for "You"; see `owner-profile-store.ts`. */
+  ownerName: Generated<string | null>;
+  /** When anyone first chose or adopted a name; the computer's name seeds only before. */
+  ownerNameSetAt: Generated<Date | null>;
+  /** The Account revision and binding while the name is the linked Account's. */
+  ownerNameRevision: Generated<string | null>;
+  ownerNameAccount: ColumnType<
+    { readonly issuer: string; readonly subject: string } | null,
+    { readonly issuer: string; readonly subject: string } | null | undefined,
+    { readonly issuer: string; readonly subject: string } | null
+  >;
 }
 export interface DeploymentEventStateTable {
   deploymentId: DeploymentId;

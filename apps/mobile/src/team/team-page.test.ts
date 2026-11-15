@@ -30,8 +30,6 @@ it("reaches every channel past the first page and every DM on the team page", as
     drawerSection({
       teamId: host.teamId,
       name: "Acme",
-      state: "live",
-      folded: false,
       sidebar: session.getSnapshot().sidebar!,
     });
   const first = page();

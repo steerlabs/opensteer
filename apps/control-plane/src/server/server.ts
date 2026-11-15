@@ -39,6 +39,7 @@ import { createPortalRouter, type PortalRouter } from "../portal/portal.js";
 import type { PortalSessionStore } from "../portal/portal-sessions.js";
 import type { ControlPlaneStore } from "../database/store.js";
 import type { PersonalRemoteAccountService } from "../account/personal-remote-account.js";
+import type { AccountProfiles } from "../account/account-profiles.js";
 import type { TeamIdentityGrantService } from "../account/team-identity-grants.js";
 import {
   hostedOAuthLaunchReturnTo,
@@ -91,6 +92,7 @@ export async function createControlPlaneServer(
     readonly portalSessions?: PortalSessionStore;
     readonly store: ControlPlaneStore;
     readonly teamIdentityGrants?: TeamIdentityGrantService;
+    readonly accountProfiles?: AccountProfiles;
   },
   options: { readonly logger?: boolean | Record<string, unknown> } = {},
 ): Promise<FastifyInstance> {

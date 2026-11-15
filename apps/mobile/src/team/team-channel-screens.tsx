@@ -37,6 +37,7 @@ import {
   type ReactNode,
 } from "react";
 import { ActivityIndicator, Alert, AppState, Pressable, StyleSheet, View } from "react-native";
+import { enterSide } from "../navigation-ref.js";
 import type { RootParamList } from "../navigation.js";
 import * as Haptics from "expo-haptics";
 import { color, space } from "../theme.js";
@@ -816,7 +817,7 @@ function Place(props: {
       return;
     }
     const taskId = await new PersonalTeamLinks(personal.rpc).task(teamId, channelId, threadRoot);
-    if (taskId !== null) navigation.navigate("Thread", { deploymentId, threadId: taskId });
+    if (taskId !== null) enterSide({ name: "Thread", params: { deploymentId, threadId: taskId } });
     else Alert.alert("That task isn't on your computer");
   };
 
@@ -872,7 +873,6 @@ function Place(props: {
     onSelectionChange: setSelection,
     agent: reach,
     toMyAgent,
-    sticky: rootId !== null,
     onToMyAgentChange: setToMyAgent,
     onAgentUnavailable: () => navigation.navigate("ConnectOpensteer", { teamId }),
     mentions,

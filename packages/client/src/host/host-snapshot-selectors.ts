@@ -21,7 +21,7 @@ export function sameStableHostSnapshot(previous: HostSnapshot, next: HostSnapsho
       previous.identityConfig === next.identityConfig &&
       previous.machines === next.machines &&
       previous.machineRevision === next.machineRevision &&
-      previous.ownerName === next.ownerName &&
+      previous.ownerProfile === next.ownerProfile &&
       previous.runQueue === next.runQueue &&
       previous.session === next.session &&
       previous.sessionSurface === next.sessionSurface &&

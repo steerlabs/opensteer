@@ -109,6 +109,7 @@ import {
   rememberedNewTab,
   rememberedTalk,
   rememberNewTab,
+  workspaceSide,
   useWorkspaceNavigation,
 } from "./workspace/navigation.js";
 import { DeploymentOperationBanner } from "./deployment-operation.js";
@@ -1161,8 +1162,9 @@ function WorkspaceKeys({
     if (restored.current === viewer) return;
     restored.current = viewer;
     const opened = address.current;
+    // A remembered place belongs to Tasks; a team or full-window page keeps its own address.
     if (
-      opened.pathname === "/live" ||
+      workspaceSide(opened.pathname) !== "tasks" ||
       new URLSearchParams(opened.search).has("panel") ||
       new URLSearchParams(opened.search).has("browser")
     )
@@ -1189,6 +1191,7 @@ function WorkspaceKeys({
         }
         if (cancelled) return;
         const now = address.current;
+        if (workspaceSide(now.pathname) !== "tasks") return;
         const params = new URLSearchParams(now.search);
         params.set("panel", "browser");
         if (sessionId !== null) {

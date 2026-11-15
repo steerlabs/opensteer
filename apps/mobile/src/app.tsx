@@ -34,12 +34,16 @@ import { StatusBar } from "expo-status-bar";
 import * as WebBrowser from "expo-web-browser";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AppState, Platform, StyleSheet, View } from "react-native";
-import { NavigationContainerRefContext, type InitialState } from "@react-navigation/native";
+import {
+  NavigationContainerRefContext,
+  StackActions,
+  type InitialState,
+} from "@react-navigation/native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import { mockIphoneRunnerId, type MockHostClient } from "@opensteer/client/mock";
-import type { MockTeamHost } from "@opensteer/client/team";
+import { AccountProfileRelay, type MockTeamHost } from "@opensteer/client/team";
 import { verifyAccessEndpoint } from "@opensteer/client/connections";
 import { MobileTeams } from "./team/mobile-teams.js";
 import { MobileTeamsProvider, type TeamEntry } from "./team/team-context.js";
@@ -69,12 +73,13 @@ import {
   routePairingLink,
 } from "./links.js";
 import { Navigation, navigationTheme } from "./navigation.js";
-import { navigationRef } from "./navigation-ref.js";
-import { openTopLevel } from "./top-level.js";
+import { sideMemory } from "./side-memory.js";
+import { enterSide, forgetTeamSide, navigationRef } from "./navigation-ref.js";
 import { sidebarRef } from "./sidebar/sidebar-context.js";
-import { isRecord } from "@opensteer/shared/isRecord";
 import {
   agentAuthorizationRoot,
+  deploymentRoot,
+  deploymentsRoot,
   needsYouRoot,
   linkedSelectionFailureIsCurrent,
   selectionMayReconcileLinkedRoot,
@@ -176,6 +181,7 @@ interface MobileRoot {
   readonly entry: TeamEntry;
   readonly iphone: IphoneAppsController;
   readonly notifications: MobileNotifications;
+  readonly profiles: AccountProfileRelay;
   readonly teams: MobileTeams;
 }
 
@@ -375,8 +381,16 @@ function mobileClient(): MobileRoot {
   // The person's teams, each its own Host reached directly, so team chat keeps
   // working when their computer is off.
   const mockTeams = new Map<string, MockTeamHost>();
+  // The person's Account name, relayed to each team whose copy is older. Calls reach Account only
+  // once the entry below exists, which is before any team session loads.
+  const profiles = new AccountProfileRelay({
+    profile: (signal) => entry.account.profile(signal),
+    updateProfile: (request) => entry.account.updateProfile(request),
+  });
   const teams = new MobileTeams({
     client,
+    onForgotten: forgetTeamSide,
+    profiles,
     directory: `${root}${storeName}`,
     files: privateFiles,
     previews,
@@ -418,7 +432,7 @@ function mobileClient(): MobileRoot {
     mockHosts: configuration.mock ? mockTeams : null,
     teams,
   });
-  singleton = { broker, client, entry, iphone, notifications, teams };
+  singleton = { broker, client, entry, iphone, notifications, profiles, teams };
   return singleton;
 }
 
@@ -515,6 +529,8 @@ export function App(): ReactNode {
   }, [applyRootSelection, client]);
 
   const syncDeferredRootSelection = useCallback(() => {
+    const state = navigationRef.isReady() ? navigationRef.getRootState() : undefined;
+    if (state !== undefined) sideMemory.record(state);
     const deploymentId = deferredRootSelection.current;
     if (deploymentId === undefined) return;
     if (applyRootSelection(deploymentId)) deferredRootSelection.current = undefined;
@@ -561,10 +577,14 @@ export function App(): ReactNode {
   );
 
   const handleNavigatorReady = (): void => {
+    const state = navigationRef.getRootState();
+    if (state !== undefined) sideMemory.record(state);
     const destination = waiting.current;
     if (destination !== null) {
       waiting.current = null;
-      navigationRef.resetRoot(destination);
+      const target = destination.routes[1];
+      if (target !== undefined) enterSide({ name: target.name, params: target.params ?? {} });
+      else navigationRef.resetRoot(destination);
     } else {
       observeRootSelection();
       syncDeferredRootSelection();
@@ -601,7 +621,7 @@ export function App(): ReactNode {
         const result = await client.handleIntegrationAuthorizationCallback(url);
         if (result === null) return;
         if (result.status === "completed") {
-          await client.getSnapshot().selection.hostClient?.load();
+          await client.getSnapshot().selection.hostClient?.refresh();
           setIntegrationNotice({
             detail: "The provider account is ready to use.",
             title: "Integration connected",
@@ -640,11 +660,12 @@ export function App(): ReactNode {
             ? null
             : computerForTeam({ shown, computersInTeam: teams.computersIn(team.teamId) });
         if (move !== null) await client.select(move).catch(() => undefined);
+        if (generation !== applicationLinkGeneration) return;
         const open = (): void => {
           if (outcome.kind === "team-notice" && team !== null)
-            navigationRef.navigate("TeamNotices", { teamId: team.teamId });
+            enterSide({ name: "TeamNotices", params: { teamId: team.teamId } });
           else if (outcome.kind === "team")
-            navigationRef.navigate("JoinTeam", { link: outcome.page });
+            navigationRef.dispatch(StackActions.push("JoinTeam", { link: outcome.page }));
         };
         if (navigationRef.isReady()) open();
         else waitingTeamLink.current = open;
@@ -694,29 +715,16 @@ export function App(): ReactNode {
         return;
       }
       sidebarRef.current?.close();
-      // On the computer already shown, the task opens top-level over the same
-      // mounted Home, as the sidebar would open it, rather than rebuilding Home.
-      const root = navigationRef.getRootState();
-      const thread = outcome.kind === "authorize-agent" ? undefined : destination.routes[1];
-      const home = root?.routes[0];
-      if (
-        root !== undefined &&
-        thread !== undefined &&
-        home?.name === "Home" &&
-        isRecord(home.params) &&
-        home.params["deploymentId"] === outcome.deploymentId
-      ) {
-        const action = openTopLevel(root, { name: thread.name, params: thread.params ?? {} });
-        if (action !== null) navigationRef.dispatch(action);
-        return;
-      }
-      navigationRef.resetRoot(destination);
+      const target = destination.routes[1];
+      if (target !== undefined) enterSide({ name: target.name, params: target.params ?? {} });
+      else navigationRef.resetRoot(destination);
     };
 
     let waitingNeedsBroker = false;
     const accept = (url: string): void => {
       waitingNeedsBroker = false;
       applicationLinkGeneration += 1;
+      waitingTeamLink.current = null;
       // OAuth must be delivered immediately even while the catalog is loading.
       // Thread routing waits because an unloaded catalog cannot say whether the
       // link names a Deployment this phone holds.
@@ -863,6 +871,23 @@ export function App(): ReactNode {
       detachClient();
     };
   }, [client, notifications]);
+
+  useEffect(() => {
+    const sync = (): void => {
+      const snapshot = client.getSnapshot();
+      if (
+        sideMemory.account(snapshot.account.account.identity?.subject ?? null) &&
+        navigationRef.isReady()
+      ) {
+        const deploymentId = snapshot.selection.deploymentId;
+        navigationRef.resetRoot(
+          deploymentId === null ? deploymentsRoot() : deploymentRoot(deploymentId),
+        );
+      }
+    };
+    sync();
+    return client.subscribe(sync);
+  }, [client]);
 
   useEffect(() => {
     observeRootSelection();

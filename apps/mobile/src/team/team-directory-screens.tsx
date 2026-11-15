@@ -63,12 +63,15 @@ import { useTeamMembers, useTeamSession } from "./team-context.js";
 import { Avatar, ChannelGlyph } from "./team-marks.js";
 import { personView, type MemberDirectory } from "./team-views.js";
 
+import { openTopLevel } from "../top-level.js";
+
 type Navigation = NativeStackNavigationProp<RootParamList>;
 type TeamParams = StaticScreenProps<{ readonly teamId: string }>;
 
 /**
- * A sheet that made something leaves for it, so Back returns to where the sheet was opened.
- * An answer that arrives after the person closed the sheet moves nothing.
+ * A sheet that made a channel or DM opens it as the sidebar would: top-level, in
+ * place of the sheet and whatever it covered. An answer that arrives after the
+ * person closed the sheet moves nothing.
  */
 function useSheetAnswer(teamId: string): {
   readonly shown: { readonly current: boolean };
@@ -79,8 +82,11 @@ function useSheetAnswer(teamId: string): {
   const openChannel = useCallback(
     (channelId: string) => {
       if (!shown.current) return;
+      const target = { name: "TeamChannel", params: { teamId, channelId } };
+      const action = openTopLevel(navigation.getState(), target);
+      if (action !== null) return navigation.dispatch(action);
       navigation.dispatch(StackActions.pop());
-      navigation.dispatch(StackActions.push("TeamChannel", { teamId, channelId }));
+      navigation.dispatch(StackActions.push(target.name, target.params));
     },
     [navigation, shown, teamId],
   );

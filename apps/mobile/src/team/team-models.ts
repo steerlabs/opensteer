@@ -293,12 +293,6 @@ export interface DmRowView {
 
 export interface TeamDrawerSectionView {
   readonly team: TeamTileView;
-  readonly folded: boolean;
-  /** Mentions of the reader across the team, shown on a folded header. */
-  readonly mentionTotal: number;
-  readonly unread: boolean;
-  /** `removed` keeps one row until it is taken out of the drawer. */
-  readonly state: "live" | "offline" | "update-app" | "update-server" | "removed";
   readonly channels: readonly ChannelRowView[];
   readonly dms: readonly DmRowView[];
 }

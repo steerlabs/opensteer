@@ -151,11 +151,7 @@ export function TeamSettingsScreen(props: TeamParams): ReactNode {
     <Screen edgeToEdge>
       <TeamSettingsBody
         actions={{
-          onProfile: () =>
-            Alert.alert(
-              bootstrap.member.displayName,
-              `Your handle is @${bootstrap.member.handle}; your agent's is @${bootstrap.member.handle}-agent. Your name comes from your Opensteer Account.`,
-            ),
+          onProfile: () => navigation.navigate("YourName", { target: "account" }),
           onNotifications: () =>
             Alert.alert(
               "Notifications",
@@ -169,10 +165,7 @@ export function TeamSettingsScreen(props: TeamParams): ReactNode {
           onChannels: () => navigation.navigate("TeamChannels", { teamId }),
           onKnowledge: () => navigation.navigate("TeamKnowledge", { teamId }),
           onAuditLog: () => navigation.navigate("TeamAudit", { teamId }),
-          onLeave: () =>
-            void coordinator
-              .leaveTeam(DeploymentIdSchema.parse(teamId))
-              .then(() => navigation.popToTop(), failed),
+          onLeave: () => void coordinator.leaveTeam(DeploymentIdSchema.parse(teamId)).catch(failed),
           onDisconnect: connected
             ? () => void coordinator.disconnectAgent(DeploymentIdSchema.parse(teamId)).catch(failed)
             : null,

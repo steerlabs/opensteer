@@ -126,6 +126,7 @@ import {
   type ShellSessionRecord,
 } from "./machine-store.js";
 import { NotificationStateStore } from "./notification-state.js";
+import { OwnerProfileStore } from "./owner-profile-store.js";
 import {
   publishPersonMessage,
   type PersonMessageInput,
@@ -197,6 +198,7 @@ export class OpensteerStore {
   readonly #readPersonalResources: snapshotStore.PersonalSnapshotResourcesReader | undefined;
   readonly requests: RequestStore;
   readonly notificationState: NotificationStateStore;
+  readonly ownerProfile: OwnerProfileStore;
   readonly browserHistory: BrowserHistoryStore;
   constructor(
     database: Kysely<DatabaseSchema>,
@@ -213,6 +215,7 @@ export class OpensteerStore {
     setExecutionClock(database, this.#executionNow);
     this.requests = new RequestStore(database, this.#links, this.#executionNow);
     this.notificationState = new NotificationStateStore(database);
+    this.ownerProfile = new OwnerProfileStore(database);
     this.browserHistory = new BrowserHistoryStore(database);
   }
 

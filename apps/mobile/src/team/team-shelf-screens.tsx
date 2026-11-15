@@ -1,6 +1,7 @@
 import { useTeamShareParticipants } from "@opensteer/client/react";
 import { ChannelShares } from "./channel-shares.js";
 import { unwrapRpcResult } from "@opensteer/client/host";
+import { isRecord } from "@opensteer/shared/isRecord";
 import type { TeamSessionClient } from "@opensteer/client/team";
 import {
   SequenceSchema,
@@ -16,6 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RootParamList } from "../navigation.js";
+import { sideMemory } from "../side-memory.js";
 import { color, space } from "../theme.js";
 import type { NativeMenuOption } from "../thread/composer-menu.js";
 import { AppText, Notice, RowGroup, SecondaryButton } from "../ui/primitives.js";
@@ -225,9 +227,17 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
                   style: "destructive",
                   text: "Leave",
                   onPress: () =>
-                    run({ type: "team.channel.leave", channelId: channelKey }, () =>
-                      navigation.popToTop(),
-                    ),
+                    run({ type: "team.channel.leave", channelId: channelKey }, () => {
+                      const action = sideMemory.trim(
+                        navigation.getState(),
+                        (route) =>
+                          isRecord(route.params) &&
+                          route.params["teamId"] === teamId &&
+                          route.params["channelId"] === channelId,
+                      );
+                      if (action !== null) navigation.dispatch(action);
+                      else navigation.popToTop();
+                    }),
                 },
               ],
             ),

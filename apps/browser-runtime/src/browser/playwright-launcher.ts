@@ -995,6 +995,9 @@ class PlaywrightPageHandle implements BrowserPage {
   private captureSession: Promise<PlaywrightCdpSession> | undefined;
   private captureWorld: number | undefined;
   private cdpPromise: Promise<CdpSession> | null = null;
+  private cdpChannel: CdpSession | null = null;
+  private closing = false;
+  private closePromise: Promise<void> | null = null;
   private targetIdPromise: Promise<string> | null = null;
   private readonly context: PlaywrightBrowserContext;
   private readonly contextHandle: PlaywrightContextHandle;
@@ -1169,12 +1172,21 @@ class PlaywrightPageHandle implements BrowserPage {
   }
 
   agentCdp(): Promise<CdpSession> {
-    return this.context
-      .newCDPSession(this.page)
-      .then((session) => new PlaywrightCdpHandle(session));
+    if (this.closing)
+      return Promise.reject(new BrowserRuntimeError("not_found", "The browser page closed."));
+    return this.context.newCDPSession(this.page).then(async (session) => {
+      const channel = new PlaywrightCdpHandle(session);
+      if (this.closing) {
+        await channel.detach();
+        throw new BrowserRuntimeError("not_found", "The browser page closed.");
+      }
+      return channel;
+    });
   }
 
   cdp(): Promise<CdpSession> {
+    if (this.closing)
+      return Promise.reject(new BrowserRuntimeError("not_found", "The browser page closed."));
     this.cdpPromise ??= this.context.newCDPSession(this.page).then(async (session) => {
       const channel = new PlaywrightPageCdpHandle(
         session,
@@ -1182,6 +1194,11 @@ class PlaywrightPageHandle implements BrowserPage {
         this.openDialogs,
         this.contextHandle.authenticator ? ["Network", "Security"] : [],
       );
+      this.cdpChannel = channel;
+      if (this.closing) {
+        await channel.detach();
+        throw new BrowserRuntimeError("not_found", "The browser page closed.");
+      }
       if (this.contextHandle.authenticator) {
         const bridge = new PasskeyBridge(channel, this.contextHandle.authenticator, {
           lateBootstrap: true,
@@ -1205,12 +1222,18 @@ class PlaywrightPageHandle implements BrowserPage {
     return this.cdpPromise;
   }
 
-  async close(): Promise<void> {
-    if (!this.page.isClosed()) await this.page.close({ runBeforeUnload: false });
+  close(): Promise<void> {
+    this.closing = true;
+    this.closePromise ??= (async () => {
+      // Native close can wait on a navigation still held by this private debugger.
+      await this.cdpChannel?.detach();
+      if (!this.page.isClosed()) await this.page.close({ runBeforeUnload: false });
+    })();
+    return this.closePromise;
   }
 
   isClosed(): boolean {
-    return this.page.isClosed();
+    return this.closing || this.page.isClosed();
   }
 
   onClose(listener: () => void): void {

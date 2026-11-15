@@ -1,6 +1,13 @@
 import {
+  AccountProfileSchema,
   ControlPlaneErrorResponseSchema,
+  UpdateAccountProfileRequestSchema,
+  UpdateAccountProfileResponseSchema,
+  accountProfilePath,
+  type AccountProfile,
   type ControlPlaneAccountId,
+  type UpdateAccountProfileRequest,
+  type UpdateAccountProfileResponse,
 } from "@opensteer/control-plane-protocol";
 import {
   CreateHostedTeamRequestSchema,
@@ -47,6 +54,9 @@ export interface AccountTeamsClient {
   hostedTeamOwners(id: HostedTeamId, signal?: AbortSignal): Promise<readonly HostedTeamOwner[]>;
   /** Hands the team to one of those owners. */
   transferHostedTeam(id: HostedTeamId, to: ControlPlaneAccountId): Promise<HostedTeamView>;
+  /** The person's shared name, with the signed receipt teams accept. */
+  profile(signal?: AbortSignal): Promise<AccountProfile>;
+  updateProfile(request: UpdateAccountProfileRequest): Promise<UpdateAccountProfileResponse>;
 }
 
 const timeoutMs = 15_000;
@@ -135,6 +145,19 @@ export class HttpAccountTeamsClient implements AccountTeamsClient {
     );
   }
 
+  profile(signal?: AbortSignal) {
+    return this.#json(accountProfilePath, "GET", AccountProfileSchema, undefined, signal);
+  }
+
+  updateProfile(request: UpdateAccountProfileRequest) {
+    return this.#json(
+      accountProfilePath,
+      "PUT",
+      UpdateAccountProfileResponseSchema,
+      UpdateAccountProfileRequestSchema.parse(request),
+    );
+  }
+
   async #gone(request: Promise<HostedTeamView>): Promise<HostedTeamView | null> {
     try {
       return await request;
@@ -146,7 +169,7 @@ export class HttpAccountTeamsClient implements AccountTeamsClient {
 
   async #json<T>(
     path: string,
-    method: "DELETE" | "GET" | "POST",
+    method: "DELETE" | "GET" | "POST" | "PUT",
     schema: z.ZodType<T>,
     body?: unknown,
     signal?: AbortSignal,

@@ -24,6 +24,13 @@ import {
   RevokeConnectResponseSchema,
   UnlinkPersonalHostRequestSchema,
   UnlinkPersonalHostResponseSchema,
+  AccountProfileSchema,
+  UpdateAccountProfileRequestSchema,
+  UpdateAccountProfileResponseSchema,
+  hostOwnerProfilePath,
+  type AccountProfile,
+  type UpdateAccountProfileRequest,
+  type UpdateAccountProfileResponse,
   type ActivatePersonalHostAccountLinkRequest,
   type ActivatePersonalHostAccountLinkResponse,
   type DirectoryProjectionRequest,
@@ -252,9 +259,29 @@ export class AccountDirectoryClient {
     }
   }
 
+  /** The linked owner's name, as Account holds it now. */
+  async ownerProfile(): Promise<AccountProfile> {
+    const response = await this.#request(hostOwnerProfilePath, "GET", null, "Owner profile");
+    return AccountProfileSchema.parse(await readBoundedJson(response, boundedJsonOptions));
+  }
+
+  async updateOwnerProfile(
+    input: UpdateAccountProfileRequest,
+  ): Promise<UpdateAccountProfileResponse> {
+    const response = await this.#request(
+      hostOwnerProfilePath,
+      "PUT",
+      UpdateAccountProfileRequestSchema.parse(input),
+      "Owner profile",
+    );
+    return UpdateAccountProfileResponseSchema.parse(
+      await readBoundedJson(response, boundedJsonOptions),
+    );
+  }
+
   async #request(
     path: string,
-    method: "DELETE" | "POST" | "PUT",
+    method: "DELETE" | "GET" | "POST" | "PUT",
     body: unknown,
     label: string,
     handleFailure?: (status: number, reason: ControlPlaneErrorReason | null) => void,
@@ -263,11 +290,11 @@ export class AccountDirectoryClient {
     let response: Response;
     try {
       response = await this.#fetch(new URL(path, this.#controlApiOrigin), {
-        body: JSON.stringify(body),
+        ...(method === "GET" ? {} : { body: JSON.stringify(body) }),
         headers: {
           accept: "application/json",
           authorization: `Bearer ${this.#hostCredential}`,
-          "content-type": "application/json",
+          ...(method === "GET" ? {} : { "content-type": "application/json" }),
         },
         method,
         redirect: "manual",

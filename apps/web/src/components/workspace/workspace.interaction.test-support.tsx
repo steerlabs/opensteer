@@ -27,6 +27,7 @@ import { TeamsProvider, type TeamAttachment } from "../../team/team-attachments.
 import {
   MockTeamHost,
   TeamSessionClient,
+  busyTeamIds,
   createMemoryTeamPersistence,
   mockAccountEmail,
   mockAccountSubject,
@@ -50,13 +51,17 @@ let client: MockHostClient;
 let sessionClient: HostClient | null = null;
 let teamHost: MockTeamHost | null = null;
 let teamSession: TeamSessionClient | null = null;
+/** Teams past the first, for a mount with more than one. */
+let moreTeams: { host: MockTeamHost; session: TeamSessionClient }[] = [];
 interface Step {
   readonly type: string;
   readonly path: string;
   readonly search: string;
+  readonly hash?: string;
 }
 let history: Step[] = [];
 let historyState: unknown = null;
+let historyKey = "";
 /** The router's own navigate, for Back and Forward as a person's browser does them. */
 let goTo: ReturnType<typeof useNavigate> | null = null;
 /** The window's width as media queries read it, changeable mid-test like a resize. */
@@ -90,12 +95,18 @@ function cleanupWorkspace() {
   teamSession = null;
   teamHost?.dispose();
   teamHost = null;
+  for (const team of moreTeams) {
+    team.session.dispose();
+    team.host.dispose();
+  }
+  moreTeams = [];
   client?.dispose();
   history = [];
   goTo = null;
   viewport.queries.clear();
   document.body.replaceChildren();
   localStorage.clear();
+  sessionStorage.clear();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 }
@@ -103,11 +114,22 @@ function cleanupWorkspace() {
 function History() {
   const location = useLocation();
   historyState = location.state;
+  historyKey = location.key;
   const type = useNavigationType();
   goTo = useNavigate();
   const last = history.at(-1);
-  if (!last || last.path !== location.pathname || last.search !== location.search)
-    history.push({ path: location.pathname, search: location.search, type });
+  if (
+    !last ||
+    last.path !== location.pathname ||
+    last.search !== location.search ||
+    (last.hash ?? "") !== location.hash
+  )
+    history.push({
+      path: location.pathname,
+      search: location.search,
+      ...(location.hash ? { hash: location.hash } : {}),
+      type,
+    });
   return null;
 }
 
@@ -125,8 +147,8 @@ async function mount(
     latencyMs?: number;
     /** What else the mock Host starts with: plugins, say. */
     mock?: Omit<MockHostClientOptions, "latencyMs" | "now">;
-    /** One live mock team beside the person's own tasks, as a joined desktop has. */
-    team?: boolean;
+    /** One live mock team beside the person's own tasks, as a joined desktop has; a second named here. */
+    team?: boolean | { readonly second: string };
     /** Hosted teams this app can create and join, in memory. */
     world?: MockTeamWorld;
     /** The Host the last mount drew, as a page reload finds it. */
@@ -152,7 +174,24 @@ async function mount(
   sessionClient = options.hostClient?.(client) ?? null;
   if (sessionClient) await sessionClient.load();
   let teams: readonly TeamAttachment[] = [];
-  if (options.team) {
+  if (options.team && options.sameHost && teamHost && teamSession) {
+    teams = [
+      {
+        teamId: teamHost.teamId,
+        name: teamHost.bootstrap.teamName,
+        origin: teamHost.origin,
+        client: teamSession,
+        link: null,
+      },
+      ...moreTeams.map(({ host, session }) => ({
+        teamId: host.teamId,
+        name: host.bootstrap.teamName,
+        origin: "https://chat.second.example",
+        client: session,
+        link: null,
+      })),
+    ];
+  } else if (options.team) {
     const host = new MockTeamHost();
     teamHost = host;
     const session = new TeamSessionClient({
@@ -172,6 +211,30 @@ async function mount(
         link: null,
       },
     ];
+    if (typeof options.team === "object") {
+      const second = new MockTeamHost({
+        teamId: busyTeamIds[1],
+        teamName: options.team.second,
+      });
+      const secondSession = new TeamSessionClient({
+        scope: { teamDeploymentId: second.teamId, userId: second.userId },
+        persistence: createMemoryTeamPersistence(),
+        rpc: second.rpc,
+        connect: second.connect,
+      });
+      await secondSession.load();
+      moreTeams.push({ host: second, session: secondSession });
+      teams = [
+        ...teams,
+        {
+          teamId: second.teamId,
+          name: second.bootstrap.teamName,
+          origin: "https://chat.second.example",
+          client: secondSession,
+          link: null,
+        },
+      ];
+    }
   }
   const node = document.createElement("div");
   document.body.append(node);
@@ -373,6 +436,7 @@ export {
   teamSession,
   history,
   historyState,
+  historyKey,
   goTo,
   resize,
   type Entry,

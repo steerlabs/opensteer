@@ -19,6 +19,7 @@ import {
 import { harnessCatalogEntry } from "@opensteer/core";
 import { useHostSelector } from "@opensteer/client/react";
 import { isRecord } from "@opensteer/shared/isRecord";
+import { readTail, type TailReading } from "@opensteer/shared/tailFollow";
 import {
   StackActions,
   useIsFocused,
@@ -540,7 +541,9 @@ function Body(props: {
   const insets = useContentInsets();
   const column = useReadingColumn();
   const list = useRef<ScrollViewInstance>(null);
-  const atEnd = useRef(false);
+  const tail = useRef<TailReading>({ follows: false, offset: 0 });
+  // The keyboard's inset under the list, as the dock reports it: the foot is past it.
+  const inset = useRef(0);
   const card = detail?.card ?? null;
   const settled = card !== null && card.endedAt !== null;
   return (
@@ -557,14 +560,20 @@ function Body(props: {
       ]}
       contentInsetAdjustmentBehavior="never"
       maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+      onContentInsetChange={({ bottom }) => {
+        inset.current = bottom;
+      }}
       onContentSizeChange={() => {
-        if (atEnd.current) list.current?.scrollToEnd({ animated: false });
+        if (tail.current.follows) list.current?.scrollToEnd({ animated: false });
       }}
       onScroll={({ nativeEvent }) => {
         const { contentOffset, contentSize, layoutMeasurement } = nativeEvent;
-        atEnd.current =
-          contentOffset.y > 0 &&
-          contentOffset.y + layoutMeasurement.height >= contentSize.height - space[48];
+        tail.current = readTail(
+          tail.current,
+          contentOffset.y,
+          contentSize.height + inset.current - layoutMeasurement.height,
+          true,
+        );
       }}
       ref={list}
       scrollEventThrottle={32}

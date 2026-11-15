@@ -43,7 +43,6 @@ vi.mock("./connection-banner.js", () => ({
   useConnectionBanner: () => null,
   ConnectionBanner: () => null,
 }));
-vi.mock("./team-page-list.js", () => ({ TeamPageList: () => <button>Browse channels</button> }));
 vi.mock("./team-context.js", () => ({
   useMobileTeams: () => ({
     owner: { id: h.ownerId },
@@ -60,7 +59,6 @@ vi.mock("./team-context.js", () => ({
     failure: h.team?.detail ?? null,
   }),
 }));
-const { TeamHomeScreen } = await import("./team-home-screen.js");
 const states: readonly TeamState[] = [
   "signed-out",
   "loading",
@@ -95,7 +93,7 @@ it.each([
       act(() =>
         root.render(
           <TeamScreenLayout route={{ params: { teamId: "dep_test" } }}>
-            <TeamHomeScreen route={{ params: { teamId: "dep_test" } }} />
+            <button>Browse channels</button>
           </TeamScreenLayout>,
         ),
       );

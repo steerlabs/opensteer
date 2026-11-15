@@ -1,15 +1,16 @@
 import { seedBrowserSession } from "@opensteer/client/test-support";
 import { seedBrowserSnapshot } from "@opensteer/client/test-support";
-import type { PersonalTabLineage } from "@opensteer/client/host";
+import type { PersonalTabLineage, HostClient } from "@opensteer/client/host";
 // @vitest-environment happy-dom
 import { act } from "react";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { mockTeamId, mockTeamChannelId } from "@opensteer/client/team";
+import { mockTeamId, mockTeamChannelId, mockTeamUserId } from "@opensteer/client/team";
 import { doneTaskList, placeList, taskList, type HostSnapshot } from "@opensteer/client/host";
 import {
   BrowserSurfaceIdSchema,
+  BrowserSessionIdSchema,
   createId,
   TeamAgentRequestIdSchema,
   ThreadIdSchema,
@@ -23,6 +24,10 @@ import {
   root,
   client,
   teamHost,
+  teamSession,
+  historyState,
+  historyKey,
+  deferred,
   history,
   goTo,
   resize,
@@ -115,8 +120,6 @@ describe("Settings returns to the workspace exactly as it was", () => {
   it("returns to a conversation-only address without reopening the remembered browser", async () => {
     let threadId = "";
     await mount((source) => {
-      // A Host that restores workspace tabs, as current Hosts do: the remembered
-      // place reopens once at launch, and must not reopen on return from Settings.
       const read = source.getSnapshot.bind(source);
       let base: HostSnapshot | undefined;
       let restoring: HostSnapshot | undefined;
@@ -711,37 +714,379 @@ describe("a channel and back", () => {
     expect(history.at(-1)).toMatchObject(scoped);
   });
 
-  it("Back after jumping into a channel restores the conversation and the page beside it", async () => {
+  it("switches to each side's exact address and follows Back and Forward", async () => {
     await mount((source) => `/tasks/${delegating(source)}${tabSearch(pageTab(source))}`, {
       team: true,
     });
-    const place = pageTab();
-    const before = history.at(-1)!;
+    const task = history.at(-1)!;
+    const team = () => element('.side-switch [role="radio"]:not([data-value="tasks"])');
+    const tasks = () => element('.side-switch [role="radio"][data-value="tasks"]');
     const entries = history.length;
-    // Switching sides is the sidebar's own business: nothing navigates.
-    await click(element('.side-switch__option:not([data-value="tasks"])'));
-    expect(history.length).toBe(entries);
-    await click(element(".team-row[data-channel-id] .team-row__main"));
-    expect(history.length).toBe(entries + 1);
+    await click(team());
+    expect(history.slice(entries).filter((step) => step.type === "PUSH")).toHaveLength(1);
     expect(history.at(-1)!.path).toMatch(/^\/teams\/[^/]+\/c\/[^/]+$/u);
-    // The channel fills the window; the page leaves the middle, and its tab stays in Tabs.
-    expect(document.querySelector(".place")).toBeNull();
-    expect(element(`.side-tab[data-place-key="${place.key}"]`)).toBeTruthy();
-
+    expect(team().getAttribute("aria-checked")).toBe("true");
+    const channel = history.at(-1)!;
+    await click(tasks());
+    expect(history.at(-1)).toEqual({ ...task, type: "PUSH" });
+    expect(tasks().getAttribute("aria-checked")).toBe("true");
+    const reselected = history.length;
+    const selectedKey = historyKey;
+    await click(tasks());
+    expect(history.length).toBe(reselected);
+    expect(historyKey).toBe(selectedKey);
+    await click(team());
+    expect(history.at(-1)).toEqual({ ...channel, type: "PUSH" });
     await act(async () => goTo!(-1));
-    await settle();
-    expect(history.at(-1)).toMatchObject({
-      path: before.path,
-      search: before.search,
-      type: "POP",
+    expect(history.at(-1)).toEqual({ ...task, type: "POP" });
+    expect(tasks().getAttribute("aria-checked")).toBe("true");
+    await act(async () => goTo!(1));
+    expect(history.at(-1)).toEqual({ ...channel, type: "POP" });
+    expect(team().getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("remembers a team's thread across a round trip through Tasks", async () => {
+    await mount((source) => `/tasks/${delegating(source)}${tabSearch(pageTab(source))}`, {
+      team: true,
     });
-    expect(element(".place").getAttribute("data-place-key")).toBe(place.key);
-    expect(element(".thread")).toBeTruthy();
+    const task = history.at(-1)!;
+    const host = teamHost!;
+    const message = host.post({ channelId: mockTeamChannelId, bodyMarkdown: "Thread bookmark" });
+    const thread = `/teams/${mockTeamId}/c/${mockTeamChannelId}/t/${message.id}`;
+    await act(async () => goTo!(thread));
+    expect(
+      element('.side-switch [role="radio"][aria-checked="true"]').getAttribute("data-value"),
+    ).toBe(mockTeamId);
+    await click(element('.side-switch [role="radio"][data-value="tasks"]'));
+    expect(history.at(-1)).toEqual({ ...task, type: "PUSH" });
+    await click(element(`.side-switch [role="radio"][data-value="${mockTeamId}"]`));
+    expect(history.at(-1)).toMatchObject({ path: thread, search: "", type: "PUSH" });
+  });
+
+  it("returns to Tasks without a tab opening that finished while the team was shown", async () => {
+    let task = "";
+    await mount(
+      (source) => {
+        task = `/tasks/${delegating(source)}`;
+        return `${task}?panel=browser&pendingBrowserTab=opening`;
+      },
+      { team: true },
+    );
+    await click(element(`.side-switch [role="radio"][data-value="${mockTeamId}"]`));
+    await click(element('.side-switch [role="radio"][data-value="tasks"]'));
+    expect(history.at(-1)).toMatchObject({ path: task, search: "?panel=browser", type: "PUSH" });
+  });
+
+  it("remembers a knowledge query and hash while settings and the directory leave both bookmarks alone", async () => {
+    await mount((source) => `/tasks/${delegating(source)}${tabSearch(pageTab(source))}`, {
+      team: true,
+    });
+    const task = history.at(-1)!;
+    const knowledge = `/teams/${mockTeamId}/knowledge?q=bookmark#topic`;
+    await act(async () => goTo!(knowledge));
+    await act(async () => goTo!("/settings/general"));
+    await click(element(".settings-navigation__back"));
+    await click(element('.side-switch [role="radio"][data-value="tasks"]'));
+    expect(history.at(-1)).toEqual({ ...task, type: "PUSH" });
+    await click(element(`.side-switch [role="radio"][data-value="${mockTeamId}"]`));
+    expect(history.at(-1)).toMatchObject({
+      path: `/teams/${mockTeamId}/knowledge`,
+      search: "?q=bookmark",
+      hash: "#topic",
+      type: "PUSH",
+    });
+    await act(async () => goTo!("/teams"));
+    expect(
+      element('.side-switch [role="radio"][aria-checked="true"]').getAttribute("data-value"),
+    ).toBe(mockTeamId);
+    await click(element(`.side-switch [role="radio"][data-value="${mockTeamId}"]`));
+    expect(history.at(-1)).toMatchObject({
+      path: `/teams/${mockTeamId}/knowledge`,
+      search: "?q=bookmark",
+      hash: "#topic",
+    });
+  });
+
+  it("restores this window's bookmarks after reload without redirecting an incoming team link", async () => {
+    await mount((source) => `/tasks/${delegating(source)}${tabSearch(pageTab(source))}`, {
+      team: true,
+    });
+    const task = history.at(-1)!;
+    await act(async () => goTo!(`/teams/${mockTeamId}/knowledge?q=saved`));
+    await act(async () => root!.unmount());
+    setRoot(null);
+    resetHistory();
+    const incoming = `/teams/${mockTeamId}/c/${mockTeamChannelId}`;
+    await mount(incoming, { sameHost: true, team: true });
+    expect(history).toEqual([{ path: incoming, search: "", type: "POP" }]);
+    await click(element('.side-switch [role="radio"][data-value="tasks"]'));
+    expect(history.at(-1)).toEqual({ ...task, type: "PUSH" });
+    await click(element(`.side-switch [role="radio"][data-value="${mockTeamId}"]`));
+    expect(history.at(-1)).toEqual({ path: incoming, search: "", type: "PUSH" });
+  });
+
+  it("keeps only passive launcher return state when restoring a side", async () => {
+    let from = "";
+    await mount(
+      (source) => {
+        from = tabSearch(pageTab(source)).slice(1);
+        return {
+          pathname: `/tasks/${delegating(source)}`,
+          search: "?panel=browser",
+          state: {
+            startFrom: from,
+            startId: "consumed",
+            startAddress: "https://example.com",
+            startOpen: false,
+            focusRequest: "consumed",
+          },
+        };
+      },
+      { team: true },
+    );
+    await click(element(`.side-switch [role="radio"][data-value="${mockTeamId}"]`));
+    await click(element('.side-switch [role="radio"][data-value="tasks"]'));
+    expect(historyState).toEqual({ startFrom: from });
+    const entries = history.length;
+    const selectedKey = historyKey;
+    await click(element('.side-switch [role="radio"][data-value="tasks"]'));
+    expect(history.length).toBe(entries);
+    expect(historyKey).toBe(selectedKey);
+    await act(async () =>
+      element(".start-page").dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      ),
+    );
+    expect(placeParams(history.at(-1)!.search)).toBe(placeParams(`?${from}`));
+  });
+
+  it("does not graft a remembered place onto a direct team address at startup", async () => {
+    await mount(
+      (source) => {
+        const snapshot = source.getSnapshot();
+        rememberPlace(
+          { deploymentId: snapshot.deploymentId, userId: snapshot.user!.id },
+          pageTab(source).destination,
+        );
+        const read = source.getSnapshot.bind(source);
+        let held: HostSnapshot | null = null;
+        let published: HostSnapshot | null = null;
+        vi.spyOn(source, "getSnapshot").mockImplementation(() => {
+          const next = read();
+          if (next !== held) {
+            held = next;
+            published = { ...next, tabRestoreVersion: 1 };
+          }
+          return published!;
+        });
+        return `/teams/${mockTeamId}/c/${mockTeamChannelId}`;
+      },
+      { team: true },
+    );
+    expect(history).toEqual([
+      { path: `/teams/${mockTeamId}/c/${mockTeamChannelId}`, search: "", type: "POP" },
+    ]);
+    expect(document.querySelector(".place")).toBeNull();
+  });
+
+  it.each(["team", "settings", "task"])(
+    "fences a deferred place result when navigating to %s, preserving same-side task changes",
+    async (target) => {
+      const gate = deferred<Awaited<ReturnType<NonNullable<HostClient["reopenPersonalTab"]>>>>();
+      const reopen = vi.fn(() => gate.promise);
+      vi.stubGlobal("opensteerDesktop", {
+        getLocalVisibility: async () => true,
+        onLocalVisibilityChanged: () => () => undefined,
+        setBadgeCount: vi.fn(async () => undefined),
+      });
+      await mount((source) => `/tasks/${delegating(source)}`, {
+        team: true,
+        hostClient: (source) => {
+          const read = source.getSnapshot.bind(source);
+          let held: HostSnapshot | null = null;
+          let published: HostSnapshot | null = null;
+          vi.spyOn(source, "getSnapshot").mockImplementation(() => {
+            const next = read();
+            if (next !== held) {
+              held = next;
+              published = { ...next, tabReopenAvailable: true };
+            }
+            return published!;
+          });
+          Object.assign(source, { reopenPersonalTab: reopen });
+          return source;
+        },
+      });
+      await act(async () =>
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "t", metaKey: true, shiftKey: true, bubbles: true }),
+        ),
+      );
+      expect(reopen).toHaveBeenCalledOnce();
+      const pathname =
+        target === "team"
+          ? `/teams/${mockTeamId}/c/${mockTeamChannelId}`
+          : target === "settings"
+            ? "/settings/general"
+            : `/tasks/${client.getSnapshot().threads.find((thread) => thread.purpose === "task" && thread.id !== delegating(client))!.id}`;
+      await act(async () => goTo!(pathname));
+      const channel = history.at(-1)!;
+      const entries = history.length;
+      const place = pageTab();
+      const destination = place.destination;
+      if (destination.kind !== "browser") throw new Error("Expected browser place");
+      await act(async () =>
+        gate.resolve({
+          type: "tab.reopen",
+          sessionId: BrowserSessionIdSchema.parse(destination.sessionId),
+          tabId: BrowserSurfaceIdSchema.parse(destination.tabId),
+          layout: { revision: 0, groups: [] },
+        }),
+      );
+      if (target === "task") {
+        expect(history).toHaveLength(entries + 1);
+        expect(history.at(-1)!.path).toBe(pathname);
+        expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
+      } else {
+        expect(history).toHaveLength(entries);
+        expect(history.at(-1)).toEqual(channel);
+        expect(document.querySelector(".place")).toBeNull();
+      }
+    },
+  );
+
+  it.each(["removed", "viewer-changed"] as const)(
+    "clears a confirmed %s team's bookmark, preserving it while offline",
+    async (ended) => {
+      await mount(`/teams/${mockTeamId}/knowledge?q=keep`, { team: true });
+      await click(element('.side-switch [role="radio"][data-value="tasks"]'));
+      await act(async () => teamSession!.disconnect());
+      await click(element(`.side-switch [role="radio"][data-value="${mockTeamId}"]`));
+      expect(history.at(-1)).toMatchObject({
+        path: `/teams/${mockTeamId}/knowledge`,
+        search: "?q=keep",
+      });
+      await click(element('.side-switch [role="radio"][data-value="tasks"]'));
+      await act(async () => teamSession!.remove(ended));
+      const key = Object.keys(sessionStorage).find((key) =>
+        key.startsWith("opensteer.workspace.sides.v1:"),
+      )!;
+      expect(JSON.parse(sessionStorage.getItem(key)!).bookmarks[mockTeamId]).toBeUndefined();
+      await click(element(`.side-switch [role="radio"][data-value="${mockTeamId}"]`));
+      expect(history.at(-1)!.path).toBe(`/teams/${mockTeamId}/`);
+      expect(history.at(-1)!.search).toBe("");
+    },
+  );
+
+  it.each(["deployment", "personal-user", "team-viewer"])(
+    "scopes stored bookmarks to the %s",
+    async (changed) => {
+      await mount(
+        (source) => {
+          const snapshot = source.getSnapshot();
+          const key = `opensteer.workspace.sides.v1:${encodeURIComponent(changed === "deployment" ? "other" : snapshot.deploymentId!)}:${encodeURIComponent(changed === "personal-user" ? "other" : snapshot.user!.id)}`;
+          sessionStorage.setItem(
+            key,
+            JSON.stringify({
+              side: "tasks",
+              bookmarks: {
+                tasks: {
+                  pathname: `/tasks/${delegating(source)}`,
+                  search: tabSearch(pageTab(source)),
+                  hash: "",
+                  startFrom: null,
+                  viewer: null,
+                },
+                [mockTeamId]: {
+                  pathname: `/teams/${mockTeamId}/knowledge`,
+                  search: "?q=private",
+                  hash: "",
+                  startFrom: null,
+                  viewer: changed === "team-viewer" ? "other" : mockTeamUserId,
+                },
+              },
+            }),
+          );
+          return changed === "team-viewer"
+            ? `/tasks/${delegating(source)}`
+            : `/teams/${mockTeamId}/c/${mockTeamChannelId}`;
+        },
+        { team: true },
+      );
+      await click(
+        element(
+          `.side-switch [role="radio"][data-value="${changed === "team-viewer" ? mockTeamId : "tasks"}"]`,
+        ),
+      );
+      expect(history.at(-1)!.search).not.toContain("browserTab");
+      expect(history.at(-1)!.search).not.toContain("private");
+      expect(history.at(-1)!.path).toBe(
+        changed === "team-viewer" ? `/teams/${mockTeamId}/c/${mockTeamChannelId}` : "/",
+      );
+    },
+  );
+
+  it("remembers in memory when session storage is refused", async () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation((key) => {
+      if (key.startsWith("opensteer.workspace.sides.v1:")) throw new Error("Storage refused");
+      return null;
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("Storage refused");
+    });
+    await mount((source) => `/tasks/${delegating(source)}${tabSearch(pageTab(source))}`, {
+      team: true,
+    });
+    const task = history.at(-1)!;
+    await click(element(`.side-switch [role="radio"][data-value="${mockTeamId}"]`));
+    await click(element('.side-switch [role="radio"][data-value="tasks"]'));
+    expect(history.at(-1)).toEqual({ ...task, type: "PUSH" });
+  });
+
+  it("a missing task redirects home with its place intact", async () => {
+    await mount((source) => {
+      const missingId = createId("thread");
+      const read = source.getSnapshot.bind(source);
+      let held: HostSnapshot | null = null;
+      let published: HostSnapshot | null = null;
+      vi.spyOn(source, "getSnapshot").mockImplementation(() => {
+        const next = read();
+        if (next !== held) {
+          held = next;
+          published = { ...next, threadLookups: { ...next.threadLookups, [missingId]: "missing" } };
+        }
+        return published!;
+      });
+      return `/tasks/${missingId}${tabSearch(pageTab(source))}`;
+    });
+    expect(history.at(-1)!.path).toBe("/");
+    expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(pageTab())));
+    expect(element(".place").getAttribute("data-place-key")).toBe(pageTab().key);
+  });
+
+  it("keeps the team last shown named while on Tasks, across a reload", async () => {
+    await mount("/", { team: { second: "Beacon" } });
+    const named = () =>
+      document.querySelector('.side-switch [role="radio"].is-recent')?.getAttribute("aria-label");
+    const choose = (label: string) =>
+      click(element(`.side-switch [role="radio"][aria-label^="${label}"]`));
+    expect(named()).toMatch(/^Acme/u);
+    await choose("Beacon");
+    await click(element('.side-switch [data-value="tasks"]'));
+    expect(element('.side-switch [aria-checked="true"]').getAttribute("data-value")).toBe("tasks");
+    expect(named()).toMatch(/^Beacon/u);
+
+    act(() => root?.unmount());
+    setRoot(null);
+    document.body.replaceChildren();
+    await mount("/", { team: { second: "Beacon" }, sameHost: true });
+    expect(element('.side-switch [aria-checked="true"]').getAttribute("data-value")).toBe("tasks");
+    expect(named()).toMatch(/^Beacon/u);
   });
 
   it("a tab opened from a channel docks the channel beside its page, and Back fills the window again", async () => {
     await mount("/", { team: true });
-    await click(element('.side-switch__option:not([data-value="tasks"])'));
+    await click(element('.side-switch [role="radio"]:not([data-value="tasks"])'));
     await click(element(".team-row[data-channel-id] .team-row__main"));
     const channel = history.at(-1)!;
     expect(document.querySelector(".place")).toBeNull();

@@ -358,11 +358,17 @@ test("release native proof and release builds share a toolchain; release caches 
   // Releases wait for main's full CI; the account-wide macOS limit already caps it.
   assert.equal(workflow.jobs["native-mac"].strategy["max-parallel"], undefined);
   const caches = release.jobs.build.steps.filter((step) => step.uses?.startsWith("actions/cache@"));
-  assert.equal(caches.length, 3);
+  assert.equal(caches.length, 5);
   for (const cache of caches) {
     assert.match(cache.with.key, /^release-only-/u);
-    assert.match(cache.with.key, /toolchain|java/u);
-    assert.match(cache.with.key, /hashFiles|outputs.swift/u);
+    if (cache.with.key.startsWith("release-only-native-")) {
+      assert.match(cache.with.key, /steps.native-cache.outputs/u);
+      assert.match(cache.with.path, /native-products\/(computer-use|passwords|dictation)\//u);
+      assert.match(cache.if, /steps.native-cache.outputs/u);
+    } else {
+      assert.match(cache.with.key, /toolchain|java/u);
+      assert.match(cache.with.key, /hashFiles/u);
+    }
     assert.equal(cache.with["restore-keys"], undefined);
   }
   assert.deepEqual(
@@ -370,10 +376,10 @@ test("release native proof and release builds share a toolchain; release caches 
     [
       ["${{ runner.temp }}/macos-build/postgres"],
       [
-        "apps/desktop/native/computer-use/.build",
-        "apps/desktop/native/passwords/.build",
-        "apps/desktop/native/dictation/.build",
+        "${{ runner.temp }}/native-products/computer-use/${{ steps.native-cache.outputs.computer-use }}",
       ],
+      ["${{ runner.temp }}/native-products/passwords/${{ steps.native-cache.outputs.passwords }}"],
+      ["${{ runner.temp }}/native-products/dictation/${{ steps.native-cache.outputs.dictation }}"],
       ["~/.gradle/caches/modules-2", "~/.gradle/wrapper/dists"],
     ],
   );

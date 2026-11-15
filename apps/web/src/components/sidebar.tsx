@@ -93,6 +93,7 @@ import { useHereId } from "./computers/here.js";
 import { useTaskDirectory, type TaskDirectory } from "./workspace/task-directory.js";
 import { useTeams } from "../team/team-attachments.js";
 import type { SegmentBadge } from "./team/team-sidebar.js";
+import type { SidebarSide, SidebarSides } from "@opensteer/client/team";
 import {
   useHighlightMatch,
   useWorkspace,
@@ -105,7 +106,7 @@ import {
   taskAt,
   type WorkspaceNavigation,
 } from "./workspace/navigation.js";
-import { revealInList, useScrollEdges, useWholeRows } from "./workspace/scroll-edges.js";
+import { revealInList, useScrollEdges } from "./workspace/scroll-edges.js";
 import { useTabCloser } from "./workspace/tab-closer.js";
 import { TabGroupHeader, tabGroupStyle } from "./workspace/tab-group.js";
 import { NativeTabMenu, TabMenu, nativeTabMenuOffered } from "./workspace/tab-menu.js";
@@ -160,7 +161,7 @@ export function Sidebar({
 }: SidebarProps) {
   const workspace = useWorkspace();
   const { nav } = workspace;
-  const { pathname, state: locationState } = useLocation();
+  const { pathname } = useLocation();
   const snapshot = useTaskSnapshot(hostClient);
   const deploymentId = useHostSelector(hostClient, (current) => current.deploymentId);
   const userId = useHostSelector(hostClient, (current) => current.user?.id ?? null);
@@ -267,19 +268,14 @@ export function Sidebar({
   const searchOpener = useRef<HTMLElement | null>(null);
   const searchOnOpen = useRef(false);
   const [tabsHeight, commitTabsHeight] = useTabsHeight();
-  useWholeRows(listsRef, !collapsed);
   const { openDrawer } = workspace;
   const openThreadId = taskAt(pathname);
   const openRowThreadId = openThreadId === null ? null : listedRowThreadId(snapshot, openThreadId);
   const directory = useTaskDirectory(hostClient, openRowThreadId);
   const { list } = directory;
   const tasksList = useRef<HTMLUListElement | null>(null);
-  const [side, setSide] = useSidebarSide(deploymentId, userId, pathname);
-  // Entering a team the person just created or joined is their choice of side.
-  const enteredTeam = enteredTeamOf(locationState);
-  useEffect(() => {
-    if (enteredTeam) setSide(enteredTeam);
-  }, [enteredTeam, setSide]);
+  const { sides, openSide } = nav;
+  const { side } = sides;
   const doneShelf = useRef<HTMLLIElement | null>(null);
   // Done takes the place of Tasks while it is open.
   const [doneView, setDoneView] = useState(false);
@@ -725,12 +721,7 @@ export function Sidebar({
           </button>
         )}
       </div>
-      <TasksBadgeSwitch
-        hostClient={hostClient}
-        onNavigate={onCloseMobile}
-        onSide={setSide}
-        side={side}
-      />
+      <TasksBadgeSwitch hostClient={hostClient} onSide={openSide} sides={sides} />
 
       <SidebarSearch
         badges={presentations.badges}
@@ -812,7 +803,7 @@ export function Sidebar({
                   </button>
                 </div>
               )}
-              <SideList labelledBy="sidebar-tasks" listRef={tasksList} whole>
+              <SideList labelledBy="sidebar-tasks" listRef={tasksList}>
                 <RowMotion
                   snap={false}
                   list={tasksList}
@@ -1019,33 +1010,23 @@ function sectionFloor(rows: number): CSSProperties {
 }
 
 /**
- * A section's rows: they scroll on their own, a hairline only at an edge with
- * more beyond; `whole` lists show only whole rows. Tabs, last, is not one: it
- * runs to the footer, its rows snapping to its top, but at its end, where its
- * last row stands whole on the footer's line.
+ * A section's rows: they scroll on their own, as the platform scrolls them,
+ * with a hairline only at an edge with more beyond.
  */
 function SideList({
   children,
   labelledBy,
   listRef,
-  whole = false,
 }: {
   readonly children: ReactNode;
   readonly labelledBy?: string;
   readonly listRef?: RefObject<HTMLUListElement | null>;
-  readonly whole?: boolean;
 }) {
   const ownRef = useRef<HTMLUListElement | null>(null);
   const ref = listRef ?? ownRef;
   useScrollEdges(ref);
   return (
-    <ul
-      aria-labelledby={labelledBy}
-      className="side-list"
-      data-scroll-edges=""
-      data-whole-rows={whole ? "" : undefined}
-      ref={ref}
-    >
+    <ul aria-labelledby={labelledBy} className="side-list" data-scroll-edges="" ref={ref}>
       {children}
     </ul>
   );
@@ -1070,63 +1051,6 @@ function VoiceButton({ onOpen }: { readonly onOpen: () => void }) {
   );
 }
 
-/**
- * Which side of the switch shows. On load it follows the address (a channel
- * opens on its team, a task on Tasks), else what this person last chose here;
- * after that only the person changes it.
- */
-function useSidebarSide(
-  deploymentId: string | null,
-  userId: string | null,
-  pathname: string,
-): readonly [string, (side: string) => void] {
-  const key = `opensteer.sidebar.side:${deploymentId ?? ""}:${userId ?? ""}`;
-  const loadedAt = useRef(pathname).current;
-  const [chosen, setChosen] = useState<{ readonly key: string; readonly side: string } | null>(
-    null,
-  );
-  const loaded = useMemo(() => routeSide(loadedAt) ?? storedSide(key), [key, loadedAt]);
-  const side = chosen?.key === key ? chosen.side : loaded;
-  const { teams } = useTeams();
-  const choose = useCallback(
-    (next: string) => {
-      setChosen({ key, side: next });
-      try {
-        localStorage.setItem(key, next);
-      } catch {
-        // The choice still holds for this window.
-      }
-    },
-    [key],
-  );
-  // A team that is gone leaves its side; Tasks is what remains.
-  return [side === "tasks" || teams.some((team) => team.teamId === side) ? side : "tasks", choose];
-}
-
-/** The team a navigation entered, as `TeamDialogsProvider` marks it. */
-export function enteredTeamOf(state: unknown): string | null {
-  return typeof state === "object" &&
-    state !== null &&
-    "enteredTeam" in state &&
-    typeof state.enteredTeam === "string"
-    ? state.enteredTeam
-    : null;
-}
-
-function routeSide(pathname: string): string | null {
-  const team = /^\/teams\/([^/]+)\//u.exec(pathname);
-  if (team) return decodeURIComponent(team[1]!);
-  return pathname.startsWith("/tasks/") ? "tasks" : null;
-}
-
-function storedSide(key: string): string {
-  try {
-    return localStorage.getItem(key) ?? "tasks";
-  } catch {
-    return "tasks";
-  }
-}
-
 const selectTasksBadge = (snapshot: HostSnapshot): SegmentBadge => {
   const needs = snapshot.needsYou?.count ?? 0;
   if (needs > 0) return { kind: "needs-you", count: needs };
@@ -1138,17 +1062,15 @@ const sameBadge = (left: SegmentBadge, right: SegmentBadge) =>
 /** The switch, with the Tasks badge read here so it never redraws the lists. */
 function TasksBadgeSwitch({
   hostClient,
-  onNavigate,
   onSide,
-  side,
+  sides,
 }: {
   readonly hostClient: HostClient;
-  readonly onNavigate: () => void;
-  readonly onSide: (side: string) => void;
-  readonly side: string;
+  readonly onSide: (side: SidebarSide) => void;
+  readonly sides: SidebarSides;
 }) {
   const badge = useHostSelector(hostClient, selectTasksBadge, sameBadge);
-  return <TeamSwitch onNavigate={onNavigate} onSide={onSide} side={side} tasksBadge={badge} />;
+  return <TeamSwitch onSide={onSide} sides={sides} tasksBadge={badge} />;
 }
 
 /**
@@ -1728,6 +1650,7 @@ function SidebarFooter({
 }) {
   const navigate = useNavigate();
   const places = useDesktopPlaces();
+  const inTeams = useTeams().teams.length > 0;
   const [open, setOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const anchorRef = useRef<HTMLButtonElement | null>(null);
@@ -1751,6 +1674,16 @@ function SidebarFooter({
       : []),
     { icon: "bolt", label: "Automations", onSelect: () => go("/automations", true) },
     { icon: "settings", label: "Settings", onSelect: () => go("/settings", false) },
+    // Once in a team, this lives under Settings → Teams instead.
+    ...(inTeams
+      ? []
+      : [
+          {
+            icon: "users" as const,
+            label: "Create or join a team",
+            onSelect: () => go("/teams", false),
+          },
+        ]),
   ];
   return (
     <div className="sidebar__footer">

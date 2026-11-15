@@ -1,3 +1,5 @@
+import { personalRouteInvalid } from "../side-memory-validity.js";
+import { sideMemory } from "../side-memory.js";
 import { layoutRoute } from "../navigation-presentations.js";
 import type { PersonalSurfaceDestination } from "@opensteer/client/host";
 import { StackActions, type NavigationAction } from "@react-navigation/native";
@@ -73,13 +75,16 @@ import {
   type SidebarActions,
   type SidebarDestination,
 } from "./sidebar-panel.js";
+import { chooseSide, type SidebarSides } from "@opensteer/client/team";
+import { sideOfScreen, type SidebarSide } from "./sidebar-side.js";
+import type { TeamPlace } from "./team-side.js";
 
 /**
  * The sidebar around the app's one native stack.
  *
  * It is the stack's own `layout`, so it wraps the navigator in place: there is
- * still exactly one navigator, one history and one `navigationRef`, and every
- * row the sidebar offers is made top-level, directly on Home (`top-level.ts`).
+ * still exactly one navigator and one `navigationRef`. The active side
+ * resumes its route chain over the same mounted Home.
  * Native sheets present above it, because UIKit presents them from the stack
  * itself.
  *
@@ -106,6 +111,14 @@ const destinations: ReadonlySet<string> = new Set<SidebarDestination>([
   "Home",
   "Schedules",
   "Tabs",
+]);
+
+/** Team places a team's side presents over the screen in front rather than making top-level. */
+const presentedTeamPlaces: ReadonlySet<TeamPlace["name"]> = new Set([
+  "TeamInvites",
+  "TeamNewChannel",
+  "TeamNewMessage",
+  "TeamSettings",
 ]);
 
 /**
@@ -195,6 +208,39 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
       ? topParams["threadId"]
       : null;
   const openTeamId = typeof topParams?.["teamId"] === "string" ? topParams["teamId"] : null;
+  const channelRoute = props.state.routes
+    .slice(0, props.state.index + 1)
+    .findLast((route) => route.name === "TeamChannel");
+  const channelParams = isRecord(channelRoute?.params) ? channelRoute.params : null;
+  const openChannelId =
+    channelRoute?.name === "TeamChannel" && typeof channelParams?.["channelId"] === "string"
+      ? channelParams["channelId"]
+      : null;
+  // The side follows the screen in front each time that changes, including back
+  // to one shown before; in between, only the person moves it. Kept here, so the
+  // drawer and the column agree. The panel shows Tasks for a team it no longer lists.
+  const frontSide = sideOfScreen(topLevel);
+  const [sides, setSides] = useState<SidebarSides>(() =>
+    chooseSide({ side: "tasks", recent: null }, frontSide ?? "tasks"),
+  );
+  const setSide = useCallback(
+    (side: SidebarSide) => setSides((held) => chooseSide(held, side)),
+    [],
+  );
+  const frontKey = topLevel?.key ?? null;
+  const [sideFront, setSideFront] = useState(frontKey);
+  if (sideFront !== frontKey) {
+    setSideFront(frontKey);
+    if (frontSide !== null) setSides((held) => chooseSide(held, frontSide));
+  }
+  const switchSide = useCallback(
+    (next: SidebarSide) => {
+      setSide(next);
+      const action = sideMemory.resume(latest.current, next);
+      if (action !== null) props.navigation.dispatch(action);
+    },
+    [props.navigation],
+  );
   const swipes = sidebarSwipes(focused, props.state);
   // The exact tab, app or phone in front, as its route names it; held while
   // the route's params are, so the panel is not redrawn for the same one.
@@ -317,6 +363,18 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   const hostClient = useSelectedHostClient();
   const readerId = useHostUserId(hostClient);
   useEffect(() => {
+    if (hostClient === null) return;
+    const reconcile = (): void => {
+      const snapshot = hostClient.getSnapshot();
+      const action = sideMemory.trim(latest.current, (route) =>
+        personalRouteInvalid(route, snapshot),
+      );
+      if (action !== null) props.navigation.dispatch(action);
+    };
+    reconcile();
+    return hostClient.subscribe(reconcile);
+  }, [hostClient, props.navigation]);
+  useEffect(() => {
     close();
   }, [close, deploymentId, docked, focusedKey, hostClient, readerId]);
   // Another Deployment's list starts at its top.
@@ -341,10 +399,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
 
   const actions = useMemo<SidebarActions>(() => {
     const navigation = props.navigation;
-    /**
-     * Makes a row top-level. Home's own route stays, so the mounted Home keeps
-     * its draft, and the stack never grows by moving around the sidebar.
-     */
+    /** An explicit row replaces its own side over the mounted Home. */
     const go = (target: TopLevelTarget): void => {
       leave();
       const action = openTopLevel(latest.current, target);
@@ -392,8 +447,10 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
             ...(requestId === undefined ? {} : { requestId }),
           },
         }),
-      onOpenTeam: (teamId) => go({ name: "TeamHome", params: { teamId } }),
-      onTeams: () => go({ name: "Teams", params: {} }),
+      onOpenTeamPlace: (place) =>
+        presentedTeamPlaces.has(place.name)
+          ? present(StackActions.push(place.name, place.params))
+          : go(place),
       onTeamSetup: (hostedTeamId) => present(StackActions.push("TeamSetup", { hostedTeamId })),
       onSearch: () => show("TaskSearch"),
       onSettings: () => present(StackActions.push("Settings")),
@@ -431,8 +488,11 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                   docked={false}
                   scroll={scrollMemory}
                   shelves={shelfMemory}
+                  onSide={switchSide}
+                  openChannelId={openChannelId}
                   openTeamId={openTeamId}
                   selectedThreadId={selectedThreadId}
+                  sides={sides}
                   visible={visible}
                 />
               )
@@ -469,8 +529,11 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                       docked
                       scroll={scrollMemory}
                       shelves={shelfMemory}
+                      onSide={switchSide}
+                      openChannelId={openChannelId}
                       openTeamId={openTeamId}
                       selectedThreadId={selectedThreadId}
+                      sides={sides}
                       visible
                     />
                   </Pane>

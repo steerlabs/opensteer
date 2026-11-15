@@ -21,6 +21,7 @@ import {
   type HostClient,
 } from "@opensteer/client/host";
 import {
+  AccountProfileRelay,
   createMemoryTeamPersistence,
   listedTeams,
   TeamSessionClient,
@@ -43,6 +44,7 @@ import { channelKind } from "./team-view-models.js";
 import { teamTile } from "./team-people.js";
 import { browserTeamSession, desktopTeamSession } from "./team-transports.js";
 import {
+  desktopAccountTeams,
   desktopTeamSessions,
   desktopTeamCoordination,
   previewTeamCoordination,
@@ -99,6 +101,7 @@ export interface TeamAccount {
 }
 
 interface TeamsValue {
+  readonly forgotten: ReadonlySet<string>;
   readonly owner: TeamRuntimeOwner | null;
   readonly surface: TeamSurface["kind"] | null;
   readonly teams: readonly TeamAttachment[];
@@ -115,12 +118,15 @@ interface TeamsValue {
   readonly enter: ((teamId: string) => Promise<void>) | null;
   /** Creating and joining hosted teams in this app; null where they open in the browser. */
   readonly coordination: WebTeamCoordination | null;
+  /** The person's Account name as this app's team sessions relay it; null without one. */
+  readonly profiles: AccountProfileRelay | null;
   readonly account: TeamAccount | null;
   /** Where the app goes when a team is entered; bound by the router. */
   readonly navigator: { current: ((path: string) => void) | null };
 }
 
 const TeamsContext = createContext<TeamsValue>({
+  forgotten: new Set(),
   owner: null,
   surface: null,
   teams: [],
@@ -130,6 +136,7 @@ const TeamsContext = createContext<TeamsValue>({
   forget: async () => undefined,
   enter: null,
   coordination: null,
+  profiles: null,
   account: null,
   navigator: { current: null },
 });
@@ -255,7 +262,10 @@ export function TeamsProvider({
     () => null,
   );
   useEffect(() => {
-    const open = (teamId: string) => navigator.current?.(teamPath(teamId, ""));
+    const open = (teamId: string) => {
+      setForgotten((held) => new Set([...held].filter((id) => id !== teamId)));
+      navigator.current?.(teamPath(teamId, ""));
+    };
     const made =
       world && hostClient
         ? previewTeamCoordination({ world, hostClient, open })
@@ -298,13 +308,23 @@ export function TeamsProvider({
   );
   const memberRef = useRef(members);
   memberRef.current = members;
+  // Main holds the Account session, so the desktop reads the name through it.
+  const profiles = useMemo(
+    () =>
+      bridge?.accountTeams
+        ? new AccountProfileRelay(
+            desktopAccountTeams({ accountTeams: bridge.accountTeams.bind(bridge) }, owner),
+          )
+        : null,
+    [bridge, owner],
+  );
   const registry = useMemo(
     () =>
       bridge
         ? new TeamTransportRegistry("desktop", (scope: TeamCacheScope) => {
             const team = memberRef.current.get(scope.teamDeploymentId);
             if (!team) throw new Error("This team is not on this computer.");
-            return desktopTeamSession({
+            const options = desktopTeamSession({
               bridge,
               origin: team.origin,
               scope,
@@ -319,9 +339,10 @@ export function TeamsProvider({
                   owner,
                 ),
             });
+            return profiles ? { ...options, profiles } : options;
           })
         : null,
-    [bridge, owner],
+    [bridge, owner, profiles],
   );
   useEffect(() => {
     setClients(new Map());
@@ -437,6 +458,7 @@ export function TeamsProvider({
         await session.leave();
       }
       if (registry && scope) await registry.remove(scope);
+      setForgotten((held) => new Set([...held, teamId]));
       await reload();
     },
     [linked, coordination, world, worldTeams, sessionOf, registry, reload],
@@ -471,6 +493,7 @@ export function TeamsProvider({
               owner.assertCurrent();
               await owner.run(() => sessions.signIn(verified, null));
             } else await coordination.coordinator.enterTeam(team.origin);
+            setForgotten((held) => new Set([...held].filter((id) => id !== teamId)));
             setEntered((count) => count + 1);
           }
         : null,
@@ -493,6 +516,7 @@ export function TeamsProvider({
               link: linked.find((link) => link.teamId === teamId) ?? null,
             }));
     return {
+      forgotten,
       owner,
       surface: surface.kind,
       teams: teams.filter((team) => !forgotten.has(team.teamId)),
@@ -502,10 +526,12 @@ export function TeamsProvider({
       forget,
       enter,
       coordination,
+      profiles,
       account,
       navigator,
     };
   }, [
+    profiles,
     account,
     owner,
     clients,
