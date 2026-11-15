@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { createId } from "@opensteer/core";
-import type { AssetUrlsInput } from "@opensteer/protocol";
+import { createId, ThreadIdSchema } from "@opensteer/core";
+import { AssetVariantSchema, type AssetUrlsInput } from "@opensteer/protocol";
+import { z } from "zod";
 import { AssetUrlStore, assetImageUrl } from "./asset-urls.js";
 
 const stores: AssetUrlStore[] = [];
@@ -243,11 +244,23 @@ it("includes FileSource kind and variant in identity and only notifies the affec
     store.get("d", thread, attachment, "preview"),
     store.get("d", thread, path, "original"),
   ]);
-  expect(read).toHaveBeenCalledTimes(2);
-  expect(read.mock.calls[1]![0].assets).toEqual([
-    { source: attachment, variant: "preview" },
-    { path: path.path, variant: "original" },
-  ]);
+  expect(read).toHaveBeenCalledTimes(3);
+  // The path batch stays readable by a Host from before `source`.
+  const batches = read.mock.calls.slice(1).map(([input]) => input);
+  const attachmentBatch = batches.find((input) => input.assets[0]!.source);
+  const pathBatch = batches.find((input) => input.assets[0]!.path);
+  expect(attachmentBatch!.assets).toEqual([{ source: attachment, variant: "preview" }]);
+  expect(pathBatch).toEqual({ threadId: thread, assets: [{ path: id, variant: "original" }] });
+  expect(
+    z
+      .strictObject({
+        threadId: ThreadIdSchema,
+        assets: z.array(
+          z.strictObject({ path: z.string().min(1), variant: AssetVariantSchema }),
+        ),
+      })
+      .safeParse(pathBatch).success,
+  ).toBe(true);
 });
 it("drops late mint answers after ownership reset and preserves retained subscriptions", async () => {
   const { store, read, thread } = setup();

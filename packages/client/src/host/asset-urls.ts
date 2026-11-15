@@ -291,7 +291,10 @@ export class AssetUrlStore {
     if (this.#disposed) return;
     const groups = new Map<string, Entry[]>();
     for (const entry of this.#queue) {
-      const key = JSON.stringify([entry.deploymentId, entry.threadId]);
+      // A task's paths batch apart from everything else, in the shape every Host in the API
+      // window reads, so one newer item cannot fail an older Host's whole batch.
+      const legacy = entry.threadId !== null && entry.source.kind === "path";
+      const key = JSON.stringify([entry.deploymentId, entry.threadId, legacy]);
       const group = groups.get(key) ?? [];
       group.push(entry);
       groups.set(key, group);
