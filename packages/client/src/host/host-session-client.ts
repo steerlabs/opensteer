@@ -1,3 +1,5 @@
+import { ReferenceStore } from "../references/store.js";
+import { TranscriptFileController } from "./transcript-files.js";
 import { AssetUrlStore, type AssetRoute } from "./asset-urls.js";
 import { needsYouEntryKey, refreshNeedsYou } from "./needs-you.js";
 import {
@@ -455,6 +457,8 @@ export class HttpHostClient {
   readonly listComputerAppWindows: OwnerViewHostClient["listComputerAppWindows"];
   readonly listApprovedComputerApps: OwnerViewHostClient["listApprovedComputerApps"];
   readonly assetUrls: AssetUrlStore;
+  readonly references: ReferenceStore;
+  readonly transcriptFiles: TranscriptFileController;
   readonly rpc: HostApiClient;
   readonly #baseUrl: URL;
   readonly #streamCache: PersonalStreamCache | undefined;
@@ -1000,7 +1004,8 @@ export class HttpHostClient {
       onVersionMismatch: () => this.#reverifyCapabilities(),
     });
     this.assetUrls = new AssetUrlStore(
-      this.rpc,
+      async (input, signal) =>
+        unwrapRpcResult(await this.rpc["asset.urls"](input, signal ? { signal } : undefined)),
       options.assetRoute
         ? {
             origin: async (deploymentId) => {
@@ -1014,6 +1019,44 @@ export class HttpHostClient {
         : { origin: async () => this.#baseUrl.origin },
       options.desktopMedia,
     );
+    this.transcriptFiles = new TranscriptFileController({
+      rpc: {
+        openFile: async (input, signal) =>
+          unwrapRpcResult(await this.rpc["file.open"](input, signal ? { signal } : undefined)),
+        readFile: async (input, signal) =>
+          unwrapRpcResult(await this.rpc["file.content"](input, signal ? { signal } : undefined)),
+      },
+    });
+    const initialReferenceSnapshot = this.#snapshot;
+    let referenceOwner = JSON.stringify([
+      initialReferenceSnapshot.deploymentId,
+      initialReferenceSnapshot.user?.id,
+      initialReferenceSnapshot.sessionId,
+      initialReferenceSnapshot.session,
+    ]);
+    this.references = new ReferenceStore({
+      getSnapshot: () => this.#snapshot,
+      resolveReferences: async (input, signal) =>
+        unwrapRpcResult(
+          await this.rpc["references.resolve"](input, signal ? { signal } : undefined),
+        ),
+      subscribe: (listener) =>
+        this.subscribe(() => {
+          const snapshot = this.#snapshot;
+          const owner = JSON.stringify([
+            snapshot.deploymentId,
+            snapshot.user?.id,
+            snapshot.sessionId,
+            snapshot.session,
+          ]);
+          if (owner !== referenceOwner) {
+            referenceOwner = owner;
+            this.assetUrls.reset();
+            this.transcriptFiles.reset();
+          }
+          listener();
+        }),
+    });
     this.#personalTabActivations = new PersonalTabActivations({
       snapshot: () => this.#snapshot,
       subscribe: (listener) => this.subscribe(listener),
@@ -3291,6 +3334,8 @@ export class HttpHostClient {
   }
 
   dispose(): void {
+    this.references.dispose();
+    this.transcriptFiles.dispose();
     this.assetUrls.dispose();
     this.#nodeDetails.clear();
     this.#pendingBrowserTabs.dispose();
@@ -4618,6 +4663,7 @@ export class HttpHostClient {
       return;
     }
     if (message.type === "host.resync-required") {
+      this.references.reconnect();
       channel.cursor = zeroSequence;
       channel.reconnectAttempt = 0;
       this.#closeChannel(channel, true, 4009, "Fresh snapshot required");
@@ -5035,6 +5081,7 @@ export class HttpHostClient {
         continue;
       }
       this.#nodeDetails.accept(event);
+      this.references.accept(event);
       if (nodeDetailEventNodeId(event)) {
         this.#live.complete(event);
         applied = event.sequence;

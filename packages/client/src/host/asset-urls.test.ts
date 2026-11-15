@@ -1,9 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
-import type { TranscriptAssetUrlsInput } from "@opensteer/protocol";
+import type { AssetUrlsInput } from "@opensteer/protocol";
 import { AssetUrlStore, assetImageUrl } from "./asset-urls.js";
-import { mockReferenceReadPorts } from "../references/mock.js";
-import { MockHostClient } from "../mock/mock-host-client.js";
 
 const stores: AssetUrlStore[] = [];
 afterEach(() => {
@@ -18,7 +16,7 @@ function setup() {
   let origin = "https://first.example";
   let invalidate: () => void = () => {};
   let revision = 1;
-  const read = vi.fn(async (input: TranscriptAssetUrlsInput) => ({
+  const read = vi.fn(async (input: AssetUrlsInput) => ({
     ok: true as const,
     data: {
       assets: input.assets.map(({ source, variant }) => ({
@@ -193,27 +191,7 @@ it("binds desktop URLs to the minting Deployment", () => {
     assetImageUrl("deployment-a", "/media/token/photo%20one.png", "https://ignored.example", true),
   ).toBe("app://opensteer/media/deployment-a/token/photo%20one.png");
 });
-it("implements ordered unavailable asset results in the mock", async () => {
-  const mock = new MockHostClient({ latencyMs: 0 });
-  try {
-    expect(
-      await mockReferenceReadPorts(mock.getSnapshot).assetUrls({
-        threadId: createId("thread"),
-        assets: [
-          { source: { kind: "path", path: "/missing.png" }, variant: "preview" },
-          { source: { kind: "path", path: "/missing.png" }, variant: "original" },
-        ],
-      }),
-    ).toEqual({
-      assets: [
-        { status: "unavailable", reason: "missing" },
-        { status: "unavailable", reason: "missing" },
-      ],
-    });
-  } finally {
-    mock.dispose();
-  }
-});
+
 
 it("re-mints when time jumps past expiry and isolates Deployment metadata", async () => {
   const { store, read, thread } = setup();

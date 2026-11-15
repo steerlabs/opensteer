@@ -1,6 +1,6 @@
 import { ThreadIdSchema } from "@opensteer/core";
 import { z } from "zod";
-import { AssetUrlSchema, AssetVariantSchema, assetUrlsMaxPaths } from "./assets.js";
+import { AssetUrlSchema } from "./assets.js";
 import { FileSourceSchema, FileResourceSchema } from "./file-sources.js";
 
 export const transcriptFilePreviewMaxBytes = 512 * 1024;
@@ -52,17 +52,3 @@ export type TranscriptFileOpenInput = z.infer<typeof TranscriptFileOpenInputSche
 export type TranscriptFileOpen = z.infer<typeof TranscriptFileOpenSchema>;
 export type TranscriptFileContentInput = z.infer<typeof TranscriptFileContentInputSchema>;
 export type TranscriptFileContent = z.infer<typeof TranscriptFileContentSchema>;
-
-/** Proposed source-based media input; the registered asset.urls encoding remains unchanged. */
-export const TranscriptAssetUrlsInputSchema = z.strictObject({
-  threadId: ThreadIdSchema.nullable(),
-  assets: z
-    .array(z.strictObject({ source: FileSourceSchema, variant: AssetVariantSchema }))
-    .min(1)
-    .max(assetUrlsMaxPaths),
-});
-export const TranscriptAssetUrlsSchema = z.strictObject({
-  assets: z.array(AssetUrlSchema).max(assetUrlsMaxPaths),
-});
-export type TranscriptAssetUrlsInput = z.infer<typeof TranscriptAssetUrlsInputSchema>;
-export type TranscriptAssetUrls = z.infer<typeof TranscriptAssetUrlsSchema>;

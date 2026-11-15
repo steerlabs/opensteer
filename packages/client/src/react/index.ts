@@ -41,3 +41,4 @@ export * from "./use-team-share-participants.js";
 export * from "./use-idle-compaction.js";
 
 export * from "./use-asset-image.js";
+export * from "./use-reference.js";

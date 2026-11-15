@@ -9,14 +9,14 @@ import {
   FileResourceSchema,
   type AssetUrl,
   type AssetVariant,
-  type TranscriptAssetUrlsInput,
+  type AssetUrlsInput,
   transcriptFileContentMaxBytes,
 } from "@opensteer/protocol";
 import { noFollowFlag, readBounded } from "@opensteer/shared/privateFiles";
 import type { FastifyInstance } from "fastify";
 import {
   rpcSuccess,
-  TranscriptAssetUrlsSchema,
+  AssetUrlsSchema,
   type HostApiServerContext,
 } from "@opensteer/protocol";
 import { requireSession } from "../integrations/integration-rpc-context.js";
@@ -84,7 +84,7 @@ export class AssetService {
       else this.#active--;
     }
   }
-  async urls(input: TranscriptAssetUrlsInput, actor: FileActor, signal?: AbortSignal) {
+  async urls(input: AssetUrlsInput, actor: FileActor, signal?: AbortSignal) {
     const context = { userId: actor.userId, threadId: input.threadId };
     await this.options.access.admit(context);
     if (!(await this.options.authorizeMedia({ ...context, sessionId: actor.sessionId })))
@@ -335,11 +335,11 @@ export class AssetService {
 }
 export function createAssetUrlHandlers(assets: AssetService | undefined) {
   return {
-    "asset.urls": async (input: TranscriptAssetUrlsInput, context: HostApiServerContext) => {
+    "asset.urls": async (input: AssetUrlsInput, context: HostApiServerContext) => {
       const session = requireSession(context);
       if (!assets) throw fileUnavailable();
       return rpcSuccess(
-        TranscriptAssetUrlsSchema.parse(
+        AssetUrlsSchema.parse(
           await assets.urls(
             input,
             { userId: session.user.id, sessionId: session.id },

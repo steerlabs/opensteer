@@ -1,6 +1,8 @@
 import { localReference } from "../references/local.js";
 import { parseReferenceHref, type ReferenceId } from "@opensteer/core";
 import { AssetUrlStore } from "../host/asset-urls.js";
+import { ReferenceStore } from "../references/store.js";
+import { TranscriptFileController } from "../host/transcript-files.js";
 import { openWaitingMessageEditor } from "../host/waiting-message-editor.js";
 import { isDeviceAccessRequestEvent } from "@opensteer/protocol";
 import { deviceAccess } from "@opensteer/protocol";
@@ -3977,6 +3979,8 @@ export class MockHostClient implements HostClient {
   readonly browserFrames: BrowserFrameStore;
   readonly browserWatchFrames: BrowserFrameStore;
   readonly assetUrls: AssetUrlStore;
+  readonly references: ReferenceStore;
+  readonly transcriptFiles: TranscriptFileController;
   readonly rpc: HostApiClient;
   get cardUseMockStates() {
     return this.#state.cardUseMockStates;
@@ -4127,7 +4131,40 @@ export class MockHostClient implements HostClient {
       mockHostApiHandlers(this.#state, options.referenceResolveFailureId),
       mockRpcContext(),
     );
-    this.assetUrls = new AssetUrlStore(this.rpc, { origin: async () => "http://mock.invalid" });
+    this.assetUrls = new AssetUrlStore(
+      async (input, signal) =>
+        unwrapRpcResult(await this.rpc["asset.urls"](input, signal ? { signal } : undefined)),
+      { origin: async () => "http://mock.invalid" },
+    );
+    this.transcriptFiles = new TranscriptFileController({
+      rpc: {
+        openFile: async (input, signal) =>
+          unwrapRpcResult(await this.rpc["file.open"](input, signal ? { signal } : undefined)),
+        readFile: async (input, signal) =>
+          unwrapRpcResult(await this.rpc["file.content"](input, signal ? { signal } : undefined)),
+      },
+    });
+    const referenceOwner = (snapshot: PublicHostSnapshot) =>
+      JSON.stringify([snapshot.deploymentId, snapshot.user?.id, snapshot.sessionId, snapshot.session]);
+    let owner = referenceOwner(this.#state.getSnapshot());
+    this.references = new ReferenceStore({
+      getSnapshot: this.#state.getSnapshot,
+      resolveReferences: async (input, signal) =>
+        unwrapRpcResult(
+          await this.rpc["references.resolve"](input, signal ? { signal } : undefined),
+        ),
+      subscribe: (listener) =>
+        this.#state.subscribe(() => {
+          const next = referenceOwner(this.#state.getSnapshot());
+          if (next !== owner) {
+            owner = next;
+            this.assetUrls.reset();
+            this.transcriptFiles.reset();
+          }
+          listener();
+        }),
+    });
+    this.#state.onReferenceEvent = (event) => this.references.accept(event);
     this.#nodeDetails = new NodeDetailStore({
       available: () => true,
       nodes: (threadId) =>
@@ -5115,6 +5152,8 @@ export class MockHostClient implements HostClient {
   }
 
   dispose(): void {
+    this.references.dispose();
+    this.transcriptFiles.dispose();
     this.assetUrls.dispose();
     this.#nodeDetails.clear();
     this.#personShowListeners.clear();
@@ -5404,6 +5443,7 @@ interface MockPlugin {
   updatedAt: string;
 }
 class MockHostState {
+  onReferenceEvent: ((event: AgentEvent) => void) | undefined;
   teamAsks: import("@opensteer/protocol").NeedsYouTeamAskEntry[] = [];
   readonly teamLinks = new Map<string, PersonalTeamLink>();
   nodeEvents: readonly import("@opensteer/core").AgentEventView[] = [];
@@ -5809,6 +5849,7 @@ class MockHostState {
   }
 
   applyThreadStateChanged(event: Extract<AgentEvent, { type: "thread.state-changed" }>): void {
+    this.onReferenceEvent?.(event);
     const previous = this.snapshot.threads.find(({ id }) => id === event.threadId);
     this.sequence = Math.max(this.sequence, Number(event.sequence));
     this.#threadState.record(event);

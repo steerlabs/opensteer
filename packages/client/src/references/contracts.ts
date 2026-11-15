@@ -11,8 +11,8 @@ import type {
 } from "@opensteer/core";
 import type {
   AvailableReference,
-  TranscriptAssetUrlsInput,
-  TranscriptAssetUrls,
+  AssetUrlsInput,
+  AssetUrls,
   FileSource,
   ReferenceResolveInput,
   ReferenceResolveResult,
@@ -61,9 +61,9 @@ export interface PersonalReferenceNavigationPorts extends ReferenceNavigationPor
 /** Adapters unwrap RPC results; these ports stay usable before RPC registration. */
 export interface ReferenceReadPorts {
   readonly assetUrls: (
-    input: TranscriptAssetUrlsInput,
+    input: AssetUrlsInput,
     signal?: AbortSignal,
-  ) => Promise<TranscriptAssetUrls>;
+  ) => Promise<AssetUrls>;
   readonly resolveReferences: (
     input: ReferenceResolveInput,
     signal?: AbortSignal,

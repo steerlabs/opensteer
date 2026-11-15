@@ -6,11 +6,8 @@ import {
   ReferenceResolveResultSchema,
 } from "./references.js";
 import { FileResourceSchema } from "./file-sources.js";
-import {
-  TranscriptFileOpenInputSchema,
-  TranscriptFileContentInputSchema,
-  TranscriptAssetUrlsInputSchema,
-} from "./transcript-files.js";
+import { TranscriptFileOpenInputSchema, TranscriptFileContentInputSchema } from "./transcript-files.js";
+import { AssetUrlsInputSchema } from "./assets.js";
 
 it("bounds resolution inputs and refuses undeclared private payloads in metadata", () => {
   const id = createId("thread");
@@ -43,7 +40,7 @@ it("keeps nullable file context and all three opaque resources without changing 
     );
   }
   expect(
-    TranscriptAssetUrlsInputSchema.parse({
+    AssetUrlsInputSchema.parse({
       threadId: null,
       assets: [{ source, variant: "preview" }],
     }).assets,

@@ -2,7 +2,8 @@ import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostic
 import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import {
   HostApiErrorSchema,
-  AttachmentContentMetadataSchema,
+  TranscriptFileContentSchema,
+  transcriptFileContentMaxBytes,
   hostApi,
   hostApiVersionHeader,
   type HostApiClient,
@@ -170,7 +171,11 @@ async function request<Name extends keyof typeof hostApi>(
   }
   const diagnostic = name === "bootstrap.get" ? bootstrapReadDiagnostics.takeSummary() : undefined;
   const deadline = new HostResponseDeadline(call?.signal);
-  const maximumBytes = declaration.stream ? attachmentMaxBytes : 16 * 1_024 * 1_024;
+  const maximumBytes = declaration.stream
+    ? name === "file.content"
+      ? transcriptFileContentMaxBytes
+      : attachmentMaxBytes
+    : 16 * 1_024 * 1_024;
   const headersTimeoutMs =
     name === "commands.dispatch" && "type" in payload && payload.type === "browser.tab.open"
       ? 25_000
@@ -236,7 +241,7 @@ async function request<Name extends keyof typeof hostApi>(
     call?.signal?.throwIfAborted();
     if (declaration.stream && response.ok) {
       const modified = response.headers.get("last-modified");
-      const metadata = AttachmentContentMetadataSchema.parse({
+      const metadata = TranscriptFileContentSchema.shape.metadata.parse({
         contentType: response.headers.get("content-type") ?? "application/octet-stream",
         etag: response.headers.get("etag") ?? "missing",
         modifiedAt: modified ? new Date(modified).toISOString() : null,

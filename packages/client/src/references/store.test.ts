@@ -15,7 +15,6 @@ import type {
 import type { HostSnapshot } from "../host/client.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { ReferenceStore } from "./store.js";
-import { mockReferenceReadPorts, mockFailedReferenceId } from "./mock.js";
 import { localReference, localTeamReference } from "./local.js";
 import { refTarget, teamPageTarget } from "./destination.js";
 
@@ -467,19 +466,3 @@ it("holds automatic work while disconnected and sends one batch on connection re
   calls[0]!.answer.resolve({ results: [task(id)] });
 });
 
-it("resolves real mock fixtures absent from the consumer snapshot, refuses unknown IDs and exposes transient failure", async () => {
-  const reads = mockReferenceReadPorts(() => base);
-  const snapshot = { ...base, threads: [], activeTasks: [], tasks: null, doneTasks: {} };
-  const store = new ReferenceStore({
-    getSnapshot: () => snapshot,
-    resolveReferences: reads.resolveReferences,
-  });
-  stores.push(store);
-  const id = ThreadIdSchema.parse(base.threads[0]!.id);
-  expect(store.read(id)).toEqual({ state: "unresolved" });
-  expect(await store.resolve(id)).toMatchObject({ status: "available", id });
-  const unknown = createId("thread");
-  expect(await store.resolve(unknown)).toEqual({ status: "unavailable", id: unknown });
-  await expect(store.resolve(mockFailedReferenceId)).rejects.toMatchObject({ code: "timeout" });
-  expect(store.read(mockFailedReferenceId)).toEqual({ state: "failed" });
-});

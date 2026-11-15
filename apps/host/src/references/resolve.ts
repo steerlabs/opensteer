@@ -1,4 +1,4 @@
-import { OpensteerError, type ReferenceId, type RequestId, type UserId } from "@opensteer/core";
+import { OpensteerError, type ReferenceId, type UserId } from "@opensteer/core";
 import type { DatabaseSchema, OpensteerStore } from "@opensteer/database";
 import {
   hostApi,
@@ -39,9 +39,7 @@ export function createThreadRequestHandler(
   store: Pick<OpensteerStore, "getThreadForOwner" | "requests">,
 ) {
   return async (
-    input: z.output<(typeof hostApi)["thread.requests.list"]["payload"]> & {
-      requestId?: RequestId;
-    },
+    input: z.output<(typeof hostApi)["thread.requests.list"]["payload"]>,
     context: HostApiServerContext,
   ) => {
     const ownerId = requireSession(context).user.id;

@@ -1152,6 +1152,8 @@ export interface HostClient {
   readonly browserFrames: BrowserFrameStore;
   readonly browserWatchFrames: BrowserFrameStore;
   readonly assetUrls?: import("./asset-urls.js").AssetUrlStore;
+  readonly references: import("../references/store.js").ReferenceStore;
+  readonly transcriptFiles: import("./transcript-files.js").TranscriptFileController;
   readonly rpc: HostApiClient;
   createAttachment(input: {
     readonly name: string;
