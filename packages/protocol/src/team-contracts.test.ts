@@ -19,6 +19,7 @@ import {
   hostApiVersion,
   minimumTeamApiVersion,
   teamApiVersion,
+  minimumHostApiVersion,
 } from "@opensteer/deployment-authority";
 import {
   TeamBinaryDownloadHeadersSchema,
@@ -94,7 +95,7 @@ describe("team boundary contracts", () => {
       expect(acceptsTeamApiVersion(stated)).toBe(true);
     for (const stated of [undefined, "", "0", "01", "1.0", " 1", ["1"], minimumTeamApiVersion - 1])
       expect(acceptsTeamApiVersion(stated)).toBe(false);
-    expect(hostApiCompatibility({ kind: "personal", apiVersion: hostApiVersion - 1 })).toBe(
+    expect(hostApiCompatibility({ kind: "personal", apiVersion: minimumHostApiVersion - 1 })).toBe(
       "host-too-old",
     );
   });
