@@ -223,23 +223,7 @@ export class AppStore {
           published: existing.latestVersion > 0,
         };
       }
-      const appId = AppIdSchema.parse(`app_${randomUUID()}`);
-      const now = new Date();
-      await tx
-        .insertInto("apps")
-        .values({
-          id: appId,
-          ownerId: input.scope.userId,
-          computerId: input.computerId,
-          threadId: input.scope.threadId,
-          runId: input.scope.runId,
-          name,
-          creationKey: input.creationKey,
-          latestVersion: 0,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .execute();
+      const appId = await createApp(tx, { ...input, name });
       const port = await allocatePort(tx, appId, input.computerId);
       await tx
         .insertInto("appServers")
@@ -297,12 +281,13 @@ export class AppStore {
   }
 
   /**
-   * Commits one version after its content or server was verified. HTML retires a server
-   * by moving it to a new stopped generation, which the caller then stops.
+   * Commits one version after its content or server was verified. Without an appId it
+   * creates an HTML app. HTML retires a server by moving it to a new stopped generation,
+   * which the caller then stops.
    */
   async commit(input: {
     readonly scope: AppRunScope & { readonly environmentId: EnvironmentId };
-    readonly appId: AppId;
+    readonly appId?: AppId;
     readonly name: string;
     readonly publishKey: string;
     readonly expectedVersion?: number;
@@ -310,6 +295,7 @@ export class AppStore {
     readonly server?: AppServerSpec;
     readonly serverGeneration?: number;
   }): Promise<{
+    readonly appId: AppId;
     readonly version: number;
     readonly event: AgentEvent;
     readonly retiredServer: { readonly generation: number } | null;
@@ -325,7 +311,20 @@ export class AppStore {
       });
     return withPersonalTransaction(this.database, async (tx) => {
       const { agentHome } = await authorizeRun(tx, input.scope, Boolean(input.server));
-      const app = await lockApp(tx, input.scope.userId, input.appId, true);
+      if (!input.appId && !input.html)
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "A server app is reserved before it is published",
+        });
+      const appId =
+        input.appId ??
+        (await createApp(tx, {
+          scope: input.scope,
+          name,
+          creationKey: `${input.scope.runId}:${input.publishKey}`,
+          computerId: agentHome.computerId,
+        }));
+      const app = await lockApp(tx, input.scope.userId, appId, true);
       if (input.server) {
         const inside = relative(agentHome.path, input.server.folder.path);
         if (
@@ -396,7 +395,7 @@ export class AppStore {
         environmentId: input.scope.environmentId,
         data: { appId: app.id, version, title: name },
       });
-      return { version, event, retiredServer };
+      return { appId: app.id, version, event, retiredServer };
     });
   }
 
@@ -558,6 +557,35 @@ function appQuery(database: Kysely<DatabaseSchema>) {
       "appServers.generation",
       "appServers.lastError",
     ]);
+}
+
+async function createApp(
+  tx: Transaction<DatabaseSchema>,
+  input: {
+    readonly scope: AppRunScope;
+    readonly name: string;
+    readonly creationKey: string;
+    readonly computerId: RunnerId;
+  },
+): Promise<AppId> {
+  const appId = AppIdSchema.parse(`app_${randomUUID()}`);
+  const now = new Date();
+  await tx
+    .insertInto("apps")
+    .values({
+      id: appId,
+      ownerId: input.scope.userId,
+      computerId: input.computerId,
+      threadId: input.scope.threadId,
+      runId: input.scope.runId,
+      name: input.name,
+      creationKey: input.creationKey,
+      latestVersion: 0,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .execute();
+  return appId;
 }
 
 async function requireOwner(database: Kysely<DatabaseSchema>, ownerId: UserId): Promise<void> {
