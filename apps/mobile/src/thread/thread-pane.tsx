@@ -1235,9 +1235,10 @@ function ThreadPaneForUser(
         keyboardShouldPersistTaps="handled"
         keyExtractor={(item) => item.key}
         ListFooterComponent={listFooter}
-        // Beside a page, before anything has been said, the page is the subject.
+        // Beside a page, before anything has been said, the page is the subject;
+        // a task holding only waiting words is not empty.
         ListEmptyComponent={
-          companion === null ? (
+          companion === null && (snapshot.lookup === "loading" || !waiting?.length) ? (
             <EmptyThread loading={snapshot.lookup === "loading"} voice={voiceThread} />
           ) : undefined
         }

@@ -3337,7 +3337,7 @@ describe("a task", () => {
     expect(host.resumeThreadInputQueue).toHaveBeenCalledWith(workId);
   });
 
-  it("renders an empty task's queued bubble alongside its empty state", async () => {
+  it("shows an empty task's waiting message without the new-task prompt, and the prompt once it goes", async () => {
     const waiting = said("Start with these statements", null);
     const host = fakeHost(
       snapshotFor({
@@ -3349,8 +3349,12 @@ describe("a task", () => {
     );
     const { container } = await mount(host, workId);
     expect(container.querySelector('[aria-label="Queued message 1 of 1, up next"]')).not.toBeNull();
-    expect(text(container)).toContain("What would you like to do?");
     expect(text(container)).toContain(waiting.body);
+    expect(text(container)).not.toContain("What would you like to do?");
+    await act(async () =>
+      host.move(snapshotFor({ entries: [], queue: [], run: null, threadId: workId })),
+    );
+    expect(text(container)).toContain("What would you like to do?");
   });
 
   it("says its messages are loading, not that nothing was said, while it opens", async () => {
