@@ -129,7 +129,7 @@ export class ReferenceStore {
           (!entry.held || entry.blocked) &&
           this.#now() - entry.confirmedAt >= revalidateAfter)
       )
-        this.#request(entry);
+        void this.#request(entry);
     }
     let active = true;
     return () => {
@@ -279,7 +279,7 @@ export class ReferenceStore {
     this.#local(entry);
     if (!entry.held || entry.blocked) {
       this.#set(entry, unresolved);
-      if (entry.visible) this.#request(entry);
+      if (entry.visible) void this.#request(entry);
     }
   }
   /** A targeted open's authoritative refusal, never a batch authentication failure. */
@@ -410,7 +410,7 @@ export class ReferenceStore {
       if (!entry.listeners.size) this.#entries.delete(id);
       else if (!this.#disposed && this.#snapshot.session === "authenticated") {
         this.#local(entry);
-        if (entry.visible && !entry.held) this.#request(entry);
+        if (entry.visible && !entry.held) void this.#request(entry);
       }
     }
   }
