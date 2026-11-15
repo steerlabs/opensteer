@@ -250,8 +250,13 @@ test("a lockfile change selects the importers whose entries changed", () => {
     importers: ["apps/marketing", "packages/database"],
     other: false,
   });
-  // Settings, catalogs, overrides and patches reach everything.
+  // Settings, catalogs, overrides and patches reach everything, even beside importer edits.
   assert.equal(lockfileChanges(lock("1"), `settings:\n  x: 1\n${lock("1")}`).other, true);
+  const mixed = decide(["pnpm-lock.yaml"], fixtureGraph, fixtureGraph, {
+    repo: repoWith({ "pnpm-lock.yaml": `overrides:\n  react: 19.1.0\n${lock("19.1.0")}` }),
+  });
+  assert.equal(mixed.typecheck, "all");
+  assert.deepEqual(mixed.files.tests, unitAll);
   // An unreadable base lockfile cannot narrow anything.
   const missing = decide(["pnpm-lock.yaml"], fixtureGraph, fixtureGraph, {
     repo: repoWith({}, { "pnpm-lock.yaml": undefined }),

@@ -101,3 +101,11 @@ test("listed browser edits and source siblings run once through test:browser", a
     }
   }
 });
+test("typechecks what CI would, including a test-only owner and a root config", () => {
+  const graph = [{ name: "a", dir: "packages/a", deps: [], coverage: [] }];
+  const filtered = (p) =>
+    p.commands.some((c) => c.includes("--filter") && c.includes("a") && c.at(-1) === "typecheck");
+  // A test-only edit leaves `affected` empty but still typechecks its owner.
+  assert.ok(filtered(localPlan(["packages/a/value.test.ts"], graph, ["packages/a/value.test.ts"])));
+  assert.ok(filtered(localPlan(["tsconfig.json"], graph, [])));
+});

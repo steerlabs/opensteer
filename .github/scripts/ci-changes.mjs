@@ -455,9 +455,11 @@ export function decide(
       if (!lock || dirs.includes(".") || dirs.some((d) => !packages.some((p) => p.dir === d))) {
         typecheckAll = whole.tests = true;
         reasons.push("lockfile: root or unreadable importer changed");
-      } else if (!dirs.length && lock.other) {
+      } else if (lock.other) {
+        // Settings, catalogs, overrides and patches can reach any importer, with or without
+        // importer edits alongside.
         typecheckAll = whole.tests = true;
-        reasons.push("lockfile: shared dependencies changed");
+        reasons.push("lockfile: settings, catalogs, overrides or patches changed");
       }
       continue;
     }

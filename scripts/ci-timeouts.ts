@@ -41,6 +41,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     .record(z.string(), z.object({ p95: z.number(), runs: z.number() }))
     .parse(JSON.parse(readFileSync(path, "utf8")));
   const measured = new Map<string, number[]>();
+  // Every job the guard holds to a limit; ci-timeouts.test.mjs keeps this list matching ci.yml.
+  const jobs = Object.keys(recorded);
   const runIds = execFileSync(
     "gh",
     [
@@ -72,7 +74,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         list.push((Date.parse(job.completed_at) - Date.parse(job.started_at)) / 60_000);
       measured.set(jobName(job.name), list);
     }
-    if (measured.size && [...measured.values()].every((list) => list.length >= samples)) break;
+    // Stop only once every recorded job has its samples; selective runs skip heavy jobs often.
+    if (jobs.every((name) => (measured.get(name)?.length ?? 0) >= samples)) break;
   }
   const next = { ...recorded };
   for (const [name, minutes] of measured) next[name] = { p95: p95(minutes), runs: minutes.length };
