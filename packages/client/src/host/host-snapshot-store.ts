@@ -1,4 +1,4 @@
-import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "./client.js";
+import type { HostClient, HostSnapshot } from "./client.js";
 
 export type HostSnapshotSelector<Selection> = (snapshot: HostSnapshot) => Selection;
 export type HostSelectionEquality<Selection> = (previous: Selection, next: Selection) => boolean;

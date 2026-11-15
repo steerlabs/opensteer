@@ -1,5 +1,5 @@
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { AgentEventViewSchema, createId } from "@opensteer/core";
+import { TabAgentEventViewSchema, createId } from "@opensteer/core";
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { MockPersonalHost } from "../mock/mock-personal-host.js";
@@ -73,7 +73,7 @@ it("installs consistent task windows and completion state before readiness, then
 it("fills all active windows after the bounded attach", async () => {
   const f = await fixture(103);
   for (const [index, thread] of f.mock.getSnapshot().threads.entries()) {
-    const event = AgentEventViewSchema.parse({
+    const event = TabAgentEventViewSchema.parse({
       type: "thread.state-changed",
       threadId: thread.id,
       eventId: createId("event"),
@@ -192,7 +192,7 @@ it("keeps a visit and a newer active projection when an older task page arrives 
   });
   f.host.publish(
     [
-      AgentEventViewSchema.parse({
+      TabAgentEventViewSchema.parse({
         type: "thread.state-changed",
         threadId: thread.id,
         eventId: createId("event"),
@@ -233,7 +233,7 @@ it.each(["recent", "active", "done"] as const)(
     const thread = f.mock.getSnapshot().threads[0]!;
     if (scope === "done") await f.mock.setTaskDone(thread.id, true);
     if (scope === "active") {
-      const event = AgentEventViewSchema.parse({
+      const event = TabAgentEventViewSchema.parse({
         type: "thread.state-changed",
         threadId: thread.id,
         environmentId: thread.environmentId,
@@ -291,7 +291,7 @@ it.each(["recent", "active", "done"] as const)(
     });
     f.host.publish(
       [
-        AgentEventViewSchema.parse({
+        TabAgentEventViewSchema.parse({
           type: "task.removed",
           threadId: thread.id,
           environmentId: thread.environmentId,

@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import type { ComputerAppSetupSummary } from "@opensteer/integration-core";
-import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
+import type { HostClient, HostSnapshot } from "../host/client.js";
 import { respondComputerAppApproval } from "./computer-app-approval.js";
 import { computerSetupRequests } from "./computer-setup-requests.js";
 

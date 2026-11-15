@@ -1,6 +1,5 @@
 import { encodeBase64Url } from "@opensteer/shared/base64url";
 import type { BrowserFrameStore, BrowserFrameView } from "./client.js";
-import type { PlaceItem } from "./places.js";
 
 export interface BrowserLastPicture {
   readonly frame: BrowserFrameView;
@@ -106,26 +105,6 @@ export function browserTabPicture(
       };
   }
   return null;
-}
-
-/**
- * Forgets pictures of tabs no longer listed, and of tabs that have since
- * loaded another page, whose picture would show the wrong one.
- */
-export function keepBrowserLastPictures(
-  frames: BrowserFrameStore,
-  places: readonly PlaceItem[],
-): void {
-  const documents = new Map<string, string | null>();
-  for (const place of places)
-    if (place.destination.kind === "browser" && place.destination.tabId && place.browser)
-      documents.set(
-        pictureKey(place.destination.sessionId, place.destination.tabId),
-        place.browser.documentId,
-      );
-  reconcileBrowserLastPictures(frames, (sessionId, tabId) =>
-    documents.get(pictureKey(sessionId, tabId)),
-  );
 }
 
 export function reconcileBrowserLastPictures(

@@ -1,21 +1,14 @@
-import {
-  compareSequence,
-  type EventData,
-  type Sequence,
-  type PlaceEnteredEventView,
-} from "@opensteer/core";
-import { computerAppIdentityKey, type LegacyMachineSummary } from "@opensteer/protocol";
-import type { BrowserSessionSummary, LegacyHostSnapshot as HostSnapshot } from "./client.js";
-import { phoneTabOpen } from "./phone-tab.js";
-import type { SurfaceDestination } from "./surfaces.js";
+import { compareSequence, type Sequence, type TabPlaceEnteredEventView } from "@opensteer/core";
+import type { HostSnapshot } from "./client.js";
+import type { TabDestination } from "./surfaces.js";
 
 /** Current Run places live outside every transcript window and catalog. */
 export class RunPlaceStore {
-  readonly #values = new Map<string, PlaceEnteredEventView>();
+  readonly #values = new Map<string, TabPlaceEnteredEventView>();
   readonly #ended = new Set<string>();
   readonly #listeners = new Map<string, Set<() => void>>();
   readonly #changed = new Set<string>();
-  readonly get = (runId: string): PlaceEnteredEventView | null => this.#values.get(runId) ?? null;
+  readonly get = (runId: string): TabPlaceEnteredEventView | null => this.#values.get(runId) ?? null;
   readonly subscribe = (runId: string, listener: () => void): (() => void) => {
     const listeners = this.#listeners.get(runId) ?? new Set();
     listeners.add(listener);
@@ -25,7 +18,7 @@ export class RunPlaceStore {
       if (!listeners.size) this.#listeners.delete(runId);
     };
   };
-  accept(event: PlaceEnteredEventView, notify = true): void {
+  accept(event: TabPlaceEnteredEventView, notify = true): void {
     const previous = this.#values.get(event.runId);
     if (
       this.#ended.has(event.runId) ||
@@ -36,11 +29,11 @@ export class RunPlaceStore {
     this.#changed.add(event.runId);
     if (notify) this.flush();
   }
-  seed(events: readonly PlaceEnteredEventView[], notify = true): void {
+  seed(events: readonly TabPlaceEnteredEventView[], notify = true): void {
     for (const event of events) this.accept(event, false);
     if (notify) this.flush();
   }
-  reconcile(sequence: Sequence, events: readonly PlaceEnteredEventView[]): void {
+  reconcile(sequence: Sequence, events: readonly TabPlaceEnteredEventView[]): void {
     const present = new Set(events.map((event) => event.runId));
     for (const event of this.#values.values())
       if (compareSequence(event.sequence, sequence) <= 0 && !present.has(event.runId))
@@ -72,55 +65,29 @@ export class RunPlaceStore {
   }
 }
 
-/** A viewing binding never decides whether the Run's place exists. */
+/** A Run's place is its tab while the person's list holds it; a closed tab is no destination. */
 export function runPlaceDestination(
-  entry: { readonly runId: string; readonly data: Pick<EventData<"place.entered">, "place"> },
-  snapshot: {
-    readonly machines: readonly LegacyMachineSummary[];
-    readonly browserSessions?: readonly BrowserSessionSummary[];
-    readonly browserTabs?: HostSnapshot["browserTabs"];
-  },
-): SurfaceDestination | null {
-  const place = entry.data.place;
-  if (place.kind === "browser") {
-    const store = snapshot.browserTabs;
-    const groupId = store?.groupForSession(place.sessionId) ?? store?.groupForTab(place.surfaceId);
-    const tab = groupId ? store?.tab(groupId, place.surfaceId) : undefined;
-    return {
-      kind: "browser",
-      sessionId: tab?.sessionId ?? place.sessionId,
-      tabId: place.surfaceId,
-    };
-  }
-  const machine = snapshot.machines.find((machine) => machine.id === place.machineId);
-  if (place.kind === "phone")
-    return machine && phoneTabOpen(machine) ? { kind: "phone", machineId: machine.id } : null;
-  const sessionId = runPlaceSessionId(entry, snapshot);
-  if (sessionId === null) return null;
-  return {
-    kind: "app",
-    machineId: place.machineId,
-    appKey: place.appKey,
-    computerSessionId: sessionId,
-    source: { kind: "task-session", sessionId },
-  };
+  entry: { readonly runId: string; readonly data: Pick<TabPlaceEnteredEventView["data"], "tabId"> },
+  snapshot: Pick<HostSnapshot, "tabs">,
+): TabDestination | null {
+  return snapshot.tabs.get(entry.data.tabId) ? { kind: "tab", tabId: entry.data.tabId } : null;
 }
 
-/** The Run's own session in a native place, which a picture of its work reads. */
+/** The Run's own session at a window or phone tab, which a picture of its work reads. */
 export function runPlaceSessionId(
-  entry: { readonly runId: string; readonly data: Pick<EventData<"place.entered">, "place"> },
-  snapshot: { readonly machines: readonly LegacyMachineSummary[] },
+  entry: { readonly runId: string; readonly data: Pick<TabPlaceEnteredEventView["data"], "tabId"> },
+  snapshot: Pick<HostSnapshot, "tabs" | "machines">,
 ): string | null {
-  const place = entry.data.place;
-  if (place.kind === "browser") return null;
+  const tab = snapshot.tabs.get(entry.data.tabId);
+  if (!tab || (tab.kind !== "window" && tab.kind !== "phone")) return null;
   const session = snapshot.machines
-    .find((machine) => machine.id === place.machineId)
+    .find((machine) => machine.id === tab.computer.computerId)
     ?.computerUse?.sessions.find(
       (session) =>
         session.runId === entry.runId &&
-        (place.kind === "phone"
+        (tab.kind === "phone"
           ? session.display
-          : session.apps.some((app) => computerAppIdentityKey(app) === place.appKey)),
+          : session.apps.some((app) => app.bundleId === tab.bundleId)),
     );
   return session?.sessionId ?? null;
 }

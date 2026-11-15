@@ -13,7 +13,7 @@ import {
   nextMarkColor,
   type EventData,
 } from "@opensteer/core";
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 import {
   BrowserContextCandidateSchema,
   BrowserHistoryUrlSchema,
@@ -24,7 +24,7 @@ import {
   BrowserTabIconResultSchema,
   BrowserTabOpenCommandSchema,
   BrowserTabOpenResultSchema,
-  LegacyComputerUseSessionSummarySchema,
+  ComputerUseSessionSummarySchema,
   HostedBrowserSessionSchema,
   PlaceActivitySchema,
   PlaceIdentitySchema,
@@ -339,7 +339,7 @@ export function seedMockPlaces(
         occupants: order === 0 ? [occupant(first.id)] : [],
       })),
     );
-  const machines: LegacyMachineSummary[] = snapshot.machines.map((machine) => ({
+  const machines: MachineSummary[] = snapshot.machines.map((machine) => ({
     ...machine,
     computerUse: machine.computerUse
       ? {
@@ -378,7 +378,7 @@ export function seedMockPlaces(
         computerUse: {
           ...mac.computerUse,
           sessions: [
-            LegacyComputerUseSessionSummarySchema.parse({
+            ComputerUseSessionSummarySchema.parse({
               actionCount: 3,
               apps: [{ bundleId: "com.apple.Keynote", displayName: "Keynote", teamId: null }],
               display: false,

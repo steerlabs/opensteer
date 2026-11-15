@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
+import type { HostSnapshot } from "../host/client.js";
 
 export type AiSharingScope = "content" | "audio";
 export const aiSharingDisclosureVersion = 1;

@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
-import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "./client.js";
+import type { HostClient, HostSnapshot } from "./client.js";
 import { AppIconOwner } from "./app-icons.js";
 
 const identity = { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null };

@@ -1,6 +1,6 @@
 import { BrowserSurfaceIdSchema, BrowserTabGroupIdSchema } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
-import type { LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
+import type { HostSnapshot } from "../host/client.js";
 import { MockHostClient } from "./mock-host-client.js";
 import { placeIdentityKey } from "@opensteer/protocol";
 import { browserTabStrip } from "../host/browser-tab-strip.js";

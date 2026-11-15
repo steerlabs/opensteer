@@ -2,7 +2,7 @@ import { clipText, plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { requestTitleText, type AssignmentSummary, type ExecutionNodeView } from "@opensteer/core";
 import type {
   AssignmentEntry,
-  LegacyHostSnapshot as HostSnapshot,
+  HostSnapshot,
   NodeEntry,
   TranscriptEntry,
 } from "./client.js";

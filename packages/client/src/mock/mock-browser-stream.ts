@@ -12,7 +12,7 @@ import { KeyedStreamPublisher, type KeyedStreamMessage } from "@opensteer/protoc
 import { BrowserTabStore } from "../host/browser-tab-store.js";
 import { BrowserSnapshotDerivation } from "../host/browser-snapshot.js";
 import type {
-  LegacyHostSnapshot as PublicHostSnapshot,
+  HostSnapshot as PublicHostSnapshot,
   PersonalTabLineage,
 } from "../host/client.js";
 

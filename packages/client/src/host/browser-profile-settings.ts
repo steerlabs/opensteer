@@ -6,7 +6,7 @@ import {
   type ComputerGlyph,
   type DeviceElsewhere,
 } from "../computers/computers.js";
-import type { BrowserProfileSummary, LegacyHostSnapshot as HostSnapshot } from "./client.js";
+import type { BrowserProfileSummary, HostSnapshot } from "./client.js";
 import { placeList, type PlaceListSource } from "./places.js";
 import { browserIdentity, type PlaceBrowserIdentity } from "./start-page-model.js";
 
@@ -23,7 +23,7 @@ export interface BrowserProfileSettingsRow {
 }
 
 export type BrowserProfileSettingsSource = PlaceListSource &
-  Pick<HostSnapshot, "browserProfileHomes">;
+  Pick<HostSnapshot, "browserProfileHomes" | "machines">;
 
 export function browserProfileSettingsRows(
   snapshot: BrowserProfileSettingsSource,

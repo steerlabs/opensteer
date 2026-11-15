@@ -1,4 +1,4 @@
-import type { LegacyHostSnapshot as HostSnapshot } from "./client.js";
+import type { HostSnapshot } from "./client.js";
 import { compareTaskOrder } from "./task-entries.js";
 import { taskList } from "./task-list.js";
 import {
@@ -94,7 +94,6 @@ export function projectSavedTasks(snapshot: HostSnapshot): SavedTask[] {
     needsYou: null,
     requests: {},
     runQueue: [],
-    browserSessions: [],
     machines: [],
   });
   const groups = ["working", "ready", "done"] as const;

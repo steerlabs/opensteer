@@ -1,0 +1,77 @@
+import { useCallback, useMemo, useSyncExternalStore } from "react";
+import type { Tab, TabId, TabLayout } from "@opensteer/core";
+import { AppsList, type AppsListState } from "../host/apps.js";
+import type { HostClient } from "../host/client.js";
+import { hostSnapshotStore } from "../host/host-snapshot-store.js";
+import type { TabStrip } from "../host/tab-strip.js";
+
+/** The one layout order every surface draws; changes only with structure, never a title. */
+export function useTabStrip(hostClient: HostClient): TabStrip {
+  const tabs = hostClient.getSnapshot().tabs;
+  const subscribe = useCallback((listener: () => void) => tabs.subscribeStructure(listener), [tabs]);
+  const get = useCallback(() => tabs.strip, [tabs]);
+  return useSyncExternalStore(subscribe, get, get);
+}
+
+export function useTabLayout(hostClient: HostClient): TabLayout {
+  const tabs = hostClient.getSnapshot().tabs;
+  const subscribe = useCallback((listener: () => void) => tabs.subscribeStructure(listener), [tabs]);
+  const get = useCallback(() => tabs.layout, [tabs]);
+  return useSyncExternalStore(subscribe, get, get);
+}
+
+/** One tab's row; rerenders only when that row changes. */
+export function useTab(hostClient: HostClient, tabId: string | null): Tab | undefined {
+  const tabs = hostClient.getSnapshot().tabs;
+  const subscribe = useCallback(
+    (listener: () => void) =>
+      tabId === null ? () => {} : tabs.subscribeTab(tabId as TabId, listener),
+    [tabs, tabId],
+  );
+  const get = useCallback(
+    () => (tabId === null ? undefined : tabs.get(tabId as TabId)),
+    [tabs, tabId],
+  );
+  return useSyncExternalStore(subscribe, get, get);
+}
+
+/** Whether the catalog still lacks rows the stream will bring. */
+export function useTabsSyncing(hostClient: HostClient): boolean {
+  const tabs = hostClient.getSnapshot().tabs;
+  const subscribe = useCallback((listener: () => void) => tabs.subscribe(listener), [tabs]);
+  const get = useCallback(() => tabs.syncing, [tabs]);
+  return useSyncExternalStore(subscribe, get, get);
+}
+
+const appsLists = new WeakMap<HostClient, AppsList>();
+/** The person's apps, shared by every view of this client; read only while one is shown. */
+export function appsList(hostClient: HostClient): AppsList {
+  let list = appsLists.get(hostClient);
+  if (!list) {
+    const store = hostSnapshotStore(hostClient);
+    list = new AppsList({
+      client: hostClient,
+      revision: () => hostClient.getSnapshot().appsRevision,
+      subscribe: (listener) => store.subscribe(listener),
+    });
+    appsLists.set(hostClient, list);
+  }
+  return list;
+}
+export function useAppsList(hostClient: HostClient): {
+  readonly list: AppsList;
+  readonly state: AppsListState;
+} {
+  const list = useMemo(() => appsList(hostClient), [hostClient]);
+  const subscribe = useCallback((listener: () => void) => list.subscribe(listener), [list]);
+  const get = useCallback(() => list.state, [list]);
+  return { list, state: useSyncExternalStore(subscribe, get, get) };
+}
+
+/** Changes with any tab change; for views deriving from many rows at once. */
+export function useTabsRevision(hostClient: HostClient): number {
+  const tabs = hostClient.getSnapshot().tabs;
+  const subscribe = useCallback((listener: () => void) => tabs.subscribe(listener), [tabs]);
+  const get = useCallback(() => tabs.revision, [tabs]);
+  return useSyncExternalStore(subscribe, get, get);
+}

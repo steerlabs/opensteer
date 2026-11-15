@@ -4,7 +4,7 @@ import {
   ownerViewComputerReadiness,
 } from "../integrations/computer-reasons.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
-import type { LegacyHostSnapshot as HostSnapshot } from "./client.js";
+import type { HostSnapshot } from "./client.js";
 import { placeList, samePlaceListSource } from "./places.js";
 import {
   startPageIndex,

@@ -8,7 +8,7 @@ import {
 import type { NeedsYouTeamAskEntry } from "@opensteer/protocol";
 import {
   mainDoneTasks,
-  type LegacyHostSnapshot as HostSnapshot,
+  type HostSnapshot,
   type TaskEntry,
   type TaskListState,
   type ThreadSummary,
@@ -84,7 +84,7 @@ const taskListSourceKeys = [
   "doneTasks",
   "activeTasks",
   "assignments",
-  "browserSessions",
+  "tabs",
   "browserUses",
   "browserProfiles",
   "connection",
@@ -356,12 +356,14 @@ function workingSurface(snapshot: TaskListSource, threadId: string): SurfaceItem
 
 function placeName(surface: SurfaceItem): string | null {
   switch (surface.kind) {
-    case "browser":
+    case "page":
       return surface.site?.replace(/^www\./, "") ?? null;
     case "phone":
-      return surface.machine.name;
+      return surface.device.name;
+    case "window":
+      return surface.tab.appName ?? surface.title;
     case "app":
-      return surface.app.displayName;
+      return surface.title;
   }
 }
 
@@ -396,10 +398,9 @@ function taskLine(
       return more > 0 ? `${title} · ${more} more` : title;
     }
     case "working":
-      if (surface?.kind === "browser")
+      if (surface?.kind === "page")
         return surface.site ? `On ${surface.site}` : `In ${surface.title}`;
-      if (surface?.kind === "phone") return `Using ${surface.machine.name}`;
-      if (surface?.kind === "app") return `Using ${surface.app.displayName}`;
+      if (surface) return `Using ${placeName(surface) ?? surface.title}`;
       return "Working";
     case "waiting":
       return "Waiting";

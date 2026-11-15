@@ -13,7 +13,7 @@ import { KeyedStreamPublisher, keyedStreamBytes } from "@opensteer/protocol/keye
 import {
   BrowserGroupRowSchema,
   BrowserTabRecordSchema,
-  type LegacyHostedBrowserBootstrap as BrowserWireBootstrap,
+  type HostedBrowserBootstrap as BrowserWireBootstrap,
 } from "@opensteer/protocol/browser";
 import {
   browserBootstrapWithRows,
@@ -31,7 +31,7 @@ import {
   DeploymentIdSchema,
   createId,
   emptyExecutionPreferences,
-  type AgentEventView as AgentEvent,
+  type TabAgentEventView as AgentEvent,
   type Message,
   type NotificationView,
   type Request as OpensteerRequest,
@@ -43,11 +43,11 @@ import { createIntegrationId } from "@opensteer/integration-core";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import {
   BrowserSurfaceIdSchema,
-  LegacyComputerViewSchema as ComputerViewSchema,
-  LegacyHostToClientMessageSchema as HostToClientMessageSchema,
+  ComputerViewSchema,
+  HostToClientMessageSchema,
   createBrowserSessionId,
   placeIdentityKey,
-  type LegacyHostToClientMessage as HostToClientMessage,
+  type HostToClientMessage,
   type RealtimeFrameDiagnostic,
 } from "@opensteer/protocol";
 import {

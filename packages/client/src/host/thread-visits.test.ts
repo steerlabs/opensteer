@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { trackThreadVisits, withPublishedReplies } from "./thread-visits.js";
-import type { LegacyHostSnapshot as HostSnapshot, MessageEntry } from "./client.js";
+import type { HostSnapshot, MessageEntry } from "./client.js";
 
 const disposers: (() => void)[] = [];
 afterEach(() => {

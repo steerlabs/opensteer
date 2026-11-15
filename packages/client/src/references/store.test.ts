@@ -4,7 +4,7 @@ import {
   OpensteerError,
   parseLegacyReferenceHref,
   ThreadIdSchema,
-  type AgentEventView,
+  type TabAgentEventView,
   type ReferenceId,
 } from "@opensteer/core";
 import type {
@@ -12,7 +12,7 @@ import type {
   ReferenceResolveInput,
   ReferenceResolveResult,
 } from "@opensteer/protocol";
-import type { LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
+import type { HostSnapshot } from "../host/client.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { ReferenceStore } from "./store.js";
 import { localReference, localTeamReference } from "./local.js";
@@ -89,7 +89,7 @@ async function called(calls: readonly unknown[], count: number) {
 function threadEvent(
   threadId: string,
   type: "thread.state-changed" | "task.removed",
-): AgentEventView {
+): TabAgentEventView {
   return {
     type,
     threadId,
@@ -97,7 +97,7 @@ function threadEvent(
       type === "task.removed"
         ? {}
         : { title: "Renamed", status: "completed", inputQueuePaused: false, pendingRequests: 0 },
-  } as unknown as AgentEventView;
+  } as unknown as TabAgentEventView;
 }
 it("uses genuinely held metadata without RPC, including hidden chips, and keeps snapshots stable", async () => {
   const { store, read, update } = setup();

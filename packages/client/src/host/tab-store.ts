@@ -79,13 +79,18 @@ export class TabStore implements TabsReadModel {
     };
   }
 
-  /** Bootstrap's ordered prefix of the same snapshot the stream then completes. */
-  seed(bootstrap: TabBootstrap): void {
+  /**
+   * Bootstrap's ordered prefix of the same snapshot the stream then completes.
+   * A running or assembling stream is newer than any bootstrap, which is ignored.
+   */
+  seed(bootstrap: TabBootstrap): boolean {
+    if (this.#receiver.state === "committed" || this.#receiver.state === "assembling") return false;
     this.#ahead = null;
     this.#receiver.seed(bootstrap.tabs as Tab[], { layout: bootstrap.layout as TabLayout });
     this.#complete = bootstrap.complete;
     this.#syncing = !bootstrap.complete;
     this.#publish();
+    return true;
   }
 
   /** "resync" asks the caller to request a fresh stream; the rows shown stay until it lands. */
@@ -156,9 +161,15 @@ export class TabStore implements TabsReadModel {
     const status =
       this.#complete !== this.#status.complete || this.#syncing !== this.#status.syncing;
     this.#status = { complete: this.#complete, syncing: this.#syncing };
+    if (structural || touched.length || status) this.#revision++;
     for (const id of touched) for (const listener of this.#tabs.get(id) ?? []) listener();
     if (structural) for (const listener of this.#structure) listener();
     if (structural || touched.length || status) for (const listener of this.#listeners) listener();
   }
   #status = { complete: false, syncing: true };
+  #revision = 0;
+  /** Counts every published change, for views that derive from many rows at once. */
+  get revision(): number {
+    return this.#revision;
+  }
 }

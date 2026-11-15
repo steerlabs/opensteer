@@ -1,15 +1,15 @@
 import { browserStoreFixture } from "../test-support/browser-snapshot.js";
 import type { BrowserGroupRow, BrowserTabRow } from "@opensteer/protocol/browser-tabs";
-import { createId, PlaceEnteredEventViewSchema, SequenceSchema } from "@opensteer/core";
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import { createId, TabPlaceEnteredEventViewSchema, SequenceSchema } from "@opensteer/core";
+import type { MachineSummary } from "@opensteer/protocol";
 import { expect, it, vi } from "vitest";
-import type { LegacyHostSnapshot as HostSnapshot } from "./client.js";
+import type { HostSnapshot } from "./client.js";
 import { runPlaceDestination, runPlaceSessionId, RunPlaceStore } from "./run-place.js";
 
 const threadId = createId("thread");
 const runId = createId("run");
 function entered(sequence: string, id = runId) {
-  return PlaceEnteredEventViewSchema.parse({
+  return TabPlaceEnteredEventViewSchema.parse({
     type: "place.entered",
     eventId: createId("event"),
     environmentId: createId("environment"),
@@ -37,7 +37,7 @@ it("names a phone while its tab is open, after the Run has let go of it", () => 
   };
   const phone = (tabOpenedAt: string | null, sessions: readonly unknown[]) => ({
     machines: [
-      { id: machineId, tabOpenedAt, computerUse: { sessions } } as unknown as LegacyMachineSummary,
+      { id: machineId, tabOpenedAt, computerUse: { sessions } } as unknown as MachineSummary,
     ],
   });
   const destination = { kind: "phone", machineId };

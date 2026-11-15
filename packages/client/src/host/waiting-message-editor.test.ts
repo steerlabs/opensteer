@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { AgentEventViewSchema, createId } from "@opensteer/core";
+import { TabAgentEventViewSchema, createId } from "@opensteer/core";
 import { NeedsYouTeamAskEntrySchema } from "@opensteer/protocol";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { MockPersonalHost } from "../mock/mock-personal-host.js";
@@ -185,7 +185,7 @@ it("patches a lease change and an edit from another device in place, and drops a
     sequence += 1;
     host.publish(
       [
-        AgentEventViewSchema.parse({
+        TabAgentEventViewSchema.parse({
           createdAt: "2026-11-14T12:05:00.000Z",
           data,
           environmentId: thread.environmentId,

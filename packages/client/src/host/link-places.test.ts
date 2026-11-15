@@ -1,8 +1,8 @@
 import { browserStoreFixture } from "../test-support/browser-snapshot.js";
 import type { BrowserGroupRow } from "@opensteer/protocol/browser-tabs";
-import type { LegacyMachineSummary } from "@opensteer/protocol";
+import type { MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
-import type { BrowserSessionSummary, LegacyHostSnapshot as HostSnapshot } from "./client.js";
+import type { BrowserSessionSummary, HostSnapshot } from "./client.js";
 import {
   linkOnComputerNetwork,
   linkPlaces,
@@ -17,7 +17,7 @@ const phone = "rnr_00000000-0000-4000-8000-000000000001";
 const mini = "rnr_00000000-0000-4000-8000-000000000002";
 const studio = "rnr_00000000-0000-4000-8000-000000000003";
 
-function machine(id: string, name: string, overrides: Partial<LegacyMachineSummary> = {}) {
+function machine(id: string, name: string, overrides: Partial<MachineSummary> = {}) {
   return {
     allowedModules: ["browser"],
     device: id === phone ? { form: "phone", platform: "ios" } : null,
@@ -26,7 +26,7 @@ function machine(id: string, name: string, overrides: Partial<LegacyMachineSumma
     name,
     status: "online",
     ...overrides,
-  } as LegacyMachineSummary;
+  } as MachineSummary;
 }
 
 function session(

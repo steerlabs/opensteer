@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "./client.js";
+import type { HostClient, HostSnapshot } from "./client.js";
 import { sameStableHostSnapshot } from "./host-snapshot-selectors.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import {

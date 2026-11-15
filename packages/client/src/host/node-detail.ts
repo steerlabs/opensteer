@@ -8,7 +8,7 @@ import {
 import {
   compareSequence,
   nodeDetailEventNodeId,
-  type AgentEventView as AgentEvent,
+  type TabAgentEventView as AgentEvent,
   type Sequence,
 } from "@opensteer/core";
 import type { NodeEventPage } from "@opensteer/protocol";
@@ -67,7 +67,7 @@ export interface NodeDetailOptions {
     through: Sequence;
     before?: string;
     limit: number;
-  }) => Promise<NodeEventPage>;
+  }) => Promise<Omit<NodeEventPage, "events"> & { readonly events: readonly AgentEvent[] }>;
   readonly nodes: (threadId: string) => readonly NodeEntry[];
   /** The other subagents of a Run, which hold the ones this subagent started. */
   readonly readNodes?: (runId: string) => Promise<readonly NodeEntry[]>;

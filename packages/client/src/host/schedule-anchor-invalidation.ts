@@ -1,4 +1,4 @@
-import type { AgentEventView } from "@opensteer/core";
+import type { TabAgentEventView } from "@opensteer/core";
 import type { HostClient, ThreadSummary } from "./client.js";
 
 export type ScheduleAnchorState = {
@@ -55,7 +55,7 @@ export class ScheduleAnchorInvalidation {
   }
 }
 
-export function invalidateScheduleAnchor(client: HostClient, event: AgentEventView): void {
+export function invalidateScheduleAnchor(client: HostClient, event: TabAgentEventView): void {
   const patch =
     event.type === "thread.state-changed"
       ? event.data

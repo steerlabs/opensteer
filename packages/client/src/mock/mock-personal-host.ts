@@ -1,10 +1,10 @@
-import { SequenceSchema, ThreadIdSchema, type AgentEventView } from "@opensteer/core";
+import { SequenceSchema, ThreadIdSchema, type TabAgentEventView } from "@opensteer/core";
 import {
   ClientToHostMessageSchema,
   hostApi,
   isDeviceAccessRequestEvent,
   projectDeviceAccessRequestEvent,
-  type LegacyHostToClientMessage as HostToClientMessage,
+  type HostToClientMessage,
 } from "@opensteer/protocol";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import type { WebSocketClient } from "../host/host-session-client.js";
@@ -53,7 +53,7 @@ export class MockPersonalHost {
   readonly #subscribed = new Map<MockPersonalSocket, boolean>();
   readonly #release: () => void;
   #through = SequenceSchema.parse("0");
-  #rows: AgentEventView[] = [];
+  #rows: TabAgentEventView[] = [];
   constructor(client = new MockHostClient({ latencyMs: 0 })) {
     this.client = client;
     this.#through = this.#highWater();
@@ -165,7 +165,7 @@ export class MockPersonalHost {
       ),
     });
   }
-  publish(events: readonly AgentEventView[], throughSequence: string): void {
+  publish(events: readonly TabAgentEventView[], throughSequence: string): void {
     const through = SequenceSchema.parse(throughSequence);
     if (
       BigInt(through) < BigInt(this.#through) ||

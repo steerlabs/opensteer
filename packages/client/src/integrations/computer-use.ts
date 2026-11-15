@@ -10,8 +10,8 @@ import { computerAppIdentityKey } from "@opensteer/integration-core";
 import {
   androidPhoneDefinitionId,
   type ComputerUsePermissions,
-  type LegacyComputerUseSessionSummary,
-  type LegacyMachineSummary,
+  type ComputerUseSessionSummary,
+  type MachineSummary,
 } from "@opensteer/protocol";
 import { turnComputer, type TranscriptGroup, type Turn } from "../host/agent-activity-model.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "../host/host-session-client.js";
@@ -196,7 +196,7 @@ export interface ComputerUseView {
   readonly apps: readonly ComputerUseAppRow[];
   readonly definition: IntegrationDefinitionSummaryView;
   readonly pending: readonly ComputerUsePendingApp[];
-  readonly sessions: readonly LegacyComputerUseSessionSummary[];
+  readonly sessions: readonly ComputerUseSessionSummary[];
   readonly state: ComputerUseState;
 }
 
@@ -211,7 +211,7 @@ export function computerUseDefinition(
   return definitions.find((definition) => definition.computerApp?.kind === "gui") ?? null;
 }
 
-export function isAgentPhone(machine: Pick<LegacyMachineSummary, "device">): boolean {
+export function isAgentPhone(machine: Pick<MachineSummary, "device">): boolean {
   return machine.device?.platform === "android" && machine.device.app !== "opensteer";
 }
 
@@ -220,7 +220,7 @@ export function isAgentPhone(machine: Pick<LegacyMachineSummary, "device">): boo
  * Contacts and Reminders, and only while Opensteer is open on it. It turns its
  * apps on and answers requests for more access itself.
  */
-export function isIphone(machine: Pick<LegacyMachineSummary, "device">): boolean {
+export function isIphone(machine: Pick<MachineSummary, "device">): boolean {
   return machine.device?.platform === "ios";
 }
 
@@ -237,7 +237,7 @@ export function computerUseView(input: {
   readonly hostConnected: boolean;
   readonly connections: readonly IntegrationConnectionSummary[];
   readonly definitions: readonly IntegrationDefinitionSummaryView[];
-  readonly machine: LegacyMachineSummary;
+  readonly machine: MachineSummary;
   readonly setupRequests?: readonly ComputerAppSetupRequest[];
 }): ComputerUseView | null {
   const definition = computerUseDefinition(input.definitions);
@@ -298,7 +298,7 @@ export function computerUseView(input: {
   };
 }
 
-export function computerUseState(machine: LegacyMachineSummary): ComputerUseState {
+export function computerUseState(machine: MachineSummary): ComputerUseState {
   if (machine.status !== "online") return { kind: "offline" };
   const report = machine.computerUse;
   if (!report || report.state === "unavailable") {
@@ -330,7 +330,7 @@ export function computerUseAppsPhrase(apps: readonly { readonly displayName: str
  * `Using Notes`, `Using Notes and Calendar`: one live session, by what it
  * holds. A phone's session holds its whole screen rather than apps.
  */
-export function computerUseSessionTitle(session: LegacyComputerUseSessionSummary): string {
+export function computerUseSessionTitle(session: ComputerUseSessionSummary): string {
   return session.display
     ? "Using the whole screen"
     : `Using ${computerUseAppsPhrase(session.apps)}`;
@@ -457,7 +457,7 @@ export function computerUseAutomaticFootnote(view: ComputerUseView): string {
  * is the one thing that can be changed from away.
  */
 export function computerUseMachineLine(
-  machine: LegacyMachineSummary,
+  machine: MachineSummary,
   hostConnected: boolean,
 ): string {
   if (!hostConnected) return "Status unavailable";
@@ -530,7 +530,7 @@ export interface PhoneUseView {
   readonly connectionId: string | null;
   readonly definition: IntegrationDefinitionSummaryView;
   /** The one task holding the phone's screen now. */
-  readonly session: LegacyComputerUseSessionSummary | null;
+  readonly session: ComputerUseSessionSummary | null;
   readonly state: PhoneUseState;
 }
 
@@ -543,7 +543,7 @@ export function phoneUseView(input: {
   readonly hostConnected: boolean;
   readonly connections: readonly IntegrationConnectionSummary[];
   readonly definitions: readonly IntegrationDefinitionSummaryView[];
-  readonly machine: LegacyMachineSummary;
+  readonly machine: MachineSummary;
 }): PhoneUseView | null {
   const { machine } = input;
   if (!isAgentPhone(machine)) return null;
@@ -573,7 +573,7 @@ export function phoneUseView(input: {
   };
 }
 
-export function phoneUseState(machine: LegacyMachineSummary): PhoneUseState {
+export function phoneUseState(machine: MachineSummary): PhoneUseState {
   if (machine.status === "needs-update")
     return { kind: "needs-update", ...(machine.detail ? { detail: machine.detail } : {}) };
   if (machine.status === "updating" || machine.status === "update-pending")
@@ -652,7 +652,7 @@ export const phoneUseIntroduction =
   "Agents see and operate this phone’s whole screen, one task at a time. You control their access here.";
 
 /** One phone's line in a list of computers. */
-function phoneUseMachineLine(machine: LegacyMachineSummary): string {
+function phoneUseMachineLine(machine: MachineSummary): string {
   const state = phoneUseState(machine);
   switch (state.kind) {
     case "needs-update":
@@ -674,7 +674,7 @@ function phoneUseMachineLine(machine: LegacyMachineSummary): string {
  */
 export function computerAppAccessApproval(input: {
   readonly definitionId: "android-phone" | "macos-app";
-  readonly machines: readonly Pick<LegacyMachineSummary, "id" | "name">[];
+  readonly machines: readonly Pick<MachineSummary, "id" | "name">[];
   readonly onThatMac: boolean;
   readonly runnerId: string;
 }): { readonly approveOn: string; readonly detail: string } {
@@ -775,7 +775,7 @@ export async function cancelComputerUseSetup(
 
 export async function stopComputerUseSession(
   hostClient: Pick<HostClient, "rpc">,
-  sessionId: LegacyComputerUseSessionSummary["sessionId"],
+  sessionId: ComputerUseSessionSummary["sessionId"],
   signal?: AbortSignal,
 ): Promise<void> {
   await hostClient.rpc["integration.computer.session.stop"](
@@ -786,8 +786,8 @@ export async function stopComputerUseSession(
 
 /** One owner-visible computer session that can show a live picture. */
 export interface WatchableComputerSession {
-  readonly machine: LegacyMachineSummary;
-  readonly session: LegacyComputerUseSessionSummary;
+  readonly machine: MachineSummary;
+  readonly session: ComputerUseSessionSummary;
 }
 
 /**
@@ -795,7 +795,7 @@ export interface WatchableComputerSession {
  * owner is shown its sessions, so this asks nothing about who is reading.
  * Macs capture an app window; phones capture their whole display.
  */
-export function canWatchComputer(machine: LegacyMachineSummary): boolean {
+export function canWatchComputer(machine: MachineSummary): boolean {
   return machine.status === "online" && machine.computerUse?.displayStreamSupported === true;
 }
 
@@ -804,7 +804,7 @@ export function canWatchComputer(machine: LegacyMachineSummary): boolean {
  * only this way; a phone whose app predates the stream is asked to update.
  * Every client uses this transport for phones.
  */
-export function canStreamComputerDisplay(machine: LegacyMachineSummary): boolean {
+export function canStreamComputerDisplay(machine: MachineSummary): boolean {
   return canWatchComputer(machine) && machine.computerUse?.displayStreamSupported === true;
 }
 
@@ -815,7 +815,7 @@ export function canStreamComputerDisplay(machine: LegacyMachineSummary): boolean
  */
 export function threadComputerSessions(input: {
   readonly hostConnected: boolean;
-  readonly machines: readonly LegacyMachineSummary[];
+  readonly machines: readonly MachineSummary[];
   readonly threadId: string | null;
 }): WatchableComputerSession[] {
   if (!input.hostConnected || input.threadId === null) return [];
@@ -847,8 +847,8 @@ interface ComputerUseNowBase {
   readonly action: string;
   /** Where, and what else it holds there: `On Mac mini · also using Calendar`. */
   readonly place: string;
-  readonly machine: LegacyMachineSummary;
-  readonly session: LegacyComputerUseSessionSummary;
+  readonly machine: MachineSummary;
+  readonly session: ComputerUseSessionSummary;
 }
 
 export type ComputerUseNow = ComputerUseNowBase &
@@ -856,7 +856,7 @@ export type ComputerUseNow = ComputerUseNowBase &
 
 export function computerUseNow(
   turn: Turn,
-  machines: readonly LegacyMachineSummary[],
+  machines: readonly MachineSummary[],
 ): ComputerUseNow | null {
   const at = turnComputer(turn);
   if (at === null) return null;
@@ -899,7 +899,7 @@ export function computerUseNow(
  */
 export function threadComputerUseNow(
   groups: readonly TranscriptGroup[],
-  machines: readonly LegacyMachineSummary[],
+  machines: readonly MachineSummary[],
 ): ComputerUseNow | null {
   const latest = groups.findLast((group) => group.kind === "turn");
   return latest?.kind === "turn" ? computerUseNow(latest.turn, machines) : null;

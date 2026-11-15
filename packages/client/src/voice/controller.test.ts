@@ -1,5 +1,5 @@
 import { BrowserSurfaceIdSchema, ThreadIdSchema, createId } from "@opensteer/core";
-import { LegacyPersonShowMessageSchema as PersonShowMessageSchema } from "@opensteer/protocol";
+import { PersonShowMessageSchema } from "@opensteer/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolEntry } from "../host/client.js";
 import { VoiceStartError, type VoiceCall, type VoiceSnapshot as Snapshot } from "./contract.js";

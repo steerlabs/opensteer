@@ -1,4 +1,31 @@
-import { sameBrowserTab, type BrowserTabDestination } from "./browser-thread-tabs.js";
+import type { HostSnapshot } from "./client.js";
+
+/** One page tab, by its stable ID. */
+export interface BrowserTabDestination {
+  readonly tabId: string;
+}
+export function sameBrowserTab(
+  a: BrowserTabDestination | null,
+  b: BrowserTabDestination | null,
+): boolean {
+  return a !== null && b !== null && a.tabId === b.tabId;
+}
+
+/** The page tab a task holds that changed most recently; holding is the Host's word. */
+export function browserThreadAgentTab(
+  source: Pick<HostSnapshot, "tabs">,
+  threadId: string,
+): BrowserTabDestination | null {
+  let best: { readonly tabId: string; readonly at: string } | null = null;
+  for (const tab of source.tabs.rows.values())
+    if (
+      tab.kind === "page" &&
+      tab.usedBy.some((holder) => holder.taskId === threadId) &&
+      (best === null || tab.updatedAt > best.at)
+    )
+      best = { tabId: tab.tabId, at: tab.updatedAt };
+  return best && { tabId: best.tabId };
+}
 
 /** A busy agent never moves the page more than once a second. */
 const switchInterval = 1000;

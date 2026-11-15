@@ -6,7 +6,7 @@ import type {
   IntegrationConnectionSummary,
   IntegrationDefinitionSummary,
 } from "@opensteer/integration-core";
-import type { LegacyComputerUseSessionSummary, LegacyMachineSummary } from "@opensteer/protocol";
+import type { ComputerUseSessionSummary, MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { computerAppRows } from "./computer-apps.js";
 import {
@@ -120,7 +120,7 @@ describe("a live Computer use line", () => {
     ];
     return groupTranscriptEntries(entries);
   }
-  function now(steps: ToolEntry[], machines: LegacyMachineSummary[]) {
+  function now(steps: ToolEntry[], machines: MachineSummary[]) {
     const turn = groups(steps).find((group) => group.kind === "turn");
     if (turn?.kind !== "turn") throw new Error("Expected a live turn");
     return computerUseNow(turn.turn, machines);
@@ -506,7 +506,7 @@ describe("an Android phone", () => {
         sessions: [displaySession()],
       }),
     });
-    const view = (machine: LegacyMachineSummary, hostConnected: boolean) =>
+    const view = (machine: MachineSummary, hostConnected: boolean) =>
       phoneUseView({
         connections: [phoneConnection("read-write")],
         definitions: [display()],
@@ -546,7 +546,7 @@ describe("an Android phone", () => {
   });
 
   it("reads the phone's own pause and an unreported phone from the Host's summary", () => {
-    const state = (machine: LegacyMachineSummary) =>
+    const state = (machine: MachineSummary) =>
       phoneUseView({ connections: [], definitions: [display()], hostConnected: true, machine })
         ?.state;
     expect(
@@ -599,7 +599,7 @@ describe("an Android phone", () => {
   });
 
   it("says each phone's state in a list of computers", () => {
-    const line = (overrides: Partial<LegacyMachineSummary>, hostConnected = true) =>
+    const line = (overrides: Partial<MachineSummary>, hostConnected = true) =>
       computerUseMachineLine(phone(overrides), hostConnected);
     expect(line({ computerUse: ready() })).toBe("Ready");
     expect(line({ computerUse: report("ready", { sessions: [displaySession()] }) })).toBe(
@@ -730,7 +730,7 @@ function display(): IntegrationDefinitionSummary {
   } as unknown as IntegrationDefinitionSummary;
 }
 
-function phone(overrides: Partial<LegacyMachineSummary>): LegacyMachineSummary {
+function phone(overrides: Partial<MachineSummary>): MachineSummary {
   return machine({
     device: { form: "phone", platform: "android" },
     id: pixel,
@@ -758,7 +758,7 @@ function phoneConnection(
   } as unknown as IntegrationConnectionSummary;
 }
 
-function displaySession(): LegacyComputerUseSessionSummary {
+function displaySession(): ComputerUseSessionSummary {
   return { ...session([]), display: true };
 }
 
@@ -775,7 +775,7 @@ function connection(
   } as unknown as IntegrationConnectionSummary;
 }
 
-function session(apps: (typeof notes)[]): LegacyComputerUseSessionSummary {
+function session(apps: (typeof notes)[]): ComputerUseSessionSummary {
   return {
     actionCount: 3,
     apps,
@@ -785,13 +785,13 @@ function session(apps: (typeof notes)[]): LegacyComputerUseSessionSummary {
     sessionId: "cus_00000000-0000-4000-8000-000000000001",
     threadId: "thr_00000000-0000-4000-8000-000000000001",
     threadTitle: "Plan the week",
-  } as unknown as LegacyComputerUseSessionSummary;
+  } as unknown as ComputerUseSessionSummary;
 }
 
 function report(
   state: "ready" | "permission-required" | "unavailable",
-  extra: Partial<NonNullable<LegacyMachineSummary["computerUse"]>> = {},
-): NonNullable<LegacyMachineSummary["computerUse"]> {
+  extra: Partial<NonNullable<MachineSummary["computerUse"]>> = {},
+): NonNullable<MachineSummary["computerUse"]> {
   return {
     displayStreamSupported: false,
 
@@ -804,14 +804,14 @@ function report(
   };
 }
 
-function machine(overrides: Partial<LegacyMachineSummary>): LegacyMachineSummary {
+function machine(overrides: Partial<MachineSummary>): MachineSummary {
   return {
     apps: null,
     id: mac,
     name: "Studio",
     status: "online",
     ...overrides,
-  } as unknown as LegacyMachineSummary;
+  } as unknown as MachineSummary;
 }
 
 function setupRequest(overrides: Partial<ComputerAppSetupRequest>): ComputerAppSetupRequest {

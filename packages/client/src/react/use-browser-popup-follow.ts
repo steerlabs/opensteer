@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { HostClient } from "../host/client.js";
-import { useBrowserSessionGroupId, useBrowserTab } from "./use-browser-tabs.js";
+import { useTab } from "./use-tabs.js";
 
 /**
  * Brings forward a popup this client's own input opened, as a browser does,
@@ -30,8 +30,8 @@ export function useBrowserPopupFollow(
     };
   }, [hostClient, sessionId, tabId]);
   const popupId = opened?.openerId === tabId ? (opened?.popupId ?? null) : null;
-  const groupId = useBrowserSessionGroupId(hostClient, sessionId ?? undefined);
-  const listed = useBrowserTab(hostClient, groupId, popupId ?? undefined);
+  // A popup becomes its own tab; it is shown once the person's list holds it.
+  const listed = useTab(hostClient, popupId);
   const latest = useRef(follow);
   latest.current = follow;
   useEffect(() => {

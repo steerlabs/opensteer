@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import type {
   BrowserSessionSummary,
-  LegacyHostSnapshot as HostSnapshot,
+  HostSnapshot,
   MessageEntry,
   ThreadSummary,
 } from "./client.js";

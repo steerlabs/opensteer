@@ -1,5 +1,5 @@
 import { voiceSayMaxLength } from "@opensteer/protocol/voice";
-import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "../host/client.js";
+import type { HostClient, HostSnapshot } from "../host/client.js";
 import { requesterLink } from "../host/task-list.js";
 import { VoiceStartError } from "./contract.js";
 import { voiceTimers, type VoiceTimer, type VoiceTimers } from "./timers.js";

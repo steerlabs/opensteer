@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import type { MockSubagentScene } from "../mock/mock-subagent-scenes.js";
 import { groupTranscriptEntries, type Turn } from "./agent-activity-model.js";
-import type { LegacyHostSnapshot as HostSnapshot, NodeEntry, TranscriptEntry } from "./client.js";
+import type { HostSnapshot, NodeEntry, TranscriptEntry } from "./client.js";
 import {
   agentCardLabel,
   agentDot,

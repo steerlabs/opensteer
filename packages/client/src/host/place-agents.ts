@@ -1,5 +1,4 @@
-import { phoneTaskSession } from "./phone-tab.js";
-import type { LegacyHostSnapshot as HostSnapshot } from "./client.js";
+import type { HostSnapshot } from "./client.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
 import type { PlaceItem } from "./places.js";
 import { taskMark, type TaskMark } from "./task-marks.js";
@@ -29,10 +28,7 @@ export interface PlaceAgents {
   readonly unnamedActing: boolean;
 }
 
-export type PlaceAgentSource = Pick<
-  HostSnapshot,
-  "activeTasks" | "browserSessions" | "machines" | "tasks" | "threads"
->;
+export type PlaceAgentSource = Pick<HostSnapshot, "activeTasks" | "tasks" | "threads">;
 
 /**
  * The agents in a place, from its `occupants` and nothing else: never the
@@ -64,48 +60,7 @@ export function placeAgents(
       b.lastActiveAt.localeCompare(a.lastActiveAt) ||
       a.threadId.localeCompare(b.threadId),
   );
-  return {
-    agents,
-    unnamedActing: unnamedActing || actingWithoutIdentity(place, snapshot),
-  };
-}
-
-/**
- * Acting reported where no occupant says who. A browser's own flag names no
- * tab, so it speaks for a tab only while the browser holds that one tab and
- * no tab of it names an acting occupant. A task's session on an app or phone
- * names its holder as `actor`; one that acts without one is anonymous.
- */
-function actingWithoutIdentity(
-  place: Pick<PlaceItem, "destination" | "occupants">,
-  snapshot: PlaceAgentSource,
-): boolean {
-  if (place.occupants.some(({ acting }) => acting)) return false;
-  const { destination } = place;
-  if (destination.kind === "browser") {
-    const session = snapshot.browserSessions.find(({ id }) => id === destination.sessionId);
-    if (session?.state !== "ready" || session.acting !== true) return false;
-    const tabs = session.browserTabs?.sessionTabs(session.id) ?? [];
-    return (
-      session.browserTabs?.sessionList(session.id).whole === true &&
-      tabs.length === 1 &&
-      tabs.every((tab) => tab.id === destination.tabId) &&
-      !tabs.some((tab) => tab.occupants.some(({ acting }) => acting))
-    );
-  }
-  if (destination.kind === "opensteer-app") return false;
-  const machine = snapshot.machines.find(({ id }) => id === destination.machineId);
-  if (destination.kind === "phone") {
-    const session = machine ? phoneTaskSession(machine) : null;
-    return session !== null && !session.actor && session.actingDisplay === true;
-  }
-  if (destination.source?.kind === "owner-view") return false;
-  const session = machine?.computerUse?.sessions.find(
-    ({ sessionId }) => sessionId === destination.computerSessionId,
-  );
-  return (
-    session !== undefined && !session.actor && session.actingAppKeys.includes(destination.appKey)
-  );
+  return { agents, unnamedActing };
 }
 
 /** Whether two answers say the same thing, so a bar redraws only when who is here changes. */

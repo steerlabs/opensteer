@@ -1,6 +1,6 @@
-import { computerAppIdentityKey, type LegacyMachineSummary } from "@opensteer/protocol";
-import type { PlaceEnteredEventView } from "@opensteer/core";
-import type { BrowserSessionSummary } from "./client.js";
+import { computerAppIdentityKey } from "@opensteer/protocol";
+import type { TabPlaceEnteredEventView } from "@opensteer/core";
+import type { HostSnapshot } from "./client.js";
 
 /**
  * What a person has done with a conversation's live page, held in memory for
@@ -101,29 +101,24 @@ export function runPageSize(input: {
  * there; a Mac app or phone session is the Run's own.
  */
 export function runPlaceActing(
-  entry: PlaceEnteredEventView,
-  snapshot: {
-    readonly browserSessions: readonly BrowserSessionSummary[];
-    readonly machines: readonly LegacyMachineSummary[];
-  },
+  entry: TabPlaceEnteredEventView,
+  snapshot: Pick<HostSnapshot, "tabs" | "machines">,
+  activity: readonly { readonly threadId: string }[],
   threadId: string,
 ): boolean {
-  const place = entry.data.place;
-  if (place.kind === "browser")
-    return snapshot.browserSessions.some(
-      (session) =>
-        session.state === "ready" &&
-        session.browserTabs
-          ?.sessionTab(session.id, place.surfaceId)
-          ?.occupants.some((occupant) => occupant.acting && occupant.threadId === threadId) ===
-          true,
-    );
+  const tab = snapshot.tabs.get(entry.data.tabId);
+  if (!tab) return false;
+  if (tab.kind === "page" || tab.kind === "app")
+    return activity.some((record) => record.threadId === threadId);
   const session = snapshot.machines
-    .find((machine) => machine.id === place.machineId)
+    .find((machine) => machine.id === tab.computer.computerId)
     ?.computerUse?.sessions.find((session) => session.runId === entry.runId);
   if (session === undefined) return false;
-  return place.kind === "phone"
+  return tab.kind === "phone"
     ? session.actingDisplay === true
-    : session.actingAppKeys.includes(place.appKey) &&
-        session.apps.some((app) => computerAppIdentityKey(app) === place.appKey);
+    : session.apps.some(
+        (app) =>
+          app.bundleId === tab.bundleId &&
+          session.actingAppKeys.includes(computerAppIdentityKey(app)),
+      );
 }

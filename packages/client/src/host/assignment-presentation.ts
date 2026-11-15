@@ -8,7 +8,7 @@ import { formatDuration, groupTranscriptEntries, workSummary } from "./agent-act
 import type {
   AssignmentEntry,
   DelegationEntry,
-  LegacyHostSnapshot as HostSnapshot,
+  HostSnapshot,
   TranscriptEntry,
 } from "./client.js";
 import { accountGettingReady, threadAccountPreparing } from "./thread-placement.js";

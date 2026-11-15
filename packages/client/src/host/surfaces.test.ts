@@ -1,5 +1,5 @@
 import { ThreadStateProjection } from "./thread-state.js";
-import { AgentEventViewSchema, SequenceSchema } from "@opensteer/core";
+import { TabAgentEventViewSchema, SequenceSchema } from "@opensteer/core";
 import { seedBrowserSession } from "../test-support/browser-snapshot.js";
 import { browserStoreFixture, replaceBrowserTabs } from "../test-support/browser-snapshot.js";
 import type {
@@ -18,7 +18,7 @@ import {
 import { MockHostClient } from "../mock/mock-host-client.js";
 import type {
   BrowserSessionSummary,
-  LegacyHostSnapshot as HostSnapshot,
+  HostSnapshot,
   PlaceEntry,
   TaskEntry,
 } from "./client.js";
@@ -199,7 +199,7 @@ describe("liveWork", () => {
     };
 
     projection.record(
-      AgentEventViewSchema.parse({
+      TabAgentEventViewSchema.parse({
         eventId: createId("event"),
         type: "thread.state-changed",
         threadId: older.thread.id,

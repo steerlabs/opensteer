@@ -11,7 +11,7 @@ import { hostsDeployment } from "../computers/computers.js";
 import { heldThread, listedRowThreadId } from "../host/task-list.js";
 import { familyAutomations } from "../host/task-family.js";
 import {
-  LegacyDeploymentSnapshotSchema as DeploymentSnapshotSchema,
+  DeploymentSnapshotSchema,
   parseTeamLinkOffer,
   PersonalTeamLinkSchema,
   type PersonalTeamLink,
@@ -72,7 +72,7 @@ import { MockDesktopUpdates, type MockDesktopUpdateScenario } from "./mock-deskt
 import { MockSettingsFixtures } from "./settings-fixtures.js";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import { BrowserCursorStore } from "../host/browser-cursor.js";
-import type { LegacyPersonShowMessage as PersonShowMessage, PluginRow } from "@opensteer/protocol";
+import type { PersonShowMessage, PluginRow } from "@opensteer/protocol";
 import { RunPlaceStore } from "../host/run-place.js";
 import { compareTaskOrder } from "../host/task-entries.js";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
@@ -89,7 +89,7 @@ import {
   type SpecialistRegistration,
   type SpecialistManifest,
   AgentEventSchema,
-  PlaceEnteredEventViewSchema,
+  TabPlaceEnteredEventViewSchema,
   AssignmentIdSchema,
   placeIdentityKey,
   type EventData,
@@ -191,7 +191,7 @@ import type { PasswordSignInRequestResponse } from "@opensteer/protocol";
 import {
   AgentPhoneHostTargetSchema,
   BrowserTabGroupColorSchema,
-  LegacyComputerUseSessionSummarySchema,
+  ComputerUseSessionSummarySchema,
   HarnessInstanceCatalogSchema,
   type HarnessInstallation,
   HostApiErrorSchema,
@@ -219,7 +219,7 @@ import {
   type HostApiHandlers,
   type HostApiServerContext,
   type MachineAccessPolicy,
-  type LegacyMachineSummary,
+  type MachineSummary,
   type ModelServer,
   type ThreadMessagePage,
 } from "@opensteer/protocol";
@@ -261,7 +261,7 @@ import type {
   HarnessAuthenticationEnvelope,
   HarnessSummary,
   HostClient,
-  LegacyHostSnapshot as PublicHostSnapshot,
+  HostSnapshot as PublicHostSnapshot,
   BrowserSessionSummary as PublicBrowserSessionSummary,
   MachineAccessHistoryPage,
   MachineAccessUpdateOutcome,
@@ -418,7 +418,7 @@ const mockstorageThreadId = "thr_00000000-0000-4000-8000-000000000002";
 const mockComputerUseRequestId = RequestIdSchema.parse("req_0192f4a1-6666-4000-8000-000000000006");
 const mockComputerUseSetupRequestId = "0192f4a1-4444-4000-8000-000000000004";
 const mockComputerUseReason = "Put the architecture decisions into the Q4 planning sheet.";
-const mockComputerUseSession = LegacyComputerUseSessionSummarySchema.parse({
+const mockComputerUseSession = ComputerUseSessionSummarySchema.parse({
   actionCount: 12,
   apps: [mockComputerUseApps.notes],
   display: false,
@@ -438,7 +438,7 @@ const mockSlackOnMacMini = {
   computer: "Mac mini",
   runnerId: mockMessagesRunnerId,
 } as const;
-const mockSlackLiveSession = LegacyComputerUseSessionSummarySchema.parse({
+const mockSlackLiveSession = ComputerUseSessionSummarySchema.parse({
   actionCount: 7,
   apps: [{ bundleId: mockSlackOnMacMini.bundleId, displayName: "Slack", teamId: "BQR82RBBHL" }],
   display: false,
@@ -452,7 +452,7 @@ const mockSlackLiveSession = LegacyComputerUseSessionSummarySchema.parse({
  * The preview's agent phone, held whole by one Thread: a display session names
  * no app, because it has the phone's entire screen.
  */
-const mockAgentPhoneSession = LegacyComputerUseSessionSummarySchema.parse({
+const mockAgentPhoneSession = ComputerUseSessionSummarySchema.parse({
   actionCount: 5,
   apps: [],
   display: true,
@@ -1487,7 +1487,7 @@ function mockEditable(item: PendingMockInput): boolean {
  * joined only so agents can reach it over SSH; and a messaging service that is
  * enrolled but away.
  */
-const mockMachines: readonly LegacyMachineSummary[] = [
+const mockMachines: readonly MachineSummary[] = [
   {
     tabOpenedAt: null,
     // The Mac this deployment runs on: it offers Messages and can read it.
@@ -4822,7 +4822,7 @@ export class MockHostClient implements HostClient {
    * A computer going offline or coming back. A real Host hears it from that
    * computer's own connection, never from a client, so the preview takes it here.
    */
-  setMachineStatus(machineId: string, status: LegacyMachineSummary["status"]): void {
+  setMachineStatus(machineId: string, status: MachineSummary["status"]): void {
     this.#state.setMachineStatus(machineId, status);
   }
 
@@ -5471,7 +5471,7 @@ class MockHostState {
   onReferenceEvent: ((event: AgentEvent) => void) | undefined;
   teamAsks: import("@opensteer/protocol").NeedsYouTeamAskEntry[] = [];
   readonly teamLinks = new Map<string, PersonalTeamLink>();
-  nodeEvents: readonly import("@opensteer/core").AgentEventView[] = [];
+  nodeEvents: readonly import("@opensteer/core").TabAgentEventView[] = [];
   openPhoneTab(machineId: string) {
     this.update({
       ...this.snapshot,
@@ -6954,7 +6954,7 @@ class MockHostState {
   }
 
   /** As the Host hears a computer go and come back: its status alone changes. */
-  setMachineStatus(machineId: string, status: LegacyMachineSummary["status"]): void {
+  setMachineStatus(machineId: string, status: MachineSummary["status"]): void {
     this.update({
       ...this.snapshot,
       machines: this.snapshot.machines.map((machine) =>
@@ -9322,7 +9322,7 @@ class MockHostState {
     };
   }
 
-  private ownedComputer(runnerId: string): LegacyMachineSummary {
+  private ownedComputer(runnerId: string): MachineSummary {
     const machine = this.snapshot.machines.find((candidate) => candidate.id === runnerId);
     if (!machine || (machine.ownership !== "mine" && machine.ownership !== "deployment"))
       throw new Error("Only this computer’s owner can request app setup.");
@@ -9332,8 +9332,8 @@ class MockHostState {
   private updateComputerUse(
     runnerId: string,
     change: (
-      report: NonNullable<LegacyMachineSummary["computerUse"]>,
-    ) => NonNullable<LegacyMachineSummary["computerUse"]>,
+      report: NonNullable<MachineSummary["computerUse"]>,
+    ) => NonNullable<MachineSummary["computerUse"]>,
   ): void {
     this.update({
       ...this.snapshot,
@@ -10832,7 +10832,7 @@ class MockHostState {
     const transcript = this.snapshot.transcripts[threadId] ?? [];
     const last = this.runPlaces.get(runId);
     if (last && placeIdentityKey(last.data.place) === placeIdentityKey(data.place)) return;
-    const event = PlaceEnteredEventViewSchema.parse({
+    const event = TabPlaceEnteredEventViewSchema.parse({
       createdAt: this.now().toISOString(),
       data,
       environmentId: thread.environmentId,
