@@ -105,7 +105,7 @@ describe("credential-aware command origin protection", () => {
   });
 });
 
-it("registers no personal file or media routes on a team Host", async () => {
+it("registers no personal file, media or reference routes on a team Host", async () => {
   const app = Fastify();
   registerHostApi(
     app,
@@ -119,12 +119,10 @@ it("registers no personal file or media routes on a team Host", async () => {
     },
   );
   try {
-    expect(
-      (await app.inject({ method: "POST", url: "/v1/rpc/asset.urls", payload: {} })).statusCode,
-    ).toBe(404);
-    expect(
-      (await app.inject({ method: "POST", url: "/v1/rpc/file.open", payload: {} })).statusCode,
-    ).toBe(404);
+    for (const method of ["asset.urls", "file.open", "references.resolve"])
+      expect(
+        (await app.inject({ method: "POST", url: `/v1/rpc/${method}`, payload: {} })).statusCode,
+      ).toBe(404);
     expect((await app.inject("/v1/rpc/file.content")).statusCode).toBe(404);
     expect((await app.inject("/media/token/image.png")).statusCode).toBe(404);
   } finally {

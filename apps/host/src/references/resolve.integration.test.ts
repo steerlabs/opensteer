@@ -10,13 +10,7 @@ import {
 import type { HostApiServerContext } from "@opensteer/protocol";
 import { createReferenceHandlers, createThreadRequestHandler } from "./resolve.js";
 
-const {
-  resolvePersonalReferences,
-}: {
-  resolvePersonalReferences: Parameters<typeof createReferenceHandlers>[1];
-} = await import(
-  new URL("../../../../packages/database/src/reference-store.ts", import.meta.url).href
-);
+import { resolvePersonalReferences } from "@opensteer/database";
 
 function rpcData<T>(result: { ok: true; data: T } | { ok: false; error: never }): T {
   if (!result.ok) throw new Error("Unexpected RPC failure");

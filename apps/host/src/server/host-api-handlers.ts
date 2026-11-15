@@ -120,6 +120,7 @@ export function createHostApiHandlers(
     | "thread.message.revisions.list"
     | "thread.live.get"
     | "thread.requests.list"
+    | "references.resolve"
   >,
   handleCoreCommand: (
     command: CoreCommand,

@@ -37,16 +37,18 @@ it("refuses old Personal epochs before discovery parsing, RPC parsing, routes an
     });
     expect(matched.discovery.deploymentId).toBe(runtime.host.deployment.id);
     for (const version of [hostApiVersion - 1, hostApiVersion - 2]) {
-      const refused = await runtime.host.app.inject({
-        method: "POST",
-        url: "/v1/rpc/commands.dispatch",
-        headers: { [hostApiVersionHeader]: String(version), "content-type": "application/json" },
-        payload: "{broken",
-      });
-      expect(refused.json()).toMatchObject({
-        ok: false,
-        error: { reason: "unsupported-version", retryable: false },
-      });
+      for (const method of ["commands.dispatch", "references.resolve"]) {
+        const refused = await runtime.host.app.inject({
+          method: "POST",
+          url: `/v1/rpc/${method}`,
+          headers: { [hostApiVersionHeader]: String(version), "content-type": "application/json" },
+          payload: "{broken",
+        });
+        expect(refused.json()).toMatchObject({
+          ok: false,
+          error: { reason: "unsupported-version", retryable: false },
+        });
+      }
       await expect(
         verifyAccessEndpoint({
           kind: "canonical",

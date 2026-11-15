@@ -149,6 +149,7 @@ export const hostApiScopes = {
   "thread.live.get": "session",
   "thread.messages.list": "session",
   "thread.requests.list": "session",
+  "references.resolve": "session",
   "triggers.get": "session",
   "triggers.list": "session",
 } satisfies Record<keyof typeof hostApi, HostApiScope>;

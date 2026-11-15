@@ -1,9 +1,11 @@
+import { localReference } from "../references/local.js";
+import { parseReferenceHref, type ReferenceId } from "@opensteer/core";
 import { AssetUrlStore } from "../host/asset-urls.js";
 import { openWaitingMessageEditor } from "../host/waiting-message-editor.js";
 import { isDeviceAccessRequestEvent } from "@opensteer/protocol";
 import { deviceAccess } from "@opensteer/protocol";
 import { hostsDeployment } from "../computers/computers.js";
-import { listedRowThreadId } from "../host/task-list.js";
+import { heldThread, listedRowThreadId } from "../host/task-list.js";
 import { familyAutomations } from "../host/task-family.js";
 import {
   DeploymentSnapshotSchema,
@@ -408,6 +410,7 @@ const mockTmdbReason =
  * person at that Mac.
  */
 const mockComputerUseThreadId = "thr_00000000-0000-4000-8000-000000000001";
+export const mockReferenceFailureId = ThreadIdSchema.parse(mockComputerUseThreadId);
 const mockstorageThreadId = "thr_00000000-0000-4000-8000-000000000002";
 const mockComputerUseRequestId = RequestIdSchema.parse("req_0192f4a1-6666-4000-8000-000000000006");
 const mockComputerUseSetupRequestId = "0192f4a1-4444-4000-8000-000000000004";
@@ -1752,6 +1755,8 @@ export interface MockPhoneJoin {
 }
 
 export interface MockHostClientOptions {
+  /** Fail the first metadata batch containing this ID, then resolve normally. */
+  referenceResolveFailureId?: ReferenceId;
   teamAsks?: readonly import("@opensteer/protocol").NeedsYouTeamAskEntry[];
   /** `seeded`, or one task holding a single scene of the subagent design. */
   subagents?: "seeded" | "absent" | MockSubagentScene;
@@ -1932,8 +1937,48 @@ function mockReaderThread<Thread extends { readonly id: string; readonly pending
   return { ...thread, pendingRequests: Math.max(0, thread.pendingRequests - hidden) };
 }
 
-function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
+function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): HostApiHandlers {
+  let referenceFailurePending = failureId !== undefined;
   const handlers: Partial<HostApiHandlers> = {
+    "references.resolve": async ({ ids }) => {
+      const snapshot = client.getSnapshot();
+      if (snapshot.session !== "authenticated")
+        return {
+          ok: false,
+          error: { code: "unauthorized", message: "Authentication required", retryable: false },
+        };
+      if (referenceFailurePending && failureId && ids.includes(failureId)) {
+        referenceFailurePending = false;
+        return {
+          ok: false,
+          error: {
+            code: "internal",
+            message: "Reference lookup temporarily unavailable",
+            retryable: true,
+          },
+        };
+      }
+      return rpcSuccess(
+        hostApi["references.resolve"].success.parse({
+          results: [...new Set(ids)].map((id) => {
+            const reference = parseReferenceHref(`opensteer:${id}`)!;
+            if (reference.kind === "request") {
+              const request = client.referenceRequest(id);
+              if (request && heldThread(snapshot, request.originatingThreadId))
+                return {
+                  status: "available",
+                  kind: "request",
+                  id: reference.id,
+                  threadId: request.originatingThreadId,
+                  requestStatus: request.status,
+                  title: plainTextExcerpt(requestTitleText(request.presentation), 256) || "Request",
+                };
+            }
+            return localReference(snapshot, reference) ?? { status: "unavailable", id };
+          }),
+        }),
+      );
+    },
     "asset.urls": async ({ assets }) => ({
       ok: true,
       data: {
@@ -2635,8 +2680,27 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       rpcSuccess(client.messageRevisionPage(input.messageId, input.before)),
     "thread.live.get": async (input) => rpcSuccess(client.liveStreams(input.threadId)),
     "thread.requests.list": async (input) => {
-      const requests = (client.getSnapshot().requests[input.threadId] ?? []).filter(
-        (request) => input.deviceAccessRequests === "include" || request.kind !== "device.access",
+      const snapshot = client.getSnapshot();
+      if (!heldThread(snapshot, input.threadId))
+        return mockRefusal(
+          new HostClientRequestError({
+            code: "not_found",
+            message: "Thread not found",
+            status: 404,
+          }),
+        );
+      const target = input.requestId ? client.referenceRequest(input.requestId) : undefined;
+      const requests = (
+        input.requestId
+          ? target
+            ? [target]
+            : []
+          : (client.getSnapshot().requests[input.threadId] ?? [])
+      ).filter(
+        (request) =>
+          request.originatingThreadId === input.threadId &&
+          (input.requestId !== undefined || request.status === "pending") &&
+          (input.deviceAccessRequests === "include" || request.kind !== "device.access"),
       );
       return rpcSuccess(
         hostApi["thread.requests.list"].success.parse({
@@ -4059,7 +4123,10 @@ export class MockHostClient implements HostClient {
       editing: this.#places.input.editing,
     };
     this.browserWatchFrames = frames;
-    this.rpc = createInMemoryHostApiClient(mockHostApiHandlers(this.#state), mockRpcContext());
+    this.rpc = createInMemoryHostApiClient(
+      mockHostApiHandlers(this.#state, options.referenceResolveFailureId),
+      mockRpcContext(),
+    );
     this.assetUrls = new AssetUrlStore(this.rpc, { origin: async () => "http://mock.invalid" });
     this.#nodeDetails = new NodeDetailStore({
       available: () => true,
@@ -6140,6 +6207,18 @@ class MockHostState {
     }
   }
   private readonly computerAppSetupRequests = new Map<string, ComputerAppSetupRequest>();
+  private readonly referenceRequests = new Map<string, Request>();
+  referenceRequest(requestId: string): Request | undefined {
+    return (
+      Object.values(this.snapshot.requests)
+        .flat()
+        .find((request) => request.id === requestId) ?? this.referenceRequests.get(requestId)
+    );
+  }
+  private referenceRequestReceipt(request: Exclude<Request, { status: "pending" }>) {
+    this.referenceRequests.set(request.id, request);
+    return requestReceipt(request);
+  }
   /** Enrollments retired here, which the preview, like the Host, keeps no row for. */
   private readonly retiredEnrollments = new Set<string>();
   private readonly phoneEnrollments = new Map<
@@ -7320,7 +7399,7 @@ class MockHostState {
     if (!untouched) return false;
     this.askTasks.delete(threadId);
     this.awaitingAsks.delete(threadId);
-    const without = <Value>(record: Readonly<Record<string, Value>>): Record<string, Value> => {
+    const without = <Value,>(record: Readonly<Record<string, Value>>): Record<string, Value> => {
       const { [threadId]: _removed, ...rest } = record;
       return rest;
     };
@@ -9440,7 +9519,10 @@ class MockHostState {
       ),
       transcripts: {
         ...snapshot.transcripts,
-        [threadId]: [...(snapshot.transcripts[threadId] ?? []), requestReceipt(resolved)],
+        [threadId]: [
+          ...(snapshot.transcripts[threadId] ?? []),
+          this.referenceRequestReceipt(resolved),
+        ],
       },
     };
   }
@@ -9466,7 +9548,10 @@ class MockHostState {
       ),
       transcripts: {
         ...this.snapshot.transcripts,
-        [threadId]: [...(this.snapshot.transcripts[threadId] ?? []), requestReceipt(resolved)],
+        [threadId]: [
+          ...(this.snapshot.transcripts[threadId] ?? []),
+          this.referenceRequestReceipt(resolved),
+        ],
       },
     });
   }
@@ -11331,7 +11416,7 @@ class MockHostState {
       {
         requests: (this.snapshot.requests[workerId] ?? []).filter(({ id }) => id !== request.id),
       },
-      requestReceipt(resolved),
+      this.referenceRequestReceipt(resolved),
     );
     if (!assignment || !script?.decision || !run) return;
     const outcome = accepted
@@ -11966,7 +12051,7 @@ class MockHostState {
     const joined = this.answerHeldMessages(request.originatingThreadId, runId, timestamp);
     const transcript = [
       ...(this.snapshot.transcripts[request.originatingThreadId] ?? []),
-      requestReceipt(resolved),
+      this.referenceRequestReceipt(resolved),
       ...joined,
     ];
     const originating = transcript.find((entry) => entry.kind === "run" && entry.runId === runId);
@@ -12432,8 +12517,10 @@ class MockHostState {
       snapshot.deploymentId !== this.snapshot.deploymentId ||
       snapshot.user?.id !== this.snapshot.user?.id ||
       snapshot.session !== "authenticated"
-    )
+    ) {
       this.runPlaces.clear();
+      this.referenceRequests.clear();
+    }
     for (const run of this.snapshot.runQueue)
       if (!snapshot.runQueue.some((next) => next.id === run.id)) this.runPlaces.end(run.id, false);
 
