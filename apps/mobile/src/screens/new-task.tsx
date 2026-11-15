@@ -57,6 +57,7 @@ import { useMobileClient } from "../ui/mobile-client-context.js";
 import { bubbleSettleMs, exit } from "../ui/motion.js";
 import { Notice } from "../ui/primitives.js";
 import { homeDraftId } from "../home/home-draft.js";
+import { delay } from "@opensteer/shared/delay";
 
 /** Ways to begin, each a sentence the reader can send or edit. */
 const examples = [
@@ -515,10 +516,6 @@ function sameNewTaskSnapshot(previous: HostSnapshot, next: HostSnapshot): boolea
     previous.executionPreferences === next.executionPreferences &&
     previous.personalSettings === next.personalSettings
   );
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 const styles = StyleSheet.create({

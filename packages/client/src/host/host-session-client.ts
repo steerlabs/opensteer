@@ -965,6 +965,7 @@ export class HttpHostClient {
   #refreshTimer: Timer | null = null;
 
   #snapshot: HostSnapshot = emptySnapshot();
+  #remembering: Promise<unknown> = Promise.resolve();
 
   readonly #deviceAccessRequests: boolean;
   readonly #viewerPlatform: "mac" | "pc" | null;
@@ -2899,18 +2900,24 @@ export class HttpHostClient {
     );
   }
 
-  async rememberExecution(choice: ExecutionChoice): Promise<ExecutionPreferences> {
-    const result = await this.dispatch({
-      ...(choice.accessMode ? { accessMode: choice.accessMode } : {}),
-      idempotencyKey: mutationIdempotencyKey("execution-preferences"),
-      ...(choice.selection ? { selection: choice.selection } : {}),
-      type: "execution.preferences.remember",
+  rememberExecution(choice: ExecutionChoice): Promise<ExecutionPreferences> {
+    // One at a time, in the order chosen: a remember nobody waits for, such
+    // as a new Thread's, must not land after a later choice and take it back.
+    const remembered = this.#remembering.then(async () => {
+      const result = await this.dispatch({
+        ...(choice.accessMode ? { accessMode: choice.accessMode } : {}),
+        idempotencyKey: mutationIdempotencyKey("execution-preferences"),
+        ...(choice.selection ? { selection: choice.selection } : {}),
+        type: "execution.preferences.remember",
+      });
+      if (result.type !== "execution.preferences.remember") {
+        throw new Error("Execution preferences command mismatch.");
+      }
+      this.#update({ ...this.#snapshot, executionPreferences: result.preferences });
+      return result.preferences;
     });
-    if (result.type !== "execution.preferences.remember") {
-      throw new Error("Execution preferences command mismatch.");
-    }
-    this.#update({ ...this.#snapshot, executionPreferences: result.preferences });
-    return result.preferences;
+    this.#remembering = remembered.catch(() => undefined);
+    return remembered;
   }
 
   async renameThread(threadId: string, title: string): Promise<ThreadSummary> {

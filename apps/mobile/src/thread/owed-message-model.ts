@@ -59,6 +59,8 @@ export function risesOnce(messageId: string): boolean {
 
 /** Generous against a phone's clock, small against the gap between two sends. */
 const clockSkewMs = 2 * 60_000;
+/** On the phone's own clock, like the claim: the first draw after Send is well within it. */
+const freshMs = 5_000;
 
 type OwedClaim = Pick<PendingCommand, "createdAt" | "idempotencyKey" | "text">;
 
@@ -91,12 +93,19 @@ export function reconcileOwed(
   let state = reconciliations.get(command.idempotencyKey);
   if (state === undefined) {
     const claimedAt = Date.parse(command.createdAt);
+    // Seen as it is claimed, everything already here is earlier: the Host
+    // has not been asked yet. Seen later, as when the phone comes back to a
+    // message whose answer was lost, the Host's copy may already be loaded,
+    // so only what is clearly older than the claim counts as earlier.
+    const asClaimed = Date.now() - claimedAt < freshMs;
     state = {
-      // Only what predates the claim: the Host's copy can already be loaded
-      // when the phone comes back to a message whose answer was lost.
       before: new Set(
         ownMessages(entries, viewerUserId)
-          .filter((entry) => entry.body === command.text && Date.parse(entry.createdAt) < claimedAt)
+          .filter(
+            (entry) =>
+              entry.body === command.text &&
+              (asClaimed || Date.parse(entry.createdAt) < claimedAt - clockSkewMs),
+          )
           .map((entry) => entry.id),
       ),
       inline: inlineNow,
