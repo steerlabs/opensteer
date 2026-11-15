@@ -3299,7 +3299,7 @@ describe("one Codex app-server per account", () => {
   });
 
   it("stops a Run's turns before the app-server it owns ends with the Run's lifetime", async () => {
-    const fixture = await setup("subagents-hold", { sharedEngine: false });
+    const fixture = await setup("subagents-late-start", { sharedEngine: false });
     try {
       const lifetime = new AbortController();
       const session = await fixture.adapter.startSession({

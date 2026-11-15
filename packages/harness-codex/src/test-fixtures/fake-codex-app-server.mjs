@@ -995,6 +995,11 @@ function handleClientMethod(message) {
         if (starting) setTimeout(starting, 50);
         break;
       }
+      if (scenario === "subagents-late-start")
+        send({
+          method: "turn/started",
+          params: { threadId: childThreadOf(), turn: childTurn("child-turn-1", "inProgress") },
+        });
       capture({ rootInterrupted: message.params.turnId ?? null });
       // Opt-in: an engine that acknowledges an interrupt and keeps going.
       if (!process.argv.includes("--ignore-interrupt")) {
@@ -1963,6 +1968,10 @@ function handleTurnStart(message) {
     // A subagent asking before the Runner has heard of it.
     if (scenario === "subagents-early-approval") sendChildApproval();
     sendSubagentActivity("spawn-1", "started");
+    if (scenario === "subagents-late-start") {
+      announceChildThread();
+      return;
+    }
     send({
       method: "turn/started",
       params: { threadId: announceChildThread(), turn: childTurn("child-turn-1", "inProgress") },
