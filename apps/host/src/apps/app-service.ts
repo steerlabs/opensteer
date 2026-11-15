@@ -383,7 +383,10 @@ export class AppService {
   }
 
   /** Servers on a lost connection are offline; the Runner's own cleanup stops them. */
-  async onRunnerDisconnected(computerId: RunnerId, connectionId: RunnerConnectionId): Promise<void> {
+  async onRunnerDisconnected(
+    computerId: RunnerId,
+    connectionId: RunnerConnectionId,
+  ): Promise<void> {
     const computer = this.#computers.get(computerId);
     if (computer?.connection.connectionId !== connectionId) return;
     this.#computers.delete(computerId);
@@ -468,7 +471,13 @@ export class AppService {
     // Viewing never starts a server.
     const state = this.#view(app).state;
     if (state !== "running")
-      return this.#errorResponse(503, stateMessage[state], input.theme, wantsHtml, input.originMode);
+      return this.#errorResponse(
+        503,
+        stateMessage[state],
+        input.theme,
+        wantsHtml,
+        input.originMode,
+      );
     try {
       return await requestAppHttp({
         ...input,
@@ -598,12 +607,24 @@ export class AppService {
     const { connection } = computer;
     try {
       await this.#options.tunnels.start(connection, spec, AbortSignal.timeout(startTimeoutMs));
-      this.#observe(spec.folder.computerId, connection.connectionId, spec.appId, spec.generation, "running");
+      this.#observe(
+        spec.folder.computerId,
+        connection.connectionId,
+        spec.appId,
+        spec.generation,
+        "running",
+      );
       if (await this.#options.apps.setLastError(spec.appId, spec.generation, null))
         this.#options.changed(ownerId, [spec.appId]);
     } catch (error) {
       if (connection.signal.aborted) throw new ComputerOfflineError();
-      this.#observe(spec.folder.computerId, connection.connectionId, spec.appId, spec.generation, "failed");
+      this.#observe(
+        spec.folder.computerId,
+        connection.connectionId,
+        spec.appId,
+        spec.generation,
+        "failed",
+      );
       await this.#options.apps.setLastError(
         spec.appId,
         spec.generation,
