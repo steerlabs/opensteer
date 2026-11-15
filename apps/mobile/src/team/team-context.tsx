@@ -90,6 +90,9 @@ const emptySnapshot: TeamSessionSnapshot = {
   channel: null,
   thread: null,
   connection: "offline",
+  unreachable: false,
+  versionRefusal: null,
+  resumedGeneration: 0,
   pending: [],
   drafts: {},
   typing: {},
@@ -164,11 +167,11 @@ export function useTeamMembers(
     (listener: () => void) => session?.subscribe(listener) ?? (() => undefined),
     [session],
   );
-  // The list is read again once the team's access or names have moved since it was read, even
-  // when that happened while this screen was away.
+  // The list is read again once the team's access has moved since it was read, even while this
+  // screen was away. Renames arrive as the session's member updates, laid over it below.
   const readDirectoryKey = useCallback(() => {
     const sidebar = session?.getSnapshot().sidebar;
-    return sidebar ? `${sidebar.accessRevision}:${sidebar.namesRevision ?? ""}` : null;
+    return sidebar?.accessRevision ?? null;
   }, [session]);
   const directoryKey = useSyncExternalStore(subscribePeople, readDirectoryKey, readDirectoryKey);
   useEffect(() => {

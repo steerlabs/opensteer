@@ -21,6 +21,7 @@ import {
   TeamSavedStateSchema,
   TeamTransportRegistry,
   TeamRuntimeOwner,
+  teamVersionRefusal,
   type AccountProfileRelay,
   type TeamCacheScope,
   type TeamPersistence,
@@ -1050,11 +1051,8 @@ export function teamFailure(error: unknown): TeamState {
     if (teamEntryRefusalOutcome(error.reason) === "membership")
       return error.reason === "removed" ? "removed" : "join";
     if (teamEntryRefusalOutcome(error.reason) === "retryable") return "offline";
-    if (error.reason === "host-too-old") return "update-server";
-    if (
-      ["client-too-old", "unsupported-version", "api-version-mismatch"].includes(error.reason ?? "")
-    )
-      return "update-app";
+    const version = teamVersionRefusal(error.reason);
+    if (version) return version;
     if (error.code === "unauthorized") return "signed-out";
     if (error.code === "forbidden" || error.code === "not_found") return "offline";
   }

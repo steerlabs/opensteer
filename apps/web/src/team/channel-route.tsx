@@ -416,7 +416,7 @@ function ChannelScreenFor({
           { ...row.command, createdAt: row.createdAt },
           pendingSendView(
             row,
-            snapshot.connection === "connected",
+            !snapshot.unreachable,
             snapshot.sendErrors?.[row.command.clientMessageId]
               ? {
                   error: snapshot.sendErrors[row.command.clientMessageId],
@@ -428,7 +428,7 @@ function ChannelScreenFor({
       );
   const items = useMemo(
     () => (timeline ? timelineItems(words, timeline, pendingFor(null), false) : []),
-    [timeline, words, snapshot.pending, snapshot.connection, snapshot.sendErrors],
+    [timeline, words, snapshot.pending, snapshot.unreachable, snapshot.sendErrors],
   );
   const lastRead = entry?.lastReadMessageId ?? null;
   const firstUnread =
@@ -729,7 +729,7 @@ function ChannelScreenFor({
             (item) => item.kind !== "message" || item.message.id !== place.threadId,
           )
         : [],
-    [thread, words, place.threadId, snapshot.pending, snapshot.connection, snapshot.sendErrors],
+    [thread, words, place.threadId, snapshot.pending, snapshot.unreachable, snapshot.sendErrors],
   );
   const readVisibleReply = useCallback(
     (messageId: string) => {
@@ -856,12 +856,13 @@ function ChannelScreenFor({
     ) : (
       threadPane
     );
-  const notice =
-    snapshot.connection === "connected"
+  const notice = snapshot.versionRefusal
+    ? ({ kind: snapshot.versionRefusal } as const)
+    : snapshot.connection === "connected"
       ? null
-      : snapshot.connection === "connecting"
-        ? ({ kind: "reconnecting" } as const)
-        : ({ kind: "unreachable" } as const);
+      : snapshot.unreachable
+        ? ({ kind: "unreachable" } as const)
+        : ({ kind: "reconnecting" } as const);
   return (
     <ChannelScreen
       banner={

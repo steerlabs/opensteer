@@ -24,10 +24,7 @@ export function useTeamView(teamId: string | undefined, previews: ReadonlyMap<st
   const client = team?.client ?? null;
   const snapshot = useTeamSession(client);
   const sidebar = snapshot?.sidebar;
-  const { members, status: people } = useTeamMembers(
-    client,
-    sidebar ? `${sidebar.accessRevision}:${sidebar.namesRevision ?? ""}` : null,
-  );
+  const { members, status: people } = useTeamMembers(client, sidebar?.accessRevision ?? null);
   const linkPresence = snapshot?.channel?.linkPresence;
   const needsYou = usePersonalNeedsYou();
   const attachedTeamId = team?.teamId;

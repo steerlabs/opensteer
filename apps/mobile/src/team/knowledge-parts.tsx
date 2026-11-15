@@ -2,7 +2,14 @@ import { unwrapRpcResult } from "@opensteer/client/host";
 import type { TeamSessionClient } from "@opensteer/client/team";
 import type { HostApiCommandInput } from "@opensteer/protocol";
 import { useFocusEffect } from "@react-navigation/native";
-import { useCallback, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { color, space } from "../theme.js";
@@ -59,9 +66,10 @@ export function useFocusedRead<Value>(
 
 /**
  * Calls `reload` when the screen comes back into view, not on its first
- * appearance (the read is already under way then).
+ * appearance (the read is already under way then), and when the team's
+ * socket comes back after a close: what changed meanwhile was never streamed.
  */
-export function useReloadOnReturn(reload: () => void): void {
+export function useReloadOnReturn(session: TeamSessionClient | null, reload: () => void): void {
   const latest = useRef(reload);
   latest.current = reload;
   const seen = useRef(false);
@@ -71,6 +79,18 @@ export function useReloadOnReturn(reload: () => void): void {
       seen.current = true;
     }, []),
   );
+  const subscribe = useCallback(
+    (listener: () => void) => session?.subscribe(listener) ?? (() => undefined),
+    [session],
+  );
+  const readResumed = useCallback(() => session?.getSnapshot().resumedGeneration ?? 0, [session]);
+  const resumed = useSyncExternalStore(subscribe, readResumed, readResumed);
+  const shown = useRef(resumed);
+  useEffect(() => {
+    if (shown.current === resumed) return;
+    shown.current = resumed;
+    latest.current();
+  }, [resumed]);
 }
 
 export async function teamCommand(
