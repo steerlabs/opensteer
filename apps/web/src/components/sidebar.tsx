@@ -293,12 +293,12 @@ export function Sidebar({
     markQuietSeen(moved);
   };
   const [loadingEarlier, setLoadingEarlier] = useState(false);
-  const doneActive = !doneView && doneRows.some((row) => row.threadId === openRowThreadId);
-  // Opening a Done task brings its shelf into view; the open task moving to
-  // Done later leaves the list where the reader put it. Each opening decides
-  // once, when its task is first listed.
+  const openInDone = doneRows.some((row) => row.threadId === openRowThreadId);
+  const doneActive = !doneView && openInDone;
+  // Opening a Done task brings its shelf into view, once the shelf is there to
+  // show; the open task moving to Done later leaves the list where it was.
   const openListed =
-    openRowThreadId !== null && (doneActive || directory.rows.has(openRowThreadId));
+    openRowThreadId !== null && (openInDone || directory.rows.has(openRowThreadId));
   const opening = useRef<{ readonly threadId: string | null; placed: boolean }>({
     threadId: null,
     placed: false,
@@ -307,9 +307,12 @@ export function Sidebar({
     if (opening.current.threadId !== openRowThreadId)
       opening.current = { threadId: openRowThreadId, placed: false };
     if (opening.current.placed || !openListed) return;
+    if (openInDone) {
+      if (!doneActive || !doneShelf.current) return;
+      revealInList(doneShelf.current);
+    }
     opening.current.placed = true;
-    if (doneActive && doneShelf.current) revealInList(doneShelf.current);
-  }, [doneActive, openListed, openRowThreadId]);
+  }, [collapsed, doneActive, openInDone, openListed, openRowThreadId]);
 
   const allTasks = useMemo(() => [...list.working, ...list.ready, ...list.done], [list]);
   const searchSources = useMemo<SidebarSearchSources>(
