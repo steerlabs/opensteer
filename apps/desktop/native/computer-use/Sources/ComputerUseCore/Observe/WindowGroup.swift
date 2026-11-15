@@ -117,7 +117,7 @@ struct WindowGroup: Sendable, Equatable {
       guard let id = KeyWindow.windowID(of: modal), id != root.windowID, !allowed.contains(id),
         all.contains(where: { $0.window.windowID == id })
       else { continue }
-      blockers.append(WindowBlocker(id: id, title: title(modal), kind: .dialog))
+      blockers.append(WindowBlocker(windowId: try WindowIdentities.retain(WindowLiveness(process: process, element: modal, windowID: id)), title: title(modal), kind: .dialog))
     }
     let menus = all.filter {
       $0.onScreen && $0.layer >= AppWindows.popUpMenuLevel && !allowed.contains($0.window.windowID)
@@ -132,7 +132,7 @@ struct WindowGroup: Sendable, Equatable {
         let ownsMenu =
           menus.contains { siblingMembers.contains($0.window.windowID) }
           || (focused == id && !barMenus.isEmpty)
-        if ownsMenu { blockers.append(WindowBlocker(id: id, title: title(sibling), kind: .menu)) }
+        if ownsMenu { blockers.append(WindowBlocker(windowId: try WindowIdentities.retain(WindowLiveness(process: process, element: sibling, windowID: id)), title: title(sibling), kind: .menu)) }
       }
     }
     blockers = Array(blockers.prefix(8))

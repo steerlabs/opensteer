@@ -104,10 +104,10 @@ describe("phone tabs", () => {
     expect(test.closeViews).not.toHaveBeenCalled();
   });
 
-  it("refuses while a task holds the phone, whatever a stale client believes", async () => {
+  it("closes a tab while a task holds the phone", async () => {
     const test = tabs({ held: true });
-    await expect(test.service.close(owner, machine)).rejects.toMatchObject({ code: "conflict" });
-    expect(test.store.closePhoneTab).not.toHaveBeenCalled();
-    expect(test.closeViews).not.toHaveBeenCalled();
+    await test.service.close(owner, machine);
+    expect(test.store.closePhoneTab).toHaveBeenCalledOnce();
+    expect(test.closeViews).toHaveBeenCalledOnce();
   });
 });

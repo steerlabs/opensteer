@@ -1,3 +1,4 @@
+import { WindowIdSchema } from "@opensteer/core";
 import {
   BrowserSessionIdSchema,
   BrowserSurfaceIdSchema,
@@ -13,7 +14,7 @@ import {
   computerUseMaxTimeoutMs,
   mintComputerUseSessionId,
   type AndroidPhoneObservation,
-  type LegacyComputerUseObservation,
+  type ComputerUseObservation,
   type MachineAppStatus,
 } from "@opensteer/protocol";
 import { RunPlaceRecorder } from "../agents/run-place-recorder.js";
@@ -91,9 +92,7 @@ const calendar: ComputerAppIdentity = {
   teamId: null,
 };
 
-function observation(
-  overrides: Partial<LegacyComputerUseObservation> = {},
-): LegacyComputerUseObservation {
+function observation(overrides: Partial<ComputerUseObservation> = {}): ComputerUseObservation {
   return {
     app: notes,
     capturedAt: "2026-09-21T10:00:00.000Z",
@@ -109,7 +108,7 @@ function observation(
     alone: false,
     window: {
       ref: "window-1",
-      id: 7,
+      windowId: WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000007"),
       frame: { x: 0, y: 0, width: 800, height: 600 },
       scale: 1,
       title: "Notes",
@@ -174,7 +173,6 @@ function macosApp(): MachineAppStatus {
 function harness(
   options: {
     readonly beginPlaceEntry?: ComputerUseServiceOptions["beginPlaceEntry"];
-    readonly onPhoneHeld?: ComputerUseServiceOptions["onPhoneHeld"];
     readonly passwords?: ComputerUseServiceOptions["passwords"];
     readonly loginReceiver?: ComputerUseServiceOptions["loginReceiver"];
     readonly expireSetupRequests?: () => Promise<void>;
@@ -198,7 +196,6 @@ function harness(
   const service = new ComputerUseService({
     deploymentId: deploymentId,
     ...(options.beginPlaceEntry ? { beginPlaceEntry: options.beginPlaceEntry } : {}),
-    ...(options.onPhoneHeld ? { onPhoneHeld: options.onPhoneHeld } : {}),
     ...(options.passwords ? { passwords: options.passwords } : {}),
     ...(options.loginReceiver ? { loginReceiver: options.loginReceiver } : {}),
     ...(options.expireSetupRequests ? { expireSetupRequests: options.expireSetupRequests } : {}),
@@ -314,7 +311,7 @@ async function dispatch(
   target: ComputerUseCallable,
   context: ComputerUseContext,
   send: (lease: ComputerUseLease) => Promise<ComputerUseDispatch>,
-): Promise<LegacyComputerUseObservation> {
+): Promise<ComputerUseObservation> {
   const lease = await service.prepare(target, context);
   let sent;
   try {
@@ -354,7 +351,7 @@ function observe(
   target: ComputerUseCallable,
   context: ComputerUseContext,
   signal?: AbortSignal,
-): Promise<LegacyComputerUseObservation> {
+): Promise<ComputerUseObservation> {
   return dispatch(service, target, context, (lease) =>
     service.sendWindowOperation(
       lease,
@@ -769,6 +766,20 @@ describe("ComputerUseService helper wire fixtures", () => {
     expect(observed.snapshot).toBe("9f2c41ab7e0d5638");
     expect(observed.app.bundleId).toBe("com.apple.Notes");
     expect(observed.elementCount).toBe(5);
+  });
+
+  it("refuses a valid bind reply for a different opaque identity", async () => {
+    const fixture = harness();
+    fixture.outcomes.push({ kind: "ok", value: wire.results["session.bind"] as never });
+    const lease = await fixture.service.prepare(callable, context);
+    try {
+      const sent = await fixture.service.sendWindowOperation(lease, callable, "bind", {
+        windowId: "win_00000000-0000-4000-8000-000000000099",
+      });
+      await expect(sent.settle()).rejects.toThrow("different window");
+    } finally {
+      fixture.service.release(lease);
+    }
   });
 
   it("reads session.act as the same envelope", async () => {
@@ -1511,12 +1522,13 @@ describe("display sessions on an Android phone", () => {
     });
   }
 
-  it("opens the phone's tab once, when the phone first answers a session", async () => {
-    const onPhoneHeld = vi.fn();
-    const test = harness({ onPhoneHeld });
+  it("reports the phone holder without changing tab membership", async () => {
+    const test = harness();
     await observePhone(test.service, context);
     await observePhone(test.service, context);
-    expect(onPhoneHeld).toHaveBeenCalledExactlyOnceWith(phoneId);
+    expect(test.service.nativeTargetUsers(context.requestedBy, phoneId)).toEqual([
+      { taskId: context.threadId },
+    ]);
   });
 
   it("records a successful phone observation as entering its main display", async () => {

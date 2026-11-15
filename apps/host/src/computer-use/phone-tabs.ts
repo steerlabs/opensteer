@@ -40,11 +40,6 @@ export class PhoneTabs {
       const owners = await this.#options.store.effectiveMachineOwners([machine]);
       if (owners.get(machine)?.effectiveOwner !== owner)
         throw new OpensteerError({ code: "not_found", message: "This phone is unavailable." });
-      if (this.#options.heldByTask(machine))
-        throw new OpensteerError({
-          code: "conflict",
-          message: "An agent is using this phone. Stop it to close the tab.",
-        });
       // Written first: a tab in front reopens a view it loses, unless the tab has gone too.
       await this.#options.store.closePhoneTab(machine);
       this.#options.closeViews(owner, machine);

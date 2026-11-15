@@ -220,13 +220,13 @@ final class HelperWireFixtureTests: XCTestCase {
       ElementTreeWalker.walk(root: window, windowFrame: windowFrame), coordinates: coordinates)
 
     let windowInfo = WindowInfo(
-      ref: "window-1", id: 42, title: "Shopping list", focused: true, main: true, minimized: false,
+      ref: "window-1", windowId: "win_00000000-0000-4000-8000-000000000042", title: "Shopping list", focused: true, main: true, minimized: false,
       onScreen: true, modal: false, current: true, frame: Observation.Rect(windowFrame))
     let observation = Observation(
       snapshot: Self.observationId,
       app: notes,
       window: Observation.WindowSummary(
-        ref: "window-1", id: 42,
+        ref: "window-1", windowId: "win_00000000-0000-4000-8000-000000000042",
         title: "Shopping list",
         frame: Observation.Rect(windowFrame),
         scale: Double(coordinates.scale)
@@ -282,12 +282,11 @@ final class HelperWireFixtureTests: XCTestCase {
           running: true
         )
       ),
+      "window.resolve": Wire.WindowResolveResult(windowId: "win_00000000-0000-4000-8000-000000000042", app: notes, title: "Shopping list", unavailableReason: nil),
       "session.windows": Wire.WindowsResult(windows: [windowInfo]),
       "session.bind": Wire.BindResult(window: windowInfo),
       "view.windows": Wire.OwnerWindowsResult(windows: [
-        OwnerWindowInfo(
-          id: 42, title: "Shopping list", focused: true, main: true, minimized: false,
-          onScreen: true)
+        OwnerWindowInfo(windowId: "win_00000000-0000-4000-8000-000000000042", title: "Shopping list")
       ]),
       "session.open": Wire.SessionOpenResult(sessionId: Self.sessionId),
       "session.close": Wire.EmptyResult(),
@@ -308,7 +307,7 @@ final class HelperWireFixtureTests: XCTestCase {
         viewId: viewId, generation: 1, state: method == "view.close" ? "closed" : "ready",
         captureTargetId: method == "view.close" ? nil : "target-1",
         window: method == "view.open"
-          ? Wire.ViewStateResult.OwnerWindowSummary(id: 42, title: "Shopping list") : nil)
+          ? Wire.ViewStateResult.OwnerWindowSummary(windowId: "win_00000000-0000-4000-8000-000000000042", title: "Shopping list") : nil)
     }
     results["display.input-reset"] = Wire.EmptyResult()
     results["display.input"] = MacOwnerInput.Result(sequence: 0, outcome: "dispatched")
@@ -401,11 +400,15 @@ final class HelperWireFixtureTests: XCTestCase {
           "sessionId": .string(sessionId),
         ]),
       ]),
+      "window.resolve": .object([
+        "id": .number(25), "method": .string("window.resolve"), "timeoutMs": .number(30_000),
+        "params": .object(["windowId": .string("win_00000000-0000-4000-8000-000000000042")]),
+      ]),
       "session.bind": .object([
         "id": .number(21), "method": .string("session.bind"), "timeoutMs": .number(30_000),
         "params": .object([
           "app": .object(["access": .string("read"), "identity": identity]),
-          "sessionId": .string(sessionId), "window": .number(42),
+          "sessionId": .string(sessionId), "windowId": .string("win_00000000-0000-4000-8000-000000000042"),
         ]),
       ]),
       "view.windows": .object([
@@ -417,7 +420,7 @@ final class HelperWireFixtureTests: XCTestCase {
         "params": .object([
           "viewId": .string("cvw_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), "generation": .number(1),
           "leaseDurationMs": .number(30_000),
-          "target": .object(["kind": .string("app"), "app": identity, "window": .number(42)]),
+          "target": .object(["kind": .string("app"), "app": identity, "windowId": .string("win_00000000-0000-4000-8000-000000000042")]),
         ]),
       ]),
       "permissions.request": .object([
@@ -557,14 +560,15 @@ final class HelperWireFixtureTests: XCTestCase {
       let envelope = try request.decoded(as: RequestEnvelope.self)
       XCTAssertEqual(envelope.method, method)
       switch method {
+      case "window.resolve": _ = try envelope.decodeParams(Wire.WindowResolveParams.self, method: method)
       case "session.windows": _ = try envelope.decodeParams(Wire.WindowsParams.self, method: method)
       case "session.bind":
-        XCTAssertEqual(try envelope.decodeParams(Wire.BindParams.self, method: method).window, 42)
+        XCTAssertEqual(try envelope.decodeParams(Wire.BindParams.self, method: method).windowId, "win_00000000-0000-4000-8000-000000000042")
       case "view.windows":
         _ = try envelope.decodeParams(Wire.OwnerWindowsParams.self, method: method)
       case "view.open":
         XCTAssertEqual(
-          try envelope.decodeParams(Wire.ViewParams.self, method: method).target?.window, 42)
+          try envelope.decodeParams(Wire.ViewParams.self, method: method).target?.windowId, "win_00000000-0000-4000-8000-000000000042")
       case "permissions.request":
         XCTAssertEqual(
           try envelope.decodeParams(Wire.PermissionsRequestParams.self, method: method).pane,
@@ -675,7 +679,7 @@ final class HelperWireFixtureTests: XCTestCase {
       Set(results.keys),
       [
         "hello", "permissions.get", "permissions.request", "apps.installed", "app.resolve",
-        "view.windows", "view.open", "view.renew", "view.close", "view.activate",
+        "window.resolve", "view.windows", "view.open", "view.renew", "view.close", "view.activate",
         "session.open", "session.close", "session.windows", "session.bind", "session.observe",
         "session.act",
         "display.resolve", "display.start", "display.demand", "display.refresh", "display.stop",
@@ -692,7 +696,7 @@ final class HelperWireFixtureTests: XCTestCase {
     XCTAssertEqual(
       Set(requests.keys),
       [
-        "permissions.request", "view.windows", "view.open", "session.windows", "session.bind",
+        "permissions.request", "window.resolve", "view.windows", "view.open", "session.windows", "session.bind",
         "session.open", "session.observe", "session.act",
         "display.resolve", "display.start", "display.demand", "display.refresh", "display.stop",
         "display.attach", "display.input-reset", "display.input",

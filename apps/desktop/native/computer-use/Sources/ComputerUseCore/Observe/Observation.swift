@@ -49,7 +49,7 @@ public struct Observation: Encodable, Sendable {
 
   public struct WindowSummary: Encodable, Sendable {
     public let ref: String
-    public let id: CGWindowID
+    public let windowId: String
     /// A window with no title carries an empty one: the whole `window` is what
     /// is nullable, not the title inside it.
     public let title: String

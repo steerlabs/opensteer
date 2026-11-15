@@ -1,3 +1,4 @@
+import { WindowIdSchema } from "@opensteer/core";
 import { once } from "node:events";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { z } from "zod";
@@ -82,7 +83,7 @@ const observation = {
   truncated: false,
   window: {
     ref: "window-1",
-    id: 42,
+    windowId: WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000042"),
     title: "Notes",
     frame: { x: 0, y: 0, width: 900, height: 600 },
     scale: 1,
@@ -131,7 +132,10 @@ describe("computer use over the desktop bridge", () => {
     fixture.bridge.answer("view.windows", () => ({
       result: {
         windows: [
-          { id: 42, title: "Notes", focused: true, main: true, minimized: false, onScreen: true },
+          {
+            windowId: WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000042"),
+            title: "Notes",
+          },
         ],
       },
     }));
@@ -190,7 +194,7 @@ describe("computer use over the desktop bridge", () => {
         access: "read-write",
         app: notes,
         operation: "bind",
-        params: { window: 42 },
+        params: { windowId: "win_00000000-0000-4000-8000-000000000042" },
       }),
     );
     await fixture.settled(2);
@@ -207,7 +211,7 @@ describe("computer use over the desktop bridge", () => {
       "session.act",
     ]);
     expect(paramsOf(fixture.bridge, "session.bind")).toMatchObject({
-      window: 42,
+      windowId: "win_00000000-0000-4000-8000-000000000042",
       sessionId,
       app: { identity: notes, access: "read-write" },
     });
@@ -327,7 +331,7 @@ describe("computer use over the desktop bridge", () => {
           operation: "bind",
           app: notes,
           access: "read-write",
-          params: { window: 42 },
+          params: { windowId: "win_00000000-0000-4000-8000-000000000042" },
         }),
         observeFrame("unsupported-observe"),
         actFrame("unsupported-act"),
@@ -1815,7 +1819,7 @@ const defaultResponder: FakeBridgeResponder = (request) => {
         result: {
           window: {
             ref: observation.window.ref,
-            id: observation.window.id,
+            windowId: observation.window.windowId,
             title: observation.window.title,
             frame: observation.window.frame,
             focused: true,

@@ -75,9 +75,8 @@ func require(_ condition: Bool, _ message: String) throws {
             "Electron owner fixture did not become ready")
           let record = try AppResolver.record(forBundleAtPath: fixture.path).unwrap("Electron fixture identity")
           let inventory = try await SessionWindows.ownerWindows(record: record, budget: .unlimited)
-          let rows = Dictionary(uniqueKeysWithValues: inventory.windows.map { window in
-            (window.title, ["id": window.id] as [String: Any])
-          })
+          var rows: [String: [String: Any]] = [:]
+          for window in inventory.windows { rows[window.title] = ["id": await window.serverWindowID] }
           try JSONSerialization.data(withJSONObject: rows).write(to: out.appendingPathComponent("windows.json"))
         }
         let until = Date().addingTimeInterval(10)
@@ -210,3 +209,21 @@ func require(_ condition: Bool, _ message: String) throws {
     }
   }
 }
+
+// OS receipts are test evidence; native requests always use the opaque identity.
+@WorkActor private enum WindowReceipts {
+  static var numbers: [String: CGWindowID] = [:]
+  static func number(_ windowId: String) -> CGWindowID {
+    if let number = numbers[windowId] { return number }
+    guard let identity = try? WindowIdentities.registry.resolve(windowId) else {
+      fatalError("The fixture did not record this window before it closed.")
+    }
+    let number = identity.liveness.windowID
+    numbers[windowId] = number
+    return number
+  }
+}
+extension WindowInfo { @WorkActor var serverWindowID: CGWindowID { WindowReceipts.number(windowId) } }
+extension OwnerWindowInfo { @WorkActor var serverWindowID: CGWindowID { WindowReceipts.number(windowId) } }
+extension Observation.WindowSummary { @WorkActor var serverWindowID: CGWindowID { WindowReceipts.number(windowId) } }
+extension WindowBlocker { @WorkActor var serverWindowID: CGWindowID { WindowReceipts.number(windowId) } }

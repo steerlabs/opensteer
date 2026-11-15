@@ -56,7 +56,7 @@ enum Wire {
     struct ViewTarget: Decodable {
       let kind: String
       let app: AppIdentity
-      let window: CGWindowID?
+      let windowId: String
     }
 
   }
@@ -69,7 +69,7 @@ enum Wire {
     var window: OwnerWindowSummary? = nil
 
     struct OwnerWindowSummary: Encodable {
-      let id: CGWindowID
+      let windowId: String
       let title: String
     }
 
@@ -243,17 +243,35 @@ enum Wire {
   struct BindParams: Decodable {
     let sessionId: String
     let app: SessionApp
-    let window: CGWindowID?
-    private enum CodingKeys: CodingKey { case sessionId, app, window }
+    let windowId: String?
+    private enum CodingKeys: CodingKey { case sessionId, app, windowId }
     init(from decoder: any Decoder) throws {
       let c = try decoder.container(keyedBy: CodingKeys.self)
       sessionId = try c.decode(String.self, forKey: .sessionId)
       app = try c.decode(SessionApp.self, forKey: .app)
-      window = try c.decode(CGWindowID?.self, forKey: .window)
+      windowId = try c.decode(String?.self, forKey: .windowId)
     }
   }
   struct WindowsResult: Encodable { let windows: [WindowInfo] }
   struct BindResult: Encodable { let window: WindowInfo }
+  struct WindowResolveParams: Decodable {
+    let windowId: String?
+    let app: AppIdentity?
+  }
+  struct WindowResolveResult: Encodable, Sendable {
+    let windowId: String?
+    let app: AppIdentity?
+    let title: String?
+    let unavailableReason: String?
+    private enum CodingKeys: CodingKey { case windowId, app, title, unavailableReason }
+    func encode(to encoder: any Encoder) throws {
+      var c = encoder.container(keyedBy: CodingKeys.self)
+      try c.encode(windowId, forKey: .windowId)
+      try c.encode(app, forKey: .app)
+      try c.encode(title, forKey: .title)
+      try c.encode(unavailableReason, forKey: .unavailableReason)
+    }
+  }
   struct OwnerWindowsParams: Decodable { let app: AppIdentity }
   struct OwnerWindowsResult: Encodable { let windows: [OwnerWindowInfo] }
 

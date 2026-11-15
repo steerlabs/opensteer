@@ -129,16 +129,16 @@ import ApplicationServices
     let a = try inventory.first(where: { $0.title == "A" }).unwrap("A")
     let b = try inventory.first(where: { $0.title == "B" }).unwrap("B")
     if ProcessInfo.processInfo.environment["OPENSTEER_MAC_SHARING_DIAGNOSTIC"] == "1" {
-      try await SharingEvidence.run(pid: pid, root: a.id, out: out)
+      try await SharingEvidence.run(pid: pid, root: a.serverWindowID, out: out)
       return
     }
     if ProcessInfo.processInfo.environment["OPENSTEER_WINDOW_GROUP_SELECTION"] == "receipt-switch" {
-      let selected = try SessionWindows.bind(app: state, window: a.id, monitor: monitor)
+      let selected = try SessionWindows.bind(app: state, window: a.windowId, monitor: monitor)
       try await receiptSwitch(out: out, app: state, ref: selected.ref, monitor: monitor)
       return
     }
     if ProcessInfo.processInfo.environment["OPENSTEER_WINDOW_GROUP_SELECTION"] == "focus" {
-      _ = try SessionWindows.bind(app: state, window: a.id, monitor: monitor)
+      _ = try SessionWindows.bind(app: state, window: a.windowId, monitor: monitor)
       _ = try await AppObserver.observe(app: state, window: a.ref, monitor: monitor)
       let cover = await PersonCover()
       defer { Task { @MainActor in cover.close() } }
@@ -146,8 +146,8 @@ import ApplicationServices
       return
     }
     if ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_EPOCH_JOURNEY"] == "1" {
-      try await personClick(a.id, pid: pid, out: out)
-      let chosen = try SessionWindows.bind(app: state, window: a.id, monitor: monitor)
+      try await personClick(a.serverWindowID, pid: pid, out: out)
+      let chosen = try SessionWindows.bind(app: state, window: a.windowId, monitor: monitor)
       _ = try await AppObserver.observe(app: state, window: chosen.ref, monitor: monitor)
       var stages: [[String: Any]] = []
       defer {
@@ -199,12 +199,12 @@ import ApplicationServices
     }
     let wire = try await WireJourney(out: out)
     if ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_VIEW_ONLY_JOURNEY"] == "1" {
-      do { try await wire.ownerViewOnly(app: state.identity, window: a.id); await wire.close() }
+      do { try await wire.ownerViewOnly(app: state.identity, window: a.windowId); await wire.close() }
       catch { await wire.close(); throw error }
       return
     }
     if ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_INPUT_JOURNEY"] == "1" {
-      do { try await wire.ownerInput(app: state.identity, a: a.id, b: b.id); await wire.close() }
+      do { try await wire.ownerInput(app: state.identity, a: a, b: b); await wire.close() }
       catch { _ = try? await wire.request("permissions.get", [:]); await wire.close(); throw error }
       return
     }
@@ -214,27 +214,27 @@ import ApplicationServices
       try await Task.sleep(nanoseconds: 200_000_000)
       do {
         try await wire.inventoryOnlyCleanup(app: state.identity, pid: pid)
-        try await wire.batchCancellation(app: state.identity, window: a.id, deadline: false)
-        try await wire.batchCancellation(app: state.identity, window: a.id, deadline: true)
+        try await wire.batchCancellation(app: state.identity, window: a.windowId, deadline: false)
+        try await wire.batchCancellation(app: state.identity, window: a.windowId, deadline: true)
         await wire.close()
         return
       } catch { await wire.close(); throw error }
     }
-    do { try await wire.run(app: state.identity, a: a.id, b: b.id); await wire.close() }
+    do { try await wire.run(app: state.identity, a: a, b: b); await wire.close() }
     catch { await wire.close(); throw error }
     if ProcessInfo.processInfo.environment["OPENSTEER_WINDOW_GROUP_CURRENT_ONLY"] == "1" { return }
-    _ = try SessionWindows.bind(app: state, window: a.id, monitor: monitor)
+    _ = try SessionWindows.bind(app: state, window: a.windowId, monitor: monitor)
     let first = try await AppObserver.observe(app: state, window: a.ref, monitor: monitor)
     if ProcessInfo.processInfo.environment["OPENSTEER_WINDOW_GROUP_SELECTION"] == "settle" {
       try await command(out, "focus", "A")
-      let before = try KeyWindow.currentFrame(a.id).unwrap("pre-settle root")
+      let before = try KeyWindow.currentFrame(a.serverWindowID).unwrap("pre-settle root")
       try await command(out, "move-on-key")
       let keyed = try await ActionRunner.run(
         actions: [.key(keys: "x")], app: state, window: a.ref, snapshot: nil,
         cancellation: SessionCancellation(), monitor: monitor, overlay: nil)
       try require(keyed.error == nil, "Settle fixture did not deliver its trigger")
       let moved = try await AppObserver.observe(app: state, window: a.ref, monitor: monitor)
-      let after = try KeyWindow.currentFrame(a.id).unwrap("post-settle root")
+      let after = try KeyWindow.currentFrame(a.serverWindowID).unwrap("post-settle root")
       try require(
         after != before && moved.window.frame.x == Double(after.minX)
           && moved.window.frame.y == Double(after.minY)
@@ -248,9 +248,9 @@ import ApplicationServices
     try JSONCoding.encoder.encode(first).write(
       to: out.appendingPathComponent("N1-observation.json"))
     try require(
-      first.window.id == a.id && !first.tree.contains("WINDOW B")
+      first.window.serverWindowID == a.serverWindowID && !first.tree.contains("WINDOW B")
         && !first.tree.contains("WINDOW C"), "N1 sibling in tree")
-    try require(state.currentWindow?.windowID == a.id, "N4 binding did not remain current")
+    try require(state.currentWindow?.windowID == a.serverWindowID, "N4 binding did not remain current")
     var moved = first
     if ProcessInfo.processInfo.environment["OPENSTEER_WINDOW_GROUP_VIDEO_FIRST"] == "1" {
       var videoAvailable = true
@@ -310,7 +310,7 @@ import ApplicationServices
     let record = AppBundleRecord(identity: state.identity, path: fixture.path)
     let ownerWindows = try await SessionWindows.ownerWindows(record: record, budget: .unlimited)
       .windows
-    try require(ownerWindows.contains { $0.id == b.id }, "Owner picker omitted B")
+    try require(ownerWindows.contains { $0.serverWindowID == b.serverWindowID }, "Owner picker omitted B")
     // The picker lists only what is open: an approved app that is not running
     // lists no windows and is still not running afterwards.
     let idle = try AppResolver.record(forBundleAtPath: "/System/Applications/TextEdit.app")
@@ -353,21 +353,21 @@ import ApplicationServices
       _ = try SessionWindows.inventory(app: state, monitor: monitor)
     } catch let error as HelperError { agentCode = error.code.rawValue }
     try JSONSerialization.data(withJSONObject: [
-      "listed": listed.map { Int($0.id) }, "unreadable": Int(unreadable), "pickerError": pickerError,
+      "listed": listed.map { Int($0.serverWindowID) }, "unreadable": Int(unreadable), "pickerError": pickerError,
       "unverified": unverified, "reason": reason, "agentCode": agentCode,
     ]).write(to: out.appendingPathComponent("picker-unverifiable.json"))
     try await command(out, "close", "Unreadable")
     try require(
-      pickerError.isEmpty && [a.id, b.id].allSatisfy { id in listed.contains { $0.id == id } }
-        && !listed.contains { $0.id == unreadable },
+      pickerError.isEmpty && [a.serverWindowID, b.serverWindowID].allSatisfy { id in listed.contains { $0.serverWindowID == id } }
+        && !listed.contains { $0.serverWindowID == unreadable },
       "Owner picker hid its windows for one it could not verify: \(pickerError)")
     try require(
       unverified == 1 && reason == "failed", "Owner picker did not count the window it left out")
     try require(agentCode == "failed", "Agent inventory accepted a window it could not verify")
     let ownerB = try await OwnerViewWindow.open(
-      record: record, windowID: b.id, cancellation: SessionCancellation(), budget: .unlimited)
+      record: record, windowID: b.windowId, cancellation: SessionCancellation(), budget: .unlimited)
     try require(
-      ownerB.target.windowID == b.id && state.currentWindow?.windowID == a.id,
+      ownerB.target.windowID == b.serverWindowID && state.currentWindow?.windowID == a.serverWindowID,
       "Owner view borrowed task A")
     let cover = await PersonCover()
     defer { Task { @MainActor in cover.close() } }
@@ -393,15 +393,15 @@ import ApplicationServices
         roleStatus = AXUIElementCopyAttributeValue(
           movingElement, kAXRoleAttribute as CFString, &role)
         reportedWindow = ActionRunner.windowID(containing: movingElement)
-        if roleStatus == .success && reportedWindow == b.id { break }
+        if roleStatus == .success && reportedWindow == b.serverWindowID { break }
         try await Task.sleep(nanoseconds: 50_000_000)
       } while Date() < reparentDeadline
       try JSONSerialization.data(withJSONObject: [
         "roleStatus": Int(roleStatus.rawValue), "reportedWindow": Int(reportedWindow ?? 0),
-        "a": Int(a.id), "b": Int(b.id),
+        "a": Int(a.serverWindowID), "b": Int(b.serverWindowID),
       ]).write(to: out.appendingPathComponent("N2-reparent.json"))
       try require(
-        roleStatus == .success && reportedWindow == b.id,
+        roleStatus == .success && reportedWindow == b.serverWindowID,
         "Reparent fixture did not preserve the AX element")
       let movedControl = try await ActionRunner.run(
         actions: [.click(target: .index(movingIndex), button: .left, count: 1)], app: state,
@@ -424,7 +424,7 @@ import ApplicationServices
             [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
           ?? []
         let ids = rows.compactMap { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value }
-        guard let c = ids.firstIndex(of: frontChild), let r = ids.firstIndex(of: a.id) else {
+        guard let c = ids.firstIndex(of: frontChild), let r = ids.firstIndex(of: a.serverWindowID) else {
           return false
         }
         return c < r
@@ -441,7 +441,7 @@ import ApplicationServices
         as? [[String: Any]] ?? []
       try JSONSerialization.data(
         withJSONObject: [
-          "rawAssociated": try PrivateAPI.associatedWindows(a.id),
+          "rawAssociated": try PrivateAPI.associatedWindows(a.serverWindowID),
           "serverOrder": AppWindows.all(processIdentifier: pid).map(\.window.windowID),
           "onScreenOrder": childStack.compactMap {
             ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value
@@ -490,8 +490,8 @@ import ApplicationServices
     let ownPopover = try await AppObserver.observe(app: state, window: a.ref, monitor: monitor)
     try save(ownPopover, "N2-popover", out: out)
     try require(ownPopover.tree.contains("Popover"), "N2 own popover absent from tree")
-    let childID = child.windows.first(where: { $0.title == "Child" })?.id
-    let popoverMember = try (state.latest?.group?.members.first(where: { $0.window.windowID != a.id && $0.window.windowID != childID })).unwrap("popover member")
+    let childID = child.windows.first(where: { $0.title == "Child" })?.serverWindowID
+    let popoverMember = try (state.latest?.group?.members.first(where: { $0.window.windowID != a.serverWindowID && $0.window.windowID != childID })).unwrap("popover member")
     let popoverPoint = try state.latest.unwrap("popover snapshot").coordinates.pixelPoint(from: CGPoint(x: popoverMember.window.frame.midX - state.latest!.windowFrame.minX, y: popoverMember.window.frame.midY - state.latest!.windowFrame.minY))
     let popoverClick = try await ActionRunner.run(actions: [.click(target: .point(popoverPoint), button: .left, count: 1)], app: state, window: a.ref, snapshot: ownPopover.snapshot, cancellation: SessionCancellation(), monitor: monitor, overlay: nil)
     try require(popoverClick.error == nil, "N2 own popover not actionable")
@@ -513,7 +513,7 @@ import ApplicationServices
     try await command(out, "menu", "B")
     let menu = try await AppObserver.observe(app: state, window: a.ref, monitor: monitor)
     try require(
-      menu.blockedBy.contains { $0.id == b.id && $0.kind == .menu },
+      menu.blockedBy.contains { $0.serverWindowID == b.serverWindowID && $0.kind == .menu },
       "N2 sibling menu does not identify its owner")
     let blocked = try await ActionRunner.run(
       actions: [.key(keys: "Escape")], app: state, window: a.ref, snapshot: nil,
@@ -528,20 +528,20 @@ import ApplicationServices
     try require(
       modal.blockedBy.contains { $0.kind == .dialog }, "N2 app-modal alert did not block A")
     let alert = try modal.blockedBy.first(where: { $0.kind == .dialog }).unwrap("modal blocker")
-    let alertWindow = try SessionWindows.bind(app: state, window: alert.id, monitor: monitor)
+    let alertWindow = try SessionWindows.bind(app: state, window: alert.windowId, monitor: monitor)
     let alertObservation = try await AppObserver.observe(app: state, window: alertWindow.ref, monitor: monitor)
     try save(alertObservation, "N2-alert-bound", out: out)
     let alertKeys = try await ActionRunner.run(actions: [.key(keys: "Return")], app: state, window: alertWindow.ref, snapshot: nil, cancellation: SessionCancellation(), monitor: monitor, overlay: nil)
     try require(alertKeys.error == nil && alertKeys.performed.count == 1, "N2 bound alert refused keyboard")
     try await command(out, "dismiss")
-    _ = try SessionWindows.bind(app: state, window: a.id, monitor: monitor)
+    _ = try SessionWindows.bind(app: state, window: a.windowId, monitor: monitor)
     try Data("Associated member, menu and alert assertions passed\n".utf8).write(to: out.appendingPathComponent("N2-passed.txt"))
     } catch {
       failures.append("N2/N3 members: " + String(describing: error))
       try await command(out, "dismiss")
       try await command(out, "reparent-back")
       try await command(out, "close", "ClippedChild")
-      _ = try SessionWindows.bind(app: state, window: a.id, monitor: monitor)
+      _ = try SessionWindows.bind(app: state, window: a.windowId, monitor: monitor)
     }
     do {
     try await command(out, "hide")
@@ -600,7 +600,7 @@ import ApplicationServices
     try await Task.sleep(nanoseconds: 1_000_000_000)
     await cover.show()
     let spaceDeadline = Date().addingTimeInterval(5)
-    while KeyWindow.isOnScreen(a.id), Date() < spaceDeadline { try await Task.sleep(nanoseconds: 50_000_000) }
+    while KeyWindow.isOnScreen(a.serverWindowID), Date() < spaceDeadline { try await Task.sleep(nanoseconds: 50_000_000) }
     try stateEvidence(state, a.ref, "fullscreen", monitor: monitor, out: out)
       var discoveredValue: CFTypeRef?
       let discoveryStatus = AXUIElementCopyAttributeValue(
@@ -610,11 +610,11 @@ import ApplicationServices
         "N5 did not read a successful off-Space AX inventory")
       let discoveredIDs = (discoveredValue as? [AXUIElement] ?? []).compactMap(KeyWindow.windowID)
       try require(
-        !discoveredIDs.contains(a.id),
+        !discoveredIDs.contains(a.serverWindowID),
         "N5 did not establish AXWindows omission for the real off-Space window")
       let offSpaceInventory = try SessionWindows.inventory(app: state, monitor: monitor)
       try require(
-        offSpaceInventory.contains { $0.ref == a.ref && $0.id == a.id },
+        offSpaceInventory.contains { $0.ref == a.ref && $0.serverWindowID == a.serverWindowID },
         "N5 inventory retired an off-Space ref")
     let elsewhere = try await AppObserver.observe(app: state, window: a.ref, monitor: monitor)
     try require(elsewhere.alone && state.latest?.group?.members.count == 1 && !elsewhere.tree.contains("Child"), "N5 full-screen elsewhere did not become alone")
@@ -652,7 +652,7 @@ import ApplicationServices
     do { _ = try await AppObserver.observe(app: state, window: b.ref, monitor: monitor); throw JourneyFailure.failed("N5 old process ref revived") }
     catch let error as HelperError { try require(error.code == .staleObservation && error.message == "That window is closed.", "N5 wrong relaunch refusal") }
     let fresh = try relaunched.first(where: { $0.title == "A" }).unwrap("relaunch A")
-    _ = try SessionWindows.bind(app: state, window: fresh.id, monitor: monitor)
+    _ = try SessionWindows.bind(app: state, window: fresh.windowId, monitor: monitor)
     let videoObservation = try await AppObserver.observe(app: state, window: fresh.ref, monitor: monitor)
     try Data("N5 hidden/minimize/fullscreen/close/relaunch assertions passed; see id-reuse artifact for allocation coverage\n".utf8).write(to: out.appendingPathComponent("N5-lifecycle-passed.txt"))
     try Data("Native window/ref/tree/routing/keyboard assertions completed before video\n".utf8).write(to: out.appendingPathComponent("nonvideo-completed.txt"))
