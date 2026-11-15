@@ -50,7 +50,7 @@ export async function resolveThreadOutputImages(
   const rows = await outputs(database, input)
     .innerJoinLateral(
       sql<{ path: string; mediaType: string; index: string }>`(
-      select image->>'path' as path, image->>'mediaType' as "mediaType", (ordinality - 1)::text as index
+      select image->>'path' as path, image->>'mediaType' as media_type, (ordinality - 1)::text as index
       from jsonb_array_elements(coalesce(data->'output'->'images', '[]'::jsonb)) with ordinality as images(image, ordinality)
     )`.as("image"),
       (join) => join.onTrue(),

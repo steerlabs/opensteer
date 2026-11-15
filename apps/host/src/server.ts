@@ -1,3 +1,5 @@
+import { createAssetUrlHandlers } from "./assets/asset-service.js";
+import { createTranscriptFileHandlers, type TranscriptFiles } from "./threads/transcript-files.js";
 import { describeSessionDevice } from "@opensteer/shared/sessionDevice";
 import type { AssetService } from "./assets/asset-service.js";
 import type { DeviceAccessService } from "./administration/device-access-service.js";
@@ -360,6 +362,7 @@ const machinePageLimit = 100;
 
 export interface HostServerDependencies {
   readonly assets?: AssetService;
+  readonly transcriptFiles?: TranscriptFiles;
   readonly execution: Pick<PersonalExecution, "canExecute">;
   readonly teamLinks: () => Promise<PersonalTeamLinks>;
   readonly connections?: ConnectionOAuth;
@@ -1110,6 +1113,8 @@ export async function createHostServer(
     });
 
   const coreRpcHandlers = {
+    ...createAssetUrlHandlers(dependencies.assets),
+    ...createTranscriptFileHandlers(dependencies.transcriptFiles),
     ...createVoiceHandlers({ ...dependencies, publishDeploymentEvent, threads: threadService }),
     "agentPhone.target.get": async (_input, context) => {
       requireRpcSession(context);
@@ -1325,11 +1330,6 @@ export async function createHostServer(
           machines: await machineSummaries(session),
         }),
       );
-    },
-    "asset.urls": async (input, context) => {
-      if (!dependencies.assets)
-        throw new OpensteerError({ code: "not_found", message: "Images unavailable" });
-      return rpcSuccess(await dependencies.assets.urls(input, requireRpcSession(context).user.id));
     },
     "tool.output.get": async (input, context) => {
       const output = await dependencies.store.toolOutputForOwner({

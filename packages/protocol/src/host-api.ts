@@ -1,3 +1,9 @@
+import {
+  TranscriptFileOpenInputSchema,
+  TranscriptFileOpenSchema,
+  TranscriptFileContentInputSchema,
+  TranscriptFileContentSchema,
+} from "./transcript-files.js";
 import { TeamCommandResultViewSchema, teamReadViews } from "./team-views.js";
 import { NeedsYouPageSchema } from "./needs-you.js";
 import {
@@ -2131,6 +2137,13 @@ export const hostApi = defineRpc({
   ),
   /** Personal only: signed addresses for image files on the hosting computer. */
   "asset.urls": declaration("POST", AssetUrlsInputSchema, AssetUrlsSchema),
+  "file.open": declaration("POST", TranscriptFileOpenInputSchema, TranscriptFileOpenSchema),
+  "file.content": declaration(
+    "GET",
+    TranscriptFileContentInputSchema,
+    TranscriptFileContentSchema,
+    true,
+  ),
   "tool.output.get": declaration(
     "GET",
     z.strictObject({

@@ -1,8 +1,5 @@
-import {
-  imagePathMaxLength,
-  ThreadIdSchema,
-  ToolOutputImageMediaTypeSchema,
-} from "@opensteer/core";
+import { FileSourceSchema } from "./file-sources.js";
+import { ThreadIdSchema, ToolOutputImageMediaTypeSchema } from "@opensteer/core";
 import { z } from "zod";
 
 /** Paths one `asset.urls` call can resolve, so a screen of images costs one round trip. */
@@ -16,12 +13,12 @@ export const AssetVariantSchema = z.enum(["preview", "original"]);
 export type AssetVariant = z.infer<typeof AssetVariantSchema>;
 
 export const AssetUrlsInputSchema = z.strictObject({
-  /** The task whose transcript names these paths; relative paths resolve in its agent home folder. */
-  threadId: ThreadIdSchema,
+  /** Optional owning task context; paths are decoded and the Host decides containment. */
+  threadId: ThreadIdSchema.nullable(),
   assets: z
     .array(
       z.strictObject({
-        path: z.string().min(1).max(imagePathMaxLength),
+        source: FileSourceSchema,
         variant: AssetVariantSchema,
       }),
     )

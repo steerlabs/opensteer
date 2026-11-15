@@ -1997,6 +1997,69 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       rpcSuccess(await client.uploadAttachment(attachmentId, context.binaryBody)),
     "attachment.content": async ({ attachmentId }) =>
       rpcSuccess(client.readAttachment(attachmentId)),
+    "file.open": async ({ threadId, source }) => {
+      if (threadId !== null && !client.getSnapshot().threads.some((t) => t.id === threadId))
+        return rpcSuccess(hostApi["file.open"].success.parse({ status: "unavailable" }));
+      // The mock has no filesystem. Only real fixture attachments can supply bytes.
+      if (source.kind !== "attachment") return rpcSuccess({ status: "unavailable" as const });
+      try {
+        const a = client.getAttachment(source.attachmentId);
+        if (
+          a.state !== "ready" ||
+          !a.sha256 ||
+          (!a.messageId && Date.parse(a.expiresAt) <= Date.now())
+        )
+          return rpcSuccess({ status: "unavailable" as const });
+        const content = client.readAttachment(a.id);
+        const bytes = content.bytes.subarray(0, 512 * 1024);
+        let preview: { kind: "download" } | { kind: "text"; text: string; truncated: boolean } = {
+          kind: "download",
+        };
+        if (!bytes.includes(0))
+          try {
+            preview = {
+              kind: "text",
+              text: new TextDecoder("utf-8", { fatal: true }).decode(bytes, {
+                stream: bytes.length < content.bytes.length,
+              }),
+              truncated: bytes.length < content.bytes.length,
+            };
+          } catch {
+            /* Binary fixture. */
+          }
+        return rpcSuccess(
+          hostApi["file.open"].success.parse({
+            status: "ok",
+            resource: { kind: "attachment", attachmentId: a.id, revision: a.sha256 },
+            name: a.name,
+            sizeBytes: a.sizeBytes,
+            mediaType: a.mediaType,
+            preview,
+          }),
+        );
+      } catch {
+        return rpcSuccess({ status: "unavailable" as const });
+      }
+    },
+    "file.content": async ({ threadId, resource }) => {
+      if (
+        (threadId !== null && !client.getSnapshot().threads.some((t) => t.id === threadId)) ||
+        resource.kind !== "attachment"
+      )
+        throw new HostClientRequestError({
+          code: "not_found",
+          message: "File unavailable",
+          status: 404,
+        });
+      const a = client.getAttachment(resource.attachmentId);
+      if (a.sha256 !== resource.revision || (!a.messageId && Date.parse(a.expiresAt) <= Date.now()))
+        throw new HostClientRequestError({
+          code: "not_found",
+          message: "File unavailable",
+          status: 404,
+        });
+      return rpcSuccess(hostApi["file.content"].success.parse(client.readAttachment(a.id)));
+    },
     "browser.password-sign-in.get": async ({ requestId }) =>
       rpcSuccess(client.passwordSignInCard(requestId)),
     "browser.sources.get": async () => rpcSuccess(client.chrome.state()),

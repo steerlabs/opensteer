@@ -137,6 +137,8 @@ export const hostApiScopes = {
   "run.attempts.list": "session",
   "sessions.list": "session",
   "asset.urls": "session",
+  "file.open": "session",
+  "file.content": "session",
   "tool.output.get": "session",
   "thread.events.list": "session",
   "node.events.list": "session",
