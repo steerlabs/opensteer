@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { createId, TimeZoneSchema, TeamTurnContextSchema } from "@opensteer/core";
+import {
+  createId,
+  ThreadAccessModeSchema,
+  TimeZoneSchema,
+  TeamTurnContextSchema,
+} from "@opensteer/core";
 import { HarnessInputSchema } from "@opensteer/protocol";
 
 const regex = z.string().superRefine((value, ctx) => {
@@ -64,6 +69,46 @@ const fileRules = z
     }),
   )
   .default([]);
+const fixtureTab = z
+  .strictObject({
+    tabId: z.string().min(1),
+    kind: z.enum(["page", "window", "phone", "app"]).default("page"),
+    title: z.string(),
+    url: z.string().optional(),
+    /** A page's identity: a profile, or null for Guest. */
+    profile: z.strictObject({ profileId: z.string(), name: z.string() }).nullable().optional(),
+    /** The computer's name; its ID comes from `computers` or is derived from the name. */
+    computer: z.string().min(1),
+    state: z.enum(["open", "asleep", "unavailable"]),
+    unavailableReason: z.string().min(1).optional(),
+    groupId: z.string().nullable().default(null),
+    openedBy: z.enum(["person", "this-task", "other-task"]).default("person"),
+    usedBy: z.array(z.enum(["this-task", "other-task"])).default([]),
+    appId: z.string().optional(),
+    appName: z.string().optional(),
+    bundleId: z.string().optional(),
+    windowId: z.string().optional(),
+    /** iPhone pages take typed actions and refuse CDP and page scripts. */
+    backend: z.enum(["cdp", "actions"]).default("cdp"),
+    pageText: z.string().optional(),
+    pageTitle: z.string().optional(),
+    cookies: z.array(z.looseObject({})).optional(),
+    /** Harness helpers whose next use sends input and then reports an unknown outcome. */
+    outcomeUnknown: z.array(z.string()).default([]),
+  })
+  .superRefine((tab, ctx) => {
+    if (tab.kind === "page" && (tab.url === undefined || tab.profile === undefined))
+      ctx.addIssue({ code: "custom", message: "A page tab needs url and profile (null is Guest)" });
+    if (tab.kind === "window" && (!tab.appName || !tab.bundleId || !tab.windowId))
+      ctx.addIssue({
+        code: "custom",
+        message: "A window tab needs appName, bundleId and windowId",
+      });
+    if (tab.kind === "app" && !tab.appId)
+      ctx.addIssue({ code: "custom", message: "An app tab needs appId" });
+    if ((tab.state === "unavailable") !== (tab.unavailableReason !== undefined))
+      ctx.addIssue({ code: "custom", message: "Only an unavailable tab has unavailableReason" });
+  });
 export const BrowserFixtureSchema = z.strictObject({
   profiles: z
     .array(
@@ -74,116 +119,166 @@ export const BrowserFixtureSchema = z.strictObject({
       }),
     )
     .default([]),
-  tabs: z
+  tabs: z.array(fixtureTab).default([]),
+  groups: z
     .array(
       z.strictObject({
-        tabId: z.string(),
-        title: z.string(),
-        url: z.string(),
-        profile: z.strictObject({ id: z.string(), name: z.string() }).nullable(),
-        computer: z.string().nullable(),
-        state: z.enum(["open", "asleep", "opening"]),
-        usedByThisTask: z.boolean(),
-        usedByOtherTask: z.boolean(),
-        groupId: z.string().nullable(),
-        current: z.boolean().optional(),
-        pageText: z.string().optional(),
-        pageTitle: z.string().optional(),
+        groupId: z.string().regex(/^tgp_[0-9a-f-]{36}$/u),
+        name: z.string().min(1),
+        color: z.string().default("grey"),
+        collapsed: z.boolean().default(false),
       }),
     )
     .default([]),
+  computers: z
+    .array(z.strictObject({ computerId: z.string().regex(/^rnr_/u), name: z.string() }))
+    .default([]),
+  /** Where Guest pages open when no computer is named. */
+  hostingComputer: z.string().default("This Mac"),
   offlineComputers: z.array(z.string()).default([]),
-  personActiveTab: z.string().optional(),
-  groups: z.array(z.looseObject({ groupId: z.string(), title: z.string() })).default([]),
   accessRequiredComputers: z.array(z.string()).default([]),
+  personActiveTab: z.string().optional(),
+  /** Windows computer_use could discover; tab_open binds them by windowId or bundleId. */
+  windows: z
+    .array(
+      z.strictObject({
+        windowId: z.string().regex(/^win_[0-9a-f-]{36}$/u),
+        computer: z.string(),
+        appName: z.string(),
+        bundleId: z.string(),
+        title: z.string(),
+      }),
+    )
+    .default([]),
+  phones: z.array(z.strictObject({ computer: z.string(), name: z.string() })).default([]),
+  apps: z
+    .array(
+      z.strictObject({ appId: z.string().regex(/^app_/u), name: z.string(), computer: z.string() }),
+    )
+    .default([]),
 });
+export type BrowserFixture = z.infer<typeof BrowserFixtureSchema>;
 const harnessCall = z.strictObject({
   call: z.string().min(1),
   args: z.record(z.string(), z.json()).default({}),
 });
-export const CaseSchema = z.strictObject({
-  id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/u),
-  after: z.string().optional(),
-  area: z.string().min(1),
-  kind: z.enum(["bad", "guard", "control"]),
-  source: z.strictObject({ commit: z.string().regex(/^[a-f0-9]{40}$/u), note: z.string().min(1) }),
-  profile: z.enum(["task", "delegated"]),
-  caller: z.enum(["run", "connection"]).default("run"),
-  purpose: z.enum(["task", "voice", "background-job"]).default("task"),
-  assigned: z.boolean().optional(),
-  voice: z.boolean().optional(),
-  teamBound: z.boolean().default(false),
-  /** The owner is linked to a team, so the Run gets team knowledge. */
-  knowledge: z.boolean().default(false),
-  teamContext: TeamTurnContextSchema.optional(),
-  machineAccessNotice: z.string().min(1).optional(),
-  /** The operating system of the computer hosting the Run, as its Runner reports it. */
-  hostingPlatform: z.enum(["darwin", "linux", "win32"]).default("darwin"),
-  requesterTimeZone: TimeZoneSchema.optional(),
-  engines: z
-    .array(z.enum(["claude", "codex", "cursor", "opencode", "pi"]))
-    .min(1)
-    .optional(),
-  browser: BrowserFixtureSchema.optional(),
-  fixtures: z.record(fixturePath, z.string()).default({}),
-  gitRepository: z.boolean().default(false),
-  turns: z.array(z.union([z.string().min(1), structuredTurn])).min(1),
-  mocks: z.record(z.string(), z.json()).default({}),
-  expect: z.strictObject({
-    harness: z.array(harnessCall).default([]),
-    notHarness: z.array(z.union([z.string(), harnessCall])).default([]),
-    files: fileRules,
-    /** Snapshot before matching calls, until ordered groups of successful results complete. */
-    boundaries: z
-      .array(
-        z.strictObject({
-          call: call.optional(),
-          until: z.array(z.array(call.extend({ result: z.json().optional() })).min(1)).default([]),
-          files: fileRules,
-        }),
-      )
-      .default([]),
-    callsOnlyKeys: z.array(call.extend({ keys: z.array(z.string()) })).default([]),
-    calls: z.array(call).default([]),
-    notCalls: z.array(z.string()).default([]),
-    notCallsWithArgs: z.array(call).default([]),
-    callsArgMatch: z
-      .array(
-        z.strictObject({
-          tool: z.string().min(1),
-          args: z.record(z.string(), z.json()).default({}),
-          path: z.array(z.string().min(1)).min(1),
-          pattern: regex,
-          first: z.boolean().default(false),
-          /** Only calls after the first valid one matching this, result included, count. */
-          after: call.extend({ result: z.json() }).optional(),
-        }),
-      )
-      .default([]),
-    notCallsArgMatch: z
-      .array(
-        z.strictObject({
-          tool: z.string().min(1),
-          args: z.record(z.string(), z.json()).default({}),
-          path: z.array(z.string().min(1)).min(1),
-          pattern: regex,
-          after: call.extend({ result: z.json() }),
-        }),
-      )
-      .default([]),
-    finalText: z.enum(["empty", "nonempty"]).optional(),
-    maxFinalTextBytes: z.number().int().nonnegative().optional(),
-    order: z.array(z.string()).default([]),
-    minCalls: z.record(z.string(), z.number().int().nonnegative()).default({}),
-    maxCalls: z.record(z.string(), z.number().int().nonnegative()).default({}),
-    noAssistantText: z.boolean().default(false),
-    textMust: z.array(regex).default([]),
-    textMustNot: z.array(regex).default([]),
-    /** Checked against assistant text from turns before the graded last turn. */
-    earlierTextMust: z.array(regex).default([]),
-    maxInvalidCalls: z.number().int().nonnegative().default(0),
-  }),
-});
+export const CaseSchema = z
+  .strictObject({
+    id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/u),
+    after: z.string().optional(),
+    area: z.string().min(1),
+    kind: z.enum(["bad", "guard", "control"]),
+    source: z.strictObject({
+      commit: z.string().regex(/^[a-f0-9]{40}$/u),
+      note: z.string().min(1),
+    }),
+    profile: z.enum(["task", "delegated"]),
+    caller: z.enum(["run", "connection"]).default("run"),
+    /** The Run's access mode; a limited Codex Run cannot run Browser Harness. */
+    accessMode: ThreadAccessModeSchema.default("full-access"),
+    /** Capabilities the Host plan withholds from this Run; omitted ones are present. */
+    capabilities: z
+      .strictObject({
+        tabs: z.boolean(),
+        pages: z.boolean(),
+        computerUse: z.boolean(),
+        apps: z.boolean(),
+      })
+      .partial()
+      .default({}),
+    /**
+     * Real local HTTP servers standing in for published server apps, by name: each maps
+     * "METHOD /path" to its JSON response. Mocks may say {{appServer:<name>}} for its localUrl.
+     */
+    appServers: z
+      .record(z.string().regex(/^[a-z0-9-]+$/u), z.record(z.string(), z.json()))
+      .default({}),
+    purpose: z.enum(["task", "voice", "background-job"]).default("task"),
+    assigned: z.boolean().optional(),
+    voice: z.boolean().optional(),
+    teamBound: z.boolean().default(false),
+    /** The owner is linked to a team, so the Run gets team knowledge. */
+    knowledge: z.boolean().default(false),
+    teamContext: TeamTurnContextSchema.optional(),
+    machineAccessNotice: z.string().min(1).optional(),
+    /** The operating system of the computer hosting the Run, as its Runner reports it. */
+    hostingPlatform: z.enum(["darwin", "linux", "win32"]).default("darwin"),
+    requesterTimeZone: TimeZoneSchema.optional(),
+    engines: z
+      .array(z.enum(["claude", "codex", "cursor", "opencode", "pi"]))
+      .min(1)
+      .optional(),
+    browser: BrowserFixtureSchema.optional(),
+    fixtures: z.record(fixturePath, z.string()).default({}),
+    gitRepository: z.boolean().default(false),
+    turns: z.array(z.union([z.string().min(1), structuredTurn])).min(1),
+    mocks: z.record(z.string(), z.json()).default({}),
+    expect: z.strictObject({
+      harness: z.array(harnessCall).default([]),
+      notHarness: z.array(z.union([z.string(), harnessCall])).default([]),
+      files: fileRules,
+      /** Snapshot before matching calls, until ordered groups of successful results complete. */
+      boundaries: z
+        .array(
+          z.strictObject({
+            call: call.optional(),
+            until: z
+              .array(z.array(call.extend({ result: z.json().optional() })).min(1))
+              .default([]),
+            files: fileRules,
+          }),
+        )
+        .default([]),
+      callsOnlyKeys: z.array(call.extend({ keys: z.array(z.string()) })).default([]),
+      calls: z.array(call).default([]),
+      notCalls: z.array(z.string()).default([]),
+      notCallsWithArgs: z.array(call).default([]),
+      callsArgMatch: z
+        .array(
+          z.strictObject({
+            tool: z.string().min(1),
+            args: z.record(z.string(), z.json()).default({}),
+            path: z.array(z.string().min(1)).min(1),
+            pattern: regex,
+            first: z.boolean().default(false),
+            /** Only calls after the first valid one matching this, result included, count. */
+            after: call.extend({ result: z.json() }).optional(),
+          }),
+        )
+        .default([]),
+      notCallsArgMatch: z
+        .array(
+          z.strictObject({
+            tool: z.string().min(1),
+            args: z.record(z.string(), z.json()).default({}),
+            path: z.array(z.string().min(1)).min(1),
+            pattern: regex,
+            after: call.extend({ result: z.json() }),
+          }),
+        )
+        .default([]),
+      finalText: z.enum(["empty", "nonempty"]).optional(),
+      maxFinalTextBytes: z.number().int().nonnegative().optional(),
+      order: z.array(z.string()).default([]),
+      minCalls: z.record(z.string(), z.number().int().nonnegative()).default({}),
+      maxCalls: z.record(z.string(), z.number().int().nonnegative()).default({}),
+      noAssistantText: z.boolean().default(false),
+      textMust: z.array(regex).default([]),
+      textMustNot: z.array(regex).default([]),
+      /** Checked against assistant text from turns before the graded last turn. */
+      earlierTextMust: z.array(regex).default([]),
+      maxInvalidCalls: z.number().int().nonnegative().default(0),
+    }),
+  })
+  .superRefine((c, ctx) => {
+    for (const [, app] of JSON.stringify(c.mocks).matchAll(/\{\{appServer:([a-z0-9-]+)\}\}/gu))
+      if (!Object.hasOwn(c.appServers, app!))
+        ctx.addIssue({
+          code: "custom",
+          path: ["mocks"],
+          message: `No appServers entry named ${app}`,
+        });
+  });
 export type EvalCase = z.infer<typeof CaseSchema>;
 export function parseCases(text: string): EvalCase[] {
   const ids = new Set<string>();

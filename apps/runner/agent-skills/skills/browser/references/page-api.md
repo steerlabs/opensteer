@@ -1,6 +1,6 @@
 # Browser Harness page API
 
-Use the pinned `OPENSTEER_BROWSER_HARNESS` executable for all page operations. Pass `--tab <tabId>` to start in a tab, or leave it out and choose one in the script with `switchTab` or `newTab` ([tabs](tabs-and-show.md)). Harness connects to whichever browser holds the tab; the CDP API below applies to CDP browsers, and [iPhone pages](#iphone-pages) use typed actions instead. Report missing executable/connection configuration as a runtime configuration error and other failures as returned. Do not substitute a browser, install another harness, change the endpoint, read local browser profiles, or copy cookies through scripts.
+Use the pinned `OPENSTEER_BROWSER_HARNESS` executable for all page operations. Each run executes one JavaScript program and exits; nothing in it survives except what it did to tabs and pages. Harness connects to whichever browser holds each tab; the CDP API below applies to CDP browsers, and [iPhone pages](#iphone-pages) use typed actions instead. Report missing executable/connection configuration as a runtime configuration error and other failures as returned. Do not substitute a browser, install another harness, change the endpoint or read local browser profiles.
 
 On POSIX shells:
 
@@ -20,9 +20,31 @@ console.log(JSON.stringify(await pageInfo(), null, 2));
 '@ | & $env:OPENSTEER_BROWSER_HARNESS --tab $TabId
 ```
 
+## Tabs and handles
+
+`await openPage(tabId)` returns a page handle bound to that tab for the rest of the script. It wakes an asleep tab, which may reload it; observe it before acting. Several handles work side by side, and none ever moves to another tab. `--tab <tabId>` is `page = await openPage(tabId)` done once before your code. Without `--tab`, `page` and the top-level helpers throw until you use a handle.
+
+The top-level helpers (`pageInfo`, `currentTab`, `ensureRealTab`, `gotoUrl`, `js`, `cdp`, `clickAt`, `typeText`, `fillInput`, `fillLogin`, `fillCard`, `pressKey`, `scroll`, `waitForElement`, `waitForLoad`, `waitForNetworkIdle`, `captureScreenshot`, `setInputFiles`, `stageFiles`, `drainEvents`, `respondDialog`) act on `page`. Every handle has the same methods: `await other.pageInfo()`, `await other.cdp("Network.enable")`.
+
+`await opensteer.callTool(name, input)` calls an Opensteer tool this Run has, with the MCP tool's input and result; a failure resolves to `{ error: { code, message, next } }` instead of throwing. Use it to find and open tabs, then bind them:
+
+```js
+const found = await opensteer.callTool("tab_list", { query: "invoices", kind: "page" });
+if ("error" in found) throw new Error(found.error.message);
+const invoices = await openPage(found.tabs[0].tabId);
+const opened = await opensteer.callTool("tab_open", {
+  target: { kind: "page", url: "https://example.com", guest: true },
+});
+if ("error" in opened) throw new Error(opened.error.message);
+const example = await openPage(opened.tab.tabId);
+console.log(await invoices.title(), await example.title());
+```
+
+`tab_open` adds a page to the person's tab list without moving their view; keep its `tabId` to return with `--tab` or `openPage` later. A tab the person closed or whose computer is offline fails plainly: report that, and never substitute another page.
+
 Choose reliable locators from observed page structure and verify the site's outcome.
 
-Each program also gets `page`, a Playwright-style API for the selected tab. Act on elements through locators: `page.getByRole(role, { name })`, `page.getByLabel(text)`, `page.getByText(text)` and `page.locator(css)`, narrowed by chaining another locator, `.first()`, `.last()`, `.nth(i)` or `.filter({ hasText, hasNotText, visible: true })`. A locator describes an element; it holds none. Every action finds its element when it runs and waits up to 10 seconds (`{ timeout }` changes that) until it can act. `click` and `check` scroll the element into view and wait until it is visible, stable, enabled and not covered, then send real mouse input; a visually hidden checkbox or radio is clicked through its visible label. `fill` and `press` focus the field and type into it; date, time, color and range fields and `selectOption` set the value directly and fire `input` and `change`. Elements that re-render or move are found again, and open shadow roots are searched.
+Each handle, including `page`, is a Playwright-style API for its tab. Act on elements through locators: `page.getByRole(role, { name })`, `page.getByLabel(text)`, `page.getByText(text)` and `page.locator(css)`, narrowed by chaining another locator, `.first()`, `.last()`, `.nth(i)` or `.filter({ hasText, hasNotText, visible: true })`. A locator describes an element; it holds none. Every action finds its element when it runs and waits up to 10 seconds (`{ timeout }` changes that) until it can act. `click` and `check` scroll the element into view and wait until it is visible, stable, enabled and not covered, then send real mouse input; a visually hidden checkbox or radio is clicked through its visible label. `fill` and `press` focus the field and type into it; date, time, color and range fields and `selectOption` set the value directly and fire `input` and `change`. Elements that re-render or move are found again, and open shadow roots are searched.
 
 `ariaSnapshot()` prints the accessibility tree as lines such as `- radio "512GB" [checked]`. Its roles and names come from Chromium's accessibility tree, which `getByRole` matches; elements that tree ignores, such as hidden ones, are skipped unless you pass `includeHidden: true`, and their names may be empty. For a large page, scope the snapshot to a relevant observed part, such as `page.getByRole("dialog", { name: "Pickup" })`. A result larger than one CDP message (432 KiB) fails and asks you to narrow it.
 
@@ -34,7 +56,9 @@ Key names are Playwright's, such as `Enter`, `Tab`, `Escape`, `ArrowDown`, `Shif
 
 Coordinates (`page.mouse.click(x, y)`, `clickAt`) are for canvas, maps, frames and widgets without usable structure. A coordinate holds only for the layout it was measured in: a scroll, animation, re-render or resize makes it stale, so measure one target right before clicking it. Programs that run again later, such as Trigger programs, find elements with locators and never store coordinates.
 
-The other helpers are `pageInfo`, `currentTab`, `gotoUrl`, `listTabs`, `listGroups`, `newTab`, `switchTab`, `closeTab`, `organizeTabs`, `js`, `cdp`, `clickAt`, `typeText`, `fillInput`, `fillLogin`, `fillCard`, `pressKey`, `scroll`, `waitForLoad`, `captureScreenshot`, `setInputFiles` and `stageFiles`. `cdp` sends any allowed CDP command when nothing else fits. Use `await` for every call.
+`cdp(method, params)` sends any CDP command to the handle's page: Network, Fetch, Log, Storage, cookies, Runtime in any execution world, and frame or worker targets the page owns. Events arrive through `drainEvents()`. Commands for another profile's browser or for targets outside the page fail as foreign. What you read there, including cookies, headers and filled values, belongs to this task: never print credentials or cookies into replies, files, memory or commits. Use `await` for every call.
+
+`waitForNetworkIdle({ timeout, idleMs })` resolves `true` once the page has had no unfinished request for `idleMs` (500 ms by default), or `false` at `timeout` (10 seconds). It counts requests that start after the call; open WebSockets and event streams do not count.
 
 To upload, pass files you can read, such as the user's attachments or files you made: `await setInputFiles("input[type=file]", ["/path/photo.png"])` for a file input, or `await setInputFiles({ x, y }, [...])` with the coordinates of a button that opens a file chooser. It returns the files the page now holds; check the page's preview too. The browser may run on another machine, so raw file-bearing CDP (`DOM.setFileInputFiles`, drag `data.files`) accepts only the paths `stageFiles` returns.
 
@@ -46,7 +70,7 @@ Observe the current layout before coordinate input, especially after a resize. C
 
 `Emulation.setDeviceMetricsOverride` affects one page across Harness invocations and navigations. Zero `width` or `height` follows the person's size; zero `deviceScaleFactor` keeps the page's scale. `Emulation.clearDeviceMetricsOverride`, or the person fitting the page to their view, removes the override. `dontSetVisibleSize` is unsupported.
 
-A JavaScript dialog (`alert`, `confirm`, `prompt` or `beforeunload`) stops its page answering any other command until it is answered. An action whose input opens one (`click`, `check`, `press`, `clickAt` and the like) stops at once and throws an error whose `dialog` holds its `id`, `type` and `message`; what the action did is unchecked. Read the dialog, then answer it with `await respondDialog({ accept: true })`, adding `promptText` for a prompt or `dialogId` for an explicitly observed identity. This works on both backends. Harness sends an observed ID even if you omit it. The person may answer first; a stale ID fails instead of answering a replacement dialog. Inspect the page again afterward. CDP opening events from `drainEvents()` carry `params.dialogId`; actions events carry `dialog.id`. On iPhone, `pageInfo` and `currentTab` report the dialog; the tabs inventory does not.
+A JavaScript dialog (`alert`, `confirm`, `prompt` or `beforeunload`) stops its page answering any other command until it is answered. An action whose input opens one (`click`, `check`, `press`, `clickAt` and the like) stops at once and throws an error whose `dialog` holds its `id`, `type` and `message`; what the action did is unchecked. Read the dialog, then answer it with `await respondDialog({ accept: true })`, adding `promptText` for a prompt or `dialogId` for an explicitly observed identity. This works on both backends. Harness sends an observed ID even if you omit it. The person may answer first; a stale ID fails instead of answering a replacement dialog. Inspect the page again afterward. CDP opening events from `drainEvents()` carry `params.dialogId`; actions events carry `dialog.id`. On iPhone, `pageInfo` and `currentTab` report the dialog.
 
 To see a page, use `await captureScreenshot()` or `Page.captureScreenshot`. Looking never changes the page. A screenshot shows the viewport in input coordinates: its pixel (x, y) is where `page.mouse.click(x, y)` and `clickAt(x, y)` land. There is no full-page capture, because Chromium can only make one by resizing the page a person may be watching: scroll and capture each part, or read the page as text. `captureBeyondViewport: true` and `fromSurface: false` are refused. A `clip` crops the picture: its `x` and `y` are document coordinates as in CDP, its region must lie in what the page shows now, and `scale` is image pixels per CSS pixel. When a page you sized is larger than the view a person is watching, you get the part that view shows, with coordinates still correct; the result then has `cropped` with the `page` and `visible` sizes, and `captureScreenshot` prints a line to stderr. A page holding a JavaScript dialog refuses capture until the dialog is answered. A CDP result or event larger than 432 KiB never reaches you: a larger screenshot fails, so send `Page.captureScreenshot` with `format: "jpeg"` or a `clip` instead, and a larger event is dropped without notice. On the desktop app an agent's `Page.startScreencast` shares the picture a viewer is streaming, a JPEG up to twice the page's size, so a large page's frames may never arrive.
 
@@ -64,4 +88,4 @@ Typing uses native insertion, with only `Enter` and `Backspace` as keys: no arbi
 
 `ariaSnapshot()` is a bounded **DOM-derived semantic snapshot**, not an accessibility tree. Literal CSS, role/name, text and label locators support scopes, first/last/nth and text/visibility filters. Regexes, predicates, `includeHidden`, checked-role filters and repeated narrowing of the same scope aren't available. Locators don't enter frames. Password values never come back from reads. Wait with locator `waitFor`, `waitForURL` (an exact HTTP(S) URL) or `waitForLoad`, not a fixed delay. After `stale-document` or `stale-geometry`, Harness refreshes the binding but doesn't repeat the action; inspect again before deciding. Never resend `outcome-unknown` input without checking the result.
 
-Agent uploads need iOS 18.4+ and an admitted native chooser. `stageFiles` returns file IDs bound to that browser, not phone paths; `setInputFiles` accepts local paths or those IDs with a CSS file-input locator or chooser-button coordinates. Screenshots capture only the viewport without resizing. Suspended tabs refuse until you explicitly `switchTab` to resume that exact tab; watching never resumes it.
+Agent uploads need iOS 18.4+ and an admitted native chooser. `stageFiles` returns file IDs bound to that browser, not phone paths; `setInputFiles` accepts local paths or those IDs with a CSS file-input locator or chooser-button coordinates. Screenshots capture only the viewport without resizing. Suspended tabs refuse until you explicitly `openPage` that exact tab; watching never resumes it.

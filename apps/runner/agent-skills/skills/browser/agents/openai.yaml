@@ -1,6 +1,6 @@
 interface:
   display_name: "Opensteer Browser"
-  short_description: "Find and use browser tabs as the right identity"
+  short_description: "Drive web pages with Browser Harness as the right identity"
   default_prompt: "Use $opensteer:browser to work through a website, using the intended identity."
 dependencies:
   tools:

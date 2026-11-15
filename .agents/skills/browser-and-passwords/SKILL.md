@@ -1,6 +1,6 @@
 ---
 name: browser-and-passwords
-description: Use when verifying browser sessions (native profiles, CDP boundary, editing, navigation, agent cursors, downloads), passkeys, Chrome extension pairing, site-cookie admission and sign-in delivery, the native Passwords broker, import worker and Swift/TypeScript wire fixtures, or saved-login leases, browser fills and sealed app delivery.
+description: Use when verifying browser sessions (native profiles, agent CDP routing, editing, navigation, agent cursors, downloads), passkeys, Chrome extension pairing, site-cookie admission and sign-in delivery, the native Passwords broker, import worker and Swift/TypeScript wire fixtures, or saved-login leases, browser fills and sealed app delivery.
 ---
 
 # Browser and passwords
@@ -23,8 +23,8 @@ Verification for browser sessions and Opensteer Passwords.
 
 ## Procedures
 
-- [Browser sessions](references/browser-sessions.md): editing, downloads, CDP boundary, native
-  profiles.
+- [Browser sessions](references/browser-sessions.md): editing, downloads, agent CDP routing,
+  native profiles.
 - [Passkeys](references/passkeys.md): flag, routing tests, VM journey.
 - [Chrome sign-ins](references/chrome-signins.md): extension pairing and delivery.
 - [Passwords](references/passwords.md): Swift broker, wire fixtures, saved logins.

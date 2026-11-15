@@ -52,6 +52,21 @@ route before the effect and never retry another route: once delivery may have st
 lost answer, including AX `cannotComplete`, is `outcome-unknown`. Secure AX fields omit values and
 labels ([Passwords](passwords.md#typing-in-apps)).
 
+## Tabs
+
+Window and phone tabs share the person's one tab list with pages and apps
+([Browser sessions](browser-sessions.md#open-tabs)). A window tab is durable and names one exact
+window by an opaque `win_<uuid>` handle that the helper keeps for each verified window and process
+incarnation, independently of viewing leases and Run sessions. Titles, PIDs and window numbers never
+identify a window, because each can repeat or change. A destroyed window leaves its tab unavailable
+as “Window closed”. A helper restart cannot prove an old identity, so its tabs become unavailable as
+`window-identity-lost` until the person opens a current window. A phone has at most one tab.
+
+Closing a window or phone tab only removes it from the list; it never closes the window, quits the
+app, stops the phone or stops agent work. Owner views are leases separate from tab membership: a
+lapsed lease leaves the tab asleep, and opening it again views the same window. `computer_use`
+binds a tab with `tab(tabId)`, which grants nothing and never substitutes another window.
+
 ## Background input and its limits
 
 Input targets the process, never the global event stream or system pointer, using private

@@ -12,7 +12,7 @@ Both cover the whole site (`github.com` covers `gist.github.com`); an identity p
 - When the person asked for this sign-in, that covers its SMS or email code unless they said otherwise: retrieve the fresh code through an already-granted integration and type it into the genuine site's challenge. Never repeat or retain it. A push approval, CAPTCHA or code nothing can receive needs the person, in the visible tab, never in chat.
 - `pending` means a Request waits for the person and grants nothing yet. `declined`: continue without the site and do not ask again unless the person asks. `busy` or `needs-approval`: name the site and what is missing. Other `unavailable` reasons say what stopped it; report them plainly.
 
-Never ask for passwords, codes or recovery answers in chat, or copy cookies or browser state yourself. Opensteer never sends you a saved value; it fills it into the approved site, where the page can read it.
+Never ask for passwords, codes or recovery answers in chat, or move cookies between browsers or profiles yourself. Request results never contain a saved value: Opensteer fills it into the approved site. Once filled, the page and your scripts can read it, so never read it back, print it or store it.
 
 Passkey support is off by default. When the Host enables it and the browser and viewing Mac support it, a passkey request needs the person's approval and their OS credential manager. Otherwise explain that the person needs a supported viewer or another sign-in method; do not bypass the site's authentication.
 
