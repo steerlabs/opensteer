@@ -263,3 +263,63 @@ it("streams a legal thousand-tab layout within the frame cap even when the layou
     f.service.dispose();
   }
 });
+
+it("keeps unrelated tabs listable and streamable while an app is deleting or missing", async () => {
+  const ordinary = row(),
+    app = { ...row(), kind: "app" as const, appId: `app_${randomUUID()}` };
+  const f = fixture([ordinary, app]);
+  const { OpensteerError } = await import("@opensteer/core");
+  f.options.apps.get = async () => {
+    throw new OpensteerError({ code: "not_found", message: "App not found" });
+  };
+  const listed = await f.service.list(actor, {});
+  expect(listed.tabs).toMatchObject([
+    { tabId: ordinary.id },
+    { tabId: app.id, state: "unavailable", unavailableCode: "app-failed" },
+  ]);
+  const messages: unknown[] = [];
+  const subscription = f.service.streams.subscribe(ownerId, async (message) => {
+    messages.push(message);
+  });
+  await subscription.ready;
+  expect(messages).not.toEqual([]);
+  ordinary.title = "Still available";
+  f.service.changed(ownerId, [ordinary.id]);
+  await subscription.flush();
+  expect(messages.at(-1)).toMatchObject({
+    stream: { op: "change", update: [{ tabId: ordinary.id, title: "Still available" }] },
+  });
+  subscription.close();
+  f.service.dispose();
+});
+
+it("shares one owner read and refreshes only the changed binding for two devices", async () => {
+  const rows = Array.from({ length: 80 }, () => row("window")),
+    f = fixture(rows);
+  const reads = vi.spyOn(f.options.store, "snapshot"),
+    windows = vi.spyOn(f.native, "windowState"),
+    computers = vi.spyOn(f.options, "computer"),
+    tasks = vi.spyOn(f.options, "canReadTask");
+  const devices = [
+    f.service.streams.subscribe(ownerId, async () => {}),
+    f.service.streams.subscribe(ownerId, async () => {}),
+  ];
+  await Promise.all(devices.map((device) => device.ready));
+  expect(reads).toHaveBeenCalledTimes(1);
+  expect(windows).toHaveBeenCalledTimes(80);
+  reads.mockClear();
+  windows.mockClear();
+  computers.mockClear();
+  tasks.mockClear();
+  rows[0]!.title = "Changed";
+  f.service.changed(ownerId, [rows[0]!.id]);
+  await Promise.all(devices.map((device) => device.flush()));
+  expect({
+    databaseSnapshots: reads.mock.calls.length,
+    nativeRPCs: windows.mock.calls.length,
+    computerReads: computers.mock.calls.length,
+    taskReads: tasks.mock.calls.length,
+  }).toEqual({ databaseSnapshots: 1, nativeRPCs: 1, computerReads: 1, taskReads: 2 });
+  for (const device of devices) device.close();
+  f.service.dispose();
+});

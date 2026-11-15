@@ -1,3 +1,4 @@
+import { runHasBrowserPages } from "../agents/browser-capability.js";
 import {
   PageAgentBindInputSchema,
   browserAgentHostRoutePrefix,
@@ -130,6 +131,9 @@ export function registerAgentPageBindingRoute(
   tokens: Pick<RunToolTokenService, "authenticate" | "reauthorize">,
   tabs: Pick<TabServicePort, "requireOpenPage">,
   callers: Pick<AgentCallerResolver, "authenticate">,
+  runBrowser: (
+    claims: RunToolScope,
+  ) => Promise<{ driverKind: string; accessMode: import("@opensteer/core").ThreadAccessMode }>,
 ): void {
   app.post(
     `${browserAgentHostRoutePrefix}/pages/bind`,
@@ -139,7 +143,8 @@ export function registerAgentPageBindingRoute(
         const token = bearerToken(request.headers);
         const claims = await tokens.authenticate(token);
         const caller = await callers.authenticate(token);
-        if (caller.kind !== "run" || caller.accessMode !== "full-access")
+        const capability = caller.kind === "run" ? await runBrowser(claims) : null;
+        if (!capability || !runHasBrowserPages(capability.driverKind, capability.accessMode))
           return reply.code(403).send({
             error: {
               code: "access_denied",

@@ -578,6 +578,21 @@ export async function createHostServer(
     dependencies.runToolTokens,
     dependencies.tabs,
     dependencies.agentTools.options.callers,
+    async (claims) => {
+      const run = await dependencies.store.database
+        .selectFrom("runs")
+        .innerJoin("harnessInstances", "harnessInstances.id", "runs.harnessInstanceId")
+        .select(["harnessInstances.driverKind", "runs.accessMode"])
+        .where("runs.id", "=", claims.runId)
+        .where("runs.requestedBy", "=", claims.requestedBy)
+        .executeTakeFirst();
+      if (!run)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "This Run's browser access has ended.",
+        });
+      return run;
+    },
   );
   registerBrowserSourceWire(
     app,

@@ -385,7 +385,7 @@ export class IntegrationPlatformService {
   readonly #isRunnerConnected: (runnerId: RunnerId) => boolean;
   readonly #computerUse: ComputerUseGateway | null;
   readonly #onTabUsed: ((claims: RunToolScope, tabId: TabId, title: string) => void) | undefined;
-  readonly #nativeTabs: Pick<NativeTabTargets, "acquired"> | undefined;
+  readonly #nativeTabs: Pick<NativeTabTargets, "acquired" | "captureMembership"> | undefined;
   readonly #tabs: Pick<TabServicePort, "get" | "authorizeShow"> | undefined;
   readonly #nativeTabTarget:
     ((ownerId: UserId, tabId: TabId) => Promise<NativeReplTabTarget>) | undefined;
@@ -429,7 +429,7 @@ export class IntegrationPlatformService {
      */
     readonly computerUse?: ComputerUseGateway | null;
     readonly onTabUsed?: (claims: RunToolScope, tabId: TabId, title: string) => void;
-    readonly nativeTabs?: Pick<NativeTabTargets, "acquired">;
+    readonly nativeTabs?: Pick<NativeTabTargets, "acquired" | "captureMembership">;
     readonly tabs?: Pick<TabServicePort, "get" | "authorizeShow">;
     readonly nativeTabTarget?: (ownerId: UserId, tabId: TabId) => Promise<NativeReplTabTarget>;
     /**
@@ -3002,6 +3002,8 @@ export class IntegrationPlatformService {
       };
       this.#onDeploymentEvent(started);
     };
+    const membershipRevision =
+      operation === "bind" ? await this.#nativeTabs?.captureMembership(ownerUserId) : undefined;
     try {
       if (operation !== "release")
         lease = await computerUse.prepare(
@@ -3118,6 +3120,7 @@ export class IntegrationPlatformService {
           runClaims,
           computerId: placement.runnerId,
           key: randomUUID(),
+          membershipRevision: membershipRevision!,
         };
         const tabId = await this.#nativeTabs.acquired(
           mac

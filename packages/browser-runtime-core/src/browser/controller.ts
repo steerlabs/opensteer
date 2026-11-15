@@ -3804,6 +3804,16 @@ export class BrowserController {
     attachedActivity: AttachedActivity | undefined,
   ): unknown {
     const method = command.method;
+    if (
+      method === "Target.createTarget" &&
+      result !== null &&
+      typeof result === "object" &&
+      !Array.isArray(result)
+    ) {
+      const targetId = targetIdFromResult(result);
+      const surfaceId = targetId ? this.ledger.surfaceIdForTarget(targetId) : undefined;
+      if (surfaceId) return { ...result, surfaceId };
+    }
     if (method === "Target.attachToTarget" && typeof command.parameters?.targetId === "string") {
       const surfaceId = this.ledger.surfaceIdForTarget(command.parameters.targetId);
       if (surfaceId && result !== null && typeof result === "object" && !Array.isArray(result)) {

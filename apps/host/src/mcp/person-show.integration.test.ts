@@ -54,7 +54,7 @@ integration("explicit person_show", () => {
             throw new OpensteerError({ code: "not_found", message: "Tab not found." });
         },
       },
-      show: async (_owner, message) => {
+      personShow: async (_owner, message) => {
         messages.push(message);
         return devices;
       },

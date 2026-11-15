@@ -35,7 +35,7 @@ export const ReferenceIdSchema = z.union([
   ...ReferenceSchema.options
     .filter((schema) => schema.shape.kind.value !== "tab")
     .map((schema) => schema.shape.id),
-  TabIdSchema.refine((value) => /^(tab_|surface_)/u.test(value)),
+  TabIdSchema,
 ]);
 
 function referenceOf(id: string): z.infer<typeof ReferenceSchema> | null {
@@ -71,8 +71,7 @@ export function parseReferenceHref(href: string): Reference | null {
 
 export function formatReferenceLink(id: ReferenceId, label: string): string {
   const reference = referenceOf(id);
-  if (!reference) throw new Error("Invalid reference ID");
-  return markdownLink(label.trim() || reference.kind, referenceHref(reference.id));
+  return markdownLink(label.trim() || reference?.kind || "tab", referenceHref(id));
 }
 
 export function tabReferenceHref(tabId: TabId): string {

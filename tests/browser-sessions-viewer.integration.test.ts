@@ -276,18 +276,32 @@ run("Browser Sessions through a whole deployment", () => {
       idempotencyKey: randomUUID(),
     });
     if (clientResult.type !== "tab.open") throw new Error("Expected page");
-    const clientOpened = { tabId: clientResult.tab.tabId, sessionId: urlSessionId };
+    const activated = await client.activateTab(clientResult.tab.tabId);
+    if (activated.kind !== "page") throw new Error("Expected page viewer");
+    const clientOpened = { tabId: clientResult.tab.tabId, sessionId: activated.sessionId };
     expect(
       client.getSnapshot().tabs.get(BrowserSurfaceIdSchema.parse(clientOpened.tabId)),
     ).toBeDefined();
     await waitFor(
       async () =>
-        (await client.readBrowserContextCandidate(urlSessionId, clientOpened.tabId)).url ===
-        `${site.origin}/`,
+        (await client.readBrowserContextCandidate(clientOpened.sessionId, clientOpened.tabId))
+          .url === `${site.origin}/`,
       15_000,
     );
     await stack.host.browser.stop(owner.id, urlSessionId);
-    const afterClose = await browserInventory(stack, sessionId);
+    let afterClose = await browserInventory(stack, sessionId);
+    const otherIds = afterClose.tabs.slice(1).map((tab) => tab.id);
+    for (const id of otherIds) {
+      const outcome = await runtimeBrowserCommand(stack, {
+        type: "browser.tab.close",
+        sessionId,
+        surfaceId: id,
+        inventoryRevision: afterClose.inventoryRevision,
+        idempotencyKey: randomUUID(),
+      });
+      expect(outcome).toMatchObject({ ok: true });
+      afterClose = await browserInventory(stack, sessionId);
+    }
     const last = afterClose.tabs[0]!;
     // Keep the open admitted but not sent to the Runtime when last-tab close wins.
     const raceKey = randomUUID();
@@ -489,6 +503,8 @@ run("Browser Sessions through a whole deployment", () => {
     addCleanup("Host client", async () => client.dispose());
     await client.load();
     const targets = catalog.tabs.map((tab) => tab.id);
+    for (const tabId of targets.slice(0, 8))
+      await client.activateTab(BrowserSurfaceIdSchema.parse(tabId));
     const release = targets
       .slice(0, 8)
       .map((surfaceId) => client.retainBrowserWatch(sessionId, surfaceId));
@@ -529,6 +545,7 @@ run("Browser Sessions through a whole deployment", () => {
       false,
     );
     failOutcome = true;
+    await client.activateTab(BrowserSurfaceIdSchema.parse(targets[8]!));
     release.push(client.retainBrowserWatch(sessionId, targets[8]!));
     addCleanup("browser watch leases", async () => {
       for (const drop of release) drop();
@@ -660,7 +677,7 @@ run("Browser Sessions through a whole deployment", () => {
       const after = await stack.host.store.getBrowserSessionForOwner(sessionId, owner.id);
       expect(after?.state).toBe("closed");
       const endedMessage =
-        "This tab has ended or is unavailable. Use Browser Harness listTabs() and switchTab(tabId).";
+        "This tab has ended or is unavailable. Use tab_list and Browser Harness openPage(tabId).";
       await expect(
         stack.host.browser.attachCdpForAgent(
           {
@@ -739,7 +756,7 @@ run("Browser Sessions through a whole deployment", () => {
           () => undefined,
         ),
       ).rejects.toThrow(
-        "This tab has ended or is unavailable. Use Browser Harness listTabs() and switchTab(tabId).",
+        "This tab has ended or is unavailable. Use tab_list and Browser Harness openPage(tabId).",
       );
       await writeViewReport("closed-session-delayed-closing", { before, after, sessionId, writes });
     } finally {
@@ -818,13 +835,13 @@ run("Browser Sessions through a whole deployment", () => {
           );
         if (source === "requested")
           expect(outcome).toBe(
-            "The browser disconnected, but Opensteer could not save its ended state. Use Browser Harness listTabs() to select another tab.",
+            "The browser disconnected, but Opensteer could not save its ended state. Use tab_list to select another tab.",
           );
         expect(consumerClosed).toHaveBeenCalledOnce();
         expect(attempts).toBe(1);
         expect(after?.state).toBe("closing");
         expect(refusal).toBe(
-          "This tab lost its browser connection. Use Browser Harness listTabs() and switchTab(tabId) to reconnect.",
+          "This tab lost its browser connection. Use tab_list and Browser Harness openPage(tabId) to reconnect.",
         );
         expect(reported.mock.calls.some((call) => call.includes(sessionId))).toBe(true);
         await writeViewReport(`closed-session-failed-${source}`, {
@@ -1193,8 +1210,10 @@ run("Browser Sessions through a whole deployment", () => {
         // Closing the popup returns them to the opener, which is as it was.
         const closedFrom = viewer.entries.length;
         const closed = await runtimeBrowserCommand(stack, {
-          type: "legacy.tab.close",
-          tabId: popup,
+          type: "browser.tab.close",
+          sessionId,
+          surfaceId: popup,
+          inventoryRevision: (await browserInventory(stack, sessionId)).inventoryRevision,
           idempotencyKey: randomUUID(),
         });
         expect(closed, JSON.stringify(closed)).toMatchObject({ ok: true });

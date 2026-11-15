@@ -74,6 +74,7 @@ it("archives a profile's saved tabs and history while retaining its exact native
         title: "Saved",
         url: "https://example.com/",
         profileId,
+        profileName: "Personal",
         openedBy: "person",
         pageBinding: { lineageId: sessionId, sessionId, surfaceId: tabId },
       },

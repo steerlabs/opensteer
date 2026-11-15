@@ -1,7 +1,14 @@
 import { TabStore, AgentToolActivityStore, appendHostDeploymentEvent } from "@opensteer/database";
 import { TabService } from "../tabs/tab-service.js";
 import { NativeTabTargets } from "../computer-use/native-tab-targets.js";
-import { tabOwner, tabComputer, authorizeTabActor, canReadTab } from "../tabs/tab-authority.js";
+import {
+  tabOwner,
+  tabComputer,
+  tabComputers,
+  authorizeTabTarget,
+  tabReadAuthority,
+  canReadTab,
+} from "../tabs/tab-authority.js";
 import { TabToolHandlers } from "../mcp/handlers/tabs.js";
 import { createTranscriptFileServices } from "../threads/transcript-files.js";
 import { TranscriptFileAccess } from "../threads/transcript-file-access.js";
@@ -933,7 +940,7 @@ export async function createHostRuntime(
       onProfilesChanged: (ownerId) =>
         realtime.publishBrowserSessionsChanged([ownerId], "browser.profiles"),
       tabs: tabStore,
-      onTabsChanged: (owner) => tabs?.changed(owner),
+      onTabsChanged: (owner, ids) => tabs?.changed(owner, ids),
       tabPlaces: {
         write: (input) => store.recordRunTabPlace(input),
         publish: (event) => publishDeploymentEvent(event),
@@ -1156,16 +1163,39 @@ export async function createHostRuntime(
           .where("id", "=", id)
           .where("createdBy", "=", tabOwner(actor))
           .executeTakeFirst()),
-      authorize: async (actor, target, db) => {
-        await authorizeTabActor(actor, db);
-        const computer = "computerId" in target ? target.computerId : undefined;
-        if (
-          !("id" in target) &&
-          computer &&
-          (await tabComputer(tabOwner(actor), computer, db)).removed
-        )
-          throw new OpensteerError({ code: "not_found", message: "Computer not found." });
+      readableTasks: async (actor, ids, db) =>
+        new Set(
+          ids.length
+            ? (
+                await db
+                  .selectFrom("threads")
+                  .select("id")
+                  .where("id", "in", ids)
+                  .where("createdBy", "=", tabOwner(actor))
+                  .execute()
+              ).map((row) => row.id)
+            : [],
+        ),
+      readAuthority: async (actor, db) => {
+        const check = await tabReadAuthority(actor, db);
+        return async (row) => {
+          try {
+            return await check(row);
+          } catch (error) {
+            if (error instanceof OpensteerError && ["forbidden", "not_found"].includes(error.code))
+              return false;
+            throw error;
+          }
+        };
       },
+      computers: async (owner, ids, db) =>
+        new Map(
+          [...(await tabComputers(owner, ids, db))].map(([id, computer]) => [
+            id,
+            { ...computer, connected: runners.isRunnerConnected(id) },
+          ]),
+        ),
+      authorize: authorizeTabTarget,
       onError: (error) => reportBrowserUsageError(error),
     });
     // A connection gaining authority settles Requests targeting the hosting

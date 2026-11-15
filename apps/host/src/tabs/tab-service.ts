@@ -56,6 +56,8 @@ export interface PageTabsPort {
     target: Extract<TabTarget, { kind: "page" }>,
     key: string,
   ): Promise<TabWrite>;
+  admitted?(row: TabWrite): Promise<void>;
+  states?(ownerId: UserId, rows: TabRecord[]): Promise<Map<TabId, NativeTabTargetState>>;
   state(ownerId: UserId, row: TabRecord): Promise<NativeTabTargetState>;
   activate(
     ownerId: UserId,
@@ -77,13 +79,27 @@ export interface TabServiceOptions {
   ): Promise<{ name: string; connected: boolean; removed: boolean }>;
   /** Metadata reach includes offline computers; this must not depend on runtime connectivity. */
   canRead(actor: TabActor, row: TabRecord, database: TabDatabase): Promise<boolean>;
+  readAuthority?(
+    actor: TabActor,
+    database: TabDatabase,
+  ): Promise<(row: TabRecord) => Promise<boolean>>;
+  computers?(
+    ownerId: UserId,
+    ids: RunnerId[],
+    database: TabDatabase,
+  ): Promise<Map<RunnerId, { name: string; connected: boolean; removed: boolean }>>;
+  readableTasks?(
+    actor: TabActor,
+    ids: RunToolScope["threadId"][],
+    database: TabDatabase,
+  ): Promise<Set<RunToolScope["threadId"]>>;
   canReadTask(
     actor: TabActor,
     taskId: RunToolScope["threadId"],
     database: TabDatabase,
   ): Promise<boolean>;
   /** Rechecks the Run/connection and current grants. Called again inside membership commits. */
-  authorize(actor: TabActor, target: TabTarget | TabRecord, database: TabDatabase): Promise<void>;
+  authorize(actor: TabActor, target: TabTarget | TabWrite, database: TabDatabase): Promise<void>;
   onError(error: unknown): void;
 }
 function owner(actor: TabActor): UserId {
@@ -127,29 +143,56 @@ export class TabService implements TabServicePort {
   readonly streams: TabStreams;
   readonly #stopAcquired: () => void;
   readonly options: TabServiceOptions;
+  readonly #projected = new Map<UserId, Map<TabId, { row: string; tab: Tab }>>();
   constructor(options: TabServiceOptions) {
     this.options = options;
     this.streams = new TabStreams(
       (ownerId) => this.project({ kind: "person", ownerId }),
       options.onError,
     );
-    this.#stopAcquired = options.nativeTargets.onTargetAcquired(async (target) => {
-      if (target.ownerId !== target.runClaims.requestedBy) notFound();
-      const opened = await this.open(
-        { kind: "run", claims: target.runClaims },
-        target.kind === "window"
-          ? { kind: "window", computerId: target.computerId, windowId: target.windowId }
-          : { kind: "phone", computerId: target.computerId },
-        target.key,
-      );
-      return opened.tab.tabId;
-    });
+    this.#stopAcquired = options.nativeTargets.onTargetAcquired(
+      async (target) => {
+        if (target.ownerId !== target.runClaims.requestedBy) notFound();
+        const intent =
+          target.kind === "window"
+            ? { kind: "window" as const, computerId: target.computerId, windowId: target.windowId }
+            : { kind: "phone" as const, computerId: target.computerId };
+        try {
+          const opened = await this.open(
+            { kind: "run", claims: target.runClaims },
+            intent,
+            target.key,
+            target.membershipRevision,
+          );
+          return opened.tab.tabId;
+        } catch (error) {
+          if (error instanceof OpensteerError && error.code === "conflict") {
+            const existing = await options.store.singleton(target.ownerId, intent);
+            if (existing?.closedAt) return existing.id;
+          }
+          throw error;
+        }
+      },
+      async (ownerId) => (await options.store.snapshot(ownerId)).layout.revision,
+    );
   }
-  changed(ownerId?: UserId): void {
+  changed(ownerId?: UserId, tabIds?: readonly TabId[]): void {
+    if (tabIds)
+      for (const [id, cache] of this.#projected) {
+        if (ownerId && id !== ownerId) continue;
+        for (const tabId of tabIds) cache.delete(tabId);
+      }
+    else if (ownerId) this.#projected.delete(ownerId);
+    else this.#projected.clear();
     this.streams.changed(ownerId);
   }
-  appsChanged(_appIds: AppId[]): void {
-    this.changed();
+  appsChanged(appIds: AppId[]): void {
+    for (const [ownerId, cache] of this.#projected) {
+      const ids = [...cache].flatMap(([id, { tab }]) =>
+        tab.kind === "app" && (!appIds.length || appIds.includes(tab.appId!)) ? [id] : [],
+      );
+      if (ids.length) this.changed(ownerId, ids);
+    }
   }
   dispose(): void {
     this.#stopAcquired();
@@ -163,14 +206,13 @@ export class TabService implements TabServicePort {
   ): Promise<{ tabs: Tab[]; layout: TabLayout }> {
     const ownerId = owner(actor),
       { rows, layout } = await this.options.store.snapshot(ownerId, database);
+    const canRead = this.options.readAuthority
+      ? await this.options.readAuthority(actor, database)
+      : (row: TabRecord) => this.options.canRead(actor, row, database);
     const visible = new Set(
-      (
-        await Promise.all(
-          rows.map(async (row) =>
-            (await this.options.canRead(actor, row, database)) ? row.id : null,
-          ),
-        )
-      ).filter((id): id is TabId => id !== null),
+      (await Promise.all(rows.map(async (row) => ((await canRead(row)) ? row.id : null)))).filter(
+        (id): id is TabId => id !== null,
+      ),
     );
     const hiddenGroups = new Set(
       layout.items.flatMap((item) =>
@@ -193,21 +235,106 @@ export class TabService implements TabServicePort {
             : [item],
       ),
     };
-    const tabs = await Promise.all(
-      rows
-        .filter((row) => visible.has(row.id))
-        .map((row) => this.#tab(actor, row, projected, database)),
+    const shown = rows.filter((row) => visible.has(row.id));
+    const computerIds = [...new Set(shown.map((row) => row.computerId))];
+    const computers = this.options.computers
+      ? await this.options.computers(ownerId, computerIds, database)
+      : new Map(
+          await Promise.all(
+            computerIds.map(
+              async (id) => [id, await this.options.computer(ownerId, id, database)] as const,
+            ),
+          ),
+        );
+    const profileIds = [...new Set(shown.flatMap((row) => (row.profileId ? [row.profileId] : [])))];
+    const profiles = new Map(
+      profileIds.length
+        ? (
+            await database
+              .selectFrom("browserProfiles")
+              .select(["id", "name"])
+              .where("ownerId", "=", ownerId)
+              .where("id", "in", profileIds)
+              .execute()
+          ).map((profile) => [profile.id, profile.name])
+        : [],
     );
+    let cache = actor.kind === "person" ? this.#projected.get(ownerId) : undefined;
+    if (actor.kind === "person" && !cache) {
+      cache = new Map();
+      this.#projected.set(ownerId, cache);
+    }
+    const refreshed = shown.filter((row) => cache?.get(row.id)?.row !== canonicalJson(row));
+    const pageStates = this.options.pages.states
+      ? await this.options.pages.states(
+          ownerId,
+          refreshed.filter((row) => row.kind === "page"),
+        )
+      : undefined;
+    let tabs = await Promise.all(
+      shown.map(async (row) => {
+        const saved = cache?.get(row.id);
+        const key = canonicalJson(row);
+        if (
+          saved?.row === key &&
+          saved.tab.computer.name === computers.get(row.computerId)?.name &&
+          (saved.tab.unavailableCode === "computer-offline") ===
+            !computers.get(row.computerId)?.connected &&
+          (saved.tab.unavailableCode === "computer-removed") ===
+            computers.get(row.computerId)?.removed
+        )
+          return TabSchema.parse({
+            ...saved.tab,
+            groupId: tabGroupOf(projected, row.id),
+            ...(row.profileId
+              ? {
+                  profile: {
+                    profileId: row.profileId,
+                    name: profiles.get(row.profileId) ?? row.profileName!,
+                  },
+                }
+              : {}),
+          });
+        const tab = await this.#tab(actor, row, projected, {
+          computer: computers.get(row.computerId)!,
+          profile: row.profileId ? profiles.get(row.profileId) : undefined,
+          live: pageStates?.get(row.id),
+        });
+        cache?.set(row.id, { row: key, tab });
+        return tab;
+      }),
+    );
+    const taskIds = [...new Set(tabs.flatMap((tab) => tab.usedBy.map((holder) => holder.taskId)))];
+    const readable = this.options.readableTasks
+      ? await this.options.readableTasks(actor, taskIds, database)
+      : new Set(
+          (
+            await Promise.all(
+              taskIds.map(async (id) =>
+                (await this.options.canReadTask(actor, id, database)) ? id : null,
+              ),
+            )
+          ).filter((id): id is RunToolScope["threadId"] => id !== null),
+        );
+    tabs = tabs.map((tab) => ({
+      ...tab,
+      usedBy: tab.usedBy.filter(({ taskId }) => readable.has(taskId)).slice(0, 128),
+    }));
+    if (cache) for (const id of cache.keys()) if (!visible.has(id)) cache.delete(id);
     return { tabs, layout: projected };
   }
   async #tab(
     actor: TabActor,
     row: TabRecord,
     layout: TabLayout,
-    database: TabDatabase,
+    facts: {
+      computer: { name: string; connected: boolean; removed: boolean };
+      profile?: string | undefined;
+      live?: NativeTabTargetState | undefined;
+    },
   ): Promise<Tab> {
     const ownerId = owner(actor),
-      computer = await this.options.computer(ownerId, row.computerId, database);
+      computer = facts.computer;
     let live: NativeTabTargetState;
     let title = row.title;
     if (computer.removed)
@@ -228,49 +355,38 @@ export class TabService implements TabServicePort {
       live = await this.options.nativeTargets.windowState(ownerId, row.computerId, row.windowId!);
     else if (row.kind === "phone")
       live = await this.options.nativeTargets.phoneState(ownerId, row.computerId);
-    else if (row.kind === "page") live = await this.options.pages.state(ownerId, row);
+    else if (row.kind === "page")
+      live = facts.live ?? (await this.options.pages.state(ownerId, row));
     else {
-      const app = await this.options.apps.get(ownerId, row.appId!);
-      title = app.name;
+      const app = await this.options.apps.get(ownerId, row.appId!).catch((error: unknown) => {
+        if (error instanceof OpensteerError && error.code === "not_found") return null;
+        throw error;
+      });
+      title = app?.name ?? row.title;
       live =
-        app.kind === "html" || app.state === "running"
+        app && (app.kind === "html" || app?.state === "running")
           ? { state: "open", usedBy: [] }
           : {
               state: "unavailable",
               usedBy: [],
               unavailableCode:
-                app.state === "offline"
+                app?.state === "offline"
                   ? "computer-offline"
-                  : app.state === "stopped"
+                  : app?.state === "stopped"
                     ? "app-stopped"
                     : "app-failed",
               unavailableReason:
-                app.state === "offline"
+                app?.state === "offline"
                   ? "This computer is offline."
-                  : app.state === "stopped"
+                  : app?.state === "stopped"
                     ? "This app is stopped."
                     : "This app failed to start.",
             };
     }
-    const profile =
-      row.kind === "page" && row.profileId
-        ? await database
-            .selectFrom("browserProfiles")
-            .select("name")
-            .where("id", "=", row.profileId)
-            .where("ownerId", "=", ownerId)
-            .executeTakeFirst()
-        : null;
-    const holders = await Promise.all(
-      [...new Set(live.usedBy.map((holder) => holder.taskId))]
-        .sort()
-        .map(async (taskId) =>
-          (await this.options.canReadTask(actor, taskId, database)) ? { taskId } : null,
-        ),
-    );
-    const usedBy = holders
-      .filter((holder): holder is { taskId: RunToolScope["threadId"] } => holder !== null)
-      .slice(0, 128);
+    const usedBy = [...new Set(live.usedBy.map(({ taskId }) => taskId))]
+      .sort()
+      .slice(0, 128)
+      .map((taskId) => ({ taskId }));
     return TabSchema.parse({
       tabId: row.id,
       kind: row.kind,
@@ -287,7 +403,7 @@ export class TabService implements TabServicePort {
         ? {
             url: row.url!,
             profile: row.profileId
-              ? { profileId: row.profileId, name: profile?.name ?? row.profileName! }
+              ? { profileId: row.profileId, name: facts.profile ?? row.profileName! }
               : null,
           }
         : {}),
@@ -374,12 +490,18 @@ export class TabService implements TabServicePort {
       }
     };
   }
-  async open(actor: TabActor, target: TabTarget, key: string): Promise<{ tab: Tab }> {
+  async open(
+    actor: TabActor,
+    target: TabTarget,
+    key: string,
+    membershipRevision?: number,
+  ): Promise<{ tab: Tab }> {
     TabTargetSchema.parse(target);
     const ownerId = owner(actor),
       database = this.options.store.database;
     await this.options.authorize(actor, target, database);
-    const initialRevision = (await this.options.store.snapshot(ownerId)).layout.revision;
+    const initialRevision =
+      membershipRevision ?? (await this.options.store.snapshot(ownerId)).layout.revision;
     const openedBy: TabOpenedBy =
       actor.kind === "run" ? { taskId: actor.claims.threadId } : "person";
     const hash = operationKey(actor, key);
@@ -439,12 +561,7 @@ export class TabService implements TabServicePort {
       operationKey(actor, key),
       async (tx) => {
         await this.options.authorize(actor, target, tx);
-        if (write.kind === "window")
-          await this.options.authorize(
-            actor,
-            { kind: "window", computerId: write.computerId, windowId: write.windowId! },
-            tx,
-          );
+        await this.options.authorize(actor, write, tx);
         if (target.kind === "app") {
           const current = await tx
             .selectFrom("apps")
@@ -467,6 +584,7 @@ export class TabService implements TabServicePort {
       target,
       initialRevision,
     );
+    if (write.kind === "page") await this.options.pages.admitted?.(write);
     this.changed(ownerId);
     return { tab: await this.#get(actor, result.tabIds[0]!) };
   }
@@ -480,7 +598,6 @@ export class TabService implements TabServicePort {
   async #row(actor: TabActor, tabId: TabId): Promise<TabRecord> {
     const row = await this.options.store.get(owner(actor), tabId);
     if (!row || !(await this.options.canRead(actor, row, this.options.store.database))) notFound();
-    await this.options.authorize(actor, row, this.options.store.database);
     return row;
   }
   async #fence(actor: TabActor, row: TabRecord, viewer: TabViewer): Promise<void> {
@@ -681,6 +798,7 @@ export class TabService implements TabServicePort {
         code: "bad_request",
         message: "Use Browser Harness only with a page tab.",
       });
+    await this.options.authorize(actor, row, this.options.store.database);
     const binding = await this.options.pages.bind(claims, row);
     const current = await this.#row(actor, tabId);
     if (current.generation !== row.generation) conflict();

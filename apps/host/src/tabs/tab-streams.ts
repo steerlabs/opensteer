@@ -22,6 +22,7 @@ interface Subscription {
 /** One ordered snapshot source, with bounded frames and field patches. */
 export class TabStreams {
   readonly #subscriptions = new Set<Subscription>();
+  readonly #projections = new Map<UserId, ReturnType<TabStreams["read"]>>();
   readonly read: (ownerId: UserId) => Promise<{ tabs: Tab[]; layout: TabLayout }>;
   readonly onError: (error: unknown) => void;
   constructor(read: TabStreams["read"], onError: TabStreams["onError"]) {
@@ -58,11 +59,15 @@ export class TabStreams {
       close: () => {
         subscription.closed = true;
         this.#subscriptions.delete(subscription);
+        if (![...this.#subscriptions].some((other) => other.ownerId === ownerId))
+          this.#projections.delete(ownerId);
       },
       flush: () => subscription.tail,
     };
   }
   changed(ownerId?: UserId): void {
+    if (ownerId) this.#projections.delete(ownerId);
+    else this.#projections.clear();
     for (const subscription of this.#subscriptions)
       if (!ownerId || subscription.ownerId === ownerId) {
         subscription.dirty = true;
@@ -73,7 +78,16 @@ export class TabStreams {
     const pending = subscription.tail.then(async () => {
       while (subscription.dirty && !subscription.closed) {
         subscription.dirty = false;
-        const { tabs, layout } = await this.read(subscription.ownerId);
+        let projection = this.#projections.get(subscription.ownerId);
+        if (!projection) {
+          projection = this.read(subscription.ownerId);
+          this.#projections.set(subscription.ownerId, projection);
+          void projection.catch(() => {
+            if (this.#projections.get(subscription.ownerId) === projection)
+              this.#projections.delete(subscription.ownerId);
+          });
+        }
+        const { tabs, layout } = await projection;
         if (subscription.closed) return;
         const next = new Map<string, Tab>(tabs.map((tab) => [tab.tabId, tab]));
         for (const [id, row] of subscription.rows) {
@@ -104,5 +118,6 @@ export class TabStreams {
   close(): void {
     for (const subscription of this.#subscriptions) subscription.closed = true;
     this.#subscriptions.clear();
+    this.#projections.clear();
   }
 }

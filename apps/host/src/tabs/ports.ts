@@ -80,6 +80,7 @@ export type NativeTargetAcquired = {
   runClaims: RunToolScope;
   computerId: RunnerId;
   key: string;
+  membershipRevision: number;
 } & ({ kind: "window"; windowId: WindowId } | { kind: "phone" });
 export type NativeTargetAcquiredHandler = (target: NativeTargetAcquired) => Promise<TabId>;
 export interface NativeTabTargetsPort {
@@ -105,5 +106,8 @@ export interface NativeTabTargetsPort {
     key: string,
   ): Promise<ComputerView>;
   closeOwnerViews(ownerId: UserId, tabId: TabId, tabGeneration: number): Promise<void>;
-  onTargetAcquired(handler: NativeTargetAcquiredHandler): () => void;
+  onTargetAcquired(
+    handler: NativeTargetAcquiredHandler,
+    capture?: (ownerId: UserId) => Promise<number>,
+  ): () => void;
 }

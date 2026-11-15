@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { IntegrationToolHandlers } from "./handlers/integrations.js";
 import {
   IntegrationPlatformStore,
@@ -230,9 +231,8 @@ async function serveMcp(
         } as unknown as ConstructorParameters<typeof TriggerService>[0]),
       ),
       apps: {
-        listForCaller: async (scope: { requestedBy: import("@opensteer/core").UserId }) => ({
-          apps: await new AppStore(store.database).list(scope.requestedBy),
-        }),
+        list: async (ownerId: import("@opensteer/core").UserId) =>
+          new AppStore(store.database).list(ownerId),
       } as never,
       pluginInstall: async () => {
         throw new Error("Unexpected install");
@@ -283,7 +283,11 @@ async function connection(
 function errorText(result: Awaited<ReturnType<Client["callTool"]>>): string {
   expect(result.isError).toBe(true);
   const [first] = result.content as { type: string; text: string }[];
-  return first?.text ?? "";
+  return z
+    .object({
+      error: z.object({ code: z.string(), message: z.string(), next: z.string().nullable() }),
+    })
+    .parse(result.structuredContent ?? JSON.parse(first!.text)).error.message;
 }
 
 describeStore("connected agents on the Opensteer MCP", (it) => {
@@ -599,7 +603,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       "opensteer_ai_account_list",
       "opensteer_request_list",
       "opensteer_automation_list",
-      "opensteer_app_list",
+      "app_list",
       "integration_search",
     ]) {
       const result = await agent.client.callTool({

@@ -157,6 +157,7 @@ integration("mixed workspace layout", () => {
         kind: "phone" as const,
         computerId: f.runnerId,
         key: "acquisition",
+        membershipRevision: (await f.tabs.snapshot(f.ownerId)).layout.revision,
       };
       expect(await acquired!(acquisition)).toBe(phoneId);
       expect(first.rows.get(phoneId)?.usedBy).toEqual([{ taskId }]);

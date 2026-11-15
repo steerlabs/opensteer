@@ -1,3 +1,4 @@
+import { runHasBrowserPages } from "./browser-capability.js";
 import { promptCacheExpiresAt } from "@opensteer/core";
 import { dispatchNodeStop, NodeStopAuthoritySchema } from "@opensteer/database";
 import { agentToolsPlanForRun } from "./agent-tools-plan.js";
@@ -589,8 +590,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       capabilities: {
         tabs: context.personalContext,
         pages:
-          context.personalContext &&
-          (harness.driverKind !== "codex" || context.thread.accessMode === "full-access"),
+          context.personalContext && runHasBrowserPages(harness.driverKind, context.run.accessMode),
         computerUse: context.personalContext && identity.modules.agents?.computerTool === 1,
         apps: context.personalContext,
       },

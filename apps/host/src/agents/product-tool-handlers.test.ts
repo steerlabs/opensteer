@@ -1705,7 +1705,7 @@ it.each([
             }
           : {
               target: {
-                current: true,
+                taskId: currentThreadId,
               },
             }),
       }),
@@ -1734,7 +1734,7 @@ it("allows a task to show its Thread to the person", async () => {
       type: "person.show",
       requestId: crypto.randomUUID(),
       target: {
-        threadId: currentThreadId,
+        taskId: currentThreadId,
       },
     }),
   ).resolves.toMatchObject({
@@ -1746,7 +1746,7 @@ it("allows a task to show its Thread to the person", async () => {
     ownerId,
     expect.objectContaining({
       target: {
-        threadId: currentThreadId,
+        taskId: currentThreadId,
       },
     }),
   );

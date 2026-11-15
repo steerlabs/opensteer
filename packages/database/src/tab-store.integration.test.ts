@@ -121,7 +121,7 @@ integration("workspace tabs", () => {
     await tabs.reopen(ownerId, a.id, "reopen");
     expect(tabLayoutIds((await tabs.snapshot(ownerId)).layout)).toEqual([c.id, a.id]);
   });
-  it("fences latest-session descriptors, preserves restore URLs and never resurrects closed pages or automation", async () => {
+  it("fences per-tab session descriptors, preserves restore URLs and never resurrects closed pages or automation", async () => {
     const { tabs, legacy, database, ownerId, computerId } = await fixture();
     const store = new OpensteerStore(legacy),
       sessionId = createBrowserSessionId();
@@ -197,9 +197,15 @@ integration("workspace tabs", () => {
         title: "Stale",
         url: "https://example.com/stale",
       }),
-    ).toBe(false);
+    ).toBe(true);
     const next = { ...binding, sessionId: later };
     expect(await tabs.bindPage(ownerId, tabId, 1, binding, next)).toBe(true);
+    expect(
+      await tabs.updatePage(ownerId, tabId, 1, binding, {
+        title: "Retired",
+        url: "https://example.com/retired",
+      }),
+    ).toBe(false);
     await tabs.close(ownerId, [tabId], "close");
     expect(
       await tabs.updatePage(ownerId, tabId, 1, next, {

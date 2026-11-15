@@ -72,7 +72,7 @@ const reportSchema = z
           .object({
             tabId: z.string(),
             state: z.string(),
-            profile: profileSchema.nullable(),
+            profile: z.object({ profileId: BrowserProfileIdSchema, name: z.string() }).nullable(),
           })
           .passthrough(),
       )
@@ -424,6 +424,7 @@ run("Browser profiles through a whole deployment", () => {
     );
     const client = people[0]!;
     const pageId = BrowserSurfaceIdSchema.parse(opened.report.opened!.tabId);
+    await client.activateTab(pageId);
     const release = client.retainBrowserWatch(sessionId, pageId);
     try {
       await waitFor(async () => client.browserWatchFrames.get(sessionId, pageId) !== null, 10_000);
@@ -597,14 +598,14 @@ run("Browser profiles through a whole deployment", () => {
       equal(
         evidence,
         `open ${identity.tabId} identity`,
-        tab!.profile?.id ?? null,
+        tab!.profile?.profileId ?? null,
         identity.profileId,
       );
       const sleeping = asleep.report.tabs!.find((row) => row.tabId === tab!.tabId);
       equal(
         evidence,
         `asleep ${tab!.tabId} identity`,
-        sleeping?.profile?.id ?? null,
+        sleeping?.profile?.profileId ?? null,
         identity.profileId,
       );
     }

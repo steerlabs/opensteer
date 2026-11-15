@@ -193,11 +193,7 @@ export class ProductToolHandlers {
     readonly threads: ThreadService;
     readonly realtime: Pick<RealtimeHub, "observe" | "sendToUsers">;
     readonly computerUse?: Pick<ComputerUseService, "sessionsForRunner" | "authorizeDisplay">;
-    readonly personShow?: (
-      userId: RunToolScope["requestedBy"],
-      message: PersonShowMessage,
-    ) => Promise<number>;
-    readonly show?: (userId: UserId, message: PersonShowMessage) => Promise<number>;
+    readonly personShow?: (userId: UserId, message: PersonShowMessage) => Promise<number>;
     readonly tabs?: Pick<TabServicePort, "authorizeShow" | "get">;
     readonly supportsLoginFill?: (scope: RunToolScope) => boolean;
     readonly browserSources: Pick<BrowserSourceService, "agentCopyChromeCookies">;
@@ -237,7 +233,7 @@ export class ProductToolHandlers {
     this.#memoryPasses = options.memoryPasses;
     this.#realtime = options.realtime;
     this.#tabs = options.tabs;
-    this.#personShow = options.show;
+    this.#personShow = options.personShow;
     this.#supportsLoginFill = options.supportsLoginFill ?? (() => false);
     this.#browserSources = options.browserSources;
     this.#savedLogins = options.savedLogins;

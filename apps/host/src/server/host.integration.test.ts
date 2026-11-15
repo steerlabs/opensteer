@@ -150,6 +150,7 @@ function createHostServer(dependencies: HostServerTestOverrides) {
           } as HostAuthenticator),
     browser: Object.assign(
       {
+        latestTabPlaces: async () => [],
         withRunnerAdmission: async <T>(_runnerId: RunnerId, action: () => Promise<T>) => action(),
       },
       complete.browser,
@@ -2903,7 +2904,7 @@ describe("durable harness catalogs", () => {
         } as never,
         browser: {
           latestPlaces: async () => [],
-          bootstrap: async () => ({
+          workspaceBootstrap: async () => ({
             available: false,
             placements: [],
             profileGrants: [],

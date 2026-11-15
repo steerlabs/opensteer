@@ -495,6 +495,29 @@ integration("Host and Chromium editing contract", () => {
         code: "ShiftLeft",
         modifiers: [],
       });
+      await vi.waitFor(
+        async () =>
+          expect(
+            z
+              .array(
+                z.object({
+                  step: z.string(),
+                  type: z.string().optional(),
+                  action: z.string().optional(),
+                  code: z.string().optional(),
+                }),
+              )
+              .parse(await engineTrace!())
+              .some(
+                (event) =>
+                  event.step === "input.done" &&
+                  event.type === "input.key" &&
+                  event.action === "up" &&
+                  event.code === "ShiftLeft",
+              ),
+          ).toBe(true),
+        { timeout: 5000 },
+      );
       const recovered = randomUUID();
       other.send({
         type: "clipboard.paste-data",

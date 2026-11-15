@@ -470,10 +470,14 @@ it("requires full Run access before binding Browser Harness and derives authorit
     kind: "run" as const,
     accessMode: "auto" as import("@opensteer/core").ThreadAccessMode,
   };
+  let driverKind = "codex";
   const callers = {
     authenticate: vi.fn(async () => caller as import("../mcp/agent-caller.js").RunCaller),
   };
-  registerAgentPageBindingRoute(app, tokens, pages, callers);
+  registerAgentPageBindingRoute(app, tokens, pages, callers, async () => ({
+    driverKind,
+    accessMode: caller.accessMode,
+  }));
   const request = {
     method: "POST" as const,
     url: "/internal/v1/browser-agent/pages/bind",
@@ -490,6 +494,11 @@ it("requires full Run access before binding Browser Harness and derives authorit
     },
   });
   expect(pages.requireOpenPage).not.toHaveBeenCalled();
+  driverKind = "claude-code";
+  expect((await app.inject(request)).json()).toEqual(binding);
+  caller.accessMode = "approval-required";
+  expect((await app.inject(request)).statusCode).toBe(403);
+  driverKind = "codex";
   caller.accessMode = "full-access";
   expect((await app.inject(request)).json()).toEqual(binding);
   expect(pages.requireOpenPage).toHaveBeenCalledWith(claims, "tab");

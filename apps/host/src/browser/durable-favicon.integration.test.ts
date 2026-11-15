@@ -240,6 +240,24 @@ integration("Durable tab icons", () => {
     });
     // The Runtime submits it from the signed ticket; the Host sends no CDP navigation.
     const opened = await opening;
+    const initialWrite = {
+      id: opened.tabId,
+      ownerId: host.ownerId,
+      computerId: runtime.runnerId,
+      kind: "page" as const,
+      title: "Amazon",
+      url: "https://amazon.com/",
+      profileId,
+      profileName: "History",
+      openedBy: "person" as const,
+      pageBinding: {
+        lineageId: opened.groupId!,
+        sessionId: opened.sessionId,
+        surfaceId: opened.tabId,
+      },
+    };
+    await new TabStore(host.store.database).open(initialWrite, "history-member");
+    await host.runtime.browser.pageTabs.admitted!(initialWrite);
     const sessionId = opened.sessionId;
     const initialNavigation = runtime.lastClaims()?.initialNavigation;
     expect(initialNavigation).toMatchObject({ url: "https://amazon.com/" });
@@ -271,7 +289,7 @@ integration("Durable tab icons", () => {
       { url: "https://www.amazon.com/", typedCount: 1, visitCount: 1 },
     ]);
     expect((await read()).entries.some((entry) => entry.url === "https://amazon.com/")).toBe(false);
-    const viewer = new WebSocket(
+    let viewer = new WebSocket(
       `ws://127.0.0.1:${host.hostPort}/v1/browser-sessions/${sessionId}/connect`,
       {
         headers: host.ownerHeaders,
@@ -282,6 +300,14 @@ integration("Durable tab icons", () => {
       await closed(viewer);
     });
     await waitForMessage(viewer, (message) => message.type === "browser.snapshot");
+    const viewerErrors: unknown[] = [];
+    viewer.on("message", (raw, binary) => {
+      if (!binary) {
+        const message = JSON.parse(raw.toString()) as { type: string };
+        if (message.type === "browser.error") viewerErrors.push(message);
+      }
+    });
+    viewer.send(JSON.stringify({ type: "stream.subscribe", surfaceId: opened.tabId }));
     const sendSurfaces = async (surfaces: Record<string, unknown>[]) => {
       const marker = randomUUID();
       const received = waitForMessage(
@@ -326,6 +352,11 @@ integration("Durable tab icons", () => {
               .receivedCommands()
               .slice(count)
               .some((command) => command.type === "navigation.go"),
+            JSON.stringify({
+              url,
+              commands: runtime.receivedCommands().slice(count),
+              errors: viewerErrors,
+            }),
           ).toBe(true),
         { timeout: 5_000 },
       );
@@ -453,6 +484,7 @@ integration("Durable tab icons", () => {
     });
     await changed();
     await sendSurfaces([]);
+    await host.runtime.browser.flushPendingTabDescriptors();
     iconRef = (await read()).icons.find(
       (icon) => icon.origin === "https://www.second.example",
     )!.iconRef;
@@ -497,6 +529,24 @@ integration("Durable tab icons", () => {
     );
     await changed();
     await sendSurfaces([surface("page-integration", "https://latest.example/", "latest")]);
+    const saved = new TabStore(host.store.database);
+    await saved.reopen(host.ownerId, opened.tabId, "history-reopen");
+    await host.runtime.browser.pageTabs.activate(
+      host.ownerId,
+      (await saved.get(host.ownerId, opened.tabId))!,
+      "history-view",
+    );
+    viewer.close();
+    await closed(viewer);
+    viewer = new WebSocket(
+      `ws://127.0.0.1:${host.hostPort}/v1/browser-sessions/${sessionId}/connect`,
+      { headers: host.ownerHeaders },
+    );
+    viewer.on("message", (raw, binary) => {
+      if (!binary) viewerErrors.push(JSON.parse(raw.toString()));
+    });
+    await waitForMessage(viewer, (message) => message.type === "browser.snapshot");
+    viewer.send(JSON.stringify({ type: "stream.subscribe", surfaceId: opened.tabId }));
     const clearedNavigation = await go("https://pending-clear.example/");
     await mutate("browser.history.clear", "history-clear");
     await changed();
@@ -725,6 +775,9 @@ integration("Durable tab icons", () => {
         },
         `fixture:${id}`,
       );
+      await host.runtime.browser.pageTabs.admitted!(
+        (await new TabStore(db).get(host.ownerId, tabId))!,
+      );
     }
     const urlOne = "https://a.example/one?token=hidden";
     const urlTwo = "https://a.example/two";
@@ -852,14 +905,14 @@ integration("Durable tab icons", () => {
     const sessionsBefore = await sessionCount();
     await runtime.close();
     await until(
-      async () => ((await currentState()) === "asleep" ? true : undefined),
+      async () => ((await currentState()) === "unavailable" ? true : undefined),
       async () => row("page-a"),
       30_000,
     );
     const commandsAfterEnd = runtime.receivedCommands().length;
     const ended = await coldTabs();
     expect(ended.refs).toEqual(live.refs);
-    expect(ended.group.tabs.map((tab) => tab.state)).toEqual(["asleep", "asleep"]);
+    expect(ended.group.tabs.map((tab) => tab.state)).toEqual(["unavailable", "unavailable"]);
     const endedIcon = await fetchIcon(host.ownerHeaders);
     expect(endedIcon.status).toBe(200);
     expect(await endedIcon.json()).toMatchObject({ data: { favicon: iconA } });
@@ -897,9 +950,9 @@ integration("Durable tab icons", () => {
     expect(runtime.receivedCommands().some((command) => command.type === "stream.subscribe")).toBe(
       false,
     );
-    expect((await coldTabs(restartedHost)).group.tabs.every((tab) => tab.state === "asleep")).toBe(
-      true,
-    );
+    expect(
+      (await coldTabs(restartedHost)).group.tabs.every((tab) => tab.state === "unavailable"),
+    ).toBe(true);
     steps.push({ step: "icon served after Host restart", status: restartedIcon.status });
 
     const closedTab = await testRpcData(
