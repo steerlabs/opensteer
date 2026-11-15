@@ -95,6 +95,8 @@ const harness = vi.hoisted(() => ({
   activeHost: null as HostClient | null,
   focusCleanups: new Set<() => void>(),
   navigate: vi.fn(),
+  /** The screen's navigation events, as the native stack would deliver them. */
+  navigationListeners: new Map<string, Set<() => void>>(),
   /** The composer's field letting go of the keyboard. */
   blur: vi.fn(),
   dispatch: vi.fn(),
@@ -372,6 +374,12 @@ vi.mock("@react-navigation/elements", () => ({
 vi.mock("@react-navigation/native", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
   const navigation = {
+    addListener: (event: string, listener: () => void) => {
+      const listeners = harness.navigationListeners.get(event) ?? new Set();
+      listeners.add(listener);
+      harness.navigationListeners.set(event, listeners);
+      return () => listeners.delete(listener);
+    },
     dispatch: harness.dispatch,
     // The conversation is the screen in front: a chip opens over it.
     getState: () => ({ index: 0, routes: [harness.currentRoute] }),
@@ -4922,6 +4930,141 @@ it("hands a new task to its transcript, with the page Ask started it from, witho
   }
 });
 
+it("becomes the task as Send is pressed, before the Host has made it", async () => {
+  const { NewTaskPane } = await import("../screens/new-task.js");
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  const thread = host.client.getSnapshot().threads.find(({ id }) => id === workId)!;
+  let made!: () => void;
+  const createThread = vi.fn(
+    () => new Promise<typeof thread>((resolve) => (made = () => resolve(thread))),
+  );
+  Object.assign(host.client, { createThread });
+  const { container, drafts, root } = await mount(host, workId);
+  harness.activeHost = host.client;
+  await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(newDraftId), "Compare quotes");
+  const onStarted = vi.fn(() => true);
+  await act(async () =>
+    root.render(
+      <NewTaskPane
+        autoFocus={false}
+        deploymentId={deploymentId}
+        hostClient={host.client}
+        onStarted={onStarted}
+        underHeader={false}
+      />,
+    ),
+  );
+  expect(text(container)).toContain("What should your agent do?");
+
+  await press(container, "Send message");
+  expect(createThread).toHaveBeenCalledOnce();
+  expect(onStarted).not.toHaveBeenCalled();
+  expect(text(container)).not.toContain("What should your agent do?");
+  expect(occurrences(container, "Compare quotes")).toBe(1);
+
+  await act(async () => made());
+  await settle();
+  expect(onStarted).toHaveBeenCalledExactlyOnceWith(workId);
+  // Under the task fading in, this screen still shows what was sent.
+  expect(occurrences(container, "Compare quotes")).toBe(1);
+  expect(text(container)).not.toContain("What should your agent do?");
+  // Covered by the task, it is Home again for the next one.
+  await act(async () => {
+    for (const listener of harness.navigationListeners.get("transitionEnd") ?? []) listener();
+  });
+  expect(text(container)).toContain("What should your agent do?");
+  expect(occurrences(container, "Compare quotes")).toBe(0);
+});
+
+it("draws a sent message at once, and once, when the Host's copy outruns its answer", async () => {
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  let answer!: () => void;
+  host.dispatch.mockImplementation(
+    (command: { readonly type: string }) =>
+      new Promise((resolve) => {
+        if (command.type !== "thread.sendMessage") resolve({ type: command.type });
+        else answer = () => resolve({ type: command.type });
+      }),
+  );
+  const { container, drafts } = await mount(host, workId);
+  await type(container, "Message", "Compare the three quotes");
+  await press(container, "Send message");
+  expect(drafts.readPending(deploymentId, userId, workId)).not.toBeNull();
+  expect(occurrences(container, "Compare the three quotes")).toBe(1);
+  // In the transcript, where the Host's copy will stand, not in a card over the bar.
+  expect(container.querySelector('[data-testid="composer-dock"]')?.textContent ?? "").not.toContain(
+    "Compare the three quotes",
+  );
+  expect(text(container)).not.toContain("Not sent yet");
+
+  // The event stream delivers the Host's copy before the command's answer.
+  host.move(
+    snapshotFor({ entries: [said("Compare the three quotes", null)], run: null, threadId: workId }),
+  );
+  expect(occurrences(container, "Compare the three quotes")).toBe(1);
+
+  await act(async () => answer());
+  await settle();
+  expect(drafts.readPending(deploymentId, userId, workId)).toBeNull();
+  expect(occurrences(container, "Compare the three quotes")).toBe(1);
+});
+
+it("still offers to send again when the answer is lost after the Host's copy was shown", async () => {
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  let lose!: () => void;
+  host.dispatch.mockImplementation(
+    (command: { readonly type: string }) =>
+      new Promise((resolve, reject) => {
+        if (command.type !== "thread.sendMessage") resolve({ type: command.type });
+        else lose = () => reject(new Error("The connection was lost."));
+      }),
+  );
+  const { container, drafts } = await mount(host, workId);
+  await type(container, "Message", "Compare the three quotes");
+  await press(container, "Send message");
+  host.move(
+    snapshotFor({ entries: [said("Compare the three quotes", null)], run: null, threadId: workId }),
+  );
+  await act(async () => lose());
+  await settle();
+  expect(drafts.readPending(deploymentId, userId, workId)).not.toBeNull();
+  expect(hasButton(container, "Send this message again")).toBe(true);
+});
+
+it("never saves a moment holding neither the words sent nor the message they became", async () => {
+  const { NewTaskPane } = await import("../screens/new-task.js");
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  Object.assign(host.client, { createThread: vi.fn(() => new Promise(() => undefined)) });
+  const files = new MemoryPrivateFilesystem();
+  const saved: string[] = [];
+  const write = files.writeFileAtomic.bind(files);
+  files.writeFileAtomic = async (path: string, content: Uint8Array | string) => {
+    saved.push(typeof content === "string" ? content : new TextDecoder().decode(content));
+    await write(path, content);
+  };
+  const { container, drafts, root } = await mount(host, workId, { files });
+  harness.activeHost = host.client;
+  await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(newDraftId), "Compare quotes");
+  await act(async () =>
+    root.render(
+      <NewTaskPane
+        autoFocus={false}
+        deploymentId={deploymentId}
+        hostClient={host.client}
+        onStarted={() => true}
+        underHeader={false}
+      />,
+    ),
+  );
+  const first = saved.findIndex((content) => content.includes("Compare quotes"));
+  await press(container, "Send message");
+  await settle();
+  expect(drafts.readPending(deploymentId, userId, newTaskDraftKey(newDraftId))?.text).toBe(
+    "Compare quotes",
+  );
+  expect(saved.slice(first).every((content) => content.includes("Compare quotes"))).toBe(true);
+});
+
 it("keeps New task creation and message keys when Ask is left after a lost creation answer", async () => {
   const { NewTaskPane } = await import("../screens/new-task.js");
   const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
@@ -4959,7 +5102,7 @@ it("keeps New task creation and message keys when Ask is left after a lost creat
   await act(async () => root.render(<div />));
   await act(async () => root.render(draw()));
   expect(createThread).toHaveBeenCalledTimes(1);
-  await press(container, "Send again");
+  await press(container, "Send this message again");
   expect(createThread).toHaveBeenCalledTimes(2);
   expect(createThread.mock.calls[1]).toEqual(createThread.mock.calls[0]);
   expect(host.dispatch).toHaveBeenCalledWith(

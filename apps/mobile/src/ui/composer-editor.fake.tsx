@@ -22,7 +22,9 @@ export const composerEditorFake = {
   runningAhead: false,
 };
 
-export function dismissKeyboard(): void {}
+export function dismissKeyboard(): Promise<void> {
+  return Promise.resolve();
+}
 
 export function ComposerEditor(props: ComposerEditorProps): ReactNode {
   const [preview, setPreview] = useState<string | null>(null);

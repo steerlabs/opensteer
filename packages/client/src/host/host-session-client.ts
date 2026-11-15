@@ -2884,7 +2884,8 @@ export class HttpHostClient {
       title: input.title?.trim() || "New task",
     });
     if (result.type !== "thread.create") throw new Error("Thread command mismatch.");
-    await this.#rememberQuietly({
+    // Not waited for: the new Thread is what the person is waiting to see.
+    void this.#rememberQuietly({
       accessMode: input.accessMode,
       selection: {
         environmentId: input.environmentId,

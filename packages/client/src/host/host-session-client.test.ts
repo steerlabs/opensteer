@@ -1583,7 +1583,8 @@ describe("HttpHostClient authentication and onboarding", () => {
     }
   });
 
-  it("sends the execution tuple it was given and remembers it once the Host accepts", async () => {
+  it("sends the execution tuple it was given and remembers it after, without waiting for that", async () => {
+    const remembering = Promise.withResolvers<void>();
     const workspace = makeDeployment("Placement work");
     const localEnvironmentId = createId("environment");
     const localRunnerId = createId("runner");
@@ -1712,6 +1713,8 @@ describe("HttpHostClient authentication and onboarding", () => {
       };
       bodies.push(body);
       if (body.type === "execution.preferences.remember") {
+        // Held open: the new Thread is the person's to see, not this.
+        await remembering.promise;
         return json({
           preferences: {
             accessMode: body.accessMode ?? "auto",
@@ -1746,6 +1749,11 @@ describe("HttpHostClient authentication and onboarding", () => {
       harnessInstanceId: codexHarnessId,
       modelSelection,
     });
+    remembering.resolve();
+    await vi.waitFor(
+      () => expect(client.getSnapshot().executionPreferences.history).toHaveLength(1),
+      { timeout: 1_000 },
+    );
 
     expect(bodies).toEqual([
       expect.objectContaining({
@@ -1779,6 +1787,7 @@ describe("HttpHostClient authentication and onboarding", () => {
       harnessInstanceId: codexHarnessId,
       modelSelection,
     });
+    await vi.waitFor(() => expect(bodies).toHaveLength(2), { timeout: 1_000 });
     expect(bodies).toEqual([
       expect.objectContaining({ type: "thread.create" }),
       expect.objectContaining({

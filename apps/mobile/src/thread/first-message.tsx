@@ -46,7 +46,7 @@ import {
 } from "../platform/attachment-draft-files.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget, type } from "../theme.js";
 import { ComposerAction } from "../ui/composer-action.js";
-import { AppText, SecondaryButton } from "../ui/primitives.js";
+import { AppText } from "../ui/primitives.js";
 import { useContentInsets, usePaneInView } from "../ui/pane.js";
 import { useGutter, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
@@ -279,9 +279,10 @@ export async function handOverFirstMessage(input: {
   /**
    * Leave the source screen. Called once the destination holds the message
    * and before the source's copy is cleared: cleared first, the source would
-   * draw its empty starter again for a frame on the way out.
+   * draw its empty starter again for a frame on the way out. It may wait for
+   * the source to finish showing what was sent before it leaves.
    */
-  readonly onReady: () => void;
+  readonly onReady: () => void | Promise<void>;
   readonly threadId: string;
   readonly userId: string;
 }): Promise<PendingCommand> {
@@ -304,7 +305,7 @@ export async function handOverFirstMessage(input: {
   // and only the Thread's copies of the files are referenced from here on.
   const owed = drafts.readPending(deploymentId, userId, threadId);
   if (owed === null) throw new Error("Your message was not saved on this phone.");
-  input.onReady();
+  await input.onReady();
   const cleared = await drafts.clearPending(
     deploymentId,
     userId,
@@ -375,6 +376,8 @@ export function FirstMessageComposer(props: {
    * clear of the keyboard.
    */
   readonly underHeader: boolean;
+  /** The message is sent: what scrolls is the task it starts, not the invitation. */
+  readonly started?: boolean;
   /** Home's composer: with nothing written, its circle starts Voice. */
   readonly voice?: boolean;
   /** Whose dismissals of a usage-limit line apply here. */
@@ -648,7 +651,8 @@ export function FirstMessageComposer(props: {
                 <VoiceMic disabled={held} face="disc" />
               ) : (
                 <ComposerAction
-                  busy={sending}
+                  // What was sent already shows it is on its way; the circle does not repeat it.
+                  busy={false}
                   disabled={!actionable}
                   kind="send"
                   label={
@@ -731,7 +735,9 @@ export function FirstMessageComposer(props: {
               paddingBottom: clearance + space[24],
               paddingLeft: gutter + insets.left,
               paddingRight: gutter + insets.right,
-              paddingTop: (props.underHeader ? headerHeight : 0) + space[24],
+              // Once sent, it starts where the task's transcript starts.
+              paddingTop:
+                (props.underHeader ? headerHeight : 0) + (props.started ? space[8] : space[24]),
             },
           ]}
           keyboardDismissMode="interactive"
@@ -793,37 +799,6 @@ export function FirstMessageExamples(props: {
   );
 }
 
-/**
- * The message already handed to the Host under a key it may have accepted. It
- * is never re-keyed and never edited; only Send again sends it, as it was.
- */
-export function FirstMessageHeld(props: {
-  /** Null where sending it again would need a decision first. */
-  readonly onRetry: (() => void) | null;
-  readonly sending: boolean;
-  readonly status: string;
-  readonly text: string;
-}): ReactNode {
-  return (
-    <View style={styles.held}>
-      {props.text === "" ? null : <AppText role="secondary">{props.text}</AppText>}
-      <View style={styles.heldFoot}>
-        <AppText role="caption" style={styles.grow} tone="muted">
-          {props.sending ? "Sending…" : props.status}
-        </AppText>
-        {props.onRetry === null ? null : (
-          <SecondaryButton
-            compact
-            disabled={props.sending}
-            label="Send again"
-            onPress={props.onRetry}
-          />
-        )}
-      </View>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   content: { flexGrow: 1, gap: space[16] },
   example: {
@@ -838,13 +813,6 @@ const styles = StyleSheet.create({
   },
   examples: { gap: space[10] },
   grow: { flex: 1 },
-  held: {
-    backgroundColor: color.surface,
-    borderRadius: radius.md,
-    gap: space[8],
-    padding: space[12],
-  },
-  heldFoot: { alignItems: "center", flexDirection: "row", gap: space[12] },
   leading: { flexDirection: "row" },
   // A generous start: the invitation sits in the upper third, where the eye
   // lands, and the composer stays where every later message is written.
