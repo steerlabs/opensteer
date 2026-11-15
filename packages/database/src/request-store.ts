@@ -1497,6 +1497,25 @@ export class RequestStore {
     ]);
     return requestPage(rows, Number(count.count), limit, scope);
   }
+  async referenceForOwner(input: {
+    readonly ownerId: UserId;
+    readonly threadId: ThreadId;
+    readonly requestId: RequestId;
+  }): Promise<Request | null> {
+    return withPersonalReadTransaction(this.#database, async (transaction) => {
+      await requirePersonalOwner(transaction, input.ownerId);
+      const row = await transaction
+        .selectFrom("requests")
+        .innerJoin("threads", "threads.id", "requests.originatingThreadId")
+        .selectAll("requests")
+        .where("requests.id", "=", input.requestId)
+        .where("requests.originatingThreadId", "=", input.threadId)
+        .where("threads.createdBy", "=", input.ownerId)
+        .executeTakeFirst();
+      return row ? requestFromRow(row) : null;
+    });
+  }
+
   async originatingPendingPage(input: {
     readonly before?: string;
     readonly deviceAccessRequests?: "include";

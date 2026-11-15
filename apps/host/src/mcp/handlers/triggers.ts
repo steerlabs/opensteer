@@ -1,5 +1,13 @@
-import { OpensteerError, type UserId, type ThreadId } from "@opensteer/core";
+import {
+  OpensteerError,
+  formatReferenceLink,
+  TriggerIdSchema,
+  RunIdSchema,
+  type UserId,
+  type ThreadId,
+} from "@opensteer/core";
 import { triggerSourceFromInput, type TriggerControlInput } from "@opensteer/triggers";
+import { z } from "zod";
 import { callerThread } from "../agent-caller.js";
 import { idempotencyKey, operationId } from "../operations.js";
 import type { ToolCall } from "./types.js";
@@ -22,21 +30,23 @@ export class TriggerToolHandlers {
   }
   async read(call: ToolCall<"opensteer_automation_list"> | ToolCall<"opensteer_automation_read">) {
     const { caller, input } = call;
-    return this.triggers.manage(
-      caller.userId,
-      "automationId" in input
-        ? {
-            operation: "get",
-            triggerId: input.automationId,
-            occurrenceLimit: input.occurrenceLimit,
-          }
-        : {
-            operation: "list",
-            limit: input.limit,
-            ...(input.systemRole ? { systemRole: input.systemRole } : {}),
-          },
-      caller.kind === "connection" ? null : callerThread(caller).id,
-      { accessMode: caller.accessMode },
+    return automationOutput(
+      await this.triggers.manage(
+        caller.userId,
+        "automationId" in input
+          ? {
+              operation: "get",
+              triggerId: input.automationId,
+              occurrenceLimit: input.occurrenceLimit,
+            }
+          : {
+              operation: "list",
+              limit: input.limit,
+              ...(input.systemRole ? { systemRole: input.systemRole } : {}),
+            },
+        caller.kind === "connection" ? null : callerThread(caller).id,
+        { accessMode: caller.accessMode },
+      ),
     );
   }
   async write(
@@ -115,14 +125,66 @@ export class TriggerToolHandlers {
           break;
       }
     }
-    return this.triggers.manage(
-      caller.userId,
-      operation,
-      caller.kind === "connection" ? null : callerThread(caller).id,
-      {
-        accessMode: caller.accessMode,
-        operationKey: idempotencyKey(caller, requestId, "trigger.write"),
-      },
+    return automationOutput(
+      await this.triggers.manage(
+        caller.userId,
+        operation,
+        caller.kind === "connection" ? null : callerThread(caller).id,
+        {
+          accessMode: caller.accessMode,
+          operationKey: idempotencyKey(caller, requestId, "trigger.write"),
+        },
+      ),
     );
   }
+}
+
+const automation = z.looseObject({ id: TriggerIdSchema, name: z.string() });
+const automationResult = z.looseObject({
+  trigger: automation.optional(),
+  triggers: z.array(automation).optional(),
+  downstreamRuns: z
+    .array(
+      z.looseObject({
+        run: z.looseObject({ id: RunIdSchema, runOrdinal: z.number() }),
+        threadTitle: z.string(),
+      }),
+    )
+    .optional(),
+});
+function automationOutput(value: unknown) {
+  const result = automationResult.parse(value);
+  return {
+    ...result,
+    ...(result.trigger
+      ? {
+          trigger: {
+            ...result.trigger,
+            link: formatReferenceLink(result.trigger.id, result.trigger.name),
+          },
+        }
+      : {}),
+    ...(result.triggers
+      ? {
+          triggers: result.triggers.map((trigger) => ({
+            ...trigger,
+            link: formatReferenceLink(trigger.id, trigger.name),
+          })),
+        }
+      : {}),
+    ...(result.downstreamRuns
+      ? {
+          downstreamRuns: result.downstreamRuns.map((row) => ({
+            ...row,
+            run: {
+              ...row.run,
+              link: formatReferenceLink(
+                row.run.id,
+                `Run ${row.run.runOrdinal} · ${row.threadTitle}`,
+              ),
+            },
+          })),
+        }
+      : {}),
+  };
 }
