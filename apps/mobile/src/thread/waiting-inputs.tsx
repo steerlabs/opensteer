@@ -56,7 +56,7 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
   const [expanded, setExpanded] = useState(false);
   const edit = editing.edit;
   // An edit outlives its message leaving the list, so the words are never lost.
-  const orphan = edit !== null && !items.some((item) => item.messageId === edit.messageId);
+  const orphan = edit?.gone === true;
   if (!props.paused && items.length === 0 && !orphan) return null;
 
   const act = async (id: string, run: () => Promise<void>, fallback: string): Promise<void> => {
@@ -148,11 +148,7 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
             layout={LinearTransition.duration(duration.enter)}
           >
             {edit?.messageId === item.messageId ? (
-              <WaitingEditor
-                asker={item.kind === "ask" ? item.asker : null}
-                edit={edit}
-                editing={editing}
-              />
+              <WaitingEditor edit={edit} editing={editing} />
             ) : (
               <>
                 <WaitingBubble
@@ -166,16 +162,7 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
                   {busyId === item.messageId ? (
                     <ActivityIndicator size="small" color={color.muted} />
                   ) : (
-                    <WaitingStatus
-                      count={items.length}
-                      index={index}
-                      item={item}
-                      refused={
-                        editing.refused?.messageId === item.messageId
-                          ? editing.refused.detail
-                          : null
-                      }
-                    />
+                    <WaitingStatus count={items.length} index={index} item={item} />
                   )}
                   {item.edit === null ? null : <EditedMark messageId={item.messageId} />}
                   {item.lease.kind === "other" ? (
@@ -224,7 +211,7 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
       })}
       {orphan && edit !== null ? (
         <Animated.View entering={enter} exiting={exit}>
-          <WaitingEditor asker={null} edit={edit} editing={editing} />
+          <WaitingEditor edit={edit} editing={editing} />
         </Animated.View>
       ) : null}
       {items.length > 3 ? (
@@ -295,15 +282,8 @@ function WaitingStatus(props: {
   readonly count: number;
   readonly index: number;
   readonly item: WaitingInput;
-  readonly refused: string | null;
 }): ReactNode {
   const { item } = props;
-  if (props.refused !== null)
-    return (
-      <AppText role="caption" style={styles.status} tone="danger">
-        {props.refused}
-      </AppText>
-    );
   if (item.lease.kind === "other")
     return (
       <AppText role="caption" style={styles.status} tone="muted">
@@ -341,16 +321,17 @@ function WaitingStatus(props: {
 /**
  * The bubble, opened in place: the same shape, drawn solid in the accent while
  * it holds the keyboard. Its files and places sit above it, each removable.
+ * Under it, what it is waiting on, or why it can't be saved where it is.
  */
 function WaitingEditor(props: {
-  /** Whose ask this is, named above the words being changed. */
-  readonly asker: string | null;
   readonly edit: WaitingEdit;
   readonly editing: WaitingEditController;
 }): ReactNode {
   const { edit, editing } = props;
+  const { draft } = edit;
   const input = useRef<TextInputInstance>(null);
-  const locked = edit.phase === "saving" || edit.phase === "taken";
+  const locked = edit.phase === "saving";
+  const notice = editNotice(edit);
   // Android drops a keyboard asked for while the menu that opened this still
   // holds the window, and focusing a field that already has focus does
   // nothing, so there the field takes focus only once the menu has gone.
@@ -360,14 +341,14 @@ function WaitingEditor(props: {
   }, []);
   return (
     <View style={styles.editColumn}>
-      {props.asker === null ? null : (
+      {edit.asker === null ? null : (
         <AppText numberOfLines={1} role="caption" tone="muted">
-          {props.asker}
+          {edit.asker}
         </AppText>
       )}
-      {edit.parts.length === 0 ? null : (
+      {draft.parts.length === 0 ? null : (
         <View style={styles.parts}>
-          {edit.parts.map((part, index) => (
+          {draft.parts.map((part, index) => (
             <PartChip
               disabled={locked}
               key={`${index}:${partName(part)}`}
@@ -380,40 +361,78 @@ function WaitingEditor(props: {
       <View style={[styles.editBubble, locked && styles.editBubbleLocked]}>
         <TextInput
           accessibilityHint="Save or cancel below"
-          accessibilityLabel={props.asker === null ? "Edit message" : `Edit ${props.asker}’s ask`}
+          accessibilityLabel={edit.asker === null ? "Edit message" : `Edit ${edit.asker}’s ask`}
           autoFocus={Platform.OS === "ios"}
           cursorColor={color.ember}
           editable={!locked}
           maxFontSizeMultiplier={controlFontScaleLimit}
           multiline
           onChangeText={editing.change}
-          placeholder={edit.parts.length > 0 ? "No words, just what’s attached" : "Message"}
+          placeholder={draft.parts.length > 0 ? "No words, just what’s attached" : "Message"}
           placeholderTextColor={color.muted}
           ref={input}
           selectionColor={color.ember}
           style={styles.editInput}
-          value={edit.text}
+          value={draft.text}
         />
       </View>
       <View style={styles.editFoot}>
-        {edit.failure !== null ? (
+        {notice === null ? (
+          <AppText role="caption" tone="muted">
+            {edit.phase === "opening" || edit.phase === "away"
+              ? "Opening…"
+              : "Waits while you edit"}
+          </AppText>
+        ) : (
           <View accessibilityLiveRegion="polite" accessibilityRole="alert" style={styles.notice}>
-            <AppText
-              role="caption"
-              style={styles.status}
-              tone={edit.phase === "taken" ? "soft" : "danger"}
-            >
-              {edit.failure}
+            <AppText role="caption" style={styles.status} tone={notice.tone}>
+              {notice.text}
             </AppText>
           </View>
-        ) : (
-          <AppText role="caption" tone="muted">
-            {edit.phase === "opening" ? "Opening…" : "Waits while you edit"}
-          </AppText>
         )}
+        {notice?.action === "reload" ? (
+          <TextAction
+            blocked={false}
+            hint="Replaces your words with the version saved elsewhere"
+            label="Reload"
+            onPress={editing.reload}
+          />
+        ) : notice?.action === "retry" ? (
+          <TextAction blocked={false} label="Try again" onPress={editing.retry} />
+        ) : null}
       </View>
     </View>
   );
+}
+
+/** Why the words can't simply be saved where they are, and what this editor offers for it. */
+function editNotice(edit: WaitingEdit): {
+  readonly action: "reload" | "retry" | null;
+  readonly text: string;
+  readonly tone: "danger" | "soft";
+} | null {
+  const ask = edit.kind === "ask";
+  if (edit.gone)
+    return {
+      action: null,
+      text: ask
+        ? "This ask was answered or withdrawn before your edit was saved."
+        : "Your agent already took this message, so your edit wasn’t saved.",
+      tone: "soft",
+    };
+  if (edit.draft.conflict !== null)
+    return {
+      action: "reload",
+      text: `This ${ask ? "ask" : "message"} changed elsewhere before you saved.`,
+      tone: "soft",
+    };
+  if (edit.failure !== null)
+    return {
+      action: edit.phase === "refused" ? "retry" : null,
+      text: edit.failure,
+      tone: "danger",
+    };
+  return null;
 }
 
 function PartChip(props: {
@@ -540,7 +559,7 @@ const styles = StyleSheet.create({
     paddingBottom: space[12] - 1.5,
     textAlignVertical: "top",
   },
-  editFoot: { alignItems: "center", flexDirection: "row", minHeight: touchTarget },
+  editFoot: { alignItems: "center", flexDirection: "row", gap: space[12], minHeight: touchTarget },
   notice: { flexShrink: 1 },
   parts: {
     flexDirection: "row",

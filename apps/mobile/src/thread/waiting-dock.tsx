@@ -1,4 +1,9 @@
-import type { HostClient, WaitingAsk, WaitingInput } from "@opensteer/client/host";
+import {
+  waitingDraftSave,
+  type HostClient,
+  type WaitingAsk,
+  type WaitingInput,
+} from "@opensteer/client/host";
 import * as Haptics from "expo-haptics";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AccessibilityInfo, Pressable, StyleSheet, View } from "react-native";
@@ -140,7 +145,9 @@ export function WaitingAskDock(props: {
  * Stands where the composer was while a waiting message is open in place, and
  * rides the keyboard as the composer does, so Save is in reach whether or not
  * the keyboard is up. An ask's bar answers it too: what was changed is saved
- * first, and the answer names the version saved.
+ * first, and the answer names the version saved. Words that can't be saved
+ * where they are, because the message left or changed under them, go on as a
+ * new message instead, or are discarded.
  */
 export function WaitingEditBar(props: {
   readonly canRespond: boolean;
@@ -154,9 +161,16 @@ export function WaitingEditBar(props: {
   const { decisions, editing, item } = props;
   const edit = editing.edit;
   if (edit === null) return null;
+  const { draft } = edit;
   const ask = item?.kind === "ask" ? item : null;
   const saving = edit.phase === "saving";
-  const ready = props.canRespond && edit.phase === "open" && decisions.pending === null;
+  const stuck = edit.gone || draft.conflict !== null || edit.phase === "refused";
+  const ready =
+    props.canRespond &&
+    edit.phase === "open" &&
+    !edit.gone &&
+    waitingDraftSave(draft) !== null &&
+    decisions.pending === null;
   const cancel = (
     <Pressable
       accessibilityRole="button"
@@ -167,40 +181,39 @@ export function WaitingEditBar(props: {
       style={styles.cancel}
     >
       <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="secondaryMedium" tone="soft">
-        {edit.phase === "taken" ? "Discard" : "Cancel"}
+        {stuck ? "Discard" : "Cancel"}
       </AppText>
     </Pressable>
   );
+  // Consent names the version on screen: the words are saved first when changed.
   const answer = async (target: WaitingAsk): Promise<void> => {
-    if (!editing.dirty) {
-      editing.cancel();
-      await decisions.decide(target, "approve");
-      return;
-    }
     const revision = await editing.save();
     if (revision !== null) await decisions.decide(target, "approve", revision);
   };
   const action =
-    edit.phase === "taken" ? (
-      <AnswerPill
-        label="Send as new message…"
-        onPress={() => props.onSendAsNew(editing.takeBack())}
-        tone="primary"
-      />
+    ask === null && stuck ? (
+      // A teammate's words aren't the person's to send as their own.
+      edit.kind === "ask" || !draft.dirty ? null : (
+        <AnswerPill
+          label="Send as new message…"
+          onPress={() => props.onSendAsNew(editing.takeBack())}
+          tone="primary"
+        />
+      )
     ) : ask === null ? (
       <AnswerPill
         busy={saving}
-        disabled={!ready || !editing.savable}
+        disabled={!ready}
         label="Save"
         onPress={() => void editing.save()}
         tone="primary"
       />
     ) : (
       <View style={styles.actions}>
-        {editing.dirty ? (
+        {draft.dirty ? (
           <AnswerPill
             busy={saving}
-            disabled={!ready || !editing.savable}
+            disabled={!ready}
             label="Save"
             onPress={() => void editing.save()}
             tone="secondary"
@@ -209,8 +222,8 @@ export function WaitingEditBar(props: {
         <AnswerPill
           accessibilityHint={ask.consent.line}
           busy={decisions.pending?.messageId === ask.messageId}
-          disabled={!ready || !editing.savable || ask.approving}
-          label={editing.dirty ? "Save and answer" : "Answer"}
+          disabled={!ready || ask.approving}
+          label={draft.dirty ? "Save and answer" : "Answer"}
           onPress={() => void answer(ask)}
           tone="primary"
         />
@@ -219,7 +232,7 @@ export function WaitingEditBar(props: {
   return (
     <ComposerBar
       action={<View style={styles.trailing}>{action}</View>}
-      {...(ask === null || edit.phase === "taken"
+      {...(ask === null
         ? {}
         : {
             caption: (

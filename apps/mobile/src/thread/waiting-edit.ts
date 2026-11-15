@@ -1,7 +1,13 @@
 import {
+  followWaitingDraft,
   HostClientRequestError,
-  messageBody,
+  openWaitingDraft,
+  reloadWaitingDraft,
+  removeWaitingDraftPart,
+  setWaitingDraftText,
+  waitingDraftSave,
   type HostClient,
+  type WaitingDraft,
   type WaitingInput,
   type WaitingMessageEditor,
 } from "@opensteer/client/host";
@@ -15,238 +21,273 @@ import { operationDetail } from "../client/mobile-client.js";
 export interface WaitingEdit {
   readonly messageId: string;
   readonly kind: WaitingInput["kind"];
-  /** The words it opened with, so an untouched editor saves nothing. */
-  readonly original: string;
-  readonly text: string;
-  /** Its files, pages and places that stay with it; removing one is part of the edit. */
-  readonly parts: readonly ContentPart[];
-  readonly originalParts: number;
+  /** Whose ask it is, named over the words; null for the person's own message. */
+  readonly asker: string | null;
+  /**
+   * The words, bound to the version they were written against and kept true
+   * to the version the Host reports: untouched words follow a newer one,
+   * changed words hold it as their conflict.
+   */
+  readonly draft: WaitingDraft;
   /**
    * `opening` until this phone holds the message, `saving` while a save is out,
-   * `taken` once the Host said the message is no longer this edit's to change.
+   * `away` while the task is out of sight and the message is let go, `refused`
+   * when it could not be held.
    */
-  readonly phase: "opening" | "open" | "saving" | "taken";
+  readonly phase: "opening" | "open" | "saving" | "away" | "refused";
+  /** Why it could not be held or saved, under the words until the next try. */
   readonly failure: string | null;
+  /** It left the line, taken by a Run or settled elsewhere; only its words are left. */
+  readonly gone: boolean;
 }
 
 export interface WaitingEditController {
   readonly edit: WaitingEdit | null;
-  /** Why the last item could not be opened, under that item until it is tried again. */
-  readonly refused: { readonly messageId: string; readonly detail: string } | null;
-  readonly dirty: boolean;
-  /** Something is left to save: words, or a file or place kept. */
-  readonly savable: boolean;
   open(item: WaitingInput): void;
   change(text: string): void;
   removePart(index: number): void;
+  /** Lets the words go for the newer version that arrived under them. */
+  reload(): void;
+  /** Tries again to hold a message that could not be held, keeping the words. */
+  retry(): void;
   cancel(): void;
-  /** Saves and closes; resolves the revision saved, or null when nothing was. */
+  /**
+   * Saves and closes; an untouched edit just closes. Resolves the version now
+   * waiting, the one an answer names, or null when nothing was saved.
+   */
   save(): Promise<number | null>;
   /** Closes the editor and hands its words and kept parts back for a new message. */
   takeBack(): { readonly text: string; readonly parts: readonly ContentPart[] } | null;
 }
 
-interface Session {
+/** One hold on the message: from its take until saved, cancelled or let go. */
+interface Lease {
   readonly messageId: string;
   editor: WaitingMessageEditor | null;
-  closed: boolean;
+  /** Let go; an editor arriving after is ended at once. */
+  ended: boolean;
+  /** A save is out; it ends the lease itself, so nothing else may. */
+  saving: boolean;
 }
 
 /**
- * The one waiting message this phone edits in place. Opening it takes the
+ * The one waiting message this phone edits in place. Holding it takes the
  * message's edit lease, so no Run takes it, and nothing behind it overtakes
- * it, while the person types; Save and Cancel end the lease. The words stay
- * on screen through anything the Host says, so nothing typed is ever lost.
+ * it, while the person types. The lease is held only while the task is in
+ * front of them (`active`): out of sight it is let go and the words are kept,
+ * and on return it is taken again and the words checked against whatever was
+ * saved meanwhile. Nothing typed is lost to anything the Host says.
  */
 export function useWaitingEdit(
   hostClient: HostClient,
   threadId: string,
   items: readonly WaitingInput[] | null,
+  active: boolean,
 ): WaitingEditController {
-  const [edit, setEdit] = useState<WaitingEdit | null>(null);
-  const [refused, setRefused] = useState<WaitingEditController["refused"]>(null);
-  const session = useRef<Session | null>(null);
-  const latest = useRef(items);
-  latest.current = items;
+  const [kept, setKept] = useState<WaitingEdit | null>(null);
+  const lease = useRef<Lease | null>(null);
+  const activeRef = useRef(active);
+  activeRef.current = active;
+
+  // The words follow the Host's version on every render, except while a save
+  // of them is out: the Host reports that save's version before it answers.
+  let edit = kept;
+  if (kept !== null && items !== null) {
+    const current = items.find((item) => item.messageId === kept.messageId);
+    const draft =
+      current === undefined || kept.phase === "saving"
+        ? kept.draft
+        : followWaitingDraft(kept.draft, {
+            content: current.item.message.content,
+            revision: current.revision,
+          });
+    const gone = current === undefined;
+    if (draft !== kept.draft || gone !== kept.gone) edit = { ...kept, draft, gone };
+  }
+  if (edit !== kept) setKept(edit);
   const editRef = useRef(edit);
   editRef.current = edit;
 
-  /**
-   * Lets the field go before it leaves: Android hands the focus of a field
-   * that disappears to the composer, which keeps the keyboard up as if a
-   * message were still being written.
-   */
-  const settle = useCallback((): void => {
-    Keyboard.dismiss();
-    setEdit(null);
+  const letGo = useCallback((): void => {
+    const held = lease.current;
+    lease.current = null;
+    if (held === null) return;
+    held.ended = true;
+    if (!held.saving) void held.editor?.cancel();
   }, []);
 
-  const close = useCallback((): void => {
-    const held = session.current;
-    session.current = null;
-    // Nothing open: the keyboard, if any, is another field's.
-    if (held === null) {
-      setEdit(null);
-      return;
-    }
-    settle();
-    held.closed = true;
-    // An editor still opening lets its lease go as soon as it arrives.
-    void held.editor?.cancel();
-  }, [settle]);
-
-  // Leaving the task lets the message go on to the agent.
-  useEffect(() => close, [close, hostClient, threadId]);
-
-  const open = useCallback(
-    (item: WaitingInput): void => {
-      if (session.current?.messageId === item.messageId) return;
-      close();
-      setRefused(null);
-      const content = item.item.message.content;
-      const parts = content.filter((part) => part.type !== "text");
-      const original = messageBody(content);
-      const held: Session = { closed: false, editor: null, messageId: item.messageId };
-      session.current = held;
-      setEdit({
-        failure: null,
-        kind: item.kind,
-        messageId: item.messageId,
-        original,
-        originalParts: parts.length,
-        parts,
-        phase: "opening",
-        text: original,
-      });
-      hostClient.editWaitingMessage(threadId, item.messageId).then(
+  const take = useCallback(
+    (messageId: string): void => {
+      const held: Lease = { editor: null, ended: false, messageId, saving: false };
+      lease.current = held;
+      hostClient.editWaitingMessage(threadId, messageId).then(
         (editor) => {
-          if (held.closed) {
+          if (held.ended) {
             void editor.cancel();
             return;
           }
           held.editor = editor;
-          // The take can find a newer version than the one drawn; untouched
-          // words start from that one, or a save would quietly undo it.
-          const current = latest.current?.find((row) => row.messageId === item.messageId);
-          setEdit((shown) => {
-            if (shown?.messageId !== item.messageId) return shown;
-            const untouched = shown.text === shown.original && shown.parts.length === parts.length;
-            if (!untouched || current === undefined || current.revision === item.revision)
-              return { ...shown, phase: "open" };
-            const fresh = current.item.message.content;
-            const freshParts = fresh.filter((part) => part.type !== "text");
-            return {
-              ...shown,
-              original: messageBody(fresh),
-              originalParts: freshParts.length,
-              parts: freshParts,
-              phase: "open",
-              text: messageBody(fresh),
-            };
-          });
+          setKept((shown) =>
+            shown?.messageId === messageId ? { ...shown, failure: null, phase: "open" } : shown,
+          );
         },
         (error: unknown) => {
-          if (held.closed || session.current !== held) return;
-          session.current = null;
-          settle();
-          setRefused({
-            detail: operationDetail(error, "This message can’t be edited right now."),
-            messageId: item.messageId,
-          });
+          if (held.ended) return;
+          lease.current = null;
+          setKept((shown) =>
+            shown?.messageId === messageId
+              ? {
+                  ...shown,
+                  failure: operationDetail(error, "This message can’t be edited right now."),
+                  phase: "refused",
+                }
+              : shown,
+          );
           void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         },
       );
     },
-    [close, hostClient, settle, threadId],
+    [hostClient, threadId],
   );
 
+  const close = useCallback((): void => {
+    letGo();
+    // Nothing open: the keyboard, if any, is another field's. Otherwise the
+    // field lets go first: Android hands the focus of a field that disappears
+    // to the composer, which keeps the keyboard up as if a message were still
+    // being written.
+    if (editRef.current !== null) Keyboard.dismiss();
+    setKept(null);
+  }, [letGo]);
+
+  // Leaving the task lets the message go on to the agent.
+  useEffect(() => close, [close, hostClient, threadId]);
+
+  // Out of sight, the message goes on without this phone's hold; back in
+  // front, the hold is taken again. A save under way finishes either way.
+  useEffect(() => {
+    const shown = editRef.current;
+    if (shown === null) return;
+    if (!active) {
+      if (shown.phase === "away" || lease.current?.saving === true) return;
+      letGo();
+      setKept((current) => (current === null ? current : { ...current, phase: "away" }));
+    } else if (shown.phase === "away") {
+      setKept((current) =>
+        current === null ? current : { ...current, failure: null, phase: "opening" },
+      );
+      take(shown.messageId);
+    }
+  }, [active, letGo, take]);
+
+  const open = useCallback(
+    (item: WaitingInput): void => {
+      if (editRef.current?.messageId === item.messageId || lease.current?.saving === true) return;
+      close();
+      setKept({
+        asker: item.kind === "ask" ? item.asker : null,
+        draft: openWaitingDraft({ content: item.item.message.content, revision: item.revision }),
+        failure: null,
+        gone: false,
+        kind: item.kind,
+        messageId: item.messageId,
+        phase: activeRef.current ? "opening" : "away",
+      });
+      if (activeRef.current) take(item.messageId);
+    },
+    [close, take],
+  );
+
+  const retry = useCallback((): void => {
+    const shown = editRef.current;
+    if (shown?.phase !== "refused" || !activeRef.current) return;
+    setKept({ ...shown, failure: null, phase: "opening" });
+    take(shown.messageId);
+  }, [take]);
+
   const change = useCallback((text: string): void => {
-    session.current?.editor?.touch();
-    setEdit((shown) => (shown === null ? shown : { ...shown, text }));
+    lease.current?.editor?.touch();
+    setKept((shown) =>
+      shown === null ? shown : { ...shown, draft: setWaitingDraftText(shown.draft, text) },
+    );
   }, []);
 
   const removePart = useCallback((index: number): void => {
-    session.current?.editor?.touch();
-    setEdit((shown) =>
-      shown === null ? shown : { ...shown, parts: shown.parts.filter((_, at) => at !== index) },
+    lease.current?.editor?.touch();
+    setKept((shown) =>
+      shown === null ? shown : { ...shown, draft: removeWaitingDraftPart(shown.draft, index) },
+    );
+  }, []);
+
+  const reload = useCallback((): void => {
+    setKept((shown) =>
+      shown?.draft.conflict
+        ? { ...shown, draft: reloadWaitingDraft(shown.draft), failure: null }
+        : shown,
     );
   }, []);
 
   const save = useCallback(async (): Promise<number | null> => {
-    const held = session.current;
+    const held = lease.current;
     const shown = editRef.current;
-    if (held?.editor == null || shown === null || shown.phase !== "open") return null;
-    const editor = held.editor;
-    const text = shown.text.trim();
-    const content: ContentPart[] = [
-      ...(text === "" ? [] : [{ text, type: "text" as const }]),
-      ...shown.parts,
-    ];
-    if (content.length === 0) return null;
-    if (text === shown.original.trim() && shown.parts.length === shown.originalParts) {
+    if (held?.editor == null || shown === null || shown.phase !== "open" || shown.gone) return null;
+    const plan = waitingDraftSave(shown.draft);
+    if (plan === null) return null;
+    if (plan.kind === "unchanged") {
       // Nothing changed: let the message go on as it was.
       close();
-      return editor.revision;
+      return plan.revision;
     }
-    setEdit({ ...shown, failure: null, phase: "saving" });
+    const editor = held.editor;
+    held.saving = true;
+    setKept({ ...shown, failure: null, phase: "saving" });
     try {
-      const saved = await editor.save(content);
-      if (session.current === held) {
-        session.current = null;
-        settle();
+      const saved = await editor.save(plan.content, plan.expectedRevision);
+      held.saving = false;
+      // Only the edit this save came from closes; it ended the lease itself.
+      if (lease.current === held) {
+        lease.current = null;
+        Keyboard.dismiss();
+        setKept(null);
       }
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       return saved.revision;
     } catch (error) {
+      held.saving = false;
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      if (session.current !== held) return null;
+      if (lease.current !== held) {
+        void editor.cancel();
+        return null;
+      }
+      const away = !activeRef.current;
+      if (away) letGo();
       const settled =
         error instanceof HostClientRequestError &&
         (error.code === "conflict" || error.code === "not_found");
-      const gone = !latest.current?.some((row) => row.messageId === shown.messageId);
-      setEdit((current) =>
+      setKept((current) =>
         current?.messageId !== shown.messageId
           ? current
           : {
               ...current,
               failure: settled
-                ? gone
-                  ? shown.kind === "ask"
-                    ? "This ask was answered or withdrawn before your edit was saved."
-                    : "Your agent already took this message, so your edit wasn’t saved."
-                  : operationDetail(error, "This message changed before your edit was saved.")
+                ? operationDetail(error, "This message changed before your edit was saved.")
                 : operationDetail(error, "Your edit wasn’t saved. Try again."),
-              phase: settled ? "taken" : "open",
+              phase: away ? "away" : "open",
             },
       );
       return null;
     }
-  }, [close, settle]);
+  }, [close, letGo]);
 
   const takeBack = useCallback((): ReturnType<WaitingEditController["takeBack"]> => {
     const shown = editRef.current;
-    if (shown === null) return null;
+    if (shown === null || lease.current?.saving === true) return null;
     close();
-    return { parts: shown.parts, text: shown.text.trim() };
+    return { parts: shown.draft.parts, text: shown.draft.text.trim() };
   }, [close]);
 
-  const dirty =
-    edit !== null &&
-    (edit.text.trim() !== edit.original.trim() || edit.parts.length !== edit.originalParts);
-  const savable = edit !== null && (edit.text.trim() !== "" || edit.parts.length > 0);
   return useMemo(
-    () => ({
-      cancel: close,
-      change,
-      dirty,
-      edit,
-      open,
-      refused,
-      removePart,
-      save,
-      savable,
-      takeBack,
-    }),
-    [change, close, dirty, edit, open, refused, removePart, save, savable, takeBack],
+    () => ({ cancel: close, change, edit, open, reload, removePart, retry, save, takeBack }),
+    [change, close, edit, open, reload, removePart, retry, save, takeBack],
   );
 }

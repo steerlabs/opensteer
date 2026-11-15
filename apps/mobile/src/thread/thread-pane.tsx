@@ -437,7 +437,9 @@ function ThreadPaneForUser(
   // render it first mounts on. The sidebar covers the screen without blurring
   // the route under it, so it counts as looking away too.
   const sidebarVisible = useSidebarVisible();
-  const focused = useIsFocused() && !sidebarVisible && inView;
+  const navigationFocused = useIsFocused();
+  const focused = navigationFocused && !sidebarVisible && inView;
+  const appForeground = useAppForeground();
   // What an arriving alert has to know before it interrupts: an alert about
   // the conversation in front of the reader, at its latest activity, is telling
   // them what they are already watching.
@@ -450,7 +452,14 @@ function ThreadPaneForUser(
 
   const inputQueue = useThreadInputQueue(hostClient, threadId);
   const waiting = useWaitingInputs(hostClient, threadId);
-  const editing = useWaitingEdit(hostClient, threadId, waiting);
+  // A waiting message is held for editing only while its task is in front of
+  // the reader: under another screen, out of view or in the background, it goes on.
+  const editing = useWaitingEdit(
+    hostClient,
+    threadId,
+    waiting,
+    navigationFocused && inView && appForeground,
+  );
   const askDecisions = useAskDecisions(hostClient);
   // Words handed to the composer: an update to answer, or an edit the agent
   // took first, on its way to being sent as a new message.
@@ -1113,7 +1122,6 @@ function ThreadPaneForUser(
     if (pinned.current && !dragging.current) scrollToLatest(false);
   };
 
-  const appForeground = useAppForeground();
   useThreadVisits(hostClient, threadId, focused && appForeground);
 
   const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>): void => {

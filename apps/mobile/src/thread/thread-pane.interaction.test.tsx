@@ -1415,6 +1415,33 @@ function teammateAsk(body: string) {
   return { entry, item, requestId, teamId };
 }
 
+/** The waiting item as the Host reports it once another device saved `words` as `revision`. */
+function savedElsewhere(
+  item: ThreadInputQueue["items"][number],
+  words: string,
+  revision: number,
+): ThreadInputQueue["items"][number] {
+  return {
+    ...item,
+    message: {
+      ...item.message,
+      content: [{ text: words, type: "text" }],
+      edit: { editedAt: at, revision },
+    },
+  } as ThreadInputQueue["items"][number];
+}
+
+/** `snapshot` with `item` as the task's only waiting input. */
+function withWaiting(
+  snapshot: HostSnapshot,
+  item: ThreadInputQueue["items"][number],
+): HostSnapshot {
+  return {
+    ...snapshot,
+    inputQueues: { [workId]: { ...snapshot.inputQueues[workId]!, items: [item] } },
+  };
+}
+
 function sent(dispatch: ReturnType<typeof fakeHost>["dispatch"]): readonly string[] {
   return dispatch.mock.calls.map(([command]) => command.type);
 }
@@ -3128,9 +3155,10 @@ describe("a task", () => {
     await type(container, "Edit message", "First queued ask, but shorter");
     expect(host.editor.touch).toHaveBeenCalled();
     await press(container, "Save");
-    expect(host.editor.save).toHaveBeenCalledWith([
-      { text: "First queued ask, but shorter", type: "text" },
-    ]);
+    expect(host.editor.save).toHaveBeenCalledWith(
+      [{ text: "First queued ask, but shorter", type: "text" }],
+      0,
+    );
     // The message is changed where it waits; nothing is taken back or sent anew.
     expect(host.client.cancelThreadInput).not.toHaveBeenCalled();
     expect(sent(host.dispatch)).not.toContain("thread.sendMessage");
@@ -3168,13 +3196,6 @@ describe("a task", () => {
       threadId: workId,
     });
     const host = fakeHost(queued);
-    host.editor.save.mockRejectedValueOnce(
-      new HostClientRequestError({
-        code: "conflict",
-        message: "This message is no longer waiting.",
-        status: 409,
-      }),
-    );
     const { container } = await mount(host, workId);
     await tapWaiting(container, waiting.body);
     await type(container, "Edit message", "Include the card fees and the FX rate");
@@ -3189,10 +3210,12 @@ describe("a task", () => {
         }),
       ),
     );
-    await press(container, "Save");
+    // Said as soon as it is gone, so Save is never offered for words with nowhere to go.
     expect(editField(container)?.value).toBe("Include the card fees and the FX rate");
     expect(text(container)).toContain("Your agent already took this message");
+    expect(hasButton(container, "Save")).toBe(false);
     await press(container, "Send as new message…");
+    expect(host.editor.save).not.toHaveBeenCalled();
     expect(editField(container)).toBeNull();
     expect(
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
@@ -3240,9 +3263,10 @@ describe("a task", () => {
     expect(hasButton(container, "Save and answer")).toBe(false);
     await type(container, "Edit Maya’s ask", "@My agent is the integration shard green yet?");
     await press(container, "Save and answer");
-    expect(host.editor.save).toHaveBeenCalledWith([
-      { text: "@My agent is the integration shard green yet?", type: "text" },
-    ]);
+    expect(host.editor.save).toHaveBeenCalledWith(
+      [{ text: "@My agent is the integration shard green yet?", type: "text" }],
+      0,
+    );
     expect(host.decideTeamAsk).toHaveBeenCalledWith({
       decision: "approve",
       expectedRevision: 1,
@@ -3273,6 +3297,153 @@ describe("a task", () => {
       requestId: ask.requestId,
       teamId: ask.teamId,
     });
+  });
+
+  it("never saves or answers over a version saved elsewhere since the words were written", async () => {
+    const ask = teammateAsk("Original ask");
+    const initial = snapshotFor({
+      entries: [ask.entry],
+      queue: [ask.item],
+      run: null,
+      threadId: workId,
+    });
+    const host = fakeHost(initial);
+    let acquire!: (editor: typeof host.editor) => void;
+    host.editWaitingMessage.mockImplementationOnce(
+      () => new Promise((resolve) => (acquire = resolve)),
+    );
+    const { container } = await mount(host, workId);
+    await tapWaiting(container, ask.entry.body);
+    await type(container, "Edit Maya’s ask", "A local change to the original ask");
+    // The iPad saved its own version while this phone was still opening the ask.
+    await act(async () =>
+      host.move(withWaiting(initial, savedElsewhere(ask.item, "From iPad", 1))),
+    );
+    host.editor.revision = 1;
+    await act(async () => acquire(host.editor));
+    await settle();
+    expect(text(container)).toContain("This ask changed elsewhere");
+    expect(button(container, "Save and answer").disabled).toBe(true);
+    expect(editField(container)?.value).toBe("A local change to the original ask");
+
+    await press(container, "Reload");
+    expect(editField(container)?.value).toBe("From iPad");
+    await type(container, "Edit Maya’s ask", "From iPad, by tonight");
+    host.editor.save.mockResolvedValueOnce({ editedAt: at, revision: 2 });
+    await press(container, "Save and answer");
+    expect(host.editor.save).toHaveBeenCalledWith(
+      [{ text: "From iPad, by tonight", type: "text" }],
+      1,
+    );
+    expect(host.decideTeamAsk).toHaveBeenCalledWith(
+      expect.objectContaining({ decision: "approve", expectedRevision: 2 }),
+    );
+  });
+
+  it("follows a version saved elsewhere until words are typed, then offers them as a new message", async () => {
+    const task = taskAtWork();
+    const waiting = said("Include the card fees", null);
+    const initial = snapshotFor({
+      entries: [...task.entries, waiting],
+      queue: [waitingInput(waiting, workId)],
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost(initial);
+    const { container } = await mount(host, workId);
+    await tapWaiting(container, waiting.body);
+    const first = savedElsewhere(waitingInput(waiting, workId), "Card fees and FX", 1);
+    await act(async () => host.move(withWaiting(initial, first)));
+    expect(editField(container)?.value).toBe("Card fees and FX");
+
+    await type(container, "Edit message", "Card fees, FX and the wire charge");
+    await act(async () => host.move(withWaiting(initial, savedElsewhere(first, "Only FX", 2))));
+    expect(text(container)).toContain("This message changed elsewhere");
+    expect(hasButton(container, "Save")).toBe(false);
+    await press(container, "Send as new message…");
+    expect(host.editor.save).not.toHaveBeenCalled();
+    expect(editField(container)).toBeNull();
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+    ).toBe("Card fees, FX and the wire charge");
+  });
+
+  it("keeps words typed while the message was opening when it can't be held, and tries again", async () => {
+    const task = taskAtWork();
+    const waiting = said("Original", null);
+    const host = fakeHost(
+      snapshotFor({
+        entries: [...task.entries, waiting],
+        queue: [waitingInput(waiting, workId)],
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
+    );
+    let refuse!: (error: Error) => void;
+    host.editWaitingMessage.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => (refuse = reject)),
+    );
+    const { container } = await mount(host, workId);
+    await tapWaiting(container, waiting.body);
+    await type(container, "Edit message", "Words typed on a slow connection");
+    await act(async () =>
+      refuse(
+        new HostClientRequestError({
+          code: "conflict",
+          message: "Being edited on Alex's iPad",
+          status: 409,
+        }),
+      ),
+    );
+    await settle();
+    expect(editField(container)?.value).toBe("Words typed on a slow connection");
+    expect(text(container)).toContain("Being edited on Alex's iPad");
+    expect(hasButton(container, "Discard")).toBe(true);
+
+    await press(container, "Try again");
+    expect(host.editWaitingMessage).toHaveBeenCalledTimes(2);
+    await press(container, "Save");
+    expect(host.editor.save).toHaveBeenCalledWith(
+      [{ text: "Words typed on a slow connection", type: "text" }],
+      0,
+    );
+  });
+
+  it("lets a waiting message go while its task is out of sight, keeping the words for the return", async () => {
+    const task = taskAtWork();
+    const waiting = said("Include the card fees", null);
+    const initial = snapshotFor({
+      entries: [...task.entries, waiting],
+      queue: [waitingInput(waiting, workId)],
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost(initial);
+    const { container, root, pane } = await mount(host, workId);
+    await tapWaiting(container, waiting.body);
+    await type(container, "Edit message", "Include the card fees and the FX rate");
+
+    // Another task pushed over this one.
+    harness.focused = false;
+    await act(async () => root.render(pane(() => undefined)));
+    expect(host.editor.cancel).toHaveBeenCalledTimes(1);
+    harness.focused = true;
+    await act(async () => root.render(pane(() => undefined)));
+    await settle();
+    expect(host.editWaitingMessage).toHaveBeenCalledTimes(2);
+    expect(editField(container)?.value).toBe("Include the card fees and the FX rate");
+
+    // The app goes to the background, and the iPad saves meanwhile.
+    await act(() => harness.appListeners.forEach((listener) => listener("background")));
+    expect(host.editor.cancel).toHaveBeenCalledTimes(2);
+    await act(async () =>
+      host.move(withWaiting(initial, savedElsewhere(waitingInput(waiting, workId), "Fees", 1))),
+    );
+    await act(() => harness.appListeners.forEach((listener) => listener("active")));
+    await settle();
+    expect(host.editWaitingMessage).toHaveBeenCalledTimes(3);
+    expect(editField(container)?.value).toBe("Include the card fees and the FX rate");
+    expect(text(container)).toContain("This message changed elsewhere");
   });
 
   it("pins footer growth and removal only while the reader stays at the tail", async () => {
