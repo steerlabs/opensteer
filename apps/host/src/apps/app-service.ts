@@ -23,6 +23,7 @@ import type { AppRuntimeSpec, RunnerAppState, RunnerConnectionId } from "@openst
 import { createPrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { appFrameHeaders, prepareAppHtml, type AppTheme } from "@opensteer/shared/appFrame";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import type { RunToolScope, RunToolTokenService } from "../agents/run-tool-tokens.js";
 import type { AppTabPort } from "../tabs/ports.js";
@@ -40,6 +41,11 @@ import { AppTunnelError, type AppRunnerConnection, type AppTunnelHub } from "./a
 export type AppActor =
   | { readonly kind: "person"; readonly ownerId: UserId }
   | { readonly kind: "run"; readonly claims: RunToolScope };
+
+export interface AppCallLifetime {
+  readonly signal?: AbortSignal;
+  readonly checkLive?: () => Promise<void>;
+}
 
 interface AppServiceOptions {
   readonly dataDirectory: string;
@@ -93,9 +99,11 @@ export class AppService {
     scope: RunToolScope,
     operationKey: string,
     input: AppPublishInput,
+    lifetime: AppCallLifetime = {},
   ): Promise<{ appId: AppId; version: number }> {
     input = AppPublishInputSchema.parse(input);
     return this.#locks.run(input.appId ?? `${scope.runId}:${operationKey}`, async () => {
+      await this.#admit({ kind: "run", claims: scope }, lifetime, input.start !== undefined);
       const replay = await this.#options.apps.publication(scope.runId, operationKey);
       if (replay) return { appId: AppIdSchema.parse(replay.appId), version: replay.version };
       const run = runScope(scope);
@@ -105,8 +113,16 @@ export class AppService {
         : undefined;
       const result =
         input.start === undefined
-          ? await this.#publishHtml(scope, operationKey, input, previous)
-          : await this.#publishServer(scope, operationKey, input, input.start, agentHome, previous);
+          ? await this.#publishHtml(scope, operationKey, input, previous, lifetime)
+          : await this.#publishServer(
+              scope,
+              operationKey,
+              input,
+              input.start,
+              agentHome,
+              previous,
+              lifetime,
+            );
       this.#options.publishEvent(result.event);
       this.#options.changed(scope.requestedBy, [result.appId]);
       return { appId: result.appId, version: result.version };
@@ -120,6 +136,7 @@ export class AppService {
     start: string,
     agentHome: ComputerFolder,
     previous: PublishedApp | undefined,
+    lifetime: AppCallLifetime,
   ) {
     let segments: string[];
     try {
@@ -134,6 +151,8 @@ export class AppService {
       folder: { computerId: agentHome.computerId, path: join(agentHome.path, ...segments) },
       command: start,
     };
+    await this.#ready(agentHome.computerId, lifetime.signal);
+    await this.#admit({ kind: "run", claims: scope }, lifetime, true);
     const run = runScope(scope);
     const reservation = previous
       ? await this.#options.apps.prepareServer({
@@ -157,20 +176,36 @@ export class AppService {
       agentHome,
       command: server.command,
     };
-    // A first publication that never commits leaves nothing behind but its contained process.
     const abandon = async () => {
-      if (reservation.published) return;
-      await this.#halt(spec.folder.computerId, spec.appId, spec.generation).catch(() => undefined);
-      await this.#options.apps.remove(spec.appId, this.#options.tabs.removeTabs);
+      if (reservation.published) {
+        await this.#options.apps.cancelStart(spec.appId, spec.generation);
+        await this.#halt(spec.folder.computerId, spec.appId, spec.generation).catch(
+          () => undefined,
+        );
+        this.#options.changed(scope.requestedBy, [spec.appId]);
+      } else {
+        const record = await this.#options.apps.markDeleting(
+          scope.requestedBy,
+          spec.appId,
+          this.#options.tabs.removeTabs,
+        );
+        try {
+          await this.#halt(record.computerId, record.id, record.server!.generation);
+          await this.#remove(record);
+        } catch {
+          this.#options.changed(scope.requestedBy, [spec.appId]);
+        }
+      }
     };
     try {
-      await this.#launch(scope.requestedBy, spec);
+      await this.#launch(scope.requestedBy, spec, { kind: "run", claims: scope }, lifetime);
     } catch (error) {
       await abandon();
+      lifetime.signal?.throwIfAborted();
       throw startFailure(error);
     }
     try {
-      await this.#options.tokens.reauthorize(scope);
+      await this.#admit({ kind: "run", claims: scope }, lifetime, true);
       return await this.#options.apps.commit({
         scope: run,
         appId: spec.appId,
@@ -191,6 +226,7 @@ export class AppService {
     operationKey: string,
     input: AppPublishInput,
     previous: PublishedApp | undefined,
+    lifetime: AppCallLifetime,
   ) {
     if (!/\.html?$/iu.test(input.path))
       throw new OpensteerError({
@@ -209,7 +245,10 @@ export class AppService {
         code: "bad_request",
         message: "Use an HTML file path inside Agent home",
       });
-    const signal = AbortSignal.timeout(30_000);
+    const signal = AbortSignal.any([
+      AbortSignal.timeout(30_000),
+      ...(lifetime.signal ? [lifetime.signal] : []),
+    ]);
     let key = "";
     for (const [index, name] of segments.entries()) {
       let cursor: string | undefined;
@@ -249,13 +288,14 @@ export class AppService {
     } catch {
       throw new OpensteerError({ code: "bad_request", message: "App HTML must be UTF-8" });
     }
-    await this.#options.tokens.reauthorize(scope);
+    await this.#admit({ kind: "run", claims: scope }, lifetime, false);
     const sha256 = createHash("sha256").update(bytes).digest("hex");
     // A digest names complete immutable bytes; interrupted writes cannot replace another version.
     await createPrivateFileAtomically(
       join(this.#directory, sha256),
       Buffer.from(bytes).toString("utf8"),
     );
+    await this.#admit({ kind: "run", claims: scope }, lifetime, false);
     const result = await this.#options.apps.commit({
       scope: runScope(scope),
       ...(previous ? { appId: previous.id } : {}),
@@ -273,8 +313,14 @@ export class AppService {
 
   /** Retires abandoned reservations, then deletes HTML bytes no version references. */
   async collectGarbage(): Promise<void> {
-    for (const reservation of await this.#options.apps.abandonedReservations())
-      await this.#options.apps.remove(reservation.id, this.#options.tabs.removeTabs);
+    for (const reservation of await this.#options.apps.abandonedReservations()) {
+      if (reservation.deleting) continue;
+      await this.#options.apps.markDeleting(
+        reservation.ownerId,
+        reservation.id,
+        this.#options.tabs.removeTabs,
+      );
+    }
     await mkdir(this.#directory, { recursive: true, mode: 0o700 });
     const referenced = new Set(await this.#options.apps.referencedDigests());
     for (const name of await readdir(this.#directory)) {
@@ -302,22 +348,38 @@ export class AppService {
    * Persists running intent, then starts on the saved computer and fixed port. Offline,
    * the intent waits for reconnect. A failure stays failed until an explicit retry.
    */
-  async start(actor: AppActor, appId: string): Promise<App> {
+  async start(actor: AppActor, appId: string, lifetime: AppCallLifetime = {}): Promise<App> {
     const id = parseAppId(appId);
     const ownerId = ownerOf(actor);
     return this.#locks.run(id, async () => {
-      if (actor.kind === "run") await this.#options.apps.authorizeRun(runScope(actor.claims), true);
+      await this.#admit(actor, lifetime, true);
+      const app = await this.#options.apps.get(ownerId, id);
+      if (this.#computers.has(app.computerId)) await this.#ready(app.computerId, lifetime.signal);
+      else if (actor.kind === "run") throw startFailure(new ComputerOfflineError());
+      await this.#admit(actor, lifetime, true);
       const record = await this.#options.apps.setDesiredState(ownerId, id, "running");
       this.#options.changed(ownerId, [id]);
-      const spec = await this.#spec(record);
+      if (actor.kind === "person" && !this.#computers.has(record.computerId))
+        return this.get(ownerId, id);
+      let dispatched = false;
       try {
-        await this.#launch(ownerId, spec);
+        const spec = await this.#spec(record);
+        await this.#launch(ownerId, spec, actor, lifetime, () => {
+          dispatched = true;
+        });
       } catch (error) {
+        if (!dispatched || lifetime.signal?.aborted) {
+          await this.#options.apps.cancelStart(id, record.server.generation);
+          await this.#halt(record.computerId, id, record.server.generation).catch(() => undefined);
+          this.#options.changed(ownerId, [id]);
+          lifetime.signal?.throwIfAborted();
+          throw startFailure(error);
+        }
         const current = await this.#options.apps.get(ownerId, id);
         // A Stop or Delete that overtook this start owns the outcome.
         if (
           actor.kind === "run" &&
-          current.server?.generation === spec.generation &&
+          current.server?.generation === record.server.generation &&
           !(error instanceof ComputerOfflineError)
         )
           throw startFailure(error);
@@ -333,6 +395,7 @@ export class AppService {
     const ownerId = ownerOf(actor);
     const record = await this.#options.apps.setDesiredState(ownerId, id, "stopped");
     this.#options.changed(ownerId, [id]);
+    if (!this.#computers.has(record.computerId)) return this.get(ownerId, id);
     try {
       await this.#halt(record.computerId, id, record.server.generation);
     } catch {
@@ -350,8 +413,13 @@ export class AppService {
   async delete(actor: AppActor, appId: string): Promise<void> {
     const id = parseAppId(appId);
     const ownerId = ownerOf(actor);
-    const record = await this.#options.apps.markDeleting(ownerId, id);
+    const record = await this.#options.apps.markDeleting(
+      ownerId,
+      id,
+      this.#options.tabs.removeTabs,
+    );
     this.#revoke(id);
+    this.#options.changed(ownerId, [id]);
     if (record.server)
       try {
         await this.#halt(record.computerId, id, record.server.generation);
@@ -599,14 +667,62 @@ export class AppService {
     };
   }
 
-  async #launch(ownerId: UserId, spec: AppRuntimeSpec): Promise<void> {
-    const computer = this.#computers.get(spec.folder.computerId);
-    if (!computer) throw new ComputerOfflineError();
-    // Reconnect reconciliation goes first; its own start of this app may already be done.
-    await computer.synced;
+  async #admit(actor: AppActor, lifetime: AppCallLifetime, fullAccess: boolean): Promise<void> {
+    lifetime.signal?.throwIfAborted();
+    await lifetime.checkLive?.();
+    if (actor.kind === "run") {
+      await this.#options.tokens.reauthorize(actor.claims);
+      await this.#options.apps.authorizeRun(runScope(actor.claims), fullAccess);
+    }
+    lifetime.signal?.throwIfAborted();
+  }
+
+  async #ready(computerId: RunnerId, signal?: AbortSignal): Promise<Computer> {
+    const computer = this.#computers.get(computerId);
+    if (!computer) throw startFailure(new ComputerOfflineError());
+    const synced = await withTimeout(computer.synced, startTimeoutMs, {
+      ...(signal ? { signal } : {}),
+      timeoutError: () =>
+        outcomeUnknown(
+          "The app's computer did not finish reconciling its servers. Reconnect it before starting an app.",
+        ),
+    });
+    if (computer.connection.signal.aborted || this.#computers.get(computerId) !== computer)
+      throw startFailure(new ComputerOfflineError());
+    if (!synced)
+      throw outcomeUnknown(
+        "Opensteer could not reconcile the computer's app servers. Confirm pending servers stopped and reconnect the computer before starting an app.",
+      );
+    return computer;
+  }
+
+  async #launch(
+    ownerId: UserId,
+    spec: AppRuntimeSpec,
+    actor: AppActor,
+    lifetime: AppCallLifetime,
+    onDispatch?: () => void,
+  ): Promise<void> {
+    const computer = await this.#ready(spec.folder.computerId, lifetime.signal);
+    const record = await this.#options.apps.record(spec.appId);
+    if (!record || record.deleting || record.server?.generation !== spec.generation)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "The app changed before its server could start. Check app_list before retrying.",
+      });
+    await this.#admit(actor, lifetime, true);
     const { connection } = computer;
     try {
-      await this.#options.tunnels.start(connection, spec, AbortSignal.timeout(startTimeoutMs));
+      onDispatch?.();
+      await this.#options.tunnels.start(
+        connection,
+        spec,
+        AbortSignal.any([
+          AbortSignal.timeout(startTimeoutMs),
+          ...(lifetime.signal ? [lifetime.signal] : []),
+        ]),
+      );
+      lifetime.signal?.throwIfAborted();
       this.#observe(
         spec.folder.computerId,
         connection.connectionId,
@@ -635,19 +751,13 @@ export class AppService {
     }
   }
 
-  /** Stops the exact generation on a connected computer; offline, the Runner already stopped it. */
+  /** Only an acknowledged Stop proves the exact generation's process tree is gone. */
   async #halt(computerId: RunnerId, appId: AppId, generation: number): Promise<void> {
     this.#options.tunnels.close(appId);
     const computer = this.#computers.get(computerId);
-    if (!computer) return;
-    try {
-      await this.#options.tunnels.stop(computerId, computer.connection, appId, generation);
-      this.#observe(computerId, computer.connection.connectionId, appId, generation, "stopped");
-    } catch (error) {
-      // A lost connection's own cleanup owns termination.
-      if (computer.connection.signal.aborted) return;
-      throw error;
-    }
+    if (!computer || computer.connection.signal.aborted) throw new ComputerOfflineError();
+    await this.#options.tunnels.stop(computerId, computer.connection, appId, generation);
+    this.#observe(computerId, computer.connection.connectionId, appId, generation, "stopped");
   }
 
   async #reconcile(computerId: RunnerId, connection: AppRunnerConnection): Promise<boolean> {

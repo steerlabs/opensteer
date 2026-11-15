@@ -24,7 +24,7 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import { AppStore, type DatabaseSchema } from "@opensteer/database";
+import { AppStore, TabStore, type DatabaseSchema } from "@opensteer/database";
 import {
   RunnerConnectionFenceSchema,
   type AppRuntimeSpec,
@@ -621,6 +621,438 @@ describeStore("published app HTML", (it) => {
       expect(runner.serving(appId)).toBe(false);
     } finally {
       await runner.disconnect();
+    }
+  });
+});
+
+describeStore("app lifecycle admission", (it) => {
+  async function setup(fixture: Parameters<typeof serviceFor>[0], home: ComputerFolder) {
+    const controller = new AbortController();
+    const connection = {
+      connectionId: `rcn_${crypto.randomUUID()}` as RunnerConnectionId,
+      signal: controller.signal,
+    };
+    const tunnels = {
+      connection: () => connection,
+      start: vi.fn(async () => 51_000),
+      stop: vi.fn(async () => undefined),
+      sync: vi.fn(async () => ({ ok: true })),
+      close: vi.fn(),
+      connect: vi.fn(),
+      accept: vi.fn(),
+    };
+    const built = serviceFor(fixture, home, {
+      tunnels: tunnels as unknown as ConstructorParameters<typeof AppService>[0]["tunnels"],
+    });
+    return { ...built, tunnels, controller, connection };
+  }
+
+  for (const operation of ["start", "publish"] as const)
+    for (const reason of ["revoked", "cancelled", "failed-sync"] as const)
+      it(`refuses a ${reason} ${operation} held behind reconciliation without persisting running intent`, async ({
+        storeFixture,
+      }) => {
+        const { database } = storeFixture;
+        const f = await storeFixture.startRunFixture("app-pending-admission");
+        await database
+          .updateTable("runs")
+          .set({ accessMode: "full-access" })
+          .where("id", "=", f.run.id)
+          .execute();
+        const b = await setup(database, f.agentHome);
+        const reserved = await b.store.reserve({
+          scope: runScope(f),
+          creationKey: "old",
+          name: "Old",
+          computerId: f.runnerId,
+        });
+        await b.store.commit({
+          scope: runScope(f),
+          appId: reserved.appId,
+          name: "Old",
+          publishKey: "old",
+          server: { folder: f.agentHome, command: "old" },
+          serverGeneration: reserved.generation,
+        });
+        await b.store.setDesiredState(f.userId, reserved.appId, "stopped");
+        const entered = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<{ ok: boolean }>();
+        b.tunnels.sync.mockImplementationOnce(async () => {
+          entered.resolve();
+          return withTimeout(release.promise, 2_000, {
+            timeoutError: () => new Error("Sync was not released"),
+          });
+        });
+        const connecting = b.service.onRunnerConnected(f.runnerId);
+        await withTimeout(entered.promise, 2_000, {
+          timeoutError: () => new Error("Sync never started"),
+        });
+        const authorized = Promise.withResolvers<void>();
+        const authorizeRun = b.store.authorizeRun.bind(b.store);
+        vi.spyOn(b.store, "authorizeRun").mockImplementation(async (...args) => {
+          const result = await authorizeRun(...args);
+          authorized.resolve();
+          return result;
+        });
+        const lifetime = new AbortController();
+        const starting =
+          operation === "start"
+            ? b.service.start({ kind: "run", claims: toolScope(f) }, reserved.appId, {
+                signal: lifetime.signal,
+              })
+            : b.service.publish(
+                toolScope(f),
+                "pending",
+                { appId: reserved.appId, name: "Pending", path: "pending", start: "pending" },
+                { signal: lifetime.signal },
+              );
+        const refused =
+          reason === "failed-sync"
+            ? expect(starting).rejects.toMatchObject({
+                reason: "outcome_unknown",
+                message: expect.stringContaining("reconcile"),
+              })
+            : expect(starting).rejects.toThrow();
+        await withTimeout(authorized.promise, 2_000, {
+          timeoutError: () => new Error("The caller never passed initial app admission"),
+        });
+        if (reason === "revoked")
+          await database
+            .updateTable("runs")
+            .set({ accessMode: "approval-required" })
+            .where("id", "=", f.run.id)
+            .execute();
+        if (reason === "cancelled") lifetime.abort(new Error("Caller cancelled"));
+        release.resolve({ ok: reason !== "failed-sync" });
+        await connecting;
+        await refused;
+        expect(b.tunnels.start).not.toHaveBeenCalled();
+        expect((await b.store.get(f.userId, reserved.appId)).server?.desiredState).toBe("stopped");
+      });
+
+  it("rechecks live caller authority after resolving the launch spec and withdraws a refused start's intent", async ({
+    storeFixture,
+  }) => {
+    const { database } = storeFixture;
+    const f = await storeFixture.startRunFixture("app-final-admission");
+    await database
+      .updateTable("runs")
+      .set({ accessMode: "full-access" })
+      .where("id", "=", f.run.id)
+      .execute();
+    const b = await setup(database, f.agentHome);
+    const reserved = await b.store.reserve({
+      scope: runScope(f),
+      creationKey: "old",
+      name: "Old",
+      computerId: f.runnerId,
+    });
+    await b.store.commit({
+      scope: runScope(f),
+      appId: reserved.appId,
+      name: "Old",
+      publishKey: "old",
+      server: { folder: f.agentHome, command: "old" },
+      serverGeneration: reserved.generation,
+    });
+    await b.store.setDesiredState(f.userId, reserved.appId, "stopped");
+    const held = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let admitted = true;
+    let holdSpec = false;
+    const service = serviceFor(database, f.agentHome, {
+      tunnels: b.tunnels as unknown as ConstructorParameters<typeof AppService>[0]["tunnels"],
+      agentHome: async () => {
+        if (!holdSpec) return f.agentHome;
+        held.resolve();
+        await withTimeout(release.promise, 2_000, {
+          timeoutError: () => new Error("Agent home resolution was not released"),
+        });
+        return f.agentHome;
+      },
+    }).service;
+    await service.onRunnerConnected(f.runnerId);
+    holdSpec = true;
+    const starting = service.start({ kind: "run", claims: toolScope(f) }, reserved.appId, {
+      checkLive: async () => {
+        if (!admitted) throw new Error("Caller no longer admitted");
+      },
+    });
+    const rejected = expect(starting).rejects.toThrow("Caller no longer admitted");
+    await withTimeout(held.promise, 2_000, {
+      timeoutError: () => new Error("Start never resolved its launch spec"),
+    });
+    admitted = false;
+    release.resolve();
+    await rejected;
+    expect(b.tunnels.start).not.toHaveBeenCalled();
+    expect((await b.store.get(f.userId, reserved.appId)).server?.desiredState).toBe("stopped");
+  });
+
+  it("enforces the stored-app limit before allocating a new publication and keeps all existing server records in reconciliation", async ({
+    storeFixture,
+  }) => {
+    const { database } = storeFixture;
+    const f = await storeFixture.startRunFixture("app-storage-limit");
+    await database
+      .updateTable("runs")
+      .set({ accessMode: "full-access" })
+      .where("id", "=", f.run.id)
+      .execute();
+    const { store: apps } = serviceFor(database, f.agentHome);
+    const ids = Array.from({ length: 500 }, () => `app_${crypto.randomUUID()}` as AppId).sort();
+    const server = { folder: f.agentHome, command: "node app.js" };
+    await database
+      .insertInto("apps")
+      .values(
+        ids.map((id) => ({
+          id,
+          computerId: f.runnerId,
+          ownerId: f.userId,
+          name: "Stored",
+          creationKey: id,
+          latestVersion: 1,
+        })),
+      )
+      .execute();
+    await database
+      .insertInto("appServers")
+      .values(
+        ids.map((appId, index) => ({
+          appId,
+          computerId: f.runnerId,
+          port: 49_152 + index,
+          desiredState: index === 499 ? ("running" as const) : ("stopped" as const),
+        })),
+      )
+      .execute();
+    await database
+      .insertInto("appVersions")
+      .values(
+        ids.map((appId) => ({
+          appId,
+          version: 1,
+          server,
+          publishKey: appId,
+          createdByRun: f.run.id,
+        })),
+      )
+      .execute();
+    expect(await apps.runtimeSet(f.runnerId)).toHaveLength(500);
+    expect((await apps.runtimeSet(f.runnerId)).at(-1)).toMatchObject({
+      id: ids[499],
+      server: { desiredState: "running" },
+    });
+    await expect(
+      apps.reserve({
+        scope: runScope(f),
+        name: "Overflow server",
+        computerId: f.runnerId,
+        creationKey: "overflow",
+      }),
+    ).rejects.toMatchObject({ code: "resource_exhausted" });
+    await expect(
+      apps.commit({
+        scope: runScope(f),
+        name: "Overflow HTML",
+        publishKey: "overflow-html",
+        html: { sha256: "a".repeat(64), sizeBytes: 1 },
+      }),
+    ).rejects.toMatchObject({ code: "resource_exhausted" });
+    expect(
+      await apps.commit({
+        scope: runScope(f),
+        appId: ids[0]!,
+        name: "Existing",
+        publishKey: "update-at-limit",
+        html: { sha256: "a".repeat(64), sizeBytes: 1 },
+      }),
+    ).toMatchObject({ appId: ids[0], version: 2 });
+  });
+
+  for (const rejection of ["authority", "cancelled", "newer-stop"] as const)
+    it(`stops a replacement rejected by ${rejection} at its exact generation and retains the previous publication stopped`, async ({
+      storeFixture,
+    }) => {
+      const f = await storeFixture.startRunFixture("app-rejected-replacement");
+      const { database } = storeFixture;
+      await database
+        .updateTable("runs")
+        .set({ accessMode: "full-access" })
+        .where("id", "=", f.run.id)
+        .execute();
+      const b = await setup(database, f.agentHome);
+      await b.service.onRunnerConnected(f.runnerId);
+      const published = await b.service.publish(toolScope(f), "old", {
+        name: "Old",
+        path: "old",
+        start: "old",
+      });
+      const lifetime = new AbortController();
+      b.tunnels.start.mockImplementationOnce(async () => {
+        if (rejection === "cancelled")
+          lifetime.abort(new Error("Caller cancelled after readiness"));
+        else if (rejection === "newer-stop")
+          await b.service.stop({ kind: "person", ownerId: f.userId }, published.appId);
+        else
+          await database
+            .updateTable("runs")
+            .set({ accessMode: "approval-required" })
+            .where("id", "=", f.run.id)
+            .execute();
+        return 51_000;
+      });
+      await expect(
+        b.service.publish(
+          toolScope(f),
+          "new",
+          { appId: published.appId, name: "New", path: "new", start: "new" },
+          { signal: lifetime.signal },
+        ),
+      ).rejects.toThrow();
+      expect(b.tunnels.stop).toHaveBeenCalledWith(f.runnerId, b.connection, published.appId, 2);
+      expect(await b.store.get(f.userId, published.appId)).toMatchObject({
+        name: "Old",
+        version: { version: 1, server: { command: "old" } },
+        server: { desiredState: "stopped", generation: 3 },
+      });
+      expect(await b.service.get(f.userId, published.appId)).toMatchObject({ state: "stopped" });
+    });
+
+  for (const failure of ["before-delete", "during-stop", "abandoned-publication"] as const)
+    it(`retains an unconfirmed ${failure} tombstone and port until complete-set sync acknowledges termination`, async ({
+      storeFixture,
+    }) => {
+      const { database } = storeFixture;
+      const f = await storeFixture.startRunFixture("app-unknown-deletion");
+      await database
+        .updateTable("runs")
+        .set({ accessMode: "full-access" })
+        .where("id", "=", f.run.id)
+        .execute();
+      const b = await setup(database, f.agentHome);
+      const tabs = new TabStore(database);
+      const appTabs = {
+        removeTabs: (tx: Parameters<TabStore["removeTabs"]>[0], id: AppId) =>
+          tabs.removeTabs(tx, id),
+      };
+      const service = serviceFor(database, f.agentHome, {
+        tunnels: b.tunnels as unknown as ConstructorParameters<typeof AppService>[0]["tunnels"],
+        tabs: appTabs,
+      }).service;
+      await service.onRunnerConnected(f.runnerId);
+      let appId: AppId;
+      if (failure === "abandoned-publication") {
+        b.tunnels.start.mockImplementationOnce(async () => {
+          b.controller.abort();
+          throw new Error("Disconnected");
+        });
+        await expect(
+          service.publish(toolScope(f), "abandoned", {
+            name: "Pending",
+            path: "pending",
+            start: "pending",
+          }),
+        ).rejects.toThrow();
+        appId = (await database.selectFrom("apps").select("id").executeTakeFirstOrThrow()).id;
+      } else {
+        appId = (
+          await service.publish(toolScope(f), "published", {
+            name: "App",
+            path: "app",
+            start: "app",
+          })
+        ).appId;
+        await tabs.open(
+          {
+            id: createId("tab"),
+            ownerId: f.userId,
+            kind: "app",
+            computerId: f.runnerId,
+            appId,
+            title: "App",
+            openedBy: "person",
+          },
+          "app-tab",
+        );
+        await tabs.open(
+          {
+            id: createId("tab"),
+            ownerId: f.userId,
+            kind: "phone",
+            computerId: f.runnerId,
+            title: "Phone",
+            openedBy: "person",
+          },
+          "phone-tab",
+        );
+        if (failure === "before-delete")
+          await service.onRunnerDisconnected(f.runnerId, b.connection.connectionId);
+        else
+          b.tunnels.stop.mockImplementationOnce(async () => {
+            b.controller.abort();
+            throw new Error("Disconnected");
+          });
+        await expect(
+          service.delete({ kind: "person", ownerId: f.userId }, appId),
+        ).rejects.toMatchObject({ reason: "outcome_unknown" });
+        expect((await tabs.snapshot(f.userId)).rows.map((tab) => tab.kind)).toEqual(["phone"]);
+      }
+      expect(await b.store.record(appId)).toMatchObject({
+        deleting: true,
+        server: { port: expect.any(Number), desiredState: "stopped" },
+      });
+      expect(
+        await database.selectFrom("personalTabs").selectAll().where("appId", "=", appId).execute(),
+      ).toEqual([]);
+      const fresh = await setup(database, f.agentHome);
+      fresh.tunnels.sync.mockResolvedValueOnce({ ok: false });
+      await fresh.service.onRunnerConnected(f.runnerId);
+      expect(await b.store.record(appId)).toMatchObject({ deleting: true });
+      await fresh.service.onRunnerConnected(f.runnerId);
+      expect(fresh.tunnels.sync).toHaveBeenCalledWith(f.runnerId, fresh.connection, []);
+      expect(await b.store.record(appId)).toBeUndefined();
+    });
+  it("keeps an abandoned reservation's fixed port through garbage collection until reconciliation proves termination", async ({
+    storeFixture,
+  }) => {
+    const { database } = storeFixture;
+    const f = await storeFixture.startRunFixture("app-abandoned-reservation");
+    await database
+      .updateTable("runs")
+      .set({ accessMode: "full-access" })
+      .where("id", "=", f.run.id)
+      .execute();
+    const b = await setup(database, f.agentHome);
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-abandoned-app-"));
+    const service = serviceFor(database, f.agentHome, {
+      dataDirectory: directory,
+      tunnels: b.tunnels as unknown as ConstructorParameters<typeof AppService>[0]["tunnels"],
+    }).service;
+    try {
+      const reservation = await b.store.reserve({
+        scope: runScope(f),
+        creationKey: "abandoned",
+        name: "Abandoned",
+        computerId: f.runnerId,
+      });
+      await database
+        .updateTable("runs")
+        .set({ status: "completed", completedAt: new Date() })
+        .where("id", "=", f.run.id)
+        .execute();
+      await service.collectGarbage();
+      await service.collectGarbage();
+      expect(await b.store.record(reservation.appId)).toMatchObject({
+        deleting: true,
+        version: null,
+        server: { port: reservation.port, desiredState: "stopped" },
+      });
+      await service.onRunnerConnected(f.runnerId);
+      expect(b.tunnels.sync).toHaveBeenCalledWith(f.runnerId, b.connection, []);
+      expect(await b.store.record(reservation.appId)).toBeUndefined();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
     }
   });
 });

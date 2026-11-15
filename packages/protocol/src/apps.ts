@@ -32,7 +32,12 @@ export const RunnerAppResultSchema = z.strictObject({
 export type RunnerAppResult = z.infer<typeof RunnerAppResultSchema>;
 export const appTunnelMaxFrameBytes = 64 * 1_024;
 
-import { AppSchema, AppIdSchema as PublishedAppIdSchema, AppNameSchema } from "@opensteer/core";
+import {
+  AppServerSchema,
+  AppSchema,
+  AppIdSchema as PublishedAppIdSchema,
+  AppNameSchema,
+} from "@opensteer/core";
 
 const request = { requestId: z.uuid(), fence: TaskRuntimeFenceSchema };
 const generation = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -89,17 +94,21 @@ export const AppCommandSchema = z.discriminatedUnion("type", [
   z.strictObject({ ...appCommand, type: z.literal("app.delete") }),
 ]);
 export type AppCommand = z.infer<typeof AppCommandSchema>;
+export const AppViewSchema = z.object({
+  ...AppSchema.shape,
+  server: z.object(AppServerSchema.shape).nullable(),
+});
 export const AppCommandResultSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("app.rename"), app: AppSchema }),
-  z.object({ type: z.literal("app.start"), app: AppSchema }),
-  z.object({ type: z.literal("app.stop"), app: AppSchema }),
+  z.object({ type: z.literal("app.rename"), app: AppViewSchema }),
+  z.object({ type: z.literal("app.start"), app: AppViewSchema }),
+  z.object({ type: z.literal("app.stop"), app: AppViewSchema }),
   z.object({ type: z.literal("app.delete"), appId: AppIdSchema, deleted: z.literal(true) }),
 ]);
 export type AppCommandResult = z.infer<typeof AppCommandResultSchema>;
 export const AppsListInputSchema = z.strictObject({
   query: z.string().trim().min(1).max(200).optional(),
 });
-export const AppsListResultSchema = z.object({ apps: z.array(z.object(AppSchema.shape)).max(500) });
+export const AppsListResultSchema = z.object({ apps: z.array(AppViewSchema).max(500) });
 export const HostAppsChangedSchema = z.object({
   type: z.literal("host.apps.changed"),
   appIds: z.array(AppIdSchema).max(500),

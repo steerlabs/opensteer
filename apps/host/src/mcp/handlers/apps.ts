@@ -11,11 +11,11 @@ export function appToolHandlers(
   const run = (caller: Parameters<typeof requireRun>[0]) =>
     ({ kind: "run", claims: requireRun(caller).claims }) as const;
   return {
-    app_publish: async (c) => apps.publish(requireRun(c.caller).claims, c.operationKey, c.input),
+    app_publish: async (c) => apps.publish(requireRun(c.caller).claims, c.operationKey, c.input, c),
     app_list: async (c) => ({
       apps: (await apps.list(c.caller.userId, c.input.query)).map(appListItem),
     }),
-    app_start: async (c) => ({ app: await apps.start(run(c.caller), c.input.appId) }),
+    app_start: async (c) => ({ app: await apps.start(run(c.caller), c.input.appId, c) }),
     app_stop: async (c) => ({ app: await apps.stop(run(c.caller), c.input.appId) }),
     app_delete: async (c) => {
       await apps.delete(run(c.caller), c.input.appId);

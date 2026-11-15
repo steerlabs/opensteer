@@ -1859,7 +1859,8 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).rejects.toThrow("Only a tool.started event names an integration call's subject");
 
-    // App subjects cannot identify a window; only explicit tab entries recover a place.
+    // An integration subject alone neither invents a durable tab nor a recent place;
+    // only an explicit tab entry recovers one.
     await store.commitRunnerEvent({
       environmentId: fixture.environmentId,
       event: pendingEvent({
@@ -1878,6 +1879,7 @@ describeStore("PostgreSQL store", (it) => {
       runnerId: fixture.runnerId,
     });
     await expect(store.latestNativePlaces(fixture.userId)).resolves.toEqual([]);
+    expect(await database.selectFrom("personalTabs").select("id").execute()).toEqual([]);
     const place = { tabId: TabIdSchema.parse("slack-window-tab"), title: "Slack", site: null };
     await store.recordRunTabPlace({
       runId: work.run.id,

@@ -9,12 +9,13 @@ import {
   TabBootstrapSchema,
 } from "./tabs.js";
 import {
+  AppViewSchema,
   AppCommandSchema,
   AppCommandResultSchema,
   AppsListInputSchema,
   AppsListResultSchema,
 } from "./apps.js";
-import { AppSchema, TabViewSchema } from "@opensteer/core";
+import { TabViewSchema } from "@opensteer/core";
 import {
   TranscriptFileOpenInputSchema,
   TranscriptFileOpenSchema,
@@ -1750,7 +1751,7 @@ const hostApiGroup2 = defineRpc({
     "POST",
     z.strictObject({ appId: AppIdSchema, theme: z.enum(["light", "dark"]) }),
     z.object({
-      app: AppSchema,
+      app: AppViewSchema,
       path: z.string().regex(/^\/v1\/apps\/app_[0-9a-f-]{36}\/(light|dark)\/[A-Za-z0-9_-]{43}\/$/u),
       entryUrl: z.url().max(512).optional(),
     }),
@@ -2288,7 +2289,7 @@ const workspaceHostApi = defineRpc({
   "tabs.get": declaration("GET", TabGetInputSchema, TabViewSchema),
   "tabs.state": declaration("GET", z.strictObject({}), TabBootstrapSchema),
   "apps.list": declaration("GET", AppsListInputSchema, AppsListResultSchema),
-  "apps.get": declaration("GET", z.strictObject({ appId: AppIdSchema }), z.object(AppSchema.shape)),
+  "apps.get": declaration("GET", z.strictObject({ appId: AppIdSchema }), AppViewSchema),
   "bootstrap.get": declaration("GET", z.strictObject({}), workspaceBootstrapOutput),
 });
 export const hostApi: typeof hostApiGroup1 &

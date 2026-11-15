@@ -194,13 +194,13 @@ export class AppServerManager {
           Math.max(this.#stopped.get(app.spec.appId) ?? 0, app.spec.generation),
         );
     const stopped = await Promise.allSettled(stops);
+    const failed = stopped.find((result) => result.status === "rejected");
+    if (failed) throw failed.reason;
     await Promise.allSettled(
       apps
         .filter((app) => app.desiredState === "running")
         .map((app) => this.start(app.spec, AbortSignal.any([signal, AbortSignal.timeout(30_000)]))),
     );
-    const failed = stopped.find((result) => result.status === "rejected");
-    if (failed) throw failed.reason;
   }
 
   /** The Host connection ended: stop everything and forget its generation fences. */

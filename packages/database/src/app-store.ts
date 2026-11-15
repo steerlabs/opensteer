@@ -140,8 +140,7 @@ export class AppStore {
         .where("apps.deleting", "=", false)
         .where("apps.latestVersion", ">", 0)
         .where("appVersions.server", "is not", null)
-        .orderBy("apps.id")
-        .limit(appListLimit),
+        .orderBy("apps.id"),
     );
     return apps.flatMap((app) =>
       app.version?.server && app.server
@@ -227,7 +226,7 @@ export class AppStore {
       const port = await allocatePort(tx, appId, input.computerId);
       await tx
         .insertInto("appServers")
-        .values({ appId, computerId: input.computerId, port, desiredState: "running" })
+        .values({ appId, computerId: input.computerId, port, desiredState: "stopped" })
         .execute();
       return { appId, computerId: input.computerId, port, generation: 1, published: false };
     });
@@ -260,14 +259,14 @@ export class AppStore {
         const port = await allocatePort(tx, app.id, app.computerId);
         await tx
           .insertInto("appServers")
-          .values({ appId: app.id, computerId: app.computerId, port, desiredState: "running" })
+          .values({ appId: app.id, computerId: app.computerId, port, desiredState: "stopped" })
           .execute();
         return { appId: app.id, computerId: app.computerId, port, generation: 1, published: true };
       }
       const generation = Number(server.generation) + 1;
       await tx
         .updateTable("appServers")
-        .set({ desiredState: "running", generation, lastError: null })
+        .set({ desiredState: "stopped", generation, lastError: null })
         .where("appId", "=", app.id)
         .execute();
       return {
@@ -349,6 +348,12 @@ export class AppStore {
             message: "The app changed while its server was starting. Check app_list and retry.",
           });
       }
+      if (input.server)
+        await tx
+          .updateTable("appServers")
+          .set({ desiredState: "running" })
+          .where("appId", "=", app.id)
+          .execute();
       const version = app.latestVersion + 1;
       if (input.expectedVersion !== undefined && input.expectedVersion !== version)
         throw new OpensteerError({
@@ -456,16 +461,33 @@ export class AppStore {
     return result.numUpdatedRows > 0n;
   }
 
-  /** Refuses new publication, start and viewing; the new generation fences older starts. */
-  async markDeleting(ownerId: UserId, appId: AppId): Promise<AppRecord> {
+  /** Withdraws only the failed generation's intent; newer lifecycle work keeps its authority. */
+  async cancelStart(appId: AppId, generation: number): Promise<void> {
+    await withPersonalTransaction(this.database, async (tx) => {
+      await tx
+        .updateTable("appServers")
+        .set({ desiredState: "stopped", generation: generation + 1, lastError: null })
+        .where("appId", "=", appId)
+        .where("generation", "=", generation)
+        .execute();
+    });
+  }
+
+  /** Refuses new publication, start and viewing while atomically withdrawing tab membership. */
+  async markDeleting(
+    ownerId: UserId,
+    appId: AppId,
+    removeTabs: (tx: Transaction<DatabaseSchema>, appId: AppId) => Promise<TabId[]>,
+  ): Promise<AppRecord> {
     return withPersonalTransaction(this.database, async (tx) => {
-      const app = await lockApp(tx, ownerId, appId);
+      const app = await lockApp(tx, ownerId, appId, true);
       await tx.updateTable("apps").set({ deleting: true }).where("id", "=", app.id).execute();
       await tx
         .updateTable("appServers")
         .set((eb) => ({ desiredState: "stopped", generation: eb("generation", "+", 1) }))
         .where("appId", "=", app.id)
         .execute();
+      await removeTabs(tx, app.id);
       const [record] = await this.#records(tx, (query) => query.where("apps.id", "=", app.id));
       if (!record) throw missing();
       return record;
@@ -480,12 +502,13 @@ export class AppStore {
     return withPersonalTransaction(this.database, async (tx) => {
       const app = await tx
         .selectFrom("apps")
-        .select("id")
+        .select(["id", "deleting"])
         .where("id", "=", appId)
+        // FOR UPDATE: Deletes this app row after removing its tab membership.
         .forUpdate()
         .executeTakeFirst();
       if (!app) return [];
-      const tabs = await removeTabs(tx, appId);
+      const tabs = app.deleting ? [] : await removeTabs(tx, appId);
       await tx.deleteFrom("apps").where("id", "=", appId).execute();
       return tabs;
     });
@@ -568,6 +591,16 @@ async function createApp(
     readonly computerId: RunnerId;
   },
 ): Promise<AppId> {
+  const { count } = await tx
+    .selectFrom("apps")
+    .select((eb) => eb.fn.countAll<string>().as("count"))
+    .where("ownerId", "=", input.scope.userId)
+    .executeTakeFirstOrThrow();
+  if (Number(count) >= appListLimit)
+    throw new OpensteerError({
+      code: "resource_exhausted",
+      message: `You can store at most ${appListLimit} apps, including pending deletions. Delete an app and confirm its server stopped before publishing another.`,
+    });
   const appId = AppIdSchema.parse(`app_${randomUUID()}`);
   const now = new Date();
   await tx

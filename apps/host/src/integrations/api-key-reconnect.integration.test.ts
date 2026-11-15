@@ -1,3 +1,4 @@
+import { ToolFailureSchema } from "@opensteer/core";
 import { startHeldRequest } from "./held-request.test-support.js";
 /**
  * Real Host RPC, integration MCP, PostgreSQL and a local HTTP upstream prove
@@ -223,7 +224,7 @@ integration("API-key reconnect incident", () => {
         ...assistant.address,
       });
       expect(refused.isError).toBe(true);
-      expect(toolText(refused)).toBe(
+      expect(ToolFailureSchema.parse(JSON.parse(toolText(refused))).error.message).toBe(
         '"Vapi API" account authorization is required. Search again for current readiness and call integration_request if this task still needs access.',
       );
       expect(upstream.received.at(-1)).toMatchObject({
