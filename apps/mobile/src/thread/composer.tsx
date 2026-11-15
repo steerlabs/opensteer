@@ -42,11 +42,13 @@ import * as Haptics from "expo-haptics";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
+  type RefObject,
 } from "react";
 import {
   AccessibilityInfo,
@@ -173,7 +175,13 @@ export function Composer(props: {
   readonly user: AuthenticatedUser;
   /** Home's composer, which offers the voice button beside the microphone. */
   readonly voice?: boolean;
-  /** Where this Thread's attached files are uploaded; null until the Thread is known. */
+  /**
+   * The pane draws the message this Thread owes in its transcript, with its
+   * own way to send it again, so the bar does not repeat it.
+   */
+  readonly owedInline?: boolean;
+  /** Where the bar puts its way to send the owed message again, for the transcript to offer. */
+  readonly retryRef?: RefObject<(() => void) | null>;
 }): ReactNode {
   const aiSharing = useAiSharing();
   const surface = useMemo(
@@ -534,6 +542,7 @@ export function Composer(props: {
     async (command: PendingCommand): Promise<void> => {
       const endDelivery = beginPendingDelivery(drafts, deploymentId, userId, command);
       if (endDelivery === null) return;
+      let failed = false;
       try {
         if (
           !(await sendPendingMessage(
@@ -542,8 +551,11 @@ export function Composer(props: {
             () => authorizeAiSharing(aiSharing, hostClient),
             notifications.registration,
           ))
-        )
+        ) {
+          // Not shared, so not sent: still owed, and offered again.
+          failed = true;
           return;
+        }
         // Acknowledged, and only now: until this line the command is still the
         // one this phone owes the Host.
         const cleared = await drafts.clearPending(
@@ -557,11 +569,9 @@ export function Composer(props: {
         if (cleared) {
           forgetDraftFiles({ deploymentId, threadId, userId }, command.localUris ?? []);
         }
-        // Felt, because the message leaves the composer before the transcript
-        // shows it and the hand has usually moved on by then.
-        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       } catch (error) {
         void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        failed = true;
         if (isHostRefusal(error) && mounted.current) {
           // The Host answered no, so the message is no longer owed: its words
           // and files go back to the draft to be changed, and the next send is
@@ -576,7 +586,14 @@ export function Composer(props: {
         }
         setFailure(operationDetail(error, "That message did not reach your deployment."));
       } finally {
-        endDelivery();
+        // Still owed after a failure, it says so where it is drawn until the next try.
+        endDelivery(
+          failed &&
+            drafts.readPending(deploymentId, userId, threadId)?.idempotencyKey ===
+              command.idempotencyKey
+            ? "failed"
+            : undefined,
+        );
       }
     },
     [aiSharing, deploymentId, drafts, hostClient, notifications, threadId, userId],
@@ -674,6 +691,8 @@ export function Composer(props: {
         text: sourceText.trim(),
         threadId,
       });
+      // Felt as it is written down, which is when the transcript draws it.
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       if (choice === "keepFullHistory") compactionOffer.dismiss();
       // The claim took the draft's words; the field empties unless words were
       // typed while it was being written. Read the store, not the render's copy,
@@ -733,6 +752,14 @@ export function Composer(props: {
     attempted.current = pending.idempotencyKey;
     void deliverExclusively(pending);
   };
+  const { retryRef } = props;
+  useLayoutEffect(() => {
+    if (retryRef === undefined) return;
+    retryRef.current = retry;
+    return () => {
+      retryRef.current = null;
+    };
+  });
 
   const stop = async (): Promise<void> => {
     if (stoppingRef.current || props.runStopping || !props.canRespond) return;
@@ -849,7 +876,7 @@ export function Composer(props: {
           />
         </Animated.View>
       )}
-      {pending === null ? null : (
+      {pending === null || props.owedInline === true ? null : (
         <Animated.View entering={enter} exiting={exit}>
           <PendingMessage
             attachments={pending.attachments ?? []}

@@ -1583,7 +1583,9 @@ describe("HttpHostClient authentication and onboarding", () => {
     }
   });
 
-  it("sends the execution tuple it was given and remembers it once the Host accepts", async () => {
+  it("sends the execution tuple it was given and remembers it after, without waiting for that", async () => {
+    const remembering = Promise.withResolvers<void>();
+    let held = remembering.promise;
     const workspace = makeDeployment("Placement work");
     const localEnvironmentId = createId("environment");
     const localRunnerId = createId("runner");
@@ -1712,6 +1714,8 @@ describe("HttpHostClient authentication and onboarding", () => {
       };
       bodies.push(body);
       if (body.type === "execution.preferences.remember") {
+        // Held open: the new Thread is the person's to see, not this.
+        await held;
         return json({
           preferences: {
             accessMode: body.accessMode ?? "auto",
@@ -1746,6 +1750,11 @@ describe("HttpHostClient authentication and onboarding", () => {
       harnessInstanceId: codexHarnessId,
       modelSelection,
     });
+    remembering.resolve();
+    await vi.waitFor(
+      () => expect(client.getSnapshot().executionPreferences.history).toHaveLength(1),
+      { timeout: 1_000 },
+    );
 
     expect(bodies).toEqual([
       expect.objectContaining({
@@ -1779,6 +1788,7 @@ describe("HttpHostClient authentication and onboarding", () => {
       harnessInstanceId: codexHarnessId,
       modelSelection,
     });
+    await vi.waitFor(() => expect(bodies).toHaveLength(2), { timeout: 1_000 });
     expect(bodies).toEqual([
       expect.objectContaining({ type: "thread.create" }),
       expect.objectContaining({
@@ -1793,6 +1803,29 @@ describe("HttpHostClient authentication and onboarding", () => {
       accessMode: "full-access",
       type: "execution.preferences.remember",
     });
+
+    // A choice made while a new Thread's remember is still out goes after it,
+    // so the earlier one cannot land last and take the choice back.
+    const late = Promise.withResolvers<void>();
+    held = late.promise;
+    bodies.length = 0;
+    await client.createThread({
+      accessMode: "full-access",
+      environmentId: localEnvironmentId,
+      harnessInstanceId: codexHarnessId,
+      modelSelection,
+    });
+    const chosen = client.rememberExecution({ accessMode: "auto" });
+    await vi.waitFor(() => expect(bodies).toHaveLength(2), { timeout: 1_000 });
+    held = Promise.resolve();
+    late.resolve();
+    await chosen;
+    expect(bodies.map((body) => body.accessMode ?? null)).toEqual([
+      "full-access",
+      "full-access",
+      "auto",
+    ]);
+    expect(client.getSnapshot().executionPreferences.accessMode).toBe("auto");
     client.dispose();
   });
 

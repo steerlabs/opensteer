@@ -51,6 +51,9 @@ export const move = LinearTransition.duration(duration.enter);
  */
 const bubbleSpring = { dampingRatio: 0.84, duration: 420 } as const;
 
+/** How long a sent bubble takes to settle in its place. */
+export const bubbleSettleMs = bubbleSpring.duration;
+
 /** What the reader just sent: it rises out of the composer into its place. */
 export function bubbleRise() {
   "worklet";
