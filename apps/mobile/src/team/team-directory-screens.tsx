@@ -345,11 +345,12 @@ export function TeamNewChannelScreen(
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<{ name: string; message: string } | null>(null);
   const teamName = snapshot.bootstrap?.teamName ?? "the team";
-  const offline = snapshot.connection !== "connected";
+  const offline = snapshot.unreachable;
   const words = channelNameFromInput(name);
   const joined = channelNamed(snapshot.sidebar?.channels.map((row) => row.channel) ?? [], name);
   const refused = refusal?.name === words ? refusal.message : null;
-  const ready = words !== "" && joined === null && refused === null && !offline && !busy;
+  const ready =
+    words !== "" && joined === null && refused === null && !offline && !busy && session !== null;
   const create = (): void => {
     if (!ready || session === null) return;
     setBusy(true);
@@ -501,7 +502,7 @@ export function TeamNewMessageScreen(props: TeamParams): ReactNode {
   const [chosen, setChosen] = useState<readonly UserId[]>([]);
   const [busy, setBusy] = useState(false);
   const teamName = snapshot.bootstrap?.teamName ?? "the team";
-  const offline = snapshot.connection !== "connected";
+  const offline = snapshot.unreachable;
   const ready = chosen.length > 0 && !offline && !busy && session !== null;
   const open = (): void => {
     if (!ready || session === null) return;
