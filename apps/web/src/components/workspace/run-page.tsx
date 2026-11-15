@@ -33,8 +33,9 @@ export function meteredConnection(): boolean {
 /**
  * Whether the person is writing in this conversation on a keyboard that takes
  * room from it, so a page opening now would push away the line they write. A
- * hardware keyboard takes none: only an on-screen one, or a field focused
- * where one comes up, defers the page.
+ * hardware keyboard takes none: only an on-screen one, or a field just focused
+ * where one comes up, defers the page. A keyboard seen closing ends that
+ * focus's claim, as Android's Back does without taking focus from the field.
  */
 export function useTypingHere(threadRef: RefObject<HTMLElement | null>, keyboardInset: number) {
   const touch = useMediaQuery("(pointer: coarse)");
@@ -62,6 +63,11 @@ export function useTypingHere(threadRef: RefObject<HTMLElement | null>, keyboard
       thread.removeEventListener("focusout", update);
     };
   }, [threadRef, touch]);
+  const keyboardUp = useRef(keyboardInset > 0);
+  useEffect(() => {
+    if (keyboardUp.current && keyboardInset === 0) setWriting(false);
+    keyboardUp.current = keyboardInset > 0;
+  }, [keyboardInset]);
   return keyboardInset > 0 || writing;
 }
 
@@ -107,6 +113,7 @@ export const RunPage = memo(function RunPage({
   const { acting, place } = useRunPlaceView(hostClient, runId, threadId);
   const [{ memory }] = useRunPageView(hostClient, threadId);
   const { usable, fresh } = usePlacePicture(place);
+  const [painted, setPainted] = useState(false);
   // Open is the person's or the rules' choice; folded here, the row only stands in for the head.
   const open = memory.run?.runId === runId && memory.run.intent === "open";
   const visible = place !== null && (shown === "page" || shown === "row");
@@ -138,7 +145,7 @@ export const RunPage = memo(function RunPage({
   const destination = place.destination;
   const site = place.site ? pageSiteLabel(place.site) : null;
   // A kept picture holds the page's place and size; it only steps back.
-  const stale = usable && !fresh;
+  const stale = usable && painted && !fresh;
   // Folded here, pressing it does what the folded picture does: open it when it fits.
   const unfoldsHere = !open && onUnfold !== null;
   return (
@@ -173,12 +180,13 @@ export const RunPage = memo(function RunPage({
             <PlacePicture
               enabled
               hostClient={hostClient}
+              onPainted={setPainted}
               place={place}
               threadId={threadId}
               usable={usable}
             />
           </span>
-          {usable ? null : <PlaceGlyph kind={place.kind} />}
+          {usable && painted ? null : <PlaceGlyph kind={place.kind} />}
         </span>
         {asPage ? null : (
           <>

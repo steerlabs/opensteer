@@ -16,21 +16,45 @@ import {
   type ReactNode,
 } from "react";
 import {
+  drawPicture,
   knownPhoneDisplayDecoding,
   phoneDisplayDecoding,
   PhoneDisplayPicture,
 } from "../phone-display-media.js";
 
+/**
+ * The last picture a decoder drew, kept across a gap in the display binding so
+ * a canvas mounted in the gap, such as the form the place folds into, draws
+ * it at once instead of waiting for the next keyframe.
+ */
+class KeptPicture {
+  #held: ReturnType<PhoneDisplayPicture["takePicture"]> = null;
+
+  hold(next: ReturnType<PhoneDisplayPicture["takePicture"]>): void {
+    if (this.#held?.picture !== next?.picture) this.#held?.picture.close();
+    this.#held = next;
+  }
+
+  paint(canvas: HTMLCanvasElement): boolean {
+    const held = this.#held;
+    if (!held) return false;
+    drawPicture(canvas, held.picture, held.width, held.height);
+    return true;
+  }
+}
+
 interface RunPlacePictures {
   readonly picture: RunPlacePicture;
   readonly display: RunPlaceDisplay | null;
   readonly media: PhoneDisplayPicture | null;
+  readonly kept: KeptPicture | null;
 }
 
 const RunPlacePicturesContext = createContext<RunPlacePictures>({
   picture: emptyRunPlacePicture,
   display: null,
   media: null,
+  kept: null,
 });
 
 /** The conversation's Run place picture, as its pane-level owner holds it. */
@@ -46,12 +70,15 @@ export function useRunPlacePictures(): RunPlacePictures {
  */
 export function RunPlacePictureScope({
   children,
+  decoding,
   enabled,
   hostClient,
   picture,
   threadId,
 }: {
   readonly children: ReactNode;
+  /** How this browser decodes a Mac app or phone; null while unknown or where it cannot. */
+  readonly decoding: HardwareAcceleration | null;
   /** Some form of the place is on screen. */
   readonly enabled: boolean;
   readonly hostClient: HostClient;
@@ -59,8 +86,8 @@ export function RunPlacePictureScope({
   readonly threadId: string;
 }) {
   const display = useRunPlaceDisplay(hostClient, threadId, enabled ? picture.placeKey : null);
-  const decoding = useDecoding(display !== null);
   const [media, setMedia] = useState<PhoneDisplayPicture | null>(null);
+  const [kept] = useState(() => new KeptPicture());
   const usable = useRef(picture.usable);
   usable.current = picture.usable;
   const placeKey = picture.placeKey;
@@ -72,6 +99,8 @@ export function RunPlacePictureScope({
     const stop = current.subscribe(() => {
       const shown = current.getSnapshot().shown;
       if (shown) {
+        // Every canvas attached now shows this decoder's own picture.
+        kept.hold(null);
         drawn = true;
         reportRunPlacePicture(hostClient, threadId, placeKey, {
           kind: "drawn",
@@ -87,24 +116,34 @@ export function RunPlacePictureScope({
     return () => {
       stop();
       // A picture the owner still counts stays on screen until the next one draws over it.
+      if (usable.current) kept.hold(current.takePicture());
       current.dispose(usable.current);
       setMedia((held) => (held === current ? null : held));
     };
-  }, [decoding, display, hostClient, placeKey, threadId]);
+  }, [decoding, display, hostClient, kept, placeKey, threadId]);
+  // After the decoder's own cleanup, which may hand its picture over on the way out.
+  useEffect(() => () => kept.hold(null), [kept]);
   // Pixels the owner stopped counting leave the screen at once.
   const wasUsable = useRef(picture.usable);
   useLayoutEffect(() => {
-    if (wasUsable.current && !picture.usable) media?.clear();
+    if (wasUsable.current && !picture.usable) {
+      kept.hold(null);
+      media?.clear();
+    }
     wasUsable.current = picture.usable;
-  }, [media, picture.usable]);
+  }, [kept, media, picture.usable]);
   return (
-    <RunPlacePicturesContext value={{ picture, display, media }}>
+    <RunPlacePicturesContext value={{ picture, display, media, kept }}>
       {children}
     </RunPlacePicturesContext>
   );
 }
 
-function useDecoding(wanted: boolean) {
+/**
+ * Whether this browser can decode a Mac app's or phone's picture, asked once
+ * per page as soon as one might be shown: null while unknown or where it cannot.
+ */
+export function useDisplayDecoding(wanted: boolean) {
   const [decoding, setDecoding] = useState(knownPhoneDisplayDecoding);
   useEffect(() => {
     if (!wanted || decoding !== undefined) return;
@@ -121,24 +160,34 @@ function useDecoding(wanted: boolean) {
 
 /**
  * A Mac app's or phone's picture, drawn by the conversation's one decoder.
- * A Mac window is asked for no more pixels than this canvas shows.
+ * A Mac window is asked for no more pixels than this canvas shows. The owner
+ * counting a picture is not this canvas having one: until it draws, the
+ * canvas stays hidden and says it has nothing, so its frame keeps a cover.
  */
 export function RunPlaceCanvas({
   enabled,
   mac,
+  onPainted,
   usable,
 }: {
   readonly enabled: boolean;
   readonly mac: boolean;
+  readonly onPainted?: ((painted: boolean) => void) | undefined;
   readonly usable: boolean;
 }) {
-  const { display, media } = useRunPlacePictures();
+  const { display, kept, media } = useRunPlacePictures();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [painted, setPainted] = useState(false);
+  useLayoutEffect(() => {
+    if (!usable) setPainted(false);
+  }, [usable]);
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !media || !enabled) return;
-    return media.attach(canvas);
-  }, [enabled, media]);
+    if (!canvas || !enabled) return;
+    if (kept?.paint(canvas)) setPainted(true);
+    return media?.attach(canvas, () => setPainted(true));
+  }, [enabled, kept, media]);
+  useLayoutEffect(() => onPainted?.(painted), [onPainted, painted]);
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
     if (!mac || !enabled || !canvas || !display || typeof ResizeObserver === "undefined") return;
@@ -154,7 +203,7 @@ export function RunPlaceCanvas({
   }, [display, enabled, mac]);
   return (
     <canvas
-      className={usable ? "place-canvas" : "place-canvas place-canvas--hidden"}
+      className={usable && painted ? "place-canvas" : "place-canvas place-canvas--hidden"}
       ref={canvasRef}
     />
   );

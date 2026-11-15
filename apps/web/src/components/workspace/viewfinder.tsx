@@ -17,7 +17,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import {
-  getBrowserLastPicture,
+  browserTabPicture,
   pageSiteLabel,
   placeActivityPoint,
   runPlaceActing,
@@ -135,6 +135,7 @@ export const Viewfinder = memo(function Viewfinder({
   // Off screen or put away, it draws nothing; the conversation decides what is watched.
   const live = inView && conversationShown;
   const { usable, fresh } = usePlacePicture(place);
+  const [painted, setPainted] = useState(false);
   const name = placeName(place);
   return (
     <button
@@ -144,7 +145,7 @@ export const Viewfinder = memo(function Viewfinder({
         "viewfinder",
         place.kind === "browser" ? "" : "viewfinder--native",
         acting ? "viewfinder--acting" : "",
-        usable && !fresh ? "viewfinder--still" : "",
+        usable && painted && !fresh ? "viewfinder--still" : "",
       ]
         .filter(Boolean)
         .join(" ")}
@@ -168,11 +169,12 @@ export const Viewfinder = memo(function Viewfinder({
         <PlacePicture
           enabled={live}
           hostClient={hostClient}
+          onPainted={setPainted}
           place={place}
           threadId={threadId}
           usable={usable}
         />
-        {usable ? null : <PlaceGlyph kind={place.kind} />}
+        {usable && painted ? null : <PlaceGlyph kind={place.kind} />}
       </span>
     </button>
   );
@@ -202,17 +204,20 @@ export function usePlacePicture(place: RunPlaceView | null) {
 /**
  * A Run place's picture, filling the frame it is put in: the tab's frames
  * from the watch store, or the Mac app's or phone's from the conversation's
- * one decoder. It holds no watch of its own.
+ * one decoder. It holds no watch of its own. It says whether it has pixels
+ * on screen, which a newly drawn form lacks until its first picture arrives.
  */
 export function PlacePicture({
   enabled,
   hostClient,
+  onPainted,
   place,
   threadId,
   usable,
 }: {
   readonly enabled: boolean;
   readonly hostClient: HostClient;
+  readonly onPainted: (painted: boolean) => void;
   readonly place: RunPlaceView;
   readonly threadId: string;
   readonly usable: boolean;
@@ -224,6 +229,7 @@ export function PlacePicture({
         key={`${destination.sessionId}:${destination.tabId}`}
         enabled={enabled}
         hostClient={hostClient}
+        onPainted={onPainted}
         placeKey={place.placeKey}
         sessionId={destination.sessionId}
         tabId={destination.tabId}
@@ -233,7 +239,12 @@ export function PlacePicture({
     ) : null;
   return (
     <span className="viewfinder__native">
-      <RunPlaceCanvas enabled={enabled} mac={place.kind === "app"} usable={usable} />
+      <RunPlaceCanvas
+        enabled={enabled}
+        mac={place.kind === "app"}
+        onPainted={onPainted}
+        usable={usable}
+      />
     </span>
   );
 }
@@ -251,6 +262,7 @@ function useViewfinderContext() {
 function BrowserFinder({
   enabled,
   hostClient,
+  onPainted,
   placeKey,
   sessionId,
   tabId,
@@ -259,6 +271,7 @@ function BrowserFinder({
 }: {
   readonly enabled: boolean;
   readonly hostClient: HostClient;
+  readonly onPainted: (painted: boolean) => void;
   readonly placeKey: string;
   readonly sessionId: string;
   readonly tabId: string;
@@ -270,17 +283,30 @@ function BrowserFinder({
   const frameRef = useRef<HTMLSpanElement | null>(null);
   const imageRef = useRef<HTMLSpanElement | null>(null);
   const [shown, setShown] = useState(false);
+  // The conversation counts a picture either store kept, an opened page's included.
   useSyncExternalStore(
     useCallback(
-      (listener) => hostClient.browserWatchFrames.subscribe(sessionId, listener, tabId),
+      (listener) => {
+        const stops = [hostClient.browserWatchFrames, hostClient.browserFrames].map((frames) =>
+          frames.subscribe(sessionId, listener, tabId),
+        );
+        return () => stops.forEach((stop) => stop());
+      },
       [hostClient, sessionId, tabId],
     ),
     useCallback(
-      () => hostClient.browserWatchFrames.invalidationKey?.(sessionId, tabId) ?? 0,
+      () =>
+        JSON.stringify(
+          [hostClient.browserWatchFrames, hostClient.browserFrames].map(
+            (frames) => frames.invalidationKey?.(sessionId, tabId) ?? 0,
+          ),
+        ),
       [hostClient, sessionId, tabId],
     ),
   );
-  const cached = getBrowserLastPicture(hostClient.browserWatchFrames, sessionId, tabId);
+  const cached = browserTabPicture(hostClient, sessionId, tabId);
+  const painted = shown || cached !== null;
+  useLayoutEffect(() => onPainted(painted), [onPainted, painted]);
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);

@@ -40,10 +40,12 @@ import { useLayout } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
 import {
   ActingRing,
+  displayCapable,
   PictureCover,
   PlaceSurface,
   pictureRadius,
   pictureWords,
+  usePainted,
   useRunPlaceActing,
 } from "./live-place.js";
 
@@ -119,11 +121,14 @@ function PanePage(
   // As wide as the reading column and its gutters, so it lines up with the words under it.
   const column = useLayout().readingWidth + 2 * space[16];
   const yielding = props.yielding === true;
+  const runId = authorized ? props.runId : null;
+  const placed = useRunPlace(hostClient, runId);
   const run = useRunPage({
     hostClient,
     threadId,
-    runId: authorized ? props.runId : null,
+    runId,
     paneVisible: props.active,
+    displayCapable: displayCapable(placed),
     visible: props.active && foreground,
     typing: keyboard || yielding,
     scrolledUp: props.scrolledUp,
@@ -195,6 +200,7 @@ function BesideRow(props: SlotProps): ReactNode {
     threadId,
     entry?.runId ?? null,
     shown && props.active,
+    displayCapable(entry),
   );
   useEffect(() => {
     if (!shown) onInset(0);
@@ -246,6 +252,7 @@ const RunPagePanel = memo(function RunPagePanel(props: {
 }): ReactNode {
   const { destination, entry, onFold, onInset, page, picture, top } = props;
   const acting = useRunPlaceActing(props.hostClient, entry, props.threadId);
+  const [painted, setPainted] = usePainted(entry);
   const { title, site } = entry.data;
   const siteLabel = site ? pageSiteLabel(site) : null;
   const corner = page === null ? pictureRadius : page.fullWidth ? 0 : radius.md;
@@ -302,10 +309,16 @@ const RunPagePanel = memo(function RunPagePanel(props: {
             destination={destination}
             entry={entry}
             hostClient={props.hostClient}
+            onPainted={setPainted}
             sessionId={props.sessionId}
             threadId={props.threadId}
           />
-          <PictureCover entry={entry} glyph={page === null ? 15 : null} picture={picture} />
+          <PictureCover
+            entry={entry}
+            glyph={page === null ? 15 : null}
+            painted={painted}
+            picture={picture}
+          />
           {acting ? <ActingRing radius={corner} /> : null}
         </Animated.View>
         {page === null ? (

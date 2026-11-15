@@ -14,6 +14,7 @@ import { expect, it } from "vitest";
 import { sharedDisplayStreams, type DisplayFrame } from "../integrations/phone-display-stream.js";
 import { seedBrowserSession, replaceBrowserTabs } from "../test-support/browser-snapshot.js";
 import { BrowserWatchStore } from "./browser-watch.js";
+import { reconcileBrowserLastPictures } from "./browser-last-picture.js";
 import type { BrowserFrameStore, HostClient, HostSnapshot } from "./client.js";
 import type { WebSocketClient } from "./host-session-client.js";
 import { RunPlaceStore } from "./run-place.js";
@@ -194,6 +195,19 @@ function fixture(phone = true) {
       return socket;
     },
   } as unknown as HostClient;
+  const reconcilePictures = () => {
+    for (const frames of [client.browserWatchFrames, client.browserFrames])
+      reconcileBrowserLastPictures(
+        frames,
+        (sessionId, tabId) => session.browserTabs.sessionTab(sessionId, tabId)?.documentId,
+        (tabId) => {
+          const groupId = session.browserTabs.groupForTab(tabId);
+          return groupId ? session.browserTabs.group(groupId)?.sessionId : undefined;
+        },
+      );
+  };
+  reconcilePictures();
+  const stopPictures = session.browserTabs.subscribe(reconcilePictures);
   let sequence = 0;
   function enter(place: PlaceRef, id = runId) {
     const entry = PlaceEnteredEventViewSchema.parse({
@@ -220,6 +234,7 @@ function fixture(phone = true) {
       for (const listener of listeners) listener();
     },
     dispose() {
+      stopPictures();
       clearRunPlacePictures(client);
       sharedDisplayStreams(client).dispose();
       places.dispose();
@@ -232,7 +247,7 @@ function fixture(phone = true) {
 it("holds the real browser watch across forms, keeps sleeping pictures and aspect, and clears revoked pictures", () => {
   const f = fixture();
   f.enter(browserPlace);
-  const release = retainRunPlacePicture(f.client, threadId, runId);
+  const release = retainRunPlacePicture(f.client, threadId, runId, false);
   const read = () => runPlacePicture(f.client, threadId);
   try {
     const socket = f.sockets[0]!;
@@ -260,7 +275,7 @@ it("holds the real browser watch across forms, keeps sleeping pictures and aspec
       sessionId,
       tabs
         .sessionTabs(sessionId)
-        .map((tab) => (tab.id === tabId ? { ...tab, state: "suspended" } : tab)),
+        .map((tab) => (tab.id === tabId ? { ...tab, state: "suspended", documentId: null } : tab)),
     );
     expect(f.watch.get(sessionId, tabId).frame).toBeNull();
     expect(read()).toMatchObject({ usable: true, fresh: false, aspect: 4 / 3 });
@@ -286,7 +301,7 @@ it("holds the real browser watch across forms, keeps sleeping pictures and aspec
     release();
     const nextRun = createId("run");
     f.enter({ ...browserPlace, surfaceId: otherTabId }, nextRun);
-    const end = retainRunPlacePicture(f.client, threadId, nextRun);
+    const end = retainRunPlacePicture(f.client, threadId, nextRun, false);
     expect(read().aspect).toBeNull();
     end();
   } finally {
@@ -305,7 +320,7 @@ it.each(["phone", "app"] as const)(
         : { kind: "app", machineId, appKey: computerAppIdentityKey(app) };
     const key = placeIdentityKey(place);
     f.enter(place);
-    const release = retainRunPlacePicture(f.client, threadId, runId);
+    const release = retainRunPlacePicture(f.client, threadId, runId, true);
     const read = () => runPlacePicture(f.client, threadId);
     try {
       const socket = f.displays[0]!;
@@ -338,6 +353,21 @@ it.each(["phone", "app"] as const)(
       expect(socket.sent).toContainEqual({ type: "display.ack", sequence: 3 });
       sharedDisplayStreams(f.client).suspend(true);
       expect(read()).toMatchObject({ usable: true, fresh: false });
+      sharedDisplayStreams(f.client).suspend(false);
+      const next = f.displays[1]!;
+      next.open();
+      expect(read()).toMatchObject({ usable: true, fresh: false });
+      next.receive({
+        type: "display.state",
+        state: "live",
+        generation: 1,
+        width: 720,
+        height: 1280,
+      });
+      next.displayFrame(1);
+      expect(read()).toMatchObject({ usable: true, fresh: false });
+      reportRunPlacePicture(f.client, threadId, key, { kind: "drawn", width: 720, height: 1280 });
+      expect(read()).toMatchObject({ usable: true, fresh: true });
       reportRunPlacePicture(f.client, threadId, key, { kind: "cleared" });
       expect(read()).toMatchObject({ usable: false, fresh: false, aspect: 720 / 1280 });
       reportRunPlacePicture(f.client, threadId, "another-place", {
@@ -346,9 +376,6 @@ it.each(["phone", "app"] as const)(
         height: 1,
       });
       expect(read().usable).toBe(false);
-      sharedDisplayStreams(f.client).suspend(false);
-      const next = f.displays[1]!;
-      next.open();
       reportRunPlacePicture(f.client, threadId, key, { kind: "drawn", width: 720, height: 1280 });
       next.close(4003);
       reportRunPlacePicture(f.client, threadId, key, { kind: "drawn", width: 720, height: 1280 });
@@ -362,3 +389,100 @@ it.each(["phone", "app"] as const)(
     }
   },
 );
+
+it("keeps the same sleeping tab's picture through a replacement session and fences revocation", () => {
+  const f = fixture();
+  f.enter(browserPlace);
+  const release = retainRunPlacePicture(f.client, threadId, runId, false);
+  try {
+    f.sockets[0]!.open();
+    f.sockets[0]!.browserFrame();
+    const tabs = f.client.browserTabs;
+    const rows = tabs.sessionTabs(sessionId);
+    replaceBrowserTabs(
+      tabs,
+      sessionId,
+      rows.map((tab) => ({ ...tab, state: "suspended", documentId: null })),
+    );
+    const replacement = BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000002");
+    replaceBrowserTabs(
+      tabs,
+      sessionId,
+      rows.map((tab) => ({
+        ...tab,
+        sessionId: replacement,
+        state: "suspended",
+        documentId: null,
+      })),
+    );
+    const group = tabs.group(sessionId)!;
+    tabs.applyGroups({ op: "begin", generation: "replacement" });
+    tabs.applyGroups({ op: "rows", rows: [{ ...group, sessionId: replacement }] });
+    tabs.applyGroups({ op: "end", revision: 0, count: 1, meta: {} });
+    f.watch.reconcile(
+      () => false,
+      (session) => session === replacement,
+    );
+    expect(runPlacePicture(f.client, threadId)).toMatchObject({ usable: true, fresh: false });
+    expect(f.sockets).toHaveLength(1);
+    f.watch.reconcile(
+      () => false,
+      () => false,
+    );
+    expect(runPlacePicture(f.client, threadId)).toMatchObject({ usable: false, fresh: false });
+  } finally {
+    release();
+    f.dispose();
+  }
+});
+
+it.each(["phone", "app"] as const)("holds no %s display until decoding is available", (kind) => {
+  const f = fixture(kind === "phone");
+  const place: PlaceRef =
+    kind === "phone"
+      ? { kind: "phone", machineId, display: "main" }
+      : { kind: "app", machineId, appKey: computerAppIdentityKey(app) };
+  f.enter(place);
+  const incapable = retainRunPlacePicture(f.client, threadId, runId, false);
+  let capable = () => {};
+  try {
+    expect(f.displays).toHaveLength(0);
+    expect(attachRunPlaceDisplay(f.client, threadId, placeIdentityKey(place))).toBeNull();
+    capable = retainRunPlacePicture(f.client, threadId, runId, true);
+    expect(f.displays).toHaveLength(1);
+    const socket = f.displays[0]!;
+    socket.open();
+    capable();
+    expect(socket.readyState).toBe(3);
+    expect(attachRunPlaceDisplay(f.client, threadId, placeIdentityKey(place))).toBeNull();
+  } finally {
+    capable();
+    incapable();
+    f.dispose();
+  }
+});
+
+it("requests a decodable picture after a delayed decoder attaches, coalescing repeated requests", () => {
+  const f = fixture();
+  const place: PlaceRef = { kind: "phone", machineId, display: "main" };
+  f.enter(place);
+  const release = retainRunPlacePicture(f.client, threadId, runId, true);
+  try {
+    const socket = f.displays[0]!;
+    socket.open();
+    const display = attachRunPlaceDisplay(f.client, threadId, placeIdentityKey(place))!;
+    socket.displayFrame(1);
+    const requests = () =>
+      socket.sent.filter((message) => message.type === "display.keyframe").length;
+    const before = requests();
+    const stop = display.onFrame((frame) => frame.done());
+    expect(requests()).toBe(before + 1);
+    display.requestKeyframe();
+    expect(requests()).toBe(before + 1);
+    stop();
+    display.release();
+  } finally {
+    release();
+    f.dispose();
+  }
+});

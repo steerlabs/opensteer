@@ -300,7 +300,8 @@ type PictureLease = Pick<
 export class PhoneDisplayPicture {
   readonly #lease: PictureLease;
   readonly #decoder: PhoneDisplayDecoder;
-  readonly #canvases = new Set<HTMLCanvasElement>();
+  /** Each canvas drawn into, and what to tell when it is. */
+  readonly #canvases = new Map<HTMLCanvasElement, (() => void) | undefined>();
   readonly #listeners = new Set<() => void>();
   readonly #unsubscribe: () => void;
   #latest: {
@@ -356,10 +357,30 @@ export class PhoneDisplayPicture {
   };
 
   /** Draws into this canvas from now on, starting with the current picture. */
-  attach(canvas: HTMLCanvasElement): () => void {
-    this.#canvases.add(canvas);
+  attach(canvas: HTMLCanvasElement, drawn?: () => void): () => void {
+    this.#canvases.set(canvas, drawn);
     if (this.#latest) this.#requestDraw();
     return () => this.#canvases.delete(canvas);
+  }
+
+  /**
+   * Hands over the newest decoded picture, which the caller must close: the
+   * picture can then outlive this decoder and be drawn into a canvas it never knew.
+   */
+  takePicture(): {
+    readonly picture: VideoFrame;
+    readonly width: number;
+    readonly height: number;
+  } | null {
+    const latest = this.#latest;
+    this.#latest = null;
+    return (
+      latest && {
+        picture: latest.picture,
+        width: latest.header.width,
+        height: latest.header.height,
+      }
+    );
   }
 
   /** Nothing of the phone stays on screen, and nothing in flight is drawn later. */
@@ -369,7 +390,7 @@ export class PhoneDisplayPicture {
     this.#latest = null;
     if (this.#drawRequest !== null) cancelAnimationFrame(this.#drawRequest);
     this.#drawRequest = null;
-    for (const canvas of this.#canvases)
+    for (const canvas of this.#canvases.keys())
       canvas.getContext("2d", { alpha: false })?.clearRect(0, 0, canvas.width, canvas.height);
     this.#update({ shown: null, stale: false });
   }
@@ -432,14 +453,8 @@ export class PhoneDisplayPicture {
     const latest = this.#latest;
     if (!latest) return;
     const { width, height, generation } = latest.header;
-    for (const canvas of this.#canvases) {
-      if (canvas.width !== width || canvas.height !== height) {
-        canvas.width = width;
-        canvas.height = height;
-      }
-      // The header's size is the picture input is normalised to; draw to exactly it.
-      canvas.getContext("2d", { alpha: false })?.drawImage(latest.picture, 0, 0, width, height);
-    }
+    for (const canvas of this.#canvases.keys()) drawPicture(canvas, latest.picture, width, height);
+    for (const drawn of this.#canvases.values()) drawn?.();
     const shown = this.#state.shown;
     const stale = this.#state.stale && latest.connection !== this.#current;
     if (
@@ -463,6 +478,20 @@ export class PhoneDisplayPicture {
     this.#state = next;
     for (const listener of this.#listeners) listener();
   }
+}
+
+/** The header's size is the picture input is normalised to; it draws to exactly that. */
+export function drawPicture(
+  canvas: HTMLCanvasElement,
+  picture: CanvasImageSource,
+  width: number,
+  height: number,
+): void {
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  canvas.getContext("2d", { alpha: false })?.drawImage(picture, 0, 0, width, height);
 }
 
 const pictures = new WeakMap<

@@ -684,6 +684,10 @@ describe("a conversation's page above it at phone width", () => {
       this.viewport!.height = window.innerHeight - 300;
       this.viewport!.dispatchEvent(new Event("resize"));
     },
+    close() {
+      this.viewport!.height = window.innerHeight;
+      this.viewport!.dispatchEvent(new Event("resize"));
+    },
     remove() {
       Reflect.deleteProperty(window, "visualViewport");
       this.viewport = null;
@@ -741,9 +745,8 @@ describe("a conversation's page above it at phone width", () => {
     expect(page() ?? folded(), "The page outlived its Run").toBeNull();
   });
 
-  it("a head with no room for the folded picture leaves the page its row, and Find under the name", async () => {
-    // A bar so narrow that only its sidebar button and name fit: whatever else
-    // is still drawn at its end runs past it.
+  /** A bar so narrow that only its sidebar button and name fit: whatever else is still drawn at its end runs past it. */
+  function narrowBar() {
     vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
       this: Element,
     ) {
@@ -754,6 +757,10 @@ describe("a conversation's page above it at phone width", () => {
         : 0;
       return DOMRect.fromRect({ x: 0, y: 0, width: 160 + end, height: 44 });
     });
+  }
+
+  it("a head with no room for the folded picture leaves the page its row, and Find under the name", async () => {
+    narrowBar();
     await opened();
     const place = await acts();
     await click(element(".run-page__handle"));
@@ -776,6 +783,46 @@ describe("a conversation's page above it at phone width", () => {
     expect(document.querySelector(".run-page__handle")).not.toBeNull();
     await click(element(".run-page__view"));
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
+  });
+
+  it("wider than a phone, a head with no room for the picture shows the place as its row", async () => {
+    narrowBar();
+    await mount(`/tasks/${waiting}`);
+    // A transcript that scrolls, so the reader is at its foot when the tab opens.
+    phoneGeometry();
+    const place = browserPlace("Coffee shortlist");
+    await act(async () => client.actInPlace(waiting, place.key));
+    await vi.waitFor(
+      () => expect(folded()?.closest("[data-yielded]"), "The head kept the picture").not.toBeNull(),
+      { timeout: 1500 },
+    );
+    const row = element(".run-page__view--row");
+    expect(document.querySelector(".run-page__handle")).toBeNull();
+    // The conversation still holds the picture the row shows.
+    await vi.waitFor(() => expect(row.querySelector(".viewfinder__glyph")).toBeNull(), {
+      timeout: 1500,
+    });
+    await click(row);
+    expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
+  });
+
+  it("on a touch screen, a keyboard put away without leaving the field lets the page open", async () => {
+    keyboard.install();
+    try {
+      await mount(`/tasks/${waiting}`, { width: 390, touch: true });
+      phoneGeometry();
+      await act(async () => element<HTMLElement>(".composer-dock [data-composer-input]").focus());
+      await act(async () => keyboard.open());
+      // Android's Back puts the keyboard away and leaves the field focused.
+      await act(async () => keyboard.close());
+      await acts();
+      await vi.waitFor(
+        () => expect(page(), "The page waited for a keyboard that had gone").not.toBeNull(),
+        { timeout: 1500 },
+      );
+    } finally {
+      keyboard.remove();
+    }
   });
 
   it.each([

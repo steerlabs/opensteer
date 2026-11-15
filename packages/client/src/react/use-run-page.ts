@@ -20,6 +20,7 @@ export interface RunPageInput extends Omit<RunPageMoment, "picture"> {
   readonly runId: string | null;
   /** Pane focus and coverage, independent of app background suspension. */
   readonly paneVisible: boolean;
+  readonly displayCapable: boolean;
   readonly room: { readonly height: number; readonly width: number } | null;
   readonly transcript?: number;
   readonly headHasRoom: boolean;
@@ -28,7 +29,13 @@ export interface RunPageInput extends Omit<RunPageMoment, "picture"> {
 export function useRunPage(input: RunPageInput) {
   const { hostClient, threadId, runId, visible } = input;
   const entry = useRunPlace(hostClient, runId);
-  const picture = useRunPlacePicture(hostClient, threadId, runId, input.paneVisible);
+  const picture = useRunPlacePicture(
+    hostClient,
+    threadId,
+    runId,
+    input.paneVisible,
+    input.displayCapable,
+  );
   const [view, update] = useRunPageView(hostClient, threadId);
   const moment: RunPageMoment = {
     visible,

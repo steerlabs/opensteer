@@ -1293,7 +1293,7 @@ function HeldRunPlace(props: {
   readonly runId: string;
   readonly threadId: string;
 }): null {
-  useRunPlacePicture(props.client, props.threadId, props.runId, true);
+  useRunPlacePicture(props.client, props.threadId, props.runId, true, true);
   return null;
 }
 

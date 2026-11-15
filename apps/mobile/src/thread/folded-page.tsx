@@ -17,6 +17,7 @@ import {
   PlaceSurface,
   pictureRadius,
   pictureWords,
+  usePainted,
   useRunPlaceActing,
 } from "./live-place.js";
 
@@ -63,6 +64,7 @@ function FoldedPicture(props: {
   // The picture the page itself would show: the conversation's pane holds it.
   const [{ picture }] = useRunPageView(hostClient, threadId);
   const acting = useRunPlaceActing(hostClient, entry, threadId);
+  const [painted, setPainted] = usePainted(entry);
   const { title, site } = entry.data;
   const siteLabel = site ? pageSiteLabel(site) : null;
   return (
@@ -84,10 +86,11 @@ function FoldedPicture(props: {
           destination={destination}
           entry={entry}
           hostClient={hostClient}
+          onPainted={setPainted}
           sessionId={sessionId}
           threadId={threadId}
         />
-        <PictureCover entry={entry} glyph={13} picture={picture} />
+        <PictureCover entry={entry} glyph={13} painted={painted} picture={picture} />
         {acting ? <ActingRing radius={pictureRadius} /> : null}
       </Animated.View>
     </Pressable>

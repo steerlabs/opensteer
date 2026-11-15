@@ -6,7 +6,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { createId, PlaceEnteredEventViewSchema } from "@opensteer/core";
 import type { HostClient, HostSnapshot } from "@opensteer/client/host";
-import { RunPlaceStore } from "@opensteer/client/host";
+import { RunPlaceStore, rememberBrowserLastPicture } from "@opensteer/client/host";
 import { LivePlace } from "./viewfinder.js";
 
 vi.mock("./workspace-context.js", () => ({
@@ -79,6 +79,7 @@ it("keeps the card and its canvas across independent inventories, Request waits 
     runPlace: store.get,
     subscribeRunPlace: store.subscribe,
     browserWatchFrames: { subscribe: () => () => {} },
+    browserFrames: { subscribe: () => () => {} },
     placeActivity: () => [],
     subscribePlaceActivity: () => () => {},
   } as unknown as HostClient;
@@ -144,4 +145,41 @@ it("keeps the card and its canvas across independent inventories, Request waits 
   expect(node.querySelector(".viewfinder__frame > .viewfinder__glyph")).not.toBeNull();
   await act(async () => store.end(runId));
   expect(node.querySelector(".viewfinder")).toBeNull();
+});
+
+it("restores a tab's picture that only the opened page kept", async () => {
+  const store = new RunPlaceStore();
+  store.accept(entry());
+  const snapshot = seedBrowserSnapshot({
+    connection: "connected",
+    session: "authenticated",
+    machines: [],
+    browserSessions: [],
+    runQueue: [{ id: runId, threadId, status: "running" }],
+  } as unknown as HostSnapshot);
+  const frames = () => ({ subscribe: () => () => {}, invalidationKey: () => 1 });
+  const client = {
+    get browserTabs() {
+      return snapshot.browserTabs!;
+    },
+    getSnapshot: () => snapshot,
+    subscribe: () => () => {},
+    runPlace: store.get,
+    subscribeRunPlace: store.subscribe,
+    browserWatchFrames: frames(),
+    browserFrames: frames(),
+    placeActivity: () => [],
+    subscribePlaceActivity: () => () => {},
+  } as unknown as HostClient;
+  rememberBrowserLastPicture(client.browserFrames, sessionId, surfaceId, {
+    data: new Uint8Array([1, 2, 3]),
+    header: { surfaceId, encoding: "jpeg", rasterWidth: 1280, rasterHeight: 800 },
+  } as unknown as Parameters<typeof rememberBrowserLastPicture>[3]);
+  const node = document.createElement("div");
+  document.body.append(node);
+  root = createRoot(node);
+  await act(async () =>
+    root!.render(<LivePlace hostClient={client} threadId={threadId} runId={runId} />),
+  );
+  expect(node.querySelector("img")?.getAttribute("src")).toMatch(/^data:image\/jpeg;base64,/u);
 });

@@ -5751,9 +5751,14 @@ export class HttpHostClient {
           this.#browserTargetAllowed(sessionId, surfaceId, asleep);
         reconcileBrowserTargets = () => {
           const document = (sessionId: string, tabId: string) =>
-            placeByKey(this.#snapshot, `browser:${sessionId}:${tabId}`)?.browser?.documentId;
-          reconcileBrowserLastPictures(this.browserWatchFrames, document);
-          reconcileBrowserLastPictures(this.browserFrames, document);
+            this.#browserTabs.sessionTab(sessionId, tabId)?.documentId;
+          const sessionForTab = (tabId: string) => {
+            const groupId = this.#browserTabs.groupForTab(tabId);
+            const group = groupId ? this.#browserTabs.group(groupId) : undefined;
+            return group && authorized(group.sessionId, tabId) ? group.sessionId : undefined;
+          };
+          reconcileBrowserLastPictures(this.browserWatchFrames, document, sessionForTab);
+          reconcileBrowserLastPictures(this.browserFrames, document, sessionForTab);
           if (this.#snapshot.connection === "connected")
             this.#placeActivity.reconcile(
               (key) => placeByKey(this.#snapshot, key)?.availability === "ready",

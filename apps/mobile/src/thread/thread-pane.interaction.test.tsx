@@ -449,7 +449,10 @@ vi.mock("@expo/ui/community/menu", () => ({
     </div>
   ),
 }));
-vi.mock("../computers/phone-display-native.js", () => ({ nativePictureView: () => null }));
+vi.mock("../computers/phone-display-native.js", () => ({
+  macWindowVideoSupported: () => true,
+  nativePictureView: () => null,
+}));
 vi.mock("../computers/phone-display.js", () => ({
   ComputerDisplay: (props: {
     active: boolean;
@@ -5530,6 +5533,10 @@ describe("the Run's page above the conversation", () => {
       expect(pageSize(container)?.width).toBe(
         Math.floor((pageSize(container)!.height! * 300) / 600),
       );
+      // The page's own view starts blank: it stays covered until it draws, never an empty frame.
+      expect(original!.querySelector('[data-testid="run-page-waiting"]')).not.toBeNull();
+      await act(() => harness.displayReport?.({ kind: "drawn", width: 300, height: 600 }));
+      expect(original!.querySelector('[data-testid="run-page-waiting"]')).toBeNull();
       const preview = original!.querySelector("[data-native-preview]");
       expect(JSON.parse(preview!.getAttribute("data-source")!)).toEqual(source);
       const renders = harness.nativeRenders;

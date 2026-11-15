@@ -90,7 +90,7 @@ import { ConversationHeader } from "./workspace/conversation-header.js";
 import { useBarYield } from "./workspace/bar-yield.js";
 import { destinationPlaceKey } from "./workspace/navigation.js";
 import { meteredConnection, RunPage, useRoom, useTypingHere } from "./workspace/run-page.js";
-import { RunPlacePictureScope } from "./workspace/run-place-picture.js";
+import { RunPlacePictureScope, useDisplayDecoding } from "./workspace/run-place-picture.js";
 import { LivePlace, useRunPlaceView } from "./workspace/viewfinder.js";
 import { useWorkspace } from "./workspace/workspace-context.js";
 import { TaskMark, TaskState, taskStateWords } from "./workspace/task-mark.js";
@@ -961,17 +961,17 @@ function ThreadView({
   const pageVisible = usePageVisible();
   const room = useRoom(threadRef, pageHere && runPlace !== null);
   const typing = useTypingHere(threadRef, keyboardInset);
-  // Some form of the place is drawn: the page or its row here, the head's
-  // picture while the bar has room for it, or the sheet's beside a place.
-  const pictureShown =
-    (!work || phone || workspaceDock.open) &&
-    !placeInMiddle &&
-    (pageHere || phoneStage || !pictureYielded);
+  // The owner opens a Mac app's or phone's stream only once a decoder here can draw it.
+  const decoding = useDisplayDecoding(runPlace !== null && runPlace.kind !== "browser");
+  // Some form of the place is drawn: the page or its row here, or the head's
+  // picture, which yields to the row where the bar has no room for it.
+  const pictureShown = (!work || phone || workspaceDock.open) && !placeInMiddle;
   const runPage = useRunPage({
     hostClient,
     threadId: thread.id,
     runId,
     paneVisible: pictureShown,
+    displayCapable: decoding !== null,
     // Only where a page can stand is its opening something the person sees.
     visible: pageHere && pageVisible,
     typing,
@@ -1057,6 +1057,7 @@ function ThreadView({
   return (
     <PersonalReferences client={hostClient} threadId={thread.id}>
       <RunPlacePictureScope
+        decoding={decoding}
         enabled={pictureShown}
         hostClient={hostClient}
         picture={runPage.picture}
@@ -1108,7 +1109,10 @@ function ThreadView({
                 />
               ) : null}
 
-              {!pageHere || runPage.entry === null ? null : (
+              {/* Wider than a phone no page opens here, but the row still stands in for a yielded head. */}
+              {runPage.entry === null ||
+              !pictureShown ||
+              !(pageHere || runPage.shown === "row") ? null : (
                 <RunPage
                   focusPage={focusPage}
                   foldedHere={pictureYielded}

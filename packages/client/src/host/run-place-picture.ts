@@ -13,29 +13,21 @@ import type { HostClient } from "./client.js";
 import { hostSnapshotStore } from "./host-snapshot-store.js";
 import { runPlaceDestination, runPlaceSessionId } from "./run-place.js";
 import type { NativeViewerSource } from "./surfaces.js";
-
-export interface RunPlacePicture {
-  readonly placeKey: string | null;
-  readonly usable: boolean;
-  readonly fresh: boolean;
-  readonly aspect: number | null;
-}
-
-export type RunPlacePictureReport =
-  | { readonly kind: "drawn"; readonly width: number; readonly height: number }
-  | { readonly kind: "cleared" };
+import {
+  emptyRunPlacePicture,
+  type RunPlacePicture,
+  type RunPlacePictureReport,
+} from "./run-place-picture-value.js";
+export {
+  emptyRunPlacePicture,
+  type RunPlacePicture,
+  type RunPlacePictureReport,
+} from "./run-place-picture-value.js";
 
 export type RunPlaceDisplay = Pick<
   DisplayLease,
   "getSnapshot" | "subscribe" | "onFrame" | "requestKeyframe" | "viewport" | "release"
 >;
-
-export const emptyRunPlacePicture: RunPlacePicture = {
-  placeKey: null,
-  usable: false,
-  fresh: false,
-  aspect: null,
-};
 
 class PictureOwner {
   readonly listeners = new Set<() => void>();
@@ -43,6 +35,7 @@ class PictureOwner {
   displayTarget: ComputerDisplayTarget | null = null;
   #runId: string | null = null;
   #holds = 0;
+  #displayHolds = 0;
   #entry: PlaceEnteredEventView | null = null;
   #stops: (() => void)[] = [];
   #streamStops: (() => void)[] = [];
@@ -51,6 +44,7 @@ class PictureOwner {
   #authority: string | null = null;
   #display: DisplayLease | null = null;
   #drawn = false;
+  #presented = false;
   #reconciling = false;
   readonly #decoders = new Set<RunPlaceDisplay>();
 
@@ -81,7 +75,7 @@ class PictureOwner {
     for (const listener of this.listeners) listener();
   }
 
-  retain(runId: string | null): () => void {
+  retain(runId: string | null, displayCapable: boolean): () => void {
     if (this.#holds > 0 && this.#runId !== runId)
       throw new Error("A conversation can hold only one Run picture.");
     if (this.#runId !== runId) {
@@ -94,13 +88,18 @@ class PictureOwner {
         this.client.browserTabs.subscribe(this.#reconcile),
         ...(runId === null ? [] : [this.client.subscribeRunPlace(runId, this.#reconcile)]),
       ];
-      this.#reconcile();
     }
+    if (displayCapable) this.#displayHolds++;
+    this.#reconcile();
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      if (--this.#holds > 0) return;
+      if (displayCapable) this.#displayHolds--;
+      if (--this.#holds > 0) {
+        this.#reconcile();
+        return;
+      }
       for (const stop of this.#stops.splice(0)) stop();
       this.#stopStream();
       this.#set({ fresh: false });
@@ -116,6 +115,7 @@ class PictureOwner {
       this.#source = null;
       this.#authority = null;
       this.#drawn = false;
+      this.#presented = false;
       this.#set(emptyRunPlacePicture);
     } finally {
       this.#reconciling = reconciling;
@@ -124,6 +124,7 @@ class PictureOwner {
 
   #stopStream(): void {
     this.#streamKey = null;
+    this.#presented = false;
     for (const stop of this.#streamStops.splice(0)) stop();
     for (const decoder of this.#decoders) decoder.release();
     this.#display?.release();
@@ -158,7 +159,10 @@ class PictureOwner {
         const destination = runPlaceDestination(entry, snapshot);
         if (destination?.kind !== "browser") return;
         const { sessionId, tabId } = destination;
-        const tab = this.client.browserTabs.sessionTab(sessionId, tabId);
+        const groupId = this.client.browserTabs.groupForTab(tabId);
+        const tab = groupId
+          ? this.client.browserTabs.tab(groupId, tabId)
+          : this.client.browserTabs.sessionTab(sessionId, tabId);
         const awake = tab === undefined || tab.state === "live";
         const streamKey = JSON.stringify([sessionId, tabId, awake]);
         if (streamKey !== this.#streamKey) {
@@ -192,7 +196,10 @@ class PictureOwner {
         this.#authority = authority;
       }
       const scope = computerDisplayScope(snapshot, this.#source);
-      const target = scope && authority && this.#source ? { scope, source: this.#source } : null;
+      const target =
+        this.#displayHolds > 0 && scope && authority && this.#source
+          ? { scope, source: this.#source }
+          : null;
       const streamKey = target ? computerDisplayTargetKey(target) : null;
       if (streamKey !== this.#streamKey) {
         this.#stopStream();
@@ -229,11 +236,13 @@ class PictureOwner {
 
   readonly #displayPicture = (): void => {
     const snapshot = this.#display?.getSnapshot();
+    if (snapshot?.connection !== "open") this.#presented = false;
     if (snapshot?.connection === "closed" || this.#authority === null) this.#drawn = false;
     this.#set({
       usable: this.#drawn,
       fresh:
         this.#drawn &&
+        this.#presented &&
         snapshot?.connection === "open" &&
         computerDisplayStatus(snapshot, this.#entry?.data.place.kind === "phone").reason === null,
     });
@@ -245,11 +254,14 @@ class PictureOwner {
       this.#entry?.data.place.kind === "browser" ||
       this.#holds === 0 ||
       this.#authority === null ||
-      this.#display?.getSnapshot().connection === "closed"
+      this.#display === null ||
+      this.#display.getSnapshot().connection === "closed"
     )
       return;
-    if (report.kind === "cleared") this.#drawn = false;
-    else {
+    if (report.kind === "cleared") {
+      this.#drawn = false;
+      this.#presented = false;
+    } else {
       if (
         !Number.isFinite(report.width) ||
         !Number.isFinite(report.height) ||
@@ -258,6 +270,7 @@ class PictureOwner {
       )
         return;
       this.#drawn = true;
+      this.#presented = this.#display.getSnapshot().connection === "open";
       this.#set({ aspect: report.width / report.height });
     }
     this.#displayPicture();
@@ -270,7 +283,11 @@ class PictureOwner {
     const decoder: RunPlaceDisplay = {
       getSnapshot: lease.getSnapshot,
       subscribe: lease.subscribe,
-      onFrame: lease.onFrame,
+      onFrame: (listener) => {
+        const stop = lease.onFrame(listener);
+        lease.requestKeyframe();
+        return stop;
+      },
       viewport: lease.viewport,
       requestKeyframe: lease.requestKeyframe,
       release: () => {
@@ -317,8 +334,9 @@ export function retainRunPlacePicture(
   client: HostClient,
   threadId: string,
   runId: string | null,
+  displayCapable: boolean,
 ): () => void {
-  return ownerFor(client, threadId).retain(runId);
+  return ownerFor(client, threadId).retain(runId, displayCapable);
 }
 
 export function reportRunPlacePicture(

@@ -11,11 +11,12 @@ import {
 import { useHostSelector, useRunPlaceDisplay } from "@opensteer/client/react";
 import type { PlaceEnteredEventView } from "@opensteer/core";
 import { placeIdentityKey } from "@opensteer/protocol";
-import { useCallback, type ReactNode } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import { Image, StyleSheet, View } from "react-native";
 import Animated from "react-native-reanimated";
 import { BrowserStream } from "../browser/browser-stream.js";
 import { ComputerDisplay } from "../computers/phone-display.js";
+import { macWindowVideoSupported } from "../computers/phone-display-native.js";
 import { color, radius, space } from "../theme.js";
 import { appear, dim, exit } from "../ui/motion.js";
 import { AppText } from "../ui/primitives.js";
@@ -26,6 +27,11 @@ interface SurfaceProps {
   readonly destination: SurfaceDestination | null;
   readonly entry: PlaceEnteredEventView;
   readonly hostClient: HostClient;
+  /**
+   * Whether this view has drawn the place since it mounted. A Mac app's or
+   * phone's view starts blank however long the conversation has had a picture.
+   */
+  readonly onPainted: (painted: boolean) => void;
   /** The Run's session in a Mac app or phone. */
   readonly sessionId: string | null;
   readonly threadId: string;
@@ -42,10 +48,24 @@ const surfaces: Record<
   (props: SurfaceProps) => ReactNode
 > = { browser: BrowserSurface, app: ComputerSurface, phone: ComputerSurface };
 
+/** Whether this binary can decode the place's picture; every binary decodes a phone's. */
+export function displayCapable(entry: PlaceEnteredEventView | null): boolean {
+  return entry?.data.place.kind !== "app" || macWindowVideoSupported();
+}
+
 /** The live picture of the place a conversation's Run is in, by the kind of place. */
 export function PlaceSurface(props: SurfaceProps): ReactNode {
   const Surface = surfaces[props.entry.data.place.kind];
   return <Surface {...props} />;
+}
+
+/**
+ * Whether a form's own view has drawn its place: a tab's view restores the
+ * picture the conversation kept as it mounts, a Mac app's or phone's only
+ * once its first frame decodes.
+ */
+export function usePainted(entry: PlaceEnteredEventView) {
+  return useState(entry.data.place.kind === "browser");
 }
 
 function BrowserSurface(props: SurfaceProps): ReactNode {
@@ -82,14 +102,16 @@ function BrowserSurface(props: SurfaceProps): ReactNode {
 }
 
 function ComputerSurface(props: SurfaceProps): ReactNode {
-  const { entry, hostClient, sessionId, threadId } = props;
+  const { entry, hostClient, onPainted, sessionId, threadId } = props;
   const place = entry.data.place;
   const placeKey = placeIdentityKey(place);
   const display = useRunPlaceDisplay(hostClient, threadId, placeKey);
   const report = useCallback(
-    (picture: RunPlacePictureReport) =>
-      reportRunPlacePicture(hostClient, threadId, placeKey, picture),
-    [hostClient, placeKey, threadId],
+    (picture: RunPlacePictureReport) => {
+      onPainted(picture.kind === "drawn");
+      reportRunPlacePicture(hostClient, threadId, placeKey, picture);
+    },
+    [hostClient, onPainted, placeKey, threadId],
   );
   if (sessionId === null || place.kind === "browser") return null;
   return (
@@ -114,15 +136,18 @@ function ComputerSurface(props: SurfaceProps): ReactNode {
  * What lies over a place's picture, the same in every form: nothing while it
  * is live, and the last picture dimmed a little while it waits for the next.
  * With no picture at all, a small form shows the place's kind; a page keeps
- * its size and names the place in it, over whatever it last drew.
+ * its size and names the place in it, over whatever it last drew. A form
+ * whose own view has not drawn yet is covered as one with no picture.
  */
 export function PictureCover(props: {
   readonly entry: PlaceEnteredEventView;
+  readonly painted: boolean;
   readonly picture: RunPlacePicture;
   /** The glyph's size in a small form; null for a page. */
   readonly glyph: number | null;
 }): ReactNode {
-  const { entry, picture } = props;
+  const { entry } = props;
+  const picture = props.painted ? props.picture : { ...props.picture, usable: false };
   const kind = entry.data.place.kind;
   if (!picture.usable && props.glyph !== null) return <PlaceGlyph kind={kind} size={props.glyph} />;
   if (picture.usable && picture.fresh) return null;

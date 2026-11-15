@@ -9,7 +9,7 @@ import { RunnerIdSchema } from "@opensteer/core";
 import type { HostSnapshot } from "@opensteer/client/host";
 import { useRunPlacePicture } from "@opensteer/client/react";
 import { LivePlace } from "./workspace/viewfinder.js";
-import { RunPlacePictureScope } from "./workspace/run-place-picture.js";
+import { RunPlacePictureScope, useDisplayDecoding } from "./workspace/run-place-picture.js";
 import type { WebSocketClient } from "@opensteer/client/host";
 import type { MachineSummary } from "@opensteer/protocol";
 
@@ -1265,11 +1265,28 @@ it.each([
   "protected",
 ])("keeps live native pixels through binding recovery and clears %s", async (refusal) => {
   // The pane holds the picture; the folded picture only reads it, as in a conversation.
-  function Pane({ runId, threadId }: { readonly runId: string; readonly threadId: string }) {
-    const picture = useRunPlacePicture(client, threadId, runId, true);
+  function Pane({
+    folded = false,
+    runId,
+    threadId,
+  }: {
+    /** A second form of the place, as one folding into the head mounts. */
+    readonly folded?: boolean;
+    readonly runId: string;
+    readonly threadId: string;
+  }) {
+    const decoding = useDisplayDecoding(true);
+    const picture = useRunPlacePicture(client, threadId, runId, true, decoding !== null);
     return (
-      <RunPlacePictureScope enabled hostClient={client} picture={picture} threadId={threadId}>
+      <RunPlacePictureScope
+        decoding={decoding}
+        enabled
+        hostClient={client}
+        picture={picture}
+        threadId={threadId}
+      >
         <LivePlace hostClient={client} runId={runId} threadId={threadId} />
+        {folded ? <LivePlace hostClient={client} runId={runId} threadId={threadId} /> : null}
       </RunPlacePictureScope>
     );
   }
@@ -1341,6 +1358,12 @@ it.each([
     expect(sockets.at(-1)?.closed).toBe(true);
     expect(node.querySelector(".viewfinder--still")).not.toBeNull();
   }
+  // A form mounted with no stream to decode draws the picture the conversation kept, at once.
+  await act(async () => root!.render(<Pane folded runId={runId} threadId={threadId} />));
+  const formed = node.querySelectorAll("canvas")[1];
+  expect(formed?.width).toBe(360);
+  expect(formed?.classList.contains("place-canvas--hidden")).toBe(false);
+  expect(node.querySelector(".viewfinder__glyph")).toBeNull();
   if (refusal === "denial-after-release") {
     await move([denied]);
     expect(node.querySelector(".place-canvas--hidden")).not.toBeNull();

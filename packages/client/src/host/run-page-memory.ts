@@ -1,6 +1,6 @@
 import type { HostClient } from "./client.js";
 import { freshRunPageMemory, type RunPageMemory, type RunPageShown } from "./run-page.js";
-import { emptyRunPlacePicture, type RunPlacePicture } from "./run-place-picture.js";
+import { emptyRunPlacePicture, type RunPlacePicture } from "./run-place-picture-value.js";
 
 /** The edge between the page and the conversation, which folds the page. */
 export const runPageHandleHeight = 20;

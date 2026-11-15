@@ -14,6 +14,7 @@ export function useRunPlacePicture(
   threadId: string,
   runId: string | null,
   visible: boolean,
+  displayCapable: boolean,
 ) {
   const subscribe = useCallback(
     (listener: () => void) => subscribeRunPlacePicture(client, threadId, listener),
@@ -25,8 +26,8 @@ export function useRunPlacePicture(
   );
   const picture = useSyncExternalStore(subscribe, get, get);
   useEffect(
-    () => (visible ? retainRunPlacePicture(client, threadId, runId) : undefined),
-    [client, threadId, runId, visible],
+    () => (visible ? retainRunPlacePicture(client, threadId, runId, displayCapable) : undefined),
+    [client, threadId, runId, visible, displayCapable],
   );
   return picture;
 }
