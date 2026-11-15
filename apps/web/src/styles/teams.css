@@ -4,7 +4,6 @@
 
 /* ---- Sidebar ---- */
 
-.teams-nav,
 .team-side__invite,
 .team-side__action,
 .teams-setup-entry {
@@ -24,21 +23,13 @@
     color var(--duration-fast) var(--ease-out);
 }
 
-.teams-nav {
-  flex: none;
-  margin-bottom: var(--space-2);
-}
-
-.teams-nav:hover,
 .team-side__invite:hover,
 .team-side__action:hover,
-.teams-setup-entry:hover,
-.teams-nav[aria-current="page"] {
+.teams-setup-entry:hover {
   background-color: var(--fill-quiet);
   color: var(--text);
 }
 
-.teams-nav > svg,
 .team-side__invite > svg,
 .team-side__action > svg {
   width: 16px;

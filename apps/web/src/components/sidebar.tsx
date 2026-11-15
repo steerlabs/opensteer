@@ -12,6 +12,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -96,6 +97,7 @@ import { useHereId } from "./computers/here.js";
 import { useTaskDirectory, type TaskDirectory } from "./workspace/task-directory.js";
 import { useTeams } from "../team/team-attachments.js";
 import type { SegmentBadge } from "./team/team-sidebar.js";
+import { chooseSide, type SidebarSide, type SidebarSides } from "@opensteer/client/team";
 import {
   useHighlightMatch,
   useWorkspace,
@@ -277,7 +279,8 @@ export function Sidebar({
   const directory = useTaskDirectory(hostClient, openRowThreadId);
   const { list } = directory;
   const tasksList = useRef<HTMLUListElement | null>(null);
-  const [side, setSide] = useSidebarSide(deploymentId, userId, pathname);
+  const [sides, setSide] = useSidebarSide(deploymentId, userId, pathname);
+  const { side } = sides;
   // Entering a team the person just created or joined is their choice of side.
   const enteredTeam = enteredTeamOf(locationState);
   useEffect(() => {
@@ -738,12 +741,7 @@ export function Sidebar({
           </button>
         )}
       </div>
-      <TasksBadgeSwitch
-        hostClient={hostClient}
-        onNavigate={onCloseMobile}
-        onSide={setSide}
-        side={side}
-      />
+      <TasksBadgeSwitch hostClient={hostClient} onSide={setSide} sides={sides} />
 
       <SidebarSearch
         badges={presentations.badges}
@@ -1091,28 +1089,40 @@ function VoiceButton({ onOpen }: { readonly onOpen: () => void }) {
 }
 
 /**
- * Which side of the switch shows. On load it follows the address (a channel
- * opens on its team, a task on Tasks), else what this person last chose here;
- * after that only the person changes it.
+ * Which side of the switch shows, and the team last shown. On load the side
+ * follows the address (a channel opens on its team, a task on Tasks), else
+ * what this person last chose here; after that only the person changes it.
  */
 function useSidebarSide(
   deploymentId: string | null,
   userId: string | null,
   pathname: string,
-): readonly [string, (side: string) => void] {
+): readonly [SidebarSides, (side: SidebarSide) => void] {
   const key = `opensteer.sidebar.side:${deploymentId ?? ""}:${userId ?? ""}`;
   const loadedAt = useRef(pathname).current;
-  const [chosen, setChosen] = useState<{ readonly key: string; readonly side: string } | null>(
-    null,
-  );
-  const loaded = useMemo(() => routeSide(loadedAt) ?? storedSide(key), [key, loadedAt]);
-  const side = chosen?.key === key ? chosen.side : loaded;
+  const [chosen, setChosen] = useState<{
+    readonly key: string;
+    readonly sides: SidebarSides;
+  } | null>(null);
+  const loaded = useMemo(() => {
+    const stored = storedSides(key);
+    const side = routeSide(loadedAt);
+    return side === null ? stored : chooseSide(stored, side);
+  }, [key, loadedAt]);
+  const sides = chosen?.key === key ? chosen.sides : loaded;
   const { teams } = useTeams();
+  const latest = useRef(sides);
+  useLayoutEffect(() => {
+    latest.current = sides;
+  });
   const choose = useCallback(
-    (next: string) => {
-      setChosen({ key, side: next });
+    (side: SidebarSide) => {
+      const next = chooseSide(latest.current, side);
+      latest.current = next;
+      setChosen({ key, sides: next });
       try {
-        localStorage.setItem(key, next);
+        localStorage.setItem(key, next.side);
+        if (next.recent !== null) localStorage.setItem(`${key}:team`, next.recent);
       } catch {
         // The choice still holds for this window.
       }
@@ -1120,7 +1130,8 @@ function useSidebarSide(
     [key],
   );
   // A team that is gone leaves its side; Tasks is what remains.
-  return [side === "tasks" || teams.some((team) => team.teamId === side) ? side : "tasks", choose];
+  const present = sides.side === "tasks" || teams.some((team) => team.teamId === sides.side);
+  return [present ? sides : { side: "tasks", recent: sides.recent }, choose];
 }
 
 /** The team a navigation entered, as `TeamDialogsProvider` marks it. */
@@ -1139,11 +1150,14 @@ function routeSide(pathname: string): string | null {
   return pathname.startsWith("/tasks/") ? "tasks" : null;
 }
 
-function storedSide(key: string): string {
+function storedSides(key: string): SidebarSides {
   try {
-    return localStorage.getItem(key) ?? "tasks";
+    return {
+      side: localStorage.getItem(key) ?? "tasks",
+      recent: localStorage.getItem(`${key}:team`),
+    };
   } catch {
-    return "tasks";
+    return { side: "tasks", recent: null };
   }
 }
 
@@ -1158,17 +1172,15 @@ const sameBadge = (left: SegmentBadge, right: SegmentBadge) =>
 /** The switch, with the Tasks badge read here so it never redraws the lists. */
 function TasksBadgeSwitch({
   hostClient,
-  onNavigate,
   onSide,
-  side,
+  sides,
 }: {
   readonly hostClient: HostClient;
-  readonly onNavigate: () => void;
-  readonly onSide: (side: string) => void;
-  readonly side: string;
+  readonly onSide: (side: SidebarSide) => void;
+  readonly sides: SidebarSides;
 }) {
   const badge = useHostSelector(hostClient, selectTasksBadge, sameBadge);
-  return <TeamSwitch onNavigate={onNavigate} onSide={onSide} side={side} tasksBadge={badge} />;
+  return <TeamSwitch onSide={onSide} sides={sides} tasksBadge={badge} />;
 }
 
 /**
@@ -1748,6 +1760,7 @@ function SidebarFooter({
 }) {
   const navigate = useNavigate();
   const places = useDesktopPlaces();
+  const inTeams = useTeams().teams.length > 0;
   const [open, setOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const anchorRef = useRef<HTMLButtonElement | null>(null);
@@ -1771,6 +1784,16 @@ function SidebarFooter({
       : []),
     { icon: "bolt", label: "Automations", onSelect: () => go("/automations", true) },
     { icon: "settings", label: "Settings", onSelect: () => go("/settings", false) },
+    // Once in a team, this lives under Settings → Teams instead.
+    ...(inTeams
+      ? []
+      : [
+          {
+            icon: "users" as const,
+            label: "Create or join a team",
+            onSelect: () => go("/teams", false),
+          },
+        ]),
   ];
   return (
     <div className="sidebar__footer">
