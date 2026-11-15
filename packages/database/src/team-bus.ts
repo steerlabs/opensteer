@@ -8,7 +8,7 @@ import { sql, type Kysely } from "kysely";
 import type { Notification, PoolClient } from "pg";
 import { z } from "zod";
 import { checkoutSession } from "./connection.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { teamBusChannel } from "./team-copies-migration.js";
 
 const RevisionSchema = z.string().regex(/^\d+$/);

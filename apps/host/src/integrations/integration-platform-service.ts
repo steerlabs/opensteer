@@ -383,6 +383,7 @@ export class IntegrationPlatformService {
   readonly #onRequestsChanged: () => void;
   readonly #isRunnerConnected: (runnerId: RunnerId) => boolean;
   readonly #computerUse: ComputerUseGateway | null;
+  readonly #onTabUsed: ((claims: RunToolScope, tabId: TabId, title: string) => void) | undefined;
   readonly #nativeTabs: Pick<NativeTabTargets, "acquired"> | undefined;
   readonly #tabs: Pick<TabServicePort, "get" | "authorizeShow"> | undefined;
   readonly #nativeTabTarget:
@@ -426,6 +427,7 @@ export class IntegrationPlatformService {
      * a Host built without it should answer rather than pretending.
      */
     readonly computerUse?: ComputerUseGateway | null;
+    readonly onTabUsed?: (claims: RunToolScope, tabId: TabId, title: string) => void;
     readonly nativeTabs?: Pick<NativeTabTargets, "acquired">;
     readonly tabs?: Pick<TabServicePort, "get" | "authorizeShow">;
     readonly nativeTabTarget?: (ownerId: UserId, tabId: TabId) => Promise<NativeReplTabTarget>;
@@ -490,6 +492,7 @@ export class IntegrationPlatformService {
     this.#isRunnerConnected = options.isRunnerConnected;
     this.#computerUse = options.computerUse ?? null;
     this.#nativeTabs = options.nativeTabs;
+    this.#onTabUsed = options.onTabUsed;
     this.#tabs = options.tabs;
     this.#nativeTabTarget = options.nativeTabTarget;
     // Silence is not a declaration: an engine that has not said it renders MCP
@@ -3124,6 +3127,7 @@ export class IntegrationPlatformService {
               }
             : { ...common, kind: "phone" },
         );
+        this.#onTabUsed?.(runClaims, tabId, result?.window?.title ?? placement.runnerName);
         return {
           value: z.json().parse(
             mac

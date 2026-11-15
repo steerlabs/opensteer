@@ -6,7 +6,7 @@ import {
   RunnerConnectionIdSchema,
   RunnerConnectionLeaseIdSchema,
   runnerEnvironmentIds,
-  LegacyRunnerToHostMessageSchema as RunnerToHostMessageSchema,
+  RunnerToHostMessageSchema,
   type RunnerConnectionFence,
   type RunnerDescriptor,
 } from "@opensteer/protocol";

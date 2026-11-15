@@ -20,7 +20,7 @@ export async function executionLeaseExpiresAt(
 export async function executionDisconnected(
   stack: Pick<VerticalStack, "api" | "environmentId">,
 ): Promise<boolean> {
-  const read = await stack.api["bootstrap.legacy.get"]({});
+  const read = await stack.api["bootstrap.get"]({});
   return (
     read.ok &&
     read.data.environments.some(

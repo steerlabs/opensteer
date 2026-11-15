@@ -3,7 +3,7 @@ import {
   TeamAccessStore,
   appendTeamAudit,
   type TeamStoreAccessEffects,
-  type LegacyDatabaseSchema as DatabaseSchema,
+  type DatabaseSchema,
 } from "@opensteer/database";
 import type { Kysely, Transaction } from "kysely";
 import type { TeamKnowledgeAudit } from "./team-knowledge.js";

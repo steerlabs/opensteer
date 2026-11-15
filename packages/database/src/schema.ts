@@ -50,8 +50,6 @@ import type {
   AuthVerificationId,
   BrowserProfileId,
   BrowserSourceId,
-  BrowserTabGroupColor,
-  BrowserTabGroupId,
   CausalChainId,
   CommandId,
   CredentialId,
@@ -571,8 +569,6 @@ interface RunnerTable {
   enrolledAt: Timestamp;
   lastSeenAt: NullableTimestamp;
   revokedAt: NullableTimestamp;
-  /** An Agent Phone's tab: open from its first use until its owner closes it. */
-  tabOpenedAt: NullableTimestamp;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -1421,25 +1417,6 @@ interface BrowserHistoryIconTable {
   favicon: string;
 }
 
-export interface LegacyPersonalTabTable {
-  id: string;
-  createdAt: Timestamp;
-  groupId: BrowserSessionId;
-  sessionId: BrowserSessionId;
-  title: string;
-  url: string;
-  favicon: Generated<string | null>;
-  iconRef: Generated<string | null>;
-  order: number;
-  openerId: string | null;
-  state: "suspended" | "restoring" | "live";
-  closedBy: Generated<UserId | null>;
-  closedAfterTabId: Generated<string | null>;
-  closedTabGroupId: Generated<BrowserTabGroupId | null>;
-  reopenedAt: Generated<Date | null>;
-  closedAt: NullableTimestamp;
-}
-
 interface BrowserSessionTable {
   tabGroupId: BrowserSessionId;
   tabRevision: Generated<number>;
@@ -1933,17 +1910,6 @@ interface ComputerAppSetupRequestTable {
   expiresAt: Timestamp;
 }
 
-export interface LegacyAppTable {
-  tabOpenedAt: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
-  id: string;
-
-  threadId: ThreadId;
-  runId: RunId;
-  title: string;
-  latestVersion: number;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
 export interface AppVersionTable {
   appId: string;
   version: number;
@@ -1970,7 +1936,7 @@ export interface AgentConnectionTable {
   revokedAt: NullableTimestamp;
 }
 
-export interface LegacyDatabaseSchema {
+export interface DatabaseSchema {
   deviceSetupRetirements: { runnerId: RunnerId; publicKeyPem: string };
   agentHomeSkillInventory: {
     computerId: RunnerId;
@@ -2110,7 +2076,8 @@ export interface LegacyDatabaseSchema {
   deploymentEventState: DeploymentEventStateTable;
 
   agentConnections: AgentConnectionTable;
-  apps: LegacyAppTable;
+  apps: AppTable;
+  appServers: AppServerTable;
   appVersions: AppVersionTable;
   attachments: AttachmentTable;
   computerUsePolicies: ComputerUsePolicyTable;
@@ -2225,24 +2192,8 @@ export interface LegacyDatabaseSchema {
   browserHistoryEntries: BrowserHistoryEntryTable;
   browserHistoryIcons: BrowserHistoryIconTable;
   browserSessions: BrowserSessionTable;
-  personalTabs: LegacyPersonalTabTable;
-  browserTabLayouts: {
-    ownerId: UserId;
-    revision: Generated<string | number | bigint>;
-    tabOrder: ColumnType<string[] | null, string[] | null | undefined, string[] | null>;
-  };
-  browserTabGroups: {
-    id: BrowserTabGroupId;
-    ownerId: UserId;
-    title: string;
-    color: BrowserTabGroupColor;
-    collapsed: Generated<boolean>;
-    // Provenance outlives the creating Thread, as a browser session's opener does.
-    createdByThreadId: ThreadId | null;
-    createdAt: Timestamp;
-    updatedAt: Timestamp;
-  };
-  browserTabGroupMembers: { ownerId: UserId; tabId: string; groupId: BrowserTabGroupId };
+  personalTabs: PersonalTabTable;
+  tabLayouts: TabLayoutTable;
   browserTabOpens: {
     ownerId: UserId;
     idempotencyKey: string;
@@ -2877,18 +2828,3 @@ export interface AppServerTable {
   generation: Generated<number>;
   lastError: string | null;
 }
-export type DatabaseSchema = Omit<
-  LegacyDatabaseSchema,
-  | "personalTabs"
-  | "browserTabLayouts"
-  | "browserTabGroups"
-  | "browserTabGroupMembers"
-  | "apps"
-  | "runners"
-> & {
-  personalTabs: PersonalTabTable;
-  tabLayouts: TabLayoutTable;
-  apps: AppTable;
-  appServers: AppServerTable;
-  runners: Omit<RunnerTable, "tabOpenedAt">;
-};

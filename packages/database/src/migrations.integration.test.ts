@@ -16,7 +16,7 @@ import {
   teamPrincipalsMigrationName,
   waitingInputEditsMigrationName,
 } from "./migrations.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { cloneTestDatabase, type TestDatabase } from "./test-database.test-support.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
 import { OpensteerStore } from "./store.js";

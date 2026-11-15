@@ -194,7 +194,7 @@ describe("owner windows", () => {
       await expect(h.service.windows(owner, machine, app)).rejects.toThrow(/approval/);
       expect(h.logs).toEqual([
         {
-          event: "computer.app.legacy.windows",
+          event: "computer.app.windows",
           details: {
             machineId: machine,
             bundleId: app.bundleId,

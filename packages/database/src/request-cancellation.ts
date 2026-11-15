@@ -11,7 +11,7 @@ import { lockDeploymentEvents } from "./personal-transaction.js";
 import type { Transaction } from "kysely";
 import { assignmentActivityEventsForRun } from "./assignment-store.js";
 import { requestFromRow, requestOriginEnvironment } from "./request-persistence.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 import { appendHostDeploymentEvent } from "./deployment-events.js";
 export async function cancelPending(

@@ -10,19 +10,12 @@ import { TabBootstrapSchema } from "./tabs.js";
 import { HostTabsSchema } from "./tabs.js";
 import { HostAppsChangedSchema } from "./apps.js";
 import { NeedsYouPageSchema } from "./needs-you.js";
-import { AppTabsSchema } from "./bootstrap.js";
-import { LegacyHostedBrowserBootstrapSchema } from "./browser.js";
+
 import { DeploymentIdSchema, DeploymentResumeCursorSchema } from "@opensteer/core";
-import { BrowserGroupStreamSchema, BrowserClientTabStreamSchema } from "./browser-tabs.js";
+
 import {
-  LegacyComputerViewChangedSchema,
-  LegacyComputerViewRemovedSchema,
-} from "./computer-view.js";
-import {
-  AgentEventViewSchema,
   type AgentEventView,
   type AssignmentSummary,
-  PlaceEnteredEventViewSchema,
   LiveRunProgressViewSchema,
   MessageViewSchema,
   NotificationViewSchema,
@@ -42,11 +35,7 @@ import {
   RunnerIdSchema,
 } from "@opensteer/core";
 import { z } from "zod";
-import {
-  LegacyPersonShowMessageSchema,
-  ThreadPlaceChangedSchema,
-  PlaceActivityNoticeViewSchema,
-} from "./places.js";
+
 import { ProtocolErrorSchema, type RealtimeFrameDiagnostic } from "./common.js";
 import { ComputerUseSessionIdSchema, computerUseMaxSessionApps } from "./computer-use.js";
 import { ShellCloseReasonSchema, ShellSessionSummarySchema } from "./shell.js";
@@ -150,7 +139,7 @@ export const ClientToHostMessageSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-export const LegacyDeploymentSnapshotSchema = z
+export const DeploymentSnapshotSchema = z
   .object({
     tasks: z.object({
       recent: z.lazy(() => TaskPageSchema),
@@ -158,7 +147,7 @@ export const LegacyDeploymentSnapshotSchema = z
       done: z.lazy(() => TaskPageSchema),
     }),
     needsYou: z.lazy(() => NeedsYouPageSchema),
-    resources: z.object({ appTabs: AppTabsSchema, browser: LegacyHostedBrowserBootstrapSchema }),
+    resources: z.object({ tabs: TabBootstrapSchema, browser: HostedBrowserBootstrapSchema }),
     messages: z.array(MessageViewSchema).max(deploymentSnapshotMaxMessages),
     messageWindows: z.array(ThreadMessageWindowSchema).max(deploymentSnapshotMaxThreads),
     /** History was not loaded; the empty arrays do not mean an empty conversation. */
@@ -175,7 +164,7 @@ export const LegacyDeploymentSnapshotSchema = z
      * absence means the Host does not say, not that no Run is anywhere.
      */
     runPlaces: z
-      .array(PlaceEnteredEventViewSchema)
+      .array(TabPlaceEnteredEventViewSchema)
       .max(deploymentSnapshotMaxRunQueueEntries)
       .optional(),
     sequence: SequenceSchema,
@@ -193,7 +182,7 @@ export const LegacyDeploymentSnapshotSchema = z
       path: ["messagesOmitted"],
     },
   );
-export type LegacyDeploymentSnapshot = z.infer<typeof LegacyDeploymentSnapshotSchema>;
+export type DeploymentSnapshot = z.infer<typeof DeploymentSnapshotSchema>;
 
 /** The most characters of a task's last reply or failure a task list carries. */
 export const taskLineMaxLength = 280;
@@ -235,7 +224,7 @@ export const ThreadEventPageSchema = z.object({
         const header = z.object({ type: z.string() }).safeParse(event);
         if (
           header.success &&
-          !AgentEventViewSchema.options.some(
+          !TabAgentEventViewSchema.options.some(
             (variant) => variant.shape.type.value === header.data.type,
           )
         )
@@ -243,7 +232,7 @@ export const ThreadEventPageSchema = z.object({
         return [event];
       }),
     )
-    .pipe(z.array(AgentEventViewSchema)),
+    .pipe(z.array(TabAgentEventViewSchema)),
   threadId: ThreadIdSchema,
   window: ThreadMessageWindowSchema,
 });
@@ -265,10 +254,12 @@ export type NodeEventPage = z.infer<typeof NodeEventPageSchema>;
 
 const ProtocolErrorViewSchema = z.object(ProtocolErrorSchema.shape);
 
-export const LegacyHostToClientMessageSchema = z.discriminatedUnion("type", [
-  LegacyPersonShowMessageSchema,
-  LegacyComputerViewChangedSchema,
-  LegacyComputerViewRemovedSchema,
+export const HostToClientMessageSchema = z.discriminatedUnion("type", [
+  PersonShowMessageSchema,
+  HostTabsSchema,
+  HostAppsChangedSchema,
+  ComputerViewChangedSchema,
+  ComputerViewRemovedSchema,
   z.object({
     type: z.literal("host.thread-visits"),
     visits: z.array(ThreadVisitSchema).max(100),
@@ -277,13 +268,13 @@ export const LegacyHostToClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     ...clientMessageBase,
     type: z.literal("host.snapshot"),
-    snapshot: LegacyDeploymentSnapshotSchema,
+    snapshot: DeploymentSnapshotSchema,
   }),
   z.object({
     ...clientMessageBase,
     type: z.literal("host.events"),
     throughSequence: SequenceSchema,
-    events: z.array(AgentEventViewSchema).max(2_000),
+    events: z.array(TabAgentEventViewSchema).max(2_000),
   }),
   /**
    * A Run's streams before they complete. It follows every durable event
@@ -319,20 +310,10 @@ export const LegacyHostToClientMessageSchema = z.discriminatedUnion("type", [
     ...clientMessageBase,
     type: z.literal("host.triggers-changed"),
   }),
-  z.object({ ...clientMessageBase, type: z.literal("host.app-tabs-changed") }),
-  ThreadPlaceChangedSchema,
-  z.object({
-    ...clientMessageBase,
-    type: z.literal("host.browser-groups"),
-    stream: BrowserGroupStreamSchema,
-  }),
-  z.object({
-    ...clientMessageBase,
-    type: z.literal("host.browser-tabs"),
-    groupId: BrowserSessionIdSchema,
-    stream: BrowserClientTabStreamSchema,
-  }),
-  ...PlaceActivityNoticeViewSchema.options,
+
+  TabThreadPlaceChangedSchema,
+
+  ...TabPlaceActivityNoticeSchema.options,
   z.object({
     ...clientMessageBase,
     type: z.literal("host.browser-sessions-changed"),
@@ -441,11 +422,7 @@ export const LegacyHostToClientMessageSchema = z.discriminatedUnion("type", [
     error: ProtocolErrorViewSchema,
   }),
 ]);
-export type LegacyHostToClientMessage = z.infer<typeof LegacyHostToClientMessageSchema>;
-
-export const realtimeEnvelopeTypes: ReadonlySet<string> = new Set(
-  LegacyHostToClientMessageSchema.options.map((schema) => schema.shape.type.value),
-);
+export type HostToClientMessage = z.infer<typeof HostToClientMessageSchema>;
 
 function collectFieldNames(value: unknown, names: Set<string>, seen: Set<unknown>): void {
   if (Array.isArray(value)) {
@@ -471,7 +448,7 @@ let realtimeWireFields: ReadonlySet<string> | undefined;
 export function isRealtimeWireField(part: string): boolean {
   if (!realtimeWireFields) {
     const names = new Set<string>();
-    collectFieldNames(LegacyHostToClientMessageSchema, names, new Set());
+    collectFieldNames(HostToClientMessageSchema, names, new Set());
     realtimeWireFields = names;
   }
   return realtimeWireFields.has(part);
@@ -559,70 +536,6 @@ export function projectDeviceAccessAssignment(
   };
 }
 
-export const DeploymentSnapshotSchema = z.object({
-  ...LegacyDeploymentSnapshotSchema.shape,
-  resources: z.object({ tabs: TabBootstrapSchema, browser: HostedBrowserBootstrapSchema }),
-  runPlaces: z
-    .array(TabPlaceEnteredEventViewSchema)
-    .max(deploymentSnapshotMaxRunQueueEntries)
-    .optional(),
-});
-export type DeploymentSnapshot = z.infer<typeof DeploymentSnapshotSchema>;
-
-type LegacyWorkspaceNotice = (typeof LegacyHostToClientMessageSchema.options)[number];
-type ReplacedWorkspaceNotice = {
-  shape: {
-    type: {
-      value:
-        | "host.computer-view.changed"
-        | "host.computer-view.removed"
-        | "host.show"
-        | "host.events"
-        | "host.snapshot"
-        | "host.browser-groups"
-        | "host.browser-tabs"
-        | "host.app-tabs-changed"
-        | "host.place-activity"
-        | "host.place-activity-cleared"
-        | "host.thread-place-changed";
-    };
-  };
-};
-const legacyWorkspaceNotices = new Set([
-  "host.computer-view.changed",
-  "host.computer-view.removed",
-  "host.show",
-  "host.events",
-  "host.snapshot",
-  "host.browser-groups",
-  "host.browser-tabs",
-  "host.app-tabs-changed",
-  "host.place-activity",
-  "host.place-activity-cleared",
-  "host.thread-place-changed",
-]);
-export const HostToClientMessageSchema = z.discriminatedUnion("type", [
-  ComputerViewChangedSchema,
-  ComputerViewRemovedSchema,
-  PersonShowMessageSchema,
-  HostTabsSchema,
-  HostAppsChangedSchema,
-  z.object({
-    ...clientMessageBase,
-    type: z.literal("host.events"),
-    throughSequence: SequenceSchema,
-    events: z.array(TabAgentEventViewSchema).max(2000),
-  }),
-  ...LegacyHostToClientMessageSchema.options.filter(
-    (schema): schema is Exclude<LegacyWorkspaceNotice, ReplacedWorkspaceNotice> =>
-      !legacyWorkspaceNotices.has(schema.shape.type.value),
-  ),
-  z.object({
-    ...clientMessageBase,
-    type: z.literal("host.snapshot"),
-    snapshot: DeploymentSnapshotSchema,
-  }),
-  ...TabPlaceActivityNoticeSchema.options,
-  TabThreadPlaceChangedSchema,
-]);
-export type HostToClientMessage = z.infer<typeof HostToClientMessageSchema>;
+export const realtimeEnvelopeTypes: ReadonlySet<string> = new Set(
+  HostToClientMessageSchema.options.map((schema) => schema.shape.type.value),
+);

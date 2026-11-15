@@ -1,3 +1,4 @@
+import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { createId } from "@opensteer/core";
 import { expect } from "vitest";
@@ -133,11 +134,7 @@ describeStore("agent Thread history", (it) => {
           environmentId: f.environmentId,
           type: "place.entered",
           data: {
-            place: {
-              kind: "app",
-              machineId: f.runnerId,
-              appKey: "com.test." + i,
-            },
+            tabId: BrowserSurfaceIdSchema.parse("native-tab-" + i),
             title: String(i),
             site: null,
           },

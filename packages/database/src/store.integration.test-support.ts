@@ -562,7 +562,7 @@ export async function createStoreFixture() {
     }
     async function stagedRequestRace(
       lock: (
-        transaction: import("kysely").Transaction<import("./schema.js").LegacyDatabaseSchema>,
+        transaction: import("kysely").Transaction<import("./schema.js").DatabaseSchema>,
       ) => Promise<unknown>,
       first: () => Promise<unknown>,
       second: () => Promise<unknown>,
@@ -942,13 +942,11 @@ export const readEmptyPersonalResources: import("./snapshot-store.js").PersonalS
         "This fixture needs a resource snapshot collaborator for its private resources",
       );
     return {
-      appTabs: [],
+      tabs: { tabs: [], layout: { revision: 0, items: [] }, complete: true },
       browser: {
         available: false,
         placements: [],
         profiles: [],
-        groups: { rows: [], complete: true },
-        tabs: [],
       },
     };
   };

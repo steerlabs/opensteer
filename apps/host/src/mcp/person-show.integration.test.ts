@@ -46,6 +46,9 @@ integration("explicit person_show", () => {
       onEvent: () => {},
       execution: {} as never,
       tabs: {
+        get: async () => {
+          throw new Error("Unexpected tab read");
+        },
         authorizeShow: async (claims, id) => {
           if (!(await tabs.get(claims.requestedBy, id)))
             throw new OpensteerError({ code: "not_found", message: "Tab not found." });

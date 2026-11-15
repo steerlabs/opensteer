@@ -6,7 +6,7 @@ import {
   personalSettings,
   requirePersonalOwner,
   withPersonalTransaction,
-  type LegacyDatabaseSchema as DatabaseSchema,
+  type DatabaseSchema,
 } from "@opensteer/database";
 import type { RealtimeHub } from "@opensteer/orchestration";
 import type { Kysely } from "kysely";

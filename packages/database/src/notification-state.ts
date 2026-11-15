@@ -21,7 +21,7 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { latestRunCompletion, threadUnreadPredicate } from "./thread-visits.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { safeCount } from "./store-primitives.js";
 /** Durable per-person viewer state. */
 export class NotificationStateStore {

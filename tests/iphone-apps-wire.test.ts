@@ -9,7 +9,7 @@ import {
   RunnerBootIdSchema,
   RunnerWireProofSchema,
   RunnerIntegrationsStatusSchema,
-  LegacyRunnerOperationalMessageSchema as RunnerOperationalMessageSchema,
+  RunnerOperationalMessageSchema,
   RunnerAuxiliaryAuthenticateSchema,
 } from "../packages/protocol/src/index.js";
 import { RunnerIdSchema } from "../packages/core/src/ids.js";

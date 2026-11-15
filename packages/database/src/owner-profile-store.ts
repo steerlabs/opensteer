@@ -8,7 +8,7 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
 import { withPersonalTransaction } from "./personal-transaction.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 
 /** The Account a linked Host's owner name came from. */
 export interface OwnerNameAccount {

@@ -1,3 +1,5 @@
+import { TabStore } from "@opensteer/database";
+import { TabIdSchema } from "@opensteer/core";
 import { randomUUID } from "node:crypto";
 import { browserRows } from "./browser-rows.test-support.js";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -137,7 +139,7 @@ integration("Durable tab icons", () => {
       token: await host.hostingRunnerEnrollmentToken,
     });
     cleanups.push(() => caller.close());
-    await testRpcData(host.origin, "bootstrap.legacy.get", {}, { headers: host.ownerHeaders });
+    await testRpcData(host.origin, "bootstrap.get", {}, { headers: host.ownerHeaders });
     const profile = await host.store.createBrowserProfile({
       homeRunnerId: runtime.runnerId,
       ownerId: host.ownerId,
@@ -229,21 +231,15 @@ integration("Durable tab icons", () => {
       ...extra,
     });
     // Initial navigation carries the same browser attribution as later address-bar actions.
-    const opening = testRpcData(
-      host.origin,
-      "commands.dispatch",
-      {
-        type: "browser.tab.open",
-        identity: { kind: "profile", profileId },
-        url: "https://amazon.com/",
-        typed: true,
-        idempotencyKey: "history-first",
-      },
-      { headers: host.ownerHeaders },
-    );
+    const opening = host.runtime.browser.openTab(host.ownerId, {
+      type: "browser.tab.open",
+      identity: { kind: "profile", profileId },
+      url: "https://amazon.com/",
+      typed: true,
+      idempotencyKey: "history-first",
+    });
     // The Runtime submits it from the signed ticket; the Host sends no CDP navigation.
     const opened = await opening;
-    if (opened.type !== "browser.tab.open") throw new Error("Unexpected command");
     const sessionId = opened.sessionId;
     const initialNavigation = runtime.lastClaims()?.initialNavigation;
     expect(initialNavigation).toMatchObject({ url: "https://amazon.com/" });
@@ -431,18 +427,13 @@ integration("Durable tab icons", () => {
     await changed();
     // A reused browser may publish the opened tab before its correlated CDP result.
     const beforeOpen = runtime.receivedCommands().length;
-    const secondOpen = testRpcData(
-      host.origin,
-      "commands.dispatch",
-      {
-        type: "browser.tab.open",
-        sessionId,
-        url: "https://second.example/",
-        typed: false,
-        idempotencyKey: "history-second",
-      },
-      { headers: host.ownerHeaders },
-    );
+    const secondOpen = host.runtime.browser.openTab(host.ownerId, {
+      type: "browser.tab.open",
+      sessionId,
+      url: "https://second.example/",
+      typed: false,
+      idempotencyKey: "history-second",
+    });
     void secondOpen.catch(() => undefined);
     const openCommand = await request("Opensteer.openTab", beforeOpen);
     await sendSurfaces([
@@ -677,21 +668,19 @@ integration("Durable tab icons", () => {
     const sessionId = opened.session.id;
     let db = host.store.database;
     const row = (id: string) =>
-      db.selectFrom("personalTabs").selectAll().where("id", "=", id).executeTakeFirst();
-    const revision = async () =>
-      (
-        await db
-          .selectFrom("browserSessions")
-          .select("tabRevision")
-          .where("id", "=", sessionId)
-          .executeTakeFirstOrThrow()
-      ).tabRevision;
+      db
+        .selectFrom("personalTabs")
+        .selectAll()
+        .where("id", "=", TabIdSchema.parse(id))
+        .executeTakeFirst();
+    const updates = vi.spyOn(TabStore.prototype, "updatePage");
+    cleanups.push(async () => updates.mockRestore());
+    const revision = async () => updates.mock.calls.filter(([, id]) => id === "page-a").length;
     const geometry = async (expected: number) => {
       await vi.waitFor(
         () =>
           expect(
-            host.runtime.browser.clientStreams.source.ports.live(sessionId)?.records.get("page-a")
-              ?.geometryRevision,
+            host.runtime.browser.pageInventory(sessionId)?.records.get("page-a")?.geometryRevision,
           ).toBe(expected),
         { timeout: 5_000 },
       );
@@ -721,6 +710,22 @@ integration("Durable tab icons", () => {
       order: id === "page-a" ? 0 : 1,
       openerId: null,
     });
+    for (const id of ["page-a", "page-b"]) {
+      const tabId = TabIdSchema.parse(id);
+      await new TabStore(db).open(
+        {
+          id: tabId,
+          ownerId: host.ownerId,
+          computerId: runtime.runnerId,
+          kind: "page",
+          title: id,
+          url: "about:blank",
+          openedBy: "person",
+          pageBinding: { lineageId: sessionId, sessionId, surfaceId: tabId },
+        },
+        `fixture:${id}`,
+      );
+    }
     const urlOne = "https://a.example/one?token=hidden";
     const urlTwo = "https://a.example/two";
     const urlB = "https://b.example/";
@@ -804,20 +809,22 @@ integration("Durable tab icons", () => {
     const coldTabs = async (currentHost = host) => {
       const bootstrap = await testRpcData(
         host.origin,
-        "bootstrap.legacy.get",
+        "bootstrap.get",
         {},
         {
           headers: host.ownerHeaders,
         },
       );
-      const group = bootstrap.browser.tabs.find((group) => group.groupId === sessionId);
+      const group = bootstrap.tabs;
       const read = await browserRows(currentHost.runtime.browser, currentHost.ownerId, sessionId);
       expect(JSON.stringify(group)).not.toContain("data:image");
       expect(JSON.stringify(read)).not.toContain("data:image");
       const refs = (
         tabs: readonly { id: string; iconRef?: string | null | undefined }[] | undefined,
       ) => Object.fromEntries((tabs ?? []).map((tab) => [tab.id, tab.iconRef ?? null]));
-      expect(refs(read.tabs)).toEqual(refs(group?.rows));
+      expect(refs(read.tabs)).toEqual(
+        refs(group.tabs.map((tab) => ({ id: tab.tabId, iconRef: tab.iconRef }))),
+      );
       return { group, refs: refs(read.tabs) };
     };
     const live = await coldTabs();
@@ -840,17 +847,19 @@ integration("Durable tab icons", () => {
             .executeTakeFirstOrThrow()
         ).count,
       );
+    const currentState = async () =>
+      (await host.runtime.tabs.get(host.ownerId, TabIdSchema.parse("page-a"))).state;
     const sessionsBefore = await sessionCount();
     await runtime.close();
     await until(
-      async () => ((await row("page-a"))?.state === "suspended" ? true : undefined),
+      async () => ((await currentState()) === "asleep" ? true : undefined),
       async () => row("page-a"),
       30_000,
     );
     const commandsAfterEnd = runtime.receivedCommands().length;
     const ended = await coldTabs();
     expect(ended.refs).toEqual(live.refs);
-    expect(ended.group?.rows.map((tab) => tab.state)).toEqual(["suspended", "suspended"]);
+    expect(ended.group.tabs.map((tab) => tab.state)).toEqual(["asleep", "asleep"]);
     const endedIcon = await fetchIcon(host.ownerHeaders);
     expect(endedIcon.status).toBe(200);
     expect(await endedIcon.json()).toMatchObject({ data: { favicon: iconA } });
@@ -888,16 +897,18 @@ integration("Durable tab icons", () => {
     expect(runtime.receivedCommands().some((command) => command.type === "stream.subscribe")).toBe(
       false,
     );
-    expect((await row("page-a"))?.state).toBe("suspended");
+    expect((await coldTabs(restartedHost)).group.tabs.every((tab) => tab.state === "asleep")).toBe(
+      true,
+    );
     steps.push({ step: "icon served after Host restart", status: restartedIcon.status });
 
     const closedTab = await testRpcData(
       host.origin,
       "commands.dispatch",
-      { type: "legacy.tab.close", tabId: "page-a", idempotencyKey: "icon-close" },
+      { type: "tab.close", tabIds: ["page-a"], idempotencyKey: "icon-close" },
       { headers: host.ownerHeaders },
     );
-    expect(closedTab.type).toBe("legacy.tab.close");
+    expect(closedTab.type).toBe("tab.close");
     const revoked = await fetchIcon(host.ownerHeaders);
     const revokedBody = await revoked.text();
     expect(revokedBody).not.toContain("data:image");

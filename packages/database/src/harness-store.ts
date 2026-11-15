@@ -27,7 +27,7 @@ import {
   maxHarnessInstancesPerEnvironment,
 } from "@opensteer/protocol";
 import { type Kysely, type Transaction, sql } from "kysely";
-import { type LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import { type DatabaseSchema } from "./schema.js";
 import {
   lockCommandIdempotency,
   findCommandByIdempotency,

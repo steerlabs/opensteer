@@ -56,6 +56,8 @@ export function createFacade(base, post = postJson) {
     });
     const result = await response.json().catch(() => null);
     if (!response.ok) {
+      if (path === "tools/call" && (result?.structuredContent?.error || result?.error))
+        return result.structuredContent ?? result;
       const error = result?.error;
       throw Object.assign(
         new Error(error?.message ?? `Opensteer request failed (HTTP ${response.status})`),

@@ -10,7 +10,7 @@ import {
   RunnerAuxiliaryChallengeSchema,
   RunnerAuxiliaryHeartbeatSchema,
   RunnerChallengeSchema,
-  LegacyRunnerToHostMessageSchema as RunnerToHostMessageSchema,
+  RunnerToHostMessageSchema,
   RunnerIntegrationsModuleSchema,
   agentPhonePackageName,
 } from "@opensteer/protocol";

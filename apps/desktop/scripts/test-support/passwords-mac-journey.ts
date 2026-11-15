@@ -13,8 +13,8 @@ import { promisify } from "node:util";
 import { createId } from "@opensteer/core";
 import {
   ComputerUseSessionIdSchema,
-  LegacyComputerUseBindResultSchema,
-  LegacyComputerUseObservationResultSchema,
+  ComputerUseBindResultSchema,
+  ComputerUseObservationResultSchema,
   ComputerUseActResultSchema,
   ComputerUseResolveAppResultSchema,
   LoginReceiverKeySchema,
@@ -287,12 +287,12 @@ export async function runPasswordsMacJourney(): Promise<void> {
     // A window ref belongs to the session that bound it: a new session binds
     // again, and an ended session's ref answers "That window is closed."
     const bind = async () =>
-      LegacyComputerUseBindResultSchema.parse(
+      ComputerUseBindResultSchema.parse(
         await request("session.bind", { sessionId, app, window: null }),
       ).window;
     let window = await bind();
     const observe = async () =>
-      LegacyComputerUseObservationResultSchema.parse(
+      ComputerUseObservationResultSchema.parse(
         await request("session.observe", {
           sessionId,
           app,

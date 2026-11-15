@@ -6,7 +6,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
 

@@ -16,7 +16,7 @@ const canonical = <T extends string>(schema: z.ZodType<T>) =>
     .preprocess((value) => (typeof value === "string" ? value.toLowerCase() : value), schema)
     .refine((value) => !/\s/u.test(value));
 
-export const LegacyReferenceSchema = z.discriminatedUnion("kind", [
+export const ReferenceSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("task"), id: canonical(ThreadIdSchema) }),
   z.strictObject({ kind: z.literal("run"), id: canonical(RunIdSchema) }),
   z.strictObject({ kind: z.literal("request"), id: canonical(RequestIdSchema) }),
@@ -24,21 +24,23 @@ export const LegacyReferenceSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("automation"), id: canonical(TriggerIdSchema) }),
   z.strictObject({ kind: z.literal("computer"), id: canonical(RunnerIdSchema) }),
   z.strictObject({ kind: z.literal("attachment"), id: canonical(AttachmentIdSchema) }),
+  z.strictObject({ kind: z.literal("tab"), id: TabIdSchema }),
 ]);
 export const TabReferenceSchema = z.strictObject({ kind: z.literal("tab"), id: TabIdSchema });
-export const ReferenceSchema = z.discriminatedUnion("kind", [
-  ...LegacyReferenceSchema.options,
-  TabReferenceSchema,
-]);
+
 export type Reference = z.infer<typeof ReferenceSchema>;
 export type ReferenceKind = Reference["kind"];
 export type ReferenceId = z.infer<typeof ReferenceIdSchema>;
-export const ReferenceIdSchema = z.union(
-  LegacyReferenceSchema.options.map((schema) => schema.shape.id),
-);
+export const ReferenceIdSchema = z.union([
+  ...ReferenceSchema.options
+    .filter((schema) => schema.shape.kind.value !== "tab")
+    .map((schema) => schema.shape.id),
+  TabIdSchema.refine((value) => /^(tab_|surface_)/u.test(value)),
+]);
 
-function referenceOf(id: string): z.infer<typeof LegacyReferenceSchema> | null {
-  for (const schema of LegacyReferenceSchema.options) {
+function referenceOf(id: string): z.infer<typeof ReferenceSchema> | null {
+  for (const schema of ReferenceSchema.options) {
+    if (schema.shape.kind.value === "tab") continue;
     const parsed = schema.safeParse({ kind: schema.shape.kind.value, id });
     if (parsed.success) return parsed.data;
   }
@@ -46,7 +48,8 @@ function referenceOf(id: string): z.infer<typeof LegacyReferenceSchema> | null {
 }
 
 export function referenceHref(id: ReferenceId): string {
-  return "opensteer:" + ReferenceIdSchema.parse(id);
+  const parsed = ReferenceIdSchema.parse(id);
+  return referenceOf(parsed) ? "opensteer:" + parsed : tabReferenceHref(TabIdSchema.parse(parsed));
 }
 
 export function parseReferenceHref(href: string): Reference | null {
@@ -77,11 +80,4 @@ export function tabReferenceHref(tabId: TabId): string {
 }
 export function formatTabReferenceLink(tabId: TabId, label: string): string {
   return markdownLink(label.trim() || "tab", tabReferenceHref(tabId));
-}
-
-export type LegacyReference = z.infer<typeof LegacyReferenceSchema>;
-export type LegacyReferenceKind = LegacyReference["kind"];
-export function parseLegacyReferenceHref(href: string): LegacyReference | null {
-  if (!/^opensteer:/iu.test(href)) return null;
-  return referenceOf(href.slice("opensteer:".length));
 }

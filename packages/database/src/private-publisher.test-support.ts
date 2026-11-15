@@ -1,6 +1,6 @@
 import { createId, ModelSelectionSchema } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
 
 export async function seedPrivatePublisher(database: Kysely<DatabaseSchema>) {

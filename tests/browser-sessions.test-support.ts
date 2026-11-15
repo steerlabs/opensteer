@@ -1,3 +1,4 @@
+import { BrowserSurfaceIdSchema } from "../packages/core/src/index.js";
 import { browserRows } from "../apps/host/src/browser/browser-rows.test-support.js";
 import {
   hostApiVersion,
@@ -57,7 +58,7 @@ export async function agentJourney(
   });
   const pageOrigin = `http://127.0.0.1:${(page.address() as { port: number }).port}`;
   await waitFor(async () => {
-    const bootstrap = await stack.api["bootstrap.legacy.get"]({});
+    const bootstrap = await stack.api["bootstrap.get"]({});
     return bootstrap.ok && bootstrap.data.browser.available;
   }, 30_000);
 
@@ -93,15 +94,16 @@ export async function agentJourney(
   const tabs = await stack.host.store.database
     .selectFrom("personalTabs")
     .selectAll()
-    .where("id", "in", [
-      tabA,
-      tabB,
-      report.profileSibling,
-      report.guestReuse.second,
-      report.profileTab,
-    ])
+    .where(
+      "id",
+      "in",
+      [tabA, tabB, report.profileSibling, report.guestReuse.second, report.profileTab].map(
+        (value) => BrowserSurfaceIdSchema.parse(value),
+      ),
+    )
     .execute();
-  const sessionFor = (tabId: string) => tabs.find((tab) => tab.id === tabId)!.groupId;
+  const sessionFor = (tabId: string) =>
+    tabs.find((tab) => tab.id === tabId)!.pageBinding!.lineageId;
   expect(sessionFor(tabA)).not.toBe(sessionFor(tabB));
   expect(sessionFor(report.profileSibling)).toBe(sessionFor(tabB));
   expect(sessionFor(report.guestReuse.second)).toBe(sessionFor(tabA));
@@ -208,12 +210,15 @@ export async function agentJourney(
   }
   crashChromium();
   await waitFor(async () => {
-    const bootstrap = await stack.api["bootstrap.legacy.get"]({});
+    const bootstrap = await stack.api["bootstrap.get"]({});
     return (
       bootstrap.ok &&
-      bootstrap.data.browser.groups.rows.every(
-        (session) => session.sessionId !== profileSession || session.state !== "ready",
-      )
+      (
+        await stack.host.store.getBrowserSessionForOwner(
+          BrowserSessionIdSchema.parse(profileSession),
+          bootstrap.data.user.id,
+        )
+      )?.state !== "ready"
     );
   }, 20_000);
   const later = await stack.sendMessage({
@@ -997,4 +1002,44 @@ export async function browserInventory(stack: VerticalStack, sessionId?: string)
     owner.id,
     sessionId ? BrowserSessionIdSchema.parse(sessionId) : undefined,
   );
+}
+
+// These cases exercise the runtime's internal page protocol; workspace membership has its own suite.
+export async function runtimeBrowserCommand(
+  stack: VerticalStack,
+  input: unknown,
+): Promise<
+  import("../packages/protocol/src/index.js").RpcResult<
+    | import("../packages/protocol/src/host-api.js").HostApiCommandOutput
+    | import("../packages/protocol/src/browser.js").BrowserTabOpenResult
+    | import("../packages/protocol/src/browser.js").BrowserTabCloseResult,
+    import("zod").z.infer<typeof import("../packages/protocol/src/host-api.js").HostApiErrorSchema>
+  >
+> {
+  const { BrowserTabOpenCommandSchema, BrowserTabCloseCommandSchema } =
+    await import("../packages/protocol/src/browser.js");
+  const { hostApi, HostApiErrorSchema } = await import("../packages/protocol/src/host-api.js");
+  const owner = await stack.host.store.firstUser();
+  if (!owner) throw new Error("Fixture owner missing");
+  try {
+    const open = BrowserTabOpenCommandSchema.safeParse(input);
+    if (open.success)
+      return { ok: true, data: await stack.host.browser.openTab(owner.id, open.data) };
+    const close = BrowserTabCloseCommandSchema.safeParse(input);
+    if (close.success)
+      return { ok: true, data: await stack.host.browser.closeTab(owner.id, close.data) };
+    return await stack.api["commands.dispatch"](hostApi["commands.dispatch"].payload.parse(input));
+  } catch (error) {
+    const { OpensteerError } = await import("../packages/core/src/index.js");
+    if (!(error instanceof OpensteerError)) throw error;
+    return {
+      ok: false,
+      error: HostApiErrorSchema.parse({
+        code: error.code,
+        message: error.message,
+        reason: error.reason,
+        retryable: error.retryable,
+      }),
+    };
+  }
 }

@@ -5,12 +5,12 @@ import {
   createId,
 } from "@opensteer/core";
 import {
-  LegacyHostAppRequestSchema as HostAppRequestSchema,
+  HostAppRequestSchema,
   CorrelationIdSchema,
   HarnessInstanceCatalogSchema,
   RunnerCommandSchema,
   type HarnessSourceDescriptor,
-  type LegacyHostToRunnerMessage as HostToRunnerMessage,
+  type HostToRunnerMessage,
   type RunnerAuxiliaryTicketClaims,
   type RunnerCommand,
   type RunnerConnectionFence,
@@ -3219,6 +3219,8 @@ it("routes correlated app requests only to the folder computer and cancels pendi
   const spec = {
     appId: "app_" + crypto.randomUUID(),
     version: 1,
+    generation: 2,
+    port: 50123,
     folder: { computerId: identity.runnerId, path: "/tmp/test-app" },
     agentHome: { computerId: identity.runnerId, path: "/tmp" },
     command: "node server.js",
@@ -3239,7 +3241,8 @@ it("routes correlated app requests only to the folder computer and cancels pendi
     );
     const requestId = crypto.randomUUID();
     const pending = registry.requestApp(
-      environmentId,
+      identity.runnerId,
+      registry.identityForRunner(identity.runnerId)!.connectionId,
       {
         type: "host.app.start",
         spec,
@@ -3254,7 +3257,7 @@ it("routes correlated app requests only to the folder computer and cancels pendi
       fence: {
         ...fenceOf(peer),
         environmentId,
-        bindingGeneration: spec.version,
+        bindingGeneration: spec.generation,
       },
     });
     if (!sent || sent.type !== "host.app.start") throw new Error("App start never reached Runner");
@@ -3264,14 +3267,16 @@ it("routes correlated app requests only to the folder computer and cancels pendi
       requestId,
       fence: sent.fence,
       ok: true,
-      port: 12345,
+      generation: spec.generation,
+      port: spec.port,
     });
     await expect(pending).resolves.toMatchObject({
       ok: true,
     });
     await expect(
       registry.requestApp(
-        environmentId,
+        identity.runnerId,
+        registry.identityForRunner(identity.runnerId)!.connectionId,
         {
           type: "host.app.start",
           spec: {
@@ -3283,12 +3288,13 @@ it("routes correlated app requests only to the folder computer and cancels pendi
         AbortSignal.timeout(2_000),
       ),
     ).rejects.toMatchObject({
-      code: "folder_unavailable",
+      code: "bad_request",
     });
     const abort = new AbortController();
     const canceledId = crypto.randomUUID();
     const canceled = registry.requestApp(
-      environmentId,
+      identity.runnerId,
+      registry.identityForRunner(identity.runnerId)!.connectionId,
       {
         type: "host.app.connect",
         spec,
@@ -3308,12 +3314,10 @@ it("routes correlated app requests only to the folder computer and cancels pendi
     );
     const cancelMessage = peer.messages.findLast((message) => message.type === "host.app.cancel");
     expect(HostAppRequestSchema.parse(cancelMessage).type).toBe("host.app.cancel");
-    const lifetime = registry.appConnectionSignal(
-      environmentId,
-      registry.identityForEnvironment(environmentId)!.connectionId,
-    );
+    const lifetime = registry.appConnection(identity.runnerId)!.signal;
     const closed = registry.requestApp(
-      environmentId,
+      identity.runnerId,
+      registry.identityForRunner(identity.runnerId)!.connectionId,
       {
         type: "host.app.connect",
         spec,

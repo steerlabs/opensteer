@@ -7,7 +7,7 @@ import {
   requireTeam,
 } from "@opensteer/database/team-access";
 import { appendTeamAudit } from "@opensteer/database/team-audit";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "@opensteer/database";
+import type { DatabaseSchema } from "@opensteer/database";
 import { sql, type Selectable } from "kysely";
 
 function linkView(row: Selectable<DatabaseSchema["teamLinks"]>, teamName: string) {

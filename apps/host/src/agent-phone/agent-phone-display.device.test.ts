@@ -406,23 +406,12 @@ it.each([
     const owner = { headers: host.ownerHeaders };
     let runnerId!: RunnerId;
     const machine = async () =>
-      (await testRpcData(host.origin, "machines.legacy.list", {}, owner)).machines.find(
+      (await testRpcData(host.origin, "machines.list", {}, owner)).machines.find(
         (row) => row.id === runnerId,
       );
     const sessions = async () => (await machine())?.computerUse?.sessions ?? [];
     async function ownerView() {
-      const opened = await testRpcData(
-        host.origin,
-        "commands.dispatch",
-        {
-          type: "computer.view.open",
-          machineId: runnerId,
-          target: { kind: "phone", display: "main" },
-          idempotencyKey: randomUUID(),
-        },
-        owner,
-      );
-      if (opened.type !== "computer.view.open") throw new Error("Owner command mismatch");
+      const opened = { view: await openPhoneOwnerView(host, runnerId) };
       const source = {
         kind: "owner-view" as const,
         viewId: opened.view.viewId,
@@ -500,19 +489,7 @@ it.each([
           });
           const before = await counts();
           await phone.shell(`am start -W -n ${fixtureActivities.display}`);
-          const opened = await testRpcData(
-            host.origin,
-            "commands.dispatch",
-            {
-              type: "computer.view.open",
-              machineId: runnerId,
-              target: { kind: "phone", display: "main" },
-              idempotencyKey: randomUUID(),
-            },
-            owner,
-          );
-          if (opened.type !== "computer.view.open")
-            throw new Error("Owner open returned another command");
+          const opened = { view: await openPhoneOwnerView(host, runnerId) };
           const source = {
             kind: "owner-view" as const,
             viewId: opened.view.viewId,
@@ -620,7 +597,7 @@ it.each([
           10000,
           50,
         );
-        const opened = await client.openComputerView(runnerId, { kind: "phone", display: "main" });
+        const opened = await openPhoneOwnerView(host, runnerId);
         const source = {
           kind: "owner-view" as const,
           viewId: opened.viewId,
@@ -753,10 +730,7 @@ it.each([
         await client.closeComputerView(source.viewId, source.generation);
         lease.release();
         const readOnlyPowerStart = frontDoor.displayPowerCommands.length;
-        const readonly = await client.openComputerView(runnerId, {
-          kind: "phone",
-          display: "main",
-        });
+        const readonly = await openPhoneOwnerView(host, runnerId);
         await phone.shell("input keyevent KEYCODE_SLEEP");
         const readLease = pool.retain({
           scope: "owner-read-only",
@@ -814,7 +788,7 @@ it.each([
     });
     let currentCaller = caller;
     cleanup.push(() => caller.close());
-    const bootstrap = await testRpcData(host.origin, "bootstrap.legacy.get", {}, owner);
+    const bootstrap = await testRpcData(host.origin, "bootstrap.get", {}, owner);
     if (!bootstrap.personalSettings) throw new Error("Owner has no Main Workspace.");
     const agent = await startPhoneAgent(host, caller, {
       key: `display-run-${randomUUID()}`,
@@ -1040,19 +1014,7 @@ it.each([
     if (!editingOnly) {
       await phase("owner-survives-task-release-replacement-and-owner-close", async () => {
         const observationBeforeViewing = await observe();
-        const opened = await testRpcData(
-          host.origin,
-          "commands.dispatch",
-          {
-            type: "computer.view.open",
-            machineId: runnerId,
-            target: { kind: "phone", display: "main" },
-            idempotencyKey: randomUUID(),
-          },
-          owner,
-        );
-        if (opened.type !== "computer.view.open")
-          throw new Error("Owner open returned another command");
+        const opened = { view: await openPhoneOwnerView(host, runnerId) };
         const source = {
           kind: "owner-view" as const,
           viewId: opened.view.viewId,
@@ -2866,9 +2828,9 @@ it.each([
         await Promise.all([firstFrame(taskView), firstFrame(own.view)]);
         await inputReady(taskView);
         const headers = { ...stranger.headers, origin: host.publicOrigin };
-        await expect(
-          testRpcData(host.origin, "machines.legacy.list", {}, { headers }),
-        ).rejects.toThrow(/HTTP 401/u);
+        await expect(testRpcData(host.origin, "machines.list", {}, { headers })).rejects.toThrow(
+          /HTTP 401/u,
+        );
         const denied = new ComputerDisplayViewer({ ...host, ownerHeaders: headers }, own.source);
         await eventually(
           "non-owner socket refused",
@@ -3142,3 +3104,25 @@ it.each([
   expect(completed).toBe(true);
   expect(cleanupFailures).toEqual([]);
 });
+
+async function openPhoneOwnerView(
+  host: import("../integrations/personal-machine.test-support.js").MachineAccessHost,
+  computerId: import("@opensteer/core").RunnerId,
+) {
+  const opened = await testRpcData(
+    host.origin,
+    "commands.dispatch",
+    { type: "tab.open", target: { kind: "phone", computerId }, idempotencyKey: randomUUID() },
+    { headers: host.ownerHeaders },
+  );
+  if (opened.type !== "tab.open") throw new Error("Expected tab");
+  const activated = await testRpcData(
+    host.origin,
+    "commands.dispatch",
+    { type: "tab.activate", tabId: opened.tab.tabId, idempotencyKey: randomUUID() },
+    { headers: host.ownerHeaders },
+  );
+  if (activated.type !== "tab.activate" || activated.viewer.kind !== "phone")
+    throw new Error("Expected computer viewer");
+  return activated.viewer.view;
+}

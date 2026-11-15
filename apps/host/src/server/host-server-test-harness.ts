@@ -15,16 +15,33 @@ export function hostServerTestDependencies(
 ): HostServerDependencies {
   return {
     // Not inert: bootstrap lists open app tabs for every viewer.
-    apps: { listTabs: async () => [] } as unknown as HostServerDependencies["apps"],
+    apps: {
+      list: async () => [],
+      onRevoked: () => () => undefined,
+    } as unknown as HostServerDependencies["apps"],
     appOriginSigningKey: Buffer.alloc(32, 1),
     appRealOrigins: true,
     attachments: inert(),
     runFiles: inert(),
     runToolTokens: inert(),
-    agentTools: inert(),
+    agentTools: {
+      options: {
+        callers: {
+          authenticate: async () => {
+            throw new Error("Unexpected agent call");
+          },
+        },
+      },
+    } as unknown as HostServerDependencies["agentTools"],
     authenticator: inert(),
     browser: inert(),
-    browserTabs: inert(),
+    tabs: {
+      bootstrap: async () => ({ tabs: [], layout: { revision: 0, items: [] }, complete: true }),
+      streams: {
+        subscribe: () => ({ ready: Promise.resolve(), close: () => {}, flush: async () => {} }),
+      },
+    } as unknown as HostServerDependencies["tabs"],
+    toolActivity: inert(),
     browserSources: inert(),
     passwordSignIns: inert(),
     signBrowserSourceInvitation: inert(),
@@ -75,6 +92,7 @@ export function hostServerTestDependencies(
     // clients to read the list again, so a hub with nothing on it would fail
     // tests that are about something else entirely.
     realtime: {
+      observe: () => () => undefined,
       broadcast: () => undefined,
       sendToUsers: () => undefined,
     } as unknown as HostServerDependencies["realtime"],

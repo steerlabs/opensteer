@@ -385,13 +385,12 @@ export function captureJourney(
         await fresh(mine, () => looker.capture(), "A background tab");
 
         const result = await kit.context.api["commands.dispatch"]({
-          type: "browser.tab.open",
-          sessionId: kit.context.sessionId,
+          type: "tab.open",
+          target: { kind: "page", guest: true, url: `${kit.context.origin}/behind` },
           idempotencyKey: randomUUID(),
-          url: `${kit.context.origin}/behind`,
         });
-        assert(result.ok && result.data.type === "browser.tab.open");
-        const behindId = result.data.tabId;
+        assert(result.ok && result.data.type === "tab.open");
+        const behindId = result.data.tab.tabId;
         const records = Reflect.get(ledger, "records") as Map<string, { page: BrowserPage }>;
         await kit.until(async () => records.has(behindId), "unshown tab registered", 5_000);
         const behindPage = records.get(behindId)!.page;

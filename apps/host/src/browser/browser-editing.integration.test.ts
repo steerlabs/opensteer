@@ -1,3 +1,4 @@
+import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import {
   connectCallerMachine,
   startPrivateMachineHost,
@@ -189,7 +190,7 @@ integration("Host and Chromium editing contract", () => {
         name: "Storage computer",
         token: await machineHost.hostingRunnerEnrollmentToken,
       });
-      await testRpcData(origin, "bootstrap.legacy.get", {}, { headers: sessionHeaders });
+      await testRpcData(origin, "bootstrap.get", {}, { headers: sessionHeaders });
 
       const opened = await testRpcData(
         origin,
@@ -263,10 +264,9 @@ integration("Host and Chromium editing contract", () => {
           Buffer.from(screenshot.data, "base64"),
         );
       };
-      const bootstrap = await runtime.browser.bootstrap(owner.id);
-      const surfaceId = bootstrap.tabs.find((group) => group.groupId === opened.session.id)?.rows[0]
-        ?.id;
-      if (!surfaceId) throw new Error("Missing browser tab in bootstrap");
+      const id = runtime.browser.pageInventory(opened.session.id)?.records.keys().next().value;
+      if (!id) throw new Error("Missing browser target");
+      const surfaceId = BrowserSurfaceIdSchema.parse(id);
       for (const viewer of [person, other, old])
         viewer.send({ type: "stream.subscribe", surfaceId, frames: false });
       await vi.waitFor(() => {

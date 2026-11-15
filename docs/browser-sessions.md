@@ -139,9 +139,9 @@ viewer. Browsers without this ability retain the full editing contract's existin
 On iPhone the agent has no arbitrary-script, clipboard or paste action and the native helper never
 reads UIPasteboard. A website may still ask iOS for Paste permission. The person can approve that
 system UI; Opensteer does not claim to prevent the website or its DOM from then receiving clipboard
-data. A JavaScript clipboard shim would not be a security boundary and is not used as one. Android's
-CDP backend must qualify machine-clipboard denial independently before it is enabled.
-It must also prove that releasing the last native CDP permit makes the WebView debugger inaccessible.
+data. A JavaScript clipboard shim would not be a security boundary and is not used as one. Android's CDP backend permits the same browser access as other CDP engines, including the
+clipboard capabilities its engine supports. Releasing the last native CDP permit must make the
+WebView debugger inaccessible.
 Debug app builds never declare CDP; a release on a debuggable system or provider that fails shutdown
 also omits it. The phone still offers each independently qualified browser/viewer/file ability, and
 agent backend negotiation returns `unsupported-operation` rather than falling back.

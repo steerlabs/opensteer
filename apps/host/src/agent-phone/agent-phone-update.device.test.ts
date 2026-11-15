@@ -458,7 +458,7 @@ describe.skipIf(!enabled)(`Agent Phone actual baseline cutover on API ${api}`, (
                   (
                     await testRpcData(
                       owner.origin,
-                      "machines.legacy.list",
+                      "machines.list",
                       {},
                       { headers: owner.ownerHeaders },
                     )
@@ -490,7 +490,7 @@ describe.skipIf(!enabled)(`Agent Phone actual baseline cutover on API ${api}`, (
                 (
                   await testRpcData(
                     owner.origin,
-                    "machines.legacy.list",
+                    "machines.list",
                     {},
                     { headers: owner.ownerHeaders },
                   )

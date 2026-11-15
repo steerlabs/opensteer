@@ -1,5 +1,5 @@
 import { createId, type WaitingRequest } from "@opensteer/core";
-import { rpcSuccess, type LegacyMachineSummary } from "@opensteer/protocol";
+import { rpcSuccess, type MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { createSettingsReadHandlers } from "./settings-read-handlers.js";
 import { testHostApiContext } from "./test-host-api-context.js";
@@ -20,7 +20,7 @@ function fixture() {
     requests: [] as WaitingRequest[],
     window: { byteCount: 0, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
   }));
-  const machines = vi.fn(async () => rpcSuccess({ machines: [] as LegacyMachineSummary[] }));
+  const machines = vi.fn(async () => rpcSuccess({ machines: [] as MachineSummary[] }));
   return {
     owner,
     catalog,
@@ -80,9 +80,7 @@ describe("Settings read projections", () => {
       },
       computerUse: { private: true },
     };
-    f.machines.mockResolvedValue(
-      rpcSuccess({ machines: [machine as unknown as LegacyMachineSummary] }),
-    );
+    f.machines.mockResolvedValue(rpcSuccess({ machines: [machine as unknown as MachineSummary] }));
     const response = await f.handlers["devices.overview.get"]({}, testHostApiContext(f.owner));
     expect(response).toEqual(
       rpcSuccess({

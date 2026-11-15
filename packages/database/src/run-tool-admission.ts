@@ -18,7 +18,7 @@ import { type Kysely, type Transaction } from "kysely";
 import { assertActiveGrant } from "./execution-authority.js";
 import { WATCH_OBSERVATIONS_PER_HOUR } from "@opensteer/triggers";
 import { assertActiveTriggerExecutionBinding, assertActiveWatchBinding } from "./trigger-store.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 export const runToolMaxDelegationDepth = agentDelegationMaxDepth;
 export type RunToolAction =
   | "assignment.cancel"

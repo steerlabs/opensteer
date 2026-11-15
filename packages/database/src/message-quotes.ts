@@ -10,7 +10,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import type { Transaction } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { messageFromRow } from "./thread-row-mappers.js";
 export async function resolveMessageQuote(
   transaction: Transaction<DatabaseSchema>,
@@ -36,7 +36,7 @@ export async function resolveMessageQuote(
     messageId: source.id,
     threadId: source.threadId,
     author: source.author,
-    // LegacyReference summaries carry labels, never addresses or control identifiers.
+    // Reference summaries carry labels, never addresses or control identifiers.
     excerpt: source.content
       .flatMap((part) =>
         part.type === "text"

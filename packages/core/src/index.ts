@@ -27,9 +27,6 @@ export * from "./tool-output.js";
 export * from "./icons.js";
 export * from "./computer-view.js";
 
-export * from "./browser-tab-order.js";
-export * from "./browser-tabs.js";
-
 export * from "./places.js";
 export * from "./person-show.js";
 

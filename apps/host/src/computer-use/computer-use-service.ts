@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import {
   createId,
   OpensteerError,
-  type EventData,
   type RunId,
   type RunnerId,
   type ThreadId,
@@ -324,16 +323,13 @@ export interface ComputerUseServiceOptions {
   readonly onAuthorityRevoked?: (
     context: Pick<ComputerUseContext, "runId" | "bindingGeneration">,
   ) => void;
-  readonly beginPlaceEntry?: (
-    runId: RunId,
-    bindingGeneration: number,
-  ) => (data: EventData<"place.entered">) => void;
   readonly onPlaceActivity?: (input: {
     ownerId: UserId;
     threadId: ThreadId;
     runId: RunId;
     generation: number;
     place: PlaceIdentity;
+    windowId?: WindowId;
     title: string;
     at: number;
     ended: boolean;
@@ -527,7 +523,6 @@ export class ComputerUseService {
   readonly #stopWrites = new Map<string, Promise<void>>();
   /** Sessions the Host has let go whose close the Mac has not yet answered. */
   readonly #undeliveredCloses = new Set<Session>();
-  readonly #beginPlaceEntry: ComputerUseServiceOptions["beginPlaceEntry"];
   readonly #onPlaceActivity: ComputerUseServiceOptions["onPlaceActivity"];
   readonly #resolveActor: ComputerUseServiceOptions["resolveActor"];
   readonly #threadTitle: ComputerUseServiceOptions["threadTitle"];
@@ -559,7 +554,6 @@ export class ComputerUseService {
     this.#stopped = new Set(
       options.stops.initial.map((stop) => stopKey(stop.runId, stop.runnerId)),
     );
-    this.#beginPlaceEntry = options.beginPlaceEntry;
     this.#onPlaceActivity = options.onPlaceActivity;
     this.#resolveActor = options.resolveActor;
     this.#threadTitle = options.threadTitle;
@@ -758,7 +752,6 @@ export class ComputerUseService {
     const { session, authority } = this.#spend(lease);
     const key = sessionKey(session.runId, session.authority.bindingGeneration, session.runnerId);
     let addedApp = false;
-    let enterPlace: ((data: EventData<"place.entered">) => void) | undefined;
     const requestId = RunnerAuxiliaryRequestIdSchema.parse(`cai:${randomUUID()}`);
     const saved = new Map<number, LoginText>();
     if (operation === "act" && Array.isArray(params.actions)) {
@@ -936,7 +929,6 @@ export class ComputerUseService {
         session.dispatched = true;
         if (target.kind === "app") this.#noteActing(session, computerAppIdentityKey(target.app));
 
-        enterPlace = this.#beginPlaceEntry?.(session.runId, session.authority.bindingGeneration);
         return this.#hub.sendComputerUse({
           access: target.access,
           app: target.kind === "app" ? target.app : null,
@@ -997,11 +989,6 @@ export class ComputerUseService {
             (operation === "act" && (result.performed?.length ?? 0) > 0)) &&
           this.#sessions.get(key) === session
         ) {
-          enterPlace?.({
-            place: { kind: "phone", machineId: session.runnerId, display: "main" },
-            title: session.runnerName,
-            site: null,
-          });
           if (operation === "act" && (result.performed?.length ?? 0) > 0) {
             this.#noteActing(session, target.definitionId);
             this.#publishPlaceActivity(session, target.definitionId, false);
@@ -1016,15 +1003,6 @@ export class ComputerUseService {
           )
         ) {
           this.#noteActing(session, computerAppIdentityKey(target.app));
-          enterPlace?.({
-            place: {
-              kind: "app",
-              machineId: session.runnerId,
-              appKey: computerAppIdentityKey(target.app),
-            },
-            title: target.app.displayName.slice(0, 256),
-            site: null,
-          });
           this.#publishPlaceActivity(session, computerAppIdentityKey(target.app), false);
         }
         if (requested > 0 && this.#sessions.get(key) === session) {
@@ -1997,6 +1975,7 @@ export class ComputerUseService {
       runId: session.runId,
       generation: session.authority.bindingGeneration,
       place,
+      ...(session.windows.get(key) ? { windowId: session.windows.get(key)!.windowId } : {}),
       title: app?.displayName ?? session.runnerName,
       at: this.#now(),
       ended,

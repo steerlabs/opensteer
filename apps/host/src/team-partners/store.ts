@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { verifyPartnerPins } from "./identity.js";
 import { sql, type Selectable, type Transaction } from "kysely";
 import { type TeamActor, type UserId } from "@opensteer/core";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "@opensteer/database";
+import type { DatabaseSchema } from "@opensteer/database";
 import {
   TeamAccessStore,
   emptyTeamAccessEffects,

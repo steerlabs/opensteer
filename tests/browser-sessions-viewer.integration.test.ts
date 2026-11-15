@@ -1,4 +1,6 @@
-import { seedBrowserSession } from "../packages/client/src/test-support/browser-snapshot.js";
+import { sql } from "kysely";
+import { BrowserSurfaceIdSchema } from "../packages/core/src/index.js";
+import { runtimeBrowserCommand } from "./browser-sessions.test-support.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { browserInventory } from "./browser-sessions.test-support.js";
 import { randomUUID } from "node:crypto";
@@ -14,16 +16,12 @@ import {
 import { WebSocket } from "../apps/host/src/browser/browser-watch-e2e.test-support.js";
 import { injectRpcRequest } from "../apps/host/src/server/test-host-api-request.js";
 import { type LaunchedBrowser } from "../packages/browser-runtime-core/src/index.js";
-import { seedBrowserSnapshot } from "../packages/client/src/test-support/browser-snapshot.js";
-import type {
-  BrowserSessionSummary,
-  LegacyHostSnapshot as HostSnapshot,
-} from "../packages/client/src/host/client.js";
+
 import {
   HttpHostClient,
   type WebSocketClient,
 } from "../packages/client/src/host/host-session-client.js";
-import { placeList } from "../packages/client/src/host/places.js";
+
 import { createId, ModelSelectionSchema, UserIdSchema } from "../packages/core/src/index.js";
 import {
   BrowserServerMessageSchema,
@@ -102,7 +100,7 @@ run("Browser Sessions through a whole deployment", () => {
         idempotencyKey: randomUUID(),
       };
       const close = () =>
-        stack.api["commands.dispatch"]({
+        runtimeBrowserCommand(stack, {
           type: "browser.tab.close",
           sessionId,
           surfaceId: initial.tabs[0]!.id,
@@ -113,32 +111,32 @@ run("Browser Sessions through a whole deployment", () => {
         order === "admitted-before-close"
           ? holdAdmittedTabOpen(stack.host.store, command.idempotencyKey)
           : null;
-      let opening: Awaited<ReturnType<(typeof stack.api)["commands.dispatch"]>>;
+      let opening: Awaited<ReturnType<typeof runtimeBrowserCommand>>;
       let closing: Awaited<ReturnType<typeof close>>;
       try {
         if (order === "close-before-admission") {
           closing = await close();
-          opening = await stack.api["commands.dispatch"](command);
+          opening = await runtimeBrowserCommand(stack, command);
         } else if (order === "admitted-before-close") {
-          const pending = stack.api["commands.dispatch"](command);
+          const pending = runtimeBrowserCommand(stack, command);
           await barrier!.waitForAdmission();
           closing = await close();
           barrier!.release();
           opening = await pending;
         } else {
-          opening = await stack.api["commands.dispatch"](command);
+          opening = await runtimeBrowserCommand(stack, command);
           closing = await close();
         }
       } finally {
         barrier?.release();
         barrier?.restore();
       }
-      const replay = await stack.api["commands.dispatch"](command);
+      const replay = await runtimeBrowserCommand(stack, command);
       const record = await stack.host.store.getBrowserSessionForOwner(sessionId, owner.id);
       const rows = await stack.host.store.database
         .selectFrom("personalTabs")
-        .select(["id", "closedAt", "state"])
-        .where("sessionId", "=", sessionId)
+        .select(["id", "closedAt"])
+        .where(sql<string>`page_binding ->> 'sessionId'`, "=", sessionId)
         .orderBy("id")
         .execute();
       const binding = await stack.host.store.getBrowserTabOpen(owner.id, command.idempotencyKey);
@@ -150,7 +148,12 @@ run("Browser Sessions through a whole deployment", () => {
         if (!opening.ok || opening.data.type !== "browser.tab.open")
           throw new Error("The ordered open did not succeed");
         expect(rows.map((row) => row.id)).toEqual([initial.tabs[0]!.id, opening.data.tabId].sort());
-        expect(rows.every((row) => row.closedAt === null && row.state === "live")).toBe(true);
+        expect(
+          rows.every(
+            (row) =>
+              row.closedAt === null && stack.host.browser.tabStateOf(sessionId, row.id) === "live",
+          ),
+        ).toBe(true);
         const inventory = await browserInventory(stack, sessionId);
         expect(inventory.tabs.map((tab) => tab.id).sort()).toEqual(rows.map((row) => row.id));
         expect(binding?.outcome.kind).toBe("opened");
@@ -178,8 +181,8 @@ run("Browser Sessions through a whole deployment", () => {
       expect(
         await stack.host.store.database
           .selectFrom("personalTabs")
-          .select(["id", "closedAt", "state"])
-          .where("sessionId", "=", sessionId)
+          .select(["id", "closedAt"])
+          .where(sql<string>`page_binding ->> 'sessionId'`, "=", sessionId)
           .orderBy("id")
           .execute(),
       ).toEqual(rows);
@@ -196,8 +199,8 @@ run("Browser Sessions through a whole deployment", () => {
     );
     const command = { type: "browser.tab.open" as const, sessionId, idempotencyKey: randomUUID() };
     const [first, retry] = await Promise.all([
-      stack.api["commands.dispatch"](command),
-      stack.api["commands.dispatch"](command),
+      runtimeBrowserCommand(stack, command),
+      runtimeBrowserCommand(stack, command),
     ]);
     if (!first.ok || first.data.type !== "browser.tab.open") throw new Error(JSON.stringify(first));
     const firstOpened = first.data;
@@ -205,7 +208,7 @@ run("Browser Sessions through a whole deployment", () => {
     const firstInventory = await browserInventory(stack, sessionId);
     expect(firstInventory.tabs).toHaveLength(2);
     expect(firstInventory.tabs.some((tab) => tab.id === firstOpened.tabId)).toBe(true);
-    const mismatch = await stack.api["commands.dispatch"]({
+    const mismatch = await runtimeBrowserCommand(stack, {
       ...command,
       url: "https://example.com/",
     });
@@ -216,7 +219,7 @@ run("Browser Sessions through a whole deployment", () => {
       "https://user:secret@example.com/",
     ]) {
       const invalid = { ...command, url, idempotencyKey: randomUUID() };
-      expect(await stack.api["commands.dispatch"](invalid)).toMatchObject({
+      expect(await runtimeBrowserCommand(stack, invalid)).toMatchObject({
         ok: false,
         error: { reason: "invalid-payload", retryable: false },
       });
@@ -232,7 +235,7 @@ run("Browser Sessions through a whole deployment", () => {
     await expect(
       stack.host.browser.openTab(UserIdSchema.parse(`usr_${randomUUID()}`), command),
     ).rejects.toMatchObject({ code: "not_found" });
-    const closed = await stack.api["commands.dispatch"]({
+    const closed = await runtimeBrowserCommand(stack, {
       type: "browser.tab.close",
       sessionId,
       surfaceId: first.data.tabId,
@@ -241,7 +244,7 @@ run("Browser Sessions through a whole deployment", () => {
     });
     if (!closed.ok || closed.data.type !== "browser.tab.close")
       throw new Error(JSON.stringify(closed));
-    expect(await stack.api["commands.dispatch"](command)).toMatchObject({
+    expect(await runtimeBrowserCommand(stack, command)).toMatchObject({
       ok: true,
       data: { tabId: first.data.tabId },
     });
@@ -267,19 +270,16 @@ run("Browser Sessions through a whole deployment", () => {
       await startPersonBrowser(stack, { viewport: { height: 700, width: 1000 } }),
     );
     await client.load();
-    const clientOpened = await client.openBrowserTab(urlSessionId, { url: site.origin });
+    const clientResult = await client.dispatch({
+      type: "tab.open",
+      target: { kind: "page", guest: true, url: site.origin },
+      idempotencyKey: randomUUID(),
+    });
+    if (clientResult.type !== "tab.open") throw new Error("Expected page");
+    const clientOpened = { tabId: clientResult.tab.tabId, sessionId: urlSessionId };
     expect(
-      (
-        client
-          .getSnapshot()
-          .browserSessions.find((session) => session.id === clientOpened.sessionId)!
-          .browserTabs?.sessionTabs(
-            client
-              .getSnapshot()
-              .browserSessions.find((session) => session.id === clientOpened.sessionId)!.id,
-          ) ?? []
-      ).some((tab) => tab.id === clientOpened.tabId),
-    ).toBe(true);
+      client.getSnapshot().tabs.get(BrowserSurfaceIdSchema.parse(clientOpened.tabId)),
+    ).toBeDefined();
     await waitFor(
       async () =>
         (await client.readBrowserContextCandidate(urlSessionId, clientOpened.tabId)).url ===
@@ -292,11 +292,11 @@ run("Browser Sessions through a whole deployment", () => {
     // Keep the open admitted but not sent to the Runtime when last-tab close wins.
     const raceKey = randomUUID();
     const barrier = holdAdmittedTabOpen(stack.host.store, raceKey);
-    const openingRequest = stack.api["commands.dispatch"]({ ...command, idempotencyKey: raceKey });
+    const openingRequest = runtimeBrowserCommand(stack, { ...command, idempotencyKey: raceKey });
     const racingClose = async () => {
       await barrier.waitForAdmission();
       try {
-        return await stack.api["commands.dispatch"]({
+        return await runtimeBrowserCommand(stack, {
           type: "browser.tab.close",
           sessionId,
           surfaceId: last.id,
@@ -320,7 +320,7 @@ run("Browser Sessions through a whole deployment", () => {
     ) {
       expect(opening).toMatchObject({ ok: false, error: { reason: "browser-tab-open-failed" } });
       expect(
-        await stack.api["commands.dispatch"]({ ...command, idempotencyKey: randomUUID() }),
+        await runtimeBrowserCommand(stack, { ...command, idempotencyKey: randomUUID() }),
       ).toMatchObject({ ok: false, error: { reason: "browser-session-closed" } });
     } else {
       expect(closing).toMatchObject({ ok: false, error: { reason: "stale-tab-inventory" } });
@@ -328,9 +328,9 @@ run("Browser Sessions through a whole deployment", () => {
     }
     await stack.host.browser.stop(owner.id, sessionId);
     expect(
-      await stack.api["commands.dispatch"]({ ...command, idempotencyKey: randomUUID() }),
+      await runtimeBrowserCommand(stack, { ...command, idempotencyKey: randomUUID() }),
     ).toMatchObject({ ok: false, error: { reason: "browser-session-closed" } });
-    expect(await stack.api["commands.dispatch"](command)).toMatchObject({
+    expect(await runtimeBrowserCommand(stack, command)).toMatchObject({
       ok: true,
       data: { tabId: first.data.tabId },
     });
@@ -383,7 +383,7 @@ run("Browser Sessions through a whole deployment", () => {
     };
 
     // A page whose response is still arriving: its tab loads, as a browser's spinner says.
-    const opened = await stack.api["commands.dispatch"]({
+    const opened = await runtimeBrowserCommand(stack, {
       type: "browser.tab.open",
       sessionId,
       url: `${site.origin}/slow`,
@@ -395,29 +395,7 @@ run("Browser Sessions through a whole deployment", () => {
     await until("its page's response is held open", tabId, true);
     // The sidebar's place list reads exactly that field.
     const read = await catalog();
-    const listed = placeList(
-      seedBrowserSnapshot({
-        browserSessions: [
-          seedBrowserSession(
-            {
-              createdAt: new Date().toISOString(),
-              id: sessionId,
-              profileId: null,
-              placement: { kind: "runner", runnerId: "rnr_11111111-1111-4111-8111-111111111111" },
-              state: "ready",
-            },
-            { rows: read.tabs, revision: read.inventoryRevision },
-            [],
-          ) as unknown as BrowserSessionSummary,
-        ],
-        browserProfiles: [],
-        browserPlacements: [],
-        machines: [],
-      } as unknown as HostSnapshot),
-    );
-    expect(listed.find((place) => place.key === `browser:${sessionId}:${tabId}`)?.loading).toBe(
-      true,
-    );
+    // Loading follows the exact runtime surface.
     // Another tab of the same browser is not loading.
     expect(read.tabs.filter((tab) => tab.id !== tabId).every((tab) => !tab.loading)).toBe(true);
 
@@ -456,7 +434,7 @@ run("Browser Sessions through a whole deployment", () => {
     );
     await until("held again", tabId, true);
     const current = await catalog();
-    const closed = await stack.api["commands.dispatch"]({
+    const closed = await runtimeBrowserCommand(stack, {
       type: "browser.tab.close",
       sessionId,
       surfaceId: tabId,
@@ -485,7 +463,7 @@ run("Browser Sessions through a whole deployment", () => {
       await startPersonBrowser(stack, { viewport: { height: 600, width: 800 } }),
     );
     for (let index = 1; index < 9; index++) {
-      const opened = await stack.api["commands.dispatch"]({
+      const opened = await runtimeBrowserCommand(stack, {
         type: "browser.tab.open",
         sessionId,
         idempotencyKey: `capacity-tab-${index}`,
@@ -590,7 +568,7 @@ run("Browser Sessions through a whole deployment", () => {
     for (const drop of release) drop();
     let current = catalog;
     for (const surfaceId of targets.slice(2)) {
-      const closed = await stack.api["commands.dispatch"]({
+      const closed = await runtimeBrowserCommand(stack, {
         type: "browser.tab.close",
         sessionId,
         surfaceId,
@@ -603,14 +581,14 @@ run("Browser Sessions through a whole deployment", () => {
     }
     expect(current.tabs).toHaveLength(2);
     const displayed = current;
-    const removedElsewhere = await stack.api["commands.dispatch"]({
+    const removedElsewhere = await runtimeBrowserCommand(stack, {
       type: "browser.tab.close",
       sessionId,
       surfaceId: targets[1]!,
       inventoryRevision: displayed.inventoryRevision!,
       idempotencyKey: randomUUID(),
     });
-    const firstDecision = await stack.api["commands.dispatch"]({
+    const firstDecision = await runtimeBrowserCommand(stack, {
       type: "browser.tab.close",
       sessionId,
       surfaceId: targets[0]!,
@@ -622,7 +600,7 @@ run("Browser Sessions through a whole deployment", () => {
     expect(surviving.tabs).toEqual([
       expect.objectContaining({ id: targets[0]!, availability: "ready" }),
     ]);
-    const secondDecision = await stack.api["commands.dispatch"]({
+    const secondDecision = await runtimeBrowserCommand(stack, {
       type: "browser.tab.close",
       sessionId,
       surfaceId: targets[0]!,
@@ -941,7 +919,7 @@ run("Browser Sessions through a whole deployment", () => {
     const tabView = { height: 640, width: 1_180 };
     const loads = () => site.seen.filter((entry) => entry.at === "load");
     const loadsBeforeTab = loads().length;
-    const opened = await stack.api["commands.dispatch"]({
+    const opened = await runtimeBrowserCommand(stack, {
       type: "browser.tab.open",
       sessionId,
       url: `${site.origin}/sized`,
@@ -1214,7 +1192,7 @@ run("Browser Sessions through a whole deployment", () => {
 
         // Closing the popup returns them to the opener, which is as it was.
         const closedFrom = viewer.entries.length;
-        const closed = await stack.api["commands.dispatch"]({
+        const closed = await runtimeBrowserCommand(stack, {
           type: "legacy.tab.close",
           tabId: popup,
           idempotencyKey: randomUUID(),
@@ -1355,7 +1333,7 @@ run("Browser Sessions through a whole deployment", () => {
               entries: viewer.entries.map((entry) =>
                 entry.kind === "frame" ? { kind: entry.kind, header: entry.header } : entry,
               ),
-              bootstrap: await stack.api["bootstrap.legacy.get"]({}),
+              bootstrap: await stack.api["bootstrap.get"]({}),
             },
             null,
             2,
@@ -1469,10 +1447,15 @@ run("Browser Sessions through a whole deployment", () => {
         pageAnsweredBeforePicture,
         liveAfterAnswer: live?.kind === "frame" ? live.header : null,
       };
-      const bootstrap = await stack.api["bootstrap.legacy.get"]({});
+      const bootstrap = await stack.api["bootstrap.get"]({});
       const sessionState =
         bootstrap.ok &&
-        bootstrap.data.browser.groups.rows.find((s) => s.sessionId === sessionId)?.state;
+        (
+          await stack.host.store.getBrowserSessionForOwner(
+            BrowserSessionIdSchema.parse(sessionId),
+            bootstrap.data.user.id,
+          )
+        )?.state;
       const outcome = {
         mode,
         handoffInjected,
@@ -1627,10 +1610,15 @@ run("Browser Sessions through a whole deployment", () => {
       expect(runtime.protocolErrors()).toEqual([]);
       expect(runtime.streamOpen()).toBe(true);
       expect(control.socket.readyState).toBe(WebSocket.OPEN);
-      const bootstrap = await stack.api["bootstrap.legacy.get"]({});
+      const bootstrap = await stack.api["bootstrap.get"]({});
       expect(
         bootstrap.ok &&
-          bootstrap.data.browser.groups.rows.find((s) => s.sessionId === sessionId)?.state,
+          (
+            await stack.host.store.getBrowserSessionForOwner(
+              BrowserSessionIdSchema.parse(sessionId),
+              bootstrap.data.user.id,
+            )
+          )?.state,
       ).toBe("ready");
       return {
         browserModule: runtime.browserModule(),

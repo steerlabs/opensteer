@@ -23,8 +23,6 @@ export * from "./schema.js";
 export * from "./store.js";
 export * from "./trigger-store.js";
 
-export * from "./browser-tab-group-store.js";
-
 export { BrowserHistoryStore } from "./browser-history-store.js";
 export * from "./browser-profile-storage-store.js";
 export * from "./notification-preview-key-store.js";
@@ -68,7 +66,8 @@ export { deliverTaskQuestionNotice, cancelSettledTaskQuestionNotice } from "./th
 
 export * from "./private-resource-store.js";
 
-export * from "./personal-tab-store.js";
+export * from "./tab-store.js";
+export * from "./agent-tool-activity-store.js";
 
 export {
   reportAgentHomeSkills,

@@ -12,7 +12,7 @@ import {
 import { describeStore } from "@opensteer/database/test-support/store";
 import { createIntegrationId } from "@opensteer/integration-core";
 import { RealtimeHub } from "@opensteer/orchestration";
-import type { LegacyHostToClientMessage as HostToClientMessage } from "@opensteer/protocol";
+import type { HostToClientMessage } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
 import type { HostApiCommand } from "@opensteer/protocol";
 import { expect, vi } from "vitest";

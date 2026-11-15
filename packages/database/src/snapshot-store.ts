@@ -28,7 +28,7 @@ import {
   SequenceSchema,
 } from "@opensteer/core";
 import {
-  type LegacyDeploymentSnapshot as DeploymentSnapshot,
+  type DeploymentSnapshot,
   deploymentSnapshotMaxRunQueueEntries,
   deploymentSnapshotMaxThreads,
   deploymentSnapshotMaxMessages,
@@ -57,7 +57,7 @@ import {
   eventFromRow,
 } from "./store-primitives.js";
 import { type Kysely, type Transaction, sql } from "kysely";
-import { type LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import { type DatabaseSchema } from "./schema.js";
 import { NotificationStateStore } from "./notification-state.js";
 import {
   threadPendingRequestsForReader,
@@ -261,10 +261,10 @@ export async function deploymentSnapshot(
             ? { deviceAccessRequests: options.deviceAccessRequests }
             : {}),
         }),
-        options.readResources({ database: transaction, ownerId, maxBytes: 128 * 1024 }),
+        options.readResources({ database: transaction, ownerId, maxBytes: 240 * 1024 }),
       ]);
       const tasks = { recent, active, done };
-      if (Buffer.byteLength(JSON.stringify(resources)) > 128 * 1024)
+      if (Buffer.byteLength(JSON.stringify(resources)) > 240 * 1024)
         throw new OpensteerError({
           code: "resource_exhausted",
           message: "Personal resources exceed the snapshot byte limit.",

@@ -33,9 +33,11 @@ export interface AppServerState {
 }
 export class AppServerError extends Error {
   readonly logTail: string;
-  constructor(message: string, logTail: string) {
+  readonly reason: "port_in_use" | undefined;
+  constructor(message: string, logTail: string, reason?: "port_in_use") {
     super(message);
     this.logTail = logTail;
+    this.reason = reason;
   }
 }
 interface Options {
@@ -239,6 +241,7 @@ export class AppServerManager {
         throw new AppServerError(
           `Port ${spec.port} is in use by another program on this computer. Stop that program, then start the app again.`,
           "",
+          "port_in_use",
         );
       const environment = programEnvironment();
       environment.PORT = String(spec.port);

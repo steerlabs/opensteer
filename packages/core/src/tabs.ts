@@ -62,6 +62,12 @@ export const TabTargetSchema = z.union([
   z.strictObject({
     kind: z.literal("page"),
     url: PageOpenUrlSchema,
+    viewport: z
+      .strictObject({
+        width: z.number().int().min(1).max(8192),
+        height: z.number().int().min(1).max(8192),
+      })
+      .optional(),
     profileId: BrowserProfileIdSchema.describe(
       "Profile ID from browser_profile_list; the profile's home selects its computer.",
     ),
@@ -69,6 +75,12 @@ export const TabTargetSchema = z.union([
   z.strictObject({
     kind: z.literal("page"),
     url: PageOpenUrlSchema,
+    viewport: z
+      .strictObject({
+        width: z.number().int().min(1).max(8192),
+        height: z.number().int().min(1).max(8192),
+      })
+      .optional(),
     guest: z.literal(true),
     computerId: RunnerIdSchema.optional().describe(
       "Computer ID from computer_list; for Guest, omitted means the hosting computer.",
@@ -76,18 +88,14 @@ export const TabTargetSchema = z.union([
   }),
   z.strictObject({
     kind: z.literal("window"),
-    computerId: RunnerIdSchema.describe(
-      "Computer ID from computer_list; for Guest, omitted means the hosting computer.",
-    ),
+    computerId: RunnerIdSchema.describe("Computer ID from computer_list."),
     windowId: WindowIdSchema.describe(
       "Opaque exact-window handle from computer_use app.windows() or the Host window picker; valid on this computer only.",
     ),
   }),
   z.strictObject({
     kind: z.literal("window"),
-    computerId: RunnerIdSchema.describe(
-      "Computer ID from computer_list; for Guest, omitted means the hosting computer.",
-    ),
+    computerId: RunnerIdSchema.describe("Computer ID from computer_list."),
     bundleId: z
       .string()
       .min(1)
@@ -98,9 +106,7 @@ export const TabTargetSchema = z.union([
   }),
   z.strictObject({
     kind: z.literal("phone"),
-    computerId: RunnerIdSchema.describe(
-      "Computer ID from computer_list; for Guest, omitted means the hosting computer.",
-    ),
+    computerId: RunnerIdSchema.describe("Computer ID from computer_list."),
   }),
   z.strictObject({
     kind: z.literal("app"),

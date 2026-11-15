@@ -1,3 +1,4 @@
+import { TabIdSchema } from "../../packages/core/src/index.js";
 import {
   connectCallerMachine,
   createMachineAccessDatabase,
@@ -120,14 +121,18 @@ export async function startMobileNetworkHost(databaseUrl: string): Promise<Mobil
             await transaction
               .insertInto("personalTabs")
               .values({
-                id: `benchmark-${index}`,
-                groupId: id,
-                sessionId: id,
+                id: TabIdSchema.parse(`benchmark-${index}`),
+                ownerId: active.ownerId,
+                computerId: caller.runnerId,
+                kind: "page",
+                openedBy: "person",
+                pageBinding: {
+                  lineageId: id,
+                  sessionId: id,
+                  surfaceId: TabIdSchema.parse(`benchmark-${index}`),
+                },
                 title: `Saved tab ${index}`,
                 url: `https://example.test/${index}`,
-                order: 0,
-                openerId: null,
-                state: "suspended",
                 createdAt,
                 closedAt: null,
               })
@@ -163,7 +168,7 @@ export async function seedPersonal(
 ) {
   const caller = await host.connectHostingCaller();
   cleanup.push(() => caller.close());
-  const boot = await host.api["bootstrap.legacy.get"]({});
+  const boot = await host.api["bootstrap.get"]({});
   if (!boot.ok) throw new Error(boot.error.message);
   const deploymentId = boot.data.deploymentId;
   const createThread = async (key: string) => {

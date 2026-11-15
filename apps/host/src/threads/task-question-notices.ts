@@ -8,7 +8,7 @@ import {
 import {
   cancelSettledTaskQuestionNotice,
   deliverTaskQuestionNotice,
-  type LegacyDatabaseSchema as DatabaseSchema,
+  type DatabaseSchema,
 } from "@opensteer/database";
 import type { Kysely } from "kysely";
 interface TaskQuestionNoticeOptions {

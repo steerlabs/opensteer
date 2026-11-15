@@ -2,7 +2,7 @@ import type { BrowserProfileId, RunnerId } from "@opensteer/core";
 import type { Transaction } from "kysely";
 import { randomUUID } from "node:crypto";
 import { profileStorage } from "./browser-profile-storage-store.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { databaseOperationOptions } from "./operation-budget.js";
 
 export async function archiveRunnerBrowserProfiles(

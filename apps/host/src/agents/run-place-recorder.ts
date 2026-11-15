@@ -1,6 +1,5 @@
 import { systemClock, type Clock } from "@opensteer/shared/clock";
 import {
-  placeIdentityKey,
   type AgentEvent,
   type EventData,
   type RunId,
@@ -78,11 +77,7 @@ export class RunPlaceRecorder<
       const pending = this.#pending.get(runId);
       this.#cancelPending(runId);
       if (previous?.generation === bindingGeneration) {
-        if (
-          previous.key === ("tabId" in data ? data.tabId : placeIdentityKey(data.place)) &&
-          !pending
-        )
-          return;
+        if (previous.key === data.tabId && !pending) return;
         const remaining = previous.at + runPlaceIntervalMs - this.#clock.now();
         if (remaining > 0) {
           const cancel = this.#clock.schedule(() => this.#flushPending(runId), remaining);
@@ -111,7 +106,7 @@ export class RunPlaceRecorder<
     const { runId, bindingGeneration, data } = input;
     const last = {
       generation: bindingGeneration,
-      key: "tabId" in data ? data.tabId : placeIdentityKey(data.place),
+      key: data.tabId,
       at: this.#clock.now(),
     };
     const previous = this.#last.get(runId);

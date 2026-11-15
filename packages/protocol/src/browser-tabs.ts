@@ -1,16 +1,8 @@
 import { z } from "zod";
-import { BrowserProfileAccessSchema } from "@opensteer/browser-profile/grant";
-import {
-  BrowserSurfaceIdSchema,
-  BrowserProfileIdSchema,
-  BrowserSessionIdSchema,
-  IsoDateTimeSchema,
-  RunnerIdSchema,
-  RunIdSchema,
-  ThreadIdSchema,
-} from "@opensteer/core";
-import { PlaceOccupantSchema } from "./places.js";
-import { keyedStreamSchema, keyedStreamViewSchema } from "./keyed-stream.js";
+
+import { BrowserSurfaceIdSchema, RunnerIdSchema, ThreadIdSchema } from "@opensteer/core";
+
+import { keyedStreamSchema } from "./keyed-stream.js";
 export const browserPersonalTabUrlMaxLength = 16_384;
 
 export const browserFaviconMaxBytes = 16 * 1_024;
@@ -83,58 +75,6 @@ export const BrowserTabStreamSchema = keyedStreamSchema(
 );
 export const BrowserSavedTabStreamSchema = keyedStreamSchema(
   z.strictObject({ id: BrowserSurfaceIdSchema }),
-  z.strictObject({}),
-);
-export const BrowserGroupRowSchema = z.strictObject({
-  id: BrowserSessionIdSchema,
-  createdAt: IsoDateTimeSchema.max(64),
-  unavailableReason: z.string().max(1000).nullable(),
-  tabCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-  inventoryRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-  sessionId: BrowserSessionIdSchema,
-
-  state: HostedBrowserSessionStateSchema,
-  origin: z.enum(["agent", "trigger", "person"]),
-  access: BrowserProfileAccessSchema,
-  placement: BrowserPlacementSelectorViewSchema,
-  profileId: BrowserProfileIdSchema.nullable(),
-  runtimeId: z.string().min(1).max(255),
-  opener: BrowserSessionOpenerSchema,
-  navigation: z.boolean(),
-  sessionCreatedAt: IsoDateTimeSchema.max(64),
-  updatedAt: IsoDateTimeSchema.max(64),
-  acting: z.boolean(),
-  page: BrowserPagePresenceSchema.nullable(),
-  attachedRunIds: z.array(RunIdSchema).max(browserSessionMaxAttachedRuns),
-  threadIds: z.array(ThreadIdSchema).max(browserSessionMaxThreads),
-});
-export type BrowserGroupRow = z.infer<typeof BrowserGroupRowSchema>;
-export const BrowserTabRowSchema = z.strictObject({
-  id: BrowserSurfaceIdSchema,
-  sessionId: BrowserSessionIdSchema,
-  title: z.string().max(256),
-  site: z.string().max(2048),
-  iconRef: BrowserTabIconRefSchema.nullable(),
-  order: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-  openerId: BrowserSurfaceIdSchema.nullable(),
-  createdAt: IsoDateTimeSchema.max(64),
-  state: z.enum(["live", "suspended", "restoring"]),
-  availability: z.enum(["ready", "starting", "unavailable"]),
-  loading: z.boolean(),
-  navigationFailed: z.boolean(),
-  documentId: z.string().min(1).max(255).nullable(),
-  canGoBack: z.boolean(),
-  canGoForward: z.boolean(),
-  occupants: z.array(PlaceOccupantSchema).max(browserSessionMaxThreads),
-});
-export type BrowserTabRow = z.infer<typeof BrowserTabRowSchema>;
-
-export const BrowserGroupStreamSchema = keyedStreamViewSchema(
-  BrowserGroupRowSchema,
-  z.strictObject({}),
-);
-export const BrowserClientTabStreamSchema = keyedStreamViewSchema(
-  BrowserTabRowSchema,
   z.strictObject({}),
 );
 export const BrowserViewerSurfaceSchema = BrowserTabRecordSchema.omit({

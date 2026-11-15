@@ -59,7 +59,7 @@ async function enrolled() {
     publicKeyFingerprint: runnerPublicKeyFingerprint(keys.publicKey),
   });
   const device = (
-    await testRpcData(host.origin, "machines.legacy.list", {}, { headers: host.ownerHeaders })
+    await testRpcData(host.origin, "machines.list", {}, { headers: host.ownerHeaders })
   ).machines.find((row) => row.id === runnerId)!;
   expect(device.allowedModules).toEqual(["browser", "integrations", "messaging", "shell"]);
   expect(device.access?.policy).toMatchObject({ browser: false, apps: false, reach: "nobody" });

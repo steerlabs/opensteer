@@ -4,9 +4,6 @@ import { TabBootstrapSchema } from "./tabs.js";
 import { IdleCompactionPolicyViewSchema, PersonalSettingsSchema } from "@opensteer/core";
 import { AuthSessionIdSchema, PersonNameSchema, QuietTaskDaysSchema } from "@opensteer/core";
 import {
-  AppIdSchema,
-  AppTitleSchema,
-  ThreadIdSchema,
   AuthenticatedUserSchema,
   DeploymentIdSchema,
   ExecutionEnvironmentKindSchema,
@@ -16,15 +13,13 @@ import {
   IdentityConfigSchema,
 } from "@opensteer/core";
 import { z } from "zod";
-import { LegacyThreadPlaceReferenceSchema, ThreadPlaceReferenceSchema } from "./places.js";
-import { LegacyHostedBrowserBootstrapSchema } from "./browser.js";
+import { ThreadPlaceReferenceSchema } from "./places.js";
 
 import {
   HarnessModelSettingsMapViewSchema,
   HarnessInstanceCatalogViewSchema,
   RunnerHarnessDriverViewSchema,
 } from "./runner.js";
-import { LegacyMachineSummarySchema } from "./machines.js";
 
 export const HostEnvironmentStatusSchema = z.enum(["connected", "disconnected"]);
 export type HostEnvironmentStatus = z.infer<typeof HostEnvironmentStatusSchema>;
@@ -76,17 +71,6 @@ export const IdentityConfigViewSchema = z.object({
   oidcProviders: z.array(z.object(IdentityConfigSchema.shape.oidcProviders.element.shape)).max(16),
 });
 
-export const AppTabSchema = z.object({
-  appId: AppIdSchema,
-  title: AppTitleSchema,
-  threadId: ThreadIdSchema,
-
-  openedAt: z.iso.datetime({ offset: true }),
-  latestVersion: z.number().int().positive(),
-});
-export const AppTabsSchema = z.array(AppTabSchema).max(500);
-export type AppTab = z.infer<typeof AppTabSchema>;
-
 /**
  * The personal owner's name: null shows as "You". While `accountBacked`, the linked Opensteer
  * Account owns it and a name is required.
@@ -99,7 +83,7 @@ export const OwnerProfileViewSchema = z.object({
 });
 export type OwnerProfileView = z.infer<typeof OwnerProfileViewSchema>;
 
-export const LegacyHostBootstrapSchema = z.object({
+export const HostBootstrapSchema = z.object({
   /**
    * The personal API version this caller is served. A Host from before the
    * window omits it: it admits a caller only at the caller's minimum.
@@ -120,9 +104,9 @@ export const LegacyHostBootstrapSchema = z.object({
     manageComputers: z.boolean(),
     managePrivateResources: z.boolean(),
   }),
-  appTabs: AppTabsSchema,
-  browser: LegacyHostedBrowserBootstrapSchema,
-  latestPlaces: z.array(LegacyThreadPlaceReferenceSchema).max(4096),
+  tabs: TabBootstrapSchema,
+  browser: HostedBrowserBootstrapSchema,
+  latestPlaces: z.array(ThreadPlaceReferenceSchema).max(4096),
   environments: z.array(HostBootstrapEnvironmentSchema).max(400),
   executionPreferences: ExecutionPreferencesViewSchema,
   quietTaskDays: QuietTaskDaysSchema,
@@ -130,15 +114,9 @@ export const LegacyHostBootstrapSchema = z.object({
   ownerProfile: OwnerProfileViewSchema.optional(),
   harnesses: z.array(HostBootstrapHarnessSchema).max(400),
   identityConfig: IdentityConfigViewSchema,
-  machines: z.array(LegacyMachineSummarySchema).max(400),
+  machines: z.array(MachineSummarySchema).max(400),
   sessionSurface: z.enum(["canonical", "personal-remote"]),
   user: AuthenticatedUserViewSchema,
 });
 
-export const HostBootstrapSchema = LegacyHostBootstrapSchema.omit({ appTabs: true }).extend({
-  tabs: TabBootstrapSchema,
-  browser: HostedBrowserBootstrapSchema,
-  latestPlaces: z.array(ThreadPlaceReferenceSchema).max(4096),
-  machines: z.array(MachineSummarySchema).max(400),
-});
 export type HostBootstrap = z.infer<typeof HostBootstrapSchema>;

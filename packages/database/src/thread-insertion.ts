@@ -7,7 +7,7 @@ import {
   type ThreadTitleSource,
 } from "@opensteer/core";
 import type { InsertObject, Transaction } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema, ThreadRow } from "./schema.js";
+import type { DatabaseSchema, ThreadRow } from "./schema.js";
 import { requireExecutionEnvironmentAccess } from "./store-primitives.js";
 
 type ThreadParents = {

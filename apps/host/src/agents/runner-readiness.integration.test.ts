@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
-import { LegacyRunnerToHostMessageSchema as RunnerToHostMessageSchema } from "@opensteer/protocol";
+import { RunnerToHostMessageSchema } from "@opensteer/protocol";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { readCodexRunCaptures } from "./codex-capture.test-support.js";
@@ -337,7 +337,7 @@ const evidence: unknown[] = [];
         operation = (kind === "crash" ? stack.crashRunner() : stack.restartRunner()).then(
           async () => {
             proceeded = true;
-            return stack.api["bootstrap.legacy.get"]({});
+            return stack.api["bootstrap.get"]({});
           },
         );
         void operation.catch(() => undefined);
@@ -383,7 +383,7 @@ const evidence: unknown[] = [];
             (record) => record.harnessInstanceId === accountId,
           )!.catalog.status,
         ).toBe("ready");
-        const bootstrap = await stack.api["bootstrap.legacy.get"]({});
+        const bootstrap = await stack.api["bootstrap.get"]({});
         if (!bootstrap.ok) throw new Error(bootstrap.error.message);
         const environment = bootstrap.data.environments.find(
           (entry) => entry.id === harness.environmentId,

@@ -163,7 +163,7 @@ export class ComputerViewService {
       return windows;
     } catch (error) {
       // A refused list only hides the person's window picker; this is its one trace.
-      this.#options.log?.("computer.app.legacy.windows", {
+      this.#options.log?.("computer.app.windows", {
         machineId: machine,
         bundleId: app.bundleId,
         reason: error instanceof OpensteerError ? (error.reason ?? error.code) : "failed",

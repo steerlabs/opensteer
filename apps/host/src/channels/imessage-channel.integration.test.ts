@@ -162,7 +162,7 @@ integration("iMessage channel", () => {
       await waitForCondition(async () => {
         const { machines } = await testRpcData(
           host.origin,
-          "machines.legacy.list",
+          "machines.list",
           {},
           { headers: host.ownerHeaders },
         );

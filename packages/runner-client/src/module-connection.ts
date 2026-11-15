@@ -1,9 +1,9 @@
 import type { RuntimeMode } from "@opensteer/core";
 import {
-  LegacyHostToRunnerMessageSchema as HostToRunnerMessageSchema,
+  HostToRunnerMessageSchema,
   RunnerAuxiliaryRequestIdSchema,
   RunnerAuxiliaryWelcomeSchema,
-  type LegacyHostToRunnerMessage as HostToRunnerMessage,
+  type HostToRunnerMessage,
   type RunnerAuxiliaryFrameFence,
   type RunnerAuxiliaryModule,
   type RunnerBootId,
@@ -429,6 +429,7 @@ export class RunnerModuleConnection {
 
 function modulePrimaryMessageFence(message: PostAuthenticationHostMessage): RunnerConnectionFence {
   switch (message.type) {
+    case "host.apps.sync":
     case "host.app.start":
     case "host.app.connect":
     case "host.app.stop":

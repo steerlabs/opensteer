@@ -1,9 +1,10 @@
 import {
   AttachmentIdSchema,
-  parseLegacyReferenceHref,
+  parseReferenceHref,
+  referenceHref,
   requestTitleText,
   RequestPresentationSchema,
-  type LegacyReference as Reference,
+  type Reference,
   type ReferenceId,
   type UserId,
 } from "@opensteer/core";
@@ -14,14 +15,14 @@ import { attachmentUserAdmission } from "./attachment-store.js";
 import { publishedMessagePredicate } from "./message-visibility.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { executionDate, withPersonalReadTransaction } from "./personal-transaction.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 
 export async function resolvePersonalReferences(
   database: Kysely<DatabaseSchema>,
   input: { readonly ownerId: UserId; readonly ids: readonly ReferenceId[] },
 ): Promise<readonly ReferenceResolution[]> {
   const ids = [...new Set(ReferenceResolveInputSchema.parse({ ids: input.ids }).ids)];
-  const references = ids.map((id) => parseLegacyReferenceHref(`opensteer:${id}`)!);
+  const references = ids.map((id) => parseReferenceHref(referenceHref(id))!);
   const ofKind = <Kind extends Reference["kind"]>(kind: Kind) =>
     references
       .filter((reference) => reference.kind === kind)
@@ -30,6 +31,21 @@ export async function resolvePersonalReferences(
   return withPersonalReadTransaction(database, async (tx) => {
     await requirePersonalOwner(tx, input.ownerId);
     const found = new Map<ReferenceId, ReferenceResolution>();
+    const tabs = ofKind("tab");
+    if (tabs.length)
+      for (const row of await tx
+        .selectFrom("personalTabs")
+        .select(["id", "title"])
+        .where("ownerId", "=", input.ownerId)
+        .where("id", "in", tabs)
+        .where("closedAt", "is", null)
+        .execute())
+        found.set(row.id, {
+          status: "available",
+          kind: "tab",
+          id: row.id,
+          title: title(row.title, "Tab"),
+        });
     const tasks = ofKind("task");
     if (tasks.length)
       for (const row of await tx

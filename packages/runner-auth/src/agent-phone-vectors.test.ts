@@ -21,7 +21,7 @@ import {
   displayDataTicketTtlMs,
   displayDefaultMaxLongSide,
   displayDefaultMaxFps,
-  LegacyHostToRunnerMessageSchema as HostToRunnerMessageSchema,
+  HostToRunnerMessageSchema,
   RunnerChallengeSchema,
   RunnerDescriptorSchema,
   RunnerAuxiliaryChallengeSchema,

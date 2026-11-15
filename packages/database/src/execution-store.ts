@@ -7,11 +7,7 @@ import { withPersonalReadTransaction, withPersonalTransaction } from "./personal
 import "./connection.js";
 import { issueRunGrant, type RevokedRunGrant } from "./run-grants.js";
 import { pendingReplacementAttempt } from "./run-attempts.js";
-import {
-  type CommandRow,
-  type ProviderSessionTable,
-  type LegacyDatabaseSchema as DatabaseSchema,
-} from "./schema.js";
+import { type CommandRow, type ProviderSessionTable, type DatabaseSchema } from "./schema.js";
 import {
   isPlaceContentPart,
   placeContentLabel,

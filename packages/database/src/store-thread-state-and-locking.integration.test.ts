@@ -10,7 +10,7 @@ import { cancelPending } from "./request-cancellation.js";
 import { HarnessIdSchema, createId, type AgentEvent, type RunnerId } from "@opensteer/core";
 import { CamelCasePlugin, Kysely, PostgresDialect, sql } from "kysely";
 import { Pool } from "pg";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { describe, expect, vi } from "vitest";
 import { OpensteerStore, TriggerStore } from "./index.js";
 import {

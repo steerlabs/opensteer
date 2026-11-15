@@ -4,7 +4,7 @@ import { sql, type Kysely } from "kysely";
 import { runReply } from "./run-reply.js";
 import { eventFromRow } from "./deployment-events.js";
 import { requirePersonalOwner, personalSettings } from "./personal-settings-store.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 
 export interface PersonalTeamRunOutcome {
   readonly runId: RunId | null;

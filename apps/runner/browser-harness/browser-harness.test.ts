@@ -127,6 +127,7 @@ it("returns shared ToolError results and preserves content blocks for tools with
               isError: true,
             }
           : { content: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }] },
+        input.name === "denied" ? { status: 400 } : {},
       );
     }),
   );

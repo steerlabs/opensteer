@@ -9,8 +9,6 @@
     "./frame-limits": "./src/browser-frame-limits.ts",
     "./bytes": "./src/bytes.ts",
     "./session-cdp-router": "./src/portable-session-cdp-router.ts",
-    "./agent-cdp-policy": "./src/agent-cdp-policy.ts",
-    "./agent-cdp-allowlist": "./src/agent-cdp-allowlist.ts",
     "./execution-contexts": "./src/execution-contexts.ts",
     "./key-codes": "./src/key-codes.ts",
     "./input-lane": "./src/input-lane.ts",

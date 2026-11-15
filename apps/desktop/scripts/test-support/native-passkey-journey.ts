@@ -52,13 +52,12 @@ export async function createNativePasskeyJourney({
       };
       const open = async () => {
         const result = await kit.context.api["commands.dispatch"]({
-          type: "browser.tab.open",
-          sessionId: kit.context.sessionId,
+          type: "tab.open",
+          target: { kind: "page", guest: true, url: site.origin },
           idempotencyKey: randomUUID(),
-          url: site.origin,
         });
-        assert(result.ok && result.data.type === "browser.tab.open");
-        await kit.selectNativePage(kit.context.sessionId, result.data.tabId);
+        assert(result.ok && result.data.type === "tab.open");
+        await kit.selectNativePage(kit.context.sessionId, result.data.tab.tabId);
         await kit.until(
           async () =>
             (await kit.pageContents().executeJavaScript("typeof window.runCeremony")) ===

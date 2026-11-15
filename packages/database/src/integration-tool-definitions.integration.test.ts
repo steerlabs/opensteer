@@ -28,7 +28,7 @@ import { IntegrationAuthorityCache } from "./integration-authority-cache.js";
 import { IntegrationPlatformStore } from "./integration-platform-store.js";
 import { replaceServerToolsInTransaction } from "./integration-platform-stores.js";
 import { migrateToLatest } from "./migrations.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { OpensteerStore } from "./store.js";
 import { jsonValue } from "./store-primitives.js";
 

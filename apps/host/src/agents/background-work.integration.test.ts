@@ -580,7 +580,7 @@ integration("Background work", () => {
           stopped.mockRestore();
         }
         const environment = async () => {
-          const result = await active.api["bootstrap.legacy.get"]({});
+          const result = await active.api["bootstrap.get"]({});
           if (!result.ok) throw new Error(result.error.message);
           return result.data.environments.find((entry) => entry.id === active.environmentId);
         };

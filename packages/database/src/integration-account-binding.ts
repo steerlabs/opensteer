@@ -5,7 +5,7 @@ import type {
 } from "@opensteer/integration-core/ports";
 import type { Kysely, Transaction } from "kysely";
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 
 /** Resolve the same binding at launch and completion so replacing it invalidates outstanding consent. */
 export async function readIntegrationAccountBinding(input: {

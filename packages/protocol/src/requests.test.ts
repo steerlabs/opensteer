@@ -2,8 +2,8 @@ import { createId, SequenceSchema } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
   ClientToHostMessageSchema,
-  LegacyHostToClientMessageSchema,
-  LegacyDeploymentSnapshotSchema,
+  HostToClientMessageSchema,
+  DeploymentSnapshotSchema,
 } from "./index.js";
 
 const now = "2026-08-22T12:00:00.000Z";
@@ -78,13 +78,11 @@ describe("Request protocol", () => {
       tasks: { recent: emptyPage, active: emptyPage, done: emptyPage },
       needsYou: { count: 1, entries: [], window: emptyWindow },
       resources: {
-        appTabs: [],
+        tabs: { tabs: [], layout: { revision: 0, items: [] }, complete: true },
         browser: {
           available: false,
           profiles: [],
           placements: [],
-          groups: { rows: [], complete: true },
-          tabs: [],
         },
       },
       messageWindows: [],
@@ -98,16 +96,16 @@ describe("Request protocol", () => {
       threads: [thread],
       deploymentId: createId("deployment"),
     } as const;
-    expect(LegacyDeploymentSnapshotSchema.parse(snapshot)).toEqual(snapshot);
-    expect(LegacyDeploymentSnapshotSchema.parse({ ...snapshot, messagesOmitted: true })).toEqual({
+    expect(DeploymentSnapshotSchema.parse(snapshot)).toEqual(snapshot);
+    expect(DeploymentSnapshotSchema.parse({ ...snapshot, messagesOmitted: true })).toEqual({
       ...snapshot,
       messagesOmitted: true,
     });
     expect(
-      LegacyDeploymentSnapshotSchema.safeParse({ ...snapshot, messagesOmitted: false }).success,
+      DeploymentSnapshotSchema.safeParse({ ...snapshot, messagesOmitted: false }).success,
     ).toBe(false);
     expect(
-      LegacyDeploymentSnapshotSchema.safeParse({
+      DeploymentSnapshotSchema.safeParse({
         ...snapshot,
         messagesOmitted: true,
         messageWindows: [{ ...emptyWindow, threadId: thread.id }],
@@ -127,18 +125,18 @@ describe("Request protocol", () => {
       ClientToHostMessageSchema.safeParse({ ...subscription, snapshotMessages: "unknown" }).success,
     ).toBe(false);
     expect(
-      LegacyDeploymentSnapshotSchema.parse({
+      DeploymentSnapshotSchema.parse({
         ...snapshot,
         unexpectedWindow: snapshot.pendingRequestWindow,
         unexpectedRequests: snapshot.pendingRequests,
       }),
     ).toEqual(snapshot);
     expect(
-      LegacyDeploymentSnapshotSchema.safeParse({ ...snapshot, pendingRequests: undefined }).success,
+      DeploymentSnapshotSchema.safeParse({ ...snapshot, pendingRequests: undefined }).success,
     ).toBe(false);
 
     expect(
-      LegacyHostToClientMessageSchema.parse({
+      HostToClientMessageSchema.parse({
         futureFrameField: true,
         snapshot: { ...snapshot, futureSnapshotField: true },
         type: "host.snapshot",
@@ -161,7 +159,7 @@ describe("Request protocol", () => {
     } as const;
 
     expect(
-      LegacyHostToClientMessageSchema.parse({
+      HostToClientMessageSchema.parse({
         events: [event],
         futureFrameField: true,
         type: "host.events",
@@ -183,11 +181,9 @@ describe("Request protocol", () => {
       type: "host.events",
       throughSequence: "1",
     });
-    expect(LegacyHostToClientMessageSchema.safeParse({ type: "host.future-frame" }).success).toBe(
-      false,
-    );
+    expect(HostToClientMessageSchema.safeParse({ type: "host.future-frame" }).success).toBe(false);
     expect(
-      LegacyHostToClientMessageSchema.safeParse({
+      HostToClientMessageSchema.safeParse({
         reason: "future-reason",
         type: "host.resync-required",
       }).success,

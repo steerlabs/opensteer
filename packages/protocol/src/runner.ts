@@ -11,7 +11,7 @@ import { DelegationModelChoiceSchema } from "@opensteer/core";
 import { ComputerFolderSchema } from "@opensteer/core";
 import { RunnerSkillMetadataReportSchema } from "./runner-skill-metadata.js";
 import { RunnerSettingsReportSchema } from "./runner-agent-home-settings.js";
-import { LegacyHostAppRequestSchema, LegacyRunnerAppResultSchema } from "./apps.js";
+
 import { HostRunFileRequestSchema, RunnerRunFileResultSchema } from "./run-files.js";
 import { ChannelRuntimeCapabilitySchema } from "@opensteer/channel-core";
 import {
@@ -1734,11 +1734,13 @@ export const RunnerBackgroundTextResultSchema = z.strictObject({
   result: BackgroundTextResultSchema,
 });
 
-export const LegacyRunnerOperationalMessageSchema = z.discriminatedUnion("type", [
+export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
   RunnerBackgroundTextResultSchema,
   RunnerSkillMetadataReportSchema,
   RunnerSettingsReportSchema,
-  LegacyRunnerAppResultSchema,
+  RunnerAppResultSchema,
+  RunnerAppStateSchema,
+  RunnerAppsSyncResultSchema,
   RunnerRunFileResultSchema,
   z.strictObject({
     ...fencedMessageBase,
@@ -1913,7 +1915,7 @@ export const LegacyRunnerOperationalMessageSchema = z.discriminatedUnion("type",
     result: RunnerVoiceResultSchema,
   }),
 ]);
-export type LegacyRunnerOperationalMessage = z.infer<typeof LegacyRunnerOperationalMessageSchema>;
+export type RunnerOperationalMessage = z.infer<typeof RunnerOperationalMessageSchema>;
 
 /**
  * What a Runner's own code produces, before the transport stamps the fence.
@@ -1923,27 +1925,28 @@ export type LegacyRunnerOperationalMessage = z.infer<typeof LegacyRunnerOperatio
  * to stamp a stale one.
  */
 export type RunnerOperationalReport = DistributiveOmit<
-  LegacyRunnerOperationalMessage,
+  RunnerOperationalMessage,
   keyof RunnerConnectionFence
 >;
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 export type RunnerCommandAccepted = Extract<
-  LegacyRunnerOperationalMessage,
+  RunnerOperationalMessage,
   { readonly type: "runner.command-accepted" }
 >;
 
-export const LegacyRunnerToHostMessageSchema = z.discriminatedUnion("type", [
+export const RunnerToHostMessageSchema = z.discriminatedUnion("type", [
   RunnerAuthenticateSchema,
   RunnerEnrollSchema,
-  ...LegacyRunnerOperationalMessageSchema.options,
+  ...RunnerOperationalMessageSchema.options,
 ]);
-export type LegacyRunnerToHostMessage = z.infer<typeof LegacyRunnerToHostMessageSchema>;
+export type RunnerToHostMessage = z.infer<typeof RunnerToHostMessageSchema>;
 
-export const LegacyHostToRunnerMessageSchema = z.discriminatedUnion("type", [
+export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
   HostBackgroundTextSchema,
   RunnerChallengeSchema,
-  ...LegacyHostAppRequestSchema.options,
+  HostAppsSyncSchema,
+  ...HostAppRequestSchema.options,
   ...HostRunFileRequestSchema.options,
   z.strictObject({
     ...fencedMessageBase,
@@ -2158,47 +2161,5 @@ export const LegacyHostToRunnerMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("host.error"),
     error: ProtocolErrorSchema,
   }),
-]);
-export type LegacyHostToRunnerMessage = z.infer<typeof LegacyHostToRunnerMessageSchema>;
-
-export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
-  RunnerAppResultSchema,
-  RunnerAppStateSchema,
-  RunnerAppsSyncResultSchema,
-  ...LegacyRunnerOperationalMessageSchema.options.filter(
-    (
-      schema,
-    ): schema is Exclude<
-      (typeof LegacyRunnerOperationalMessageSchema.options)[number],
-      { shape: { type: { value: "runner.app.result" } } }
-    > => schema.shape.type.value !== "runner.app.result",
-  ),
-]);
-export type RunnerOperationalMessage = z.infer<typeof RunnerOperationalMessageSchema>;
-export const RunnerToHostMessageSchema = z.discriminatedUnion("type", [
-  RunnerAppResultSchema,
-  RunnerAppStateSchema,
-  RunnerAppsSyncResultSchema,
-  ...LegacyRunnerToHostMessageSchema.options.filter(
-    (
-      schema,
-    ): schema is Exclude<
-      (typeof LegacyRunnerToHostMessageSchema.options)[number],
-      { shape: { type: { value: "runner.app.result" } } }
-    > => schema.shape.type.value !== "runner.app.result",
-  ),
-]);
-export type RunnerToHostMessage = z.infer<typeof RunnerToHostMessageSchema>;
-export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
-  HostAppsSyncSchema,
-  ...HostAppRequestSchema.options,
-  ...LegacyHostToRunnerMessageSchema.options.filter(
-    (
-      schema,
-    ): schema is Exclude<
-      (typeof LegacyHostToRunnerMessageSchema.options)[number],
-      { shape: { type: { value: `host.app.${string}` } } }
-    > => !schema.shape.type.value.startsWith("host.app."),
-  ),
 ]);
 export type HostToRunnerMessage = z.infer<typeof HostToRunnerMessageSchema>;

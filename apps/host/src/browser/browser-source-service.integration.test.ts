@@ -20,7 +20,7 @@ import {
   createDatabase,
   migrateToLatest,
   OpensteerStore,
-  PersonalTabStore,
+  TabStore,
 } from "@opensteer/database";
 
 import type { PersonalHostAccessRouteEnvelope } from "@opensteer/deployment-authority";
@@ -404,7 +404,8 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       onDeploymentEvent: () => {},
       hostOrigin: new URL(sourceOrigin),
       repository: store,
-      personalTabs: new PersonalTabStore(database),
+      tabs: new TabStore(database),
+      tabPlaces: { write: async () => undefined, publish: () => {}, notice: () => {} },
       signer: new BrowserAttachTicketSigner({ keyId: "host-test", privateKey: hostKey.privateKey }),
       targetResolver: {
         placements: () =>
@@ -861,13 +862,22 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     const connection = runtime.connections.at(-1);
     if (!connection) throw new Error("Expected a runtime connection");
     const tabId = BrowserSurfaceIdSchema.parse(`tab-${opened.session.id.slice(4)}`);
-    await vi.waitFor(
-      async () =>
-        expect(
-          await new PersonalTabStore(database).get(ownerId, tabId),
-          "The runtime tab was not persisted",
-        ).not.toBeNull(),
-      { timeout: 2000 },
+    await new TabStore(database).open(
+      {
+        id: tabId,
+        kind: "page",
+        ownerId,
+        computerId: run.runnerId,
+        title: "Test",
+        url: "about:blank",
+        openedBy: "person",
+        pageBinding: {
+          lineageId: opened.session.id,
+          sessionId: opened.session.id,
+          surfaceId: tabId,
+        },
+      },
+      randomUUID(),
     );
     return {
       agent: {
@@ -2472,7 +2482,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       await vi.waitFor(() => expect(chrome.held, "Chrome export did not start").toHaveLength(1), {
         timeout: 2000,
       });
-      await new PersonalTabStore(database).close(ownerId, agent.tabId);
+      await new TabStore(database).close(ownerId, [agent.tabId], randomUUID());
       chrome.releaseExports();
       await expect(copy).rejects.toMatchObject({ code: "conflict" });
       expect(connection.imports()).toEqual([]);

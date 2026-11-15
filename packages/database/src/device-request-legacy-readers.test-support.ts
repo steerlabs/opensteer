@@ -5,7 +5,7 @@ import type { z } from "zod";
 
 let readers:
   | Promise<{
-      LegacyDeploymentSnapshotSchema: z.ZodType;
+      DeploymentSnapshotSchema: z.ZodType;
       NeedsYouPageSchema: z.ZodType;
       PendingRequestViewSchema: z.ZodType;
     }>
@@ -16,7 +16,7 @@ export function devicesLegacyReaders() {
     const root = resolve(import.meta.dirname, "../../..");
     const result = await build({
       stdin: {
-        contents: `export { LegacyDeploymentSnapshotSchema } from "./packages/protocol/src/client.ts";
+        contents: `export { DeploymentSnapshotSchema } from "./packages/protocol/src/client.ts";
           export { NeedsYouPageSchema } from "./packages/protocol/src/needs-you.ts";
           export { PendingRequestViewSchema } from "./packages/core/src/requests.ts";`,
         resolveDir: root,

@@ -5,12 +5,7 @@ import {
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import { assertPersonalOwner } from "./private-resource-owner.js";
-import {
-  eventDataSchemas,
-  integrationGatewayNamespaces,
-  placeIdentityKey,
-  type EventData,
-} from "@opensteer/core";
+import { eventDataSchemas, type EventData } from "@opensteer/core";
 import { storableText } from "./runner-event-store.js";
 import { appendHostDeploymentEvent } from "./deployment-events.js";
 import {
@@ -18,7 +13,6 @@ import {
   type BrowserProfileId,
   BrowserProfileIdSchema,
   type ContentPart,
-  IntegrationCallSubjectSchema,
   OpensteerError,
   type RunId,
   RunIdSchema,
@@ -37,7 +31,7 @@ import {
   type BrowserTabOpenBinding,
   BrowserTabOpenBindingSchema,
   type HostedBrowserSessionState,
-  type LegacyThreadPlaceReference as ThreadPlaceReference,
+  type ThreadPlaceReference,
   browserPageSite,
   browserSessionMaxAttachedRuns,
   browserSessionMaxThreads,
@@ -59,7 +53,7 @@ import {
 } from "./browser-profile-storage-store.js";
 
 import { databaseOperationOptions } from "./operation-budget.js";
-import { type LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import { type DatabaseSchema } from "./schema.js";
 import {
   findCommandByIdempotency,
   idempotencyConflict,
@@ -346,61 +340,7 @@ export async function deleteBrowserProfileInTransaction(
   if (!owned) {
     throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
   }
-  // No session can join these lineages while the session lock is held.
-  const lineages = await transaction
-    .selectFrom("browserSessions as session")
-    .select("session.tabGroupId")
-    .where("session.profileId", "=", input.profileId)
-    .where(({ exists, not, selectFrom }) =>
-      not(
-        exists(
-          selectFrom("browserSessions as newer")
-            .select("newer.id")
-            .whereRef("newer.tabGroupId", "=", "session.tabGroupId")
-            .where(sql<boolean>`(newer.created_at, newer.id) > (session.created_at, session.id)`),
-        ),
-      ),
-    )
-    .where(({ exists, selectFrom }) =>
-      exists(
-        selectFrom("personalTabs as tab")
-          .select("tab.id")
-          .whereRef("tab.groupId", "=", "session.tabGroupId")
-          .where("tab.closedAt", "is", null),
-      ),
-    )
-    .orderBy("session.tabGroupId")
-    .execute(databaseOperationOptions());
-  const groupIds = lineages.map((lineage) => lineage.tabGroupId);
   const now = new Date();
-  if (groupIds.length > 0) {
-    // Each lineage, then its tabs, in key order, as closing one lineage locks them.
-    await transaction
-      .selectFrom("browserSessions")
-      .select("id")
-      .where("id", "in", groupIds)
-      .orderBy("id")
-      .forNoKeyUpdate()
-      .execute(databaseOperationOptions());
-    await transaction
-      .selectFrom("personalTabs")
-      .select("id")
-      .where("groupId", "in", groupIds)
-      .orderBy("id")
-      .forNoKeyUpdate()
-      .execute(databaseOperationOptions());
-    await transaction
-      .updateTable("personalTabs")
-      .set({ closedAt: now })
-      .where("groupId", "in", groupIds)
-      .where("closedAt", "is", null)
-      .execute(databaseOperationOptions());
-    await transaction
-      .updateTable("browserSessions")
-      .set((eb) => ({ tabRevision: eb("tabRevision", "+", 1) }))
-      .where("id", "in", groupIds)
-      .execute(databaseOperationOptions());
-  }
   await transaction
     .updateTable("browserProfiles")
     .set({
@@ -658,78 +598,30 @@ export async function latestNativePlaces(
   database: Kysely<DatabaseSchema>,
   ownerId: UserId,
 ): Promise<readonly ThreadPlaceReference[]> {
-  const result = await sql<{
-    threadId: ThreadId;
-    runId: RunId;
-    integration: unknown;
-    at: Date;
-  }>`
-    with recursive native_calls as (
-      select distinct on (s.run_id, s.runner_binding_generation, s.data->>'callId', coalesce(s.data->>'nodeId', ''))
-        s.run_id, s.data->'integration' as integration, c.created_at as at, c.sequence
-      from deployment_events s join deployment_events c
-        on c.run_id = s.run_id and c.type = 'tool.completed'
-        and c.runner_binding_generation is not distinct from s.runner_binding_generation
-        and c.data->>'callId' = s.data->>'callId'
-        and coalesce(c.data->>'nodeId', '') = coalesce(s.data->>'nodeId', '')
-        and c.sequence > s.sequence and c.data->>'isError' = 'false'
-      where s.type = 'tool.started'
-        and s.data->'tool'->>'namespace' in (${sql.join([...integrationGatewayNamespaces])})
-        and (s.data->'tool'->>'name' = 'integration_call'
-          or (s.runner_ordinal is null and c.runner_ordinal is null
-            and s.data->'tool'->>'name' in ('computer.windows', 'computer.bind', 'computer.observe',
-              'computer.click', 'computer.type', 'computer.key', 'computer.setValue', 'computer.scroll', 'computer.act')))
-        and (s.data->'integration'->'computerApp'->>'runnerId' is not null
-          or s.data->'integration'->'phone'->>'runnerId' is not null)
-        and s.data->'integration'->'operation'->>'name' in ('observe', 'act')
-      order by s.run_id, s.runner_binding_generation, s.data->>'callId', coalesce(s.data->>'nodeId', ''), c.sequence
-    ), lineage as (
-      select n.*, r.thread_id, r.assignment_id, 0 as depth, array[]::text[] as path
-      from native_calls n join runs r on r.id = n.run_id
-      union all
-      select l.run_id, l.integration, l.at, l.sequence, d.parent_thread_id, d.parent_assignment_id,
-        l.depth + 1, l.path || d.id::text
-      from lineage l join delegations d on d.id = l.assignment_id
-      where l.depth < 64 and not d.id::text = any(l.path)
-    ), addressed as (
-      select distinct on (l.run_id, l.sequence) l.*
-      from lineage l join threads t on t.id = l.thread_id
-      where t.listed
-      order by l.run_id, l.sequence, l.depth
-    )
-    select distinct on (a.thread_id) a.thread_id, a.run_id, a.integration, a.at
-    from addressed a join threads t on t.id = a.thread_id
-    where t.created_by = ${ownerId}
-      and not exists (select 1 from browser_session_uses b where b.thread_id = a.thread_id and b.last_used_at > a.at)
-    order by a.thread_id, a.at desc, a.sequence desc limit 4096
-  `.execute(database, databaseOperationOptions());
-  return result.rows.flatMap((row, order) => {
-    const parsed = IntegrationCallSubjectSchema.safeParse(row.integration);
-    if (!parsed.success) return [];
-    const subject = parsed.data;
-    const place = subject.computerApp
-      ? {
-          kind: "app" as const,
-          machineId: subject.computerApp.runnerId,
-          appKey: subject.computerApp.bundleId.toLowerCase(),
-        }
-      : subject.phone
-        ? { kind: "phone" as const, machineId: subject.phone.runnerId, display: "main" }
-        : null;
-    return place
-      ? [
-          {
-            threadId: row.threadId,
-            runId: row.runId,
-            place,
-            title: subject.computerApp?.app ?? subject.phone!.computer,
-            site: null,
-            iconRef: null,
-            order,
-            at: row.at.toISOString(),
-          },
-        ]
-      : [];
+  const rows = await database
+    .selectFrom("deploymentEvents as e")
+    .innerJoin("threads as t", "t.id", "e.threadId")
+    .selectAll("e")
+    .where("e.type", "=", "place.entered")
+    .where("t.createdBy", "=", ownerId)
+    .orderBy("e.sequence", "desc")
+    .limit(4096)
+    .execute();
+  const seen = new Set<ThreadId>();
+  return rows.flatMap((row) => {
+    const event = eventFromRow(row);
+    if (event.type !== "place.entered" || seen.has(event.threadId)) return [];
+    seen.add(event.threadId);
+    return [
+      {
+        taskId: event.threadId,
+        runId: event.runId,
+        ...event.data,
+        iconRef: null,
+        order: Number(event.sequence),
+        at: event.createdAt,
+      },
+    ];
   });
 }
 
@@ -1820,14 +1712,14 @@ export async function latestRunPlace(database: Kysely<DatabaseSchema>, runId: Ru
 }
 
 /** The personal event allocator precedes Run locks, including on delegated Runs. */
-export async function recordRunPlace(
+export async function recordRunTabPlace(
   database: Kysely<DatabaseSchema>,
   input: {
     readonly runId: RunId;
     readonly bindingGeneration: number;
     readonly data: EventData<"place.entered">;
   },
-): Promise<AgentEvent | undefined> {
+): Promise<Extract<AgentEvent, { type: "place.entered" }> | undefined> {
   return withPersonalTransaction(database, async (transaction) => {
     await transaction
       .selectFrom("runs")
@@ -1857,9 +1749,9 @@ export async function recordRunPlace(
       .executeTakeFirst();
     if (last) {
       const previous = eventDataSchemas["place.entered"].parse(last.data);
-      if (placeIdentityKey(previous.place) === placeIdentityKey(input.data.place)) return undefined;
+      if (previous.tabId === input.data.tabId) return undefined;
     }
-    return appendHostDeploymentEvent(transaction, {
+    const event = await appendHostDeploymentEvent(transaction, {
       type: "place.entered",
       runId: input.runId,
       threadId: run.threadId,
@@ -1867,5 +1759,6 @@ export async function recordRunPlace(
       // A title cut to its bound can end on half a surrogate pair, which jsonb refuses.
       data: { ...input.data, title: storableText(input.data.title) },
     });
+    return event.type === "place.entered" ? event : undefined;
   });
 }

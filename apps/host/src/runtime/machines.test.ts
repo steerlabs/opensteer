@@ -1,8 +1,8 @@
 import { createId } from "@opensteer/core";
 import {
-  LegacyMachineSummarySchema,
+  MachineSummarySchema,
   mintComputerUseSessionId,
-  type LegacyComputerUseSessionSummary,
+  type ComputerUseSessionSummary,
   type MachineAppStatus,
   type MachineModuleSummary,
 } from "@opensteer/protocol";
@@ -399,7 +399,7 @@ describe("Machines projection", () => {
     });
 
     function projectPhone(apps: readonly MachineAppStatus[] | null) {
-      const session: LegacyComputerUseSessionSummary = {
+      const session: ComputerUseSessionSummary = {
         actionCount: 2,
         actingAppKeys: [],
         apps: [],
@@ -497,7 +497,7 @@ describe("Machines projection", () => {
 
     function project(
       apps: readonly MachineAppStatus[] | null,
-      session?: LegacyComputerUseSessionSummary,
+      session?: ComputerUseSessionSummary,
       appApproval?: "ask" | "automatic",
     ) {
       const [machine] = projectMachines({
@@ -711,7 +711,7 @@ describe("Machines projection", () => {
     });
 
     it("is ready with both grants and carries the live session", () => {
-      const session: LegacyComputerUseSessionSummary = {
+      const session: ComputerUseSessionSummary = {
         actionCount: 4,
         actingAppKeys: ["com.apple.notes"],
         apps: [{ bundleId: "com.apple.Notes", displayName: "Notes", teamId: null }],
@@ -745,7 +745,7 @@ describe("Machines projection", () => {
       });
       expect(projected.ownership).toBe("deployment");
       expect(project(null, session).computerUse).toBeNull();
-      expect(LegacyMachineSummarySchema.parse(projected)).toEqual(projected);
+      expect(MachineSummarySchema.parse(projected)).toEqual(projected);
     });
   });
 
@@ -767,7 +767,7 @@ describe("Machines projection", () => {
       threadsByEnvironment: new Map(),
       runners: [runner()],
     })) {
-      expect(LegacyMachineSummarySchema.parse(machine)).toEqual(machine);
+      expect(MachineSummarySchema.parse(machine)).toEqual(machine);
     }
   });
 });

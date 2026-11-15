@@ -14,7 +14,7 @@ import {
   databaseOperationOptions,
   inDatabaseOperationTransaction,
 } from "./operation-budget.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { applyDatabaseOperationBudget } from "./operation-budget-executor.js";
 
 interface DatabaseConnectionOptions {

@@ -19,7 +19,7 @@ import {
 } from "@opensteer/core";
 import type { BrowserSignInRequestResponse } from "@opensteer/protocol/browser-sources";
 import { sql, type Kysely, type Transaction } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import {
   browserSignInRequestDeliverableInTransaction,
   fulfilBrowserSignInRequestInTransaction,

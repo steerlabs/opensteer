@@ -1,10 +1,10 @@
-import { LegacyHostBootstrapSchema } from "./bootstrap.js";
 import { createId } from "@opensteer/core";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserPageSite, isBrowserPageSite } from "./browser.js";
 import {
   ClientToHostMessageSchema,
-  LegacyHostToClientMessageSchema,
+  HostToClientMessageSchema,
   ThreadEventPageSchema,
 } from "./client.js";
 
@@ -51,29 +51,24 @@ describe("browser tab sites", () => {
     "data:text/html,private",
     "blob:https://example.com/private",
   ];
-  const catalogFrame = (site: string) => ({
-    type: "host.browser-tabs",
-    groupId: "bsn_00000000-0000-4000-8000-000000000001",
+  const catalogFrame = (url: string) => ({
+    type: "host.tabs",
     stream: {
       op: "rows",
       rows: [
         {
-          sessionId: "bsn_00000000-0000-4000-8000-000000000001",
-          id: "surface-1",
-          createdAt: timestamps.createdAt,
-          state: "live",
+          tabId: "surface-1",
+          kind: "page",
           title: "example.com",
-          site,
-          iconRef: null,
-          order: 0,
-          openerId: null,
-          availability: "ready",
-          documentId: null,
-          loading: false,
-          navigationFailed: true,
-          canGoBack: false,
-          canGoForward: false,
-          occupants: [],
+          url,
+          profile: null,
+          computer: { computerId: createId("runner"), name: "Mac" },
+          groupId: null,
+          state: "open",
+          openedBy: "person",
+          usedBy: [],
+          createdAt: timestamps.createdAt,
+          updatedAt: timestamps.updatedAt,
         },
       ],
     },
@@ -104,14 +99,13 @@ describe("browser tab sites", () => {
     "reads a Host frame naming %s on a runtime whose URL refuses it",
     (site) => {
       stubUrlThatRefusesEverything();
-      expect(LegacyHostToClientMessageSchema.safeParse(catalogFrame(site)).success).toBe(true);
+      expect(HostToClientMessageSchema.safeParse(catalogFrame(site)).success).toBe(true);
     },
   );
 
   it("reads a site a newer Host may send, since the Host decides what a site is", () => {
     expect(
-      LegacyHostToClientMessageSchema.safeParse(catalogFrame("https://example.com/not-today"))
-        .success,
+      HostToClientMessageSchema.safeParse(catalogFrame("https://example.com/not-today")).success,
     ).toBe(true);
   });
 
@@ -132,34 +126,21 @@ describe("browser tab sites", () => {
   });
 });
 
-it("accepts app tab invalidation and bounds the bootstrap app catalog", () => {
-  expect(LegacyHostToClientMessageSchema.parse({ type: "host.app-tabs-changed" })).toEqual({
-    type: "host.app-tabs-changed",
-  });
-  const tab = {
-    appId: "app_00000000-0000-4000-8000-000000000001",
-    title: "Budget",
-
-    threadId: createId("thread"),
-    openedAt: timestamps.createdAt,
-    latestVersion: 2,
+it("accepts app invalidation", () => {
+  const notice = {
+    type: "host.apps.changed",
+    appIds: ["app_00000000-0000-4000-8000-000000000001"],
   };
-  expect(LegacyHostBootstrapSchema.shape.appTabs.parse([tab])).toEqual([tab]);
-  expect(LegacyHostBootstrapSchema.shape.appTabs.safeParse(Array(501).fill(tab)).success).toBe(
-    false,
-  );
+  expect(HostToClientMessageSchema.parse(notice)).toEqual(notice);
 });
 
-it("admits opt-in browser streams and per-socket repair", () => {
+it("admits shared tab streams and per-socket repair", () => {
   const groupId = "bsn_00000000-0000-4000-8000-000000000001";
   for (const frame of [
     { type: "client.browser.resync" },
     { type: "client.browser.resync", groupId },
   ])
     expect(ClientToHostMessageSchema.parse(frame)).toEqual(frame);
-  for (const frame of [
-    { type: "host.browser-groups", stream: { op: "begin", generation: "g" } },
-    { type: "host.browser-tabs", groupId, stream: { op: "begin", generation: "g" } },
-  ])
-    expect(LegacyHostToClientMessageSchema.parse(frame)).toEqual(frame);
+  const frame = { type: "host.tabs", stream: { op: "begin", generation: "g" } };
+  expect(HostToClientMessageSchema.parse(frame)).toEqual(frame);
 });

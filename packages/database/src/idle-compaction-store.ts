@@ -1,6 +1,6 @@
 import { type RunMaintenance, type ThreadId, type UserId, OpensteerError } from "@opensteer/core";
 import type { Kysely } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { enqueueThreadInputInTransaction } from "./thread-inbox.js";
 

@@ -69,7 +69,7 @@ import {
   type TaskPage,
   type ThreadEventPage,
   type ThreadMessagePage,
-  type LegacyDeploymentSnapshot as DeploymentSnapshot,
+  type DeploymentSnapshot,
 } from "@opensteer/protocol";
 import type { Clock } from "@opensteer/shared/clock";
 import { type Kysely } from "kysely";
@@ -144,11 +144,7 @@ import {
   type RunnerEnrollmentIssuanceRecord,
   type RunnerInventoryRecord,
 } from "./runner-store.js";
-import {
-  type CommandRow,
-  type LegacyDatabaseSchema as DatabaseSchema,
-  type PendingCommandRow,
-} from "./schema.js";
+import { type CommandRow, type DatabaseSchema, type PendingCommandRow } from "./schema.js";
 import * as snapshotStore from "./snapshot-store.js";
 import {
   type DurableWindowReadOptions,
@@ -375,12 +371,6 @@ export class OpensteerStore {
   }
   async leaveDevice(input: Parameters<typeof leaveDevice>[2]) {
     return leaveDevice(this.#database, this.#links, input);
-  }
-  async openPhoneTab(runnerId: RunnerId): Promise<boolean> {
-    return runnerStore.openPhoneTab(this.#database, runnerId);
-  }
-  async closePhoneTab(runnerId: RunnerId): Promise<void> {
-    return runnerStore.closePhoneTab(this.#database, runnerId);
   }
   async renameRunner(
     runnerId: RunnerId,
@@ -714,8 +704,8 @@ export class OpensteerStore {
   async resolvePlaceActor(input: { readonly agentBindingId: string; readonly ownerId: UserId }) {
     return browserSessionStore.resolvePlaceActor(this.#database, input);
   }
-  recordRunPlace(input: Parameters<typeof browserSessionStore.recordRunPlace>[1]) {
-    return browserSessionStore.recordRunPlace(this.#database, input);
+  recordRunTabPlace(input: Parameters<typeof browserSessionStore.recordRunTabPlace>[1]) {
+    return browserSessionStore.recordRunTabPlace(this.#database, input);
   }
   latestRunPlace(runId: RunId) {
     return browserSessionStore.latestRunPlace(this.#database, runId);

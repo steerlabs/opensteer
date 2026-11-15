@@ -1,3 +1,4 @@
+import { ChannelConnectionInspectionViewSchema } from "@opensteer/channel-core";
 import { MachineSummarySchema } from "./machines.js";
 import { OwnerWindowInfoSchema } from "./computer-use.js";
 import { HostBootstrapSchema, type HostBootstrap } from "./bootstrap.js";
@@ -54,7 +55,6 @@ import {
   ChannelAccountViewSchema,
   ChannelBindingIdSchema,
   ChannelBindingViewSchema,
-  ChannelConnectionInspectionViewSchema,
   ChannelDashboardViewSchema,
   ChannelExecutionPolicySchema,
   ChannelRouteSelectorSchema,
@@ -186,16 +186,11 @@ import {
 } from "@opensteer/triggers/models";
 import { z } from "zod";
 import { ReferenceResolveInputSchema, ReferenceResolveResultSchema } from "./references.js";
-import { AppIdSchema, LegacyAppSchema } from "@opensteer/core";
+import { AppIdSchema } from "@opensteer/core";
 import { AgentPhoneHostTargetViewSchema } from "./android-phone.js";
 import { AssetUrlsInputSchema, AssetUrlsSchema } from "./assets.js";
 import { AttachmentContentSchema, AttachmentReferenceInputSchema } from "./attachments.js";
-import {
-  AppTabsSchema,
-  LegacyHostBootstrapSchema,
-  IdentityConfigViewSchema,
-  OwnerProfileViewSchema,
-} from "./bootstrap.js";
+import { IdentityConfigViewSchema, OwnerProfileViewSchema } from "./bootstrap.js";
 import {
   BrowserSignInDecisionSchema,
   BrowserSignInOutcomeSchema,
@@ -215,33 +210,13 @@ import {
   BrowserProfileDeletionSchema,
   BrowserProfileNameSchema,
   BrowserProfileSchema,
-  BrowserTabCloseCommandSchema,
-  BrowserTabCloseResultSchema,
   BrowserTabIconInputSchema,
   BrowserTabIconResultSchema,
-  BrowserTabOpenCommandSchema,
-  BrowserTabOpenResultSchema,
   CreateBrowserProfileBodySchema,
   CreateBrowserProfileResponseSchema,
   StartHostedBrowserBodySchema,
   StartHostedBrowserResponseSchema,
   ThreadBrowserUsageSchema,
-  PersonalTabActivateCommandSchema,
-  PersonalTabActivateResultSchema,
-  PersonalTabCloseCommandSchema,
-  PersonalTabCloseResultSchema,
-  PersonalTabGroupUpdateCommandSchema,
-  PersonalTabGroupUpdateResultSchema,
-  PersonalTabReopenCommandSchema,
-  PersonalTabReopenResultSchema,
-  PersonalTabsCloseCommandSchema,
-  PersonalTabsCloseResultSchema,
-  PersonalTabsGroupCommandSchema,
-  PersonalTabsGroupResultSchema,
-  PersonalTabsMoveCommandSchema,
-  PersonalTabsMoveResultSchema,
-  PersonalTabsUngroupCommandSchema,
-  PersonalTabsUngroupResultSchema,
   browserUsageRunBatchSize,
 } from "./browser.js";
 import {
@@ -259,7 +234,6 @@ import {
   ComputerUseInstalledAppSchema,
   ComputerUseInstalledAppsParamsSchema,
   ComputerUseSessionIdSchema,
-  LegacyOwnerWindowInfoSchema,
   computerUseMaxInstalledApps,
   computerUseMaxWindows,
 } from "./computer-use.js";
@@ -267,8 +241,6 @@ import {
   ApprovedComputerAppSchema,
   ComputerViewCloseCommandSchema,
   ComputerViewCloseResultSchema,
-  ComputerViewOpenCommandSchema,
-  ComputerViewOpenResultSchema,
   ComputerViewRenewCommandSchema,
   ComputerViewRenewResultSchema,
 } from "./computer-view.js";
@@ -279,7 +251,7 @@ import {
   DeviceRefusalContextSchema,
   DeviceSessionBindingProofSchema,
 } from "./devices.js";
-import { LegacyMachineSummarySchema } from "./machines.js";
+
 import { defineRpc, type RpcClient, type RpcHandlers } from "./rpc.js";
 import { RunnerModuleNameSchema } from "./runner-identity.js";
 import {
@@ -387,25 +359,8 @@ const harnessAuthenticationEnvelopeSchema = z.object({
 });
 
 const otherCommandInputSchema = z.discriminatedUnion("type", [
-  z.strictObject({
-    type: z.literal("app.tab.open"),
-    appId: AppIdSchema,
-    idempotencyKey: idempotencyKeySchema,
-  }),
-  z.strictObject({
-    type: z.literal("app.tab.close"),
-    appId: AppIdSchema,
-    idempotencyKey: idempotencyKeySchema,
-  }),
-  z.strictObject({
-    type: z.literal("phone.tab.close"),
-    machineId: RunnerIdSchema,
-    idempotencyKey: idempotencyKeySchema,
-  }),
-  ComputerViewOpenCommandSchema,
   ComputerViewCloseCommandSchema,
   ComputerViewRenewCommandSchema,
-  BrowserTabCloseCommandSchema,
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     mediaType: AttachmentMediaTypeSchema,
@@ -1193,15 +1148,6 @@ const commandInputSchema = z.discriminatedUnion("type", [
   ...AppCommandSchema.options,
   ...TeamCommandSchema.options,
   SettingsPluginEnableCommandSchema,
-  BrowserTabOpenCommandSchema,
-  PersonalTabActivateCommandSchema,
-  PersonalTabCloseCommandSchema,
-  PersonalTabReopenCommandSchema,
-  PersonalTabsGroupCommandSchema,
-  PersonalTabsUngroupCommandSchema,
-  PersonalTabsMoveCommandSchema,
-  PersonalTabGroupUpdateCommandSchema,
-  PersonalTabsCloseCommandSchema,
   ...otherCommandInputSchema.options,
 ]);
 
@@ -1210,19 +1156,8 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   ...AppCommandResultSchema.options,
   ...TeamCommandResultViewSchema.options,
   SettingsPluginEnableResultSchema,
-  PersonalTabActivateResultSchema,
-  PersonalTabCloseResultSchema,
-  PersonalTabReopenResultSchema,
-  PersonalTabsGroupResultSchema,
-  PersonalTabsUngroupResultSchema,
-  PersonalTabsMoveResultSchema,
-  PersonalTabGroupUpdateResultSchema,
-  PersonalTabsCloseResultSchema,
-  BrowserTabOpenResultSchema,
-  ComputerViewOpenResultSchema,
   ComputerViewCloseResultSchema,
   ComputerViewRenewResultSchema,
-  BrowserTabCloseResultSchema,
   z.object({ type: z.literal("attachment.upload.create"), attachment: AttachmentSchema }),
   z.object({ type: z.literal("attachment.upload.discard") }),
 
@@ -1536,9 +1471,6 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     type: z.literal("browser.profile.delete"),
     deletion: BrowserProfileDeletionSchema.optional().catch(undefined),
   }),
-  z.object({ type: z.literal("app.tab.open"), appTabs: AppTabsSchema }),
-  z.object({ type: z.literal("app.tab.close"), appTabs: AppTabsSchema }),
-  z.object({ type: z.literal("phone.tab.close") }),
   z.object({ type: z.literal("browser.session.close") }),
   z.object({ type: z.literal("browser.history.remove") }),
   z.object({ type: z.literal("browser.history.clear") }),
@@ -1814,18 +1746,16 @@ const hostApiGroup2 = defineRpc({
    * Deployment with remote access off refuses with reason
    * `personal-remote-access-off`.
    */
-  "agentPhone.target.get": declaration("GET", emptyInputSchema, AgentPhoneHostTargetViewSchema),
-  "apps.legacy.get": declaration("GET", z.strictObject({ appId: AppIdSchema }), LegacyAppSchema),
   "apps.view": declaration(
     "POST",
     z.strictObject({ appId: AppIdSchema, theme: z.enum(["light", "dark"]) }),
     z.object({
-      app: LegacyAppSchema,
+      app: AppSchema,
       path: z.string().regex(/^\/v1\/apps\/app_[0-9a-f-]{36}\/(light|dark)\/[A-Za-z0-9_-]{43}\/$/u),
-      /** One-use address on the app's own origin; absent on routes without one. */
       entryUrl: z.url().max(512).optional(),
     }),
   ),
+  "agentPhone.target.get": declaration("GET", emptyInputSchema, AgentPhoneHostTargetViewSchema),
   "attachment.get": declaration("GET", AttachmentReferenceInputSchema, AttachmentSchema),
   "attachment.upload": {
     ...declaration("POST", AttachmentReferenceInputSchema, AttachmentSchema),
@@ -1909,7 +1839,6 @@ const hostApiGroup3 = defineRpc({
     emptyOutputSchema,
   ),
   "auth.signOut": declaration("POST", emptyInputSchema, emptyOutputSchema),
-  "bootstrap.legacy.get": declaration("GET", emptyInputSchema, LegacyHostBootstrapSchema),
   "channel.connection.check": declaration(
     "POST",
     z.strictObject({ connectionId: IntegrationConnectionIdSchema }),
@@ -2064,13 +1993,6 @@ const hostApiGroup3 = defineRpc({
 } as const);
 
 const hostApiGroup4 = defineRpc({
-  "computer.app.legacy.windows": declaration(
-    "POST",
-    z.strictObject({ machineId: RunnerIdSchema, app: ComputerAppIdentitySchema }),
-    z.object({
-      windows: z.array(z.object(LegacyOwnerWindowInfoSchema.shape)).max(computerUseMaxWindows),
-    }),
-  ),
   "integration.computer.apps.approved": declaration(
     "GET",
     emptyInputSchema,
@@ -2106,13 +2028,6 @@ const hostApiGroup4 = defineRpc({
     IntegrationRepositoryAccessViewSchema,
   ),
   "integrations.get": declaration("GET", emptyInputSchema, IntegrationDashboardViewSchema),
-  "machines.legacy.list": declaration(
-    "GET",
-    emptyInputSchema,
-    // Four registry projections feed one list, each read a page of 100 deep: the bound
-    // has to admit all of them or a busy Deployment fails its own response.
-    z.object({ machines: z.array(LegacyMachineSummarySchema).max(400) }),
-  ),
   "machine.access.history": declaration(
     "GET",
     z.strictObject({
@@ -2366,7 +2281,9 @@ const workspaceHostApi = defineRpc({
   "computer.app.windows": declaration(
     "POST",
     z.strictObject({ machineId: RunnerIdSchema, app: ComputerAppIdentitySchema }),
-    z.object({ windows: z.array(OwnerWindowInfoSchema).max(computerUseMaxWindows) }),
+    z.object({
+      windows: z.array(z.object(OwnerWindowInfoSchema.shape)).max(computerUseMaxWindows),
+    }),
   ),
   "tabs.get": declaration("GET", TabGetInputSchema, TabViewSchema),
   "tabs.state": declaration("GET", z.strictObject({}), TabBootstrapSchema),

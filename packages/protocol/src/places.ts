@@ -1,25 +1,6 @@
 import { TabIdSchema, PersonShowTargetSchema } from "@opensteer/core";
 import { z } from "zod";
-import {
-  RunIdSchema,
-  ThreadIdSchema,
-  IsoDateTimeSchema,
-  BrowserSurfaceIdSchema,
-} from "@opensteer/core";
-
-export const LegacyPersonShowMessageSchema = z.object({
-  type: z.literal("host.show"),
-
-  threadId: ThreadIdSchema,
-  runId: RunIdSchema,
-  target: z.union([
-    z.object({ tabId: BrowserSurfaceIdSchema }),
-    z.object({ threadId: ThreadIdSchema }),
-    /** `runId` is the Run in the place, which may not be the Run asking to show it. */
-    z.object({ place: PlaceIdentityViewSchema, runId: RunIdSchema }),
-  ]),
-});
-export type LegacyPersonShowMessage = z.infer<typeof LegacyPersonShowMessageSchema>;
+import { RunIdSchema, ThreadIdSchema, IsoDateTimeSchema } from "@opensteer/core";
 
 const revision = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 export {
@@ -82,24 +63,9 @@ export const PlaceActivityNoticeViewSchema = z.discriminatedUnion("type", [
   z.object({ ...PlaceActivityNoticeSchema.options[1].shape, place: PlaceIdentityViewSchema }),
 ]);
 
-export const LegacyThreadPlaceReferenceSchema = z.object({
-  threadId: ThreadIdSchema,
-  /**
-   * The Run that acted there. A reference without one, from an older Host,
-   * names no Run, so no reply shows it as its live picture.
-   */
-  runId: RunIdSchema.optional(),
-  place: PlaceIdentityViewSchema,
-  title: z.string().max(256),
-  site: z.string().max(2048).nullable(),
-  iconRef: z.string().max(128).nullable(),
-  order: revision,
-  at: IsoDateTimeSchema,
-});
-export type LegacyThreadPlaceReference = z.infer<typeof LegacyThreadPlaceReferenceSchema>;
 export const ThreadPlaceChangedSchema = z.object({
   type: z.literal("host.thread-place-changed"),
-  reference: LegacyThreadPlaceReferenceSchema,
+  reference: z.lazy(() => ThreadPlaceReferenceSchema),
 });
 
 export const PersonShowMessageSchema = z.object({

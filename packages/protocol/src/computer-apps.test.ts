@@ -46,14 +46,7 @@ describe("computer app auxiliary frames", () => {
       expect(
         HostToIntegrationsModuleMessageSchema.safeParse({ ...request, ...patch }).success,
       ).toBe(false);
-    const window = {
-      id: 42,
-      title: "List",
-      focused: true,
-      main: true,
-      minimized: false,
-      onScreen: true,
-    };
+    const window = { windowId: "win_00000000-0000-4000-8000-000000000042", title: "List" };
     const response = {
       ...fence,
       type: "runner.integrations.computer-app-windows-result",
@@ -76,7 +69,7 @@ describe("computer app auxiliary frames", () => {
     ).toMatchObject({
       result: { kind: "error", code: "app-not-allowed", message: "That app is not allowed." },
     });
-    const rpc = hostApi["computer.app.legacy.windows"];
+    const rpc = hostApi["computer.app.windows"];
     const machineId = fence.runnerId;
     expect(rpc.payload.parse({ machineId, app })).toEqual({ machineId, app });
     expect(rpc.payload.safeParse({ machineId, app, extra: true }).success).toBe(false);

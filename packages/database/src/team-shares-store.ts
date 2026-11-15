@@ -34,11 +34,7 @@ import {
 import { sql, type Selectable, type Transaction } from "kysely";
 import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { teamMentions } from "@opensteer/shared/teamMentions";
-import type {
-  LegacyDatabaseSchema as DatabaseSchema,
-  TeamMessageTable,
-  TeamShareTable,
-} from "./schema.js";
+import type { DatabaseSchema, TeamMessageTable, TeamShareTable } from "./schema.js";
 import {
   type TeamStoreAccessEffects,
   TeamAccessStore,

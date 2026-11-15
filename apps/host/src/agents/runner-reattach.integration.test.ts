@@ -822,7 +822,7 @@ integration("Runs that outlive their connection", () => {
       .map((part) => part.text)
       .join("\n");
     expect(notice).toContain("Opensteer restarted while you were working");
-    const bootstrap = await active.api["bootstrap.legacy.get"]({});
+    const bootstrap = await active.api["bootstrap.get"]({});
     if (!bootstrap.ok) throw new Error(bootstrap.error.message);
     expect(
       bootstrap.data.environments
@@ -948,7 +948,7 @@ integration("Runs that outlive their connection", () => {
       active.network.block();
       await waitFor(
         async () => {
-          const state = await active.api["bootstrap.legacy.get"]({});
+          const state = await active.api["bootstrap.get"]({});
           return (
             state.ok &&
             state.data.environments.find((environment) => environment.id === active.environmentId)
@@ -1002,7 +1002,7 @@ integration("Runs that outlive their connection", () => {
     active.network.unblock();
     await waitFor(
       async () => {
-        const state = await active.api["bootstrap.legacy.get"]({});
+        const state = await active.api["bootstrap.get"]({});
         return (
           state.ok &&
           state.data.environments.find((environment) => environment.id === active.environmentId)

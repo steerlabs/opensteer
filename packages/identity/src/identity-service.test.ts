@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import type { Kysely } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "@opensteer/database";
+import type { DatabaseSchema } from "@opensteer/database";
 import { IdentityService } from "./identity-service.js";
 
 const { checkSchema } = vi.hoisted(() => ({ checkSchema: vi.fn<() => Promise<void>>() }));

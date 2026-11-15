@@ -14,7 +14,7 @@ import {
   type RunnerId,
   type ThreadId,
 } from "@opensteer/core";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 import { nearestListedThread } from "./thread-lineage.js";
 

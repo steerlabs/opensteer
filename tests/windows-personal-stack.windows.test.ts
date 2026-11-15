@@ -439,7 +439,7 @@ describe("the personal stack from source", () => {
     // through it, read for its version and signed in on its default account.
     const engines = await vi.waitFor(
       async () => {
-        const view = await rpc("bootstrap.legacy.get", {});
+        const view = await rpc("bootstrap.get", {});
         const computer = view.environments.find((value) => value.id === stack.environmentId);
         const driver = computer?.harnessDrivers.find((value) => value.driverKind === "codex");
         const account = view.harnesses.find(

@@ -1,6 +1,5 @@
 import {
   createId,
-  BrowserSessionIdSchema,
   BrowserSurfaceIdSchema,
   type AgentEvent,
   type EventData,
@@ -13,21 +12,17 @@ import { RunPlaceRecorder } from "./run-place-recorder.js";
 
 const runId = createId("run");
 const browser: EventData<"place.entered"> = {
-  place: {
-    kind: "browser",
-    sessionId: BrowserSessionIdSchema.parse("bsn_11111111-1111-4111-8111-111111111111"),
-    surfaceId: BrowserSurfaceIdSchema.parse("A"),
-  },
+  tabId: BrowserSurfaceIdSchema.parse("A"),
   title: "A",
   site: null,
 };
 const app: EventData<"place.entered"> = {
-  place: { kind: "app", machineId: createId("runner"), appKey: "com.apple.Notes" },
+  tabId: BrowserSurfaceIdSchema.parse("notes-tab"),
   title: "Notes",
   site: null,
 };
 const phone: EventData<"place.entered"> = {
-  place: { kind: "phone", machineId: createId("runner"), display: "main" },
+  tabId: BrowserSurfaceIdSchema.parse("phone-tab"),
   title: "Phone",
   site: null,
 };

@@ -97,7 +97,7 @@ import {
 } from "@opensteer/protocol";
 import type {
   CommandRow,
-  LegacyDatabaseSchema as DatabaseSchema,
+  DatabaseSchema,
   DelegationTable,
   RunRow,
   ThreadInputTable,

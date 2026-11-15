@@ -1,7 +1,7 @@
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import type { Kysely } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 
 export async function assertPersonalOwner(database: Kysely<DatabaseSchema>, ownerId: UserId) {
   await requirePersonalOwner(database, ownerId);

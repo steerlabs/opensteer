@@ -15,7 +15,7 @@ import { endAttempt } from "./run-attempts.js";
 import { cleanupRunAttemptTransaction, finalizeRunTransaction } from "./run-finalization.js";
 import { runWasStopped, type RevokedRunGrant } from "./run-grants.js";
 import { lockRunProjectionRows, lockThreadProviderSessions } from "./run-projection-locks.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import {
   eventFromRow,
   jsonValue,

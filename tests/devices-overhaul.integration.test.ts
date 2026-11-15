@@ -864,13 +864,13 @@ it("keeps person and Guest placement while Browser is off and continues a pendin
     expect(off).toMatchObject({ outcome: "updated" });
     const machines = await testRpcData(
       home.origin,
-      "machines.legacy.list",
+      "machines.list",
       {},
       { headers: home.ownerHeaders },
     );
     const bootstrap = await testRpcData(
       home.origin,
-      "bootstrap.legacy.get",
+      "bootstrap.get",
       {},
       { headers: home.ownerHeaders },
     );

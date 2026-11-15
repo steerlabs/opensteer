@@ -14,7 +14,7 @@ import { migrateTeamPrincipals } from "./team-principals-migration.js";
 import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
 import { TEAM_COPIES_SQL, teamCopiesMigrationName } from "./team-copies-migration.js";
 import { TEAM_KNOWLEDGE_NOTES_SQL } from "./team-knowledge-schema.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 
 /**
  * One current reusable invite per team, with unlimited (`null`) or capped uses. Its verifier is

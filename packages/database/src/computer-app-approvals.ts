@@ -38,7 +38,7 @@ import {
   writeIntegrationGrantInTransaction,
 } from "./integration-grant-write.js";
 import { requestFromRow, requestOriginEnvironment } from "./request-persistence.js";
-import type { LegacyDatabaseSchema as DatabaseSchema, RequestRow } from "./schema.js";
+import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 
 export async function lockComputerApprovalScopeInTransaction(

@@ -1,9 +1,10 @@
+import { TabCommandSchema } from "../packages/protocol/src/tabs.js";
 import { expect, it, vi } from "vitest";
 import { DesktopWebLinks } from "../apps/desktop/src/app/web-links.js";
 import { WebLinkDeliveryOwner } from "../apps/desktop/src/bridge/methods/web-links.js";
 import { openDesktopWebLink, receiveDesktopWebLinks } from "../apps/web/src/desktop/web-links.js";
 import type { BrowserIdentityOpenInput } from "../packages/client/src/host/index.js";
-import { MockHostClient } from "../packages/client/src/mock/index.js";
+
 import { createId } from "../packages/core/src/index.js";
 import {
   DesktopWebLinkDeliverySchema,
@@ -16,7 +17,15 @@ import {
 // Desktop main's link queue and delivery owner feeding the renderer's receiver;
 // it lives here because the web image type-checks apps/web without desktop sources.
 async function deliveryFixture() {
-  const client = new MockHostClient();
+  const client = {
+    getSnapshot: () => ({ deploymentId: createId("deployment"), user: { id: createId("user") } }),
+    dispatch: async (
+      _input: import("../packages/protocol/src/host-api.js").HostApiCommandInput,
+    ): Promise<import("../packages/protocol/src/host-api.js").HostApiCommandOutput> => {
+      throw new Error("Unconfigured dispatch");
+    },
+    dispose: () => {},
+  };
   const snapshot = client.getSnapshot();
   const scope = {
     deploymentId: DesktopWebLinkDeliverySchema.shape.deploymentId.parse(snapshot.deploymentId),
@@ -53,27 +62,33 @@ async function deliveryFixture() {
   const show = vi.fn();
   const commands = new Map<string, string>();
   let fail = true;
-  const opened = vi.spyOn(client, "beginBrowserTabOpen").mockImplementation((target, options) => {
-    const key = options!.idempotencyKey!;
-    return {
-      idempotencyKey: key,
-      result: (async () => {
-        const command = JSON.stringify({ target, url: options!.url });
-        const previous = commands.get(key);
-        if (previous && previous !== command) throw new Error("Idempotency key already used");
-        commands.set(key, command);
-        if (fail) {
-          fail = false;
-          throw new Error("Response lost");
-        }
-        return { sessionId: "session", tabId: key } as Awaited<
-          ReturnType<typeof client.openBrowserTab>
-        >;
-      })(),
-    };
+  const inputs: Array<
+    import("../packages/protocol/src/tabs.js").TabCommand & { type: "tab.open" }
+  > = [];
+  const opened = vi.spyOn(client, "dispatch").mockImplementation(async (input) => {
+    if (input.type !== "tab.open") throw new Error("Expected tab.open");
+    const parsed = TabCommandSchema.parse(input);
+    if (parsed.type !== "tab.open") throw new Error("Expected tab.open");
+    inputs.push(parsed);
+    const key = input.idempotencyKey,
+      command = JSON.stringify(input);
+    const previous = commands.get(key);
+    if (previous && previous !== command) throw new Error("Idempotency key already used");
+    commands.set(key, command);
+    if (fail) {
+      fail = false;
+      throw new Error("Response lost");
+    }
+    return { type: "tab.open", tab: { tabId: key } } as Awaited<ReturnType<typeof client.dispatch>>;
   });
   const start = () => (bound: DesktopWebLink, ack: (id: string) => Promise<void>) =>
-    openDesktopWebLink(bound, client, bound.request!, show, ack);
+    openDesktopWebLink(
+      bound,
+      client as unknown as import("../packages/client/src/host/index.js").HostClient,
+      bound.request!,
+      show,
+      ack,
+    );
   const connect = () => receiveDesktopWebLinks(bridge, scope, start, errors);
   links.accept("https://example.com/first");
   links.accept("https://example.com/next");
@@ -81,6 +96,7 @@ async function deliveryFixture() {
   await vi.waitFor(() => expect(errors).toHaveBeenCalledOnce());
   return {
     scope,
+    inputs,
     errors,
     opened,
     connect,
@@ -97,19 +113,15 @@ it("exposes Retry after failure, reuses the exact request and then delivers the 
   const fixture = await deliveryFixture();
   try {
     expect(fixture.opened).toHaveBeenCalledTimes(1);
-    expect(fixture.show).toHaveBeenCalledExactlyOnceWith({
-      kind: "pending-browser",
-      idempotencyKey: fixture.opened.mock.calls[0]![1]!.idempotencyKey,
-    });
+    expect(fixture.show).not.toHaveBeenCalled();
     expect(fixture.errors.mock.calls[0]![1].retry).toBeTypeOf("function");
     await fixture.errors.mock.calls[0]![1].retry();
     await vi.waitFor(() => expect(fixture.opened).toHaveBeenCalledTimes(3));
     expect(fixture.opened.mock.calls[1]).toEqual(fixture.opened.mock.calls[0]);
-    expect(fixture.opened.mock.calls[2]![1]!.url).toBe("https://example.com/next");
+    expect(fixture.inputs[2]!.target).toMatchObject({ url: "https://example.com/next" });
     expect(fixture.show).toHaveBeenCalledWith({
-      kind: "browser",
-      sessionId: "session",
-      tabId: fixture.opened.mock.calls[2]![1]!.idempotencyKey,
+      kind: "tab",
+      tabId: fixture.inputs[2]!.idempotencyKey,
     });
   } finally {
     fixture.stop();
@@ -121,11 +133,10 @@ it("Dismiss drops only the failed link and delivers its successor", async () => 
   try {
     await fixture.errors.mock.calls[0]![1].dismiss();
     await vi.waitFor(() => expect(fixture.opened).toHaveBeenCalledTimes(2));
-    expect(fixture.opened.mock.calls[1]![1]!.url).toBe("https://example.com/next");
+    expect(fixture.inputs[1]!.target).toMatchObject({ url: "https://example.com/next" });
     expect(fixture.show).toHaveBeenCalledWith({
-      kind: "browser",
-      sessionId: "session",
-      tabId: fixture.opened.mock.calls[1]![1]!.idempotencyKey,
+      kind: "tab",
+      tabId: fixture.inputs[1]!.idempotencyKey,
     });
   } finally {
     fixture.stop();
@@ -135,7 +146,10 @@ it("Dismiss drops only the failed link and delivers its successor", async () => 
 it("replays the bound request after a renderer reload even when the remembered profile or this Mac's browser changes", async () => {
   const fixture = await deliveryFixture();
   try {
-    expect(fixture.opened.mock.calls[0]![0]).toEqual(fixture.scope.target());
+    expect(fixture.opened.mock.calls[0]![0]).toMatchObject({
+      type: "tab.open",
+      target: { kind: "page", guest: true, computerId: fixture.scope.target().placement?.runnerId },
+    });
     fixture.stop();
     fixture.scope.target = () => ({
       identity: { kind: "profile", profileId: createId("browserProfile") },

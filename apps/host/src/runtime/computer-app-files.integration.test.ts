@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import {
   runnerIntegrationsProtocolVersion,
   type HostRunFileRequest,
-  type LegacyHostToRunnerMessage as HostToRunnerMessage,
+  type HostToRunnerMessage,
 } from "@opensteer/protocol";
 import { ComputerAppError, RunFiles, type ComputerAppProvider } from "@opensteer/runner";
 import type WebSocket from "ws";

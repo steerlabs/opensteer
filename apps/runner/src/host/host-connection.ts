@@ -1,3 +1,4 @@
+import { AppServerError } from "../apps/app-server-manager.js";
 import { harnessMinimumVersion } from "@opensteer/core";
 import { meetsMinimumVersion } from "@opensteer/harness";
 import { join } from "node:path";
@@ -5,13 +6,7 @@ import { RunFiles, RunFileError, type RunFilePort } from "../attachments/run-fil
 import type { HostRunFileRequest } from "@opensteer/protocol";
 import { sameRunnerConnectionFence, computerAppMaxTimeoutMs } from "@opensteer/protocol";
 import { openAppTunnel } from "../apps/app-tunnel.js";
-import type {
-  HostAppRequest,
-  HostAppsSync,
-  RunnerAppResult,
-  RunnerAppState,
-  RunnerAppsSyncResult,
-} from "@opensteer/protocol";
+import type { HostAppRequest, HostAppsSync } from "@opensteer/protocol";
 import type { AppServerState } from "../apps/app-server-manager.js";
 import type { RunnerConfig } from "@opensteer/config";
 import type {
@@ -130,11 +125,8 @@ interface InboundFrame {
   readonly isBinary: boolean;
 }
 
-/** App frames echo their request's fence; `RunnerOperationalReport` predates them. */
-type AppReport = RunnerAppResult | RunnerAppState | RunnerAppsSyncResult;
-type RunnerReport = RunnerOperationalReport | AppReport;
 type RunnerReportSink = Omit<RunnerMessageSink, "send"> & {
-  send(message: RunnerReport): Promise<void>;
+  send(message: RunnerOperationalReport): Promise<void>;
   abort?: (reason: string) => void;
   close?: () => void;
 };
@@ -1791,6 +1783,7 @@ export class AgentsWorkSession implements RunnerWorkSession {
       await this.#sendAppReport({
         ...echo,
         ok: false,
+        ...(error instanceof AppServerError && error.reason ? { reason: error.reason } : {}),
         error: (error instanceof Error ? error.message : "App server failed").slice(0, 2_000),
         ...(logTail ? { logTail: logTail.slice(-16_384) } : {}),
       });
@@ -1849,7 +1842,7 @@ export class AgentsWorkSession implements RunnerWorkSession {
       throw new Error("App request belongs to another connection");
   }
 
-  #sendAppReport(message: AppReport): Promise<void> {
+  #sendAppReport(message: RunnerOperationalReport): Promise<void> {
     return this.#options.sink.send(message);
   }
 
@@ -2035,7 +2028,7 @@ function requiredEnvironmentId(identity: RunnerIdentity) {
 
 interface BufferedEffectScope {
   bytes: number;
-  readonly messages: RunnerReport[];
+  readonly messages: RunnerOperationalReport[];
   pendingCommands: number;
   releasing: boolean;
 }
@@ -2067,7 +2060,7 @@ export class CausallyOrderedRunnerSink implements RunnerMessageSink {
     return this.#refresh(runId);
   }
 
-  send(message: RunnerReport): Promise<void> {
+  send(message: RunnerOperationalReport): Promise<void> {
     if (this.#closed) return Promise.reject(new Error("Host connection is closed"));
     const scope = operationalMessageEffectScope(message);
     const barrier = scope ? this.#scopes.get(scope) : undefined;
@@ -2183,7 +2176,7 @@ export class WebSocketMessageSink implements RunnerMessageSink {
     this.#socket = socket;
   }
 
-  send(message: RunnerReport): Promise<void> {
+  send(message: RunnerOperationalReport): Promise<void> {
     if (this.#closed) return Promise.reject(new Error("Host connection is closed"));
     let frame: string;
     try {
@@ -2311,7 +2304,7 @@ function runnerCommandEffectScope(command: RunnerCommand): string | undefined {
   }
 }
 
-function operationalMessageEffectScope(message: RunnerReport): string | undefined {
+function operationalMessageEffectScope(message: RunnerOperationalReport): string | undefined {
   switch (message.type) {
     case "runner.event":
       return `run:${message.event.runId}`;

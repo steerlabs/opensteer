@@ -7,7 +7,7 @@ import {
 } from "@opensteer/core";
 import type { Transaction } from "kysely";
 import { currentRunAttempt, recordAttemptDispatch } from "./run-attempts.js";
-import type { LegacyDatabaseSchema as DatabaseSchema, GrantTable } from "./schema.js";
+import type { DatabaseSchema, GrantTable } from "./schema.js";
 
 /**
  * A grant a transaction revoked. Every token names its grant by Run and binding

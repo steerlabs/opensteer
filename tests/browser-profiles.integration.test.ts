@@ -1,3 +1,4 @@
+import { BrowserSurfaceIdSchema } from "../packages/core/src/index.js";
 /**
  * Written against CONTRACTS.md before implementation. Failure journeys:
  * Guest copies lose later login; request replays duplicate approvals; restricted
@@ -304,14 +305,16 @@ async function fulfillNewProfile(
   } finally {
     limit?.mockRestore();
   }
-  const bootstrap = await stack.api["bootstrap.legacy.get"]({});
+  const bootstrap = await stack.api["bootstrap.get"]({});
   if (!bootstrap.ok) throw new Error(bootstrap.error.message);
   const profile = bootstrap.data.browser.profiles.find((profile) => profile.name === "Brex Ops");
   if (!profile) throw new Error("Request did not create Brex Ops");
   evidence.observations.push({
     requestId,
     profile,
-    sessionIds: bootstrap.data.browser.groups.rows.map((session) => session.sessionId),
+    sessionIds: (await stack.host.store.listBrowserSessions(bootstrap.data.user.id)).map(
+      (session) => session.id,
+    ),
   });
   if (people) {
     try {
@@ -375,7 +378,7 @@ run("Browser profiles through a whole deployment", () => {
     );
     equal(evidence, "replay is identified", report.replayed!.replayed, true);
     expect(report.request).toMatchObject({ status: "fulfilled" });
-    const bootstrap = await stack.api["bootstrap.legacy.get"]({});
+    const bootstrap = await stack.api["bootstrap.get"]({});
     if (!bootstrap.ok) throw new Error(bootstrap.error.message);
     equal(
       evidence,
@@ -383,7 +386,12 @@ run("Browser profiles through a whole deployment", () => {
       bootstrap.data.browser.profiles.map(({ name }) => name),
       ["Brex"],
     );
-    equal(evidence, "approval opened no session", bootstrap.data.browser.groups.rows.length, 0);
+    equal(
+      evidence,
+      "approval opened no session",
+      (await stack.host.store.listBrowserSessions(bootstrap.data.user.id)).length,
+      0,
+    );
     const profile = bootstrap.data.browser.profiles[0]!;
     await waitFor(
       async () =>
@@ -403,28 +411,19 @@ run("Browser profiles through a whole deployment", () => {
     const sessionId = (
       await stack.host.store.database
         .selectFrom("personalTabs")
-        .select("sessionId")
-        .where("id", "=", opened.report.opened!.tabId)
+        .select("pageBinding")
+        .where("id", "=", BrowserSurfaceIdSchema.parse(opened.report.opened!.tabId))
         .executeTakeFirstOrThrow()
-    ).sessionId!;
+    ).pageBinding!.sessionId;
     await waitFor(
       async () =>
         people[0]!
           .getSnapshot()
-          .browserSessions.some(
-            (session) =>
-              session.id === sessionId &&
-              (session.browserTabs?.sessionTabs(session?.id) ?? []).length,
-          ),
+          .tabs.get(BrowserSurfaceIdSchema.parse(opened.report.opened!.tabId)) !== undefined,
       10_000,
     );
     const client = people[0]!;
-    const pageId = (client
-      .getSnapshot()
-      .browserSessions.find((session) => session.id === sessionId)!
-      .browserTabs?.sessionTabs(
-        client.getSnapshot().browserSessions.find((session) => session.id === sessionId)!.id,
-      ) ?? [])[0]!.id;
+    const pageId = BrowserSurfaceIdSchema.parse(opened.report.opened!.tabId);
     const release = client.retainBrowserWatch(sessionId, pageId);
     try {
       await waitFor(async () => client.browserWatchFrames.get(sessionId, pageId) !== null, 10_000);
@@ -531,7 +530,7 @@ run("Browser profiles through a whole deployment", () => {
         continuation!.profiles!.profiles.map((profile) => ({ id: profile.id, name: profile.name })),
         [{ id: result.profile.id, name: "Brex Ops" }],
       );
-      const retained = await stack.api["bootstrap.legacy.get"]({});
+      const retained = await stack.api["bootstrap.get"]({});
       equal(
         evidence,
         "Personal approval retains the profile across restart",
@@ -641,12 +640,12 @@ run("Browser profiles through a whole deployment", () => {
         client.getSnapshot().browserProfiles.some((profile) => profile.id === id),
         true,
       );
-    const bootstrap = await stack.api["bootstrap.legacy.get"]({});
+    const bootstrap = await stack.api["bootstrap.get"]({});
     if (!bootstrap.ok) throw new Error(bootstrap.error.message);
     equal(
       evidence,
       "no session opened to trigger invalidation",
-      bootstrap.data.browser.groups.rows.length,
+      (await stack.host.store.listBrowserSessions(bootstrap.data.user.id)).length,
       0,
     );
   });
@@ -664,9 +663,14 @@ run("Browser profiles through a whole deployment", () => {
           client.getSnapshot().browserProfiles.some((profile) => profile.id === result.profile.id),
           true,
         );
-      const bootstrap = await stack.api["bootstrap.legacy.get"]({});
+      const bootstrap = await stack.api["bootstrap.get"]({});
       if (!bootstrap.ok) throw new Error(bootstrap.error.message);
-      equal(evidence, "Request opened no session", bootstrap.data.browser.groups.rows.length, 0);
+      equal(
+        evidence,
+        "Request opened no session",
+        (await stack.host.store.listBrowserSessions(bootstrap.data.user.id)).length,
+        0,
+      );
     },
   );
 

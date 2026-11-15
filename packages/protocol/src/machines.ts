@@ -5,7 +5,7 @@ import {
   ComputerAppStatusEntrySchema,
   computerAppMaxStatusEntries,
 } from "./computer-apps.js";
-import { LegacyMachineComputerUseSchema } from "./computer-use.js";
+
 import { RunnerModuleReadinessSchema } from "./runner.js";
 import {
   RunnerDeviceFormSchema,
@@ -82,7 +82,7 @@ export const MachineKindSchema = z.enum([
 ]);
 export type MachineKind = z.infer<typeof MachineKindSchema>;
 
-export const LegacyMachineSummarySchema = z.object({
+export const MachineSummarySchema = z.object({
   kind: z
     .string()
     .transform((kind) => MachineKindSchema.safeParse(kind).data ?? "unknown")
@@ -118,14 +118,7 @@ export const LegacyMachineSummarySchema = z.object({
    * let agents operate, and what one is doing in them right now, is their own
    * business and not a fact about the computer anyone managing it may read.
    */
-  computerUse: LegacyMachineComputerUseSchema.nullable().default(null),
-  /**
-   * When this Agent Phone's tab opened; null while it has none. Beside
-   * `computerUse`, not in it, because that goes null while a phone is offline
-   * and a tab stays. Owner-only like `computerUse`. A Host older than this
-   * field omits it.
-   */
-  tabOpenedAt: z.string().nullable().default(null),
+  computerUse: MachineComputerUseSchema.nullable().default(null),
   detail: z.string().nullable(),
   /**
    * What the computer says it is — its shape and platform — from its last
@@ -174,10 +167,5 @@ export const LegacyMachineSummarySchema = z.object({
   pinnedThreads: z.number().int().nonnegative().max(1_000_000),
   revocable: z.boolean(),
   status: z.enum(["online", "offline", "pending", "needs-update", "updating", "update-pending"]),
-});
-export type LegacyMachineSummary = z.infer<typeof LegacyMachineSummarySchema>;
-
-export const MachineSummarySchema = LegacyMachineSummarySchema.omit({ tabOpenedAt: true }).extend({
-  computerUse: MachineComputerUseSchema.nullable().default(null),
 });
 export type MachineSummary = z.infer<typeof MachineSummarySchema>;

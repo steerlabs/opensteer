@@ -1,3 +1,8 @@
+import type { TabService } from "./tabs/tab-service.js";
+import type { AgentToolActivityStore, DatabaseSchema } from "@opensteer/database";
+import { registerAgentToolRoute } from "./mcp/agent-tool-route.js";
+import { registerAgentPageBindingRoute } from "./browser/trigger-cdp-bridge.js";
+import { handleAppCommand } from "./apps/app-routes.js";
 import { createAssetUrlHandlers } from "./assets/asset-service.js";
 import { createReferenceHandlers, createThreadRequestHandler } from "./references/resolve.js";
 import { resolvePersonalReferences } from "@opensteer/database";
@@ -21,7 +26,6 @@ import { findPersonalSettings, requirePersonalOwner, needsYouPage } from "@opens
 import type { PersonalExecution } from "./runtime/personal-execution.js";
 import type { PersonalTeamLinks } from "./team-links/service.js";
 import { previewToolOutput, type AgentEventView } from "@opensteer/core";
-import type { BrowserClientStreamMessage } from "./browser/browser-client-streams.js";
 
 import { readAutomaticModelPreview } from "./agents/automatic-models.js";
 import { registerDesktopUpdateMaintenance } from "./access/personal-desktop-update-routes.js";
@@ -46,7 +50,6 @@ import { createAppHandlers, registerAppRoutes } from "./apps/app-routes.js";
 
 import { AgentPhoneUpdateHub } from "./agent-phone/update-hub.js";
 import type { AgentPhoneUpdateRelease } from "./agent-phone/update-release.js";
-import type { BrowserTabGroupService } from "./browser/browser-tab-group-service.js";
 import { searchSuggestions } from "./browser/search-suggestions.js";
 import { runnerAuxiliaryWelcome } from "./server/runner-auxiliary-welcome.js";
 import { createVoiceHandlers } from "./voice/voice-handlers.js";
@@ -73,7 +76,6 @@ import { createVoiceHandlers } from "./voice/voice-handlers.js";
  * A new browser-facing capability is a new rpc member, not a route added below.
  */
 import type { ComputerViewService } from "./computer-use/computer-view-service.js";
-import type { PhoneTabs } from "./computer-use/phone-tabs.js";
 
 import websocket from "@fastify/websocket";
 import {
@@ -145,8 +147,8 @@ import {
   ConfigurePersonalRemoteAccessRequestSchema,
   ConsumePersonalHostAccountLinkRequestSchema,
   CorrelationIdSchema,
-  LegacyHostBootstrapSchema as HostBootstrapSchema,
-  LegacyHostToClientMessageSchema as HostToClientMessageSchema,
+  HostBootstrapSchema,
+  HostToClientMessageSchema,
   HostToIntegrationsModuleMessageSchema,
   HostToShellModuleMessageSchema,
   IntegrationsModuleEventSchema,
@@ -156,7 +158,7 @@ import {
   RunnerAuxiliaryHeartbeatSchema,
   RunnerAuxiliaryModuleSchema,
   RunnerModuleNameSchema,
-  LegacyRunnerToHostMessageSchema as RunnerToHostMessageSchema,
+  RunnerToHostMessageSchema,
   RunnerWireProofSchema,
   ShellModuleToHostMessageSchema,
   agentPhoneOutdatedReason,
@@ -170,14 +172,14 @@ import {
   threadPageMaxItems,
   unsupportedVersionCloseCode,
   type AgentPhoneHostTarget,
-  type LegacyComputerUseSessionSummary,
+  type ComputerUseSessionSummary,
   type HarnessAuthenticationState,
   type HarnessSourceDescriptor,
   type HostApiHandlers,
   type HostApiServerContext,
-  type LegacyHostToClientMessage as HostToClientMessage,
+  type HostToClientMessage,
   type HostToIntegrationsModuleMessage,
-  type LegacyHostToRunnerMessage as HostToRunnerMessage,
+  type HostToRunnerMessage,
   type HostToShellModuleMessage,
   type IntegrationsModuleEvent,
   type MachineAppStatus,
@@ -389,7 +391,8 @@ export interface HostServerDependencies {
   readonly deviceAccess: DeviceAccessService;
   readonly machineFullDiskAccess: MachineFullDiskAccessService;
   readonly browser: BrowserService;
-  readonly browserTabs: BrowserTabGroupService;
+  readonly tabs: TabService;
+  readonly toolActivity: AgentToolActivityStore<DatabaseSchema>;
   readonly browserSources: BrowserSourceService;
   readonly passwordSignIns: Pick<PasswordSignInService, "get" | "respond">;
   readonly signBrowserSourceInvitation: (bytes: Uint8Array) => string;
@@ -407,7 +410,6 @@ export interface HostServerDependencies {
   /** The Host's end of every `integrations` module stream. */
   readonly computerApps: ComputerAppHub;
   readonly computerViews?: ComputerViewService;
-  readonly phoneTabs?: PhoneTabs;
   readonly displayStreams?: DisplayStreamHub;
   /** The Host's computer-use sessions, for the rows that show one. */
   readonly computerUse?: Pick<ComputerUseService, "sessionsForRunner">;
@@ -563,11 +565,19 @@ export async function createHostServer(
   registerSessionExchangeRoute(app, {
     personalRemoteAccess: dependencies.personalRemoteAccess?.service,
   });
-  registerAgentCdpBridge(
+  registerAgentCdpBridge(app, dependencies.browser, dependencies.runToolTokens);
+  registerAgentToolRoute(app, {
+    callers: dependencies.agentTools.options.callers,
+    service: dependencies.agentTools,
+    activity: dependencies.toolActivity,
+    realtime: dependencies.realtime,
+    publish: (events) => events.forEach(publishDeploymentEvent),
+  });
+  registerAgentPageBindingRoute(
     app,
-    dependencies.browser,
     dependencies.runToolTokens,
-    dependencies.browserTabs,
+    dependencies.tabs,
+    dependencies.agentTools.options.callers,
   );
   registerBrowserSourceWire(
     app,
@@ -987,7 +997,7 @@ export async function createHostServer(
       string,
       { ownerViews: Awaited<ReturnType<ComputerViewService["list"]>>; ownerViewVersion?: number }
     >();
-    const computerUseSessions = new Map<string, readonly LegacyComputerUseSessionSummary[]>();
+    const computerUseSessions = new Map<string, readonly ComputerUseSessionSummary[]>();
     const computerUseDisplayStreamSupported = new Map<string, boolean>();
     const computerUsePolicies = new Map<string, { readonly appApproval: "ask" | "automatic" }>();
     for (const runner of manageable) {
@@ -1078,8 +1088,6 @@ export async function createHostServer(
         ownedByViewer: runner.ownerUserId === ownerId,
         readiness: moduleReadiness(runner.id, runner.moduleDescriptors.browser?.wireVersion),
         revokedAt: runner.revokedAt,
-        tabOpenedAt:
-          ownership.get(runner.id)?.effectiveOwner === ownerId ? runner.tabOpenedAt : null,
         // Only a live connection says which build it runs.
         runtimeVersion: dependencies.runners.identityForRunner(runner.id)?.runtimeVersion ?? null,
       })),
@@ -1130,6 +1138,10 @@ export async function createHostServer(
       );
     },
     ...createAppHandlers(dependencies.apps, appGateway),
+    "tabs.get": async (input, context) =>
+      rpcSuccess(await dependencies.tabs.get(requireRpcSession(context).user.id, input.tabId)),
+    "tabs.state": async (_input, context) =>
+      rpcSuccess(await dependencies.tabs.bootstrap(requireRpcSession(context).user.id, 240 * 1024)),
     "attachment.get": async (input, context) =>
       rpcSuccess(
         await dependencies.attachments.get(input.attachmentId, requireRpcSession(context).user.id),
@@ -1155,7 +1167,7 @@ export async function createHostServer(
           ),
         ),
       ),
-    "bootstrap.legacy.get": async (_input, context) => {
+    "bootstrap.get": async (_input, context) => {
       const session = requireRpcSession(context),
         ownerId = session.user.id;
       await requirePersonalOwner(dependencies.store.database, ownerId);
@@ -1176,11 +1188,9 @@ export async function createHostServer(
           environmentIds: environments.map(({ id }) => id),
         }),
         settings
-          ? dependencies.browser.bootstrap(ownerId)
+          ? dependencies.browser.workspaceBootstrap(ownerId)
           : {
               available: false,
-              groups: { rows: [], complete: true },
-              tabs: [],
               placements: [],
               profiles: [],
               profileHomes: [],
@@ -1208,8 +1218,8 @@ export async function createHostServer(
             managePrivateResources: true,
           },
           browser,
-          appTabs: settings ? await dependencies.apps.listTabs(ownerId) : [],
-          latestPlaces: settings ? await dependencies.browser.latestPlaces(ownerId) : [],
+          tabs: await dependencies.tabs.bootstrap(ownerId, 240 * 1024),
+          latestPlaces: settings ? await dependencies.browser.latestTabPlaces(ownerId) : [],
           environments: environments.map((environment) => {
             const runner = dependencies.runners.identityForEnvironment(environment.id);
             return {
@@ -1331,10 +1341,10 @@ export async function createHostServer(
         }),
       );
     },
-    "machines.legacy.list": async (_input, context) => {
+    "machines.list": async (_input, context) => {
       const session = requireRpcSession(context);
       return rpcSuccess(
-        hostApi["machines.legacy.list"].success.parse({
+        hostApi["machines.list"].success.parse({
           machines: await machineSummaries(session),
         }),
       );
@@ -1590,7 +1600,10 @@ export async function createHostServer(
     | "browser.history.get"
     | "browser.history.icons.get"
     | "thread.browserUsage.get"
-    | "apps.legacy.get"
+    | "apps.list"
+    | "tabs.get"
+    | "tabs.state"
+    | "apps.get"
     | "apps.view"
     | "attachment.get"
     | "attachment.upload"
@@ -1600,7 +1613,7 @@ export async function createHostServer(
     | "teams.links.list"
     | "teams.threadTask.get"
     | "teams.replyTask.get"
-    | "bootstrap.legacy.get"
+    | "bootstrap.get"
     | "harness.authentication.get"
     | "automaticModels.get"
     | "harness.catalog.refresh"
@@ -1612,7 +1625,7 @@ export async function createHostServer(
     | "voice.say"
     | "voice.stop"
     | "machine.access.history"
-    | "machines.legacy.list"
+    | "machines.list"
     | "requests.list"
     | "run.attempts.list"
     | "tasks.list"
@@ -2375,64 +2388,72 @@ export async function createHostServer(
           }),
           type: command.type,
         };
-      case "tabs.group": {
-        const { type, ...input } = command;
-        return {
-          type,
-          ...(await dependencies.browserTabs.group({ kind: "person", ownerId: userId }, input)),
-        };
-      }
-      case "tabs.ungroup":
+      case "tab.open": {
+        const { tab } = await dependencies.tabs.open(
+          { kind: "person", ownerId: userId },
+          command.target,
+          command.idempotencyKey,
+        );
         return {
           type: command.type,
-          layout: await dependencies.browserTabs.ungroup(
+          tab,
+          layout: (await dependencies.tabs.project({ kind: "person", ownerId: userId })).layout,
+        };
+      }
+      case "tab.reopen":
+        return {
+          type: command.type,
+          ...(await dependencies.tabs.reopen(
+            { kind: "person", ownerId: userId },
+            command.tabId,
+            command.idempotencyKey,
+          )),
+        };
+      case "tab.close":
+        return {
+          type: command.type,
+          ...(await dependencies.tabs.close(
             { kind: "person", ownerId: userId },
             command.tabIds,
             command.idempotencyKey,
-          ),
+          )),
+          layout: (await dependencies.tabs.project({ kind: "person", ownerId: userId })).layout,
         };
-      case "tabs.move": {
-        const { type, ...input } = command;
-        return {
-          type,
-          layout: await dependencies.browserTabs.move({ kind: "person", ownerId: userId }, input),
-        };
-      }
-      case "tabGroup.update": {
-        const { type, ...input } = command;
-        return {
-          type,
-          layout: await dependencies.browserTabs.update({ kind: "person", ownerId: userId }, input),
-        };
-      }
-      case "tabs.close":
+      case "tab.activate":
         return {
           type: command.type,
-          ...(await dependencies.browserTabs.close(
+          ...(await dependencies.tabs.activate(userId, command.tabId, command.idempotencyKey)),
+        };
+      case "tab.organize":
+        return {
+          type: command.type,
+          ...(await dependencies.tabs.organize(
             { kind: "person", ownerId: userId },
-            command.tabIds,
+            command,
+            command.idempotencyKey,
           )),
+          layout: (await dependencies.tabs.project({ kind: "person", ownerId: userId })).layout,
         };
-      case "legacy.tab.activate":
-        return dependencies.browser.activatePersonalTab(userId, command.tabId);
-      case "legacy.tab.reopen":
-        return dependencies.browser.reopenPersonalTab(userId, command.idempotencyKey);
-      case "legacy.tab.close":
-        return dependencies.browser.closePersonalTab(userId, command.tabId);
-      case "app.tab.open":
-      case "app.tab.close":
+      case "tab.group.update":
         return {
           type: command.type,
-          ...(await dependencies.apps.setTabOpen(
-            command.appId,
-            userId,
-            command.type === "app.tab.open",
+          ...(await dependencies.tabs.updateGroup(
+            { kind: "person", ownerId: userId },
+            command,
+            command.idempotencyKey,
           )),
+          layout: (await dependencies.tabs.project({ kind: "person", ownerId: userId })).layout,
         };
-      case "browser.tab.open":
-        return dependencies.browser.openTab(userId, command);
-      case "browser.tab.close":
-        return dependencies.browser.closeTab(userId, command);
+      case "tab.group.delete":
+        return {
+          type: command.type,
+          ...(await dependencies.tabs.deleteGroup(userId, command.groupId, command.idempotencyKey)),
+        };
+      case "app.rename":
+      case "app.start":
+      case "app.stop":
+      case "app.delete":
+        return handleAppCommand(dependencies.apps, command, userId);
       case "browser.session.close":
         await dependencies.browser.stop(userId, BrowserSessionIdSchema.parse(command.sessionId));
         return { type: command.type };
@@ -2475,7 +2496,6 @@ export async function createHostServer(
       coreRpcHandlers,
       handleCoreCommand,
       dependencies.computerViews,
-      dependencies.phoneTabs,
     ),
     ...(dependencies.connections
       ? createConnectionRpcHandlers(dependencies.connections)
@@ -2750,7 +2770,7 @@ export async function createHostServer(
         dependencies.realtime,
         dependencies.discovery.document.deploymentId,
         servedHostApiVersion(request.headers),
-        dependencies.browser,
+        dependencies.tabs,
         session,
         request.log,
       );
@@ -3710,7 +3730,7 @@ function attachRealtimeSocket(
   realtime: RealtimeHub,
   deploymentId: import("@opensteer/core").DeploymentId,
   apiVersion: number,
-  browser: BrowserService,
+  tabs: TabService,
   session: AuthenticatedSession,
   log: FastifyInstance["log"],
 ): void {
@@ -3719,7 +3739,7 @@ function attachRealtimeSocket(
   const peer = jsonPeer<HostToClientMessage>(socket, `client-peer:${randomUUID()}`);
   const sink = {
     ...peer,
-    send: async (message: HostToClientMessage | BrowserClientStreamMessage) => {
+    send: async (message: HostToClientMessage) => {
       const projected = HostToClientMessageSchema.safeParse(
         // Tells the reader which version the state it just received was read at.
         message.type === "host.synchronized" ? { ...message, apiVersion } : message,
@@ -3795,7 +3815,7 @@ function attachRealtimeSocket(
   let queuedBytes = 0;
   let queuedItems = 0;
   let unsubscribe: (() => void) | undefined;
-  let browserStream: Awaited<ReturnType<BrowserService["clientStreams"]["attach"]>> | undefined;
+  let browserStream: ReturnType<TabService["streams"]["subscribe"]> | undefined;
   let realtimeClosed = false;
   let subscribed = false;
   const unregister = realtime.registerConnection(session.user.id, session.id, sink);
@@ -3893,20 +3913,14 @@ function attachRealtimeSocket(
   });
   socket.once("error", close);
   void (async () => {
-    for await (const { message, bytes } of browserInbox) {
+    for await (const { bytes } of browserInbox) {
       queuedBytes -= bytes;
       queuedItems--;
       if (realtimeClosed) break;
-      if (browserStream) browserStream.resync(message.groupId);
-      else if (!message.groupId) {
-        const attached = await browser.clientStreams.attach(
-          session.user.id,
-          { send: (message) => sink.send(message), bufferedAmount: () => socket.bufferedAmount },
-          message.continuation,
-        );
-        if (realtimeClosed) attached.close();
-        else browserStream = attached;
-      }
+      browserStream?.close();
+      browserStream = tabs.streams.subscribe(session.user.id, (message) => sink.send(message));
+      await browserStream.ready;
+      if (realtimeClosed) browserStream.close();
     }
   })().catch(failed);
   void (async () => {
@@ -3926,6 +3940,10 @@ function attachRealtimeSocket(
       }
       if (subscribed) throw badMessage("Client is already subscribed");
       try {
+        if (!browserStream) {
+          browserStream = tabs.streams.subscribe(session.user.id, (message) => sink.send(message));
+          void browserStream.ready.catch(failed);
+        }
         const subscription = await realtime.subscribe({
           // State read at another version is replaced, not resumed.
           afterSequence:

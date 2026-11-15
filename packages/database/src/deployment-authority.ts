@@ -1,7 +1,7 @@
 import { OpensteerError } from "@opensteer/core";
 import type { Kysely } from "kysely";
 import { checkoutSession } from "./connection.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 
 export interface DeploymentAuthorityLease {
   /**

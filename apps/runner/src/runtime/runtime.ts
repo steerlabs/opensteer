@@ -80,7 +80,7 @@ import {
   pendingAgentEventMaxSerializedBytes,
   type PendingAgentEvent,
   type ProtocolError,
-  type LegacyHostToRunnerMessage as HostToRunnerMessage,
+  type HostToRunnerMessage,
   type HarnessAuthenticationState,
   type HarnessInstallation,
   type HarnessInstanceCatalog,

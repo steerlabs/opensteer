@@ -70,7 +70,7 @@ import type {
   ChannelAccountTable,
   ChannelBindingTable,
   ChannelDeliveryTable,
-  LegacyDatabaseSchema as DatabaseSchema,
+  DatabaseSchema,
   IntegrationConnectionTable,
 } from "./schema.js";
 import { executionEnvironmentIsAvailableToUser } from "./execution-authority.js";

@@ -20,7 +20,7 @@ import {
 import { type Kysely, type Transaction, sql } from "kysely";
 import {
   type CommandRow,
-  type LegacyDatabaseSchema as DatabaseSchema,
+  type DatabaseSchema,
   type RunRow,
   type ProviderSessionTable,
 } from "./schema.js";

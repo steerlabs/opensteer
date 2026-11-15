@@ -1,6 +1,6 @@
 import { createId, type TeamAgentReturnOutcome, type TeamMessageId } from "@opensteer/core";
 import { sql, type Selectable, type Transaction } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema, TeamAgentRequestTable } from "./schema.js";
+import type { DatabaseSchema, TeamAgentRequestTable } from "./schema.js";
 import { appendTeamAudit } from "./team-audit-store.js";
 import { teamPrincipalProfiles } from "./team-principals-store.js";
 

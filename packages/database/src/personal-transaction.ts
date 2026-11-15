@@ -1,4 +1,4 @@
-import type { LegacyDatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { sql } from "kysely";
 import type { DeploymentId } from "@opensteer/core";
 import type { IsolationLevel, Kysely, Transaction } from "kysely";
@@ -24,7 +24,7 @@ export function inheritExecutionClock<Schema>(
 
 const held = new WeakSet<object>();
 
-export function withPersonalReadTransaction<Result, Schema = LegacyDatabaseSchema>(
+export function withPersonalReadTransaction<Result, Schema = DatabaseSchema>(
   database: Kysely<Schema>,
   read: (transaction: Transaction<Schema>) => Promise<Result>,
   isolationLevel: IsolationLevel = "repeatable read",
@@ -56,7 +56,7 @@ export async function lockDeploymentEvents<Schema>(transaction: Transaction<Sche
   return state.deploymentId;
 }
 
-export function withPersonalTransaction<Result, Schema = LegacyDatabaseSchema>(
+export function withPersonalTransaction<Result, Schema = DatabaseSchema>(
   database: Kysely<Schema>,
   action: (transaction: Transaction<Schema>) => Promise<Result>,
   isolationLevel?: IsolationLevel,

@@ -4,11 +4,7 @@ import { contentSaysSomething, isPlaceContentPart } from "@opensteer/core";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { isConstraintViolation } from "./connection.js";
-import {
-  type DeploymentEventRow,
-  type RunRow,
-  type LegacyDatabaseSchema as DatabaseSchema,
-} from "./schema.js";
+import { type DeploymentEventRow, type RunRow, type DatabaseSchema } from "./schema.js";
 import { type PendingAgentEvent, PendingAgentEventSchema } from "@opensteer/protocol";
 import {
   type EnvironmentId,

@@ -44,7 +44,7 @@ import {
   type AgentPhoneArtifactManifest,
   type AgentPhoneHostTarget,
   type AgentPhoneSetupStatus,
-  type LegacyComputerViewNativeResult as ComputerViewNativeResult,
+  type ComputerViewNativeResult,
   type HostIntegrationsComputerView,
   type HostIntegrationsDisplayStart,
   type RunnerAuxiliaryFrameFence,
@@ -1719,7 +1719,7 @@ export async function waitForPhoneOnline(
     async () => {
       const [status, { machines }] = await Promise.all([
         readPhoneStatus(device),
-        testRpcData(host.origin, "machines.legacy.list", {}, { headers: host.ownerHeaders }),
+        testRpcData(host.origin, "machines.list", {}, { headers: host.ownerHeaders }),
       ]);
       const machine = machines.find((candidate) => candidate.id === runnerId);
       if (
@@ -1773,7 +1773,7 @@ export async function connectAgentComputer(
       async () => {
         const bootstrap = await testRpcData(
           host.origin,
-          "bootstrap.legacy.get",
+          "bootstrap.get",
           {},
           { headers: host.ownerHeaders },
         );

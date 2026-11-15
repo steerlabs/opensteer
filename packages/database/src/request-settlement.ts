@@ -1,7 +1,7 @@
 import { AuthSessionIdSchema, OpensteerError, type UserId } from "@opensteer/core";
 import { describeSessionDevice } from "@opensteer/shared/sessionDevice";
 import type { Transaction } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 
 /** Read provenance before domain writes; the caller must fence the session before commit. */

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { sql, type Kysely } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "@opensteer/database";
+import type { DatabaseSchema } from "@opensteer/database";
 
 export async function consumeAnonymousRateLimit(
   database: Kysely<DatabaseSchema>,

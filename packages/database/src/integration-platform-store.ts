@@ -3,7 +3,7 @@ import { SpecialistStore } from "./specialist-store.js";
 import { PluginStore } from "./plugin-store.js";
 import { ComputerOperationStore } from "./computer-operation-store.js";
 import type { Kysely } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import {
   IntegrationConnectionAuthStore,
   IntegrationGrantStore,

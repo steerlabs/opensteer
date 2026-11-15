@@ -92,7 +92,7 @@ integration("API-key reconnect incident", () => {
         token: await host.hostingRunnerEnrollmentToken,
       });
       closers.unshift(() => caller.close());
-      await testRpcData(host.origin, "bootstrap.legacy.get", {}, { headers: host.ownerHeaders });
+      await testRpcData(host.origin, "bootstrap.get", {}, { headers: host.ownerHeaders });
 
       const run = await dispatchCallerRun(host, caller, {
         key: "api-key-reconnect-run",

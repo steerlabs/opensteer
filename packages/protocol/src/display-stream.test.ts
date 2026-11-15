@@ -16,7 +16,7 @@ import {
   encodeDisplayViewerFrame,
   DisplayViewerStateSchema,
   DisplayInputResultSchema,
-  LegacyDisplayViewerControlSchema,
+  DisplayViewerControlSchema,
   displayViewerCloseCodes,
   isRetryableDisplayViewerClose,
 } from "./display-stream.js";
@@ -261,9 +261,9 @@ describe("display input and socket messages", () => {
     ).toBe(false);
     // Its one answer is a refusal whose reason that release shows no words for.
     const refusal = { type: "display.control", state: "refused", reason: "released-by-owner" };
-    expect(LegacyDisplayViewerControlSchema.parse(refusal)).toEqual(refusal);
+    expect(DisplayViewerControlSchema.parse(refusal)).toEqual(refusal);
     for (const state of ["held", "released", "busy"])
-      expect(LegacyDisplayViewerControlSchema.safeParse({ ...refusal, state }).success).toBe(false);
+      expect(DisplayViewerControlSchema.safeParse({ ...refusal, state }).success).toBe(false);
     // Current viewers never receive a control message.
     expect(DisplayViewerServerMessageSchema.safeParse(refusal).success).toBe(false);
   });

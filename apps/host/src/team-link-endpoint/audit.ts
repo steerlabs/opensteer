@@ -1,5 +1,5 @@
 import type { TeamAgentRequestId, TeamChannelId, TeamLinkId, RunId } from "@opensteer/core";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "@opensteer/database";
+import type { DatabaseSchema } from "@opensteer/database";
 import type { Kysely } from "kysely";
 
 export async function auditTeamMachineCall(

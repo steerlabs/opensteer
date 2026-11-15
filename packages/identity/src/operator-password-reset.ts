@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { createId, normalizeIdentityEmail, type IdentityEmail, type UserId } from "@opensteer/core";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "@opensteer/database";
+import type { DatabaseSchema } from "@opensteer/database";
 import { sql, type Kysely } from "kysely";
 
 const localPasswordRecoveryTokenPrefix = "olpr_";

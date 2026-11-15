@@ -428,6 +428,26 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
                   "minLength": 1,
                   "type": "string",
                 },
+                "viewport": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "height": {
+                      "maximum": 8192,
+                      "minimum": 1,
+                      "type": "integer",
+                    },
+                    "width": {
+                      "maximum": 8192,
+                      "minimum": 1,
+                      "type": "integer",
+                    },
+                  },
+                  "required": [
+                    "width",
+                    "height",
+                  ],
+                  "type": "object",
+                },
               },
               "required": [
                 "kind",
@@ -457,6 +477,26 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
                   "minLength": 1,
                   "type": "string",
                 },
+                "viewport": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "height": {
+                      "maximum": 8192,
+                      "minimum": 1,
+                      "type": "integer",
+                    },
+                    "width": {
+                      "maximum": 8192,
+                      "minimum": 1,
+                      "type": "integer",
+                    },
+                  },
+                  "required": [
+                    "width",
+                    "height",
+                  ],
+                  "type": "object",
+                },
               },
               "required": [
                 "kind",
@@ -469,7 +509,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
               "additionalProperties": false,
               "properties": {
                 "computerId": {
-                  "description": "Computer ID from computer_list; for Guest, omitted means the hosting computer.",
+                  "description": "Computer ID from computer_list.",
                   "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                   "type": "string",
                 },
@@ -500,7 +540,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
                   "type": "string",
                 },
                 "computerId": {
-                  "description": "Computer ID from computer_list; for Guest, omitted means the hosting computer.",
+                  "description": "Computer ID from computer_list.",
                   "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                   "type": "string",
                 },
@@ -520,7 +560,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
               "additionalProperties": false,
               "properties": {
                 "computerId": {
-                  "description": "Computer ID from computer_list; for Guest, omitted means the hosting computer.",
+                  "description": "Computer ID from computer_list.",
                   "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                   "type": "string",
                 },
@@ -1474,110 +1514,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "type": "object",
     },
     "name": "opensteer_messaging_bridge_remove",
-  },
-  {
-    "access": "write",
-    "callers": [
-      "run",
-    ],
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "appId": {
-          "pattern": "^app_[0-9a-f-]{36}$",
-          "type": "string",
-        },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "path": {
-          "maxLength": 4096,
-          "minLength": 1,
-          "type": "string",
-        },
-        "start": {
-          "maxLength": 16384,
-          "minLength": 1,
-          "type": "string",
-        },
-        "title": {
-          "maxLength": 160,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "path",
-        "title",
-      ],
-      "type": "object",
-    },
-    "name": "opensteer_app_publish",
-  },
-  {
-    "access": "read",
-    "callers": [
-      "run",
-      "program",
-      "connection",
-    ],
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {},
-      "type": "object",
-    },
-    "name": "opensteer_app_list",
-  },
-  {
-    "access": "write",
-    "callers": [
-      "run",
-    ],
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "appId": {
-          "pattern": "^app_[0-9a-f-]{36}$",
-          "type": "string",
-        },
-        "body": {
-          "maxLength": 262144,
-          "type": "string",
-        },
-        "headers": {
-          "additionalProperties": {
-            "maxLength": 8192,
-            "type": "string",
-          },
-          "propertyNames": {
-            "maxLength": 200,
-            "type": "string",
-          },
-          "type": "object",
-        },
-        "method": {
-          "default": "GET",
-          "pattern": "^[A-Z]{1,32}$",
-          "type": "string",
-        },
-        "path": {
-          "default": "/",
-          "maxLength": 4096,
-          "type": "string",
-        },
-      },
-      "required": [
-        "appId",
-      ],
-      "type": "object",
-    },
-    "name": "opensteer_app_call",
   },
   {
     "access": "read",

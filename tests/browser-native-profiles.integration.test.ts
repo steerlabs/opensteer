@@ -1,3 +1,4 @@
+import { runtimeBrowserCommand } from "./browser-sessions.test-support.js";
 import { browserInventory } from "./browser-sessions.test-support.js";
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -252,7 +253,7 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
   const site = await stateSite();
   await vi.waitFor(
     async () => {
-      const bootstrap = await stack.api["bootstrap.legacy.get"]({});
+      const bootstrap = await stack.api["bootstrap.get"]({});
       expect(
         bootstrap.ok && bootstrap.data.browser.available,
         "Runner browser module never became available",
@@ -267,7 +268,7 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
     suffix: string,
   ): Promise<BrowserTabOpenResult> => {
     const reply = await bounded(
-      stack.api["commands.dispatch"]({
+      runtimeBrowserCommand(stack, {
         type: "browser.tab.open",
         identity: profileId ? { kind: "profile", profileId } : { kind: "guest" },
         url: site.origin + suffix,
@@ -283,7 +284,7 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
   };
   const close = async (opened: BrowserTabOpenResult) => {
     const catalog = await browserInventory(stack, opened.sessionId);
-    const reply = await stack.api["commands.dispatch"]({
+    const reply = await runtimeBrowserCommand(stack, {
       type: "browser.tab.close",
       sessionId: opened.sessionId,
       surfaceId: opened.tabId,
@@ -393,7 +394,7 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
 
   expect(await stack.host.store.getBrowserProfileStorage(profile.id)).toEqual(binding);
   // A reconnect may confirm established storage, never replace its immutable binding.
-  const deleted = await stack.api["commands.dispatch"]({
+  const deleted = await runtimeBrowserCommand(stack, {
     type: "browser.profile.delete",
     profileId: profile.id,
     idempotencyKey: randomUUID(),
@@ -431,7 +432,7 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
   await expect(
     access(path.join(browser.profileRoot, "profiles", profile.id)),
   ).rejects.toMatchObject({ code: "ENOENT" });
-  const bootstrap = await stack.api["bootstrap.legacy.get"]({});
+  const bootstrap = await stack.api["bootstrap.get"]({});
   expect(
     bootstrap.ok &&
       bootstrap.data.browser.profileDeletions?.some(
@@ -458,7 +459,7 @@ it("advertises exact prepared storage through the reachable Personal browser com
   });
   await vi.waitFor(
     async () => {
-      const bootstrap = await stack.api["bootstrap.legacy.get"]({});
+      const bootstrap = await stack.api["bootstrap.get"]({});
       expect(
         bootstrap.ok && bootstrap.data.browser.available,
         `Standalone browser auxiliary stream never became ready: ${browser.diagnostics()}`,
@@ -466,7 +467,7 @@ it("advertises exact prepared storage through the reachable Personal browser com
     },
     { timeout: 15_000 },
   );
-  const machines = await stack.api["machines.legacy.list"]({});
+  const machines = await stack.api["machines.list"]({});
   if (!machines.ok) throw new Error(machines.error.message);
   const browserComputers = machines.data.machines.filter((machine) => machine.modules.browser);
   expect(browserComputers).toHaveLength(1);
@@ -478,7 +479,7 @@ it("advertises exact prepared storage through the reachable Personal browser com
       .where("id", "=", RunnerIdSchema.parse(browserComputers[0]!.id))
       .executeTakeFirstOrThrow(),
   ).toEqual({ kind: "local", ownerKind: "user" });
-  const created = await stack.api["commands.dispatch"]({
+  const created = await runtimeBrowserCommand(stack, {
     type: "browser.profile.create",
     input: {
       name: "Standalone",
@@ -489,7 +490,7 @@ it("advertises exact prepared storage through the reachable Personal browser com
   if (!created.ok || created.data.type !== "browser.profile.create")
     throw new Error("Standalone profile was not created");
   const opened = await bounded(
-    stack.api["commands.dispatch"]({
+    runtimeBrowserCommand(stack, {
       type: "browser.tab.open",
       identity: { kind: "profile", profileId: created.data.profile.id },
       idempotencyKey: randomUUID(),

@@ -8,20 +8,7 @@ export const ComputerViewIdSchema = z
   .regex(/^cvw_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
 export type ComputerViewId = z.infer<typeof ComputerViewIdSchema>;
 export const ComputerWindowIdSchema = z.number().int().nonnegative();
-export const LegacyComputerViewWindowSchema = z.object({
-  id: ComputerWindowIdSchema,
-  title: z.string().max(1_024),
-});
-export type LegacyComputerViewWindow = z.infer<typeof LegacyComputerViewWindowSchema>;
-export const LegacyComputerViewTargetSchema = z.discriminatedUnion("kind", [
-  z.strictObject({
-    kind: z.literal("app"),
-    app: ComputerAppIdentitySchema,
-    window: ComputerWindowIdSchema.optional(),
-  }),
-  z.strictObject({ kind: z.literal("phone"), display: z.string().min(1).max(255) }),
-]);
-export type LegacyComputerViewTarget = z.infer<typeof LegacyComputerViewTargetSchema>;
+
 export const ComputerViewUnavailableReasonSchema = z.enum([
   "locked",
   "minimized",
@@ -44,31 +31,6 @@ export const ComputerViewUnavailableReasonSchema = z.enum([
   "host-restarted",
 ]);
 export type ComputerViewUnavailableReason = z.infer<typeof ComputerViewUnavailableReasonSchema>;
-/** Private authority record. A view never holds a Run, a control grant, or an app reservation. */
-export const LegacyComputerViewRecordSchema = z
-  .strictObject({
-    ownerUserId: UserIdSchema,
-    connectionId: z.string().min(1).max(255),
-    machineId: RunnerIdSchema,
-    target: LegacyComputerViewTargetSchema,
-    window: LegacyComputerViewWindowSchema.nullable().default(null),
-    viewId: ComputerViewIdSchema,
-    generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-    captureTargetId: z.string().min(1).max(255).nullable(),
-    state: z.enum(["opening", "ready", "unavailable", "closed", "expired"]),
-    openedAt: IsoDateTimeSchema,
-    expiresAt: IsoDateTimeSchema,
-    unavailableReason: ComputerViewUnavailableReasonSchema.nullable(),
-  })
-  .refine(
-    (view) =>
-      view.state !== "ready" ||
-      ((view.target.kind === "phone" || view.captureTargetId !== null) &&
-        view.unavailableReason === null),
-    "A ready view requires a verified capture target and no refusal.",
-  );
-export type LegacyComputerViewRecord = z.infer<typeof LegacyComputerViewRecordSchema>;
-
 import { WindowIdSchema } from "./ids.js";
 export const ComputerViewWindowSchema = z.object({
   windowId: WindowIdSchema,
@@ -84,11 +46,22 @@ export const ComputerViewTargetSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("phone"), display: z.string().min(1).max(255) }),
 ]);
 export type ComputerViewTarget = z.infer<typeof ComputerViewTargetSchema>;
+
+/** Private authority record. A view never holds a Run, a control grant, or an app reservation. */
 export const ComputerViewRecordSchema = z
   .strictObject({
-    ...LegacyComputerViewRecordSchema.shape,
+    ownerUserId: UserIdSchema,
+    connectionId: z.string().min(1).max(255),
+    machineId: RunnerIdSchema,
     target: ComputerViewTargetSchema,
     window: ComputerViewWindowSchema.nullable().default(null),
+    viewId: ComputerViewIdSchema,
+    generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    captureTargetId: z.string().min(1).max(255).nullable(),
+    state: z.enum(["opening", "ready", "unavailable", "closed", "expired"]),
+    openedAt: IsoDateTimeSchema,
+    expiresAt: IsoDateTimeSchema,
+    unavailableReason: ComputerViewUnavailableReasonSchema.nullable(),
   })
   .refine(
     (view) =>

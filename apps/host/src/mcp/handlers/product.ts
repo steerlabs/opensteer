@@ -38,7 +38,7 @@ import { withDatabaseTransaction } from "@opensteer/database";
 import { assertThreadCaller } from "@opensteer/database";
 import type { RealtimeHub } from "@opensteer/orchestration";
 import { SpecialistStore } from "@opensteer/database";
-import type { PersonShowMessage, LegacyPersonShowMessage } from "@opensteer/protocol";
+import type { PersonShowMessage } from "@opensteer/protocol";
 import {
   agentDelegationMaxDepth,
   causalChainMaxDelegations,
@@ -59,7 +59,6 @@ import {
   type Request,
   type AssignmentSummary,
   compareSequence,
-  placeIdentityKey,
   ThreadIdSchema,
   MessageIdSchema,
   type AgentEvent,
@@ -83,7 +82,6 @@ import { computerAppIdentityKey } from "@opensteer/protocol";
 import type { BrowserService } from "../../browser/browser-service.js";
 import type { BrowserSourceService } from "../../browser/browser-source-service.js";
 import type { SavedLoginService } from "../../browser/saved-logins.js";
-import type { BrowserTabGroupService } from "../../browser/browser-tab-group-service.js";
 import type { PlaceContextService } from "../../computer-use/place-context-service.js";
 import type { ComputerUseService } from "../../computer-use/computer-use-service.js";
 
@@ -135,10 +133,26 @@ const unknownEnvironment = "Selected execution environment does not exist";
 const chooseExecutionNext = "See the current choices with opensteer_ai_account_list.";
 
 export class ProductToolHandlers {
+  async #readableTabPlaces<T extends { tabId: import("@opensteer/core").TabId }>(
+    owner: UserId,
+    rows: readonly T[],
+  ): Promise<T[]> {
+    const visible = await Promise.all(
+      rows.map(
+        async (row) =>
+          await this.#tabs?.get?.(owner, row.tabId).then(
+            () => true,
+            () => false,
+          ),
+      ),
+    );
+    return rows.filter((_, i) => visible[i]);
+  }
+
   readonly #deploymentId: DeploymentId;
   readonly #threads: ThreadService;
   readonly #realtime: Pick<RealtimeHub, "observe" | "sendToUsers">;
-  readonly #tabs: Pick<TabServicePort, "authorizeShow"> | undefined;
+  readonly #tabs: Pick<TabServicePort, "authorizeShow" | "get"> | undefined;
   readonly #personShow:
     | ((userId: RunToolScope["requestedBy"], message: PersonShowMessage) => Promise<number>)
     | undefined;
@@ -181,10 +195,10 @@ export class ProductToolHandlers {
     readonly computerUse?: Pick<ComputerUseService, "sessionsForRunner" | "authorizeDisplay">;
     readonly personShow?: (
       userId: RunToolScope["requestedBy"],
-      message: LegacyPersonShowMessage,
+      message: PersonShowMessage,
     ) => Promise<number>;
     readonly show?: (userId: UserId, message: PersonShowMessage) => Promise<number>;
-    readonly tabs?: Pick<TabServicePort, "authorizeShow">;
+    readonly tabs?: Pick<TabServicePort, "authorizeShow" | "get">;
     readonly supportsLoginFill?: (scope: RunToolScope) => boolean;
     readonly browserSources: Pick<BrowserSourceService, "agentCopyChromeCookies">;
     readonly savedLogins: Pick<SavedLoginService, "useSavedLogin" | "useCard">;
@@ -201,7 +215,6 @@ export class ProductToolHandlers {
       | "openAgentSession"
       | "requestAccess"
     >;
-    readonly browserTabs?: BrowserTabGroupService;
     readonly canRunHarness: (environmentId: EnvironmentId, driverKind: HarnessId) => boolean;
     /** The access modes an engine enforces on a computer; undefined when it cannot run there. */
     readonly harnessAccessModes: (
@@ -463,14 +476,14 @@ export class ProductToolHandlers {
     const seen = new Set<string>();
     const references = recent.places.flatMap((event) => {
       if (!event.runId) return [];
-      const key = `${event.runId}:${placeIdentityKey(event.data.place)}`;
+      const key = `${event.runId}:${event.data.tabId}`;
       if (seen.has(key)) return [];
       seen.add(key);
       return [{ threadId: thread.id, runId: event.runId, ...event.data }];
     });
-    const recentPlaces = (await this.#browser.readablePlaces(caller.userId, references))
+    const recentPlaces = (await this.#readableTabPlaces(caller.userId, references))
       .slice(0, 10)
-      .map(({ runId, place, title, site }) => ({ runId, place, title, site }));
+      .map(({ runId, tabId, title, site }) => ({ runId, tabId, title, site }));
     const context = {
       thread: { ...thread, link: formatReferenceLink(thread.id, thread.title) },
       recentRuns: recent.runs.map(({ modelSelection, ...run }) => ({
@@ -649,11 +662,11 @@ export class ProductToolHandlers {
           : [],
     );
     const [places, owners, requests, messages] = await Promise.all([
-      this.#browser.readablePlaces(
+      this.#readableTabPlaces(
         caller.userId,
         events.flatMap((event) =>
           event.type === "place.entered"
-            ? [{ threadId, place: event.data.place, sequence: event.sequence }]
+            ? [{ threadId, tabId: event.data.tabId, sequence: event.sequence }]
             : [],
         ),
       ),

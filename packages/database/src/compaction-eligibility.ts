@@ -8,7 +8,7 @@ import {
   type ThreadId,
 } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 
 export async function compactionIsEligible(
   database: Kysely<DatabaseSchema>,

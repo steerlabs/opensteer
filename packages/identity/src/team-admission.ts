@@ -29,7 +29,7 @@ import { TeamInvitesStore, assertTeamInviteUsable } from "@opensteer/database/te
 import { admitTeamMember, publishTeamMember } from "@opensteer/database/team-members";
 import { appendTeamAudit } from "@opensteer/database/team-audit";
 import { sql, type Transaction } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "@opensteer/database";
+import type { DatabaseSchema } from "@opensteer/database";
 import type {
   AccountAdoptionAccount,
   AccountAdoptionAuthority,

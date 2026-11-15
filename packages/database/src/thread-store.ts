@@ -68,11 +68,7 @@ import {
   sameProviderContinuationIdentity,
   type ThreadInputQueue,
 } from "@opensteer/core";
-import {
-  type CommandRow,
-  type ThreadRow,
-  type LegacyDatabaseSchema as DatabaseSchema,
-} from "./schema.js";
+import { type CommandRow, type ThreadRow, type DatabaseSchema } from "./schema.js";
 import { type RevokedRunGrant } from "./run-grants.js";
 import type { BrowserUsageCredit } from "./browser-session-store.js";
 import {

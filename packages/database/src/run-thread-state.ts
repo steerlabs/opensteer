@@ -7,7 +7,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import type { Kysely } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 
 /**
  * What a Run's engine cannot see in its own history: whether the Run before it

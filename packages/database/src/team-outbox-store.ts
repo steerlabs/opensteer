@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { NotificationIdSchema, type TeamChannelId, type UserId } from "@opensteer/core";
 import { type Transaction } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { TeamAccessStore } from "./team-access-store.js";
 
 export interface TeamPushDelivery {

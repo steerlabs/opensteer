@@ -19,7 +19,7 @@ import {
   verifyDeviceSessionBindingSignature,
 } from "@opensteer/runner-auth";
 import { type Kysely, sql } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { personalDeploymentOwner } from "./machine-store.js";
 import { machineOwnershipIn } from "./machine-ownership.js";

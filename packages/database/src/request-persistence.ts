@@ -1,6 +1,6 @@
 import { RequestSchema, type EnvironmentId, type Request } from "@opensteer/core";
 import type { Kysely, Transaction } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema, RequestRow } from "./schema.js";
+import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 import { createHash } from "node:crypto";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";

@@ -1,6 +1,6 @@
 import { recordedTransactionConflicts } from "./lock-order-checker.test-support.js";
 import type { Kysely } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 
 /** Stop after a real PostgreSQL statement has acquired its locks. */
 export function pauseAfterLock(

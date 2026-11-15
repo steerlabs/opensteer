@@ -93,7 +93,7 @@ integration("computer apps", () => {
       ).rejects.toThrow("Update Opensteer");
       const listed = await testRpcData(
         host.origin,
-        "machines.legacy.list",
+        "machines.list",
         {},
         { headers: host.ownerHeaders },
       );
@@ -147,7 +147,7 @@ integration("computer apps", () => {
     await waitForCondition(async () => {
       const machines = await testRpcData(
         host.origin,
-        "machines.legacy.list",
+        "machines.list",
         {},
         {
           headers: host.ownerHeaders,
@@ -553,7 +553,7 @@ integration("computer apps", () => {
 
     const machines = await testRpcData(
       host.origin,
-      "machines.legacy.list",
+      "machines.list",
       {},
       {
         headers: host.ownerHeaders,

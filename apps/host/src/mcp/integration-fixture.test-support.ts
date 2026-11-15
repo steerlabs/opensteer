@@ -28,6 +28,7 @@ export function createIntegrationMcpFixture(
     },
   );
   const handlers = agentToolHandlers({
+    tabs: unavailable as never,
     administration: new Proxy(
       {},
       {

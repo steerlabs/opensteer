@@ -9,7 +9,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { createTeamFixture } from "./team-fixture.test-support.js";
 import { createTeamTopic, type TeamTopicGrant } from "./team-knowledge-store.js";
 

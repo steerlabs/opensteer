@@ -20,7 +20,7 @@ import {
 import { sql, type Kysely, type Transaction } from "kysely";
 import { appendHostDeploymentEvent } from "./deployment-events.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
-import type { DatabaseSchema, LegacyDatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 
 export const appPortFirst = 49_152;
 export const appPortCount = 16_384;
@@ -388,7 +388,7 @@ export class AppStore {
           .executeTakeFirst();
         if (retired) retiredServer = { generation: Number(retired.generation) };
       }
-      const event = await appendHostDeploymentEvent(legacyTransaction(tx), {
+      const event = await appendHostDeploymentEvent(tx, {
         type: "app.published",
         threadId: input.scope.threadId,
         runId: input.scope.runId,
@@ -677,6 +677,3 @@ async function allocatePort(
 }
 
 // Other stores still type the facade on the pre-0026 schema; the event tables are identical.
-function legacyTransaction(tx: Transaction<DatabaseSchema>): Transaction<LegacyDatabaseSchema> {
-  return tx as unknown as Transaction<LegacyDatabaseSchema>;
-}

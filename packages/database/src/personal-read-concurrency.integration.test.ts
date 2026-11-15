@@ -35,11 +35,9 @@ it("reads a consistent personal page while a writer holds the Deployment fence",
         const page = await deploymentSnapshot(tx, new NotificationStateStore(database), {
           viewerId: personal.userId,
           readResources: async () => ({
-            appTabs: [],
+            tabs: { tabs: [], layout: { revision: 0, items: [] }, complete: true },
             browser: {
               available: false,
-              groups: { rows: [], complete: true },
-              tabs: [],
               profiles: [],
               placements: [],
             },

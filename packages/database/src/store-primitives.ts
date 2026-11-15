@@ -16,7 +16,7 @@ import {
   executionEnvironmentIsAvailableToUser,
 } from "./execution-authority.js";
 import { databaseOperationOptions } from "./operation-budget.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { type CommandRow, type RunRow } from "./schema.js";
 import { projectThreadState } from "./thread-status.js";
 import { appendHostDeploymentEvent } from "./deployment-events.js";

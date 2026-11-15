@@ -14,11 +14,7 @@ import { randomUUID } from "node:crypto";
 import { deleteBrowserProfileInTransaction } from "./browser-session-store.js";
 
 import { databaseOperationOptions } from "./operation-budget.js";
-import type {
-  BrowserProfileDeletionTable,
-  BrowserProfileTable,
-  LegacyDatabaseSchema as DatabaseSchema,
-} from "./schema.js";
+import type { BrowserProfileDeletionTable, BrowserProfileTable, DatabaseSchema } from "./schema.js";
 
 export interface NativeProfileDeletionResult {
   readonly sessionIds: readonly BrowserSessionId[];

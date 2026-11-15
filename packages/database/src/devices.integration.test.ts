@@ -16,7 +16,7 @@ import { createDatabase } from "./connection.js";
 import { cloneTestDatabase, type TestDatabase } from "./test-database.test-support.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
 import { OpensteerStore } from "./store.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { testRunnerDescriptor } from "./runner-fixture.test-support.js";
 import { personalReachableGrant } from "./runner-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";

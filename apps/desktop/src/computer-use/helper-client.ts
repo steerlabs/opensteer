@@ -15,7 +15,7 @@ import {
   ComputerUseHelloResultSchema,
   computerUseHelperProtocolVersion,
   macOwnerViewVersion,
-  legacyComputerUseHelperResults,
+  computerUseHelperResults,
   computerUseRequestMayHaveEffect,
   computerUseMaxTimeoutMs,
   computerUseOutOfTimeSentence,
@@ -217,7 +217,7 @@ export interface ComputerUseHelperRequestOptions {
   readonly signal?: AbortSignal;
 }
 
-type HelperResults = typeof legacyComputerUseHelperResults;
+type HelperResults = typeof computerUseHelperResults;
 export type ComputerUseHelperResult<Method extends ComputerUseHelperMethod> = z.infer<
   HelperResults[Method]
 >;
@@ -830,7 +830,7 @@ export class ComputerUseHelperClient {
             resolvePromise(value);
             return;
           }
-          const parsed = legacyComputerUseHelperResults[method].safeParse(value);
+          const parsed = computerUseHelperResults[method].safeParse(value);
           if (!parsed.success) {
             rejectPromise(
               new ComputerUseHelperFailure(

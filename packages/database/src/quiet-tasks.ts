@@ -1,7 +1,7 @@
 import { nonTerminalRunStatuses, type ThreadId, type UserId } from "@opensteer/core";
 import { sql, type Kysely, type RawBuilder } from "kysely";
 import { latestRunCompletion, threadUnreadPredicate } from "./thread-visits.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 
 /**
  * A task the Host may move to Done for its creator: finished, read, holding

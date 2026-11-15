@@ -16,10 +16,10 @@ export class AppTunnelError extends Error {
   readonly logTail: string;
   /** The Runner refused to treat another program's listener as this app. */
   readonly portInUse: boolean;
-  constructor(message: string, logTail = "") {
+  constructor(message: string, logTail = "", reason?: "port_in_use") {
     super(message);
     this.logTail = logTail;
-    this.portInUse = /^Port \d+ is in use by another program/u.test(message);
+    this.portInUse = reason === "port_in_use";
   }
 }
 
@@ -213,6 +213,7 @@ export class AppTunnelHub {
 }
 
 function check(result: RunnerAppResult): RunnerAppResult {
-  if (!result.ok) throw new AppTunnelError(result.error ?? "App server failed", result.logTail);
+  if (!result.ok)
+    throw new AppTunnelError(result.error ?? "App server failed", result.logTail, result.reason);
   return result;
 }

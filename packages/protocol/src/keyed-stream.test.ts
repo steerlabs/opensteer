@@ -1,9 +1,4 @@
-import { createId } from "@opensteer/core";
-import {
-  BrowserGroupRowSchema,
-  BrowserTabRowSchema,
-  BrowserTabRecordSchema,
-} from "./browser-tabs.js";
+import { BrowserTabRecordSchema } from "./browser-tabs.js";
 import { describe, expect, it } from "vitest";
 import {
   KeyedStreamPublisher,
@@ -221,10 +216,8 @@ describe("keyed streams", () => {
   });
 });
 
-it("fits the worst legal runtime, client tab and group rows including envelopes", () => {
+it("fits the worst legal runtime row including its envelope", () => {
   const bad = (size: number) => "\u0000".repeat(size);
-  const date = "2026-11-10T00:00:00." + "0".repeat(43) + "Z";
-  const sessionId = "bsn_00000000-0000-0000-0000-000000000000";
   const tab = BrowserTabRecordSchema.parse({
     id: bad(512),
     state: "suspended",
@@ -241,53 +234,7 @@ it("fits the worst legal runtime, client tab and group rows including envelopes"
     canGoForward: true,
     sizedByAgent: true,
   });
-  const row = BrowserTabRowSchema.parse({
-    id: bad(512),
-    sessionId,
-    title: bad(256),
-    site: bad(2048),
-    iconRef: "x".repeat(128),
-    order: Number.MAX_SAFE_INTEGER,
-    openerId: bad(512),
-    createdAt: date,
-    state: "restoring",
-    availability: "unavailable",
-    loading: true,
-    navigationFailed: true,
-    documentId: bad(255),
-    canGoBack: true,
-    canGoForward: true,
-    occupants: Array.from({ length: 16 }, () => ({
-      threadId: createId("thread"),
-      holding: true,
-      acting: true,
-      lastActiveAt: date,
-    })),
-  });
-  const group = BrowserGroupRowSchema.parse({
-    id: sessionId,
-    createdAt: date,
-    unavailableReason: bad(1000),
-    tabCount: Number.MAX_SAFE_INTEGER,
-    inventoryRevision: Number.MAX_SAFE_INTEGER,
-    sessionId,
-
-    state: "starting",
-    origin: "person",
-    access: "read-write",
-    placement: { kind: "runner", runnerId: createId("runner") },
-    profileId: createId("browserProfile"),
-    runtimeId: bad(255),
-    opener: { kind: "task", threadId: createId("thread") },
-    navigation: true,
-    sessionCreatedAt: date,
-    updatedAt: date,
-    acting: true,
-    page: { title: bad(256), url: bad(2048) },
-    attachedRunIds: Array.from({ length: 128 }, () => createId("run")),
-    threadIds: Array.from({ length: 16 }, () => createId("thread")),
-  });
-  for (const value of [tab, row, group]) {
+  for (const value of [tab]) {
     expect(
       keyedStreamBytes({ type: "browser.tabs", stream: { op: "rows", rows: [value] } }) + 1024,
     ).toBeLessThan(keyedStreamHardCapBytes);

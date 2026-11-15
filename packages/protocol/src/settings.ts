@@ -17,7 +17,7 @@ import {
   IntegrationConnectionStatusReasonSchema,
   PluginDeviceViewSchema,
 } from "@opensteer/integration-core/models";
-import { LegacyMachineSummarySchema } from "./machines.js";
+import { MachineSummarySchema } from "./machines.js";
 
 const name = z.string().min(1).max(120);
 const revision = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -107,9 +107,7 @@ export const PluginDetailViewSchema = z.object({
   registrations: z.array(z.object({ id: name, ownerUserId: UserIdSchema })).max(1000),
   accounts: z.array(PluginAccountViewSchema).max(100),
   devices: z
-    .array(
-      z.object({ runnerId: RunnerIdSchema, name, status: LegacyMachineSummarySchema.shape.status }),
-    )
+    .array(z.object({ runnerId: RunnerIdSchema, name, status: MachineSummarySchema.shape.status }))
     .max(400),
   permissions: z
     .array(
@@ -164,7 +162,7 @@ const OtherDeviceShape = {
   name: PluginDeviceViewSchema.shape.name,
   kind: PluginDeviceViewSchema.shape.kind,
   computer: z
-    .object({ id: RunnerIdSchema, name, status: LegacyMachineSummarySchema.shape.status })
+    .object({ id: RunnerIdSchema, name, status: MachineSummarySchema.shape.status })
     .nullable(),
   /** Why its server is not running, in the server's own status words; null when it is. */
   issue: z.string().max(1_000).nullable(),
@@ -173,7 +171,7 @@ const OtherDeviceShape = {
 export const DevicesOverviewViewSchema = z.object({
   devices: z
     .array(
-      LegacyMachineSummarySchema.pick({
+      MachineSummarySchema.pick({
         id: true,
         name: true,
         device: true,
@@ -184,7 +182,7 @@ export const DevicesOverviewViewSchema = z.object({
         access: true,
         revocable: true,
       }).extend({
-        access: LegacyMachineSummarySchema.shape.access
+        access: MachineSummarySchema.shape.access
           .unwrap()
           .pick({ policy: true, revision: true })
           .nullable()

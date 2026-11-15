@@ -17,8 +17,8 @@ await win.observe({ screenshot: true }); // look again, with a picture
 
 - `apps()` lists the approved Mac apps you can use; `app(query, { computer })` picks one (add
   `computer` when the same app is approved on several Macs).
-- `App.windows()` lists the app's windows, each with an opaque `windowId`, its `title` and state such
-  as `focused` and `minimized`. `App.window(windowId)` binds that exact window; `App.window()` binds
+- `App.windows()` lists the app's windows as `{ windowId, title }`. `App.window(windowId)` binds
+  that exact window; `App.window()` binds
   the window you used last in this app, else the app's front window. It opens the app in the
   background if needed. A `windowId` is valid on its computer only; `tab_open` with
   `{ kind: "window", computerId, windowId }` puts it in the person's tab list.

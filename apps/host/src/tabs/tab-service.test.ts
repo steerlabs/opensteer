@@ -137,7 +137,11 @@ describe("tab projection and viewer admission", () => {
     expect(visible.tabs).toMatchObject([
       { tabId: a.id, groupId: null, state: "asleep", usedBy: [{ taskId }] },
     ]);
-    f.options.computer = async () => ({ name: "Computer", connected: false, removed: false });
+    f.options.computer = async (_owner, id) => ({
+      name: "Computer",
+      connected: id !== a.computerId,
+      removed: false,
+    });
     expect((await f.service.list(actor, {})).tabs[0]).toMatchObject({
       tabId: a.id,
       state: "unavailable",
@@ -172,6 +176,7 @@ describe("tab projection and viewer admission", () => {
     const a = row(),
       b = row("window"),
       f = fixture([a, b]);
+    b.computerId = createId("runner");
     const full = await f.service.bootstrap(ownerId, 65536);
     const prefix = await f.service.bootstrap(
       ownerId,
@@ -205,7 +210,12 @@ describe("tab projection and viewer admission", () => {
       },
     ]);
     expect(messages[0]).not.toHaveProperty("stream.meta");
-    f.options.computer = async () => ({ name: "Computer", connected: false, removed: false });
+    const untouched = receiver.rows.get(b.id);
+    f.options.computer = async (_owner, id) => ({
+      name: "Computer",
+      connected: id !== a.computerId,
+      removed: false,
+    });
     f.service.changed(ownerId);
     await stream.flush();
     expect(receiver.rows.get(a.id)).toMatchObject({
@@ -213,11 +223,43 @@ describe("tab projection and viewer admission", () => {
       unavailableCode: "computer-offline",
     });
     f.options.computer = async () => ({ name: "Computer", connected: true, removed: false });
+    messages.length = 0;
     f.service.changed(ownerId);
     await stream.flush();
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      stream: { op: "change", add: [expect.objectContaining({ tabId: a.id, state: "asleep" })] },
+    });
     expect(receiver.rows.get(a.id)).toMatchObject({ state: "asleep" });
     expect(receiver.rows.get(a.id)).not.toHaveProperty("unavailableCode");
+    expect(receiver.rows.get(b.id)).toBe(untouched);
     stream.close();
     f.service.dispose();
   });
+});
+
+it("streams a legal thousand-tab layout within the frame cap even when the layout exceeds 64 KiB", async () => {
+  const rows = Array.from({ length: 1000 }, () => ({
+    ...row(),
+    id: TabIdSchema.parse(`tab_${randomUUID()}_${"a".repeat(40)}`),
+  }));
+  const f = fixture(rows);
+  try {
+    const prefix = await f.service.bootstrap(ownerId, 240 * 1024);
+    expect(Buffer.byteLength(JSON.stringify(prefix.layout))).toBeGreaterThan(64 * 1024);
+    expect(prefix.complete).toBe(false);
+    const messages: unknown[] = [];
+    const receiver = new KeyedStreamReceiver<Tab, { layout: TabLayout }, "tabId">({ key: "tabId" });
+    const stream = f.service.streams.subscribe(ownerId, async (frame) => {
+      messages.push(frame);
+      expect(Buffer.byteLength(JSON.stringify(frame))).toBeLessThan(256 * 1024);
+      receiver.apply(frame.stream);
+    });
+    await stream.ready;
+    expect(receiver.rows.size).toBe(1000);
+    expect(messages.length).toBeGreaterThan(2);
+    stream.close();
+  } finally {
+    f.service.dispose();
+  }
 });

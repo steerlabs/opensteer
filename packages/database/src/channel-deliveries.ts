@@ -14,7 +14,7 @@ import {
 } from "@opensteer/channel-core";
 import type { ContentPart, MessageId, ThreadId } from "@opensteer/core";
 import { sql, type Transaction } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { jsonValue, type ChannelLinks } from "./store-primitives.js";
 
 /** One delivery a `status` message becomes, addressed by conversation or by ingress. */

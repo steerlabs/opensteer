@@ -12,7 +12,7 @@ import { sql, type Kysely } from "kysely";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { executionDate, withPersonalReadTransaction } from "./personal-transaction.js";
 import { requestFromRow } from "./request-persistence.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import {
   boundedWindowBytes,
   boundedWindowLimit,

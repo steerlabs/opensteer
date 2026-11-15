@@ -18,7 +18,7 @@ import {
 } from "./computer-app-setup.js";
 import { replaceServerToolsInTransaction } from "./integration-platform-stores.js";
 import { machineOwnershipIn } from "./machine-ownership.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 
 /** An installed MCP server that one computer runs, as the Host tracks it. */
 export interface LocalMcpServerRecord {

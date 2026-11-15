@@ -31,7 +31,7 @@ import {
 import { pendingReplacementAttempt, type RunAttemptRow } from "./run-attempts.js";
 import {
   type CommandRow,
-  type LegacyDatabaseSchema as DatabaseSchema,
+  type DatabaseSchema,
   type PendingCommandRow,
   type RunRow,
 } from "./schema.js";

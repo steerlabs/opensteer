@@ -7,7 +7,7 @@ import { expect, it } from "vitest";
 import { createServer } from "node:http";
 import type { AppRuntimeSpec } from "@opensteer/protocol";
 import { AppServerManager, type AppServerState } from "./app-server-manager.js";
-import { freePort, freePorts } from "./free-port.test-support.js";
+import { freeAppPort, freeAppPorts } from "./free-port.test-support.js";
 
 const crashServer = `require('node:http').createServer((q,s)=>{s.end('ok');if(q.url==='/crash')s.on('finish',()=>process.exit(0))}).listen(process.env.PORT,'127.0.0.1')`;
 
@@ -33,7 +33,7 @@ async function specFor(root: string, command: string, port?: number): Promise<Ap
     appId: `app_${crypto.randomUUID()}`,
     version: 1,
     generation: 1,
-    port: port ?? (await freePort()),
+    port: port ?? (await freeAppPort()),
     folder: { computerId, path: root },
     agentHome: { computerId, path: root },
     command,
@@ -229,7 +229,7 @@ it("returns bounded log tails on exit and readiness timeout", async () => {
     appId: "app_test",
     version: 1,
     generation: 1,
-    port: await freePort(),
+    port: await freeAppPort(),
     folder: { computerId: createId("runner"), path: root },
     agentHome: { computerId: createId("runner"), path: root },
     command: "",
@@ -284,12 +284,12 @@ it("reserves the Runner's server limit across concurrent apps and refuses launch
     appId: "unused",
     version: 1,
     generation: 1,
-    port: await freePort(),
+    port: await freeAppPort(),
     folder: { computerId: createId("runner"), path: root },
     agentHome: { computerId: createId("runner"), path: root },
     command: "exit 1",
   } satisfies AppRuntimeSpec;
-  const ports = await freePorts(33);
+  const ports = await freeAppPorts(33);
   const starts = ports
     .slice(0, 32)
     .map((port) => manager.start({ ...spec, port, appId: `app_${crypto.randomUUID()}` }));
@@ -330,7 +330,7 @@ it("inventories detached descendants without the execution marker before stoppin
     appId: `app_${crypto.randomUUID()}`,
     version: 1,
     generation: 1,
-    port: await freePort(),
+    port: await freeAppPort(),
     folder: { computerId: createId("runner"), path: root },
     agentHome: { computerId: createId("runner"), path: root },
     command: `${process.execPath} parent.cjs`,
@@ -400,13 +400,13 @@ it("cleans a crashed server and descendants before releasing its capacity and la
     appId: "app_crash",
     version: 1,
     generation: 1,
-    port: await freePort(),
+    port: await freeAppPort(),
     folder: { computerId: createId("runner"), path: root },
     agentHome: { computerId: createId("runner"), path: root },
     command: `exec ${process.execPath} server.cjs`,
   } satisfies AppRuntimeSpec;
   const starts: Promise<number>[] = [];
-  const ports = await freePorts(33);
+  const ports = await freeAppPorts(33);
   let settled: Promise<PromiseSettledResult<number>[]> | undefined;
   try {
     await writeFile(
@@ -496,13 +496,13 @@ it.each(["stop", "replacement", "crash", "stopAll"] as const)(
       appId: "app_uncertain",
       version: 1,
       generation: 1,
-      port: await freePort(),
+      port: await freeAppPort(),
       folder: { computerId: createId("runner"), path: root },
       agentHome: { computerId: createId("runner"), path: root },
       command: `exec ${process.execPath} server.cjs`,
     } satisfies AppRuntimeSpec;
     const starts: Promise<number>[] = [];
-    const ports = await freePorts(33);
+    const ports = await freeAppPorts(33);
     let settled: Promise<PromiseSettledResult<number>[]> | undefined;
     try {
       await writeFile(

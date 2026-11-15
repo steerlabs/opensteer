@@ -6,7 +6,7 @@ import {
   testReadyHarnessCatalog,
   testRunnerDescriptor,
 } from "@opensteer/database/test-support/store";
-import { readPersonalResources } from "../browser/personal-snapshot.js";
+import { readEmptyPersonalResources } from "@opensteer/database/test-support/store";
 import {
   AgentEventSchema,
   createId,
@@ -67,7 +67,7 @@ integration.sequential("Thread title lifecycle", () => {
     maxConnections: 6,
   });
   const store = new OpensteerStore(database, {
-    readPersonalResources: (input) => readPersonalResources(input, () => []),
+    readPersonalResources: readEmptyPersonalResources,
   });
   const published: AgentEvent[] = [];
   const commands = new CommandService({

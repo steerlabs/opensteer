@@ -19,7 +19,7 @@ import { OperationKeySchema, CursorSchema } from "./inputs.js";
 import {
   TaskSchema,
   SubagentCancelOutputSchema,
-  LegacyThreadReadOutputSchema,
+  ThreadReadOutputSchema,
   ThreadListOutputSchema,
   ThreadMessageOutputSchema,
   ThreadInterruptOutputSchema,
@@ -85,7 +85,7 @@ export const opensteer_task_read = defineAgentTool({
   description:
     "Read a task with its current AI account, model and access mode; omit taskId for this task. The messages view returns published messages, newest first; activity adds its tools, places, apps and Requests. recentRuns and recentPlaces always come back: a place is recent, never proof it is still open, and its runId goes to person_show. Keep reads small with a low limit and maxCharsPerItem. Tool text is clipped unless you name its itemId; sign-in, card and computer_use calls show status only. Mention returned items by their `link`, verbatim.",
   input: readInput,
-  output: LegacyThreadReadOutputSchema,
+  output: ThreadReadOutputSchema,
   access: "read",
   callers: ["run", "program", "connection"] as const,
 });
@@ -368,7 +368,7 @@ export const opensteer_subagent_read = defineAgentTool({
     .omit({ taskId: true, query: true, aroundMessageId: true })
     .safeExtend({ subagentId: ExecutionNodeIdSchema })
     .superRefine(validateReadWindow),
-  output: LegacyThreadReadOutputSchema,
+  output: ThreadReadOutputSchema,
   access: "read",
   callers: ["run", "program", "connection"] as const,
 });

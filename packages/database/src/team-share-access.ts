@@ -1,6 +1,6 @@
 import { OpensteerError, type TeamActor, type TeamChannelId } from "@opensteer/core";
 import { sql, type Transaction } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 
 export interface TeamPartnerWriteContext {
   shareId: string;

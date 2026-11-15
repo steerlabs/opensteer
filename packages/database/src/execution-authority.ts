@@ -8,7 +8,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import type { Kysely } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 type Database = Kysely<DatabaseSchema>;
 export interface ActiveExecutionBindingInput {
   readonly lostExecution?: boolean;

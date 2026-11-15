@@ -14,7 +14,7 @@ import { z } from "zod";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { databaseOperationOptions } from "./operation-budget.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import {
   findCommandByIdempotency,
   idempotencyConflict,

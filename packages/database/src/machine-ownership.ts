@@ -1,7 +1,7 @@
 import { personalDeploymentOwner } from "./machine-store.js";
 import { runnerRunsItsDeployment, type RunnerId, type UserId } from "@opensteer/core";
 import type { Kysely, Transaction } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 
 export interface MachineOwnershipRecord {
   readonly effectiveOwner: UserId | null;

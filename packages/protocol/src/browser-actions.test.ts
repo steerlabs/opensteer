@@ -2,7 +2,7 @@ import { createId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
   BrowserActionRequestSchema,
-  LegacyBrowserActionResultSchema,
+  BrowserActionResultSchema,
   BrowserActionErrorCodeSchema,
   BrowserActionLocatorSchema,
   BrowserAgentBackendSchema,
@@ -45,7 +45,7 @@ const examples: readonly { action: BrowserAction; result: unknown }[] = [
         ...(type === "page.navigate" ? { url: "https://example.test/" } : {}),
         ...(type === "page.wait" ? { timeout: 100 } : {}),
       } as BrowserAction,
-      result: { binding },
+      result: { binding, ...(type === "surface.resume" ? { dialog: null, reloaded: false } : {}) },
     }),
   ),
   { action: { type: "surface.close" }, result: { outcome: "closed" } },
@@ -141,7 +141,7 @@ describe("typed browser agent wire", () => {
       }).action,
     ).toEqual({ type: "session.tabs", cursor: "42" });
     expect(
-      LegacyBrowserActionResultSchema.parse({
+      BrowserActionResultSchema.parse({
         type: "session.tabs",
         tabs: [binding],
         nextCursor: "43",
@@ -244,7 +244,7 @@ describe("typed browser agent wire", () => {
           .success,
       ).toBe(false);
       expect(
-        LegacyBrowserActionResultSchema.safeParse({
+        BrowserActionResultSchema.safeParse({
           type: action.type,
           ...(result as object),
           unchecked: true,
@@ -326,7 +326,7 @@ describe("typed browser agent wire", () => {
         }).success,
       ).toBe(true);
     expect(
-      LegacyBrowserActionResultSchema.safeParse({
+      BrowserActionResultSchema.safeParse({
         type: "dom.snapshot",
         text: "界".repeat(200_000),
       }).success,

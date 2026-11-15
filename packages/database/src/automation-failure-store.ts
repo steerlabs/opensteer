@@ -8,7 +8,7 @@ import type {
 } from "@opensteer/core";
 import { TriggerProgramEventSchema, TriggerSourceSchema } from "@opensteer/triggers";
 import { sql, type Kysely, type Transaction } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { nearestListedThread } from "./thread-lineage.js";
 
 export type AutomationFailureReason =

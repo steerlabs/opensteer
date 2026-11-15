@@ -25,7 +25,7 @@ import { OpensteerError, createId, type UserId } from "@opensteer/core";
 import { erasedIntegrationAuthAttemptPayload } from "./integration-auth-attempt-store.js";
 import { type Kysely, type Selectable, sql } from "kysely";
 import type {
-  LegacyDatabaseSchema as DatabaseSchema,
+  DatabaseSchema,
   IntegrationConnectionTable,
   IntegrationProviderApplicationTable,
 } from "./schema.js";

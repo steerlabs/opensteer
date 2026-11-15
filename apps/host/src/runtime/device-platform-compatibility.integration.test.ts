@@ -2,11 +2,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createId } from "@opensteer/core";
-import {
-  LegacyHostToClientMessageSchema as HostToClientMessageSchema,
-  RunnerDescriptorSchema,
-  hostApi,
-} from "@opensteer/protocol";
+import { HostToClientMessageSchema, RunnerDescriptorSchema, hostApi } from "@opensteer/protocol";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
@@ -24,8 +20,8 @@ import {
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 const methods = [
-  "bootstrap.legacy.get",
-  "machines.legacy.list",
+  "bootstrap.get",
+  "machines.list",
   "integrations.get",
   "integration.platform.get",
   "integration.computer.setup.list",
@@ -155,8 +151,8 @@ integration("device platform release compatibility", () => {
         hostApi[method].success.parse(raw);
         rpc.push({ method, data: raw });
       }
-      const machineList = hostApi["machines.legacy.list"].success.parse(
-        rpc.find(({ method }) => method === "machines.legacy.list")?.data,
+      const machineList = hostApi["machines.list"].success.parse(
+        rpc.find(({ method }) => method === "machines.list")?.data,
       );
       expect(machineList.machines.find(({ id }) => id === runnerId)).toMatchObject({
         device: { form: "laptop", platform: "macos" },

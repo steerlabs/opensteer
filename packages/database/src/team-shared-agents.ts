@@ -13,11 +13,7 @@ import {
   type TeamShareRow,
 } from "@opensteer/protocol";
 import { sql, type Selectable, type Transaction } from "kysely";
-import type {
-  LegacyDatabaseSchema as DatabaseSchema,
-  TeamMessageTable,
-  TeamShareTable,
-} from "./schema.js";
+import type { DatabaseSchema, TeamMessageTable, TeamShareTable } from "./schema.js";
 import type { TeamAccessStore } from "./team-access-store.js";
 import { appendTeamAudit } from "./team-audit-store.js";
 import { createTeamAskReturn } from "./team-request-returns.js";

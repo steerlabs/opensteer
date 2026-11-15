@@ -212,6 +212,7 @@ async function serveMcp(
       connections: new ConnectionAuthenticator(new AgentConnectionStore(store.database)),
     }),
     handlers: agentToolHandlers({
+      tabs: {} as never,
       administration: new Proxy(
         {},
         {
@@ -230,7 +231,7 @@ async function serveMcp(
       ),
       apps: {
         listForCaller: async (scope: { requestedBy: import("@opensteer/core").UserId }) => ({
-          apps: await new AppStore(store.database).listOwned(scope.requestedBy),
+          apps: await new AppStore(store.database).list(scope.requestedBy),
         }),
       } as never,
       pluginInstall: async () => {

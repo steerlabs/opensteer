@@ -1,13 +1,13 @@
 import {
   formatComputerUseResultHead,
   type AndroidPhoneObservation,
-  type LegacyComputerUseObservation,
+  type ComputerUseObservation,
 } from "@opensteer/protocol";
 import type { ReplContent } from "../computer-use/computer-repl/messages.js";
 
 /** The REPL owns emission order; observations have one text header, then a picture. */
 export function computerObservationContent(
-  observation: LegacyComputerUseObservation | AndroidPhoneObservation,
+  observation: ComputerUseObservation | AndroidPhoneObservation,
   renderImages: boolean,
   computer: string,
 ): ReplContent[] {
@@ -29,7 +29,7 @@ export function computerObservationContent(
         ...(observation.tree ? [observation.tree] : []),
         ...("windows" in observation && observation.windows.length
           ? [
-              `Windows: ${JSON.stringify(observation.windows.map(({ id, title, current }) => ({ id, title, current })))}`,
+              `Windows: ${JSON.stringify(observation.windows.map(({ windowId, title, current }) => ({ windowId, title, current })))}`,
             ]
           : []),
         ...("blockedBy" in observation && observation.blockedBy.length

@@ -1,3 +1,5 @@
+import { BrowserSurfaceIdSchema } from "../packages/core/src/index.js";
+import { runtimeBrowserCommand } from "./browser-sessions.test-support.js";
 import { browserInventory } from "./browser-sessions.test-support.js";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import {
@@ -245,7 +247,7 @@ run("Browser Sessions through a whole deployment", () => {
       );
       await send("stale document after reload", login, tabId, true);
       for (const page of ["pay", "otp"] as const) {
-        const opened = await client.openBrowserTab(sessionId, { url: `${origin}/${page}` });
+        const opened = await openContextPage(stack, sessionId, { url: `${origin}/${page}` });
         await waitFor(async () => rendered.has(page), 10_000);
         await published(opened.tabId, `Automatic context /${page}`);
         const candidate = await read(page, opened.tabId);
@@ -255,7 +257,7 @@ run("Browser Sessions through a whole deployment", () => {
         });
         await send(`automatic ${page}`, candidate, opened.tabId, true);
       }
-      const plain = await client.openBrowserTab(sessionId, { url: `${origin}/plain` });
+      const plain = await openContextPage(stack, sessionId, { url: `${origin}/plain` });
       await published(plain.tabId, "Automatic context /plain");
       await send("explicit plain", await read("plain", plain.tabId), plain.tabId, false);
       const retry = await automatic.dispatch();
@@ -316,7 +318,7 @@ run("Browser Sessions through a whole deployment", () => {
         viewport: { width: 1000, height: 700 },
       }),
     );
-    const opened = await stack.api["commands.dispatch"]({
+    const opened = await runtimeBrowserCommand(stack, {
       type: "browser.tab.open",
       sessionId,
       url: `${origin}/ada`,
@@ -340,7 +342,7 @@ run("Browser Sessions through a whole deployment", () => {
     );
     const threadA = threads[0]!;
     const threadB = threads[1]!;
-    const sent = await stack.api["commands.dispatch"]({
+    const sent = await runtimeBrowserCommand(stack, {
       type: "thread.sendMessage",
       threadId: threadA,
       idempotencyKey: randomUUID(),
@@ -466,11 +468,14 @@ run("Browser Sessions through a whole deployment", () => {
       pagesA: ReturnType<typeof runPages>;
       pagesB: ReturnType<typeof runPages>;
     }[] = [];
+    const runtimeRows = () =>
+      [...(stack.host.browser.pageInventory(sessionId)?.records.values() ?? [])].map((row) => ({
+        ...row,
+        occupants: stack.host.browser.tabOccupants(owner.id, sessionId, row.id),
+      }));
     const note = (phase: string) => {
       const current = session();
-      const unrelatedTab = (current?.browserTabs?.sessionTabs(current.id) ?? []).find(
-        (tab) => tab.id === unrelated.surfaceId,
-      );
+      const unrelatedTab = runtimeRows().find((tab) => tab.id === unrelated.surfaceId);
       if (current?.state === "ready") expect(unrelatedTab).toBeDefined();
       expect(unrelatedTab?.occupants ?? []).toEqual([]);
       expect(
@@ -478,8 +483,8 @@ run("Browser Sessions through a whole deployment", () => {
           .getSnapshot()
           .browserUses?.some((use) => use.runId && use.tabId === unrelated.surfaceId),
       ).toBe(false);
-      const pagesA = runPages(client.getSnapshot().browserUses, current ? [current] : [], [runA]);
-      const pagesB = runPages(client.getSnapshot().browserUses, current ? [current] : [], [runB]);
+      const pagesA = runPages(client.getSnapshot().browserUses, client.getSnapshot(), [runA]);
+      const pagesB = runPages(client.getSnapshot().browserUses, client.getSnapshot(), [runB]);
       expect(
         [...pagesA, ...pagesB].some(
           (page) => page.destination.tabId === unrelated.surfaceId || page.title === "www.sixt.com",
@@ -493,16 +498,7 @@ run("Browser Sessions through a whole deployment", () => {
     clock.advanceBy(300);
     await request(runB, agentB, { method: "Target.getTargets" });
     await stack.host.browser.flushPendingTabDescriptors();
-    const discoveryGroup = (
-      await stack.host.browser.clientStreams.source.bootstrap(owner.id)
-    ).groups?.rows.find((group) => group.sessionId === sessionId);
-    expect(discoveryGroup).toBeDefined();
-    await waitFor(
-      async () =>
-        session().acting === discoveryGroup!.acting &&
-        session().attachedRunIds.length === discoveryGroup!.attachedRunIds.length,
-      10_000,
-    );
+    await waitFor(async () => session().acting === true, 10_000);
     expect(note("still discovery-only")).toEqual({ pagesA: [], pagesB: [] });
     const attached = z.object({ sessionId: z.string(), surfaceId: z.string() }).parse(
       await request(runA, agentA, {
@@ -516,7 +512,7 @@ run("Browser Sessions through a whole deployment", () => {
         client
           .getSnapshot()
           .browserUses?.some((use) => use.runId === runA && use.tabId === adaId) === true &&
-        (session().browserTabs?.sessionTabs(session()?.id) ?? [])
+        runtimeRows()
           .find((tab) => tab.id === adaId)
           ?.occupants.some((occupant) => occupant.threadId === threadA && occupant.acting) === true,
       10_000,
@@ -532,12 +528,10 @@ run("Browser Sessions through a whole deployment", () => {
       JSON.stringify({ type: "navigation.go", surfaceId: adaId, url: `${origin}/ada-renamed` }),
     );
     await waitFor(
-      async () =>
-        (session().browserTabs?.sessionTabs(session()?.id) ?? []).find((tab) => tab.id === adaId)
-          ?.title === "Ada Lovelace — updated",
+      async () => runtimeRows().find((tab) => tab.id === adaId)?.title === "Ada Lovelace — updated",
       15_000,
     );
-    expect(client.browserTabs.sessionTab(sessionId, adaId)).toMatchObject({
+    expect(client.getSnapshot().tabs.get(BrowserSurfaceIdSchema.parse(adaId))).toMatchObject({
       title: "Ada Lovelace — updated",
     });
     expect(client.browserViewerSurface(sessionId, adaId)).toBeUndefined();
@@ -566,9 +560,7 @@ run("Browser Sessions through a whole deployment", () => {
           .getSnapshot()
           .browserUses?.some((use) => use.runId === runA && use.tabId === babbage.surfaceId) ===
           true &&
-        (session().browserTabs?.sessionTabs(session()?.id) ?? []).find(
-          (tab) => tab.id === babbage.surfaceId,
-        )?.title === "Charles Babbage",
+        runtimeRows().find((tab) => tab.id === babbage.surfaceId)?.title === "Charles Babbage",
       15_000,
     );
     expect(note("Run A created Babbage").pagesA.map((page) => page.title)).toEqual([
@@ -581,9 +573,7 @@ run("Browser Sessions through a whole deployment", () => {
     await waitFor(
       async () =>
         session().acting === true &&
-        (session().browserTabs?.sessionTabs(session()?.id) ?? []).every((tab) =>
-          tab.occupants.every((occupant) => !occupant.acting),
-        ) === true,
+        runtimeRows().every((tab) => tab.occupants.every((occupant) => !occupant.acting)) === true,
       10_000,
     );
     expect(note("Run B discovery while Run A is idle").pagesA.every((page) => !page.acting)).toBe(
@@ -601,7 +591,7 @@ run("Browser Sessions through a whole deployment", () => {
           .getSnapshot()
           .browserUses?.some((use) => use.runId === runB && use.tabId === babbage.surfaceId) ===
           true &&
-        (session().browserTabs?.sessionTabs(session()?.id) ?? [])
+        runtimeRows()
           .find((tab) => tab.id === babbage.surfaceId)
           ?.occupants.some((occupant) => occupant.threadId === threadB && occupant.acting) === true,
       10_000,
@@ -609,7 +599,7 @@ run("Browser Sessions through a whole deployment", () => {
     const concurrent = note("only Run B acts on shared Babbage");
     expect(concurrent.pagesA.every((page) => !page.acting)).toBe(true);
     expect(concurrent.pagesB).toMatchObject([{ title: "Charles Babbage", acting: true }]);
-    const combined = runPages(client.getSnapshot().browserUses, [session()], [runA, runB]);
+    const combined = runPages(client.getSnapshot().browserUses, client.getSnapshot(), [runA, runB]);
     expect(combined).toHaveLength(2);
     expect(combined.find((page) => page.destination.tabId === babbage.surfaceId)?.acting).toBe(
       true,
@@ -658,7 +648,8 @@ run("Browser Sessions through a whole deployment", () => {
         {
           passed: true,
           headless: true,
-          discoveryInventoryRevision: discoveryGroup!.inventoryRevision,
+          discoveryInventoryRevision:
+            stack.host.browser.pageInventory(sessionId)?.inventoryRevision,
           sessionId,
           runA,
           runB,
@@ -719,7 +710,7 @@ run("Browser Sessions through a whole deployment", () => {
     const origin = `http://127.0.0.1:${(site.address() as { port: number }).port}`;
     const tabs: BrowserTabOpenResult[] = [];
     for (const name of ["blue", "red"]) {
-      const result = await stack.api["commands.dispatch"]({
+      const result = await runtimeBrowserCommand(stack, {
         type: "browser.tab.open",
         identity: { kind: "guest" },
         url: `${origin}/${name}`,
@@ -732,20 +723,16 @@ run("Browser Sessions through a whole deployment", () => {
     const sessionId = tabs[0]!.sessionId;
     expect(tabs[1]!.sessionId).toBe(sessionId);
     const coldRows = async () => {
-      const result = await stack.api["bootstrap.legacy.get"]({});
+      const result = await stack.api["bootstrap.get"]({});
       if (!result.ok) throw new Error(JSON.stringify(result));
-      return (
-        ((store) => store.structure().map((key) => store.tab(key.groupId, key.tabId)!))(
-          (await browserInventory(stack)).browserTabs!,
-        ) ?? []
-      );
+      return (await browserInventory(stack)).tabs;
     };
     await waitFor(async () => (await coldRows()).filter((row) => row.iconRef).length === 2, 10_000);
     const before = await coldRows();
     const images = new Map<string, string>();
     for (const row of before) {
       const result = await stack.api["browser.tabIcon.get"]({
-        sessionId: row.sessionId,
+        sessionId: row.sessionId!,
         iconRef: row.iconRef!,
       });
       if (!result.ok || !result.data.favicon) throw new Error(JSON.stringify(result));
@@ -764,7 +751,10 @@ run("Browser Sessions through a whole deployment", () => {
     );
     for (const row of dormant) {
       expect(
-        await stack.api["browser.tabIcon.get"]({ sessionId: row.sessionId, iconRef: row.iconRef! }),
+        await stack.api["browser.tabIcon.get"]({
+          sessionId: row.sessionId!,
+          iconRef: row.iconRef!,
+        }),
       ).toMatchObject({ ok: true, data: { favicon: images.get(row.id) } });
     }
     expect(requests.length, JSON.stringify(requests.slice(requestsAtRestart))).toBe(
@@ -772,16 +762,18 @@ run("Browser Sessions through a whole deployment", () => {
     );
     expect(launches).toBe(launchesAtRestart);
     await browserAvailable(stack);
-    const restored = await stack.api["commands.dispatch"]({
-      type: "legacy.tab.activate",
+    const restored = await runtimeBrowserCommand(stack, {
+      type: "tab.activate",
       tabId: tabs[0]!.tabId,
       idempotencyKey: randomUUID(),
     });
     expect(restored, JSON.stringify(restored)).toMatchObject({ ok: true });
     const restoredCatalog = await browserInventory(
       stack,
-      restored.ok && restored.data.type === "legacy.tab.activate"
-        ? restored.data.session.id
+      restored.ok && restored.data.type === "tab.activate"
+        ? restored.data.viewer.kind === "page"
+          ? restored.data.viewer.sessionId
+          : sessionId
         : sessionId,
     );
     expect(restoredCatalog.tabs.filter((tab) => tab.documentId !== null)).toEqual([
@@ -796,7 +788,7 @@ run("Browser Sessions through a whole deployment", () => {
     expect(sibling.iconRef).toBe(before.find((row) => row.id === sibling.id)!.iconRef);
     expect(
       await stack.api["browser.tabIcon.get"]({
-        sessionId: sibling.sessionId,
+        sessionId: sibling.sessionId!,
         iconRef: sibling.iconRef!,
       }),
     ).toMatchObject({ ok: true, data: { favicon: images.get(sibling.id) } });
@@ -832,7 +824,7 @@ run("Browser Sessions through a whole deployment", () => {
     });
     const pageOrigin = `http://127.0.0.1:${(page.address() as { port: number }).port}`;
     await waitFor(async () => {
-      const bootstrap = await stack.api["bootstrap.legacy.get"]({});
+      const bootstrap = await stack.api["bootstrap.get"]({});
       return bootstrap.ok && bootstrap.data.browser.available;
     }, 30_000);
     const threadId = await stack.createThread({
@@ -895,3 +887,24 @@ run("Browser Sessions through a whole deployment", () => {
     expect(replacement.stale).toMatch(/^refused: /u);
   }, 240_000);
 });
+
+async function openContextPage(
+  stack: import("../apps/host/src/agents/vertical-stack.test-support.js").VerticalStack,
+  sessionId: string,
+  input: { url: string },
+) {
+  const owner = (await stack.host.store.firstUser())!;
+  const session = await stack.host.store.getBrowserSessionForOwner(
+    BrowserSessionIdSchema.parse(sessionId),
+    owner.id,
+  );
+  const result = await stack.api["commands.dispatch"]({
+    type: "tab.open",
+    target: session?.profileId
+      ? { kind: "page", profileId: session.profileId, url: input.url }
+      : { kind: "page", guest: true, computerId: session!.runnerId, url: input.url },
+    idempotencyKey: randomUUID(),
+  });
+  if (!result.ok || result.data.type !== "tab.open") throw new Error(JSON.stringify(result));
+  return { tabId: result.data.tab.tabId };
+}

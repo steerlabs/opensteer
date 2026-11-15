@@ -1,7 +1,9 @@
+import { appToolHandlers } from "./apps.js";
+import { TabToolHandlers } from "./tabs.js";
 import { administrationToolHandlers, type AdministrationToolHandlers } from "./administration.js";
 import type { AppService } from "../../apps/app-service.js";
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
-import { requireRun } from "../operations.js";
+
 import type { ProductToolHandlers } from "./product.js";
 import type { IntegrationToolHandlers } from "./integrations.js";
 import type { TriggerToolHandlers } from "./triggers.js";
@@ -16,7 +18,8 @@ export function agentToolHandlers(options: {
   readonly product: ProductToolHandlers;
   readonly integrations: IntegrationToolHandlers;
   readonly triggers: TriggerToolHandlers;
-  readonly apps: Pick<AppService, "publish" | "listForCaller" | "fetch">;
+  readonly apps: Pick<AppService, "publish" | "list" | "start" | "stop" | "delete">;
+  readonly tabs: TabToolHandlers;
   readonly pluginInstall: (
     scope: RunToolScope,
     directory: string,
@@ -35,11 +38,12 @@ export function agentToolHandlers(options: {
     t = options.triggers;
   const handlers: Partial<AgentToolHandlers> = {
     ...administrationToolHandlers(options.administration, options.pluginInstall),
-    opensteer_app_publish: async (c) =>
-      await options.apps.publish(requireRun(c.caller).claims, c.operationKey, c.input),
-    opensteer_app_list: async (c) =>
-      await options.apps.listForCaller({ requestedBy: c.caller.userId }),
-    opensteer_app_call: async (c) => await options.apps.fetch(requireRun(c.caller).claims, c.input),
+    ...appToolHandlers(options.apps),
+    tab_list: (c) => options.tabs.tab_list(c),
+    tab_open: (c) => options.tabs.tab_open(c),
+    tab_close: (c) => options.tabs.tab_close(c),
+    tab_organize: (c) => options.tabs.tab_organize(c),
+    tab_group_update: (c) => options.tabs.tab_group_update(c),
     opensteer_ai_account_list: async (c) => await p.opensteer_ai_account_list(c),
     opensteer_task_create: Object.assign(
       async (c: ToolCall<"opensteer_task_create">) =>

@@ -18,10 +18,7 @@ import {
   type AuthSessionId,
   type PersonalRemoteSessionDelivery,
 } from "@opensteer/core";
-import {
-  requestSettlementActor,
-  type LegacyDatabaseSchema as DatabaseSchema,
-} from "@opensteer/database";
+import { requestSettlementActor, type DatabaseSchema } from "@opensteer/database";
 import {
   AccountHostSessionGrantClaimsSchema,
   AccountLinkGenerationSchema,

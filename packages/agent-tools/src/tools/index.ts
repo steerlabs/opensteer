@@ -1,7 +1,6 @@
 import { tabTools } from "./tabs.js";
 import { appTools } from "./apps.js";
 import { aiAccountTools } from "./ai-accounts.js";
-import { opensteer_app_publish, opensteer_app_list, opensteer_app_call } from "./apps.js";
 import {
   opensteer_request_list,
   opensteer_request_read,
@@ -60,9 +59,6 @@ export const agentTools = [
   ...browserTools,
   ...pluginTools,
   ...messagingBridgeTools,
-  opensteer_app_publish,
-  opensteer_app_list,
-  opensteer_app_call,
   opensteer_request_list,
   opensteer_request_read,
   opensteer_request_answer,

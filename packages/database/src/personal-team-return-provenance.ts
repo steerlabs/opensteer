@@ -5,7 +5,7 @@ import type {
   TeamSource,
 } from "@opensteer/core";
 import type { Kysely } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 
 export async function personalTeamReturnPost(
   database: Kysely<DatabaseSchema>,

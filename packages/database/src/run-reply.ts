@@ -7,7 +7,7 @@ import {
   type ThreadId,
 } from "@opensteer/core";
 import type { Transaction } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 
 /**
  * A Run's reply: the last message its agent wrote that says something — text

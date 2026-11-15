@@ -18,6 +18,7 @@ export const ReferenceResolveInputSchema = z.strictObject({
 });
 const common = { status: z.literal("available"), title: z.string().min(1).max(256) };
 export const AvailableReferenceSchema = z.discriminatedUnion("kind", [
+  z.object({ ...common, kind: z.literal("tab"), id: TabIdSchema }),
   z.object({ ...common, kind: z.literal("task"), id: ThreadIdSchema }),
   z.object({
     ...common,

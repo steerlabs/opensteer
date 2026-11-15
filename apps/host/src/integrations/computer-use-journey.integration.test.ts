@@ -15,7 +15,7 @@ type ComputerAppApprovalList = {
     readonly request: import("@opensteer/integration-core").ComputerAppSetupRequest;
   }[];
 };
-import { placeList, type LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
+import { TabIdSchema, WindowIdSchema } from "@opensteer/core";
 import {
   createId,
   HarnessIdSchema,
@@ -50,7 +50,7 @@ import {
 } from "@opensteer/orchestration";
 import {
   BrowserSurfaceIdSchema,
-  LegacyComputerUseObservationSchema,
+  ComputerUseObservationSchema,
   ComputerUseSessionIdSchema,
   createBrowserSessionId,
   readComputerUseResultHeadline,
@@ -58,11 +58,11 @@ import {
   RunnerBootIdSchema,
   RunnerConnectionIdSchema,
   RunnerConnectionLeaseIdSchema,
-  LegacyWindowInfoSchema as WindowInfoSchema,
+  WindowInfoSchema,
   type BrowserTabOpenBinding,
   type ComputerUseErrorCode,
   type ComputerUseSessionId,
-  type LegacyComputerViewNativeResult as ComputerViewNativeResult,
+  type ComputerViewNativeResult,
   type HostIntegrationsComputerUse,
   type HostIntegrationsComputerView,
   type HostIntegrationsOperation,
@@ -1344,7 +1344,13 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     const world = await createWorld(database, {
       ownerUserId: host.ownerId,
       onPlaceActivity: (input) => {
-        host.runtime.browser.noteNativeActivity(input);
+        const tabId = TabIdSchema.parse("native-notes");
+        host.runtime.browser.noteTabActivity({ ...input, tabId });
+        if (!input.ended)
+          host.runtime.browser.beginRunTabPlace(
+            input.runId,
+            input.generation,
+          )({ tabId, title: "Notes", site: null });
       },
     });
     try {
@@ -1415,12 +1421,12 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         event: started,
       });
       expect(BigInt(delivered.event.sequence)).toBeGreaterThan(BigInt(completedAction.sequence));
-      const before = (await host.runtime.browser.latestPlaces(host.ownerId)).find(
-        (reference) => reference.threadId === run.threadId,
+      const before = (await host.runtime.browser.latestTabPlaces(host.ownerId)).find(
+        (reference) => reference.taskId === run.threadId,
       );
       expect(before).toMatchObject({
         runId: run.runId,
-        place: { kind: "app", machineId: world.macId, appKey: "com.apple.notes" },
+        tabId: "native-notes",
         title: "Notes",
       });
       await store.commitRunnerEvent({
@@ -1471,22 +1477,22 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       restarted = await createHostRuntime(host.config, { logger: { level: "error" } });
       if (restarted.kind !== "personal") throw new Error("Expected Personal Host");
       await restarted.listen();
-      expect(await restarted.browser.latestPlaces(host.ownerId)).toEqual(
+      expect(await restarted.browser.latestTabPlaces(host.ownerId)).toEqual(
         expect.arrayContaining([expect.objectContaining({ title: "Notes" })]),
       );
       const bootstrap = await testRpcData(
         host.origin,
-        "bootstrap.legacy.get",
+        "bootstrap.get",
         {},
         { headers: host.ownerHeaders },
       );
       const recovered = bootstrap.latestPlaces?.find(
-        (reference) => reference.threadId === run.threadId,
+        (reference) => reference.taskId === run.threadId,
       );
       // Rebuilt from the durable tool events, the reference still names the Run that acted.
       expect(recovered).toMatchObject({
         runId: run.runId,
-        place: before!.place,
+        tabId: before!.tabId,
         title: "Notes",
         at: completedAction.createdAt,
       });
@@ -3458,16 +3464,6 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       name: phone,
     };
     expect(summary.display).toBe(true);
-    const livePlace = placeList({
-      browserSessions: [],
-      machines: [{ id: phoneId, name: phone, computerUse: { sessions: [summary] } }],
-      browserProfiles: [],
-      browserPlacements: [],
-    } as unknown as Pick<
-      HostSnapshot,
-      "browserSessions" | "browserProfiles" | "browserPlacements" | "machines"
-    >).find((place) => place.kind === "phone")!;
-    if (livePlace.destination.kind !== "phone") throw new Error("Expected phone");
     if (process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR) {
       await mkdir(process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR, { recursive: true });
       await writeFile(
@@ -3475,7 +3471,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
           process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR,
           "phone-place-from-summary.json",
         ),
-        JSON.stringify({ summary, place: livePlace, part: phonePart }, null, 2),
+        JSON.stringify({ summary, part: phonePart }, null, 2),
       );
     }
     await new PlaceContextService({
@@ -4131,16 +4127,7 @@ class FakeMac {
         result: {
           kind: "ok",
           value: {
-            windows: [
-              {
-                id: 7,
-                title: "Groceries",
-                focused: true,
-                main: true,
-                minimized: false,
-                onScreen: true,
-              },
-            ],
+            windows: [{ windowId: WindowIdSchema.parse("win_7"), title: "Groceries" }],
           },
         },
       });
@@ -4738,7 +4725,7 @@ async function observeMacWindow(
   );
   return {
     sessionId: observe.sessionId,
-    observation: LegacyComputerUseObservationSchema.parse((await observe.settle()).observation),
+    observation: ComputerUseObservationSchema.parse((await observe.settle()).observation),
   };
 }
 

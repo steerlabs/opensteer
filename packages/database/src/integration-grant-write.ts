@@ -13,7 +13,7 @@ import {
   type IntegrationProviderAuthorization,
 } from "@opensteer/integration-core";
 import { sql, type Selectable, type Transaction } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema, IntegrationGrantTable } from "./schema.js";
+import type { DatabaseSchema, IntegrationGrantTable } from "./schema.js";
 
 export interface CreateIntegrationGrantInput {
   readonly access: IntegrationAccess;

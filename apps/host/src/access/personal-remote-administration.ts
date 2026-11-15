@@ -4,7 +4,7 @@ import { OpensteerError, type AuthenticatedSession } from "@opensteer/core";
 import {
   requestSettlementActor,
   requirePersonalOwner,
-  type LegacyDatabaseSchema as DatabaseSchema,
+  type DatabaseSchema,
 } from "@opensteer/database";
 import {
   PersonalRemoteAdministrationIntentSchema,

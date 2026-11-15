@@ -24,7 +24,7 @@ import {
   RunnerEnrollmentCredentialSchema,
   runnerProofFormatVersion,
   ShellSessionIdSchema,
-  type LegacyHostToRunnerMessage as HostToRunnerMessage,
+  type HostToRunnerMessage,
   type MachineAccessPolicy,
   type MachineAccessRunContext,
   type RunnerBootId,
@@ -868,7 +868,7 @@ export async function connectCallerMachine(
     async () => {
       const bootstrap = await testRpcData(
         host.origin,
-        "bootstrap.legacy.get",
+        "bootstrap.get",
         {},
         { headers: host.ownerHeaders },
       );

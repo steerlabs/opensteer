@@ -12,7 +12,7 @@ import {
 import type { ThreadMessagePage } from "@opensteer/protocol";
 import { sql, type Kysely } from "kysely";
 import { z } from "zod";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { messageViewFromRow } from "./thread-row-mappers.js";
 import { boundedSerializedPrefix, serializedArrayBytes } from "./message-window.js";
 const historyCursorSchema = z.strictObject({

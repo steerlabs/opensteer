@@ -1,6 +1,6 @@
 import type { AesGcmCredentialVault } from "@opensteer/access/host";
 import type { AgentEvent, DeploymentId, RunId, ThreadId, UserId } from "@opensteer/core";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "@opensteer/database";
+import type { DatabaseSchema } from "@opensteer/database";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
 import type { Kysely } from "kysely";

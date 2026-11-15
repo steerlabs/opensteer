@@ -4,12 +4,12 @@ import {
   androidPhoneDefinitionId,
   runnerIntegrationsCompatibilityReason,
   type ComputerUsePermissions,
-  type LegacyComputerUseSessionSummary,
-  type LegacyComputerView as ComputerView,
+  type ComputerUseSessionSummary,
+  type ComputerView,
   type MachineAppStatus,
-  type LegacyMachineComputerUse,
+  type MachineComputerUse,
   type MachineModuleSummary,
-  type LegacyMachineSummary,
+  type MachineSummary,
   type RunnerDevice,
   type RunnerModuleName,
   type RunnerModuleReadiness,
@@ -18,7 +18,7 @@ import {
 import { browserRuntimeCompatibilityReason } from "../browser/browser-runtime-compatibility.js";
 
 /** The access section of a machine row, as a management viewer sees it. */
-export type MachineAccessView = NonNullable<LegacyMachineSummary["access"]>;
+export type MachineAccessView = NonNullable<MachineSummary["access"]>;
 
 /**
  * The Machines projection.
@@ -33,8 +33,6 @@ export type MachineAccessView = NonNullable<LegacyMachineSummary["access"]>;
 /** The Runner registry row this projection needs. */
 export interface MachineRunnerInput {
   readonly deviceProfile: "iphone" | null;
-  /** Null unless this viewer effectively owns the phone. */
-  readonly tabOpenedAt?: Date | null;
   readonly phoneUpdate?: "downloading" | "installing" | "awaiting-user" | "failed" | null;
   readonly updateRequired?: "agent-phone-outdated" | "runner-outdated" | null;
   /** The enrollment's grant: what this computer may ever advertise. */
@@ -94,7 +92,7 @@ export interface MachineProjectionInput {
     { readonly ownerViews: readonly ComputerView[]; readonly ownerViewVersion?: number }
   >;
   readonly computerUseDisplayStreamSupported?: ReadonlyMap<string, boolean>;
-  readonly computerUseSessions?: ReadonlyMap<string, readonly LegacyComputerUseSessionSummary[]>;
+  readonly computerUseSessions?: ReadonlyMap<string, readonly ComputerUseSessionSummary[]>;
   readonly deploymentOwnsMainComputer: boolean;
   readonly pendingRunners: readonly MachinePendingRunnerInput[];
   readonly runners: readonly MachineRunnerInput[];
@@ -137,7 +135,7 @@ type MutableMachineModules = {
   -readonly [Name in RunnerModuleName]?: MachineModuleSummary;
 };
 
-function projectModules(runner: MachineRunnerInput): LegacyMachineSummary["modules"] {
+function projectModules(runner: MachineRunnerInput): MachineSummary["modules"] {
   const modules: MutableMachineModules = {};
   for (const name of RunnerModuleNameSchema.options) {
     if (runner.modules[name] === undefined) continue;
@@ -168,9 +166,7 @@ function projectModules(runner: MachineRunnerInput): LegacyMachineSummary["modul
 }
 
 /** A pending enrollment shows what it will be allowed to do once redeemed. */
-function pendingModules(
-  allowedModules: readonly RunnerModuleName[],
-): LegacyMachineSummary["modules"] {
+function pendingModules(allowedModules: readonly RunnerModuleName[]): MachineSummary["modules"] {
   const modules: MutableMachineModules = {};
   for (const name of allowedModules) modules[name] = unreportedModule();
   return modules;
@@ -201,9 +197,9 @@ const computerUseDefinitionId = "macos-app";
  */
 function projectPhoneComputerUse(
   apps: readonly MachineAppStatus[] | undefined,
-  sessions: readonly LegacyComputerUseSessionSummary[],
+  sessions: readonly ComputerUseSessionSummary[],
   displayStreamSupported: boolean,
-): LegacyMachineComputerUse {
+): MachineComputerUse {
   const base = {
     appApproval: null,
     displayStreamSupported,
@@ -242,12 +238,12 @@ function projectPhoneComputerUse(
  */
 function projectComputerUse(
   apps: readonly MachineAppStatus[] | undefined,
-  sessions: readonly LegacyComputerUseSessionSummary[] = [],
+  sessions: readonly ComputerUseSessionSummary[] = [],
   policy: {
     readonly appApproval: "ask" | "automatic";
   } = { appApproval: "ask" },
   displayStreamSupported = false,
-): LegacyMachineComputerUse {
+): MachineComputerUse {
   const { appApproval } = policy;
   const entry = apps?.find(({ definitionId }) => definitionId === computerUseDefinitionId);
   if (!entry) {
@@ -307,8 +303,8 @@ function projectComputerUse(
   };
 }
 
-export function projectMachines(input: MachineProjectionInput): readonly LegacyMachineSummary[] {
-  const machines: LegacyMachineSummary[] = [];
+export function projectMachines(input: MachineProjectionInput): readonly MachineSummary[] {
+  const machines: MachineSummary[] = [];
 
   for (const runner of input.runners) {
     if (runner.revokedAt !== null) continue;
@@ -343,7 +339,6 @@ export function projectMachines(input: MachineProjectionInput): readonly LegacyM
           ? { ...projected, ...views, ownerViews: [...views.ownerViews] }
           : projected;
       })(),
-      tabOpenedAt: runner.tabOpenedAt?.toISOString() ?? null,
       detail: runner.phoneUpdate
         ? runner.phoneUpdate === "failed"
           ? `Agent Phone couldn’t update on ${runner.name}. Update over USB to try again.`
@@ -404,7 +399,6 @@ export function projectMachines(input: MachineProjectionInput): readonly LegacyM
       // A computer that has not connected yet reports nothing.
       apps: null,
       computerUse: null,
-      tabOpenedAt: null,
       detail: null,
       device: enrollment.deviceProfile === "iphone" ? { form: "phone", platform: "ios" } : null,
       enrollmentId: enrollment.id,

@@ -350,7 +350,7 @@ export const BrowserActionBindingSchema = z.strictObject({
 const bindingResult = <Name extends string>(type: Name) =>
   z.strictObject({ type: z.literal(type), binding: BrowserActionBindingSchema });
 const voidResult = <Name extends string>(type: Name) => z.strictObject({ type: z.literal(type) });
-export const LegacyBrowserActionResultSchema = z
+export const BrowserActionResultSchema = z
   .discriminatedUnion("type", [
     z.strictObject({
       type: z.literal("session.tabs"),
@@ -358,7 +358,12 @@ export const LegacyBrowserActionResultSchema = z
       nextCursor: tabCursor.nullable(),
     }),
     bindingResult("surface.attach"),
-    bindingResult("surface.resume"),
+    z.strictObject({
+      type: z.literal("surface.resume"),
+      binding: BrowserActionBindingSchema,
+      dialog: BrowserActionDialogSchema.nullable(),
+      reloaded: z.boolean(),
+    }),
     bindingResult("surface.open"),
     z.strictObject({
       type: z.literal("surface.close"),
@@ -426,10 +431,10 @@ export const LegacyBrowserActionResultSchema = z
     }),
   ])
   .refine(withinBudget, "The result exceeds the page byte budget.");
-export type LegacyBrowserActionResult = z.infer<typeof LegacyBrowserActionResultSchema>;
+export type BrowserActionResult = z.infer<typeof BrowserActionResultSchema>;
 
-export const LegacyBrowserActionResponseSchema = z.union([
-  z.strictObject({ id: revision, result: LegacyBrowserActionResultSchema }),
+export const BrowserActionResponseSchema = z.union([
+  z.strictObject({ id: revision, result: BrowserActionResultSchema }),
   z.strictObject({ id: revision, error: BrowserActionErrorSchema }),
 ]);
 export const BrowserActionEventSchema = z.discriminatedUnion("type", [
@@ -472,7 +477,7 @@ export const BrowserAgentResultSchema = z.strictObject({
   type: z.literal("agent.result"),
   attachmentId: z.uuid(),
   requestId: z.uuid(),
-  result: LegacyBrowserActionResultSchema,
+  result: BrowserActionResultSchema,
 });
 export const BrowserAgentErrorSchema = z.strictObject({
   type: z.literal("agent.error"),
@@ -489,13 +494,7 @@ export const BrowserAgentEventSchema = z.strictObject({
 export const BrowserResumeTabParametersSchema = z.strictObject({
   surfaceId: BrowserSurfaceIdSchema,
 });
-export const LegacyBrowserResumeTabResultSchema = z.strictObject({
-  surfaceId: BrowserSurfaceIdSchema,
-  targetId: identifier,
-  documentId: z.string().min(1).max(255),
-  reloaded: z.boolean(),
-});
-export type LegacyBrowserResumeTabResult = z.infer<typeof LegacyBrowserResumeTabResultSchema>;
+
 export const BrowserListTabsParametersSchema = z.strictObject(tabPage);
 export const AgentTabSchema = z.strictObject({
   surfaceId: BrowserSurfaceIdSchema,
@@ -562,12 +561,6 @@ export function pageBrowserTabs<T>(
   return { tabs, nextCursor: null };
 }
 
-export const BrowserResumeTabResultSchema = LegacyBrowserResumeTabResultSchema.extend({
-  dialog: AgentTabSchema.shape.dialog,
-  userActivity: AgentTabSchema.shape.userActivity,
-  pageResize: AgentTabSchema.shape.pageResize,
-});
-export type BrowserResumeTabResult = z.infer<typeof BrowserResumeTabResultSchema>;
 export const BrowserActionResumeResultSchema = z.strictObject({
   type: z.literal("surface.resume"),
   binding: BrowserActionBindingSchema,
@@ -575,21 +568,13 @@ export const BrowserActionResumeResultSchema = z.strictObject({
   reloaded: z.boolean(),
 });
 
-export const BrowserActionResultSchema = z
-  .discriminatedUnion("type", [
-    BrowserActionResumeResultSchema,
-    ...LegacyBrowserActionResultSchema.options.filter(
-      (
-        schema,
-      ): schema is Exclude<
-        (typeof LegacyBrowserActionResultSchema.options)[number],
-        { shape: { type: { value: "surface.resume" } } }
-      > => schema.shape.type.value !== "surface.resume",
-    ),
-  ])
-  .refine(withinBudget, "The result exceeds the page byte budget.");
-export type BrowserActionResult = z.infer<typeof BrowserActionResultSchema>;
-export const BrowserActionResponseSchema = z.union([
-  z.strictObject({ id: revision, result: BrowserActionResultSchema }),
-  z.strictObject({ id: revision, error: BrowserActionErrorSchema }),
-]);
+export const BrowserResumeTabResultSchema = z.strictObject({
+  dialog: AgentTabSchema.shape.dialog,
+  userActivity: AgentTabSchema.shape.userActivity,
+  pageResize: AgentTabSchema.shape.pageResize,
+  surfaceId: BrowserSurfaceIdSchema,
+  targetId: identifier,
+  documentId: z.string().min(1).max(255),
+  reloaded: z.boolean(),
+});
+export type BrowserResumeTabResult = z.infer<typeof BrowserResumeTabResultSchema>;

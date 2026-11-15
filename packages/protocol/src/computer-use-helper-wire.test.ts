@@ -6,9 +6,9 @@ import {
   ComputerUseHelperErrorSchema,
   ComputerUseHelperEventSchema,
   ComputerUseHelperMethodSchema,
-  LegacyComputerUseHelperRequestSchema,
+  ComputerUseHelperRequestSchema,
   computerUseHelperProtocolVersion,
-  legacyComputerUseHelperResults,
+  computerUseHelperResults,
 } from "./computer-use.js";
 
 /**
@@ -37,8 +37,7 @@ describe("helper wire fixture", () => {
   });
 
   it.each(Object.entries(fixture.results))("%s result matches its schema", (method, result) => {
-    const schema =
-      legacyComputerUseHelperResults[method as keyof typeof legacyComputerUseHelperResults];
+    const schema = computerUseHelperResults[method as keyof typeof computerUseHelperResults];
     const parsed = schema.safeParse(result);
     expect(parsed.error?.issues ?? []).toEqual([]);
   });
@@ -72,13 +71,14 @@ describe("helper wire fixture", () => {
       "session.windows",
       "view.open",
       "view.windows",
+      "window.resolve",
     ]);
     for (const [method, request] of Object.entries(fixture.requests)) {
-      const parsed = LegacyComputerUseHelperRequestSchema.safeParse(request);
+      const parsed = ComputerUseHelperRequestSchema.safeParse(request);
       expect(parsed.error?.issues ?? []).toEqual([]);
       expect(parsed.data?.method).toBe(method);
     }
-    const act = LegacyComputerUseHelperRequestSchema.parse(fixture.requests["session.act"]);
+    const act = ComputerUseHelperRequestSchema.parse(fixture.requests["session.act"]);
     if (act.method !== "session.act") throw new Error("expected session.act");
     expect(act.timeoutMs).toEqual(expect.any(Number));
     expect(act.params.app.access).toBe("read-write");

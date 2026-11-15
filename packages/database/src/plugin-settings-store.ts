@@ -19,7 +19,7 @@ import {
 } from "@opensteer/protocol";
 import { sql, type Kysely } from "kysely";
 import { isDeepStrictEqual } from "node:util";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import {
@@ -431,7 +431,7 @@ export class PluginSettingsStore {
     machines: readonly {
       id: string;
       name: string;
-      status: import("@opensteer/protocol").LegacyMachineSummary["status"];
+      status: import("@opensteer/protocol").MachineSummary["status"];
     }[],
   ) {
     const snapshot = await this.snapshot(owner);

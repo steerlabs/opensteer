@@ -3,7 +3,7 @@ import { AppIdSchema } from "@opensteer/core";
 import { z } from "zod";
 import { ComputerFolderSchema } from "@opensteer/core";
 
-export const LegacyAppRuntimeSpecSchema = z.strictObject({
+export const AppRuntimeSpecSchema = z.strictObject({
   appId: AppIdSchema,
   version: z.number().int().positive(),
   /** The server's folder, which the Runner refuses unless it resolves inside `agentHome`. */
@@ -11,43 +11,29 @@ export const LegacyAppRuntimeSpecSchema = z.strictObject({
   agentHome: ComputerFolderSchema,
 
   command: z.string().min(1).max(16_384),
+  generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  port: z.number().int().min(49152).max(65535),
 });
-export type LegacyAppRuntimeSpec = z.infer<typeof LegacyAppRuntimeSpecSchema>;
-const base = {
-  requestId: z.uuid(),
-  spec: LegacyAppRuntimeSpecSchema,
-  fence: TaskRuntimeFenceSchema,
-};
-export const LegacyHostAppRequestSchema = z.discriminatedUnion("type", [
-  z.strictObject({ ...base, type: z.literal("host.app.start") }),
-  z.strictObject({
-    ...base,
-    type: z.literal("host.app.connect"),
-    ticket: z.string().min(1).max(200),
-  }),
-  z.strictObject({ ...base, type: z.literal("host.app.stop") }),
-  z.strictObject({ ...base, type: z.literal("host.app.cancel") }),
-]);
-export type LegacyHostAppRequest = z.infer<typeof LegacyHostAppRequestSchema>;
-export const LegacyRunnerAppResultSchema = z.strictObject({
+export type AppRuntimeSpec = z.infer<typeof AppRuntimeSpecSchema>;
+
+export const RunnerAppResultSchema = z.strictObject({
   type: z.literal("runner.app.result"),
   requestId: z.uuid(),
   appId: AppIdSchema,
   fence: TaskRuntimeFenceSchema,
   ok: z.boolean(),
-  port: z.number().int().min(1).max(65_535).optional(),
+  generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  port: z.number().int().min(49152).max(65535).optional(),
+  reason: z.literal("port_in_use").optional(),
   error: z.string().max(2_000).optional(),
   logTail: z.string().max(16_384).optional(),
 });
-export type LegacyRunnerAppResult = z.infer<typeof LegacyRunnerAppResultSchema>;
+
+export type RunnerAppResult = z.infer<typeof RunnerAppResultSchema>;
 export const appTunnelMaxFrameBytes = 64 * 1_024;
 
 import { AppSchema, AppIdSchema as PublishedAppIdSchema, AppNameSchema } from "@opensteer/core";
-export const AppRuntimeSpecSchema = LegacyAppRuntimeSpecSchema.extend({
-  generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  port: z.number().int().min(49152).max(65535),
-});
-export type AppRuntimeSpec = z.infer<typeof AppRuntimeSpecSchema>;
+
 const request = { requestId: z.uuid(), fence: TaskRuntimeFenceSchema };
 const generation = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 export const HostAppRequestSchema = z.discriminatedUnion("type", [
@@ -87,11 +73,7 @@ export const RunnerAppStateSchema = z.strictObject({
   error: z.string().max(2000).optional(),
 });
 export type RunnerAppState = z.infer<typeof RunnerAppStateSchema>;
-export const RunnerAppResultSchema = LegacyRunnerAppResultSchema.extend({
-  generation,
-  port: z.number().int().min(49152).max(65535).optional(),
-});
-export type RunnerAppResult = z.infer<typeof RunnerAppResultSchema>;
+
 export const RunnerAppsSyncResultSchema = z.strictObject({
   ...request,
   type: z.literal("runner.apps.sync.result"),

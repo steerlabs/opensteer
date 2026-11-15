@@ -6,7 +6,7 @@ import {
   type RunId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema, ExecutionNodeTable } from "./schema.js";
+import type { DatabaseSchema, ExecutionNodeTable } from "./schema.js";
 
 export type ExecutionNodeRow = Selectable<ExecutionNodeTable>;
 

@@ -6,7 +6,7 @@ import {
   type RunnerId,
 } from "@opensteer/core";
 import type { Kysely, Selectable, Transaction } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema, RunAttemptTable } from "./schema.js";
+import type { DatabaseSchema, RunAttemptTable } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 
 export type RunAttemptRow = Selectable<RunAttemptTable>;

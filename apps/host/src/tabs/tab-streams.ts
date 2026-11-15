@@ -78,9 +78,6 @@ export class TabStreams {
         const next = new Map<string, Tab>(tabs.map((tab) => [tab.tabId, tab]));
         for (const [id, row] of subscription.rows) {
           const after = next.get(id);
-          // Field patches cannot remove optional properties.
-          if (after && Object.keys(row).some((key) => !Object.hasOwn(after, key)))
-            subscription.publisher.reset();
           if (!equal(row, after)) subscription.publisher.mark(id);
         }
         for (const [id, row] of next)

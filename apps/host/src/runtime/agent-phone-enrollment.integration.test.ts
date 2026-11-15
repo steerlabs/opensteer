@@ -93,7 +93,7 @@ integration.sequential("An Android phone joining a Deployment", () => {
     const machine = async () => {
       const result = await testRpcData(
         active.origin,
-        "machines.legacy.list",
+        "machines.list",
         {},
         {
           headers: active.ownerHeaders,
@@ -230,7 +230,7 @@ integration.sequential("An Android phone joining a Deployment", () => {
 
     const machines = await testRpcData(
       host.origin,
-      "machines.legacy.list",
+      "machines.list",
       {},
       { headers: host.ownerHeaders },
     );
@@ -326,7 +326,7 @@ integration.sequential("An Android phone joining a Deployment", () => {
     expect(reconnected.welcome).not.toBeNull();
     const machine = async () =>
       (
-        await testRpcData(host!.origin, "machines.legacy.list", {}, { headers: host!.ownerHeaders })
+        await testRpcData(host!.origin, "machines.list", {}, { headers: host!.ownerHeaders })
       ).machines.find((row) => row.id === runnerId)!;
     await waitForCondition(async () => (await machine()).status === "offline");
     const original = await host.store.runnerForAuthentication(runnerId);
@@ -499,7 +499,7 @@ integration.sequential("An Android phone joining a Deployment", () => {
     await waitForCondition(async () => {
       const rows = await testRpcData(
         host!.origin,
-        "machines.legacy.list",
+        "machines.list",
         {},
         {
           headers: host!.ownerHeaders,
@@ -940,7 +940,7 @@ async function retirePhone(host: MachineAccessHost, enrollmentId: string) {
 async function pendingEnrollments(host: MachineAccessHost): Promise<string[]> {
   const { machines } = await testRpcData(
     host.origin,
-    "machines.legacy.list",
+    "machines.list",
     {},
     { headers: host.ownerHeaders },
   );

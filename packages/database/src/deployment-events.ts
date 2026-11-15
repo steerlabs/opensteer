@@ -15,7 +15,7 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
 import { lockDeploymentEvents } from "./personal-transaction.js";
-import type { LegacyDatabaseSchema as DatabaseSchema, DeploymentEventRow } from "./schema.js";
+import type { DatabaseSchema, DeploymentEventRow } from "./schema.js";
 
 export type HostDeploymentEventInput = AgentEvent extends infer Event
   ? Event extends AgentEvent

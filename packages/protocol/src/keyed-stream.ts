@@ -273,10 +273,11 @@ export class KeyedStreamPublisher<
         this.#dirty.delete(id);
         continue;
       }
-      const operation = !row ? "remove" : !before ? "add" : "update";
+      const replace = row && before && Object.keys(before).some((key) => !Object.hasOwn(row, key));
+      const operation = !row ? "remove" : !before || replace ? "add" : "update";
       const entry = !row
         ? id
-        : !before
+        : !before || replace
           ? row
           : ({ ...patch(before, row), [this.#key]: id } as {
               [K in Exclude<keyof Row, Key>]?: Row[K] | undefined;
@@ -286,7 +287,7 @@ export class KeyedStreamPublisher<
         (frame[operation] ? 1 : keyedStreamBytes({ [operation]: [] }) - 1);
       if (accepted.size && bytes + size > this.#options.targetBytes) break;
       if (!row) (frame.remove ??= []).push(id);
-      else if (!before) (frame.add ??= []).push(row);
+      else if (!before || replace) (frame.add ??= []).push(row);
       else
         (frame.update ??= []).push({ ...patch(before, row), [this.#key]: id } as {
           [K in Exclude<keyof Row, Key>]?: Row[K] | undefined;

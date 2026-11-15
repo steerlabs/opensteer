@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:net";
 
 /** Distinct loopback ports the OS just released; its ephemeral range is the app port range. */
-export async function freePorts(count: number): Promise<number[]> {
+export async function freeAppPorts(count: number): Promise<number[]> {
   const listeners: Server[] = [];
   try {
     for (let index = 0; index < count; index++) {
@@ -25,7 +25,7 @@ export async function freePorts(count: number): Promise<number[]> {
   }
 }
 
-export async function freePort(): Promise<number> {
-  const [port] = await freePorts(1);
+export async function freeAppPort(): Promise<number> {
+  const [port] = await freeAppPorts(1);
   return port!;
 }

@@ -6,7 +6,7 @@ import { dirname } from "node:path";
 import { sql } from "kysely";
 import type { Kysely } from "kysely";
 import { createId, type UserId, type TeamChannelId } from "../packages/core/src/index.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "../packages/database/src/schema.js";
+import type { DatabaseSchema } from "../packages/database/src/schema.js";
 import { startTeamSystem } from "./team-system.test-support.js";
 
 export type PerfTeam = Awaited<ReturnType<typeof startTeamSystem>>;

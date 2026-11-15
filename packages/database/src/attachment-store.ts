@@ -23,7 +23,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
-import type { AttachmentTable, LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { AttachmentTable, DatabaseSchema } from "./schema.js";
 import "./store-primitives.js";
 export type AttachmentRow = Selectable<AttachmentTable>;
 export const attachmentRetainedMaxBytes = 2 * 1024 * 1024 * 1024;

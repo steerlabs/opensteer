@@ -2,8 +2,8 @@ import { TabIdSchema } from "./ids.js";
 import { CompactionReturnHintSchema } from "./idle-compaction.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { AppIdSchema, AppTitleSchema } from "./apps.js";
-import { PlaceIdentitySchema, PlaceIdentityViewSchema } from "./places.js";
+import { AppIdSchema, AppNameSchema } from "./apps.js";
+
 import { z } from "zod";
 import {
   ProviderContextMeasurementSchema,
@@ -198,11 +198,11 @@ const eventDataSchemas = {
   "app.published": z.strictObject({
     appId: AppIdSchema,
     version: z.number().int().positive(),
-    title: AppTitleSchema,
+    title: AppNameSchema,
   }),
   "place.entered": z.strictObject({
-    place: PlaceIdentitySchema,
-    title: z.string().max(256),
+    tabId: TabIdSchema,
+    title: z.string().max(1024),
     site: placeSiteSchema.nullable(),
   }),
   "assignment.created": z.strictObject({ assignment: AssignmentSummarySchema }),
@@ -524,7 +524,6 @@ const eventDataViewSchemas = {
   "app.published": z.object(eventDataSchemas["app.published"].shape),
   "place.entered": z.object({
     ...eventDataSchemas["place.entered"].shape,
-    place: PlaceIdentityViewSchema,
   }),
   "assignment.created": z.object({ assignment: AssignmentSummarySchema }),
   "assignment.updated": z.object({ assignment: AssignmentSummarySchema }),

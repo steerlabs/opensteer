@@ -5,7 +5,7 @@ import {
 } from "@opensteer/control-plane-protocol";
 import type { DeploymentId } from "@opensteer/core";
 import type { Kysely, Transaction } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 
 export class TeamInstallationStore {
   readonly #key: Buffer;

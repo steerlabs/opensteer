@@ -10,7 +10,7 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { admitRunToolCallInTransaction, type RunToolAdmissionInput } from "./run-tool-admission.js";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { jsonValue, systemPrincipalId } from "./store-primitives.js";
 import { messageFromRow } from "./thread-row-mappers.js";
 import { appendHostDeploymentEvent } from "./deployment-events.js";

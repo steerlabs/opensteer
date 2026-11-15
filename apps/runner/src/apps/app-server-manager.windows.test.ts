@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { expect, it } from "vitest";
 import { ExecutionContainment } from "../runtime/execution-containment.js";
 import { AppServerManager } from "./app-server-manager.js";
-import { freePort } from "./free-port.test-support.js";
+import { freeAppPort } from "./free-port.test-support.js";
 
 it("starts a server from a cmd start string, serves it, and leaves nothing behind when stopped", async () => {
   const root = await mkdtemp(join(tmpdir(), "opensteer app server "));
@@ -33,7 +33,7 @@ it("starts a server from a cmd start string, serves it, and leaves nothing behin
       folder: { computerId: createId("runner"), path: root },
       version: 1,
       generation: 1,
-      port: await freePort(),
+      port: await freeAppPort(),
     });
     const served = (await (await fetch(`http://127.0.0.1:${port}/`)).json()) as {
       child: number;

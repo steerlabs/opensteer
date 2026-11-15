@@ -591,7 +591,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         pages:
           context.personalContext &&
           (harness.driverKind !== "codex" || context.thread.accessMode === "full-access"),
-        computerUse: context.personalContext,
+        computerUse: context.personalContext && identity.modules.agents?.computerTool === 1,
         apps: context.personalContext,
       },
       settingsError: settingsFile?.error,

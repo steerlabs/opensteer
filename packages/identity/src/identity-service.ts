@@ -45,7 +45,7 @@ import {
   identityPasswordMinLength,
 } from "@opensteer/core";
 import { personProfileReceiptClaim } from "@opensteer/control-plane-protocol";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "@opensteer/database";
+import type { DatabaseSchema } from "@opensteer/database";
 import { describeSessionDevice } from "./session-device.js";
 import { refuseEntry } from "./team-admission.js";
 import { sso } from "@better-auth/sso";

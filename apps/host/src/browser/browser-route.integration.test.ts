@@ -91,7 +91,7 @@ integration("Host browser broker vertical", () => {
       name: "Storage computer",
       token: await machineHost.hostingRunnerEnrollmentToken,
     });
-    await testRpcData(origin, "bootstrap.legacy.get", {}, { headers: sessionHeaders });
+    await testRpcData(origin, "bootstrap.get", {}, { headers: sessionHeaders });
 
     // Identity is explicit at open: profiles are never auto-provisioned.
     const createdProfile = await testRpcData(
@@ -271,12 +271,7 @@ integration("Host browser broker vertical", () => {
       (frame) => decodeBrowserFrameEnvelope(frame).header.frameId,
     );
 
-    const bootstrap = await testRpcData(
-      origin,
-      "bootstrap.legacy.get",
-      {},
-      { headers: { cookie } },
-    );
+    const bootstrap = await testRpcData(origin, "bootstrap.get", {}, { headers: { cookie } });
     expect(bootstrap.browser).toMatchObject({
       available: true,
       profiles: [{ name: "Integration browser" }],
@@ -296,15 +291,11 @@ integration("Host browser broker vertical", () => {
     ).resolves.toBe(false);
     const detachedBootstrap = await testRpcData(
       origin,
-      "bootstrap.legacy.get",
+      "bootstrap.get",
       {},
       { headers: { cookie } },
     );
-    expect(
-      detachedBootstrap.browser.groups.rows.find(
-        (session) => session.sessionId === started.session.id,
-      ),
-    ).toMatchObject({ acting: false, attachedRunIds: [] });
+    expect(detachedBootstrap.tabs.tabs.every((tab) => tab.usedBy.length === 0)).toBe(true);
 
     // A fresh session needs no profile and no grant, and carries no lease.
 
@@ -372,12 +363,7 @@ integration("Host browser broker vertical", () => {
         capability: "browser",
       });
       expect(browserRuntime.streamOpen()).toBe(true);
-      const after = await testRpcData(
-        origin,
-        "bootstrap.legacy.get",
-        {},
-        { headers: sessionHeaders },
-      );
+      const after = await testRpcData(origin, "bootstrap.get", {}, { headers: sessionHeaders });
       expect(after.browser.profileHomes).toContain(browserRuntime.runnerId);
       const person = await runtime.browser.start({
         fresh: true,

@@ -11,7 +11,7 @@ import {
 } from "@opensteer/database/test-support/database";
 import {
   HarnessInstanceCatalogViewSchema,
-  LegacyHostToClientMessageSchema as HostToClientMessageSchema,
+  HostToClientMessageSchema,
   type HostApiCommandInput,
   type HostApiCommandOutput,
 } from "@opensteer/protocol";

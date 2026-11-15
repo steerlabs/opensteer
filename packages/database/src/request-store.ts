@@ -106,7 +106,7 @@ import { cancelPending } from "./request-cancellation.js";
 import { requestFromRow, requestInsert, requestOriginEnvironment } from "./request-persistence.js";
 import { insertBrowserProfileOnLockedHome } from "./browser-session-store.js";
 import { runHasActiveGrant } from "./run-grants.js";
-import type { LegacyDatabaseSchema as DatabaseSchema, RequestRow } from "./schema.js";
+import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { jsonValue, threadPathLinks, type ChannelLinks } from "./store-primitives.js";
 import { appendHostDeploymentEvent } from "./deployment-events.js";
 export { cancelPending } from "./request-cancellation.js";

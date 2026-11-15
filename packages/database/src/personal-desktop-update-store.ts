@@ -9,7 +9,7 @@ import {
 } from "@opensteer/protocol/maintenance";
 import type { DesktopUpdateProgress } from "@opensteer/protocol/desktop-supervisor";
 import type { Kysely, Selectable, Transaction } from "kysely";
-import type { LegacyDatabaseSchema as DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema } from "./schema.js";
 import { requestSettlementActor } from "./request-settlement.js";
 
 const active = ["pending", "running", "staged", "installing"] as const;
