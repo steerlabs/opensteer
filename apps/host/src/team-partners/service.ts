@@ -1,3 +1,7 @@
+import { sql } from "kysely";
+import type { TeamBus } from "@opensteer/database/team-bus";
+import type { TeamPartnerOfferVault } from "./offer-vault.js";
+import { PartnerMailbox, partnerCallError } from "./mailbox.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { OpensteerError, type TeamActor } from "@opensteer/core";
 import {
@@ -37,6 +41,7 @@ interface Entry {
   teamId?: string;
   id?: string;
   active: boolean;
+  approvals?: string;
   incoming: number;
 }
 export interface TeamPartnerNetwork {
@@ -71,6 +76,30 @@ export class TeamPartners {
     handoff: (send: () => Promise<void>) => Promise<void> = (send) => send(),
   ): Promise<unknown> {
     signal?.throwIfAborted();
+    const combined = signal ? AbortSignal.any([signal, this.#abort.signal]) : this.#abort.signal;
+    const fence = async (send: () => Promise<void>) => {
+      const revision = await this.store.access.current();
+      const authorize = () => this.#authorize(linkId, operation);
+      await authorize();
+      await this.store.access.handoff(revision, authorize, send);
+    };
+    const result = this.connected(linkId)
+      ? await this.#localRequest(linkId, operation, combined, (send) => handoff(() => fence(send)))
+      : this.#mailbox
+        ? await this.#mailbox.request(linkId, operation, combined, (send) =>
+            handoff(() => fence(send)),
+          )
+        : await Promise.reject(partnerError("partner-unreachable"));
+    await handoff(() => fence(async () => {}));
+    return result;
+  }
+
+  async #localRequest(
+    linkId: string,
+    operation: TeamShareOperation,
+    signal: AbortSignal,
+    handoff: (send: () => Promise<void>) => Promise<void>,
+  ): Promise<unknown> {
     const entry = [...this.#entries].find(
       (e) => e.id === linkId && e.active && e.peer.socket.readyState === 1,
     );
@@ -111,11 +140,17 @@ export class TeamPartners {
   readonly #opening = new Map<string, Promise<void>>();
   readonly #retry = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #attempts = new Map<string, number>();
-  readonly #offers = new Map<string, TeamPartnerOffer>();
+  readonly #mailbox: PartnerMailbox | undefined;
+  readonly #unsubscribeBus: (() => void)[] = [];
+  readonly #draining = new Map<string, Promise<void>>();
+  readonly #drainAgain = new Set<string>();
   readonly #abort = new AbortController();
   readonly #network: TeamPartnerNetwork;
 
   readonly options: {
+    bus?: TeamBus;
+    processId?: string;
+    offerVault?: TeamPartnerOfferVault;
     store: TeamPartnerStore;
     keys: Pick<HostKeyPair, "privateKey">;
     teamName: string;
@@ -125,6 +160,17 @@ export class TeamPartners {
   };
   constructor(options: TeamPartners["options"]) {
     this.options = options;
+    if (options.bus) {
+      if (!options.processId) throw new Error("Partner mailbox requires processId");
+      this.#mailbox = new PartnerMailbox(options.store, options.bus, options.processId);
+      this.#unsubscribeBus.push(
+        options.bus.on((event) => {
+          if (event.kind === "partnerCall") this.#track(this.#drain(event.linkId));
+          if (event.kind === "partnerLink") this.#track(this.#linkChanged(event.linkId));
+        }),
+        options.bus.onResync(() => this.#resync()),
+      );
+    }
     this.#network = options.network ?? new TeamLinkNetwork(options.publicOnly);
     this.#unsubscribeAccess = this.store.access.onRevoke((effects) =>
       this.lifetimes.close(effects),
@@ -141,6 +187,144 @@ export class TeamPartners {
     [...this.#entries].some(
       (entry) => entry.id === id && entry.active && entry.peer.socket.readyState === 1,
     );
+
+  async #authorize(linkId: string, operation: TeamShareOperation) {
+    return this.store.access.database.transaction().execute(async (t) => {
+      const row = await this.store.get(linkId, t);
+      if (!row || row.state !== "active" || (await this.store.policy(t)) === "off")
+        throw partnerError("not-found");
+      const share = await t
+        .selectFrom("teamShares")
+        .selectAll()
+        .where("id", "=", operation.shareId)
+        .where("partnerLinkId", "=", linkId)
+        .executeTakeFirst();
+      if (
+        !share ||
+        (share.generation !== operation.generation &&
+          !(
+            operation.op === "end" &&
+            share.state === "ended" &&
+            share.generation === operation.generation + 1
+          )) ||
+        (share.state === "ended" && operation.op !== "end") ||
+        (share.state === "offered" && !["offer", "accept", "roster", "end"].includes(operation.op))
+      )
+        throw partnerError("not-found");
+      return true;
+    });
+  }
+
+  async #offer(id: string) {
+    const row = await this.store.get(id);
+    if (!row?.sealedOffer) return undefined;
+    if (!this.options.offerVault) throw new Error("Partner pairing requires offerVault");
+    return this.options.offerVault.open(id, row.sealedOffer);
+  }
+  async #clearOffer(id: string) {
+    await this.store.access.database
+      .updateTable("teamPartnerLinks")
+      .set({ sealedOffer: null })
+      .where("id", "=", id)
+      .execute();
+  }
+  maintenance() {
+    return this.#mailbox?.maintenance() ?? Promise.resolve();
+  }
+
+  async #linkChanged(id: string) {
+    const row = await this.store.get(id);
+    const off = await this.store.access.database
+      .transaction()
+      .execute(async (t) => (await this.store.policy(t)) === "off");
+    if (!row || row.state === "revoked" || off) {
+      this.#cancelRetry(id);
+      await this.#closeLink(id, row?.state === "revoked" ? { type: "revoked" } : undefined);
+      if (row?.state === "revoked") await this.#data?.revoked(id);
+      return;
+    }
+    // An opening handshake already reads the committed approval state.
+    if (
+      [...this.#entries].some(
+        (entry) =>
+          entry.id === id &&
+          entry.approvals !== undefined &&
+          entry.approvals !== JSON.stringify([row.localApproved, row.partnerApproved]),
+      )
+    )
+      await this.#closeLink(id, { type: "approval" });
+    if (row.role === "dialer") this.reconnect(id);
+    await this.#drain(id);
+  }
+  async #resync() {
+    const rows = await this.store.access.database
+      .selectFrom("teamPartnerLinks")
+      .select("id")
+      .execute();
+    await Promise.all(rows.map((row) => this.#linkChanged(row.id)));
+  }
+  #drain(linkId: string): Promise<void> {
+    const running = this.#draining.get(linkId);
+    if (running) {
+      this.#drainAgain.add(linkId);
+      return running;
+    }
+    const job = (async () => {
+      if (!this.#mailbox || !this.connected(linkId) || this.#abort.signal.aborted) return;
+      for (;;) {
+        this.#drainAgain.delete(linkId);
+        const rows = await this.#mailbox.claim(linkId);
+        if (!rows.length) {
+          if (this.#drainAgain.has(linkId)) continue;
+          return;
+        }
+        await Promise.all(
+          rows.map(async (row) => {
+            let result: unknown = null,
+              error: unknown = null;
+            try {
+              const operation = TeamShareOperationSchema.parse(row.operation);
+              const revision = await this.store.access.current();
+              const authorize = () => this.#authorize(linkId, operation);
+              await authorize();
+              result = await this.#localRequest(
+                linkId,
+                operation,
+                AbortSignal.any([
+                  this.#abort.signal,
+                  AbortSignal.timeout(Math.max(1, row.expiresAt.getTime() - Date.now())),
+                ]),
+                async (send) =>
+                  await this.store.access.handoff(revision, authorize, async () => {
+                    await authorize();
+                    await send();
+                  }),
+              );
+            } catch (caught) {
+              error = partnerCallError(caught);
+            }
+            await this.store.access.database
+              .updateTable("teamPartnerCalls")
+              .set({
+                state: error ? "failed" : "done",
+                result: sql`${JSON.stringify(result ?? null)}::jsonb`,
+                error: sql`${JSON.stringify(error)}::jsonb`,
+              })
+              .where("id", "=", row.id)
+              .where("state", "=", "claimed")
+              .where("claimedBy", "=", this.options.processId!)
+              .execute();
+          }),
+        );
+        if (!this.connected(linkId) || this.#abort.signal.aborted) return;
+      }
+    })().finally(() => {
+      this.#draining.delete(linkId);
+      this.#drainAgain.delete(linkId);
+    });
+    this.#draining.set(linkId, job);
+    return job;
+  }
 
   async start() {
     for (const row of await this.store.access.database
@@ -162,12 +346,13 @@ export class TeamPartners {
       await this.#network.discover(offer.origin, signal),
       offer,
     );
+    if (!this.options.offerVault) throw new Error("Partner pairing requires offerVault");
     const row = await this.store.propose(
       actor,
       descriptor.authority,
       new URL(offer.origin).hostname.slice(0, 160),
+      (id) => this.options.offerVault!.seal(id, offer),
     );
-    this.#offers.set(row.id, offer);
     try {
       await this.store.access.outsideHumanSession(() => this.#open(row, offer));
     } catch (error) {
@@ -243,7 +428,7 @@ export class TeamPartners {
 
   async revoke(actor: TeamActor, id: string) {
     await this.store.revoke(id, actor);
-    this.#offers.delete(id);
+    await this.#clearOffer(id);
     await this.#data?.revoked(id);
     const row = await this.store.get(id);
     if (row) await this.#closeLink(id, { type: "revoked" });
@@ -354,6 +539,7 @@ export class TeamPartners {
     }
     entry.id = row.id;
     entry.active = row.state === "active";
+    entry.approvals = JSON.stringify([row.localApproved, row.partnerApproved]);
     await entry.peer.send({ type: "ready", state: row.state, approved: row.localApproved });
     if (row.state === "revoked") {
       await entry.peer.close();
@@ -423,7 +609,8 @@ export class TeamPartners {
           const current = await this.store.seen(row.id, ready.approved, response.name);
           if (current.state === "revoked") throw partnerError();
           entry.active = current.state === "active";
-          this.#offers.delete(row.id);
+          entry.approvals = JSON.stringify([current.localApproved, current.partnerApproved]);
+          await this.#clearOffer(row.id);
           this.#attempts.delete(row.id);
         })(),
         10_000,
@@ -443,6 +630,7 @@ export class TeamPartners {
   }
 
   async #receive(entry: Entry, row: PartnerRow) {
+    if (entry.active) this.#track(this.#drain(row.id));
     if (entry.active && this.#data)
       this.#track(
         this.#data.connected(row.id).catch(async (error: unknown) => {
@@ -558,7 +746,7 @@ export class TeamPartners {
           .transaction()
           .execute((t) => this.store.policy(t));
         if (policy === "off") return;
-        const offer = this.#offers.get(id);
+        const offer = await this.#offer(id);
         if (offer && Date.parse(offer.expiresAt) <= Date.now())
           throw partnerError("partner-invite-expired");
         await this.#open(row, offer);
@@ -571,14 +759,14 @@ export class TeamPartners {
   }
 
   async #failed(id: string, error: unknown) {
-    const offer = this.#offers.get(id);
+    const offer = await this.#offer(id);
     if (
       offer &&
       (Date.parse(offer.expiresAt) <= Date.now() ||
         (error instanceof OpensteerError &&
           (error.reason === "partner-pairing-refused" || error.reason === "identity-mismatch")))
     ) {
-      this.#offers.delete(id);
+      await this.#clearOffer(id);
       this.#cancelRetry(id);
       await this.store.abandonProposal(id);
       return;
@@ -625,7 +813,8 @@ export class TeamPartners {
     this.#unsubscribeAccess();
     this.lifetimes.stop();
     this.#abort.abort();
-    this.#offers.clear();
+    this.#mailbox?.close();
+    for (const unsubscribe of this.#unsubscribeBus) unsubscribe();
     for (const id of this.#retry.keys()) this.#cancelRetry(id);
     await Promise.all([...this.#entries].map((entry) => entry.peer.close()));
     await Promise.allSettled(this.#jobs);
