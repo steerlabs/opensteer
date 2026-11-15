@@ -1613,6 +1613,7 @@ it("uses authenticated admission for a person message without waking work", asyn
     type: "person.message.result",
     requestId,
     messageId,
+    link: `[Message](opensteer:${messageId})`,
   });
   expect(publishPersonMessage).toHaveBeenCalledWith({
     message: "Ready.",
