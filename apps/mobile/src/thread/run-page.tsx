@@ -31,7 +31,7 @@ import {
 } from "react-native";
 import Animated, { FadeOutUp } from "react-native-reanimated";
 import { agentWorkingLabel } from "../browser/acting-dot.js";
-import { paramsDestination, sameDestination } from "../browser/surface-route.js";
+import { paramsTabId } from "../browser/surface-route.js";
 import { layoutRoute } from "../navigation-presentations.js";
 import { color, radius, space, touchTarget } from "../theme.js";
 import { useCellular } from "../ui/cellular.js";
@@ -125,8 +125,8 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
   const inFront =
     beside &&
     current?.name === "WorkspaceBrowser" &&
-    binding.destination !== null &&
-    sameDestination(paramsDestination(current.params), binding.destination);
+    binding.destination?.kind === "browser" &&
+    paramsTabId(current.params) === binding.destination.tabId;
   const placeRunId = entry !== null && authorized && !inFront ? entry.runId : null;
   const scrolledUp = props.scrolledUp;
 

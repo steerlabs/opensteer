@@ -1,7 +1,7 @@
 import { personalRouteInvalid } from "../side-memory-validity.js";
 import { sideMemory } from "../side-memory.js";
 import { layoutRoute } from "../navigation-presentations.js";
-import type { PersonalSurfaceDestination } from "@opensteer/client/host";
+import type { TabId } from "@opensteer/core";
 import { StackActions, type NavigationAction } from "@react-navigation/native";
 import { isRecord } from "@opensteer/shared/isRecord";
 import {
@@ -48,7 +48,7 @@ import {
 } from "react-native-reserved-regions";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useVerticalBar } from "../ui/vertical-bar.js";
-import { paramsDestination, tabsRoute } from "../browser/surface-route.js";
+import { paramsTabId, tabRoute } from "../browser/surface-route.js";
 import {
   deriveShell,
   edgesAround,
@@ -108,6 +108,7 @@ const sidebarMinimumWidth = 260;
 
 /** The top-level screens the sidebar marks as current by name rather than by a row of their own. */
 const destinations: ReadonlySet<string> = new Set<SidebarDestination>([
+  "Apps",
   "Home",
   "Schedules",
   "Tabs",
@@ -245,10 +246,10 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   // The exact tab, app or phone in front, as its route names it; held while
   // the route's params are, so the panel is not redrawn for the same one.
   const pageParams = focused?.name === "WorkspaceBrowser" ? focused.params : undefined;
-  const pageDestination = useMemo(() => paramsDestination(pageParams), [pageParams]);
+  const pageTabId = useMemo(() => paramsTabId(pageParams), [pageParams]);
   // However it was reached, a page in front arranges itself and whoever is
   // beside it around the folds it can use, in the sidebar's room too.
-  const page = pageDestination !== null;
+  const page = pageTabId !== null;
 
   // The arrangement room last chose, held across renders so a width hovering
   // on the threshold does not flip it. A page borrows the sidebar's room
@@ -433,13 +434,14 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
       onOpenDone: () => show("DoneTasks"),
       onOpenQuietlyMoved: (targetDeploymentId) =>
         present(StackActions.push("QuietlyMoved", { deploymentId: targetDeploymentId })),
-      onOpenPlace: (destination: PersonalSurfaceDestination) => {
+      onOpenTab: (tabId: TabId) => {
         const deployment = homeDeployment();
         if (deployment === null) return leave();
         // Exactly the tab, alone: who opened it, or who is in front, is not
         // whom it talks to.
-        go({ name: "WorkspaceBrowser", params: tabsRoute(deployment, destination) });
+        go({ name: "WorkspaceBrowser", params: tabRoute(deployment, tabId) });
       },
+      onApps: () => show("Apps"),
       onOpenNeedsYou: (targetDeploymentId) =>
         go({ name: "NeedsYou", params: { deploymentId: targetDeploymentId } }),
       onOpenTask: (targetDeploymentId, threadId, requestId) =>
@@ -496,6 +498,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                   openChannelId={openChannelId}
                   openTeamId={openTeamId}
                   selectedThreadId={selectedThreadId}
+                  selectedTabId={pageTabId}
                   sides={sides}
                   visible={visible}
                 />
@@ -537,6 +540,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                       openChannelId={openChannelId}
                       openTeamId={openTeamId}
                       selectedThreadId={selectedThreadId}
+                      selectedTabId={pageTabId}
                       sides={sides}
                       visible
                     />

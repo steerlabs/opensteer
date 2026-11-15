@@ -12,17 +12,11 @@ import {
   type DoneTaskList,
   type HostClient,
   type LegacyHostSnapshot as HostSnapshot,
-  type PlaceItem,
-  type PersonalSurfaceDestination,
   type TaskList,
   type TaskRow,
 } from "@opensteer/client/host";
-import {
-  useBrowserGroups,
-  usePlace,
-  usePlaceStructure,
-  useSyncingPlaceholder,
-} from "@opensteer/client/react";
+import { useHostSelector, useSyncingPlaceholder } from "@opensteer/client/react";
+import type { TabId } from "@opensteer/core";
 import {
   memo,
   useCallback,
@@ -45,8 +39,9 @@ import {
   View,
 } from "react-native";
 import { ActingDot, agentWorkingLabel } from "../browser/acting-dot.js";
-import { opensteerAppGlyph } from "../browser/agent-surface.js";
-import { tabSiteLabel } from "../browser/site-label.js";
+import { tabAgents } from "../tabs/tab-agents.js";
+import { layoutTabIds, tabKindGlyph, tabTitle, tabWhat } from "../tabs/tab-entries.js";
+import { useTab, useTabLayout, useTabsModel, useTabsSyncing } from "../tabs/use-tabs.js";
 import { sidebarBottom, sidebarTop } from "../layout.js";
 import { statusTone } from "../screens/deployment-row.js";
 import {
@@ -89,7 +84,7 @@ import { recentTeam, type SidebarSides } from "@opensteer/client/team";
 import { TeamSide, type TeamPlace } from "./team-side.js";
 
 /** The root places the drawer switches between. */
-export type SidebarDestination = "Home" | "Schedules" | "Tabs";
+export type SidebarDestination = "Apps" | "Home" | "Schedules" | "Tabs";
 
 export interface SidebarActions {
   /** Closes the drawer and hands focus back to whatever opened it. */
@@ -101,8 +96,10 @@ export interface SidebarActions {
   readonly onOpenDone: () => void;
   /** The sheet naming the tasks just moved to Done for the reader. */
   readonly onOpenQuietlyMoved: (deploymentId: string) => void;
-  /** Shows exactly this tab, app or phone, alone. */
-  readonly onOpenPlace: (destination: PersonalSurfaceDestination) => void;
+  /** Shows exactly this tab, of any kind, alone. */
+  readonly onOpenTab: (tabId: TabId) => void;
+  /** The person's published apps. */
+  readonly onApps: () => void;
   /** A task, at the request named when one is. */
   readonly onOpenTask: (deploymentId: string, threadId: string, requestId?: string) => void;
   /** A channel, or another of a team's places, from that team's side. */
@@ -273,6 +270,8 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   readonly shelves: ShelfMemory;
   /** The task in front, marked as the one open. */
   readonly selectedThreadId: string | null;
+  /** The tab in front, marked as the one open and always listed. */
+  readonly selectedTabId: TabId | null;
   /** The team whose screen is in front. */
   readonly openTeamId: string | null;
   /** The channel or DM in front, marked as the one open. */
@@ -550,6 +549,12 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
               label="Automations"
               onPress={actions.onSchedules}
             />
+            <DestinationRow
+              current={destination === "Apps"}
+              icon="square.grid.2x2"
+              label="Apps"
+              onPress={actions.onApps}
+            />
           </View>
 
           <TeamSetupRows onSetup={actions.onTeamSetup} />
@@ -558,7 +563,11 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
             {hostClient === null || model === null ? (
               <GroupHead title="Tabs" />
             ) : (
-              <SidebarTabs hostClient={hostClient} onOpen={actions.onOpenPlace} />
+              <SidebarTabs
+                hostClient={hostClient}
+                onOpen={actions.onOpenTab}
+                selectedTabId={props.selectedTabId}
+              />
             )}
             <DestinationRow
               current={destination === "Tabs"}
@@ -784,76 +793,72 @@ function DoneLine(props: {
 const sidebarTabLimit = 5;
 
 /**
- * The Deployment's tabs, apps and phones as rows, in the shared place list's
- * order. A row opens exactly its place; nothing is shown of who opened it or
- * which task holds it, and no picture is asked for.
+ * The first tabs of the one list, in the Host's one order — the order All tabs
+ * shows — with the open one always listed. A row opens exactly its tab; no
+ * picture is asked for.
  */
 const SidebarTabs = memo(function SidebarTabs(props: {
   readonly hostClient: HostClient;
-  readonly onOpen: (destination: PersonalSurfaceDestination) => void;
+  readonly onOpen: (tabId: TabId) => void;
+  readonly selectedTabId: TabId | null;
 }): ReactNode {
-  // The panel arranges slots; each row reads its own place, so a title repaints one row.
-  const places = usePlaceStructure(props.hostClient);
-  const syncing = useBrowserGroups(props.hostClient).syncing && places.length === 0;
-  const finding = useSyncingPlaceholder(syncing, places.length);
+  const model = useTabsModel(props.hostClient);
+  const order = layoutTabIds(useTabLayout(model));
+  const syncing = useTabsSyncing(model) && order.length === 0;
+  const finding = useSyncingPlaceholder(syncing, order.length);
+  const shown = order.slice(0, sidebarTabLimit);
+  const { selectedTabId } = props;
+  if (selectedTabId !== null && order.includes(selectedTabId) && !shown.includes(selectedTabId))
+    shown.push(selectedTabId);
   return (
     <>
-      <GroupHead {...(syncing ? {} : { count: places.length })} title="Tabs" />
+      <GroupHead {...(syncing ? {} : { count: order.length })} title="Tabs" />
       {finding ? (
         <AppText role="caption" style={styles.finding} tone="muted">
           Finding tabs…
         </AppText>
       ) : null}
-      {places.slice(0, sidebarTabLimit).map((place) => (
-        <KeyedPlaceRow
-          hostClient={props.hostClient}
-          key={place.key}
-          onOpen={props.onOpen}
-          placeKey={place.key}
-        />
-      ))}
+      {model === null
+        ? null
+        : shown.map((tabId) => (
+            <SidebarTabRow
+              current={tabId === selectedTabId}
+              hostClient={props.hostClient}
+              key={tabId}
+              model={model}
+              onOpen={props.onOpen}
+              tabId={tabId}
+            />
+          ))}
     </>
   );
 });
 
-const KeyedPlaceRow = memo(function KeyedPlaceRow(props: {
+/** One tab, reading only its own row, so a title repaints only it. */
+const SidebarTabRow = memo(function SidebarTabRow(props: {
+  readonly current: boolean;
   readonly hostClient: HostClient;
-  readonly onOpen: (destination: PersonalSurfaceDestination) => void;
-  readonly placeKey: string;
+  readonly model: NonNullable<ReturnType<typeof useTabsModel>>;
+  readonly onOpen: (tabId: TabId) => void;
+  readonly tabId: TabId;
 }): ReactNode {
-  const place = usePlace(props.hostClient, props.placeKey);
-  return place ? <PlaceRow onOpen={props.onOpen} place={place} /> : null;
-});
-
-const placeGlyph: Record<PlaceItem["kind"], SFSymbolName> = {
-  "opensteer-app": opensteerAppGlyph,
-  app: "desktopcomputer",
-  browser: "globe",
-  phone: "smartphone",
-};
-
-const placeKind: Record<PlaceItem["kind"], string> = {
-  "opensteer-app": "Opensteer app",
-  app: "App",
-  browser: "Tab",
-  phone: "Phone",
-};
-
-const PlaceRow = memo(function PlaceRow(props: {
-  readonly onOpen: (destination: PersonalSurfaceDestination) => void;
-  readonly place: PlaceItem;
-}): ReactNode {
-  const { onOpen, place } = props;
-  const acting = place.occupants.some((occupant) => occupant.acting);
-  const unavailable = place.availability === "unavailable";
-  const where =
-    (place.kind === "browser" ? tabSiteLabel(place.site) : (place.device?.name ?? null)) ??
-    placeKind[place.kind];
+  const tab = useTab(props.model, props.tabId);
+  const usedBy = tab?.usedBy;
+  const selectActing = useCallback(
+    (snapshot: HostSnapshot) =>
+      usedBy !== undefined && tabAgents(usedBy, snapshot).agents.some(({ acting }) => acting),
+    [usedBy],
+  );
+  const acting = useHostSelector(props.hostClient, selectActing);
+  if (tab === undefined) return null;
+  const unavailable = tab.state === "unavailable";
+  const where = tabWhat(tab);
+  const title = tabTitle(tab);
   const label = [
-    place.title,
+    title,
     where,
     acting ? agentWorkingLabel.toLowerCase() : null,
-    unavailable ? "unavailable" : null,
+    unavailable ? (tab.unavailableReason ?? "unavailable") : null,
   ]
     .filter((part) => part !== null)
     .join(", ");
@@ -861,12 +866,12 @@ const PlaceRow = memo(function PlaceRow(props: {
     <DestinationRow
       accessibilityLabel={label}
       accessory={acting ? <ActingDot grouped /> : null}
-      current={false}
+      current={props.current}
       detail={where}
-      icon={placeGlyph[place.kind]}
-      label={place.title}
+      icon={tabKindGlyph[tab.kind]}
+      label={title}
       muted={unavailable}
-      onPress={() => onOpen(place.destination)}
+      onPress={() => props.onOpen(tab.tabId)}
     />
   );
 });

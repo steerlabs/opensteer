@@ -44,12 +44,14 @@ const harness = vi.hoisted(() => ({
   panels: [] as {
     docked: boolean;
     selectedThreadId: string | null;
+    selectedTabId: string | null;
     openThreadId: string | null;
     sides: { side: string; recent: string | null };
     onSide: (side: string) => void;
     visible: boolean;
     actions: {
-      onOpenPlace: (destination: object) => void;
+      onOpenTab: (tabId: string) => void;
+      onApps: () => void;
       onOpenTask: (deploymentId: string, threadId: string) => void;
       onTabs: () => void;
       onSchedules: () => void;
@@ -181,8 +183,9 @@ vi.mock("./sidebar-panel.js", () => ({
     return (
       <nav data-docked={props.docked} data-visible={props.visible}>
         <button onClick={() => props.actions.onOpenTask("deployment-a", "thread-b")}>Task B</button>
-        <button onClick={() => props.actions.onOpenPlace(tabB)}>Tab B</button>
+        <button onClick={() => props.actions.onOpenTab(tabB)}>Tab B</button>
         <button onClick={props.actions.onTabs}>Tabs</button>
+        <button onClick={props.actions.onApps}>Apps</button>
         <button onClick={props.actions.onSchedules}>Schedules</button>
         <button onClick={props.actions.onHome}>Home</button>
       </nav>
@@ -199,14 +202,9 @@ import {
   useSidebarVisible,
 } from "./sidebar-context.js";
 
-const tabB = { kind: "browser", sessionId: "session-b", tabId: "tab-b" } as const;
-/** Tab B as a route names it. */
-const tabBRoute = {
-  deploymentId: "deployment-a",
-  scope: "tabs",
-  sessionId: tabB.sessionId,
-  tabId: tabB.tabId,
-};
+const tabB = "tab_b";
+/** Tab B as a route names it: by its tabId alone, never a session or a viewing lease. */
+const tabBRoute = { deploymentId: "deployment-a", tabId: tabB };
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
@@ -544,7 +542,7 @@ describe("the sidebar as the window changes shape", () => {
     const fromThread = {
       key: "owned-key",
       name: "WorkspaceBrowser",
-      params: { deploymentId: "deployment-a", sessionId: "s", tabId: "t", threadId: "thread-a" },
+      params: { deploymentId: "deployment-a", tabId: "tab_t", threadId: "thread-a" },
     };
     await render([home, threadA, fromThread]);
     expect(lastPanel().docked).toBe(false);
@@ -599,6 +597,27 @@ describe("the sidebar as the window changes shape", () => {
     expect(action.payload.routes[1]).toEqual({
       name: "WorkspaceBrowser",
       params: tabBRoute,
+    });
+  });
+
+  it("marks the tab in front as the sidebar's selection, by its tabId", async () => {
+    harness.bounds = { height: 1133, width: 744 };
+    const { render } = await mount([home, threadA]);
+    expect(lastPanel().selectedTabId).toBeNull();
+    await render([home, { key: "tab-key", name: "WorkspaceBrowser", params: tabBRoute }]);
+    expect(lastPanel().selectedTabId).toBe(tabB);
+  });
+
+  it("opens Apps over a task as the Deployment's own list, carrying no conversation", async () => {
+    harness.bounds = { height: 1133, width: 744 };
+    const { container } = await mount([home, threadA]);
+    press(container, "Apps");
+    const action = harness.dispatch.mock.calls[0]![0] as {
+      payload: { routes: { name: string; params?: object }[] };
+    };
+    expect(action.payload.routes[1]).toEqual({
+      name: "Apps",
+      params: { deploymentId: "deployment-a" },
     });
   });
 
@@ -658,7 +677,7 @@ describe("the shell around what the system reserves", () => {
       {
         key: "page-key",
         name: "WorkspaceBrowser",
-        params: { deploymentId: "deployment-a", sessionId: "s", tabId: "t", threadId: "thread-a" },
+        params: { deploymentId: "deployment-a", tabId: "tab_t", threadId: "thread-a" },
       },
     ]);
     expect(stackStyle(fromThread.container)).toMatchObject(whole);

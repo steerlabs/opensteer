@@ -375,6 +375,7 @@ vi.mock("@react-navigation/native", async () => {
     dispatch: harness.dispatch,
     // The conversation is the screen in front: a chip opens over it.
     getState: () => ({ index: 0, routes: [harness.currentRoute] }),
+    isFocused: () => harness.focused,
     navigate: harness.navigate,
     setOptions: (options: Record<string, unknown>) => {
       harness.headerWrites += 1;
@@ -1466,7 +1467,7 @@ describe("a conversation with a page", () => {
     );
 
   // Failure: the person is left on a page for a tab the Host never made.
-  it("pushes an app's own route at once, and takes that page back if the Host refuses the tab", async () => {
+  it("opens an app's one tab, then shows it, and stays with why when the Host refuses", async () => {
     const appId = "app_11111111-1111-4111-8111-111111111111";
     const host = fakeHost(
       snapshotFor({
@@ -1485,24 +1486,30 @@ describe("a conversation with a page", () => {
         threadId: workId,
       }),
     );
-    const answer = Promise.withResolvers<void>();
-    Object.assign(host.client, {
-      openAppTab: () => answer.promise,
-      viewApp: () => new Promise(() => undefined),
-    });
+    const refused = Promise.withResolvers<{ tabId: string }>();
+    const opened = Promise.withResolvers<{ tabId: string }>();
+    const openTab = vi
+      .fn()
+      .mockReturnValueOnce(refused.promise)
+      .mockReturnValueOnce(opened.promise);
+    Object.assign(host.client, { openTab, viewApp: () => new Promise(() => undefined) });
     const { container } = await mount(host, workId);
     await press(container, "Open Budget");
+    expect(openTab).toHaveBeenLastCalledWith({ appId, kind: "app" });
+    await act(async () => refused.reject(new Error("This Host cannot open app tabs.")));
+    expect(harness.dispatch).not.toHaveBeenCalledWith(
+      expect.objectContaining({ name: "WorkspaceBrowser" }),
+    );
+    expect(text(container)).toContain("This app could not open as a tab");
+    await press(container, "Open Budget");
+    await act(async () => opened.resolve({ tabId: "tab_budget" }));
     expect(harness.dispatch).toHaveBeenLastCalledWith(
       expect.objectContaining({
         name: "WorkspaceBrowser",
-        params: expect.objectContaining({ appId, threadId: workId }),
+        params: expect.objectContaining({ tabId: "tab_budget", threadId: workId }),
         type: "PUSH",
       }),
     );
-    harness.currentRoute = { name: "WorkspaceBrowser", params: { appId } };
-    await act(async () => answer.reject(new Error("This Host cannot open app tabs.")));
-    expect(harness.dispatch).toHaveBeenLastCalledWith({ count: 1, type: "POP" });
-    expect(text(container)).toContain("This Host cannot open app tabs.");
   });
 
   it("takes one open question in the bar, and leaves a durable one to its card", async () => {
@@ -5230,15 +5237,24 @@ describe("the Run's page above the conversation", () => {
         transcripts: { [conversationId]: [ran(runId), reply] },
       });
       expect(harness.nativeRenders).toBe(renders);
+      // A phone opens its one tab; a Mac app named only by the Run's session has no tab to open.
+      const openTab = vi.fn(async () => ({ tabId: "tab_phone" }));
+      Object.assign(host.client, { openTab });
       await press(container, "Native place");
-      expect(harness.dispatch).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          params: expect.objectContaining({
-            machineId: macMini!.id,
-            ...(kind === "app" ? { computerSessionId: session.sessionId } : { phone: true }),
+      if (kind === "phone") {
+        expect(openTab).toHaveBeenCalledExactlyOnceWith({ computerId: macMini!.id, kind });
+        expect(harness.dispatch).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            name: "WorkspaceBrowser",
+            params: expect.objectContaining({ tabId: "tab_phone" }),
           }),
-        }),
-      );
+        );
+      } else {
+        expect(openTab).not.toHaveBeenCalled();
+        expect(harness.dispatch).not.toHaveBeenCalledWith(
+          expect.objectContaining({ name: "WorkspaceBrowser" }),
+        );
+      }
       await act(() => harness.appListeners.forEach((listener) => listener("background")));
       expect(container.querySelector("[data-native-preview]")?.getAttribute("data-active")).toBe(
         "false",
@@ -5267,7 +5283,7 @@ describe("the Run's page above the conversation", () => {
     expect(harness.dispatch).toHaveBeenLastCalledWith({
       type: "PUSH",
       name: "WorkspaceBrowser",
-      params: { deploymentId, threadId: conversationId, sessionId, tabId: surfaceId },
+      params: { deploymentId, threadId: conversationId, tabId: surfaceId },
     });
     expect(host.client.retainBrowserWatch).toHaveBeenCalledOnce();
     await act(() => harness.appListeners.forEach((listener) => listener("background")));

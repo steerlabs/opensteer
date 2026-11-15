@@ -1,67 +1,55 @@
-import type { HostClient } from "@opensteer/client/host";
+import type { HostClient, TabsReadModel } from "@opensteer/client/host";
 import { useMemo, useSyncExternalStore } from "react";
+import { layoutTabIds } from "../tabs/tab-entries.js";
+import { useTabsModel } from "../tabs/use-tabs.js";
 import type { OpenTabSuggestion } from "./address-bar.js";
 import { pageSite } from "./surface-route.js";
 
-export function tabSuggestions(client: HostClient, groupId: string) {
-  const store = client.browserTabs;
-  let ids: readonly string[] | undefined;
-  let revision = -1;
-  let observing = false;
+/**
+ * The open pages the address bar offers to switch to, in the one list's
+ * order. Rows keep their identity until their own title or site changes, so
+ * typing over a page redraws only what changed.
+ */
+export function tabSuggestions(model: TabsReadModel) {
   let rows: readonly OpenTabSuggestion[] = [];
-  let indices = new Map<string, number>();
-  const dirty = new Set<string>();
-  const row = (id: string): OpenTabSuggestion => {
-    const tab = store.tab(groupId, id)!;
-    return {
-      favicon: client.browserViewerSurface(tab.sessionId, id)?.favicon ?? null,
-      id,
-      site: pageSite(tab.site),
-      title: tab.title || pageSite(tab.site) || "New tab",
-    };
-  };
+  let byId = new Map<string, OpenTabSuggestion>();
+  // While subscribed, only a notified change rebuilds; unsubscribed reads always do.
+  let observing = false;
+  let stale = true;
   const read = () => {
-    const list = store.tabs(groupId).ids;
-    const nextRevision = store.tabRevision(groupId);
-    if (list !== ids || (!observing && revision !== nextRevision)) {
-      ids = list;
-      rows = ids.map(row);
-      indices = new Map(ids.map((id, index) => [id, index]));
-    } else if (dirty.size) {
-      let next: OpenTabSuggestion[] | undefined;
-      for (const id of dirty) {
-        const index = indices.get(id);
-        if (index === undefined) continue;
-        const value = row(id);
-        const before = rows[index]!;
-        if (
-          value.title === before.title &&
-          value.site === before.site &&
-          value.favicon === before.favicon
-        )
-          continue;
-        next ??= [...rows];
-        next[index] = value;
-      }
-      if (next) rows = next;
+    if (observing && !stale) return rows;
+    stale = false;
+    const next: OpenTabSuggestion[] = [];
+    const nextById = new Map<string, OpenTabSuggestion>();
+    let changed = false;
+    for (const tabId of layoutTabIds(model.layout)) {
+      const tab = model.get(tabId);
+      if (tab?.kind !== "page") continue;
+      const site = pageSite(tab.url ?? "");
+      const title = tab.title || site || "New tab";
+      const before = byId.get(tabId);
+      const row =
+        before !== undefined && before.title === title && before.site === site
+          ? before
+          : { favicon: null, id: tabId, site, title };
+      changed ||= row !== rows[next.length];
+      next.push(row);
+      nextById.set(tabId, row);
     }
-    dirty.clear();
-    revision = nextRevision;
+    byId = nextById;
+    if (changed || next.length !== rows.length) rows = next;
     return rows;
   };
   const subscribe = (listener: () => void) => {
-    read();
     observing = true;
-    const changes = store.subscribeTabChanges((id, changed) => {
-      if (id !== groupId) return;
-      for (const key of changed) dirty.add(key);
+    stale = true;
+    const stop = model.subscribe(() => {
+      stale = true;
       listener();
     });
-    const structure = store.subscribeTabs(groupId, listener);
     return () => {
       observing = false;
-      changes();
-      structure();
+      stop();
     };
   };
   return { read, subscribe };
@@ -69,10 +57,11 @@ export function tabSuggestions(client: HostClient, groupId: string) {
 
 const noSuggestions: readonly OpenTabSuggestion[] = [];
 const inactive = { read: () => noSuggestions, subscribe: () => () => {} };
-export function useTabSuggestions(client: HostClient, groupId: string, enabled = true) {
+export function useTabSuggestions(client: HostClient, enabled = true) {
+  const model = useTabsModel(client);
   const selection = useMemo(
-    () => (enabled ? tabSuggestions(client, groupId) : inactive),
-    [client, groupId, enabled],
+    () => (enabled && model !== null ? tabSuggestions(model) : inactive),
+    [enabled, model],
   );
   return useSyncExternalStore(selection.subscribe, selection.read, selection.read);
 }

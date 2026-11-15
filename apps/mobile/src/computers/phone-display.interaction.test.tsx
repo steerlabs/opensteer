@@ -17,6 +17,7 @@ import type { EditingProxyEvent } from "@opensteer/client/editing";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const state = vi.hoisted(() => ({
   closed: vi.fn(),
+  reopen: vi.fn(),
   dispatch: vi.fn(),
   os: "android",
   recovery: undefined as number | undefined,
@@ -222,7 +223,6 @@ import {
   ComputerTaskView,
   ComputerOwnerView,
   decodeDisplayFrame,
-  PhoneTabView,
 } from "./phone-display.js";
 class Socket implements WebSocketClient {
   readyState = 0;
@@ -281,7 +281,7 @@ async function setup(
   os = "android",
   owner = false,
   interactive = true,
-  screen: "display" | "task" | "owner" | "live" | "tab" = "display",
+  screen: "display" | "task" | "owner" | "live" = "display",
 ) {
   state.os = os;
   socket = new Socket();
@@ -437,14 +437,6 @@ async function setup(
             runId={runId}
             threadId={threadId}
           />
-        ) : screen === "tab" ? (
-          <PhoneTabView
-            active={active}
-            hostClient={client}
-            machineId="machine"
-            onClosed={state.closed}
-            onTyping={noop}
-          />
         ) : screen === "task" ? (
           <ComputerTaskView
             active={active}
@@ -459,10 +451,10 @@ async function setup(
             active={active}
             hostClient={client}
             viewId="owner-view"
-            windowId={phone ? undefined : 42}
             generation={1}
             machineId="machine"
             appKey={phone ? null : "com.apple.notes"}
+            onReopen={state.reopen}
             onTyping={noop}
           />
         ) : (
@@ -1115,146 +1107,23 @@ it("coalesces moves while preserving the latest timestamp before lift and cancel
   ]);
 });
 
-it("reopens an ended phone owner view through the explicit open path", async () => {
-  const { endOwner, render, client } = await setup(true, "android", true, true, "owner");
-  endOwner();
-  await render();
-  expect(container.textContent).toContain("This view has ended");
-  await press("Reopen phone");
-  expect(client.openComputerView).toHaveBeenCalledWith("machine", {
-    kind: "phone",
-    display: "main",
-  });
-  // A phone is its own route: its tab picks the new view up from the snapshot.
-  expect(state.dispatch).not.toHaveBeenCalled();
-});
-
-it("keeps Open's wake when the Host's notice replaces the resting page before the answer", async () => {
-  const { client, move, render } = await setup(true, "android", false, true, "tab");
-  const [held] = client.getSnapshot().machines;
-  const resting = {
-    ...held!,
-    tabOpenedAt: "2026-11-02T12:00:00.000Z",
-    computerUse: { ...held!.computerUse!, sessions: [] },
-  };
-  vi.mocked(client.openComputerView).mockRejectedValueOnce(new Error("refused"));
-  move!({ machines: [resting] });
-  await render();
-  const view = {
-    expiresAt: "2099-01-01T00:00:00.000Z",
-    generation: 2,
-    machineId: "machine",
-    state: "ready",
-    target: { kind: "phone", display: "main" },
-    viewId: "new-owner",
-  };
-  let answer = (_: unknown) => undefined as void;
-  vi.mocked(client.openComputerView).mockImplementationOnce(
-    () => new Promise((resolve) => (answer = resolve as typeof answer)),
-  );
-  const cancel = vi.spyOn(sharedDisplayStreams(client), "cancelAutoWake");
-  await press("Open Your phone");
-  await vi.waitFor(() => expect(client.openComputerView).toHaveBeenCalledTimes(2));
-  await act(async () =>
-    move!({
-      machines: [{ ...resting, computerUse: { ...resting.computerUse, ownerViews: [view] } }],
-    } as never),
-  );
-  await act(async () => {
-    answer(view);
-    await Promise.resolve();
-  });
-  await act(async () => undefined);
-  expect(cancel).not.toHaveBeenCalled();
-});
-
-it("opens a phone's tab by itself when its task lets go, without waking the phone", async () => {
-  const { client, move, render } = await setup(true, "android", false, true, "tab");
-  await render();
-  expect(client.openComputerView).not.toHaveBeenCalled();
-
-  const [held] = client.getSnapshot().machines;
-  move!({
-    machines: [
-      {
-        ...held!,
-        tabOpenedAt: "2026-11-02T12:00:00.000Z",
-        computerUse: { ...held!.computerUse!, sessions: [] },
-      },
-    ],
-  });
-  await render();
-  expect(client.openComputerView).toHaveBeenCalledExactlyOnceWith(
-    "machine",
-    { kind: "phone", display: "main" },
-    { wake: false },
-  );
-  expect(container.textContent).toContain("Opening Your phone…");
-  expect(container.textContent).not.toContain("to see it and use it.");
-});
-
-it("offers Open once when the Host refuses a tab's view, and closes it on request", async () => {
-  const { client, move, render } = await setup(true, "android", false, true, "tab");
-  await render();
-  vi.mocked(client.openComputerView).mockRejectedValueOnce(new Error("refused"));
-  const [held] = client.getSnapshot().machines;
-  move!({
-    machines: [
-      {
-        ...held!,
-        tabOpenedAt: "2026-11-02T12:00:00.000Z",
-        computerUse: { ...held!.computerUse!, sessions: [] },
-      },
-    ],
-  });
-  await render();
-  expect(container.textContent).toContain("to see it and use it.");
-  expect(client.openComputerView).toHaveBeenCalledOnce();
-
-  await press("Open Your phone");
-  expect(client.openComputerView).toHaveBeenLastCalledWith("machine", {
-    kind: "phone",
-    display: "main",
-  });
-
-  await press("Close tab");
-  expect(client.closePhoneTab).toHaveBeenCalledExactlyOnceWith("machine");
-  await vi.waitFor(() => expect(state.closed).toHaveBeenCalledOnce());
-});
-
-it("reopens an ended Mac view by app name and the same window, replacing its route", async () => {
-  const { endOwner, render, client } = await setup(false, "android", true, true, "owner");
-  endOwner();
-  await render();
-  await press("Reopen Notes");
-  expect(client.openComputerView).toHaveBeenCalledWith("machine", {
-    kind: "app",
-    app: { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null },
-    window: 42,
-  });
-  expect(state.dispatch).toHaveBeenLastCalledWith({
-    name: "WorkspaceBrowser",
-    params: {
-      deploymentId: "deployment",
-      scope: "tabs",
-      appKey: "com.apple.notes",
-      machineId: "machine",
-      viewId: "new-owner",
-      generation: 2,
-      windowId: 42,
-    },
-  });
-});
-
-it("explains when the ended Mac app is no longer approved", async () => {
-  const { endOwner, render, client } = await setup(false, "android", true, true, "owner");
-  vi.mocked(client.listApprovedComputerApps).mockResolvedValue([]);
-  endOwner();
-  await render();
-  await press("Reopen Notes");
-  expect(container.textContent).toContain("This app is no longer approved for viewing.");
-  expect(client.openComputerView).not.toHaveBeenCalled();
-});
+it.each([
+  [true, "Reopen phone"],
+  [false, "Reopen Notes"],
+] as const)(
+  "reopens an ended owner view by opening its tab again (phone: %s)",
+  async (phone, label) => {
+    state.reopen.mockClear();
+    const { endOwner, render, client } = await setup(phone, "android", true, true, "owner");
+    endOwner();
+    await render();
+    expect(container.textContent).toContain("This view has ended");
+    await press(label);
+    expect(state.reopen).toHaveBeenCalledOnce();
+    expect(client.openComputerView).not.toHaveBeenCalled();
+    expect(state.dispatch).not.toHaveBeenCalled();
+  },
+);
 
 it.each(["owner", "task"] as const)(
   "plays a Mac %s on a recovery-capable iOS binary",

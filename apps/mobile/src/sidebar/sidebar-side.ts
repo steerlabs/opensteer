@@ -5,6 +5,7 @@ export type { SidebarSide };
 
 /** Top-level screens that belong to the Tasks side. */
 const tasksScreens: ReadonlySet<string> = new Set([
+  "Apps",
   "DoneTasks",
   "Home",
   "NeedsYou",

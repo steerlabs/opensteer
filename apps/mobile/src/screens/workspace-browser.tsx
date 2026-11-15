@@ -1,33 +1,33 @@
 import { useVerticalBar } from "../ui/vertical-bar.js";
 import { contactSupport } from "../report-mail.js";
-import { PendingBrowserTabView, showPendingBrowserTab } from "../browser/pending-browser-tab.js";
 import {
-  browserPlaceUnavailableReason,
   canRespondToRequests,
   describeHostConnection,
-  placeAgents,
   placeAgentState,
-  placeDestinationEnded,
   samePlaceAgents,
   threadMark,
   type BrowserTabDestination,
-  type BrowserTabOpenHandle,
   type BrowserTabStore,
   type HostClient,
   type LegacyHostSnapshot as HostSnapshot,
-  type PlaceItem,
-  type PersonalSurfaceDestination,
 } from "@opensteer/client/host";
 import {
   useBrowserAgentFollow,
   useBrowserPopupFollow,
   useHostSelector,
   useHostSnapshot,
-  usePlaceList,
   useThreadAgentTab,
 } from "@opensteer/client/react";
 import { deviceElsewhere } from "@opensteer/client/computers";
-import type { BrowserPageContentPart } from "@opensteer/core";
+import {
+  TabIdSchema,
+  type BrowserPageContentPart,
+  type Tab,
+  type TabId,
+  type TabLayout,
+  type TabTarget,
+} from "@opensteer/core";
+import { computerAppIdentityKey, type TabViewer } from "@opensteer/protocol";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { useHeaderHeight } from "@react-navigation/elements";
 import {
@@ -42,7 +42,6 @@ import {
   Suspense,
   useCallback,
   useEffect,
-  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -81,26 +80,25 @@ import {
 import { CompanionCapsule } from "../browser/pair-chrome.js";
 import { usePlaceStatusRow } from "../browser/place-status.js";
 import type { PageDevice } from "../browser/address-bar.js";
-import {
-  PlaceBarProvider,
-  ToolbarAsk,
-  ToolbarLeave,
-  useNativeBarAway,
-} from "../browser/place-bar.js";
-import { Toolbar, ToolbarCapsule, ToolbarMenu } from "../browser/toolbar.js";
-import {
-  paramsDestination,
-  routeDestination,
-  sameDestination,
-  type SurfacesRoute,
-} from "../browser/surface-route.js";
-import { tabSiteLabel } from "../browser/site-label.js";
+import { PlaceBarProvider, ToolbarLeave } from "../browser/place-bar.js";
+import { tabRoute, type TabRoute } from "../browser/surface-route.js";
 import { newTaskDraftKey } from "../client/thread-drafts.js";
 import { homeDraftId } from "../home/home-draft.js";
 import { useHereDeviceId } from "../computers/here-device.js";
 import { usePhoneBrowserManager } from "../phone-browser/runtime.js";
 import { usePhoneTabPresentation } from "../phone-browser/presentation.js";
-import { MacAppView } from "../computers/mac-app-view.js";
+import { ComputerOwnerView } from "../computers/phone-display.js";
+import { adjacentTabId, layoutTabIds, tabTitle } from "../tabs/tab-entries.js";
+import { tabAgents } from "../tabs/tab-agents.js";
+import { tabsClient } from "../tabs/tabs-host.js";
+import {
+  useOperation,
+  useTab,
+  useTabLayout,
+  useTabsModel,
+  useTabsSyncing,
+} from "../tabs/use-tabs.js";
+import { useTabViewer } from "../tabs/use-tab-viewer.js";
 import { computerSymbols } from "./settings-model.js";
 import { color, space, touchTarget } from "../theme.js";
 import {
@@ -137,7 +135,7 @@ import { ThreadTitlePill } from "./thread-header.js";
  * agent's own Thread sits beside the page; on a phone, tapping the agent goes
  * to it.
  */
-export function WorkspaceBrowserScreen({ route }: StaticScreenProps<SurfacesRoute>): ReactNode {
+export function WorkspaceBrowserScreen({ route }: StaticScreenProps<TabRoute>): ReactNode {
   const { selection } = useMobileState();
   if (selection.deploymentId !== route.params.deploymentId || selection.hostClient === null) {
     return (
@@ -161,10 +159,7 @@ export function WorkspaceBrowserScreen({ route }: StaticScreenProps<SurfacesRout
   );
 }
 
-function Surfaces(props: {
-  readonly hostClient: HostClient;
-  readonly route: SurfacesRoute;
-}): ReactNode {
+function Surfaces(props: { readonly hostClient: HostClient; readonly route: TabRoute }): ReactNode {
   const { snapshot, loadError, reload } = useHostSnapshot(props.hostClient);
   const presence = useScreenPresence();
   const authorized = snapshot.session === "authenticated" && snapshot.user !== null;
@@ -201,18 +196,11 @@ function SurfacesForUser(props: {
   readonly hostClient: HostClient;
   readonly loadError: string | null;
   readonly reload: () => Promise<void>;
-  readonly route: SurfacesRoute;
+  readonly route: TabRoute;
   readonly snapshot: HostSnapshot;
 }): ReactNode {
-  const { route, snapshot } = props;
+  const { snapshot } = props;
   const connected = canRespondToRequests(snapshot);
-  // One value per place the route names, so the page below is not handed a
-  // new destination on every snapshot.
-  const destinationKey = JSON.stringify(routeDestination(route));
-  const destination = useMemo(
-    () => JSON.parse(destinationKey) as PersonalSurfaceDestination | null,
-    [destinationKey],
-  );
   const notices = (
     <>
       {props.loadError ? (
@@ -231,47 +219,162 @@ function SurfacesForUser(props: {
       )}
     </>
   );
-  if (route.pendingBrowserTab)
-    return <PendingBrowserTabView hostClient={props.hostClient} route={route} />;
-  // A previous release's route for a conversation's grid of tabs names no
-  // place; there is no grid any more, and nothing is picked in its place.
-  if (destination === null)
-    return (
-      <Screen>
-        <Notice title="This tab isn’t available" detail="Return to Tabs to choose another." />
-      </Screen>
-    );
   return (
-    <Focused
-      presence={props.presence}
+    <TabSurface
       connected={connected}
-      destination={destination}
       hostClient={props.hostClient}
       notices={notices}
-      route={route}
+      presence={props.presence}
+      route={props.route}
       snapshot={snapshot}
     />
   );
+}
+
+interface TabSurfaceProps {
+  readonly presence: PagePresence;
+  readonly connected: boolean;
+  readonly hostClient: HostClient;
+  readonly notices: ReactNode;
+  readonly route: TabRoute;
+  readonly snapshot: HostSnapshot;
+}
+
+/**
+ * The tab the route names, found by its tabId in the Host's one list. A tab
+ * that leaves the list while it is in front takes this device's selection to
+ * the entry beside it, or back when there is none; a popup goes back to the
+ * page that opened it. Arriving at a tab that is already closed says so, with
+ * Reopen: nothing else is ever shown in its place.
+ */
+function TabSurface(props: TabSurfaceProps): ReactNode {
+  const { hostClient, route } = props;
+  const navigation = useNavigation();
+  const model = useTabsModel(hostClient);
+  const listed = useTab(model, route.tabId);
+  const syncing = useTabsSyncing(model);
+  const layout = useTabLayout(model);
+  // The last layout that held this tab, to find its neighbour once it is gone.
+  const held = useRef<{
+    readonly layout: TabLayout;
+    readonly tab: Tab;
+    readonly tabId: TabId;
+  } | null>(null);
+  if (held.current !== null && held.current.tabId !== route.tabId) held.current = null;
+  if (listed !== undefined && layoutTabIds(layout).includes(route.tabId))
+    held.current = { layout, tab: listed, tabId: route.tabId };
+  // While the list catches up after a reconnect, the tab in front stays as it was.
+  const tab = listed ?? (syncing ? held.current?.tab : undefined);
+  const left = tab === undefined && !syncing && held.current !== null;
+  const shown = props.presence.shown;
+  useEffect(() => {
+    if (!left || !shown || !navigation.isFocused()) return;
+    const from = held.current;
+    held.current = null;
+    const next =
+      route.popup === true || from === null ? null : adjacentTabId(from.layout, from.tabId);
+    if (next !== null) navigation.setParams({ editAddress: false, popup: false, tabId: next });
+    else if (navigation.canGoBack()) navigation.goBack();
+  }, [left, navigation, route.popup, shown]);
+  if (tab === undefined)
+    return (
+      <Screen>
+        {props.notices}
+        {syncing || left ? (
+          <TabStatus title="Opening…" waiting />
+        ) : (
+          <ClosedTab hostClient={hostClient} key={route.tabId} tabId={route.tabId} />
+        )}
+      </Screen>
+    );
+  if (tab.state === "unavailable")
+    return (
+      <Screen>
+        {props.notices}
+        <UnavailableTab hostClient={hostClient} key={tab.tabId} tab={tab} />
+      </Screen>
+    );
+  // One mounted screen across tab changes in place, so the page's companion stays.
+  return <ViewedTab {...props} tab={tab} />;
+}
+
+/** A tab no longer in the list: only the person's Reopen brings this same tab back. */
+function ClosedTab(props: { readonly hostClient: HostClient; readonly tabId: TabId }): ReactNode {
+  const reopening = useOperation();
+  const { hostClient, tabId } = props;
+  return (
+    <TabStatus
+      action={{
+        label: reopening.busy ? "Reopening…" : "Reopen",
+        onPress: () =>
+          void reopening.run(
+            () => tabsClient(hostClient).reopenTab(tabId),
+            "This tab could not reopen.",
+          ),
+      }}
+      detail={reopening.failure}
+      title="This tab was closed"
+    />
+  );
+}
+
+/** A tab that cannot open now says why; closing it is the one thing left to do. */
+function UnavailableTab(props: { readonly hostClient: HostClient; readonly tab: Tab }): ReactNode {
+  const closing = useTabClose(props.hostClient, props.tab.tabId);
+  return (
+    <TabStatus
+      action={{ label: closing.closing ? "Closing…" : "Close tab", onPress: closing.close }}
+      detail={closing.failure}
+      title={props.tab.unavailableReason ?? "This tab can’t open right now"}
+    />
+  );
+}
+
+/**
+ * A listed tab, opened through the Host, then shown as its kind is shown.
+ * Moving between pages of one browser keeps showing that browser while the
+ * Host answers for the next page, so nothing remounts in between.
+ */
+function ViewedTab(props: TabSurfaceProps & { readonly tab: Tab }): ReactNode {
+  const { state, retry } = useTabViewer(props.hostClient, props.tab.tabId, true);
+  const last = useRef<TabViewer | null>(null);
+  const viewer: TabViewer | null =
+    state.status === "ready"
+      ? state.viewer
+      : state.status === "activating" && props.tab.kind === "page" && last.current?.kind === "page"
+        ? { ...last.current, surfaceId: props.tab.tabId }
+        : null;
+  last.current = viewer ?? last.current;
+  if (viewer === null)
+    return (
+      <Screen>
+        {props.notices}
+        {state.status === "failed" ? (
+          <TabStatus action={{ label: "Try again", onPress: retry }} title={state.error} />
+        ) : (
+          <TabStatus title="Opening…" waiting />
+        )}
+      </Screen>
+    );
+  return <Focused {...props} onReactivate={retry} viewer={viewer} />;
 }
 
 /** What is beside the page: a Thread, or Home's new task being started from it. */
 type Companion = { readonly kind: "thread"; readonly threadId: string } | { readonly kind: "task" };
 
 /**
- * One tab, app or phone with its own bar, and — where a pair fits — a second
- * pane. The place's view makes room for its own keyboard; this screen only
- * hears that it is typing, so the pane being typed in is the one that lifts.
+ * One tab with its own bar, and — where a pair fits — a second pane. The
+ * tab's view makes room for its own keyboard; this screen only hears that it
+ * is typing, so the pane being typed in is the one that lifts.
  */
-function Focused(props: {
-  readonly presence: PagePresence;
-  readonly connected: boolean;
-  readonly destination: PersonalSurfaceDestination;
-  readonly hostClient: HostClient;
-  readonly notices: ReactNode;
-  readonly route: SurfacesRoute;
-  readonly snapshot: HostSnapshot;
-}): ReactNode {
-  const { destination, hostClient, route, snapshot } = props;
+function Focused(
+  props: TabSurfaceProps & {
+    readonly onReactivate: () => void;
+    readonly tab: Tab;
+    readonly viewer: TabViewer;
+  },
+): ReactNode {
+  const { hostClient, route, snapshot, tab, viewer } = props;
   const { deploymentId } = route;
   const navigation = useNavigation();
   const headerHeight = useHeaderHeight();
@@ -285,28 +388,9 @@ function Focused(props: {
     readonly threadId: string;
   } | null>(null);
 
-  // Who is here, from this place's occupants alone. A saved tab is found by
-  // its own id, wherever its lineage lives now.
-  const places = usePlaceList(hostClient);
-  const place = useMemo(
-    () => places.find((candidate) => samePlace(candidate, destination)) ?? null,
-    [destination, places],
-  );
-  // A closed app keeps its name and its Thread: the bar still says what ended,
-  // and Ask still reaches whoever made it.
-  const lastApp = useRef<PlaceItem | null>(null);
-  // Only for the app this route still names: an agent's show swaps the route in place.
-  if (lastApp.current !== null && !samePlace(lastApp.current, destination)) lastApp.current = null;
-  if (place?.opensteerApp !== undefined) lastApp.current = place;
-  const appThreadId = lastApp.current?.opensteerApp?.threadId ?? null;
-  const occupied = useMemo(
-    () => ({ destination, occupants: place?.occupants ?? [] }),
-    [destination, place?.occupants],
-  );
-  const selectAgents = useCallback(
-    (current: HostSnapshot) => placeAgents(occupied, current),
-    [occupied],
-  );
+  // Who is here: the tasks the Host says use this tab, and nothing nearby.
+  const usedBy = tab.usedBy;
+  const selectAgents = useCallback((current: HostSnapshot) => tabAgents(usedBy, current), [usedBy]);
   const agents = useHostSelector(hostClient, selectAgents, samePlaceAgents);
 
   const [chosen, setChosen] = useState<Companion | null>(null);
@@ -325,9 +409,9 @@ function Focused(props: {
     [besideId],
   );
 
-  const shownPage = destination.kind === "browser" ? page : null;
-  const latest = useRef({ appThreadId, shownPage });
-  latest.current = { appThreadId, shownPage };
+  const shownPage = viewer.kind === "page" ? page : null;
+  const latest = useRef({ shownPage });
+  latest.current = { shownPage };
 
   /**
    * An agent's Thread, as its own screen. The screen directly under this one
@@ -350,19 +434,24 @@ function Focused(props: {
   );
   const showBeside = useCallback((threadId: string) => setChosen({ kind: "thread", threadId }), []);
   /**
-   * Ask's page goes on the draft it is for — the task's, or Home's new task —
-   * and is this reader's, so it is shown, removed and sent from that draft
-   * like the words with it, and survives leaving it unsent. A page Ask cannot
-   * name, such as a Mac app's, takes any earlier one off rather than leaving
-   * it to stand for what was asked about. Answers whether there is such a draft.
+   * Ask's page goes on Home's new task draft, and is this reader's, so it is
+   * shown, removed and sent from that draft like the words with it, and
+   * survives leaving it unsent. A page Ask cannot name, such as a Mac app's,
+   * takes any earlier one off rather than leaving it to stand for what was
+   * asked about. Answers whether there is such a draft.
    */
   const putPageOnDraft = useCallback(
     (target: AskTarget): boolean => {
-      const { appThreadId: origin, shownPage: included } = latest.current;
       const userId = hostClient.getSnapshot().user?.id;
-      const draftKey = target === "thread" ? origin : newTaskDraftKey(homeDraftId);
-      if (userId === undefined || draftKey === null) return false;
-      void drafts.writeDraftPage(deploymentId, userId, draftKey, included).catch(() => undefined);
+      if (userId === undefined || target === "thread") return false;
+      void drafts
+        .writeDraftPage(
+          deploymentId,
+          userId,
+          newTaskDraftKey(homeDraftId),
+          latest.current.shownPage,
+        )
+        .catch(() => undefined);
       return true;
     },
     [deploymentId, drafts, hostClient],
@@ -370,21 +459,14 @@ function Focused(props: {
   /** Ask, on a phone: that composer's own screen, with the page on its draft. */
   const askAway = useCallback(
     (target: AskTarget) => {
-      if (!putPageOnDraft(target)) return;
-      const { appThreadId: origin } = latest.current;
-      if (target === "thread") {
-        if (origin !== null) openThread(origin);
-      } else navigation.dispatch(StackActions.popToTop());
+      if (putPageOnDraft(target)) navigation.dispatch(StackActions.popToTop());
     },
-    [navigation, openThread, putPageOnDraft],
+    [navigation, putPageOnDraft],
   );
   /** Ask, where a pair fits: the composer opens beside the page, with the page on its draft. */
   const askBeside = useCallback(
     (target: AskTarget) => {
-      if (!putPageOnDraft(target)) return;
-      const { appThreadId: origin } = latest.current;
-      if (target === "task") setChosen({ kind: "task" });
-      else if (origin !== null) setChosen({ kind: "thread", threadId: origin });
+      if (putPageOnDraft(target)) setChosen({ kind: "task" });
     },
     [putPageOnDraft],
   );
@@ -400,39 +482,35 @@ function Focused(props: {
     [navigation],
   );
 
-  /**
-   * Back from a page that closed, past every page under it that has ended
-   * too: each was opened from the screen below it, which is where the person
-   * is going.
-   */
-  const onClosed = useCallback(() => {
-    if (!navigation.isFocused()) return;
-    const state = navigation.getState();
-    const index = state?.index ?? 0;
-    const current = hostClient.getSnapshot();
-    let depth = 1;
-    while (depth <= index) {
-      const below = state?.routes[index - depth];
-      const ended = below?.name === "WorkspaceBrowser" ? paramsDestination(below.params) : null;
-      if (ended === null || !placeDestinationEnded(current, ended)) break;
-      depth += 1;
-    }
-    navigation.dispatch(StackActions.pop(depth));
-  }, [hostClient, navigation]);
+  // A new tab of this page's profile, over this one, so Back returns here.
+  const opening = useOperation();
   const onOpenTab = useCallback(
-    (opening: BrowserTabOpenHandle) => {
-      if (!navigation.isFocused()) {
-        void opening.result.catch(() => undefined);
-        return;
-      }
-      showPendingBrowserTab(navigation, route, opening);
+    (url: string) => {
+      if (tab.kind !== "page") return;
+      const target: TabTarget = tab.profile
+        ? { kind: "page", profileId: tab.profile.profileId, url }
+        : { computerId: tab.computer.computerId, guest: true, kind: "page", url };
+      void opening.run(
+        () => tabsClient(hostClient).openTab(target),
+        "A new tab could not be opened.",
+        (opened) => {
+          if (navigation.isFocused())
+            navigation.dispatch(
+              StackActions.push(
+                "WorkspaceBrowser",
+                tabRoute(deploymentId, opened.tabId, route.threadId),
+              ),
+            );
+        },
+      );
     },
-    [navigation, route],
+    [deploymentId, hostClient, navigation, opening, route.threadId, tab],
   );
   // Another tab of the same browser takes this one's place in the route, as
   // Safari's tab swipe does; Back still returns where the page came from.
   const onSwitchTab = useCallback(
-    (tabId: string) => navigation.setParams({ editAddress: false, popup: false, tabId }),
+    (tabId: string) =>
+      navigation.setParams({ editAddress: false, popup: false, tabId: TabIdSchema.parse(tabId) }),
     [navigation],
   );
   /**
@@ -440,17 +518,11 @@ function Focused(props: {
    * whichever tab it is on, until the person moves the page themselves. It
    * waits while something is over the page, such as the tab sheet.
    */
-  const shownTab = destination.kind === "browser" ? destination : null;
+  const shownTab =
+    viewer.kind === "page" ? { sessionId: viewer.sessionId, tabId: route.tabId } : null;
   const showTab = useCallback(
-    (tab: BrowserTabDestination) => {
-      navigation.setParams({
-        editAddress: false,
-        popup: false,
-        sessionId: tab.sessionId,
-        tabId: tab.tabId,
-      });
-    },
-    [navigation],
+    (shown: BrowserTabDestination) => onSwitchTab(shown.tabId),
+    [onSwitchTab],
   );
   const agentTab = useThreadAgentTab(hostClient, besideId);
   const follow = useBrowserAgentFollow({
@@ -464,37 +536,29 @@ function Focused(props: {
   const onPopup = useCallback(
     (tabId: string) => {
       navigation.dispatch(
-        StackActions.push("WorkspaceBrowser", { ...route, editAddress: false, popup: true, tabId }),
+        StackActions.push("WorkspaceBrowser", {
+          ...tabRoute(deploymentId, TabIdSchema.parse(tabId), route.threadId),
+          popup: true,
+        }),
       );
     },
-    [navigation, route],
+    [deploymentId, navigation, route.threadId],
   );
   const onShowTabs = useCallback(() => {
-    if (destination.kind !== "browser") return;
     navigation.dispatch(
       StackActions.push("BrowserTabs", {
         deploymentId,
-        sessionId: destination.sessionId,
-        tabId: destination.tabId,
+        tabId: route.tabId,
         ...(besideId === null ? {} : { threadId: besideId }),
       }),
     );
-  }, [besideId, deploymentId, destination, navigation]);
+  }, [besideId, deploymentId, navigation, route.tabId]);
   const [paired, setPaired] = useState(false);
-  const title =
-    place?.title ??
-    lastApp.current?.title ??
-    shownPage?.title ??
-    (destination.kind === "browser" ? "Tab" : "");
-  // The app open as this tab, and what its menu can do now.
-  const appId = destination.kind === "opensteer-app" ? destination.appId : null;
-  const appClose = useAppClose(hostClient, appId, onClosed);
+  const title = tab.title.trim() || shownPage?.title || tabTitle(tab);
+  // Closing only takes the tab off the list: an app's server and an agent's work go on.
+  const closing = useTabClose(hostClient, tab.tabId);
+  const appId = viewer.kind === "app" ? viewer.appId : null;
   const appReload = useRef<(() => void) | null>(null);
-  const appOpen = appId !== null && place !== null;
-  const openAppThread = useCallback(() => {
-    const { appThreadId: origin } = latest.current;
-    if (origin !== null) openThread(origin);
-  }, [openThread]);
   const reloadApp = useCallback(() => appReload.current?.(), []);
   const reportApp = useCallback(() => {
     if (appId !== null) contactSupport({ kind: "app", id: appId });
@@ -504,34 +568,24 @@ function Focused(props: {
       appId === null
         ? null
         : {
-            closable: props.connected && appOpen && !appClose.closing,
-            live: appOpen && !appClose.closing,
-            onClose: appClose.close,
-            onOpenThread: appThreadId === null ? null : openAppThread,
+            closable: props.connected && !closing.closing,
+            live: !closing.closing,
+            onClose: closing.close,
+            onOpenThread: null,
             onReload: reloadApp,
             onReport: reportApp,
           },
-    [
-      appClose.close,
-      appClose.closing,
-      appId,
-      appOpen,
-      appThreadId,
-      openAppThread,
-      props.connected,
-      reloadApp,
-      reportApp,
-    ],
+    [appId, closing.close, closing.closing, props.connected, reloadApp, reportApp],
   );
   const onAsk = paired ? askBeside : askAway;
   const onOpenAgent = paired ? showBeside : openThread;
   const verticalBar = useVerticalBar();
   const companionShown = companion !== null;
-  const pairedChrome = paired && companionShown && destination.kind === "browser";
+  const pairedChrome = paired && companionShown && viewer.kind === "page";
   usePageHeader({
     agents,
     app: appMenu,
-    asksThread: appThreadId !== null,
+    asksThread: false,
     noAsk: pairedChrome,
     onAsk,
     onOpenAgent,
@@ -567,17 +621,14 @@ function Focused(props: {
     (): AppPairChrome | null =>
       appPaired && appMenu !== null
         ? {
-            sections: appMenuSections(
-              appMenu,
-              askChoices({ asksThread: appThreadId !== null, onAsk: askBeside }),
-            ),
+            sections: appMenuSections(appMenu, askChoices({ asksThread: false, onAsk: askBeside })),
           }
         : null,
-    [appMenu, appPaired, appThreadId, askBeside],
+    [appMenu, appPaired, askBeside],
   );
   const others = agents.agents.some(({ threadId }) => threadId !== besideId);
   const pairMenu: NativeMenuSection[] = [
-    askChoices({ asksThread: appThreadId !== null, onAsk: askBeside }),
+    askChoices({ asksThread: false, onAsk: askBeside }),
     others
       ? agents.agents.map((agent) => ({
           id: `beside:${agent.threadId}`,
@@ -591,28 +642,42 @@ function Focused(props: {
   // The Thread's own mark, as web draws it: the page's occupants can lag the agent arriving.
   const following: PageFollowing | null =
     follow.following && besideId !== null ? { mark: threadMark(besideId, snapshot) } : null;
+  const closeItem: NativeMenuOption = {
+    destructive: true,
+    disabled: closing.closing,
+    icon: "xmark.circle",
+    id: "close",
+    label: "Close tab",
+    onPress: closing.close,
+  };
   const body =
-    destination.kind === "opensteer-app" ? (
+    viewer.kind === "app" ? (
       <AppTab
-        appId={destination.appId}
-        closeFailure={appClose.failure}
-        closing={appClose.closing}
+        appId={viewer.appId}
+        closeFailure={closing.failure}
+        closing={closing.closing}
         hostClient={hostClient}
-        key={destination.appId}
-        onRetryClose={appClose.close}
+        key={viewer.appId}
+        onRetryClose={closing.close}
         onTyping={setTyping}
         pair={appPair}
         reloadRef={appReload}
         title={title}
       />
-    ) : destination.kind !== "browser" ? (
-      <MacAppView
+    ) : viewer.kind !== "page" ? (
+      <ComputerOwnerView
         active={props.presence.interactive}
-        destination={destination}
+        appKey={
+          viewer.view.target.kind === "app" ? computerAppIdentityKey(viewer.view.target.app) : null
+        }
+        generation={viewer.view.generation}
         hostClient={hostClient}
-        key={JSON.stringify(destination)}
-        onClosed={onClosed}
+        key={`${viewer.view.viewId}:${viewer.view.generation}`}
+        machineId={viewer.view.machineId}
+        menu={[closeItem]}
+        onReopen={props.onReactivate}
         onTyping={setTyping}
+        viewId={viewer.view.viewId}
       />
     ) : (
       <BrowserTab
@@ -623,20 +688,18 @@ function Focused(props: {
         editAddress={route.editAddress === true}
         following={following}
         hostClient={hostClient}
-        onClosed={onClosed}
         onOpenTab={onOpenTab}
         onPopup={onPopup}
+        onReactivate={props.onReactivate}
         onShowTabs={onShowTabs}
         onSteer={follow.steer}
         onSwitchTab={onSwitchTab}
         onTyping={setTyping}
         onViewing={setPage}
         pair={pair}
-        place={place}
-        popup={route.popup === true}
-        sessionId={destination.sessionId}
+        sessionId={viewer.sessionId}
         snapshot={snapshot}
-        tabId={destination.tabId}
+        tabId={route.tabId}
       />
     );
   const companionActions = (threadId: string): readonly NativeMenuOption[] => [
@@ -711,6 +774,18 @@ function Focused(props: {
                 />
               ),
           };
+  const notices = (
+    <>
+      {props.notices}
+      {opening.failure === null ? null : (
+        <Notice
+          action={{ label: "Dismiss", onPress: opening.dismiss }}
+          detail={opening.failure}
+          title="A new tab could not be opened"
+        />
+      )}
+    </>
+  );
   return (
     <PlaceBarProvider ask={ask} status={status} verticalBar={verticalBar}>
       <PagePairSurface
@@ -720,7 +795,7 @@ function Focused(props: {
         // Only Android's app bar is in the room's way: on iOS an app runs under a
         // transparent bar, from the screen's top, and every other place has its own bar.
         keyboardVerticalOffset={appId !== null && Platform.OS !== "ios" ? headerHeight : 0}
-        notices={props.notices}
+        notices={notices}
         onPaired={setPaired}
         typing={typing}
       />
@@ -731,16 +806,9 @@ function Focused(props: {
 /** Wide enough for a task's name, never wider than a pane beside a page leaves it. */
 const companionPillWidth = 320;
 
-/** Whether a place is the one a route names: a tab by its own id, else exactly. */
-function samePlace(place: PlaceItem, destination: PersonalSurfaceDestination): boolean {
-  if (destination.kind === "browser")
-    return place.destination.kind === "browser" && place.destination.tabId === destination.tabId;
-  return sameDestination(place.destination, destination);
-}
-
 /**
  * Whether a browser tab is drawn as a page now: listed awake, with a page, by
- * a running browser. A sleeping tab keeps its last document but is restored.
+ * a running browser.
  */
 function browserShowsPage(
   snapshot: HostSnapshot,
@@ -758,16 +826,15 @@ function browserShowsPage(
   );
 }
 
-/**
- * One browser tab, found by its own id as the web finds it: live in its
- * browser, saved and restoring through the shared activation, or ended. A
- * saved tab's lineage moving to a new session moves the route with it; the
- * tab is the same, so nothing else changes.
- */
 const LocalPhoneTab = lazy(() =>
   import("../phone-browser/local-tab.js").then(({ LocalPhoneTab }) => ({ default: LocalPhoneTab })),
 );
 
+/**
+ * One page, in the browser session the Host's activation named. A page whose
+ * browser has not caught up yet says it is opening; one whose browser ended
+ * offers to open it again, which the Host restores in place.
+ */
 function BrowserTab(props: {
   readonly presence: PagePresence;
   readonly connected: boolean;
@@ -777,9 +844,10 @@ function BrowserTab(props: {
   readonly editAddress: boolean;
   readonly following: PageFollowing | null;
   readonly hostClient: HostClient;
-  readonly onClosed: () => void;
-  readonly onOpenTab: (opening: BrowserTabOpenHandle) => void;
+  readonly onOpenTab: (url: string) => void;
   readonly onPopup: (tabId: string) => void;
+  /** Ask the Host to open this tab again, as the person's own Open. */
+  readonly onReactivate: () => void;
   readonly onShowTabs: () => void;
   readonly onSteer: () => void;
   readonly onSwitchTab: (tabId: string) => void;
@@ -787,38 +855,17 @@ function BrowserTab(props: {
   readonly onViewing: (page: BrowserPageContentPart | null) => void;
   /** What the page's bar adds while a Thread is beside it. */
   readonly pair: PagePairChrome | null;
-  /** This tab in the place list, found by its own id; null while it is not listed. */
-  readonly place: PlaceItem | null;
-  readonly popup: boolean;
   readonly sessionId: string;
   readonly snapshot: HostSnapshot;
-  readonly tabId: string;
+  readonly tabId: TabId;
 }): ReactNode {
-  const { hostClient, place, snapshot, tabId } = props;
+  const { hostClient, snapshot, tabId } = props;
   const phoneManager = usePhoneBrowserManager();
   usePhoneTabPresentation(phoneManager, tabId);
   const local = phoneManager?.localPresentation(props.deploymentId, tabId) ?? null;
   const navigation = useNavigation();
-  const saved = place?.personalTab;
-  const lineageSession =
-    saved?.state === "live" && place?.destination.kind === "browser"
-      ? place.destination.sessionId
-      : null;
-  // The session that shows this tab: its lineage's live one, else the route's.
-  const sessionId = local?.sessionId ?? lineageSession ?? props.sessionId;
-  useLayoutEffect(() => {
-    if (sessionId !== props.sessionId) navigation.setParams({ sessionId });
-  }, [sessionId, navigation, props.sessionId]);
-
-  const currentPage = useRef<string | null>(null);
+  const sessionId = local?.sessionId ?? props.sessionId;
   const pageKey = `${sessionId}:${tabId}`;
-  currentPage.current = pageKey;
-  useEffect(() => {
-    currentPage.current = pageKey;
-    return () => {
-      if (currentPage.current === pageKey) currentPage.current = null;
-    };
-  }, [pageKey]);
 
   const session = snapshot.browserSessions.find(({ id }) => id === sessionId) ?? null;
   const live =
@@ -851,30 +898,21 @@ function BrowserTab(props: {
     const to = order.indexOf(tabId);
     shown.current = { arrival: from >= 0 && to >= 0 && to < from ? -1 : 1, tabId };
   }
-  const restorable = saved !== undefined && saved.state !== "live";
-  const unknown =
-    !live &&
-    !restorable &&
-    place === null &&
-    snapshot.tabRestoreVersion === 1 &&
-    !placeDestinationEnded(snapshot, { kind: "browser", sessionId, tabId });
-  const lookup = useBoundedLineageRead(hostClient, unknown, sessionId, tabId);
-  const onClosed = () => {
-    if (currentPage.current === pageKey && navigation.isFocused()) props.onClosed();
-  };
   useBrowserPopupFollow(
     hostClient,
     live && props.presence.interactive ? { sessionId, tabId } : null,
     props.onPopup,
   );
-  const popupEnded =
-    props.popup && placeDestinationEnded(snapshot, { kind: "browser", sessionId, tabId });
-  const latestClosed = useRef(onClosed);
-  latestClosed.current = onClosed;
+  // The browser it was opened in is gone while the tab stays listed: the Host
+  // restored it elsewhere, so ask once where it is now.
+  const asked = useRef<string | null>(null);
+  const vanished = session === null && local === null && snapshot.browserSessions.length > 0;
+  const { onReactivate } = props;
   useEffect(() => {
-    if ((popupEnded || lookup.closed === true) && props.presence.interactive)
-      latestClosed.current();
-  }, [lookup.closed, popupEnded, props.presence.interactive]);
+    if (!vanished || asked.current === sessionId) return;
+    asked.current = sessionId;
+    onReactivate();
+  }, [onReactivate, sessionId, vanished]);
 
   if ((live || local) && session !== null)
     return (
@@ -908,7 +946,6 @@ function BrowserTab(props: {
         hostClient={hostClient}
         key={pageKey}
         editAddress={props.editAddress}
-        onClosed={onClosed}
         onOpenTab={props.onOpenTab}
         onShowTabs={props.onShowTabs}
         onSteer={props.onSteer}
@@ -937,239 +974,15 @@ function BrowserTab(props: {
         />
       </Suspense>
     );
-  return (
-    <>
-      {restorable && place !== null ? (
-        <SavedTab
-          connected={props.connected}
-          hostClient={hostClient}
-          key={tabId}
-          onClosed={onClosed}
-          place={place}
-          snapshot={snapshot}
-          tabId={tabId}
-        />
-      ) : unknown && lookup.closed !== true ? (
-        <TabStatus
-          {...(lookup.error === null
-            ? {}
-            : { action: { label: "Try again", onPress: lookup.retry } })}
-          title={
-            lookup.error ??
-            (lookup.closed === null ? "Looking for this tab…" : "This tab isn’t available here")
-          }
-          waiting={lookup.error === null && lookup.closed === null}
-        />
-      ) : (
-        <BrowserEnded
-          detail={session?.state === "failed" ? session.error : null}
-          failed={session?.state === "failed"}
-        />
-      )}
-    </>
-  );
-}
-
-/**
- * A lineage the bounded catalog leaves out, read once, as the web reads it:
- * true when the Host says the tab is gone, false when it still lists it or
- * cannot say, null while it is being asked. Nothing is chosen in its place.
- */
-function useBoundedLineageRead(
-  hostClient: HostClient,
-  unknown: boolean,
-  sessionId: string,
-  tabId: string,
-): { readonly closed: boolean | null; readonly error: string | null; readonly retry: () => void } {
-  const [attempt, setAttempt] = useState(0);
-  const [answer, setAnswer] = useState<{
-    readonly key: string;
-    readonly attempt: number;
-    readonly closed: boolean | null;
-    readonly error: string | null;
-  } | null>(null);
-  const asked = useRef<{
-    readonly key: string;
-    readonly attempt: number;
-    readonly hostClient: HostClient;
-    readonly promise: ReturnType<NonNullable<HostClient["readPersonalTabs"]>>;
-  } | null>(null);
-  const key = `${sessionId}:${tabId}`;
-  useEffect(() => {
-    if (!unknown || hostClient.readPersonalTabs === undefined) return;
-    if (
-      asked.current?.key !== key ||
-      asked.current.attempt !== attempt ||
-      asked.current.hostClient !== hostClient
-    )
-      asked.current = {
-        key,
-        attempt,
-        hostClient,
-        promise: hostClient.readPersonalTabs(sessionId),
-      };
-    let cancelled = false;
-    // A restarted effect observes the same request rather than abandoning it.
-    void asked.current.promise
-      .then((lineage) => {
-        if (cancelled) return;
-        const listed = lineage?.tabs === undefined || lineage.tabs.some(({ id }) => id === tabId);
-        setAnswer({ closed: lineage === null || !listed, error: null, attempt, key });
-      })
-      .catch((error: unknown) => {
-        if (!cancelled)
-          setAnswer({
-            closed: null,
-            error: error instanceof Error ? error.message : "This tab could not be found.",
-            attempt,
-            key,
-          });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [attempt, hostClient, key, sessionId, tabId, unknown]);
-  const retry = useCallback(() => setAttempt((value) => value + 1), []);
-  const current = answer?.key === key && answer.attempt === attempt ? answer : null;
-  return {
-    closed: hostClient.readPersonalTabs === undefined ? false : (current?.closed ?? null),
-    error: current?.error ?? null,
-    retry,
-  };
-}
-
-/**
- * A saved tab, restored on its saved computer through the client's one
- * activation owner (`activatePersonalTab`), which waits for the connection
- * and the computer and keeps one attempt per tab. Opening it asks once; a
- * lasting reason asks never. The answer moves the route to the restored
- * session; one that arrives after the person left changes nothing.
- */
-function SavedTab(props: {
-  readonly connected: boolean;
-  readonly hostClient: HostClient;
-  readonly onClosed: () => void;
-  readonly place: PlaceItem;
-  readonly snapshot: HostSnapshot;
-  readonly tabId: string;
-}): ReactNode {
-  const { hostClient, place, snapshot, tabId } = props;
-  const navigation = useNavigation();
-  const placement = snapshot.browserPlacements.find(
-    ({ runnerId }) => runnerId === place.device?.machineId,
-  );
-  const lasting = browserPlaceUnavailableReason(
-    place.identity,
-    place.personalTab?.unavailableReason,
-    placement?.unavailableReason,
-  );
-  const [failure, setFailure] = useState<string | null>(null);
-  const [closeFailure, setCloseFailure] = useState<string | null>(null);
-  const [closing, setClosing] = useState(false);
-  const closingNow = useRef(false);
-  const [attempt, setAttempt] = useState(0);
-  const openingId = useId();
-  const opening = `${openingId}:${attempt}`;
-  const activate = hostClient.activatePersonalTab;
-  useLayoutEffect(() => {
-    if (activate === undefined || lasting !== null) return;
-    let cancelled = false;
-    setFailure(null);
-    void activate
-      .call(hostClient, tabId, { opening })
-      .then((result) => {
-        if (cancelled || result === null) return;
-        navigation.setParams({ sessionId: result.session.id, tabId: result.tabId });
-      })
-      .catch((error: unknown) => {
-        if (!cancelled)
-          setFailure(error instanceof Error ? error.message : "This tab could not reopen.");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activate, hostClient, lasting, navigation, opening, tabId]);
-  const close = () => {
-    if (closingNow.current) return;
-    closingNow.current = true;
-    setClosing(true);
-    setCloseFailure(null);
-    void hostClient
-      .closePersonalTabs([tabId])
-      .then((result) => {
-        if (result.closed.includes(tabId)) props.onClosed();
-        else
-          throw new Error(
-            result.failed.find((item) => item.tabId === tabId)?.message ??
-              "This tab could not be closed.",
-          );
-      })
-      .catch((error: unknown) =>
-        setCloseFailure(error instanceof Error ? error.message : "This tab could not be closed."),
-      )
-      .finally(() => {
-        closingNow.current = false;
-        setClosing(false);
-      });
-  };
-  const waitingFor =
-    !props.connected || placement?.available !== true
-      ? `Waiting for ${place.device?.name ?? "its computer"}…`
-      : null;
-  return (
-    <View style={styles.fill}>
-      {closeFailure !== null ? (
-        <TabStatus title={closeFailure} action={{ label: "Try again", onPress: close }} />
-      ) : lasting !== null ? (
-        <TabStatus title={lasting} />
-      ) : failure !== null ? (
-        <TabStatus
-          action={{ label: "Try again", onPress: () => setAttempt((value) => value + 1) }}
-          title={failure}
-        />
-      ) : (
-        <TabStatus title={waitingFor ?? "Opening…"} waiting />
-      )}
-      {/* The page's own bar, resting until the page is back: only Close works. */}
-      <CloseBar closeDisabled={!props.connected || closing} onClose={close}>
-        <AppText numberOfLines={1} role="secondaryMedium" tone="muted">
-          {tabSiteLabel(place.site) ?? place.title}
-        </AppText>
-      </CloseBar>
-    </View>
-  );
-}
-
-/** The bar of a place with nothing else to drive: the way out, its name, Ask and Close. */
-function CloseBar(props: {
-  readonly children: ReactNode;
-  readonly closeDisabled: boolean;
-  readonly onClose: () => void;
-}): ReactNode {
-  useNativeBarAway();
-  return (
-    <Toolbar edge="bottom" testID="page-toolbar">
-      <ToolbarLeave />
-      <ToolbarCapsule style={styles.restingAddress}>{props.children}</ToolbarCapsule>
-      <ToolbarAsk />
-      <ToolbarMenu
-        label="More"
-        sections={[
-          [
-            {
-              destructive: true,
-              disabled: props.closeDisabled,
-              icon: "xmark.circle",
-              id: "close",
-              label: "Close tab",
-              onPress: props.onClose,
-            },
-          ],
-        ]}
-        symbol="ellipsis"
+  if (session?.state === "closed" || session?.state === "failed")
+    return (
+      <TabStatus
+        action={{ label: "Open again", onPress: props.onReactivate }}
+        detail={session.state === "failed" ? session.error : null}
+        title={session.state === "failed" ? "This page stopped working" : "This page is asleep"}
       />
-    </Toolbar>
-  );
+    );
+  return <TabStatus title="Opening…" waiting />;
 }
 
 /** An app's menu, beside the way out in its pane's own top row while a Thread is beside it. */
@@ -1178,58 +991,30 @@ interface AppPairChrome {
 }
 
 /**
- * Closing the app open as this tab. Its copy goes the moment Close is
- * pressed, so the card under this page comes back at once and two copies
- * never run; a refusal brings the app back with why.
+ * Closing this tab: it leaves the list, and the screen moves on when the
+ * list says so. A refusal stays here with why; an answer for a tab no longer
+ * shown changes nothing.
  */
-function useAppClose(
+function useTabClose(
   hostClient: HostClient,
-  appId: string | null,
-  onClosed: () => void,
+  tabId: TabId,
 ): { readonly close: () => void; readonly closing: boolean; readonly failure: string | null } {
-  const navigation = useNavigation();
-  const identity = useMemo(() => ({ appId, hostClient }), [appId, hostClient]);
-  const [state, setState] = useState<{
-    readonly identity: typeof identity;
-    readonly closing: boolean;
-    readonly failure: string | null;
-  }>({ identity, closing: false, failure: null });
-  const latestIdentity = useRef(identity);
-  latestIdentity.current = identity;
-  const latestAttempt = useRef<{ readonly identity: typeof identity } | null>(null);
-  useEffect(
-    () => () => {
-      if (latestAttempt.current?.identity === identity) latestAttempt.current = null;
-    },
-    [identity],
-  );
-  const latestClosed = useRef(onClosed);
-  latestClosed.current = onClosed;
+  const operation = useOperation();
+  const { run } = operation;
+  const [attempted, setAttempted] = useState<TabId | null>(null);
   const close = useCallback(() => {
-    if (appId === null) return;
-    const attempt = { identity };
-    latestAttempt.current = attempt;
-    setState({ identity, closing: true, failure: null });
-    void hostClient.closeAppTab(appId).then(
-      () => {
-        if (latestIdentity.current !== identity || latestAttempt.current !== attempt) return;
-        if (navigation.isFocused()) latestClosed.current();
-        else setState({ identity, closing: false, failure: null });
-      },
-      (error: unknown) => {
-        if (latestIdentity.current !== identity || latestAttempt.current !== attempt) return;
-        setState({
-          identity,
-          closing: false,
-          failure: error instanceof Error ? error.message : "Try again in a moment.",
-        });
-      },
-    );
-  }, [appId, hostClient, identity, navigation]);
+    setAttempted(tabId);
+    void run(async () => {
+      const result = await tabsClient(hostClient).closeTabs([tabId]);
+      const failed = result.failed.find((item) => item.tabId === tabId);
+      if (failed) throw new Error(failed.error.message);
+    }, "This tab could not be closed.");
+  }, [hostClient, run, tabId]);
+  const current = attempted === tabId;
   return {
     close,
-    closing: state.identity === identity && state.closing,
-    failure: state.identity === identity ? state.failure : null,
+    closing: current && operation.busy,
+    failure: current ? operation.failure : null,
   };
 }
 
@@ -1254,13 +1039,6 @@ const AppTab = memo(function AppTab(props: {
   const focused = useIsFocused();
   const insets = useContentInsets();
   const headerHeight = useHeaderHeight();
-  const ended = useHostSelector(
-    hostClient,
-    useCallback(
-      (snapshot: HostSnapshot) => placeDestinationEnded(snapshot, { appId, kind: "opensteer-app" }),
-      [appId],
-    ),
-  );
   const known = useHostSelector(hostClient, (snapshot) => snapshot.deploymentShape !== null);
   // What the pane's own row covers, its top inset included, as last measured.
   const [row, setRow] = useState<number | null>(null);
@@ -1304,10 +1082,6 @@ const AppTab = memo(function AppTab(props: {
       ) : props.closing ? (
         <View style={[styles.fill, clear]}>
           <TabStatus title="Closing…" waiting />
-        </View>
-      ) : ended ? (
-        <View style={[styles.fill, clear]}>
-          <BrowserEnded detail={null} failed={false} />
         </View>
       ) : (
         <AppFrame appId={appId} client={hostClient} tab={tab} />
@@ -1361,6 +1135,8 @@ const AppTab = memo(function AppTab(props: {
 /** What a tab with no picture says, centred where the page would be. */
 function TabStatus(props: {
   readonly action?: { readonly label: string; readonly onPress: () => void };
+  /** Why, under the title, when there is more to say. */
+  readonly detail?: string | null;
   readonly title: string;
   readonly waiting?: boolean;
 }): ReactNode {
@@ -1370,6 +1146,11 @@ function TabStatus(props: {
       <AppText role="bodyMedium" style={styles.centred}>
         {props.title}
       </AppText>
+      {props.detail ? (
+        <AppText role="secondary" style={styles.centred} tone="muted">
+          {props.detail}
+        </AppText>
+      ) : null}
       {props.action === undefined ? null : (
         <SecondaryButton label={props.action.label} onPress={props.action.onPress} />
       )}
@@ -1689,28 +1470,6 @@ function CompanionPane(props: { readonly companion: PairCompanion }): ReactNode 
   );
 }
 
-/**
- * A tab that is gone stays gone: one line says so, with why when it failed.
- * Nothing takes its place; Back returns to wherever it was opened from.
- */
-function BrowserEnded(props: {
-  readonly detail: string | null;
-  readonly failed: boolean;
-}): ReactNode {
-  return (
-    <View accessibilityLiveRegion="polite" style={styles.ended}>
-      <AppText role="bodyMedium" style={styles.centred}>
-        {props.failed ? "This page stopped working" : "This tab was closed"}
-      </AppText>
-      {props.failed && props.detail ? (
-        <AppText role="secondary" style={styles.centred} tone="muted">
-          {props.detail}
-        </AppText>
-      ) : null}
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   // Over the app, which scrolls under it; Back and a balancing slot keep the name centred.
   appRow: {
@@ -1751,8 +1510,6 @@ const styles = StyleSheet.create({
   pageAlone: { flex: 1, minHeight: 0 },
   // Centred over the pane, clear of its edges.
   pill: { alignItems: "center", paddingBottom: space[4] },
-  // The resting page's address, standing where the live page's will be.
-  restingAddress: { flex: 1, justifyContent: "center", minWidth: 0, paddingHorizontal: space[16] },
   row: { flexDirection: "row" },
   // Tabletop with the composer typing: the second pane keeps at least its
   // composer, and the page above gives up height to make room.

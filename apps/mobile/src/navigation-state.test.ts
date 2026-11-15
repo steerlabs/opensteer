@@ -7,8 +7,7 @@ import {
 } from "@react-navigation/native";
 import { SideMemory } from "./side-memory.js";
 import { personalRouteInvalid } from "./side-memory-validity.js";
-import { BrowserTabStore } from "@opensteer/client/host";
-import type { BrowserGroupRow } from "@opensteer/protocol/browser-tabs";
+import { FakeTabs, pageTab, tabId } from "../test-support/mock-tabs.js";
 import type { LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
 
 // Use the real stack router without importing the native rendering layer in Node.
@@ -239,7 +238,7 @@ describe("warm mobile sides on the native stack router", () => {
   const task = { name: "Thread", params: { deploymentId: "d", threadId: "task" } };
   const page = {
     name: "WorkspaceBrowser",
-    params: { deploymentId: "d", threadId: "task", sessionId: "browser", tabId: "tab" },
+    params: { deploymentId: "d", threadId: "task", tabId: tabId("page") },
   };
   const channel = { name: "TeamChannel", params: { teamId: "a", channelId: "general" } };
   const reply = { name: "TeamThread", params: { ...channel.params, rootId: "root" } };
@@ -428,14 +427,9 @@ describe("warm mobile sides on the native stack router", () => {
       "Thread",
       "WorkspaceBrowser",
     ]);
-    const browserTabs = new BrowserTabStore();
-    browserTabs.seed({
-      groups: {
-        rows: [{ id: "g", sessionId: "browser", createdAt: "2026-01-01" } as BrowserGroupRow],
-        complete: true,
-      },
-      tabs: [],
-    });
+    const tabs = new FakeTabs();
+    tabs.reset([pageTab("page", "Page")], [{ kind: "tab", tabId: tabId("page") }]);
+    tabs.syncing = true;
     const live = {
       ...unavailable,
       connection: "connected",
@@ -446,11 +440,13 @@ describe("warm mobile sides on the native stack router", () => {
         manageComputers: true,
         managePrivateResources: true,
       },
-      browserTabs,
-    } as HostSnapshot;
+      tabs,
+    } as unknown as HostSnapshot;
+    // Still syncing, then listed: neither is closure.
     expect(f.memory.trim(f.state(), (route) => personalRouteInvalid(route, live))).toBeNull();
-    browserTabs.applyTabs("g", { op: "begin", generation: "tabs" });
-    browserTabs.applyTabs("g", { op: "end", revision: 0, count: 0, meta: {} });
+    tabs.syncing = false;
+    expect(f.memory.trim(f.state(), (route) => personalRouteInvalid(route, live))).toBeNull();
+    tabs.setLayout([]);
     f.apply(f.memory.trim(f.state(), (route) => personalRouteInvalid(route, live)));
     expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "Thread"]);
     f.push(page);
@@ -475,47 +471,12 @@ describe("warm mobile sides on the native stack router", () => {
     expect(f.state().routes).toEqual(tasks);
   });
 
-  it("preserves exact owner-view generation and never invents another tab", () => {
+  it("keeps a tab route by its tabId alone, never a viewing lease", () => {
     const f = fixture();
     f.enter(task);
-    const ownerView = {
-      name: "WorkspaceBrowser",
-      params: {
-        deploymentId: "d",
-        threadId: "task",
-        machineId: "mac",
-        appKey: "notes",
-        viewId: "view",
-        generation: 7,
-        windowId: 123,
-      },
-    };
-    f.push(ownerView);
+    f.push(page);
     f.enter(channel);
     f.resume("tasks");
-    expect(f.state().routes.at(-1)?.params).toEqual(ownerView.params);
-    const unknown = {
-      threadLookups: {},
-      deploymentId: "d",
-      connection: "connected",
-      session: "authenticated",
-      can: {},
-      machines: [{ id: "mac", computerUse: { sessions: [] } }],
-    } as unknown as HostSnapshot;
-    expect(f.memory.trim(f.state(), (route) => personalRouteInvalid(route, unknown))).toBeNull();
-    const replaced = {
-      ...unknown,
-      machines: [
-        {
-          id: "mac",
-          computerUse: {
-            ownerViews: [{ viewId: "view", generation: 8, state: "live" }],
-            sessions: [],
-          },
-        },
-      ],
-    } as unknown as HostSnapshot;
-    f.apply(f.memory.trim(f.state(), (route) => personalRouteInvalid(route, replaced)));
-    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "Thread"]);
+    expect(f.state().routes.at(-1)?.params).toEqual(page.params);
   });
 });

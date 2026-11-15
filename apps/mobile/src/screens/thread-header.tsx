@@ -13,7 +13,7 @@ import {
 } from "../thread/around-button.js";
 import { aroundGlanceSelector, sameAroundGlance } from "../thread/around-model.js";
 import { FoldedPage, foldedPageWidth } from "../thread/folded-page.js";
-import { surfaceRoute } from "../browser/surface-route.js";
+import { useOpenPlace } from "../tabs/viewer-open.js";
 import { sameThreadHeader, type ThreadHeaderState } from "../thread/thread-pane.js";
 import { TaskStateIndicator } from "../thread/task-status.js";
 import type { NativeMenuOption } from "../thread/composer-menu.js";
@@ -214,6 +214,7 @@ function ThreadTitle(
         : measured.freed.slice(0, yielded).reduce((left, freed) => left - freed, measured.width)),
   );
   const { deploymentId, hostClient, threadId } = props;
+  const openPlace = useOpenPlace(hostClient, deploymentId, threadId);
   useLayoutEffect(() => {
     const openAround = () => navigation.navigate("ThreadAround", { deploymentId, threadId });
     navigation.setOptions(
@@ -223,14 +224,7 @@ function ThreadTitle(
             {foldedRunId === null ? null : (
               <FoldedPage
                 hostClient={hostClient}
-                onOpen={(destination: SurfaceDestination) =>
-                  navigation.dispatch(
-                    StackActions.push(
-                      "WorkspaceBrowser",
-                      surfaceRoute(deploymentId, threadId, destination),
-                    ),
-                  )
-                }
+                onOpen={(destination: SurfaceDestination) => openPlace(destination)}
                 onUnfold={() =>
                   updatePage((value) => ({
                     ...value,
@@ -264,6 +258,7 @@ function ThreadTitle(
     hostClient,
     navigation,
     onAroundWidths,
+    openPlace,
     room,
     threadId,
     updatePage,

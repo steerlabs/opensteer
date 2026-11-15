@@ -3,7 +3,7 @@
 import { act, type ReactElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createId } from "@opensteer/core";
+import { createId, TabIdSchema } from "@opensteer/core";
 import type { HostClient, LegacyHostSnapshot as HostSnapshot } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { headerFontScaleLimit } from "../theme.js";
@@ -228,7 +228,7 @@ const { useThreadHeader } = await import("../screens/thread-header.js");
 const { AroundScreen } = await import("./around-sheet.js");
 const { aroundPlaces } = await import("./around-model.js");
 const { taskFamily } = await import("@opensteer/client/host");
-const { surfaceRoute } = await import("../browser/surface-route.js");
+const { tabRoute } = await import("../browser/surface-route.js");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 harness.setOptions.mockImplementation((options: Record<string, unknown>) => {
@@ -387,7 +387,7 @@ describe("the conversation's bar", () => {
   it("draws nothing for a conversation with nothing around it", async () => {
     const w = await world({ automations: "absent" });
     const threadId = w.titled("Review storage integration");
-    w.move({ ...w.snapshot(), browserSessions: [], machines: [], appTabs: [] });
+    w.move({ ...w.snapshot(), browserSessions: [], machines: [] });
     const { android, ios } = bar(w.client, threadId);
     expect(control(android())).toBeNull();
     expect(ios()).toEqual([]);
@@ -466,7 +466,6 @@ describe("the conversation's bar", () => {
       ...original,
       browserSessions: [],
       machines: [],
-      appTabs: [],
       assignments: {},
       threadAutomations: {},
     };
@@ -735,7 +734,7 @@ describe("Around this thread", () => {
       { name: "Home", params: { deploymentId } },
       {
         name: "WorkspaceBrowser",
-        params: { deploymentId, scope: "tabs", sessionId: "page", tabId: "beside" },
+        params: { deploymentId, tabId: "beside" },
       },
       { name: "ThreadAround", params: { deploymentId, threadId: home } },
     ];
@@ -744,13 +743,15 @@ describe("Around this thread", () => {
       (node) => node.getAttribute("aria-label")!,
     );
     expect(rows[0]).toMatch(/agent working$/u);
-    const last = places.at(-1)!;
-    press(container, rows[places.length - 1]!);
+    const page = places.findLastIndex(({ destination }) => destination.kind === "browser");
+    const pressed = places[page]!.destination;
+    if (pressed.kind !== "browser") throw new Error("Expected a page among the places");
+    press(container, rows[page]!);
     expect(harness.goBack).toHaveBeenCalledOnce();
     expect(harness.dispatch).toHaveBeenLastCalledWith({
       type: "PUSH",
       name: "WorkspaceBrowser",
-      params: surfaceRoute(deploymentId, home, last.destination),
+      params: tabRoute(deploymentId, TabIdSchema.parse(pressed.tabId), home),
     });
     act(() => named(container, /^Book a table for Friday, Needs you/u).click());
     expect(harness.dispatch).toHaveBeenLastCalledWith({
@@ -763,7 +764,7 @@ describe("Around this thread", () => {
   it("gives a task the way back to the conversation it works for, and nothing else when that is all", async () => {
     const w = await world();
     const worker = w.titled("Book a table for Friday");
-    w.move({ ...w.snapshot(), browserSessions: [], machines: [], appTabs: [] });
+    w.move({ ...w.snapshot(), browserSessions: [], machines: [] });
     const container = sheet(worker);
     expect(tabs(container)).toEqual([]);
     expect(container.querySelector("section")).toBeNull();
