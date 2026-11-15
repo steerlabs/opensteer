@@ -1,78 +1,57 @@
-import ExpoModulesCore
 import UIKit
 import UniformTypeIdentifiers
 
-public final class PasteTargetModule: Module {
-  public func definition() -> ModuleDefinition {
-    Name("OpensteerPasteTarget")
-    View(PasteTargetView.self) {
-      Events("onPasteImages")
-      Prop("maxBytes") { (view: PasteTargetView, value: Int) in view.maxBytes = value }
-    }
-  }
-}
+/// Images pasted or dropped into the editor, written to private temporary files.
+enum PastedImages {
+  /// Formats the Host reads as they are; anything else (HEIC from Photos, TIFF)
+  /// is re-encoded as JPEG, as the photo picker's compatible mode does.
+  private static let kept: [UTType] = [.png, .jpeg, .webP, .gif]
 
-/// Takes the images a Paste delivers to the text field it holds. A React Native
-/// field declines Paste for a pasteboard that holds no text, and UIKit then asks
-/// each view above the first responder; this view answers for images, so text
-/// pastes stay with the field and nothing in React Native is replaced.
-final class PasteTargetView: ExpoView {
-  let onPasteImages = EventDispatcher()
-  /// The most one image may hold where the field sends it; a larger one is reported, not written.
-  var maxBytes = 0
+  private enum Outcome { case image([String: Any]), failed, tooLarge }
 
-  override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-    if action == #selector(UIResponderStandardEditActions.paste(_:)) {
-      return UIPasteboard.general.hasImages
-    }
-    return super.canPerformAction(action, withSender: sender)
+  static func providers(_ providers: [NSItemProvider]) -> [NSItemProvider] {
+    providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.image.identifier) }
   }
 
-  override func paste(_ sender: Any?) {
-    let providers = UIPasteboard.general.itemProviders
-      .filter { $0.hasItemConformingToTypeIdentifier(UTType.image.identifier) }
-    guard !providers.isEmpty else { return }
+  /// Delivers `{ images, failed, tooLarge }` on the main queue, or discards the files if `isLive` says no.
+  static func load(
+    _ providers: [NSItemProvider],
+    maxBytes: Int,
+    isLive: @escaping () -> Bool,
+    deliver: @escaping ([String: Any]) -> Void
+  ) {
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("pasted-images", isDirectory: true)
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let group = DispatchGroup()
-    let limit = maxBytes
-    var outcomes = [PastedImage.Outcome](repeating: .failed, count: providers.count)
+    var outcomes = [Outcome](repeating: .failed, count: providers.count)
     for (index, provider) in providers.enumerated() {
       group.enter()
-      PastedImage.load(provider, into: directory, maxBytes: limit) { outcome in
+      load(provider, into: directory, maxBytes: maxBytes) { outcome in
         DispatchQueue.main.async {
           outcomes[index] = outcome
           group.leave()
         }
       }
     }
-    group.notify(queue: .main) { [weak self] in
+    group.notify(queue: .main) {
       let delivered = outcomes.compactMap { outcome -> [String: Any]? in
         if case .image(let image) = outcome { return image }
         return nil
       }
-      guard let self, self.window != nil else {
-        for image in delivered { PastedImage.discard(image) }
+      guard isLive() else {
+        for image in delivered { discard(image) }
         return
       }
-      self.onPasteImages([
+      deliver([
         "images": delivered,
         "failed": outcomes.filter { if case .failed = $0 { return true }; return false }.count,
         "tooLarge": outcomes.filter { if case .tooLarge = $0 { return true }; return false }.count,
       ])
     }
   }
-}
 
-private enum PastedImage {
-  /// Formats the Host reads as they are; anything else (HEIC from Photos, TIFF)
-  /// is re-encoded as JPEG, as the photo picker's compatible mode does.
-  static let kept: [UTType] = [.png, .jpeg, .webP, .gif]
-
-  enum Outcome { case image([String: Any]), failed, tooLarge }
-
-  static func load(
+  private static func load(
     _ provider: NSItemProvider, into directory: URL, maxBytes: Int, done: @escaping (Outcome) -> Void
   ) {
     let registered = provider.registeredTypeIdentifiers.compactMap(UTType.init)
@@ -110,7 +89,7 @@ private enum PastedImage {
     ]
   }
 
-  static func discard(_ image: [String: Any]) {
+  private static func discard(_ image: [String: Any]) {
     if let uri = image["uri"] as? String, let url = URL(string: uri) {
       try? FileManager.default.removeItem(at: url)
     }

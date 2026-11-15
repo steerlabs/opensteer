@@ -40,9 +40,8 @@ vi.mock("../thread/composer-bar.js", () => ({
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
-vi.mock("../../modules/paste-target/index.js", () => ({
-  PasteTarget: ({ children }: { children?: ReactNode }) => <>{children}</>,
-}));
+vi.mock("../ui/composer-editor.js", () => import("../ui/composer-editor.fake.js"));
+vi.mock("../ui/composer-reference-picker.js", () => ({ ComposerReferencePicker: () => null }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("../ui/composer-action.js", () => ({ ComposerAction: () => null }));
 vi.mock("./attachments.js", () => ({ StagedAttachments: () => null }));
@@ -56,6 +55,7 @@ it.each(["people-only", "not-connected"] as const)(
     const root = createRoot(host);
     const change = vi.fn();
     const props: ComponentProps<typeof TeamComposer> = {
+      editor: { current: null },
       placeholder: "Reply",
       text: "",
       onChangeText: vi.fn(),
@@ -65,6 +65,8 @@ it.each(["people-only", "not-connected"] as const)(
       onAgentUnavailable: vi.fn(),
       mentions: null,
       onPickMention: vi.fn(),
+      references: [],
+      onPickReference: vi.fn(),
       onMention: vi.fn(),
       attachments: [],
       onAttach: vi.fn(),

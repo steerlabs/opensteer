@@ -52,6 +52,7 @@ import { homeDraftId } from "../home/home-draft.js";
 import { VoiceContext } from "@opensteer/client/react";
 import type { VoiceControls } from "@opensteer/client/voice";
 import { VoiceOverlay } from "../voice/controls.js";
+import { composerEditorFake } from "../ui/composer-editor.fake.js";
 
 /*
  * One conversation on the phone, drawn by the real pane, transcript, composer
@@ -93,8 +94,6 @@ const harness = vi.hoisted(() => ({
   drafts: null as ThreadDraftStore | null,
   activeHost: null as HostClient | null,
   focusCleanups: new Set<() => void>(),
-  select: null as
-    null | ((event: { nativeEvent: { selection: { start: number; end: number } } }) => void),
   navigate: vi.fn(),
   /** The composer's field letting go of the keyboard. */
   blur: vi.fn(),
@@ -131,13 +130,12 @@ const harness = vi.hoisted(() => ({
   },
 }));
 
-const selectionCalls: { text: string | undefined; start: number; end: number }[] = [];
+const selectionCalls = composerEditorFake.calls;
+composerEditorFake.blur = () => harness.blur();
 let dictation = new DictationController({ port: null, createId: () => crypto.randomUUID() });
 vi.mock("./settings/engine-mark.js", () => ({ EngineMark: () => null }));
 vi.mock("../voice/cursor-mark.js", () => ({ PillMic: () => null, VoiceCursor: () => null }));
-vi.mock("../../modules/paste-target/index.js", () => ({
-  PasteTarget: ({ children }: { children?: ReactNode }) => <>{children}</>,
-}));
+vi.mock("../ui/composer-editor.js", () => import("../ui/composer-editor.fake.js"));
 vi.mock("react-native-webview", () => ({ WebView: () => null }));
 vi.mock("react-native-keyboard-controller", () => ({
   KeyboardChatScrollView: () => null,
@@ -259,12 +257,9 @@ vi.mock("react-native", async () => {
       readonly placeholder?: string;
       readonly value?: string;
     }) => {
-      harness.select = props.onSelectionChange ?? null;
       React.useImperativeHandle(props.ref, () => ({
         blur: harness.blur,
         focus: () => undefined,
-        setSelection: (start: number, end: number) =>
-          selectionCalls.push({ text: props.value, start, end }),
       }));
       return (
         <textarea
@@ -800,6 +795,7 @@ const viewer = base.user;
 if (viewer === null) throw new Error("The mock Host has no signed-in reader.");
 const userId = viewer.id;
 const workId = ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000004");
+const otherWorkId = "thr_00000000-0000-4000-8000-000000000005";
 const newDraftId = homeDraftId;
 const at = "2026-10-09T10:00:00.000Z";
 const human = {
@@ -1569,11 +1565,14 @@ describe("a conversation with a page", () => {
     await focus(container);
     expect(pageChip(container)?.textContent).toBe("Research page");
     await type(container, "Message", "Explain this");
+    // The field holds a reference React has not heard about yet; Send reads it first.
+    const words = `Explain this [Fix login](opensteer:${otherWorkId})`;
+    composerEditorFake.ahead = words;
     await press(container, "Send message");
     expect(host.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "thread.sendMessage",
-        content: expect.arrayContaining([included]),
+        content: expect.arrayContaining([included, { text: words, type: "text" }]),
       }),
     );
   });
@@ -3157,11 +3156,11 @@ describe("a task", () => {
     expect(editField(container)?.value).toBe(waiting[0]!.body);
     await type(container, "Edit message", "First queued ask, but shorter");
     expect(host.editor.touch).toHaveBeenCalled();
+    // The last keystroke, a reference, is still on its way from the field when Save is tapped.
+    const words = `First queued ask, but shorter, like [Fix login](opensteer:${otherWorkId})`;
+    composerEditorFake.ahead = words;
     await press(container, "Save");
-    expect(host.editor.save).toHaveBeenCalledWith(
-      [{ text: "First queued ask, but shorter", type: "text" }],
-      0,
-    );
+    expect(host.editor.save).toHaveBeenCalledWith([{ text: words, type: "text" }], 0);
     // The message is changed where it waits; nothing is taken back or sent anew.
     expect(host.client.cancelThreadInput).not.toHaveBeenCalled();
     expect(sent(host.dispatch)).not.toContain("thread.sendMessage");
@@ -4224,7 +4223,7 @@ it("dictates at the caret, cancels preview, adopts edits and sends finalized wor
   await type(container, "Message", "Hi there");
   const field = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')!;
   await act(async () => {
-    harness.select?.({ nativeEvent: { selection: { start: 2, end: 2 } } });
+    composerEditorFake.select?.({ start: 2, end: 2 });
   });
   await press(container, "Start dictation (English)");
   await speech.emit({ type: "listening" });
@@ -4232,14 +4231,14 @@ it("dictates at the caret, cancels preview, adopts edits and sends finalized wor
   expect(field.value).toBe("Hi my there");
   await press(container, "Cancel dictation");
   expect(field.value).toBe("Hi there");
-  await act(async () => harness.select?.({ nativeEvent: { selection: { start: 3, end: 8 } } }));
+  await act(async () => composerEditorFake.select?.({ start: 3, end: 8 }));
   await press(container, "Start dictation (English)");
   await speech.emit({ type: "listening" });
   await speech.emit({ type: "text", finalized: [], volatile: ["my"] });
   expect(field.value).toBe("Hi my");
   expect(selectionCalls.at(-1)).toEqual({ text: "Hi my", start: 5, end: 5 });
   const calls = selectionCalls.length;
-  await act(async () => harness.select?.({ nativeEvent: { selection: { start: 0, end: 0 } } }));
+  await act(async () => composerEditorFake.select?.({ start: 0, end: 0 }));
   await speech.emit({ type: "text", finalized: [], volatile: ["my"] });
   expect(selectionCalls).toHaveLength(calls);
   await speech.emit({ type: "text", finalized: [], volatile: ["my friend"] });
@@ -4721,6 +4720,7 @@ it("offers voice on Home's composer but not on a new task's", async () => {
         blocker={null}
         held={false}
         execution={firstMessageExecution(host.client.getSnapshot())}
+        hostClient={host.client}
         inputRef={{ current: null }}
         onChangeText={vi.fn()}
         onChooseAI={vi.fn()}
