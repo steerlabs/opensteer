@@ -502,11 +502,13 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
   if (parsed.OPENSTEER_STRICT_INSTALLATION === "true") {
     if (
       !deploymentPolicy(deploymentShape).services.team ||
-      !environment.OPENSTEER_AUTH_SECRET_FILE ||
+      // The image entrypoint has already read each `_FILE` into its variable and dropped the name.
+      !parsed.OPENSTEER_AUTH_SECRET ||
       !parsed.OPENSTEER_HOST_INSTANCE_PATH ||
       !parsed.OPENSTEER_HOST_PRIVATE_KEY_PATH ||
       !parsed.OPENSTEER_HOST_PUBLIC_KEY_PATH ||
-      !environment.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST_FILE
+      !parsed.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST ||
+      parsed.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN !== undefined
     )
       throw new Error(
         "Strict team installation requires mounted auth secret, setup digest, Host instance and key pair files",
