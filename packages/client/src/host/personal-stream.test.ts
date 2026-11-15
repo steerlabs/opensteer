@@ -75,7 +75,7 @@ it("attaches once and atomically persists only the state already applied at its 
   );
   expect(client.deploymentPosition()).toBe("47");
 });
-it("restores an applied cut only for the same Deployment, viewer and epoch", async () => {
+it("restores a saved cut only for the same Deployment, viewer, served version and reader format", async () => {
   let held: PersonalStreamCheckpoint | null = null;
   const cache: PersonalStreamCache = {
     load: async () => held,
@@ -110,22 +110,39 @@ it("restores an applied cut only for the same Deployment, viewer and epoch", asy
   expect(restored.getSnapshot().savedViewReadiness?.tasksReady).toBe(true);
   restored.dispose();
   const saved = held! as PersonalStreamCheckpoint;
-  held = { ...saved, cursor: { ...saved.cursor, apiVersion: hostApiVersion + 1 } };
-  const fresh = new HttpHostClient({
-    baseUrl: "http://mock-host",
-    capabilities: [],
-    fetch: f.host.fetch,
-    webSocketFactory: f.host.connect,
-    refreshIntervalMs: 0,
-    streamCache: cache,
-  });
-  cleanups.push(() => fresh.dispose());
-  await fresh.load();
-  await vi.waitFor(() =>
-    expect(
-      [...f.host.sockets][0]?.sent.some((row) => JSON.parse(row).cursor?.afterSequence === "0"),
-    ).toBe(true),
-  );
+  expect(saved.cursor.apiVersion).toBe(hostApiVersion);
+  const fresh = (checkpoint: PersonalStreamCheckpoint) => {
+    held = checkpoint;
+    const client = new HttpHostClient({
+      baseUrl: "http://mock-host",
+      capabilities: [],
+      fetch: f.host.fetch,
+      webSocketFactory: f.host.connect,
+      refreshIntervalMs: 0,
+      streamCache: cache,
+    });
+    cleanups.push(() => client.dispose());
+    return client;
+  };
+  // Read from a Host serving another version, or by a reader in another local format.
+  for (const checkpoint of [
+    { ...saved, cursor: { ...saved.cursor, apiVersion: hostApiVersion - 1 } },
+    { ...saved, scope: { ...saved.scope, apiVersion: hostApiVersion + 1 } },
+  ]) {
+    const client = fresh(checkpoint);
+    await client.load();
+    await vi.waitFor(() =>
+      expect(
+        [...f.host.sockets].some((socket) =>
+          socket.sent.some((row) => {
+            const cursor = JSON.parse(row).cursor;
+            return cursor?.afterSequence === "0" && cursor.apiVersion === hostApiVersion;
+          }),
+        ),
+      ).toBe(true),
+    );
+    client.dispose();
+  }
 });
 it("restores absolute task versions so replay cannot undo a newer HTTP answer", async () => {
   const { ThreadStateProjection } = await import("./thread-state.js");

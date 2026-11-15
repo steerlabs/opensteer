@@ -51,6 +51,7 @@ pnpm desktop:public-release prepare --channel stable --app-zip /absolute/rebuilt
 ## Previous-release baseline
 
 Personal epoch 53 started over with a fresh schema, so earlier releases get an upgrade message
-and never attach. Once a public release on the current epoch ships, a change that must keep it
+and never attach. Releases before the personal API window (version 58) state one exact version;
+from 58 on, Hosts and apps inside each other's window attach. Once a public release on the current epoch ships, a change that must keep it
 working adds a released-client journey: build that release's client source and drive it against
 the current Host, and have CI fetch that commit in shallow checkouts.

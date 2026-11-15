@@ -3,9 +3,11 @@ import { TeamEntryOutcomeError } from "../team/native-team-entry.js";
 import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import { TeamEntryRefusedError } from "../auth/native-oauth.js";
 import {
-  apiNegotiation,
-  apiVersionHeader,
-  apiVersionQueryParameter,
+  apiVersionHeaders,
+  hostApiCurrentHeader,
+  hostApiVersionHeader,
+  setApiVersionQuery,
+  teamApiVersionHeader,
 } from "@opensteer/deployment-authority";
 import type { DeploymentId } from "@opensteer/core";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
@@ -50,6 +52,7 @@ export interface HostTransportRequest {
     readonly additional?: Readonly<Record<string, string>>;
     readonly accept?: string | undefined;
     readonly apiVersion?: string | undefined;
+    readonly apiCurrent?: string | undefined;
     readonly bootstrapDiagnostics?: string | undefined;
     readonly contentType?: string | undefined;
     readonly idempotencyKey?: string | undefined;
@@ -230,33 +233,32 @@ export class HostTransport {
       const assertCurrent = this.retainAuthorization(selected);
       const { resolved, connection } = selected;
       const deploymentKind = connection.authority.document.deploymentShape.kind;
+      const versionHeaders = [hostApiVersionHeader, hostApiCurrentHeader, teamApiVersionHeader];
       const negotiatesVersion =
         this.#expectedKind === "team" ||
         request.headers.apiVersion !== undefined ||
         Object.keys(request.headers.additional ?? {}).some((name) =>
-          ["x-opensteer-api-version", "x-opensteer-team-api-version"].includes(name.toLowerCase()),
+          versionHeaders.includes(name.toLowerCase()),
         );
       if (negotiatesVersion) {
         const additional = Object.fromEntries(
           Object.entries(request.headers.additional ?? {}).filter(
-            ([name]) =>
-              !["x-opensteer-api-version", "x-opensteer-team-api-version"].includes(
-                name.toLowerCase(),
-              ),
+            ([name]) => !versionHeaders.includes(name.toLowerCase()),
           ),
         );
-        const { apiVersion: _version, ...headers } = request.headers;
+        const { apiVersion: _version, apiCurrent: _current, ...headers } = request.headers;
+        const versions = apiVersionHeaders(deploymentKind);
         request = {
           ...request,
           headers: {
             ...headers,
             ...(deploymentKind === "personal"
-              ? { apiVersion: String(apiNegotiation(deploymentKind).apiVersion) }
+              ? {
+                  apiVersion: versions[hostApiVersionHeader],
+                  apiCurrent: versions[hostApiCurrentHeader],
+                }
               : {}),
-            additional: {
-              ...additional,
-              [apiVersionHeader(deploymentKind)]: String(apiNegotiation(deploymentKind).apiVersion),
-            },
+            additional: { ...additional, ...versions },
           },
         };
       }
@@ -383,10 +385,7 @@ export class HostTransport {
     const bound = events(socket);
     const target = hostUrl(resolved.origin, input.path);
     target.protocol = target.protocol === "https:" ? "wss:" : "ws:";
-    target.searchParams.set(
-      apiVersionQueryParameter,
-      String(apiNegotiation(connection.authority.document.deploymentShape.kind).apiVersion),
-    );
+    setApiVersionQuery(target, connection.authority.document.deploymentShape.kind);
     assertCurrent();
     this.#sockets.add(socket);
     releaseOwner = resolved.teamRuntime?.own(() =>
@@ -399,11 +398,7 @@ export class HostTransport {
         requestOrigin: resolved.origin,
         deploymentId: resolved.deploymentId,
         url: target.toString(),
-        headers: {
-          [apiVersionHeader(connection.authority.document.deploymentShape.kind)]: String(
-            apiNegotiation(connection.authority.document.deploymentShape.kind).apiVersion,
-          ),
-        },
+        headers: apiVersionHeaders(connection.authority.document.deploymentShape.kind),
       },
       {
         close: (code, reason) => {

@@ -14,9 +14,12 @@ import {
 import { OpensteerError, unsupportedVersionReason } from "@opensteer/core";
 import { attachmentMaxBytes } from "@opensteer/core";
 import {
+  apiCurrentQueryParameter,
   apiNegotiation,
   apiVersionHeader,
   apiVersionQueryParameter,
+  hostApiCurrentHeader,
+  minimumHostApiVersion,
   statesApiVersion,
 } from "@opensteer/deployment-authority";
 import type { DeploymentKind } from "@opensteer/core";
@@ -324,14 +327,12 @@ function isUnchanged(request: FastifyRequest, reply: FastifyReply): boolean {
 }
 
 /**
- * The epoch gate, run before anything else this route does.
+ * The version gate, run before anything else this route does.
  *
  * It precedes authentication, the origin comparison and the payload parse on
- * purpose: a caller on another epoch may be sending a payload whose fields no
- * longer mean what this tree thinks they mean, so no part of it is dispatched.
- * A missing header is the same refusal as a wrong one — every client that
- * reaches this Host ships the header, because the Host serves its own web
- * bundle and the Desktop ships with the Host.
+ * purpose: a caller outside this Host's window may be sending a payload whose
+ * fields no longer mean what this tree thinks they mean, so no part of it is
+ * dispatched. A missing version is refused like one outside the window.
  */
 export function requireNegotiatedVersion(
   request: FastifyRequest,
@@ -339,12 +340,17 @@ export function requireNegotiatedVersion(
 ): void {
   if (statesApiVersion(request.headers, kind)) return;
   const stated = request.headers[apiVersionHeader(kind)];
+  const current = kind === "personal" ? request.headers[hostApiCurrentHeader] : undefined;
+  const serves =
+    kind === "personal"
+      ? `Opensteer protocol ${minimumHostApiVersion} through ${apiNegotiation(kind).apiVersion}`
+      : `Opensteer protocol ${apiNegotiation(kind).apiVersion}`;
   throw new OpensteerError({
     code: "bad_request",
     message:
       typeof stated === "string"
-        ? `This deployment speaks Opensteer protocol ${apiNegotiation(kind).apiVersion}; the caller stated ${stated}.`
-        : `This deployment speaks Opensteer protocol ${apiNegotiation(kind).apiVersion} and the caller stated none.`,
+        ? `This deployment serves ${serves}; the caller stated ${stated}${typeof current === "string" ? ` through ${current}` : ""}.`
+        : `This deployment serves ${serves} and the caller stated none.`,
     reason: unsupportedVersionReason,
   });
 }
@@ -403,14 +409,18 @@ export interface HostApiRegistrationOptions {
 
 export function carryWebSocketVersion(request: FastifyRequest, kind: DeploymentKind): void {
   if (request.headers.upgrade?.toLowerCase() !== "websocket") return;
-  const versions = new URL(request.url, "http://localhost").searchParams.getAll(
-    apiVersionQueryParameter,
-  );
-  if (!versions.length) return;
-  const header = apiVersionHeader(kind),
-    held = request.headers[header];
-  request.headers[header] =
-    versions.length === 1 && (held === undefined || held === versions[0]) ? versions[0] : "invalid";
+  const query = new URL(request.url, "http://localhost").searchParams;
+  const carry = (parameter: string, header: string) => {
+    const versions = query.getAll(parameter);
+    if (!versions.length) return;
+    const held = request.headers[header];
+    request.headers[header] =
+      versions.length === 1 && (held === undefined || held === versions[0])
+        ? versions[0]
+        : "invalid";
+  };
+  carry(apiVersionQueryParameter, apiVersionHeader(kind));
+  if (kind === "personal") carry(apiCurrentQueryParameter, hostApiCurrentHeader);
 }
 
 /**

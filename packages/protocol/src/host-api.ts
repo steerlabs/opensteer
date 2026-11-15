@@ -316,12 +316,13 @@ const oidcReturnPathSchema = z
   .default("/");
 
 /**
- * The request header every rpc caller states its protocol epoch in. A request
- * that omits it is a client from before negotiation existed, and the Host
- * refuses it: there are none in the wild, because the Host serves its own web
- * bundle and the Desktop ships with the Host it talks to.
+ * The request headers every rpc caller states its versions in. Phones, Agent
+ * Phones, Runners and open windows update apart from their Host, so it serves
+ * every caller whose window overlaps its own ("API compatibility" in
+ * docs/connections.md).
  */
 export {
+  hostApiCurrentHeader,
   hostApiVersionHeader,
   teamApiVersion,
   teamApiVersionHeader,

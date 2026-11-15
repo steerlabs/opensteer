@@ -109,22 +109,19 @@ export class MockPersonalHost {
     const socket = new MockPersonalSocket((data) => {
       const frame = ClientToHostMessageSchema.parse(JSON.parse(data));
       if (frame.type !== "client.subscribe") return;
-      if (
-        frame.cursor.deploymentId !== this.client.getSnapshot().deploymentId ||
-        frame.cursor.apiVersion !== hostApiVersion
-      ) {
+      if (frame.cursor.deploymentId !== this.client.getSnapshot().deploymentId) {
         socket.close();
         return;
       }
       this.#subscribed.set(socket, frame.deviceAccessRequests === "include");
-      const rows = this.#rows.filter(
-        (row) => BigInt(row.sequence) > BigInt(frame.cursor.afterSequence),
-      );
+      // Like the Host, state read at another version is replaced, not resumed.
+      const after = frame.cursor.apiVersion === hostApiVersion ? frame.cursor.afterSequence : "0";
+      const rows = this.#rows.filter((row) => BigInt(row.sequence) > BigInt(after));
       if (
-        frame.cursor.afterSequence !== "0" &&
+        after !== "0" &&
         rows.length <= 200 &&
         this.#rows.length > 0 &&
-        BigInt(frame.cursor.afterSequence) >= BigInt(this.#rows[0]!.sequence) - 1n
+        BigInt(after) >= BigInt(this.#rows[0]!.sequence) - 1n
       )
         socket.deliver({
           type: "host.events",

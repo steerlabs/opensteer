@@ -4,7 +4,6 @@ import {
   HostApiErrorSchema,
   AttachmentContentMetadataSchema,
   hostApi,
-  hostApiVersionHeader,
   type HostApiClient,
   type HostApiHandlers,
   type HostApiServerContext,
@@ -13,11 +12,7 @@ import {
   type RpcInput,
   type RpcOutput,
 } from "@opensteer/protocol";
-import {
-  hostApiVersion,
-  teamApiVersion,
-  teamApiVersionHeader,
-} from "@opensteer/deployment-authority";
+import { apiVersionHeaders } from "@opensteer/deployment-authority";
 import { attachmentMaxBytes } from "@opensteer/core";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { formatIssues } from "@opensteer/shared/validationIssues";
@@ -203,11 +198,9 @@ async function request<Name extends keyof typeof hostApi>(
         headers: {
           ...(diagnostic ? { [bootstrapDiagnosticHeader]: JSON.stringify(diagnostic) } : {}),
           accept: declaration.stream ? "*/*" : "application/json",
-          // Every rpc request states the epoch this app speaks. It is sent from
+          // Every rpc request states the versions this app speaks. It is sent from
           // here alone so no caller can reach a Host without having negotiated.
-          [options.kind === "team" ? teamApiVersionHeader : hostApiVersionHeader]: String(
-            options.kind === "team" ? teamApiVersion : hostApiVersion,
-          ),
+          ...apiVersionHeaders(options.kind === "team" ? "team" : "personal"),
           ...(declaration.method === "POST"
             ? {
                 "content-type":

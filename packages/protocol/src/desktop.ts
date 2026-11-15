@@ -1108,7 +1108,7 @@ function boundedUtf8String(minimumBytes: number, maximumBytes: number) {
 
 const DesktopAcceptHeaderSchema = z.string().regex(/^[\x20-\x7e]{1,255}$/u);
 const DesktopIdempotencyKeySchema = z.string().regex(/^[\x21-\x7e]{1,255}$/u);
-/** The protocol epoch the calling client states, relayed as it was sent. */
+/** A version the calling client states, relayed as it was sent. */
 const DesktopApiVersionSchema = z.string().regex(/^[0-9]{1,6}$/u);
 
 export const DesktopHostHttpRequestSchema = z.strictObject({
@@ -1117,6 +1117,7 @@ export const DesktopHostHttpRequestSchema = z.strictObject({
   headers: z.strictObject({
     accept: DesktopAcceptHeaderSchema.optional(),
     apiVersion: DesktopApiVersionSchema.optional(),
+    apiCurrent: DesktopApiVersionSchema.optional(),
     bootstrapDiagnostics: z
       .string()
       .regex(/^[\x20-\x7e]{1,2048}$/u)
@@ -1179,6 +1180,7 @@ export const DesktopHostBinaryOpenInputSchema = z
     headers: z.strictObject({
       accept: DesktopAcceptHeaderSchema.optional(),
       apiVersion: DesktopApiVersionSchema.optional(),
+      apiCurrent: DesktopApiVersionSchema.optional(),
       contentType: z.literal("application/octet-stream").optional(),
       teamUpload: z.string().min(1).max(2048).optional(),
     }),

@@ -6,6 +6,14 @@ import {
 } from "@opensteer/deployment-authority";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
+import {
+  json,
+  same,
+  surfaceBreaks,
+  wireBreaks,
+  type JsonSchema,
+  type Surface,
+} from "./wire-compatibility.test-support.js";
 import { hostApi } from "./host-api.js";
 import { teamIdentityRpcNames, teamReadSchemas, TeamCommandSchema } from "./team-api.js";
 import { TeamClientFrameSchema, TeamServerFrameSchema } from "./team-chat.js";
@@ -53,9 +61,6 @@ import {
   TeamServerFrameViewSchema,
 } from "./team-views.js";
 
-type JsonSchema = { readonly [key: string]: unknown };
-type Direction = "input" | "output";
-type Surface = keyof Pick<TeamWire, "input" | "output" | "frames">;
 interface TeamWire {
   readonly teamApiVersion: number;
   readonly minimumTeamApiVersion: number;
@@ -78,11 +83,6 @@ interface PartnerWire extends Pick<TeamWire, Surface> {
 const snapshotPath = new URL("./team-wire.snapshot.json", import.meta.url);
 const partnerSnapshotPath = new URL("./team-partner-wire.snapshot.json", import.meta.url);
 const updateVariable = "OPENSTEER_UPDATE_TEAM_WIRE";
-
-function json(schema: z.core.$ZodType): JsonSchema {
-  const { $schema: _, ...rest } = z.toJSONSchema(schema, { io: "input", unrepresentable: "any" });
-  return rest;
-}
 
 function teamWire(): TeamWire {
   // Only what a team Host serves: `teams.*` entries are the personal Host's own routes.
@@ -180,128 +180,6 @@ const partnerFrameViews = {
   "partner file chunk": [TeamShareFileChunkSchema, TeamShareFileChunkViewSchema],
 } as const;
 
-const record = (value: unknown): JsonSchema =>
-  typeof value === "object" && value !== null && !Array.isArray(value) ? (value as JsonSchema) : {};
-const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
-
-/** Names a union member by its literal discriminator, or by its JSON type. */
-function memberKey(member: JsonSchema): string {
-  const literals = Object.entries(record(member.properties))
-    .filter(([, value]) => "const" in record(value))
-    .map(([name, value]) => `${name}=${String(record(value).const)}`);
-  return literals.length ? literals.join(",") : String(member.type ?? JSON.stringify(member));
-}
-
-/**
- * Where a newer reader stops accepting what an older peer sends (`input`) or
- * a newer writer starts sending what an older reader rejects (`output`). New
- * fields must be optional either way; an output may only gain them where its
- * readers ignore unknown fields, and only an input may gain union members or
- * enum values, except the frame types readers skip.
- */
-function breakingChanges(
-  before: unknown,
-  after: unknown,
-  direction: Direction,
-  path = "",
-  skipsUnknownMembers = false,
-): string[] {
-  if (same(before, after)) return [];
-  const old = record(before),
-    next = record(after);
-  const breaks: string[] = [];
-  const keys = new Set([...Object.keys(old), ...Object.keys(next)]);
-  for (const key of keys) {
-    const at = `${path}/${key}`;
-    if (same(old[key], next[key])) continue;
-    if (key === "properties") {
-      const oldProperties = record(old.properties),
-        nextProperties = record(next.properties);
-      const required = new Set((next.required as string[] | undefined) ?? []);
-      for (const name of Object.keys(oldProperties)) {
-        if (!(name in nextProperties)) breaks.push(`${at}/${name} was removed`);
-        else
-          breaks.push(
-            ...breakingChanges(
-              oldProperties[name],
-              nextProperties[name],
-              direction,
-              `${at}/${name}`,
-            ),
-          );
-      }
-      for (const name of Object.keys(nextProperties)) {
-        if (name in oldProperties) continue;
-        if (required.has(name)) breaks.push(`${at}/${name} was added as required`);
-        else if (direction === "output" && old.additionalProperties === false)
-          breaks.push(`${at}/${name} was added where readers refuse unknown fields`);
-      }
-    } else if (key === "required") {
-      const oldRequired = new Set((old.required as string[] | undefined) ?? []);
-      const nextRequired = new Set((next.required as string[] | undefined) ?? []);
-      const narrowed =
-        direction === "input"
-          ? [...nextRequired].filter(
-              (name) => !oldRequired.has(name) && name in record(old.properties),
-            )
-          : [...oldRequired].filter((name) => !nextRequired.has(name));
-      for (const name of narrowed)
-        breaks.push(
-          `${path}/properties/${name} became ${direction === "input" ? "required" : "optional"}`,
-        );
-    } else if (key === "anyOf" || key === "oneOf") {
-      const members = (value: unknown) =>
-        new Map(
-          (Array.isArray(value) ? value : []).map((member) => [
-            memberKey(record(member)),
-            member as unknown,
-          ]),
-        );
-      const oldMembers = members(old[key]),
-        nextMembers = members(next[key]);
-      for (const [name, member] of oldMembers) {
-        if (!nextMembers.has(name)) breaks.push(`${at}[${name}] was removed`);
-        else
-          breaks.push(
-            ...breakingChanges(member, nextMembers.get(name), direction, `${at}[${name}]`),
-          );
-      }
-      if (direction === "output" && !skipsUnknownMembers)
-        for (const name of nextMembers.keys())
-          if (!oldMembers.has(name)) breaks.push(`${at}[${name}] was added`);
-    } else if (key === "enum") {
-      const nextValues = (next.enum as unknown[] | undefined) ?? [];
-      const oldValues = (old.enum as unknown[] | undefined) ?? [];
-      const widened =
-        direction === "input" && oldValues.every((value) => nextValues.includes(value));
-      if (!widened) breaks.push(`${at} changed`);
-    } else if (key === "items" || key === "additionalProperties") {
-      if (key === "additionalProperties" && old[key] === false && !(key in next)) continue;
-      if (typeof old[key] === "object" && typeof next[key] === "object")
-        breaks.push(...breakingChanges(old[key], next[key], direction, at));
-      else breaks.push(`${at} changed`);
-    } else breaks.push(`${at} changed`);
-  }
-  return breaks;
-}
-
-function surfaceBreaks(before: unknown, after: unknown, surface: Surface, path = ""): string[] {
-  const breaks = breakingChanges(before, after, "input", path);
-  if (surface !== "input")
-    breaks.push(...breakingChanges(before, after, "output", path, surface === "frames"));
-  return [...new Set(breaks)];
-}
-
-function wireBreaks(before: Pick<TeamWire, Surface>, after: Pick<TeamWire, Surface>): string[] {
-  return (["input", "output", "frames"] as const).flatMap((surface) =>
-    Object.entries(before[surface]).flatMap(([name, schema]) =>
-      name in after[surface]
-        ? surfaceBreaks(schema, after[surface][name], surface, `${surface} ${name}`)
-        : [`${surface} ${name} was removed`],
-    ),
-  );
-}
-
 const ignoringStrictness = (schema: JsonSchema): unknown =>
   JSON.parse(
     JSON.stringify(schema, (key, value: unknown) =>
@@ -318,7 +196,7 @@ describe("team wire compatibility", () => {
     if (committed.teamApiVersion === teamApiVersion)
       expect(
         wireBreaks(committed, current),
-        "This breaks peers on the same teamApiVersion. Make it additive, or bump teamApiVersion and decide minimumTeamApiVersion (docs/teams.md#transport-and-versions).",
+        "This breaks peers on the same teamApiVersion. Make it additive, or bump teamApiVersion and decide minimumTeamApiVersion (docs/connections.md#api-compatibility).",
       ).toEqual([]);
     if (process.env[updateVariable] === "1")
       writeFileSync(snapshotPath, `${JSON.stringify(current, null, 2)}\n`);

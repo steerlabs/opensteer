@@ -85,7 +85,11 @@ import {
   type IconName,
   type MessageRevisionView,
 } from "@opensteer/core";
-import { hostApiVersion, apiVersionQueryParameter } from "@opensteer/deployment-authority";
+import {
+  hostApiVersion,
+  minimumHostApiVersion,
+  setApiVersionQuery,
+} from "@opensteer/deployment-authority";
 import {
   BrowserSessionIdSchema,
   DisplaySourceSchema,
@@ -358,6 +362,8 @@ export interface WebSocketClient {
 interface DeploymentChannel {
   refused: boolean;
   cursor: Sequence;
+  /** The version `cursor` was read at; state read at another one is replaced. */
+  apiVersion: number;
   /** The nonce of the liveness probe this channel is waiting on, if any. */
   probeFollowsNetwork: boolean;
   probeNonce: string | null;
@@ -462,6 +468,11 @@ export class HttpHostClient {
   #cacheLoaded = false;
   #applyingSnapshot = false;
   #restoredCursor: Sequence | null = null;
+  /**
+   * The version the Host serves this client, from bootstrap. A Host from before
+   * the window admits this client only at its minimum, and does not say so.
+   */
+  #servedApiVersion = minimumHostApiVersion;
   readonly #channels = new Map<string, DeploymentChannel>();
   readonly #fetch: Fetch;
   readonly #listeners = new Set<() => void>();
@@ -3798,6 +3809,7 @@ export class HttpHostClient {
       this.#expireSession();
       generation = this.#viewerGeneration;
     }
+    this.#servedApiVersion = payload.apiVersion ?? minimumHostApiVersion;
     const environments = payload.environments.map((environment) => ({ ...environment }));
     const harnesses = payload.harnesses.map(({ config, ...harness }) => ({
       ...harness,
@@ -3871,7 +3883,7 @@ export class HttpHostClient {
       if (
         cached &&
         cached.cursor.deploymentId === payload.deploymentId &&
-        cached.cursor.apiVersion === hostApiVersion &&
+        cached.cursor.apiVersion === this.#servedApiVersion &&
         cached.scope.userId === payload.user.id &&
         cached.scope.deploymentId === payload.deploymentId &&
         cached.scope.apiVersion === hostApiVersion
@@ -4198,6 +4210,7 @@ export class HttpHostClient {
       existing ??
       ({
         cursor: this.#restoredCursor ?? zeroSequence,
+        apiVersion: this.#servedApiVersion,
         refused: false,
         probeFollowsNetwork: false,
         probeNonce: null,
@@ -4270,18 +4283,19 @@ export class HttpHostClient {
     socket.addEventListener("open", () => {
       if (channel.socket !== socket) return;
       channel.progressAt = Date.now();
+      if (channel.apiVersion !== this.#servedApiVersion) {
+        channel.apiVersion = this.#servedApiVersion;
+        channel.cursor = zeroSequence;
+      }
       try {
         socket.send(
           JSON.stringify({
             cursor: {
               deploymentId: channel.deploymentId,
-              apiVersion: hostApiVersion,
+              apiVersion: channel.apiVersion,
               afterSequence: channel.cursor,
             },
-            // The realtime half of the same negotiation the rpc header carries:
-            // an upgraded Host refuses the stream before sending an event this
-            // app would read with the wrong meaning.
-            apiVersion: hostApiVersion,
+            apiVersion: channel.apiVersion,
             ...(this.#supportsDeviceAccessRequests() ? { deviceAccessRequests: "include" } : {}),
             ...(this.#capabilities?.includes("person-show-v1") ? { personShow: "accept" } : {}),
             ...(this.#capabilities?.includes("tool-output-detail-v1")
@@ -5453,8 +5467,7 @@ export class HttpHostClient {
   #webSocketUrl(path: string): string {
     const url = new URL(path, this.#baseUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    url.searchParams.set(apiVersionQueryParameter, String(hostApiVersion));
-    return url.toString();
+    return setApiVersionQuery(url, "personal").toString();
   }
 
   /**
@@ -5555,7 +5568,7 @@ export class HttpHostClient {
       threadStates: this.#threadState.checkpoint(),
       cursor: {
         deploymentId: DeploymentIdSchema.parse(scope.deploymentId),
-        apiVersion: hostApiVersion,
+        apiVersion: channel.apiVersion,
         afterSequence: channel.cursor,
       },
     };

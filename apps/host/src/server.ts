@@ -102,6 +102,7 @@ import {
   type HarnessInstanceStateKind,
   type RunnerId,
   excludedBackgroundAccounts,
+  zeroSequence,
 } from "@opensteer/core";
 import {
   machineIsManagedBy,
@@ -114,6 +115,8 @@ import {
 import {
   HostDescriptorSchema,
   hostApiVersion,
+  minimumHostApiVersion,
+  negotiatedHostApiVersion,
   type HostBootstrapMethod,
   type HostCapability,
   type HostDiscoveryEnvelope,
@@ -626,7 +629,8 @@ export async function createHostServer(
     void reply.header("cache-control", "no-store");
     return HostDescriptorSchema.parse({
       kind: "personal",
-      apiVersion: hostApiVersion,
+      apiVersion: minimumHostApiVersion,
+      currentApiVersion: hostApiVersion,
       authority: dependencies.discovery,
       bootstrapMethods: await advertisedBootstrapMethods(dependencies),
       capabilities: advertisedCapabilities(dependencies),
@@ -1185,6 +1189,7 @@ export async function createHostServer(
       dependencies.ownerProfile?.refreshSoon();
       return rpcSuccess(
         HostBootstrapSchema.parse({
+          apiVersion: servedHostApiVersion(context.headers),
           deploymentId: dependencies.discovery.document.deploymentId,
           sessionId: session.id,
           personalSettings: settings,
@@ -2753,6 +2758,7 @@ export async function createHostServer(
         socket,
         dependencies.realtime,
         dependencies.discovery.document.deploymentId,
+        servedHostApiVersion(request.headers),
         dependencies.browser,
         session,
         request.log,
@@ -3701,10 +3707,18 @@ export class RunnerChallengeAdmission {
   }
 }
 
+/** The personal version gate has already admitted every `/v1/` caller this serves. */
+function servedHostApiVersion(headers: Parameters<typeof negotiatedHostApiVersion>[0]): number {
+  const version = negotiatedHostApiVersion(headers);
+  if (version === null) throw new Error("A caller reached the Host without a negotiated version.");
+  return version;
+}
+
 function attachRealtimeSocket(
   socket: WebSocket,
   realtime: RealtimeHub,
   deploymentId: import("@opensteer/core").DeploymentId,
+  apiVersion: number,
   browser: BrowserService,
   session: AuthenticatedSession,
   log: FastifyInstance["log"],
@@ -3739,7 +3753,7 @@ function attachRealtimeSocket(
             )
               ? message.type
               : "unknown",
-            apiEpoch: hostApiVersion,
+            apiEpoch: apiVersion,
             bytes: Buffer.byteLength(JSON.stringify(message)),
             issuePaths: projected.error.issues.slice(0, 8).map(({ path }) =>
               path.length === 0
@@ -3831,18 +3845,14 @@ function attachRealtimeSocket(
     try {
       if (isBinary) throw badMessage("Client messages must be JSON text");
       const message = ClientToHostMessageSchema.parse(parseFrame(buffer));
-      // Refuse another epoch before either stream can process its following frames.
-      if (
-        message.type === "client.subscribe" &&
-        (message.cursor.apiVersion !== hostApiVersion ||
-          message.cursor.deploymentId !== deploymentId)
-      ) {
+      // Refuse another Deployment's cursor before either stream can process its following frames.
+      if (message.type === "client.subscribe" && message.cursor.deploymentId !== deploymentId) {
         close();
         void sink
           .send({
             error: {
               code: "bad_message",
-              message: `This deployment speaks Opensteer protocol ${hostApiVersion}.`,
+              message: "This cursor belongs to another deployment.",
               reason: unsupportedVersionReason,
               retryable: false,
             },
@@ -3923,7 +3933,9 @@ function attachRealtimeSocket(
       if (subscribed) throw badMessage("Client is already subscribed");
       try {
         const subscription = await realtime.subscribe({
-          afterSequence: message.cursor.afterSequence,
+          // State read at another version is replaced, not resumed.
+          afterSequence:
+            message.cursor.apiVersion === apiVersion ? message.cursor.afterSequence : zeroSequence,
           ...(message.deviceAccessRequests
             ? { deviceAccessRequests: message.deviceAccessRequests }
             : {}),
