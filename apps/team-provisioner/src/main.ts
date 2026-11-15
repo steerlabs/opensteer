@@ -20,9 +20,8 @@ function log(event: string, fields: Readonly<Record<string, unknown>> = {}): voi
 
 async function main(): Promise<void> {
   const config = loadProvisionerConfig(process.env);
-  const google = new GoogleAuth({
-    scopes: ["https://www.googleapis.com/auth/sqlservice.login"],
-  });
+  // One Google identity for Storage's managed folders and the IAM database login.
+  const google = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] });
   const pool = new pg.Pool({
     host: config.platform.databaseHost,
     port: 5432,
@@ -52,7 +51,8 @@ async function main(): Promise<void> {
     platform: config.platform,
     database: new PostgresTeamDatabase(pool),
     storage: new GcsTeamStorage(
-      new Storage(),
+      new Storage({ authClient: google }),
+      google,
       config.platform.bucket,
       config.project,
       config.projectNumber,

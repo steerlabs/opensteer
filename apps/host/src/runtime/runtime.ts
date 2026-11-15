@@ -181,8 +181,9 @@ import { PlaceContextService } from "../computer-use/place-context-service.js";
 import { HostAuthenticator } from "../identity/auth.js";
 import { CredentialService, loadOrCreateCredentialKey } from "../identity/credential-service.js";
 import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
-import { loadOrCreateHostInstance } from "../identity/host-instance.js";
+import { loadHostInstance, loadOrCreateHostInstance } from "../identity/host-instance.js";
 import {
+  loadHostKeys,
   loadOrCreateHostKeys,
   SignedTokenService,
   signHostDiscovery,
@@ -463,11 +464,18 @@ export async function createHostRuntime(
   const executionNow = options.executionClock?.now ?? (() => Date.now());
   assertHostConfigInvariants(config);
   const dataDirectory = resolve(config.dataDirectory);
-  const keys = await loadOrCreateHostKeys({
-    dataDirectory,
-    ...(config.privateKeyPath ? { privateKeyPath: config.privateKeyPath } : {}),
-    ...(config.publicKeyPath ? { publicKeyPath: config.publicKeyPath } : {}),
-  });
+  // A strict installation was provisioned outside this process and is read, never created.
+  const keys =
+    config.strictInstallation && config.privateKeyPath && config.publicKeyPath
+      ? await loadHostKeys({
+          privateKeyPath: config.privateKeyPath,
+          publicKeyPath: config.publicKeyPath,
+        })
+      : await loadOrCreateHostKeys({
+          dataDirectory,
+          ...(config.privateKeyPath ? { privateKeyPath: config.privateKeyPath } : {}),
+          ...(config.publicKeyPath ? { publicKeyPath: config.publicKeyPath } : {}),
+        });
   const hostKeyFingerprint = fingerprintForSpki(
     keys.publicKey.export({ format: "der", type: "spki" }).toString("base64url"),
   );
@@ -480,13 +488,15 @@ export async function createHostRuntime(
   // HostInstanceId belongs to this installation, not to the portable database.
   // Materialize it before any database work so startup never creates a
   // Deployment row without first having a durable local identity.
-  const hostInstance = await loadOrCreateHostInstance(
-    dataDirectory,
-    config.deploymentIdentity?.hostInstanceId,
-  );
+  const hostInstance =
+    config.strictInstallation && config.hostInstancePath
+      ? await loadHostInstance(config.hostInstancePath, config.deploymentIdentity?.hostInstanceId)
+      : await loadOrCreateHostInstance(dataDirectory, config.deploymentIdentity?.hostInstanceId);
   const database = createDatabase({
     applicationName: "opensteer-host",
     connectionString: config.databaseUrl,
+    // Several team copies share one database login during a rollout; 5 queries + 1 listener each.
+    ...(deploymentPolicy(config.deploymentShape).services.team ? { maxConnections: 6 } : {}),
   });
   let administrationCatalogs: HarnessCatalogReconciliationOwner | undefined;
   let authorityLease: DeploymentAuthorityLease | undefined;

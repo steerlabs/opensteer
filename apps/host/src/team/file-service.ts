@@ -478,11 +478,15 @@ export class TeamFileService {
           if (object.key === key) await this.files.delete(key, object.generation);
     }
   }
-  async close() {
-    this.#unsubscribe();
+  /** Ends every transfer in flight; the service keeps serving new, authorized ones. */
+  async abortTransfers() {
     for (const transfer of this.#caching.values()) transfer.controller.abort();
     await Promise.allSettled([...this.#caching.values()].map((t) => t.done));
     for (const transfer of this.#active) transfer.controller.abort();
     this.#active.clear();
+  }
+  async close() {
+    this.#unsubscribe();
+    await this.abortTransfers();
   }
 }

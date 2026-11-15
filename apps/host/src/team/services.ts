@@ -51,6 +51,7 @@ import { TeamOutboxStore, type TeamPushDelivery } from "@opensteer/database/team
 import { TeamRequestsStore } from "@opensteer/database/team-requests";
 import { TeamLinkService } from "./link-service.js";
 import { TeamFileService } from "./file-service.js";
+import type { TeamFileStore } from "./file-store.js";
 import { TeamShareFiles } from "../team-partners/files.js";
 import { TeamRealtimeHub } from "./realtime.js";
 import type { PersonProfileReceiptVerifier } from "../access/person-profile-receipt-verifier.js";
@@ -76,6 +77,8 @@ export interface TeamServiceOptions {
   readonly origin: string;
   readonly inviteVerifiers?: TeamInviteVerifierVault;
   readonly dataDirectory: string;
+  /** Where team file bytes live; local disk under the data directory when absent. */
+  readonly fileStore?: TeamFileStore;
   readonly storageLimitBytes?: number | undefined;
   readonly knowledge: {
     read(actor: TeamActor, name: string, input: unknown): Promise<unknown>;
@@ -142,7 +145,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
     hostKeyFingerprint: options.hostKeyFingerprint,
   });
   const files = new TeamFilesStore(access, { storageLimitBytes: options.storageLimitBytes });
-  const fileService = new TeamFileService(files, access, options.dataDirectory);
+  const fileService = new TeamFileService(files, access, options.dataDirectory, options.fileStore);
   if (shares) {
     shares.files = new TeamShareFiles(shares, fileService);
     fileService.remote = shares.files;
@@ -153,6 +156,8 @@ export async function startTeamServices(options: TeamServiceOptions) {
   const closeAll = (code = 1012) => {
     realtime.closeAll(code);
     options.machine?.closeAll?.(code);
+    void fileService.abortTransfers();
+    void options.partners?.closeSockets();
   };
   const detachAll = access.onCloseAll(closeAll);
   const resync = async () => {
@@ -180,7 +185,12 @@ export async function startTeamServices(options: TeamServiceOptions) {
   };
   const maintenance = () => {
     if (!stopped && !maintaining)
-      maintaining = Promise.all([requests.expire(), fileService.collectGarbage(), access.prune()])
+      maintaining = Promise.all([
+        requests.expire(),
+        fileService.collectGarbage(),
+        access.prune(),
+        options.partners?.maintenance(),
+      ])
         .catch(() => options.backgroundError("team-maintenance"))
         .finally(() => {
           maintaining = null;

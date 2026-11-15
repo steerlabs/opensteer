@@ -1,4 +1,5 @@
-import { Storage } from "@google-cloud/storage";
+import type { Storage } from "@google-cloud/storage";
+import type { GoogleAuth } from "google-auth-library";
 import { z } from "zod";
 
 export interface TeamStorage {
@@ -8,11 +9,19 @@ export interface TeamStorage {
 
 export class GcsTeamStorage implements TeamStorage {
   private readonly storage: Storage;
+  private readonly auth: GoogleAuth;
   private readonly bucket: string;
   private readonly project: string;
   private readonly projectNumber: string;
-  constructor(storage: Storage, bucket: string, project: string, projectNumber: string) {
+  constructor(
+    storage: Storage,
+    auth: GoogleAuth,
+    bucket: string,
+    project: string,
+    projectNumber: string,
+  ) {
     this.storage = storage;
+    this.auth = auth;
     this.bucket = bucket;
     this.project = project;
     this.projectNumber = projectNumber;
@@ -25,10 +34,12 @@ export class GcsTeamStorage implements TeamStorage {
     allowed: readonly number[] = [],
   ) {
     try {
-      return await this.storage.authClient.request({
+      return await this.auth.request({
         method,
         url: `https://storage.googleapis.com/storage/v1/b/${encodeURIComponent(this.bucket)}/managedFolders${path}`,
-        data,
+        ...(data === undefined
+          ? {}
+          : { body: JSON.stringify(data), headers: { "content-type": "application/json" } }),
       });
     } catch (error) {
       const code = z.object({ response: z.object({ status: z.number() }) }).safeParse(error).data

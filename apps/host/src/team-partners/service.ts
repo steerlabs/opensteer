@@ -809,6 +809,10 @@ export class TeamPartners {
     this.#jobs.add(job);
     void job.catch(() => this.options.onError()).finally(() => this.#jobs.delete(job));
   }
+  /** Drops every partner socket; dialer links reconnect on their own. */
+  async closeSockets() {
+    await Promise.all([...this.#entries].map((entry) => entry.peer.close()));
+  }
   async close() {
     this.#unsubscribeAccess();
     this.lifetimes.stop();
