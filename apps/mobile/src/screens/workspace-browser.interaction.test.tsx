@@ -1,26 +1,30 @@
-import { seedBrowserSession } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
-import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 
 import { act, StrictMode, useEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BrowserEditingStore,
-  browserThreadAgentTab,
+  TabStore,
   type BrowserSessionSummary,
   type HostSnapshot,
+  type PlaceActivity,
+  type PlaceOccupant,
 } from "@opensteer/client/host";
 import { Alert } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { fitOffer, pictureBox, pinched, slideFor } from "../browser/browser-page.js";
-import { BrowserPageContentPartSchema } from "@opensteer/core";
-import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
-import type { BrowserTabRow } from "@opensteer/protocol/browser-tabs";
-import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
+import {
+  BrowserPageContentPartSchema,
+  RunnerIdSchema,
+  TabIdSchema,
+  type App,
+  type Tab,
+  type TabId,
+} from "@opensteer/core";
+import type { BrowserViewerSurface } from "@opensteer/protocol/browser-tabs";
+import { MemoryPrivateFilesystem, tabFixture } from "@opensteer/client/test-support";
 import type { TabRoute } from "../browser/surface-route.js";
-import { appTab, FakeTabs, pageTab, phoneTab, windowTab } from "../../test-support/mock-tabs.js";
-import type { Tab, TabId } from "@opensteer/core";
 import type { TabViewer } from "@opensteer/protocol";
 import {
   createThreadDraftStore,
@@ -33,10 +37,9 @@ import { WorkspaceBrowserScreen } from "./workspace-browser.js";
 /*
  * One tab, app or phone, by route. What can go wrong: a link's tab is swapped
  * for whatever tab is active; an ended browser is replaced by another; Chrome
- * sign-in is lost; another person's or deployment's tabs are shown; a saved
- * tab's lineage moving to a new session leaves the page on the old session; a
- * lineage the bounded catalog leaves out is read more than once or replaced by
- * a sibling; the bar names an agent from the route rather than the page's
+ * sign-in is lost; another person's or deployment's tabs are shown; anything
+ * but the person's own Open wakes a phone; moving between pages of one browser
+ * blanks the page; the bar names an agent from the route rather than the page's
  * occupants, or pushes a second copy of the Thread under it; Ask loses the
  * page; the route's origin changes what the screen shows.
  */
@@ -61,6 +64,10 @@ const state = vi.hoisted(() => ({
     readonly onActivate: (event: { focalX: number; focalY: number }) => void;
     readonly onDeactivate: () => void;
     readonly onUpdate: (event: { focalX: number; focalY: number; scale: number }) => void;
+  },
+  swipe: null as null | {
+    readonly failOffsetY?: unknown;
+    readonly onDeactivate: (event: { translationX: number }) => void;
   },
   safeArea: { bottom: 0, left: 0, right: 0, top: 0 },
   setOptions: vi.fn(),
@@ -163,12 +170,13 @@ vi.mock("react-native-webview", () => ({
     </div>
   ),
 }));
+// The screen's own hooks run for real over the fake client; only the snapshot
+// reads, the app view and the popup follow stand in.
 vi.mock("@opensteer/client/react", async () => {
   const actual =
     await vi.importActual<typeof import("@opensteer/client/react")>("@opensteer/client/react");
   return {
-    useActionReview: actual.useActionReview,
-    useBrowserAgentFollow: actual.useBrowserAgentFollow,
+    ...actual,
     useAppView: (...args: Parameters<typeof actual.useAppView>) =>
       state.realAppView
         ? actual.useAppView(...args)
@@ -194,24 +202,7 @@ vi.mock("@opensteer/client/react", async () => {
       loadError: null,
       reload: state.refresh,
     }),
-    // The keyed tab reads, from the same fixture as the snapshot.
-    useBrowserSessionGroupId: (_client: unknown, sessionId: string | undefined) =>
-      sessionId === undefined
-        ? undefined
-        : seedBrowserSnapshot(state.snapshot!).browserTabs?.groupForSession(sessionId),
-    useBrowserTab: (_client: unknown, groupId?: string, tabId?: string) =>
-      groupId && tabId
-        ? seedBrowserSnapshot(state.snapshot!).browserTabs?.tab(groupId, tabId)
-        : undefined,
-    useBrowserTabs: (_client: unknown, groupId: string) => fixtureList(groupId),
-    useBrowserViewerSurface: (_client: unknown, sessionId?: string, tabId?: string) =>
-      sessionId && tabId ? fixtureSurface(sessionId, tabId) : undefined,
     useBrowserTabAwake: () => true,
-    // No Run place in these fixtures: the agent's tab is the one its Thread occupies.
-    useThreadAgentTab: (_client: unknown, threadId: string | null) =>
-      threadId === null
-        ? null
-        : browserThreadAgentTab(seedBrowserSnapshot(state.snapshot!).browserSessions, threadId),
   };
 });
 vi.mock("../ui/mobile-client-context.js", () => ({
@@ -404,6 +395,11 @@ vi.mock("react-native-gesture-handler", async () => ({
   ...(await import("../../test-support/native-chrome.js")).gestureHandler,
   usePinchGesture: (config: typeof state.pinch) => {
     state.pinch = config;
+    return {};
+  },
+  // The address bar's sideways swipe between tabs.
+  usePanGesture: (config: NonNullable<typeof state.swipe>) => {
+    if ("failOffsetY" in config) state.swipe = config;
     return {};
   },
 }));
@@ -688,38 +684,59 @@ afterEach(() => {
   state.extraTabs = [];
   state.tabsComplete = true;
   state.activate = null;
+  state.swipe = null;
+  tabs = new TabStore();
+  clientListeners.clear();
 });
 
 const agentHome = { computerId: "rnr_00000000-0000-4000-8000-000000000001", path: "/Users/alex" };
+/** The computer every fixture tab is on. */
+const studio = {
+  computerId: RunnerIdSchema.parse("rnr_00000000-0000-4000-8000-00000000000a"),
+  name: "Studio Mac",
+};
+const agentAt = "2026-10-13T00:00:00.000Z";
+type Occupant = Partial<Omit<PlaceOccupant, "threadId">> & {
+  readonly threadId: string;
+};
+
+/** One page of a fixture browser: its tab row, its viewer's surface, and who is in it. */
+interface Page {
+  readonly id: TabId;
+  readonly title: string;
+  readonly url: string;
+  readonly occupants?: readonly Occupant[];
+  readonly sizedByAgent?: boolean;
+}
+/** A browser session and the pages it holds, which become the Host's page tabs. */
+type FixtureSession = BrowserSessionSummary & { readonly pages: readonly Page[] };
+type PageInput = Omit<Page, "id"> & { readonly id: string };
+const firstPage: PageInput = { id: "page-1", title: "Page", url: "https://example.com" };
 
 function session(
   id: string,
   state: BrowserSessionSummary["state"] = "ready",
-): BrowserSessionSummary {
-  return seedBrowserSession(
-    {
-      access: "read-write",
-      attachedRunIds: [],
-      dialog: null,
-      error: null,
-      id,
-      origin: "agent",
-      placement: { kind: "runner", runnerId: "runner-a" },
-      profileId: null,
-      runtimeId: "runtime-a",
-      state,
-      viewerError: null,
-      viewerState: "synchronized",
-    },
-    undefined,
-    [{ active: true, id: "page-1", title: "Page", url: "https://example.com" }] as NonNullable<
-      Parameters<typeof seedBrowserSession>[2]
-    >,
-  );
+  pages: readonly PageInput[] = [firstPage],
+): FixtureSession {
+  return {
+    access: "read-write",
+    attachedRunIds: [],
+    dialog: null,
+    error: null,
+    id,
+    origin: "agent",
+    placement: { kind: "runner", runnerId: "runner-a" },
+    profileId: null,
+    runtimeId: "runtime-a",
+    state,
+    viewerError: null,
+    viewerState: "synchronized",
+    pages: pages.map((page) => ({ ...page, id: TabIdSchema.parse(page.id) })),
+  } as FixtureSession;
 }
 
 function snapshot(sessions: BrowserSessionSummary[]): HostSnapshot {
-  return seedBrowserSnapshot({
+  return {
     assignments: {},
     browserPlacements: [],
     browserProfiles: [],
@@ -744,26 +761,129 @@ function snapshot(sessions: BrowserSessionSummary[]): HostSnapshot {
     transcripts: {},
     user: { id: "user-a" },
     waitingRequests: [],
-  } as unknown as HostSnapshot);
+  } as unknown as HostSnapshot;
 }
 
-function fixtureRows(sessionId: string): ReadonlyMap<string, BrowserTabRow> | undefined {
-  const session = state.snapshot?.browserSessions.find(({ id }) => id === sessionId);
-  return session
-    ? new Map(session.browserTabs?.sessionTabs(sessionId).map((tab) => [tab.id, tab]))
-    : undefined;
+/** Every page the snapshot's browsers hold, with the browser holding it. */
+function pagesOf(raw: HostSnapshot | null) {
+  return (raw?.browserSessions ?? []).flatMap((held) =>
+    ((held as Partial<FixtureSession>).pages ?? []).map((page) => ({ session: held, page })),
+  );
 }
-function fixtureList(sessionId: string) {
-  const rows = fixtureRows(sessionId);
-  return { ids: rows ? [...rows.keys()] : [], syncing: false, whole: rows !== undefined };
+function pageIn(sessionId: string, tabId: string): Page | undefined {
+  return pagesOf(state.snapshot).find(
+    (held) => held.session.id === sessionId && held.page.id === tabId,
+  )?.page;
 }
-const fixtureTabs = {
-  sessionTab: (sessionId: string, tabId: string) => fixtureRows(sessionId)?.get(tabId),
-  sessionList: fixtureList,
-  tab: (groupId: string, tabId: string) => fixtureRows(groupId)?.get(tabId),
-};
-const fixtureSurface = (sessionId: string, tabId: string) =>
-  state.snapshot?.browserTabs?.surface(sessionId, tabId);
+
+/** A page's tab row: who uses it, and when they were last there. */
+function pageTab(page: Page): Tab {
+  const occupants = page.occupants ?? [];
+  const tab = tabFixture({
+    tabId: page.id,
+    title: page.title,
+    url: page.url,
+    computer: studio,
+    updatedAt:
+      occupants
+        .map(({ lastActiveAt }) => lastActiveAt ?? agentAt)
+        .sort()
+        .at(-1) ?? agentAt,
+  });
+  // The fixture's task ids are words, not the Host's ids, so they skip its schema.
+  const usedBy = [...new Set(occupants.map(({ threadId }) => threadId))]
+    .sort()
+    .map((taskId) => ({ taskId }));
+  return { ...tab, usedBy } as unknown as Tab;
+}
+/** A Mac window or a phone the person opened as a tab. */
+function nativeTab(phone: boolean, extra: Partial<Tab> = {}): Tab {
+  return tabFixture({
+    tabId: TabIdSchema.parse("tab_native"),
+    computer: studio,
+    ...(phone ? { kind: "phone", title: "Pixel" } : { kind: "window", title: "Notes" }),
+    ...extra,
+  });
+}
+
+/** The Host's one tab list on this device, kept up as each render's snapshot says. */
+let tabs = new TabStore();
+let tabsRevision = 0;
+function syncTabs(): void {
+  const listed = [
+    ...new Map(
+      [...pagesOf(state.snapshot).map(({ page }) => pageTab(page)), ...state.extraTabs].map(
+        (tab) => [tab.tabId, tab],
+      ),
+    ).values(),
+  ];
+  const layout = {
+    revision: ++tabsRevision,
+    items: listed.map((tab) => ({ kind: "tab" as const, tabId: tab.tabId })),
+  };
+  if (!state.tabsComplete) {
+    // A list still arriving: what is known so far, and more to come.
+    tabs.clear();
+    tabs.seed({ tabs: listed, layout, complete: false });
+    return;
+  }
+  tabs.apply({ op: "begin", generation: `fixture-${tabsRevision}` });
+  if (listed.length) tabs.apply({ op: "rows", rows: listed });
+  tabs.apply({ op: "end", revision: 0, count: listed.length, meta: { layout } });
+}
+
+const seededSnapshots = new WeakMap<object, HostSnapshot>();
+function currentSnapshot(): HostSnapshot | null {
+  const raw = state.snapshot;
+  if (raw === null) return null;
+  const held = seededSnapshots.get(raw);
+  if (held) return held;
+  const view = { ...raw, tabs } as HostSnapshot;
+  seededSnapshots.set(raw, view);
+  return view;
+}
+
+const nobodyActing: readonly PlaceActivity[] = [];
+const activities = new WeakMap<object, Map<string, readonly PlaceActivity[]>>();
+/** The Host's word for who acts in a tab now: its acting occupants. */
+function placeActivity(tabId: string): readonly PlaceActivity[] {
+  const raw = state.snapshot;
+  if (raw === null) return nobodyActing;
+  const held = activities.get(raw) ?? new Map<string, readonly PlaceActivity[]>();
+  activities.set(raw, held);
+  if (!held.has(tabId)) {
+    const acting = pagesOf(raw)
+      .filter(({ page }) => page.id === tabId)
+      .flatMap(({ page }) => page.occupants ?? [])
+      .filter(({ acting }) => acting === true)
+      .map(({ threadId }) => ({ placeKey: tabId, threadId }) as unknown as PlaceActivity);
+    held.set(tabId, acting.length ? acting : nobodyActing);
+  }
+  return held.get(tabId)!;
+}
+
+const surfaces = new WeakMap<Page, BrowserViewerSurface>();
+/** The page as the viewer bound to its browser draws it; the same object while the page is. */
+function viewerSurface(sessionId: string, tabId: string): BrowserViewerSurface | undefined {
+  const page = pageIn(sessionId, tabId);
+  if (page === undefined) return undefined;
+  const held = surfaces.get(page);
+  if (held) return held;
+  const surface = {
+    id: page.id,
+    title: page.title,
+    url: page.url,
+    state: "live",
+    documentId: `document-${page.id}`,
+    geometryRevision: 1,
+    loading: false,
+    navigationFailed: false,
+    sizedByAgent: page.sizedByAgent ?? false,
+    favicon: null,
+  } as unknown as BrowserViewerSurface;
+  surfaces.set(page, surface);
+  return surface;
+}
 
 const liveFeed = { status: "live", error: null, frame: null } as const;
 
@@ -773,71 +893,15 @@ type TestRoute = Omit<Partial<TabRoute>, "tabId"> & {
   readonly tabId?: string;
 };
 
-/** The Host's one tab list for a snapshot: every listed page, then the test's other tabs. */
-const tabModels = new WeakMap<object, FakeTabs>();
-function tabsFor(raw: HostSnapshot, seeded: HostSnapshot): FakeTabs {
-  const held = tabModels.get(raw);
-  if (held && held.complete === state.tabsComplete) return held;
-  const model = new FakeTabs();
-  const pages = seeded.browserSessions.flatMap((session) =>
-    (session.browserTabs?.sessionTabs(session.id) ?? []).map((row) =>
-      pageTab(row.id, row.title ?? "Page", {
-        tabId: row.id as TabId,
-        url: row.site ? `https://${row.site.replace(/^https?:\/\//u, "")}` : "https://example.com/",
-        usedBy: [...new Set((row.occupants ?? []).map(({ threadId }) => threadId))]
-          .sort()
-          .map((taskId) => ({ taskId: taskId as Tab["usedBy"][number]["taskId"] })),
-      }),
-    ),
-  );
-  const tabs = [...new Map([...pages, ...state.extraTabs].map((tab) => [tab.tabId, tab])).values()];
-  model.reset(
-    tabs,
-    tabs.map((tab) => ({ kind: "tab" as const, tabId: tab.tabId })),
-  );
-  model.complete = state.tabsComplete;
-  tabModels.set(raw, model);
-  return model;
-}
-const seededSnapshots = new WeakMap<object, HostSnapshot>();
-function currentSnapshot(): HostSnapshot | null {
-  const raw = state.snapshot;
-  if (raw === null) return null;
-  const held = seededSnapshots.get(raw);
-  if (held && (held as { tabs?: FakeTabs }).tabs?.complete === state.tabsComplete) return held;
-  const seeded = seedBrowserSnapshot(raw);
-  // A page's occupants become its tab's users: an acting one's task is running,
-  // and its last activity is its task's.
-  const occupants = seeded.browserSessions.flatMap((session) =>
-    (session.browserTabs?.sessionTabs(session.id) ?? []).flatMap((row) => row.occupants ?? []),
-  );
-  const threads = seeded.threads.map((thread) => {
-    const mine = occupants.filter(({ threadId }) => threadId === thread.id);
-    if (mine.length === 0) return thread;
-    return {
-      ...thread,
-      status: thread.status ?? (mine.some(({ acting }) => acting) ? "running" : "idle"),
-      updatedAt: mine
-        .map(({ lastActiveAt }) => lastActiveAt)
-        .sort()
-        .at(-1),
-    };
-  });
-  const view = { ...seeded, threads, tabs: tabsFor(raw, seeded) } as HostSnapshot;
-  seededSnapshots.set(raw, view);
-  return view;
-}
 /** The Host's activation: a page in the browser listing it, an app as itself. */
 async function activate(tabId: string): Promise<TabViewer> {
   if (state.activate) return state.activate(tabId);
-  const current = currentSnapshot();
-  const tab = (current as { tabs?: FakeTabs } | null)?.tabs?.get(tabId as TabId);
+  const tab = tabs.get(tabId);
   if (tab?.kind === "app") return { appId: tab.appId!, kind: "app" };
-  const sessions = current?.browserSessions ?? [];
-  const session =
-    sessions.find((row) => row.browserTabs?.sessionTab(row.id, tabId) !== undefined) ?? sessions[0];
-  if (!session) throw new Error("No browser holds this page.");
-  return { kind: "page", sessionId: session.id as never, surfaceId: tabId as TabId };
+  const held = pagesOf(state.snapshot).find(({ page }) => page.id === tabId);
+  const browser = held?.session ?? state.snapshot?.browserSessions[0];
+  if (!browser) throw new Error("No browser holds this page.");
+  return { kind: "page", sessionId: browser.id as never, surfaceId: tabId as TabId };
 }
 /** The Host's viewer for a Mac window or a phone, as its activation answers. */
 function nativeViewer(phone: boolean, generation = 1): TabViewer {
@@ -865,14 +929,28 @@ async function settle(): Promise<void> {
   for (let index = 0; index < 4; index += 1) await act(async () => undefined);
 }
 
+/** Who the fake client tells when the Host's snapshot changes. */
+const clientListeners = new Set<() => void>();
+
 async function setup(
   params: TestRoute = {},
   options: { strict?: boolean; snapshot?: HostSnapshot } = {},
 ) {
   state.hostClient.getSnapshot ??= currentSnapshot;
+  state.hostClient.subscribe ??= (listener: () => void) => {
+    clientListeners.add(listener);
+    return () => clientListeners.delete(listener);
+  };
   state.hostClient.activateTab ??= vi.fn(activate);
-  state.hostClient.browserTabs ??= fixtureTabs;
-  state.hostClient.browserViewerSurface ??= fixtureSurface;
+  state.hostClient.browserViewerSurface ??= viewerSurface;
+  state.hostClient.placeActivity ??= placeActivity;
+  state.hostClient.subscribePlaceActivity ??= () => () => undefined;
+  state.hostClient.runPlace ??= () => null;
+  state.hostClient.subscribeRunPlace ??= () => () => undefined;
+  state.hostClient.tabViewer ??= () => null;
+  state.hostClient.getApp ??= async (appId: string) => {
+    throw new Error(`No app ${appId}.`);
+  };
   state.drafts ??= createThreadDraftStore({
     filePath: "/private/drafts.json",
     now: () => new Date("2026-10-13T00:00:00.000Z"),
@@ -895,10 +973,17 @@ async function setup(
       ...params,
     } as TestRoute,
   };
+  const focus = () =>
+    act(() => {
+      state.focusEpoch += 1;
+      for (const listener of state.focusListeners) listener();
+    });
   const render = async () => {
-    Object.defineProperty(state.hostClient, "browserTabs", {
-      configurable: true,
-      get: () => seedBrowserSnapshot(state.snapshot!).browserTabs!,
+    // As on a phone: what covers the page changes before the Host's next word arrives.
+    focus();
+    act(() => {
+      syncTabs();
+      for (const listener of clientListeners) listener();
     });
     act(() =>
       root.render(
@@ -911,10 +996,7 @@ async function setup(
         ),
       ),
     );
-    act(() => {
-      state.focusEpoch += 1;
-      for (const listener of state.focusListeners) listener();
-    });
+    focus();
     await settle();
   };
   await render();
@@ -957,15 +1039,14 @@ function header(): HTMLElement {
   return container;
 }
 
-function mailSession(id: string): BrowserSessionSummary {
-  return seedBrowserSession({ ...session(id) }, undefined, [
+function mailSession(id: string): FixtureSession {
+  return session(id, "ready", [
     {
-      active: true,
       id: "srf_00000000-0000-4000-8000-000000000001",
       title: "Mail",
       url: "https://mail.example.com/inbox",
     },
-  ] as unknown as NonNullable<Parameters<typeof seedBrowserSession>[2]>);
+  ]);
 }
 
 async function pressAsync(container: HTMLElement, label: string) {
@@ -985,39 +1066,20 @@ function press(container: HTMLElement, label: string) {
   act(() => button.click());
 }
 
-const agentAt = "2026-10-13T00:00:00.000Z";
-type Occupant = Partial<Omit<import("@opensteer/client/host").PlaceOccupant, "threadId">> & {
-  readonly threadId: string;
-};
-
-/** A browser whose one tab holds these occupants, as a Host that names who is in a tab lists them. */
-function occupied(id: string, occupants: readonly Occupant[]): BrowserSessionSummary {
-  return seedBrowserSession(
-    { ...session(id) },
+/** A browser whose one page holds these occupants, as a Host that names who is in a tab lists them. */
+function occupied(id: string, occupants: readonly Occupant[], pageId = "page-1"): FixtureSession {
+  return session(id, "ready", [
     {
-      generation: 1,
-      revision: 1,
-      rows: [
-        {
-          availability: "ready",
-          documentId: null,
-          iconRef: null,
-          id: "page-1",
-          occupants: occupants.map((occupant) => ({
-            acting: false,
-            holding: true,
-            home: false,
-            lastActiveAt: agentAt,
-            ...occupant,
-          })),
-          openerId: null,
-          order: 0,
-          site: "https://example.com",
-          title: "Page",
-        },
-      ],
+      ...firstPage,
+      id: pageId,
+      occupants: occupants.map((occupant) => ({
+        acting: false,
+        holding: true,
+        lastActiveAt: agentAt,
+        ...occupant,
+      })),
     },
-  ) as unknown as BrowserSessionSummary;
+  ]);
 }
 
 /** A snapshot whose directory holds the agents' Threads and Agent home. */
@@ -1056,10 +1118,10 @@ describe("mobile pages", () => {
   /** Two pages of one browser, listed in that order. */
   function twoPages(): HostSnapshot {
     return snapshot([
-      seedBrowserSession({ ...session("chosen") }, undefined, [
-        { active: true, id: "page-1", title: "Page", url: "https://example.com" },
-        { active: false, id: "page-2", title: "Next", url: "https://next.example.com" },
-      ] as unknown as NonNullable<Parameters<typeof seedBrowserSession>[2]>),
+      session("chosen", "ready", [
+        firstPage,
+        { id: "page-2", title: "Next", url: "https://next.example.com" },
+      ]),
     ]);
   }
 
@@ -1089,7 +1151,7 @@ describe("mobile pages", () => {
 
   it("opens a popup the person's input opened over its page, ready to go back", async () => {
     const chosen = mailSession("chosen");
-    const tabId = (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id;
+    const tabId = chosen.pages[0]!.id;
     const { render } = await setup({ sessionId: chosen.id, tabId });
     state.snapshot = snapshot([chosen]);
     await render();
@@ -1130,24 +1192,12 @@ describe("mobile pages", () => {
       browserFrames: { subscribe: () => () => undefined },
     };
     const chosen = mailSession("chosen");
-    const target = "srf_00000000-0000-4000-8000-000000000002" as NonNullable<
-      Parameters<typeof seedBrowserSession>[2]
-    >[number]["id"];
+    const target = "srf_00000000-0000-4000-8000-000000000002";
     const { container, render } = await setup({ sessionId: chosen.id, tabId: target });
     state.snapshot = snapshot([
-      seedBrowserSession({ ...chosen }, undefined, [
-        ...chosen
-          .browserTabs!.sessionTabs(chosen.id)
-          .map((row) => chosen.browserTabs!.surface(chosen.id, row.id)!),
-        {
-          ...chosen.browserTabs!.surface(
-            chosen.id,
-            chosen.browserTabs!.sessionTabs(chosen.id)[0]!.id,
-          )!,
-          id: target,
-          active: false,
-          title: "Second page",
-        },
+      session(chosen.id, "ready", [
+        ...chosen.pages,
+        { ...chosen.pages[0]!, id: target, title: "Second page" },
       ]),
     ]);
     await render();
@@ -1170,7 +1220,7 @@ describe("mobile pages", () => {
     const chosen = mailSession("chosen");
     const { container, render } = await setup({
       sessionId: chosen.id,
-      tabId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+      tabId: chosen.pages[0]!.id,
     });
     let feed: object = { ...liveFeed, admissionId: "admission-1" };
     state.hostClient.browserViewerState = () => feed;
@@ -1193,7 +1243,7 @@ describe("mobile pages", () => {
     const chosen = mailSession("chosen");
     const { container, render } = await setup({
       sessionId: chosen.id,
-      tabId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+      tabId: chosen.pages[0]!.id,
     });
     state.snapshot = snapshot([chosen]);
     await render();
@@ -1219,7 +1269,7 @@ describe("mobile pages", () => {
     press(container, "Tap the page");
     press(container, "Keyboard");
     type("x");
-    const surfaceId = (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id;
+    const surfaceId = chosen.pages[0]!.id;
     expect(sendBrowserCommand.mock.calls).toEqual([
       [chosen.id, { type: "clipboard.paste", surfaceId, text: "saved" }],
       [chosen.id, { type: "clipboard.paste", surfaceId, text: "!" }],
@@ -1235,9 +1285,9 @@ describe("mobile pages", () => {
     await pressAsync(menu(), "Close tab");
     expect(closeTabs).toHaveBeenCalledExactlyOnceWith(["page-1"]);
     state.snapshot = snapshot([
-      seedBrowserSession({ ...session("chosen") }, undefined, [
-        { active: true, id: "page-2", title: "Next", url: "https://next.example.com" },
-      ] as unknown as NonNullable<Parameters<typeof seedBrowserSession>[2]>),
+      session("chosen", "ready", [
+        { id: "page-2", title: "Next", url: "https://next.example.com" },
+      ]),
     ]);
     await render();
     expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
@@ -1273,6 +1323,34 @@ describe("mobile pages", () => {
     expect(state.setParams).not.toHaveBeenCalled();
     expect(state.goBack).not.toHaveBeenCalled();
     expect(state.hostClient.activateTab).toHaveBeenCalledOnce();
+  });
+
+  it("swipes to the next page of its browser in list order, and keeps it drawn while that opens", async () => {
+    const { container, render, route } = await setup(
+      { sessionId: "chosen" },
+      { snapshot: twoPages() },
+    );
+    // The first page has nothing before it.
+    act(() => state.swipe!.onDeactivate({ translationX: 200 }));
+    expect(state.setParams).not.toHaveBeenCalled();
+    act(() => state.swipe!.onDeactivate({ translationX: -200 }));
+    expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
+      editAddress: false,
+      popup: false,
+      tabId: "page-2",
+    });
+    const opening = Promise.withResolvers<TabViewer>();
+    state.activate = () => opening.promise;
+    route.params = { ...route.params, tabId: "page-2" };
+    await render();
+    expect(container.textContent).not.toContain("Opening…");
+    expect(container.textContent).toContain("Viewing chosen");
+    await act(async () =>
+      opening.resolve({ kind: "page", sessionId: "chosen" as never, surfaceId: "page-2" as TabId }),
+    );
+    expect(
+      container.querySelector("[data-expected-surface]")?.getAttribute("data-expected-surface"),
+    ).toBe("page-2");
   });
 
   it("stays on the page and explains a failed close", async () => {
@@ -1317,11 +1395,9 @@ describe("mobile pages", () => {
     const sendBrowserCommand = vi.fn();
     state.hostClient = {
       dispatch,
-      getSnapshot: () => state.snapshot,
       retainBrowserViewer: () => () => undefined,
       rpc: {},
       sendBrowserCommand,
-      subscribe: () => () => undefined,
     };
     state.hostClient.browserViewerState = () => liveFeed;
     state.hostClient.browserFrames ??= { subscribe: () => () => undefined };
@@ -1426,7 +1502,9 @@ describe("mobile pages", () => {
     expect(container.textContent).toContain("This page is asleep");
     expect(container.textContent).not.toContain("Viewing other");
     await pressAsync(container, "Open again");
+    // Open again is the person's own Open.
     expect(state.hostClient.activateTab).toHaveBeenCalledTimes(2);
+    expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("page-1", { wake: true });
     expect(container.textContent).not.toContain("Viewing other");
     expect(state.dispatch).not.toHaveBeenCalled();
   });
@@ -1624,7 +1702,7 @@ describe("the page's bar", () => {
   it.each([false, true])(
     "Ask on a native surface includes no invented web page (phone: %s)",
     async (phone) => {
-      state.extraTabs = [phone ? phoneTab("native") : windowTab("native", "Notes")];
+      state.extraTabs = [nativeTab(phone)];
       state.activate = async () => nativeViewer(phone);
       const opened = await setup({ tabId: "tab_native" });
       state.snapshot = withAgents([]);
@@ -1681,20 +1759,29 @@ describe("the page's bar", () => {
  */
 describe("an app open as a tab", () => {
   const appId = "app_11111111-1111-4111-8111-111111111111" as Tab["appId"] & string;
-  const budget = () => appTab("budget", appId, { title: "Budget" });
-  async function openApp() {
+  const budget = () =>
+    tabFixture({
+      tabId: TabIdSchema.parse("tab_budget"),
+      kind: "app",
+      appId,
+      title: "Budget",
+      computer: studio,
+    });
+  /** The app open as its tab; `taskId` is the conversation the app record says made it. */
+  async function openApp(taskId: string | null = null) {
     const closeTabs = vi.fn(async (tabIds: readonly string[]) => ({ closed: tabIds, failed: [] }));
     const viewApp = vi.fn(async () => ({
       app: { title: "Budget" },
       url: `https://host.test/v1/apps/${appId}/dark/token/`,
     }));
+    const getApp = vi.fn(async () => ({ appId, name: "Budget", taskId }) as unknown as App);
     const stopApp = vi.fn();
-    state.hostClient = { closeTabs, stopApp, viewApp };
+    state.hostClient = { closeTabs, getApp, stopApp, viewApp };
     state.extraTabs = [budget()];
     const opened = await setup({ tabId: "tab_budget" });
     state.snapshot = withAgents([]);
     await opened.render();
-    return { ...opened, closeTabs, stopApp, viewApp };
+    return { ...opened, closeTabs, getApp, stopApp, viewApp };
   }
   const webView = () => document.querySelector("[data-testid='app-webview']");
   /** The app's menu, behind its name in the native bar. */
@@ -1712,6 +1799,27 @@ describe("an app open as a tab", () => {
     expect(JSON.parse(webView()!.getAttribute("data-style")!)).toMatchObject({ flex: 1 });
     expect(document.querySelector("[data-testid='page-toolbar']")).toBeNull();
     expect(webView()?.getAttribute("data-uri")).toContain(appId);
+  });
+
+  it("asks in and opens the conversation that made it, as its record says, and neither once that is gone", async () => {
+    const { getApp, render } = await openApp("thread-app");
+    const made = {
+      name: "Thread",
+      params: { deploymentId: "deployment-a", threadId: "thread-app" },
+      type: "PUSH",
+    };
+    press(appMenu(), "Open its conversation");
+    expect(state.dispatch).toHaveBeenLastCalledWith(made);
+    state.dispatch.mockClear();
+    press(appMenu(), "Ask about this app");
+    expect(state.dispatch).toHaveBeenCalledExactlyOnceWith(made);
+    // The conversation is deleted: the app's next record names none.
+    getApp.mockResolvedValue({ appId, name: "Budget", taskId: null } as unknown as App);
+    state.snapshot = { ...state.snapshot!, appsRevision: 1 } as HostSnapshot;
+    await render();
+    expect(appMenu().textContent).not.toContain("Open its conversation");
+    expect(appMenu().textContent).not.toContain("Ask about this app");
+    expect(appMenu().textContent).toContain("New task");
   });
 
   it("closes only its tab from the bar, never its server, and leaves once the list drops it", async () => {
@@ -1804,19 +1912,34 @@ describe("any kind of tab, by its tabId", () => {
   it.each([false, true])(
     "shows the exact owner view the Host opened for it (phone: %s)",
     async (phone) => {
-      state.extraTabs = [phone ? phoneTab("native") : windowTab("native", "Notes")];
+      state.extraTabs = [nativeTab(phone)];
       state.activate = vi.fn(async () => nativeViewer(phone, 7));
-      const { container } = await setup({ tabId: "tab_native" }, { snapshot: withAgents([]) });
+      const { container, render } = await setup(
+        { tabId: "tab_native" },
+        { snapshot: withAgents([]) },
+      );
       expect(container.textContent).toContain(
         `${phone ? "Phone" : "Mac app com.apple.notes"} view owner-view:7`,
       );
-      expect(state.activate).toHaveBeenCalledExactlyOnceWith("tab_native");
+      // Only the person's Open may wake a phone: asking again on return to the foreground may not.
+      expect(state.hostClient.activateTab).toHaveBeenCalledExactlyOnceWith("tab_native", {
+        wake: true,
+      });
+      state.foreground = false;
+      await render();
+      state.foreground = true;
+      await render();
+      expect(state.hostClient.activateTab).toHaveBeenCalledTimes(2);
+      expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("tab_native", {
+        wake: false,
+      });
+      expect(container.textContent).toContain("view owner-view:7");
     },
   );
 
   it("offers Reopen for a closed tab, and never shows another in its place", async () => {
     const reopenTab = vi.fn(async () => {
-      state.extraTabs = [windowTab("native", "Notes")];
+      state.extraTabs = [nativeTab(false)];
       state.snapshot = withAgents([session("other")]);
       return state.extraTabs[0]!;
     });
@@ -1837,7 +1960,7 @@ describe("any kind of tab, by its tabId", () => {
 
   it("says why an unavailable tab cannot open, and asks the Host nothing", async () => {
     state.extraTabs = [
-      windowTab("native", "Notes", {
+      nativeTab(false, {
         state: "unavailable",
         unavailableCode: "window-closed",
         unavailableReason: "Window closed",
@@ -2059,35 +2182,19 @@ describe("a page beside its agent's thread", () => {
       const { container, render, route } = await openPage();
       const agentOn = (tabId: string) =>
         withAgents([
-          seedBrowserSession(
-            { ...occupied("browser-child", []) },
-            {
-              generation: 1,
-              revision: 1,
-              rows: ["page-1", "page-2"].map((id, order) => ({
-                availability: "ready",
-                documentId: null,
-                iconRef: null,
-                id,
-                occupants:
-                  id === tabId
-                    ? [
-                        {
-                          acting: true,
-                          holding: true,
-                          home: false,
-                          lastActiveAt: agentAt,
-                          threadId: "thread-agent",
-                        },
-                      ]
-                    : [],
-                openerId: null,
-                order,
-                site: "https://example.com",
-                title: id === "page-1" ? "Page" : "Flights",
-              })),
-            },
-          ) as unknown as BrowserSessionSummary,
+          session(
+            "browser-child",
+            "ready",
+            ["page-1", "page-2"].map((id) => ({
+              id,
+              occupants:
+                id === tabId
+                  ? [{ acting: true, lastActiveAt: agentAt, threadId: "thread-agent" }]
+                  : [],
+              title: id === "page-1" ? "Page" : "Flights",
+              url: "https://example.com",
+            })),
+          ),
         ]);
       const showTab = async (tabId: string) => {
         route.params = {
@@ -2550,7 +2657,7 @@ describe("native page layout and controls", () => {
     const chosen = mailSession("chosen");
     const opened = await setup({
       sessionId: chosen.id,
-      tabId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+      tabId: chosen.pages[0]!.id,
     });
     state.snapshot = snapshot([chosen]);
     await opened.render();
@@ -2579,7 +2686,7 @@ describe("native page layout and controls", () => {
     });
     expect(send).toHaveBeenCalledExactlyOnceWith(chosen.id, {
       type: "navigation.go",
-      surfaceId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+      surfaceId: chosen.pages[0]!.id,
       typed: true,
       url,
     });
@@ -2588,19 +2695,11 @@ describe("native page layout and controls", () => {
   it("cancels a draft address and switches a suggested tab in the page route", async () => {
     const { container, chosen, render, send } = await open();
     const other = {
-      ...(chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!,
-      id: BrowserSurfaceIdSchema.parse("srf_00000000-0000-4000-8000-000000000002"),
+      id: "srf_00000000-0000-4000-8000-000000000002",
       title: "Other",
       url: "https://other.example",
     };
-    state.snapshot = snapshot([
-      seedBrowserSession({ ...chosen }, undefined, [
-        ...chosen
-          .browserTabs!.sessionTabs(chosen.id)
-          .map((row) => chosen.browserTabs!.surface(chosen.id, row.id)!),
-        other,
-      ]),
-    ]);
+    state.snapshot = snapshot([session(chosen.id, "ready", [...chosen.pages, other])]);
     await render();
     press(container, "Address, mail.example.com");
     changeAddress(container, "discard this");
@@ -2608,10 +2707,7 @@ describe("native page layout and controls", () => {
     press(container, "Address, mail.example.com");
     expect(
       container.querySelector<HTMLInputElement>('input[aria-label="Website address"]')?.value,
-    ).toBe(
-      chosen.browserTabs!.surface(chosen.id, chosen.browserTabs!.sessionTabs(chosen.id)[0]!.id)!
-        .url,
-    );
+    ).toBe(chosen.pages[0]!.url);
     changeAddress(container, "Other");
     press(container, "Other, other.example");
     expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
@@ -2629,7 +2725,7 @@ describe("native page layout and controls", () => {
     press(container, "Fit to screen");
     expect(send).toHaveBeenCalledExactlyOnceWith(chosen.id, {
       type: "viewport.set",
-      surfaceId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+      surfaceId: chosen.pages[0]!.id,
       width: 400,
       height: 800,
     });
@@ -2663,15 +2759,7 @@ describe("native page layout and controls", () => {
     state.layout = { width: 400, height: 800 };
     const { container, send, chosen, render } = await open();
     state.snapshot = snapshot([
-      seedBrowserSession({ ...chosen }, undefined, [
-        {
-          ...chosen.browserTabs!.surface(
-            chosen.id,
-            chosen.browserTabs!.sessionTabs(chosen.id)[0]!.id,
-          )!,
-          sizedByAgent: true,
-        },
-      ]),
+      session(chosen.id, "ready", [{ ...chosen.pages[0]!, sizedByAgent: true }]),
     ]);
     await render();
     press(container, "Fit to screen");
@@ -2686,62 +2774,26 @@ describe("native page layout and controls", () => {
     });
     expect(send).toHaveBeenCalledExactlyOnceWith(chosen.id, {
       type: "viewport.set",
-      surfaceId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+      surfaceId: chosen.pages[0]!.id,
       width: 400,
       height: 800,
     });
   });
 
-  it("disables catalog-refused history and admits history from older Hosts", async () => {
+  // A page's viewer does not say whether history exists, so Back and Forward are always offered.
+  it("offers the page's history in More on a phone, and beside the address where it is wide", async () => {
     const { container, chosen, send, render } = await open();
-    const catalog = occupied(chosen.id, []).browserTabs!.inventory(occupied(chosen.id, [])?.id)!;
     const item = (label: string) =>
       [...menu().querySelectorAll("button")].find((button) => button.textContent === label);
-    state.snapshot = snapshot([
-      seedBrowserSession(
-        { ...chosen },
-        {
-          ...catalog,
-          rows: [
-            {
-              ...occupied(chosen.id, []).browserTabs!.sessionTabs(chosen.id)[0]!,
-              id: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
-              canGoBack: false,
-              canGoForward: false,
-            },
-          ],
-        },
-      ),
-    ]);
-    await render();
     // A phone's address keeps its room: the page's history is in More, beside Forward.
     expect(element(container, "Previous page")).toBeNull();
-    expect(item("Back")?.disabled).toBe(true);
-    expect(item("Forward")?.disabled).toBe(true);
-    press(menu(), "Back");
-    press(menu(), "Forward");
-    expect(send).not.toHaveBeenCalled();
-    state.snapshot = snapshot([chosen]);
-    await render();
     expect(item("Back")?.disabled).toBe(false);
     expect(item("Forward")?.disabled).toBe(false);
     press(menu(), "Back");
     press(menu(), "Forward");
     expect(send.mock.calls).toEqual([
-      [
-        chosen.id,
-        {
-          type: "navigation.back",
-          surfaceId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
-        },
-      ],
-      [
-        chosen.id,
-        {
-          type: "navigation.forward",
-          surfaceId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
-        },
-      ],
+      [chosen.id, { type: "navigation.back", surfaceId: chosen.pages[0]!.id }],
+      [chosen.id, { type: "navigation.forward", surfaceId: chosen.pages[0]!.id }],
     ]);
 
     // Where the page is wide, Back and Forward stand beside the address, as Safari's do on iPad.
@@ -2761,7 +2813,7 @@ describe("native page layout and controls", () => {
     const chosen = mailSession("chosen");
     const { container, render } = await setup({
       sessionId: chosen.id,
-      tabId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+      tabId: chosen.pages[0]!.id,
     });
     state.snapshot = snapshot([chosen]);
     await act(async () => await render());
@@ -2783,7 +2835,7 @@ describe("native page layout and controls", () => {
     act(() =>
       editing.receive(chosen.id, {
         type: "browser.editing",
-        surfaceId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+        surfaceId: chosen.pages[0]!.id,
         context: {
           contextId: "00000000-0000-4000-8000-000000000001",
           field: { kind: "text", multiline: false, sensitive: false },
@@ -2807,7 +2859,7 @@ describe("native page layout and controls", () => {
     const chosen = mailSession("chosen");
     const { container, render } = await setup({
       sessionId: chosen.id,
-      tabId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+      tabId: chosen.pages[0]!.id,
     });
     state.snapshot = snapshot([chosen]);
     await render();
@@ -2817,7 +2869,7 @@ describe("native page layout and controls", () => {
     act(() =>
       editing.receive(chosen.id, {
         type: "browser.editing",
-        surfaceId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+        surfaceId: chosen.pages[0]!.id,
         context: {
           contextId: "00000000-0000-4000-8000-000000000001",
           field: { kind: "text", multiline: false, sensitive: false },
@@ -2839,7 +2891,7 @@ it("opens controller page actions only from matching streamed facts and offers o
     browserFrames: { editing, subscribe: () => () => undefined },
   };
   const chosen = mailSession("chosen");
-  const surfaceId = (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id;
+  const surfaceId = chosen.pages[0]!.id;
   const { container, render } = await setup({ sessionId: chosen.id, tabId: surfaceId });
   state.snapshot = snapshot([chosen]);
   await render();
@@ -2878,7 +2930,7 @@ it("fences a menu clipboard read when another page contact changes its destinati
   editing.negotiate("chosen", 2);
   state.hostClient = { browserFrames: { editing, subscribe: () => () => undefined } };
   const chosen = mailSession("chosen");
-  const surfaceId = (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id;
+  const surfaceId = chosen.pages[0]!.id;
   const { container, render } = await setup({ sessionId: chosen.id, tabId: surfaceId });
   state.snapshot = snapshot([chosen]);
   await render();

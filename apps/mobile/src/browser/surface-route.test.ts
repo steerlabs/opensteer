@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { tabId } from "../../test-support/mock-tabs.js";
+import { TabIdSchema } from "@opensteer/core";
 import { pageSite, paramsTabId, tabRoute, viewedPage } from "./surface-route.js";
 describe("pageSite", () => {
   it("names a site as a person says it, without its www", () => {
@@ -20,11 +20,12 @@ describe("viewedPage", () => {
 });
 
 describe("tab routes", () => {
+  const page = TabIdSchema.parse("tab_page");
   it("name exactly one tab by its tabId, through typed and untyped params", () => {
-    const route = tabRoute("deployment", tabId("page"), "thread");
-    expect(route).toEqual({ deploymentId: "deployment", tabId: tabId("page"), threadId: "thread" });
-    expect(paramsTabId(JSON.parse(JSON.stringify(route)))).toBe(tabId("page"));
-    expect(tabRoute("deployment", tabId("page"))).not.toHaveProperty("threadId");
+    const route = tabRoute("deployment", page, "thread");
+    expect(route).toEqual({ deploymentId: "deployment", tabId: page, threadId: "thread" });
+    expect(paramsTabId(JSON.parse(JSON.stringify(route)))).toBe(page);
+    expect(tabRoute("deployment", page)).not.toHaveProperty("threadId");
   });
 
   // A link can carry any value; one that is not a tab id names nothing.
