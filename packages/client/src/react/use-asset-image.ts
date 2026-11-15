@@ -1,69 +1,133 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import { AttachmentIdSchema } from "@opensteer/core";
 import type { HostClient } from "../host/client.js";
-import type { AssetVariant } from "@opensteer/protocol";
+import type { AssetVariant, FileSource } from "@opensteer/protocol";
 import type { AssetImage } from "../host/asset-urls.js";
 
 export const TranscriptImageContext = createContext<{
   client: HostClient;
-  threadId: string;
+  threadId: string | null;
+  enabled?: boolean;
 } | null>(null);
-/** Local images show only in a task transcript on a Host that serves them; elsewhere they stay words. */
 export function useTranscriptImages(): boolean {
   return useContext(TranscriptImageContext)?.client.getSnapshot().agentImagesAvailable === true;
 }
-export function useAssetImage(path: string, variant: AssetVariant = "preview") {
+export function useAssetImage(
+  source: FileSource | string,
+  variant: AssetVariant = "preview",
+  options: { readonly enabled?: boolean } = {},
+) {
   const context = useContext(TranscriptImageContext);
   const client = context?.client;
-  const threadId = context?.threadId;
+  const threadId = context?.threadId ?? null;
+  const subscribeOwner = useCallback(
+    (listener: () => void) => client?.subscribe(listener) ?? (() => {}),
+    [client],
+  );
+  const readOwner = useCallback(() => {
+    const snapshot = client?.getSnapshot();
+    return JSON.stringify([
+      snapshot?.deploymentId,
+      snapshot?.user?.id,
+      snapshot?.sessionId,
+      snapshot?.session,
+      snapshot?.agentImagesAvailable,
+    ]);
+  }, [client]);
+  const owner = useSyncExternalStore(subscribeOwner, readOwner, readOwner);
   const snapshot = client?.getSnapshot();
-  const personal = useTranscriptImages();
-  const deploymentId = personal ? (snapshot?.deploymentId ?? null) : null;
+  const deploymentId =
+    snapshot?.agentImagesAvailable === true && snapshot.session === "authenticated"
+      ? snapshot.deploymentId
+      : null;
   const store = client?.assetUrls;
-  const [state, setState] = useState<{ image: AssetImage | null; failed: boolean }>({
+  const enabled = options.enabled !== false && context?.enabled !== false;
+  const kind = typeof source === "string" ? "path" : source.kind;
+  const identity =
+    typeof source === "string"
+      ? source
+      : source.kind === "path"
+        ? source.path
+        : source.attachmentId;
+  const fileSource = useMemo<FileSource>(
+    () =>
+      kind === "path"
+        ? { kind, path: identity }
+        : { kind, attachmentId: AttachmentIdSchema.parse(identity) },
+    [kind, identity],
+  );
+  const stateKey = JSON.stringify([owner, threadId, kind, identity, variant, enabled]);
+  const [state, setState] = useState<{ key: string; image: AssetImage | null; failed: boolean }>({
+    key: stateKey,
     image: null,
     failed: false,
   });
+  const controller = useRef<AbortController | null>(null);
   useEffect(() => {
-    let alive = true;
+    const current = new AbortController();
+    controller.current = current;
     let generation = 0;
     const load = () => {
-      const current = ++generation;
-      if (store && deploymentId && threadId)
-        void store.image(deploymentId, threadId, path, variant).then(
-          (image) => {
-            if (alive && current === generation)
-              setState((previous) =>
-                previous.image?.source === image?.source && previous.failed === (image === null)
-                  ? previous
-                  : { image, failed: image === null },
-              );
-          },
-          () => {
-            if (alive && current === generation) setState({ image: null, failed: true });
-          },
-        );
+      const version = ++generation;
+      if (enabled && store && deploymentId)
+        void store
+          .image(deploymentId, threadId, fileSource, variant, { signal: current.signal })
+          .then(
+            (image) => {
+              if (!current.signal.aborted && version === generation)
+                setState((previous) =>
+                  previous.key === stateKey &&
+                  previous.image?.source === image?.source &&
+                  previous.failed === (image === null)
+                    ? previous
+                    : { key: stateKey, image, failed: image === null },
+                );
+            },
+            () => {
+              if (!current.signal.aborted && version === generation)
+                setState({ key: stateKey, image: null, failed: true });
+            },
+          );
     };
-    setState({ image: null, failed: false });
+    setState({ key: stateKey, image: null, failed: false });
+    const release =
+      enabled && store && deploymentId
+        ? store.subscribeImage(deploymentId, threadId, fileSource, variant, load)
+        : undefined;
     load();
-    if (store && deploymentId && threadId) store.confirm(deploymentId, threadId, path, variant);
-    const release = store?.subscribe(load);
+    if (enabled && store && deploymentId)
+      store.confirm(deploymentId, threadId, fileSource, variant, { signal: current.signal });
     return () => {
-      alive = false;
+      current.abort();
       release?.();
     };
-  }, [store, deploymentId, threadId, path, variant]);
+  }, [store, deploymentId, threadId, fileSource, variant, enabled, stateKey]);
   const [retry, setRetry] = useState(0);
   return {
     retry,
-    ...state,
-    available: !!(deploymentId && threadId && store),
+    image: state.key === stateKey ? state.image : null,
+    failed: state.key === stateKey && state.failed,
+    available: !!(deploymentId && store),
     deploymentId,
     onError: () => {
-      if (store && deploymentId && threadId)
-        void store.loadFailed(deploymentId, threadId, path, variant).then((retried) => {
-          if (!retried) setState({ image: null, failed: true });
-          else setRetry((value) => value + 1);
-        });
+      const current = controller.current;
+      if (enabled && store && deploymentId && current && !current.signal.aborted)
+        void store
+          .loadFailed(deploymentId, threadId, fileSource, variant, { signal: current.signal })
+          .then((retried) => {
+            if (current.signal.aborted) return;
+            if (!retried) setState({ key: stateKey, image: null, failed: true });
+            else setRetry((value) => value + 1);
+          });
     },
   };
 }

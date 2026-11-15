@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   createId,
   OpensteerError,
@@ -11,7 +12,7 @@ import {
 } from "@opensteer/core";
 import { TeamFileSchema, TeamUploadMetadataSchema, teamPreviewMaxBytes } from "@opensteer/protocol";
 import { sql, type ExpressionBuilder, type Selectable, type Transaction } from "kysely";
-import type { z } from "zod";
+import { z } from "zod";
 import type { DatabaseSchema, TeamBlobTable, TeamMessageTable } from "./schema.js";
 import { TeamAccessStore, requireTeam } from "./team-access-store.js";
 import { appendTeamAudit } from "./team-audit-store.js";
@@ -79,6 +80,13 @@ export async function bindTeamFiles(
     .execute();
 }
 
+const cacheLeaseSchema = z.array(
+  z.object({ token: z.string(), part: z.enum(["original", "preview"]), expires: z.number() }),
+);
+function cacheLeases(row: Selectable<TeamBlobTable>) {
+  return row.uploadLease ? cacheLeaseSchema.parse(JSON.parse(row.uploadLease)) : [];
+}
+
 export class TeamFilesStore {
   readonly access: TeamAccessStore;
   /** Bytes every team file may hold together, previews and unfinished uploads included. */
@@ -144,27 +152,64 @@ export class TeamFilesStore {
       return write(t, row);
     });
   }
-  async reserveCache(id: TeamBlobId, part: "original" | "preview") {
+  cacheLeaseValid(row: Selectable<TeamBlobTable>, token: string) {
+    return cacheLeases(row).some((lease) => lease.token === token && lease.expires > Date.now());
+  }
+  async reserveCache(
+    id: TeamBlobId,
+    part: "original" | "preview",
+    removeExpired: (row: Selectable<TeamBlobTable>, part: "original" | "preview") => Promise<void>,
+  ) {
     return this.cacheWrite(id, async (t, row) => {
+      const leases = cacheLeases(row).filter((lease) => lease.expires > Date.now());
       const column = part === "original" ? "cacheOriginalReserved" : "cachePreviewReserved";
-      if (row[column]) return;
-      await this.#reserveStorage(
-        t,
-        Number(part === "original" ? row.sizeBytes : row.previewSizeBytes),
-      );
+      const generation = part === "original" ? row.generation : row.previewGeneration;
+      if (row[column] && !generation && !leases.some((lease) => lease.part === part))
+        await removeExpired(row, part);
+      if (!row[column])
+        await this.#reserveStorage(
+          t,
+          Number(part === "original" ? row.sizeBytes : row.previewSizeBytes),
+        );
+      const token = randomUUID();
+      const expires = Date.now() + 15 * 60_000;
+      leases.push({ token, part, expires });
       await t
         .updateTable("teamBlobs")
-        .set({ [column]: true })
+        .set({
+          [column]: true,
+          uploadLease: JSON.stringify(leases),
+          uploadLeaseExpiresAt: new Date(Math.max(...leases.map((lease) => lease.expires))),
+        })
+        .where("id", "=", id)
+        .execute();
+      return token;
+    });
+  }
+  async releaseCache(id: TeamBlobId, part: "original" | "preview", token: string) {
+    await this.access.database.transaction().execute(async (t) => {
+      const row = await t
+        .selectFrom("teamBlobs")
+        .selectAll()
+        .where("id", "=", id)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!row || !row.remoteShareId || row.state !== "ready") return;
+      const leases = cacheLeases(row).filter((lease) => lease.token !== token);
+      const generation = part === "original" ? row.generation : row.previewGeneration;
+      const column = part === "original" ? "cacheOriginalReserved" : "cachePreviewReserved";
+      await t
+        .updateTable("teamBlobs")
+        .set({
+          [column]: !!generation || leases.some((lease) => lease.part === part),
+          uploadLease: leases.length ? JSON.stringify(leases) : null,
+          uploadLeaseExpiresAt: leases.length
+            ? new Date(Math.max(...leases.map((lease) => lease.expires)))
+            : null,
+        })
         .where("id", "=", id)
         .execute();
     });
-  }
-  async releaseCache(id: TeamBlobId, part: "original" | "preview") {
-    await this.access.database
-      .updateTable("teamBlobs")
-      .set(part === "original" ? { cacheOriginalReserved: false } : { cachePreviewReserved: false })
-      .where("id", "=", id)
-      .execute();
   }
   async evictInactiveCaches(remove: (row: Selectable<TeamBlobTable>) => Promise<void>) {
     await this.access.knowledgeWrite(async (t) => {
@@ -180,11 +225,22 @@ export class TeamFilesStore {
         .forNoKeyUpdate()
         .execute();
       for (const row of rows) {
-        if (await remoteFileShare(t, row)) continue;
+        if (
+          (await remoteFileShare(t, row)) &&
+          (!row.uploadLeaseExpiresAt || row.uploadLeaseExpiresAt > new Date())
+        )
+          continue;
         await remove(row);
         await t
           .updateTable("teamBlobs")
-          .set({ cacheOriginalReserved: false, cachePreviewReserved: false })
+          .set({
+            cacheOriginalReserved: false,
+            cachePreviewReserved: false,
+            generation: null,
+            previewGeneration: null,
+            uploadLease: null,
+            uploadLeaseExpiresAt: null,
+          })
           .where("id", "=", row.id)
           .execute();
       }
@@ -271,10 +327,74 @@ export class TeamFilesStore {
         .executeTakeFirstOrThrow();
     });
   }
+  async claimUpload(id: TeamBlobId, remove: (row: Selectable<TeamBlobTable>) => Promise<void>) {
+    return this.access.database.transaction().execute(async (t) => {
+      const row = await t
+        .selectFrom("teamBlobs")
+        .selectAll()
+        .where("id", "=", id)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      requireTeam(row.state === "uploading", "Upload is not pending");
+      requireTeam(
+        !row.uploadLeaseExpiresAt || row.uploadLeaseExpiresAt <= new Date(),
+        "Upload already in progress",
+      );
+      if (row.uploadLease) await remove(row);
+      const lease = randomUUID();
+      return t
+        .updateTable("teamBlobs")
+        .set({
+          uploadLease: lease,
+          uploadLeaseExpiresAt: new Date(Date.now() + 15 * 60_000),
+          storageKey: `${id}-${lease}`,
+        })
+        .where("id", "=", id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+    });
+  }
+  async releaseUpload(id: TeamBlobId, lease: string) {
+    await this.access.database
+      .updateTable("teamBlobs")
+      .set({ uploadLease: null, uploadLeaseExpiresAt: null })
+      .where("id", "=", id)
+      .where("uploadLease", "=", lease)
+      .where("state", "=", "uploading")
+      .execute();
+  }
+  async collectDeleting(remove: (row: Selectable<TeamBlobTable>) => Promise<void>) {
+    return this.access.database.transaction().execute(async (t) => {
+      const rows = await t
+        .selectFrom("teamBlobs")
+        .selectAll()
+        .where("state", "=", "deleting")
+        .orderBy("id")
+        .limit(100)
+        .forNoKeyUpdate()
+        .skipLocked()
+        .execute();
+      for (const row of rows) {
+        const retained = await t
+          .selectFrom("teamBlobs")
+          .select("id")
+          .where("storageKey", "=", row.storageKey)
+          .where("id", "!=", row.id)
+          .where("state", "!=", "deleting")
+          .executeTakeFirst();
+        if (!retained) await remove(row);
+        await t.deleteFrom("teamBlobs").where("id", "=", row.id).execute();
+      }
+      return rows.length;
+    });
+  }
   async complete(
     actor: TeamActor,
     id: TeamBlobId,
     input: {
+      uploadLease: string;
+      generation: string;
+      previewGeneration?: string | null;
       receivedBytes: number;
       sha256: string;
       verifiedType: string;
@@ -307,7 +427,13 @@ export class TeamFilesStore {
           row.uploaderKind === actor.kind &&
           row.state !== "deleting",
       );
-      if (row.state === "ready") return teamFileView(row);
+      requireTeam(
+        row.state === "uploading" &&
+          row.uploadLease === input.uploadLease &&
+          row.uploadLeaseExpiresAt &&
+          row.uploadLeaseExpiresAt > new Date(),
+        "Upload lease expired",
+      );
       requireTeam(
         input.receivedBytes === Number(row.sizeBytes) &&
           input.sha256 === row.sha256 &&
@@ -319,6 +445,10 @@ export class TeamFilesStore {
         .updateTable("teamBlobs")
         .set({
           state: "ready",
+          generation: input.generation ?? null,
+          previewGeneration: input.previewGeneration ?? null,
+          uploadLease: null,
+          uploadLeaseExpiresAt: null,
           receivedBytes: input.receivedBytes,
           verifiedType: input.verifiedType,
           previewStorageKey: input.previewStorageKey,
@@ -382,6 +512,7 @@ export class TeamFilesStore {
         .where((e) =>
           e.or([
             e("expiresAt", "<", new Date()),
+            e.and([e("state", "=", "uploading"), e("uploadLeaseExpiresAt", "<", new Date())]),
             e.exists(
               e
                 .selectFrom("teamMembers as m")

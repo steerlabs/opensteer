@@ -65,8 +65,9 @@ it("uses durable operation IDs and attaches reply claims only for the exact Run 
   });
   const ledger = {
     forRun: async () => request,
+    post: async () => undefined,
     recordPost: vi.fn(),
-    freeze: vi.fn(),
+    freeze: vi.fn(async () => request),
     publication: vi.fn(),
   } as unknown as PersonalTeamRequestsStore;
   const calls: TeamLinkCallInput[] = [];

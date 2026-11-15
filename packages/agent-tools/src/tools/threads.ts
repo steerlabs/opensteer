@@ -83,7 +83,7 @@ export const opensteer_task_read = defineAgentTool({
   targetFields: ["taskId"],
   title: "Read a task",
   description:
-    "Read a task with its current AI account, model and access mode; omit taskId for this task. The messages view returns published messages, newest first; activity adds its tools, places, apps and Requests. recentRuns and recentPlaces always come back: a place is recent, never proof it is still open, and its runId goes to person_show. Keep reads small with a low limit and maxCharsPerItem. Tool text is clipped unless you name its itemId; sign-in, card and computer_use calls show status only.",
+    "Read a task with its current AI account, model and access mode; omit taskId for this task. The messages view returns published messages, newest first; activity adds its tools, places, apps and Requests. recentRuns and recentPlaces always come back: a place is recent, never proof it is still open, and its runId goes to person_show. Keep reads small with a low limit and maxCharsPerItem. Tool text is clipped unless you name its itemId; sign-in, card and computer_use calls show status only. Mention returned items by their `link`, verbatim.",
   input: readInput,
   output: ThreadReadOutputSchema,
   access: "read",
@@ -94,7 +94,7 @@ export const opensteer_task_list = defineAgentTool({
   name: "opensteer_task_list",
   title: "List tasks",
   description:
-    "List reachable tasks, newest updated first, up to 50 per page; page with cursor. parentTaskId lists the tasks that task delegated (for this task's own, take its ID from opensteer_task_read), and each row carries its delegationId and taskStatus.",
+    "List reachable tasks, newest updated first, up to 50 per page; page with cursor. parentTaskId lists the tasks that task delegated (for this task's own, take its ID from opensteer_task_read), and each row carries its delegationId and taskStatus. Mention returned items by their `link`, verbatim.",
   input: z.strictObject({
     cursor: CursorSchema.optional(),
     limit: z.number().int().min(1).max(50).default(25),
@@ -111,7 +111,7 @@ export const opensteer_task_delegate = defineAgentTool({
   targetFields: ["taskId"],
   title: "Delegate work",
   description:
-    "Start a delegated task, or continue a finished one with taskId. Its starting context is only message and places, so never include secrets. Keep delegationId for status, wait or cancel. Mode async returns once admitted; mode wait waits up to timeoutMs. When delegating a check, ask for a brief result, including when nothing changed. Change a task's active work with opensteer_task_send instead.",
+    "Start a delegated task, or continue a finished one with taskId. Its starting context is only message and places, so never include secrets. Keep delegationId for status, wait or cancel. Mode async returns once admitted; mode wait waits up to timeoutMs. When delegating a check, ask for a brief result, including when nothing changed. Change a task's active work with opensteer_task_send instead. Mention returned items by their `link`, verbatim.",
   input: z
     .strictObject({
       mode: z.enum(["async", "wait"]).default("async"),
@@ -199,7 +199,7 @@ export const opensteer_task_send = defineAgentTool({
   targetFields: ["taskId"],
   title: "Send to a task",
   description:
-    "Send to a task. report leaves context for its next turn and starts nothing; queue starts its next turn or waits for one; steer reaches its active Run now and never falls back to queueing. The returned delegationId names the delegation it joined; when it is null nothing returns on its own, so give a finished task more work with opensteer_task_delegate and taskId. Accepted is not read, and cancelled will never run, so do not resend.",
+    "Send to a task. report leaves context for its next turn and starts nothing; queue starts its next turn or waits for one; steer reaches its active Run now and never falls back to queueing. The returned delegationId names the delegation it joined; when it is null nothing returns on its own, so give a finished task more work with opensteer_task_delegate and taskId. Accepted is not read, and cancelled will never run, so do not resend. Mention returned items by their `link`, verbatim.",
   input: z
     .strictObject({
       delivery: z.enum(["report", "queue", "steer"]).describe("report, queue or steer."),
@@ -340,7 +340,7 @@ export const opensteer_task_create = defineAgentTool({
   name: "opensteer_task_create",
   title: "Create a task",
   description:
-    "Start a top-level task of its own, such as one per scheduled run, with no parent or delegation. Its starting context is only message, so never include secrets. Nothing returns automatically: wait on its taskId with opensteer_task_wait.",
+    "Start a top-level task of its own, such as one per scheduled run, with no parent or delegation. Its starting context is only message, so never include secrets. Nothing returns automatically: wait on its taskId with opensteer_task_wait. Mention returned items by their `link`, verbatim.",
   input: z
     .strictObject(opensteer_task_delegate.input.shape)
     .omit({ taskId: true, places: true })

@@ -7,7 +7,7 @@ export const opensteer_request_list = defineAgentTool({
   name: "opensteer_request_list",
   title: "List Requests",
   description:
-    "List Requests from tasks and background jobs, newest first. A pending Request is not permission.",
+    "List Requests from tasks and background jobs, newest first. A pending Request is not permission. Mention returned items by their `link`, verbatim.",
   input: z.strictObject({
     cursor: CursorSchema.optional(),
     limit: z.number().int().min(1).max(100).default(50),
@@ -20,7 +20,7 @@ export const opensteer_request_read = defineAgentTool({
   name: "opensteer_request_read",
   title: "Read a Request",
   description:
-    "Read one Request's status, its ordinary question details and its revision before answering it.",
+    "Read one Request's status, its ordinary question details and its revision before answering it. Mention returned items by their `link`, verbatim.",
   input: z.strictObject({ requestId: RequestIdSchema }),
   output: RequestWithdrawOutputSchema,
   access: "read",

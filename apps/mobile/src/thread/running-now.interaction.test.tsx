@@ -82,6 +82,7 @@ vi.mock("../ui/glass.js", () => ({
   GlassSurface: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
 }));
 vi.mock("../ui/keyboard.js", () => ({ useKeyboardVisible: () => false }));
+vi.mock("../ui/composer-editor.js", () => ({ dismissKeyboard: vi.fn() }));
 vi.mock("../ui/action-review.js", () => ({ ActionReviewSheet: () => null }));
 vi.mock("../client/mobile-client.js", () => ({
   operationDetail: (_error: unknown, fallback: string) => fallback,

@@ -59,10 +59,20 @@ it("pairs either order, shares duplicate answers and serializes deduplicated spe
       notes.push(text);
     },
   });
-  await call.speak("turn:1", "first");
-  await f.calls.handle(f.owner, { ...f.command, action: "say", id: "chat:1", text: "second" });
+  await call.speak("turn:1", "[first](opensteer:future)");
+  await f.calls.handle(f.owner, {
+    ...f.command,
+    action: "say",
+    id: "chat:1",
+    text: "[second](/private/secret.txt)",
+  });
   await call.speak("turn:2", "third");
-  await f.calls.handle(f.owner, { ...f.command, action: "say", id: "chat:1", text: "second" });
+  await f.calls.handle(f.owner, {
+    ...f.command,
+    action: "say",
+    id: "chat:1",
+    text: "[second](/private/secret.txt)",
+  });
   expect(spoken).toEqual(["first", "second", "third"]);
   expect(notes).toEqual([expect.stringContaining("The person was just told: second")]);
   f.abort.abort();

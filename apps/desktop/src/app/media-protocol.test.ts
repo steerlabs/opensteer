@@ -69,3 +69,43 @@ it("bounds bytes and propagates abort while waiting for an upstream body", async
   }));
   await expect(oversized.arrayBuffer()).rejects.toThrow();
 });
+
+it("forwards v2 resource claims unchanged without attaching a session credential", async () => {
+  const payload = btoa(
+    JSON.stringify({
+      v: 2,
+      sessionId: "session",
+      userId: "owner",
+      threadId: null,
+      resource: { kind: "home", key: "a2V5", revision: "revision" },
+      variant: "preview",
+      exp: 123456,
+    }),
+  )
+    .replaceAll("=", "")
+    .replaceAll("+", "-")
+    .replaceAll("/", "_");
+  const token = `${payload}.signature`;
+  const response = await forwardMedia(
+    new Request(`app://opensteer/media/${id}/${token}/preview.webp`),
+    async () => ({
+      exchange: async (request, read) => {
+        expect(request.path).toBe(`/media/${token}/preview.webp`);
+        expect(request.credentials).toBe("omit");
+        expect(request.headers).toEqual({});
+        expect(request.expectedDeploymentId).toBe(id);
+        return read(
+          new Response("preview", {
+            headers: {
+              "content-type": "image/webp",
+              "content-security-policy": "default-src 'none'; sandbox",
+            },
+          }),
+          { signal: request.signal!, onProgress: () => undefined },
+        );
+      },
+    }),
+  );
+  expect(await response.text()).toBe("preview");
+  expect(response.headers.get("content-security-policy")).toContain("sandbox");
+});

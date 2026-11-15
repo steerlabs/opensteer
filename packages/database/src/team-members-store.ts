@@ -23,7 +23,7 @@ export async function publishTeamMember(transaction: Transaction<DatabaseSchema>
   );
 }
 
-function memberView(row: {
+export function teamMemberView(row: {
   readonly displayName: string;
   readonly joinedAt: Date;
   readonly nameRevision: string;
@@ -97,7 +97,7 @@ export class TeamMembersStore {
         .select(["u.displayName", "u.image", "u.nameRevision"])
         .where("m.userId", "=", actor.userId)
         .executeTakeFirstOrThrow();
-      return memberView(row);
+      return teamMemberView(row);
     });
   }
   async page(actor: TeamActor, after?: UserId) {
@@ -111,7 +111,7 @@ export class TeamMembersStore {
       if (after) query = query.where("m.userId", ">", after);
       const rows = await query.orderBy("m.userId").limit(51).execute();
       return {
-        members: rows.slice(0, 50).map(memberView),
+        members: rows.slice(0, 50).map(teamMemberView),
         hasMore: rows.length > 50,
       };
     });
@@ -158,7 +158,7 @@ export class TeamMembersStore {
         .select(["u.displayName", "u.image", "u.nameRevision"])
         .where("m.userId", "=", input.userId)
         .executeTakeFirst();
-      return { member: row ? memberView(row) : null };
+      return { member: row ? teamMemberView(row) : null };
     });
   }
   async change(actor: TeamActor, userId: UserId, change: "remove" | "owner" | "admin" | "member") {

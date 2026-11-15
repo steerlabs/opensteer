@@ -10,7 +10,7 @@ import { Directory, File, Paths } from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import * as Sharing from "expo-sharing";
 import type { HostClient } from "@opensteer/client/host";
-import { discardPastedImage } from "../../modules/paste-target/files.js";
+import { discardPastedImage } from "../../modules/composer-editor/files.js";
 
 export { discardPastedImage };
 
@@ -253,11 +253,20 @@ export async function shareChatAttachment(
   name: string,
 ): Promise<void> {
   const blob = await client.readAttachment(attachmentId);
+  await shareFileBytes(new Uint8Array(await blob.arrayBuffer()), name, blob.type);
+}
+
+/** Bytes handed to the share sheet through a private copy that is erased once it returns. */
+export async function shareFileBytes(
+  bytes: Uint8Array,
+  name: string,
+  mediaType: string,
+): Promise<void> {
   const safeName = name.replace(/[\\/\p{Cc}]/gu, "_").slice(0, 160) || "attachment";
   const file = new File(Paths.cache, `${randomUUID()}-${safeName}`);
   try {
-    await file.write(new Uint8Array(await blob.arrayBuffer()));
-    await Sharing.shareAsync(file.uri, { mimeType: blob.type || "application/octet-stream" });
+    await file.write(bytes);
+    await Sharing.shareAsync(file.uri, { mimeType: mediaType || "application/octet-stream" });
   } finally {
     if (file.exists) file.delete();
   }

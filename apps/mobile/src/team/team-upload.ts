@@ -4,7 +4,7 @@ import { CryptoDigestAlgorithm, digest } from "expo-crypto";
 import { File } from "expo-file-system";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
-import type { PastedImage } from "../../modules/paste-target/index.js";
+import type { PastedImage } from "../../modules/composer-editor/index.js";
 
 /** A file the person chose for a team message, still only on this phone. */
 export interface TeamUploadSource {

@@ -11,6 +11,9 @@ import {
   TeamMarkdownSchema,
   PersonalTeamLinkSchema,
   TeamChannelsResultSchema,
+  TeamChannelSummarySchema,
+  TeamChannelSchema,
+  TeamMessageSchema,
   TeamReadResultSchema,
   TeamMessagePageSchema,
   TeamSearchInputSchema,
@@ -19,6 +22,39 @@ import {
 } from "@opensteer/protocol";
 import { CursorSchema, OperationKeySchema } from "./inputs.js";
 import { defineAgentTool } from "../registry.js";
+
+import { AgentLinkSchema } from "./agent-links.js";
+
+export const AgentTeamChannelSchema = TeamChannelSchema.extend({
+  link: AgentLinkSchema.optional(),
+});
+export const AgentTeamChannelSummarySchema = TeamChannelSummarySchema.extend({
+  link: AgentLinkSchema.optional(),
+});
+export const AgentTeamMessageSchema = TeamMessageSchema.extend({
+  link: AgentLinkSchema.optional(),
+});
+export const AgentTeamMessagePageSchema = TeamMessagePageSchema.extend({
+  messages: z.array(AgentTeamMessageSchema).max(50),
+  channel: AgentTeamChannelSchema,
+  nextCursor: TeamMessageIdSchema.nullable(),
+});
+export const AgentTeamReadResultSchema = TeamReadResultSchema.extend({
+  page: AgentTeamMessagePageSchema,
+  link: AgentLinkSchema.optional(),
+});
+export const AgentTeamSearchPageSchema = TeamSearchPageSchema.extend({
+  results: z
+    .array(z.strictObject({ message: AgentTeamMessageSchema, source: TeamSourceSchema }))
+    .max(50),
+});
+
+export type AgentTeamChannel = z.infer<typeof AgentTeamChannelSchema>;
+export type AgentTeamChannelSummary = z.infer<typeof AgentTeamChannelSummarySchema>;
+export type AgentTeamMessage = z.infer<typeof AgentTeamMessageSchema>;
+export type AgentTeamMessagePage = z.infer<typeof AgentTeamMessagePageSchema>;
+export type AgentTeamReadResult = z.infer<typeof AgentTeamReadResultSchema>;
+export type AgentTeamSearchPage = z.infer<typeof AgentTeamSearchPageSchema>;
 
 export const opensteer_team_read = defineAgentTool({
   name: "opensteer_team_read",
@@ -45,11 +81,14 @@ export const opensteer_team_read = defineAgentTool({
       }),
       TeamChannelsResultSchema.omit({ nextAfter: true }).extend({
         nextCursor: TeamChannelsResultSchema.shape.nextAfter,
+        channels: z.array(AgentTeamChannelSummarySchema).max(50),
       }),
-      TeamReadResultSchema.extend({
-        page: TeamMessagePageSchema.extend({ nextCursor: TeamMessageIdSchema.nullable() }),
+      AgentTeamReadResultSchema,
+      z.strictObject({
+        path: z.string().min(1).max(4096),
+        source: TeamSourceSchema,
+        link: AgentLinkSchema.optional(),
       }),
-      z.strictObject({ path: z.string().min(1).max(4096), source: TeamSourceSchema }),
     ])
     .refine(
       (value) =>
@@ -70,7 +109,7 @@ export const opensteer_team_search = defineAgentTool({
     teamId: DeploymentIdSchema.optional(),
     cursor: CursorSchema.optional(),
   }),
-  output: TeamSearchPageSchema,
+  output: AgentTeamSearchPageSchema,
   access: "read",
   team: true,
   callers: ["run"],
@@ -89,6 +128,7 @@ export const opensteer_team_post = defineAgentTool({
     attachmentPaths: z.array(z.string().min(1).max(4096)).max(10).default([]),
   }),
   output: z.strictObject({
+    link: AgentLinkSchema.optional(),
     messageId: TeamMessageIdSchema,
     source: TeamSourceSchema,
     askOutcomes: z.array(TeamAskOutcomeSchema).max(21).optional(),
@@ -103,7 +143,11 @@ export const opensteer_team_file_download = defineAgentTool({
   title: "Download a team file",
   description: "Download an authorized file from a linked team and return its local path.",
   input: z.strictObject({ teamId: DeploymentIdSchema.optional(), fileId: TeamBlobIdSchema }),
-  output: z.strictObject({ path: z.string().min(1).max(4096), source: TeamSourceSchema }),
+  output: z.strictObject({
+    path: z.string().min(1).max(4096),
+    source: TeamSourceSchema,
+    link: AgentLinkSchema.optional(),
+  }),
   access: "read",
   team: true,
   callers: ["run"] as const,

@@ -73,3 +73,7 @@ export * from "./devices.js";
 export * from "./team-partner.js";
 
 export * from "./team-share.js";
+
+export * from "./references.js";
+export * from "./file-sources.js";
+export * from "./transcript-files.js";

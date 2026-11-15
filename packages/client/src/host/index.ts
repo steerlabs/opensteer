@@ -107,3 +107,6 @@ export * from "./thread-visits.js";
 export * from "./idle-compaction.js";
 
 export * from "./asset-urls.js";
+
+export * from "./composer-references.js";
+export * from "./transcript-files.js";

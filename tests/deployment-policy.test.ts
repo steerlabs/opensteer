@@ -33,6 +33,29 @@ const clientPolicyDerivations: Record<string, { count: number; reason: string }>
   },
 };
 const exceptions: Record<string, { counts: Record<string, number>; reason: string }> = {
+  "apps/mobile/src/markdown/reference-link.tsx": {
+    counts: { "navigation?.context.kind": 2, "navigation.context.kind": 1, "context.kind": 2 },
+    reason:
+      "A reference's render scope says whether words sit in personal or team text, not Deployment policy.",
+  },
+  "apps/web/src/components/composer-editor-document.ts": {
+    counts: { "attrs.kind": 1 },
+    reason: "A composer token's kind says which link form it holds, not a Deployment kind.",
+  },
+  "apps/web/src/components/references/reference-scope.tsx": {
+    counts: { "scope?.context.kind": 1 },
+    reason:
+      "A reference's render scope says whether words sit in personal or team text, not Deployment policy.",
+  },
+  "apps/web/src/references-visual.tsx": {
+    counts: { scenario: 1 },
+    reason: "A visual fixture scenario chooses which captured surface to draw.",
+  },
+  "packages/client/src/references/composer.ts": {
+    counts: { "options?.scope": 1, kind: 1 },
+    reason:
+      "A composer's scope and token kind decide which links become chips, not Deployment policy.",
+  },
   "apps/host/src/runtime/machines.ts": {
     counts: { "runner.device?.form": 1 },
     reason: "The runner hardware form labels a headless device, not a Deployment.",
@@ -121,6 +144,7 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   "apps/host/src/server/host-api-registration.ts": {
     counts: {
       "options.kind": 2,
+      kind: 3,
     },
     reason:
       "Transport pins deployment kind and negotiates the independent protocol before admitting a request.",
@@ -345,7 +369,7 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   },
   "packages/client/src/host/host-api-client.ts": {
     counts: {
-      "options.kind": 2,
+      "options.kind": 1,
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
@@ -408,11 +432,11 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   },
   "packages/deployment-authority/src/authority.ts": {
     counts: {
-      kind: 3,
+      kind: 5,
       "parsed.data.kind": 1,
     },
     reason:
-      "Transport pins deployment kind and negotiates the independent protocol before admitting a request; only team peers negotiate a version window.",
+      "Transport pins deployment kind and negotiates the independent protocol before admitting a request; personal and team peers each negotiate their own version window.",
   },
   "packages/control-plane-protocol/src/hosted-teams.ts": {
     counts: {

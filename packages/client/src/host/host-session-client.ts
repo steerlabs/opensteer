@@ -1,3 +1,5 @@
+import { ReferenceStore } from "../references/store.js";
+import { TranscriptFileController } from "./transcript-files.js";
 import { AssetUrlStore, type AssetRoute } from "./asset-urls.js";
 import { needsYouEntryKey, refreshNeedsYou } from "./needs-you.js";
 import {
@@ -45,6 +47,7 @@ import {
   RunnerIdSchema,
   ExecutionNodeIdSchema,
   TeamAgentRequestIdSchema,
+  RequestIdSchema,
   nodeDetailEventNodeId,
   type QuietTaskDays,
   type PersonName,
@@ -85,7 +88,11 @@ import {
   type IconName,
   type MessageRevisionView,
 } from "@opensteer/core";
-import { hostApiVersion, apiVersionQueryParameter } from "@opensteer/deployment-authority";
+import {
+  hostApiVersion,
+  minimumHostApiVersion,
+  setApiVersionQuery,
+} from "@opensteer/deployment-authority";
 import {
   BrowserSessionIdSchema,
   DisplaySourceSchema,
@@ -358,6 +365,8 @@ export interface WebSocketClient {
 interface DeploymentChannel {
   refused: boolean;
   cursor: Sequence;
+  /** The version `cursor` was read at; state read at another one is replaced. */
+  apiVersion: number;
   /** The nonce of the liveness probe this channel is waiting on, if any. */
   probeFollowsNetwork: boolean;
   probeNonce: string | null;
@@ -455,6 +464,8 @@ export class HttpHostClient {
   readonly listComputerAppWindows: OwnerViewHostClient["listComputerAppWindows"];
   readonly listApprovedComputerApps: OwnerViewHostClient["listApprovedComputerApps"];
   readonly assetUrls: AssetUrlStore;
+  readonly references: ReferenceStore;
+  readonly transcriptFiles: TranscriptFileController;
   readonly rpc: HostApiClient;
   readonly #baseUrl: URL;
   readonly #streamCache: PersonalStreamCache | undefined;
@@ -462,6 +473,11 @@ export class HttpHostClient {
   #cacheLoaded = false;
   #applyingSnapshot = false;
   #restoredCursor: Sequence | null = null;
+  /**
+   * The version the Host serves this client, from bootstrap. A Host from before
+   * the window admits this client only at its minimum, and does not say so.
+   */
+  #servedApiVersion = minimumHostApiVersion;
   readonly #channels = new Map<string, DeploymentChannel>();
   readonly #fetch: Fetch;
   readonly #listeners = new Set<() => void>();
@@ -1000,7 +1016,8 @@ export class HttpHostClient {
       onVersionMismatch: () => this.#reverifyCapabilities(),
     });
     this.assetUrls = new AssetUrlStore(
-      this.rpc,
+      async (input, signal) =>
+        unwrapRpcResult(await this.rpc["asset.urls"](input, signal ? { signal } : undefined)),
       options.assetRoute
         ? {
             origin: async (deploymentId) => {
@@ -1014,6 +1031,45 @@ export class HttpHostClient {
         : { origin: async () => this.#baseUrl.origin },
       options.desktopMedia,
     );
+    this.transcriptFiles = new TranscriptFileController({
+      images: { store: this.assetUrls, deploymentId: () => this.#snapshot.deploymentId },
+      rpc: {
+        openFile: async (input, signal) =>
+          unwrapRpcResult(await this.rpc["file.open"](input, signal ? { signal } : undefined)),
+        readFile: async (input, signal) =>
+          unwrapRpcResult(await this.rpc["file.content"](input, signal ? { signal } : undefined)),
+      },
+    });
+    const initialReferenceSnapshot = this.#snapshot;
+    let referenceOwner = JSON.stringify([
+      initialReferenceSnapshot.deploymentId,
+      initialReferenceSnapshot.user?.id,
+      initialReferenceSnapshot.sessionId,
+      initialReferenceSnapshot.session,
+    ]);
+    this.references = new ReferenceStore({
+      getSnapshot: () => this.#snapshot,
+      resolveReferences: async (input, signal) =>
+        unwrapRpcResult(
+          await this.rpc["references.resolve"](input, signal ? { signal } : undefined),
+        ),
+      subscribe: (listener) =>
+        this.subscribe(() => {
+          const snapshot = this.#snapshot;
+          const owner = JSON.stringify([
+            snapshot.deploymentId,
+            snapshot.user?.id,
+            snapshot.sessionId,
+            snapshot.session,
+          ]);
+          if (owner !== referenceOwner) {
+            referenceOwner = owner;
+            this.assetUrls.reset();
+            this.transcriptFiles.reset();
+          }
+          listener();
+        }),
+    });
     this.#personalTabActivations = new PersonalTabActivations({
       snapshot: () => this.#snapshot,
       subscribe: (listener) => this.subscribe(listener),
@@ -3291,6 +3347,8 @@ export class HttpHostClient {
   }
 
   dispose(): void {
+    this.references.dispose();
+    this.transcriptFiles.dispose();
     this.assetUrls.dispose();
     this.#nodeDetails.clear();
     this.#pendingBrowserTabs.dispose();
@@ -3440,6 +3498,19 @@ export class HttpHostClient {
         ],
       },
     });
+  }
+
+  async readRequest(threadId: string, requestId: string): Promise<Request | null> {
+    const { requests } = unwrapRpcResult(
+      await this.rpc["thread.requests.list"]({
+        requestId: RequestIdSchema.parse(requestId),
+        threadId: ThreadIdSchema.parse(threadId),
+        ...(this.#supportsDeviceAccessRequests()
+          ? { deviceAccessRequests: "include" as const }
+          : {}),
+      }),
+    );
+    return requests.find(({ id }) => id === requestId) ?? null;
   }
 
   #supportsDeviceAccessRequests(): boolean {
@@ -3798,6 +3869,7 @@ export class HttpHostClient {
       this.#expireSession();
       generation = this.#viewerGeneration;
     }
+    this.#servedApiVersion = payload.apiVersion ?? minimumHostApiVersion;
     const environments = payload.environments.map((environment) => ({ ...environment }));
     const harnesses = payload.harnesses.map(({ config, ...harness }) => ({
       ...harness,
@@ -3871,7 +3943,7 @@ export class HttpHostClient {
       if (
         cached &&
         cached.cursor.deploymentId === payload.deploymentId &&
-        cached.cursor.apiVersion === hostApiVersion &&
+        cached.cursor.apiVersion === this.#servedApiVersion &&
         cached.scope.userId === payload.user.id &&
         cached.scope.deploymentId === payload.deploymentId &&
         cached.scope.apiVersion === hostApiVersion
@@ -4198,6 +4270,7 @@ export class HttpHostClient {
       existing ??
       ({
         cursor: this.#restoredCursor ?? zeroSequence,
+        apiVersion: this.#servedApiVersion,
         refused: false,
         probeFollowsNetwork: false,
         probeNonce: null,
@@ -4270,18 +4343,19 @@ export class HttpHostClient {
     socket.addEventListener("open", () => {
       if (channel.socket !== socket) return;
       channel.progressAt = Date.now();
+      if (channel.apiVersion !== this.#servedApiVersion) {
+        channel.apiVersion = this.#servedApiVersion;
+        channel.cursor = zeroSequence;
+      }
       try {
         socket.send(
           JSON.stringify({
             cursor: {
               deploymentId: channel.deploymentId,
-              apiVersion: hostApiVersion,
+              apiVersion: channel.apiVersion,
               afterSequence: channel.cursor,
             },
-            // The realtime half of the same negotiation the rpc header carries:
-            // an upgraded Host refuses the stream before sending an event this
-            // app would read with the wrong meaning.
-            apiVersion: hostApiVersion,
+            apiVersion: channel.apiVersion,
             ...(this.#supportsDeviceAccessRequests() ? { deviceAccessRequests: "include" } : {}),
             ...(this.#capabilities?.includes("person-show-v1") ? { personShow: "accept" } : {}),
             ...(this.#capabilities?.includes("tool-output-detail-v1")
@@ -4618,6 +4692,7 @@ export class HttpHostClient {
       return;
     }
     if (message.type === "host.resync-required") {
+      this.references.reconnect();
       channel.cursor = zeroSequence;
       channel.reconnectAttempt = 0;
       this.#closeChannel(channel, true, 4009, "Fresh snapshot required");
@@ -4715,8 +4790,11 @@ export class HttpHostClient {
       else this.#browserTabs.applyTabs(message.groupId, message.stream);
       return;
     }
+    // What this socket sent was read at the version it names, whatever bootstrap last said.
+    if (message.apiVersion !== undefined)
+      channel.apiVersion = this.#servedApiVersion = message.apiVersion;
     channel.cursor = maxSequence(channel.cursor, message.sequence);
-    this.#persistCheckpoint(channel);
+    this.#persistCheckpoint(channel, true);
     // A resubscription sends every open stream whole right after this, so what
     // the old connection streamed is forgotten rather than continued, and any
     // reread still in flight belongs to the old subscription.
@@ -5035,6 +5113,7 @@ export class HttpHostClient {
         continue;
       }
       this.#nodeDetails.accept(event);
+      this.references.accept(event);
       if (nodeDetailEventNodeId(event)) {
         this.#live.complete(event);
         applied = event.sequence;
@@ -5453,8 +5532,7 @@ export class HttpHostClient {
   #webSocketUrl(path: string): string {
     const url = new URL(path, this.#baseUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    url.searchParams.set(apiVersionQueryParameter, String(hostApiVersion));
-    return url.toString();
+    return setApiVersionQuery(url, "personal").toString();
   }
 
   /**
@@ -5523,7 +5601,9 @@ export class HttpHostClient {
         }
       : null;
   }
-  #persistCheckpoint(channel: DeploymentChannel): void {
+  #persistCheckpoint(channel: DeploymentChannel, synchronizing = false): void {
+    // Until a socket synchronizes, the version its state was read at is unconfirmed.
+    if (!channel.synchronized && !synchronizing) return;
     const scope = this.#cacheScope();
     if (!scope || !this.#streamCache) return;
     const generation = this.#viewerGeneration;
@@ -5555,7 +5635,7 @@ export class HttpHostClient {
       threadStates: this.#threadState.checkpoint(),
       cursor: {
         deploymentId: DeploymentIdSchema.parse(scope.deploymentId),
-        apiVersion: hostApiVersion,
+        apiVersion: channel.apiVersion,
         afterSequence: channel.cursor,
       },
     };

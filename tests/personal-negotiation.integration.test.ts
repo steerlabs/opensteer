@@ -5,10 +5,15 @@ import WebSocket from "ws";
 import { once } from "node:events";
 import { it, expect } from "vitest";
 import { createId } from "../packages/core/src/index.js";
-import { unsupportedVersionCloseCode } from "../packages/protocol/src/index.js";
 import {
+  apiCurrentQueryParameter,
+  apiVersionHeaders,
+  apiVersionQueryParameter,
+  hostApiCurrentHeader,
   hostApiVersion,
   hostApiVersionHeader,
+  minimumHostApiVersion,
+  setApiVersionQuery,
 } from "../packages/deployment-authority/src/index.js";
 import {
   cloneTestDatabase,
@@ -19,7 +24,7 @@ import { startPersonalRuntime } from "../apps/host/src/runtime/personal-startup.
 import { waitForRealtimeMessage } from "../apps/host/src/agents/vertical-stack.test-support.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 
-it("refuses old Personal epochs before discovery parsing, RPC parsing, routes and realtime dispatch", async () => {
+it("serves every Personal caller whose window overlaps, and refuses the rest before parsing, routes and realtime dispatch", async () => {
   const database = await cloneTestDatabase("host"),
     directory = await mkdtemp(join(tmpdir(), "personal-negotiation-"));
   let runtime: Awaited<ReturnType<typeof startPersonalRuntime>> | undefined,
@@ -31,19 +36,60 @@ it("refuses old Personal epochs before discovery parsing, RPC parsing, routes an
         agentHome: { computerId: createId("runner"), path: directory },
       }),
     );
+    const descriptor = await (
+      await fetch(new URL("/.well-known/opensteer", runtime.hostOrigin.origin))
+    ).json();
+    expect(descriptor).toMatchObject({
+      apiVersion: minimumHostApiVersion,
+      currentApiVersion: hostApiVersion,
+    });
     const matched = await verifyAccessEndpoint({
       kind: "canonical",
       origin: runtime.hostOrigin.origin,
     });
     expect(matched.discovery.deploymentId).toBe(runtime.host.deployment.id);
-    for (const version of [hostApiVersion - 1, hostApiVersion - 2]) {
-      const refused = await runtime.host.app.inject({
+    // A newer Host that still serves this tree's version.
+    await expect(
+      verifyAccessEndpoint({
+        kind: "canonical",
+        origin: runtime.hostOrigin.origin,
+        fetch: async () => Response.json({ ...descriptor, currentApiVersion: hostApiVersion + 3 }),
+      }),
+    ).resolves.toMatchObject({ discovery: { deploymentId: runtime.host.deployment.id } });
+    const dispatch = (headers: Record<string, string>) =>
+      runtime!.host.app.inject({
         method: "POST",
         url: "/v1/rpc/commands.dispatch",
-        headers: { [hostApiVersionHeader]: String(version), "content-type": "application/json" },
+        headers: { ...headers, "content-type": "application/json" },
         payload: "{broken",
       });
-      expect(refused.json()).toMatchObject({
+    // Admitted: refused only for the payload, never for the version.
+    for (const headers of [
+      apiVersionHeaders("personal"),
+      { [hostApiVersionHeader]: String(hostApiVersion) },
+      {
+        [hostApiVersionHeader]: String(minimumHostApiVersion),
+        [hostApiCurrentHeader]: String(hostApiVersion + 3),
+      },
+    ])
+      expect(
+        JSON.stringify((await dispatch(headers)).json()),
+        JSON.stringify(headers),
+      ).not.toContain("unsupported-version");
+    // A caller learns the version it is served before it reads any state.
+    const bootstrap = await runtime.host.app.inject({
+      method: "GET",
+      url: "/v1/rpc/bootstrap.get?input=%7B%7D",
+      headers: {
+        [hostApiVersionHeader]: String(minimumHostApiVersion),
+        [hostApiCurrentHeader]: String(hostApiVersion + 3),
+        cookie: runtime.sessionCookie,
+        origin: runtime.hostOrigin.origin,
+      },
+    });
+    expect(bootstrap.json()).toMatchObject({ ok: true, data: { apiVersion: hostApiVersion } });
+    for (const version of [minimumHostApiVersion - 1, minimumHostApiVersion - 2]) {
+      expect((await dispatch({ [hostApiVersionHeader]: String(version) })).json()).toMatchObject({
         ok: false,
         error: { reason: "unsupported-version", retryable: false },
       });
@@ -56,6 +102,16 @@ it("refuses old Personal epochs before discovery parsing, RPC parsing, routes an
         }),
       ).rejects.toMatchObject({ code: "host-too-old" });
     }
+    expect(
+      (await dispatch({ [hostApiVersionHeader]: String(hostApiVersion + 1) })).json(),
+    ).toMatchObject({ error: { reason: "unsupported-version" } });
+    await expect(
+      verifyAccessEndpoint({
+        kind: "canonical",
+        origin: runtime.hostOrigin.origin,
+        fetch: async () => Response.json({ ...descriptor, apiVersion: hostApiVersion + 1 }),
+      }),
+    ).rejects.toMatchObject({ code: "client-too-old" });
     // Every other route refuses an unversioned caller before authentication;
     // only routes a browser or another service reaches are declared exempt.
     const unversioned = (url: string) => runtime!.host.app.inject({ method: "GET", url });
@@ -72,15 +128,22 @@ it("refuses old Personal epochs before discovery parsing, RPC parsing, routes an
       expect(JSON.stringify((await unversioned(url)).body), url).not.toContain(
         "unsupported-version",
       );
-    socket = new WebSocket(
-      `${runtime.hostOrigin.origin.replace(/^http/u, "ws")}/v1/realtime?opensteer_api_version=${hostApiVersion}`,
-      { headers: { cookie: runtime.sessionCookie, origin: runtime.hostOrigin.origin } },
+    const realtime = setApiVersionQuery(
+      new URL("/v1/realtime", runtime.hostOrigin.origin.replace(/^http/u, "ws")),
+      "personal",
     );
+    realtime.searchParams.set(apiCurrentQueryParameter, String(hostApiVersion + 3));
+    socket = new WebSocket(realtime, {
+      headers: { cookie: runtime.sessionCookie, origin: runtime.hostOrigin.origin },
+    });
     await withTimeout(once(socket, "open"), 3000, {
       timeoutError: () => new Error("Personal realtime never opened"),
     });
-    const refused = waitForRealtimeMessage(socket, (frame) => frame.type === "host.error");
-    const closed = once(socket, "close");
+    const synchronized = waitForRealtimeMessage(
+      socket,
+      (frame) => frame.type === "host.synchronized",
+    );
+    // A cut read at another version is replaced from the start.
     socket.send(
       JSON.stringify({
         type: "client.subscribe",
@@ -93,14 +156,17 @@ it("refuses old Personal epochs before discovery parsing, RPC parsing, routes an
         threadId: null,
       }),
     );
-    expect(await refused).toMatchObject({ error: { reason: "unsupported-version" } });
-    expect(
-      (
-        await withTimeout(closed, 3000, {
-          timeoutError: () => new Error("Refused Personal socket did not close"),
-        })
-      )[0],
-    ).toBe(unsupportedVersionCloseCode);
+    expect(await synchronized).toMatchObject({ type: "host.synchronized" });
+    // A socket below the window is refused at the upgrade, before any frame.
+    const below = new URL(realtime);
+    below.searchParams.delete(apiCurrentQueryParameter);
+    below.searchParams.set(apiVersionQueryParameter, String(minimumHostApiVersion - 1));
+    const refusedUpgrade = await runtime.host.app.inject({
+      method: "GET",
+      url: `${below.pathname}${below.search}`,
+      headers: { connection: "Upgrade", upgrade: "websocket" },
+    });
+    expect(refusedUpgrade.json()).toMatchObject({ error: { reason: "unsupported-version" } });
   } finally {
     socket?.terminate();
     await runtime?.close();

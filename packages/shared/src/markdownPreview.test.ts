@@ -17,3 +17,11 @@ it("turns Markdown into one plain line for a list", () => {
   expect(emoji.length).toBeLessThanOrEqual(200);
   expect(emoji).toBe(`${"😀".repeat(99)}…`);
 });
+
+it("strips private destinations and distant definitions before preview clipping", () => {
+  const source = "[answer][file]\n\n" + " ".repeat(20_000) + "\n[file]: /private/secret.txt";
+  expect(markdownPreview(source, 30)).toBe("answer");
+  expect(markdownPreview("[task](opensteer:future) [file](</private/a b.txt>)", 100)).toBe(
+    "task file",
+  );
+});

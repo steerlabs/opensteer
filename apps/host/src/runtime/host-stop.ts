@@ -6,7 +6,7 @@ const slowStopLogIntervalMs = 1_000;
 
 /** Exits once closed, so a handle left open can't hold the process until it is killed. */
 export async function stopHost(
-  runtime: Pick<HostRuntime, "app" | "close" | "closingStep">,
+  runtime: Pick<HostRuntime, "app" | "close" | "closingStep"> & { drain?: () => Promise<void> },
   signal: string,
   exit: (code: number) => void = (code) => process.exit(code),
 ): Promise<void> {
@@ -20,6 +20,7 @@ export async function stopHost(
   slow.unref();
   let code = 0;
   try {
+    if (runtime.drain) await runtime.drain();
     await runtime.close();
   } catch (error) {
     code = 1;
@@ -58,7 +59,7 @@ export async function stopHostOnAuthorityLoss(
  * bounds it and fails the exit, since the Host may no longer do that work unfenced.
  */
 export function hostStopper(
-  runtime: Pick<HostRuntime, "app" | "close" | "closingStep">,
+  runtime: Pick<HostRuntime, "app" | "close" | "closingStep"> & { drain?: () => Promise<void> },
   exit: (code: number) => void = (code) => process.exit(code),
 ): { signal(name: string): void; authorityLost(error: Error): void } {
   let stopping = false;

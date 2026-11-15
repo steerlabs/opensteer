@@ -1,13 +1,11 @@
 import type { Nodes } from "mdast";
-import type { CompileContext, Token } from "mdast-util-from-markdown";
-import { fromMarkdown } from "mdast-util-from-markdown";
-import { gfmFromMarkdown } from "mdast-util-gfm";
-import { gfm } from "micromark-extension-gfm";
+import { markdownSourceTree as parse } from "./markdownParser.js";
+import { isNetworkPath } from "./fileHref.js";
+export { isNetworkPath } from "./fileHref.js";
 
 /**
  * Markdown image handling shared by the Runner (embedding generated images in
- * a reply), the Host (keeping local paths out of team and bridge text) and
- * every client (deciding what an image source may load). Browser-safe.
+ * a reply) and every client (deciding what an image source may load). Browser-safe.
  */
 
 /**
@@ -19,14 +17,6 @@ export type MarkdownImageSource =
   | { readonly kind: "local"; readonly path: string }
   | { readonly kind: "remote"; readonly url: string }
   | { readonly kind: "none" };
-
-/**
- * Two leading separators in any mix is a path Windows opens over the network,
- * which can send the account's NTLM credentials; refuse it before any file access.
- */
-export function isNetworkPath(path: string): boolean {
-  return /^[\\/]{2}/.test(path.trim());
-}
 
 /** Renderers hand over a percent-encoded destination; the file's name is decoded once. */
 export function classifyMarkdownImageSource(source: string): MarkdownImageSource {
@@ -53,25 +43,6 @@ export function classifyMarkdownImageSource(source: string): MarkdownImageSource
   return /^[a-z][a-z\d+.-]*:/i.test(path) ? { kind: "none" } : { kind: "local", path };
 }
 
-function keepPath(this: CompileContext, token: Token): void {
-  const decoded = this.resume();
-  const authored = this.sliceSerialize(token);
-  const node = this.stack.at(-1);
-  if (node && (node.type === "image" || node.type === "link" || node.type === "definition"))
-    node.url =
-      (isWindowsDrivePath(authored) || isUncPath(authored)) && !authored.includes("&")
-        ? authored
-        : decoded;
-}
-function parse(text: string) {
-  return fromMarkdown(text, {
-    extensions: [gfm()],
-    mdastExtensions: [
-      gfmFromMarkdown(),
-      { exit: { resourceDestinationString: keepPath, definitionDestinationString: keepPath } },
-    ],
-  });
-}
 function isWindowsDrivePath(path: string): boolean {
   return /^[a-z]:[\\/]/i.test(path);
 }
@@ -172,42 +143,5 @@ export function appendImageEmbeds(markdown: string, paths: readonly string[]): s
   let result =
     end === undefined ? markdown : `${markdown}${/[\r\n]$/.test(markdown) ? "" : "\n"}${end}`;
   for (const path of missing) result += `${result ? "\n\n" : ""}${imageEmbed(path)}`;
-  return result;
-}
-export function stripLocalImageEmbeds(markdown: string): string {
-  let result = markdown;
-  const replacements = imageNodes(markdown).filter(
-    (image) =>
-      classifyMarkdownImageSource(image.url).kind === "local" ||
-      /^file:/i.test(image.url) ||
-      isUncPath(image.url),
-  );
-  const localUrls = new Set(replacements.map((image) => image.url));
-  const gather = (node: Nodes): void => {
-    if (
-      node.type === "definition" &&
-      localUrls.has(node.url) &&
-      node.position?.start.offset !== undefined &&
-      node.position.end.offset !== undefined
-    )
-      replacements.push({
-        url: node.url,
-        alt: "",
-        start: node.position.start.offset,
-        end: node.position.end.offset,
-      });
-    if ("children" in node) node.children.forEach(gather);
-  };
-  gather(parse(markdown));
-  for (const image of replacements.sort((a, b) => b.start - a.start)) {
-    // Network file references must not leak out either, even though clients refuse them.
-    if (
-      classifyMarkdownImageSource(image.url).kind !== "local" &&
-      !/^file:/i.test(image.url) &&
-      !isUncPath(image.url)
-    )
-      continue;
-    result = result.slice(0, image.start) + image.alt + result.slice(image.end);
-  }
   return result;
 }

@@ -505,6 +505,31 @@ describe("team transaction authority", () => {
     await expect(chat.setAccess(admin, dm.id, access.revision, [])).rejects.toThrow();
     await expect(chat.addDmPeople(admin, dm.id, [admin.userId], true)).rejects.toThrow();
   });
+  it("keeps reference labels and sanitation adjacency out of agent admission on send and edit", async () => {
+    const c = await channel();
+    const l = await link();
+    const member = await fixture.database
+      .selectFrom("teamMembers")
+      .select("handle")
+      .where("userId", "=", owner.userId)
+      .executeTakeFirstOrThrow();
+    const handle = `@${member.handle}-agent`;
+    const body = `[see ${handle}](https://team.example/c/${c.id}) [word ](opensteer:future)${handle}`;
+    const sent = await send(c.id, body);
+    expect(sent.message.mentions).toEqual([]);
+    expect(await requests.pending(l)).toHaveLength(0);
+    await chat.editOrDelete(owner, c.id, sent.message.id, {
+      bodyMarkdown: body,
+      mentions: [{ kind: "agent", userId: owner.userId }],
+    });
+    expect((await chat.message(owner, c.id, sent.message.id)).mentions).toEqual([]);
+    expect(await requests.pending(l)).toHaveLength(0);
+    const asked = await send(c.id, `${handle} Please check`);
+    expect(asked.message.mentions).toEqual([{ kind: "agent", userId: owner.userId }]);
+    expect(asked.wake).toBe("queued");
+    expect(await requests.pending(l)).toHaveLength(1);
+  });
+
   it("admits only human own-agent mentions, only once, with an active link; edits never wake", async () => {
     const c = await channel();
     const events: { kind: string; state: string | undefined }[] = [];
@@ -853,13 +878,13 @@ describe("team transaction authority", () => {
       await expect(textUpload(team.files, owner, c.id)).rejects.toMatchObject({
         reason: "team-storage-full",
       });
-      expect(await readdir(join(dataDirectory, "team-files"))).toContain(file.id);
+      expect(await storedFile(dataDirectory, file.id)).toBe(true);
       await team.dispatch(owner, {
         type: "team.message.delete",
         channelId: c.id,
         messageId: (sent as { message: { id: TeamMessageId } }).message.id,
       });
-      expect(await readdir(join(dataDirectory, "team-files"))).not.toContain(file.id);
+      expect(await storedFile(dataDirectory, file.id)).toBe(false);
       await expect(textUpload(team.files, owner, c.id)).resolves.toMatchObject({
         sizeBytes: 36,
       });
@@ -924,7 +949,7 @@ describe("team transaction authority", () => {
           .where("id", "=", file.id)
           .executeTakeFirst(),
       ).resolves.toEqual({ state: "ready" });
-      expect(await readdir(join(directory, "team-files"))).toContain(file.id);
+      expect(await storedFile(directory, file.id)).toBe(true);
     } finally {
       release.resolve();
       await files.close();
@@ -950,9 +975,8 @@ describe("team transaction authority", () => {
       await files.collectGarbage();
       const remaining = await fixture.database.selectFrom("teamBlobs").select("id").execute();
       expect(remaining.map((row) => row.id)).toEqual([kept.id]);
-      const stored = await readdir(join(directory, "team-files"));
-      expect(stored).not.toContain(unsent.id);
-      expect(stored).toContain(kept.id);
+      expect(await storedFile(directory, unsent.id)).toBe(false);
+      expect(await storedFile(directory, kept.id)).toBe(true);
     } finally {
       await files.close();
       await rm(directory, { recursive: true, force: true });
@@ -1804,3 +1828,10 @@ describe("team transaction authority", () => {
     }
   });
 });
+
+/** Uploads are published under an immutable key that starts with the file's id. */
+async function storedFile(directory: string, id: string) {
+  return (await readdir(join(directory, "team-files"))).some(
+    (name) => name === id || name.startsWith(`${id}-`),
+  );
+}

@@ -1,3 +1,7 @@
+import { createAssetUrlHandlers } from "./assets/asset-service.js";
+import { createReferenceHandlers, createThreadRequestHandler } from "./references/resolve.js";
+import { resolvePersonalReferences } from "@opensteer/database";
+import { createTranscriptFileHandlers, type TranscriptFiles } from "./threads/transcript-files.js";
 import { describeSessionDevice } from "@opensteer/shared/sessionDevice";
 import type { AssetService } from "./assets/asset-service.js";
 import type { DeviceAccessService } from "./administration/device-access-service.js";
@@ -102,6 +106,7 @@ import {
   type HarnessInstanceStateKind,
   type RunnerId,
   excludedBackgroundAccounts,
+  zeroSequence,
 } from "@opensteer/core";
 import {
   machineIsManagedBy,
@@ -114,6 +119,8 @@ import {
 import {
   HostDescriptorSchema,
   hostApiVersion,
+  minimumHostApiVersion,
+  negotiatedHostApiVersion,
   type HostBootstrapMethod,
   type HostCapability,
   type HostDiscoveryEnvelope,
@@ -360,6 +367,7 @@ const machinePageLimit = 100;
 
 export interface HostServerDependencies {
   readonly assets?: AssetService;
+  readonly transcriptFiles?: TranscriptFiles;
   readonly execution: Pick<PersonalExecution, "canExecute">;
   readonly teamLinks: () => Promise<PersonalTeamLinks>;
   readonly connections?: ConnectionOAuth;
@@ -626,7 +634,8 @@ export async function createHostServer(
     void reply.header("cache-control", "no-store");
     return HostDescriptorSchema.parse({
       kind: "personal",
-      apiVersion: hostApiVersion,
+      apiVersion: minimumHostApiVersion,
+      currentApiVersion: hostApiVersion,
       authority: dependencies.discovery,
       bootstrapMethods: await advertisedBootstrapMethods(dependencies),
       capabilities: advertisedCapabilities(dependencies),
@@ -1110,6 +1119,9 @@ export async function createHostServer(
     });
 
   const coreRpcHandlers = {
+    ...createReferenceHandlers(dependencies.store, resolvePersonalReferences),
+    ...createAssetUrlHandlers(dependencies.assets),
+    ...createTranscriptFileHandlers(dependencies.transcriptFiles),
     ...createVoiceHandlers({ ...dependencies, publishDeploymentEvent, threads: threadService }),
     "agentPhone.target.get": async (_input, context) => {
       requireRpcSession(context);
@@ -1185,6 +1197,7 @@ export async function createHostServer(
       dependencies.ownerProfile?.refreshSoon();
       return rpcSuccess(
         HostBootstrapSchema.parse({
+          apiVersion: servedHostApiVersion(context.headers),
           deploymentId: dependencies.discovery.document.deploymentId,
           sessionId: session.id,
           personalSettings: settings,
@@ -1325,11 +1338,6 @@ export async function createHostServer(
           machines: await machineSummaries(session),
         }),
       );
-    },
-    "asset.urls": async (input, context) => {
-      if (!dependencies.assets)
-        throw new OpensteerError({ code: "not_found", message: "Images unavailable" });
-      return rpcSuccess(await dependencies.assets.urls(input, requireRpcSession(context).user.id));
     },
     "tool.output.get": async (input, context) => {
       const output = await dependencies.store.toolOutputForOwner({
@@ -1522,20 +1530,7 @@ export async function createHostServer(
           }),
         ),
       ),
-    "thread.requests.list": async (input, context) => {
-      const ownerId = requireRpcSession(context).user.id;
-      const thread = await dependencies.store.getThreadForOwner(input.threadId, ownerId);
-      if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-      const page = await dependencies.store.requests.originatingPendingPage({
-        ...(input.before ? { before: input.before } : {}),
-        limit: Math.min(input.limit ?? threadPageMaxItems, threadPageMaxItems),
-        ...(input.deviceAccessRequests ? { deviceAccessRequests: input.deviceAccessRequests } : {}),
-        threadId: input.threadId,
-      });
-      return rpcSuccess(
-        hostApi["thread.requests.list"].success.parse({ ...page, threadId: input.threadId }),
-      );
-    },
+    "thread.requests.list": createThreadRequestHandler(dependencies.store),
     "attention.get": async (input, context) => {
       const [attention, homeName] = await Promise.all([
         dependencies.store.notificationState.attention(
@@ -1630,6 +1625,7 @@ export async function createHostServer(
     | "thread.message.revisions.list"
     | "thread.live.get"
     | "thread.requests.list"
+    | "references.resolve"
   >;
 
   const executeCoreCommand = async (command: CoreCommand, context: HostApiServerContext) => {
@@ -2753,6 +2749,7 @@ export async function createHostServer(
         socket,
         dependencies.realtime,
         dependencies.discovery.document.deploymentId,
+        servedHostApiVersion(request.headers),
         dependencies.browser,
         session,
         request.log,
@@ -3701,10 +3698,18 @@ export class RunnerChallengeAdmission {
   }
 }
 
+/** The personal version gate has already admitted every `/v1/` caller this serves. */
+function servedHostApiVersion(headers: Parameters<typeof negotiatedHostApiVersion>[0]): number {
+  const version = negotiatedHostApiVersion(headers);
+  if (version === null) throw new Error("A caller reached the Host without a negotiated version.");
+  return version;
+}
+
 function attachRealtimeSocket(
   socket: WebSocket,
   realtime: RealtimeHub,
   deploymentId: import("@opensteer/core").DeploymentId,
+  apiVersion: number,
   browser: BrowserService,
   session: AuthenticatedSession,
   log: FastifyInstance["log"],
@@ -3715,7 +3720,10 @@ function attachRealtimeSocket(
   const sink = {
     ...peer,
     send: async (message: HostToClientMessage | BrowserClientStreamMessage) => {
-      const projected = HostToClientMessageSchema.safeParse(message);
+      const projected = HostToClientMessageSchema.safeParse(
+        // Tells the reader which version the state it just received was read at.
+        message.type === "host.synchronized" ? { ...message, apiVersion } : message,
+      );
       if (!projected.success) {
         // Publisher faults cannot be repaired by replaying the same cursor.
         // Keep validation errors (which can contain private values) off the wire.
@@ -3739,7 +3747,7 @@ function attachRealtimeSocket(
             )
               ? message.type
               : "unknown",
-            apiEpoch: hostApiVersion,
+            apiEpoch: apiVersion,
             bytes: Buffer.byteLength(JSON.stringify(message)),
             issuePaths: projected.error.issues.slice(0, 8).map(({ path }) =>
               path.length === 0
@@ -3831,18 +3839,14 @@ function attachRealtimeSocket(
     try {
       if (isBinary) throw badMessage("Client messages must be JSON text");
       const message = ClientToHostMessageSchema.parse(parseFrame(buffer));
-      // Refuse another epoch before either stream can process its following frames.
-      if (
-        message.type === "client.subscribe" &&
-        (message.cursor.apiVersion !== hostApiVersion ||
-          message.cursor.deploymentId !== deploymentId)
-      ) {
+      // Refuse another Deployment's cursor before either stream can process its following frames.
+      if (message.type === "client.subscribe" && message.cursor.deploymentId !== deploymentId) {
         close();
         void sink
           .send({
             error: {
               code: "bad_message",
-              message: `This deployment speaks Opensteer protocol ${hostApiVersion}.`,
+              message: "This cursor belongs to another deployment.",
               reason: unsupportedVersionReason,
               retryable: false,
             },
@@ -3923,7 +3927,9 @@ function attachRealtimeSocket(
       if (subscribed) throw badMessage("Client is already subscribed");
       try {
         const subscription = await realtime.subscribe({
-          afterSequence: message.cursor.afterSequence,
+          // State read at another version is replaced, not resumed.
+          afterSequence:
+            message.cursor.apiVersion === apiVersion ? message.cursor.afterSequence : zeroSequence,
           ...(message.deviceAccessRequests
             ? { deviceAccessRequests: message.deviceAccessRequests }
             : {}),

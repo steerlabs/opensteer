@@ -1,3 +1,4 @@
+import { FileSourceSchema } from "./file-sources.js";
 import {
   imagePathMaxLength,
   ThreadIdSchema,
@@ -16,14 +17,20 @@ export const AssetVariantSchema = z.enum(["preview", "original"]);
 export type AssetVariant = z.infer<typeof AssetVariantSchema>;
 
 export const AssetUrlsInputSchema = z.strictObject({
-  /** The task whose transcript names these paths; relative paths resolve in its agent home folder. */
-  threadId: ThreadIdSchema,
+  /** Optional owning task context; paths are decoded and the Host decides containment. */
+  threadId: ThreadIdSchema.optional(),
   assets: z
     .array(
-      z.strictObject({
-        path: z.string().min(1).max(imagePathMaxLength),
-        variant: AssetVariantSchema,
-      }),
+      z
+        .strictObject({
+          /** A file path, in the shape Hosts before `source` read; send paths this way. */
+          path: z.string().min(1).max(imagePathMaxLength).optional(),
+          source: FileSourceSchema.optional(),
+          variant: AssetVariantSchema,
+        })
+        .refine((item) => (item.path === undefined) !== (item.source === undefined), {
+          message: "Name a file by exactly one of path or source",
+        }),
     )
     .min(1)
     .max(assetUrlsMaxPaths),

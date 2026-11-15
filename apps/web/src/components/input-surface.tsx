@@ -10,6 +10,7 @@ import { androidPhoneDefinitionId } from "@opensteer/protocol";
 import { ActionNote, ChoiceRows } from "./action-rows.js";
 import { useShell } from "./app-shell.js";
 import { composerDraftKeyFor } from "./composer-drafts.js";
+import { personalReferenceCandidates } from "./composer-reference-picker.js";
 import {
   Composer,
   type ComposerRecipient,
@@ -81,7 +82,7 @@ export function InputSurface({
   readOnly?: boolean;
   footerExtras?: ReactNode;
   /** See `Composer`'s `inputRef`. */
-  inputRef?: React.RefObject<HTMLTextAreaElement | null> | undefined;
+  inputRef?: React.RefObject<HTMLElement | null> | undefined;
   /** Escape in the field: back to the open request's answers, when one is docked. */
   onEscape?: (() => void) | undefined;
   onStop?: (() => Promise<void>) | undefined;
@@ -210,6 +211,7 @@ export function InputSurface({
           pendingSends={"sends" in durable ? durable.sends : null}
           placeholder={placeholder}
           recipient={recipient}
+          references={(query) => personalReferenceCandidates(hostClient, query)}
           restore={restoredDraft}
           running={running}
           stopping={stopping}

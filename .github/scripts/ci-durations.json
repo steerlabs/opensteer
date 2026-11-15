@@ -1087,7 +1087,6 @@
     "packages/shared/src/restartPolicy.test.ts": 1510,
     "packages/shared/src/serverProbes.test.ts": 1550,
     "packages/shared/src/tcpServer.test.ts": 1662,
-    "packages/shared/src/transcriptLinks.test.ts": 1503,
     "packages/shared/src/userEnvironment.test.ts": 1502,
     "packages/triggers/src/authority.test.ts": 1502,
     "packages/triggers/src/contract.test.ts": 1501,

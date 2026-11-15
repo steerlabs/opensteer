@@ -16,7 +16,7 @@ import {
   View,
 } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
-import { PlainProse } from "../markdown/markdown.js";
+import { Markdown } from "../markdown/markdown.js";
 import { color, space, touchTarget } from "../theme.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Notice } from "../ui/primitives.js";
@@ -123,7 +123,7 @@ function History(props: {
       {rows?.map((row, index) => (
         <View key={row.revision} style={[styles.row, index > 0 && styles.rowSeparated]}>
           <RevisionHead row={row} />
-          <PlainProse text={row.text} />
+          <Markdown profile="person" text={row.text} />
           <RevisionParts content={row.content} />
         </View>
       ))}

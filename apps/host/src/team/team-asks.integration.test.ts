@@ -486,7 +486,10 @@ describe("consent-gated team asks", () => {
         undefined,
         { linkId, runId: createId("run"), operationId: randomUUID() },
       );
+      const claimed = await files.claimUpload(upload.id, async () => {});
       return files.complete(actor, upload.id, {
+        uploadLease: claimed.uploadLease!,
+        generation: "1",
         receivedBytes: 1,
         sha256,
         verifiedType: "text/plain",

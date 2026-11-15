@@ -4,6 +4,7 @@ import type { AccountProfileRelay } from "./account-profile-relay.js";
 import { bootstrapMembershipRefused, teamEntryRefusalOutcome } from "@opensteer/protocol";
 import type { TeamFileUpload } from "./files.js";
 import {
+  compareSequence,
   OpensteerError,
   type TeamChannelId,
   type TeamMessageId,
@@ -65,7 +66,17 @@ export interface TeamSessionSnapshot {
   readonly sidebar: TeamSidebar | null;
   readonly channel: TeamTimeline | null;
   readonly thread: TeamTimeline | null;
+  /** The socket's state; `offline` between a close and the next attempt, however brief. */
   readonly connection: "offline" | "connecting" | "connected";
+  /**
+   * Nothing reaches the team: out of reach for longer than a server swap takes, or
+   * disconnected on purpose. What "Can't reach" and waiting sends read.
+   */
+  readonly unreachable: boolean;
+  /** Set while the team refuses this app's protocol version, until a check succeeds. */
+  readonly versionRefusal: TeamVersionRefusal | null;
+  /** Moves on each reconnect after a close; views without a live stream read again. */
+  readonly resumedGeneration: number;
   readonly pending: readonly PendingTeamSend[];
   readonly drafts: Readonly<Record<string, string>>;
   readonly typing: Readonly<Record<string, readonly string[]>>;
@@ -107,6 +118,21 @@ function refusedSend(error: unknown): error is OpensteerError {
 }
 
 const healthyConnectionMs = 30_000;
+/** Longer than a planned server swap, so a swap never reads as out of reach. */
+const unreachableAfterMs = 5_000;
+/** WebSocket close codes the team server sends: a planned restart, or a refusal. */
+const restartingCloseCode = 1012;
+const refusedCloseCode = 1008;
+const memberNamesBound = 1_000;
+
+export type TeamVersionRefusal = "update-app" | "update-server";
+/** Which side must update, from a refusal's `reason`. */
+export function teamVersionRefusal(reason: string | null | undefined): TeamVersionRefusal | null {
+  if (reason === "host-too-old") return "update-server";
+  return ["client-too-old", "unsupported-version", "api-version-mismatch"].includes(reason ?? "")
+    ? "update-app"
+    : null;
+}
 
 export class TeamSessionClient {
   readonly rpc: HostApiClient;
@@ -131,6 +157,9 @@ export class TeamSessionClient {
     channel: null,
     thread: null,
     connection: "offline",
+    unreachable: false,
+    versionRefusal: null,
+    resumedGeneration: 0,
     pending: [],
     drafts: {},
     typing: {},
@@ -148,6 +177,11 @@ export class TeamSessionClient {
   #persist: Promise<void> = Promise.resolve();
   #reconnecting: Promise<void> | null = null;
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  #unreachableTimer: ReturnType<typeof setTimeout> | null = null;
+  #opened = false;
+  /** The names revision last caught up to (null: read again); renames in between arrive as frames. */
+  #namesRevision: string | null | undefined;
+  #namesRead = 0;
   #connected = false;
   #removed = false;
   #removal: Promise<void> | null = null;
@@ -261,6 +295,7 @@ export class TeamSessionClient {
                   ]),
                 ).values(),
               ];
+        this.#namesRevision ??= bootstrap.sidebar.namesRevision;
         this.#update({
           bootstrap: this.#withNewerOwnName(bootstrap),
           sidebar: monotonicTeamSidebar(this.#snapshot.sidebar, bootstrap.sidebar),
@@ -288,15 +323,29 @@ export class TeamSessionClient {
   }
   connect(): void {
     if (this.#removed || this.#disposed || this.#socket) return;
+    // From rest (first connect, or after disconnecting) the deadline starts with this attempt.
+    const resting = !this.#connected;
+    if (resting) this.#startUnreachable(true);
     this.#connected = true;
-    this.#update({ connection: "connecting", error: null });
+    this.#update({
+      connection: "connecting",
+      error: null,
+      ...(resting ? { unreachable: false } : {}),
+    });
     const socket = this.#options.connect();
     this.#socket = socket;
     let openedAt: number | undefined;
     socket.addEventListener("open", () => {
       if (this.#socket !== socket) return;
       openedAt = Date.now();
-      this.#update({ connection: "connected" });
+      this.#clearUnreachable();
+      const resumed = this.#opened;
+      this.#opened = true;
+      this.#update({
+        connection: "connected",
+        unreachable: false,
+        ...(resumed ? { resumedGeneration: this.#snapshot.resumedGeneration + 1 } : {}),
+      });
       this.#subscribe(null);
       if (this.#snapshot.channel) this.#subscribe(this.#snapshot.channel);
       if (this.#snapshot.thread) this.#subscribe(this.#snapshot.thread);
@@ -322,28 +371,59 @@ export class TeamSessionClient {
         closed();
       }
     });
-    const closed = () => {
+    const closed = (code?: number) => {
       if (this.#socket !== socket) return;
       this.#socket = null;
       this.#connectionGeneration++;
       this.#update({ connection: "offline", typing: {}, presence: {} });
       if (!this.#connected || this.#removed) return;
+      this.#startUnreachable();
       // A socket that opens and fails at once keeps backing off.
       if (openedAt !== undefined && Date.now() - openedAt >= healthyConnectionMs) this.#attempt = 0;
-      this.#reconnectLater();
+      if (code === refusedCloseCode) this.#recheck();
+      else this.#reconnectLater(code !== restartingCloseCode);
     };
-    socket.addEventListener("close", closed);
+    socket.addEventListener("close", (event) => closed(event.code));
     socket.addEventListener("error", () => {
       socket.close();
       closed();
+    });
+  }
+  /** One deadline from the first attempt or close; failed attempts after it never push it back. */
+  #startUnreachable(fresh = false): void {
+    if (!fresh && (this.#unreachableTimer || this.#snapshot.unreachable)) return;
+    this.#clearUnreachable();
+    this.#unreachableTimer = setTimeout(() => {
+      this.#unreachableTimer = null;
+      this.#update({ unreachable: true });
+    }, unreachableAfterMs);
+  }
+  #clearUnreachable(): void {
+    if (this.#unreachableTimer) clearTimeout(this.#unreachableTimer);
+    this.#unreachableTimer = null;
+  }
+  /** A refused socket: ask now why, so a revocation or version refusal shows at once. */
+  #recheck(): void {
+    const generation = this.#connectionGeneration;
+    void this.#revalidate().then((revalidated) => {
+      if (
+        generation !== this.#connectionGeneration ||
+        !this.#connected ||
+        this.#removed ||
+        this.#disposed
+      )
+        return;
+      // Still backed off: a server that keeps refusing the socket is not asked in a tight loop.
+      this.#reconnectLater(!revalidated);
     });
   }
   /**
    * Jittered, and before revalidating: a restarted team server must not receive
    * every member's bootstrap and socket in the same instant. A failed
    * revalidation waits for the next step rather than opening a doomed socket.
+   * A planned restart skips the check: nothing about the viewer changed.
    */
-  #reconnectLater(): void {
+  #reconnectLater(revalidate = true): void {
     const generation = this.#connectionGeneration;
     const current = () =>
       generation === this.#connectionGeneration &&
@@ -354,6 +434,10 @@ export class TeamSessionClient {
     this.#reconnectTimer = setTimeout(
       () => {
         this.#reconnectTimer = null;
+        if (!revalidate) {
+          if (current()) this.connect();
+          return;
+        }
         void this.#revalidate().then((revalidated) => {
           if (!current()) return;
           if (revalidated) this.connect();
@@ -374,6 +458,11 @@ export class TeamSessionClient {
   }
   async #authorizationFailure(error: unknown): Promise<void> {
     if (!(error instanceof OpensteerError)) return;
+    const versionRefusal = teamVersionRefusal(error.reason);
+    if (versionRefusal) {
+      this.#update({ versionRefusal });
+      return;
+    }
     const refusal = teamEntryRefusalOutcome(error.reason);
     if (refusal === "retryable") return;
     if (refusal === "membership") {
@@ -435,7 +524,9 @@ export class TeamSessionClient {
         this.#update({
           bootstrap: this.#withNewerOwnName(bootstrap),
           sidebar: monotonicTeamSidebar(this.#snapshot.sidebar, bootstrap.sidebar),
+          versionRefusal: null,
         });
+        this.#catchUpNames(bootstrap.sidebar.namesRevision);
         // A relay that failed or was missed while away is tried again.
         void this.#relayProfile();
       }
@@ -703,32 +794,9 @@ export class TeamSessionClient {
       case "team.agent.recipient":
         this.#applyRecipients([frame.recipient]);
         break;
-      case "team.member.updated": {
-        // Renames commit and publish independently, so an older one can arrive last.
-        const { member } = frame;
-        const held = this.#snapshot.memberUpdates?.[member.userId];
-        if ((member.nameRevision ?? 0) <= (held?.nameRevision ?? 0)) break;
-        const bootstrap = this.#snapshot.bootstrap;
-        const self =
-          bootstrap?.member.userId === member.userId &&
-          (member.nameRevision ?? 0) > (bootstrap.member.nameRevision ?? 0);
-        this.#update({
-          memberUpdates: { ...this.#snapshot.memberUpdates, [member.userId]: member },
-          ...(self
-            ? {
-                bootstrap: {
-                  ...bootstrap,
-                  member: {
-                    ...bootstrap.member,
-                    displayName: member.displayName,
-                    nameRevision: member.nameRevision,
-                  },
-                },
-              }
-            : {}),
-        });
+      case "team.member.updated":
+        this.#applyNames([frame.member]);
         break;
-      }
       case "team.cut": {
         const view = frame.cut.scope.kind === "channel" ? "channel" : "thread";
         const held = this.#snapshot[view];
@@ -749,9 +817,18 @@ export class TeamSessionClient {
         }
         break;
       }
-      case "team.sidebar":
+      case "team.sidebar": {
+        // Sent as a socket subscribes, so it also tells what moved while it was away.
+        const held = this.#snapshot.sidebar;
+        if (held && compareSequence(frame.sidebar.accessRevision, held.accessRevision) > 0)
+          this.receive({
+            type: "team.access.changed",
+            accessRevision: frame.sidebar.accessRevision,
+          });
         this.#applySidebar(frame.sidebar);
+        this.#catchUpNames(frame.sidebar.namesRevision);
         break;
+      }
       case "team.sidebar.dirty":
         void this.#refreshSidebarRows(frame.channelIds).catch(() => undefined);
         break;
@@ -811,6 +888,58 @@ export class TeamSessionClient {
           });
         break;
     }
+  }
+  /** Renames commit and publish independently, so an older one can arrive last. */
+  #applyNames(members: readonly TeamMember[]): void {
+    let updates = this.#snapshot.memberUpdates;
+    for (const member of members) {
+      const held = updates?.[member.userId];
+      if ((member.nameRevision ?? 0) <= (held?.nameRevision ?? 0)) continue;
+      updates = { ...updates, [member.userId]: member };
+    }
+    if (updates === this.#snapshot.memberUpdates || !updates) return;
+    const bootstrap = this.#snapshot.bootstrap;
+    const self = bootstrap ? updates[bootstrap.member.userId] : undefined;
+    this.#update({
+      memberUpdates: updates,
+      ...(bootstrap && self && (self.nameRevision ?? 0) > (bootstrap.member.nameRevision ?? 0)
+        ? {
+            bootstrap: {
+              ...bootstrap,
+              member: {
+                ...bootstrap.member,
+                displayName: self.displayName,
+                nameRevision: self.nameRevision,
+              },
+            },
+          }
+        : {}),
+    });
+  }
+  /** Renames made while away were never announced to this session: read the names again. */
+  #catchUpNames(namesRevision: string | undefined): void {
+    if (namesRevision === undefined || namesRevision === this.#namesRevision) return;
+    const first = this.#namesRevision === undefined;
+    this.#namesRevision = namesRevision;
+    if (first) return;
+    const lifetime = this.#lifetime,
+      read = ++this.#namesRead;
+    void (async () => {
+      const members: TeamMember[] = [];
+      let after: UserId | undefined;
+      do {
+        const page = await this.rpc["team.members.list"](after ? { after } : {}).then(
+          unwrapRpcResult,
+        );
+        if (lifetime !== this.#lifetime || read !== this.#namesRead) return;
+        members.push(...page.members);
+        after = page.hasMore ? page.members.at(-1)?.userId : undefined;
+      } while (after && members.length < memberNamesBound);
+      this.#applyNames(members);
+    })().catch(() => {
+      // The next catch-up reads them; a held revision would otherwise hide the miss.
+      if (read === this.#namesRead) this.#namesRevision = null;
+    });
   }
   #applySidebar(sidebar: TeamSidebar, replace = false, notify = true): void {
     const previous = this.#snapshot.sidebar;
@@ -1282,10 +1411,11 @@ export class TeamSessionClient {
     this.#connected = false;
     if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = null;
+    this.#clearUnreachable();
     const socket = this.#socket;
     this.#socket = null;
     socket?.close();
-    this.#update({ connection: "offline", typing: {}, presence: {} });
+    this.#update({ connection: "offline", unreachable: true, typing: {}, presence: {} });
   }
   remove(ended: TeamSessionSnapshot["ended"] = "removed"): Promise<void> {
     if (this.#removal) return this.#removal;

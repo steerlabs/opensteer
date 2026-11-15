@@ -25,7 +25,7 @@ it.each(["app", "phone"] as const)(
     );
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
-    element<HTMLTextAreaElement>("[data-composer-input]").focus();
+    element<HTMLElement>("[data-composer-input]").focus();
     const snapshot = client.getSnapshot();
     const source = snapshot.threads.find((thread) => thread.purpose === "task")!;
     const machine = snapshot.machines.find((machine) =>
@@ -67,7 +67,7 @@ it("routes an authorized unloaded Thread through the existing Thread route", asy
   );
   vi.spyOn(document, "hasFocus").mockReturnValue(true);
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
-  element<HTMLTextAreaElement>("[data-composer-input]").focus();
+  element<HTMLElement>("[data-composer-input]").focus();
   const snapshot = client.getSnapshot();
   const source = snapshot.threads.find((thread) => thread.purpose === "task")!;
   const threadId = createId("thread");
@@ -94,7 +94,7 @@ it.each(["task"])("shows a requested tab from a %s while its composer has focus"
   const threadId = history.at(-1)!.path.split("/").at(-1)!;
   const place = pageTab();
   if (place.destination.kind !== "browser") throw new Error("Expected a browser tab");
-  const composer = element<HTMLTextAreaElement>("[data-composer-input]");
+  const composer = element<HTMLElement>("[data-composer-input]");
   composer.focus();
   expect(document.activeElement).toBe(composer);
   const before = history.length;
@@ -152,7 +152,7 @@ it("leaves other focused work, hidden windows and other conversations alone with
     }
     field.remove();
   }
-  element<HTMLTextAreaElement>("[data-composer-input]").focus();
+  element<HTMLElement>("[data-composer-input]").focus();
   visibility.mockReturnValue("hidden");
   await deliverIgnored();
   visibility.mockReturnValue("visible");

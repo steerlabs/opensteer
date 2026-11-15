@@ -1,4 +1,4 @@
-import { hostApiVersion } from "@opensteer/deployment-authority";
+import { apiVersionHeaders } from "@opensteer/deployment-authority";
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { pipeline } from "node:stream/promises";
@@ -17,7 +17,7 @@ export async function runnerFileRequest(
   return await new Promise<IncomingMessage>((resolve, reject) => {
     const options = {
       ca,
-      headers: { ...headers, "x-opensteer-api-version": String(hostApiVersion) },
+      headers: { ...headers, ...apiVersionHeaders("personal") },
       signal,
       method: upload ? "PUT" : "GET",
     };

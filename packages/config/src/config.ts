@@ -164,6 +164,11 @@ const configuredSecret = (maximumLength: number) =>
 const bindAddress = z.union([z.ipv4(), z.ipv6(), z.literal("localhost")]);
 const HostEnvironmentSchema = z.object({
   OPENSTEER_AUTH_SECRET: configuredSecret(8_192),
+  OPENSTEER_STRICT_INSTALLATION: z.enum(["true", "false"]).default("false"),
+  OPENSTEER_HOST_INSTANCE_PATH: optionalPath,
+  OPENSTEER_TEAM_FILE_STORE: z.enum(["local", "gcs"]).default("local"),
+  OPENSTEER_TEAM_FILE_BUCKET: optionalPath,
+  OPENSTEER_TEAM_FILE_PREFIX: optionalPath,
   OPENSTEER_ACCOUNT_BUNDLE_FD: optionalFileDescriptor,
   OPENSTEER_ACCOUNT_BUNDLE_PATH: optionalPath,
   OPENSTEER_BIND_ADDRESS: bindAddress.default("127.0.0.1"),
@@ -242,6 +247,9 @@ export interface HostConfig {
   };
   readonly accountBundlePath: string;
   readonly authSecret: string;
+  readonly strictInstallation?: boolean;
+  readonly hostInstancePath?: string;
+  readonly teamFileStore?: { kind: "local" } | { kind: "gcs"; bucket: string; prefix: string };
   readonly bindAddress: string;
   readonly canonicalOrigin: URL;
   /**
@@ -454,6 +462,13 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
   }
   const parsed = HostEnvironmentSchema.parse(values);
   if (
+    parsed.OPENSTEER_TEAM_FILE_STORE === "gcs" &&
+    (!parsed.OPENSTEER_TEAM_FILE_BUCKET ||
+      !parsed.OPENSTEER_TEAM_FILE_PREFIX ||
+      !parsed.OPENSTEER_TEAM_FILE_PREFIX.endsWith("/"))
+  )
+    throw new Error("GCS team files require a bucket and managed-folder prefix ending in /");
+  if (
     parsed.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN !== undefined &&
     parsed.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST !== undefined
   )
@@ -484,6 +499,19 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
   const deploymentShape = DeploymentShapeSchema.parse({
     kind: parsed.OPENSTEER_DEPLOYMENT_KIND ?? "personal",
   });
+  if (parsed.OPENSTEER_STRICT_INSTALLATION === "true") {
+    if (
+      !deploymentPolicy(deploymentShape).services.team ||
+      !environment.OPENSTEER_AUTH_SECRET_FILE ||
+      !parsed.OPENSTEER_HOST_INSTANCE_PATH ||
+      !parsed.OPENSTEER_HOST_PRIVATE_KEY_PATH ||
+      !parsed.OPENSTEER_HOST_PUBLIC_KEY_PATH ||
+      !environment.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST_FILE
+    )
+      throw new Error(
+        "Strict team installation requires mounted auth secret, setup digest, Host instance and key pair files",
+      );
+  }
   const accountBundle = readAccountAdoptionBundle({
     ...parsed,
     ...(parsed.OPENSTEER_ACCOUNT_BUNDLE_FD === undefined &&
@@ -610,6 +638,18 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
         }
       : {}),
     authSecret: parsed.OPENSTEER_AUTH_SECRET,
+    strictInstallation: parsed.OPENSTEER_STRICT_INSTALLATION === "true",
+    ...(parsed.OPENSTEER_HOST_INSTANCE_PATH
+      ? { hostInstancePath: parsed.OPENSTEER_HOST_INSTANCE_PATH }
+      : {}),
+    teamFileStore:
+      parsed.OPENSTEER_TEAM_FILE_STORE === "gcs"
+        ? {
+            kind: "gcs",
+            bucket: parsed.OPENSTEER_TEAM_FILE_BUCKET!,
+            prefix: parsed.OPENSTEER_TEAM_FILE_PREFIX!,
+          }
+        : { kind: "local" },
     bindAddress: parsed.OPENSTEER_BIND_ADDRESS,
     canonicalOrigin,
     browserRuntime,

@@ -1,6 +1,6 @@
 import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import { net, session, type Session } from "electron";
-import { hostApiVersionHeader } from "@opensteer/protocol";
+import { hostApiCurrentHeader, hostApiVersionHeader } from "@opensteer/protocol";
 import type {
   HostNetwork,
   HostNetworkRequest,
@@ -119,10 +119,13 @@ function requestHeaders(input: HostNetworkRequest): Record<string, string> {
   if (input.request.headers.idempotencyKey) {
     headers["idempotency-key"] = input.request.headers.idempotencyKey;
   }
-  // The calling client negotiates with the Host: relay its stated epoch.
-  // Renderer clients and Desktop main each state the version they understand.
+  // The calling client negotiates with the Host: relay the versions it states.
+  // Renderer clients and Desktop main each state the versions they understand.
   if (input.request.headers.apiVersion) {
     headers[hostApiVersionHeader] = input.request.headers.apiVersion;
+  }
+  if (input.request.headers.apiCurrent) {
+    headers[hostApiCurrentHeader] = input.request.headers.apiCurrent;
   }
   if (input.request.headers.bootstrapDiagnostics) {
     headers[bootstrapDiagnosticHeader] = input.request.headers.bootstrapDiagnostics;

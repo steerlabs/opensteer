@@ -88,7 +88,7 @@ jobs:
           {
             pnpm format:check
             pnpm lint
-            node .github/scripts/ci-team-api.mjs
+            node .github/scripts/ci-stable-api.mjs
             pnpm exec tsx scripts/quarantine.ts
             # Prose guards: docs-only changes run no test lane, so lint carries them.
             pnpm exec vitest run tests/product-name-spelling.test.ts

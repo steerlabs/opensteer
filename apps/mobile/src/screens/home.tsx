@@ -1,7 +1,7 @@
 import { useHeaderHeight } from "@react-navigation/elements";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useCallback, type ReactNode } from "react";
-import { Keyboard } from "react-native";
+import { dismissKeyboard } from "../ui/composer-editor.js";
 import { Screen } from "../ui/screen.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { NewTaskPane } from "./new-task.js";
@@ -29,7 +29,7 @@ export function HomeScreen(props: HomeScreenProps): ReactNode {
   const onStarted = useCallback(
     (threadId: string): boolean => {
       if (!navigation.isFocused()) return false;
-      Keyboard.dismiss();
+      dismissKeyboard();
       navigation.dispatch(StackActions.push("Thread", { deploymentId, threadId }));
       return true;
     },

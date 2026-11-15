@@ -52,7 +52,7 @@ export function UsageNotice({
   readonly entries?: UsageLimitNoticeInput["entries"];
   readonly placements: UsageLimitNoticeInput["placements"];
   /** Where the keyboard goes once the line is dismissed: the words being written. */
-  readonly returnFocusTo: RefObject<HTMLTextAreaElement | null>;
+  readonly returnFocusTo: RefObject<HTMLElement | null>;
   readonly selection: UsageLimitNoticeInput["selection"];
 }) {
   const { snapshot } = useShell();
@@ -77,7 +77,7 @@ export function UsageNoticeLine({
 }: {
   readonly notice: UsageLimitNotice | null;
   readonly action?: ReactNode;
-  readonly returnFocusTo: RefObject<HTMLTextAreaElement | null>;
+  readonly returnFocusTo: RefObject<HTMLElement | null>;
 }) {
   const store = browserNoticeDismissals("opensteer.usage-notices.dismissed");
   const dismissed = useSyncExternalStore(store.subscribe, store.getSnapshot);

@@ -1,7 +1,7 @@
 import { requireOptionalNativeModule } from "expo";
 import { Platform } from "react-native";
 import type { HostClient } from "@opensteer/client/host";
-import { hostApiVersion } from "@opensteer/deployment-authority";
+import { minimumHostApiVersion } from "@opensteer/deployment-authority";
 import type { DeviceInitialAccess } from "@opensteer/protocol";
 import type {
   PhoneBrowserNativeEvent,
@@ -134,7 +134,8 @@ export async function enrollAndroidPhone(input: {
   const host = await phoneEnrollmentHost(input.hostClient, input.deploymentId);
   return connection().enrollFromHost({
     ...host,
-    apiVersion: hostApiVersion,
+    // The native module states one version; a Host serves it as a caller at exactly that one.
+    apiVersion: minimumHostApiVersion,
     devicesV1: input.hostClient.getSnapshot().devicesAvailable === true,
     deploymentId: input.deploymentId,
     name: input.name,

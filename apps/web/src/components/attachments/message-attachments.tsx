@@ -5,7 +5,6 @@ import {
   useId,
   useRef,
   useState,
-  type RefObject,
   type ReactNode,
 } from "react";
 import type { ArtifactContentPart } from "@opensteer/core";
@@ -14,6 +13,7 @@ import { actionErrorMessage } from "../../ui-utils.js";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
 import { attachmentDetail, isInlineImage } from "./attachment-parts.js";
+import { useNearViewport } from "../use-near-viewport.js";
 
 /**
  * The HostClient available to transcript content. Without one, attachments
@@ -258,24 +258,6 @@ function useDownload(
       });
   };
   return { download, error, pending };
-}
-
-/** True once the element comes within a screen of view, and from then on. */
-function useNearViewport(ref: RefObject<HTMLElement | null>): boolean {
-  const [near, setNear] = useState(() => typeof IntersectionObserver === "undefined");
-  useEffect(() => {
-    const element = ref.current;
-    if (near || !element) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) setNear(true);
-      },
-      { rootMargin: "100% 0px" },
-    );
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [near, ref]);
-  return near;
 }
 
 export function ImagePreviewDialog({

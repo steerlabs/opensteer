@@ -34,9 +34,17 @@ export interface TeamToolPort {
           "teamId" | "teamName" | "state"
         >[];
       }
-    | z.output<typeof import("@opensteer/protocol").TeamChannelsResultSchema>
-    | z.output<typeof import("@opensteer/protocol").TeamReadResultSchema>
-    | { path: string; source: z.output<typeof import("@opensteer/core").TeamSourceSchema> }
+    | (Omit<z.output<typeof import("@opensteer/protocol").TeamChannelsResultSchema>, "channels"> & {
+        channels: import("@opensteer/agent-tools/tools").AgentTeamChannelSummary[];
+      })
+    | (Omit<import("@opensteer/agent-tools/tools").AgentTeamReadResult, "page"> & {
+        page: Omit<import("@opensteer/agent-tools/tools").AgentTeamMessagePage, "nextCursor">;
+      })
+    | {
+        path: string;
+        link?: string;
+        source: z.output<typeof import("@opensteer/core").TeamSourceSchema>;
+      }
   >;
   search(
     run: TeamToolRun,

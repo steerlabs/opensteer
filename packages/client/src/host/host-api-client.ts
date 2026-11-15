@@ -2,9 +2,9 @@ import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostic
 import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import {
   HostApiErrorSchema,
-  AttachmentContentMetadataSchema,
+  TranscriptFileContentSchema,
+  transcriptFileContentMaxBytes,
   hostApi,
-  hostApiVersionHeader,
   type HostApiClient,
   type HostApiHandlers,
   type HostApiServerContext,
@@ -13,11 +13,7 @@ import {
   type RpcInput,
   type RpcOutput,
 } from "@opensteer/protocol";
-import {
-  hostApiVersion,
-  teamApiVersion,
-  teamApiVersionHeader,
-} from "@opensteer/deployment-authority";
+import { apiVersionHeaders } from "@opensteer/deployment-authority";
 import { attachmentMaxBytes } from "@opensteer/core";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { formatIssues } from "@opensteer/shared/validationIssues";
@@ -170,7 +166,11 @@ async function request<Name extends keyof typeof hostApi>(
   }
   const diagnostic = name === "bootstrap.get" ? bootstrapReadDiagnostics.takeSummary() : undefined;
   const deadline = new HostResponseDeadline(call?.signal);
-  const maximumBytes = declaration.stream ? attachmentMaxBytes : 16 * 1_024 * 1_024;
+  const maximumBytes = declaration.stream
+    ? name === "file.content"
+      ? transcriptFileContentMaxBytes
+      : attachmentMaxBytes
+    : 16 * 1_024 * 1_024;
   const headersTimeoutMs =
     name === "commands.dispatch" && "type" in payload && payload.type === "browser.tab.open"
       ? 25_000
@@ -203,11 +203,9 @@ async function request<Name extends keyof typeof hostApi>(
         headers: {
           ...(diagnostic ? { [bootstrapDiagnosticHeader]: JSON.stringify(diagnostic) } : {}),
           accept: declaration.stream ? "*/*" : "application/json",
-          // Every rpc request states the epoch this app speaks. It is sent from
+          // Every rpc request states the versions this app speaks. It is sent from
           // here alone so no caller can reach a Host without having negotiated.
-          [options.kind === "team" ? teamApiVersionHeader : hostApiVersionHeader]: String(
-            options.kind === "team" ? teamApiVersion : hostApiVersion,
-          ),
+          ...apiVersionHeaders(options.kind === "team" ? "team" : "personal"),
           ...(declaration.method === "POST"
             ? {
                 "content-type":
@@ -236,7 +234,7 @@ async function request<Name extends keyof typeof hostApi>(
     call?.signal?.throwIfAborted();
     if (declaration.stream && response.ok) {
       const modified = response.headers.get("last-modified");
-      const metadata = AttachmentContentMetadataSchema.parse({
+      const metadata = TranscriptFileContentSchema.shape.metadata.parse({
         contentType: response.headers.get("content-type") ?? "application/octet-stream",
         etag: response.headers.get("etag") ?? "missing",
         modifiedAt: modified ? new Date(modified).toISOString() : null,

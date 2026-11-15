@@ -10,6 +10,43 @@ hostnames keep exact no-script routes so they skip it, and the Worker must be li
 that returns Connect app origins ships. The Account never hosts a person's Deployment; it only records which
 [hosted teams](hosted-teams.md) should exist.
 
+## API compatibility
+
+Phones, Agent Phones, Runners, open windows, personal Opensteer and team servers update on their
+own schedules, so each API is a window, not an exact match
+([authority.ts](../packages/deployment-authority/src/authority.ts)). Refusing a peer is the last
+resort: a person whose phone updated before their Mac loses their Mac.
+
+- Each side has a current version and the oldest it still serves. A personal caller states both
+  (`x-opensteer-api-version` carries its minimum, `x-opensteer-api-current` its current; a socket
+  carries them in its URL) and is served the lower of the two current versions while the windows
+  overlap. A personal descriptor advertises the Host's minimum as `apiVersion` and its current as
+  `currentApiVersion`. A peer from before the window states and advertises one version, which the
+  minimum fields keep matching while the minimum holds. A team peer states only its current
+  version and serves any peer at or above its own minimum; a newer team peer adapts down.
+- Changes are additive by default and keep the version: new commands, reads, optional fields, and
+  frame types, union members and enum values a reader is never sent. A Host parses requests
+  strictly; replies and frames are read tolerantly where a reader can be. A personal realtime
+  reader does not skip a frame it cannot read, it resubscribes to repair it, so a Host sends a new
+  personal frame type, member or value only to callers that ask for it or are new enough to read
+  it. Two things stay strict everywhere: signed discovery documents, and inputs whose
+  dropped field would change an answer or authorize something, such as an approval of words a
+  person never saw. An older caller is refused that one operation, never the connection.
+- Move a current version only for a change an older peer would misread, and then serve older
+  callers the shape they read; the personal [wire guard](../packages/protocol/src/personal-wire.test.ts)
+  compares every personal schema with the one recorded at the minimum. Bootstrap tells a caller
+  the version it is served before it reads any state, and each realtime sync names the version its
+  state was read at; saved state read at another version is replaced by a snapshot, never resumed
+  or refused.
+- Raise a minimum only for a security reason or once published Stable already speaks the new
+  minimum; the [Stable floor guard](../.github/scripts/ci-stable-api.mjs) enforces both, and an
+  exception needs an explicit guard change and Tim's approval.
+- A refusal names the side that is behind: "Update Opensteer" for the app or personal Opensteer,
+  and the team server for a team below a peer's minimum.
+
+[The team wire guard](../packages/protocol/src/team-wire.test.ts) holds a snapshot of every team
+schema as its reader parses it and fails on a non-additive change unless the version moves.
+
 ## Route selection and lifetime
 
 [`connection-resolver.ts`](../packages/client/src/connections/connection-resolver.ts) is the only

@@ -1524,7 +1524,7 @@ it("refuses old apps only for shared channel work", async () => {
           if (frame.type === "team.cut") cuts.push(frame.cut);
           return true;
         },
-        close: (reason) => closed.resolve(reason),
+        close: (_code, reason) => closed.resolve(reason),
       },
     );
     await watching.receive({

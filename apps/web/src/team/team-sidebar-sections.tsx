@@ -29,14 +29,18 @@ import { sidebarView } from "./team-view-models.js";
 export function teamConnection(
   team: TeamAttachment,
   snapshot:
-    (Pick<TeamSessionSnapshot, "connection"> & Partial<Pick<TeamSessionSnapshot, "ended">>) | null,
+    | (Pick<TeamSessionSnapshot, "connection"> &
+        Partial<Pick<TeamSessionSnapshot, "ended" | "unreachable" | "versionRefusal">>)
+    | null,
 ): TeamConnection {
   if (snapshot?.ended === "sign-in" || snapshot?.ended === "viewer-changed") return "sign-in";
   if (team.link?.state === "revoked" || snapshot?.ended === "removed") return "removed";
   if (team.link?.state === "needs_update") return "update-app";
+  if (snapshot?.versionRefusal) return snapshot.versionRefusal;
   if (snapshot?.connection === "connected") return "online";
-  if (snapshot?.connection === "connecting") return "reconnecting";
-  return "offline";
+  // A closed socket is out of reach only once the session's deadline passes: a swap is not.
+  if (!snapshot || snapshot.unreachable) return "offline";
+  return "reconnecting";
 }
 
 /** What a team's segment says. */
@@ -205,6 +209,11 @@ export function TeamSideFor({
   const canInvite = useTeamSessionValue(client, selectCanInvite);
   const { openInvite, openNewChannel, openNewMessage } = useTeamDialogs();
   const connection = useTeamSessionValue(client, selectConnection);
+  const unreachable = useTeamSessionValue(client, (snapshot) => snapshot?.unreachable ?? false);
+  const versionRefusal = useTeamSessionValue(
+    client,
+    (snapshot) => snapshot?.versionRefusal ?? null,
+  );
   const ended = useTeamSessionValue(client, (snapshot) => snapshot?.ended ?? null);
   const refusal = useTeamSessionValue(client, (snapshot) => snapshot?.refusalReason ?? null);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -321,7 +330,7 @@ export function TeamSideFor({
       team={sidebarView({
         teamId: team.teamId,
         tile: teamTile(team.teamId, teamName ?? team.name),
-        connection: teamConnection(team, { connection, ended }),
+        connection: teamConnection(team, { connection, ended, unreachable, versionRefusal }),
         sidebar,
       })}
     />

@@ -1,3 +1,4 @@
+import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import type { ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import {
@@ -196,7 +197,10 @@ function ResultRow(props: {
             {props.result.where} · {message.time}
           </AppText>
         </View>
-        <Highlighted match={props.result.match} text={plainText(message.text)} />
+        <Highlighted
+          match={props.result.match}
+          text={plainTextExcerpt(message.text, 4_000) ?? ""}
+        />
       </View>
     </Pressable>
   );
@@ -222,16 +226,6 @@ function Highlighted(props: { readonly match: string; readonly text: string }): 
       {props.text.slice(at + props.match.length)}
     </Text>
   );
-}
-
-/** Markdown's marks dropped, for an excerpt. */
-function plainText(markdown: string): string {
-  return markdown
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/[*_~`>#]+/g, "")
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 /** A picker chip: the platform's own menu of the choices, the one in force checked. */

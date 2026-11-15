@@ -1,3 +1,9 @@
+import {
+  TranscriptFileOpenInputSchema,
+  TranscriptFileOpenSchema,
+  TranscriptFileContentInputSchema,
+  TranscriptFileContentSchema,
+} from "./transcript-files.js";
 import { TeamCommandResultViewSchema, teamReadViews } from "./team-views.js";
 import { NeedsYouPageSchema } from "./needs-you.js";
 import {
@@ -163,6 +169,7 @@ import {
   UpdateTriggerHttpBodySchema,
 } from "@opensteer/triggers/models";
 import { z } from "zod";
+import { ReferenceResolveInputSchema, ReferenceResolveResultSchema } from "./references.js";
 import { AppIdSchema, AppSchema } from "@opensteer/core";
 import { AgentPhoneHostTargetViewSchema } from "./android-phone.js";
 import { AssetUrlsInputSchema, AssetUrlsSchema } from "./assets.js";
@@ -316,12 +323,13 @@ const oidcReturnPathSchema = z
   .default("/");
 
 /**
- * The request header every rpc caller states its protocol epoch in. A request
- * that omits it is a client from before negotiation existed, and the Host
- * refuses it: there are none in the wild, because the Host serves its own web
- * bundle and the Desktop ships with the Host it talks to.
+ * The request headers every rpc caller states its versions in. Phones, Agent
+ * Phones, Runners and open windows update apart from their Host, so it serves
+ * every caller whose window overlaps its own ("API compatibility" in
+ * docs/connections.md).
  */
 export {
+  hostApiCurrentHeader,
   hostApiVersionHeader,
   teamApiVersion,
   teamApiVersionHeader,
@@ -2131,6 +2139,13 @@ export const hostApi = defineRpc({
   ),
   /** Personal only: signed addresses for image files on the hosting computer. */
   "asset.urls": declaration("POST", AssetUrlsInputSchema, AssetUrlsSchema),
+  "file.open": declaration("POST", TranscriptFileOpenInputSchema, TranscriptFileOpenSchema),
+  "file.content": declaration(
+    "GET",
+    TranscriptFileContentInputSchema,
+    TranscriptFileContentSchema,
+    true,
+  ),
   "tool.output.get": declaration(
     "GET",
     z.strictObject({
@@ -2254,14 +2269,24 @@ export const hostApi = defineRpc({
       ),
     ThreadMessagePageSchema,
   ),
+  "references.resolve": declaration(
+    "POST",
+    ReferenceResolveInputSchema,
+    ReferenceResolveResultSchema,
+  ),
   "thread.requests.list": declaration(
     "GET",
     z
       .strictObject({
         threadId: ThreadIdSchema,
+        requestId: RequestIdSchema.optional(),
         deviceAccessRequests: z.literal("include").optional(),
       })
-      .extend(durablePageInputSchema.shape),
+      .extend(durablePageInputSchema.shape)
+      .refine(
+        (input) => !input.requestId || (input.before === undefined && input.limit === undefined),
+        "A targeted Request read cannot page",
+      ),
     z.object({
       requests: readableRequestList(RequestViewSchema, 100),
       threadId: ThreadIdSchema,

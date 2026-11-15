@@ -44,7 +44,7 @@ test("read-only preflight, secret-free discovery and only stable publication app
       ...(name === "preflight" ? { actions: "read" } : {}),
       ...(name === "account" ? { "id-token": "write" } : {}),
       ...(name.startsWith("team-image") ? { packages: "write" } : {}),
-      ...(name === "team-provisioner" ? { "id-token": "write", packages: "write" } : {}),
+      ...(name === "team-provisioner" ? { packages: "write" } : {}),
     });
     assert.equal(
       job.environment,
@@ -52,7 +52,6 @@ test("read-only preflight, secret-free discovery and only stable publication app
         build: "release",
         "publish-stable": "publish",
         account: "account",
-        "team-provisioner": "teams",
       }[name],
     );
     for (const step of job.steps) {
@@ -102,47 +101,15 @@ test("read-only preflight, secret-free discovery and only stable publication app
     /always/,
   );
 });
-test("hosted teams deploy only after Beta publication, using that release's digests", () => {
+test("hosted teams are promoted explicitly from published digests", () => {
   const job = workflow.jobs["team-provisioner"];
-  const enabled = (
-    channel,
-    publication,
-    images = "success",
-    cancelled = false,
-    discover = { result: "success", outputs: { skip: "false" } },
-  ) =>
-    Boolean(
-      runInNewContext(job.if.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), {
-        needs: {
-          preflight: { outputs: { channel } },
-          discover,
-          "publish-insider": { result: publication },
-          "publish-stable": { result: channel === "stable" ? "success" : "skipped" },
-          "team-images": { result: images },
-        },
-        cancelled: () => cancelled,
-      }),
-    );
-  assert.equal(enabled("beta", "success"), true);
-  for (const publication of ["skipped", "failure", "cancelled"])
-    assert.equal(enabled("beta", publication), false);
-  assert.equal(enabled("stable", "skipped"), false);
-  assert.equal(enabled("stable", "success"), false);
-  assert.equal(enabled("beta", "success", "failure"), false);
-  assert.equal(enabled("beta", "success", "success", true), false);
-  // A full rerun after a failed deploy finds the Beta already published and verified by
-  // discover, skips publication, and must still be able to finish the deployment.
-  const published = { result: "success", outputs: { skip: "true" } };
-  assert.equal(enabled("beta", "skipped", "success", false, published), true);
-  assert.equal(enabled("beta", "skipped", "failure", false, published), false);
-  assert.equal(enabled("stable", "skipped", "success", false, published), false);
-  assert.equal(
-    enabled("beta", "skipped", "success", false, { result: "failure", outputs: { skip: "true" } }),
-    false,
-  );
-  assert.ok(job.needs.includes("discover"));
-  assert.equal(job.env.TEAM_HOST_IMAGE, "${{ needs.team-images.outputs.host_image }}");
-  assert.equal(job.env.TEAM_GATEWAY_IMAGE, "${{ needs.team-images.outputs.gateway_image }}");
+  assert.doesNotMatch(JSON.stringify(job), /google-github-actions|deploy-team-provisioner.sh/);
+  const promotion = parseDocument(
+    readFileSync(new URL("../workflows/promote-team-servers.yml", import.meta.url), "utf8"),
+  ).toJS();
+  assert.ok(promotion.on.workflow_dispatch.inputs.provisioner_image.required);
+  assert.equal(promotion.jobs.promote.environment, "teams");
+  assert.match(JSON.stringify(promotion), /deploy-team-provisioner.sh/);
 });
 
 test("observer preflight fails before signing and persists one interpreter for launch tooling", () => {

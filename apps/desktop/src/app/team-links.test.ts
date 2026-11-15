@@ -31,14 +31,19 @@ it("hands unknown-team channel and message/thread targets to the renderer withou
   const pages = [
     `https://unknown.example/c/${channel}`,
     `https://unknown.example/c/${channel}/m/42`,
+    `https://unknown.example/c/${channel}/t/42/m/43`,
+    `https://unknown.example/knowledge/${createId("knowledgeTopic")}`,
+    `https://unknown.example/knowledge/${createId("knowledgeTopic")}?note=${createId("knowledgeNote")}`,
   ];
   const links = new DesktopTeamLinks();
   const received: DesktopTeamLink[] = [];
   links.attach((link) => received.push(link));
   for (const page of pages) expect(links.accept(appLink(page))).toBe(true);
-  expect(received[0]!.url).toBe(pages[0]);
-  links.acknowledge(received[0]!.id);
-  expect(received[1]!.url).toBe(pages[1]);
+  for (const [index, page] of pages.entries()) {
+    expect(received[index]!.url).toBe(page);
+    links.acknowledge(received[index]!.id);
+  }
+  expect(received).toHaveLength(pages.length);
 });
 
 it("rejects the wrong scheme, credentials, non-HTTPS pages and malformed targets", () => {

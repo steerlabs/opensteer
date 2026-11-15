@@ -9,7 +9,8 @@ import {
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { memo, useMemo, type ReactNode } from "react";
-import { Keyboard, Pressable, StyleSheet, View, useWindowDimensions } from "react-native";
+import { Pressable, StyleSheet, View, useWindowDimensions } from "react-native";
+import { dismissKeyboard } from "../ui/composer-editor.js";
 import Animated from "react-native-reanimated";
 import { color, controlFontScaleLimit, pillHeight, space, touchTarget } from "../theme.js";
 import { GlassSurface } from "../ui/glass.js";
@@ -67,7 +68,7 @@ export const RunningNowCapsule = memo(function RunningNowCapsule(props: {
         accessibilityLabel={`${model.name}. Show the list`}
         accessibilityRole="button"
         onPress={() => {
-          Keyboard.dismiss();
+          dismissKeyboard();
           props.onOpen();
         }}
         style={({ pressed }) => [styles.target, pressed && styles.pressed]}

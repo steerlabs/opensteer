@@ -2,6 +2,7 @@ import {
   AgentBrowserSessionSummarySchema,
   ChromeCookiesResultSchema,
   SavedLoginResultSchema,
+  UseCardResultSchema,
 } from "@opensteer/protocol";
 import { z } from "zod";
 import {
@@ -44,6 +45,9 @@ import {
   TriggerSummaryViewSchema,
   TriggerWatchActivationViewSchema,
 } from "@opensteer/triggers";
+import { AgentLinkSchema } from "./agent-links.js";
+export { AgentLinkSchema } from "./agent-links.js";
+
 const AiAccountModelOptionSchema = z.union([
   z.object({
     id: z.string().min(1).max(100),
@@ -146,6 +150,7 @@ const task = ThreadSchema.shape;
 const PageSchema = { hasMore: z.boolean(), nextCursor: z.string().nullable() };
 
 export const ThreadDetailSchema = z.object({
+  link: AgentLinkSchema.optional(),
   id: task.id,
   title: task.title,
   status: task.status,
@@ -162,6 +167,7 @@ export const ThreadDetailSchema = z.object({
   updatedAt: task.updatedAt,
 });
 export const ThreadSummarySchema = z.object({
+  link: AgentLinkSchema.optional(),
   delegationId: AssignmentIdSchema.nullable(),
   doneAt: task.doneAt.optional(),
   id: ThreadIdSchema,
@@ -177,6 +183,7 @@ export const ThreadListOutputSchema = z.object({
   ...PageSchema,
 });
 export const TaskSchema = z.object({
+  link: AgentLinkSchema.optional(),
   delegationId: AssignmentIdSchema.nullable(),
   taskId: ThreadIdSchema,
   runId: RunSchema.shape.id.nullable(),
@@ -191,15 +198,18 @@ export const TaskSchema = z.object({
   finishedAt: z.string().nullable(),
 });
 export const ThreadMessageOutputSchema = z.object({
+  link: AgentLinkSchema.optional(),
   delegationId: AssignmentIdSchema.nullable(),
   disposition: z.enum(["cancelled", "pending", "steering", "run-queued"]),
   messageId: MessageIdSchema,
   runId: RunSchema.shape.id.nullable(),
 });
 export const ThreadInterruptOutputSchema = z.object({
+  link: AgentLinkSchema.optional(),
   interruptedRunId: RunSchema.shape.id.nullable(),
 });
 export const ThreadUpdateOutputSchema = z.object({
+  link: AgentLinkSchema.optional(),
   title: task.title,
   doneAt: task.doneAt,
   doneWhenRunEnds: z.boolean(),
@@ -248,7 +258,10 @@ export const PluginInstallOutputSchema = z.object({
     .nullable()
     .optional(),
 });
-export const PersonMessageOutputSchema = z.object({ messageId: MessageIdSchema });
+export const PersonMessageOutputSchema = z.object({
+  messageId: MessageIdSchema,
+  link: AgentLinkSchema.optional(),
+});
 export const PersonShowOutputSchema = z.object({
   status: z.enum(["sent-unconfirmed", "no-device-connected", "already-requested"]),
   connectedDevices: z.number().int().nonnegative(),
@@ -299,6 +312,7 @@ export function toolRequestAnswerer(
   return { ...rest, taskId: threadId };
 }
 export const RequestOutputSchema = z.object({
+  link: AgentLinkSchema.optional(),
   id: RequestIdSchema,
   kind: RequestKindSchema,
   status: RequestStatusSchema,
@@ -317,6 +331,7 @@ export const RequestListOutputSchema = z.object({
 });
 export const RequestWithdrawOutputSchema = z.object({ request: RequestOutputSchema });
 export const RequestCreationOutputSchema = z.object({
+  link: AgentLinkSchema.optional(),
   kind: RequestKindSchema,
   replayed: z.boolean(),
   requestId: RequestIdSchema,
@@ -339,15 +354,15 @@ const [copied, chromePending, chromeDeclined, chromeUnavailable] =
   ChromeCookiesResultSchema.options;
 export const CopyChromeCookiesOutputSchema = z.discriminatedUnion("status", [
   copied.extend(heldGuidance),
-  chromePending.extend(heldGuidance),
-  chromeDeclined.extend(heldGuidance),
+  chromePending.extend({ ...heldGuidance, link: AgentLinkSchema.optional() }),
+  chromeDeclined.extend({ ...heldGuidance, link: AgentLinkSchema.optional() }),
   chromeUnavailable.extend(heldGuidance),
 ]);
 const [ready, savedPending, savedDeclined, savedUnavailable] = SavedLoginResultSchema.options;
 export const UseSavedLoginOutputSchema = z.discriminatedUnion("status", [
   ready.extend(heldGuidance),
-  savedPending.extend(heldGuidance),
-  savedDeclined.extend(heldGuidance),
+  savedPending.extend({ ...heldGuidance, link: AgentLinkSchema.optional() }),
+  savedDeclined.extend({ ...heldGuidance, link: AgentLinkSchema.optional() }),
   savedUnavailable.extend(heldGuidance),
 ]);
 export const BrowserSessionSchema = AgentBrowserSessionSummarySchema;
@@ -396,11 +411,15 @@ export const BrowserTabWriteOutputSchema = z.object({
   failed: z.array(z.object({ tabId: z.string(), message: z.string() })).optional(),
   restored: z.array(z.object({ tabId: z.string(), sessionId: z.string() })).optional(),
 });
-const SafeTriggerSchema = TriggerViewSchema.omit({
+export const SafeTriggerSchema = TriggerViewSchema.omit({
   webhookRouteKey: true,
   anchorThreadId: true,
   createdByThreadId: true,
-}).extend({ taskId: ThreadIdSchema, createdByTaskId: ThreadIdSchema.nullable() });
+}).extend({
+  link: AgentLinkSchema.optional(),
+  taskId: ThreadIdSchema,
+  createdByTaskId: ThreadIdSchema.nullable(),
+});
 const AutomationRevisionSchema = TriggerRevisionViewSchema.omit({
   triggerId: true,
   createdByThreadId: true,
@@ -425,7 +444,7 @@ const AutomationWatchSchema = TriggerWatchActivationViewSchema.omit({
   taskId: ThreadIdSchema,
   automationId: TriggerViewSchema.shape.id,
 });
-const AutomationSummarySchema = TriggerSummaryViewSchema.omit({
+export const AutomationSummarySchema = TriggerSummaryViewSchema.omit({
   webhookRouteKey: true,
   anchorThreadId: true,
   anchorThreadTitle: true,
@@ -433,6 +452,7 @@ const AutomationSummarySchema = TriggerSummaryViewSchema.omit({
 }).extend({
   taskId: ThreadIdSchema,
   taskTitle: z.string(),
+  link: AgentLinkSchema.optional(),
   createdByTaskId: ThreadIdSchema.nullable(),
 });
 export const TriggerOutputSchema = z.object({
@@ -461,6 +481,7 @@ export const TriggerOutputSchema = z.object({
             }).shape,
           )
           .extend({
+            link: AgentLinkSchema.optional(),
             taskId: ThreadIdSchema,
             aiAccountId: HarnessInstanceIdSchema,
             delegationId: AssignmentIdSchema.nullable(),
@@ -482,6 +503,7 @@ export { AgentMediaContentSchema, IntegrationCallOutputSchema } from "./integrat
 
 /** A timeline entry. `itemId` is a message ID, or an activity event's sequence. */
 export const ThreadItemSchema = z.object({
+  link: AgentLinkSchema.optional(),
   itemId: z.string(),
   type: z.string(),
   status: z.string(),
@@ -498,13 +520,22 @@ export type ThreadItem = z.infer<typeof ThreadItemSchema>;
 
 export const ThreadWaitOutputSchema = z.object({
   status: z.enum(["running", "settled", "offline", "timed_out"]),
-  pendingRequest: z.object({ id: z.string(), kind: z.string() }).optional(),
-  run: z.object({ id: RunSchema.shape.id, status: RunSchema.shape.status }).optional(),
+  pendingRequest: z
+    .object({ id: z.string(), kind: z.string(), link: AgentLinkSchema.optional() })
+    .optional(),
+  run: z
+    .object({
+      id: RunSchema.shape.id,
+      status: RunSchema.shape.status,
+      link: AgentLinkSchema.optional(),
+    })
+    .optional(),
   items: z.array(ThreadItemSchema).max(100),
   hasMore: z.boolean(),
   task: TaskSchema.optional(),
 });
 export const ThreadConfigureOutputSchema = z.object({
+  link: AgentLinkSchema.optional(),
   taskId: ThreadIdSchema,
   aiAccountId: HarnessInstanceIdSchema,
   modelSelection: z.object({
@@ -515,10 +546,12 @@ export const ThreadConfigureOutputSchema = z.object({
   providerSessionId: ProviderSessionIdSchema.nullable(),
 });
 export const ThreadQueueOutputSchema = z.object({
+  link: AgentLinkSchema.optional(),
   paused: z.boolean(),
   items: z
     .array(
       z.object({
+        link: AgentLinkSchema.optional(),
         messageId: MessageIdSchema,
         author: ToolMessageAuthorSchema,
         preview: z.string().max(500),
@@ -543,6 +576,7 @@ export const ThreadReadOutputSchema = z
     recentRuns: z
       .array(
         z.object({
+          link: AgentLinkSchema.optional(),
           runId: RunSchema.shape.id,
           status: RunSchema.shape.status,
           delegationId: AssignmentIdSchema.nullable(),
@@ -571,5 +605,11 @@ export const ThreadReadOutputSchema = z
     "Task history exceeds the agent output byte limit",
   );
 
-export { UseCardResultSchema as UseCardOutputSchema } from "@opensteer/protocol";
-export type { UseCardResult as UseCardOutput } from "@opensteer/protocol";
+const [cardReady, cardPending, cardResolved, cardUnavailable] = UseCardResultSchema.options;
+export const UseCardOutputSchema = z.discriminatedUnion("status", [
+  cardReady,
+  cardPending.extend({ link: AgentLinkSchema.optional() }),
+  cardResolved,
+  cardUnavailable,
+]);
+export type UseCardOutput = z.infer<typeof UseCardOutputSchema>;

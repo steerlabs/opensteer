@@ -1,5 +1,6 @@
 import {
   messagePages,
+  phoneTabOpen,
   placePage,
   replyPlaces,
   type HostClient,
@@ -9,7 +10,11 @@ import {
   type Turn,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
-import type { BrowserPageContentPart } from "@opensteer/core";
+import type {
+  BrowserPageContentPart,
+  ComputerAppContentPart,
+  PhoneContentPart,
+} from "@opensteer/core";
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 import { Image, Pressable, StyleSheet, View } from "react-native";
 import { color, material, radius, space } from "../theme.js";
@@ -80,6 +85,59 @@ function IncludedPages(props: {
           title={page.title}
         />
       ))}
+    </View>
+  );
+}
+
+/**
+ * The apps and phones a person included with their message, beside its pages:
+ * named as they were sent, even once gone. A phone is its own address and
+ * opens while its view does; an app names no session of its own, so it is
+ * only named, never opened by commandeering one.
+ */
+export function MessagePlaces(props: {
+  readonly places: readonly (ComputerAppContentPart | PhoneContentPart)[];
+}): ReactNode {
+  const surfaces = useContext(TranscriptSurfacesContext);
+  if (surfaces === null || props.places.length === 0) return null;
+  return <IncludedPlaces places={props.places} surfaces={surfaces} />;
+}
+
+function IncludedPlaces(props: {
+  readonly places: readonly (ComputerAppContentPart | PhoneContentPart)[];
+  readonly surfaces: TranscriptSurfaces;
+}): ReactNode {
+  const machines = useHostSelector(props.surfaces.hostClient, selectMachines);
+  const connection = useHostSelector(props.surfaces.hostClient, selectConnection);
+  return (
+    <View style={styles.pages}>
+      {props.places.map((part) => {
+        if (part.type === "computer-app")
+          return (
+            <SurfaceChip
+              ended={false}
+              favicon={null}
+              glyph="laptopcomputer"
+              key={`app:${part.machineId}:${part.app.bundleId}`}
+              onPress={null}
+              secondary={null}
+              title={part.name}
+            />
+          );
+        const machine = machines.find(({ id }) => id === part.machineId);
+        const open = connection === "connected" && machine !== undefined && phoneTabOpen(machine);
+        return (
+          <SurfaceChip
+            ended={!open}
+            favicon={null}
+            glyph="smartphone"
+            key={`phone:${part.machineId}:${part.display}`}
+            onPress={() => props.surfaces.open({ kind: "phone", machineId: part.machineId })}
+            secondary={null}
+            title={part.name}
+          />
+        );
+      })}
     </View>
   );
 }
@@ -303,7 +361,8 @@ function SurfaceChip(props: {
   readonly ended: boolean;
   readonly favicon: string | null;
   readonly glyph: "globe" | "laptopcomputer" | "smartphone";
-  readonly onPress: () => void;
+  /** Null for a chip that only names what it was. */
+  readonly onPress: (() => void) | null;
   readonly secondary: string | null;
   readonly title: string;
 }): ReactNode {
@@ -332,10 +391,10 @@ function SurfaceChip(props: {
           : undefined
       }
       accessibilityLabel={label}
-      accessibilityRole="button"
+      accessibilityRole={props.onPress === null ? "text" : "button"}
       accessibilityState={{ disabled: props.ended }}
-      disabled={props.ended}
-      onPress={props.onPress}
+      disabled={props.ended || props.onPress === null}
+      onPress={props.onPress ?? undefined}
       style={({ pressed }) => [
         styles.chip,
         props.acting === true && !props.ended && styles.acting,

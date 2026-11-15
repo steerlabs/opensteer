@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Pressable, StyleSheet, TextInput, View, type TextInputInstance } from "react-native";
+import type { ComposerEditorHandle } from "@opensteer/client/references";
+import { useEffect, useState, type ReactNode, type RefObject } from "react";
+import { Pressable, StyleSheet, View } from "react-native";
 import { ComposerBar, ComposerGlyph, composerLaneHeight } from "../thread/composer-bar.js";
 import {
   color,
@@ -9,19 +10,26 @@ import {
   radius,
   space,
   touchTarget,
-  type,
 } from "../theme.js";
 import { ComposerAction } from "../ui/composer-action.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { teamUploadMaxBytes } from "@opensteer/protocol";
 import { StagedAttachments } from "./attachments.js";
-import { PasteTarget, type PastedImages } from "../../modules/paste-target/index.js";
+import type { PastedImages } from "../../modules/composer-editor/index.js";
+import { ComposerEditor } from "../ui/composer-editor.js";
+import {
+  ComposerReferencePicker,
+  type ReferenceRow,
+  type ReferenceSection,
+} from "../ui/composer-reference-picker.js";
 import { MentionList } from "./mention-list.js";
 import { AgentOrb, PeopleOnlyBadge } from "./team-marks.js";
 import type { AgentReach, MentionOption, StagedAttachmentView } from "./team-models.js";
 
 export interface TeamComposerProps {
+  /** The field, held by the screen that sends: it reads the last keystroke before sending. */
+  readonly editor: RefObject<ComposerEditorHandle | null>;
   /** "Message #support", "Reply…", "Message Maya". */
   readonly placeholder: string;
   readonly text: string;
@@ -38,6 +46,9 @@ export interface TeamComposerProps {
   /** The @ list's rows while the reader is typing a mention; null when closed. */
   readonly mentions: readonly MentionOption[] | null;
   readonly onPickMention: (option: MentionOption) => void;
+  /** Channels and knowledge the open @ can put in the words as links; empty when closed. */
+  readonly references: readonly ReferenceSection[];
+  readonly onPickReference: (row: ReferenceRow) => void;
   /** Starts a mention: the parent inserts "@" where the cursor is. */
   readonly onMention: () => void;
   readonly attachments: readonly StagedAttachmentView[];
@@ -66,7 +77,7 @@ export interface TeamComposerProps {
  * linked the pill still shows, and asking explains how to connect one.
  */
 export function TeamComposer(props: TeamComposerProps): ReactNode {
-  const input = useRef<TextInputInstance>(null);
+  const input = props.editor;
   const [focused, setFocused] = useState(false);
   const refused = props.attachments.some((file) => file.refused !== null);
   const uploading = props.attachments.some(
@@ -80,7 +91,7 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
   const open = focused || hasContent || toMyAgent || isEditing;
   useEffect(() => {
     if (isEditing) input.current?.focus();
-  }, [isEditing]);
+  }, [input, isEditing]);
   const askPill =
     props.agent === "people-only" ? (
       <View style={styles.badgeSlot}>
@@ -98,6 +109,7 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
     );
   return (
     <View style={styles.stack}>
+      <ComposerReferencePicker onPick={props.onPickReference} sections={props.references} />
       {props.mentions === null ? null : (
         <MentionList onPick={props.onPickMention} options={props.mentions} />
       )}
@@ -141,35 +153,27 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
                 </AppText>
               </Pressable>
             ) : null}
-            <PasteTarget
-              maxBytes={teamUploadMaxBytes}
-              onPasteImages={(event) => props.onPasteImages(event.nativeEvent)}
+            <ComposerEditor
+              accessibilityLabel={toMyAgent ? "Ask your agent" : props.placeholder}
+              maxHeight={160}
+              maxImageBytes={teamUploadMaxBytes}
+              onBackspaceWhenEmpty={() => {
+                if (toMyAgent) props.onToMyAgentChange(false);
+              }}
+              onBlur={() => setFocused(false)}
+              onChangeText={props.onChangeText}
+              onFocus={() => setFocused(true)}
+              onPasteImages={props.onPasteImages}
+              {...(props.onSelectionChange === undefined
+                ? {}
+                : { onSelectionChange: props.onSelectionChange })}
+              paddingVertical={10}
+              placeholder={toMyAgent ? "Ask your agent…" : props.placeholder}
+              ref={input}
+              scope="team"
               style={styles.field}
-            >
-              <TextInput
-                accessibilityLabel={toMyAgent ? "Ask your agent" : props.placeholder}
-                cursorColor={color.ember}
-                maxFontSizeMultiplier={controlFontScaleLimit}
-                multiline
-                onBlur={() => setFocused(false)}
-                onChangeText={props.onChangeText}
-                onFocus={() => setFocused(true)}
-                onKeyPress={(event) => {
-                  if (toMyAgent && event.nativeEvent.key === "Backspace" && props.text === "") {
-                    props.onToMyAgentChange(false);
-                  }
-                }}
-                onSelectionChange={(event) =>
-                  props.onSelectionChange?.(event.nativeEvent.selection)
-                }
-                placeholder={toMyAgent ? "Ask your agent…" : props.placeholder}
-                placeholderTextColor={color.muted}
-                ref={input}
-                selectionColor={color.ember}
-                style={styles.input}
-                value={props.text}
-              />
-            </PasteTarget>
+              value={props.text}
+            />
           </Pressable>
         }
         leading={
@@ -185,7 +189,8 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
             ) : null}
             {open ? (
               <Pressable
-                accessibilityLabel="Mention someone"
+                accessibilityHint="People to mention, or a channel or note to link"
+                accessibilityLabel="Mention or link"
                 accessibilityRole="button"
                 onPress={props.onMention}
               >
@@ -311,16 +316,6 @@ const styles = StyleSheet.create({
   editingLabel: { color: color.textSoft, fontWeight: "600" },
   captionLine: { paddingHorizontal: space[14] },
   field: { flex: 1 },
-  input: {
-    color: color.text,
-    fontSize: type.body.fontSize,
-    fontWeight: type.body.fontWeight,
-    includeFontPadding: false,
-    maxHeight: 160,
-    paddingHorizontal: 0,
-    paddingVertical: 11,
-    textAlignVertical: "top",
-  },
   lane: { alignItems: "flex-start", flex: 1, flexDirection: "row", minHeight: composerLaneHeight },
   pill: {
     ...material.control,

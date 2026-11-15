@@ -115,7 +115,12 @@ vi.mock("../ui/primitives.js", () => ({
       {props.action ? <button onClick={props.action.onPress}>{props.action.label}</button> : null}
     </div>
   ),
-  SecondaryButton: () => null,
+  PrimaryButton: (props: { readonly label: string; readonly onPress: () => void }) => (
+    <button onClick={props.onPress}>{props.label}</button>
+  ),
+  SecondaryButton: (props: { readonly label: string; readonly onPress: () => void }) => (
+    <button onClick={props.onPress}>{props.label}</button>
+  ),
   StatusDot: () => null,
   TypingDots: () => null,
   monoFontFamily: "monospace",
@@ -487,5 +492,50 @@ describe("Run details", () => {
 
     expect(sheet.textContent).toContain("Nothing yet");
     expect(sheet.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("finds a Run a link named in history, loading the conversation around it first", async () => {
+    // The conversation holds only its newest reply; the linked Run is older than what is loaded.
+    const host = fakeHost(snapshotWith(replying.slice(answered.length)));
+    let loaded = () => undefined as void;
+    const around = vi.fn(
+      (_threadId: string, _messageId: string) => new Promise<void>((resolve) => (loaded = resolve)),
+    );
+    Object.assign(host.client, {
+      loadTranscriptAround: around,
+      observeThread: () => () => undefined,
+    });
+    const sheet = render(
+      <ConversationActivityScreen
+        route={{
+          params: { anchorMessageId: askA.id, deploymentId, runId: runA, threadId: taskId },
+        }}
+      />,
+    );
+    expect(around).toHaveBeenCalledWith(taskId, askA.id);
+    expect(sheet.textContent).toContain("Loading");
+    host.move(snapshotWith(replying));
+    await act(async () => loaded());
+    expect(sheet.textContent).toContain(noteA.body);
+    expect(sheet.textContent).not.toContain(preambleB.body);
+  });
+
+  it("says a linked Run isn't available once the Host has nothing around it", async () => {
+    const host = fakeHost(snapshotWith(replying.slice(answered.length)));
+    Object.assign(host.client, {
+      loadTranscriptAround: async () => undefined,
+      observeThread: () => () => undefined,
+    });
+    const sheet = render(
+      <ConversationActivityScreen
+        route={{
+          params: { anchorMessageId: askA.id, deploymentId, runId: runA, threadId: taskId },
+        }}
+      />,
+    );
+    await act(async () => undefined);
+    expect(sheet.textContent).toContain("This isn't available");
+    press(sheet, "Back");
+    expect(harness.goBack).toHaveBeenCalledOnce();
   });
 });

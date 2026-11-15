@@ -13,7 +13,13 @@ import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js"
 import { AppText, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
 import { ConnectOpensteerBody, JoinSheetBody, type ConnectView, type InviteView } from "./join.js";
 import type { TeamTileView } from "./team-models.js";
-import { readTeamLinkIntent, teamFailure, type TeamLinkIntent } from "./mobile-teams.js";
+import {
+  readTeamLinkIntent,
+  TeamAccessError,
+  teamFailure,
+  type TeamLinkIntent,
+} from "./mobile-teams.js";
+import { readFailure, UnavailableState } from "../ui/unavailable-state.js";
 import { useCoordinatorSnapshot, useMobileTeams, useTeam, useTeamEntry } from "./team-context.js";
 import { openTeamGeneral } from "./mobile-team-entry.js";
 
@@ -225,64 +231,89 @@ function inviteFailure(error: unknown, host: string, team: TeamTileView): Invite
   };
 }
 
-/** A channel or message link: opened once the team says the reader may see it. */
+/** A team page, opened once the team says the reader may see it. */
 function OpenPlace(props: {
-  readonly intent: Extract<TeamLinkIntent, { kind: "open" }>;
+  readonly intent: Exclude<TeamLinkIntent, { kind: "invite" | "agent-link" }>;
 }): ReactNode {
   const { intent } = props;
   const navigation = useNavigation<Navigation>();
   const teams = useMobileTeams();
-  const team = teams.teamAt(intent.origin);
-  const [failure, setFailure] = useState<string | null>(
-    team === null
-      ? "That link is for a team this phone isn't in. Ask someone in it for an invite link."
-      : null,
-  );
+  const [failure, setFailure] = useState<"unavailable" | "offline" | null>(null);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    if (team === null) return;
     let current = true;
-    void teams.destination(team.teamId, intent.channelId, intent.messageId).then(
-      (destination) => {
-        if (!current) return;
-        enterSide({
-          name: destination.kind === "thread" ? "TeamThread" : "TeamChannel",
-          params:
-            destination.kind === "thread"
-              ? {
-                  teamId: team.teamId,
-                  channelId: destination.channelId,
-                  rootId: destination.rootId,
-                  ...(destination.replyId === null ? {} : { replyId: destination.replyId }),
-                }
-              : {
-                  teamId: team.teamId,
-                  channelId: destination.channelId,
-                  ...(destination.messageId === null ? {} : { messageId: destination.messageId }),
-                },
-        });
-      },
-      () => current && setFailure("You don't have access to this."),
+    setFailure(null);
+    const open = async () => {
+      const located = await teams.locate(intent.origin);
+      let teamId: string;
+      if (located.kind === "held") {
+        teamId = located.team.teamId;
+        if (located.team.state === "signed-out")
+          await teams.signIn(await teams.verifyTeam(intent.origin), null);
+      } else {
+        await teams.signIn(located.verified, null);
+        teamId = located.verified.discovery.deploymentId;
+      }
+      if (!current) return;
+      const destination = await teams.pageDestination(teamId, intent);
+      if (!current) return;
+      switch (destination.kind) {
+        case "thread":
+          enterSide({
+            name: "TeamThread",
+            params: {
+              teamId,
+              channelId: destination.channelId,
+              rootId: destination.rootId,
+              ...(destination.replyId === null ? {} : { replyId: destination.replyId }),
+            },
+          });
+          break;
+        case "channel":
+          enterSide({
+            name: "TeamChannel",
+            params: {
+              teamId,
+              channelId: destination.channelId,
+              ...(destination.messageId === null ? {} : { messageId: destination.messageId }),
+            },
+          });
+          break;
+        case "knowledge-topic":
+          enterSide({ name: "TeamKnowledge", params: { teamId, topicId: destination.topicId } });
+          break;
+        case "knowledge-note":
+          enterSide({
+            name: "TeamNote",
+            params: { teamId, topicId: destination.topicId, noteId: destination.noteId },
+          });
+          break;
+      }
+    };
+    void open().catch(
+      (error: unknown) =>
+        current &&
+        setFailure(
+          !(error instanceof TeamAccessError) && readFailure(error) === "offline"
+            ? "offline"
+            : "unavailable",
+        ),
     );
     return () => {
       current = false;
     };
-  }, [intent.channelId, intent.messageId, navigation, team, teams]);
-  return (
+  }, [attempt, intent, teams]);
+  return failure === null ? (
     <View style={styles.sheet}>
-      {failure === null ? (
-        <AppText role="secondary" tone="muted">
-          Opening…
-        </AppText>
-      ) : (
-        <>
-          <AppText role="title">That link could not be opened</AppText>
-          <AppText role="secondary" tone="muted">
-            {failure}
-          </AppText>
-          <SecondaryButton label="OK" onPress={() => navigation.goBack()} />
-        </>
-      )}
+      <AppText role="secondary" tone="muted">
+        Opening…
+      </AppText>
     </View>
+  ) : (
+    <UnavailableState
+      onBack={() => navigation.goBack()}
+      onRetry={failure === "offline" ? () => setAttempt((count) => count + 1) : undefined}
+    />
   );
 }
 

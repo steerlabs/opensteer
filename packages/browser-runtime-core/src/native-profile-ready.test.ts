@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { LocalProfileBindingSchema } from "@opensteer/protocol";
-import { hostApiVersion, hostApiVersionHeader } from "@opensteer/deployment-authority";
+import { apiVersionHeaders } from "@opensteer/deployment-authority";
 import { nativeProfileReadyClient } from "./native-profile-ready.js";
 const binding = LocalProfileBindingSchema.parse({
   version: 1,
@@ -25,7 +25,7 @@ it("sends only signed authority over trusted HTTP or HTTPS and forwards cancella
     method: "POST",
     headers: {
       authorization: "Bearer signed-ticket",
-      [hostApiVersionHeader]: String(hostApiVersion),
+      ...apiVersionHeaders("personal"),
     },
     redirect: "error",
     signal,

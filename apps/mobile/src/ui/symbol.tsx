@@ -1,6 +1,8 @@
 import { SymbolView } from "expo-symbols";
 import type { ReactNode } from "react";
 import { StyleSheet, Text } from "react-native";
+import Svg, { Path } from "react-native-svg";
+import { symbolArt } from "./symbol-art.js";
 import { color } from "../theme.js";
 
 /**
@@ -11,8 +13,8 @@ import { color } from "../theme.js";
  * the operating system's rather than as a picture drawn inside the app.
  * `SymbolView` resolves a bare string name on iOS only — every other platform
  * has no symbol of its own to map it to and renders `fallback` instead — so
- * the glyph below is the Android answer, and also the answer on an iOS version
- * that never shipped the symbol being asked for.
+ * the stroke art or character below is the Android answer, and also the
+ * answer on an iOS version that never shipped the symbol being asked for.
  *
  * The allowed names are a closed union rather than every SF Symbol, because a
  * name that is only a string is a name nobody has drawn a fallback for:
@@ -28,6 +30,7 @@ export type SFSymbolName =
   | "arrow.turn.down.right"
   | "arrow.up"
   | "arrow.up.left.and.arrow.down.right"
+  | "arrowshape.turn.up.left"
   | "at"
   | "bell"
   | "bolt"
@@ -50,6 +53,7 @@ export type SFSymbolName =
   | "cpu"
   | "cursorarrow"
   | "desktopcomputer"
+  | "doc"
   | "doc.text"
   | "ellipsis"
   | "exclamationmark.circle"
@@ -60,6 +64,7 @@ export type SFSymbolName =
   | "globe"
   | "hand.raised"
   | "hifispeaker"
+  | "icloud.slash"
   | "house"
   | "key"
   | "keyboard"
@@ -94,6 +99,7 @@ export type SFSymbolName =
   | "powerplug"
   | "puzzlepiece.extension"
   | "qrcode.viewfinder"
+  | "questionmark.circle"
   | "rectangle.on.rectangle"
   | "rectangle.portrait.and.arrow.right"
   | "repeat"
@@ -113,9 +119,11 @@ export type SFSymbolName =
   | "tablecells"
   | "terminal"
   | "text.append"
+  | "text.quote"
   | "trash"
   | "tv"
   | "waveform"
+  | "waveform.path.ecg"
   | "xmark";
 
 export type SymbolWeightName = "regular" | "medium" | "semibold" | "bold";
@@ -136,6 +144,7 @@ export function Symbol(props: {
   const tint = props.tint ?? color.text;
   const weight = props.weight ?? "regular";
   const label = props.accessibilityLabel;
+  const art = symbolArt[props.name];
 
   return (
     <SymbolView
@@ -143,7 +152,13 @@ export function Symbol(props: {
       // The fallback replaces the whole view where there are no SF Symbols and
       // takes none of these props with it, so it carries its own size, colour
       // and accessibility rather than inheriting them.
-      fallback={<Glyph label={label} name={props.name} size={size} tint={tint} weight={weight} />}
+      fallback={
+        art === undefined ? (
+          <Glyph label={label} name={props.name} size={size} tint={tint} weight={weight} />
+        ) : (
+          <Art art={art} label={label} size={size} tint={tint} weight={weight} />
+        )
+      }
       name={props.name}
       size={size}
       tintColor={tint}
@@ -186,6 +201,31 @@ function Glyph(props: {
   );
 }
 
+/** The glyph drawn in strokes, where a character would read as a box or an emoji. */
+function Art(props: {
+  readonly art: string;
+  readonly label: string | undefined;
+  readonly size: number;
+  readonly tint: string;
+  readonly weight: SymbolWeightName;
+}): ReactNode {
+  return (
+    <Svg
+      {...accessibility(props.label)}
+      fill="none"
+      height={props.size}
+      stroke={props.tint}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth={artStroke[props.weight]}
+      viewBox="0 0 24 24"
+      width={props.size}
+    >
+      <Path d={props.art} />
+    </Svg>
+  );
+}
+
 function accessibility(label: string | undefined): {
   readonly accessibilityElementsHidden?: boolean;
   readonly accessibilityLabel?: string;
@@ -211,6 +251,7 @@ const glyph: Record<SFSymbolName, string> = {
   "arrow.turn.down.right": "↳",
   "arrow.up": "↑",
   "arrow.up.left.and.arrow.down.right": "⤢",
+  "arrowshape.turn.up.left": "↩\uFE0E",
   at: "@",
   bell: "◔",
   bolt: "ϟ",
@@ -233,6 +274,7 @@ const glyph: Record<SFSymbolName, string> = {
   cpu: "▣",
   cursorarrow: "↖",
   desktopcomputer: "▭",
+  doc: "▯",
   "doc.text": "▤",
   ellipsis: "…",
   "exclamationmark.circle": "!",
@@ -243,6 +285,7 @@ const glyph: Record<SFSymbolName, string> = {
   globe: "◍",
   "hand.raised": "✋\uFE0E",
   hifispeaker: "♫",
+  "icloud.slash": "⊘",
   house: "⌂",
   key: "⚷",
   keyboard: "⌨",
@@ -277,6 +320,7 @@ const glyph: Record<SFSymbolName, string> = {
   powerplug: "⌁",
   "puzzlepiece.extension": "⧉",
   "qrcode.viewfinder": "⌗",
+  "questionmark.circle": "?",
   "rectangle.on.rectangle": "❐",
   "rectangle.portrait.and.arrow.right": "⇥",
   repeat: "↻",
@@ -296,10 +340,19 @@ const glyph: Record<SFSymbolName, string> = {
   tablecells: "⊞",
   terminal: "›",
   "text.append": "≡",
+  "text.quote": "❝",
   trash: "⌫",
   tv: "⊡",
   waveform: "⦀",
+  "waveform.path.ecg": "∿",
   xmark: "✕",
+};
+
+const artStroke: Record<SymbolWeightName, number> = {
+  bold: 2.4,
+  medium: 2,
+  regular: 1.8,
+  semibold: 2.2,
 };
 
 const glyphWeight: Record<SymbolWeightName, "400" | "500" | "600" | "700"> = {

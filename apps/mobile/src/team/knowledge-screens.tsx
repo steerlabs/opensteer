@@ -92,7 +92,7 @@ export function TeamKnowledgeScreen(
   const query = useSettledText(text);
   const topics = useKnowledgeTopics(session);
   const notes = useKnowledgeNotes(session, { topicId: chosen, query });
-  useReloadOnReturn(() => {
+  useReloadOnReturn(session, () => {
     topics.reload();
     notes.reload();
   });
@@ -429,7 +429,7 @@ export function TeamNoteScreen(
   const padding = useBottomPadding();
   const read = useKnowledgeNote(session, noteId, topicId);
   const [viewing, setViewing] = useState<number | null>(null);
-  useReloadOnReturn(read.reload);
+  useReloadOnReturn(session, read.reload);
   const topicName = read.topic?.name ?? "";
   useLayoutEffect(() => navigation.setOptions({ title: topicName }), [navigation, topicName]);
   const { note, topic, history } = read;

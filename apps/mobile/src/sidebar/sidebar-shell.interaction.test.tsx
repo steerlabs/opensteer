@@ -69,6 +69,7 @@ const harness = vi.hoisted(() => ({
   closeDrawer: vi.fn(),
 }));
 
+vi.mock("../ui/composer-editor.js", () => ({ dismissKeyboard: harness.dismiss }));
 vi.mock("react-native", () => ({
   AccessibilityInfo: { sendAccessibilityEvent: harness.sendAccessibilityEvent },
   BackHandler: { addEventListener: () => ({ remove: () => undefined }) },

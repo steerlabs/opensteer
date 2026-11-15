@@ -1,4 +1,11 @@
-import { AssetService } from "../assets/asset-service.js";
+import { createTranscriptFileServices } from "../threads/transcript-files.js";
+import { TranscriptFileAccess } from "../threads/transcript-file-access.js";
+import {
+  admitTranscriptFiles,
+  resolveThreadOutputImages,
+  readThreadOutputImage,
+} from "@opensteer/database";
+import { AuthSessionIdSchema } from "@opensteer/core";
 import { IdleCompactionService } from "../agents/idle-compaction-service.js";
 import { admitIdleCompaction, idleCompactionCandidates } from "@opensteer/database/idle-compaction";
 import { DeviceAccessService } from "../administration/device-access-service.js";
@@ -181,8 +188,9 @@ import { PlaceContextService } from "../computer-use/place-context-service.js";
 import { HostAuthenticator } from "../identity/auth.js";
 import { CredentialService, loadOrCreateCredentialKey } from "../identity/credential-service.js";
 import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
-import { loadOrCreateHostInstance } from "../identity/host-instance.js";
+import { loadHostInstance, loadOrCreateHostInstance } from "../identity/host-instance.js";
 import {
+  loadHostKeys,
   loadOrCreateHostKeys,
   SignedTokenService,
   signHostDiscovery,
@@ -410,13 +418,18 @@ export interface TeamHostRuntime {
   readonly app: FastifyInstance;
   readonly deployment: Deployment;
   readonly team: Awaited<ReturnType<typeof import("../team/services.js").startTeamServices>>;
-  readonly authorityLost: Promise<Error>;
+  /** Turns unready and retires keep-alive connections while load balancers drop this process. */
+  drain(): Promise<void>;
   close(): Promise<void>;
   closingStep(): string | undefined;
   listen(): Promise<string>;
 }
 export interface HostRuntimeOptions {
   readonly teamPartnerNetwork?: import("../team-partners/service.js").TeamPartnerNetwork;
+  /** How long a stopping team Host stays reachable while load balancers drop it; tests shorten it. */
+  readonly teamDrainDelayMs?: number;
+  /** How long a stopping team Host waits for in-flight requests and transfers before cutting them. */
+  readonly teamDrainDeadlineMs?: number;
   readonly onDeploymentEvent?: (event: AgentEvent) => void;
   readonly executionClock?: import("@opensteer/shared/clock").Clock;
   /** Controls notification grace/backoff independently of Account transport. */
@@ -458,11 +471,18 @@ export async function createHostRuntime(
   const executionNow = options.executionClock?.now ?? (() => Date.now());
   assertHostConfigInvariants(config);
   const dataDirectory = resolve(config.dataDirectory);
-  const keys = await loadOrCreateHostKeys({
-    dataDirectory,
-    ...(config.privateKeyPath ? { privateKeyPath: config.privateKeyPath } : {}),
-    ...(config.publicKeyPath ? { publicKeyPath: config.publicKeyPath } : {}),
-  });
+  // A strict installation was provisioned outside this process and is read, never created.
+  const keys =
+    config.strictInstallation && config.privateKeyPath && config.publicKeyPath
+      ? await loadHostKeys({
+          privateKeyPath: config.privateKeyPath,
+          publicKeyPath: config.publicKeyPath,
+        })
+      : await loadOrCreateHostKeys({
+          dataDirectory,
+          ...(config.privateKeyPath ? { privateKeyPath: config.privateKeyPath } : {}),
+          ...(config.publicKeyPath ? { publicKeyPath: config.publicKeyPath } : {}),
+        });
   const hostKeyFingerprint = fingerprintForSpki(
     keys.publicKey.export({ format: "der", type: "spki" }).toString("base64url"),
   );
@@ -475,10 +495,10 @@ export async function createHostRuntime(
   // HostInstanceId belongs to this installation, not to the portable database.
   // Materialize it before any database work so startup never creates a
   // Deployment row without first having a durable local identity.
-  const hostInstance = await loadOrCreateHostInstance(
-    dataDirectory,
-    config.deploymentIdentity?.hostInstanceId,
-  );
+  const hostInstance =
+    config.strictInstallation && config.hostInstancePath
+      ? await loadHostInstance(config.hostInstancePath, config.deploymentIdentity?.hostInstanceId)
+      : await loadOrCreateHostInstance(dataDirectory, config.deploymentIdentity?.hostInstanceId);
   const database = createDatabase({
     applicationName: "opensteer-host",
     connectionString: config.databaseUrl,
@@ -492,7 +512,9 @@ export async function createHostRuntime(
   let taskQuestions: TaskQuestionNotices | undefined;
   let pluginChangeNotices: PluginChangeNotices | undefined;
   try {
-    authorityLease = await acquireDeploymentAuthorityLease(database);
+    // A team database is served by several Host processes at once; a personal one by exactly one.
+    if (!deploymentPolicy(config.deploymentShape).services.team)
+      authorityLease = await acquireDeploymentAuthorityLease(database);
     await migrateToLatest(database).catch((error: unknown) => {
       throw config.mode === "development" ? withDevelopmentDatabaseReset(error) : error;
     });
@@ -504,7 +526,7 @@ export async function createHostRuntime(
       hostInstanceId: hostInstance.hostInstanceId,
       deploymentShape: config.deploymentShape,
     });
-    if (deploymentPolicy(config.deploymentShape).services.team) {
+    if (!authorityLease) {
       return await createTeamHostRuntime({
         config,
         options,
@@ -512,7 +534,6 @@ export async function createHostRuntime(
         deployment,
         keys,
         hostKeyFingerprint,
-        authorityLease,
       });
     }
     const personalConfig = config.personal!;
@@ -2549,6 +2570,34 @@ export async function createHostRuntime(
       });
       return linkStarting;
     }
+    const transcriptFileServices = createTranscriptFileServices({
+      authSecret: config.authSecret,
+      dataDirectory,
+      deploymentId: deployment.id,
+      access: new TranscriptFileAccess({
+        home: files,
+        attachments,
+        imagesRoot: resolve(config.runnerDataDirectory, "images"),
+        helperPath: personalConfig.nativeFsHelperPath,
+        admit: ({ userId, threadId }) =>
+          admitTranscriptFiles(database, { ownerId: userId, threadId }),
+        outputImages: (input) => resolveThreadOutputImages(database, input),
+        outputImage: (input) => readThreadOutputImage(database, input),
+      }),
+      authorizeMedia: async ({ sessionId, userId }) =>
+        Boolean(
+          await database
+            .selectFrom("authSessions")
+            .innerJoin("users", "users.id", "authSessions.userId")
+            .select("authSessions.id")
+            .where("authSessions.id", "=", AuthSessionIdSchema.parse(sessionId))
+            .where("authSessions.userId", "=", userId)
+            .where("authSessions.expiresAt", ">", new Date())
+            .where("authSessions.absoluteExpiresAt", ">", new Date())
+            .where("users.disabledAt", "is", null)
+            .executeTakeFirst(),
+        ),
+    });
     const app = await createHostServer(
       {
         connections,
@@ -2562,14 +2611,8 @@ export async function createHostRuntime(
             }
           : {}),
         attachments,
-        assets: new AssetService({
-          authSecret: config.authSecret,
-          dataDirectory,
-          runnerDataDirectory: config.runnerDataDirectory,
-          agentHome: async () => (await personalExecution()).options.agentHome.path,
-          owns: async (threadId, ownerId) =>
-            Boolean(await store.getThreadForOwner(threadId, ownerId)),
-        }),
+        assets: transcriptFileServices.assets,
+        transcriptFiles: transcriptFileServices.files,
         runFiles: runFileRelay,
         apps,
         appOriginSigningKey: createHmac("sha256", config.authSecret)
@@ -2962,7 +3005,7 @@ export async function createHostRuntime(
         await step("quiet tasks", () => quietTasks.stop());
         await step("coordinator", () => coordinator.stop());
         await step("task questions", () => taskQuestions?.close());
-        files.close();
+        transcriptFileServices.close();
         await step("HTTP server", () => app.close());
         await step("admission", () => admission.close());
         await step("thread state loop", () => threadStateLoop?.close());

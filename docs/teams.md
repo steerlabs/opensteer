@@ -52,6 +52,15 @@ transcript or arbitrary tool output. The private task shows whether delivery is 
 or blocked, with a reason. Reconnect reconciles pending publication against its receipt without
 rerunning the work or duplicating the post; revoked access or cancellation cannot resurrect it.
 
+<a id="publication-privacy"></a>
+
+Personal Opensteer removes private object and local-file Markdown destinations before
+agent replies or notes go to a team, before messaging-bridge delivery, in Voice speech
+and notes, and before plain-text excerpts and notification previews are clipped. Labels
+remain readable; paths or IDs written in labels, prose or code are not redacted. Explicit
+copy and share preserve the person's chosen Markdown. Unsafe unresolved frozen replies
+stop visibly rather than changing their body under an existing operation ID.
+
 ## Entering a team
 
 Desktop and mobile share `NativeTeamEntry.authorize` for startup, explicit entry and recovery.
@@ -143,9 +152,13 @@ and terminalize affected requests and revoke affected links in that same transac
 writes take its shared lock before the channel lock, recheck authority and hold it through
 commit. The [lock-order registry](../packages/database/src/lock-order.ts) governs actual ranks.
 Buffered reads compare the authorization revision at handoff and discard the whole answer if
-access was lost. After commit, removal closes affected sockets, link sockets and file streams
-before the command returns. Tests must assert **after the command returns**, not an earlier
-internal point. Removing a person cuts their link; already downloaded data stays on their Mac.
+access was lost. No action or read commits after the revocation commits on any copy. Open streams
+on the committing copy close before the command returns; on other copies within notification
+latency. A copy whose notification session stalls or drops re-reads the revision at every handoff
+and closes its streams within about twenty seconds. A delivery racing a concurrent commit on
+another copy can complete inside that window — the same class of race a single process has
+between commit and its in-memory revision update.
+Removing a person cuts their link; already downloaded data stays on their Mac.
 The team audits agent reads, searches, posts and knowledge calls as well as admin actions.
 
 ## Invites
@@ -170,34 +183,15 @@ channels, and receive no shared-channel requests on personal links. Version 5 re
 for unshared work because it already sends explicit request kinds. Sharing an open channel ends an
 older app's subscription with an Opensteer update message.
 A team Host checks only `teamApiVersion`, before authentication and parsing on every team
-surface, including bootstrap, subscriptions, binary routes and the personal link. Partner sockets negotiate their own protocol. Personal Hosts check
-only the personal Host epoch. Team updates use [deploy/team](../deploy/team/README.md); desktop
-supervision updates personal Opensteer.
-
-Team servers, apps and personal Opensteer update on their own schedules, so the team API is a
-window, not an exact match ([authority.ts](../packages/deployment-authority/src/authority.ts)):
-
-- Each side states its own `teamApiVersion` and serves any peer at or above its own
-  `minimumTeamApiVersion`. A newer peer is admitted, because it learns this side's version from
-  discovery or the link's `ready` frame and enforces its own minimum. Discovery also advertises
-  the team's minimum, so an app below it is told to update before it sends anything.
-- Changes are additive by default and keep the version: new commands, reads, optional fields
-  and frame types. The team Host parses commands and reads strictly. Every other reader is tolerant:
-  replies and realtime and link frames, in both directions, drop unknown fields, and frame
-  readers skip frame types they do not know. A sender uses new behavior only when the peer
-  advertises its capability. Two things stay strict: the signed discovery document, and
-  the search and knowledge inputs a link frame carries, because a dropped filter or version
-  guard would change the answer.
-- Move `teamApiVersion` only for a change an older peer would misread. Raise
-  `minimumTeamApiVersion` only for a security reason or once published Stable team servers
-  already speak that version. The [Stable compatibility guard](../.github/scripts/ci-team-api.mjs)
-  enforces the published `desktop-v*` floor; a security exception needs an explicit guard change
-  and Tim's approval. Self-hosted Stable teams must keep working as apps update.
-- A refusal names the side that is behind: the app or personal Opensteer says "Update
-  Opensteer", and a team older than the peer's minimum says the team server needs an update.
-
-[The team wire guard](../packages/protocol/src/team-wire.test.ts) holds a snapshot of every team
-schema as its reader parses it and fails on a non-additive change unless the version moves.
+surface, including bootstrap, subscriptions, binary routes and the personal link. Partner sockets
+negotiate their own protocol. Team updates use [deploy/team](../deploy/team/README.md); desktop
+supervision updates personal Opensteer. The team API is a window like the personal one
+([API compatibility](connections.md#api-compatibility)): discovery and the link's `ready` frame
+advertise the team's minimum, so an app below it is told to update before it sends anything. Team
+frame readers, in both directions, skip frame types they do not know, and a sender uses new
+behavior only when the peer advertises its capability. The search and knowledge inputs a link
+frame carries stay strict, because a dropped filter or version guard would change the answer.
+Self-hosted Stable teams must keep working as apps update.
 
 First-owner setup expires after 24 hours; restarting with the same token does not renew it.
 Rotating only that token and recreating the Host opens a fresh setup window while no owner exists.

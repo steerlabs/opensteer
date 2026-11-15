@@ -14,7 +14,7 @@ import type { MachineSummary } from "@opensteer/protocol";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mockCardUseRequest, mockTmdbProposal } from "@opensteer/client/mock";
+import { MockHostClient, mockCardUseRequest, mockTmdbProposal } from "@opensteer/client/mock";
 import { createThreadMutationGate, type ThreadMutationGate } from "./thread-mutation-gate.js";
 
 vi.mock("./agent-mark.js", () => ({
@@ -188,7 +188,9 @@ vi.mock("./composer-menu.js", () => ({
   ),
 }));
 
-const { RequestSheetContent } = await import("./request-sheet.js");
+const { RequestSheetContent, RequestSheetScreen } = await import("./request-sheet.js");
+const { useMobileState } = await import("../ui/mobile-client-context.js");
+const { useNavigation } = await import("@react-navigation/native");
 const { resetRequestSessionsForTests } = await import("./request-session.js");
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -1369,5 +1371,60 @@ it.each(["live", "durable"] as const)(
     );
   },
 );
+
+describe("RequestSheetScreen opened from a link", () => {
+  const settled = "req_0192f4a1-1111-4000-8000-000000000001";
+  const threadId = "thr_00000000-0000-4000-8000-000000000003";
+
+  async function open(requestId: string) {
+    const host = new MockHostClient({ latencyMs: 0 });
+    await host.load();
+    await host.dispatch({
+      idempotencyKey: "settle",
+      requestId: settled,
+      response: { kind: "choice", optionId: "approve" },
+      type: "request.respond",
+    });
+    const deploymentId = host.getSnapshot().deploymentId!;
+    const goBack = vi.fn();
+    vi.mocked(useMobileState).mockReturnValue({
+      selection: { deploymentId, hostClient: host },
+    } as unknown as ReturnType<typeof useMobileState>);
+    vi.mocked(useNavigation).mockReturnValue({ dispatch: vi.fn(), goBack } as never);
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () =>
+      root.render(
+        <RequestSheetScreen
+          route={{ params: { deploymentId, opened: "reference", requestId, threadId } }}
+        />,
+      ),
+    );
+    return { container, goBack };
+  }
+
+  it("shows a settled Request as it ended, read only, rather than closing", async () => {
+    const { container, goBack } = await open(settled);
+    await act(() =>
+      vi.waitFor(() => expect(container.textContent).toContain("Send the launch email"), {
+        timeout: 2_000,
+      }),
+    );
+    expect(container.textContent).toContain("Answered");
+    expect(container.textContent).not.toContain("Allow");
+    expect(goBack).not.toHaveBeenCalled();
+  });
+
+  it("says a Request the Host no longer has isn't available", async () => {
+    const { container } = await open("req_0192f4a1-1111-4000-8000-0000000000ff");
+    await act(() =>
+      vi.waitFor(() => expect(container.textContent).toContain("This isn't available"), {
+        timeout: 2_000,
+      }),
+    );
+  });
+});
 
 vi.mock("../ui/ai-sharing.js", () => import("../../test-support/ai-sharing.js"));

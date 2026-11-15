@@ -35,6 +35,7 @@ export class TeamShares implements TeamChatRelay {
   readonly #rosterJobs = new Map<string, Promise<unknown>>();
   readonly #agentStates = new Map<string, string>();
   readonly #statusJobs = new Map<string, Promise<void>>();
+  // The 600/min anti-abuse limit is per process.
   readonly #rates = new Map<string, { until: number; count: number }>();
   readonly #unsubscribe: () => void;
   readonly #unsubscribeAccess: () => void;
@@ -73,7 +74,7 @@ export class TeamShares implements TeamChatRelay {
       receive: (id, op) => this.receive(id, op),
       reply: async (id, op, send) => {
         if (op.op === "end" || op.op === "offer") return send();
-        const revision = this.chat.access.revision;
+        const revision = await this.chat.access.current();
         const authorize = () =>
           op.op === "file" && this.files
             ? this.files.authorized(id, op).then(() => true)
@@ -203,7 +204,7 @@ export class TeamShares implements TeamChatRelay {
       previous
         .catch(() => {})
         .then(async () => {
-          const revision = this.chat.access.revision;
+          const revision = await this.chat.access.current();
           const people = await this.store.roster(s);
           const authorize = () =>
             this.store.db.transaction().execute(async (t) => {
@@ -391,7 +392,7 @@ export class TeamShares implements TeamChatRelay {
       .execute();
     for (const s of rows) {
       if (s.role === "owner") await this.partners.hint(s.partnerLinkId, s.id, s.generation);
-      else if (this.partners.connected(s.partnerLinkId)) await this.sendAgentStates(s);
+      else await this.sendAgentStates(s);
     }
   }
   async sendAgentStates(s: Share): Promise<void> {
@@ -451,8 +452,7 @@ export class TeamShares implements TeamChatRelay {
       if (this.#rosters.get(s.id) === signature) continue;
       this.#rosters.set(s.id, signature);
       if (s.role === "owner") this.chat.changed(s.channelId!);
-      if (s.role === "follower" && this.partners.connected(s.partnerLinkId))
-        this.track(this.sendRoster(s));
+      if (s.role === "follower") this.track(this.sendRoster(s));
     }
   }
   async end(id: string, actor?: TeamActor) {
@@ -461,16 +461,15 @@ export class TeamShares implements TeamChatRelay {
     await this.#rosterJobs.get(id)?.catch(() => {});
     this.#dirty.delete(id);
     await this.#pulling.get(id)?.catch(() => {});
-    if (this.partners.connected(s.partnerLinkId))
-      try {
-        await this.partners.request(s.partnerLinkId, {
-          op: "end",
-          shareId: s.id,
-          generation: s.generation,
-        });
-      } catch {
-        /* The local archive is authoritative even while the partner is offline. */
-      }
+    try {
+      await this.partners.request(s.partnerLinkId, {
+        op: "end",
+        shareId: s.id,
+        generation: s.generation,
+      });
+    } catch {
+      /* The local archive is authoritative even while the partner is offline. */
+    }
     if (s.channelId) this.chat.changed(s.channelId);
   }
   async revoked(linkId: string) {
@@ -555,7 +554,7 @@ export class TeamShares implements TeamChatRelay {
           },
           controller.signal,
           async (send) => {
-            const revision = this.chat.access.revision;
+            const revision = await this.chat.access.current();
             await authorize();
             return this.chat.access.handoff(revision, authorize, () => {
               submitted = true;

@@ -1,3 +1,4 @@
+import type { TeamBus } from "./team-bus.js";
 import { teamAskerCanPost, cancelUnavailableSharedAsks } from "./team-shared-agents.js";
 import { teamSharedChannelsApiVersion } from "@opensteer/protocol";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -117,13 +118,130 @@ export class TeamAccessStore {
   get revision() {
     return this.#revision;
   }
+  #bus: TeamBus | undefined;
+  #notified = 0n;
+  #syncing: Promise<void> | undefined;
+  #force = true;
+  readonly #own = new Set<string>();
+  readonly #allClosers = new Set<(code: number) => void>();
+  readonly #linkSession = new AsyncLocalStorage<{ linkId: TeamLinkId; epoch: string }>();
+  withLinkEpoch<Value>(linkId: TeamLinkId, epoch: string, run: () => Value): Value {
+    return this.#linkSession.run({ linkId, epoch }, run);
+  }
+  async checkLinkEpoch(transaction: Transaction<DatabaseSchema>) {
+    const session = this.#linkSession.getStore();
+    if (!session) return;
+    // No row lock: revocation is fenced by the access-state lock every write holds, and a write
+    // that read the old epoch before a reconnect committed simply happened before it.
+    const row = await sql<{ epoch: string }>`select connection_epoch::text as epoch from team_links
+      where id=${session.linkId} and state='active'`.execute(transaction);
+    requireTeam(row.rows[0]?.epoch === session.epoch, "Team link superseded");
+  }
+  onCloseAll(close: (code: number) => void) {
+    this.#allClosers.add(close);
+    return () => {
+      this.#allClosers.delete(close);
+    };
+  }
+  attach(bus: TeamBus) {
+    this.#bus = bus;
+    let unhealthySince = bus.healthy ? 0 : Date.now();
+    const off = bus.on((event) => {
+      if (event.kind !== "access") return;
+      this.#notified =
+        BigInt(event.revision) > this.#notified ? BigInt(event.revision) : this.#notified;
+      void this.sync().catch(() => this.#closeAll());
+    });
+    const resync = bus.onResync(async () => {
+      this.#force = true;
+      await this.sync();
+    });
+    const health = bus.onHealth((healthy) => {
+      unhealthySince = healthy ? 0 : Date.now();
+    });
+    const timer = setInterval(() => {
+      if (bus.healthy) return;
+      void this.sync().catch(() => this.#closeAll());
+      if (unhealthySince && Date.now() - unhealthySince >= 10_000) this.#closeAll();
+    }, 1000);
+    timer.unref();
+    return () => {
+      off();
+      resync();
+      health();
+      clearInterval(timer);
+      this.#bus = undefined;
+    };
+  }
+  #closeAll() {
+    for (const close of this.#allClosers) close(1012);
+  }
+  async prune() {
+    await sql`delete from team_access_changes where created_at < now()-interval '24 hours'
+      and revision < (select max(revision) from team_access_changes)`.execute(this.database);
+  }
+  async sync(): Promise<void> {
+    if (this.#syncing) return this.#syncing;
+    // Without a bus this process is the only writer, so its own revision is already current.
+    if (
+      !this.#force &&
+      (!this.#bus || this.#bus.healthy) &&
+      this.#notified <= BigInt(this.#revision)
+    )
+      return;
+    this.#force = false;
+    this.#syncing = (async () => {
+      const changes = await sql<{
+        currentRevision: string;
+        revision: string | null;
+        effects: TeamStoreAccessEffects;
+      }>`select s.revision::text as current_revision, c.revision::text, c.effects
+        from team_access_state s left join team_access_changes c on c.revision > ${this.#revision}
+        where s.singleton_key='team' order by c.revision`.execute(this.database);
+      if (
+        changes.rows[0]?.revision === null &&
+        BigInt(changes.rows[0].currentRevision) > BigInt(this.#revision)
+      ) {
+        this.#closeAll();
+        this.#revision = SequenceSchema.parse(changes.rows[0].currentRevision);
+      }
+      for (const change of changes.rows) {
+        if (change.revision === null) continue;
+        if (BigInt(change.revision) <= BigInt(this.#revision)) continue;
+        if (BigInt(change.revision) !== BigInt(this.#revision) + 1n) this.#closeAll();
+        this.#revision = SequenceSchema.parse(change.revision);
+        if (this.#own.delete(change.revision)) continue;
+        for (const close of this.#closers)
+          setImmediate(() => {
+            void Promise.resolve()
+              .then(() => this.outsideHumanSession(() => close(change.effects)))
+              .catch(() => this.#closeAll());
+          });
+      }
+    })()
+      .catch((error) => {
+        this.#force = true;
+        throw error;
+      })
+      .finally(() => {
+        this.#syncing = undefined;
+      });
+    await this.#syncing;
+    if (this.#bus?.healthy && this.#notified > BigInt(this.#revision)) await this.sync();
+  }
+  /** The access revision to authorize against: never older than what any copy has committed. */
+  async current(): Promise<Sequence> {
+    await this.sync();
+    return this.#revision;
+  }
   withHumanSession<Value>(session: AuthenticatedSession, run: () => Promise<Value>) {
     return this.#sessions.run({ sessionId: session.id, userId: session.user.id }, run);
   }
   outsideHumanSession<Value>(run: () => Value): Value {
-    return teamPeerVersion.exit(() => this.#sessions.exit(run));
+    return this.#linkSession.exit(() => teamPeerVersion.exit(() => this.#sessions.exit(run)));
   }
   async checkSession(transaction: Transaction<DatabaseSchema>) {
+    await this.checkLinkEpoch(transaction);
     const session = this.#sessions.getStore();
     if (!session) return;
     const valid = await transaction
@@ -310,43 +428,57 @@ export class TeamAccessStore {
     }>,
     afterAuthority?: (transaction: Transaction<DatabaseSchema>, value: Value) => Promise<void>,
   ): Promise<Value> {
-    const committed = await this.database.transaction().execute(async (transaction) => {
-      // The singleton is the first row lock, including across indirect group changes.
-      await transaction
-        .selectFrom("teamAccessState")
-        .select("revision")
-        .where("singletonKey", "=", "team")
-        // FOR UPDATE: Required by M1/M2 to fence ACL deletion against content SHARE through COMMIT.
-        .forUpdate()
-        .executeTakeFirstOrThrow();
-      // Authority UPDATE already excludes content; reserve channels before later request cancellation discovers them.
-      await transaction
-        .selectFrom("teamChannels")
-        .select("id")
-        .orderBy("id")
-        // FOR UPDATE: M1/M2 requires the same channel lock before content and ACL removal.
-        .forUpdate()
-        .execute();
-      await this.checkSession(transaction);
-      const result = await write(transaction);
-      if (result.accessChanged === false) return { ...result, revision: null };
-      for (const write of this.#beforeCommit) await write(transaction, result.effects);
-      const effects = await this.#terminalize(transaction, result.effects);
-      await afterAuthority?.(transaction, result.value);
-      const state = await transaction
-        .updateTable("teamAccessState")
-        .set({
-          revision: sql`revision+1`,
-          directoryRevision: sql`directory_revision+1`,
-          updatedAt: new Date(),
-        })
-        .where("singletonKey", "=", "team")
-        .returning("revision")
-        .executeTakeFirstOrThrow();
-      return { ...result, effects, revision: SequenceSchema.parse(state.revision) };
-    });
+    await this.sync();
+    let writtenRevision: string | undefined;
+    const committed = await this.database
+      .transaction()
+      .execute(async (transaction) => {
+        // The singleton is the first row lock, including across indirect group changes.
+        await transaction
+          .selectFrom("teamAccessState")
+          .select("revision")
+          .where("singletonKey", "=", "team")
+          // FOR UPDATE: Required by M1/M2 to fence ACL deletion against content SHARE through COMMIT.
+          .forUpdate()
+          .executeTakeFirstOrThrow();
+        // Authority UPDATE already excludes content; reserve channels before later request cancellation discovers them.
+        await transaction
+          .selectFrom("teamChannels")
+          .select("id")
+          .orderBy("id")
+          // FOR UPDATE: M1/M2 requires the same channel lock before content and ACL removal.
+          .forUpdate()
+          .execute();
+        await this.checkSession(transaction);
+        const result = await write(transaction);
+        if (result.accessChanged === false) return { ...result, revision: null };
+        for (const write of this.#beforeCommit) await write(transaction, result.effects);
+        const effects = await this.#terminalize(transaction, result.effects);
+        await afterAuthority?.(transaction, result.value);
+        const state = await transaction
+          .updateTable("teamAccessState")
+          .set({
+            revision: sql`revision+1`,
+            directoryRevision: sql`directory_revision+1`,
+            updatedAt: new Date(),
+          })
+          .where("singletonKey", "=", "team")
+          .returning("revision")
+          .executeTakeFirstOrThrow();
+        await sql`insert into team_access_changes(revision,effects) values (${state.revision},${JSON.stringify(effects)}::jsonb)`.execute(
+          transaction,
+        );
+        writtenRevision = state.revision;
+        this.#own.add(state.revision);
+        return { ...result, effects, revision: SequenceSchema.parse(state.revision) };
+      })
+      .catch((error) => {
+        if (writtenRevision) this.#own.delete(writtenRevision);
+        throw error;
+      });
     if (committed.revision === null) return committed.value;
-    if (BigInt(committed.revision) > BigInt(this.#revision)) this.#revision = committed.revision;
+    this.#force = true;
+    await this.sync();
     const closed = await Promise.allSettled(
       [...this.#closers].map((close) =>
         Promise.resolve().then(() => this.outsideHumanSession(() => close(committed.effects))),
@@ -693,9 +825,12 @@ export class TeamAccessStore {
     authorize: () => Promise<boolean>,
     deliver: () => Value,
   ): Promise<Value> {
+    await this.sync();
+    if (this.#linkSession.getStore()) await this.knowledgeWrite(async () => {});
     while (authorizedAt !== this.#revision) {
       authorizedAt = this.#revision;
       requireTeam(await authorize());
+      await this.sync();
     }
     return deliver();
   }

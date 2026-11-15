@@ -3,7 +3,7 @@ import { z } from "zod";
 import { defineAgentTool } from "../registry.js";
 import { CursorSchema, OperationKeySchema } from "./inputs.js";
 import { IntegrationCallOutputSchema } from "./integration-outputs.js";
-import { RequestCreationOutputSchema } from "./outputs.js";
+import { AgentLinkSchema, RequestCreationOutputSchema } from "./outputs.js";
 
 const accessState = z.enum(["enabled", "disabled", "unsupported"]);
 export const computer_list = defineAgentTool({
@@ -18,6 +18,7 @@ export const computer_list = defineAgentTool({
     computers: z.array(
       z.object({
         computerId: RunnerIdSchema,
+        link: AgentLinkSchema.optional(),
         name: z.string(),
         online: z.boolean(),
         hosting: z.boolean(),

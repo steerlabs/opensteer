@@ -651,3 +651,70 @@ it.each([true, false])(
     }
   },
 );
+
+it("opens thread and knowledge pages through authorized reads without retargeting mismatched parents", async () => {
+  const f = fixture();
+  try {
+    await f.teams.session(mockFamilyTeamId);
+    const host = f.hosts.get(mockFamilyTeamId)!;
+    const channelId = TeamChannelIdSchema.parse([...host.channels.keys()][0]);
+    const root = host.post({ channelId, bodyMarkdown: "Root" });
+    const reply = host.post({ channelId, threadRootId: root.id, bodyMarkdown: "Reply" });
+    const other = host.post({ channelId, bodyMarkdown: "Other root" });
+    const intent = {
+      kind: "open" as const,
+      origin: mockFamilyTeamOrigin,
+      channelId,
+      threadRootId: root.id,
+      messageId: reply.id,
+    };
+    expect(await f.teams.pageDestination(mockFamilyTeamId, intent)).toEqual({
+      kind: "thread",
+      channelId,
+      rootId: root.id,
+      replyId: reply.id,
+    });
+    await expect(
+      f.teams.pageDestination(mockFamilyTeamId, { ...intent, threadRootId: other.id }),
+    ).rejects.toThrow("not in that thread");
+    expect(await f.teams.destination(mockFamilyTeamId, channelId, reply.id)).toEqual({
+      kind: "thread",
+      channelId,
+      rootId: root.id,
+      replyId: reply.id,
+    });
+    const topicId = host.knowledge.starterTopicId;
+    const noteId = createId("knowledgeNote");
+    host.knowledge.addVersion({
+      noteId,
+      topicId,
+      title: "Note",
+      body: "Body",
+      writer: { kind: "human", userId: host.userId, name: "Reader" },
+    });
+    const noteIntent = {
+      kind: "knowledge-note" as const,
+      origin: mockFamilyTeamOrigin,
+      topicId,
+      noteId,
+    };
+    expect(await f.teams.pageDestination(mockFamilyTeamId, noteIntent)).toEqual({
+      kind: "knowledge-note",
+      topicId,
+      noteId,
+    });
+    const otherTopicId = createId("knowledgeTopic");
+    host.knowledge.addTopic({
+      id: otherTopicId,
+      name: "Another topic",
+      description: "",
+      access: [{ subject: { kind: "everyone" }, level: "read" }],
+      createdBy: host.userId,
+    });
+    await expect(
+      f.teams.pageDestination(mockFamilyTeamId, { ...noteIntent, topicId: otherTopicId }),
+    ).rejects.toThrow("not in that topic");
+  } finally {
+    f.teams.dispose();
+  }
+});

@@ -31,6 +31,7 @@ export const screenPresentations = {
   Computer: "modal",
   DeploymentSwitcher: "modal",
   AgentAuthorization: "modal",
+  FileViewer: "fullScreenModal",
   // The Add group's presentation, which each of its screens takes.
   Add: "modal",
   AddDeployment: "modal",

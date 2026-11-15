@@ -609,3 +609,227 @@ describe("member names", () => {
     });
   });
 });
+
+describe("a team server swap", () => {
+  function swapFixture() {
+    vi.useFakeTimers();
+    const host = new MockTeamHost(),
+      persistence = createMemoryTeamPersistence(),
+      sockets: MockTeamSocket[] = [];
+    let failing = false;
+    let refusal: { code: string; reason: string } | null = null;
+    const client = new TeamSessionClient({
+      scope,
+      persistence,
+      connect: () => {
+        const socket = host.connect();
+        sockets.push(socket);
+        if (failing) {
+          // Never opens: the server is out of reach.
+          socket.readyState = 2;
+          queueMicrotask(() => socket.close(1006));
+        }
+        return socket;
+      },
+      rpc: new Proxy(host.rpc, {
+        get(target, key, receiver) {
+          if (key === "team.bootstrap.get" && refusal) {
+            const { code, reason } = refusal;
+            return async () => {
+              host.calls.push(key);
+              return { ok: false, error: { code, reason, message: "Refused", retryable: false } };
+            };
+          }
+          return Reflect.get(target, key, receiver);
+        },
+      }),
+      random: () => 0.5,
+    });
+    const bootstraps = () => host.calls.filter((name) => name === "team.bootstrap.get").length;
+    return {
+      host,
+      persistence,
+      sockets,
+      client,
+      bootstraps,
+      fail: (value: boolean) => (failing = value),
+      refuse: (value: { code: string; reason: string } | null) => (refusal = value),
+      dispose: () => {
+        client.dispose();
+        host.dispose();
+        vi.useRealTimers();
+      },
+    };
+  }
+
+  it("reads as out of reach once, five seconds after the first close, until a socket opens", async () => {
+    const f = swapFixture();
+    try {
+      await f.client.load();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.client.getSnapshot()).toMatchObject({
+        connection: "connected",
+        resumedGeneration: 0,
+      });
+
+      f.sockets.at(-1)!.close(1012);
+      expect(f.client.getSnapshot()).toMatchObject({ connection: "offline", unreachable: false });
+      await vi.advanceTimersByTimeAsync(225);
+      expect(f.client.getSnapshot()).toMatchObject({
+        connection: "connected",
+        unreachable: false,
+        resumedGeneration: 1,
+      });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(f.client.getSnapshot().unreachable, "A finished swap still read as out of reach").toBe(
+        false,
+      );
+
+      f.fail(true);
+      const before = f.sockets.length;
+      f.sockets.at(-1)!.close(1006);
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(f.sockets.length - before, "Failed attempts never retried").toBeGreaterThanOrEqual(3);
+      expect(f.client.getSnapshot().unreachable).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(f.client.getSnapshot().unreachable).toBe(true);
+      expect(f.client.getSnapshot().resumedGeneration).toBe(1);
+
+      f.fail(false);
+      await vi.advanceTimersByTimeAsync(12_000);
+      expect(f.client.getSnapshot()).toMatchObject({
+        connection: "connected",
+        unreachable: false,
+        resumedGeneration: 2,
+      });
+
+      // Disconnected on purpose, nothing reaches the team until connecting again.
+      f.client.disconnect();
+      expect(f.client.getSnapshot().unreachable).toBe(true);
+      f.client.connect();
+      expect(f.client.getSnapshot().unreachable).toBe(false);
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it("reconnects from a planned restart without asking who the viewer is", async () => {
+    const f = swapFixture();
+    try {
+      await f.client.load();
+      await vi.advanceTimersByTimeAsync(0);
+      const asked = f.bootstraps(),
+        opened = f.sockets.length;
+      f.sockets.at(-1)!.close(1012);
+      await vi.advanceTimersByTimeAsync(224);
+      expect(f.sockets).toHaveLength(opened);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(f.sockets).toHaveLength(opened + 1);
+      expect(f.bootstraps()).toBe(asked);
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it("asks at once why a socket was refused and ends a removed viewer's session", async () => {
+    const f = swapFixture();
+    try {
+      await f.client.load();
+      await vi.advanceTimersByTimeAsync(0);
+      await f.client.setDraft(channelScope, "Draft");
+      const asked = f.bootstraps();
+      f.sockets.at(-1)!.close(1008);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.bootstraps(), "A refused socket waited before revalidating").toBe(asked + 1);
+      expect(f.client.getSnapshot().connection).toBe("offline");
+
+      await vi.advanceTimersByTimeAsync(225);
+      expect(f.client.getSnapshot().connection).toBe("connected");
+      f.refuse({ code: "forbidden", reason: "removed" });
+      f.sockets.at(-1)!.close(1008);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.client.getSnapshot()).toMatchObject({ ended: "removed", refusalReason: "removed" });
+      expect(await f.persistence.load(scope)).toBeNull();
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it.each([
+    ["api-version-mismatch", "update-app"],
+    ["client-too-old", "update-app"],
+    ["host-too-old", "update-server"],
+  ] as const)(
+    "shows a %s refusal at once, keeps drafts, and clears it once the team accepts",
+    async (reason, shown) => {
+      const f = swapFixture();
+      try {
+        await f.client.load();
+        await vi.advanceTimersByTimeAsync(0);
+        await f.client.setDraft(channelScope, "Draft");
+        f.refuse({ code: "conflict", reason });
+        f.sockets.at(-1)!.close(1008);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(f.client.getSnapshot()).toMatchObject({
+          versionRefusal: shown,
+          unreachable: false,
+          ended: null,
+        });
+        expect(f.client.getSnapshot().drafts[teamScopeKey(channelScope)]).toBe("Draft");
+        expect(await f.persistence.load(scope)).not.toBeNull();
+
+        f.refuse(null);
+        await vi.advanceTimersByTimeAsync(12_000);
+        expect(f.client.getSnapshot()).toMatchObject({
+          versionRefusal: null,
+          connection: "connected",
+        });
+      } finally {
+        f.dispose();
+      }
+    },
+  );
+
+  it("rereads member names that moved while the socket was away", async () => {
+    const f = swapFixture();
+    try {
+      await f.client.load();
+      await vi.advanceTimersByTimeAsync(0);
+      const lists = () => f.host.calls.filter((name) => name === "team.members.list").length;
+      expect(lists(), "A first connect reread the directory").toBe(0);
+      const self = f.client.getSnapshot().bootstrap!.member;
+      f.host.members[0] = { ...self, displayName: "Maya Chen", nameRevision: 3 };
+      f.sockets.at(-1)!.close(1012);
+      await vi.advanceTimersByTimeAsync(225);
+      expect(lists()).toBe(1);
+      expect(f.client.getSnapshot().memberUpdates?.[self.userId]).toMatchObject({
+        displayName: "Maya Chen",
+        nameRevision: 3,
+      });
+      expect(f.client.getSnapshot().bootstrap!.member.displayName).toBe("Maya Chen");
+
+      f.sockets.at(-1)!.close(1012);
+      await vi.advanceTimersByTimeAsync(450);
+      expect(f.client.getSnapshot().connection).toBe("connected");
+      expect(lists(), "Unmoved names were read again").toBe(1);
+
+      // A reread that fails is tried at the next catch-up even though the revision is unchanged.
+      const read = f.host.read.bind(f.host);
+      const failing = vi.spyOn(f.host, "read").mockImplementation(async (name, input) => {
+        if (name === "team.members.list") throw new Error("Unavailable");
+        return read(name, input);
+      });
+      f.host.members[0] = { ...self, displayName: "Maya C.", nameRevision: 4 };
+      f.sockets.at(-1)!.close(1012);
+      await vi.advanceTimersByTimeAsync(900);
+      expect(lists()).toBe(2);
+      failing.mockRestore();
+      f.sockets.at(-1)!.close(1012);
+      await vi.advanceTimersByTimeAsync(1_800);
+      expect(lists()).toBe(3);
+      expect(f.client.getSnapshot().bootstrap!.member.displayName).toBe("Maya C.");
+    } finally {
+      f.dispose();
+    }
+  });
+});

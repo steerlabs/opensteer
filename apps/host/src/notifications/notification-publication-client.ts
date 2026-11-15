@@ -1,3 +1,5 @@
+import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
+import { notificationTitleMaxCharacters, notificationBodyMaxCharacters } from "@opensteer/core";
 import {
   HostNotificationPublicationResponseSchema,
   HostNotificationPublicationSchema,
@@ -89,8 +91,9 @@ export class NotificationPublicationClient {
         key: key.key,
         plaintext: {
           version: 1,
-          title: entry.title,
-          body: entry.body,
+          title: plainTextExcerpt(entry.title, notificationTitleMaxCharacters) ?? "Opensteer",
+          body:
+            plainTextExcerpt(entry.body, notificationBodyMaxCharacters) ?? "Opensteer needs you.",
         },
         context: {
           deploymentId: this.#deploymentId,

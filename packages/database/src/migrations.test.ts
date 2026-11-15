@@ -31,8 +31,47 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0022_person_names",
     "0023_agent_home_settings",
     "0024_waiting_input_edits",
+    "0025_team_copies",
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());
   expect(personalTeamBaselineName).toBe("0002_personal_team_baseline");
+});
+
+it("keeps post-0025 migrations compatible with a running previous Host unless marked contract", async () => {
+  const { Kysely, DummyDriver, PostgresAdapter, PostgresIntrospector, PostgresQueryCompiler } =
+    await import("kysely");
+  const statements: string[] = [];
+  const db = new Kysely<Record<string, never>>({
+    dialect: {
+      createAdapter: () => new PostgresAdapter(),
+      createDriver: () => new DummyDriver(),
+      createIntrospector: (database) => new PostgresIntrospector(database),
+      createQueryCompiler: () => new PostgresQueryCompiler(),
+    },
+    plugins: [
+      {
+        transformQuery({ node, queryId }) {
+          statements.push(new PostgresQueryCompiler().compileQuery(node, queryId).sql);
+          return node;
+        },
+        async transformResult({ result }) {
+          return result;
+        },
+      },
+    ],
+  });
+  try {
+    for (const [name, migration] of Object.entries(await migrationProvider().getMigrations())) {
+      if (Number(name.slice(0, 4)) <= 25 || /(?:^|_)contract(?:_|$)/u.test(name)) continue;
+      statements.length = 0;
+      await migration.up(db);
+      const sql = statements.join("\n").replace(/--[^\n]*|\/\*[\s\S]*?\*\//gu, " ");
+      expect(sql, name).not.toMatch(
+        /\bdrop\s+(?:table|column)\b|\brename\s+(?:to|column)\b|\balter\s+column\s+[^;]*?\b(?:type|set\s+not\s+null)\b/iu,
+      );
+    }
+  } finally {
+    await db.destroy();
+  }
 });

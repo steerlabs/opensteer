@@ -729,7 +729,9 @@ export function silentRunLabel(run: RunEntry): string {
 
 /** Which reply's Activity to show: the one under way, else the latest; or one turn's own. */
 export type ConversationActivitySelection =
-  { readonly kind: "latest" } | { readonly key: string; readonly kind: "turn" };
+  | { readonly kind: "latest" }
+  | { readonly key: string; readonly kind: "turn" }
+  | { readonly kind: "run"; readonly runId: string };
 
 /**
  * What one reply did, as Activity shows it. A message that joins a Run splits
@@ -807,6 +809,8 @@ export function conversationActivityTurn(
   if (selection.kind === "turn") {
     return activities.find(({ keys }) => keys.includes(selection.key)) ?? null;
   }
+  if (selection.kind === "run")
+    return activities.findLast(({ turn }) => turn.runId === selection.runId) ?? null;
   return (
     activities.findLast(({ live }) => live) ??
     activities.findLast(({ reply, steps }) => reply !== null || steps.length > 0) ??

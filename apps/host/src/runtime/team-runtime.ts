@@ -1,4 +1,7 @@
 import { TeamPartners } from "../team-partners/service.js";
+import { createTeamPartnerOfferVault } from "../team-partners/offer-vault.js";
+import { GcsTeamFileStore } from "../team/file-store.js";
+import { TeamInstallationStore } from "@opensteer/database/team-installation";
 import { TeamPartnerStore } from "../team-partners/store.js";
 import { registerTeamPartnerRoutes } from "../team-partners/routes.js";
 import {
@@ -11,8 +14,7 @@ import { teamOidcStatePrefix, teamOAuthVersionParameter } from "@opensteer/deplo
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, rename, unlink } from "node:fs/promises";
-import { dirname } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   OpensteerError,
   deploymentPolicy,
@@ -30,9 +32,9 @@ import {
   AccountDirectoryStore,
   NotificationPreviewKeyStore,
   TeamAccessStore,
+  TeamBus,
   appendTeamAudit,
   type DatabaseSchema,
-  type DeploymentAuthorityLease,
 } from "@opensteer/database";
 import {
   IdentityService,
@@ -88,9 +90,8 @@ export async function createTeamHostRuntime(input: {
   deployment: Deployment;
   keys: HostKeyPair;
   hostKeyFingerprint: HostKeyFingerprint;
-  authorityLease: DeploymentAuthorityLease;
 }): Promise<TeamHostRuntime> {
-  const { config, options, database, deployment, keys, hostKeyFingerprint, authorityLease } = input;
+  const { config, options, database, deployment, keys, hostKeyFingerprint } = input;
   const app = Fastify({ logger: options.logger ?? false, bodyLimit: 1024 * 1024 });
   const stopping = new AbortController();
   const lifetimes = new TeamLinkLifetimes();
@@ -103,6 +104,12 @@ export async function createTeamHostRuntime(input: {
   let directory: AccountDirectoryPublisher | undefined;
   let admitted: TeamIdentityAdmission | undefined;
   let stopped = false;
+  let ready = false;
+  // One process among the copies serving this team's database.
+  const processId = randomUUID();
+  const bus = new TeamBus(database, { onError: () => report("team-bus") });
+  const installation = new TeamInstallationStore(config.authSecret, deployment.id);
+  let draining = false;
   let step: string | undefined;
   const report = (area: string) => app.log.error({ area }, "Team background service failed");
   const envelope = signHostDiscovery(keys, {
@@ -157,8 +164,14 @@ export async function createTeamHostRuntime(input: {
     publishing.start();
   }
   try {
+    // Adoption may have happened on another copy; the sealed bundle is the source of truth.
+    const adopted = await installation.load(database);
+    if (adopted) account = accountFromBundle(adopted);
     const access = new TeamAccessStore(database);
     partners = new TeamPartners({
+      bus,
+      processId,
+      offerVault: createTeamPartnerOfferVault(config.authSecret, deployment.id),
       store: new TeamPartnerStore(access, envelope),
       ...(options.teamPartnerNetwork ? { network: options.teamPartnerNetwork } : {}),
       keys,
@@ -167,6 +180,16 @@ export async function createTeamHostRuntime(input: {
       onError: () => report("team-partners"),
     });
     services = await startTeamServices({
+      bus,
+      processId,
+      ...(config.teamFileStore?.kind === "gcs"
+        ? {
+            fileStore: new GcsTeamFileStore(
+              config.teamFileStore.bucket,
+              config.teamFileStore.prefix,
+            ),
+          }
+        : {}),
       profileReceipts: new RemotePersonProfileReceiptVerifier({
         issuer,
         ...(options.accountControlFetch ? { fetch: options.accountControlFetch } : {}),
@@ -198,7 +221,12 @@ export async function createTeamHostRuntime(input: {
         },
         cancel: (linkId, requestId) => machine?.endpoint.cancel(linkId, requestId),
         close: (effects) => lifetimes.close(effects),
-        isOnline: (ownerUserId) => machine?.endpoint.isOnline(ownerUserId) ?? false,
+        isOnline: async (ownerUserId) => (await machine?.endpoint.isOnline(ownerUserId)) ?? false,
+        resync: async () => {
+          await machine?.endpoint.resync();
+        },
+        closeAll: (code) => machine?.endpoint.closeAll(code),
+        relocate: () => machine?.endpoint.relocate(),
       },
       registerPreviewKey: (session, command) =>
         preview.register({ userId: session.user.id, authSessionId: session.id, ...command }),
@@ -221,6 +249,8 @@ export async function createTeamHostRuntime(input: {
     const team = services;
     const adapters = createTeamMachineAdapters(team, knowledge);
     machine = createTeamLinkEndpoint({
+      bus,
+      processId,
       teamName: config.deploymentName ?? "Team",
       database,
       requests: team.requests,
@@ -266,19 +296,8 @@ export async function createTeamHostRuntime(input: {
         issuer,
         ...(options.accountControlFetch ? { fetch: options.accountControlFetch } : {}),
       }),
-      installAccountBundle: async (bundle) => {
-        await persistAccountBundle(config.accountBundlePath, bundle);
-        account = {
-          provisioningMode: "adoption",
-          reachability: "canonical",
-          controlApiOrigin: new URL(bundle.controlApiOrigin),
-          hostCredential: bundle.hostCredential,
-          issuer: new URL(bundle.oidc.issuer),
-          oidcClientId: bundle.oidc.clientId,
-          oidcClientSecret: bundle.oidcClientSecret,
-        };
-        await publishDirectory();
-      },
+      // Every copy, this one included, picks the bundle up from the `account` event.
+      installAccountBundle: (bundle, transaction) => installation.install(transaction, bundle),
     });
     admitted = admission;
     const identity = new IdentityService(database, {
@@ -305,6 +324,17 @@ export async function createTeamHostRuntime(input: {
         : {}),
     });
     await identity.initialize();
+    const reloadAccount = async () => {
+      const bundle = await installation.load(database);
+      if (!bundle || stopped) return;
+      account = accountFromBundle(bundle);
+      await identity.reloadAccountProvider(accountProvider(account));
+      await publishDirectory();
+    };
+    const detachAccount = bus.on((event) => {
+      if (event.kind === "account") void reloadAccount().catch(() => report("team-account"));
+    });
+    const detachAccountResync = bus.onResync(reloadAccount);
     const authenticator = new HostAuthenticator({ identity, publicUrl: config.canonicalOrigin });
     app.addHook("onRequest", async (request) => {
       carryWebSocketVersion(request, "team");
@@ -347,8 +377,20 @@ export async function createTeamHostRuntime(input: {
         assertTeamApiVersion(toWebHeaders(request.headers));
     });
     installHostHttpBoundary(app);
+    // While draining, every response retires its connection so a proxy's pooled connections to
+    // this process end, and new sockets are refused so clients reconnect to another copy.
+    app.addHook("onRequest", async (request, reply) => {
+      if (draining && request.headers.upgrade?.toLowerCase() === "websocket")
+        await reply.code(503).header("connection", "close").send({ ok: false });
+    });
+    app.addHook("onSend", async (_request, reply) => {
+      if (draining) reply.header("connection", "close");
+    });
     await app.register(websocket, { options: { maxPayload: 512 * 1024 } });
     app.get("/healthz", () => ({ ok: true }));
+    app.get("/readyz", async (_request, reply) =>
+      ready && !draining && bus.healthy ? { ok: true } : reply.code(503).send({ ok: false }),
+    );
     app.get("/.well-known/opensteer", () =>
       HostDescriptorSchema.parse({
         ...apiNegotiation("team"),
@@ -426,7 +468,7 @@ export async function createTeamHostRuntime(input: {
                 socket.send(JSON.stringify(frame));
                 return true;
               },
-              close: (reason) => socket.close(1008, reason),
+              close: (code, reason) => socket.close(code, reason),
             },
           );
           const expiration = setTimeout(
@@ -441,7 +483,7 @@ export async function createTeamHostRuntime(input: {
             const frame = raw.toString(),
               bytes = Buffer.byteLength(frame);
             if (++queuedFrames > 64 || (queuedBytes += bytes) > 1024 * 1024) {
-              socket.close(1008, "Team input buffer exceeded");
+              socket.close(1012, "Team input buffer exceeded");
               return;
             }
             receiving = receiving
@@ -479,30 +521,56 @@ export async function createTeamHostRuntime(input: {
         })
       ).register(app);
     await app.ready();
+    await bus.start();
     await partners.start();
     await publishDirectory();
+    ready = true;
     let closing: Promise<void> | undefined;
+    const drainDelayMs = options.teamDrainDelayMs ?? 5_000;
+    const drainDeadlineMs = options.teamDrainDeadlineMs ?? 60_000;
     return {
       kind: "team",
       app,
       deployment,
       team,
-      authorityLost: authorityLease.lost,
       listen: () => app.listen({ host: config.bindAddress, port: config.port }),
       closingStep: () => step,
+      drain: async () => {
+        if (draining) return;
+        step = "draining";
+        draining = true;
+        app.server.closeIdleConnections();
+        await delay(drainDelayMs);
+        // Clients move to another copy; 1012 tells them it's a restart, not a refusal.
+        team.relocate(1012);
+      },
       close: () =>
         (closing ??= (async () => {
+          draining = true;
           stopped = true;
           stopping.abort();
-          lifetimes.stop();
           const failures: unknown[] = [];
+          const http = async () => {
+            const deadline = setTimeout(() => app.server.closeAllConnections(), drainDeadlineMs);
+            deadline.unref();
+            try {
+              await app.close();
+            } finally {
+              clearTimeout(deadline);
+            }
+          };
+          detachAccount();
+          detachAccountResync();
+          // HTTP first: admitted uploads and downloads finish before their services close.
           for (const [name, close] of [
+            ["http", http],
+            ["link lifetimes", () => lifetimes.stop()],
             ["partner transports", () => partners?.close()],
             ["team transports", () => team.close()],
-            ["http", () => app.close()],
+            ["link endpoint", () => machine?.endpoint.close()],
             ["Account directory", () => directory?.close()],
             ["Account authority", () => authority?.close()],
-            ["authority lease", () => authorityLease.close()],
+            ["team bus", () => bus.close()],
             ["database", () => database.destroy()],
           ] as const) {
             step = name;
@@ -523,10 +591,12 @@ export async function createTeamHostRuntime(input: {
     await Promise.allSettled([
       partners?.close(),
       services?.close(),
+      machine?.endpoint.close(),
       app.close(),
       directory?.close(),
       authority?.close(),
     ]);
+    await bus.close();
     throw error;
   }
 }
@@ -541,30 +611,14 @@ function accountProvider(account: NonNullable<HostConfig["account"]>): OidcProvi
     trustedOrigins: [],
   };
 }
-async function persistAccountBundle(
-  path: string,
-  bundle: HostAccountAdoptionBundle,
-): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${randomUUID()}`;
-  try {
-    const file = await open(temporary, "wx", 0o600);
-    try {
-      await file.writeFile(JSON.stringify(bundle));
-      await file.sync();
-    } finally {
-      await file.close();
-    }
-    await rename(temporary, path);
-    const directory = await open(dirname(path), "r");
-    try {
-      await directory.sync();
-    } finally {
-      await directory.close();
-    }
-  } finally {
-    await unlink(temporary).catch((error) => {
-      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
-    });
-  }
+function accountFromBundle(bundle: HostAccountAdoptionBundle): NonNullable<HostConfig["account"]> {
+  return {
+    provisioningMode: "adoption",
+    reachability: "canonical",
+    controlApiOrigin: new URL(bundle.controlApiOrigin),
+    hostCredential: bundle.hostCredential,
+    issuer: new URL(bundle.oidc.issuer),
+    oidcClientId: bundle.oidc.clientId,
+    oidcClientSecret: bundle.oidcClientSecret,
+  };
 }

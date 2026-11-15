@@ -54,7 +54,13 @@ vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 import type { IphoneAppsController } from "../iphone-apps/controller.js";
 import { IphoneAppsProvider } from "../iphone-apps/context.js";
 import { Markdown } from "../markdown/markdown.js";
+import * as Clipboard from "expo-clipboard";
+import {
+  ReferenceNavigationContext,
+  type ReferenceNavigation,
+} from "../markdown/reference-context.js";
 import { ConversationLinksProvider } from "./conversation-links.js";
+import { useConversationLinks, type ConversationLinks } from "./link-context.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
@@ -202,4 +208,50 @@ it("leaves links as they were on a phone that is not one of the Deployment's dev
     ["https://unsplash.com/photos/tiger"],
     ["http://localhost:5173/tiger"],
   ]);
+});
+
+it("opens a link to something in Opensteer here, never in a browser, and holds Open and Copy", () => {
+  const host = new MockHostClient({ latencyMs: 0 });
+  const snapshot = host.getSnapshot();
+  const opened: string[] = [];
+  const references = {
+    open: async (href: string) => void opened.push(href),
+  } as unknown as ReferenceNavigation;
+  let links: ConversationLinks | null = null;
+  const Probe = () => {
+    links = useConversationLinks();
+    return null;
+  };
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  roots.push(root);
+  act(() =>
+    root.render(
+      <IphoneAppsProvider controller={phone(snapshot.deploymentId!, true)}>
+        <ReferenceNavigationContext value={references}>
+          <ConversationLinksProvider
+            deploymentId={snapshot.deploymentId!}
+            hostClient={host}
+            threadId={snapshot.threads[0]!.id}
+          >
+            <Probe />
+          </ConversationLinksProvider>
+        </ReferenceNavigationContext>
+      </IphoneAppsProvider>,
+    ),
+  );
+  const open = vi.spyOn(host, "beginBrowserTabOpen");
+  const task = { href: `opensteer:${snapshot.threads[1]!.id}`, label: "the review" };
+  const file = { href: "/Users/me/Opensteer/notes.md:42", label: "notes" };
+  for (const link of [task, file]) {
+    expect(links!.menu(link).map(({ title }) => title)).toEqual(["Open", "Copy"]);
+    links!.open(link.href);
+  }
+  expect(opened).toEqual([task.href, file.href]);
+  links!.act(task, "copy");
+  expect(Clipboard.setStringAsync).toHaveBeenCalledWith(`[the review](${task.href})`);
+  expect(open).not.toHaveBeenCalled();
+  expect(navigation.routes).toEqual([]);
+  expect(linking.openURL).not.toHaveBeenCalled();
 });

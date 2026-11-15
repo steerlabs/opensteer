@@ -1,5 +1,13 @@
 import { useMobileClient } from "../ui/mobile-client-context.js";
-import { PasteTarget } from "../../modules/paste-target/index.js";
+import type { ComposerEditorHandle } from "@opensteer/client/references";
+import { ComposerEditor } from "../ui/composer-editor.js";
+import {
+  activeReferenceQuery,
+  ComposerReferencePicker,
+  insertReference,
+  personalReferenceSections,
+  startReference,
+} from "../ui/composer-reference-picker.js";
 import { useCompactionOffer } from "@opensteer/client/react";
 import { compactionOfferText } from "@opensteer/client/host";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
@@ -45,8 +53,6 @@ import {
   Alert,
   Pressable,
   StyleSheet,
-  TextInput,
-  type TextInputInstance,
   useWindowDimensions,
   View,
 } from "react-native";
@@ -187,6 +193,8 @@ export function Composer(props: {
   const currentOwner = useRef(owner);
   currentOwner.current = owner;
   const selection = useRef({ start: text.length, end: text.length });
+  // The caret, as state only so an `@` it follows opens the reference picker.
+  const [caret, setCaret] = useState(text.length);
   const speechView = dictationView(dictationState, owner);
   const preview = speechView.preview;
   const dictating = ["starting", "listening", "finishing"].includes(speechView.phase);
@@ -210,7 +218,7 @@ export function Composer(props: {
   const [failure, setFailure] = useState<string | null>(null);
   const [draftFailure, setDraftFailure] = useState<string | null>(null);
   const [focused, setFocused] = useState(false);
-  const input = useRef<TextInputInstance>(null);
+  const input = useRef<ComposerEditorHandle>(null);
   // Out of view, the field lets go of the keyboard: nothing is typed where it
   // cannot be seen.
   useEffect(() => {
@@ -318,6 +326,16 @@ export function Composer(props: {
   const canSend =
     view.canSend || (dictating && !disabled && !sending && pending === null && attachmentsReady);
   const requestBlocked = disabled || sending || pending !== null;
+  // A typed `@` offers references to put in the words, until the caret leaves it.
+  const referenceQuery =
+    focused && !dictating && !disabled && !textHidden
+      ? activeReferenceQuery(displayedText, caret)
+      : null;
+  // Read when the picker opens and as the query narrows; nothing subscribes while it is closed.
+  const referenceSections =
+    referenceQuery === null
+      ? []
+      : personalReferenceSections(hostClient.getSnapshot(), referenceQuery.query, threadId);
   const changeText = (next: string): void => {
     draftText.current = next;
     const write = ++draftWrite.current;
@@ -333,19 +351,32 @@ export function Composer(props: {
     );
   };
 
+  // Dictation shows its words in the field without making them the draft or an undo
+  // step; when it ends the field returns to the draft, with the words if they were kept.
   const committedSelection = useRef<{ text: string; start: number; end: number } | null>(null);
+  const dictationBase = useRef(selection.current);
+  const previewing = useRef(false);
   useEffect(() => {
-    const caret = committedSelection.current;
-    if (caret && displayedText === caret.text) {
-      input.current?.setSelection(caret.start, caret.end);
-      committedSelection.current = null;
-    }
-  }, [displayedText, preview]);
-  useEffect(() => {
+    const editor = input.current;
     if (preview) {
+      previewing.current = true;
       selection.current = preview.selection;
-      input.current?.setSelection(preview.selection.start, preview.selection.end);
+      editor?.preview({ ...editor.readSnapshot(), composing: false, ...preview });
+      return;
     }
+    if (!previewing.current) return;
+    previewing.current = false;
+    const committed = committedSelection.current;
+    committedSelection.current = null;
+    const next = draftText.current;
+    const at = committed?.text === next ? committed : dictationBase.current;
+    if (editor === null) return;
+    editor.restore({
+      composing: false,
+      generation: editor.readSnapshot().generation,
+      selection: { start: Math.min(at.start, next.length), end: Math.min(at.end, next.length) },
+      text: next,
+    });
   }, [preview?.text]);
   useEffect(() => {
     if (readOnly || textHidden) dictation.leave(owner);
@@ -379,10 +410,13 @@ export function Composer(props: {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     dictation.start({
       owner,
-      read: () => ({
-        text: drafts.readDraft(deploymentId, userId, threadId)?.text ?? "",
-        selection: selection.current,
-      }),
+      read: () => {
+        dictationBase.current = selection.current;
+        return {
+          text: drafts.readDraft(deploymentId, userId, threadId)?.text ?? "",
+          selection: selection.current,
+        };
+      },
       commit: (next, caret) => {
         selection.current = caret;
         if (mounted.current && currentOwner.current === owner)
@@ -630,8 +664,18 @@ export function Composer(props: {
         threadId,
       });
       if (choice === "keepFullHistory") compactionOffer.dismiss();
-      // Do not erase words typed while the durable claim was being written.
-      if (draftText.current === sourceText) changeText("");
+      // Do not erase words typed while the durable claim was being written. The
+      // field is reset, so a keystroke still on its way from it cannot refill it.
+      if (draftText.current === sourceText) {
+        changeText("");
+        const editor = input.current;
+        editor?.restore({
+          composing: false,
+          generation: editor.readSnapshot().generation + 1,
+          selection: { start: 0, end: 0 },
+          text: "",
+        });
+      }
       changeQuote(null);
       setDeclinedPage(null);
       const claimed = drafts.readPending(deploymentId, userId, threadId);
@@ -662,19 +706,19 @@ export function Composer(props: {
     if (finishingSend.current) return;
     finishingSend.current = true;
     try {
+      const generation = input.current?.readSnapshot().generation ?? null;
       const result = dictating ? await dictation.stop(owner) : { kind: "idle" as const };
-      if (
-        result.kind === "failed" ||
-        result.kind === "aborted" ||
-        !mounted.current ||
-        !visible.current ||
-        !latestSend.current.canSend
-      )
-        return;
-      await latestSend.current.sendMessage(
-        result.kind === "committed" ? result.text : draftText.current,
-        choice,
-      );
+      if (result.kind === "failed" || result.kind === "aborted" || !mounted.current) return;
+      let words = result.kind === "committed" ? result.text : draftText.current;
+      // The field's last keystroke, or an autocorrection the tap on Send accepted, can
+      // still be on its way to React: read what the field holds now.
+      if (result.kind !== "committed" && input.current !== null && generation !== null) {
+        const flushed = await input.current.flushPendingInput(generation).catch(() => null);
+        if (flushed === null || flushed.composing) return;
+        words = flushed.text;
+      }
+      if (!mounted.current || !visible.current || !latestSend.current.canSend) return;
+      await latestSend.current.sendMessage(words, choice);
     } finally {
       finishingSend.current = false;
     }
@@ -895,6 +939,12 @@ export function Composer(props: {
           </Pressable>
         </View>
       ) : null}
+      {referenceQuery === null ? null : (
+        <ComposerReferencePicker
+          onPick={(row) => insertReference(input.current, referenceQuery, caret, row.markdown)}
+          sections={referenceSections}
+        />
+      )}
       <DictationStatus controller={dictation} snapshot={dictationState} owner={owner} />
       <VoiceDock />
       {surface !== null && typedField !== null ? (
@@ -925,15 +975,28 @@ export function Composer(props: {
             ? {}
             : {
                 leading: (
-                  <NativeMenu
-                    accessibilityHint="Change the model, and what else can be done here"
-                    accessibilityLabel="Thread actions"
-                    onPresent={hold}
-                    onSettle={settle}
-                    options={menuOptions}
-                  >
-                    <ComposerGlyph icon="plus" />
-                  </NativeMenu>
+                  <View style={styles.leading}>
+                    <NativeMenu
+                      accessibilityHint="Change the model, and what else can be done here"
+                      accessibilityLabel="Thread actions"
+                      onPresent={hold}
+                      onSettle={settle}
+                      options={menuOptions}
+                    >
+                      <ComposerGlyph icon="plus" />
+                    </NativeMenu>
+                    {view.shape === "rounded" && view.showField && !textHidden ? (
+                      <Pressable
+                        accessibilityHint="Puts a link to a task, automation or computer in your message"
+                        accessibilityLabel="Add a reference"
+                        accessibilityRole="button"
+                        disabled={disabled}
+                        onPress={() => startReference(input.current)}
+                      >
+                        <ComposerGlyph icon="at" muted={disabled} />
+                      </Pressable>
+                    ) : null}
+                  </View>
                 ),
               })}
           field={
@@ -953,38 +1016,33 @@ export function Composer(props: {
               <Pressable
                 accessible={false}
                 onPress={() => input.current?.focus()}
+                // A touch that reaches the field is proof no menu is over it any
+                // more: iOS gives no dismissal event for a native menu, and this
+                // is the moment the bar can stop holding its shape for one.
+                onTouchStart={settle}
                 style={styles.lane}
               >
-                <PasteTarget
-                  maxBytes={attachmentMaxBytes}
-                  onPasteImages={(event) => void staged.paste(event.nativeEvent)}
-                >
-                  <TextInput
-                    accessibilityLabel="Message"
-                    cursorColor={color.ember}
-                    maxFontSizeMultiplier={controlFontScaleLimit}
-                    multiline
-                    onBlur={() => setFocused(false)}
-                    onChangeText={editText}
-                    onSelectionChange={(event) => {
-                      selection.current = event.nativeEvent.selection;
-                    }}
-                    onFocus={() => {
-                      setFocused(true);
-                      settle();
-                    }}
-                    // A touch that reaches the field is proof no menu is over it any
-                    // more: iOS gives no dismissal event for a native menu, and this
-                    // is the moment the bar can stop holding its shape for one.
-                    onTouchStart={settle}
-                    placeholder={pageInBar === null ? props.placeholder : "Ask about this page…"}
-                    placeholderTextColor={color.muted}
-                    ref={input}
-                    selectionColor={color.ember}
-                    style={[styles.input, { maxHeight: fieldMaxHeight }]}
-                    value={displayedText}
-                  />
-                </PasteTarget>
+                <ComposerEditor
+                  accessibilityLabel="Message"
+                  maxHeight={fieldMaxHeight}
+                  maxImageBytes={attachmentMaxBytes}
+                  onBlur={() => setFocused(false)}
+                  onChangeText={editText}
+                  onFocus={() => {
+                    setFocused(true);
+                    settle();
+                  }}
+                  onPasteImages={(pasted) => void staged.paste(pasted)}
+                  onSelectionChange={(next) => {
+                    selection.current = next;
+                    setCaret(next.start);
+                  }}
+                  paddingVertical={fieldPadding}
+                  placeholder={pageInBar === null ? props.placeholder : "Ask about this page…"}
+                  ref={input}
+                  scope="personal"
+                  value={text}
+                />
               </Pressable>
             ) : (
               // The open Request is answered by choosing, so the bar holds only
@@ -1168,12 +1226,11 @@ function IncludedPage(props: {
 }
 
 /**
- * The field's padding, the same above and below. One line in the system font's
- * own height — about 20 points at the default size — plus this on each side
- * fills the 36-point lane, so a wrapped last line stays level with the controls
- * the way the first line is.
+ * The field's padding, the same above and below. One 24-point body line plus
+ * this on each side fills the 36-point lane, so a wrapped last line stays level
+ * with the controls the way the first line is.
  */
-const fieldPadding = space[8];
+const fieldPadding = space[6];
 
 const styles = StyleSheet.create({
   // The update the next message answers. The excerpt is shown so the reader
@@ -1206,6 +1263,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[6],
   },
   disabled: { opacity: 0.45 },
+  leading: { flexDirection: "row" },
   dock: { gap: space[8] },
   failure: { paddingHorizontal: space[12] },
   pending: {
@@ -1217,22 +1275,6 @@ const styles = StyleSheet.create({
   },
   pendingFoot: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: space[12] },
   pendingRetry: { justifyContent: "center", minHeight: touchTarget },
-  // No `lineHeight`. React Native gives a multiline iOS field that value as a
-  // paragraph's minimum and maximum line height and, unlike `Text`, never adds
-  // the baseline offset that centres the glyphs in it — so UIKit puts all the
-  // extra height above them and the words and the placeholder sit low in their
-  // own line. The font's own line height has nothing to redistribute. The field
-  // grows line by line from there, then scrolls inside itself rather than
-  // pushing the transcript off the screen.
-  input: {
-    color: color.text,
-    fontSize: type.body.fontSize,
-    fontWeight: type.body.fontWeight,
-    includeFontPadding: false,
-    paddingHorizontal: 0,
-    paddingVertical: fieldPadding,
-    textAlignVertical: "top",
-  },
   lane: { flex: 1, justifyContent: "center", minHeight: composerLaneHeight },
   page: {
     ...material.control,

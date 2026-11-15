@@ -114,7 +114,7 @@ function Knowledge({
     refreshList();
     setRound((next) => next + 1);
   };
-  useOnReturn(refresh);
+  useOnReturn(refresh, view.snapshot.resumedGeneration);
 
   const href = (topic: KnowledgeTopicId | null, note: string | null = null) =>
     knowledgePath(teamId, topic, note, query);
@@ -252,6 +252,7 @@ function Knowledge({
           <NotePanel
             key={noteId}
             noteId={noteId}
+            expectedTopicId={topicId}
             onChanged={refreshList}
             round={round}
             onClose={() => show(null)}
@@ -662,6 +663,7 @@ function NearEnd({
 /* ---- The open note ---- */
 
 function NotePanel({
+  expectedTopicId,
   noteId,
   onChanged,
   onClose,
@@ -670,6 +672,7 @@ function NotePanel({
   topics,
   view,
 }: {
+  readonly expectedTopicId: KnowledgeTopicId | null;
   readonly noteId: KnowledgeNoteId;
   readonly onChanged: () => void;
   readonly onClose: () => void;
@@ -716,6 +719,13 @@ function NotePanel({
       onChanged();
       toast.success("Note deleted.");
     }, failed);
+
+  if (note && expectedTopicId !== null && note.topicId !== expectedTopicId)
+    return (
+      <aside aria-label="Note" className="kb-note">
+        <p className="team-empty">This note is not available in this topic.</p>
+      </aside>
+    );
 
   return (
     <aside aria-label="Note" className="kb-note">
@@ -936,10 +946,19 @@ function Versions({
 
 /* ---- Pieces ---- */
 
-/** Reads again when the person comes back to the window: knowledge has no live stream. */
-function useOnReturn(read: () => void) {
+/**
+ * Reads again when the person comes back to the window, or the team's socket comes back after a
+ * close: knowledge has no live stream.
+ */
+function useOnReturn(read: () => void, resumed: number) {
   const latest = useRef(read);
   latest.current = read;
+  const seen = useRef(resumed);
+  useEffect(() => {
+    if (seen.current === resumed) return;
+    seen.current = resumed;
+    latest.current();
+  }, [resumed]);
   useEffect(() => {
     let last = Date.now();
     const back = () => {

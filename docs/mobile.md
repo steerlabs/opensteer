@@ -71,9 +71,12 @@ computer, and a pending execution change blocks Send. A hidden mounted pane neit
 active Thread nor records visits. Visits follow the presented task while the app is in the foreground and acknowledge Host completion
 and published reply timestamps independently of scroll position. Layout uses measured geometry,
 folds and text size, never device names. Integration OAuth's browser return is
-only a wake-up: read the attempt back with the same Host credential. Transcript links go through
-[transcriptLinks.ts](../packages/shared/src/transcriptLinks.ts) so generated content cannot switch
-Deployments. Composer dictation is in [Dictation](dictation.md).
+only a wake-up: read the attempt back with the same Host credential. Transcript links are classified by
+[classifyHref](../packages/core/src/hrefs.ts) and opened by the rendering surface's own
+Deployment, so generated content cannot switch Deployments or reach the OS. The composer field is
+a native module that shows references as atoms over a plain Markdown draft; replacing the whole
+draft must reset the field rather than diff into it. Composer dictation is in
+[Dictation](dictation.md).
 
 ## AI sharing
 

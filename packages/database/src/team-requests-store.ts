@@ -38,6 +38,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
     linkId: TeamLinkId,
     id: TeamAgentRequestId,
   ) {
+    await this.access.checkLinkEpoch(transaction);
     const row = await transaction
       .selectFrom("teamAgentRequests as r")
       .innerJoin("teamLinks as l", "l.id", "r.linkId")
@@ -95,7 +96,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
     _action: "read" | "post" | "knowledge" | "status",
   ) {
     await this.expire(id);
-    const revision = this.access.revision;
+    const revision = await this.access.current();
     const request = await this.access.database
       .transaction()
       .execute(async (t) => teamRequestView(await this.#record(t, linkId, id)));
@@ -115,7 +116,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
     limit = 200,
   ) {
     await this.expire();
-    const revision = this.access.revision;
+    const revision = await this.access.current();
     const result = await this.access.database.transaction().execute(async (t) => {
       const link = await t
         .selectFrom("teamLinks")
@@ -723,8 +724,8 @@ export class TeamRequestsStore implements TeamRequestStorePort {
     ).messageId;
   }
   async receipt(linkId: TeamLinkId, id: TeamAgentRequestId): Promise<TeamMessageId | null> {
-    const revision = this.access.revision;
-    const receipt = await this.access.database.transaction().execute(async (t) => {
+    const revision = await this.access.current();
+    const receipt = await this.access.knowledgeWrite(async (t) => {
       const row = await t
         .selectFrom("teamAgentRequests")
         .selectAll()

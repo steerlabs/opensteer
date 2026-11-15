@@ -15,6 +15,8 @@ knowledge tools are the exception: any Run that may use the owner's personal con
 owner's topics as the owner ([knowledge](knowledge.md#agents)).
 See [Teams](teams.md) for the request and access fences.
 
+See [publication privacy](teams.md#publication-privacy) for sanitation, copy and frozen-reply rules.
+
 Typed Claude compaction maintenance is separate from conversation work. A lost maintenance Run
 must end without recovery replay: repeating an uncertain compaction can summarize the same
 conversation twice. Native compaction activity is durable evidence; ordinary Run outcomes remain

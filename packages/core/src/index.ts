@@ -46,3 +46,6 @@ export * from "./team.js";
 export * from "./team-links.js";
 
 export * from "./idle-compaction.js";
+
+export * from "./references.js";
+export * from "./hrefs.js";

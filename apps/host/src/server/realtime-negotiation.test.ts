@@ -357,7 +357,7 @@ describe("realtime version negotiation", () => {
       await close();
     }
   });
-  it("refuses a subscription on another epoch with a final close, before subscribing", async () => {
+  it("refuses another Deployment's cursor with a final close, before subscribing", async () => {
     const subscribe = vi.fn();
     const attach = vi.fn();
     const { close, socket } = await realtimeSocket(subscribe, {
@@ -366,12 +366,12 @@ describe("realtime version negotiation", () => {
     try {
       socket.send(
         JSON.stringify({
-          apiVersion: hostApiVersion + 1,
+          apiVersion: hostApiVersion,
           threadId: null,
           type: "client.subscribe",
           cursor: {
-            deploymentId: testDiscovery.document.deploymentId,
-            apiVersion: hostApiVersion + 1,
+            deploymentId: createId("deployment"),
+            apiVersion: hostApiVersion,
             afterSequence: zeroSequence,
           },
         }),
@@ -382,7 +382,7 @@ describe("realtime version negotiation", () => {
       expect(refusal).toEqual({
         error: {
           code: "bad_message",
-          message: `This deployment speaks Opensteer protocol ${hostApiVersion}.`,
+          message: "This cursor belongs to another deployment.",
           reason: "unsupported-version",
           retryable: false,
         },
@@ -391,6 +391,30 @@ describe("realtime version negotiation", () => {
       expect(await closedWith(socket)).toBe(unsupportedVersionCloseCode);
       expect(subscribe).not.toHaveBeenCalled();
       expect(attach).not.toHaveBeenCalled();
+    } finally {
+      await close();
+    }
+  });
+
+  it("replaces state read at another version instead of resuming or refusing it", async () => {
+    const subscribe = vi.fn(async () => () => undefined);
+    const { close, socket } = await realtimeSocket(subscribe);
+    const deploymentId = testDiscovery.document.deploymentId;
+    try {
+      socket.send(
+        JSON.stringify({
+          apiVersion: hostApiVersion - 1,
+          threadId: null,
+          type: "client.subscribe",
+          cursor: { deploymentId, apiVersion: hostApiVersion - 1, afterSequence: "41" },
+        }),
+      );
+      socket.send(JSON.stringify({ nonce: "replaced", type: "client.ping" }));
+
+      expect(await nextMessage(socket)).toEqual({ nonce: "replaced", type: "host.pong" });
+      expect(subscribe).toHaveBeenCalledWith(
+        expect.objectContaining({ afterSequence: zeroSequence }),
+      );
     } finally {
       await close();
     }

@@ -17,6 +17,7 @@ import {
   settle,
 } from "./workspace.interaction.test-support.js";
 import { tabOrder } from "./tab-order.js";
+import { composerText, rewrite } from "../composer-editor.test-support.js";
 
 let execute: ((command: DesktopPersonalTabCommand) => void) | undefined;
 const bridge = {
@@ -60,14 +61,10 @@ it("new and close commands across composer, address and sidebar preserve the dra
   expect(quiet.length).toBeGreaterThanOrEqual(2);
   const threads = client.getSnapshot().threads.map((thread) => thread.id);
   const close = vi.spyOn(client, "closeBrowserTab");
-  const field = element<HTMLTextAreaElement>("[data-composer-input]");
+  const field = element<HTMLElement>("[data-composer-input]");
   field.focus();
   await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
-      field,
-      "Keep this draft",
-    );
-    field.dispatchEvent(new Event("input", { bubbles: true }));
+    rewrite(field, "Keep this draft");
   });
   await click(element(`.side-tab[data-place-key="${quiet[0]!.key}"] .side-tab__main`));
   await command({ type: "new-tab" });
@@ -82,7 +79,7 @@ it("new and close commands across composer, address and sidebar preserve the dra
   expect(selected()).toBe(
     initial[initial.findIndex((place) => place.key === quiet[0]!.key) + 1]!.key,
   );
-  expect(field.value).toBe("Keep this draft");
+  expect(composerText(field)).toBe("Keep this draft");
   await click(element(`.side-tab[data-place-key="${quiet[1]!.key}"] .side-tab__main`));
   const send = vi.spyOn(client, "sendBrowserCommand");
   element<HTMLElement>("[data-live-page] textarea").focus();
@@ -94,12 +91,12 @@ it("new and close commands across composer, address and sidebar preserve the dra
     ),
   ).toBe(false);
   expect(client.getSnapshot().threads.map((thread) => thread.id)).toEqual(threads);
-  expect(field.value).toBe("Keep this draft");
+  expect(composerText(field)).toBe("Keep this draft");
 });
 
 it("number and cycle commands select exactly their tab while editing chords leave navigation, tabs and threads alone", async () => {
   await mount((source) => `/${tabSearch(pageTab(source))}`);
-  const field = element<HTMLTextAreaElement>("[data-composer-input]");
+  const field = element<HTMLElement>("[data-composer-input]");
   field.focus();
   const places = tabOrder(placeList(client.getSnapshot()));
   expect(places.map((place) => place.key)).toEqual(

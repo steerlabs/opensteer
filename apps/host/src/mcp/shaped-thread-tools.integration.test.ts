@@ -14,6 +14,8 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { ownTestDatabaseProducer } from "@opensteer/database/test-support/database";
 import {
   createId,
+  formatReferenceLink,
+  MessageIdSchema,
   BrowserSurfaceIdSchema,
   type AgentEvent,
   type RunId,
@@ -26,6 +28,7 @@ import {
 } from "@opensteer/core";
 import {
   opensteer_task_read,
+  opensteer_task_send,
   opensteer_task_list,
   person_show,
   opensteer_task_configure,
@@ -1576,7 +1579,12 @@ describeStore("shaped agent task tools", (it) => {
       operationKey: randomUUID(),
     });
     expect(read).toMatchObject({
-      request: { id: created.request.id, status: "pending", title: "Browser access" },
+      request: {
+        id: created.request.id,
+        status: "pending",
+        title: "Browser access",
+        link: formatReferenceLink(created.request.id, "Browser access"),
+      },
     });
     expect(read).not.toHaveProperty("request.payload");
     await expect(
@@ -1789,7 +1797,8 @@ describeStore("shaped agent task tools", (it) => {
   }) => {
     const f = await storeFixture.startRunFixture("shaped-events");
     const s = setup(storeFixture, f);
-    const request = await storeFixture.openLiveRequest(f, createId("request"));
+    const requestId = createId("request");
+    const request = await storeFixture.openLiveRequest(f, requestId);
     const base = {
       bindingGeneration: f.bindingGeneration,
       environmentId: f.environmentId,
@@ -1849,6 +1858,7 @@ describeStore("shaped agent task tools", (it) => {
     );
     const page = await s.read({ view: "activity", limit: 1 });
     expect(page.items[0]).toMatchObject({ itemId: messageId, text: "Published answer" });
+    expect(page.items[0]!.link).toBe(formatReferenceLink(messageId, "Message"));
     const earlier = await s.read({ view: "activity", cursor: page.nextBefore });
     expect(
       earlier.items
@@ -1860,6 +1870,7 @@ describeStore("shaped agent task tools", (it) => {
     ]);
     expect(earlier.items.find((i) => i.type === "request.opened")).toMatchObject({
       title: "Approval required",
+      link: formatReferenceLink(requestId, "Approval required"),
     });
     const serialized = JSON.stringify(earlier);
     for (const secret of [
@@ -1914,7 +1925,18 @@ describeStore("shaped agent task tools", (it) => {
     expect(Buffer.byteLength(JSON.stringify(page.items))).toBeLessThanOrEqual(256 * 1024);
     expect(page.hasMore).toBe(true);
     expect(page.nextBefore).not.toBeNull();
-    ThreadReadOutputSchema.parse(productToolOutput(page));
+    const shaped = ThreadReadOutputSchema.parse(productToolOutput(page));
+    expect(shaped.task.link).toBe(formatReferenceLink(page.thread.id, page.thread.title));
+    expect(
+      shaped.recentRuns.every(
+        (run) => run.link === formatReferenceLink(run.runId, `Run · ${page.thread.title}`),
+      ),
+    ).toBe(true);
+    expect(
+      shaped.items.every(
+        (item) => item.link === formatReferenceLink(MessageIdSchema.parse(item.itemId), "Message"),
+      ),
+    ).toBe(true);
     const older = await s.read({ limit: 100, maxCharsPerItem: 50000, cursor: page.nextBefore });
     expect(older.items.length).toBeGreaterThan(0);
     expect(older.items.some((i) => page.items.some((p) => p.itemId === i.itemId))).toBe(false);
@@ -1928,6 +1950,7 @@ describeStore("shaped agent task tools", (it) => {
     const configuration = await s.read({});
     expect(configuration.thread).toMatchObject({
       id: f.thread.id,
+      link: formatReferenceLink(f.thread.id, f.thread.title),
       modelSelection: testModelSelection,
       accessMode: f.thread.accessMode,
     });
@@ -1936,7 +1959,11 @@ describeStore("shaped agent task tools", (it) => {
       input: opensteer_task_queue.input.parse({ action: "list" }),
       operationKey: randomUUID(),
     });
-    expect(queue).toEqual({ paused: false, items: [] });
+    expect(queue).toEqual({
+      paused: false,
+      items: [],
+      link: formatReferenceLink(f.thread.id, f.thread.title),
+    });
     await storeFixture.database
       .updateTable("threads")
       .set({ accessMode: "full-access" })
@@ -1951,7 +1978,7 @@ describeStore("shaped agent task tools", (it) => {
         input: listing,
         operationKey: randomUUID(),
       }),
-    ).toEqual({ paused: false, items: [] });
+    ).toEqual({ paused: false, items: [], link: formatReferenceLink(f.thread.id, f.thread.title) });
     await expect(
       s.product.opensteer_task_queue({
         caller: lower,
@@ -1998,6 +2025,61 @@ describeStore("shaped agent task tools", (it) => {
     await expect(s.read({}, connection)).rejects.toThrow("must name taskId");
   });
 
+  it("keeps sent and queued message links through output validation and strips previews before clipping", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("send-reference-links");
+    const s = setup(storeFixture, f);
+    const target = await storeFixture.startRunFixture("send-reference-target");
+    const label = "Readable title ".repeat(50);
+    const message = formatReferenceLink(f.thread.id, label);
+    const sent = opensteer_task_send.output.parse(
+      productToolOutput(
+        await s.product.opensteer_task_send({
+          caller: s.caller,
+          input: opensteer_task_send.input.parse({
+            taskId: target.thread.id,
+            delivery: "queue",
+            message,
+          }),
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    const link = formatReferenceLink(sent.messageId, `Message · ${target.thread.title}`);
+    expect(sent.link).toBe(link);
+    expect(sent.disposition).toBe("pending");
+    const queue = opensteer_task_queue.output.parse(
+      productToolOutput(
+        await s.product.opensteer_task_queue({
+          caller: s.caller,
+          input: opensteer_task_queue.input.parse({ taskId: target.thread.id, action: "list" }),
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    expect(queue.items).toContainEqual(
+      expect.objectContaining({
+        messageId: sent.messageId,
+        link,
+        preview: label.slice(0, 500),
+        truncated: true,
+      }),
+    );
+    expect(queue.items.find((item) => item.messageId === sent.messageId)!.preview).not.toContain(
+      "opensteer:",
+    );
+    expect(
+      (
+        await storeFixture.database
+          .selectFrom("messages")
+          .select("content")
+          .where("id", "=", sent.messageId)
+          .executeTakeFirstOrThrow()
+      ).content,
+    ).toEqual([{ type: "text", text: message }]);
+  });
+
   it("returns one task shape on delegation and replay, full results, and open/latest assignments across personal tasks", async ({
     storeFixture,
   }) => {
@@ -2016,6 +2098,7 @@ describeStore("shaped agent task tools", (it) => {
       operationKey,
     });
     expect(delegated).toMatchObject({
+      link: formatReferenceLink(delegated.threadId, delegated.title),
       assignmentId: expect.any(String),
       status: "open",
       threadId: expect.any(String),
@@ -2033,6 +2116,7 @@ describeStore("shaped agent task tools", (it) => {
     expect((await list()).threads).toContainEqual(
       expect.objectContaining({
         id: delegated.threadId,
+        link: delegated.link,
         assignmentId: delegated.assignmentId,
         taskStatus: "open",
       }),
@@ -2134,7 +2218,13 @@ describeStore("shaped agent task tools", (it) => {
         input: opensteer_task_interrupt.input.parse({}),
         operationKey: randomUUID(),
       }),
-    ).toEqual({ interruptedRunId: null });
+    ).toEqual({
+      interruptedRunId: null,
+      link: formatReferenceLink(
+        f.thread.id,
+        (await storeFixture.store.getThreadForOwner(f.thread.id, f.userId))!.title,
+      ),
+    });
   });
 
   it("shows another Run using the caller actor and emits both Run identities, with reach but no write ceiling", async ({

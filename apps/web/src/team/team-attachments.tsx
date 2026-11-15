@@ -27,6 +27,7 @@ import {
   TeamSessionClient,
   TeamTransportRegistry,
   TeamRuntimeOwner,
+  teamVersionRefusal,
   type MockTeamHost,
   type MockTeamWorld,
   type TeamCacheScope,
@@ -403,22 +404,12 @@ export function TeamsProvider({
           });
         } catch (error) {
           if (!live || owner.signal.aborted) return;
+          const refused = error instanceof HostClientRequestError ? error : null;
           const failure =
-            error instanceof HostClientRequestError && bootstrapMembershipRefused(error)
+            refused && bootstrapMembershipRefused(refused)
               ? "join"
-              : error instanceof HostClientRequestError &&
-                  [
-                    "host-too-old",
-                    "client-too-old",
-                    "unsupported-version",
-                    "api-version-mismatch",
-                  ].includes(error.reason ?? "")
-                ? error.reason === "host-too-old"
-                  ? "update-server"
-                  : "update-app"
-                : error instanceof HostClientRequestError && error.code === "unauthorized"
-                  ? "sign-in"
-                  : "unavailable";
+              : (teamVersionRefusal(refused?.reason) ??
+                (refused?.code === "unauthorized" ? "sign-in" : "unavailable"));
           setFailures((previous) => new Map(previous).set(teamId, failure));
           if (failure !== "unavailable")
             setClients((previous) => {
