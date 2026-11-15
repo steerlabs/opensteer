@@ -15,7 +15,8 @@ import {
 } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { Platform } from "react-native";
-import type { SurfacesRoute } from "./browser/surface-route.js";
+import type { TabRoute } from "./browser/surface-route.js";
+import type { TabId } from "@opensteer/core";
 import { SetUpPhoneScreen } from "./phone-setup/setup-screen.js";
 import { headerActions, stackScreenOptions, TopLevelMenu } from "./navigation-header.js";
 import { isTopLevel, topLevelScreenOptions } from "./top-level.js";
@@ -54,6 +55,7 @@ import { SettingsMessagingScreen } from "./screens/settings-messaging.js";
 import { AgentAuthorizationScreen } from "./screens/agent-authorization.js";
 import { SettingsPluginsScreen } from "./screens/settings-plugins.js";
 import { TabsScreen } from "./screens/tabs.js";
+import { AppsScreen } from "./screens/apps.js";
 import { TaskSearchScreen } from "./screens/task-search.js";
 import { ThreadFindScreen } from "./screens/thread-find.js";
 import { RequestSheetScreen } from "./thread/request-sheet.js";
@@ -231,6 +233,8 @@ const RootStack = createNativeStackNavigator({
     // Every tab this person may see, from the sidebar. A tab opened from here
     // is shown alone.
     Tabs: { screen: TabsScreen, options: { headerLargeTitle: true, title: "Tabs" } },
+    // The person's published apps, from the sidebar like Tabs.
+    Apps: { screen: AppsScreen, options: { headerLargeTitle: true, title: "Apps" } },
     // Everything set to run on its own, from the sidebar like Tabs.
     Schedules: {
       screen: SchedulesScreen,
@@ -250,13 +254,12 @@ const RootStack = createNativeStackNavigator({
     // Every task on the Deployment, narrowed by the search field in its bar,
     // from the sidebar's magnifying glass.
     TaskSearch: { screen: TaskSearchScreen, options: { title: "Search" } },
-    // A conversation's tabs and Mac apps, pushed over it: the grid, or one
-    // tab or app, which a tile pushes over the grid; or one tab, app or phone
-    // alone, from Tabs or the sidebar. The native
-    // Back (and swipe, and Android's back) returns, and leaving stops nothing.
+    // Exactly one tab of any kind, by its tabId, from Tabs, the sidebar or a
+    // conversation. The native Back (and swipe, and Android's back) returns,
+    // and leaving stops nothing.
     WorkspaceBrowser: { screen: WorkspaceBrowserScreen, options: { title: "Tabs" } },
-    // One browser's tabs, from the tab button in a page's bar; opened for a
-    // task, that task's tabs first. It opens at half height and grows for many.
+    // The one tab list, from the tab button in a page's bar, with that page
+    // marked. It opens at half height and grows for many.
     BrowserTabs: {
       screen: BrowserTabsScreen,
       options: {
@@ -802,6 +805,7 @@ type OpensteerRootParamList = {
   readonly Settings: undefined;
   readonly Plugins: { readonly deploymentId: string };
   readonly Tabs: { readonly deploymentId: string };
+  readonly Apps: { readonly deploymentId: string };
   readonly TaskSearch: { readonly deploymentId: string };
   readonly Thread: {
     readonly deploymentId: string;
@@ -849,11 +853,10 @@ type OpensteerRootParamList = {
     readonly nodeId?: string;
     readonly threadId: string;
   };
-  readonly WorkspaceBrowser: SurfacesRoute;
+  readonly WorkspaceBrowser: TabRoute;
   readonly BrowserTabs: {
     readonly deploymentId: string;
-    readonly sessionId: string;
-    readonly tabId: string;
+    readonly tabId: TabId;
     readonly threadId?: string;
   };
 };

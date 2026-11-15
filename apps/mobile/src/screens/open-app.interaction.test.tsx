@@ -8,6 +8,7 @@ import {
 } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { computerReasonWords } from "@opensteer/client/integrations";
+import { attachMockTabs, windowTab } from "../../test-support/mock-tabs.js";
 import { OpenAppScreen } from "./open-app.js";
 
 const state = vi.hoisted(() => ({
@@ -142,9 +143,12 @@ vi.mock("react-native", () => ({
   ),
 }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-const windowInfo = (id: number, title: string) => ({
+const chosenWindow = "win_00000000-0000-4000-8000-000000000042";
+/** A window as the Mac lists it; `windowId` is the opaque handle a current client carries. */
+const windowInfo = (id: number, title: string, windowId?: string) => ({
   id,
   title,
+  ...(windowId === undefined ? {} : { windowId }),
   focused: false,
   main: true,
   minimized: false,
@@ -171,21 +175,8 @@ async function setup() {
   const app = approved.find((a) => a.target.kind === "app" && a.name === "Notes")!;
   const list = vi.spyOn(host, "listApprovedComputerApps").mockResolvedValue(approved);
   const windows = vi.spyOn(host, "listComputerAppWindows").mockResolvedValue([]);
-  const open = vi.spyOn(host, "openComputerView").mockImplementation(
-    async (machineId, target) =>
-      ({
-        viewId: "opened",
-        generation: 2,
-        machineId,
-        target,
-        ...(target.kind === "app" && target.window !== undefined
-          ? { window: { id: target.window, title: "Chosen" } }
-          : {}),
-      }) as Awaited<ReturnType<typeof host.openComputerView>>,
-  );
-  const close = vi
-    .spyOn(host, "closeComputerView")
-    .mockResolvedValue({} as Awaited<ReturnType<typeof host.closeComputerView>>);
+  const tabs = attachMockTabs(host, { layout: [], tabs: [] });
+  const open = vi.spyOn(host as unknown as import("@opensteer/client/host").TabsClient, "openTab");
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -193,7 +184,7 @@ async function setup() {
     act(async () =>
       root!.render(<OpenAppScreen route={{ params: { deploymentId: "deployment" } }} />),
     );
-  return { host, snapshot, approved, app, list, windows, open, close, render };
+  return { host, snapshot, approved, app, list, windows, open, render, tabs };
 }
 function button(label: string) {
   const found = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
@@ -243,47 +234,49 @@ it.each(["offline", "unavailable", "permission-required"])(
     expect(w.open).not.toHaveBeenCalled();
   },
 );
-it("opens a single window, dismissing the sheet before pushing the exact window route", async () => {
+it("opens a window's tab, dismissing the sheet before showing that tab", async () => {
   const w = await setup();
-  w.windows.mockResolvedValue([windowInfo(42, "Shopping")]);
+  w.windows.mockResolvedValue([windowInfo(42, "Shopping", chosenWindow)]);
   await w.render();
   await press("Notes, Shopping");
-  expect(w.open).toHaveBeenCalledWith(w.app.machineId, { ...w.app.target, window: 42 });
+  expect(w.open).toHaveBeenCalledWith({
+    computerId: w.app.machineId,
+    kind: "window",
+    windowId: chosenWindow,
+  });
+  const tab = [...w.tabs.model.rows.values()][0]!;
   expect(state.goBack.mock.invocationCallOrder[0]).toBeLessThan(
     state.dispatch.mock.invocationCallOrder[0]!,
   );
   expect(state.dispatch).toHaveBeenCalledWith({
     type: "PUSH",
-    payload: {
-      name: "WorkspaceBrowser",
-      params: {
-        deploymentId: "deployment",
-        scope: "tabs",
-        machineId: w.app.machineId,
-        appKey: "com.apple.notes",
-        viewId: "opened",
-        generation: 2,
-        windowId: 42,
-      },
-    },
+    payload: { name: "WorkspaceBrowser", params: { deploymentId: "deployment", tabId: tab.tabId } },
   });
 });
-it("offers multiple windows through NativeMenu and opens the chosen one", async () => {
+it("offers multiple windows through NativeMenu and opens the chosen one by its handle", async () => {
   const w = await setup();
   w.list.mockResolvedValue([w.app]);
-  w.windows.mockResolvedValue([windowInfo(1, "First"), windowInfo(42, "Chosen")]);
+  w.windows.mockResolvedValue([windowInfo(1, "First"), windowInfo(42, "Chosen", chosenWindow)]);
   await w.render();
   // The native menu adds no layout of its own, so the row inside it lays out its line.
   expect(container.querySelector('[data-native-menu] > [data-row="true"]')).not.toBeNull();
   await press("Chosen");
-  expect(w.open).toHaveBeenCalledWith(w.app.machineId, { ...w.app.target, window: 42 });
+  expect(w.open).toHaveBeenCalledWith({
+    computerId: w.app.machineId,
+    kind: "window",
+    windowId: chosenWindow,
+  });
 });
-it("opens without a window when an older Host refuses enumeration", async () => {
+it("opens through the app's bundle when windows are unknown or carry no handle", async () => {
   const w = await setup();
   w.windows.mockRejectedValue(new Error("computer-view-unsupported"));
   await w.render();
   await press("Notes");
-  expect(w.open).toHaveBeenCalledWith(w.app.machineId, w.app.target);
+  expect(w.open).toHaveBeenCalledWith({
+    bundleId: "com.apple.Notes",
+    computerId: w.app.machineId,
+    kind: "window",
+  });
 });
 it.each(["computer-view-limit", "locked-screen"])(
   "shows human words for Host refusal %s",
@@ -317,69 +310,37 @@ it("retries the approved list and shows its empty state", async () => {
   expect(container.textContent).toContain("No apps to open yet");
 });
 it.each(["unmount", "blur"])(
-  "leaves a late owner view to expire, without navigating, after %s",
+  "navigates nobody when the tab opens after the person left (%s)",
   async (leave) => {
     const w = await setup();
-    let finish!: (view: Awaited<ReturnType<typeof w.host.openComputerView>>) => void;
-    w.open.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          finish = resolve;
-        }),
-    );
+    let finish!: () => void;
+    const opened = new Promise<void>((resolve) => (finish = resolve));
+    const real = w.open.getMockImplementation();
+    w.open.mockImplementationOnce(async (target) => {
+      await opened;
+      return (real ?? (() => Promise.reject(new Error("no open"))))(target);
+    });
     await w.render();
     await press("Notes, No windows open");
     if (leave === "unmount") {
       await act(async () => root!.unmount());
       root = null;
     } else state.focused = false;
-    await act(async () =>
-      finish({
-        viewId: "late",
-        generation: 3,
-        machineId: w.app.machineId,
-        target: w.app.target,
-      } as Awaited<ReturnType<typeof w.host.openComputerView>>),
-    );
-    // The Host may have answered with a view another device is watching.
-    expect(w.close).not.toHaveBeenCalled();
+    await act(async () => finish());
     expect(state.goBack).not.toHaveBeenCalled();
     expect(state.dispatch).not.toHaveBeenCalled();
   },
 );
-it("switches to an existing owner view of the exact window without opening again", async () => {
+it("marks an app that already has a window tab as open", async () => {
   const w = await setup();
-  // Create the real Host projection before replacing its open RPC with the assertion spy.
-  w.open.mockRestore();
-  vi.mocked(w.host.getSnapshot).mockRestore();
-  if (w.app.target.kind !== "app") throw new Error("Missing app fixture");
-  w.windows.mockRestore();
-  const windows = await w.host.listComputerAppWindows(w.app.machineId, w.app.target.app);
-  const chosen = windows[0]!;
-  await w.host.openComputerView(w.app.machineId, { ...w.app.target, window: chosen.id });
-  const snapshot = { ...w.host.getSnapshot(), deploymentId: "deployment" };
-  vi.spyOn(w.host, "getSnapshot").mockReturnValue(snapshot);
-  const open = vi.spyOn(w.host, "openComputerView");
-  vi.spyOn(w.host, "listComputerAppWindows").mockResolvedValue([chosen]);
+  w.tabs.model.reset(
+    [
+      windowTab("notes", "Shopping", {
+        computer: { computerId: w.app.machineId as never, name: "Mac" },
+      }),
+    ],
+    [{ kind: "tab", tabId: "tab_notes" as never }],
+  );
   await w.render();
-  await press("Notes, Open");
-  expect(open).not.toHaveBeenCalled();
-  expect(state.dispatch).toHaveBeenCalled();
-});
-it("asks the Host for the front window when windows are unknown, even with one already open", async () => {
-  const w = await setup();
-  w.open.mockRestore();
-  vi.mocked(w.host.getSnapshot).mockRestore();
-  if (w.app.target.kind !== "app") throw new Error("Missing app fixture");
-  w.windows.mockRestore();
-  const [first] = await w.host.listComputerAppWindows(w.app.machineId, w.app.target.app);
-  await w.host.openComputerView(w.app.machineId, { ...w.app.target, window: first!.id });
-  const snapshot = { ...w.host.getSnapshot(), deploymentId: "deployment" };
-  vi.spyOn(w.host, "getSnapshot").mockReturnValue(snapshot);
-  const open = vi.spyOn(w.host, "openComputerView");
-  // An older Host can't say which windows are open, so the front one may be another.
-  vi.spyOn(w.host, "listComputerAppWindows").mockRejectedValue(new Error("unsupported"));
-  await w.render();
-  await press("Notes");
-  expect(open).toHaveBeenCalledWith(w.app.machineId, w.app.target);
+  expect(button("Notes, Open")).toBeDefined();
 });

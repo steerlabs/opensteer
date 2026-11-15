@@ -4,6 +4,7 @@ import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 
 import type { WebViewProps } from "react-native-webview";
 import { AccessibilityInfo, Linking } from "react-native";
+import { attachMockTabs } from "../../test-support/mock-tabs.js";
 import { act, useState, type ComponentProps, type ReactNode } from "react";
 import { createId } from "@opensteer/core";
 import { createRoot, type Root } from "react-dom/client";
@@ -1201,47 +1202,29 @@ it("renders published apps in isolated native WebViews, caps inline height and r
 });
 
 /*
- * An app is one live copy on a client. What can go wrong: Open waits on the
- * Host before the page appears; the card keeps its WebView while the tab has
- * one too; closing the tab leaves the card without its app; a Host that refuses
- * the tab leaves the card dead, or the person on a page for a tab that never was.
+ * An app is one live copy on a client. What can go wrong: the card keeps its
+ * WebView while the tab has one too; closing the tab leaves the card without
+ * its app; Open opens some other tab, or none; a Host that refuses the tab
+ * leaves the card dead, or the person on a page for a tab that never was.
  */
 describe("an app's card and its tab", () => {
   const appId = "app_11111111-1111-4111-8111-111111111111";
-  async function mount(openAppTab: (appId: string) => Promise<void>) {
+  async function mount() {
     const client = new MockHostClient();
-    const tabRow = {
-      appId,
-      latestVersion: 1,
-      openedAt: new Date().toISOString(),
-      threadId: createId("thread"),
-      title: "Budget",
-    };
-    let snapshot = client.getSnapshot();
-    const listeners = new Set<() => void>();
-    const publish = (appTabs: readonly (typeof tabRow)[]) => {
-      snapshot = { ...snapshot, appTabs };
-      for (const listener of listeners) listener();
-    };
-    vi.spyOn(client, "subscribe").mockImplementation((listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    });
-    vi.spyOn(client, "getSnapshot").mockImplementation(() => snapshot);
     const view = vi.spyOn(client, "viewApp").mockImplementation(async () => ({
       app: {
         id: appId,
-        threadId: tabRow.threadId,
+        threadId: createId("thread"),
         runId: createId("run"),
         title: "Budget",
         latestVersion: 1,
-        createdAt: tabRow.openedAt,
-        updatedAt: tabRow.openedAt,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       },
       url: `https://host.test/v1/apps/${appId}/dark/${"a".repeat(43)}/`,
     }));
-    const open = vi.spyOn(client, "openAppTab").mockImplementation(openAppTab);
-    const tabs: TranscriptAppTabs = { leave: vi.fn(), open: vi.fn() };
+    const mock = attachMockTabs(client, { layout: [], tabs: [] });
+    const tabs: TranscriptAppTabs = { show: vi.fn() };
     const container = document.createElement("div");
     document.body.append(container);
     const root = createRoot(container);
@@ -1254,7 +1237,7 @@ describe("an app's card and its tab", () => {
               entry={{
                 appId,
                 id: "app:event",
-                createdAt: tabRow.openedAt,
+                createdAt: new Date().toISOString(),
                 kind: "app",
                 title: "Budget",
                 version: 1,
@@ -1265,53 +1248,46 @@ describe("an app's card and its tab", () => {
         </TranscriptHostClientContext>,
       ),
     );
-    return { client, container, open, publish, tabRow, tabs, view };
+    return { client, container, mock, tabs, view };
   }
   const frame = (container: HTMLElement) => container.querySelector("[data-app-webview]");
 
-  it("goes to the tab without waiting for the Host, runs no copy of its own, and comes back when it closes", async () => {
-    const answer = Promise.withResolvers<void>();
-    const f = await mount(() => answer.promise);
+  it("opens its one tab and shows it, runs no copy of its own meanwhile, and comes back when it closes", async () => {
+    const f = await mount();
     try {
       expect(frame(f.container)).not.toBeNull();
       await act(async () => press(f.container, "Open"));
-      expect(f.open).toHaveBeenCalledWith(appId);
-      expect(f.tabs.open).toHaveBeenCalledWith(appId);
-
-      await act(async () => f.publish([f.tabRow]));
+      expect(f.mock.calls.find(({ method }) => method === "openTab")?.args).toEqual([
+        { appId, kind: "app" },
+      ]);
+      const [tab] = f.mock.model.rows.values();
+      expect(f.tabs.show).toHaveBeenCalledWith(tab!.tabId);
       expect(frame(f.container)).toBeNull();
       expect(f.view).toHaveBeenCalledTimes(1);
-      expect(f.container.textContent).toContain("Open in Tabs");
       await act(async () => press(f.container, "Open in Tabs"));
-      expect(f.tabs.open).toHaveBeenCalledTimes(2);
-      expect(f.open).toHaveBeenCalledTimes(1);
+      expect(f.tabs.show).toHaveBeenCalledTimes(2);
 
-      await act(async () => f.publish([]));
+      await act(async () => f.mock.model.setLayout([]));
       expect(frame(f.container)).not.toBeNull();
       expect(f.container.textContent).not.toContain("Open in Tabs");
-      await act(async () => answer.resolve());
-      expect(f.tabs.leave).not.toHaveBeenCalled();
     } finally {
       f.client.dispose();
     }
   });
 
-  it("says so when the Host refuses the tab, takes the page back and can try again", async () => {
-    const f = await mount(async () => {
-      throw new Error("This Host cannot open app tabs.");
-    });
+  it("says so when the Host refuses the tab, shows nothing and can try again", async () => {
+    const f = await mount();
     try {
+      f.mock.failNext("openTab", "This Host cannot open app tabs.");
       await act(async () => press(f.container, "Open"));
-      expect(f.tabs.leave).toHaveBeenCalledWith(appId);
+      expect(f.tabs.show).not.toHaveBeenCalled();
       expect(f.container.querySelector('[role="alert"]')?.textContent).toContain(
         "This Host cannot open app tabs.",
       );
       expect(frame(f.container)).not.toBeNull();
 
-      f.open.mockImplementation(async () => undefined);
       await act(async () => press(f.container, "Try again"));
-      expect(f.open).toHaveBeenCalledTimes(2);
-      expect(f.tabs.open).toHaveBeenCalledTimes(2);
+      expect(f.tabs.show).toHaveBeenCalledTimes(1);
       expect(f.container.querySelector('[role="alert"]')).toBeNull();
     } finally {
       f.client.dispose();

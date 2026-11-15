@@ -1,6 +1,5 @@
 import {
   messagePages,
-  phoneTabOpen,
   placePage,
   replyPlaces,
   type HostClient,
@@ -14,6 +13,7 @@ import type {
   BrowserPageContentPart,
   ComputerAppContentPart,
   PhoneContentPart,
+  TabId,
 } from "@opensteer/core";
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 import { Image, Pressable, StyleSheet, View } from "react-native";
@@ -45,9 +45,8 @@ export const TranscriptSurfacesContext = createContext<TranscriptSurfaces | null
  * changes with every streamed token, so a card never redraws on one.
  */
 export interface TranscriptAppTabs {
-  readonly open: (appId: string) => void;
-  /** Takes back the page `open` put in front, once its tab turns out not to exist. */
-  readonly leave: (appId: string) => void;
+  /** Shows the app's tab, opened from this conversation. */
+  readonly show: (tabId: TabId) => void;
 }
 
 export const TranscriptAppTabsContext = createContext<TranscriptAppTabs | null>(null);
@@ -125,7 +124,8 @@ function IncludedPlaces(props: {
             />
           );
         const machine = machines.find(({ id }) => id === part.machineId);
-        const open = connection === "connected" && machine !== undefined && phoneTabOpen(machine);
+        // A phone opens its one tab, which wakes it only for this explicit Open.
+        const open = connection === "connected" && machine !== undefined;
         return (
           <SurfaceChip
             ended={!open}

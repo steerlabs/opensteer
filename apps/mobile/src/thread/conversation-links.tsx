@@ -1,18 +1,19 @@
 import {
   conversationComputerId,
   linkPlaces,
-  mutationIdempotencyKey,
   type HostClient,
   type LinkPlace,
 } from "@opensteer/client/host";
 import { classifyHref } from "@opensteer/core";
 import { markdownLink } from "@opensteer/shared/markdownLinks";
-import { useNavigation } from "@react-navigation/native";
+import { StackActions, useNavigation } from "@react-navigation/native";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 import { useMemo, type ReactNode } from "react";
 import { Alert, Linking, Platform, StyleSheet } from "react-native";
-import { showPendingBrowserTab } from "../browser/pending-tab-route.js";
+import { tabRoute } from "../browser/surface-route.js";
+import { pageTabTarget } from "../tabs/place-tab.js";
+import { tabsClient } from "../tabs/tabs-host.js";
 import { systemBrowserLabel } from "../browser/system-browser.js";
 import { useHereDeviceId } from "../computers/here-device.js";
 import { useReferenceNavigation } from "../markdown/reference-context.js";
@@ -54,24 +55,28 @@ export function ConversationLinksProvider(props: {
         url,
       });
     };
+    /**
+     * A reply link opens as a new tab where the person chose, and shows once
+     * the Host has it, over this conversation; anything it can't open goes to
+     * the system's browser instead.
+     */
     const openOn = (url: string, place: LinkPlace): void => {
-      let opening;
-      try {
-        opening = hostClient.beginBrowserTabOpen(place.target, {
-          url,
-          idempotencyKey: mutationIdempotencyKey("reply-link"),
-        });
-      } catch {
+      const target = pageTabTarget(hostClient.getSnapshot(), place.target, url);
+      if (target === null) {
         openOutside(url);
         return;
       }
-      const key = opening.idempotencyKey;
-      showPendingBrowserTab(navigation, { deploymentId, threadId }, opening, {
-        fallback: () => {
-          hostClient.dismissPendingBrowserTab(key);
-          openOutside(url);
-        },
-      });
+      tabsClient(hostClient)
+        .openTab(target)
+        .then(
+          (tab) => {
+            if (navigation.isFocused())
+              navigation.dispatch(
+                StackActions.push("WorkspaceBrowser", tabRoute(deploymentId, tab.tabId, threadId)),
+              );
+          },
+          () => openOutside(url),
+        );
     };
     return {
       Hold: ReadingHold,

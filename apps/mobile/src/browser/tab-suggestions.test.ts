@@ -1,54 +1,38 @@
 import { expect, it, vi } from "vitest";
-import { MockHostClient } from "@opensteer/client/mock";
-import { BrowserSurfaceIdSchema } from "@opensteer/core";
+import { FakeTabs, pageTab, phoneTab, tabId } from "../../test-support/mock-tabs.js";
 import { tabSuggestions } from "./tab-suggestions.js";
 
-it("refreshes a suggestion's title and site by key without reading unchanged rows", () => {
-  const client = new MockHostClient({ latencyMs: 0 });
-  const store = client.browserTabs;
-  const first = store.structure()[0]!;
-  const row = store.tab(first.groupId, first.tabId)!;
-  const rows = Array.from({ length: 10_000 }, (_, i) => ({
-    ...row,
-    id: BrowserSurfaceIdSchema.parse(`suggestion-${i}`),
-    order: i,
-    openerId: null,
-  }));
-  store.applyTabs(first.groupId, { op: "begin", generation: "suggestions" });
-  store.applyTabs(first.groupId, { op: "rows", rows });
-  store.applyTabs(first.groupId, { op: "end", revision: 0, count: rows.length, meta: {} });
-  const selection = tabSuggestions(client, first.groupId);
+it("offers the list's pages in order and refreshes one by key without rereading unchanged rows", () => {
+  const model = new FakeTabs();
+  const pages = Array.from({ length: 1_000 }, (_, i) => pageTab(`p${i}`, `Page ${i}`));
+  model.reset(
+    [...pages, phoneTab("pixel")],
+    [...pages, phoneTab("pixel")].map((tab) => ({ kind: "tab" as const, tabId: tab.tabId })),
+  );
+  const selection = tabSuggestions(model);
   let current = selection.read();
   const release = selection.subscribe(() => {
     current = selection.read();
   });
-  const read = vi.spyOn(store, "tab");
+  // Subscribing rereads once, for a change between the first read and the subscription.
+  const before = selection.read();
+  const get = vi.spyOn(model, "get");
   try {
-    const before = current;
+    expect(before).toHaveLength(1_000);
     for (let i = 0; i < 20; i++) expect(selection.read()).toBe(before);
-    expect(read).not.toHaveBeenCalled();
-    store.applyTabs(first.groupId, {
-      op: "change",
-      generation: "suggestions",
-      base: 0,
-      revision: 1,
-      update: [{ id: rows[0]!.id, title: "Fresh title", site: "https://fresh.example" }],
-    });
-    expect(current[0]).toMatchObject({ title: "Fresh title", site: "fresh.example" });
+    expect(get).not.toHaveBeenCalled();
+
+    model.patch({ ...pages[0]!, title: "Fresh title", url: "https://fresh.example/" });
+    expect(current[0]).toMatchObject({ site: "fresh.example", title: "Fresh title" });
     expect(current[1]).toBe(before[1]);
-    expect(read).toHaveBeenCalledTimes(1);
-    store.applyTabs(first.groupId, {
-      op: "change",
-      generation: "suggestions",
-      base: 1,
-      revision: 2,
-      remove: [rows[0]!.id],
-    });
-    expect(current).toHaveLength(9_999);
-    expect(current.some((suggestion) => suggestion.id === rows[0]!.id)).toBe(false);
+
+    model.setLayout(
+      model.layout.items.filter((item) => item.kind !== "tab" || item.tabId !== tabId("p0")),
+    );
+    expect(current).toHaveLength(999);
+    expect(current.some(({ id }) => id === tabId("p0"))).toBe(false);
   } finally {
-    read.mockRestore();
+    get.mockRestore();
     release();
-    client.dispose();
   }
 });
