@@ -853,13 +853,13 @@ describe("team transaction authority", () => {
       await expect(textUpload(team.files, owner, c.id)).rejects.toMatchObject({
         reason: "team-storage-full",
       });
-      expect(await readdir(join(dataDirectory, "team-files"))).toContain(file.id);
+      expect(await storedFile(dataDirectory, file.id)).toBe(true);
       await team.dispatch(owner, {
         type: "team.message.delete",
         channelId: c.id,
         messageId: (sent as { message: { id: TeamMessageId } }).message.id,
       });
-      expect(await readdir(join(dataDirectory, "team-files"))).not.toContain(file.id);
+      expect(await storedFile(dataDirectory, file.id)).toBe(false);
       await expect(textUpload(team.files, owner, c.id)).resolves.toMatchObject({
         sizeBytes: 36,
       });
@@ -924,7 +924,7 @@ describe("team transaction authority", () => {
           .where("id", "=", file.id)
           .executeTakeFirst(),
       ).resolves.toEqual({ state: "ready" });
-      expect(await readdir(join(directory, "team-files"))).toContain(file.id);
+      expect(await storedFile(directory, file.id)).toBe(true);
     } finally {
       release.resolve();
       await files.close();
@@ -950,9 +950,8 @@ describe("team transaction authority", () => {
       await files.collectGarbage();
       const remaining = await fixture.database.selectFrom("teamBlobs").select("id").execute();
       expect(remaining.map((row) => row.id)).toEqual([kept.id]);
-      const stored = await readdir(join(directory, "team-files"));
-      expect(stored).not.toContain(unsent.id);
-      expect(stored).toContain(kept.id);
+      expect(await storedFile(directory, unsent.id)).toBe(false);
+      expect(await storedFile(directory, kept.id)).toBe(true);
     } finally {
       await files.close();
       await rm(directory, { recursive: true, force: true });
@@ -1804,3 +1803,10 @@ describe("team transaction authority", () => {
     }
   });
 });
+
+/** Uploads are published under an immutable key that starts with the file's id. */
+async function storedFile(directory: string, id: string) {
+  return (await readdir(join(directory, "team-files"))).some(
+    (name) => name === id || name.startsWith(`${id}-`),
+  );
+}

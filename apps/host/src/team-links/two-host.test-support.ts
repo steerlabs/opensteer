@@ -142,8 +142,11 @@ export async function createTwoHostLinkFixture() {
         return write(tx, rights);
       });
     },
-    async knowledgeWrite() {
-      throw new Error("Knowledge execution belongs to lane K");
+    async knowledgeWrite(write) {
+      return team.database.transaction().execute(async (tx) => {
+        await sql`select * from team_access_state where singleton_key='team' for share`.execute(tx);
+        return write(tx);
+      });
     },
     async handoff(authorizedAt, authorize, deliver) {
       if (authorizedAt !== access.revision && !(await authorize())) throw linkError();

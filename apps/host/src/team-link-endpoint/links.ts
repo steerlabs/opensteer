@@ -80,6 +80,13 @@ export class TeamEndpointLinks {
     await sql`update team_link_connections set seen_at=now() where link_id=${linkId} and epoch=${epoch}`.execute(
       this.database,
     );
+    await this.database
+      .updateTable("teamLinks")
+      .set({ lastSeenAt: new Date().toISOString() })
+      .where("id", "=", linkId)
+      .where("state", "=", "active")
+      .where("connectionEpoch", "=", epoch)
+      .execute();
   }
   async disconnected(linkId: TeamLinkId, epoch: string) {
     await sql`delete from team_link_connections where link_id=${linkId} and epoch=${epoch}`.execute(
