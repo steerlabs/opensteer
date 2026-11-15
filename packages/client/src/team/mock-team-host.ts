@@ -82,10 +82,10 @@ export class MockTeamSocket implements WebSocketClient {
     if (typeof data !== "string") throw new Error("Expected a text frame.");
     this.#send(TeamClientFrameSchema.parse(JSON.parse(data)));
   }
-  close(): void {
+  close(code = 1000): void {
     if (this.readyState === 3) return;
     this.readyState = 3;
-    this.emit("close", {});
+    this.emit("close", { code });
   }
 }
 export class MockTeamHost {
@@ -261,6 +261,9 @@ export class MockTeamHost {
   sidebar(): TeamSidebar {
     return {
       accessRevision: SequenceSchema.parse("1"),
+      namesRevision: SequenceSchema.parse(
+        String(this.members.reduce((total, member) => total + (member.nameRevision ?? 0), 0)),
+      ),
       totalMentionCount: [...this.messages.values()].filter((message) => {
         const channel = this.channels.get(message.channelId);
         return (
@@ -363,7 +366,7 @@ export class MockTeamHost {
     const socket = new MockTeamSocket((frame) => {
       if (frame.type === "team.subscribe") {
         if (!acceptsTeamApiVersion(frame.teamApiVersion)) {
-          socket.close();
+          socket.close(1008);
           return;
         }
         socket.deliver({ type: "team.sidebar", sidebar: this.#sidebarPage() });

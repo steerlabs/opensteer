@@ -16,6 +16,7 @@
     "./personal-team-requests-store": "./src/personal-team-requests-store.ts",
     "./team-requests-port": "./src/team-requests-port.ts",
     "./team-access": "./src/team-access-store.ts",
+    "./team-bus": "./src/team-bus.ts",
     "./team-members": "./src/team-members-store.ts",
     "./team-principals": "./src/team-principals-store.ts",
     "./team-groups": "./src/team-groups-store.ts",
@@ -35,7 +36,8 @@
     "./test-support/personal-run": "./src/personal-run-fixture.test-support.ts",
     "./personal-settings-store": "./src/personal-settings-store.ts",
     "./idle-compaction": "./src/idle-compaction-store.ts",
-    "./command-delivery": "./src/command-delivery.ts"
+    "./command-delivery": "./src/command-delivery.ts",
+    "./team-installation": "./src/team-installation-store.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -52,7 +54,8 @@
     "@opensteer/triggers": "workspace:*",
     "kysely": "catalog:",
     "pg": "catalog:",
-    "zod": "catalog:"
+    "zod": "catalog:",
+    "@opensteer/control-plane-protocol": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",

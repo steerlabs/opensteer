@@ -1,3 +1,4 @@
+import type { TeamBus } from "@opensteer/database/team-bus";
 import type { DatabaseSchema } from "@opensteer/database";
 import type { TeamRequestStorePort } from "@opensteer/database/team-requests-port";
 import type { Kysely } from "kysely";
@@ -10,6 +11,8 @@ import type { TeamLinkLifetimes } from "./lifetimes.js";
 import type { UserId } from "@opensteer/core";
 
 export function createTeamLinkEndpoint(options: {
+  readonly bus?: TeamBus;
+  readonly processId?: string;
   readonly teamName: string;
   readonly database: Kysely<DatabaseSchema>;
   readonly requests: TeamRequestStorePort;

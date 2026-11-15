@@ -426,7 +426,7 @@ function Place(props: {
         lastReadMessageId: newLineAt,
         pending: snapshot.pending,
         sendErrors: snapshot.sendErrors,
-        connected: snapshot.connection === "connected",
+        connected: !snapshot.unreachable,
         now: new Date(),
         ...(rootId === null ? {} : { skipId: rootId }),
         asks,
@@ -437,7 +437,7 @@ function Place(props: {
       newLineAt,
       previews,
       rootId,
-      snapshot.connection,
+      snapshot.unreachable,
       snapshot.pending,
       snapshot.sendErrors,
       snapshot.presence,
@@ -840,9 +840,7 @@ function Place(props: {
     await shareTeamFile(session, file);
   };
 
-  const connectionBanner = useConnectionBanner(props.team, snapshot.connection, () =>
-    session.connect(),
-  );
+  const connectionBanner = useConnectionBanner(props.team, snapshot, () => session.connect());
   const shareView = channelShareView(channel.share);
   const banner: ConnectionBannerView | null =
     connectionBanner ??

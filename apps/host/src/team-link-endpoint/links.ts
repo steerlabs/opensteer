@@ -1,5 +1,6 @@
+import { teamLinksOnline } from "@opensteer/database/team-chat";
 import { createHash } from "node:crypto";
-import { type TeamLinkId } from "@opensteer/core";
+import { OpensteerError, type TeamLinkId } from "@opensteer/core";
 import {
   TeamLinkCredentialSchema,
   TeamLinkRedeemSchema,
@@ -47,13 +48,54 @@ export class TeamEndpointLinks {
     return link;
   }
 
-  async seen(linkId: TeamLinkId): Promise<void> {
+  async hello(linkId: TeamLinkId, processId: string) {
+    return this.access.knowledgeWrite(async (tx) => {
+      const row = await sql<{
+        epoch: string;
+      }>`update team_links set connection_epoch=connection_epoch+1 where id=${linkId} and state='active' returning connection_epoch::text as epoch`.execute(
+        tx,
+      );
+      if (!row.rows[0]) throw linkError("unauthorized");
+      const epoch = row.rows[0].epoch;
+      await sql`insert into team_link_connections(link_id,epoch,process_id,seen_at) values (${linkId},${epoch},${processId},now())`.execute(
+        tx,
+      );
+      return epoch;
+    });
+  }
+  async assertEpoch(linkId: TeamLinkId, epoch: string) {
+    await this.access.knowledgeWrite(async (tx) => {
+      const row =
+        await sql`select 1 from team_links where id=${linkId} and connection_epoch=${epoch} and state='active' for share`.execute(
+          tx,
+        );
+      if (!row.rows.length)
+        throw new OpensteerError({
+          code: "conflict",
+          reason: "link-superseded",
+          message: "Team link superseded",
+        });
+    });
+  }
+  async seen(linkId: TeamLinkId, epoch: string): Promise<void> {
+    await sql`update team_link_connections set seen_at=now() where link_id=${linkId} and epoch=${epoch}`.execute(
+      this.database,
+    );
     await this.database
       .updateTable("teamLinks")
       .set({ lastSeenAt: new Date().toISOString() })
       .where("id", "=", linkId)
       .where("state", "=", "active")
+      .where("connectionEpoch", "=", epoch)
       .execute();
+  }
+  async disconnected(linkId: TeamLinkId, epoch: string) {
+    await sql`delete from team_link_connections where link_id=${linkId} and epoch=${epoch}`.execute(
+      this.database,
+    );
+  }
+  async isOnline(userId: import("@opensteer/core").UserId) {
+    return (await teamLinksOnline(this.database, [userId])).has(userId);
   }
 
   async redeem(value: unknown) {

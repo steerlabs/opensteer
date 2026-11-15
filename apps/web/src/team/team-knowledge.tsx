@@ -114,7 +114,7 @@ function Knowledge({
     refreshList();
     setRound((next) => next + 1);
   };
-  useOnReturn(refresh);
+  useOnReturn(refresh, view.snapshot.resumedGeneration);
 
   const href = (topic: KnowledgeTopicId | null, note: string | null = null) =>
     knowledgePath(teamId, topic, note, query);
@@ -936,10 +936,19 @@ function Versions({
 
 /* ---- Pieces ---- */
 
-/** Reads again when the person comes back to the window: knowledge has no live stream. */
-function useOnReturn(read: () => void) {
+/**
+ * Reads again when the person comes back to the window, or the team's socket comes back after a
+ * close: knowledge has no live stream.
+ */
+function useOnReturn(read: () => void, resumed: number) {
   const latest = useRef(read);
   latest.current = read;
+  const seen = useRef(resumed);
+  useEffect(() => {
+    if (seen.current === resumed) return;
+    seen.current = resumed;
+    latest.current();
+  }, [resumed]);
   useEffect(() => {
     let last = Date.now();
     const back = () => {

@@ -147,12 +147,14 @@ export function ConnectionBanner({
   readonly team: string;
 }) {
   const [shown, setShown] = useState(immediate);
+  // The delay is for a problem beginning; one problem turning into another shows at once.
+  const active = notice !== null;
   useEffect(() => {
-    if (!notice || immediate) return;
+    if (!active || immediate) return;
     setShown(false);
     const timer = window.setTimeout(() => setShown(true), bannerDelayMs);
     return () => window.clearTimeout(timer);
-  }, [immediate, notice?.kind]);
+  }, [immediate, active]);
   if (!notice || !shown) return null;
   const line = (icon: IconName | "spinner", text: string, tone = "", action?: React.ReactNode) => (
     <div className={`connection-line${tone ? ` connection-line--${tone}` : ""}`} role="status">

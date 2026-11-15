@@ -54,7 +54,7 @@ export function NewChannelDialog({
   const [refusal, setRefusal] = useState<{ name: string; message: string } | null>(null);
   if (!view) return null;
   const teamName = view.snapshot.bootstrap?.teamName ?? view.team.name;
-  const offline = view.snapshot.connection !== "connected";
+  const offline = view.snapshot.unreachable;
   const words = channelNameFromInput(name);
   const joined = channelNamed(
     view.snapshot.sidebar?.channels.map((row) => row.channel) ?? [],
@@ -221,7 +221,7 @@ export function NewMessageDialog({
   const [busy, setBusy] = useState(false);
   if (!view) return null;
   const teamName = view.snapshot.bootstrap?.teamName ?? view.team.name;
-  const offline = view.snapshot.connection !== "connected";
+  const offline = view.snapshot.unreachable;
   const open = () => {
     if (chosen.length === 0 || offline || busy) return;
     setBusy(true);

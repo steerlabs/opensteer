@@ -1,3 +1,4 @@
+import type { TeamBus } from "./team-bus.js";
 import {
   channelShare,
   requireOwnerChannel,
@@ -298,6 +299,22 @@ export interface TeamChatRelay {
     pin: boolean,
   ): Promise<boolean>;
 }
+/**
+ * Which of these people have their agent online: a live connection on the link's current
+ * epoch, on any team Host copy. One query on the caller's connection.
+ */
+export async function teamLinksOnline(
+  executor: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
+  userIds: readonly UserId[],
+): Promise<Set<UserId>> {
+  if (!userIds.length) return new Set();
+  const rows = await sql<{ owner: UserId }>`select distinct l.owner_user_id as owner
+    from team_link_connections c join team_links l on l.id=c.link_id
+    where l.owner_user_id = any(${[...userIds]}::text[]) and l.state='active'
+      and c.epoch=l.connection_epoch and c.seen_at > now()-interval '90 seconds'`.execute(executor);
+  return new Set(rows.rows.map((row) => row.owner));
+}
+
 export class TeamChatStore {
   relay: TeamChatRelay | undefined;
   readonly #requestListeners = new Set<(event: TeamRequestChange) => Promise<void> | void>();
@@ -306,11 +323,16 @@ export class TeamChatStore {
   readonly identity: {
     readonly teamId: DeploymentId;
     readonly teamName: string;
-    readonly agentOnline?: (ownerUserId: UserId) => boolean;
   };
   constructor(access: TeamAccessStore, identity: TeamChatStore["identity"]) {
     this.access = access;
     this.identity = identity;
+  }
+  /** Request changes reach the copy holding the link through the link endpoint's own refresh. */
+  attach(bus: TeamBus) {
+    return bus.on((event) => {
+      if (event.kind === "channel") this.changed(event.channelId);
+    });
   }
   onChange(listener: (channelId: TeamChannelId) => void) {
     this.#listeners.add(listener);
@@ -1735,7 +1757,7 @@ export class TeamChatStore {
     linkId?: TeamLinkId,
     agent?: TeamAgentOperation,
   ): Promise<Value> {
-    const revision = this.access.revision;
+    const revision = await this.access.current();
     try {
       const value = await this.access.database
         .transaction()
@@ -1871,11 +1893,11 @@ export class TeamChatStore {
         .orderBy("id")
         .limit(200)
         .execute();
-      const linkPresence = (rows: readonly { ownerUserId: UserId }[]) =>
-        [...new Set(rows.map((row) => row.ownerUserId))].slice(0, 200).map((ownerUserId) => ({
-          ownerUserId,
-          online: this.identity.agentOnline?.(ownerUserId) ?? false,
-        }));
+      const linkPresence = async (rows: readonly { ownerUserId: UserId }[]) => {
+        const owners = [...new Set(rows.map((row) => row.ownerUserId))].slice(0, 200);
+        const online = await teamLinksOnline(t, owners);
+        return owners.map((ownerUserId) => ({ ownerUserId, online: online.has(ownerUserId) }));
+      };
       if (input.sinceSeq !== null && BigInt(input.sinceSeq) <= BigInt(channel.changeSeq)) {
         const rows = await messages
           .where("changeSeq", ">", input.sinceSeq)
@@ -1890,7 +1912,7 @@ export class TeamChatStore {
         if (rows.length + statuses.length <= 200) {
           const cut = {
             ...base,
-            linkPresence: linkPresence([...statuses, ...recentRequests]),
+            linkPresence: await linkPresence([...statuses, ...recentRequests]),
             type: "resumed" as const,
             changedRows: await teamMessageViews(
               t,
@@ -1914,7 +1936,7 @@ export class TeamChatStore {
       const cut = {
         ...base,
         people: page.people,
-        linkPresence: linkPresence(recentRequests),
+        linkPresence: await linkPresence(recentRequests),
         type: "snapshot" as const,
         messages: page.messages,
         requests: recentRequests.map(teamRequestView),
@@ -1937,7 +1959,7 @@ export class TeamChatStore {
     linkId?: TeamLinkId,
     agent?: TeamAgentOperation,
   ) {
-    const revision = this.access.revision;
+    const revision = await this.access.current();
     const result = await this.read(
       actor,
       "search",
@@ -2025,6 +2047,7 @@ export class TeamChatStore {
           .where("id", "=", throughMessageId)
           .executeTakeFirst(),
       );
+      await bumpTeamChannel(t, channelId);
       await t
         .insertInto("teamChannelMemberState")
         .values({
@@ -2081,6 +2104,7 @@ export class TeamChatStore {
         .where("id", "=", rootId)
         .executeTakeFirst();
       requireTeam(root && root.threadRootId === null && root.deletedAt === null);
+      await bumpTeamChannel(t, channelId);
       return t
         .insertInto("teamAgentRecipients")
         .values({ userId: actor.userId, channelId, rootId, enabled })
@@ -2104,6 +2128,7 @@ export class TeamChatStore {
   ) {
     await this.access.writeForPeer(actor, channelId, async (t, a) => {
       requireTeam(actor.kind === "human" && a.read);
+      await bumpTeamChannel(t, channelId);
       await t
         .insertInto("teamChannelMemberState")
         .values({
@@ -2131,7 +2156,7 @@ export class TeamChatStore {
     agent?: TeamAgentOperation,
   ) {
     for (;;) {
-      const revision = this.access.revision;
+      const revision = await this.access.current();
       const result = await this.access.database.transaction().execute(async (t) => {
         const link = linkId ? await this.access.link(t, actor, linkId) : undefined;
         const member = await this.access.member(t, actor.userId);
@@ -2195,6 +2220,7 @@ export class TeamChatStore {
           .where("state", "=", "active")
           .executeTakeFirst());
         const channels = [];
+        let selfOnline: boolean | undefined;
         for (const row of pageRows) {
           const authority = authorities.get(row.id) ?? {
             read: false,
@@ -2234,7 +2260,9 @@ export class TeamChatStore {
             notificationLevel:
               state?.notificationLevel ??
               (row.kind === "dm" || row.kind === "group_dm" ? "all" : "mentions"),
-            agentOnline: linked && (this.identity.agentOnline?.(actor.userId) ?? false),
+            agentOnline:
+              linked &&
+              (selfOnline ??= (await teamLinksOnline(t, [actor.userId])).has(actor.userId)),
           });
         }
         if (actor.kind === "agent")
@@ -2262,7 +2290,7 @@ export class TeamChatStore {
           ),
         };
       });
-      if (revision === this.access.revision) return result;
+      if (revision === (await this.access.current())) return result;
     }
   }
 }

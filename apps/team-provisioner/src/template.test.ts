@@ -16,9 +16,8 @@ const input: TeamTemplateInput = {
   name: "Acme Design",
   images: {
     host: pinned("opensteer-team-host", "1"),
-    gateway: pinned("opensteer-team-gateway", "1"),
   },
-  postgresImage: pinned("postgres", "2"),
+  platform: { databaseIp: "10.1.1.1", bucket: "teams", databaseCaDigest: "ca-1" },
   replicas: 1,
   setupGeneration: 1,
 };
@@ -38,12 +37,12 @@ function find(objects: readonly KubernetesObject[], kind: string) {
 
 function podSpec(objects: readonly KubernetesObject[]) {
   return (
-    find(objects, "StatefulSet").spec as {
+    find(objects, "Deployment").spec as {
       template: {
         spec: {
           automountServiceAccountToken: boolean;
           securityContext: Record<string, unknown>;
-          initContainers: Container[];
+
           containers: Container[];
         };
       };
@@ -72,16 +71,17 @@ describe("renderTeam", () => {
         from: [
           { namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": edgeNamespace } } },
         ],
-        ports: [{ protocol: "TCP", port: 8080 }],
+        ports: [{ protocol: "TCP", port: 4310 }],
       },
     ]);
     const metadataAddress = policy.egress.filter((rule) =>
       rule.to.some((peer) => peer.ipBlock?.cidr.startsWith("169.254.")),
     );
-    expect(metadataAddress).toHaveLength(1);
-    expect(metadataAddress.every((rule) => JSON.stringify(rule.ports).includes('"port":53'))).toBe(
-      true,
-    );
+    expect(metadataAddress).toHaveLength(2);
+    expect(metadataAddress[0]?.ports).toEqual([
+      { protocol: "TCP", port: 80 },
+      { protocol: "TCP", port: 8080 },
+    ]);
     const internet = policy.egress.find((rule) =>
       rule.to.some((peer) => peer.ipBlock?.cidr === "0.0.0.0/0"),
     );
@@ -94,13 +94,33 @@ describe("renderTeam", () => {
   });
 
   it("runs every container unprivileged, with no API credentials and Postgres on loopback", () => {
-    const spec = podSpec(renderTeam(input));
+    const objects = renderTeam(input);
+    expect(JSON.stringify(objects)).not.toMatch(
+      /PersistentVolumeClaim|volumeClaimTemplates|StatefulSet/,
+    );
+    expect(find(objects, "Deployment").spec).toMatchObject({
+      replicas: 1,
+      minReadySeconds: 10,
+      strategy: { type: "RollingUpdate", rollingUpdate: { maxSurge: 1, maxUnavailable: 0 } },
+    });
+    const spec = podSpec(objects);
+    expect(spec).toMatchObject({
+      serviceAccountName: "team",
+      terminationGracePeriodSeconds: 90,
+      containers: [
+        {
+          name: "host",
+          readinessProbe: { httpGet: { path: "/readyz" } },
+          livenessProbe: { httpGet: { path: "/healthz" } },
+        },
+      ],
+    });
     expect(spec.automountServiceAccountToken).toBe(false);
     expect(spec.securityContext).toMatchObject({
       runAsNonRoot: true,
       seccompProfile: { type: "RuntimeDefault" },
     });
-    for (const container of [...spec.initContainers, ...spec.containers]) {
+    for (const container of spec.containers) {
       expect(container.securityContext, container.name).toMatchObject({
         runAsNonRoot: true,
         allowPrivilegeEscalation: false,
@@ -108,8 +128,6 @@ describe("renderTeam", () => {
         capabilities: { drop: ["ALL"] },
       });
     }
-    const postgres = spec.initContainers.find((container) => container.name === "postgres")!;
-    expect(postgres.args).toEqual(["-c", "listen_addresses=127.0.0.1"]);
     const env = (name: string) =>
       Object.fromEntries(
         spec.containers
@@ -122,15 +140,11 @@ describe("renderTeam", () => {
       OPENSTEER_CANONICAL_ORIGIN: "https://acme.teams.opensteer.com",
       OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST_FILE: "/run/secrets/host/setup-token-digest",
     });
-    expect(env("gateway")).toEqual({
-      OPENSTEER_SITE_ADDRESS: ":8080",
-      OPENSTEER_HOST_UPSTREAM: "127.0.0.1:4310",
-    });
   });
 
   it("changes its digest exactly when what runs changes", () => {
     const hash = (overrides: Partial<TeamTemplateInput>) =>
-      find(renderTeam({ ...input, ...overrides }), "StatefulSet").metadata.annotations?.[
+      find(renderTeam({ ...input, ...overrides }), "Deployment").metadata.annotations?.[
         appliedHashAnnotation
       ];
     expect(hash({})).toBe(hash({}));
@@ -142,14 +156,23 @@ describe("renderTeam", () => {
   });
 
   it("generates fresh credentials for each team and keeps them out of the pod template", () => {
-    const first = newTeamSecret({ id: input.id, slug: "acme", setupTokenDigest: "a".repeat(64) });
-    const second = newTeamSecret({ id: input.id, slug: "acme", setupTokenDigest: "a".repeat(64) });
+    const first = newTeamSecret({
+      id: input.id,
+      slug: "acme",
+      setupTokenDigest: "a".repeat(64),
+      databaseUrl: "postgresql://test",
+      databaseCa: "CA",
+    });
+    const second = newTeamSecret({
+      id: input.id,
+      slug: "acme",
+      setupTokenDigest: "a".repeat(64),
+      databaseUrl: "postgresql://test",
+      databaseCa: "CA",
+    });
     const data = (secret: KubernetesObject) => secret.stringData as Record<string, string>;
-    expect(data(first)["postgres-password"]).not.toBe(data(second)["postgres-password"]);
+    expect(data(first)["host-private.pem"]).not.toBe(data(second)["host-private.pem"]);
     expect(data(first)["auth-secret"]).not.toBe(data(second)["auth-secret"]);
-    expect(data(first)["database-url"]).toBe(
-      `postgresql://opensteer:${data(first)["postgres-password"]}@127.0.0.1:5432/opensteer`,
-    );
     expect(JSON.stringify(renderTeam(input))).not.toContain("a".repeat(64));
   });
 });

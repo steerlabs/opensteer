@@ -6,6 +6,8 @@ interface Lifetime {
   readonly userId: UserId;
   readonly requestId?: TeamAgentRequestId;
   readonly channelIds: readonly TeamChannelId[];
+  /** A link socket a client can reopen on another copy, unlike a transfer in flight. */
+  readonly socket?: boolean;
   readonly cancel: (revoked: boolean) => void;
 }
 
@@ -33,8 +35,19 @@ export class TeamLinkLifetimes {
     }
   }
 
-  stop(): void {
+  /** Moves link sockets to another copy; admitted transfers keep running. */
+  closeSockets(): void {
+    for (const entry of this.#entries)
+      if (entry.socket) {
+        this.#entries.delete(entry);
+        entry.cancel(false);
+      }
+  }
+  closeAll(_code = 1012): void {
     for (const entry of this.#entries) entry.cancel(false);
     this.#entries.clear();
+  }
+  stop(): void {
+    this.closeAll(1012);
   }
 }

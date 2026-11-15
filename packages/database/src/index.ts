@@ -78,6 +78,7 @@ export {
 } from "./agent-home-settings-store.js";
 
 export * from "./team-access-store.js";
+export * from "./team-bus.js";
 export * from "./team-members-store.js";
 export * from "./team-groups-store.js";
 export * from "./team-invites-store.js";

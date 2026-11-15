@@ -31,6 +31,8 @@ export const databaseLockOrder = [
   "team_sharing_settings",
   "team_partner_invites",
   "team_partner_links",
+  // A link's forwarded calls are admitted under its row.
+  "team_partner_calls",
   "team_shares",
   "team_share_participants",
   "team_share_relays",

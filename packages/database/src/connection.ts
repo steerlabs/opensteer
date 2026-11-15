@@ -62,6 +62,9 @@ export function createDatabase(
   };
   pool.on("release", (_error, client) => forget(client));
   pool.on("remove", forget);
+  // An idle client the server ends (restart, failover) is dropped by the pool; without a
+  // listener the error would crash the process.
+  pool.on("error", () => {});
   const database = new Kysely<DatabaseSchema>({
     dialect: new PostgresDialect({
       controlClient: Client,

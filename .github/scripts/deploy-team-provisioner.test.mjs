@@ -7,11 +7,7 @@ import { test } from "node:test";
 
 const script = new URL("./deploy-team-provisioner.sh", import.meta.url).pathname;
 const pinned = (name, digit) => `ghcr.io/steerlabs/${name}@sha256:${digit.repeat(64)}`;
-const images = [
-  pinned("opensteer-team-provisioner", "a"),
-  pinned("opensteer-team-host", "b"),
-  pinned("opensteer-team-gateway", "c"),
-];
+const images = [pinned("opensteer-team-provisioner", "a"), pinned("opensteer-team-host", "b")];
 
 // A real git history and a fake kubectl that records what the deploy did.
 function fixture() {
@@ -38,7 +34,7 @@ set -eu
 echo "$*" >> "$FAKE_DIR/calls"
 case "$*" in
   *"get deployment team-provisioner"*) cat "$FAKE_DIR/live" 2>/dev/null || true ;;
-  kustomize*) printf '"@PROVISIONER_IMAGE@" "@TEAM_HOST_IMAGE@" "@TEAM_GATEWAY_IMAGE@" "@SOURCE_REVISION@"\\n' ;;
+  kustomize*) printf '"@PROVISIONER_IMAGE@" "@TEAM_HOST_IMAGE@" "@SOURCE_REVISION@"\\n' ;;
   "apply -f -") cat > "$FAKE_DIR/applied" ;;
   *"rollout status"*) if [[ $ROLLOUT_FAILS == true ]]; then exit 1; fi ;;
 esac
@@ -78,7 +74,7 @@ test("deploys the provisioner with the release's pinned team images", () => {
 test("refuses an unpinned team image and never rolls teams back to an older source", () => {
   const f = fixture();
   try {
-    const unpinned = [images[0], "ghcr.io/steerlabs/opensteer-team-host:stable", images[2]];
+    const unpinned = [images[0], "ghcr.io/steerlabs/opensteer-team-host:stable"];
     assert.equal(f.run(f.newer, { refs: unpinned }).status, 1);
     const older = f.run(f.older, { live: f.newer });
     assert.equal(older.status, 0);
