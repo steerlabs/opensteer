@@ -6,6 +6,7 @@ import {
   tabComputer,
   tabComputers,
   authorizeTabTarget,
+  authorizeTabActor,
   tabReadAuthority,
   canReadTab,
 } from "../tabs/tab-authority.js";
@@ -1196,6 +1197,7 @@ export async function createHostRuntime(
           ]),
         ),
       authorize: authorizeTabTarget,
+      authorizeMembership: authorizeTabActor,
       onError: (error) => reportBrowserUsageError(error),
     });
     // A connection gaining authority settles Requests targeting the hosting

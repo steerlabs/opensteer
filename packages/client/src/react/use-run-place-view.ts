@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from "react";
-import type { TabKind, TabPlaceEnteredEventView } from "@opensteer/core";
+import type { TabKind, PlaceEnteredEventView } from "@opensteer/core";
 import { computerAppIdentityKey } from "@opensteer/protocol";
 import type { HostClient } from "../host/client.js";
 import { runPlaceActing } from "../host/run-page.js";
@@ -31,7 +31,7 @@ export function useRunPlaceView(
   threadId: string,
 ): {
   readonly acting: boolean;
-  readonly entry: TabPlaceEnteredEventView | null;
+  readonly entry: PlaceEnteredEventView | null;
   readonly place: RunPlaceView | null;
 } {
   const entry = useRunPlace(hostClient, runId);

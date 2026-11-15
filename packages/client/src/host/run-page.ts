@@ -1,5 +1,5 @@
 import { computerAppIdentityKey } from "@opensteer/protocol";
-import type { TabPlaceEnteredEventView } from "@opensteer/core";
+import type { PlaceEnteredEventView } from "@opensteer/core";
 import type { HostSnapshot } from "./client.js";
 
 /**
@@ -101,7 +101,7 @@ export function runPageSize(input: {
  * there; a Mac app or phone session is the Run's own.
  */
 export function runPlaceActing(
-  entry: TabPlaceEnteredEventView,
+  entry: PlaceEnteredEventView,
   snapshot: Pick<HostSnapshot, "tabs" | "machines">,
   activity: readonly { readonly threadId: string }[],
   threadId: string,

@@ -20,7 +20,7 @@ it("reads apps only as the signed-in person", async () => {
   await handlers["apps.list"]({ query: "notes" }, context);
   await handlers["apps.view"]({ appId, theme: "dark" }, context);
   expect(get).toHaveBeenCalledWith(userId, appId);
-  expect(list).toHaveBeenCalledWith(userId, "notes");
+  expect(list).toHaveBeenCalledWith({ kind: "person", ownerId: userId }, "notes");
   expect(view).toHaveBeenCalledWith(userId, appId, "dark");
   await expect(
     handlers["apps.get"]({ appId }, { ...context, session: null }),

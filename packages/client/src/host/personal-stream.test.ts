@@ -162,7 +162,7 @@ it("saves what a socket sent under the version that socket served, not the last 
 });
 it("restores absolute task versions so replay cannot undo a newer HTTP answer", async () => {
   const { ThreadStateProjection } = await import("./thread-state.js");
-  const { TabAgentEventViewSchema, SequenceSchema } = await import("@opensteer/core");
+  const { AgentEventViewSchema, SequenceSchema } = await import("@opensteer/core");
   const mock = new MockHostClient({ latencyMs: 0 });
   try {
     const thread = { ...mock.getSnapshot().threads[0]!, status: "idle" as const },
@@ -172,7 +172,7 @@ it("restores absolute task versions so replay cannot undo a newer HTTP answer", 
     const restored = new ThreadStateProjection();
     restored.restore(saved);
     restored.record(
-      TabAgentEventViewSchema.parse({
+      AgentEventViewSchema.parse({
         type: "thread.state-changed",
         threadId: thread.id,
         eventId: createId("event"),

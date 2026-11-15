@@ -46,7 +46,7 @@ import {
   nodeDetailEventNodeId,
   type QuietTaskDays,
   type PersonName,
-  TabAgentEventViewSchema,
+  AgentEventViewSchema,
   LiveItemViewSchema,
   LiveRunProgressViewSchema,
   RunIdSchema,
@@ -65,7 +65,7 @@ import {
   liveStreamKeyOf,
   requestTitleText,
   zeroSequence,
-  type TabAgentEventView as AgentEvent,
+  type AgentEventView as AgentEvent,
   type AssignmentSummary,
   type AssignmentView,
   type Attachment,
@@ -212,7 +212,7 @@ type RealtimeEvent = AgentEvent | (z.infer<typeof realtimeEventPositionSchema> &
 
 const realtimeHeaderSchema = z.object({ type: z.string().min(1) });
 const realtimeEventTypes = new Set<string>(
-  TabAgentEventViewSchema.options.map((schema) => schema.shape.type.value),
+  AgentEventViewSchema.options.map((schema) => schema.shape.type.value),
 );
 const realtimeSnapshotFrameSchema = z.object({
   snapshot: z.looseObject({ threads: z.array(z.unknown()).max(deploymentSnapshotMaxThreads) }),
@@ -4104,8 +4104,8 @@ export class HttpHostClient {
             const { thread } = realtimeThreadEventSchema.parse(raw).data;
             skip = !ThreadStatusSchema.safeParse(thread.status).success;
           }
-          if (!skip) return TabAgentEventViewSchema.parse(raw);
-          const parsed = TabAgentEventViewSchema.safeParse(raw);
+          if (!skip) return AgentEventViewSchema.parse(raw);
+          const parsed = AgentEventViewSchema.safeParse(raw);
           if (!parsed.success)
             ignoredIssues.push(
               ...parsed.error.issues.map((issue) => ({
@@ -5958,7 +5958,7 @@ function tabEventPage<Page extends { readonly events: readonly unknown[] }>(
   result: Parameters<typeof unwrapRpcResult<Page>>[0],
 ): Omit<Page, "events"> & { readonly events: AgentEvent[] } {
   const page = unwrapRpcResult(result);
-  return { ...page, events: z.array(TabAgentEventViewSchema).parse(page.events) };
+  return { ...page, events: z.array(AgentEventViewSchema).parse(page.events) };
 }
 
 function emptySnapshot(tabs: TabStore): HostSnapshot {

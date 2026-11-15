@@ -3,7 +3,7 @@ import {
   RunnerIdSchema,
   SequenceSchema,
   createId,
-  type TabAgentEventView as AgentEvent,
+  type AgentEventView as AgentEvent,
   type MessageId,
   type Request,
   type RunId,

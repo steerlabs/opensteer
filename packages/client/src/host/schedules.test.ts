@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { invalidateScheduleAnchor } from "./schedule-anchor-invalidation.js";
-import { createId, defaultTaskSymbol, type TabAgentEventView } from "@opensteer/core";
+import { createId, defaultTaskSymbol, type AgentEventView } from "@opensteer/core";
 import type { TriggerSummary } from "@opensteer/triggers/models";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { HostClientRequestError, type HostClient, type HostSnapshot } from "./client.js";
@@ -534,13 +534,13 @@ it.each(["initial", "offline", "error"])(
         type: "thread.state-changed",
         threadId: worker.id,
         data: { doneAt: null },
-      } as unknown as TabAgentEventView);
+      } as unknown as AgentEventView);
       f.emit({});
       invalidateScheduleAnchor(f.client, {
         type: "thread.input-queue-updated",
         threadId: worker.id,
         data: { paused: true },
-      } as unknown as TabAgentEventView);
+      } as unknown as AgentEventView);
       f.emit({});
       f.get.mockResolvedValue({ ok: true, data: fresh });
       finish({ ok: true, data: stale });

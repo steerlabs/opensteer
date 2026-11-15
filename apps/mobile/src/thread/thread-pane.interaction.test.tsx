@@ -34,7 +34,7 @@ import {
   RunIdSchema,
   RunnerIdSchema,
   TabIdSchema,
-  TabPlaceEnteredEventViewSchema,
+  PlaceEnteredEventViewSchema,
   ThreadIdSchema,
   voiceCallSeed,
   type Request,
@@ -5041,7 +5041,7 @@ describe("the Run's page above the conversation", () => {
   const pageTab = TabIdSchema.parse("tab_run-page");
   const nextTab = TabIdSchema.parse("tab_next-page");
   const entered = (runId: string, threadId: string, sequence = "1", tabId: TabId = pageTab) =>
-    TabPlaceEnteredEventViewSchema.parse({
+    PlaceEnteredEventViewSchema.parse({
       type: "place.entered",
       eventId: createId("event"),
       environmentId: createId("environment"),
@@ -5186,7 +5186,7 @@ describe("the Run's page above the conversation", () => {
       };
       const host = fakeHost(initial);
       host.runPlaces.accept(
-        TabPlaceEnteredEventViewSchema.parse({
+        PlaceEnteredEventViewSchema.parse({
           ...entered(runId, conversationId),
           data: { tabId: nativeTab, title: "Native place", site: null },
         }),

@@ -121,6 +121,59 @@ integration("workspace tabs", () => {
     await tabs.reopen(ownerId, a.id, "reopen");
     expect(tabLayoutIds((await tabs.snapshot(ownerId)).layout)).toEqual([c.id, a.id]);
   });
+  it("inserts roots at a group's first-member boundary and appends whole group blocks without an anchor", async () => {
+    const { tabs, write, ownerId } = await fixture();
+    const [a, b, c, d] = Array.from({ length: 4 }, () =>
+      write("app", { appId: `app_${randomUUID()}` }),
+    );
+    for (const row of [a!, b!, c!, d!]) await tabs.open(row, row.id);
+    const grouped = await tabs.organize(
+      ownerId,
+      { tabIds: [b!.id, c!.id], group: { name: "Block", color: "blue" } },
+      "block",
+    );
+    const group = grouped.layout.items[1]!;
+    if (group.kind !== "group") throw new Error("Block missing");
+    const moved = await tabs.organize(
+      ownerId,
+      { tabIds: [d!.id], group: null, beforeTabId: b!.id },
+      "root-before-group",
+    );
+    expect(moved.layout.items).toEqual([
+      { kind: "tab", tabId: a!.id },
+      { kind: "tab", tabId: d!.id },
+      group,
+    ]);
+    await expect(
+      tabs.organize(
+        ownerId,
+        { tabIds: [a!.id], group: null, beforeTabId: c!.id },
+        "root-inside-group",
+      ),
+    ).rejects.toMatchObject({ code: "conflict" });
+    await tabs.organize(
+      ownerId,
+      { tabIds: [b!.id, c!.id], group: { groupId: group.group.groupId }, beforeTabId: a!.id },
+      "group-first",
+    );
+    const appended = await tabs.organize(
+      ownerId,
+      { tabIds: [b!.id, c!.id], group: { groupId: group.group.groupId } },
+      "group-last",
+    );
+    expect(appended.layout.items).toEqual(moved.layout.items);
+    await tabs.close(ownerId, [b!.id, c!.id], "empty-group");
+    const rootEnd = await tabs.organize(
+      ownerId,
+      { tabIds: [a!.id], group: null },
+      "append-after-empty-group",
+    );
+    expect(rootEnd.layout.items).toMatchObject([
+      { kind: "tab", tabId: d!.id },
+      { kind: "group", group: { tabIds: [] } },
+      { kind: "tab", tabId: a!.id },
+    ]);
+  });
   it("fences per-tab session descriptors, preserves restore URLs and never resurrects closed pages or automation", async () => {
     const { tabs, legacy, database, ownerId, computerId } = await fixture();
     const store = new OpensteerStore(legacy),

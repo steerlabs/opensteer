@@ -1,15 +1,14 @@
-import { compareSequence, type Sequence, type TabPlaceEnteredEventView } from "@opensteer/core";
+import { compareSequence, type Sequence, type PlaceEnteredEventView } from "@opensteer/core";
 import type { HostSnapshot } from "./client.js";
 import type { TabDestination } from "./surfaces.js";
 
 /** Current Run places live outside every transcript window and catalog. */
 export class RunPlaceStore {
-  readonly #values = new Map<string, TabPlaceEnteredEventView>();
+  readonly #values = new Map<string, PlaceEnteredEventView>();
   readonly #ended = new Set<string>();
   readonly #listeners = new Map<string, Set<() => void>>();
   readonly #changed = new Set<string>();
-  readonly get = (runId: string): TabPlaceEnteredEventView | null =>
-    this.#values.get(runId) ?? null;
+  readonly get = (runId: string): PlaceEnteredEventView | null => this.#values.get(runId) ?? null;
   readonly subscribe = (runId: string, listener: () => void): (() => void) => {
     const listeners = this.#listeners.get(runId) ?? new Set();
     listeners.add(listener);
@@ -19,7 +18,7 @@ export class RunPlaceStore {
       if (!listeners.size) this.#listeners.delete(runId);
     };
   };
-  accept(event: TabPlaceEnteredEventView, notify = true): void {
+  accept(event: PlaceEnteredEventView, notify = true): void {
     const previous = this.#values.get(event.runId);
     if (
       this.#ended.has(event.runId) ||
@@ -30,11 +29,11 @@ export class RunPlaceStore {
     this.#changed.add(event.runId);
     if (notify) this.flush();
   }
-  seed(events: readonly TabPlaceEnteredEventView[], notify = true): void {
+  seed(events: readonly PlaceEnteredEventView[], notify = true): void {
     for (const event of events) this.accept(event, false);
     if (notify) this.flush();
   }
-  reconcile(sequence: Sequence, events: readonly TabPlaceEnteredEventView[]): void {
+  reconcile(sequence: Sequence, events: readonly PlaceEnteredEventView[]): void {
     const present = new Set(events.map((event) => event.runId));
     for (const event of this.#values.values())
       if (compareSequence(event.sequence, sequence) <= 0 && !present.has(event.runId))
@@ -68,7 +67,7 @@ export class RunPlaceStore {
 
 /** A Run's place is its tab while the person's list holds it; a closed tab is no destination. */
 export function runPlaceDestination(
-  entry: { readonly runId: string; readonly data: Pick<TabPlaceEnteredEventView["data"], "tabId"> },
+  entry: { readonly runId: string; readonly data: Pick<PlaceEnteredEventView["data"], "tabId"> },
   snapshot: Pick<HostSnapshot, "tabs">,
 ): TabDestination | null {
   return snapshot.tabs.get(entry.data.tabId) ? { kind: "tab", tabId: entry.data.tabId } : null;
@@ -76,7 +75,7 @@ export function runPlaceDestination(
 
 /** The Run's own session at a window or phone tab, which a picture of its work reads. */
 export function runPlaceSessionId(
-  entry: { readonly runId: string; readonly data: Pick<TabPlaceEnteredEventView["data"], "tabId"> },
+  entry: { readonly runId: string; readonly data: Pick<PlaceEnteredEventView["data"], "tabId"> },
   snapshot: Pick<HostSnapshot, "tabs" | "machines">,
 ): string | null {
   const tab = snapshot.tabs.get(entry.data.tabId);

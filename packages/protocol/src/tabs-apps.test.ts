@@ -328,11 +328,11 @@ it("accepts only opaque exact-window discovery and binding identities", () => {
 });
 
 it("requires a stable tab identity in persisted place-use events", async () => {
-  const { TabPlaceEnteredEventSchema } = await import("@opensteer/core");
+  const { PlaceEnteredEventSchema } = await import("@opensteer/core");
   const data = { tabId, title: "Page", site: "https://example.test" };
-  expect(TabPlaceEnteredEventSchema.shape.data.parse(data)).toEqual(data);
+  expect(PlaceEnteredEventSchema.shape.data.parse(data)).toEqual(data);
   expect(
-    TabPlaceEnteredEventSchema.shape.data.safeParse({
+    PlaceEnteredEventSchema.shape.data.safeParse({
       ...data,
       place: { kind: "browser", surfaceId: tabId },
     }).success,

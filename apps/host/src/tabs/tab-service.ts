@@ -100,6 +100,7 @@ export interface TabServiceOptions {
   ): Promise<boolean>;
   /** Rechecks the Run/connection and current grants. Called again inside membership commits. */
   authorize(actor: TabActor, target: TabTarget | TabWrite, database: TabDatabase): Promise<void>;
+  authorizeMembership(actor: TabActor, database: TabDatabase): Promise<void>;
   onError(error: unknown): void;
 }
 function owner(actor: TabActor): UserId {
@@ -143,13 +144,18 @@ export class TabService implements TabServicePort {
   readonly streams: TabStreams;
   readonly #stopAcquired: () => void;
   readonly options: TabServiceOptions;
-  readonly #projected = new Map<UserId, Map<TabId, { row: string; tab: Tab }>>();
+  readonly #catalogs = new Map<
+    UserId,
+    {
+      rows: Map<TabId, Tab>;
+      layout: TabLayout;
+      dirty: Set<TabId> | null;
+      pending?: Promise<{ rows: ReadonlyMap<TabId, Tab>; layout: TabLayout }>;
+    }
+  >();
   constructor(options: TabServiceOptions) {
     this.options = options;
-    this.streams = new TabStreams(
-      (ownerId) => this.project({ kind: "person", ownerId }),
-      options.onError,
-    );
+    this.streams = new TabStreams((ownerId) => this.#catalog(ownerId), options.onError);
     this.#stopAcquired = options.nativeTargets.onTargetAcquired(
       async (target) => {
         if (target.ownerId !== target.runClaims.requestedBy) notFound();
@@ -177,19 +183,17 @@ export class TabService implements TabServicePort {
     );
   }
   changed(ownerId?: UserId, tabIds?: readonly TabId[]): void {
-    if (tabIds)
-      for (const [id, cache] of this.#projected) {
-        if (ownerId && id !== ownerId) continue;
-        for (const tabId of tabIds) cache.delete(tabId);
-      }
-    else if (ownerId) this.#projected.delete(ownerId);
-    else this.#projected.clear();
-    this.streams.changed(ownerId);
+    for (const [id, catalog] of this.#catalogs) {
+      if (ownerId && id !== ownerId) continue;
+      if (!tabIds) catalog.dirty = null;
+      else if (catalog.dirty) for (const tabId of tabIds) catalog.dirty.add(tabId);
+    }
+    this.streams.changed(ownerId, tabIds);
   }
   appsChanged(appIds: AppId[]): void {
-    for (const [ownerId, cache] of this.#projected) {
-      const ids = [...cache].flatMap(([id, { tab }]) =>
-        tab.kind === "app" && (!appIds.length || appIds.includes(tab.appId!)) ? [id] : [],
+    for (const [ownerId, catalog] of this.#catalogs) {
+      const ids = [...catalog.rows.values()].flatMap((tab) =>
+        tab.kind === "app" && (!appIds.length || appIds.includes(tab.appId!)) ? [tab.tabId] : [],
       );
       if (ids.length) this.changed(ownerId, ids);
     }
@@ -197,6 +201,54 @@ export class TabService implements TabServicePort {
   dispose(): void {
     this.#stopAcquired();
     this.streams.close();
+    this.#catalogs.clear();
+  }
+  async #catalog(ownerId: UserId) {
+    let catalog = this.#catalogs.get(ownerId);
+    if (!catalog) {
+      catalog = { rows: new Map(), layout: { revision: 0, items: [] }, dirty: null };
+      this.#catalogs.set(ownerId, catalog);
+    }
+    const current = catalog;
+    current.pending ??= (async () => {
+      do {
+        const ids = current.dirty;
+        current.dirty = new Set();
+        try {
+          if (ids === null) {
+            const projected = await this.#snapshotProject(
+              { kind: "person", ownerId },
+              this.options.store.database,
+            );
+            current.rows = new Map(projected.tabs.map((tab) => [tab.tabId, tab]));
+            current.layout = projected.layout;
+          } else if (ids.size) {
+            const rows = await this.options.store.rows(ownerId, [...ids]);
+            if (rows.length !== ids.size || rows.some((row) => !current.rows.has(row.id))) {
+              current.dirty = null;
+              continue;
+            }
+            const projected = await this.#projectRows(
+              { kind: "person", ownerId },
+              rows,
+              current.layout,
+              this.options.store.database,
+              current.rows,
+            );
+            for (const id of ids)
+              if (!projected.tabs.some((tab) => tab.tabId === id)) current.rows.delete(id);
+            for (const tab of projected.tabs) current.rows.set(tab.tabId, tab);
+          }
+        } catch (error) {
+          current.dirty = null;
+          throw error;
+        }
+      } while (current.dirty === null || current.dirty.size);
+      return { rows: current.rows, layout: current.layout };
+    })().finally(() => {
+      delete current.pending;
+    });
+    return current.pending;
   }
 
   /** The same ordered projection feeds bootstrap, snapshots, RPCs and the keyed stream. */
@@ -204,8 +256,29 @@ export class TabService implements TabServicePort {
     actor: TabActor,
     database = this.options.store.database,
   ): Promise<{ tabs: Tab[]; layout: TabLayout }> {
+    if (actor.kind === "person" && database === this.options.store.database) {
+      await this.options.authorizeMembership(actor, database);
+      const { rows, layout } = await this.#catalog(actor.ownerId);
+      return { tabs: [...rows.values()], layout };
+    }
+    return this.#snapshotProject(actor, database);
+  }
+  async #snapshotProject(
+    actor: TabActor,
+    database: TabDatabase,
+  ): Promise<{ tabs: Tab[]; layout: TabLayout }> {
     const ownerId = owner(actor),
       { rows, layout } = await this.options.store.snapshot(ownerId, database);
+    return this.#projectRows(actor, rows, layout, database);
+  }
+  async #projectRows(
+    actor: TabActor,
+    rows: TabRecord[],
+    layout: TabLayout,
+    database: TabDatabase,
+    catalog?: ReadonlyMap<TabId, Tab>,
+  ): Promise<{ tabs: Tab[]; layout: TabLayout }> {
+    const ownerId = owner(actor);
     const canRead = this.options.readAuthority
       ? await this.options.readAuthority(actor, database)
       : (row: TabRecord) => this.options.canRead(actor, row, database);
@@ -215,26 +288,30 @@ export class TabService implements TabServicePort {
       ),
     );
     const hiddenGroups = new Set(
-      layout.items.flatMap((item) =>
-        item.kind === "group" && item.group.tabIds.some((id) => !visible.has(id))
-          ? [item.group.groupId]
-          : [],
-      ),
+      catalog
+        ? []
+        : layout.items.flatMap((item) =>
+            item.kind === "group" && item.group.tabIds.some((id) => !visible.has(id))
+              ? [item.group.groupId]
+              : [],
+          ),
     );
-    const projected: TabLayout = {
-      revision: layout.revision,
-      items: layout.items.flatMap<TabLayout["items"][number]>((item) =>
-        item.kind === "tab"
-          ? visible.has(item.tabId)
-            ? [item]
-            : []
-          : hiddenGroups.has(item.group.groupId)
-            ? item.group.tabIds
-                .filter((id) => visible.has(id))
-                .map((tabId) => ({ kind: "tab" as const, tabId }))
-            : [item],
-      ),
-    };
+    const projected: TabLayout = catalog
+      ? layout
+      : {
+          revision: layout.revision,
+          items: layout.items.flatMap<TabLayout["items"][number]>((item) =>
+            item.kind === "tab"
+              ? visible.has(item.tabId)
+                ? [item]
+                : []
+              : hiddenGroups.has(item.group.groupId)
+                ? item.group.tabIds
+                    .filter((id) => visible.has(id))
+                    .map((tabId) => ({ kind: "tab" as const, tabId }))
+                : [item],
+          ),
+        };
     const shown = rows.filter((row) => visible.has(row.id));
     const computerIds = [...new Set(shown.map((row) => row.computerId))];
     const computers = this.options.computers
@@ -259,48 +336,20 @@ export class TabService implements TabServicePort {
           ).map((profile) => [profile.id, profile.name])
         : [],
     );
-    let cache = actor.kind === "person" ? this.#projected.get(ownerId) : undefined;
-    if (actor.kind === "person" && !cache) {
-      cache = new Map();
-      this.#projected.set(ownerId, cache);
-    }
-    const refreshed = shown.filter((row) => cache?.get(row.id)?.row !== canonicalJson(row));
     const pageStates = this.options.pages.states
       ? await this.options.pages.states(
           ownerId,
-          refreshed.filter((row) => row.kind === "page"),
+          shown.filter((row) => row.kind === "page"),
         )
       : undefined;
     let tabs = await Promise.all(
       shown.map(async (row) => {
-        const saved = cache?.get(row.id);
-        const key = canonicalJson(row);
-        if (
-          saved?.row === key &&
-          saved.tab.computer.name === computers.get(row.computerId)?.name &&
-          (saved.tab.unavailableCode === "computer-offline") ===
-            !computers.get(row.computerId)?.connected &&
-          (saved.tab.unavailableCode === "computer-removed") ===
-            computers.get(row.computerId)?.removed
-        )
-          return TabSchema.parse({
-            ...saved.tab,
-            groupId: tabGroupOf(projected, row.id),
-            ...(row.profileId
-              ? {
-                  profile: {
-                    profileId: row.profileId,
-                    name: profiles.get(row.profileId) ?? row.profileName!,
-                  },
-                }
-              : {}),
-          });
         const tab = await this.#tab(actor, row, projected, {
           computer: computers.get(row.computerId)!,
           profile: row.profileId ? profiles.get(row.profileId) : undefined,
           live: pageStates?.get(row.id),
+          groupId: catalog?.get(row.id)?.groupId,
         });
-        cache?.set(row.id, { row: key, tab });
         return tab;
       }),
     );
@@ -320,7 +369,6 @@ export class TabService implements TabServicePort {
       ...tab,
       usedBy: tab.usedBy.filter(({ taskId }) => readable.has(taskId)).slice(0, 128),
     }));
-    if (cache) for (const id of cache.keys()) if (!visible.has(id)) cache.delete(id);
     return { tabs, layout: projected };
   }
   async #tab(
@@ -331,6 +379,7 @@ export class TabService implements TabServicePort {
       computer: { name: string; connected: boolean; removed: boolean };
       profile?: string | undefined;
       live?: NativeTabTargetState | undefined;
+      groupId?: TabGroupId | null | undefined;
     },
   ): Promise<Tab> {
     const ownerId = owner(actor),
@@ -392,7 +441,7 @@ export class TabService implements TabServicePort {
       kind: row.kind,
       title,
       computer: { computerId: row.computerId, name: computer.name },
-      groupId: tabGroupOf(layout, row.id),
+      groupId: facts.groupId === undefined ? tabGroupOf(layout, row.id) : facts.groupId,
       ...live,
       usedBy,
       openedBy: row.openedBy,
@@ -475,6 +524,7 @@ export class TabService implements TabServicePort {
     groupIds: readonly TabGroupId[] = [],
   ): TabAuthorization {
     return async (tx, rows, layout) => {
+      await this.options.authorizeMembership(actor, tx);
       const affected = new Set(ids);
       for (const item of layout.items)
         if (
@@ -485,8 +535,7 @@ export class TabService implements TabServicePort {
           for (const id of item.group.tabIds) affected.add(id);
       for (const id of affected) {
         const row = rows.find((row) => row.id === id);
-        if (!row || !(await this.options.canRead(actor, row, tx))) notFound();
-        await this.options.authorize(actor, row, tx);
+        if (!row || row.ownerId !== owner(actor)) notFound();
       }
     };
   }
@@ -624,8 +673,8 @@ export class TabService implements TabServicePort {
         for (const tabId of tabIds) {
           try {
             const row = rows.find((row) => row.id === tabId);
-            if (!row || !(await this.options.canRead(actor, row, tx))) notFound();
-            await this.options.authorize(actor, row, tx);
+            if (!row || row.ownerId !== owner(actor)) notFound();
+            await this.options.authorizeMembership(actor, tx);
             permitted.add(tabId);
             cleanup.push(row);
           } catch (error) {
@@ -690,6 +739,7 @@ export class TabService implements TabServicePort {
   ): Promise<{ tab: Tab; viewer: TabViewer }> {
     const actor = { kind: "person", ownerId } as const,
       row = await this.#row(actor, tabId);
+    await this.options.authorize(actor, row, this.options.store.database);
     let viewer: TabViewer;
     if (row.kind === "page") viewer = await this.options.pages.activate(ownerId, row, key);
     else if (row.kind === "app") {
@@ -711,6 +761,7 @@ export class TabService implements TabServicePort {
       );
       viewer = { kind: row.kind, view };
     }
+    this.changed(ownerId, [tabId]);
     let tab: Tab;
     try {
       tab = await this.get(ownerId, tabId);
@@ -720,7 +771,6 @@ export class TabService implements TabServicePort {
         await this.options.nativeTargets.closeOwnerViews(ownerId, tabId, row.generation);
       throw error;
     }
-    this.changed(ownerId);
     return { tab, viewer };
   }
   async organize(

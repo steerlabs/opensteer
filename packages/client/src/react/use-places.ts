@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
-import type { TabId, TabPlaceEnteredEventView } from "@opensteer/core";
+import type { TabId, PlaceEnteredEventView } from "@opensteer/core";
 import type { HostClient, HostSnapshot } from "../host/client.js";
 import { placeList, placeByKey, type PlaceItem } from "../host/places.js";
 import { actingOccupants } from "../host/place-activity.js";
@@ -149,7 +149,7 @@ export function useRunPlace(hostClient: HostClient | null, runId: string | null)
 
 const selectSource = (snapshot: HostSnapshot) => snapshot;
 /** Catalog changes retarget a picture without subscribing the card to streaming text. */
-export function useRunPlaceBinding(hostClient: HostClient, entry: TabPlaceEnteredEventView | null) {
+export function useRunPlaceBinding(hostClient: HostClient, entry: PlaceEnteredEventView | null) {
   const source = useHostSelector(hostClient, selectSource, (a, b) => a.machines === b.machines);
   const tabId = entry?.data.tabId ?? null;
   const tabs = hostClient.getSnapshot().tabs;

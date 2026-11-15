@@ -11,7 +11,7 @@ import {
   type ThreadInput,
   requestOptionDeclines,
   requestTitleText,
-  type TabAgentEventView as AgentEvent,
+  type AgentEventView as AgentEvent,
   type LiveStreamKey,
   type MessageEdit,
   type MessageKind,

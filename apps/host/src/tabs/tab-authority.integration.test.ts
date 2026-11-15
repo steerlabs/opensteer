@@ -3,15 +3,17 @@ import { TabStore } from "@opensteer/database";
 import { createStoreFixture } from "@opensteer/database/test-support/store";
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   authorizeTabTarget,
+  authorizeTabActor,
   canReadTab,
   tabComputer,
   tabComputers,
   tabReadAuthority,
 } from "./tab-authority.js";
 import { TabService } from "./tab-service.js";
+import type { TabStreamMessage } from "./tab-streams.js";
 import type { NativeTargetAcquiredHandler, TabActor } from "./ports.js";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
 
@@ -70,6 +72,7 @@ integration("production tab authority", () => {
       readAuthority: tabReadAuthority,
       canReadTask: async () => true,
       authorize: authorizeTabTarget,
+      authorizeMembership: authorizeTabActor,
       onError: (error) => {
         throw error;
       },
@@ -173,8 +176,8 @@ integration("production tab authority", () => {
         code: "not_found",
       });
       expect(await t.service.close(t.actor, [deniedId], "close-denied")).toMatchObject({
-        closed: [],
-        failed: [{ tabId: deniedId }],
+        closed: [deniedId],
+        failed: [],
       });
     } finally {
       t.service.dispose();
@@ -250,6 +253,68 @@ integration("production tab authority", () => {
       await t.f.close();
     }
   });
+  it("lets the owner and writable Runs organize and close removed targets while acquisition still fails", async () => {
+    const t = await fixture();
+    try {
+      const removed = await t.page(t.run.runnerId, "removed-computer");
+      const profileTab = await t.page(t.run.runnerId, "deleted-profile");
+      await t.f.database
+        .updateTable("personalTabs")
+        .set({ profileId: createId("browserProfile"), profileName: "Deleted" })
+        .where("id", "=", profileTab)
+        .execute();
+      // Retain the hosting computer's authority but remove the saved target computer.
+      await t.f.database
+        .updateTable("personalTabs")
+        .set({ computerId: createId("runner") })
+        .where("id", "=", removed)
+        .execute();
+      const person = { kind: "person", ownerId: t.run.userId } as const;
+      const grouped = await t.service.organize(
+        person,
+        { tabIds: [removed, profileTab], group: { name: "Unavailable", color: "blue" } },
+        "organize-removed",
+      );
+      for (const id of [removed, profileTab]) {
+        await expect(t.service.activate(t.run.userId, id, `activate-${id}`)).rejects.toMatchObject({
+          code: "not_found",
+        });
+      }
+      await t.service.organize(
+        t.actor,
+        { tabIds: [removed, profileTab], group: null },
+        "agent-organize-removed",
+      );
+      await t.f.database
+        .updateTable("runs")
+        .set({ accessMode: "approval-required" })
+        .where("id", "=", t.run.runId)
+        .execute();
+      await expect(
+        t.service.updateGroup(
+          t.actor,
+          { groupId: grouped.groups[0]!.groupId, name: "Denied" },
+          "readonly-empty-group",
+        ),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      await t.f.database
+        .updateTable("runs")
+        .set({ accessMode: "full-access" })
+        .where("id", "=", t.run.runId)
+        .execute();
+      expect(await t.service.close(person, [removed], "close-removed")).toEqual({
+        closed: [removed],
+        failed: [],
+      });
+      expect(await t.service.close(t.actor, [profileTab], "close-profile")).toEqual({
+        closed: [profileTab],
+        failed: [],
+      });
+    } finally {
+      t.service.dispose();
+      await t.f.close();
+    }
+  });
   it("returns a late acquired handle without reopening membership closed after admission", async () => {
     const t = await fixture();
     try {
@@ -307,6 +372,8 @@ integration("tab projection database cost", () => {
     });
     const store = new TabStore(database),
       rows = [];
+    const snapshots = vi.spyOn(store, "snapshot"),
+      targeted = vi.spyOn(store, "rows");
     for (let index = 0; index < 40; index++) {
       const id = TabIdSchema.parse(`tab_${randomUUID()}`);
       await store.open(
@@ -364,17 +431,21 @@ integration("tab projection database cost", () => {
       readableTasks: async () => new Set(),
       canReadTask: async () => true,
       authorize: authorizeTabTarget,
+      authorizeMembership: authorizeTabActor,
       onError: (error) => {
         throw error;
       },
     });
-    const devices = [
-      service.streams.subscribe(run.userId, async () => {}),
-      service.streams.subscribe(run.userId, async () => {}),
-    ];
+    const messages: TabStreamMessage[][] = [[], []];
+    const devices = messages.map((sent) =>
+      service.streams.subscribe(run.userId, async (message) => {
+        sent.push(message);
+      }),
+    );
     try {
       await Promise.all(devices.map((device) => device.ready));
       expect(nativeRPCs).toBe(40);
+      for (const sent of messages) sent.length = 0;
       await database
         .updateTable("personalTabs")
         .set({ title: "Changed", updatedAt: new Date() })
@@ -382,10 +453,22 @@ integration("tab projection database cost", () => {
         .execute();
       queries = 0;
       nativeRPCs = 0;
+      snapshots.mockClear();
+      targeted.mockClear();
       service.changed(run.userId, [rows[0]!]);
       await Promise.all(devices.map((device) => device.flush()));
-      expect(nativeRPCs).toBe(1);
-      expect(queries).toBeLessThanOrEqual(12);
+      expect(snapshots).not.toHaveBeenCalled();
+      expect(targeted).toHaveBeenCalledExactlyOnceWith(run.userId, [rows[0]!]);
+      expect(await targeted.mock.results[0]!.value).toHaveLength(1);
+      expect(nativeRPCs, "rows projected through the native state port").toBe(1);
+      expect(queries).toBe(8);
+      for (const sent of messages)
+        expect(sent).toMatchObject([
+          {
+            type: "host.tabs",
+            stream: { op: "change", update: [{ tabId: rows[0], title: "Changed" }] },
+          },
+        ]);
     } finally {
       for (const device of devices) device.close();
       service.dispose();

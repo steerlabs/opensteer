@@ -193,6 +193,17 @@ export class TabStore {
       windowApp: row.windowApp ? ComputerAppIdentitySchema.parse(row.windowApp) : null,
     };
   }
+  async rows(ownerId: UserId, tabIds: readonly TabId[]): Promise<TabRecord[]> {
+    if (!tabIds.length) return [];
+    const rows = await this.database
+      .selectFrom("personalTabs")
+      .selectAll()
+      .where("ownerId", "=", ownerId)
+      .where("id", "in", tabIds)
+      .where("closedAt", "is", null)
+      .execute(databaseOperationOptions());
+    return rows.map((row) => this.#parse(row));
+  }
   async get(
     ownerId: UserId,
     tabId: TabId,
@@ -585,7 +596,12 @@ export class TabStore {
         input.beforeTabId &&
         (target?.kind === "group" ? anchorGroup !== target.group.groupId : anchorGroup !== null);
       const creating = input.group !== null && "name" in input.group;
-      if (outside && !creating && !wholeGroup)
+      const rootBoundary =
+        input.group === null &&
+        layout.items.some(
+          (item) => item.kind === "group" && item.group.tabIds[0] === input.beforeTabId,
+        );
+      if (outside && !creating && !wholeGroup && !rootBoundary)
         failure("conflict", "The anchor belongs to another destination.");
       removeIds(layout, ids);
       if (target?.kind === "group") {
@@ -593,14 +609,16 @@ export class TabStore {
           (item) => item.kind === "group" && item.group.groupId === target.group.groupId,
         )!;
         if (current.kind !== "group") failure("conflict", "The destination group changed.");
-        if (outside && wholeGroup) {
+        if (wholeGroup && (outside || !input.beforeTabId)) {
           current.group.tabIds = [...input.tabIds];
           layout.items = layout.items.filter((item) => item !== current);
-          const anchor = layout.items.findIndex((item) =>
-            item.kind === "tab"
-              ? item.tabId === input.beforeTabId
-              : item.group.tabIds.includes(input.beforeTabId!),
-          );
+          const anchor = input.beforeTabId
+            ? layout.items.findIndex((item) =>
+                item.kind === "tab"
+                  ? item.tabId === input.beforeTabId
+                  : item.group.tabIds.includes(input.beforeTabId!),
+              )
+            : layout.items.length;
           layout.items.splice(anchor, 0, current);
         } else {
           const anchor = input.beforeTabId
@@ -640,8 +658,10 @@ export class TabStore {
         layout.items.splice(anchor, 0, { kind: "group", group });
       } else {
         const anchor = input.beforeTabId
-          ? layout.items.findIndex(
-              (item) => item.kind === "tab" && item.tabId === input.beforeTabId,
+          ? layout.items.findIndex((item) =>
+              item.kind === "tab"
+                ? item.tabId === input.beforeTabId
+                : item.group.tabIds[0] === input.beforeTabId,
             )
           : layout.items.length;
         layout.items.splice(

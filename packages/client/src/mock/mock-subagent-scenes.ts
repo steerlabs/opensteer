@@ -1,10 +1,10 @@
 import {
-  TabAgentEventViewSchema,
+  AgentEventViewSchema,
   ExecutionNodeIdSchema,
   RequestSchema,
   SequenceSchema,
   createId,
-  type TabAgentEventView as AgentEvent,
+  type AgentEventView as AgentEvent,
   type Request,
 } from "@opensteer/core";
 import type {
@@ -482,7 +482,7 @@ export function seedMockSubagentScene<Snapshot extends HostSnapshot>(
   let sequence = 500;
   const emit = (runId: string, event: Pick<AgentEvent, "type" | "data">, at: string) =>
     events.push(
-      TabAgentEventViewSchema.parse({
+      AgentEventViewSchema.parse({
         ...event,
         createdAt: at,
         environmentId: base.environmentId,

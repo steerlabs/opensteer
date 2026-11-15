@@ -1,4 +1,4 @@
-import { createId, SequenceSchema, type TabAgentEventView as AgentEvent } from "@opensteer/core";
+import { createId, SequenceSchema, type AgentEventView as AgentEvent } from "@opensteer/core";
 import type { NodeEventPage } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { NodeDetailStore } from "./node-detail.js";

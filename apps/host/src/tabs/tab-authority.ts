@@ -8,6 +8,7 @@ import {
 import {
   OpensteerStore,
   resolveResourceAccess,
+  requirePersonalOwner,
   runAllowsPersonalContext,
   type TabDatabase,
   type TabRecord,
@@ -74,6 +75,10 @@ export async function authorizeTabActor(
   database: TabDatabase,
   required: ResourceAccessLevel = "read-write",
 ): Promise<void> {
+  if (actor.kind === "person") {
+    await requirePersonalOwner(database, actor.ownerId);
+    return;
+  }
   if (actor.kind === "run") {
     await new OpensteerStore(database).assertActiveGrant(actor.claims);
     if (!(await runAllowsPersonalContext(database, actor.claims.runId))) deny();

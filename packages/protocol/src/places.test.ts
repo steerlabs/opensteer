@@ -2,7 +2,7 @@ import { createBrowserSessionId } from "@opensteer/protocol/browser";
 import { describe, expect, it } from "vitest";
 import { ContentPartSchema, contentSaysSomething, createId } from "@opensteer/core";
 import { BrowserTabIconResultSchema, TargetedBrowserClientMessageSchema } from "./browser.js";
-import { PlaceActivitySchema } from "./places.js";
+import { TabPlaceActivitySchema } from "./places.js";
 
 describe("place wire contracts", () => {
   it("validates scoped icon bytes", () => {
@@ -28,7 +28,7 @@ describe("place wire contracts", () => {
   });
   it("validates normalized geometry and receipt/expiry ordering", () => {
     const activity = {
-      place: { kind: "browser", sessionId: createBrowserSessionId(), surfaceId: "tab-x" },
+      tabId: "tab-x",
       threadId: createId("thread"),
       runId: createId("run"),
       generation: 1,
@@ -39,11 +39,18 @@ describe("place wire contracts", () => {
       pointer: null,
       geometryRevision: 1,
     };
-    expect(PlaceActivitySchema.safeParse(activity).success).toBe(true);
-    expect(PlaceActivitySchema.safeParse({ ...activity, pointer: { x: 1.1, y: 0 } }).success).toBe(
-      false,
-    );
-    expect(PlaceActivitySchema.safeParse({ ...activity, expiresAt: 999 }).success).toBe(false);
+    expect(TabPlaceActivitySchema.safeParse(activity).success).toBe(true);
+    expect(
+      TabPlaceActivitySchema.safeParse({
+        ...activity,
+        tabId: undefined,
+        place: { kind: "browser", sessionId: createBrowserSessionId(), surfaceId: "tab-x" },
+      }).success,
+    ).toBe(false);
+    expect(
+      TabPlaceActivitySchema.safeParse({ ...activity, pointer: { x: 1.1, y: 0 } }).success,
+    ).toBe(false);
+    expect(TabPlaceActivitySchema.safeParse({ ...activity, expiresAt: 999 }).success).toBe(false);
   });
   it("preserves old browser parts and supports explicit native references", () => {
     const page = {

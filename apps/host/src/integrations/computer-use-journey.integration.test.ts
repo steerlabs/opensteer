@@ -5126,6 +5126,7 @@ async function createWorld(
     canRead: canReadTab,
     canReadTask: async () => true,
     authorize: (actor, _target, db) => authorizeTabActor(actor, db),
+    authorizeMembership: authorizeTabActor,
     onError: (error) => {
       throw error;
     },

@@ -62,7 +62,7 @@ export const TabOrganizeInputSchema = z.strictObject({
     z.null(),
   ]),
   beforeTabId: TabIdSchema.optional().describe(
-    "Tab ID from tab_list: a destination member for tab moves, or an outside tab for a whole-group move.",
+    "Tab ID from tab_list. Inside a group, inserts before that member. At root, a group’s first member anchors its top-level boundary. Whole-group moves use an outside anchor; omit it to append the block. Empty groups cannot be anchors.",
   ),
 });
 export type TabOrganizeInput = z.infer<typeof TabOrganizeInputSchema>;

@@ -674,6 +674,11 @@ function makeEventViewVariant<T extends AgentEventType>(type: T) {
 
 export const agentEventMaxSerializedBytes = 512 * 1_024;
 
+export const PlaceEnteredEventSchema = makeEventVariant("place.entered").extend({
+  runId: RunIdSchema,
+});
+export type PlaceEnteredEvent = z.infer<typeof PlaceEnteredEventSchema>;
+
 export const AgentEventSchema = z
   .discriminatedUnion("type", [
     makeEventVariant("assignment.created"),
@@ -718,7 +723,7 @@ export const AgentEventSchema = z
     makeEventVariant("thread.state-changed"),
     makeEventVariant("thread.continuation-established"),
     makeEventVariant("thread.access-mode-updated"),
-    makeEventVariant("place.entered").extend({ runId: RunIdSchema }),
+    PlaceEnteredEventSchema,
     makeEventVariant("app.published").extend({ runId: RunIdSchema }),
   ])
   .refine(
@@ -836,55 +841,3 @@ export function previewToolOutput(event: AgentEventView): AgentEventView {
 export function toolOutputDigest(text: string): string {
   return bytesToHex(sha256(new TextEncoder().encode(text)));
 }
-
-export const TabPlaceEnteredEventViewSchema = PlaceEnteredEventViewSchema.extend({
-  data: z.object({
-    tabId: TabIdSchema,
-    title: z.string().max(1024),
-    site: placeSiteSchema.nullable(),
-  }),
-});
-export type TabPlaceEnteredEventView = z.infer<typeof TabPlaceEnteredEventViewSchema>;
-
-export const TabAgentEventViewSchema = z
-  .discriminatedUnion("type", [
-    TabPlaceEnteredEventViewSchema,
-    ...AgentEventViewSchema.options.filter(
-      (
-        schema,
-      ): schema is Exclude<
-        (typeof AgentEventViewSchema.options)[number],
-        { shape: { type: { value: "place.entered" } } }
-      > => schema.shape.type.value !== "place.entered",
-    ),
-  ])
-  .refine(
-    (event) =>
-      new TextEncoder().encode(JSON.stringify(event)).byteLength <= agentEventMaxSerializedBytes,
-    `Agent event must not exceed ${agentEventMaxSerializedBytes} serialized bytes`,
-  );
-export type TabAgentEventView = z.infer<typeof TabAgentEventViewSchema>;
-
-export const TabPlaceEnteredEventSchema = makeEventVariant("place.entered").extend({
-  runId: RunIdSchema,
-  data: z.strictObject(TabPlaceEnteredEventViewSchema.shape.data.shape),
-});
-export type TabPlaceEnteredEvent = z.infer<typeof TabPlaceEnteredEventSchema>;
-export const TabAgentEventSchema = z
-  .discriminatedUnion("type", [
-    TabPlaceEnteredEventSchema,
-    ...AgentEventSchema.options.filter(
-      (
-        schema,
-      ): schema is Exclude<
-        (typeof AgentEventSchema.options)[number],
-        { shape: { type: { value: "place.entered" } } }
-      > => schema.shape.type.value !== "place.entered",
-    ),
-  ])
-  .refine(
-    (event) =>
-      new TextEncoder().encode(JSON.stringify(event)).byteLength <= agentEventMaxSerializedBytes,
-    `Agent event must not exceed ${agentEventMaxSerializedBytes} serialized bytes`,
-  );
-export type TabAgentEvent = z.infer<typeof TabAgentEventSchema>;

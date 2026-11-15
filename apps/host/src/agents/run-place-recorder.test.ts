@@ -314,7 +314,7 @@ describe("tab places", () => {
       title: string;
       site: string | null;
     }> = [];
-    const recorder = new RunPlaceRecorder<import("@opensteer/core").TabPlaceEnteredEvent["data"]>({
+    const recorder = new RunPlaceRecorder({
       clock: new ManualClock(0),
       write: async (input) => {
         writes.push(input.data);

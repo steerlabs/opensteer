@@ -8,7 +8,7 @@ import {
 import {
   compareSequence,
   nodeDetailEventNodeId,
-  type TabAgentEventView as AgentEvent,
+  type AgentEventView as AgentEvent,
   type Sequence,
 } from "@opensteer/core";
 import type { NodeEventPage } from "@opensteer/protocol";

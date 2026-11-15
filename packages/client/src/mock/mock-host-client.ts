@@ -30,7 +30,7 @@ import { placeList as tabPlaceList } from "../host/places.js";
 import type { WindowId } from "@opensteer/core";
 import { createTabsClient, type TabsClientPort } from "../host/tabs-client.js";
 import type { TabsClient } from "../host/tabs-contract.js";
-import { TabAgentEventViewSchema } from "@opensteer/core";
+import { AgentEventViewSchema } from "@opensteer/core";
 import { TabIdSchema, type App, type TabId, type TabTarget } from "@opensteer/core";
 import type {
   AppCommand,
@@ -97,7 +97,7 @@ import {
   SpecialistManifestSchema,
   type SpecialistRegistration,
   type SpecialistManifest,
-  TabPlaceEnteredEventViewSchema,
+  PlaceEnteredEventViewSchema,
   AssignmentIdSchema,
   AssignmentSummarySchema,
   AssignmentViewSchema,
@@ -141,8 +141,8 @@ import {
   requestOptionDeclines,
   requestTitleText,
   sameProviderContinuationIdentity,
-  type TabAgentEvent as AgentEvent,
-  TabAgentEventSchema,
+  type AgentEvent,
+  AgentEventSchema,
   nodeDetailEventNodeId,
   ExecutionNodeIdSchema,
   compareSequence,
@@ -4010,7 +4010,7 @@ export class MockHostClient implements HostClient {
         );
         return {
           ...page,
-          events: page.events.map((event) => TabAgentEventViewSchema.parse(event)),
+          events: page.events.map((event) => AgentEventViewSchema.parse(event)),
         };
       },
       sendWatch: (deploymentId, nodeId) => {
@@ -5052,7 +5052,7 @@ class MockHostState {
   onReferenceEvent: ((event: AgentEvent) => void) | undefined;
   teamAsks: import("@opensteer/protocol").NeedsYouTeamAskEntry[] = [];
   readonly teamLinks = new Map<string, PersonalTeamLink>();
-  nodeEvents: readonly import("@opensteer/core").TabAgentEventView[] = [];
+  nodeEvents: readonly import("@opensteer/core").AgentEventView[] = [];
   /** The mock Host's tab commands, over its tab catalog and browser world. */
   /** The person's own tabs and apps answer only their signed-in owner, as the Host's scope does. */
   #requireOwner(): void {
@@ -10632,7 +10632,7 @@ class MockHostState {
     if (!tabId) return;
     const last = this.runPlaces.get(runId);
     if (last?.data.tabId === tabId) return;
-    const event = TabPlaceEnteredEventViewSchema.parse({
+    const event = PlaceEnteredEventViewSchema.parse({
       createdAt: this.now().toISOString(),
       data: { tabId, title: data.title, site: data.site },
       environmentId: thread.environmentId,
@@ -10657,7 +10657,7 @@ class MockHostState {
     name: { readonly title?: string; readonly icon?: IconName },
   ): void {
     this.sequence = Math.max(this.sequence, this.snapshot.revision) + 1;
-    const event = TabAgentEventSchema.parse({
+    const event = AgentEventSchema.parse({
       type: "thread.state-changed",
       eventId: createId("event"),
       threadId: thread.id,
@@ -10853,7 +10853,7 @@ class MockHostState {
   private publishThreadExecution(thread: ThreadSummary): void {
     // The Host records the switch as an event, and its marker is what that
     // event folds into, live or reloaded.
-    const recorded = TabAgentEventSchema.parse({
+    const recorded = AgentEventSchema.parse({
       createdAt: thread.updatedAt,
       data: { thread: mockThread(thread) },
       environmentId: thread.environmentId,

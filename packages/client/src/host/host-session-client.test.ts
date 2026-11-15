@@ -20,7 +20,7 @@ import {
   RunnerIdSchema,
   createId,
   emptyExecutionPreferences,
-  type TabAgentEventView as AgentEvent,
+  type AgentEventView as AgentEvent,
   type Message,
   type NotificationView,
   type Request as OpensteerRequest,

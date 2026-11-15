@@ -3,7 +3,7 @@ import {
   BrowserSessionIdSchema,
   createId,
   SequenceSchema,
-  TabAgentEventViewSchema,
+  AgentEventViewSchema,
   TabIdSchema,
   ThreadIdSchema,
   type Tab,
@@ -96,7 +96,7 @@ describe("liveWork", () => {
       thread: { ...task(2, "Newer", "idle").thread, updatedAt: "2026-01-02T00:00:00.000Z" },
     };
     projection.record(
-      TabAgentEventViewSchema.parse({
+      AgentEventViewSchema.parse({
         eventId: createId("event"),
         type: "thread.state-changed",
         threadId: older.thread.id,

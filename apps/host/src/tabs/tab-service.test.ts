@@ -78,6 +78,10 @@ function fixture(rows: TabRecord[]) {
       rows: rows.filter((row) => !row.closedAt),
       layout: structuredClone(layout),
     }),
+    rows: async (_owner: unknown, ids: string[]) =>
+      rows
+        .filter((row) => ids.includes(row.id) && !row.closedAt)
+        .map((row) => structuredClone(row)),
     get: async (_owner: unknown, id: unknown) =>
       structuredClone(rows.find((row) => row.id === id && !row.closedAt) ?? null),
   } as unknown as TabStore;
@@ -96,6 +100,7 @@ function fixture(rows: TabRecord[]) {
     canRead: async () => true,
     canReadTask: async (_actor, id) => id !== hiddenTask,
     authorize: async () => {},
+    authorizeMembership: async () => {},
     onError: (error) => {
       throw error;
     },
@@ -142,6 +147,7 @@ describe("tab projection and viewer admission", () => {
       connected: id !== a.computerId,
       removed: false,
     });
+    f.service.changed(ownerId);
     expect((await f.service.list(actor, {})).tabs[0]).toMatchObject({
       tabId: a.id,
       state: "unavailable",
@@ -307,6 +313,9 @@ it("shares one owner read and refreshes only the changed binding for two devices
   await Promise.all(devices.map((device) => device.ready));
   expect(reads).toHaveBeenCalledTimes(1);
   expect(windows).toHaveBeenCalledTimes(80);
+  await f.service.bootstrap(ownerId, 240 * 1024);
+  expect(reads).toHaveBeenCalledTimes(1);
+  expect(windows).toHaveBeenCalledTimes(80);
   reads.mockClear();
   windows.mockClear();
   computers.mockClear();
@@ -319,7 +328,7 @@ it("shares one owner read and refreshes only the changed binding for two devices
     nativeRPCs: windows.mock.calls.length,
     computerReads: computers.mock.calls.length,
     taskReads: tasks.mock.calls.length,
-  }).toEqual({ databaseSnapshots: 1, nativeRPCs: 1, computerReads: 1, taskReads: 2 });
+  }).toEqual({ databaseSnapshots: 0, nativeRPCs: 1, computerReads: 1, taskReads: 2 });
   for (const device of devices) device.close();
   f.service.dispose();
 });
