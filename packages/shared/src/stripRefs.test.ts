@@ -32,6 +32,14 @@ describe("stripRefs", () => {
     ["<img src='file:///Users/me/a.png' alt=\"a\">", '<img src="" alt="a">'],
     ["<a HREF=" + href + ">task</a>", '<a HREF="">task</a>'],
     ['<img srcset="https://ok.example/a.png 1x, /tmp/b.png 2x">', '<img srcset="">'],
+    [
+      '<a href="https://ok.example" ping="https://ok.example/audit /Users/me/private.txt">Open</a>',
+      '<a href="https://ok.example" ping="">Open</a>',
+    ],
+    [
+      '<img srcset="https://ok.example/a.png 1x, https://ok.example/b.png 2x">',
+      '<img srcset="https://ok.example/a.png 1x, https://ok.example/b.png 2x">',
+    ],
     ['<div>\n<a href="//host/share">x</a>\n</div>', '<div>\n<a href="">x</a>\n</div>'],
     [
       '<a href="https://team.example/c/abc" title="notes">ok</a>',

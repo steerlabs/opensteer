@@ -24,7 +24,10 @@ const htmlDestinationAttribute =
 function stripHtmlDestinations(html: string): string {
   return html.replace(htmlDestinationAttribute, (whole, prefix: string, quoted: string) => {
     const value = /^["']/u.test(quoted) ? quoted.slice(1, -1) : quoted;
-    const destinations = value.split(",").map((entry) => entry.trim().split(/\s+/u)[0] ?? "");
+    // `ping` lists URLs by spaces and `srcset` by commas with size descriptors: check every token.
+    const destinations = value
+      .split(/[\s,]+/u)
+      .filter((token) => !/^\d+(\.\d+)?[wxh]$/u.test(token));
     return destinations.some((url) => url !== "" && privateDestination(url))
       ? `${prefix}""`
       : whole;

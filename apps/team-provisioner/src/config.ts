@@ -12,7 +12,8 @@ const EnvironmentSchema = z.object({
     return url.protocol === "https:" && url.origin === value;
   }, "Expected an HTTPS origin"),
   OPENSTEER_TEAM_HOST_IMAGE: PinnedImageSchema,
-  OPENSTEER_TEAM_REPLICAS: z.coerce.number().int().min(1).default(1),
+  // Each team login allows 32 connections: two steady copies and one rollout surge, ten apiece.
+  OPENSTEER_TEAM_REPLICAS: z.coerce.number().int().min(1).max(2).default(1),
   OPENSTEER_TEAM_DATABASE_IP: z.ipv4(),
   OPENSTEER_TEAM_DATABASE_HOST: z.hostname(),
   OPENSTEER_TEAM_DATABASE_CA_FILE: z.string().min(1),
