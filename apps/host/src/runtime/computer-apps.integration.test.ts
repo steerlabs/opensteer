@@ -335,8 +335,16 @@ integration("computer apps", () => {
       arguments: { text: "again", to: { address: "friend@example.test" } },
       ...sendOperation.address,
     });
-    expect(toolText(narrowed)).toContain("Studio Mac allows reading only");
-    expect(toolText(narrowed)).toContain('access "read-write"');
+    expect(narrowed).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: "access_denied",
+          message:
+            'Studio Mac allows reading only. Ask for read-write to send: call integration_request with integration "apple-messages" and access "read-write"; do not retry this call until it is fulfilled.',
+        },
+      },
+    });
 
     const widenSetup = await requestComputerAppSetup(
       host,
@@ -386,7 +394,10 @@ integration("computer apps", () => {
     expect(offRefusal).toMatchObject({
       isError: true,
       structuredContent: {
-        error: { reason: "device-access-off", computerId: computer.runnerId, capability: "apps" },
+        error: {
+          code: "access_denied",
+          next: expect.stringContaining(`computerId=${computer.runnerId}, access=apps`),
+        },
       },
     });
     const connectionAfterOff = await host.store.database

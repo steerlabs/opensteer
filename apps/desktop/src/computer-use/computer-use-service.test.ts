@@ -625,7 +625,14 @@ describe.skipIf(!onMac)("the helper connection's lifetime", () => {
       leaseDurationMs: 600_000,
     };
     await expect(
-      harness.call("view.open", { ...authority, target: { kind: "app", app: notesIdentity } }),
+      harness.call("view.open", {
+        ...authority,
+        target: {
+          kind: "app",
+          app: notesIdentity,
+          windowId: "win_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        },
+      }),
     ).resolves.toMatchObject({ state: "ready" });
     expect(harness.helper.methods.filter((method) => method === "hello")).toHaveLength(hellos + 1);
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 80));
@@ -832,7 +839,7 @@ const observation = {
   truncated: false,
   window: {
     ref: "window-1",
-    id: 42,
+    windowId: "win_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     title: "Notes",
     frame: { x: 0, y: 0, width: 900, height: 600 },
     scale: 1,

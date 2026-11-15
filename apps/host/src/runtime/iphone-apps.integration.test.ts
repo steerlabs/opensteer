@@ -900,9 +900,15 @@ integration.sequential("iPhone integrations Host contract", () => {
       ...phoneReadAddress,
     });
     expect(offlineCall).toMatchObject({ isError: true });
-    expect(toolText(offlineCall)).toBe(
-      `device-offline: computerId=${phone.runnerId}, capability=apps. Device is offline. Do not request access.`,
-    );
+    expect(offlineCall).toMatchObject({
+      structuredContent: {
+        error: {
+          code: "computer_offline",
+          message: "Device is offline. Do not request access.",
+          next: `computerId=${phone.runnerId}, access=apps. Check computer_list; do not request access while it is offline.`,
+        },
+      },
+    });
     expect(macCalls).toHaveLength(0);
     await writeFile(
       join(directory, "invocations.json"),

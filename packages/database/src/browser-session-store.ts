@@ -591,9 +591,7 @@ export async function authorizedPlaceThreadIds(
   return rows.map(({ id }) => id);
 }
 
-/** Reconstruct quiet native references from Host-resolved subjects and successful results.
- * The transcript is already durable; pictures and helper sessions are never recovered here.
- */
+/** Recover the latest durable tab entry for each task. */
 export async function latestNativePlaces(
   database: Kysely<DatabaseSchema>,
   ownerId: UserId,
