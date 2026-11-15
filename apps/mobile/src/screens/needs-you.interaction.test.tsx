@@ -116,3 +116,25 @@ it("opens the task a teammate's ask waits in, and dismisses one whose task is go
   });
   expect(harness.navigate).toHaveBeenCalledTimes(1);
 });
+
+it("dismisses a failed ask whose task remains, and still opens that task", async () => {
+  const { container, decideTeamAsk } = mount([
+    ask(
+      "treq_failed",
+      {
+        failureReason: "The team link was revoked.",
+        task: { messageId: "msg_1", revision: 1, threadId },
+      } as never,
+      "Maya",
+    ),
+  ]);
+  expect(container.textContent).toContain("The team link was revoked.");
+  await act(async () => control(container, "Maya").click());
+  expect(harness.navigate).toHaveBeenCalledWith("Thread", { deploymentId, threadId });
+  await act(async () => control(container, "Dismiss").click());
+  expect(decideTeamAsk).toHaveBeenCalledWith({
+    decision: "decline",
+    requestId: "treq_failed",
+    teamId: "dep_0192f4a1-1111-4000-8000-0000000000aa",
+  });
+});

@@ -20,8 +20,9 @@ export function NeedsYouScreen(props: StaticScreenProps<{ readonly deploymentId:
 
 /**
  * Everything waiting on the person. A teammate's ask is answered in the task
- * it waits in, where its words can be read and edited first; one whose task
- * is gone only has its failure left to dismiss.
+ * it waits in, where its words can be read and edited first. A failed ask
+ * says why and can be dismissed, which declines it, and still opens any task
+ * it left behind; one that never became a task can only be dismissed.
  */
 function NeedsYouList({ client, deploymentId }: { client: HostClient; deploymentId: string }) {
   const page = useHostSelector(client, (snapshot) => snapshot.needsYou);
@@ -61,45 +62,54 @@ function NeedsYouList({ client, deploymentId }: { client: HostClient; deployment
       <ScrollView contentContainerStyle={{ padding: space[16], gap: space[16] }}>
         {page?.entries.length === 0 ? <AppText tone="muted">Nothing needs you.</AppText> : null}
         {page?.entries.map((entry) => {
+          const key = needsYouEntryKey(entry);
           const destination = entryDestination(entry);
-          if (destination === null)
-            return entry.kind !== "team-ask" ? null : (
-              <View key={needsYouEntryKey(entry)} style={{ padding: space[16], gap: space[8] }}>
-                <AppText>{teamAskerLabel(entry.presentation.asker)}</AppText>
-                <AppText tone="danger">
-                  {entry.failureReason ?? entry.presentation.bodyMarkdown}
-                </AppText>
+          const ask = entry.kind === "team-ask" ? entry : null;
+          const label = (
+            <>
+              <AppText>
+                {entry.kind === "team-ask" ? teamAskerLabel(entry.presentation.asker) : entry.title}
+              </AppText>
+              {ask ? <AppText tone="muted">{ask.presentation.bodyMarkdown}</AppText> : null}
+            </>
+          );
+          return (
+            <View key={key} style={{ gap: space[8] }}>
+              {destination === null ? (
+                <View style={{ gap: space[8], padding: space[16] }}>{label}</View>
+              ) : (
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityState={{ busy: dismissing === needsYouEntryKey(entry) }}
+                  onPress={() => navigation.navigate("Thread", { deploymentId, ...destination })}
+                  style={{ gap: space[8], padding: space[16] }}
+                >
+                  {label}
+                </Pressable>
+              )}
+              {ask?.failureReason === undefined ? null : (
+                <AppText style={{ paddingHorizontal: space[16] }} tone="danger">
+                  {ask.failureReason}
+                </AppText>
+              )}
+              {ask !== null && (ask.failureReason !== undefined || destination === null) ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ busy: dismissing === key }}
                   disabled={dismissing !== null}
-                  onPress={() => void dismiss(entry)}
+                  onPress={() => void dismiss(ask)}
                   style={{
                     alignSelf: "flex-start",
                     justifyContent: "center",
                     minHeight: touchTarget,
+                    paddingHorizontal: space[16],
                   }}
                 >
                   <AppText role="secondaryMedium" tone="ember">
                     Dismiss
                   </AppText>
                 </Pressable>
-              </View>
-            );
-          return (
-            <Pressable
-              accessibilityRole="button"
-              key={needsYouEntryKey(entry)}
-              onPress={() => navigation.navigate("Thread", { deploymentId, ...destination })}
-              style={{ padding: space[16], gap: space[8] }}
-            >
-              <AppText>
-                {entry.kind === "team-ask" ? teamAskerLabel(entry.presentation.asker) : entry.title}
-              </AppText>
-              {entry.kind === "team-ask" ? (
-                <AppText tone="muted">{entry.presentation.bodyMarkdown}</AppText>
               ) : null}
-            </Pressable>
+            </View>
           );
         })}
         {failure ? <AppText tone="danger">{failure}</AppText> : null}
