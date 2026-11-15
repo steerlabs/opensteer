@@ -60,7 +60,7 @@ export async function reportAgentHomeSettings(
       .selectFrom("agentHomeSettings")
       .select(["fileStatus", "fileError", "settings"])
       .where("computerId", "=", authenticated.runnerId)
-      .forUpdate()
+      .forNoKeyUpdate()
       .executeTakeFirst();
     const { result } = report;
     const settings =
