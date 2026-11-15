@@ -174,6 +174,31 @@ integration("workspace tabs", () => {
       { kind: "tab", tabId: a!.id },
     ]);
   });
+  it("moves a group's first tab out to just before its own group", async () => {
+    const { tabs, write, ownerId } = await fixture();
+    const [a, b, c] = Array.from({ length: 3 }, () =>
+      write("app", { appId: `app_${randomUUID()}` }),
+    );
+    for (const row of [a!, b!, c!]) await tabs.open(row, row.id);
+    const grouped = await tabs.organize(
+      ownerId,
+      { tabIds: [b!.id, c!.id], group: { name: "Block", color: "blue" } },
+      "block",
+    );
+    const group = grouped.layout.items[1]!;
+    if (group.kind !== "group") throw new Error("Block missing");
+    // The group's place is named by its first member that stays, as the UI sends it.
+    const out = await tabs.organize(
+      ownerId,
+      { tabIds: [b!.id], group: null, beforeTabId: c!.id },
+      "first-out",
+    );
+    expect(out.layout.items).toEqual([
+      { kind: "tab", tabId: a!.id },
+      { kind: "tab", tabId: b!.id },
+      { kind: "group", group: { ...group.group, tabIds: [c!.id] } },
+    ]);
+  });
   it("fences per-tab session descriptors, preserves restore URLs and never resurrects closed pages or automation", async () => {
     const { tabs, legacy, database, ownerId, computerId } = await fixture();
     const store = new OpensteerStore(legacy),

@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import {
+  appNoticeTitle,
   sameTaskMark,
   threadInDirectory,
   threadMark,
@@ -59,6 +60,33 @@ export function AppsPage() {
             </button>
           </p>
         ) : null}
+        {state.notices.map((notice) =>
+          notice.message === null ? (
+            <p aria-live="polite" className="notice" key={notice.appId} role="status">
+              <Icon name="clock" />
+              <span>{appNoticeTitle(notice)}</span>
+            </p>
+          ) : (
+            <p
+              aria-live="assertive"
+              className="notice notice--error"
+              key={notice.appId}
+              role="alert"
+            >
+              <Icon name="alert-circle" />
+              <span>
+                {appNoticeTitle(notice)}: {notice.message}
+              </span>
+              <button
+                className="btn btn--small"
+                onClick={() => list.dismissFailure(notice.appId)}
+                type="button"
+              >
+                Dismiss
+              </button>
+            </p>
+          ),
+        )}
         {apps === null && !state.error ? (
           <div className="automations-list">
             <LoadingRows label="Loading apps" />

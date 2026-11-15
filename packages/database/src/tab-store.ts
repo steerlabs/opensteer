@@ -596,10 +596,13 @@ export class TabStore {
         input.beforeTabId &&
         (target?.kind === "group" ? anchorGroup !== target.group.groupId : anchorGroup !== null);
       const creating = input.group !== null && "name" in input.group;
+      // A group's place is named by its first member that is not moving.
       const rootBoundary =
         input.group === null &&
         layout.items.some(
-          (item) => item.kind === "group" && item.group.tabIds[0] === input.beforeTabId,
+          (item) =>
+            item.kind === "group" &&
+            item.group.tabIds.find((id) => !ids.has(id)) === input.beforeTabId,
         );
       if (outside && !creating && !wholeGroup && !rootBoundary)
         failure("conflict", "The anchor belongs to another destination.");

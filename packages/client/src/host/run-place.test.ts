@@ -126,7 +126,7 @@ it("knows a Run acts in, and pictures, one window of an app by its exact tab", (
       } as unknown as MachineSummary,
     ],
   };
-  const entryA = TabPlaceEnteredEventViewSchema.parse({
+  const entryA = PlaceEnteredEventViewSchema.parse({
     ...entered("5"),
     data: { tabId: "window-a", title: "Notes", site: null },
   });
