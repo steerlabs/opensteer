@@ -9,7 +9,7 @@ import { HostClientRequestError, stageAttachment, type HostClient } from "@opens
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { operationDetail } from "../client/mobile-client.js";
 import { type DraftAttachment, type ThreadDraftStore } from "../client/thread-drafts.js";
-import type { PastedImages } from "../../modules/paste-target/index.js";
+import type { PastedImages } from "../../modules/composer-editor/index.js";
 import {
   discardPastedImage,
   importPastedImage,

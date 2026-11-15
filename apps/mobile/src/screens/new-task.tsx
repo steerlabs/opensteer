@@ -24,7 +24,8 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { ActivityIndicator, StyleSheet, View, type TextInputInstance } from "react-native";
+import type { ComposerEditorHandle } from "@opensteer/client/references";
+import { ActivityIndicator, StyleSheet, View } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
 import { newTaskDraftKey, type PendingCommand } from "../client/thread-drafts.js";
 import type { FirstMessageAttachmentDraftScope } from "../platform/attachment-draft-files.js";
@@ -119,7 +120,7 @@ function NewTask(props: {
   const agentHome = snapshot.personalSettings?.agentHome.path ?? null;
   const text = draft?.text ?? "";
   const held = drafts.readPending(deploymentId, userId, draftKey);
-  const input = useRef<TextInputInstance>(null);
+  const input = useRef<ComposerEditorHandle>(null);
   const files = useMemo<FirstMessageAttachmentDraftScope>(
     () => ({ deploymentId, draftId, kind: "new-task", userId }),
     [deploymentId, draftId, userId],
@@ -180,6 +181,16 @@ function NewTask(props: {
       requestedSelection: ExecutionSelection | null = null,
     ): Promise<void> => {
       if (inFlight.current) return;
+      // The field's last keystroke can still be on its way to React: read what it holds now.
+      const field = input.current;
+      let words = text.trim();
+      if (existing === null && field !== null) {
+        const flushed = await field
+          .flushPendingInput(field.readSnapshot().generation)
+          .catch(() => null);
+        if (flushed === null) return;
+        words = flushed.text.trim();
+      }
       if (!(await authorizeAiSharing(aiSharing, hostClient))) return;
       if (!mounted.current || inFlight.current) return;
       inFlight.current = true;
@@ -201,7 +212,6 @@ function NewTask(props: {
               ? null
               : accessModeConflict(live.executionPreferences.accessMode, placement);
           if (accessReason !== null) throw new Error(accessReason);
-          const words = text.trim();
           claimed = await claimFirstMessage({
             browserPage: includedPage,
             deploymentId,
@@ -223,6 +233,13 @@ function NewTask(props: {
             userId,
           });
           changeText("");
+          // Reset, so a keystroke still on its way from the field cannot refill it.
+          field?.restore({
+            composing: false,
+            generation: field.readSnapshot().generation + 1,
+            selection: { start: 0, end: 0 },
+            text: "",
+          });
         }
         const start = claimed.start;
         if (start === undefined)
@@ -334,6 +351,7 @@ function NewTask(props: {
       voice={props.voice === true}
       held={held !== null}
       execution={execution}
+      hostClient={hostClient}
       inputRef={input}
       onChangeText={changeText}
       onChooseAI={(pickerAttemptId, conversation) =>

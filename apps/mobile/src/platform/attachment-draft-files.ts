@@ -10,7 +10,7 @@ import { Directory, File, Paths } from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import * as Sharing from "expo-sharing";
 import type { HostClient } from "@opensteer/client/host";
-import { discardPastedImage } from "../../modules/paste-target/files.js";
+import { discardPastedImage } from "../../modules/composer-editor/files.js";
 
 export { discardPastedImage };
 

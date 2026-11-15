@@ -429,7 +429,9 @@ describe("Expo engine/account/model journeys", () => {
     function Draft() {
       const { snapshot: live } = useHostSnapshot(mobile.hostClient!);
       const execution = firstMessageExecution(live);
-      const input = useRef<import("react-native").TextInputInstance | null>(null);
+      const input = useRef<import("@opensteer/client/references").ComposerEditorHandle | null>(
+        null,
+      );
       const staged = {
         items: [],
         notice: null,
@@ -446,6 +448,7 @@ describe("Expo engine/account/model journeys", () => {
           })}
           held={false}
           execution={execution}
+          hostClient={mobile.hostClient!}
           inputRef={input}
           onChangeText={() => undefined}
           onChooseAI={() => undefined}

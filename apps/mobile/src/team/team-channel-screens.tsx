@@ -69,8 +69,14 @@ import type {
   StagedAttachmentView,
 } from "./team-models.js";
 import type { TeamComposerProps } from "./team-composer.js";
-import { discardPastedImage } from "../../modules/paste-target/files.js";
-import type { PastedImages } from "../../modules/paste-target/index.js";
+import type { ComposerEditorHandle } from "@opensteer/client/references";
+import {
+  insertReference,
+  startReference,
+  useTeamReferenceSections,
+} from "../ui/composer-reference-picker.js";
+import { discardPastedImage } from "../../modules/composer-editor/files.js";
+import type { PastedImages } from "../../modules/composer-editor/index.js";
 import {
   pastedTeamSource,
   pickTeamPhoto,
@@ -501,6 +507,18 @@ function Place(props: {
 
   // The composer: words, mentions, files, and whether it asks the reader's agent.
   const [text, setText] = useState(() => snapshot.drafts[scopeKey] ?? "");
+  const editor = useRef<ComposerEditorHandle>(null);
+  /** Puts other words in the field outright; a keystroke still on its way cannot undo it. */
+  const replaceText = (next: string): void => {
+    setText(next);
+    const field = editor.current;
+    field?.restore({
+      composing: false,
+      generation: field.readSnapshot().generation + 1,
+      selection: { start: next.length, end: next.length },
+      text: next,
+    });
+  };
   // Editing one of the reader's messages sets their unsent words aside until it ends.
   const [editing, setEditing] = useState<{
     readonly id: TeamMessageId;
@@ -589,6 +607,12 @@ function Place(props: {
             })),
         });
   const me = directory.get(viewerId) ?? null;
+  const references = useTeamReferenceSections(
+    session,
+    props.team?.origin ?? null,
+    snapshot.sidebar,
+    mentionQuery,
+  );
 
   const pickMention = (option: MentionOption): void => {
     if (mentionQuery === null) return;
@@ -652,7 +676,17 @@ function Place(props: {
   };
 
   const send = async (): Promise<void> => {
-    const words = text.trim();
+    // The field's last keystroke can still be on its way to React: read what it holds now.
+    const field = editor.current;
+    let current = text;
+    if (field !== null) {
+      const flushed = await field
+        .flushPendingInput(field.readSnapshot().generation)
+        .catch(() => null);
+      if (flushed === null || openEdit.current !== editing) return;
+      current = flushed.text;
+    }
+    const words = current.trim();
     setFailure(null);
     if (editing !== null) {
       if (words === "" || savingEdit) return;
@@ -667,7 +701,7 @@ function Place(props: {
           mentions: [...teamMentions(words, directory.values())],
         });
         if (openEdit.current === saving) {
-          setText(saving.draft);
+          replaceText(saving.draft);
           setEditing(null);
         }
       } catch (error) {
@@ -703,7 +737,7 @@ function Place(props: {
           setStaged([]);
         },
       );
-      setText("");
+      replaceText("");
       // After sending it stays as the reader left it, in a thread; a channel's
       // ask opens its own thread, so the channel's composer starts off again.
       if (rootId === null) setToMyAgent(false);
@@ -714,7 +748,7 @@ function Place(props: {
 
   const cancelEdit = (): void => {
     if (editing === null) return;
-    setText(editing.draft);
+    replaceText(editing.draft);
     setEditing(null);
   };
   const report = (error: unknown): void =>
@@ -784,7 +818,7 @@ function Place(props: {
       }
       case "edit":
         setEditing((held) => ({ id: message.id, draft: held?.draft ?? text }));
-        setText(message.bodyMarkdown);
+        replaceText(message.bodyMarkdown);
         return;
       case "delete":
         Alert.alert("Delete this message?", "It's removed for everyone here.", [
@@ -862,6 +896,7 @@ function Place(props: {
     (id) => props.members.find((member) => member.userId === id)?.displayName ?? "That person",
   );
   const composer: TeamComposerProps = {
+    editor,
     placeholder:
       rootId !== null
         ? "Reply…"
@@ -877,7 +912,17 @@ function Place(props: {
     onAgentUnavailable: () => navigation.navigate("ConnectOpensteer", { teamId }),
     mentions,
     onPickMention: pickMention,
-    onMention: () => changeText(`${text.slice(0, selection.start)}@${text.slice(selection.end)}`),
+    references,
+    onPickReference: (row) => {
+      if (mentionQuery === null) return;
+      insertReference(
+        editor.current,
+        { start: selection.start - mentionQuery.length - 1 },
+        selection.start,
+        row.markdown,
+      );
+    },
+    onMention: () => startReference(editor.current),
     attachments: staged.map(stagedView),
     onAttach: () => void attach(),
     onPasteImages: pasteImages,

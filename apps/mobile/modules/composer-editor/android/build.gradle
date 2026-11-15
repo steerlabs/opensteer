@@ -1,0 +1,19 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+group = 'com.opensteer.composereditor'
+version = '1.0.0'
+android {
+  namespace 'com.opensteer.composereditor'
+  defaultConfig {
+    versionCode 1
+    versionName '1.0.0'
+  }
+}
+dependencies {
+  // React Native's own pin: AppCompatEditText routes paste, keyboard images and drops
+  // through OnReceiveContentListener on every API level the app supports.
+  implementation 'androidx.appcompat:appcompat:1.7.0'
+  testImplementation 'junit:junit:4.13.2'
+}

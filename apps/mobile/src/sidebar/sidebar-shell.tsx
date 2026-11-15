@@ -24,7 +24,6 @@ import {
   AccessibilityInfo,
   BackHandler,
   I18nManager,
-  Keyboard,
   Platform,
   StyleSheet,
   useWindowDimensions,
@@ -32,6 +31,7 @@ import {
   type HostInstance,
   type LayoutChangeEvent,
 } from "react-native";
+import { dismissKeyboard } from "../ui/composer-editor.js";
 import ReanimatedDrawerLayout, {
   DrawerKeyboardDismissMode,
   DrawerLockMode,
@@ -325,7 +325,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
     if (dockedRef.current) return;
     // The keyboard would otherwise stay up over the drawer. The draft is the
     // composer's and is untouched; only the field loses focus.
-    Keyboard.dismiss();
+    dismissKeyboard();
     trigger.current = from ?? null;
     restoreFocus.current = true;
     closing.current = false;
@@ -347,7 +347,11 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
     if (visibleRef.current === next) return;
     visibleRef.current = next;
     setVisible(next);
-    if (next) return;
+    // The drawer's own drag dismissal reaches only React Native's text inputs, not the composer's.
+    if (next) {
+      dismissKeyboard();
+      return;
+    }
     const from = trigger.current;
     trigger.current = null;
     if (restoreFocus.current && from !== null)
