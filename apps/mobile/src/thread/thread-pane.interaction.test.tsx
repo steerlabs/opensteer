@@ -758,6 +758,7 @@ const roots: Root[] = [];
 afterEach(() => {
   composerEditorFake.composing = false;
   composerEditorFake.ahead = null;
+  composerEditorFake.runningAhead = false;
   aiSharingTestPermission.allowed = true;
   for (const root of roots.splice(0)) act(() => root.unmount());
   dictation.dispose();
@@ -1579,6 +1580,37 @@ describe("a conversation with a page", () => {
     );
   });
 
+  it("keeps words typed while a sent message is still being saved", async () => {
+    // The phone's disk holds the message's save until the test lets it finish.
+    let save: Promise<void> | null = null;
+    let saved!: () => void;
+    const files = new (class extends MemoryPrivateFilesystem {
+      override async writeFileAtomic(path: string, content: Uint8Array | string) {
+        const held = save;
+        save = null;
+        if (held !== null) await held;
+        return super.writeFileAtomic(path, content);
+      }
+    })();
+    const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+    const { container } = await mount(host, workId, { files });
+    await type(container, "Message", "Hang the mirror first");
+    save = new Promise<void>((resolve) => (saved = resolve));
+    await press(container, "Send message");
+    await type(container, "Message", "Hang the mirror first, then the art");
+    await act(async () => saved());
+    await settle();
+    expect(host.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "thread.sendMessage",
+        content: [{ text: "Hang the mirror first", type: "text" }],
+      }),
+    );
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+    ).toBe("Hang the mirror first, then the art");
+  });
+
   it("keeps a task's composing text until Send is tapped after composition ends", async () => {
     const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
     const { container } = await mount(host, workId);
@@ -1955,6 +1987,7 @@ describe("a voice conversation while Opensteer is replying", () => {
       "Send the note to Maya?",
     );
     await type(container, "Message", "Use the staging list instead");
+    composerEditorFake.runningAhead = true;
     expect(text(container)).not.toContain("chooses");
     expect(hasButton(container, "Choose Reject and send")).toBe(false);
     expect(container.querySelector('textarea[aria-label="Suggest a change"]')).toBeNull();
@@ -1967,6 +2000,10 @@ describe("a voice conversation while Opensteer is replying", () => {
       threadId: conversationId,
       type: "thread.sendMessage",
     });
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+      "the sent words left a field running ahead of React",
+    ).toBe("");
     expect(container.querySelector('[aria-label="Docked request"]')).not.toBeNull();
   });
 
@@ -4306,7 +4343,7 @@ it("dictates at the caret, cancels preview, adopts edits and sends finalized wor
     content: [{ type: "text", text: "Hi my there! friend" }],
   });
   expect(sent(host.dispatch)).toHaveLength(1);
-  expect(selectionCalls.at(-1)).toEqual({ text: "Hi my there! friend", start: 19, end: 19 });
+  expect(selectionCalls).toContainEqual({ text: "Hi my there! friend", start: 19, end: 19 });
 });
 
 it("keeps denied permission actionable and downloads without starting the microphone", async () => {

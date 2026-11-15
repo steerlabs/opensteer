@@ -350,6 +350,17 @@ export function Composer(props: {
       },
     );
   };
+  /** Puts other words in the field outright; a keystroke still on its way cannot undo it. */
+  const replaceText = (next: string): void => {
+    changeText(next);
+    const editor = input.current;
+    editor?.restore({
+      composing: false,
+      generation: editor.readSnapshot().generation + 1,
+      selection: { start: next.length, end: next.length },
+      text: next,
+    });
+  };
 
   // Dictation shows its words in the field without making them the draft or an undo
   // step; when it ends the field returns to the draft, with the words if they were kept.
@@ -460,7 +471,7 @@ export function Composer(props: {
   useEffect(() => {
     if (restore === null) return;
     const current = draftText.current;
-    if (restore.text) changeText(current.trim() ? `${restore.text}\n${current}` : restore.text);
+    if (restore.text) replaceText(current.trim() ? `${restore.text}\n${current}` : restore.text);
     // A restore without a quote leaves the one already standing; only an
     // explicit null takes it away.
     if (restore.quote !== undefined) changeQuote(restore.quote);
@@ -476,7 +487,7 @@ export function Composer(props: {
     setRefused(null);
     if (refused.text) {
       const current = draftText.current;
-      changeText(current.trim() ? `${refused.text}\n${current}` : refused.text);
+      replaceText(current.trim() ? `${refused.text}\n${current}` : refused.text);
     }
     // Each file returns with this phone's copy when it has one, and by
     // reference to the Host's when it does not.
@@ -664,18 +675,11 @@ export function Composer(props: {
         threadId,
       });
       if (choice === "keepFullHistory") compactionOffer.dismiss();
-      // Do not erase words typed while the durable claim was being written. The
-      // field is reset, so a keystroke still on its way from it cannot refill it.
-      if (draftText.current === sourceText) {
-        changeText("");
-        const editor = input.current;
-        editor?.restore({
-          composing: false,
-          generation: editor.readSnapshot().generation + 1,
-          selection: { start: 0, end: 0 },
-          text: "",
-        });
-      }
+      // The claim took the draft's words; the field empties unless words were
+      // typed while it was being written. Read the store, not the render's copy,
+      // which the claim may already have emptied.
+      const left = drafts.readDraft(deploymentId, userId, threadId)?.text ?? "";
+      if (left === "" || left === sourceText) replaceText("");
       changeQuote(null);
       setDeclinedPage(null);
       const claimed = drafts.readPending(deploymentId, userId, threadId);
