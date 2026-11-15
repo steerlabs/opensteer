@@ -1,3 +1,5 @@
+import { clearRunPageViews } from "../host/run-page-memory.js";
+import { clearRunPlacePictures } from "../host/run-place-picture.js";
 import { localReference } from "../references/local.js";
 import { parseReferenceHref, type ReferenceId } from "@opensteer/core";
 import { AssetUrlStore } from "../host/asset-urls.js";
@@ -4088,6 +4090,8 @@ export class MockHostClient implements HostClient {
       const snapshot = this.#state.getSnapshot();
       const scope = viewerScopeOf(snapshot);
       if (this.#viewer.change(scope)) {
+        clearRunPageViews(this);
+        clearRunPlacePictures(this);
         this.#pendingBrowserTabs.clear();
         this.#state.updatePlaces({
           ...snapshot,
@@ -5168,6 +5172,8 @@ export class MockHostClient implements HostClient {
   }
 
   dispose(): void {
+    clearRunPageViews(this);
+    clearRunPlacePictures(this);
     this.references.dispose();
     this.transcriptFiles.dispose();
     this.assetUrls.dispose();

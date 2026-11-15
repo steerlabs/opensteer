@@ -1056,7 +1056,7 @@ function ThreadView({
               onFind={() => setFinding(true)}
               onPictureYield={setPictureYielded}
               onUnfold={runPage.unfold}
-              pageOpen={runPage.shown === "open"}
+              pageOpen={runPage.shown === "page"}
               threadId={thread.id}
               title={title}
               titleRef={headerTitleRef}
@@ -1080,7 +1080,7 @@ function ThreadView({
                 onFits={runPage.setFits}
                 onFold={runPage.fold}
                 onUnfold={runPage.unfold}
-                open={runPage.shown === "open"}
+                open={runPage.shown === "page"}
                 runId={runPage.placeRunId}
                 scrollRef={scrollRef}
                 threadId={thread.id}

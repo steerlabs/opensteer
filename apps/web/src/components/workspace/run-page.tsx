@@ -1,6 +1,6 @@
 import {
   pageSiteLabel,
-  runPageActed,
+  runPageConsidered,
   runPageDesktopAspect,
   runPageFolded,
   runPageHandleHeight,
@@ -54,7 +54,7 @@ export function useRunPage(
   hostClient: HostClient,
   threadId: string,
   runId: string | null,
-  moment: () => Omit<RunPageMoment, "cellular">,
+  moment: () => Pick<RunPageMoment, "scrolledUp" | "typing">,
 ) {
   const [{ memory }, update] = useRunPageView(hostClient, threadId);
   const entry = useRunPlace(hostClient, runId);
@@ -65,9 +65,11 @@ export function useRunPage(
   useEffect(() => {
     if (placeRunId === null) return;
     update((view) => {
-      const memory = runPageActed(view.memory, placeRunId, {
+      const memory = runPageConsidered(view.memory, placeRunId, {
         ...momentRef.current(),
         cellular: meteredConnection(),
+        visible: true,
+        picture: true,
       });
       return memory === view.memory ? view : { ...view, memory };
     });
@@ -77,7 +79,7 @@ export function useRunPage(
   const unfold = useCallback(() => {
     if (placeRunId === null) return;
     focusPage.current = document.activeElement?.closest(".viewfinder") != null;
-    update((view) => ({ ...view, memory: runPageOpened(placeRunId) }));
+    update((view) => ({ ...view, memory: runPageOpened(placeRunId, view.memory) }));
   }, [placeRunId, update]);
   const fold = useCallback(
     () => update((view) => ({ ...view, memory: runPageFolded(view.memory) })),

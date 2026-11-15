@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import {
   freshRunPageMemory,
-  runPageActed,
+  runPageConsidered,
   runPageShown,
   type RunPageMemory,
 } from "@opensteer/client/host";
@@ -27,7 +27,13 @@ it.each(["WIFI", "CELLULAR"])("waits for %s with a Run place already present", a
     observed = memory;
     useEffect(() => {
       update((value) =>
-        runPageActed(value, "run-present", { cellular, scrolledUp: false, typing: false }),
+        runPageConsidered(value, "run-present", {
+          cellular,
+          scrolledUp: false,
+          typing: false,
+          visible: true,
+          picture: true,
+        }),
       );
     }, [cellular]);
     return null;
@@ -35,15 +41,15 @@ it.each(["WIFI", "CELLULAR"])("waits for %s with a Run place already present", a
   const root = createRoot(document.createElement("div"));
   try {
     await act(async () => root.render(<Page />));
-    expect(observed).toBe(freshRunPageMemory);
+    expect(observed.run?.intent).toBe("undecided");
     network.type = "UNKNOWN";
     await act(async () => root.render(<Page />));
-    expect(observed).toBe(freshRunPageMemory);
+    expect(observed.run?.intent).toBe("undecided");
     network.type = type;
     await act(async () => root.render(<Page />));
-    expect(observed.decidedRunId).toBe("run-present");
+    expect(observed.run?.runId).toBe("run-present");
     expect(runPageShown(observed, "run-present", true)).toBe(
-      type === "CELLULAR" ? "folded" : "open",
+      type === "CELLULAR" ? "folded" : "page",
     );
   } finally {
     await act(async () => root.unmount());

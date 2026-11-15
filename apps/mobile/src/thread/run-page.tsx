@@ -1,6 +1,6 @@
 import {
   pageSiteLabel,
-  runPageActed,
+  runPageConsidered,
   runPageDesktopAspect,
   runPageFolded,
   runPageHandleHeight,
@@ -133,10 +133,16 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
   useEffect(() => {
     if (beside || placeRunId === null) return;
     update((value) => {
-      const memory = runPageActed(value.memory, placeRunId, { cellular, scrolledUp, typing });
+      const memory = runPageConsidered(value.memory, placeRunId, {
+        cellular,
+        scrolledUp,
+        typing,
+        visible: props.active && foreground,
+        picture: true,
+      });
       return memory === value.memory ? value : { ...value, memory };
     });
-  }, [beside, cellular, placeRunId, scrolledUp, typing, update]);
+  }, [beside, cellular, foreground, placeRunId, props.active, scrolledUp, typing, update]);
 
   const page =
     size.height === 0
@@ -154,7 +160,7 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
   const shown = beside
     ? placeRunId === null
       ? "none"
-      : "open"
+      : "page"
     : runPageShown(view.memory, placeRunId, fits);
   useEffect(() => {
     if (beside) return;
@@ -167,7 +173,7 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
     },
     [beside, update],
   );
-  const open = shown === "open" && entry !== null;
+  const open = (shown === "page" || shown === "row") && entry !== null;
   useEffect(() => {
     if (!open) onInset(0);
   }, [onInset, open]);

@@ -1,3 +1,5 @@
+import { clearRunPageViews } from "./run-page-memory.js";
+import { clearRunPlacePictures } from "./run-place-picture.js";
 import { ReferenceStore } from "../references/store.js";
 import { TranscriptFileController } from "./transcript-files.js";
 import { AssetUrlStore, type AssetRoute } from "./asset-urls.js";
@@ -3355,6 +3357,8 @@ export class HttpHostClient {
   }
 
   dispose(): void {
+    clearRunPageViews(this);
+    clearRunPlacePictures(this);
     this.references.dispose();
     this.transcriptFiles.dispose();
     this.assetUrls.dispose();
@@ -5694,6 +5698,8 @@ export class HttpHostClient {
     this.#browserTargetRevision = this.#browserTabs.targetRevision;
     const scope = viewerScopeOf(snapshot);
     if (this.#viewer.change(scope)) {
+      clearRunPageViews(this);
+      clearRunPlacePictures(this);
       for (const check of this.#browserWaiters) check();
       this.#nodeDetails.clear();
       this.#runPlaces.clear();
