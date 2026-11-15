@@ -20,7 +20,10 @@ it("keeps person-owned apps and their fixed port through versions, HTML conversi
       userId: p.userId,
       environmentId: p.environmentId,
     };
-    const server = { folder: { ...p.agentHome, path: `${p.agentHome.path}/app` }, command: "node s.js" };
+    const server = {
+      folder: { ...p.agentHome, path: `${p.agentHome.path}/app` },
+      command: "node s.js",
+    };
     const reservation = await store.reserve({
       scope,
       creationKey: `${p.runId}:first`,
@@ -90,7 +93,11 @@ it("keeps person-owned apps and their fixed port through versions, HTML conversi
     });
     expect(again.port).toBe(reservation.port);
 
-    await database.updateTable("runs").set({ status: "completed" }).where("id", "=", p.runId).execute();
+    await database
+      .updateTable("runs")
+      .set({ status: "completed" })
+      .where("id", "=", p.runId)
+      .execute();
     await expect(
       store.commit({
         scope,
@@ -133,7 +140,11 @@ it("keeps person-owned apps and their fixed port through versions, HTML conversi
     });
     expect(removing).toEqual([reservation.appId]);
     expect(
-      await database.selectFrom("appServers").select("appId").where("appId", "=", reservation.appId).execute(),
+      await database
+        .selectFrom("appServers")
+        .select("appId")
+        .where("appId", "=", reservation.appId)
+        .execute(),
     ).toEqual([]);
   } finally {
     await database.destroy();

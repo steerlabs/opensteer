@@ -117,7 +117,10 @@ export class AppStore {
             eb(sql<string>`app_versions.server->'folder'->>'path'`, "ilike", pattern),
           ]),
         );
-      return filtered.orderBy("apps.updatedAt", "desc").orderBy("apps.id").limit(appListLimit + 1);
+      return filtered
+        .orderBy("apps.updatedAt", "desc")
+        .orderBy("apps.id")
+        .limit(appListLimit + 1);
     });
     if (apps.length > appListLimit)
       throw new OpensteerError({
@@ -128,7 +131,9 @@ export class AppStore {
   }
 
   /** Server specs to reconcile on one computer, including stopped ones so the Runner fences them. */
-  async runtimeSet(computerId: RunnerId): Promise<Array<PublishedApp & { server: AppServerRecord }>> {
+  async runtimeSet(
+    computerId: RunnerId,
+  ): Promise<Array<PublishedApp & { server: AppServerRecord }>> {
     const apps = await this.#records(this.database, (query) =>
       query
         .where("apps.computerId", "=", computerId)
@@ -139,7 +144,9 @@ export class AppStore {
         .limit(appListLimit),
     );
     return apps.flatMap((app) =>
-      app.version?.server && app.server ? [{ ...app, version: app.version, server: app.server }] : [],
+      app.version?.server && app.server
+        ? [{ ...app, version: app.version, server: app.server }]
+        : [],
     );
   }
 
@@ -312,7 +319,10 @@ export class AppStore {
       input.html &&
       (input.html.sizeBytes < 1 || input.html.sizeBytes > appMaxBytes || input.server)
     )
-      throw new OpensteerError({ code: "bad_request", message: "App HTML exceeds the 5 MiB limit" });
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "App HTML exceeds the 5 MiB limit",
+      });
     return withPersonalTransaction(this.database, async (tx) => {
       const { agentHome } = await authorizeRun(tx, input.scope, Boolean(input.server));
       const app = await lockApp(tx, input.scope.userId, input.appId, true);
@@ -439,7 +449,9 @@ export class AppStore {
       .where("appId", "=", appId)
       .where("generation", "=", generation)
       .where((eb) =>
-        lastError === null ? eb("lastError", "is not", null) : eb("lastError", "is distinct from", lastError),
+        lastError === null
+          ? eb("lastError", "is not", null)
+          : eb("lastError", "is distinct from", lastError),
       )
       .executeTakeFirst();
     return result.numUpdatedRows > 0n;
