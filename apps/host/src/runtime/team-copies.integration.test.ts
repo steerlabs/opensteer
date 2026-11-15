@@ -8,6 +8,7 @@ import { createTeamFixture } from "@opensteer/database/test-support/team";
 import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
 import { createHostRuntime, type TeamHostRuntime } from "./runtime.js";
 
+// Skipped outside the PostgreSQL launcher, which provides the database URL.
 const integration = process.env.OPENSTEER_TEST_DATABASE_URL ? describe : describe.skip;
 
 integration("team Host copies", () => {
