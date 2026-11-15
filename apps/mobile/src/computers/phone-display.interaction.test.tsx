@@ -7,6 +7,7 @@ import { encodeDisplayViewerFrame } from "@opensteer/protocol";
 import { BrowserTabStore, RunPlaceStore } from "@opensteer/client/host";
 import { createId, PlaceEnteredEventViewSchema } from "@opensteer/core";
 import { FoldedPage } from "../thread/folded-page.js";
+import { useRunPlacePicture } from "@opensteer/client/react";
 import type { HostClient, HostSnapshot, WebSocketClient } from "@opensteer/client/host";
 import { sharedDisplayStreams, type DisplaySnapshot } from "@opensteer/client/integrations";
 import type { EditingProxyEvent } from "@opensteer/client/editing";
@@ -425,14 +426,18 @@ async function setup(
     act(async () =>
       root!.render(
         screen === "live" ? (
-          <FoldedPage
-            hostClient={client}
-            onOpen={noop}
-            onUnfold={noop}
-            room
-            runId={runId}
-            threadId={threadId}
-          />
+          <>
+            {/* The conversation's pane holds the Run's picture; the bar only draws it. */}
+            <HeldRunPlace client={client} runId={runId} threadId={threadId} />
+            <FoldedPage
+              hostClient={client}
+              onOpen={noop}
+              onUnfold={noop}
+              room
+              runId={runId}
+              threadId={threadId}
+            />
+          </>
         ) : screen === "tab" ? (
           <PhoneTabView
             active={active}
@@ -1282,6 +1287,15 @@ it("revokes picture input and requests a key when the decoder loses its picture"
 });
 
 function noop(): void {}
+
+function HeldRunPlace(props: {
+  readonly client: HostClient;
+  readonly runId: string;
+  readonly threadId: string;
+}): null {
+  useRunPlacePicture(props.client, props.threadId, props.runId, true);
+  return null;
+}
 
 it("keeps passive native decoded pixels while the session binding is missing or offline and clears authority while released", async () => {
   const view = await setup(true, "android", false, false, "live");

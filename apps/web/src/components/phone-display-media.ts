@@ -292,8 +292,13 @@ export function hidesPhoneDisplayPicture({
  * it was drawn is closed unseen, and a replayed one is never drawn, so a
  * joiner's first picture is the screen as it is now.
  */
+type PictureLease = Pick<
+  DisplayLease,
+  "getSnapshot" | "subscribe" | "onFrame" | "requestKeyframe" | "release"
+>;
+
 export class PhoneDisplayPicture {
-  readonly #lease: DisplayLease;
+  readonly #lease: PictureLease;
   readonly #decoder: PhoneDisplayDecoder;
   readonly #canvases = new Set<HTMLCanvasElement>();
   readonly #listeners = new Set<() => void>();
@@ -315,7 +320,7 @@ export class PhoneDisplayPicture {
   };
   #disposed = false;
 
-  constructor(lease: DisplayLease, acceleration: HardwareAcceleration) {
+  constructor(lease: PictureLease, acceleration: HardwareAcceleration) {
     this.#lease = lease;
     this.#decoder = new PhoneDisplayDecoder({
       acceleration,
@@ -473,7 +478,7 @@ export function retainPhoneDisplayPicture(
   streams: DisplayStreams,
   target: ComputerDisplayTarget,
   acceleration: HardwareAcceleration,
-): { readonly picture: PhoneDisplayPicture; readonly release: (preservePixels?: boolean) => void } {
+): { readonly picture: PhoneDisplayPicture; readonly release: () => void } {
   let pool = pictures.get(streams);
   if (!pool) {
     pool = new Map();
@@ -491,13 +496,13 @@ export function retainPhoneDisplayPicture(
   let released = false;
   return {
     picture: entry.picture,
-    release: (preservePixels = false) => {
+    release: () => {
       if (released) return;
       released = true;
       entry.holds -= 1;
       if (entry.holds > 0) return;
       if (shared.get(key) === entry) shared.delete(key);
-      entry.picture.dispose(preservePixels);
+      entry.picture.dispose();
     },
   };
 }

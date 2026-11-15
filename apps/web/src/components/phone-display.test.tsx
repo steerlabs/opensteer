@@ -7,7 +7,9 @@ import { MockHostClient } from "@opensteer/client/mock";
 import { sharedDisplayStreams } from "@opensteer/client/integrations";
 import { RunnerIdSchema } from "@opensteer/core";
 import type { HostSnapshot } from "@opensteer/client/host";
+import { useRunPlacePicture } from "@opensteer/client/react";
 import { LivePlace } from "./workspace/viewfinder.js";
+import { RunPlacePictureScope } from "./workspace/run-place-picture.js";
 import type { WebSocketClient } from "@opensteer/client/host";
 import type { MachineSummary } from "@opensteer/protocol";
 
@@ -1262,6 +1264,15 @@ it.each([
   "denial-before-session-removal",
   "protected",
 ])("keeps live native pixels through binding recovery and clears %s", async (refusal) => {
+  // The pane holds the picture; the folded picture only reads it, as in a conversation.
+  function Pane({ runId, threadId }: { readonly runId: string; readonly threadId: string }) {
+    const picture = useRunPlacePicture(client, threadId, runId, true);
+    return (
+      <RunPlacePictureScope enabled hostClient={client} picture={picture} threadId={threadId}>
+        <LivePlace hostClient={client} runId={runId} threadId={threadId} />
+      </RunPlacePictureScope>
+    );
+  }
   const { machine, sessionId } = phone();
   const session = machine.computerUse!.sessions[0]!;
   const runId = session.runId,
@@ -1281,12 +1292,10 @@ it.each([
   const node = document.createElement("div");
   document.body.append(node);
   root = createRoot(node);
-  await act(async () =>
-    root!.render(<LivePlace hostClient={client} runId={runId} threadId={threadId} />),
-  );
+  await act(async () => root!.render(<Pane runId={runId} threadId={threadId} />));
   await vi.waitFor(async () => {
     await act(async () => {});
-    expect(node.querySelector(".phone-display__picture--hidden")).toBeNull();
+    expect(node.querySelector(".place-canvas--hidden")).toBeNull();
     expect(node.querySelector("canvas")?.width).toBe(360);
   });
   const canvas = node.querySelector("canvas");
@@ -1304,7 +1313,7 @@ it.each([
         generation: 1,
       }),
     );
-    expect(node.querySelector(".phone-display__picture--hidden")).not.toBeNull();
+    expect(node.querySelector(".place-canvas--hidden")).not.toBeNull();
     return;
   }
   const denied = {
@@ -1318,7 +1327,7 @@ it.each([
   };
   if (refusal === "denial-before-release" || refusal === "denial-before-session-removal") {
     await move([denied]);
-    expect(node.querySelector(".phone-display__picture--hidden")).not.toBeNull();
+    expect(node.querySelector(".place-canvas--hidden")).not.toBeNull();
     expect(sockets.at(-1)?.closed).toBe(true);
     return;
   }
@@ -1328,30 +1337,30 @@ it.each([
   ]) {
     await move([changed]);
     expect(node.querySelector("canvas")).toBe(canvas);
-    expect(node.querySelector(".phone-display__picture--hidden")).toBeNull();
+    expect(node.querySelector(".place-canvas--hidden")).toBeNull();
     expect(sockets.at(-1)?.closed).toBe(true);
     expect(node.querySelector(".viewfinder--still")).not.toBeNull();
   }
   if (refusal === "denial-after-release") {
     await move([denied]);
-    expect(node.querySelector(".phone-display__picture--hidden")).not.toBeNull();
+    expect(node.querySelector(".place-canvas--hidden")).not.toBeNull();
     return;
   }
   decoder.blocked = true;
   await move([machine]);
   expect(node.querySelector("canvas")).toBe(canvas);
-  expect(node.querySelector(".phone-display__picture--hidden")).toBeNull();
+  expect(node.querySelector(".place-canvas--hidden")).toBeNull();
   await vi.waitFor(() =>
     expect(decoder.pending.length, "replacement stream never submitted a frame").toBeGreaterThan(0),
   );
   await act(async () => decoder.pending.splice(0).forEach((output) => output()));
   await vi.waitFor(async () => {
     await act(async () => {});
-    expect(node.querySelector(".phone-display__picture--hidden")).toBeNull();
+    expect(node.querySelector(".place-canvas--hidden")).toBeNull();
     expect(node.querySelector(".viewfinder--still")).toBeNull();
   });
   await move([{ ...machine, ownership: "mine", computerUse: null }]);
-  expect(node.querySelector(".phone-display__picture--hidden")).not.toBeNull();
+  expect(node.querySelector(".place-canvas--hidden")).not.toBeNull();
   expect(node.querySelector("canvas")).toBe(canvas);
   expect(sessionId).toBeDefined();
 });

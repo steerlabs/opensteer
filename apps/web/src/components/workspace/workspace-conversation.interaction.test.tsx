@@ -666,6 +666,29 @@ describe("a conversation's page above it at phone width", () => {
         return size(this, key);
       });
   }
+  /** A phone's visual viewport, which an on-screen keyboard shortens. */
+  const keyboard = {
+    viewport: null as (EventTarget & { height: number }) | null,
+    install() {
+      this.viewport = Object.assign(new EventTarget(), {
+        height: window.innerHeight,
+        offsetTop: 0,
+        scale: 1,
+      });
+      Object.defineProperty(window, "visualViewport", {
+        configurable: true,
+        value: this.viewport,
+      });
+    },
+    open() {
+      this.viewport!.height = window.innerHeight - 300;
+      this.viewport!.dispatchEvent(new Event("resize"));
+    },
+    remove() {
+      Reflect.deleteProperty(window, "visualViewport");
+      this.viewport = null;
+    },
+  };
   async function opened() {
     await mount(`/tasks/${waiting}`, { width: 390 });
     phoneGeometry();
@@ -688,6 +711,8 @@ describe("a conversation's page above it at phone width", () => {
 
   it("opens on the first action, folds into the head, unfolds, shows the full tab and ends with the Run", async () => {
     await opened();
+    // A hardware keyboard takes no room: writing in a narrow window still lets it open.
+    await act(async () => element<HTMLElement>(".composer-dock [data-composer-input]").focus());
     const place = await acts();
     expect(page()).not.toBeNull();
     expect(folded(), "The head kept a picture of the open page").toBeNull();
@@ -768,9 +793,12 @@ describe("a conversation's page above it at phone width", () => {
       },
     ],
     [
+      // On a phone: the field takes focus and the on-screen keyboard takes room.
+      // A hardware keyboard takes none, so focus alone never folds the page.
       "typing",
       async () => {
         await act(async () => element<HTMLElement>(".composer-dock [data-composer-input]").focus());
+        await act(async () => keyboard.open());
       },
     ],
     [
@@ -783,6 +811,7 @@ describe("a conversation's page above it at phone width", () => {
       },
     ],
   ])("starts folded while the reader is %s", async (_case, moment) => {
+    keyboard.install();
     await opened();
     try {
       await moment();
@@ -793,6 +822,7 @@ describe("a conversation's page above it at phone width", () => {
       expect(page(), "The reader could not open it themselves").not.toBeNull();
     } finally {
       Reflect.deleteProperty(navigator, "connection");
+      keyboard.remove();
     }
   });
 });
