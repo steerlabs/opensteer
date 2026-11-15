@@ -58,6 +58,8 @@ async function renderScenario(scenario: ThreadActivityScenario): Promise<HTMLEle
     environments: scenario.accountPreparing
       ? withAccountPreparing(base.environments, harness)
       : base.environments,
+    // The scenario's own transcript says what the Run waits for; no card docks over it.
+    requests: { ...base.requests, [thread.id]: [] },
     runQueue: [...scenario.runQueue],
     threads: base.threads.map((candidate) =>
       candidate.id === thread.id ? { ...candidate, status: scenario.status } : candidate,

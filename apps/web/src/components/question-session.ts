@@ -6,7 +6,7 @@ import {
 } from "@opensteer/client/host";
 import type { Request, RequestFormAnswers, RequestResponse } from "@opensteer/core";
 import { useSyncExternalStore } from "react";
-import { composerDraftKeyFor, composerDrafts } from "./composer-drafts.js";
+import { composerDraftKeyFor, composerDrafts, holdsContent } from "./composer-drafts.js";
 import { useShell } from "./app-shell.js";
 
 /**
@@ -134,7 +134,7 @@ export function advanceQuestion(
   } else updateQuestionSession(request.id, { drafts });
 }
 
-/** Whether the person has words waiting in this task's message box. */
+/** Whether the person has anything waiting in this task's message box. */
 export function useMessageDraftWaiting(threadId: string): boolean {
   const { snapshot } = useShell();
   const key = composerDraftKeyFor(snapshot.deploymentId, snapshot.user?.id ?? null, {
@@ -143,7 +143,10 @@ export function useMessageDraftWaiting(threadId: string): boolean {
   });
   return useSyncExternalStore(
     composerDrafts.subscribe,
-    () => (key ? (composerDrafts.read(key)?.text.trim() ?? "") !== "" : false),
+    () => {
+      const draft = key ? composerDrafts.read(key) : null;
+      return draft !== null && holdsContent(draft);
+    },
     () => false,
   );
 }

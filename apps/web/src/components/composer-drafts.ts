@@ -116,7 +116,8 @@ function blank(): ComposerDraft {
   return { files: [], quote: null, text: "", updatedAt: 0 };
 }
 
-function holdsContent(draft: ComposerDraft): boolean {
+/** Whether a draft holds anything the person put there: words, a file, a quote or a place. */
+export function holdsContent(draft: ComposerDraft): boolean {
   return (
     draft.text.trim().length > 0 ||
     draft.quote !== null ||

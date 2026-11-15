@@ -21,6 +21,19 @@ function isPersonQuestionEvent(event: AgentEventView): boolean {
   );
 }
 
+/**
+ * Events an older app can read. Its event pages and realtime frames parse every
+ * Request event strictly, so one person question would cost it the whole page.
+ */
+export function projectAgentEvents<Event extends AgentEventView>(
+  events: readonly Event[],
+  apiVersion: number,
+): Event[] {
+  return readsPersonQuestions(apiVersion)
+    ? [...events]
+    : events.filter((event) => !isPersonQuestionEvent(event));
+}
+
 export function projectNeedsYouPage(page: NeedsYouPage, apiVersion: number): NeedsYouPage {
   if (readsPersonQuestions(apiVersion)) return page;
   return {
@@ -37,7 +50,7 @@ export function projectHostMessage<Message extends HostToClientMessage>(
 ): Message {
   if (readsPersonQuestions(apiVersion)) return message;
   if (message.type === "host.events")
-    return { ...message, events: message.events.filter((event) => !isPersonQuestionEvent(event)) };
+    return { ...message, events: projectAgentEvents(message.events, apiVersion) };
   if (message.type === "host.snapshot")
     return {
       ...message,

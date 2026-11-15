@@ -147,6 +147,7 @@ import {
   CorrelationIdSchema,
   HostBootstrapSchema,
   HostToClientMessageSchema,
+  projectAgentEvents,
   projectHostMessage,
   projectNeedsYouPage,
   HostToIntegrationsModuleMessageSchema,
@@ -1374,6 +1375,10 @@ export async function createHostServer(
             projectDeviceAccessRequestEvent(event, input.deviceAccessRequests === "include"),
           ),
       };
+      projected.events = projectAgentEvents(
+        projected.events,
+        servedHostApiVersion(context.headers),
+      );
       return rpcSuccess(
         hostApi["thread.events.list"].success.parse(
           input.toolOutputs === "preview" ? clientToolOutputPage(projected) : projected,
@@ -1401,6 +1406,10 @@ export async function createHostServer(
             projectDeviceAccessRequestEvent(event, input.deviceAccessRequests === "include"),
           ),
       };
+      projected.events = projectAgentEvents(
+        projected.events,
+        servedHostApiVersion(context.headers),
+      );
       return rpcSuccess(
         hostApi["node.events.list"].success.parse(
           input.toolOutputs === "preview" ? clientToolOutputPage(projected) : projected,

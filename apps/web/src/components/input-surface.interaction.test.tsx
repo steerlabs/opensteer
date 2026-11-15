@@ -8,6 +8,7 @@ import { mockTmdbProposal } from "@opensteer/client/mock";
 import { BrowserTabStore, deriveSurface } from "@opensteer/client/host";
 import { InputSurface, RequestStack } from "./input-surface.js";
 import { resetQuestionSessionsForTests } from "./question-session.js";
+import { composerDraftKeyFor, composerDrafts } from "./composer-drafts.js";
 import { composerField, rewrite, textareaView } from "./composer-editor.test-support.js";
 
 const noPlaces = vi.hoisted(() => ({ browserSessions: [], connection: "connected", machines: [] }));
@@ -409,6 +410,23 @@ describe("answering a question", () => {
     expect(answerField(node)).not.toBeNull();
     expect(draft.closest("[hidden]")).not.toBeNull();
     expect(draft.value).toBe("Also check Kyoto");
+  });
+
+  it("leaves a draft holding only a quote in the message box too", () => {
+    composerDrafts.update(
+      composerDraftKeyFor("deployment", "viewer", { kind: "thread", threadId: "thread" })!,
+      {
+        quote: { attribution: "Sam", excerpt: "the August numbers", messageId: "msg_quoted" },
+        text: "",
+      },
+    );
+    const node = mount([question([field("q")])]);
+    expect(node.querySelector(".composer--answer")).toBeNull();
+    expect(
+      [...node.querySelectorAll("button")].some(
+        (button) => button.textContent === "Type an answer",
+      ),
+    ).toBe(true);
   });
 
   it("finishes a several-choice question from its card while a draft keeps the message box", async () => {
