@@ -78,7 +78,7 @@ import {
   LiveRunProgressViewSchema,
   LocalPasswordRecoveryTokenSchema,
   MessageContentSchema,
-  MessageEditSchema,
+  MessageEditViewSchema,
   MessageIdSchema,
   MessageRevisionViewSchema,
   MessageViewSchema,
@@ -1238,7 +1238,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("thread.input.lease.release") }),
   z.object({
-    edit: MessageEditSchema,
+    edit: MessageEditViewSchema,
     message: MessageViewSchema,
     type: z.literal("thread.input.edit"),
   }),

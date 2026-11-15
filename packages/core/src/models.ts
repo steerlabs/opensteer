@@ -633,7 +633,7 @@ export const MessageViewSchema = z
     /** Whether this read's input has reached the published conversation. */
     published: z.boolean().optional(),
     quote: MessageQuoteViewSchema.optional(),
-    edit: z.lazy(() => MessageEditSchema).optional(),
+    edit: z.lazy(() => MessageEditViewSchema).optional(),
   })
   .superRefine(validateMessage);
 /**
@@ -646,6 +646,7 @@ export const MessageEditSchema = z.strictObject({
   /** The owner edited a teammate's ask, so its words are no longer only the teammate's. */
   ownerEdited: z.literal(true).optional(),
 });
+export const MessageEditViewSchema = z.object(MessageEditSchema.shape);
 export type MessageEdit = z.infer<typeof MessageEditSchema>;
 export type Message = z.infer<typeof MessageSchema>;
 export type MessageView = z.infer<typeof MessageViewSchema>;
