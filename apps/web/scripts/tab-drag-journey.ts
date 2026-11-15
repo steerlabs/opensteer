@@ -7,6 +7,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import type { Page } from "playwright-core";
+import type { MockHostClient } from "@opensteer/client/mock";
 import { expectThat, finishJourney, journeyChecks, openMockWeb } from "./mock-web-journey.js";
 
 const artifactDirectory = path.resolve(
@@ -322,6 +323,13 @@ async function openWorld(world: "busy" | "stress") {
   await page.evaluate(() =>
     (Reflect.get(window, "opensteerMock") as { scriptPlaces(): unknown }).scriptPlaces(),
   );
+  // The world seeds a group of its own; this journey builds, and follows, one group alone.
+  await page.evaluate(async () => {
+    const client = Reflect.get(window, "opensteerMock") as MockHostClient;
+    for (const item of client.getSnapshot().tabs.layout.items)
+      if (item.kind === "group") await client.deleteTabGroup(item.group.groupId);
+  });
+  await page.locator(".side-tab-group").waitFor({ state: "detached" });
   return { context, page, errors };
 }
 

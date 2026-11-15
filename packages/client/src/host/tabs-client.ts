@@ -45,8 +45,12 @@ export function createTabsClient(port: TabsClientPort): TabsClient {
     return result as ResultOf<Command["type"]>;
   }
   return {
-    async openTab(target) {
-      const result = await send({ type: "tab.open", target });
+    async openTab(target, options) {
+      const result = await send({
+        type: "tab.open",
+        target,
+        ...(options?.typed && target.kind === "page" ? { typed: true as const } : {}),
+      });
       port.store.applyCommand({ layout: result.layout, tabs: [result.tab as Tab] });
       return result.tab as Tab;
     },

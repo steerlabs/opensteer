@@ -34,14 +34,12 @@ const rows: SortRow[] = layout.items.flatMap((item): SortRow[] =>
           color: "blue",
           collapsed: false,
         },
-        ...item.group.tabIds.map(
-          (tabId): SortRow => ({
-            kind: "tab",
-            key: tabId,
-            tabId,
-            group: { id: item.group.groupId, color: "blue" },
-          }),
-        ),
+        ...item.group.tabIds.map((tabId): SortRow => ({
+          kind: "tab",
+          key: tabId,
+          tabId,
+          group: { id: item.group.groupId, color: "blue" },
+        })),
       ],
 );
 const at = (key: string) => rows.findIndex((row) => row.key === key);
@@ -73,8 +71,14 @@ it("a whole group moves as one block, before another group or to the end", () =>
 });
 
 it("a drop before a group with no member left to name its place moves nothing", () => {
-  const empty: TabLayout = { revision: 1, items: [{ kind: "tab", tabId: id("a") }, group("E", [])] };
+  const empty: TabLayout = {
+    revision: 1,
+    items: [{ kind: "tab", tabId: id("a") }, group("E", [])],
+  };
   expect(
-    organizeInput({ item: { tabIds: ["a"] }, to: { groupId: null, before: { groupId: "E" } } }, empty),
+    organizeInput(
+      { item: { tabIds: ["a"] }, to: { groupId: null, before: { groupId: "E" } } },
+      empty,
+    ),
   ).toBeNull();
 });

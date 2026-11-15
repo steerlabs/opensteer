@@ -3,6 +3,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import type { Locator } from "playwright-core";
 import type { MockHostClient } from "@opensteer/client/mock";
+import type { TabId } from "@opensteer/core";
 import { expectThat, finishJourney, journeyChecks, openMockWeb } from "./mock-web-journey.js";
 
 const artifactDirectory = path.resolve(
@@ -410,12 +411,10 @@ try {
     const history = () =>
       page.evaluate(async () => {
         const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-        const params = new URLSearchParams(location.search);
-        const session = client
-          .getSnapshot()
-          .browserSessions.find((session) => session.id === params.get("browser"))!;
-        await client.browserHistory.load(session.profileId!);
-        return client.browserHistory.entries(session.profileId!).map((entry) => entry.url);
+        const tabId = new URLSearchParams(location.search).get("tab")!;
+        const profileId = client.getSnapshot().tabs.get(tabId as TabId)!.profile!.profileId;
+        await client.browserHistory.load(profileId);
+        return client.browserHistory.entries(profileId).map((entry) => entry.url);
       });
     await address().fill("stopped.example.com");
     await address().press("Enter");

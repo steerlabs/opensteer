@@ -55,6 +55,7 @@ export interface PageTabsPort {
     actor: TabActor,
     target: Extract<TabTarget, { kind: "page" }>,
     key: string,
+    typed?: boolean,
   ): Promise<TabWrite>;
   admitted?(row: TabWrite): Promise<void>;
   states?(ownerId: UserId, rows: TabRecord[]): Promise<Map<TabId, NativeTabTargetState>>;
@@ -495,6 +496,8 @@ export class TabService implements TabServicePort {
     target: TabTarget,
     key: string,
     membershipRevision?: number,
+    /** The person typed a page's address. */
+    typed = false,
   ): Promise<{ tab: Tab }> {
     TabTargetSchema.parse(target);
     const ownerId = owner(actor),
@@ -511,7 +514,7 @@ export class TabService implements TabServicePort {
     let write: TabWrite;
     let appFence: { version: number; generation: number | null } | undefined;
     if (target.kind === "page")
-      write = await this.options.pages.open(actor, target, operationKey(actor, key));
+      write = await this.options.pages.open(actor, target, operationKey(actor, key), typed);
     else if (target.kind === "app") {
       const app = await this.options.apps.get(ownerId, target.appId);
       appFence = { version: app.version, generation: app.server?.generation ?? null };

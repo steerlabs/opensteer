@@ -283,9 +283,7 @@ try {
         );
         expectThat(
           observed,
-          shown === added[0]!.id &&
-            address === expected &&
-            conversation,
+          shown === added[0]!.id && address === expected && conversation,
           "the tab or conversation is not shown",
         );
         await page.screenshot({

@@ -811,6 +811,28 @@ export class MockPlaceWorld {
       },
     };
   }
+  /**
+   * As the Host does for a window or phone: the Run's activity in that exact
+   * tab, which also enters it as the Run's place. It stays until the Run lets go.
+   */
+  actInNativeTab(runId: string, threadId: string, tabId: string): void {
+    const at = this.#now().getTime();
+    this.activity.apply({
+      type: "host.place-activity",
+      activity: TabPlaceActivitySchema.parse({
+        tabId,
+        threadId,
+        runId,
+        generation: 1,
+        seq: ++this.#seq,
+        order: ++this.#order,
+        at,
+        expiresAt: at + 15000,
+        pointer: null,
+        geometryRevision: 0,
+      }),
+    });
+  }
   actInPlace(threadId: string, placeKey: string): void {
     const snapshot = this.#snapshot();
     const place = placeList(snapshot).find((item) => item.key === placeKey);
@@ -912,8 +934,7 @@ export class MockPlaceWorld {
       title: tab.title,
       url: tab.url,
       // The document the page's context reads name, so a chip and its read agree.
-      documentId:
-        tab.documentId ?? held?.documentId ?? `document-${tab.id}`,
+      documentId: tab.documentId ?? held?.documentId ?? `document-${tab.id}`,
       geometryRevision: 1,
       loading: tab.loading ?? false,
       navigationFailed: false,

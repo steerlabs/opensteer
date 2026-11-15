@@ -267,8 +267,8 @@ export function seedMockSubagents<Snapshot extends HostSnapshot>(
     originatingRunId: openRunId,
     presentation: {
       kind: "choice",
-      title: "Confirm the Friday reservation",
-      detail: "Reserve a table for two at 7pm.",
+      title: "Confirm the Friday reservation at Nopa",
+      detail: "Reserve a table for two at Nopa at 7pm.",
       risk: "low",
       options: [
         { id: "allow-once", label: "Allow once", hint: "allow-once" },

@@ -9064,7 +9064,11 @@ describe("HttpHostClient owner views", () => {
       await older;
       expect(host.client.tabViewer(tab.tabId)).toMatchObject({ view: { viewId: newer.viewId } });
       // The lease lapsing shows as the same tab's viewer, ended, never as it was answered.
-      const expired = { ...newer, state: "expired" as const, unavailableReason: "expired" as const };
+      const expired = {
+        ...newer,
+        state: "expired" as const,
+        unavailableReason: "expired" as const,
+      };
       socket.receive({ type: "host.computer-view.changed", view: expired });
       expect(host.client.tabViewer(tab.tabId)).toEqual({ kind: "window", view: expired });
       // And the same object while nothing changed, so a selector stays still.

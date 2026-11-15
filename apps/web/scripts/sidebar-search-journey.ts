@@ -341,6 +341,10 @@ try {
   );
 
   await check("a folded group's tabs are found, by title and by the group's name", async () => {
+    // The world's own group stays open; only the group made here folds.
+    const openMembers = await page.evaluate(
+      () => document.querySelectorAll(".sidebar__lists .side-tab--grouped").length,
+    );
     const groupId = await page.evaluate(async () => {
       const client = Reflect.get(window, "opensteerMock") as MockHostClient;
       const { groups } = await client.organizeTabs({
@@ -359,7 +363,11 @@ try {
     const byGroup = await search(page, "weekend plans");
     await shot(page, "03-group.png");
     const byTitle = await search(page, "lisbon");
-    expectThat({ folded }, folded === 0, "the group did not fold its tabs in the list");
+    expectThat(
+      { folded, openMembers },
+      folded === openMembers,
+      "the group did not fold its tabs in the list",
+    );
     expectThat(
       { byGroup },
       byGroup.options
@@ -454,7 +462,7 @@ try {
     expectThat(
       { found, opened },
       found.options[0]?.title === "Hyatt Seoul booking" &&
-        opened.path.startsWith("/threads/") &&
+        opened.path.startsWith("/tasks/") &&
         opened.row?.startsWith("Hyatt Seoul booking") === true,
       "Enter did not open the task's conversation",
     );
@@ -492,9 +500,7 @@ try {
       }));
       expectThat(
         { done, at, opened },
-        at >= 0 &&
-          opened.path === `/threads/${done.threadId}` &&
-          opened.focus === "Search tasks and tabs",
+        at >= 0 && opened.path === `/tasks/${done.threadId}` && opened.focus === "Search",
         "the Done task did not open, or the keyboard was lost",
       );
       return { done, opened };
@@ -720,7 +726,7 @@ try {
           { afterSearch, afterDrawer },
           afterSearch.drawer &&
             !afterSearch.search &&
-            afterSearch.focus === "Search tasks and tabs" &&
+            afterSearch.focus === "Search" &&
             !afterDrawer,
           "Escape did not close search first, keyboard in the drawer, then the drawer",
         );

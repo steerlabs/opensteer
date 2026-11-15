@@ -16,7 +16,8 @@ import type {
   TabViewer,
 } from "@opensteer/protocol";
 export interface TabsClient {
-  openTab(target: TabTarget): Promise<Tab>;
+  /** `typed`: the person typed a page's address, which their browsing history ranks. */
+  openTab(target: TabTarget, options?: { readonly typed?: boolean }): Promise<Tab>;
   closeTabs(tabIds: TabId[]): Promise<TabCloseResult>;
   reopenTab(tabId?: TabId): Promise<Tab>;
   /**

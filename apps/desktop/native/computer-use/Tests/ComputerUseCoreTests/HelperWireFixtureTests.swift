@@ -286,7 +286,9 @@ final class HelperWireFixtureTests: XCTestCase {
       "session.windows": Wire.WindowsResult(windows: [windowInfo]),
       "session.bind": Wire.BindResult(window: windowInfo),
       "view.windows": Wire.OwnerWindowsResult(windows: [
-        OwnerWindowInfo(windowId: "win_00000000-0000-4000-8000-000000000042", title: "Shopping list")
+        OwnerWindowInfo(
+          windowId: "win_00000000-0000-4000-8000-000000000042", title: "Shopping list",
+          minimized: false, onScreen: true)
       ]),
       "session.open": Wire.SessionOpenResult(sessionId: Self.sessionId),
       "session.close": Wire.EmptyResult(),

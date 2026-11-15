@@ -5073,7 +5073,11 @@ class MockHostState {
     const republish = () => this.emit();
     switch (command.type) {
       case "tab.open": {
-        const tabId = await this.#openTab(command.target, command.idempotencyKey);
+        const tabId = await this.#openTab(
+          command.target,
+          command.idempotencyKey,
+          command.typed === true,
+        );
         republish();
         return { type: command.type, tab: catalog.tab(tabId), layout: catalog.layout() };
       }
@@ -5111,7 +5115,7 @@ class MockHostState {
         return { type: command.type, layout: catalog.layout() };
     }
   }
-  async #openTab(target: TabTarget, idempotencyKey: string): Promise<TabId> {
+  async #openTab(target: TabTarget, idempotencyKey: string, typed = false): Promise<TabId> {
     const catalog = this.tabCatalog;
     if (target.kind === "page") {
       if (!this.places) throw new Error("The browser is unavailable.");
@@ -5126,6 +5130,7 @@ class MockHostState {
           ? { placement: { kind: "runner", runnerId: target.computerId } }
           : {}),
         url: target.url,
+        ...(typed ? { typed: true } : {}),
         idempotencyKey,
       });
       catalog.revealPage(opened.tabId);
@@ -10640,6 +10645,7 @@ class MockHostState {
       type: "place.entered",
     });
     this.runPlaces.accept(event, false);
+    if (place.kind !== "browser") this.places?.actInNativeTab(runId, threadId, tabId);
     this.update({
       ...this.snapshot,
       transcripts: {

@@ -1234,6 +1234,7 @@ function fakeHost(initial: HostSnapshot) {
     editor,
     releaseWaitingMessage: client.releaseWaitingMessage,
     runPlaces,
+    placeActivity,
     watchRelease,
     /** The Host binds this device's view of a page tab to another browser session. */
     rebind(tabId: string, sessionId: string) {
@@ -5191,6 +5192,22 @@ describe("the Run's page above the conversation", () => {
           data: { tabId: nativeTab, title: "Native place", site: null },
         }),
       );
+      // As the Host does, the Run's activity in that exact tab comes with the entry.
+      host.placeActivity.apply({
+        type: "host.place-activity",
+        activity: {
+          tabId: nativeTab,
+          threadId: conversationId,
+          runId,
+          generation: 1,
+          seq: 1,
+          order: 1,
+          at: Date.now(),
+          expiresAt: Date.now() + 15_000,
+          pointer: null,
+          geometryRevision: 0,
+        },
+      });
       const { container } = await mount(host, conversationId);
       await layOut();
       const original = card(container);

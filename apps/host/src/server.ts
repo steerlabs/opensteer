@@ -2408,6 +2408,8 @@ export async function createHostServer(
           { kind: "person", ownerId: userId },
           command.target,
           command.idempotencyKey,
+          undefined,
+          command.typed === true,
         );
         return {
           type: command.type,

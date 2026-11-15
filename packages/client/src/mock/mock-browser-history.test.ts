@@ -27,10 +27,12 @@ async function openPage(
   target: { profileId: BrowserProfileId } | { guest: true; computerId: RunnerId },
   url = "https://history.example/start",
   idempotencyKey: string = crypto.randomUUID(),
+  typed = false,
 ) {
   const opened = await client.dispatch({
     type: "tab.open",
     target: { kind: "page", url, ...target },
+    ...(typed ? { typed: true as const } : {}),
     idempotencyKey,
   });
   if (opened.type !== "tab.open") throw new Error("Expected an opened tab");
@@ -42,11 +44,11 @@ it("records committed opens once, navigation typed intent, and retained favicons
   vi.useFakeTimers();
   const { client, profileId } = setup();
   const input = { url: "https://history.example/first" };
-  const opened = await openPage(client, { profileId }, input.url, "history-open");
-  await openPage(client, { profileId }, input.url, "history-open");
+  const opened = await openPage(client, { profileId }, input.url, "history-open", true);
+  await openPage(client, { profileId }, input.url, "history-open", true);
   let history = unwrapRpcResult(await client.rpc["browser.history.get"]({ profileId }));
-  // Opening a tab is one visit; only an address typed into a shown page counts as typed.
-  expect(history.entries).toMatchObject([{ url: input.url, typedCount: 0, visitCount: 1 }]);
+  // Opening a tab is one visit, typed when the person typed its address in a new tab.
+  expect(history.entries).toMatchObject([{ url: input.url, typedCount: 1, visitCount: 1 }]);
   client.sendBrowserCommand(opened.sessionId, {
     type: "navigation.go",
     surfaceId: opened.tabId,
@@ -57,7 +59,7 @@ it("records committed opens once, navigation typed intent, and retained favicons
   history = unwrapRpcResult(await client.rpc["browser.history.get"]({ profileId }));
   expect(history.entries.map((entry) => [entry.url, entry.typedCount])).toEqual([
     ["https://history.example/second", 1],
-    [input.url, 0],
+    [input.url, 1],
   ]);
   const iconRef = history.icons[0]!.iconRef;
   expect(iconRef).toMatch(/^[a-f\d]{64}$/u);

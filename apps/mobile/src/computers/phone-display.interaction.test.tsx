@@ -361,6 +361,23 @@ async function setup(
     listeners.forEach((listener) => listener());
   };
   const activity = new PlaceActivityStore();
+  // As the Host does, the Run's activity in the phone's tab comes with its entry.
+  if (screen === "live")
+    activity.apply({
+      type: "host.place-activity",
+      activity: {
+        tabId: phoneTab.tabId,
+        threadId,
+        runId,
+        generation: 1,
+        seq: 1,
+        order: 1,
+        at: Date.parse("2026-11-02T12:00:00.000Z"),
+        expiresAt: Date.parse("2026-11-02T12:00:15.000Z"),
+        pointer: null,
+        geometryRevision: 0,
+      },
+    });
   const client = {
     getSnapshot: () => snapshot,
     runPlace: runPlaces.get,

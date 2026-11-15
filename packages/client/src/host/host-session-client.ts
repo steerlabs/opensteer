@@ -742,7 +742,10 @@ export class HttpHostClient {
   }
   async readBrowserTabIcon(tabId: string, iconRef: string): Promise<string | null> {
     return unwrapRpcResult(
-      await this.rpc["browser.tabIcon.get"]({ tabId: BrowserSurfaceIdSchema.parse(tabId), iconRef }),
+      await this.rpc["browser.tabIcon.get"]({
+        tabId: BrowserSurfaceIdSchema.parse(tabId),
+        iconRef,
+      }),
     ).favicon;
   }
   /** Holds on Threads observed beside the active one, counted per Thread. */

@@ -12,7 +12,11 @@ const artifactDirectory = path.resolve(
 await mkdir(artifactDirectory, { recursive: true });
 const { checks, check, abort } = journeyChecks();
 const web = await openMockWeb("opensteer-tab-profile-filter-web");
-const trigger = (page: Page) => page.getByRole("button", { name: "Filter tabs by profile" });
+/** The one tab filter, which narrows by profile among its choices. */
+const trigger = (page: Page) => page.locator(".side-tab-filter");
+const clear = (page: Page) => page.getByRole("button", { name: "Clear tab filter" });
+const profileChoices = (page: Page) =>
+  page.getByRole("group", { name: "Profile" }).getByRole("menuitemradio");
 const rows = (page: Page) =>
   page.locator(".side-section--tabs [data-place-key]").evaluateAll((items) =>
     items.map((item) => ({
@@ -48,7 +52,7 @@ async function choose(page: Page, name: string) {
   await page.getByRole("menuitemradio", { name, exact: true }).click();
   await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
   await page.waitForFunction(
-    () => document.activeElement === document.querySelector(".side-profile-filter"),
+    () => document.activeElement === document.querySelector(".side-tab-filter"),
   );
 }
 
@@ -79,11 +83,17 @@ try {
   // live last-tab removal; clearing; keyboard focus; responsive drawer overflow.
   await check("Tabs exposes a keyboard-accessible profile menu with exact counts", async () => {
     await trigger(page).click({ timeout: 3000 });
-    const choices = await page.getByRole("menuitemradio").allTextContents();
+    const choices = await profileChoices(page).allTextContents();
     const all = await page
       .getByRole("menuitemradio", { name: "All profiles", exact: true })
       .getAttribute("aria-checked");
-    expectThat({ choices, all }, choices.length === 4 && all === "true", "profile choices missing");
+    // All profiles, then one choice for each identity a tab is in.
+    const identityCount = new Set(identities.map((tab) => tab.profileId)).size;
+    expectThat(
+      { choices, all, identityCount },
+      choices.length === identityCount + 1 && all === "true",
+      "profile choices missing",
+    );
     for (const [name, profileId] of [
       ["Personal", "bpr_00000000-0000-4000-8000-000000000001"],
       ["Work", "bpr_00000000-0000-4000-8000-000000000002"],
@@ -129,7 +139,7 @@ try {
         "Tasks changed",
       );
       await shot(page, "02-work.png");
-      await page.getByRole("button", { name: "Clear profile filter" }).click();
+      await clear(page).click();
       expectThat(
         {},
         JSON.stringify(await rows(page)) === JSON.stringify(before),
@@ -153,7 +163,7 @@ try {
         JSON.stringify(filtered) === JSON.stringify(expected),
         "Guest matches are wrong",
       );
-      await page.getByRole("button", { name: "Clear profile filter" }).click();
+      await clear(page).click();
       return { filtered };
     },
   );
@@ -180,7 +190,7 @@ try {
         "last tab silently cleared the filter",
       );
       await shot(page, "04-empty.png");
-      await page.getByRole("button", { name: "Clear profile filter" }).click();
+      await clear(page).click();
       expectThat({}, (await rows(page)).length > 0, "clear did not restore other tabs");
       return { remaining };
     },
@@ -192,7 +202,7 @@ try {
     await page.getByRole("combobox", { name: "Search tasks and tabs" }).waitFor();
     await page.keyboard.press("Escape");
     await trigger(page).click();
-    const menu = await page.getByRole("menu", { name: "Filter tabs by profile" }).boundingBox();
+    const menu = await page.getByRole("group", { name: "Profile" }).boundingBox();
     expectThat(
       { menu },
       !!menu && menu.x >= 0 && menu.x + menu.width <= 390,
@@ -207,7 +217,7 @@ try {
     return { errors };
   });
   await check(
-    "a single identity needs no filter, and clearing returns keyboard focus to Tabs",
+    "a single identity needs no profile choice, and clearing keeps the keyboard",
     async () => {
       await choose(page, "Guest");
       const otherTabs = (await inventory(page)).filter((tab) => tab.profileId !== null);
@@ -220,12 +230,26 @@ try {
         },
         otherTabs.map((tab) => tab.key),
       );
-      await page.getByRole("button", { name: "Clear profile filter" }).click();
-      await trigger(page).waitFor({ state: "hidden" });
-      await page.waitForFunction(() => document.activeElement?.id === "sidebar-tabs");
-      return {
+      await clear(page).click();
+      // The keyboard stays on the filter, or goes to Tabs when nothing is left to narrow.
+      await page.waitForFunction(
+        () =>
+          document.activeElement?.id === "sidebar-tabs" ||
+          document.activeElement === document.querySelector(".side-tab-filter"),
+      );
+      let profileSections = 0;
+      if (await trigger(page).isVisible()) {
+        await trigger(page).click();
+        await page.getByRole("group", { name: "Agents" }).waitFor();
+        profileSections = await page.getByRole("group", { name: "Profile" }).count();
+        await page.keyboard.press("Escape");
+      }
+      const observed = {
+        profileSections,
         remainingProfiles: [...new Set((await inventory(page)).map((tab) => tab.profileId))],
       };
+      expectThat(observed, profileSections === 0, "one identity still offers a profile choice");
+      return observed;
     },
   );
   await check("selected profiles and tab rows fit at every sidebar width", async () => {
@@ -276,7 +300,7 @@ try {
                 return { left, right, width };
               };
               const label = section.querySelector<HTMLElement>(
-                ".side-profile-filter > span:last-child",
+                ".side-tab-filter > span:last-child",
               );
               if (!label) throw new Error("Missing profile label");
               const { left, right } = section.getBoundingClientRect();
@@ -284,8 +308,8 @@ try {
                 section: { left, right },
                 heading: rect(".side-head"),
                 title: rect(".side-head__title"),
-                filter: rect(".side-profile-filter"),
-                clear: rect(".side-profile-clear"),
+                filter: rect(".side-tab-filter"),
+                clear: rect(".side-tab-filter__clear"),
                 newTab: rect('[aria-label="New tab"]'),
                 list: rect(".side-list"),
                 label: { width: label.clientWidth, scrollWidth: label.scrollWidth },
@@ -328,7 +352,7 @@ try {
           await sample.getByRole("combobox", { name: "Search tasks and tabs" }).waitFor();
           await sample.keyboard.press("Escape");
           await measure("drawer");
-          await sample.getByRole("button", { name: "Clear profile filter" }).click();
+          await clear(sample).click();
           await trigger(sample).waitFor();
         } finally {
           await sample.close();

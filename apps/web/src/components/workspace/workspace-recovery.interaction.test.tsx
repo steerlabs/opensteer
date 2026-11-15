@@ -135,7 +135,15 @@ describe("the review's findings", () => {
   });
 
   it("3 · a delayed open from the start page keeps the conversation chosen meanwhile, and loses to a newer place choice", async () => {
-    await mount("/");
+    await mount((source) => {
+      // A profile has its own computer; Guest with two to choose from would be asked which.
+      const snapshot = source.getSnapshot();
+      localStorage.setItem(
+        `opensteer.browse-with.v1:${encodeURIComponent(snapshot.deploymentId!)}:${encodeURIComponent(snapshot.user!.id)}`,
+        JSON.stringify({ kind: "profile", profileId: snapshot.browserProfiles[0]!.id }),
+      );
+      return "/";
+    });
     const real = client.openTab;
     const gates = [deferred<void>(), deferred<void>()];
     let opens = 0;
@@ -151,6 +159,7 @@ describe("the review's findings", () => {
     await pressEnter(element(".start-page__input"));
     expect(open).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "page", url: "https://example.com/" }),
+      { typed: true },
     );
     // Choosing a conversation meanwhile keeps the start page in the middle until the tab is listed.
     const threadId = firstTaskId();

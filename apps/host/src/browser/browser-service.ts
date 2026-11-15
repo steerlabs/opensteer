@@ -2760,7 +2760,7 @@ export class BrowserService {
   }
 
   readonly pageTabs: PageTabsPort = {
-    open: (actor, target, key) => this.#openWorkspacePage(actor, target, key),
+    open: (actor, target, key, typed) => this.#openWorkspacePage(actor, target, key, typed),
     admitted: async (write) => {
       const row = await this.#workspaceTabs?.get(write.ownerId, write.id);
       if (row?.pageBinding && row.pageBinding.sessionId === write.pageBinding?.sessionId) {
@@ -2839,6 +2839,7 @@ export class BrowserService {
     actor: TabActor,
     target: Extract<TabTarget, { kind: "page" }>,
     key: string,
+    typed = false,
   ): Promise<TabWrite> {
     const ownerId =
       actor.kind === "person"
@@ -2891,6 +2892,7 @@ export class BrowserService {
             ? { placement: { kind: "runner" as const, runnerId: target.computerId } }
             : {}),
         ...(target.url === "about:blank" ? {} : { url: target.url }),
+        ...(typed && actor.kind === "person" ? { typed: true } : {}),
         ...(target.viewport ? { viewport: target.viewport } : {}),
       },
       agent,

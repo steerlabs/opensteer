@@ -303,7 +303,11 @@ export class MockTabCatalog {
       };
       this.#items.splice(before ? at() : Math.min(firstIndex, this.#items.length), 0, created);
     } else
-      this.#items.splice(at(), 0, ...input.tabIds.map((tabId) => ({ kind: "tab" as const, tabId })));
+      this.#items.splice(
+        at(),
+        0,
+        ...input.tabIds.map((tabId) => ({ kind: "tab" as const, tabId })),
+      );
     this.#revision++;
   }
   updateGroup(input: TabGroupUpdateInput): TabGroup {
