@@ -388,6 +388,11 @@ function contained(observed: Awaited<ReturnType<typeof card>>, what: string) {
   );
 }
 
+/** The first tab row; a group's head above it opens no tab. */
+function firstTab(page: Page) {
+  return page.locator(".side-section--tabs [data-place-key] .side-tab__main").first();
+}
+
 /** A turn, found by the Run it is a stretch of. */
 async function turnOf(page: Page, runId: string) {
   return page.locator(`.turn[data-run-id="${runId}"]`).first();
@@ -644,7 +649,7 @@ try {
       return observed;
     });
 
-    await page.locator(".side-tab__main").first().click();
+    await firstTab(page).click();
     await page.locator(".workspace--work").waitFor();
     await check("the docked header gives the title its width", async () => {
       const header = page.locator(".workspace--work .conv-header");
@@ -710,7 +715,7 @@ try {
 
   {
     const { context, page } = await openTask({ width: 1440, height: 900 }, false, true);
-    await page.locator(".side-tab__main").first().click();
+    await firstTab(page).click();
     await page.locator(".workspace--work").waitFor();
     const handle = page.getByRole("separator", { name: "Resize conversation" });
     for (const desktop of [false, true]) {
