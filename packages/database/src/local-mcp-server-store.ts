@@ -141,7 +141,7 @@ export class LocalMcpServerStore {
           .selectFrom("computerAppSetupRequests")
           .selectAll()
           .where("kind", "=", "server")
-          .where("deviceId", "=", await requireSelfDeviceId(transaction, runnerId))
+          .where("runnerId", "=", await requireSelfDeviceId(transaction, runnerId))
           .where("definitionId", "=", locked.id)
           // FOR UPDATE: Delete an expired or superseded server setup request.
           .forUpdate()
@@ -482,7 +482,7 @@ async function answeredRequest(
     .selectFrom("computerAppSetupRequests")
     .selectAll()
     .where("id", "=", input.setupRequestId)
-    .where("deviceId", "=", await requireSelfDeviceId(transaction, input.runnerId))
+    .where("runnerId", "=", await requireSelfDeviceId(transaction, input.runnerId))
     .where("kind", "=", "server")
     // FOR UPDATE: Approval and denial delete this server setup request.
     .forUpdate()

@@ -92,7 +92,7 @@ export async function computerUsePolicyInTransaction(
     .selectFrom("computerUsePolicies")
     .select(["appApproval", "revision"])
     .where("deploymentId", "=", deployment.id)
-    .where("deviceId", "=", deviceId)
+    .where("runnerId", "=", deviceId)
     .where("ownerUserId", "=", ownerUserId)
     .executeTakeFirst();
   return row ?? { appApproval: "ask", revision: 0 };
@@ -352,7 +352,7 @@ export async function settleComputerAppApprovalInTransaction(
         now: new Date(),
         ownerUserId: waiting.ownerUserId,
         reason: waiting.reason,
-        deviceId: waiting.deviceId,
+        deviceId: waiting.runnerId,
         threadId: waiting.threadId,
         threadTitle: waiting.threadTitle,
       });

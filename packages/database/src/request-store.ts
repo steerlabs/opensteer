@@ -1,3 +1,4 @@
+import { computerConnectionDeviceId } from "./integration-store.js";
 import type {
   IntegrationConnectionSummary as LegacyIntegrationConnectionSummary,
   ComputerAppSetupRequest as LegacyComputerAppSetupRequest,
@@ -1905,7 +1906,7 @@ export class RequestStore {
             "integrationServers.installationId",
           ])
           .where("integrationConnections.connectionKind", "=", "computer")
-          .where("integrationConnections.deviceId", "=", input.deviceId)
+          .where(computerConnectionDeviceId, "=", input.deviceId)
           .where("integrationConnections.integrationDefinitionId", "=", input.definitionId)
           // `= null` matches nothing, so a phone's app-less connection is found with `is`.
           .where(

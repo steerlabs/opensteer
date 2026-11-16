@@ -1,3 +1,4 @@
+import { computerConnectionDeviceId } from "./integration-store.js";
 import { getDeviceSelfRunnerId, getSelfDeviceId } from "./device-inventory-store.js";
 import { threadFromRow } from "./thread-row-mappers.js";
 import { retryDatabaseTransaction } from "./connection.js";
@@ -947,7 +948,7 @@ export class ChannelStore {
       .where("connectionKind", "=", "computer")
       .where("integrationDefinitionId", "=", input.definitionId)
       .where("ownerUserId", "=", input.ownerUserId)
-      .where("deviceId", "=", deviceId)
+      .where(computerConnectionDeviceId, "=", deviceId)
       .where("status", "!=", "revoked")
       .executeTakeFirst();
     return row?.id ?? null;
@@ -2288,7 +2289,7 @@ async function requireComputerChannelSource(
           "connectionKind",
           "integrationDefinitionId",
           "ownerUserId",
-          "deviceId",
+          computerConnectionDeviceId.as("deviceId"),
           "status",
         ])
         .where("id", "=", input.sourceConnectionId)

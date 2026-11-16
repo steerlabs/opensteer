@@ -63,9 +63,10 @@ export function computerAppSetupRequestFromRow(
 ): DeviceComputerAppSetupRequest {
   // `appKey` is the index's copy of the identity, not part of the approval a
   // desktop signs, so it never reaches the signed transcript.
-  const { appKey: _appKey, ...rest } = row;
+  const { appKey: _appKey, runnerId: deviceId, ...rest } = row;
   return DeviceComputerAppSetupRequestSchema.parse({
     ...rest,
+    deviceId,
     createdAt: row.createdAt.toISOString(),
     expiresAt: row.expiresAt.toISOString(),
   });
@@ -81,7 +82,7 @@ export async function lockComputerAppSetupRequestInTransaction(
       .selectFrom("computerAppSetupRequests")
       .selectAll()
       .where("kind", "=", scope.kind)
-      .where("deviceId", "=", scope.deviceId)
+      .where("runnerId", "=", scope.deviceId)
       .where("definitionId", "=", scope.definitionId)
       .where("appKey", scope.appKey === null ? "is" : "=", scope.appKey)
       // FOR UPDATE: Callers delete or replace this computer app setup request.
@@ -109,7 +110,7 @@ export async function deleteComputerAppSetupRequestsInTransaction(
 ): Promise<readonly string[]> {
   let query = transaction.deleteFrom("computerAppSetupRequests");
   if (scope.kind !== undefined) query = query.where("kind", "=", scope.kind);
-  if (scope.deviceId !== undefined) query = query.where("deviceId", "=", scope.deviceId);
+  if (scope.deviceId !== undefined) query = query.where("runnerId", "=", scope.deviceId);
   if (scope.definitionId !== undefined) {
     query = query.where("definitionId", "=", scope.definitionId);
   }
@@ -140,7 +141,7 @@ export async function relinkComputerAppAccessRequestsInTransaction(
   if (waiting.length === 0) return;
   const replacement = await transaction
     .selectFrom("computerAppSetupRequests")
-    .innerJoin("devices", "devices.id", "computerAppSetupRequests.deviceId")
+    .innerJoin("devices", "devices.id", "computerAppSetupRequests.runnerId")
     .select([
       "computerAppSetupRequests.app as app",
       "computerAppSetupRequests.kind as kind",
@@ -246,7 +247,7 @@ export async function insertComputerAppSetupRequestInTransaction(
       expiresAt: new Date(input.now.getTime() + computerAppSetupRequestLifetimeMs),
       id: randomUUID(),
       ownerUserId: input.ownerUserId,
-      deviceId: input.deviceId,
+      runnerId: input.deviceId,
     })
     .returningAll()
     .executeTakeFirstOrThrow();

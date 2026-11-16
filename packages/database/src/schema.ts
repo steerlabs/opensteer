@@ -1567,7 +1567,7 @@ export interface IntegrationConnectionTable {
   capabilities: JsonColumn<readonly string[]>;
   grantedScopes: JsonColumn<readonly string[]>;
   integrationDefinitionId: string | null;
-  /** The messaging Runner assigned to a channel; computer targets use deviceId. */
+  /** Channel assignment, also retained for previous Hosts reading self-backed computer targets. */
   runnerId: RunnerId | null;
   deviceId: Generated<DeviceId | null>;
   /**
@@ -1875,7 +1875,8 @@ interface ChannelLinkCodeTable {
 
 interface ComputerUsePolicyTable {
   deploymentId: DeploymentId;
-  deviceId: DeviceId;
+  /** Legacy storage name retained while the previous Host runs. */
+  runnerId: DeviceId;
   ownerUserId: UserId;
   appApproval: "ask" | "automatic";
   revision: number;
@@ -1885,7 +1886,8 @@ interface ComputerUsePolicyTable {
 /** A person's Stop for one Run on one Device; it lasts as long as the Run. */
 interface ComputerUseStopTable {
   runId: RunId;
-  deviceId: DeviceId;
+  /** Legacy storage name retained while the previous Host runs. */
+  runnerId: DeviceId;
   stoppedAt: Timestamp;
 }
 
@@ -1899,7 +1901,8 @@ interface ComputerAppSetupRequestTable {
   id: string;
   deploymentId: DeploymentId;
   ownerUserId: UserId;
-  deviceId: DeviceId;
+  /** Legacy storage name retained while the previous Host runs. */
+  runnerId: DeviceId;
   definitionId: string;
   definitionDigest: string;
   access: "read" | "read-write";

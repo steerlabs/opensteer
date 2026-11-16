@@ -119,7 +119,7 @@ export async function clearRemovedDeviceStopsInTransaction(
   if (deviceIds.length)
     await transaction
       .deleteFrom("computerUseStops")
-      .where("deviceId", "in", [...deviceIds])
+      .where("runnerId", "in", [...deviceIds])
       .execute();
 }
 export type DeviceRemovalEffects = Awaited<ReturnType<typeof revokeRunner>>;

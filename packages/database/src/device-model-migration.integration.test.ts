@@ -6,6 +6,8 @@ import { createDatabase } from "./connection.js";
 import { cloneTestDatabase, type TestDatabase } from "./test-database.test-support.js";
 import { deviceDriversMigrationName, migrateToLatest, migrationProvider } from "./migrations.js";
 import { seedPrivatePublisher } from "./private-publisher.test-support.js";
+import { OpensteerStore } from "./store.js";
+import { IntegrationPlatformStore } from "./integration-platform-store.js";
 let clone: TestDatabase;
 let db: ReturnType<typeof createDatabase>;
 beforeEach(async () => {
@@ -156,10 +158,10 @@ it("backfills visible active and revoked identities exactly, splits targets and 
     expect(Boolean(driver.detachedAt)).toBe(entry.revoked);
   }
   expect((await db.selectFrom("computerUsePolicies").selectAll().execute())[0]).toMatchObject({
-    deviceId: ids[0],
+    runnerId: ids[0],
     revision: 5,
   });
-  expect((await db.selectFrom("computerUseStops").selectAll().execute())[0]?.deviceId).toBe(ids[0]);
+  expect((await db.selectFrom("computerUseStops").selectAll().execute())[0]?.runnerId).toBe(ids[0]);
   const connections = await db
     .selectFrom("integrationConnections")
     .select(["id", "deviceId", "runnerId"])
@@ -167,14 +169,14 @@ it("backfills visible active and revoked identities exactly, splits targets and 
     .execute();
   expect(connections).toEqual(
     expect.arrayContaining([
-      { id: computerConnection, deviceId: ids[0], runnerId: null },
+      { id: computerConnection, deviceId: ids[0], runnerId: ids[0] },
       { id: channelConnection, deviceId: null, runnerId: fixture.runnerId },
     ]),
   );
   expect(
     await db
       .selectFrom("computerAppSetupRequests")
-      .select(["deviceId", "definitionDigest"])
+      .select(["runnerId as deviceId", "definitionDigest"])
       .where("id", "=", setupRequestId)
       .executeTakeFirstOrThrow(),
   ).toEqual({ deviceId: ids[0], definitionDigest: "unchanged-digest" });
@@ -212,4 +214,72 @@ it("creates no Devices on a team deployment, including historical visible Runner
   );
   await migrateToLatest(db);
   expect(await db.selectFrom("devices").selectAll().execute()).toEqual([]);
+});
+
+it("keeps the previous Host's writes readable after expanding the device model", async () => {
+  await previous();
+  const fixture = await seedPrivatePublisher(db);
+  await migrateToLatest(db);
+  const deviceId = DeviceIdSchema.parse(fixture.runnerId);
+  const store = new OpensteerStore(db);
+  const integrations = new IntegrationPlatformStore(db);
+  await sql`select access_policy,access_policy_revision from runners where id=${fixture.runnerId}`.execute(
+    db,
+  );
+  await sql`update runners set access_policy_revision=access_policy_revision+1 where id=${fixture.runnerId}`.execute(
+    db,
+  );
+  await sql`insert into computer_use_policies(deployment_id,runner_id,owner_user_id,app_approval,revision)
+    values(${fixture.deploymentId},${fixture.runnerId},${fixture.userId},'automatic',2)`.execute(
+    db,
+  );
+  expect(
+    await integrations.getDeviceComputerUsePolicy({ deviceId, ownerUserId: fixture.userId }),
+  ).toEqual({ appApproval: "automatic", revision: 2 });
+  await sql`insert into computer_use_stops(run_id,runner_id) values(${fixture.runId},${fixture.runnerId})`.execute(
+    db,
+  );
+  expect(await store.activeComputerUseStops()).toEqual([{ runId: fixture.runId, deviceId }]);
+  const setupRequestId = crypto.randomUUID();
+  await sql`insert into computer_app_setup_requests(id,kind,deployment_id,owner_user_id,runner_id,definition_id,definition_digest,access,expires_at)
+    values(${setupRequestId},'app',${fixture.deploymentId},${fixture.userId},${fixture.runnerId},'android-phone','old-image','read',now()+interval '1 hour')`.execute(
+    db,
+  );
+  expect(await integrations.getDeviceComputerAppSetupRequest({ setupRequestId })).toMatchObject({
+    deviceId,
+    definitionDigest: "old-image",
+  });
+  const connectionId = createIntegrationId("connection");
+  await sql`insert into integration_connections(id,owner_user_id,connection_kind,provider,connection_method,status,display_name,capabilities,granted_scopes,integration_definition_id,runner_id,computer_access,auth_method_id)
+    values(${connectionId},${fixture.userId},'computer','test','computer','connected','Previous Host','[]','[]','android-phone',${fixture.runnerId},'read','computer')`.execute(
+    db,
+  );
+  expect(
+    await integrations.getDeviceComputerConnectionForCall({
+      connectionId,
+      ownerUserId: fixture.userId,
+    }),
+  ).toMatchObject({ deviceId, connection: { computer: { deviceId, access: "read" } } });
+  await expect(
+    sql`insert into integration_connections(id,owner_user_id,connection_kind,provider,connection_method,status,display_name,capabilities,granted_scopes,integration_definition_id,device_id,computer_access)
+    values(${createIntegrationId("connection")},${fixture.userId},'computer','test','computer','connected','New Host','[]','[]','android-phone',${deviceId},'read')`.execute(
+      db,
+    ),
+  ).rejects.toMatchObject({ code: "23505" });
+  expect(
+    (
+      await sql<{
+        target: string;
+      }>`select confrelid::regclass::text as target from pg_constraint where conname='auth_sessions_device_id_fkey'`.execute(
+        db,
+      )
+    ).rows,
+  ).toEqual([{ target: "runners" }]);
+  expect(
+    (
+      await sql`select indexname from pg_indexes where indexname='integration_connections_computer_live_unique'`.execute(
+        db,
+      )
+    ).rows,
+  ).toHaveLength(1);
 });

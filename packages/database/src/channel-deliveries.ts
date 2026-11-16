@@ -1,3 +1,4 @@
+import { computerConnectionDeviceId } from "./integration-store.js";
 import { getDeviceSelfRunnerId } from "./device-inventory-store.js";
 import { stripRefs } from "@opensteer/shared/stripRefs";
 import { placeContentLabel } from "@opensteer/core";
@@ -162,7 +163,7 @@ export async function channelSourceAllows(
   // then the source, then the channel; callers needing a Workspace lock it first.
   const source = await transaction
     .selectFrom("integrationConnections")
-    .select(["computerAccess", "ownerUserId", "deviceId", "status"])
+    .select(["computerAccess", "ownerUserId", computerConnectionDeviceId.as("deviceId"), "status"])
     .where("id", "=", channel.sourceConnectionId)
     .$if(lock, (query) => query.forShare())
     .executeTakeFirst();

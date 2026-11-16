@@ -129,7 +129,7 @@ integration("MCP servers on a computer", () => {
       expect(asked.definitionDigest).toBe(localMcpLaunchDigest(launch));
       const persistedTarget = await host.store.database
         .selectFrom("computerAppSetupRequests")
-        .select("deviceId")
+        .select("runnerId as deviceId")
         .where("id", "=", asked.id)
         .executeTakeFirstOrThrow();
       expect(persistedTarget.deviceId).toBe(

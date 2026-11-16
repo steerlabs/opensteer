@@ -2028,6 +2028,13 @@ integration.sequential("PostgreSQL computer app connections", () => {
       connectionMethod: "computer",
       displayName: "Mac lifecycle",
     });
+    expect(
+      await database
+        .selectFrom("integrationConnections")
+        .select(["runnerId", "deviceId"])
+        .where("id", "=", created.connection.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ runnerId: setup.runnerId, deviceId: setup.runnerId });
     const readTool = await database
       .selectFrom("integrationTools")
       .select(["id", "name"])
@@ -4234,7 +4241,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     const stored = await database
       .selectFrom("computerUsePolicies")
       .selectAll()
-      .where("deviceId", "=", DeviceIdSchema.parse(setup.runnerId))
+      .where("runnerId", "=", DeviceIdSchema.parse(setup.runnerId))
       .executeTakeFirstOrThrow();
     expect(stored).not.toHaveProperty("approval");
     await expect(
@@ -6063,7 +6070,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
           deploymentId: deployment!.id,
           ownerUserId: run.userId,
           revision: 1,
-          deviceId: DeviceIdSchema.parse(setup.phone.phoneId),
+          runnerId: DeviceIdSchema.parse(setup.phone.phoneId),
           updatedAt: new Date(),
         })
         .execute();

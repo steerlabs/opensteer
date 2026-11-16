@@ -36,8 +36,8 @@ export async function recordComputerUseStop(
     if (!device) return;
     await transaction
       .insertInto("computerUseStops")
-      .values({ runId: input.runId, deviceId: input.deviceId })
-      .onConflict((c) => c.columns(["runId", "deviceId"]).doNothing())
+      .values({ runId: input.runId, runnerId: input.deviceId })
+      .onConflict((c) => c.columns(["runId", "runnerId"]).doNothing())
       .execute();
   });
 }
@@ -49,7 +49,7 @@ export async function activeComputerUseStops(
   return database
     .selectFrom("computerUseStops")
     .innerJoin("runs", "runs.id", "computerUseStops.runId")
-    .select(["computerUseStops.runId", "computerUseStops.deviceId"])
+    .select(["computerUseStops.runId", "computerUseStops.runnerId as deviceId"])
     .where("runs.status", "in", nonTerminalRunStatuses)
     .execute();
 }

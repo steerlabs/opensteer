@@ -232,7 +232,7 @@ integration("iMessage channel", () => {
         .executeTakeFirstOrThrow();
       expect(sourceTarget).toEqual({
         deviceId: await host.store.requireSelfDeviceId(computer.runnerId),
-        runnerId: null,
+        runnerId: computer.runnerId,
       });
       expect(row).toEqual({
         credentialId: null,

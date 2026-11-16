@@ -1,6 +1,9 @@
 export const deviceDriversMigrationName = "0028_device_drivers";
 
+// Legacy target keys and Runner policy columns remain until a separately planned contract step.
 export const DEVICE_DRIVERS_SQL = `
+alter table runners alter column access_policy set default '{"reach":"nobody","commands":false,"forwarding":false,"shares":[],"browser":false,"apps":false}'::jsonb;
+alter table runners alter column access_policy_revision set default 1;
 create table devices (
   id text primary key,
   deployment_id text not null references deployments(id) on delete restrict,
@@ -60,28 +63,18 @@ begin
   if invalid_count > 0 then raise exception 'Device migration: % unresolved retained control targets',invalid_count; end if;
 end $$;
 alter table integration_connections add column device_id text references devices(id) on delete restrict;
-update integration_connections set device_id=runner_id,runner_id=null where connection_kind='computer';
+update integration_connections set device_id=runner_id where connection_kind='computer';
 alter table integration_connections add constraint integration_connections_device_target check(
- (connection_kind='computer' and device_id is not null and runner_id is null) or
+ (connection_kind='computer' and (device_id is not null or runner_id is not null) and
+   (device_id is null or runner_id is null or device_id=runner_id)) or
  (connection_kind<>'computer' and device_id is null));
-drop index integration_connections_computer_live_unique;
-create unique index integration_connections_computer_live_unique on integration_connections(integration_definition_id,device_id,coalesce(computer_app_key,'')) where connection_kind='computer' and status<>'revoked';
-alter table computer_use_policies rename column runner_id to device_id;
-alter table computer_use_policies add foreign key(device_id) references devices(id) on delete restrict;
+create unique index integration_connections_device_live_unique on integration_connections(integration_definition_id,coalesce(device_id,runner_id),coalesce(computer_app_key,'')) where connection_kind='computer' and status<>'revoked';
 alter table computer_use_policies add foreign key(deployment_id) references deployments(id) on delete restrict;
 alter table computer_use_policies add foreign key(owner_user_id) references users(id) on delete restrict;
-alter table computer_use_stops rename column runner_id to device_id;
-alter table computer_use_stops add foreign key(device_id) references devices(id) on delete restrict;
 alter table computer_use_stops add foreign key(run_id) references runs(id) on delete cascade;
-create index computer_use_stops_device on computer_use_stops(device_id,run_id);
-alter table computer_app_setup_requests rename column runner_id to device_id;
-alter table computer_app_setup_requests add foreign key(device_id) references devices(id) on delete restrict;
+create index computer_use_stops_device on computer_use_stops(runner_id,run_id);
 alter table computer_app_setup_requests add foreign key(deployment_id) references deployments(id) on delete restrict;
 alter table computer_app_setup_requests add foreign key(owner_user_id) references users(id) on delete restrict;
-create index computer_app_setup_requests_device_expiry on computer_app_setup_requests(device_id,expires_at);
+create index computer_app_setup_requests_device_expiry on computer_app_setup_requests(runner_id,expires_at);
 create index computer_app_setup_requests_owner_expiry on computer_app_setup_requests(owner_user_id,expires_at);
-alter table personal_tabs add foreign key(computer_id) references devices(id) on delete restrict;
-alter table auth_sessions drop constraint auth_sessions_device_id_fkey;
-alter table auth_sessions add foreign key(device_id) references devices(id) on delete restrict;
-alter table runners drop column access_policy,drop column access_policy_revision;
 `;

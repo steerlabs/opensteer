@@ -543,8 +543,8 @@ export async function getMachineAccessTarget(
     .where("deviceDrivers.detachedAt", "is", null)
     .where("devices.removedAt", "is", null)
     .select([
-      "accessPolicy",
-      "accessPolicyRevision",
+      "devices.accessPolicy",
+      "devices.accessPolicyRevision",
       "lastSeenAt",
       "moduleDescriptors",
       "devices.name",
@@ -585,7 +585,13 @@ export async function listReachableMachines(
     .where("deviceDrivers.role", "=", "self")
     .where("deviceDrivers.detachedAt", "is", null)
     .where("devices.removedAt", "is", null)
-    .select(["accessPolicy", "runners.id", "lastSeenAt", "moduleDescriptors", "devices.name"])
+    .select([
+      "devices.accessPolicy",
+      "runners.id",
+      "lastSeenAt",
+      "moduleDescriptors",
+      "devices.name",
+    ])
     .where("revokedAt", "is", null)
     // A Run never reaches the machine it runs on over SSH.
     .where("runners.id", "!=", callerRunnerId)
@@ -593,9 +599,9 @@ export async function listReachableMachines(
     .where(sql<boolean>`allowed_modules ? 'shell'`)
     .where((expression) =>
       expression.or([
-        expression(sql<string>`access_policy ->> 'reach'`, "=", "deployment"),
+        expression(sql<string>`devices.access_policy ->> 'reach'`, "=", "deployment"),
         expression.and([
-          expression(sql<string>`access_policy ->> 'reach'`, "=", "owner"),
+          expression(sql<string>`devices.access_policy ->> 'reach'`, "=", "owner"),
           expression.or([
             expression.and([
               expression("devices.ownerKind", "=", "user"),

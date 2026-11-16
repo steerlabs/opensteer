@@ -121,7 +121,7 @@ import {
 } from "./integration-request-fulfillment.js";
 import { IntegrationAuthorityCache } from "./integration-authority-cache.js";
 
-import { integrationConnectionFromRow } from "./integration-store.js";
+import { computerConnectionDeviceId, integrationConnectionFromRow } from "./integration-store.js";
 import {
   computerAppScopeOf,
   computerAppSetupRequestFromRow,
@@ -560,7 +560,7 @@ export async function revokeComputerConnectionsInTransaction(
       "integrationConnections.integrationDefinitionId",
       "integrationConnections.ownerUserId",
       "integrationConnections.integrationServerId",
-      "integrationConnections.deviceId",
+      computerConnectionDeviceId.as("deviceId"),
       "integrationServers.installationId",
     ])
     .where("integrationConnections.connectionKind", "=", "computer")
@@ -570,7 +570,7 @@ export async function revokeComputerConnectionsInTransaction(
       .where("integrationConnections.id", "=", selector.connectionId)
       .where("integrationConnections.ownerUserId", "=", selector.ownerUserId);
   } else if ("deviceId" in selector) {
-    query = query.where("integrationConnections.deviceId", "=", selector.deviceId);
+    query = query.where(computerConnectionDeviceId, "=", selector.deviceId);
   } else {
     query = query.where("integrationServers.installationId", "=", selector.installationId);
   }
@@ -1657,13 +1657,13 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
         "integrationServers.id",
         "integrationConnections.integrationServerId",
       )
-      .select("integrationConnections.deviceId")
+      .select(computerConnectionDeviceId.as("deviceId"))
       .where("integrationServers.installationId", "=", installationId)
       .where("integrationConnections.connectionKind", "=", "computer")
       .where("integrationConnections.status", "!=", "revoked")
-      .where("integrationConnections.deviceId", "is not", null)
+      .where(computerConnectionDeviceId, "is not", null)
       .distinct()
-      .orderBy("integrationConnections.deviceId")
+      .orderBy(computerConnectionDeviceId)
       .execute();
     return rows.flatMap(({ deviceId }) => (deviceId ? [deviceId] : []));
   }
@@ -1678,7 +1678,9 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
         "integrationServers.id",
         "integrationConnections.integrationServerId",
       )
-      .innerJoin("deviceDrivers", "deviceDrivers.deviceId", "integrationConnections.deviceId")
+      .innerJoin("deviceDrivers", (join) =>
+        join.on("deviceDrivers.deviceId", "=", computerConnectionDeviceId),
+      )
       .select("deviceDrivers.runnerId")
       .where("deviceDrivers.role", "=", "self")
       .where("deviceDrivers.detachedAt", "is", null)
@@ -2256,7 +2258,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
           .selectAll()
           .where("id", "=", input.setupRequestId)
           .where("deploymentId", "=", deployment.id)
-          .where("deviceId", "=", input.deviceId)
+          .where("runnerId", "=", input.deviceId)
           .where("ownerUserId", "=", input.ownerUserId)
           .where("kind", "=", "policy")
           .where("policyAppApproval", "=", "automatic")
@@ -2281,14 +2283,14 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
         .insertInto("computerUsePolicies")
         .values({
           deploymentId: deployment.id,
-          deviceId: input.deviceId,
+          runnerId: input.deviceId,
           ownerUserId: input.ownerUserId,
           appApproval: input.appApproval,
           revision,
           updatedAt: now,
         })
         .onConflict((conflict) =>
-          conflict.columns(["deploymentId", "deviceId", "ownerUserId"]).doUpdateSet({
+          conflict.columns(["deploymentId", "runnerId", "ownerUserId"]).doUpdateSet({
             appApproval: input.appApproval,
             revision,
             updatedAt: now,
@@ -2297,7 +2299,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
         .execute();
       await transaction
         .deleteFrom("computerAppSetupRequests")
-        .where("deviceId", "=", input.deviceId)
+        .where("runnerId", "=", input.deviceId)
         .where("ownerUserId", "=", input.ownerUserId)
         .where("kind", "=", "policy")
         .execute();
@@ -2324,7 +2326,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
   ): Promise<readonly ComputerAppSetupRequest[]> {
     const rows = await this.database
       .selectFrom("computerAppSetupRequests")
-      .innerJoin("devices", "devices.id", "computerAppSetupRequests.deviceId")
+      .innerJoin("devices", "devices.id", "computerAppSetupRequests.runnerId")
       .selectAll("computerAppSetupRequests")
       .where("computerAppSetupRequests.ownerUserId", "=", ownerUserId)
       .where("computerAppSetupRequests.expiresAt", ">", new Date())
@@ -2358,7 +2360,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
       .selectFrom("computerAppSetupRequests")
       .selectAll()
       .where("id", "=", input.setupRequestId)
-      .$if(input.deviceId !== undefined, (query) => query.where("deviceId", "=", input.deviceId!))
+      .$if(input.deviceId !== undefined, (query) => query.where("runnerId", "=", input.deviceId!))
       .where("expiresAt", ">", new Date())
       .executeTakeFirst();
     return row ? computerAppSetupRequestFromRow(row) : null;
@@ -2481,7 +2483,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     return withPersonalTransaction(this.database, async (transaction) => {
       const request = await transaction
         .selectFrom("computerAppSetupRequests")
-        .select("deviceId")
+        .select("runnerId as deviceId")
         .where("id", "=", input.requestId)
         .where("ownerUserId", "=", input.ownerUserId)
         .executeTakeFirst();
@@ -2527,10 +2529,10 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     // sweep takes its locks in the order every approval does.
     const expiring = await this.database
       .selectFrom("computerAppSetupRequests")
-      .select("deviceId")
+      .select("runnerId as deviceId")
       .distinct()
       .where("expiresAt", "<=", now)
-      .orderBy("deviceId", "asc")
+      .orderBy("runnerId", "asc")
       .execute();
     const grants: IntegrationGrant[] = [];
     const requestEvents: AgentEvent[] = [];
@@ -2541,7 +2543,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
         await lockComputerApprovalScopeInTransaction(transaction, { deviceId });
         const expired = await transaction
           .deleteFrom("computerAppSetupRequests")
-          .where("deviceId", "=", deviceId)
+          .where("runnerId", "=", deviceId)
           .where("expiresAt", "<=", now)
           .returning("id")
           .execute();
@@ -2658,7 +2660,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
       administrationCommand(transaction, input.administration, async () => {
         const connection = await transaction
           .selectFrom("integrationConnections")
-          .select(["deviceId", "computerApp"])
+          .select([computerConnectionDeviceId.as("deviceId"), "computerApp"])
           .where("id", "=", input.connectionId)
           .where("ownerUserId", "=", input.ownerUserId)
           .where("connectionKind", "=", "computer")
@@ -2712,7 +2714,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
       administrationCommand(transaction, input.administration, async () => {
         const named = await transaction
           .selectFrom("integrationConnections")
-          .select("deviceId")
+          .select(computerConnectionDeviceId.as("deviceId"))
           .where("id", "=", input.connectionId)
           .where("ownerUserId", "=", input.ownerUserId)
           .where("connectionKind", "=", "computer")
@@ -2759,7 +2761,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
   } | null> {
     const row = await this.database
       .selectFrom("integrationConnections")
-      .innerJoin("devices", "devices.id", "integrationConnections.deviceId")
+      .innerJoin("devices", (join) => join.on("devices.id", "=", computerConnectionDeviceId))
       .leftJoin("deviceDrivers", (join) =>
         join
           .onRef("deviceDrivers.deviceId", "=", "devices.id")
@@ -2768,6 +2770,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
       )
       .leftJoin("runners", "runners.id", "deviceDrivers.runnerId")
       .selectAll("integrationConnections")
+      .select(computerConnectionDeviceId.as("deviceId"))
       .select([
         "devices.name as runnerName",
         "runners.deviceProfile",
@@ -4051,7 +4054,7 @@ async function computerConnectionTargetInTransaction(
     .selectAll()
     .where("connectionKind", "=", "computer")
     .where("integrationDefinitionId", "=", input.definitionId)
-    .where("deviceId", "=", input.deviceId)
+    .where(computerConnectionDeviceId, "=", input.deviceId)
     .where("computerAppKey", scope.appKey === null ? "is" : "=", scope.appKey)
     .where("status", "!=", "revoked")
     .forNoKeyUpdate()
@@ -4099,7 +4102,7 @@ async function consumeComputerAppApprovalInTransaction(
     .selectFrom("computerAppSetupRequests")
     .selectAll()
     .where("id", "=", input.setupRequestId)
-    .where("deviceId", "=", input.deviceId)
+    .where("runnerId", "=", input.deviceId)
     .where("ownerUserId", "=", input.actorUserId)
     .where("definitionId", "=", input.definitionId)
     .where("kind", "=", "app")
@@ -4319,7 +4322,7 @@ async function writeComputerConnectionInTransaction(
       ownerUserId: input.ownerUserId,
       providerApplicationId: null,
       deviceId: scope.deviceId,
-      runnerId: null,
+      runnerId: await getDeviceSelfRunnerId(transaction, scope.deviceId),
       transportKind: null,
     })
     .returningAll()

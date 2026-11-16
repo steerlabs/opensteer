@@ -24,7 +24,13 @@ import {
   type IntegrationProvider,
   type IntegrationProviderApplication,
 } from "@opensteer/integration-core";
-import { OpensteerError, createId, type UserId } from "@opensteer/core";
+import {
+  DeviceIdSchema,
+  OpensteerError,
+  createId,
+  type DeviceId,
+  type UserId,
+} from "@opensteer/core";
 import { erasedIntegrationAuthAttemptPayload } from "./integration-auth-attempt-store.js";
 import { type Kysely, type Selectable, sql } from "kysely";
 import type {
@@ -32,6 +38,9 @@ import type {
   IntegrationConnectionTable,
   IntegrationProviderApplicationTable,
 } from "./schema.js";
+
+// The previous Host still inserts computer connections with only runner_id.
+export const computerConnectionDeviceId = sql<DeviceId | null>`case when integration_connections.connection_kind='computer' then coalesce(integration_connections.device_id,integration_connections.runner_id) end`;
 
 export interface StoredIntegrationSecret {
   readonly envelope: Buffer;
@@ -1067,17 +1076,20 @@ function providerApplicationFromRow(
 export function integrationConnectionFromRow(
   row: Selectable<IntegrationConnectionTable>,
 ): DeviceIntegrationConnectionSummary {
+  const deviceId =
+    row.deviceId ??
+    (row.connectionKind === "computer" && row.runnerId ? DeviceIdSchema.parse(row.runnerId) : null);
   return DeviceIntegrationConnectionSummarySchema.parse({
     accountIdentifier: row.accountIdentifier,
     applicationSource: row.applicationSource,
     authMethodId: row.authMethodId,
     authorizationDigest: row.authorizationDigest,
     computer:
-      row.connectionKind === "computer" && row.computerAccess && row.deviceId
+      row.connectionKind === "computer" && row.computerAccess && deviceId
         ? {
             access: row.computerAccess,
             app: row.computerApp,
-            deviceId: row.deviceId,
+            deviceId,
             blockedAt: row.computerBlockedAt?.toISOString() ?? null,
             policyRevision: row.computerPolicyRevision,
           }

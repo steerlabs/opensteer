@@ -89,7 +89,7 @@ it("a delayed Stop cannot be reinserted after Device removal commits", async () 
       .set({ removedAt: new Date() })
       .where("id", "=", deviceId)
       .execute();
-    await transaction.deleteFrom("computerUseStops").where("deviceId", "=", deviceId).execute();
+    await transaction.deleteFrom("computerUseStops").where("runnerId", "=", deviceId).execute();
   });
   await writing;
   expect(await store.activeComputerUseStops()).toEqual([]);

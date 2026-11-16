@@ -1,3 +1,4 @@
+import { computerConnectionDeviceId } from "./integration-store.js";
 import {
   administrationCommand,
   type AdministrationCommandIdentity,
@@ -258,7 +259,7 @@ export async function renameDevice(
       await transaction
         .selectFrom("integrationConnections")
         .select("id")
-        .where("deviceId", "=", deviceId)
+        .where(computerConnectionDeviceId, "=", deviceId)
         .where("status", "!=", "revoked")
         .orderBy("id")
         .forNoKeyUpdate()
@@ -266,7 +267,7 @@ export async function renameDevice(
       await transaction
         .updateTable("integrationConnections")
         .set({ displayName: trimmed, updatedAt: new Date() })
-        .where("deviceId", "=", deviceId)
+        .where(computerConnectionDeviceId, "=", deviceId)
         .where("status", "!=", "revoked")
         .execute();
     }),

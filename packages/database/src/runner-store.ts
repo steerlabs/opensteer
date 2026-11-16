@@ -1,3 +1,4 @@
+import { computerConnectionDeviceId } from "./integration-store.js";
 import {
   lockDeviceRemovalInTransaction,
   clearRemovedDeviceStopsInTransaction,
@@ -1273,7 +1274,7 @@ export async function renameRunner(
       await transaction
         .selectFrom("integrationConnections")
         .select("id")
-        .where("deviceId", "=", deviceId)
+        .where(computerConnectionDeviceId, "=", deviceId)
         .where("connectionKind", "=", "computer")
         .where("status", "!=", "revoked")
         .orderBy("id", "asc")
@@ -1285,7 +1286,7 @@ export async function renameRunner(
           displayName: name,
           updatedAt,
         })
-        .where("deviceId", "=", deviceId)
+        .where(computerConnectionDeviceId, "=", deviceId)
         .where("connectionKind", "=", "computer")
         .where("status", "!=", "revoked")
         .execute(databaseOperationOptions());
