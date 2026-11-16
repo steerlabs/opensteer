@@ -714,7 +714,11 @@ export class BrowserService {
   readonly #onHistoryChanged: NonNullable<BrowserServiceOptions["onHistoryChanged"]>;
   readonly #workspaceTabs: TabStore | undefined;
   readonly #onTabsChanged: (ownerId?: UserId, tabIds?: readonly BrowserSurfaceId[]) => void;
-  readonly #restoringPages = new Set<BrowserSurfaceId>();
+  /**
+   * Pages whose saved URL is a destination their runtime has not committed yet (an intended
+   * open or a restore); the runtime's interim about:blank must not replace it.
+   */
+  readonly #pagesAwaitingNavigation = new Set<BrowserSurfaceId>();
   readonly #workspacePageGenerations = new Map<string, number>();
   readonly #closeResults = new Map<
     string,
@@ -2784,6 +2788,7 @@ export class BrowserService {
           `${row.pageBinding.sessionId}:${row.id}`,
           row.generation,
         );
+        if (row.url && row.url !== "about:blank") this.#pagesAwaitingNavigation.add(row.id);
         await this.#flushTabDescriptors(row.pageBinding.sessionId);
       }
     },
@@ -3001,7 +3006,7 @@ export class BrowserService {
               other.pageBinding?.lineageId === binding.lineageId,
           )
           .map((other) => other.id);
-        this.#restoringPages.add(row.id);
+        this.#pagesAwaitingNavigation.add(row.id);
         const finish = await this.#prepareStart({
           ownerId,
           sessionId,
@@ -3137,9 +3142,9 @@ export class BrowserService {
           generation,
           binding,
           descriptor,
-          this.#restoringPages.has(row.id),
+          this.#pagesAwaitingNavigation.has(row.id),
         );
-        if (descriptor.url !== "about:blank") this.#restoringPages.delete(row.id);
+        if (descriptor.url !== "about:blank") this.#pagesAwaitingNavigation.delete(row.id);
       }
     }
     for (const tabId of closed) {
@@ -3163,6 +3168,7 @@ export class BrowserService {
             throw new OpensteerError({ code: "conflict", message: "The page binding changed." });
         },
       );
+      this.#pagesAwaitingNavigation.delete(tabId);
     }
     if (pending.size && pending.size < descriptors.length)
       return this.#writeWorkspacePages(
