@@ -15,6 +15,13 @@ import { IntegrationRequestStore } from "./integration-request-store.js";
 export * from "./integration-platform-stores.js";
 export * from "./local-mcp-server-store.js";
 export * from "./computer-connection-store.js";
+export {
+  ComputerAppNotOfferedError,
+  approveComputerAppAutomaticallyInTransaction,
+  type AutomaticComputerAppApprovalInput,
+  type SetComputerConnectionInput,
+  type SetComputerConnectionResult,
+} from "./computer-connection-writes.js";
 export * from "./mcp-oauth-connection-store.js";
 import { ComputerConnectionStore } from "./computer-connection-store.js";
 import { McpOAuthConnectionStore } from "./mcp-oauth-connection-store.js";

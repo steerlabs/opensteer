@@ -96,6 +96,7 @@ import {
   databaseShutdownDetails,
   IntegrationAuthAttemptStore,
   IntegrationPlatformStore,
+  listIntegrationConnections,
   PluginSettingsStore,
   IntegrationStore,
   isTransactionConflict,
@@ -1556,7 +1557,7 @@ export async function createHostRuntime(
       store: integrationPlatformStore,
     });
     const devices = new DeviceService({
-      listConnections: (ownerUserId) => integrationStore.listConnections(ownerUserId),
+      listConnections: (ownerUserId) => listIntegrationConnections(database, ownerUserId),
       providerAuthorizations: (ownerUserId) => integrations.providerAuthorizations(ownerUserId),
       computerApps,
       computerUse,

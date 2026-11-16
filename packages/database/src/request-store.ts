@@ -89,7 +89,7 @@ import {
 } from "./computer-app-setup.js";
 import "./connection.js";
 import { lockIntegrationCatalogDefinitionInTransaction } from "./integration-platform-stores.js";
-import { approveComputerAppAutomaticallyInTransaction } from "./computer-connection-store.js";
+import { approveComputerAppAutomaticallyInTransaction } from "./computer-connection-writes.js";
 import { deviceAccessStates } from "./device-store.js";
 import { machineOwnershipIn, machineIsManagedBy } from "./machine-ownership.js";
 import { cancelPending } from "./request-cancellation.js";

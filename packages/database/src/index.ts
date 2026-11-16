@@ -13,6 +13,7 @@ export * from "./deployment-authority.js";
 export * from "./integration-auth-attempt-store.js";
 export * from "./integration-platform-store.js";
 export * from "./integration-store.js";
+export * from "./integration-connections.js";
 export * from "./migrations.js";
 export * from "./notification-state.js";
 export * from "./owner-profile-store.js";

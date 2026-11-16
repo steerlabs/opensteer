@@ -1,3 +1,7 @@
+import {
+  integrationConnectionFromRow,
+  listIntegrationConnections,
+} from "./integration-connections.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import {
   administrationCommand,
@@ -11,7 +15,6 @@ import type { IntegrationOAuthAccountBinding } from "@opensteer/integration-core
 
 import { jsonValue } from "./store-primitives.js";
 import {
-  IntegrationConnectionSummarySchema,
   IntegrationProviderSchema,
   integrationProviderIdentityAlreadyConnectedDetail,
   type IntegrationConnectionId,
@@ -24,11 +27,7 @@ import {
 import { OpensteerError, createId, type UserId } from "@opensteer/core";
 import { erasedIntegrationAuthAttemptPayload } from "./integration-auth-attempt-store.js";
 import { type Kysely, type Selectable, sql } from "kysely";
-import type {
-  DatabaseSchema,
-  IntegrationConnectionTable,
-  IntegrationProviderApplicationTable,
-} from "./schema.js";
+import type { DatabaseSchema, IntegrationProviderApplicationTable } from "./schema.js";
 
 export interface StoredIntegrationSecret {
   readonly envelope: Buffer;
@@ -829,16 +828,7 @@ export class IntegrationStore {
   }
 
   async listConnections(ownerUserId: UserId): Promise<readonly IntegrationConnectionSummary[]> {
-    const rows = await this.#database
-      .selectFrom("integrationConnections")
-      .selectAll()
-      .where("ownerUserId", "=", ownerUserId)
-      .where("connectionKind", "in", ["provider-account", "computer"])
-      .where("status", "!=", "revoked")
-      .orderBy("updatedAt", "desc")
-      .limit(500)
-      .execute();
-    return rows.map(integrationConnectionFromRow);
+    return listIntegrationConnections(this.#database, ownerUserId);
   }
 
   async connectApiKey(input: {
@@ -1045,39 +1035,4 @@ function providerApplicationFromRow(
     status: row.status,
     updatedAt: row.updatedAt.toISOString(),
   };
-}
-
-export function integrationConnectionFromRow(
-  row: Selectable<IntegrationConnectionTable>,
-): IntegrationConnectionSummary {
-  return IntegrationConnectionSummarySchema.parse({
-    accountIdentifier: row.accountIdentifier,
-    applicationSource: row.applicationSource,
-    authMethodId: row.authMethodId,
-    authorizationDigest: row.authorizationDigest,
-    computer:
-      row.connectionKind === "computer" && row.computerAccess && row.runnerId
-        ? {
-            access: row.computerAccess,
-            app: row.computerApp,
-            runnerId: row.runnerId,
-            blockedAt: row.computerBlockedAt?.toISOString() ?? null,
-            policyRevision: row.computerPolicyRevision,
-          }
-        : null,
-    connectionMethod: row.connectionMethod,
-    createdAt: row.createdAt.toISOString(),
-    definitionId: row.integrationDefinitionId,
-    displayName: row.displayName,
-    externalIdentityId: row.externalIdentityId,
-    externalTenantId: row.externalTenantId,
-    grantedScopes: row.grantedScopes,
-    id: row.id,
-    provider: row.provider,
-    providerApplicationId: row.providerApplicationId,
-    status: row.status,
-    statusDetail: row.statusDetail,
-    statusReason: row.statusReason,
-    updatedAt: row.updatedAt.toISOString(),
-  });
 }

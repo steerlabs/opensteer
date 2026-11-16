@@ -1583,6 +1583,7 @@ async function createHarness(input: {
     listGrants: vi.fn(async () => input.grants ?? []),
     listMcpOAuthConnections: vi.fn(async () => []),
     requests,
+    integrationRequests: requests,
   };
   const requestComputerAppAccess = vi.fn(
     async (request: { readonly app: string; readonly callId?: string }) => {

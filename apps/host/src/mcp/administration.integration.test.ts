@@ -1077,7 +1077,7 @@ describeStore("MCP administration", (it) => {
     const agent = mcp(
       {
         store: f.store,
-        integrations: { platform: { store: platform, revokeGrant } },
+        integrations: { devices: { revokeGrant }, platform: { store: platform } },
         realtime: { broadcast: vi.fn() },
       } as unknown as AdministrationDependencies,
       run.userId,
