@@ -1,4 +1,4 @@
-import { memo, useMemo, type ComponentProps } from "react";
+import { createContext, memo, useContext, useMemo, type ComponentProps } from "react";
 import ReactMarkdown, { type Components, type UrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { classifyHref } from "@opensteer/core";
@@ -6,6 +6,7 @@ import { Icon, type IconName } from "../icon.js";
 import { remarkChipPunctuation } from "../references/chip-punctuation.js";
 import { TeamMessageLink } from "../references/reference-link.js";
 import { attachmentDetail, isInlineImage } from "../attachments/attachment-parts.js";
+import { useImageActions } from "../image-actions.js";
 import { MentionChip } from "./team-marks.js";
 import type { FileView, MentionView } from "./team-models.js";
 
@@ -154,14 +155,7 @@ export function MessageFiles({
         <ul aria-label="Images" className="team-files__images">
           {images.map((file) => (
             <li key={file.id}>
-              <button
-                aria-label={`Open ${file.name}`}
-                className="team-image"
-                onClick={() => onOpen?.(file)}
-                type="button"
-              >
-                <img alt="" decoding="async" loading="lazy" src={file.previewUrl ?? undefined} />
-              </button>
+              <TeamImage file={file} onOpen={onOpen} />
             </li>
           ))}
         </ul>
@@ -176,6 +170,34 @@ export function MessageFiles({
         </ul>
       ) : null}
     </div>
+  );
+}
+
+/** Reads a team file's original, where this screen can. */
+export const TeamFileReadContext = createContext<((file: FileView) => Promise<File>) | null>(null);
+
+function TeamImage({
+  file,
+  onOpen,
+}: {
+  readonly file: FileView;
+  readonly onOpen?: ((file: FileView) => void) | undefined;
+}) {
+  const read = useContext(TeamFileReadContext);
+  const actions = useImageActions(useMemo(() => (read ? () => read(file) : null), [file, read]));
+  return (
+    <>
+      <button
+        aria-label={`Open ${file.name}`}
+        className="team-image"
+        onClick={() => onOpen?.(file)}
+        type="button"
+        {...actions.target}
+      >
+        <img alt="" decoding="async" loading="lazy" src={file.previewUrl ?? undefined} />
+      </button>
+      {actions.menu}
+    </>
   );
 }
 

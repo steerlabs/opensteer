@@ -1,5 +1,9 @@
 import type { HostClient } from "@opensteer/client/host";
-import { attachmentNativeImageMediaTypes, type ArtifactContentPart } from "@opensteer/core";
+import {
+  AttachmentIdSchema,
+  attachmentNativeImageMediaTypes,
+  type ArtifactContentPart,
+} from "@opensteer/core";
 import { createContext, useContext, useState, type ReactNode } from "react";
 import {
   ActivityIndicator,
@@ -10,6 +14,8 @@ import {
   StyleSheet,
   View,
 } from "react-native";
+import { TranscriptImageContext } from "@opensteer/client/react";
+import { ImageHold, personalImageSource } from "../images/image-actions.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { shareChatAttachment } from "../platform/attachment-draft-files.js";
 import { color, material, radius, space, touchTarget } from "../theme.js";
@@ -168,6 +174,7 @@ function SentChip(props: {
   readonly part: ArtifactContentPart;
 }): ReactNode {
   const { client, part } = props;
+  const threadId = useContext(TranscriptImageContext)?.threadId ?? null;
   const [opening, setOpening] = useState(false);
   const detail = attachmentDetail(part.name, part.mediaType, part.sizeBytes);
   const face = (
@@ -202,6 +209,22 @@ function SentChip(props: {
       )
       .finally(() => setOpening(false));
   };
+  if (part.mediaType.startsWith("image/")) {
+    return (
+      <ImageHold
+        source={personalImageSource(
+          client,
+          threadId,
+          { kind: "attachment", attachmentId: AttachmentIdSchema.parse(part.artifactId) },
+          part.name,
+        )}
+        shareOnPress
+        style={styles.sentChip}
+      >
+        {face}
+      </ImageHold>
+    );
+  }
   return (
     <Pressable
       accessibilityHint="Opens it to view or save"

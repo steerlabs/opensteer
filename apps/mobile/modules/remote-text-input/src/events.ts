@@ -4,7 +4,7 @@ import {
   editingClipboardMaxBytes,
   editingClipboardMaxItems,
 } from "@opensteer/protocol/editing";
-import { decodeBase64Url, encodeBase64Url } from "@opensteer/shared/base64url";
+import { decodeBase64Url } from "@opensteer/shared/base64url";
 import { z } from "zod";
 
 const offset = z.number().int().nonnegative();
@@ -85,10 +85,6 @@ const packet = z.object({
 });
 export function decodeBase64(value: string): Uint8Array {
   return decodeBase64Url(value.replace(/=+$/u, "").replaceAll("+", "-").replaceAll("/", "_"));
-}
-export function encodeBase64(bytes: Uint8Array): string {
-  const raw = encodeBase64Url(bytes).replaceAll("-", "+").replaceAll("_", "/");
-  return raw.padEnd(Math.ceil(raw.length / 4) * 4, "=");
 }
 export function decodeNativeEvent(value: unknown): {
   id: number;

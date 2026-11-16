@@ -22,6 +22,7 @@ import { desktopAppEntryUrl } from "./app-protocol.js";
 import type { DesktopConfiguration } from "../config.js";
 import type { DesktopWindowFactory } from "./desktop-main-process.js";
 import { DesktopAppOriginPolicy } from "./navigation-policy.js";
+import { configureDesktopWindowContextMenu } from "./window-context-menu.js";
 import type { DesktopUsbDeviceAccess } from "./usb-device-access.js";
 
 const desktopTitleBarHeight = 52;
@@ -230,6 +231,7 @@ export class ElectronWindowFactory implements DesktopWindowFactory {
     this.#windows.add(window);
     this.#onCreated(window);
     configureDesktopWindowNavigation(window.webContents, this.#policy);
+    configureDesktopWindowContextMenu(window.webContents, () => window);
     window.webContents.on("preload-error", (_event, preloadPath, error) => {
       this.#log("desktop.preload.error", { error: error.message, preloadPath });
     });

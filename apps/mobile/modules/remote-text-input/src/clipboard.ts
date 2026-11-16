@@ -1,7 +1,7 @@
 import type { EditingClipboardPayloadItem } from "@opensteer/client/editing";
 import { editingClipboardMaxBytes, editingClipboardMaxItems } from "@opensteer/protocol/editing";
 import * as Clipboard from "expo-clipboard";
-import { encodeBase64 } from "./events.js";
+import { encodeBase64 } from "@opensteer/shared/base64url";
 export type MobileClipboardOutcome = "written" | "empty" | "refused" | "unsupported" | "too-large";
 export interface MobileClipboardPort {
   write(items: readonly EditingClipboardPayloadItem[]): Promise<MobileClipboardOutcome>;

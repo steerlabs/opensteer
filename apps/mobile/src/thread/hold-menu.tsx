@@ -11,6 +11,7 @@ import {
 } from "./link-context.js";
 
 export interface HoldMenuProps {
+  readonly accessibilityLabel?: string;
   readonly actions: readonly LinkAction[];
   readonly children: ReactNode;
   readonly onAction: (id: string) => void;
@@ -55,6 +56,7 @@ export function HoldMenu(props: HoldMenuProps): ReactNode {
   const actions = link !== null && links ? links.menu(link) : props.actions;
   return (
     <Pressable
+      accessibilityLabel={props.accessibilityLabel}
       accessibilityActions={props.actions.map(({ id, title }) => ({ name: id, label: title }))}
       android_disableSound
       delayLongPress={300}

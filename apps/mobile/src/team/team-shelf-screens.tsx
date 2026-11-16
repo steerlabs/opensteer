@@ -1,3 +1,5 @@
+import { TeamImageSources } from "./team-image-hold.js";
+import { teamImageSource } from "./team-file-export.js";
 import { useTeamShareParticipants } from "@opensteer/client/react";
 import { ChannelShares } from "./channel-shares.js";
 import { unwrapRpcResult } from "@opensteer/client/host";
@@ -562,20 +564,34 @@ export function TeamFilesScreen(props: ChannelParams): ReactNode {
     );
   return (
     <Screen edgeToEdge>
-      <FilesBody
-        files={files}
-        filter={filter}
-        onFilter={setFilter}
-        onOpen={(file) =>
-          navigation.navigate("TeamChannel", { teamId, channelId, messageId: file.messageId })
-        }
-        onQuery={setQuery}
-        onShowMessage={(messageId) =>
-          navigation.navigate("TeamChannel", { teamId, channelId, messageId })
-        }
-        paddingBottom={padding}
-        query={query}
-      />
+      <TeamImageSources
+        value={(id) => {
+          const file = read.value?.find((row) => row.file.id === id)?.file;
+          if (!file)
+            return {
+              name: "Image",
+              read: async () => {
+                throw new Error("Image unavailable");
+              },
+            };
+          return teamImageSource(session, file);
+        }}
+      >
+        <FilesBody
+          files={files}
+          filter={filter}
+          onFilter={setFilter}
+          onOpen={(file) =>
+            navigation.navigate("TeamChannel", { teamId, channelId, messageId: file.messageId })
+          }
+          onQuery={setQuery}
+          onShowMessage={(messageId) =>
+            navigation.navigate("TeamChannel", { teamId, channelId, messageId })
+          }
+          paddingBottom={padding}
+          query={query}
+        />
+      </TeamImageSources>
     </Screen>
   );
 }

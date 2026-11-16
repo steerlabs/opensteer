@@ -1,30 +1,36 @@
 import { useContext, useState } from "react";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { Image } from "expo-image";
-import { useAssetImage } from "@opensteer/client/react";
+import { TranscriptImageContext, useAssetImage } from "@opensteer/client/react";
+import { ImageHold, personalImageSource } from "../images/image-actions.js";
 import { color, radius } from "../theme.js";
 import { ReferenceVisibility, useReferenceNavigation } from "./reference-context.js";
 
 /**
  * An image an agent embedded. Nothing is asked of the Host until it can be
  * seen; until then it holds its place at the shape it will take. A tap opens
- * it in the file viewer, where Original and Download are.
+ * it in the file viewer.
  */
 export function AssetImage({ path, alt = "" }: { path: string; alt?: string }) {
+  const owner = useContext(TranscriptImageContext);
   const visible = useContext(ReferenceVisibility);
   const preview = useAssetImage(path, "preview", { enabled: visible });
   const navigation = useReferenceNavigation();
   const [open, setOpen] = useState(false);
   if (preview.failed) return <Text>{alt || "Image unavailable"}</Text>;
-  if (!preview.available) return <Text>{alt || path}</Text>;
+  if (!owner || !preview.available) return <Text>{alt || path}</Text>;
   const image = preview.image;
   const viewer =
     navigation?.ports !== undefined && "openFile" in navigation.ports ? navigation.ports : null;
   return (
     <View>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={alt || "Open image"}
+      <ImageHold
+        source={personalImageSource(
+          owner.client,
+          owner.threadId,
+          { kind: "path", path },
+          path.split("/").at(-1) || "Image",
+        )}
         onPress={() =>
           viewer ? void viewer.openFile({ source: { kind: "path", path } }) : setOpen(true)
         }
@@ -50,12 +56,13 @@ export function AssetImage({ path, alt = "" }: { path: string; alt?: string }) {
           ]}
           onError={preview.onError}
         />
-      </Pressable>
+      </ImageHold>
       {open ? <OriginalImage path={path} close={() => setOpen(false)} /> : null}
     </View>
   );
 }
 function OriginalImage({ path, close }: { path: string; close: () => void }) {
+  const owner = useContext(TranscriptImageContext);
   const original = useAssetImage(path, "original");
   const image = original.image;
   return (
@@ -66,23 +73,33 @@ function OriginalImage({ path, close }: { path: string; close: () => void }) {
         </Pressable>
         {original.failed ? (
           <Text style={{ color: "white" }}>Image unavailable</Text>
-        ) : (
-          <Image
-            key={original.retry}
-            source={
-              image
-                ? {
-                    uri: image.source,
-                    cacheKey: `${original.deploymentId}:${image.revision}:original:v1`,
-                  }
-                : null
-            }
-            cachePolicy="memory-disk"
-            contentFit="contain"
+        ) : owner ? (
+          <ImageHold
+            source={personalImageSource(
+              owner.client,
+              owner.threadId,
+              { kind: "path", path },
+              path.split("/").at(-1) || "Image",
+            )}
             style={{ flex: 1 }}
-            onError={original.onError}
-          />
-        )}
+          >
+            <Image
+              key={original.retry}
+              source={
+                image
+                  ? {
+                      uri: image.source,
+                      cacheKey: `${original.deploymentId}:${image.revision}:original:v1`,
+                    }
+                  : null
+              }
+              cachePolicy="memory-disk"
+              contentFit="contain"
+              style={{ flex: 1 }}
+              onError={original.onError}
+            />
+          </ImageHold>
+        ) : null}
       </View>
     </Modal>
   );
