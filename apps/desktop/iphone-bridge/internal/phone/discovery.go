@@ -126,3 +126,29 @@ func (i *Inventory) USBDevices() []ios.DeviceEntry {
 	}
 	return result
 }
+
+func (i *Inventory) PreferredDevices(wifi map[string]bool) []ios.DeviceEntry {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	byIdentity := make(map[string]ios.DeviceEntry)
+	for _, d := range i.routes {
+		if d.Properties.ConnectionType == "Network" && !wifi[d.Properties.SerialNumber] {
+			continue
+		}
+		previous, exists := byIdentity[d.Properties.SerialNumber]
+		if !exists || (d.Properties.ConnectionType == "USB" && previous.Properties.ConnectionType != "USB") || (d.Properties.ConnectionType == previous.Properties.ConnectionType && d.DeviceID < previous.DeviceID) {
+			byIdentity[d.Properties.SerialNumber] = d
+		}
+	}
+	result := make([]ios.DeviceEntry, 0, len(byIdentity))
+	for _, d := range byIdentity {
+		result = append(result, d)
+	}
+	return result
+}
+func (i *Inventory) Has(d ios.DeviceEntry) bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	candidate, ok := i.routes[d.DeviceID]
+	return ok && candidate.Properties.SerialNumber == d.Properties.SerialNumber && candidate.Properties.ConnectionType == d.Properties.ConnectionType
+}

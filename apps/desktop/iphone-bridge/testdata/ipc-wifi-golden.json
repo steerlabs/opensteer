@@ -1,0 +1,120 @@
+[
+  {
+    "kind": "request",
+    "protocolVersion": 1,
+    "id": 3,
+    "timeoutMs": 10000,
+    "method": "setup.enableWifi",
+    "params": {
+      "localPhoneId": "fixture-phone",
+      "nativeEpoch": 3
+    }
+  },
+  {
+    "kind": "request",
+    "protocolVersion": 1,
+    "id": 4,
+    "timeoutMs": 10000,
+    "method": "setup.disableWifi",
+    "params": {
+      "localPhoneId": "fixture-phone",
+      "nativeEpoch": 3
+    }
+  },
+  {
+    "kind": "request",
+    "protocolVersion": 1,
+    "id": 5,
+    "timeoutMs": 10000,
+    "method": "setup.pairWifi",
+    "params": {
+      "localPhoneId": "fixture-phone",
+      "nativeEpoch": 3
+    }
+  },
+  {
+    "kind": "response",
+    "id": 5,
+    "result": {
+      "revision": 4,
+      "candidates": [
+        {
+          "localPhoneId": "fixture-phone",
+          "nativeEpoch": 3,
+          "name": "iPhone",
+          "model": "",
+          "osVersion": "",
+          "build": "",
+          "transport": "wifi",
+          "reason": "wifi-phone-not-found"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "response",
+    "id": 6,
+    "result": {
+      "error": {
+        "code": "wifi-not-enabled",
+        "effect": "not-started",
+        "completedSteps": 0
+      }
+    }
+  },
+  {
+    "kind": "response",
+    "id": 7,
+    "result": {
+      "error": {
+        "code": "local-network-permission-required",
+        "effect": "not-started",
+        "completedSteps": 0
+      }
+    }
+  },
+  {
+    "kind": "response",
+    "id": 8,
+    "result": {
+      "error": {
+        "code": "wifi-phone-not-found",
+        "effect": "not-started",
+        "completedSteps": 0
+      }
+    }
+  },
+  {
+    "kind": "response",
+    "id": 9,
+    "result": {
+      "error": {
+        "code": "wifi-pairing-required",
+        "effect": "not-started",
+        "completedSteps": 0
+      }
+    }
+  },
+  {
+    "kind": "response",
+    "id": 10,
+    "result": {
+      "error": {
+        "code": "wifi-transport-unsupported",
+        "effect": "not-started",
+        "completedSteps": 0
+      }
+    }
+  },
+  {
+    "kind": "response",
+    "id": 11,
+    "result": {
+      "error": {
+        "code": "wifi-identity-mismatch",
+        "effect": "not-started",
+        "completedSteps": 0
+      }
+    }
+  }
+]

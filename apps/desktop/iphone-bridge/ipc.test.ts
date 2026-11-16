@@ -5,7 +5,7 @@ import {
   iphoneNativeMessageSchema,
 } from "../../../packages/protocol/src/iphone-bridge.js";
 
-describe.each(["ipc-golden.json", "screen-ipc-golden.json"])(
+describe.each(["ipc-golden.json", "screen-ipc-golden.json", "ipc-wifi-golden.json"])(
   "iPhone native IPC golden fixtures: %s",
   (filename) => {
     const fixtures: unknown = JSON.parse(

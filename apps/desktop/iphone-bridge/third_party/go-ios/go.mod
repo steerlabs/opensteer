@@ -5,6 +5,8 @@ go 1.26.0
 require (
 	github.com/Masterminds/semver v1.5.0
 	github.com/google/uuid v1.1.2
+	github.com/tadglines/go-pkgs v0.0.0-20210623144937-b983b20f54f9
+	golang.org/x/crypto v0.52.0
 	golang.org/x/net v0.55.0
 	google.golang.org/protobuf v1.32.0
 	gvisor.dev/gvisor v0.0.0-20240405191320-0878b34101b5
