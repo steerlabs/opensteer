@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import type { TeamSessionClient } from "@opensteer/client/team";
+import { TeamRuntimeOwner, type TeamSessionClient } from "@opensteer/client/team";
 import type { TeamMessage } from "@opensteer/protocol";
 const h = vi.hoisted(() => ({ convert: vi.fn(), write: vi.fn(), remove: vi.fn(), share: vi.fn() }));
 vi.mock("./team-context.js", () => ({ dataUri: h.convert }));
@@ -52,7 +52,6 @@ it("withholds export and share after Account retirement during data URI conversi
 it.each(["write", "share", "completion"] as const)(
   "cleans the staged export after %s",
   async (stage) => {
-    const { TeamRuntimeOwner } = await import("@opensteer/client/team");
     const owner = new TeamRuntimeOwner(null);
     h.convert.mockResolvedValue("data:text/plain;base64,QQ==");
     h.write.mockReset().mockImplementation(async () => {

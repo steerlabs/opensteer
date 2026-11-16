@@ -1,6 +1,6 @@
 import type { HostClient } from "@opensteer/client/host";
 import type { FileSource } from "@opensteer/protocol";
-import { encodeBase64Url } from "@opensteer/shared/base64url";
+import { encodeBase64 } from "@opensteer/shared/base64url";
 import * as Clipboard from "expo-clipboard";
 import { File } from "expo-file-system";
 import * as Haptics from "expo-haptics";
@@ -55,8 +55,7 @@ export function useImageActions(source: ImageActionsSource) {
         await shareFileBytes(bytes, source.name, mediaType, signal);
         return;
       }
-      const raw = encodeBase64Url(bytes).replace(/-/g, "+").replace(/_/g, "/");
-      let base64 = raw.padEnd(Math.ceil(raw.length / 4) * 4, "=");
+      let base64 = encodeBase64(bytes);
       if (!clipboardNeedsPng(mediaType, Platform.OS)) {
         try {
           await Clipboard.setImageAsync(base64);
