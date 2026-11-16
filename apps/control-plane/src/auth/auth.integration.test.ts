@@ -140,7 +140,10 @@ integration("Account OAuth freshness PostgreSQL boundary", () => {
     try {
       const page = await server.inject({ method: "GET", url: "/sign-in" });
       expect(page.body).toContain("Sign in with email");
-      expect((await signIn({ password: "wrong" })).statusCode).toBe(401);
+      const wrongPassword = await signIn({ password: "wrong" });
+      expect(wrongPassword.statusCode).toBe(401);
+      expect(wrongPassword.body).toContain("Email or password is incorrect.");
+      expect(wrongPassword.body).toContain('action="/sign-in/app-review"');
       expect((await signIn({ email: "another@example.test" })).statusCode).toBe(401);
       expect((await signIn({}, "https://attacker.test.invalid")).statusCode).toBe(403);
       const direct = await auth.handler(

@@ -322,23 +322,30 @@ function registerAccountPages(
       publicOrigin,
     );
     const oauthQuery = returnTo ? "" : rawQuery(request.url);
+    return sendSignInPage(reply, { returnTo, oauthQuery });
+  });
+  const sendSignInPage = (
+    reply: FastifyReply,
+    input: { returnTo: URL | null; oauthQuery: string; appReviewFailure?: string },
+  ) => {
     const reauthorization = new Set(
-      (new URLSearchParams(oauthQuery).get("prompt") ?? "").split(/\s+/u).filter(Boolean),
+      (new URLSearchParams(input.oauthQuery).get("prompt") ?? "").split(/\s+/u).filter(Boolean),
     ).has("login");
     return sendAccountPage(
       reply,
       reauthorization ? "Confirm it’s you · Opensteer" : "Sign in · Opensteer",
       signInBody({
-        hiddenFields: returnTo
-          ? `<input type="hidden" name="return_to" value="${escapeHtml(returnTo.toString())}">`
-          : `<input type="hidden" name="oauth_query" value="${escapeHtml(oauthQuery)}">`,
+        hiddenFields: input.returnTo
+          ? `<input type="hidden" name="return_to" value="${escapeHtml(input.returnTo.toString())}">`
+          : `<input type="hidden" name="oauth_query" value="${escapeHtml(input.oauthQuery)}">`,
         reauthorization,
         appReviewSignIn,
+        ...(input.appReviewFailure ? { appReviewFailure: input.appReviewFailure } : {}),
         ...(dependencies.appleSignIn ? { appleSignIn: true } : {}),
-        ...(returnTo ? { hostedOAuth: true } : {}),
+        ...(input.returnTo ? { hostedOAuth: true } : {}),
       }),
     );
-  });
+  };
 
   app.post("/sign-out", async (request, reply) => {
     requireAccountHost(request);
@@ -393,9 +400,17 @@ function registerAccountPages(
         Boolean(form.switch_account),
       );
       copySetCookies(reply, response);
-      if (credentials && !response.ok) {
-        return sendWebResponse(reply, response);
+      if (credentials && (response.status === 401 || response.status === 429)) {
+        return sendSignInPage(reply.code(response.status), {
+          returnTo,
+          oauthQuery: form.oauth_query ?? "",
+          appReviewFailure:
+            response.status === 429
+              ? "Too many attempts. Try again in a minute."
+              : "Email or password is incorrect.",
+        });
       }
+      if (credentials && !response.ok) return sendWebResponse(reply, response);
       const payload = (
         credentials ? ConsentRedirectResponseSchema : AuthRedirectResponseSchema
       ).parse(await response.json());
