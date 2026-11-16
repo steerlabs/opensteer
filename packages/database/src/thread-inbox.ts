@@ -15,11 +15,7 @@ import { threadAllowsPersonalContext } from "./run-personal-context.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
-import {
-  isMemoryPassWake,
-  memoryPassWakeContext,
-  startMemoryPassInTransaction,
-} from "./memory-pass-store.js";
+import { isMemoryPassWake, startMemoryPassInTransaction } from "./memory-pass-store.js";
 import { assertLineageCompatibleReuse } from "./resource-access.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import {
@@ -2568,7 +2564,7 @@ export async function enqueueThreadInputInTransaction(
   request: EnqueueThreadInputRequest,
   prepared?: Awaited<ReturnType<typeof lockThreadInputPreconditions>>,
 ): Promise<EnqueuedThreadInput> {
-  let content = ContentPartSchema.array().min(1).parse(request.content);
+  const content = ContentPartSchema.array().min(1).parse(request.content);
   if (
     (request.source.kind === "agent" || request.source.kind === "connection") &&
     !request.forwardedPlaces &&
@@ -2774,14 +2770,6 @@ export async function enqueueThreadInputInTransaction(
         code: "conflict",
         message: MANAGED_MEMORY_WAKE_SKIPPED,
       });
-    // After the fingerprint and receipt replay, so a retry replays what this wake froze.
-    content = [
-      ...content,
-      {
-        type: "text",
-        text: await memoryPassWakeContext(transaction, thread),
-      },
-    ];
     const started = await startMemoryPassInTransaction(transaction, thread, request.memoryPass);
     thread = started.worker;
     passEvents.push(started.event);

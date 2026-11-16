@@ -2190,6 +2190,18 @@ describeStore("shaped agent task tools", (it) => {
         taskStatus: "open",
       }),
     );
+    const changed = await s.product.opensteer_task_list({
+      caller: s.caller,
+      input: opensteer_task_list.input.parse({ changedSince: "2000-01-01T00:00:00Z" }),
+      operationKey: randomUUID(),
+    });
+    expect(opensteer_task_list.output.parse(productToolOutput(changed)).tasks).toContainEqual(
+      expect.objectContaining({
+        id: f.thread.id,
+        newMessages: expect.any(Number),
+        firstNewAt: expect.any(String),
+      }),
+    );
     await storeFixture.store.cancelAssignment({
       assignmentId: delegated.assignmentId!,
       requestedBy: f.userId,

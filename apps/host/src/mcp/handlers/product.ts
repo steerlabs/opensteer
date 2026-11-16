@@ -471,6 +471,7 @@ export class ProductToolHandlers {
       maxItems: input.limit,
       ownerId: claims.requestedBy,
       ...(input.query ? { query: input.query } : {}),
+      ...(input.changedSince ? { changedSince: new Date(input.changedSince) } : {}),
       scope,
       scopeId: caller.kind === "connection" ? caller.key : callerThread(caller).id,
     });
@@ -488,6 +489,9 @@ export class ProductToolHandlers {
         doneAt: summary.doneAt,
         title: summary.title,
         updatedAt: summary.updatedAt,
+        ...(summary.newMessages === undefined
+          ? {}
+          : { newMessages: summary.newMessages, firstNewAt: summary.firstNewAt }),
       })),
       hasMore: page.window.hasMore,
       nextBefore: page.window.nextBefore,

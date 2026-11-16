@@ -4,6 +4,7 @@ import {
   ExecutionNodeIdSchema,
   DelegationModelChoiceSchema,
   HarnessInstanceIdSchema,
+  IsoDateTimeSchema,
   MessageIdSchema,
   RunIdSchema,
   ModelSelectionSchema,
@@ -94,8 +95,9 @@ export const opensteer_task_list = defineAgentTool({
   name: "opensteer_task_list",
   title: "List tasks",
   description:
-    "List reachable tasks, newest updated first, up to 50 per page; page with cursor. parentTaskId lists the tasks that task delegated (for this task's own, take its ID from opensteer_task_read), and each row carries its delegationId and taskStatus. Mention returned items by their `link`, verbatim.",
+    "List reachable tasks, newest updated first, up to 50 per page; page with cursor. parentTaskId lists the tasks that task delegated (for this task's own, take its ID from opensteer_task_read), and each row carries its delegationId and taskStatus. changedSince lists only tasks with messages after that time, most recent first, with newMessages and firstNewAt; read them with opensteer_task_read. Mention returned items by their `link`, verbatim.",
   input: z.strictObject({
+    changedSince: IsoDateTimeSchema.optional(),
     cursor: CursorSchema.optional(),
     limit: z.number().int().min(1).max(50).default(25),
     parentTaskId: ThreadIdSchema.optional(),
