@@ -410,7 +410,7 @@ async function runDesktop(
     process.platform === "darwin"
       ? await openDesktopPrivateFilesystem({
           binary: loaded.config.localExecution.nativeFsHelperBinary,
-          root: iphoneOwnershipRoot(),
+          root: iphoneOwnershipRoot(loaded.config.dataDirectory),
         })
       : privateFiles;
   const iphone = new IphoneService({

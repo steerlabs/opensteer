@@ -16,10 +16,9 @@ Procedures for a Mac driving an iPhone's screen. Constraints live in
   by name.
 - Never drive the host screen: GUI and Electron checks run only in the VM (`pnpm test:vm`).
 - Never read or operate signing keys, Apple accounts or release credentials.
-- Never touch the live install. Desktop keeps phone reservations under
-  `~/Library/Application Support/Opensteer/iPhone Ownership` in every build
-  ([bridge-paths.ts](../../../apps/desktop/src/iphone/bridge-paths.ts)), so qualify on a Mac with
-  no live install, or get Tim's sign-off first.
+- Never touch the live install. Phone reservations live in each build's own data directory
+  ([bridge-paths.ts](../../../apps/desktop/src/iphone/bridge-paths.ts)), so a source build stays
+  out of an installed app's folder; don't point `OPENSTEER_DESKTOP_DATA_DIR` at it.
 - Never type or record a passcode; the person unlocks the phone.
 - Keep UDIDs, pair records, phone content and typed text out of logs, fixtures and evidence.
 - Skipped, blocked or unrun checks are unverified, never passed. A build or a passing synthetic

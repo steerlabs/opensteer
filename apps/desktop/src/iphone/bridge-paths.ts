@@ -3,7 +3,6 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { homedir } from "node:os";
 import { z } from "zod";
 import {
   opensteerAppleTeamId,
@@ -11,8 +10,9 @@ import {
 } from "../signed-helpers/developer-id.js";
 import { IphoneServiceError } from "./iphone-store.js";
 
-export function iphoneOwnershipRoot(home = homedir()): string {
-  return path.join(home, "Library", "Application Support", "Opensteer", "iPhone Ownership");
+/** Inside this install's own data directory, so a source build never touches an installed app's. */
+export function iphoneOwnershipRoot(dataDirectory: string): string {
+  return path.join(dataDirectory, "iPhone Ownership");
 }
 export function bundledIphoneBridgePath(input: {
   packaged: boolean;
