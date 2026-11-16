@@ -210,6 +210,12 @@ button {
     padding: 0 4px;
   }
 }
+/* The closing section and footer still offer it where the bar has no room. */
+@media (max-width: 359px) {
+  .nav__talk {
+    display: none;
+  }
+}
 
 /* ---------- Footer ---------- */
 .footer {
