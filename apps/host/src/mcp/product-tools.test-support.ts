@@ -360,8 +360,8 @@ export class ProductToolsTestClient {
       "thread.interrupt": "opensteer_task_interrupt",
       "thread.update": "opensteer_task_update",
       "task.cancel": "opensteer_delegation_cancel",
-      "person.message": "person_notify",
-      "person.show": "person_show",
+      "person.message": "send_to_person",
+      "person.show": "show_to_person",
       "request.withdraw": "opensteer_request_withdraw",
     };
     name = taskNames[request.type] ?? name;

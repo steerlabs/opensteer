@@ -18,7 +18,7 @@ Automations are personal. Timing controls require a task access mode no higher t
 Programs use the same MCP as Runs with the program tool list. `opensteer_task_delegate` returns the task;
 a program or a Run may wait on its `delegationId` with `opensteer_delegation_wait`, bounded at 100 seconds, or
 wait on its `taskId` with `opensteer_task_wait`, whose `items` match `opensteer_task_read`. `computer_use`, the
-`*_request` tools, `ask_person`, `person_notify` and `person_show` are Run-only. Delegate when agent judgment or a Run-only tool is needed.
+`*_request` tools, `ask_person`, `send_to_person` and `show_to_person` are Run-only. Delegate when agent judgment or a Run-only tool is needed.
 Programs cannot approve, grant access, handle sign-in credentials or raise their ceiling.
 
 Manual runs have real side effects and work only for non-archived schedules and webhooks. Avoid duplicate effects while outcomes are unknown. Respect site limits and never bypass a block by changing identity or session.

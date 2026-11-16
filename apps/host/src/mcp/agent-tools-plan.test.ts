@@ -97,7 +97,7 @@ it("filters capability tools and invalidates a plan when driver reach changes", 
   for (const name of [
     "tab_list",
     "tab_open",
-    "person_show",
+    "show_to_person",
     "app_publish",
     "app_list",
     "computer_use",

@@ -48,7 +48,7 @@ next}`), recorded as that call's result. An exhausted or unmatched mock returns 
   with the limited-access error.
 - `browser` supplies the person's tabs of every kind (`page`, `window`, `phone`, `app`), groups,
   profiles, `windows`, `phones` and `apps` that `tab_open` can bind, `offlineComputers`,
-  `accessRequiredComputers` and `personActiveTab`. Unmocked `tab_*` tools and `person_show`
+  `accessRequiredComputers` and `personActiveTab`. Unmocked `tab_*` tools and `show_to_person`
   answer from that state, and every case receives a fake `OPENSTEER_BROWSER_HARNESS` sharing it:
   scripts run in a bounded VM with `openPage(tabId)` handles, `--tab`, and
   `opensteer.callTool`, which reaches the fake Host like an MCP call. Tab state survives scripts

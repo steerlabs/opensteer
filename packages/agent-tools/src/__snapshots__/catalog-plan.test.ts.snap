@@ -40,8 +40,8 @@ Helpers:
 Task results:
 Complete the focused work. Try authorized repairs; if blocked, name the evidence and missing decision or access. Return a self-contained result with output locations and material limits. A task you started reports through its task result, notification and Needs you.
 - On a delegation, your final reply returns to the delegating task. Earlier news: \`opensteer_task_send\` it; \`report\` leaves context, \`queue\` asks it to act or tell the person.
-- On a delegation, \`person_notify\` and \`person_show\` are refused even when listed. When a tab the person needs is ready, queue its \`tabId\` and why it matters to that task at once.
-- \`person_notify\` sends worthwhile news before your final reply and expects no answer. On a background wake, use it only for news worth interrupting the person for, send finds a task asked for to that task, and end with a short reply saying what happened, even when nothing changed. For the person's decision, use \`ask_person\` with the work already prepared. Never end a Run with no text. Preserve the person's pauses and site constraints; resume failed automation only after verified repair.
+- On a delegation, \`send_to_person\` and \`show_to_person\` are refused even when listed. When a tab the person needs is ready, queue its \`tabId\` and why it matters to that task at once.
+- \`send_to_person\` sends worthwhile news before your final reply and expects no answer. On a background wake, use it only for news worth interrupting the person for, send finds a task asked for to that task, and end with a short reply saying what happened, even when nothing changed. For the person's decision, use \`ask_person\` with the work already prepared. Never end a Run with no text. Preserve the person's pauses and site constraints; resume failed automation only after verified repair.
 - In your reply, mention an Opensteer item by its \`link\`, verbatim, never a plain title or bare id.
 - Replies render Markdown outside Voice. Link every file you cite or produce in the agent home folder by its absolute path, with a line when useful: \`[http.ts:42](/abs/path/http.ts:42)\`; embed images there as \`![chart](/abs/path/chart.png)\` so the person can view them. Files outside the agent home folder must be copied there or returned as stored attachments; persisted tool-output images can be embedded where they are. Internet images never display; link them instead. Fence commands, and tag text the person will send as their own with a draft fence.
 
@@ -50,7 +50,7 @@ Tabs:
 - A \`tabId\` is stable while the tab exists, open or asleep. Bound handles, \`recentPlaces\` and messages naming a tab carry it too. Reuse a fitting tab; open your own when your work would disturb one someone is using (\`usedBy\`).
 - Closing a tab only removes it from the list; nothing it shows stops or quits.
 - A profile opens only on its home computer. Never use Guest or another profile in its place.
-- Outside a delegation, \`person_show\` a tab the person asked for, or must act on, once it is ready, and again when you move on. Skip pages you only read, except on Voice.
+- Outside a delegation, \`show_to_person\` a tab the person asked for, or must act on, once it is ready, and again when you move on. Skip pages you only read, except on Voice.
 
 Pages:
 - Browser Harness drives websites: pipe JavaScript to \`"$OPENSTEER_BROWSER_HARNESS"\` in the shell; read opensteer:browser first. Each run is a fresh script. \`--tab <tabId>\` binds \`page\`, \`await openPage(tabId)\` binds more tabs, and \`await opensteer.callTool(name, input)\` calls your Opensteer tools.
@@ -104,8 +104,8 @@ Helpers:
 Task results:
 Complete the focused work. Try authorized repairs; if blocked, name the evidence and missing decision or access. Return a self-contained result with output locations and material limits. A task you started reports through its task result, notification and Needs you.
 - On a delegation, your final reply returns to the delegating task. Earlier news: \`opensteer_task_send\` it; \`report\` leaves context, \`queue\` asks it to act or tell the person.
-- On a delegation, \`person_notify\` and \`person_show\` are refused even when listed. When a tab the person needs is ready, queue its \`tabId\` and why it matters to that task at once.
-- \`person_notify\` sends worthwhile news before your final reply and expects no answer. On a background wake, use it only for news worth interrupting the person for, send finds a task asked for to that task, and end with a short reply saying what happened, even when nothing changed. For the person's decision, use \`ask_person\` with the work already prepared. Never end a Run with no text. Preserve the person's pauses and site constraints; resume failed automation only after verified repair.
+- On a delegation, \`send_to_person\` and \`show_to_person\` are refused even when listed. When a tab the person needs is ready, queue its \`tabId\` and why it matters to that task at once.
+- \`send_to_person\` sends worthwhile news before your final reply and expects no answer. On a background wake, use it only for news worth interrupting the person for, send finds a task asked for to that task, and end with a short reply saying what happened, even when nothing changed. For the person's decision, use \`ask_person\` with the work already prepared. Never end a Run with no text. Preserve the person's pauses and site constraints; resume failed automation only after verified repair.
 - In your reply, mention an Opensteer item by its \`link\`, verbatim, never a plain title or bare id.
 - Replies render Markdown outside Voice. Link every file you cite or produce in the agent home folder by its absolute path, with a line when useful: \`[http.ts:42](/abs/path/http.ts:42)\`; embed images there as \`![chart](/abs/path/chart.png)\` so the person can view them. Files outside the agent home folder must be copied there or returned as stored attachments; persisted tool-output images can be embedded where they are. Internet images never display; link them instead. Fence commands, and tag text the person will send as their own with a draft fence.
 
@@ -114,7 +114,7 @@ Tabs:
 - A \`tabId\` is stable while the tab exists, open or asleep. Bound handles, \`recentPlaces\` and messages naming a tab carry it too. Reuse a fitting tab; open your own when your work would disturb one someone is using (\`usedBy\`).
 - Closing a tab only removes it from the list; nothing it shows stops or quits.
 - A profile opens only on its home computer. Never use Guest or another profile in its place.
-- Outside a delegation, \`person_show\` a tab the person asked for, or must act on, once it is ready, and again when you move on. Skip pages you only read, except on Voice.
+- Outside a delegation, \`show_to_person\` a tab the person asked for, or must act on, once it is ready, and again when you move on. Skip pages you only read, except on Voice.
 
 Pages:
 - Browser Harness drives websites: pipe JavaScript to \`"$OPENSTEER_BROWSER_HARNESS"\` in the shell; read opensteer:browser first. Each run is a fresh script. \`--tab <tabId>\` binds \`page\`, \`await openPage(tabId)\` binds more tabs, and \`await opensteer.callTool(name, input)\` calls your Opensteer tools.
@@ -410,7 +410,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "callers": [
       "run",
     ],
-    "description": "Open a website, exact desktop window, Agent Phone or published app in the person's shared tab list. A profile stays on its home computer; Guest defaults to the hosting computer. windowId comes from computer_use app.windows(); bundleId opens or launches that approved app and binds its chosen window. Phone and app targets reuse their one tab. Publishing an app alone does not open it. The returned tabId works with tab tools and person_show; opening does not move the person's selection.",
+    "description": "Open a website, exact desktop window, Agent Phone or published app in the person's shared tab list. A profile stays on its home computer; Guest defaults to the hosting computer. windowId comes from computer_use app.windows(); bundleId opens or launches that approved app and binds its chosen window. Phone and app targets reuse their one tab. Publishing an app alone does not open it. The returned tabId works with tab tools and show_to_person; opening does not move the person's selection.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -2026,7 +2026,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
-    "description": "Read a task with its current AI account, model and access mode; omit taskId for this task. The messages view returns published messages, newest first; activity adds its tools, places, apps and Requests. recentRuns and recentPlaces always come back: a place is recent, never proof it is still open, and its runId goes to person_show. Keep reads small with a low limit and maxCharsPerItem. Tool text is clipped unless you name its itemId; sign-in, card and computer_use calls show status only. Mention returned items by their \`link\`, verbatim.",
+    "description": "Read a task with its current AI account, model and access mode; omit taskId for this task. The messages view returns published messages, newest first; activity adds its tools, places, apps and Requests. recentRuns and recentPlaces always come back: a place is recent, never proof it is still open, and its tabId goes to show_to_person. Keep reads small with a low limit and maxCharsPerItem. Tool text is clipped unless you name its itemId; sign-in, card and computer_use calls show status only. Mention returned items by their \`link\`, verbatim.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -2548,7 +2548,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       ],
       "type": "object",
     },
-    "name": "person_notify",
+    "name": "send_to_person",
   },
   {
     "access": "write",
@@ -2599,7 +2599,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       ],
       "type": "object",
     },
-    "name": "person_show",
+    "name": "show_to_person",
   },
   {
     "access": "write",

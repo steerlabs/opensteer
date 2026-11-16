@@ -18,8 +18,8 @@ import {
   RequestCreationOutputSchema,
 } from "./outputs.js";
 
-export const person_notify = defineAgentTool({
-  name: "person_notify",
+export const send_to_person = defineAgentTool({
+  name: "send_to_person",
   title: "Send to the person",
   description:
     "Send this Run’s requester a message in this task now, while work continues; it may notify their devices. It expects no answer: to get one, use ask_person. Refused on a delegation: ask the delegating task to tell the person. On a background wake, use it only for news worth interrupting the person for; send finds a task asked for to that task with opensteer_task_send queue, and otherwise just say briefly what happened in your final reply. Put the completed answer in your final reply without a duplicate message.",
@@ -29,8 +29,8 @@ export const person_notify = defineAgentTool({
   callers: ["run"] as const,
 });
 
-export const person_show = defineAgentTool({
-  name: "person_show",
+export const show_to_person = defineAgentTool({
+  name: "show_to_person",
   title: "Show a tab or task",
   description:
     "Ask devices viewing this task to bring an explicit tab or task into view. tabId comes from tab_list or tab_open; taskId comes from opensteer_task_list or opensteer_task_read. Asleep tabs may wake. A closed or unavailable target is not replaced. Delegated tasks send the destination to their delegating task. sent-unconfirmed means delivery, not proof the person saw it.",

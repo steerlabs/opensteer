@@ -32,7 +32,7 @@ const runPlans = {
 // Codex middle-truncates an entry beyond about 4,000 bytes; leave margin so no section is cut.
 const codexEntryBytes = 3_500;
 const capabilityTools = {
-  tabs: ["tab_list", "tab_open", "tab_close", "tab_organize", "tab_group_update", "person_show"],
+  tabs: ["tab_list", "tab_open", "tab_close", "tab_organize", "tab_group_update", "show_to_person"],
   computerUse: ["computer_use"],
   apps: ["app_publish", "app_list", "app_start", "app_stop", "app_delete"],
 } as const;
