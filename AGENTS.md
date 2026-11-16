@@ -186,6 +186,10 @@ as `.claude/skills/`.
 - When you split a request across agents, each works on its own branch in its
   own worktree and opens no PR. You merge their branches into one PR branch and
   open one PR.
+- Don't undo work that landed on main while your branch was open. Resolve a
+  conflict so both changes survive, never by taking your side wholesale. Before
+  pushing, read your diff against current `origin/main` and account for every
+  line it removes; reverting someone's change needs a reason in the PR body.
 - Push when the change is ready for review, not after every edit. Every PR and
   every push runs CI on one shared queue of 60 jobs, so a dozen small PRs or
   pushes block everyone's checks for hours.

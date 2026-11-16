@@ -87,13 +87,13 @@ function fixture() {
   const targets = new Map([[thread.id, thread]]);
   const messageId = createId("message");
   const personMessage = vi.fn(
-    async (_call: import("./handlers/index.js").ToolCall<"person_notify">) => ({
+    async (_call: import("./handlers/index.js").ToolCall<"send_to_person">) => ({
       messageId,
       unnamedSecret: "private",
     }),
   );
   const handlers = {
-    person_notify: personMessage,
+    send_to_person: personMessage,
     opensteer_task_send: vi.fn(async () => {
       throw new Error("Unexpected effect");
     }),
@@ -631,7 +631,7 @@ describe("Opensteer MCP spine", () => {
           jsonrpc: "2.0",
           id: 2,
           method: "tools/call",
-          params: { name: "person_notify", arguments: { message: "waiting" } },
+          params: { name: "send_to_person", arguments: { message: "waiting" } },
         },
         sessionId,
       );
@@ -890,7 +890,7 @@ describe("Opensteer MCP spine", () => {
           jsonrpc: "2.0",
           id: 1,
           method: "tools/call",
-          params: { name: "person_notify", arguments: { message: "one authority" } },
+          params: { name: "send_to_person", arguments: { message: "one authority" } },
         }),
       });
       expect(response.status).toBe(200);
@@ -955,9 +955,9 @@ describe("Opensteer MCP spine", () => {
       expect(names).toContain("opensteer_task_wait");
       expect(client.getInstructions()).toBeUndefined();
       expect(names).not.toContain("computer_use");
-      expect(names).not.toContain("person_show");
+      expect(names).not.toContain("show_to_person");
       await expect(
-        f.service.callTool("program", "person_notify", { message: "hi" }, { operationKey: "p" }),
+        f.service.callTool("program", "send_to_person", { message: "hi" }, { operationKey: "p" }),
       ).rejects.toThrow("unavailable to this caller");
       expect(f.personMessage).not.toHaveBeenCalled();
     } finally {
@@ -1097,7 +1097,7 @@ describe("Opensteer MCP spine", () => {
       expect(names).not.toContain("computer_use");
       expect(names).not.toContain("saved_login_request");
       expect(names).not.toContain("chrome_cookies_request");
-      expect(names).not.toContain("person_notify");
+      expect(names).not.toContain("send_to_person");
     } finally {
       await client.close();
       await f.service.close();
@@ -1107,9 +1107,9 @@ describe("Opensteer MCP spine", () => {
     const f = fixture();
     const input = { message: "sent once" };
     expect(
-      await f.service.callTool("run", "person_notify", input, { operationKey: "rpc-1" }),
+      await f.service.callTool("run", "send_to_person", input, { operationKey: "rpc-1" }),
     ).not.toHaveProperty("unnamedSecret");
-    await f.service.callTool("run", "person_notify", input, { operationKey: "rpc-2" });
+    await f.service.callTool("run", "send_to_person", input, { operationKey: "rpc-2" });
     expect(f.personMessage).toHaveBeenCalledTimes(2);
     expect(f.personMessage.mock.calls.map(([call]) => call.operationKey)).toEqual([
       "rpc-1",
@@ -1119,10 +1119,10 @@ describe("Opensteer MCP spine", () => {
   it("rechecks live authority on a new call", async () => {
     const f = fixture();
     const input = { message: "once" };
-    await f.service.callTool("run", "person_notify", input, { operationKey: "1" });
+    await f.service.callTool("run", "send_to_person", input, { operationKey: "1" });
     f.callers.delete("run");
     await expect(
-      f.service.callTool("run", "person_notify", input, { operationKey: "2" }),
+      f.service.callTool("run", "send_to_person", input, { operationKey: "2" }),
     ).rejects.toThrow("expired");
     expect(f.personMessage).toHaveBeenCalledTimes(1);
   });
@@ -1169,7 +1169,7 @@ describe("Opensteer MCP spine", () => {
     await expect(
       f.service.callTool(
         "run",
-        "person_notify",
+        "send_to_person",
         { message: "hi", attribution: "spoofed" },
         { operationKey: "invalid" },
       ),
@@ -1211,7 +1211,7 @@ describe("Opensteer MCP spine", () => {
     try {
       await f.service.close();
       const result = await client.callTool({
-        name: "person_notify",
+        name: "send_to_person",
         arguments: { message: "after restart" },
       });
       expect(result.isError).not.toBe(true);

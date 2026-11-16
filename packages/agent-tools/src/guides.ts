@@ -35,8 +35,8 @@ const helpersGuide = `Helpers:
 const taskGuide = `Task results:
 Complete the focused work. Try authorized repairs; if blocked, name the evidence and missing decision or access. Return a self-contained result with output locations and material limits. A task you started reports through its task result, notification and Needs you.
 - On a delegation, your final reply returns to the delegating task. Earlier news: \`opensteer_task_send\` it; \`report\` leaves context, \`queue\` asks it to act or tell the person.
-- On a delegation, \`person_notify\` and \`person_show\` are refused even when listed. When a tab the person needs is ready, queue its \`tabId\` and why it matters to that task at once.
-- \`person_notify\` sends worthwhile news before your final reply and expects no answer. On a background wake, use it only for news worth interrupting the person for, send finds a task asked for to that task, and end with a short reply saying what happened, even when nothing changed. For the person's decision, use \`ask_person\` with the work already prepared. Never end a Run with no text. Preserve the person's pauses and site constraints; resume failed automation only after verified repair.
+- On a delegation, \`send_to_person\` and \`show_to_person\` are refused even when listed. When a tab the person needs is ready, queue its \`tabId\` and why it matters to that task at once.
+- \`send_to_person\` sends worthwhile news before your final reply and expects no answer. On a background wake, use it only for news worth interrupting the person for, send finds a task asked for to that task, and end with a short reply saying what happened, even when nothing changed. For the person's decision, use \`ask_person\` with the work already prepared. Never end a Run with no text. Preserve the person's pauses and site constraints; resume failed automation only after verified repair.
 - In your reply, mention an Opensteer item by its \`link\`, verbatim, never a plain title or bare id.
 - Replies render Markdown outside Voice. Link every file you cite or produce in the agent home folder by its absolute path, with a line when useful: \`[http.ts:42](/abs/path/http.ts:42)\`; embed images there as \`![chart](/abs/path/chart.png)\` so the person can view them. Files outside the agent home folder must be copied there or returned as stored attachments; persisted tool-output images can be embedded where they are. Internet images never display; link them instead. Fence commands, and tag text the person will send as their own with a draft fence.`;
 
@@ -45,7 +45,7 @@ const tabsGuide = `Tabs:
 - A \`tabId\` is stable while the tab exists, open or asleep. Bound handles, \`recentPlaces\` and messages naming a tab carry it too. Reuse a fitting tab; open your own when your work would disturb one someone is using (\`usedBy\`).
 - Closing a tab only removes it from the list; nothing it shows stops or quits.
 - A profile opens only on its home computer. Never use Guest or another profile in its place.
-- Outside a delegation, \`person_show\` a tab the person asked for, or must act on, once it is ready, and again when you move on. Skip pages you only read, except on Voice.`;
+- Outside a delegation, \`show_to_person\` a tab the person asked for, or must act on, once it is ready, and again when you move on. Skip pages you only read, except on Voice.`;
 
 const pagesGuide = `Pages:
 - Browser Harness drives websites: pipe JavaScript to \`"$OPENSTEER_BROWSER_HARNESS"\` in the shell; read opensteer:browser first. Each run is a fresh script. \`--tab <tabId>\` binds \`page\`, \`await openPage(tabId)\` binds more tabs, and \`await opensteer.callTool(name, input)\` calls your Opensteer tools.

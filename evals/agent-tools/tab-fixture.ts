@@ -17,7 +17,7 @@ export const tabFixtureTools = new Set([
   "tab_close",
   "tab_organize",
   "tab_group_update",
-  "person_show",
+  "show_to_person",
 ]);
 
 function failure(code: string, message: string, next: string | null = null): FixtureToolResult {
@@ -306,7 +306,7 @@ export class TabFixture {
         if (typeof args.collapsed === "boolean") group.collapsed = args.collapsed;
         return { result: { group: this.#groups(state).find((g) => g.groupId === group.groupId) } };
       }
-      case "person_show": {
+      case "show_to_person": {
         const target = isRecord(args.target) ? args.target : {};
         if (typeof target.tabId === "string") {
           const tab = findTab(target.tabId);

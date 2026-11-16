@@ -9,7 +9,7 @@ function tool(name: AgentToolName) {
 }
 describe("Opensteer tool inputs", () => {
   it("requires an explicit tab or task for Show", () => {
-    const schema = tool("person_show").input;
+    const schema = tool("show_to_person").input;
     expect(schema.safeParse({ target: { tabId: "tab-from-list" } }).success).toBe(true);
     expect(schema.safeParse({ target: { taskId: createId("thread") } }).success).toBe(true);
     for (const target of [

@@ -283,7 +283,7 @@ export class ProductToolHandlers {
       }),
     }));
   }
-  async preparePersonShow({ caller, input }: ToolCall<"person_show">) {
+  async preparePersonShow({ caller, input }: ToolCall<"show_to_person">) {
     const target = PersonShowTargetSchema.parse(input.target);
     const claims = requireRun(caller).claims;
     if (await this.#store.runAssignment(claims.runId))
@@ -297,14 +297,14 @@ export class ProductToolHandlers {
     return target;
   }
 
-  async person_show(call: ToolCall<"person_show">) {
+  async show_to_person(call: ToolCall<"show_to_person">) {
     const { caller, input, operationKey } = call;
     const claims = requireRun(caller).claims;
-    const requestId = operationId(caller, operationKey, "person_show");
+    const requestId = operationId(caller, operationKey, "show_to_person");
     const target = await this.preparePersonShow(call);
     if (!this.#personShow) throw badRequest("Showing places is unavailable on this Host.");
     const admission = await this.#store.admitRunToolCall(
-      runAdmission(caller, "person_show", input, requestId),
+      runAdmission(caller, "show_to_person", input, requestId),
     );
     if (!admission.wasDuplicate && "tabId" in target)
       await this.#tabs!.authorizeShow(claims, target.tabId);
@@ -326,14 +326,14 @@ export class ProductToolHandlers {
     };
   }
 
-  async person_notify({ caller, input, operationKey }: ToolCall<"person_notify">) {
+  async send_to_person({ caller, input, operationKey }: ToolCall<"send_to_person">) {
     const claims = requireRun(caller).claims;
-    const requestId = operationId(caller, operationKey, "person_notify");
+    const requestId = operationId(caller, operationKey, "send_to_person");
     if (await this.#store.runAssignment(claims.runId))
       throw forbidden(assignedRunRefusal, assignedRunNext);
 
     const result = await this.#commands.publishPersonMessage({
-      admission: runAdmission(caller, "person_notify", input, requestId),
+      admission: runAdmission(caller, "send_to_person", input, requestId),
       message: input.message,
     });
     return {

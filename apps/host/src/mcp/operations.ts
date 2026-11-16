@@ -41,8 +41,8 @@ const actions = {
   computer_access_request: "device.access.request",
   opensteer_task_delegate: "thread.delegate",
   opensteer_task_send: "thread.message",
-  person_notify: "person.message",
-  person_show: "person.show",
+  send_to_person: "person.message",
+  show_to_person: "person.show",
   opensteer_task_update: "thread.write",
   opensteer_delegation_cancel: "assignment.cancel",
 } as const;

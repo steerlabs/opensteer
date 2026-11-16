@@ -126,7 +126,7 @@ it("requires quiet background work and one valid notification for important news
     ),
   ).toBe(false);
   const important = cases.find((c) => c.id === "memory-important-item")!.expect;
-  const message = { tool: "person_notify", args: { message: "Important news" }, valid: true };
+  const message = { tool: "send_to_person", args: { message: "Important news" }, valid: true };
   expect(grade(important, [mail, message], "").every((c) => c.pass)).toBe(true);
   expect(grade(important, [mail, { ...message, valid: false }], "").every((c) => c.pass)).toBe(
     false,
