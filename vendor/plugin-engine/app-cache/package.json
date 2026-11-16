@@ -1,0 +1,23 @@
+{
+  "name": "@opensteer/plugin-engine-app-cache",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./contracts": "./src/contracts/cache.ts",
+    "./changes": "./src/changes.ts",
+    "./sqlite": "./src/sqlite.ts"
+  },
+  "dependencies": {
+    "effect": "4.1.4"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node ../../../scripts/plugin-engine/build.mjs"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/node": "catalog:"
+  }
+}

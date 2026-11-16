@@ -1,0 +1,23 @@
+{
+  "name": "@opensteer/plugin-engine-reactivity",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./cloudflare": "./src/cloudflare.ts"
+  },
+  "dependencies": {
+    "effect": "4.1.4"
+  },
+  "devDependencies": {
+    "@effect/sql-sqlite-do": "4.1.4",
+    "esbuild": "0.28.2",
+    "miniflare": "4.20260730.0",
+    "typescript": "catalog:",
+    "@types/node": "catalog:"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node ../../../scripts/plugin-engine/build.mjs"
+  }
+}

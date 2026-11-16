@@ -1,0 +1,26 @@
+{
+  "name": "@opensteer/plugin-engine-mcp",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./browser": "./src/contracts/browser.ts"
+  },
+  "dependencies": {
+    "@opensteer/plugin-engine-sdk": "workspace:*",
+    "@opensteer/plugin-engine-utils": "workspace:*",
+    "@opencode-ai/codemode": "0.0.0-dev-19272",
+    "acorn": "8.15.0",
+    "apps": "workspace:*",
+    "effect": "4.1.4"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node ../../../scripts/plugin-engine/build.mjs"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/node": "catalog:"
+  }
+}

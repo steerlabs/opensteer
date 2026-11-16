@@ -1,0 +1,52 @@
+/**
+ * Divide a tool invocation's time, on its own isolate's clock, by who the work belonged to:
+ * PluginEngine, the app's authored code, upstream providers, a person answering an elicitation, or
+ * another call loading a cache entry this one waits for. Background work no caller waits on runs
+ * beside the division and is reported apart.
+ * Each boundary declares its owner where the work starts (see `owned`); the invocation's own span is
+ * PluginEngine's. The host adds the other isolates' parts.
+ */
+import { Effect } from "effect";
+import { makeOwnershipAccounting, measuredSpan } from "@opensteer/plugin-engine-telemetry";
+import { InvocationTimingSink } from "../contracts/host.ts";
+
+/** The span `makeElicit` opens while a person answers. */
+export const elicitationWaitSpan = "app.elicitation.wait";
+/** The span around each workflow control an app calls, which PluginEngine answers. */
+export const workflowControlSpan = "app.workflow.control";
+
+/**
+ * Run a tool operation in its `app.<operation>` span and time it from the span's own start to its
+ * own end. The span records each part, and the isolated handler returns them to the host.
+ */
+export const timedInvocation =
+  (operation: "call" | "query" | "mutate") =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    Effect.gen(function* () {
+      const report = yield* InvocationTimingSink;
+      return yield* effect.pipe(
+        measuredSpan(`app.${operation}`, {}, (start) => {
+          const accounting = makeOwnershipAccounting(start, "pluginEngine");
+          return {
+            around: accounting.observe,
+            end: (end, span) => {
+              const spent = accounting.read(end);
+              report({
+                elapsedMs: Number(end - start) / 1_000_000,
+                upstreamMs: spent.upstream,
+                elicitationMs: spent.person,
+                authoredMs: spent.app,
+                leaseMs: spent.lease,
+                backgroundMs: spent.background,
+              });
+              span.attribute("pluginEngine.upstream.wait_ms", spent.upstream);
+              span.attribute("pluginEngine.elicitation.wait_ms", spent.person);
+              span.attribute("pluginEngine.authored_ms", spent.app);
+              span.attribute("pluginEngine.lease.wait_ms", spent.lease);
+              span.attribute("pluginEngine.background_ms", spent.background);
+              span.attribute("pluginEngine.overhead_ms", spent.pluginEngine);
+            },
+          };
+        }),
+      );
+    });

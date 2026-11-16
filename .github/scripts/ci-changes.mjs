@@ -38,13 +38,14 @@ export function readGraph(root, ref) {
   const workspace = ref
     ? git(root, ["show", `${ref}:pnpm-workspace.yaml`])
     : readFileSync(resolve(root, "pnpm-workspace.yaml"), "utf8");
-  // Deliberately support only this repository's explicit one-level workspace globs.
-  const groups = [...workspace.matchAll(/^\s*-\s+['"]?([\w-]+)\/\*['"]?\s*$/gm)].map((m) => m[1]);
+  // Explicit workspace roots may contain several path segments.
+  const groups = [...workspace.matchAll(/^\s*-\s+['"]?([\w/-]+)\/\*['"]?\s*$/gm)].map((m) => m[1]);
   if (!groups.length) throw new Error("Unsupported workspace definition");
   const manifests = paths.filter(
     (p) =>
-      groups.some((g) => p.startsWith(g + "/")) &&
-      p.split("/").length === 3 &&
+      groups.some(
+        (g) => p.startsWith(g + "/") && p.split("/").length === g.split("/").length + 2,
+      ) &&
       p.endsWith("/package.json") &&
       (ref || existsSync(resolve(root, p))),
   );

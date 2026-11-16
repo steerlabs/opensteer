@@ -109,3 +109,21 @@ test("typechecks what CI would, including a test-only owner and a root config", 
   assert.ok(filtered(localPlan(["packages/a/value.test.ts"], graph, ["packages/a/value.test.ts"])));
   assert.ok(filtered(localPlan(["tsconfig.json"], graph, [])));
 });
+
+test("imported packages keep compiler checks while skipping local style rewrites", () => {
+  const file = "vendor/plugin-engine/sdk/src/index.ts";
+  const plan = localPlan(
+    [file],
+    [
+      {
+        name: "@opensteer/plugin-engine-sdk",
+        dir: "vendor/plugin-engine/sdk",
+        deps: [],
+        coverage: [],
+      },
+    ],
+    [file],
+  );
+  assert.ok(plan.commands.some((command) => command.includes("typecheck")));
+  assert.ok(!plan.commands.some((command) => command.includes("oxlint")));
+});

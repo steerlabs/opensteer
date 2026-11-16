@@ -1,0 +1,144 @@
+diff --git a/dist/commonjs/dereference.js b/dist/commonjs/dereference.js
+index 7bf92249f8d658062c97026ba8bcfcbbec5e74d8..68b3fc09823b48b00de8e76a4b7be7afc5eee21c 100644
+--- a/dist/commonjs/dereference.js
++++ b/dist/commonjs/dereference.js
+@@ -139,9 +139,19 @@
+                 dereference(subSchema[subKey], lookup, baseURI, `${keyBase}/${(0, pointer_js_1.encodePointer)(subKey)}`);
+             }
+         }
+-        else {
++        // Only keywords that hold schemas are walked. The values of annotations such as `example`, and of
++        // unknown keywords such as OpenAPI's `x-examples`, are data: an `id` or `$id` in them names no
++        // schema, and walking them registered duplicate or misplaced schema URIs.
++        else if (exports.schemaKeyword[key]) {
+             dereference(subSchema, lookup, baseURI, keyBase);
+         }
++        else if (key === 'dependencies' && subSchema && typeof subSchema === 'object') {
++            for (let subKey in subSchema) {
++                if (!Array.isArray(subSchema[subKey])) {
++                    dereference(subSchema[subKey], lookup, baseURI, `${keyBase}/${(0, pointer_js_1.encodePointer)(subKey)}`);
++                }
++            }
++        }
+     }
+     return lookup;
+ }
+diff --git a/dist/commonjs/validate.js b/dist/commonjs/validate.js
+index 75a3d4d9986e7fbb049103d4c6a4a7b0465a3f22..bcea1a2836372ff59b8610565a4b9f7fe38213e7 100644
+--- a/dist/commonjs/validate.js
++++ b/dist/commonjs/validate.js
+@@ -50,7 +50,10 @@
+     if ($recursiveAnchor === true && recursiveAnchor === null) {
+         recursiveAnchor = schema;
+     }
+-    if ($recursiveRef === '#') {
++    // Apply every recursive reference. A schema nested under a pointer refers to its own root by that
++    // pointer, which is also the target used when no recursive anchor is in scope. Only "#" was
++    // applied before, so any other value was silently skipped.
++    if ($recursiveRef !== undefined) {
+         const refSchema = recursiveAnchor === null
+             ? lookup[__absolute_recursive_ref__]
+             : recursiveAnchor;
+@@ -429,7 +432,7 @@
+         if (!stop && $patternProperties !== undefined) {
+             const keywordLocation = `${schemaLocation}/patternProperties`;
+             for (const pattern in $patternProperties) {
+-                const regex = new RegExp(pattern, 'u');
++                const regex = schemaPattern(pattern);
+                 const subSchema = $patternProperties[pattern];
+                 for (const key in instance) {
+                     if (!regex.test(key)) {
+@@ -782,7 +785,7 @@
+                 error: `String is too long (${length} > ${$maxLength}).`
+             });
+         }
+-        if ($pattern !== undefined && !new RegExp($pattern, 'u').test(instance)) {
++        if ($pattern !== undefined && !schemaPattern($pattern).test(instance)) {
+             errors.push({
+                 instanceLocation,
+                 keyword: 'pattern',
+@@ -803,3 +806,12 @@
+     }
+     return { valid: errors.length === 0, errors };
+ }
++
++// Preserve Unicode matching, while accepting legacy JavaScript patterns used by upstream APIs.
++function schemaPattern(pattern) {
++    try { return new RegExp(pattern, 'u'); }
++    catch (error) {
++        if (!(error instanceof SyntaxError)) throw error;
++        return new RegExp(pattern);
++    }
++}
+diff --git a/dist/esm/dereference.js b/dist/esm/dereference.js
+index 81805bacf312b327b934a3132df8e571c27e6a68..7b4debbfbaddf2d0b5a3f7c731921bdae28b122f 100644
+--- a/dist/esm/dereference.js
++++ b/dist/esm/dereference.js
+@@ -135,9 +135,19 @@
+                 dereference(subSchema[subKey], lookup, baseURI, `${keyBase}/${encodePointer(subKey)}`);
+             }
+         }
+-        else {
++        // Only keywords that hold schemas are walked. The values of annotations such as `example`, and of
++        // unknown keywords such as OpenAPI's `x-examples`, are data: an `id` or `$id` in them names no
++        // schema, and walking them registered duplicate or misplaced schema URIs.
++        else if (schemaKeyword[key]) {
+             dereference(subSchema, lookup, baseURI, keyBase);
+         }
++        else if (key === 'dependencies' && subSchema && typeof subSchema === 'object') {
++            for (let subKey in subSchema) {
++                if (!Array.isArray(subSchema[subKey])) {
++                    dereference(subSchema[subKey], lookup, baseURI, `${keyBase}/${encodePointer(subKey)}`);
++                }
++            }
++        }
+     }
+     return lookup;
+ }
+diff --git a/dist/esm/validate.js b/dist/esm/validate.js
+index 7a523741614bd8255f5adaf0393e1ab5e7595b59..63d91eed50ad7870a7614bbdecc4f6c2c4fb70a0 100644
+--- a/dist/esm/validate.js
++++ b/dist/esm/validate.js
+@@ -47,7 +47,10 @@
+     if ($recursiveAnchor === true && recursiveAnchor === null) {
+         recursiveAnchor = schema;
+     }
+-    if ($recursiveRef === '#') {
++    // Apply every recursive reference. A schema nested under a pointer refers to its own root by that
++    // pointer, which is also the target used when no recursive anchor is in scope. Only "#" was
++    // applied before, so any other value was silently skipped.
++    if ($recursiveRef !== undefined) {
+         const refSchema = recursiveAnchor === null
+             ? lookup[__absolute_recursive_ref__]
+             : recursiveAnchor;
+@@ -426,7 +429,7 @@
+         if (!stop && $patternProperties !== undefined) {
+             const keywordLocation = `${schemaLocation}/patternProperties`;
+             for (const pattern in $patternProperties) {
+-                const regex = new RegExp(pattern, 'u');
++                const regex = schemaPattern(pattern);
+                 const subSchema = $patternProperties[pattern];
+                 for (const key in instance) {
+                     if (!regex.test(key)) {
+@@ -779,7 +782,7 @@
+                 error: `String is too long (${length} > ${$maxLength}).`
+             });
+         }
+-        if ($pattern !== undefined && !new RegExp($pattern, 'u').test(instance)) {
++        if ($pattern !== undefined && !schemaPattern($pattern).test(instance)) {
+             errors.push({
+                 instanceLocation,
+                 keyword: 'pattern',
+@@ -800,3 +803,12 @@
+     }
+     return { valid: errors.length === 0, errors };
+ }
++
++// Preserve Unicode matching, while accepting legacy JavaScript patterns used by upstream APIs.
++function schemaPattern(pattern) {
++    try { return new RegExp(pattern, 'u'); }
++    catch (error) {
++        if (!(error instanceof SyntaxError)) throw error;
++        return new RegExp(pattern);
++    }
++}

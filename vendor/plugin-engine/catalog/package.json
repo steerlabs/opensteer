@@ -1,0 +1,24 @@
+{
+  "name": "@opensteer/plugin-engine-catalog",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./contracts": "./src/contracts/index.ts"
+  },
+  "dependencies": {
+    "@opensteer/plugin-engine-app-templates": "workspace:*",
+    "@opensteer/plugin-engine-sdk": "workspace:*",
+    "@opensteer/plugin-engine-utils": "workspace:*",
+    "effect": "4.1.4"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node ../../../scripts/plugin-engine/build.mjs"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/node": "catalog:"
+  }
+}

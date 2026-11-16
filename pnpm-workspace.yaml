@@ -2,6 +2,7 @@ packages:
   - apps/*
   - packages/*
   - evals/*
+  - vendor/plugin-engine/*
 
 catalog:
   "@agentclientprotocol/sdk": 2.2.0
@@ -44,12 +45,22 @@ catalog:
   opencode-ai: 1.18.32
 
 patchedDependencies:
+  "effect@4.1.4": patches/plugin-engine-effect@4.1.4.patch
+  "@opencode-ai/codemode@0.0.0-dev-19272": patches/plugin-engine-@opencode-ai__codemode@0.0.0-dev-19272.patch
+  "@alchemy.run/cloudflare-runtime@2.0.0-beta.80": patches/plugin-engine-@alchemy.run__cloudflare-runtime@2.0.0-beta.80.patch
+  "@cloudflare/worker-bundler@0.2.4": patches/plugin-engine-@cloudflare__worker-bundler@0.2.4.patch
+  "@cfworker/json-schema@4.1.1": patches/plugin-engine-@cfworker__json-schema@4.1.1.patch
+  "@swagger-api/apidom-ns-openapi-3-1@1.11.6": patches/plugin-engine-@swagger-api__apidom-ns-openapi-3-1@1.11.6.patch
+  "tailwindcss-iso@1.0.7": patches/plugin-engine-tailwindcss-iso@1.0.7.patch
   expo-notifications@58.1.6: patches/expo-notifications@58.1.6.patch
   playwright-core@1.62.1: patches/playwright-core@1.62.1.patch
   react-native-screens@4.30.0: patches/react-native-screens@4.30.0.patch
   react-native-webrtc@155.0.1: patches/react-native-webrtc@155.0.1.patch
 
 overrides:
+  effect: 4.1.4
+  "@effect/platform-node": 4.1.4
+  "@effect/platform-node-shared": 4.1.4
   "@earendil-works/pi-coding-agent>undici": 8.12.2
   "postcss>source-map-js": 1.2.2
   # Vitest pins its own Vite; keep every copy on the patched release.
@@ -59,5 +70,11 @@ overrides:
 # neither target is built from the root.
 peerDependencyRules:
   ignoreMissing:
+    # The imported Node services never load the optional Redis adapter.
+    - redis
     - dmg-builder
     - electron-builder-squirrel-windows
+  # These transitive build tools use APIs exercised by the imported build.
+  allowedVersions:
+    "capnp-es>typescript": "7.0.2"
+    "@cloudflare/unenv-preset>unenv": "2.0.0-rc.25"

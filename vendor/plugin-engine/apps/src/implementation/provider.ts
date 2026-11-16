@@ -1,0 +1,95 @@
+/** Pure constructors over the native provider contracts. */
+import { Effect, Schema } from "effect";
+import { fromPromise, type PromiseMethod } from "./authoring.ts";
+import {
+  type AccountCheck,
+  type AuthMethods,
+  type FieldExposure,
+  OAuth2Config,
+  OAuth2Method,
+  Provider,
+  SecretsMethod,
+} from "../contracts/provider.ts";
+import type { Placement } from "../contracts/placement.ts";
+import type { DeclarationInvalid } from "../contracts/schema.ts";
+import { parseDeclaration } from "./schema.ts";
+
+/** Declare a secrets method with an Effect decoder. */
+export const secrets = <Fields extends Schema.Decoder<unknown>>(options: {
+  readonly label: string;
+  readonly guide?: string;
+  readonly fields: Fields;
+  readonly exposure?: Readonly<Record<string, FieldExposure>>;
+  readonly request?: readonly Placement[];
+}): SecretsMethod<Fields> => new SecretsMethod(options);
+
+/**
+ * The `oauth2()` form an author chose: client credentials or authorization code by `grant`, then
+ * discovered or declared endpoints by `discover`. Only that form explains an invalid declaration.
+ */
+const clientCredentials = Schema.is(Schema.Struct({ grant: Schema.Literal("client_credentials") }));
+const oauth2Form = (config: unknown) => {
+  const [discovered, declared, discoveredMachine, declaredMachine] = OAuth2Config.members;
+  const discovers =
+    typeof config === "object" && config !== null && Object.hasOwn(config, "discover");
+  if (clientCredentials(config)) return discovers ? discoveredMachine : declaredMachine;
+  return discovers ? discovered : declared;
+};
+
+/** Validate OAuth endpoints while declaring their app-visible response projection. */
+export const oauth2 = <Response extends Schema.Decoder<unknown>>(
+  config: OAuth2Config,
+  response: Response,
+  exposure?: Readonly<Record<string, FieldExposure>>,
+  request?: readonly Placement[],
+  clientGuide?: string,
+): Effect.Effect<OAuth2Method<Response>, DeclarationInvalid> =>
+  parseDeclaration(OAuth2Config, config, "oauth2()", oauth2Form).pipe(
+    Effect.map(
+      (config) =>
+        new OAuth2Method({
+          config,
+          response,
+          ...(exposure === undefined ? {} : { exposure }),
+          ...(request === undefined ? {} : { request }),
+          ...(clientGuide === undefined ? {} : { clientGuide }),
+        }),
+    ),
+  );
+
+/** Author options: the account check is an ordinary async function. */
+export interface ProviderOptions<Auth extends AuthMethods> {
+  readonly name: string;
+  readonly auth: Auth;
+  /**
+   * Hosts the credentials may be sent to: `api.example.com`, `api.example.com:8443`, or
+   * `*.example.com` for one level of subdomain. Secret fields then reach app code as handles
+   * that the outbound network replaces only on requests to these hosts. An account records the
+   * hosts it was connected for; changing them does not change the provider, but an existing
+   * account sends only to hosts it was connected for until it is connected again.
+   */
+  readonly hosts?: readonly string[];
+  /** Verify a connected account with a safe read, optionally reporting its upstream identity. */
+  readonly health?: PromiseMethod<AccountCheck<Auth>["run"]>;
+}
+
+/**
+ * Retain the provider and literal method names without registering or authenticating it. A
+ * method's `request` restricts where its credentials go only among the provider's `hosts`, so a
+ * provider that declares a `request` declares `hosts` too.
+ */
+export const defineProvider = <const Auth extends AuthMethods>({
+  health,
+  ...options
+}: ProviderOptions<Auth>): Provider<Auth> => {
+  const placed = Object.entries(options.auth).filter(([, method]) => method.request !== undefined);
+  if (options.hosts === undefined && placed.length > 0)
+    throw new TypeError(
+      `Provider "${options.name}" declares a request for ${placed.map(([name]) => name).join(", ")} but no hosts. Declare the hosts its credentials may be sent to.`,
+    );
+  if (health === undefined) return new Provider(options);
+  // SAFETY: the host runs a check only with an account bound against this provider: its method is
+  // a key of `auth` and its fields were decoded by that method's schema, as `Auth` promises.
+  const run = fromPromise(health, "check") as unknown as AccountCheck<AuthMethods>["run"];
+  return new Provider({ ...options, health: { run } });
+};
