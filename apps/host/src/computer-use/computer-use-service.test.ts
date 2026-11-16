@@ -20,6 +20,7 @@ import {
   type MachineAppStatus,
 } from "@opensteer/protocol";
 
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { readFileSync } from "node:fs";
 import type { WebSocket } from "ws";
 import { DisplayStreamHub } from "./display-stream-hub.js";
@@ -2130,40 +2131,40 @@ it("keeps two screen Device holds and Stops independent from each other and Mac 
   const first = DeviceIdSchema.parse(createId("device"));
   const second = DeviceIdSchema.parse(createId("device"));
   const stops = durableStops();
-  const test = harness({ stops: stops.ledger() });
+  const host = harness({ stops: stops.ledger() });
   const phoneTarget = {
     kind: "display" as const,
     definitionId: "iphone-screen" as const,
     access: "read-write" as const,
   };
   const use = async (deviceId: typeof first, on = context) => {
-    const lease = await test.service.prepare({ deviceId, deviceName: "iPhone", ownerUserId }, on);
+    const lease = await host.service.prepare({ deviceId, deviceName: "iPhone", ownerUserId }, on);
     try {
-      const sent = await test.service.sendObserve(lease, phoneTarget, false);
+      const sent = await host.service.sendObserve(lease, phoneTarget, false);
       await sent.settle();
       return sent.sessionId;
     } finally {
-      test.service.release(lease);
+      host.service.release(lease);
     }
   };
   try {
     const firstSession = await use(first);
     await use(second);
-    await observe(test.service, callable, context);
-    test.service.handleHelperEvent(runnerId, {
+    await observe(host.service, callable, context);
+    host.service.handleHelperEvent(runnerId, {
       event: "session.stopped",
       params: { sessionId: firstSession, runId: context.runId, reason: "user" },
     });
     expect(stops.rows.size).toBe(0);
-    expect(test.service.sessionsForRunner(first)).toHaveLength(1);
+    expect(host.service.sessionsForRunner(first)).toHaveLength(1);
     const other = { ...context, runId: createId("run"), threadId: createId("thread") };
     await expect(use(first, other)).rejects.toMatchObject({ code: "busy" });
-    await test.service.stop(firstSession, ownerUserId);
+    await host.service.stop(firstSession, ownerUserId);
     await expect(use(first)).rejects.toThrow(/stopped/);
     await use(second);
-    expect(test.service.sessionsForRunner(runnerId)).toHaveLength(1);
+    expect(host.service.sessionsForRunner(runnerId)).toHaveLength(1);
     expect([...stops.rows.values()]).toEqual([{ runId: context.runId, runnerId: first }]);
-    test.service.forgetDevice(first);
+    host.service.forgetDevice(first);
     await expect(use(first)).rejects.toThrow(/stopped/);
     const restarted = harness({ stops: stops.ledger() });
     try {
@@ -2174,7 +2175,7 @@ it("keeps two screen Device holds and Stops independent from each other and Mac 
       await restarted.service.shutdown();
     }
   } finally {
-    await test.service.shutdown();
+    await host.service.shutdown();
   }
 });
 
@@ -2201,7 +2202,7 @@ it("validates a no-session Stop's captured driver and retires pending acknowledg
     finish = resolve;
   });
   const record = vi.fn(async () => waiting);
-  const test = harness({
+  const host = harness({
     hub: {
       routeCurrent: (candidate) => candidate.generation === 4 && candidate.deviceId === deviceId,
     },
@@ -2216,26 +2217,28 @@ it("validates a no-session Stop's captured driver and retires pending acknowledg
     },
   };
   try {
-    test.service.handleHelperEvent(deviceId, event, { ...route, generation: 3 });
+    host.service.handleHelperEvent(deviceId, event, { ...route, generation: 3 });
     expect(record).not.toHaveBeenCalled();
-    test.service.handleHelperEvent(deviceId, event, route);
+    host.service.handleHelperEvent(deviceId, event, route);
     expect(record).toHaveBeenCalledWith(context.runId, deviceId);
-    test.service.forgetDevice(deviceId, true);
+    host.service.forgetDevice(deviceId, true);
     finish();
-    await waiting;
+    await withTimeout(waiting, 1_000, {
+      timeoutError: () => new Error("The held Stop write never settled"),
+    });
     await Promise.resolve();
-    expect(test.acknowledged).toEqual([]);
+    expect(host.acknowledged).toEqual([]);
   } finally {
     finish();
-    await test.service.shutdown();
+    await host.service.shutdown();
   }
 });
 
 it("lists only the matching display definition and excludes the iPhone data app", async () => {
-  const test = harness();
+  const host = harness();
   const operation = { operation: "observe", state: "ready" as const, detail: null, remedy: null };
   const screen = DeviceIdSchema.parse(createId("device"));
-  test.machines.push(
+  host.machines.push(
     { name: "iPhone app", platform: "ios", runnerId: createId("runner"), status: null },
     {
       name: "Screen",
@@ -2253,12 +2256,12 @@ it("lists only the matching display definition and excludes the iPhone data app"
   );
   try {
     expect(
-      (await test.service.eligibleMachines(ownerUserId, "iphone-screen")).map(({ name }) => name),
+      (await host.service.eligibleMachines(ownerUserId, "iphone-screen")).map(({ name }) => name),
     ).toEqual(["Screen"]);
     expect(
-      (await test.service.eligibleMachines(ownerUserId, "android-phone")).map(({ name }) => name),
+      (await host.service.eligibleMachines(ownerUserId, "android-phone")).map(({ name }) => name),
     ).toEqual(["Android"]);
   } finally {
-    await test.service.shutdown();
+    await host.service.shutdown();
   }
 });

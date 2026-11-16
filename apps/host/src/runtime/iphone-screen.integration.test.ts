@@ -45,6 +45,7 @@ import {
 } from "./machine-access-protocol.test-support.js";
 
 const baseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
+// Needs the PostgreSQL that `pnpm test:integration` provides.
 const integration = baseUrl ? describe : describe.skip;
 
 function observation(): IphoneScreenObservation {
