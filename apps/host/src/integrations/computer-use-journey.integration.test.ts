@@ -3163,7 +3163,8 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       hub: world.hub,
       authorizer: world.store,
       listMachines: async () => [],
-      machineOwners: (ids) => world.store.effectiveMachineOwners(ids),
+      machineOwners: (ids) =>
+        world.store.effectiveDeviceOwners(ids.map((id) => DeviceIdSchema.parse(id))),
       onSessionsChanged: () => undefined,
       threadTitle: async () => "Replacement",
       stops: {
@@ -3304,11 +3305,14 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     const run = await world.startRun("Discover computers");
     const gateway = await world.gateway(run);
     const inventory = vi.spyOn(world.computerUse, "eligibleInventory");
-    const policy = vi.spyOn(world.persistence, "getComputerUsePolicy");
+    const policy = vi.spyOn(world.persistence, "getDeviceComputerUsePolicy");
     await gateway.call("integration_search", { query: "Computer use" });
     expect(inventory).toHaveBeenCalledTimes(1);
     expect(policy).toHaveBeenCalledTimes(1);
-    expect(policy).toHaveBeenCalledWith({ runnerId: world.macId, ownerUserId: world.owner.userId });
+    expect(policy).toHaveBeenCalledWith({
+      deviceId: DeviceIdSchema.parse(world.macId),
+      ownerUserId: world.owner.userId,
+    });
     inventory.mockClear();
     policy.mockClear();
     const invalidApp = await gateway.call("app_access_request", {
@@ -3320,7 +3324,10 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     expect(invalidApp.isError).toBe(true);
     expect(inventory).toHaveBeenCalledTimes(1);
     expect(policy).toHaveBeenCalledTimes(1);
-    expect(policy).toHaveBeenCalledWith({ runnerId: world.macId, ownerUserId: world.owner.userId });
+    expect(policy).toHaveBeenCalledWith({
+      deviceId: DeviceIdSchema.parse(world.macId),
+      ownerUserId: world.owner.userId,
+    });
     inventory.mockClear();
     policy.mockClear();
     const invalidPhone = await gateway.call("app_access_request", {
@@ -3331,7 +3338,10 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     expect(invalidPhone.isError).toBe(true);
     expect(inventory).toHaveBeenCalledTimes(1);
     expect(policy).toHaveBeenCalledTimes(1);
-    expect(policy).toHaveBeenCalledWith({ runnerId: world.macId, ownerUserId: world.owner.userId });
+    expect(policy).toHaveBeenCalledWith({
+      deviceId: DeviceIdSchema.parse(world.macId),
+      ownerUserId: world.owner.userId,
+    });
     await world.close();
   });
 
@@ -5077,7 +5087,8 @@ async function createWorld(
         const platform = moduleDescriptors.integrations?.platform;
         return platform ? [{ name, platform, runnerId: id }] : [];
       }),
-    machineOwners: (runnerIds) => store.effectiveMachineOwners(runnerIds),
+    machineOwners: (runnerIds) =>
+      store.effectiveDeviceOwners(runnerIds.map((id) => DeviceIdSchema.parse(id))),
     onSessionsChanged: () => undefined,
     onAuthorityRevoked: ({ runId, bindingGeneration }) =>
       platform.resetComputerGeneration(runId, bindingGeneration),
@@ -5123,15 +5134,16 @@ async function createWorld(
     selfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
     hub,
     connections: (ownerId) => connections.listConnections(ownerId),
-    owners: (ids) => store.effectiveMachineOwners(ids),
+    owners: (ids) => store.effectiveDeviceOwners(ids.map((id) => DeviceIdSchema.parse(id))),
     changed: () => undefined,
   });
   const nativeTabs = new NativeTabTargets({
     views: computerViews,
     connections: (ownerId) => connections.listConnections(ownerId),
     owns: async (ownerId, computerId) =>
-      (await store.effectiveMachineOwners([computerId])).get(computerId)?.effectiveOwner ===
-      ownerId,
+      (await store.effectiveDeviceOwners([DeviceIdSchema.parse(computerId)])).get(
+        DeviceIdSchema.parse(computerId),
+      )?.effectiveOwner === ownerId,
     connected: (computerId) => hub.attached(computerId),
     queryWindow: (computerId, target) =>
       hub.resolveWindow(computerId, target, { timeoutMs: 1_000 }),

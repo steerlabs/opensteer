@@ -1,7 +1,12 @@
-import { runnerRunsItsDeployment, sameStringSet } from "@opensteer/core";
+import {
+  isPhoneDisplayDefinitionId,
+  runnerRunsItsDeployment,
+  sameStringSet,
+} from "@opensteer/core";
 import {
   RunnerModuleNameSchema,
-  androidPhoneDefinitionId,
+  deviceAccess,
+  AndroidPhoneNavigationSchema,
   runnerIntegrationsCompatibilityReason,
   type ComputerUsePermissions,
   type ComputerUseSessionSummary,
@@ -67,6 +72,7 @@ export interface MachinePendingRunnerInput {
 }
 
 export interface MachineProjectionInput {
+  readonly devices?: readonly MachineDeviceInput[] | undefined;
   /**
    * What each computer permits and who is on it, for the computers this viewer
    * manages. A machine absent from this map gets `access: null`, which is what
@@ -206,7 +212,7 @@ function projectPhoneComputerUse(
     permissions: null,
     sessions: [...sessions],
   };
-  const entry = apps?.find(({ definitionId }) => definitionId === androidPhoneDefinitionId);
+  const entry = apps?.find(({ definitionId }) => isPhoneDisplayDefinitionId(definitionId));
   if (!entry) {
     return {
       ...base,
@@ -304,6 +310,7 @@ function projectComputerUse(
 }
 
 export function projectMachines(input: MachineProjectionInput): readonly MachineSummary[] {
+  if (input.devices) return projectDeviceMachines(input);
   const machines: MachineSummary[] = [];
 
   for (const runner of input.runners) {
@@ -423,4 +430,184 @@ export function projectMachines(input: MachineProjectionInput): readonly Machine
 /** Whether any connected computer can serve this module right now. */
 export function machineModuleIsRoutable(readiness: RunnerModuleReadiness | undefined): boolean {
   return readiness !== undefined && readiness !== "unavailable";
+}
+
+export interface MachineDeviceInput {
+  readonly device: Pick<
+    import("@opensteer/database").DeviceInventoryRecord,
+    "id" | "kind" | "platform" | "form" | "name" | "ownerKind" | "removedAt" | "accessPolicy"
+  >;
+  readonly drivers: readonly import("@opensteer/protocol").DeviceDriverView[];
+  readonly selfRunnerId: import("@opensteer/core").RunnerId | null;
+  readonly screenStatus: import("@opensteer/protocol").RunnerIntegrationsDeviceStatus | null;
+  readonly screenConnected: boolean;
+  readonly phoneAccess: "read" | "read-write" | null;
+}
+
+function projectDeviceMachines(input: MachineProjectionInput): readonly MachineSummary[] {
+  const legacy = projectMachines({ ...input, devices: undefined });
+  const result: MachineSummary[] = [];
+  for (const {
+    device,
+    drivers,
+    selfRunnerId,
+    screenStatus,
+    screenConnected,
+    phoneAccess,
+  } of input.devices ?? []) {
+    if (device.removedAt) continue;
+    const self = legacy.find((machine) => machine.id === selfRunnerId);
+    const screen = drivers.find((driver) => driver.role === "screen") ?? null;
+    const android =
+      device.kind === "agent-phone" ||
+      (self?.apps?.some((app) => isPhoneDisplayDefinitionId(app.definitionId)) &&
+        device.platform === "android");
+    const phone = screen !== null || android;
+    const selected = screen ? "iphone-screen" : "android-phone";
+    const available = (
+      ready: boolean,
+      reason: import("@opensteer/protocol").DeviceCapabilityReason["kind"],
+    ): import("@opensteer/protocol").DeviceAvailability =>
+      ready ? { state: "ready", reason: null } : { state: "unavailable", reason: { kind: reason } };
+    const physical = screen
+      ? !screen.attached
+        ? available(false, "not-connected")
+        : !screenConnected
+          ? available(false, "driver-offline")
+          : (screenStatus?.availability ?? available(false, "unreported"))
+      : available(self?.status === "online", "driver-offline");
+    const access = deviceAccess(device.accessPolicy);
+    const capability = (
+      supported: boolean,
+      enabled: boolean,
+      ready: boolean,
+      configurable = true,
+    ): import("@opensteer/protocol").DeviceCapability => ({
+      supported,
+      enabled: supported && enabled,
+      configurable: supported && configurable,
+      ...(!supported
+        ? { state: "unsupported" as const, reason: { kind: "unsupported" as const } }
+        : !enabled
+          ? { state: "disabled" as const, reason: { kind: "access-off" as const } }
+          : available(ready, "driver-offline")),
+    });
+    const phoneDisplay: import("@opensteer/protocol").PhoneDisplayView | null = !phone
+      ? null
+      : {
+          definitionId: selected,
+          driver: screen ?? drivers.find((driver) => driver.role === "self") ?? null,
+          control: !access.apps
+            ? { state: "disabled", reason: { kind: "access-off" } }
+            : !phoneAccess
+              ? available(false, "approval-required")
+              : physical,
+          view: !phoneAccess
+            ? available(false, "approval-required")
+            : screen && screenStatus?.ownerViewVersion !== 1 && physical.state === "ready"
+              ? available(false, "helper-unavailable")
+              : physical,
+          input:
+            phoneAccess !== "read-write"
+              ? available(false, "approval-required")
+              : screen && screenStatus?.inputVersion !== 1 && physical.state === "ready"
+                ? available(false, "helper-unavailable")
+                : physical,
+          navigationButtons: screen
+            ? (screenStatus?.navigationButtons ?? [])
+            : AndroidPhoneNavigationSchema.options.map((id) => ({ id, label: id })),
+          actions: screen
+            ? (screenStatus?.actions ?? [])
+            : [
+                "tap",
+                "longPress",
+                "swipe",
+                "drag",
+                "type",
+                "clear",
+                "navigate",
+                "launch",
+                "scroll",
+                "wake",
+                "wait",
+              ],
+          wake: screen ? (screenStatus?.wake ?? false) : true,
+          lock: screen ? (screenStatus?.lock ?? null) : null,
+          setup: screen
+            ? {
+                location: "driver-mac",
+                driverRunnerId: screen.runnerId,
+                driverRunnerName: screen.runnerName,
+              }
+            : { location: "android-usb" },
+        };
+    result.push({
+      ...(self ?? {
+        access: input.access.get(device.id) ?? null,
+        allowedModules: [],
+        apps: null,
+        computerUse: null,
+        detail: null,
+        enrollmentId: null,
+        expiresAt: null,
+        fullDiskAccess: null,
+        lastSeenAt: null,
+        modules: {},
+        pinnedThreads: 0,
+        revocable: true,
+        runtimeVersion: null,
+        status: screenConnected ? "online" : "offline",
+      }),
+      id: device.id,
+      kind: device.kind,
+      name: device.name,
+      device:
+        device.platform && device.form ? { platform: device.platform, form: device.form } : null,
+      ownership: device.ownerKind === "user" ? "mine" : "deployment",
+      selfRunnerId,
+      drivers: [...drivers],
+      phoneDisplay,
+      capabilities: {
+        browser: capability(
+          !!self?.modules.browser,
+          access.browser,
+          self?.modules.browser?.readiness === "ready",
+          device.kind !== "home",
+        ),
+        apps: capability(
+          phone || !!self?.modules.integrations,
+          access.apps,
+          phone ? physical.state === "ready" : self?.modules.integrations?.readiness === "ready",
+        ),
+        files: capability(
+          !!self?.modules.shell,
+          access.files,
+          self?.modules.shell?.readiness === "ready",
+          device.kind !== "home",
+        ),
+      },
+      ...(phone
+        ? {
+            apps: screen
+              ? screenStatus
+                ? [{ definitionId: selected, operations: screenStatus.operations }]
+                : null
+              : (self?.apps ?? null),
+            computerUse: {
+              ...projectPhoneComputerUse(
+                screen
+                  ? screenStatus
+                    ? [{ definitionId: selected, operations: screenStatus.operations }]
+                    : undefined
+                  : (self?.apps ?? undefined),
+                input.computerUseSessions?.get(device.id) ?? [],
+                input.computerUseDisplayStreamSupported?.get(device.id) ?? false,
+              ),
+              ownerViews: [...(input.computerViews?.get(device.id)?.ownerViews ?? [])],
+            },
+          }
+        : {}),
+    });
+  }
+  return [...result, ...legacy.filter((machine) => machine.status === "pending")];
 }

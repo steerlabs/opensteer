@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { createHash } from "node:crypto";
 import { BrowserRequestOutcomeSchema, OpensteerError, type Request } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
@@ -511,7 +512,7 @@ export async function continuationMessage(
         const matching = await Promise.all(
           phones.map(async (phone) => ({
             phone,
-            deviceId: await integrations.selfDeviceId(phone.runnerId),
+            deviceId: DeviceIdSchema.parse(phone.deviceId ?? phone.runnerId),
           })),
         );
         const phone = matching.find((row) => row.deviceId === payload.deviceId)?.phone;
@@ -527,7 +528,7 @@ export async function continuationMessage(
       const matching = await Promise.all(
         machines.map(async (machine) => ({
           machine,
-          deviceId: await integrations.selfDeviceId(machine.runnerId),
+          deviceId: DeviceIdSchema.parse(machine.deviceId ?? machine.runnerId),
         })),
       );
       const machine = matching.find((row) => row.deviceId === payload.deviceId)?.machine;

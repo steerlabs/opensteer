@@ -1,3 +1,4 @@
+import type { ComputerTargetId } from "../../computer-apps/computer-app-hub.js";
 import {
   AppAccessRequestInputSchema,
   RequestUnionSchema,
@@ -401,19 +402,19 @@ export class IntegrationToolHandlers {
         ? [{ runnerId, app, access }]
         : [],
     );
-    const phoneAccessRunners = new Set(
+    const phoneAccessRunners = new Set<ComputerTargetId>(
       setupRequests.flatMap(({ kind, definitionId, runnerId }) =>
         kind === "app" && definitionId === androidPhoneDefinitionId ? [runnerId] : [],
       ),
     );
     return {
       onMacRequests,
-      onMac: (runnerId: z.infer<typeof RunnerIdSchema>, appKey: string) =>
+      onMac: (runnerId: ComputerTargetId, appKey: string) =>
         onMacRequests.some(
           (request) =>
             request.runnerId === runnerId && computerAppIdentityKey(request.app) === appKey,
         ),
-      phoneAccess: (runnerId: z.infer<typeof RunnerIdSchema>) => phoneAccessRunners.has(runnerId),
+      phoneAccess: (runnerId: ComputerTargetId) => phoneAccessRunners.has(runnerId),
       grants: new Set<IntegrationConnectionId>(
         accessRequests.flatMap(({ requestedConnectionId }) =>
           requestedConnectionId ? [requestedConnectionId] : [],
