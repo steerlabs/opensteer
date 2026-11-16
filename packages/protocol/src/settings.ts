@@ -180,6 +180,10 @@ export const DevicesOverviewViewSchema = z.object({
         allowedModules: true,
         kind: true,
         access: true,
+        selfRunnerId: true,
+        drivers: true,
+        capabilities: true,
+        phoneDisplay: true,
         revocable: true,
       }).extend({
         access: MachineSummarySchema.shape.access

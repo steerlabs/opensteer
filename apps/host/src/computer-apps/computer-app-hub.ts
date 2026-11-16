@@ -549,6 +549,7 @@ export class ComputerAppHub {
       this.#options.onDisplayEvent?.(stream.identity.runnerId, message);
       return;
     }
+    if (message.type === "runner.integrations.device-status") return;
     const pending = entry.pending.get(message.requestId);
     // A result races the cancel a deadline or an abort already sent, so a
     // request this stream no longer holds is the answer to a call that is

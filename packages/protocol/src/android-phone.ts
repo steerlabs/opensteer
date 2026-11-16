@@ -32,7 +32,7 @@ import {
  * session holds the entire screen. Everything here is the phone's half of the
  * computer-use contract; the Mac's half stays in `computer-use.ts` unchanged.
  */
-export const androidPhoneDefinitionId = "android-phone";
+export { androidPhoneDefinitionId } from "@opensteer/core";
 
 /** The Opensteer Agent Phone app's package, which is also how an observation names it in front. */
 export const agentPhonePackageName = "com.opensteer.agentphone";

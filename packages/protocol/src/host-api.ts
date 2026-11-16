@@ -1,4 +1,5 @@
 import { ChannelConnectionInspectionViewSchema } from "@opensteer/channel-core";
+import { DeviceIdSchema, DeviceDriverGenerationSchema } from "@opensteer/core";
 import { MachineSummarySchema } from "./machines.js";
 import { OwnerWindowInfoSchema } from "./computer-use.js";
 import { HostBootstrapSchema, type HostBootstrap } from "./bootstrap.js";
@@ -359,7 +360,73 @@ const harnessAuthenticationEnvelopeSchema = z.object({
   environmentStatus: z.enum(["connected", "disconnected"]),
 });
 
+export const IphoneScreenAttachCommandSchema = z.strictObject({
+  type: z.literal("iphone.screen.attach"),
+  idempotencyKey: idempotencyKeySchema,
+  driverRunnerId: RunnerIdSchema,
+  target: z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("new"), name: z.string().trim().min(1).max(120) }),
+    z.strictObject({
+      kind: z.literal("existing"),
+      deviceId: DeviceIdSchema,
+      expectedGeneration: DeviceDriverGenerationSchema,
+    }),
+  ]),
+});
+export type IphoneScreenAttachCommand = z.infer<typeof IphoneScreenAttachCommandSchema>;
+export const IphoneScreenDetachCommandSchema = z.strictObject({
+  type: z.literal("iphone.screen.detach"),
+  idempotencyKey: idempotencyKeySchema,
+  deviceId: DeviceIdSchema,
+  expectedGeneration: DeviceDriverGenerationSchema,
+});
+export type IphoneScreenDetachCommand = z.infer<typeof IphoneScreenDetachCommandSchema>;
+export const IphoneScreenAttachResultSchema = z.object({
+  type: z.literal("iphone.screen.attach"),
+  deviceId: DeviceIdSchema,
+  generation: DeviceDriverGenerationSchema,
+});
+export type IphoneScreenAttachResult = z.infer<typeof IphoneScreenAttachResultSchema>;
+export const IphoneScreenDetachResultSchema = z.object({
+  type: z.literal("iphone.screen.detach"),
+  deviceId: DeviceIdSchema,
+  generation: DeviceDriverGenerationSchema,
+});
+export type IphoneScreenDetachResult = z.infer<typeof IphoneScreenDetachResultSchema>;
+export const DeviceMachineRevokeCommandSchema = z.strictObject({
+  idempotencyKey: idempotencyKeySchema,
+  machineId: DeviceIdSchema,
+  type: z.literal("machine.revoke"),
+});
+export type DeviceMachineRevokeCommand = z.infer<typeof DeviceMachineRevokeCommandSchema>;
+export const DeviceMachineRenameCommandSchema = z.strictObject({
+  idempotencyKey: idempotencyKeySchema,
+  machineId: DeviceIdSchema,
+  name: z.string().trim().min(1).max(120),
+  type: z.literal("machine.rename"),
+});
+export type DeviceMachineRenameCommand = z.infer<typeof DeviceMachineRenameCommandSchema>;
+export const DeviceMachineAccessUpdateCommandSchema = z.strictObject({
+  type: z.literal("machine.access.update"),
+  idempotencyKey: idempotencyKeySchema,
+  deviceId: DeviceIdSchema,
+  expectedRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  policy: MachineAccessPolicySchema,
+});
+export type DeviceMachineAccessUpdateCommand = z.infer<
+  typeof DeviceMachineAccessUpdateCommandSchema
+>;
+export const DeviceMachineSessionBindCommandSchema = z.strictObject({
+  type: z.literal("machine.session.bind"),
+  idempotencyKey: idempotencyKeySchema,
+  machineId: DeviceIdSchema,
+  proof: DeviceSessionBindingProofSchema,
+});
+export type DeviceMachineSessionBindCommand = z.infer<typeof DeviceMachineSessionBindCommandSchema>;
+
 const otherCommandInputSchema = z.discriminatedUnion("type", [
+  IphoneScreenAttachCommandSchema,
+  IphoneScreenDetachCommandSchema,
   ComputerViewCloseCommandSchema,
   ComputerViewRenewCommandSchema,
   z.strictObject({
@@ -681,17 +748,8 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("harness.authentication.cancel"),
   }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    machineId: z.string().min(1).max(512),
-    type: z.literal("machine.revoke"),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    machineId: z.string().min(1).max(512),
-    name: z.string().trim().min(1).max(120),
-    type: z.literal("machine.rename"),
-  }),
+  DeviceMachineRevokeCommandSchema,
+  DeviceMachineRenameCommandSchema,
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     machineId: RunnerIdSchema,
@@ -1153,6 +1211,8 @@ const commandInputSchema = z.discriminatedUnion("type", [
 ]);
 
 const commandOutputSchema = z.discriminatedUnion("type", [
+  IphoneScreenAttachResultSchema,
+  IphoneScreenDetachResultSchema,
   ...TabCommandResultSchema.options,
   ...AppCommandResultSchema.options,
   ...TeamCommandResultViewSchema.options,

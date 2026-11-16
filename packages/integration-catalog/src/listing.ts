@@ -96,6 +96,7 @@ export const catalogProducts: readonly CatalogProduct[] = [
   { name: "Location", category: "devices", definitionIds: ["iphone-location"] },
   { name: "Computer use", category: "devices", definitionIds: ["macos-app"] },
   { name: "Android phone", category: "devices", definitionIds: ["android-phone"] },
+  { name: "iPhone screen", category: "devices", definitionIds: ["iphone-screen"] },
 ];
 
 export interface CatalogPresentation {
