@@ -20,6 +20,7 @@ import type { ControlPlaneDatabaseSchema } from "../database/schema.js";
 import { appleOrigin } from "./apple-sign-in.js";
 import { AccountProfiles } from "../account/account-profiles.js";
 import { isOfficialNativeReference } from "../database/store.js";
+import { appReviewSignIn, type AppReviewSignInConfig } from "./app-review-sign-in.js";
 
 export const controlPlaneAuthPath = "/api/auth";
 /**
@@ -36,6 +37,7 @@ interface ControlPlaneAuthConfig {
   readonly publicOrigin: URL;
   readonly googleClientId?: string;
   readonly googleClientSecret?: string;
+  readonly appReview?: AppReviewSignInConfig;
   /** Minted before this runs; a process that outlives the secret needs a restart. */
   readonly apple?: { readonly clientId: string; readonly clientSecret: string };
 }
@@ -137,6 +139,7 @@ export function createControlPlaneAuth(
       },
     },
     disabledPaths: [
+      ...(config.appReview ? [] : ["/sign-in/app-review"]),
       "/change-email",
       "/change-password",
       "/delete-user",
@@ -152,6 +155,7 @@ export function createControlPlaneAuth(
     ],
     emailAndPassword: { enabled: false },
     plugins: [
+      ...(config.appReview ? [appReviewSignIn(config.appReview)] : []),
       // The provider uses the JWT issuer; pin it across both public hostnames.
       jwt({
         disableSettingJwtHeader: true,
@@ -214,6 +218,7 @@ export function createControlPlaneAuth(
         "/oauth2/authorize": { max: 60, window: 60 },
         "/oauth2/token": { max: 30, window: 60 },
         "/sign-in/social": { max: 30, window: 60 },
+        "/sign-in/app-review": { max: 30, window: 60 },
       },
       enabled: true,
       max: 300,

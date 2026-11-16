@@ -59,6 +59,44 @@ describe("control-plane configuration", () => {
     ).toThrow(/PostgreSQL/u);
   });
 
+  it("enables App Review sign-in only with a valid email and a long password together", () => {
+    const review = {
+      OPENSTEER_APP_REVIEW_EMAIL: " APPREVIEW@OPENSTEER.COM ",
+      OPENSTEER_APP_REVIEW_PASSWORD: "r".repeat(24),
+    };
+    expect(loadControlPlaneConfig(validEnvironment).appReview).toBeUndefined();
+    expect(
+      loadControlPlaneConfig({
+        ...validEnvironment,
+        OPENSTEER_APP_REVIEW_EMAIL: review.OPENSTEER_APP_REVIEW_EMAIL,
+      }).appReview,
+    ).toBeUndefined();
+    expect(
+      loadControlPlaneConfig({
+        ...validEnvironment,
+        OPENSTEER_APP_REVIEW_PASSWORD: review.OPENSTEER_APP_REVIEW_PASSWORD,
+      }).appReview,
+    ).toBeUndefined();
+    expect(loadControlPlaneConfig({ ...validEnvironment, ...review }).appReview).toEqual({
+      email: "appreview@opensteer.com",
+      password: review.OPENSTEER_APP_REVIEW_PASSWORD,
+    });
+    expect(() =>
+      loadControlPlaneConfig({
+        ...validEnvironment,
+        ...review,
+        OPENSTEER_APP_REVIEW_EMAIL: "invalid",
+      }),
+    ).toThrow();
+    expect(() =>
+      loadControlPlaneConfig({
+        ...validEnvironment,
+        ...review,
+        OPENSTEER_APP_REVIEW_PASSWORD: "r".repeat(23),
+      }),
+    ).toThrow();
+  });
+
   it("requires server-side Cloudflare credentials and a separate derivation secret", () => {
     const missingToken: NodeJS.ProcessEnv = { ...validEnvironment };
     delete missingToken.OPENSTEER_CONNECT_CLOUDFLARE_API_TOKEN;

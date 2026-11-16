@@ -13,7 +13,7 @@ Apple-side prerequisites, all Tim's:
 - App IDs `com.opensteer.opensteer` and `com.opensteer.opensteer.NotificationService`, both with the
   App Group `group.com.opensteer.mobile.notifications`; the app also with Push Notifications.
 - "iPhone and iPad Apps on Apple Silicon Macs" turned off: the Mac app shares this bundle ID.
-- App Review notes pointing at the demo server, with its address and password.
+- App Review notes with the App Review Account email and password and the demo computer details.
 
 From a clean, full-history checkout of the selected commit, with an absolute `MOBILE_EVIDENCE_DIR`
 outside it. The version is the desktop's derived number, not `package.json`'s base: a base would
@@ -53,6 +53,9 @@ or export compliance are answers Tim gives in App Store Connect; never declare t
 Send a build to external TestFlight before submitting for review.
 
 ## Review demonstration
+
+On the Account sign-in page, reviewers choose “Sign in with email” and use `appreview@opensteer.com`
+with the App Review password. Link the demo personal Opensteer to that same Account.
 
 Reviewers need a dedicated personal Opensteer on a disposable computer for agent tasks; a team
 server runs no agents and cannot replace it. Use a funded test engine account and sample data,

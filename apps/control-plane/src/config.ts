@@ -1,4 +1,5 @@
 import type { AppleSignInConfig } from "./auth/apple-sign-in.js";
+import type { AppReviewSignInConfig } from "./auth/app-review-sign-in.js";
 import {
   isBareOrigin,
   isSecureOrLoopbackOrigin,
@@ -176,6 +177,12 @@ const AccountEnvironmentSchema = z
     OPENSTEER_PERSONAL_ACCOUNT_LINK_OPERATION_KEY: Base64UrlKeySchema,
     OPENSTEER_GOOGLE_CLIENT_ID: z.string().min(1),
     OPENSTEER_GOOGLE_CLIENT_SECRET: z.string().min(1),
+    OPENSTEER_APP_REVIEW_EMAIL: z
+      .string()
+      .transform((value) => value.normalize("NFKC").trim().toLowerCase())
+      .pipe(z.email().max(320))
+      .optional(),
+    OPENSTEER_APP_REVIEW_PASSWORD: z.string().min(24).max(4_096).optional(),
     OPENSTEER_APPLE_SIGN_IN_CLIENT_ID: z.string().min(1).optional(),
     OPENSTEER_APPLE_SIGN_IN_KEY_ID: z
       .string()
@@ -249,6 +256,7 @@ export interface ControlPlaneConfig {
   readonly personalAccountLinkOperationKey: string;
   readonly googleClientId: string;
   readonly googleClientSecret: string;
+  readonly appReview?: AppReviewSignInConfig;
   readonly appleSignIn?: AppleSignInConfig;
   readonly hostedOAuth?: {
     readonly encryptionPrivateKey: string;
@@ -347,6 +355,14 @@ export function loadControlPlaneConfig(
     personalAccountLinkOperationKey: parsed.OPENSTEER_PERSONAL_ACCOUNT_LINK_OPERATION_KEY,
     googleClientId: parsed.OPENSTEER_GOOGLE_CLIENT_ID,
     googleClientSecret: parsed.OPENSTEER_GOOGLE_CLIENT_SECRET,
+    ...(parsed.OPENSTEER_APP_REVIEW_EMAIL && parsed.OPENSTEER_APP_REVIEW_PASSWORD
+      ? {
+          appReview: {
+            email: parsed.OPENSTEER_APP_REVIEW_EMAIL,
+            password: parsed.OPENSTEER_APP_REVIEW_PASSWORD,
+          },
+        }
+      : {}),
     ...(appleSignInConfig(parsed) ? { appleSignIn: appleSignInConfig(parsed)! } : {}),
     ...(hostedOAuthConfig(parsed) ? { hostedOAuth: hostedOAuthConfig(parsed)! } : {}),
     portalOrigin: parsed.OPENSTEER_PORTAL_ORIGIN,

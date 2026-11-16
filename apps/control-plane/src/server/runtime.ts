@@ -127,6 +127,7 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
     const server = await createControlPlaneServer(
       {
         ...(appleSignIn ? { appleSignIn } : {}),
+        ...(config.appReview ? { appReviewSignIn: true } : {}),
         auth,
         authenticator: new ControlPlaneAuthenticator(auth, database, config.publicOrigin),
         connectLifecycle,

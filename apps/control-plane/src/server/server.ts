@@ -62,6 +62,10 @@ const UiFormSchema = z
   .refine((value) => !(value.oauth_query && value.return_to), {
     message: "Account sign-in has conflicting return targets",
   });
+const AppReviewFormSchema = UiFormSchema.safeExtend({
+  email: z.string().max(320),
+  password: z.string().max(4_096),
+});
 const ConsentFormSchema = z.strictObject({
   decision: z.enum(["accept", "deny"]),
   oauth_query: z.string().min(1).max(maximumOAuthQueryLength),
@@ -70,6 +74,7 @@ const ConsentFormSchema = z.strictObject({
 export async function createControlPlaneServer(
   dependencies: {
     readonly appleSignIn?: AppleSignInConfig;
+    readonly appReviewSignIn?: boolean;
     readonly auth: ControlPlaneAuth;
     readonly authenticator: ControlPlaneAuthenticator;
     readonly connectLifecycle: ConnectLifecycleService;
@@ -280,6 +285,7 @@ function registerAccountPages(
   app: FastifyInstance,
   dependencies: {
     readonly appleSignIn?: AppleSignInConfig;
+    readonly appReviewSignIn?: boolean;
     readonly auth: ControlPlaneAuth;
     readonly fonts: BrowserPageFonts;
     readonly hostedOAuthBroker?: HostedOAuthBrokerService;
@@ -289,6 +295,7 @@ function registerAccountPages(
   portal: PortalRouter | undefined,
 ): void {
   const { auth, fonts, publicOrigin, store } = dependencies;
+  const appReviewSignIn = dependencies.appReviewSignIn === true;
   const sendAccountPage = (reply: FastifyReply, title: string, body: string) =>
     sendBrowserPage(reply, { body, fonts, layout: "card", title });
   const sendAuthorizationRestartPage = (reply: FastifyReply) =>
@@ -317,22 +324,30 @@ function registerAccountPages(
       publicOrigin,
     );
     const oauthQuery = returnTo ? "" : rawQuery(request.url);
+    return sendSignInPage(reply, { returnTo, oauthQuery });
+  });
+  const sendSignInPage = (
+    reply: FastifyReply,
+    input: { returnTo: URL | null; oauthQuery: string; appReviewFailure?: string },
+  ) => {
     const reauthorization = new Set(
-      (new URLSearchParams(oauthQuery).get("prompt") ?? "").split(/\s+/u).filter(Boolean),
+      (new URLSearchParams(input.oauthQuery).get("prompt") ?? "").split(/\s+/u).filter(Boolean),
     ).has("login");
     return sendAccountPage(
       reply,
       reauthorization ? "Confirm it’s you · Opensteer" : "Sign in · Opensteer",
       signInBody({
-        hiddenFields: returnTo
-          ? `<input type="hidden" name="return_to" value="${escapeHtml(returnTo.toString())}">`
-          : `<input type="hidden" name="oauth_query" value="${escapeHtml(oauthQuery)}">`,
+        hiddenFields: input.returnTo
+          ? `<input type="hidden" name="return_to" value="${escapeHtml(input.returnTo.toString())}">`
+          : `<input type="hidden" name="oauth_query" value="${escapeHtml(input.oauthQuery)}">`,
         reauthorization,
+        appReviewSignIn,
+        ...(input.appReviewFailure ? { appReviewFailure: input.appReviewFailure } : {}),
         ...(dependencies.appleSignIn ? { appleSignIn: true } : {}),
-        ...(returnTo ? { hostedOAuth: true } : {}),
+        ...(input.returnTo ? { hostedOAuth: true } : {}),
       }),
     );
-  });
+  };
 
   app.post("/sign-out", async (request, reply) => {
     requireAccountHost(request);
@@ -345,11 +360,14 @@ function registerAccountPages(
   });
 
   const signInWith =
-    (provider: "apple" | "google") => async (request: FastifyRequest, reply: FastifyReply) => {
+    (provider: "apple" | "google" | "app-review") =>
+    async (request: FastifyRequest, reply: FastifyReply) => {
       requireAccountHost(request);
       void reply.header("cache-control", "no-store");
       requireExactOrigin(request, publicOrigin.origin);
-      const form = UiFormSchema.parse(parseForm(request.body));
+      const credentials =
+        provider === "app-review" ? AppReviewFormSchema.parse(parseForm(request.body)) : undefined;
+      const form = credentials ?? UiFormSchema.parse(parseForm(request.body));
       const returnTo = hostedOAuthLaunchReturnTo(form.return_to, publicOrigin);
       if (form.switch_account) {
         if (!returnTo || !dependencies.hostedOAuthBroker)
@@ -366,7 +384,9 @@ function registerAccountPages(
         if (!signedOut.ok) throw new ControlPlaneError("unauthorized", "Sign out failed");
       }
       const body = {
-        provider,
+        ...(credentials
+          ? { email: credentials.email, password: credentials.password }
+          : { provider }),
         ...(form.switch_account && provider === "google"
           ? { additionalParams: { prompt: "select_account" } }
           : {}),
@@ -377,12 +397,25 @@ function registerAccountPages(
         auth,
         request,
         publicOrigin,
-        "/sign-in/social",
+        credentials ? "/sign-in/app-review" : "/sign-in/social",
         body,
         Boolean(form.switch_account),
       );
       copySetCookies(reply, response);
-      const payload = AuthRedirectResponseSchema.parse(await response.json());
+      if (credentials && (response.status === 401 || response.status === 429)) {
+        return sendSignInPage(reply.code(response.status), {
+          returnTo,
+          oauthQuery: form.oauth_query ?? "",
+          appReviewFailure:
+            response.status === 429
+              ? "Too many attempts. Try again in a minute."
+              : "Email or password is incorrect.",
+        });
+      }
+      if (credentials && !response.ok) return sendWebResponse(reply, response);
+      const payload = (
+        credentials ? ConsentRedirectResponseSchema : AuthRedirectResponseSchema
+      ).parse(await response.json());
       if (!response.ok || !payload.url) {
         throw new ControlPlaneError("unauthorized", "Sign-in could not be started");
       }
@@ -390,6 +423,7 @@ function registerAccountPages(
     };
   app.post("/sign-in/google", signInWith("google"));
   if (dependencies.appleSignIn) app.post("/sign-in/apple", signInWith("apple"));
+  if (appReviewSignIn) app.post("/sign-in/app-review", signInWith("app-review"));
 
   app.get("/consent", async (request, reply) => {
     requireAccountHost(request);
