@@ -25,16 +25,6 @@ import { browserRuntimeCompatibilityReason } from "../browser/browser-runtime-co
 /** The access section of a machine row, as a management viewer sees it. */
 export type MachineAccessView = NonNullable<MachineSummary["access"]>;
 
-/**
- * The Machines projection.
- *
- * A machine is a Runner, so this is a direct projection of the runners table
- * plus what each of that Runner's modules last said about itself. There is
- * nothing to merge: the browser relay and the messaging transport are modules
- * of one identity rather than enrollments a person has to recognise as the
- * same computer.
- */
-
 /** The Runner registry row this projection needs. */
 export interface MachineRunnerInput {
   readonly deviceProfile: "iphone" | null;
@@ -562,7 +552,8 @@ function projectDeviceMachines(input: MachineProjectionInput): readonly MachineS
       kind: device.kind,
       name: device.name,
       device:
-        device.platform && device.form ? { platform: device.platform, form: device.form } : null,
+        self?.device ??
+        (device.platform && device.form ? { platform: device.platform, form: device.form } : null),
       ownership: device.ownerKind === "user" ? "mine" : "deployment",
       selfRunnerId,
       drivers: [...drivers],
@@ -574,11 +565,13 @@ function projectDeviceMachines(input: MachineProjectionInput): readonly MachineS
           self?.modules.browser?.readiness === "ready",
           device.kind !== "home",
         ),
-        apps: capability(
-          phone || !!self?.modules.integrations,
-          access.apps,
-          phone ? physical.state === "ready" : self?.modules.integrations?.readiness === "ready",
-        ),
+        apps: phoneDisplay
+          ? { supported: true, configurable: true, enabled: access.apps, ...phoneDisplay.control }
+          : capability(
+              !!self?.modules.integrations,
+              access.apps,
+              self?.modules.integrations?.readiness === "ready",
+            ),
         files: capability(
           !!self?.modules.shell,
           access.files,

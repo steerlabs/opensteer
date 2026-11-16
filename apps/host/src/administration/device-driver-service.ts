@@ -5,19 +5,18 @@ import {
   type RunnerId,
   type UserId,
 } from "@opensteer/core";
-import type { OpensteerStore, DeviceRemovalEffects } from "@opensteer/database";
+import type { OpensteerStore } from "@opensteer/database";
 import { requirePersonalOwner } from "@opensteer/database";
 import type { IphoneScreenAttachCommand, IphoneScreenDetachCommand } from "@opensteer/protocol";
-import { deviceMembershipTurn } from "./device-removal.js";
 
 export interface DeviceDriverManagementPort {
   screenDriver(
     runnerId: RunnerId,
   ): { readonly connectionGeneration: number; readonly screenDrivers: 1 } | null;
-  withAdmission<T>(deviceId: DeviceId, action: () => Promise<T>): Promise<T>;
-  bindingsChanged(deviceId: DeviceId): Promise<void>;
-  removed(effects: DeviceRemovalEffects): Promise<void>;
-  disableAgentAccess(deviceId: DeviceId): Promise<void>;
+  change<T>(
+    input: { readonly deviceIds: readonly DeviceId[]; readonly runnerIds: readonly RunnerId[] },
+    commit: () => Promise<T>,
+  ): Promise<T>;
 }
 
 export class DeviceDriverService {
@@ -33,23 +32,26 @@ export class DeviceDriverService {
     command: IphoneScreenAttachCommand | IphoneScreenDetachCommand,
   ) {
     await requirePersonalOwner(this.store.database, actor.userId);
-    return deviceMembershipTurn(this.store, async () => {
-      const change = async () => {
-        const result =
-          command.type === "iphone.screen.attach"
-            ? await this.#attach(actor, command)
-            : await this.store.detachIphoneScreen({ ...actor, ...command });
-        await this.port.bindingsChanged(result.deviceId);
-        return { type: command.type, ...result };
-      };
-      const deviceId =
-        command.type === "iphone.screen.detach"
-          ? command.deviceId
-          : command.target.kind === "existing"
-            ? command.target.deviceId
-            : null;
-      return deviceId ? this.port.withAdmission(deviceId, change) : change();
-    });
+    const change = async () => {
+      const result =
+        command.type === "iphone.screen.attach"
+          ? await this.#attach(actor, command)
+          : await this.store.detachIphoneScreen({ ...actor, ...command });
+      return { type: command.type, ...result };
+    };
+    const deviceId =
+      command.type === "iphone.screen.detach"
+        ? command.deviceId
+        : command.target.kind === "existing"
+          ? command.target.deviceId
+          : null;
+    return this.port.change(
+      {
+        deviceIds: deviceId ? [deviceId] : [],
+        runnerIds: command.type === "iphone.screen.attach" ? [command.driverRunnerId] : [],
+      },
+      change,
+    );
   }
 
   #attach(

@@ -1,9 +1,9 @@
 import {
-  selfComputerApps,
-  selfComputerUse,
+  deviceComputerApps,
+  deviceComputerUse,
   type DeviceComputerAppsPort,
   type DeviceComputerUseGateway,
-  type LegacyComputerUseGateway,
+  type ComputerUseGateway as RoutedComputerUseGateway,
   type DeviceComputerScope,
   type DeviceComputerResult,
 } from "./device-computer-gateway.js";
@@ -260,7 +260,7 @@ export interface EngineCapabilityQuery extends RunToolContext {
 }
 
 /** What `callTool`, the rpc surface and `integration_request` need of sessions. */
-export type ComputerUseGateway = LegacyComputerUseGateway;
+export type ComputerUseGateway = RoutedComputerUseGateway;
 
 /** An MCP client the Host holds, or is opening, for one of an installation's servers. */
 interface OpenClient {
@@ -400,7 +400,7 @@ export class IntegrationPlatformService {
   readonly #computerToolEnabled: (
     context: RunCapabilityClaims<string>,
   ) => boolean | Promise<boolean>;
-  readonly #computerUseVersion: (runnerId: ComputerTargetId) => number | undefined;
+  readonly #computerUseVersion: (runnerId: RunnerId) => number | undefined;
   readonly #runFiles: RunFilePort | undefined;
   readonly #mcpImageContent: (context: EngineCapabilityQuery) => Promise<boolean>;
   /** Who may use which app on which Mac; this service only dispatches the calls. */
@@ -427,6 +427,10 @@ export class IntegrationPlatformService {
       | "send"
       | "requireAgentAccess"
       | "withRunnerAdmission"
+      | "withDeviceAdmission"
+      | "withDeviceAdmissions"
+      | "requireDeviceAgentAccess"
+      | "deviceStatus"
       | "removePluginData"
     >;
     /**
@@ -456,7 +460,7 @@ export class IntegrationPlatformService {
     readonly computerToolEnabled?: (
       context: RunCapabilityClaims<string>,
     ) => boolean | Promise<boolean>;
-    readonly computerUseVersion?: (runnerId: ComputerTargetId) => number | undefined;
+    readonly computerUseVersion?: (runnerId: RunnerId) => number | undefined;
     readonly runFiles?: RunFilePort;
     readonly computerReplTime?: Pick<
       ConstructorParameters<typeof ComputerReplService>[0],
@@ -494,8 +498,7 @@ export class IntegrationPlatformService {
         (await options.listConnections(owner)).map((row) =>
           DeviceIntegrationConnectionReaderSchema.parse(row),
         ));
-    this.#deviceApps =
-      options.deviceComputerApps ?? selfComputerApps(options.store, options.computerApps);
+    this.#deviceApps = options.deviceComputerApps ?? deviceComputerApps(options.computerApps);
     this.#computerApps = options.computerApps;
     this.#dataDirectory = options.dataDirectory;
     const secureFetch: typeof fetch = (target, init) =>
@@ -516,7 +519,7 @@ export class IntegrationPlatformService {
     this.#isRunnerConnected = options.isRunnerConnected;
     this.#computerUse =
       options.deviceComputerUse ??
-      (options.computerUse ? selfComputerUse(options.store, options.computerUse) : null);
+      (options.computerUse ? deviceComputerUse(options.computerUse) : null);
     this.#nativeTabs = options.nativeTabs;
     this.#onDeviceTargetAcquired = options.onDeviceTargetAcquired;
     this.#onTabUsed = options.onTabUsed;
@@ -1693,12 +1696,7 @@ export class IntegrationPlatformService {
    * command, which an administrator runs deliberately.
    */
   #withDeviceAdmissions<T>(ids: readonly DeviceId[], action: () => Promise<T>): Promise<T> {
-    const sorted = [...new Set(ids)].sort();
-    const enter = (index: number): Promise<T> =>
-      index === sorted.length
-        ? action()
-        : this.#deviceApps.withAdmission(sorted[index]!, () => enter(index + 1));
-    return enter(0);
+    return this.#deviceApps.withAdmissions(ids, action);
   }
 
   async uninstallIntegration(input: {

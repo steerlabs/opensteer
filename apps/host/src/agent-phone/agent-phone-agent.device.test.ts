@@ -136,7 +136,7 @@ describe.skipIf(requestedEngine === undefined)(
     let build: AgentPhoneE2eBuild | null = null;
     let stack: VerticalStack | null = null;
     let passwordsBridge: Awaited<ReturnType<typeof startPersonalPasswordsBridge>> | null = null;
-    let integrations: ReturnType<typeof prepareIntegrationsModule>;
+    let integrations: Awaited<ReturnType<typeof prepareIntegrationsModule>>;
     let frontDoor: TlsFrontDoor | null = null;
     let publicOrigin: URL;
     let owner: AgentPhoneOwner;
@@ -181,13 +181,13 @@ describe.skipIf(requestedEngine === undefined)(
       const publicPort = await freePort();
       publicOrigin = new URL(`https://${address}:${publicPort}`);
       passwordsBridge = await startPersonalPasswordsBridge();
+      integrations = await prepareIntegrationsModule({
+        platform: "darwin",
+        dataDirectory: join(scratch, "integrations"),
+        computerUseBridge: passwordsBridge!.bridge,
+      });
       stack = await startVerticalStack({
         integrations: () => {
-          integrations = prepareIntegrationsModule({
-            platform: "darwin",
-            dataDirectory: join(scratch, "integrations"),
-            computerUseBridge: passwordsBridge!.bridge,
-          });
           if (!integrations) throw new Error("Missing scripted Personal authority module");
           return integrations;
         },

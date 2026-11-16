@@ -1,4 +1,4 @@
-import { deviceMembershipTurn, removeDevice } from "./device-removal.js";
+import { removeDevice } from "./device-removal.js";
 import { DeviceDriverService } from "./device-driver-service.js";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { createHash } from "node:crypto";
@@ -49,7 +49,6 @@ export type AdministrationDependencies = Pick<
   | "realtime"
   | "ownerProfile"
   | "deviceDrivers"
-  | "deviceState"
 > & {
   readonly reconcileIdleCompaction?: () => Promise<void>;
   readonly publishDeploymentEvent: (event: import("@opensteer/core").AgentEvent) => void;
@@ -551,37 +550,13 @@ export class AdministrationService {
       }
       case "machine.revoke": {
         const deviceId = DeviceIdSchema.parse(command.machineId);
-        const self =
-          (await dependencies.store.listDeviceDrivers({ deviceId, includeDetached: true })).find(
-            (driver) => driver.role === "self",
-          )?.runnerId ?? null;
-        if (self)
-          await removeDevice(
-            dependencies,
-            self,
-            userId,
-            { administration, allowDeployment: true },
-            afterResponse,
-          );
-        else {
-          const port = dependencies.deviceDrivers;
-          if (!port)
-            throw new OpensteerError({
-              code: "conflict",
-              message: "Device driver management is unavailable.",
-            });
-          await deviceMembershipTurn(dependencies.store, () =>
-            port.withAdmission(deviceId, async () => {
-              const effects = await dependencies.store.removeDevice(
-                deviceId,
-                userId,
-                administration ? { administration } : {},
-              );
-              await port.removed(effects);
-            }),
-          );
-          notifyMachinesChanged(dependencies.realtime, "machine.command");
-        }
+        await removeDevice(
+          dependencies,
+          deviceId,
+          userId,
+          { administration, allowDeployment: true },
+          afterResponse,
+        );
         return {
           type: command.type,
         };

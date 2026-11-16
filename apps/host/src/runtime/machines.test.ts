@@ -1,6 +1,7 @@
-import { createId } from "@opensteer/core";
+import { createId, DeviceIdSchema } from "@opensteer/core";
 import {
   MachineSummarySchema,
+  machineAccessPolicyDefault,
   mintComputerUseSessionId,
   type ComputerUseSessionSummary,
   type MachineAppStatus,
@@ -820,4 +821,39 @@ it("projects a detached screen Device without borrowing its Mac's modules or rea
       control: { state: "unavailable", reason: { kind: "not-connected" } },
     },
   });
+});
+
+it("preserves the self Device descriptor when adding stored Device identity", () => {
+  const id = createId("runner");
+  const ownDevice = runner({ id, device: { platform: "ios", form: "phone", app: "opensteer" } });
+  const summary = projectMachines({
+    access: new Map(),
+    apps: new Map(),
+    deploymentOwnsMainComputer: true,
+    pendingRunners: [],
+    runners: [ownDevice],
+    threadsByEnvironment: new Map(),
+    devices: [
+      {
+        device: {
+          id: DeviceIdSchema.parse(id),
+          kind: "phone",
+          platform: "ios",
+          form: "phone",
+          name: ownDevice.name,
+          ownerKind: "user",
+          removedAt: null,
+          accessPolicy: machineAccessPolicyDefault,
+        },
+        drivers: [
+          { role: "self", runnerId: id, runnerName: ownDevice.name, generation: 1, attached: true },
+        ],
+        selfRunnerId: id,
+        screenStatus: null,
+        screenConnected: false,
+        phoneAccess: null,
+      },
+    ],
+  })[0];
+  expect(summary?.device).toEqual(ownDevice.device);
 });

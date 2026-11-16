@@ -1,25 +1,20 @@
 import {
-  OpensteerError,
+  DeviceIdSchema,
   androidPhoneDefinitionId,
   type DeviceId,
   type PhoneDisplayDefinitionId,
   type UserId,
 } from "@opensteer/core";
-import type { IntegrationPlatformStore } from "@opensteer/database";
 import type { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 import {
   type ComputerUseService,
   type ComputerUseMachineOption,
   type ComputerUseHolding,
   type ComputerUseScope,
-  type ComputerUseTarget,
   type ComputerUseDispatchResult,
 } from "../computer-use/computer-use-service.js";
 import {
   ComputerUseInstalledAppsParamsSchema,
-  getPhoneDisplayCodec,
-  PhoneDisplayObservationResultSchema,
-  PhoneDisplayInstalledAppsResultSchema,
   PhoneDisplayInstalledAppsParamsSchema,
   type PhoneDisplayObservation,
   type PhoneDisplayInstalledAppsParams,
@@ -32,7 +27,10 @@ import {
 import type { IntegrationAccess } from "@opensteer/integration-core";
 import type { z } from "zod";
 
-export interface DeviceComputerOption extends Omit<ComputerUseMachineOption, "runnerId"> {
+export interface DeviceComputerOption extends Omit<
+  ComputerUseMachineOption,
+  "runnerId" | "definitionId"
+> {
   readonly deviceId: DeviceId;
   readonly definitionId: "macos-app" | PhoneDisplayDefinitionId;
   readonly availability?: DeviceAvailability;
@@ -121,6 +119,7 @@ export interface DeviceComputerUseGateway extends Pick<
 }
 export interface DeviceComputerAppsPort {
   availability?(deviceId: DeviceId): Promise<DeviceAvailability | null>;
+  withAdmissions<T>(deviceIds: readonly DeviceId[], action: () => Promise<T>): Promise<T>;
   withAdmission<T>(deviceId: DeviceId, action: () => Promise<T>): Promise<T>;
   appStatus(
     deviceId: DeviceId,
@@ -134,7 +133,7 @@ export interface DeviceComputerAppsPort {
   compatibilityReason(deviceId: DeviceId): Promise<string | null>;
   requireAgentAccess(deviceId: DeviceId): Promise<void>;
 }
-export type LegacyComputerUseGateway = Pick<
+export type ComputerUseGateway = Pick<
   ComputerUseService,
   | "closeForConnection"
   | "eligibleMachines"
@@ -151,33 +150,32 @@ export type LegacyComputerUseGateway = Pick<
   | "sendObserve"
   | "sendWindowOperation"
 >;
-export function selfComputerApps(
-  store: Pick<IntegrationPlatformStore, "requireDeviceSelfRunnerId">,
+export function deviceComputerApps(
   hub: Pick<
     ComputerAppHub,
-    | "withRunnerAdmission"
+    | "withDeviceAdmission"
+    | "withDeviceAdmissions"
     | "appStatus"
     | "attached"
     | "reportsApp"
     | "compatibilityReason"
-    | "requireAgentAccess"
+    | "requireDeviceAgentAccess"
+    | "deviceStatus"
   >,
 ): DeviceComputerAppsPort {
-  const self = (id: DeviceId) => store.requireDeviceSelfRunnerId(id);
   return {
-    withAdmission: async (id, action) => hub.withRunnerAdmission(await self(id), action),
-    appStatus: async (id, definition) => hub.appStatus(await self(id), definition),
-    attached: async (id) => hub.attached(await self(id)),
-    reportsApp: async (id, definition) => hub.reportsApp(await self(id), definition),
-    compatibilityReason: async (id) => hub.compatibilityReason(await self(id)),
-    requireAgentAccess: async (id) => hub.requireAgentAccess(await self(id)),
+    availability: async (id) => hub.deviceStatus(id)?.availability ?? null,
+    withAdmission: (id, action) => hub.withDeviceAdmission(id, action),
+    withAdmissions: (ids, action) => hub.withDeviceAdmissions(ids, action),
+    appStatus: async (id, definition) => hub.appStatus(id, definition),
+    attached: async (id) => hub.attached(id),
+    reportsApp: async (id, definition) => hub.reportsApp(id, definition),
+    compatibilityReason: async (id) => hub.compatibilityReason(id),
+    requireAgentAccess: async (id) => hub.requireDeviceAgentAccess(id),
   };
 }
 
-export function selfComputerUse(
-  store: Pick<IntegrationPlatformStore, "requireSelfDeviceId" | "requireDeviceSelfRunnerId">,
-  service: LegacyComputerUseGateway,
-): DeviceComputerUseGateway {
+export function deviceComputerUse(service: ComputerUseGateway): DeviceComputerUseGateway {
   const inventory = async (owner: UserId) => {
     const result = await service.eligibleInventory(owner);
     const project = (
@@ -187,44 +185,13 @@ export function selfComputerUse(
       Promise.all(
         rows.map(async ({ runnerId, ...row }) => ({
           ...row,
-          deviceId: await store.requireSelfDeviceId(runnerId),
-          definitionId,
+          deviceId: DeviceIdSchema.parse(row.deviceId ?? runnerId),
+          definitionId: row.definitionId ?? definitionId,
         })),
       );
     return {
       machines: await project(result.machines, "macos-app"),
       phones: await project(result.phones, androidPhoneDefinitionId),
-    };
-  };
-  const target = (value: DeviceComputerTarget): ComputerUseTarget => {
-    if (value.kind === "display" && value.definitionId !== androidPhoneDefinitionId)
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "This screen requires its assigned Device driver.",
-      });
-    return value.kind === "app" ? value : { ...value, definitionId: androidPhoneDefinitionId };
-  };
-  const dispatch = async (
-    value: ReturnType<ComputerUseService["sendObserve"]>,
-  ): Promise<Dispatch> => {
-    const result = await value;
-    return {
-      ...result,
-      settle: async () => {
-        const answer = await result.settle();
-        return answer.kind === "app"
-          ? answer
-          : {
-              ...answer,
-              observation: answer.observation
-                ? PhoneDisplayObservationResultSchema.parse(
-                    getPhoneDisplayCodec(androidPhoneDefinitionId).decodeResult("observe", {
-                      observation: answer.observation,
-                    }),
-                  ).observation
-                : null,
-            };
-      },
     };
   };
   async function installedApps(
@@ -246,26 +213,16 @@ export function selfComputerUse(
   ): Promise<
     z.infer<typeof ComputerUseInstalledAppsResultSchema> | PhoneDisplayInstalledAppsResult
   > {
-    const runner = await store.requireDeviceSelfRunnerId(id);
-    if (definition && definition !== androidPhoneDefinitionId)
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "This screen requires its assigned Device driver.",
-      });
     return definition
-      ? PhoneDisplayInstalledAppsResultSchema.parse(
-          getPhoneDisplayCodec(definition).decodeResult(
-            "installed_apps",
-            await service.installedApps(
-              runner,
-              owner,
-              PhoneDisplayInstalledAppsParamsSchema.parse(params),
-              definition,
-            ),
-          ),
+      ? service.installedApps(
+          id,
+          owner,
+          PhoneDisplayInstalledAppsParamsSchema.parse(params),
+          definition,
         )
-      : service.installedApps(runner, owner, ComputerUseInstalledAppsParamsSchema.parse(params));
+      : service.installedApps(id, owner, ComputerUseInstalledAppsParamsSchema.parse(params));
   }
+
   return {
     eligibleInventory: inventory,
     eligibleMachines: async (owner, definition) => {
@@ -274,32 +231,26 @@ export function selfComputerUse(
         (row) => row.definitionId === definition,
       );
     },
-    resolveApp: async ({ deviceId, ...input }) =>
-      service.resolveApp({ ...input, runnerId: await store.requireDeviceSelfRunnerId(deviceId) }),
+    resolveApp: async ({ deviceId, ...input }) => service.resolveApp({ ...input, deviceId }),
     installedApps,
-    holders: async (id) => service.holders(await store.requireDeviceSelfRunnerId(id)),
-    closeForConnection: async (id, holding) => {
-      const runner = await store.requireDeviceSelfRunnerId(id);
-      service.closeForConnection(runner, holding);
-    },
+    holders: async (id) => service.holders(id),
+    closeForConnection: async (id, holding) => service.closeForConnection(id, holding),
     stop: (id, owner) => service.stop(id, owner),
     threadTitle: (id, owner) => service.threadTitle(id, owner),
     prepare: async ({ deviceId, deviceName, ...machine }, context) =>
       service.prepare(
         {
           ...machine,
-          runnerId: await store.requireDeviceSelfRunnerId(deviceId),
-          runnerName: deviceName,
+          deviceId,
+          deviceName,
         },
         context,
       ),
     release: (lease) => service.release(lease),
-    releaseSession: async (context, id) =>
-      service.releaseSession(context, await store.requireDeviceSelfRunnerId(id)),
-    sendObserve: (lease, value, ...rest) =>
-      dispatch(service.sendObserve(lease, target(value), ...rest)),
-    sendAct: (lease, value, ...rest) => dispatch(service.sendAct(lease, target(value), ...rest)),
+    releaseSession: async (context, id) => service.releaseSession(context, id),
+    sendObserve: (lease, value, ...rest) => service.sendObserve(lease, value, ...rest),
+    sendAct: (lease, value, ...rest) => service.sendAct(lease, value, ...rest),
     sendWindowOperation: (lease, value, ...rest) =>
-      dispatch(service.sendWindowOperation(lease, target(value), ...rest)),
+      service.sendWindowOperation(lease, value, ...rest),
   };
 }

@@ -90,10 +90,7 @@ async function setup() {
       negotiated
         ? { connectionGeneration: connection.connectionGeneration, screenDrivers: 1 }
         : null,
-    withAdmission: async (_id, action) => action(),
-    bindingsChanged: async () => {},
-    removed: async () => {},
-    disableAgentAccess: async () => {},
+    change: async (_input, commit) => commit(),
   };
   const service = new DeviceDriverService(store, port);
   const actor = { userId: owner.userId, sessionId };
@@ -193,6 +190,15 @@ it("requires confirmed negotiation and an owner person session, then removes onl
     {
       store: f.store,
       deviceDrivers: f.port,
+      computerApps: {
+        withDeviceAdmissions: async (_ids: unknown, action: () => Promise<unknown>) => action(),
+        forgetDevice: () => {},
+        refreshDeviceDrivers: async () => {},
+      },
+      browser: { profilesRemoved: async () => {} },
+      publishDeploymentEvent: () => {},
+      integrations: { continuations: { notify: () => {} } },
+      authenticator: { identity: { announceSessionsEnded: () => {} } },
       realtime: { broadcast: () => {} },
     } as unknown as AdministrationDependencies,
     () => {},

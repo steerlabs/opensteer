@@ -1,8 +1,66 @@
 import { expect, it } from "vitest";
 import { createId, DeviceIdSchema } from "@opensteer/core";
 import type { DeviceInventoryRecord } from "@opensteer/database";
-import { DeviceMachineSummarySchema, machineAccessPolicyDefault } from "@opensteer/protocol";
-import { deviceCapabilities, projectDeviceMachines } from "./device-machine-projection.js";
+import {
+  DeviceMachineSummarySchema,
+  machineAccessPolicyDefault,
+  RunnerAuxiliaryFrameFenceSchema,
+} from "@opensteer/protocol";
+import { projectMachines } from "../runtime/machines.js";
+const project = (
+  device: DeviceInventoryRecord,
+  runnerId: import("@opensteer/core").RunnerId,
+  attached = false,
+  availability: import("@opensteer/protocol").DeviceAvailability = {
+    state: "unavailable",
+    reason: { kind: "not-connected" },
+  },
+) =>
+  projectMachines({
+    devices: [
+      {
+        device,
+        selfRunnerId: null,
+        drivers: [{ runnerId, role: "screen", generation: 2, attached, runnerName: "Work Mac" }],
+        screenConnected: attached,
+        screenStatus: attached
+          ? {
+              ...RunnerAuxiliaryFrameFenceSchema.parse({
+                runnerId,
+                module: "integrations",
+                connectionGeneration: 1,
+                connectionId: `rcn_${crypto.randomUUID()}`,
+                connectionLeaseId: `rls_${crypto.randomUUID()}`,
+                bootId: `rbt_${crypto.randomUUID()}`,
+                auxiliaryStreamId: `rax_${crypto.randomUUID()}`,
+              }),
+              module: "integrations",
+              type: "runner.integrations.device-status",
+              deviceId: device.id,
+              driverGeneration: 2,
+              definitionId: "iphone-screen",
+              operations: [],
+              availability,
+              navigationButtons: [],
+              actions: [],
+              wake: false,
+              lock: null,
+              displayVersion: null,
+              ownerViewVersion: null,
+              inputVersion: null,
+              powerVersion: null,
+            }
+          : null,
+        phoneAccess: "read-write",
+      },
+    ],
+    runners: [],
+    pendingRunners: [],
+    access: new Map(),
+    apps: new Map(),
+    threadsByEnvironment: new Map(),
+    deploymentOwnsMainComputer: true,
+  });
 
 it("keeps a detached screen Device visible without borrowing its Mac's execution or readiness", () => {
   const deviceId = DeviceIdSchema.parse(createId("device")),
@@ -22,13 +80,7 @@ it("keeps a detached screen Device visible without borrowing its Mac's execution
     createdAt: new Date(),
     updatedAt: new Date(),
   };
-  const result = projectDeviceMachines({
-    devices: [device],
-    drivers: [{ deviceId, runnerId, role: "screen", generation: 2, detachedAt: new Date() }],
-    runnerNames: new Map([[runnerId, "Work Mac"]]),
-    selfMachines: [],
-    runnerConnected: () => true,
-  });
+  const result = project(device, runnerId);
   expect(DeviceMachineSummarySchema.parse(result[0])).toMatchObject({
     id: deviceId,
     name: "Travel iPhone",
@@ -69,18 +121,10 @@ it("keeps a connected iPhone's typed control availability in agent capabilities"
     createdAt: new Date(),
     updatedAt: new Date(),
   };
-  const display = projectDeviceMachines({
-    devices: [device],
-    drivers: [],
-    selfMachines: [],
-    runnerNames: new Map(),
-    runnerConnected: () => true,
-  })[0]!.phoneDisplay!;
+  const runnerId = createId("runner");
   expect(
-    deviceCapabilities(device, undefined, true, {
-      ...display,
-      control: { state: "unavailable", reason: { kind: "locked" } },
-    }).apps,
+    project(device, runnerId, true, { state: "unavailable", reason: { kind: "locked" } })[0]
+      ?.capabilities?.apps,
   ).toMatchObject({
     supported: true,
     enabled: true,
@@ -88,11 +132,13 @@ it("keeps a connected iPhone's typed control availability in agent capabilities"
     reason: { kind: "locked" },
   });
   expect(
-    deviceCapabilities(
-      { ...device, accessPolicy: { ...device.accessPolicy, apps: false } },
-      undefined,
-      true,
-      { ...display, control: { state: "ready", reason: null } },
-    ).apps,
-  ).toMatchObject({ enabled: false, state: "disabled", reason: { kind: "access-off" } });
+    project({ ...device, accessPolicy: { ...device.accessPolicy, apps: false } }, runnerId, true, {
+      state: "ready",
+      reason: null,
+    })[0]?.capabilities?.apps,
+  ).toMatchObject({
+    enabled: false,
+    state: "disabled",
+    reason: { kind: "access-off" },
+  });
 });

@@ -1,4 +1,4 @@
-import { deviceCapabilities } from "../../server/device-machine-projection.js";
+import { projectMachines } from "../../runtime/machines.js";
 import { deviceAccessStates } from "@opensteer/database";
 import type { z } from "zod";
 import {
@@ -11,7 +11,8 @@ import {
   type UserId,
 } from "@opensteer/core";
 import type { IntegrationConnectionSummary } from "@opensteer/integration-core";
-import { hostApi } from "@opensteer/protocol";
+import { isPhoneDisplayDefinitionId } from "@opensteer/core";
+import { RunnerModuleNameSchema, hostApi } from "@opensteer/protocol";
 import {
   AdministrationService,
   isAdministrationCommand,
@@ -316,6 +317,60 @@ export class AdministrationToolHandlers {
       computerIds(store, caller.userId),
     ]);
     const byRunner = new Map(runnerPage.runners.map((runner) => [runner.id, runner]));
+    const connections = await this.service.dependencies.integrations.platform.deviceConnections(
+      caller.userId,
+    );
+    const hub = this.service.dependencies.computerApps;
+    const summaries = projectMachines({
+      deploymentOwnsMainComputer: true,
+      pendingRunners: [],
+      access: new Map(),
+      apps: new Map(page.devices.map((device) => [device.id, hub.status(device.id) ?? []])),
+      threadsByEnvironment: new Map(),
+      runners: runnerPage.runners.map((runner) => ({
+        ...runner,
+        modules: runner.moduleDescriptors,
+        ownerName: null,
+        connected: runners.isRunnerConnected(runner.id),
+        readiness: new Map(
+          RunnerModuleNameSchema.options.flatMap((module) => {
+            const readiness = runners.moduleReadiness(runner.id, module);
+            return readiness === undefined
+              ? []
+              : [[module, { readiness, checkedAt: null, detail: null }] as const];
+          }),
+        ),
+        runtimeVersion: null,
+        ownedByViewer: true,
+      })),
+      devices: page.devices.map((device) => ({
+        device,
+        selfRunnerId:
+          drivers.find(
+            (binding) =>
+              binding.deviceId === device.id && binding.role === "self" && !binding.detachedAt,
+          )?.runnerId ?? null,
+        drivers: drivers
+          .filter((binding) => binding.deviceId === device.id)
+          .map((binding) => ({
+            role: binding.role,
+            runnerId: binding.runnerId,
+            generation: binding.generation,
+            attached: binding.detachedAt === null,
+            runnerName: byRunner.get(binding.runnerId)?.name ?? "Computer",
+          })),
+        screenConnected: hub.attached(device.id),
+        screenStatus: hub.deviceStatus(device.id),
+        phoneAccess:
+          connections.find(
+            (entry) =>
+              entry.computer?.deviceId === device.id &&
+              entry.status !== "revoked" &&
+              !entry.computer.blockedAt &&
+              isPhoneDisplayDefinitionId(entry.definitionId),
+          )?.computer?.access ?? null,
+      })),
+    });
     return {
       nextCursor: page.nextCursor,
       computers: await Promise.all(
@@ -326,7 +381,7 @@ export class AdministrationToolHandlers {
           );
           const runner = self ? byRunner.get(self.runnerId) : undefined;
           const environmentId = self ? computers.environmentId(self.runnerId) : undefined;
-          const live = this.service.dependencies.deviceState?.status(device.id);
+          const summary = summaries.find((row) => row.id === device.id);
           const access = runner
             ? deviceAccessStates(
                 device.accessPolicy,
@@ -354,19 +409,12 @@ export class AdministrationToolHandlers {
                 attached: driver.detachedAt === null,
                 runnerName: byRunner.get(driver.runnerId)?.name ?? "Computer",
               })),
-            online: live?.connected ?? (self ? runners.isRunnerConnected(self.runnerId) : false),
+            online: summary?.status === "online",
             hosting: environmentId !== undefined,
             canRunTasks: environmentId !== undefined && this.canExecute(environmentId),
             capabilities: runner?.capabilities ?? [],
-            deviceCapabilities: deviceCapabilities(
-              device,
-              runner
-                ? { allowedModules: [...runner.allowedModules], modules: runner.moduleDescriptors }
-                : undefined,
-              live?.connected ?? (self ? runners.isRunnerConnected(self.runnerId) : false),
-              live?.phoneDisplay,
-            ),
-            ...(live?.phoneDisplay ? { phoneDisplay: live.phoneDisplay } : {}),
+            deviceCapabilities: summary?.capabilities,
+            ...(summary?.phoneDisplay ? { phoneDisplay: summary.phoneDisplay } : {}),
             revoked: device.removedAt !== null,
             access,
             sessions: self ? await store.listActiveShellSessions(self.runnerId) : [],

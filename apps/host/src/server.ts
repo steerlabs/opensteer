@@ -1,7 +1,4 @@
-import {
-  projectDeviceMachines,
-  type DeviceMachineLivePort,
-} from "./server/device-machine-projection.js";
+import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import type { TabService } from "./tabs/tab-service.js";
 import type { AgentToolActivityStore, DatabaseSchema } from "@opensteer/database";
 import { registerAgentToolRoute } from "./mcp/agent-tool-route.js";
@@ -377,7 +374,6 @@ const machinePageLimit = 100;
 
 export interface HostServerDependencies {
   readonly deviceDrivers?: DeviceDriverManagementPort;
-  readonly deviceState?: DeviceMachineLivePort;
   readonly assets?: AssetService;
   readonly transcriptFiles?: TranscriptFiles;
   readonly execution: Pick<PersonalExecution, "canExecute">;
@@ -1155,18 +1151,75 @@ export async function createHostServer(
       }),
       dependencies.store.listDeviceDrivers({ includeDetached: true }),
     ]);
-    const selfMachines = projectMachines({ ...registry, deploymentOwnsMainComputer: true });
-    return [
-      ...projectDeviceMachines({
-        devices: devices.devices,
-        drivers,
-        selfMachines,
-        runnerNames: new Map(registry.runners.map((runner) => [runner.id, runner.name])),
-        runnerConnected: (id) => dependencies.runners.isRunnerConnected(id),
-        ...(dependencies.deviceState ? { live: dependencies.deviceState } : {}),
+    const connections = await dependencies.integrations.platform.deviceConnections(session.user.id);
+    const access = new Map(registry.access);
+    const computerViews = new Map(registry.computerViews);
+    const computerUseSessions = new Map(registry.computerUseSessions);
+    const computerUseDisplayStreamSupported = new Map(registry.computerUseDisplayStreamSupported);
+    const runnerNames = new Map(registry.runners.map((runner) => [runner.id, runner.name]));
+    const inputs = await Promise.all(
+      devices.devices.map(async (device) => {
+        const bindings = drivers.filter((binding) => binding.deviceId === device.id);
+        const selfRunnerId =
+          bindings.find((binding) => binding.role === "self" && !binding.detachedAt)?.runnerId ??
+          null;
+        if (!access.has(device.id))
+          access.set(device.id, {
+            activeSessions: [],
+            ownerReachAvailable: true,
+            policy: {
+              ...device.accessPolicy,
+              browser: deviceAccess(device.accessPolicy).browser,
+              apps: deviceAccess(device.accessPolicy).apps,
+            },
+            revision: device.accessPolicyRevision,
+          });
+        if (dependencies.computerViews)
+          computerViews.set(device.id, {
+            ...computerViews.get(selfRunnerId ?? device.id),
+            ownerViews: await dependencies.computerViews.list(session.user.id, device.id),
+          });
+        computerUseSessions.set(
+          device.id,
+          dependencies.computerUse?.sessionsForRunner(device.id) ?? [],
+        );
+        const stream = dependencies.computerApps.displayStream(device.id);
+        computerUseDisplayStreamSupported.set(
+          device.id,
+          stream !== null && stream !== "unsupported",
+        );
+        const connection = connections.find(
+          (entry) =>
+            entry.computer?.deviceId === device.id &&
+            entry.status !== "revoked" &&
+            !entry.computer.blockedAt &&
+            isPhoneDisplayDefinitionId(entry.definitionId),
+        );
+        return {
+          device,
+          selfRunnerId,
+          drivers: bindings.map((binding) => ({
+            role: binding.role,
+            runnerId: binding.runnerId,
+            generation: binding.generation,
+            attached: binding.detachedAt === null,
+            runnerName: runnerNames.get(binding.runnerId) ?? "Computer",
+          })),
+          screenStatus: dependencies.computerApps.deviceStatus(device.id),
+          screenConnected: dependencies.computerApps.attached(device.id),
+          phoneAccess: connection?.computer?.access ?? null,
+        };
       }),
-      ...selfMachines.filter((machine) => machine.status === "pending"),
-    ];
+    );
+    return projectMachines({
+      ...registry,
+      access,
+      computerViews,
+      computerUseSessions,
+      computerUseDisplayStreamSupported,
+      devices: inputs,
+      deploymentOwnsMainComputer: true,
+    });
   };
 
   const coreRpcHandlers = {
@@ -2298,9 +2351,7 @@ export async function createHostServer(
             if (runnerId && result.changed.browser && !deviceAccess(command.policy).browser)
               await dependencies.browser.disableAgentAccess(runnerId);
             if (result.changed.apps && !deviceAccess(command.policy).apps) {
-              if (dependencies.deviceDrivers)
-                await dependencies.deviceDrivers.disableAgentAccess(deviceId);
-              else if (runnerId) await dependencies.computerApps.disableAgentAccess(runnerId);
+              await dependencies.computerApps.disableAgentAccess(deviceId);
             }
           }
           return result;
@@ -2313,9 +2364,10 @@ export async function createHostServer(
                 ),
               )
             : change();
-        const result = dependencies.deviceDrivers
-          ? await dependencies.deviceDrivers.withAdmission(deviceId, enterRunner)
-          : await enterRunner();
+        const result = await dependencies.computerApps.withDeviceAdmissions(
+          [deviceId],
+          enterRunner,
+        );
         if (result.outcome === "conflict")
           return { outcome: "conflict" as const, type: command.type };
         for (const event of result.requestEvents) dependencies.publishDeploymentEvent?.(event);

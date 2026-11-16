@@ -1,5 +1,3 @@
-import { DeviceIdSchema } from "@opensteer/core";
-import type { ComputerTargetId } from "../computer-apps/computer-app-hub.js";
 import type { RemovedComputerApp as RemovedDeviceComputerApp } from "@opensteer/database";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import {

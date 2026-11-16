@@ -1,8 +1,6 @@
 import { normalizeToolOutput } from "@opensteer/core";
 import {
   AndroidPhoneObservationSchema,
-  PhoneDisplayObservationResultSchema,
-  getPhoneDisplayCodec,
   readComputerUseResultHeadline,
   type AndroidPhoneObservation,
   type ComputerUseObservation,
@@ -116,16 +114,12 @@ describe("phone observation emission", () => {
   it("reports secure lock facts and keeps a failed screenshot tree usable", () => {
     const { text } = normalizeToolOutput(
       computerObservationContent(
-        PhoneDisplayObservationResultSchema.parse(
-          getPhoneDisplayCodec("android-phone").decodeResult("observe", {
-            observation: phoneObservation({
-              locked: true,
-              screenshot: null,
-              screenshotUnavailable: "failed",
-              secureLock: true,
-            }),
-          }),
-        ).observation,
+        phoneObservation({
+          locked: true,
+          screenshot: null,
+          screenshotUnavailable: "failed",
+          secureLock: true,
+        }),
         true,
         "Pixel 8",
       ),

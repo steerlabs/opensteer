@@ -1,3 +1,4 @@
+import { changeDeviceDrivers } from "../administration/device-removal.js";
 import { DeviceDriverResolver } from "../computer-use/device-drivers.js";
 import { DeviceIdSchema, type DeviceId } from "@opensteer/core";
 import { TabStore, AgentToolActivityStore, appendHostDeploymentEvent } from "@opensteer/database";
@@ -752,8 +753,17 @@ export async function createHostRuntime(
     await deviceDrivers.refresh();
     const computerApps = new ComputerAppHub({
       drivers: deviceDrivers,
-      requireDeviceAgentAccess: async (deviceId) =>
-        requireDeviceAccess(database, deviceId, "apps", computerApps.attached(deviceId)),
+      requireDeviceAgentAccess: async (deviceId) => {
+        const binding = deviceDrivers.binding(deviceId);
+        await requireDeviceAccess(
+          database,
+          deviceId,
+          "apps",
+          binding.role === "self"
+            ? runners.isRunnerConnected(binding.runnerId)
+            : computerApps.attached(deviceId),
+        );
+      },
       onDeviceInputWithdrawn: (deviceId) => displayStreams?.withdrawOwnerInput(deviceId),
       onDeviceRemoved: (deviceId, removed) => {
         computerUse?.forgetDevice(deviceId, removed);
@@ -1228,6 +1238,7 @@ export async function createHostRuntime(
       devices: store,
       pages: browser.pageTabs,
       nativeTargets: nativeTabs,
+      deviceNativeTargets: nativeTabs,
       apps: { get: (owner, id) => requiredService(apps, "Apps").get(owner, id) },
       computer: async (owner, computer, db) => ({
         ...(await tabComputer(owner, computer, db)),
@@ -1609,6 +1620,9 @@ export async function createHostRuntime(
       adapters: integrationAdapters,
       secretVault: integrationVault,
       listConnections: (ownerUserId) => integrationStore.listConnections(ownerUserId),
+      listDeviceConnections: (ownerUserId) => integrationStore.listDeviceConnections(ownerUserId),
+      onDeviceTargetAcquired: (target) => tabs!.acquired(target),
+      onDeviceInputAccessWithdrawn: (id) => displayStreams?.withdrawOwnerInput(id),
       authorizationSource: integrations,
       computerApps,
       computerUse,
@@ -1675,13 +1689,7 @@ export async function createHostRuntime(
           return !!agents && "runFiles" in agents && agents.runFiles === 1;
         },
       },
-      computerUseVersion: (deviceId) => {
-        let runnerId: RunnerId;
-        try {
-          runnerId = deviceDrivers.binding(DeviceIdSchema.parse(deviceId), "macos-app").runnerId;
-        } catch {
-          return undefined;
-        }
+      computerUseVersion: (runnerId) => {
         const integrations = runnerRegistry?.identityForRunner(runnerId)?.modules.integrations;
         return integrations &&
           "computerUseVersion" in integrations &&
@@ -2438,6 +2446,21 @@ export async function createHostRuntime(
       runners,
       onDeploymentEvent: publishDeploymentEvent,
       continuations,
+      deviceOnline: (id, capability) => {
+        let binding;
+        try {
+          binding = deviceDrivers.binding(id);
+        } catch {
+          return false;
+        }
+        if (binding.role === "screen")
+          return (
+            capability === "apps" &&
+            computerApps.attached(id) &&
+            computerApps.deviceStatus(id)?.availability.state === "ready"
+          );
+        return runners.isRunnerConnected(binding.runnerId);
+      },
     });
     const machineFullDiskAccess = new MachineFullDiskAccessService({
       store,
@@ -2869,6 +2892,10 @@ export async function createHostRuntime(
         channels: { relay: messagingRelay, service: channels },
         commands,
         computerApps,
+        deviceDrivers: {
+          screenDriver: (id) => computerApps.screenDriverConnection(id),
+          change: (input, commit) => changeDeviceDrivers({ store, computerApps }, input, commit),
+        },
         computerUse,
         computerViews,
         displayStreams,
