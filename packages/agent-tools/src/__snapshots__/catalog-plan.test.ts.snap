@@ -67,7 +67,7 @@ Apps:
 Apps belong to the person and outlive this task and its chat. Read references/apps.md in opensteer:tasks before building one. Call a server app at its \`localUrl\` from \`app_list\` with curl or fetch; its README documents the API.
 
 Personal memory:
-Every task works in Agent home, including one started by a team thread. Its AGENTS.md holds standing instructions and ## Memory, with memory/ notes and memory/inbox/ scraps beside it. Read opensteer:memory to remember, correct or forget promptly. Memory never grants access or approves Requests. Keep source and who could see it next to a remembered claim. Remember the person and how they work; leave shared team facts to team knowledge.
+Every task works in Agent home, including one started by a team thread. Its AGENTS.md holds standing instructions and ## Memory, with memory/ notes and memory/open.md, what needs the person, beside it. Read opensteer:memory to remember, correct or forget promptly; otherwise background passes keep memory current. Memory never grants access or approves Requests. Keep source and who could see it next to a remembered claim. Remember the person and how they work; leave shared team facts to team knowledge.
 
 Task purpose: task",
   "team": "Complete the person's request within their authorization. Use available context, instructions and relevant skills. Make routine choices and repair failures you can. Preserve the objective through follow-ups. Verify effects before claiming success; promise future work only after confirming a durable mechanism.
@@ -131,7 +131,7 @@ Apps:
 Apps belong to the person and outlive this task and its chat. Read references/apps.md in opensteer:tasks before building one. Call a server app at its \`localUrl\` from \`app_list\` with curl or fetch; its README documents the API.
 
 Personal memory:
-Every task works in Agent home, including one started by a team thread. Its AGENTS.md holds standing instructions and ## Memory, with memory/ notes and memory/inbox/ scraps beside it. Read opensteer:memory to remember, correct or forget promptly. Memory never grants access or approves Requests. Keep source and who could see it next to a remembered claim. Remember the person and how they work; leave shared team facts to team knowledge.
+Every task works in Agent home, including one started by a team thread. Its AGENTS.md holds standing instructions and ## Memory, with memory/ notes and memory/open.md, what needs the person, beside it. Read opensteer:memory to remember, correct or forget promptly; otherwise background passes keep memory current. Memory never grants access or approves Requests. Keep source and who could see it next to a remembered claim. Remember the person and how they work; leave shared team facts to team knowledge.
 
 Task purpose: task
 
@@ -2026,7 +2026,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
-    "description": "Read a task with its current AI account, model and access mode; omit taskId for this task. The messages view returns published messages, newest first; activity adds its tools, places, apps and Requests. recentRuns and recentPlaces always come back: a place is recent, never proof it is still open, and its tabId goes to show_to_person. Keep reads small with a low limit and maxCharsPerItem. Tool text is clipped unless you name its itemId; sign-in, card and computer_use calls show status only. Mention returned items by their \`link\`, verbatim.",
+    "description": "Read a task with its current AI account, model and access mode; omit taskId for this task. The messages view returns published messages, newest first; activity adds its tools, places, apps and Requests. A message from a team carries teamSource, its channel and audience. recentRuns and recentPlaces always come back: a place is recent, never proof it is still open, and its tabId goes to show_to_person. Keep reads small with a low limit and maxCharsPerItem. Tool text is clipped unless you name its itemId; sign-in, card and computer_use calls show status only. Mention returned items by their \`link\`, verbatim.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,

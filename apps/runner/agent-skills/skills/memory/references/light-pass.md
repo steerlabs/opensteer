@@ -23,7 +23,9 @@ as the moment deserves. Skim what is routine; dig in when something might matter
 3. **Find what's new.** `opensteer_task_list` with `changedSince` a few minutes before your last
    handoff lists every task with new messages, Voice included; read them with
    `opensteer_task_read`, and open the activity view when you need to know what really happened.
-   Tasks linked from the open list are items you raised: read them for the person's answers. Read
+   Your own task and the nightly pass's appear there too; skip them. Tasks linked from the open
+   list are items you raised: read them for the person's answers. A message from a team carries
+   `teamSource`, its channel and audience; keep it beside anything you repeat from it. Read
    the mail, Messages and calendar connected to the owner (`integration_search`, then
    `integration_call`) from where your last handoff stopped.
 4. **Keep the open list true**, then **decide** each open item, both below.

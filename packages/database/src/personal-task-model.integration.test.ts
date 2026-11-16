@@ -72,6 +72,7 @@ import { commitRunnerEvent } from "./runner-event-store.js";
 import { admitTeamTaskRequest, cancelTeamTaskRequest } from "./task-admission-store.js";
 import { openVoiceThread } from "./voice-store.js";
 import { createMemoryPass } from "./memory-pass-store.js";
+import { messageTeamSources } from "./message-team-sources.js";
 import { TriggerStore } from "./trigger-store.js";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { testRunnerDescriptor } from "./store.integration.test-support.js";
@@ -609,6 +610,34 @@ it("owns independent memory jobs that see ordinary and team tasks as changed", a
   expect(changed.threads.map(({ id }) => id).sort()).toEqual(
     [ordinary.id, team.receipt.taskId].sort(),
   );
+  // A pass that reads these tasks learns where team content came from and who could see it.
+  const teamMessages = await f.database
+    .selectFrom("messages")
+    .select("id")
+    .where("threadId", "=", team.receipt.taskId)
+    .execute();
+  const teamSources = await messageTeamSources(
+    f.database,
+    team.receipt.taskId,
+    teamMessages.map(({ id }) => id),
+  );
+  expect([...teamSources.values()]).toEqual([
+    expect.objectContaining({ teamId: f.origin.teamId, audience: expect.any(Object) }),
+  ]);
+  const ordinaryMessages = await f.database
+    .selectFrom("messages")
+    .select("id")
+    .where("threadId", "=", ordinary.id)
+    .execute();
+  expect(
+    (
+      await messageTeamSources(
+        f.database,
+        ordinary.id,
+        ordinaryMessages.map(({ id }) => id),
+      )
+    ).size,
+  ).toBe(0);
   expect(
     (
       await f.database

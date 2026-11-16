@@ -19,7 +19,9 @@ from about the last four weeks.
 Then read everything since, in full, investigating however you judge useful:
 `opensteer_task_list` with `changedSince` lists every task with new messages, Voice included; read
 each with `opensteer_task_read`, newest first, paging back to where the new messages start. A
-task's report is no substitute for what the person said. Read the light pass's history for today
+task's report is no substitute for what the person said. A message from a team carries
+`teamSource`: keep its channel and audience beside every memory taken from it, and leave shared
+team facts to team knowledge. Read the light pass's history for today
 (its worker is the `taskId` of the `memory-light` automation in `opensteer_automation_list`): what
 it raised, what the person answered or dismissed. Read the connected mail, Messages and calendar
 from where your last handoff stopped. Then read all of `memory/`.

@@ -568,8 +568,16 @@ export class ProductToolHandlers {
     const messages = [...(await this.#readableMessages(caller, page.messages))].sort((a, b) =>
       compareSequence(b.sequence, a.sequence),
     );
+    const teamSources = await this.#store.messageTeamSources(
+      thread.id,
+      messages.map((m) => m.id),
+    );
     const items = boundedThreadItems(
-      messages.map((m) => messageItem(m, input.maxCharsPerItem, input.textOffset)),
+      messages.map((m) => {
+        const item = messageItem(m, input.maxCharsPerItem, input.textOffset);
+        const teamSource = teamSources.get(m.id);
+        return teamSource ? { ...item, teamSource } : item;
+      }),
     );
     if (input.itemId && !items.length) throw forbidden("Item is unavailable in this task");
     const hasMore = items.length < messages.length || page.window.hasMore;
