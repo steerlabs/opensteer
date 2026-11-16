@@ -243,6 +243,9 @@ async function main(): Promise<void> {
 
     const interpreter = `${layout.interpreter}${executableSuffix}`;
     await stageFile(interpreterSource, path.join(staging, interpreter));
+    // Script engines are version-checked through this interpreter below; only
+    // macOS signing would otherwise make it executable before that.
+    await setFileMode(path.join(staging, interpreter), 0o755);
     artifacts.push({ mode: "executable", path: interpreter });
 
     // One staging pass per engine whose bytes this distribution ships: a file

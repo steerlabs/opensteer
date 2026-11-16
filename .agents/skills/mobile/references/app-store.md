@@ -13,7 +13,8 @@ Apple-side prerequisites, all Tim's:
 - App IDs `com.opensteer.opensteer` and `com.opensteer.opensteer.NotificationService`, both with the
   App Group `group.com.opensteer.mobile.notifications`; the app also with Push Notifications.
 - "iPhone and iPad Apps on Apple Silicon Macs" turned off: the Mac app shares this bundle ID.
-- App Review notes pointing at the demo server, with its address and password.
+- App Review notes naming the dedicated reviewer Google account and the steps below; the
+  password goes only in App Store Connect's sign-in fields.
 
 From a clean, full-history checkout of the selected commit, with an absolute `MOBILE_EVIDENCE_DIR`
 outside it. The version is the desktop's derived number, not `package.json`'s base: a base would
@@ -54,12 +55,27 @@ Send a build to external TestFlight before submitting for review.
 
 ## Review demonstration
 
-Reviewers need a dedicated personal Opensteer on a disposable computer for agent tasks; a team
-server runs no agents and cannot replace it. Use a funded test engine account and sample data,
-never a person's real credentials or files. Pair the reviewer through the supported personal
-remote-access flow, and snapshot the disposable stack for restoration after review.
+The phone reaches a personal Opensteer asynchronously only by Opensteer Account sign-in to a
+computer with Connect on; pairing codes expire in ten minutes and there is no password door. So the
+reviewer needs a dedicated, always-on personal Opensteer owned by a dedicated free Google account
+(never a person's own, never a paid seat), with no real data, messaging, shell or private
+integrations. A team server runs no agents and cannot stand in; show team chat separately with the
+[team-server skill](../../team-server/SKILL.md) if at all.
 
-Demonstrate shared chat separately with the [team-server skill](../../team-server/SKILL.md).
-First-owner setup needs public HTTPS and Account adoption; invite the reviewer as a test member.
-Keep the personal computer available for agent demonstrations and show offline team chat
-separately. Do not use removed server-kind/local-password configuration.
+The demo computer can be a Linux VM running a release package of an official immutable release:
+build at that release's exact source and version with `OPENSTEER_DESKTOP_RELEASE=1`, taking the
+Agent Phone APK, manifest and producer receipt unmodified from that release's Mac ZIP
+(`Contents/Resources/personal-runtime/web/agent-phone/`), so every release check runs. A
+contributor package cannot reach production services. Run it as its own user with Xvfb and an
+unlocked Secret Service keyring (Electron refuses `basic_text`), enabled at boot. On it:
+
+1. Settings → AI → Codex → Sign in → Use an API key instead, with a dedicated, spend-capped key;
+   turn every other AI service Off so the sharing prompt names only OpenAI.
+2. Settings → Account → Sign in with the reviewer Google account, then turn on Use from anywhere.
+3. From a fresh simulator or phone: Sign in → Continue with Google, open the computer, accept AI
+   sharing, get a reply and a follow-up, and answer a question. A prompt must name `ask_person`
+   ("…First use the ask_person tool to ask me…"); "ask me" alone gets prose, not a Request.
+
+Snapshot the VM disk before every change and after qualification; restore the whole disk, since
+database, keyring and agent home travel together. Google may still challenge an unfamiliar
+device; one successful sign-in does not prevent later challenges.
