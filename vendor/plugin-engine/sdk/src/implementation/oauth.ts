@@ -18,7 +18,7 @@ import {
 } from "effect";
 import type { HostCrypto } from "./host-crypto.ts";
 import { Digest } from "effect/crypto";
-import { Base64, Hex } from "effect/encoding";
+import { Base64, Base64Url, Hex } from "effect/encoding";
 import {
   AccountConnectionRefused,
   AccountConnectionTargetChanged,
@@ -35,9 +35,13 @@ import {
   recordSignInFailure,
   startSignIn,
 } from "./connection-state.ts";
+import { lockApp } from "./apps.ts";
 import { requireTargetProvider } from "./connection-target.ts";
 import { Account } from "../contracts/account.ts";
 import {
+  BrokeredOAuthAttempt,
+  BrokeredOAuthResult,
+  OAuthBrokerFailed,
   OAuthClientUnavailable,
   type CheckOAuthSetup,
   type OAuthClientSetup,
@@ -96,7 +100,7 @@ import {
   type VersionId,
 } from "../contracts/shared.ts";
 import { StoredAccount, type Credentials } from "../contracts/storage.ts";
-import { type AccountCredential, invocationAccount } from "./provider.ts";
+import { canonical, type AccountCredential, invocationAccount } from "./provider.ts";
 import { inOrder, query, transaction, type Query } from "./database.ts";
 import {
   claimCredentials,
@@ -115,7 +119,7 @@ import {
   preferredClientMethod,
   registrationGrantTypes,
   type OAuthClientKind,
-  type OAuthProtocolFailed,
+  OAuthProtocolFailed,
 } from "./oauth-protocol.ts";
 import { defaultLabel, ownedAccount, resumeWaitingSources } from "./accounts.ts";
 import type { OAuthCallbackField, OAuthFailureDetail } from "./oauth-diagnostics.ts";
@@ -635,6 +639,7 @@ export const makeOAuth = (
   options?: OAuthOptions,
   lifecycle?: ResourceLifecycle,
   background?: BackgroundWork,
+  inTransaction: Effect.Effect<boolean> = Effect.succeed(false),
 ) => {
   const hash = (value: string) =>
     crypto.digest
@@ -675,7 +680,7 @@ export const makeOAuth = (
   const operatorClient = (id: FirstPartyOAuthClientId) =>
     Effect.gen(function* () {
       const client = firstPartyClients.get(id);
-      if (client === undefined) return undefined;
+      if (client === undefined || client.broker !== undefined) return undefined;
       const { server } = client;
       const registration: OAuthRegistration =
         client.tokenEndpointAuthMethod === "none" || client.clientSecret === undefined
@@ -705,6 +710,113 @@ export const makeOAuth = (
         ...(server.resource === undefined ? {} : { resource: server.resource }),
       };
     });
+  const brokerProtocolFailure = (error: OAuthBrokerFailed) =>
+    new OAuthProtocolFailed({
+      reason:
+        error.reason === "grant_rejected" || error.reason === "binding_changed"
+          ? "invalid_grant"
+          : error.reason === "client_rejected"
+            ? "invalid_client"
+            : error.reason === "invalid_response"
+              ? "invalid_response"
+              : "request",
+    });
+  const bindingHash = (value: string) =>
+    crypto.digest
+      .digest(Digest.sha256, new TextEncoder().encode(value))
+      .pipe(Effect.map(Base64Url.encode));
+  const clientDigest = (client: FirstPartyOAuthClient) =>
+    decode(JsonObject, Struct.omit(client, ["label", "unlisted"])).pipe(
+      Effect.flatMap((value) => bindingHash(canonical(value))),
+    );
+  const brokerCurrent = (id: FirstPartyOAuthClientId, broker: BrokeredOAuthAttempt) =>
+    Effect.gen(function* () {
+      const client = firstPartyClients.get(id);
+      return (
+        client !== undefined &&
+        client.broker !== undefined &&
+        options?.broker !== undefined &&
+        (yield* clientDigest(client)) === broker.binding.clientDigest
+      );
+    });
+  const requirementDigest = (
+    tx: Query,
+    input: Pick<typeof StartConnectionOAuth.Type, "connection" | "owner">,
+    reviewed = false,
+  ) =>
+    Effect.gen(function* () {
+      const connection = yield* openConnection(tx, input);
+      const provider = yield* requireTargetProvider(tx, connection);
+      const value = yield* decode(JsonObject, {
+        app: connection.target.app,
+        requirement: connection.target.requirement,
+        scope: connection.target.scope,
+        definition: reviewed ? connection.target.reviewedProvider : provider.definition,
+      });
+      return yield* bindingHash(canonical(value));
+    });
+  const brokerTokens = (
+    expected: BrokeredOAuthAttempt,
+    result: Redacted.Redacted<BrokeredOAuthResult>,
+  ) =>
+    Effect.gen(function* () {
+      const value = yield* Schema.decodeUnknownEffect(BrokeredOAuthResult)(
+        Redacted.value(result),
+      ).pipe(Effect.mapError(() => new OAuthBrokerFailed({ reason: "invalid_response" })));
+      if (
+        canonical(value.binding) !== canonical(expected.binding) ||
+        value.attemptId !== expected.attemptId
+      )
+        return yield* new OAuthBrokerFailed({ reason: "binding_changed" });
+      const tokens = value.tokens;
+      if (tokens.tokenType.toLowerCase() !== "bearer")
+        return yield* new OAuthBrokerFailed({ reason: "invalid_response" });
+      const now = yield* Clock.currentTimeMillis;
+      return {
+        access_token: tokens.accessToken,
+        token_type: "bearer" as const,
+        scope: tokens.grantedScopes.join(" "),
+        ...(tokens.refreshToken === undefined ? {} : { refresh_token: tokens.refreshToken }),
+        ...(tokens.expiresAt === undefined
+          ? {}
+          : {
+              expires_in: Math.max(0, (tokens.expiresAt - now) / 1000),
+              brokerExpiresAt: tokens.expiresAt,
+            }),
+      };
+    });
+  const acknowledgeBroker = (
+    broker: BrokeredOAuthAttempt,
+    kind: "authorization" | "refresh",
+    resultId: string,
+  ) =>
+    options?.broker
+      ?.acknowledge({ ...broker, kind, resultId })
+      .pipe(Effect.catch(() => Effect.void)) ?? Effect.void;
+  const validateBroker = (id: FirstPartyOAuthClientId, broker: BrokeredOAuthAttempt) =>
+    Effect.gen(function* () {
+      if (!(yield* brokerCurrent(id, broker)) || options?.broker === undefined)
+        return yield* new OAuthBrokerFailed({ reason: "binding_changed" });
+      yield* options.broker.validate(broker.binding);
+    });
+  const revokeBroker = (
+    broker: BrokeredOAuthAttempt,
+    tokens: {
+      readonly refreshToken: string | undefined;
+      readonly accessToken: unknown;
+    },
+  ) => {
+    if (options?.broker === undefined || typeof tokens.accessToken !== "string") return Effect.void;
+    return options.broker.revoke({
+      ...broker,
+      tokens: Redacted.make({
+        accessToken: tokens.accessToken,
+        tokenType: "Bearer",
+        grantedScopes: broker.binding.scopes,
+        ...(tokens.refreshToken === undefined ? {} : { refreshToken: tokens.refreshToken }),
+      }),
+    });
+  };
   /**
    * A grant as renewal and revocation use it: a grant to the operator's client gets the client's
    * current configuration, and is undefined when the operator removed the client.
@@ -734,6 +846,21 @@ export const makeOAuth = (
    */
   const renewalOf = (protocol: ReturnType<typeof makeOAuthProtocol>, grant: OAuthGrant) =>
     Effect.gen(function* () {
+      if (isFirstPartyGrant(grant) && grant.broker !== undefined) {
+        const broker = grant.broker;
+        if (options?.broker === undefined || !(yield* brokerCurrent(grant.firstParty, broker)) || grant.refreshToken === undefined) return undefined;
+        if (yield* inTransaction) return yield* new StorageError();
+        const port = options.broker;
+        const resultId = `${broker.attemptId}:${broker.renewalGeneration}`;
+        return {
+          attributes: { "oauth.client.kind": "first_party" },
+          request: port.refresh({ ...broker, resultId, refreshToken: Redacted.make(grant.refreshToken) }).pipe(
+            Effect.flatMap((result) => brokerTokens(broker, result)),
+            Effect.mapError(brokerProtocolFailure),
+          ),
+          acknowledge: acknowledgeBroker(broker, "refresh", resultId),
+        };
+      }
       const operating = yield* operatingGrant(grant);
       if (operating === undefined) return undefined;
       const clientKind = grantClientKind(grant);
@@ -774,6 +901,7 @@ export const makeOAuth = (
     const same = (declared: string | undefined, configured: string) =>
       declared !== undefined && new URL(declared).href === new URL(configured).href;
     for (const client of firstPartyClients.values()) {
+      if (client.broker !== undefined && options?.broker === undefined) continue;
       if (client.unlisted === true && client.id !== reconnecting) continue;
       if (
         !same(server.authorization_endpoint, client.server.authorizationUrl) ||
@@ -1798,12 +1926,13 @@ export const makeOAuth = (
     id: OAuthAttemptId,
     attempt: typeof OAuthAttemptRecord.Type,
     authorizationUrl: string,
+    brokerExpiry?: number,
   ) =>
     Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       const encrypted = yield* encrypt(id, attempt);
       const pending = yield* openConnection(db, input);
-      const expiresAt = new Date(Math.min(now + 10 * 60_000, pending.expiresAt.getTime()));
+      const expiresAt = new Date(Math.min(now + 10 * 60_000, pending.expiresAt.getTime(), brokerExpiry ?? Infinity));
       yield* transaction(db, (tx) =>
         Effect.gen(function* () {
           const current = yield* requireOpen(input, yield* lockConnection(tx, input, crypto));
@@ -1844,6 +1973,39 @@ export const makeOAuth = (
       if (protocol === undefined) return yield* new OAuthClientUnavailable(input);
       if (redirect === undefined)
         return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
+      if (firstParty.client.broker !== undefined) {
+        const port = options?.broker;
+        if (port === undefined) return yield* new OAuthClientUnavailable(input);
+        const binding = {
+          ...firstParty.client.broker,
+          scopes: firstParty.scopes,
+          requirementDigest: yield* requirementDigest(db, input, true),
+          clientDigest: yield* clientDigest(firstParty.client),
+        };
+        if (binding.requirementDigest !== (yield* requirementDigest(db, input))) {
+          const { target } = yield* openConnection(db, input);
+          return yield* new AccountConnectionTargetChanged({ app: target.app, requirement: target.requirement });
+        }
+        const started = yield* port.start({ connection: input.connection, owner: input.owner, binding }).pipe(
+          Effect.mapError(() => new OAuthSetupFailed({ reason: "service_unavailable" })),
+        );
+        const broker = yield* decode(BrokeredOAuthAttempt, {
+          attemptId: started.attemptId,
+          binding: { ...binding, accountLinkGeneration: started.accountLinkGeneration },
+        });
+        const now = yield* Clock.currentTimeMillis;
+        if (!Number.isFinite(started.expiresAt) || started.expiresAt <= now)
+          return yield* new OAuthSetupFailed({ reason: "incompatible_response" });
+        const id = OAuthAttemptId.make(`broker_${broker.attemptId}`);
+        const attempt = yield* decode(OAuthFirstPartyAttempt, {
+          ...input, broker, firstParty: firstParty.client.id, response,
+          redirectUri: binding.redirectUri,
+          state: yield* nextId, verifier: yield* nextId,
+          account: existing?.id ?? AccountId.make(`acc_${yield* nextId}`),
+          ...(existing === undefined ? {} : { reconnect: true }),
+        });
+        return { ...(yield* saveAttempt(input, id, attempt, started.authorizationUrl, started.expiresAt)), brokerAttemptId: broker.attemptId };
+      }
       const operator = yield* operatorClient(firstParty.client.id);
       if (operator === undefined) return yield* new OAuthClientUnavailable(input);
       const { scopeSeparator, authorizationParams, resource } = firstParty.client.server;
@@ -1971,6 +2133,7 @@ export const makeOAuth = (
       if (row.expiresAt.getTime() <= now) return yield* failed("sign_in_expired");
       const raw = yield* decrypt(id, row.encrypted, JsonObject);
       const attempt = yield* decode(OAuthAttemptRecord, raw);
+      if (isFirstPartyAttempt(attempt) && attempt.broker !== undefined) return yield* failed("callback_malformed");
       yield* Effect.annotateCurrentSpan("oauth.provider.id", attempt.provider);
       // A sign-in started before 4.0.10 with a saved client names it as `savedClient`, which this
       // version does not read. That client is now a stored client the product authorizes, so
@@ -2055,17 +2218,109 @@ export const makeOAuth = (
       Effect.withSpan("oauth.completeOAuth"),
     );
 
+  const completeBrokeredOAuth = (input: {
+    readonly connection: typeof StartConnectionOAuth.Type.connection;
+    readonly owner?: OwnerId;
+    readonly attemptId: string;
+  }) =>
+    Effect.gen(function* () {
+      if (yield* inTransaction) return yield* failed("oauth_unavailable");
+      const saved = yield* readConnection(db, input);
+      if (saved.state.status === "completed") {
+        const row = yield* query(() =>
+          db.findFirst("oauthGrants", {
+            where: (b) =>
+              b("id", "=", saved.state.status === "completed" ? saved.state.account.id : ""),
+          }),
+        );
+        const grant =
+          row === null
+            ? undefined
+            : yield* decrypt(saved.state.account.id, row.encrypted, OAuthGrant);
+        if (
+          grant === undefined ||
+          !isFirstPartyGrant(grant) ||
+          grant.broker?.attemptId !== input.attemptId
+        )
+          return yield* failed("sign_in_replaced");
+        yield* acknowledgeBroker(grant.broker, "authorization", input.attemptId);
+        return saved.state.account;
+      }
+      const connection = yield* requireOpen(input, saved);
+      const id = OAuthAttemptId.make(`broker_${input.attemptId}`);
+      if (connection.oauthAttempt !== id) return yield* failed("sign_in_replaced");
+      const row = yield* query(() =>
+        db.findFirst("oauthAttempts", { where: (b) => b("id", "=", id) }),
+      );
+      if (row === null) return yield* failed("sign_in_not_found");
+      if (row.status !== "pending") return yield* failed("sign_in_used");
+      if (row.expiresAt.getTime() <= (yield* Clock.currentTimeMillis))
+        return yield* failed("sign_in_expired");
+      const attempt = yield* decrypt(id, row.encrypted, OAuthFirstPartyAttempt);
+      if (
+        attempt.connection !== input.connection ||
+        attempt.owner !== connection.owner ||
+        attempt.broker?.attemptId !== input.attemptId
+      )
+        return yield* failed("sign_in_replaced");
+      if (protocol === undefined || options?.broker === undefined)
+        return yield* failed("oauth_unavailable");
+      // Pull before claiming: a transport outage never spends a consent whose result is still held.
+      const result = yield* options.broker
+        .pull(attempt.broker)
+        .pipe(Effect.mapError(() => failed("service_unavailable")));
+      const tokens = yield* brokerTokens(attempt.broker, result).pipe(
+        Effect.mapError(() => failed("incompatible_response")),
+      );
+      const claim = `claim_${yield* nextId}`;
+      yield* query(() =>
+        db.updateMany("oauthAttempts", {
+          where: (b) => b.and(b("id", "=", id), b("status", "=", "pending")),
+          set: { status: claim },
+        }),
+      );
+      const claimed = yield* query(() =>
+        db.findFirst("oauthAttempts", { where: (b) => b("id", "=", id) }),
+      );
+      if (claimed?.status !== claim) return yield* failed("sign_in_used");
+      const account = yield* exchangeClaimed(
+        protocol,
+        input,
+        undefined,
+        id,
+        attempt,
+        false,
+        tokens,
+      ).pipe(
+        Effect.tapError((error) =>
+          Schema.is(OAuthCompletionFailed)(error) ||
+          Schema.is(AccountConnectionRefused)(error) ||
+          Schema.is(AccountConnectionTargetChanged)(error)
+            ? recordSignInFailure(db, crypto, input, id, error)
+            : Effect.void,
+        ),
+      );
+      yield* acknowledgeBroker(attempt.broker, "authorization", input.attemptId);
+      return account;
+    });
+
   /** Validate the authorization response this completion claimed, exchange its code and save. */
   const exchangeClaimed = (
     protocol: ReturnType<typeof makeOAuthProtocol>,
-    input: typeof CompleteConnectionOAuth.Type,
-    callback: URL,
+    input: Pick<typeof CompleteConnectionOAuth.Type, "connection" | "owner">,
+    callback: URL | undefined,
     id: OAuthAttemptId,
     attempt: typeof OAuthAttemptRecord.Type,
     legacySavedClient: boolean,
+    brokeredTokens?: { readonly access_token: string; readonly token_type: "bearer"; readonly scope: string; readonly refresh_token?: string; readonly expires_in?: number; readonly brokerExpiresAt?: number },
   ) =>
     Effect.gen(function* () {
       if (attempt.reconnect) yield* reconnectTarget(db, attempt);
+      const exchange = yield* Effect.gen(function* () {
+        if (isFirstPartyAttempt(attempt) && attempt.broker !== undefined) {
+          if (brokeredTokens === undefined || !(yield* brokerCurrent(attempt.firstParty, attempt.broker))) return yield* failed("client_unavailable");
+          return { tokens: brokeredTokens, scope: undefined, named: undefined, holding: undefined };
+        }
       // An attempt with the operator's client signs in with its current configuration only.
       const operating = isFirstPartyAttempt(attempt)
         ? yield* operatorClient(attempt.firstParty).pipe(
@@ -2139,7 +2394,7 @@ export const makeOAuth = (
           ? { kind: "entered" }
           : { kind: "stored" };
       const parameters = yield* protocol
-        .callback({ ...operating, clientKind }, callback)
+        .callback({ ...operating, clientKind }, callback!)
         .pipe(Effect.mapError((error) => callbackFailed(error, sent)));
       const tokens = yield* protocol.exchange({ ...operating, clientKind }, parameters).pipe(
         Effect.mapError((error) => exchangeFailed(error, sent)),
@@ -2193,12 +2448,15 @@ export const makeOAuth = (
             }),
         ),
       );
+        return { tokens, scope, named, holding };
+      });
+      const { tokens, scope, named, holding } = exchange;
       // The operator's client keeps no grant holding a scope it does not allow.
       if (isFirstPartyAttempt(attempt) && !grantAllowed(attempt.firstParty, tokens.scope)) {
         yield* revokeRefused(attempt.firstParty, {
           refreshToken: tokens.refresh_token,
           accessToken: tokens.access_token,
-        });
+        }, attempt.broker);
         return yield* new OAuthCompletionFailed({
           reason: "scope_exceeded",
           cause: { stage: "exchange", field: "scope" },
@@ -2225,6 +2483,7 @@ export const makeOAuth = (
         redirectUri: attempt.redirectUri,
         ...(tokens.refresh_token === undefined ? {} : { refreshToken: tokens.refresh_token }),
         ...expiry(completedAt, tokens.expires_in),
+        ...(brokeredTokens?.brokerExpiresAt === undefined ? {} : { expiresAt: brokeredTokens.brokerExpiresAt }),
       };
       // An entered client the connection asked to keep becomes a stored client of its owner,
       // unless one holds it already.
@@ -2263,7 +2522,7 @@ export const makeOAuth = (
         decode(
           OAuthGrant,
           isFirstPartyAttempt(attempt)
-            ? { ...issued, grant: "authorization_code", firstParty: attempt.firstParty, generation }
+            ? { ...issued, grant: "authorization_code", firstParty: attempt.firstParty, ...(attempt.broker === undefined ? {} : { broker: { ...attempt.broker, renewalGeneration: 0, grantedScopes: tokens.scope === undefined ? attempt.broker.binding.scopes : tokens.scope.split(/\s+/u).filter(Boolean) } }), generation }
             : {
                 ...issued,
                 server: attempt.server,
@@ -2286,6 +2545,12 @@ export const makeOAuth = (
           const current = yield* requireOpen(input, yield* lockConnection(tx, input, crypto));
           // A newer sign-in started while the token exchange was running.
           if (current.oauthAttempt !== id) return yield* failed("sign_in_replaced");
+          if (isFirstPartyAttempt(attempt) && attempt.broker !== undefined) {
+            yield* lockApp(tx, { app: current.target.app, owner: current.target.owner }).pipe(Effect.catchTag("AppNotFound", () => Effect.fail(new AccountConnectionTargetChanged({ app: current.target.app, requirement: current.target.requirement }))));
+            if ((yield* requirementDigest(tx, input)) !== attempt.broker.binding.requirementDigest)
+              return yield* new AccountConnectionTargetChanged({ app: current.target.app, requirement: current.target.requirement });
+            yield* validateBroker(attempt.firstParty, attempt.broker).pipe(Effect.mapError(() => failed("client_unavailable")));
+          }
           // A person may have removed the stored client while its code was being exchanged. The
           // no-op update locks its row in the order a removal takes it, so a removal either commits
           // first, and the sign-in fails closed as for any pending with the client, or waits for
@@ -2444,6 +2709,7 @@ export const makeOAuth = (
         // Renew again from the saved grant, as it would have. See renewalLease.
         const abandoned = claimed;
         const grant = yield* decrypt(account.id, row.encrypted, OAuthGrant);
+        if (isFirstPartyGrant(grant) && grant.broker !== undefined && !(yield* brokerCurrent(grant.firstParty, grant.broker))) return yield* reconnect("grant_unusable");
         const renewable = grant.grant === "client_credentials" || grant.refreshToken !== undefined;
         // The service refused exactly the credentials this grant still holds. A grant another
         // call has renewed since then holds different ones, which this call uses instead.
@@ -2551,6 +2817,7 @@ export const makeOAuth = (
                 settled
                   ? { ...exceeded, refreshToken: exceeded.refreshToken ?? grant.refreshToken }
                   : exceeded,
+                grant.broker,
               );
               if (settled) return yield* reconnect("scope_exceeded", cause);
             }
@@ -2601,10 +2868,12 @@ export const makeOAuth = (
             decode(OAuthGrant, {
               ...Struct.omit(base, ["expiresAt"]),
               fields,
+              ...(isFirstPartyGrant(base) && base.broker !== undefined ? { broker: { ...base.broker, renewalGeneration: base.broker.renewalGeneration + 1, grantedScopes: tokens.scope === undefined ? base.broker.grantedScopes : tokens.scope.split(/\s+/u).filter(Boolean) } } : {}),
               ...(base.grant === "client_credentials" || refreshToken === undefined
                 ? {}
                 : { refreshToken }),
               ...expiry(updatedAt.getTime(), tokens.expires_in),
+              ...("brokerExpiresAt" in tokens && typeof tokens.brokerExpiresAt === "number" ? { expiresAt: tokens.brokerExpiresAt } : {}),
             }).pipe(Effect.flatMap((updated) => encrypt(account.id, updated)));
           const renewed = yield* renewedFrom(grant);
           const encryptedCredentials = yield* encrypt(account.id, fields);
@@ -2615,6 +2884,8 @@ export const makeOAuth = (
                 tx.findFirst("accounts", { where: (b) => b("id", "=", account.id) }),
               );
               if (saved === null) return false;
+              if (isFirstPartyGrant(grant) && grant.broker !== undefined)
+                yield* validateBroker(grant.firstParty, grant.broker).pipe(Effect.mapError(() => new StorageError()));
               // Only the tokens are this renewal's. The grant is written on the condition that it
               // still holds what was read, and read again otherwise, so a write that kept the
               // claim is carried forward rather than replaced by the grant this renewal started
@@ -2659,6 +2930,7 @@ export const makeOAuth = (
             recorded.lost = "tokens";
             return undefined;
           }
+          if ("acknowledge" in renewal) yield* renewal.acknowledge;
           yield* Effect.annotateCurrentSpan("oauth.renewal.outcome", "renewed");
           return held(fields);
         });
@@ -2874,6 +3146,7 @@ export const makeOAuth = (
         if (!row.status.startsWith("ready_")) continue;
         const now = yield* Clock.currentTimeMillis;
         const grant = yield* decrypt(account.id, row.encrypted, OAuthGrant);
+        if (isFirstPartyGrant(grant) && grant.broker !== undefined && !(yield* brokerCurrent(grant.firstParty, grant.broker))) return yield* reconnect("grant_unusable");
         const renewable = grant.grant === "client_credentials" || grant.refreshToken !== undefined;
         if (
           grant.expiresAt === undefined ||
@@ -3179,6 +3452,11 @@ export const makeOAuth = (
       Effect.gen(function* () {
         yield* Effect.annotateCurrentSpan("oauth.provider.id", removed.provider);
         const stored = yield* decrypt(removed.account, removed.encrypted, OAuthGrant);
+        if (isFirstPartyGrant(stored) && stored.broker !== undefined) {
+          if (firstPartyClients.get(stored.firstParty)?.server.revocationUrl === undefined) return "unsupported" as const;
+          yield* revokeBroker(stored.broker, { refreshToken: stored.refreshToken, accessToken: stored.fields["access_token"] });
+          return "revoked" as const;
+        }
         // A grant to the operator's client is revoked at the client's configured endpoint.
         const grant = yield* operatingGrant(stored);
         if (grant === undefined) return "unsupported" as const;
@@ -3199,16 +3477,17 @@ export const makeOAuth = (
   const revokeRefused = (
     id: FirstPartyOAuthClientId,
     tokens: { readonly refreshToken: string | undefined; readonly accessToken: unknown },
+    broker?: BrokeredOAuthAttempt,
   ) =>
     revokeLater(
       settledRevocation(
-        operatorClient(id).pipe(
+        broker === undefined ? operatorClient(id).pipe(
           Effect.flatMap((operator) =>
             operator === undefined
               ? Effect.succeed("unsupported" as const)
               : revokeTokens(operator, { kind: "first_party", id }, tokens),
           ),
-        ),
+        ) : firstPartyClients.get(id)?.server.revocationUrl === undefined ? Effect.succeed("unsupported") : revokeBroker(broker, tokens).pipe(Effect.as("revoked")),
         "oauth.revokeRefused",
       ),
     );
@@ -3221,7 +3500,12 @@ export const makeOAuth = (
         db.findFirst("oauthGrants", { where: (b) => b("id", "=", account) }),
       );
       if (row === null) return { revocation: "manual" as const };
-      const grant = yield* operatingGrant(yield* decrypt(account, row.encrypted, OAuthGrant));
+      const stored = yield* decrypt(account, row.encrypted, OAuthGrant);
+      if (isFirstPartyGrant(stored) && stored.broker !== undefined) {
+        const client = firstPartyClients.get(stored.firstParty);
+        return { revocation: client?.server.revocationUrl !== undefined && options?.broker !== undefined ? "automatic" as const : "manual" as const };
+      }
+      const grant = yield* operatingGrant(stored);
       if (grant === undefined) return { revocation: "manual" as const };
       const accessToken = grant.fields["access_token"];
       const token =
@@ -3237,6 +3521,7 @@ export const makeOAuth = (
 
   return {
     revocation,
+    completeBrokeredOAuth,
     clients,
     connections: { oauthSetup, startOAuth, completeOAuth },
     findOAuth,

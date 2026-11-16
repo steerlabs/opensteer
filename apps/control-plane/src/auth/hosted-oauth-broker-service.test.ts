@@ -1,3 +1,4 @@
+import { brokerProviderFixture } from "./hosted-oauth-broker.test-support.js";
 import { createHash } from "node:crypto";
 import {
   ControlPlaneAccountIdSchema,
@@ -33,6 +34,7 @@ describe("HostedOAuthBrokerService authority", () => {
     const broker = new HostedOAuthBrokerService({
       applications: [
         {
+          ...brokerProviderFixture("github"),
           clientId: "github-client",
           clientSecret: "github-secret",
           installationUrl: "https://github.com/apps/opensteer/installations/new",
@@ -250,6 +252,7 @@ describe("HostedOAuthBrokerService authorization session", () => {
     const broker = new HostedOAuthBrokerService({
       applications: [
         {
+          ...brokerProviderFixture("google"),
           clientId: "google-client",
           clientSecret: "google-secret",
           provider: "google",
@@ -518,6 +521,7 @@ describe("HostedOAuthBrokerService Microsoft authorization", () => {
     const broker = new HostedOAuthBrokerService({
       applications: [
         {
+          ...brokerProviderFixture("microsoft"),
           clientId: "microsoft-client",
           clientSecret: "microsoft-secret",
           provider: "microsoft",
@@ -688,6 +692,7 @@ describe("HostedOAuthBrokerService refresh failure classification", () => {
     const broker = new HostedOAuthBrokerService({
       applications: [
         {
+          ...brokerProviderFixture("google"),
           clientId: "google-client",
           clientSecret: "google-secret",
           provider: "google",
@@ -884,6 +889,7 @@ describe("HostedOAuthBrokerService Microsoft refresh", () => {
     const broker = new HostedOAuthBrokerService({
       applications: [
         {
+          ...brokerProviderFixture("microsoft"),
           clientId: "microsoft-client",
           clientSecret: "microsoft-secret",
           provider: "microsoft",
@@ -1128,6 +1134,7 @@ describe("HostedOAuthBrokerService GitHub user tokens", () => {
     const broker = new HostedOAuthBrokerService({
       applications: [
         {
+          ...brokerProviderFixture("github"),
           clientId: "Iv23lip88ORd2qUNRuId",
           clientSecret: "github-secret",
           installationUrl: "https://github.com/apps/opensteer/installations/new",
@@ -1296,6 +1303,7 @@ describe("HostedOAuthBrokerService GitHub user tokens", () => {
     const broker = new HostedOAuthBrokerService({
       applications: [
         {
+          ...brokerProviderFixture("github"),
           clientId: "Iv23lip88ORd2qUNRuId",
           clientSecret: "github-secret",
           installationUrl: "https://github.com/apps/opensteer/installations/new",
@@ -1604,6 +1612,7 @@ describe("HostedOAuthBrokerService Discord tokens", () => {
     const broker = new HostedOAuthBrokerService({
       applications: [
         {
+          ...brokerProviderFixture("discord"),
           clientId: "discord-client",
           clientSecret: "discord-secret",
           provider: "discord",

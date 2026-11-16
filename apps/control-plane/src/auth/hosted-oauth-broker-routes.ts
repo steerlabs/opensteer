@@ -1,4 +1,8 @@
 import {
+  CreatePluginOAuthAttemptRequestSchema,
+  CreatePluginOAuthCallbackRelayRequestSchema,
+  CreatePluginOAuthRefreshRequestSchema,
+  CreatePluginOAuthRevocationRequestSchema,
   AcknowledgeHostedOAuthRefreshRequestSchema,
   AcknowledgeHostedOAuthResultRequestSchema,
   AcknowledgeHostedOAuthResultResponseSchema,
@@ -67,7 +71,9 @@ export function registerHostedOAuthBrokerRoutes(
     );
     const result = await dependencies.broker.createAuthorizationAttempt(
       authority,
-      CreateHostedOAuthAttemptRequestSchema.parse(request.body),
+      z
+        .union([CreatePluginOAuthAttemptRequestSchema, CreateHostedOAuthAttemptRequestSchema])
+        .parse(request.body),
     );
     return reply.header("cache-control", "no-store").send(result);
   });
@@ -78,7 +84,9 @@ export function registerHostedOAuthBrokerRoutes(
     );
     const result = await dependencies.broker.createCallbackRelay(
       authority,
-      CreateOAuthCallbackRelayRequestSchema.parse(request.body),
+      z
+        .union([CreatePluginOAuthCallbackRelayRequestSchema, CreateOAuthCallbackRelayRequestSchema])
+        .parse(request.body),
     );
     return reply.header("cache-control", "no-store").send(result);
   });
@@ -421,7 +429,9 @@ export function registerHostedOAuthBrokerRoutes(
       .send(
         await dependencies.broker.refresh(
           authority,
-          CreateHostedOAuthRefreshRequestSchema.parse(request.body),
+          z
+            .union([CreatePluginOAuthRefreshRequestSchema, CreateHostedOAuthRefreshRequestSchema])
+            .parse(request.body),
         ),
       );
   });
@@ -435,7 +445,12 @@ export function registerHostedOAuthBrokerRoutes(
       .send(
         await dependencies.broker.revoke(
           authority,
-          CreateHostedOAuthRevocationRequestSchema.parse(request.body),
+          z
+            .union([
+              CreatePluginOAuthRevocationRequestSchema,
+              CreateHostedOAuthRevocationRequestSchema,
+            ])
+            .parse(request.body),
         ),
       );
   });

@@ -28,6 +28,7 @@ export interface HostedOAuthAttemptDurableInput {
 }
 
 export interface HostedOAuthRefreshDurableInput {
+  readonly requestBindingDigest?: string;
   readonly accountSubject: ControlPlaneAccountId;
   readonly deploymentId: DeploymentId;
   readonly expiresAt: Date;
@@ -433,6 +434,7 @@ export class HostedOAuthBrokerStore {
         .insertInto("hostedOAuthBrokerRefreshes")
         .values({
           ...input,
+          requestBindingDigest: input.requestBindingDigest ?? null,
           createdAt: now,
           failureCode: null,
           providerError: null,
@@ -585,6 +587,7 @@ export class HostedOAuthBrokerStore {
 
 function assertSameRefreshClaim(
   existing: {
+    readonly requestBindingDigest: string | null;
     readonly accountSubject: ControlPlaneAccountId;
     readonly deploymentId: DeploymentId;
     readonly expiresAt: Date;
@@ -595,6 +598,7 @@ function assertSameRefreshClaim(
   input: HostedOAuthRefreshDurableInput,
 ): void {
   if (
+    existing.requestBindingDigest !== (input.requestBindingDigest ?? null) ||
     existing.accountSubject !== input.accountSubject ||
     existing.deploymentId !== input.deploymentId ||
     existing.expiresAt.getTime() !== input.expiresAt.getTime() ||
@@ -620,6 +624,7 @@ export function assertHostedOAuthBrokerDurableRecord(value: object): void {
     "provider",
     "providerApplicationRevision",
     "requestedScopeDigest",
+    "requestBindingDigest",
     "sealedCiphertext",
     "stateHash",
     "transactionId",

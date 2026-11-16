@@ -442,6 +442,15 @@ export const betterAuth17Migration: Migration = {
   },
 };
 
+const pluginOAuthRefreshBindingMigration: Migration = {
+  async up(database: Kysely<unknown>): Promise<void> {
+    await sql`alter table public.hosted_oauth_broker_refreshes add column request_binding_digest text
+      check (request_binding_digest is null or request_binding_digest ~ '^[A-Za-z0-9_-]{43}$')`.execute(
+      database,
+    );
+  },
+};
+
 const migrationProvider = {
   async getMigrations(): Promise<Record<string, Migration>> {
     return {
@@ -468,6 +477,7 @@ const migrationProvider = {
       "0020_team_ready_notifications": teamReadyNotificationsMigration,
       "0021_account_deletion_fence": accountDeletionFenceMigration,
       "0022_account_name_revision": accountNameRevisionMigration,
+      "0023_plugin_oauth_refresh_binding": pluginOAuthRefreshBindingMigration,
     };
   },
 };

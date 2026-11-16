@@ -36,6 +36,7 @@ export const captureConnectionTarget = (
         requirement: target.requirement,
       });
     const snapshot: StoredConnectionTarget = {
+      reviewedProvider: requirement.definition,
       app: target.app,
       requirement: target.requirement,
       scope: requirement.scope,

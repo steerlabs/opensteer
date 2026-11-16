@@ -185,6 +185,20 @@ export const ManagedAccountInputs = {
 
 /** Host-only: not part of the HTTP API or the Promise SDK. */
 export interface ManagedAccounts {
+  /** Standalone trusted completion: pull normalized tokens, commit, then acknowledge the broker result. */
+  readonly completeBrokeredOAuth: (input: {
+    readonly connection: import("./shared.ts").AccountConnectionId;
+    readonly owner?: OwnerId;
+    readonly attemptId: string;
+  }) => Effect.Effect<Account,
+    | StorageError | CredentialsError
+    | import("./account-connection.ts").AccountConnectionNotFound
+    | import("./account-connection.ts").AccountConnectionClosed
+    | import("./account-connection.ts").AccountConnectionTargetChanged
+    | import("./account-connection.ts").AccountConnectionRefused
+    | import("./oauth.ts").OAuthCompletionFailed
+  >;
+
   readonly add: (
     input: typeof ManagedAccountInputs.add.Type,
   ) => Effect.Effect<

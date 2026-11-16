@@ -176,8 +176,23 @@ export function validateOAuthAuthorizationResponse(input: {
   readonly clientId: string;
   readonly issuer: string | null;
   readonly parameters: URLSearchParams;
+  /** An engine state pinned in a sealed relay; absent, require the Host state format. */
+  readonly expectedState?: string;
 }): OAuthAuthorizationResponse {
-  const state = oauthAuthorizationResponseState(input.parameters);
+  const states = input.parameters.getAll("state");
+  const state =
+    input.expectedState === undefined
+      ? oauthAuthorizationResponseState(input.parameters)
+      : input.expectedState;
+  if (
+    states.length !== 1 ||
+    states[0] !== state ||
+    state.length < 32 ||
+    state.length > 1024 ||
+    /[\p{Cc}\p{Cf}]/u.test(state)
+  ) {
+    throw new OAuth2Error("OAuth authorization response state does not match the pinned attempt");
+  }
   const codes = input.parameters.getAll("code");
   const errors = input.parameters.getAll("error");
   if (

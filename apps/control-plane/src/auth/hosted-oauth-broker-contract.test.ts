@@ -1,7 +1,9 @@
+import { brokerProviderFixture } from "./hosted-oauth-broker.test-support.js";
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
 import {
+  CreatePluginOAuthAttemptRequestSchema,
   ControlPlaneAccountIdSchema,
   CreateHostedOAuthAttemptRequestSchema,
   HostedOAuthAttemptIdSchema,
@@ -51,6 +53,7 @@ async function scenario(
   surface: "desktop" | "web" | "native" = "desktop",
   finish?: "app",
   appReturnPort?: number,
+  plugin = false,
 ) {
   const now = new Date("2026-09-18T21:50:00Z");
   const accountId = ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`);
@@ -72,9 +75,15 @@ async function scenario(
     return row;
   };
   const fetch = vi.fn(async () => Response.json(response));
-  const broker = new HostedOAuthBrokerService({
+  const brokerOptions = {
     applications: [
-      { clientId: "slack-client", clientSecret: "slack-secret", provider: "slack", revision: 1 },
+      {
+        ...brokerProviderFixture("slack"),
+        clientId: "slack-client",
+        clientSecret: "slack-secret",
+        provider: "slack",
+        revision: 1,
+      },
     ],
     issuer: new URL("https://accounts.example.test"),
     now: () => now,
@@ -152,7 +161,13 @@ async function scenario(
         };
       }),
     } as never,
-  });
+  };
+  const broker = new HostedOAuthBrokerService(brokerOptions);
+  const reload = (revision: number) =>
+    new HostedOAuthBrokerService({
+      ...brokerOptions,
+      applications: brokerOptions.applications.map((application) => ({ ...application, revision })),
+    });
   const request = CreateHostedOAuthAttemptRequestSchema.parse({
     accountSubject: { issuer: "https://accounts.example.test", subject: accountId },
     attemptId,
@@ -168,9 +183,28 @@ async function scenario(
     providerApplicationRevision: 1,
     returnPath: "/threads/test",
   });
+  const pluginRequest = CreatePluginOAuthAttemptRequestSchema.parse({
+    kind: "plugin",
+    attemptId,
+    expiresAt: request.expiresAt,
+    provider: "slack",
+    registryRevision: 1,
+    requestedScopes: method!.oauth.scopes,
+    clientSurface: surface,
+    ...(finish ? { finish } : {}),
+    ...(appReturnPort === undefined ? {} : { appReturnPort }),
+    binding: {
+      accountSubject: request.accountSubject,
+      accountLinkGeneration: "g".repeat(43),
+      deploymentAuthorityDigest: request.deploymentAuthorityDigest,
+      hostPublicKey: recipient.publicKey,
+      requirementDigest: "r".repeat(43),
+      redirectUrl: broker.callbackUrl("slack"),
+    },
+  });
   const created = await broker.createAuthorizationAttempt(
     { credentialHash: "unused", deploymentId, hostInstanceId },
-    request,
+    plugin ? pluginRequest : request,
   );
   const launched = new URL(
     await broker.launchAuthorization(
@@ -198,10 +232,37 @@ async function scenario(
     state,
     deploymentId,
     broker,
+    reload,
+    callback: {
+      provider: "slack",
+      parameters: new URLSearchParams({ state, code: "synthetic-code" }),
+      cookieHeader: `__Secure-opensteer.oauth.${attemptId}=${new URL(created.launchUrl).searchParams.get("ticket")!}`,
+    },
   };
 }
 
 describe("managed provider authorization contract", () => {
+  it.each(["", `${scopes},admin:unknown`])(
+    "refuses missing or excess scopes in a plugin token result (%s)",
+    async (scope) => {
+      const s = await scenario({ ...validResponse, scope }, "web", undefined, undefined, true);
+      expect(await s.complete()).toMatchObject({
+        status: "failed",
+        failureCode: "scope-escalation",
+      });
+      expect(s.current().sealedCiphertext).toBeNull();
+    },
+  );
+  it("pins a plugin provider revision across a broker deployment", async () => {
+    const s = await scenario(validResponse, "web", undefined, undefined, true);
+    const updated = s.reload(2);
+    expect(await updated.completeAuthorization(s.callback)).toMatchObject({
+      status: "failed",
+      failureCode: "stale-provider-application",
+    });
+    expect(s.fetch).not.toHaveBeenCalled();
+  });
+
   it.each(["desktop", "native"] as const)(
     "holds managed %s consent for its app",
     async (surface) => {

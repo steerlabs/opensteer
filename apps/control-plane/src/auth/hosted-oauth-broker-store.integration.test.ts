@@ -1,9 +1,19 @@
+import { brokerProviderFixture } from "./hosted-oauth-broker.test-support.js";
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
   recordTestDatabaseSetup,
 } from "@opensteer/database/test-support/database";
 import {
+  CreatePluginOAuthAttemptRequestSchema,
+  CreatePluginOAuthCallbackRelayRequestSchema,
+  OAuthBrokerPluginRelayContextSchema,
+  CreatePluginOAuthRefreshRequestSchema,
+  OAuthBrokerPluginAuthorizationContextSchema,
+  OAuthBrokerPluginRefreshContextSchema,
+  OAuthBrokerPluginRevocationContextSchema,
+  HostedOAuthRevocationTransactionIdSchema,
+  OAuthBrokerTokenBundleSchema,
   ControlPlaneAccountIdSchema,
   HostedOAuthAttemptIdSchema,
   HostedOAuthRefreshTransactionIdSchema,
@@ -657,6 +667,7 @@ integration("hosted OAuth broker durable boundary", () => {
       const broker = new HostedOAuthBrokerService({
         applications: [
           {
+            ...brokerProviderFixture("google"),
             clientId: "managed-google-client",
             clientSecret: "managed-google-secret",
             provider: "google",
@@ -854,6 +865,7 @@ integration("hosted OAuth broker durable boundary", () => {
     const broker = new HostedOAuthBrokerService({
       applications: [
         {
+          ...brokerProviderFixture("google"),
           clientId: "google-client",
           clientSecret: "google-secret",
           provider: "google",
@@ -941,6 +953,432 @@ integration("hosted OAuth broker durable boundary", () => {
       }),
     ).rejects.toMatchObject({ code: "unavailable" });
     expect(providerFetch).toHaveBeenCalledTimes(beforeRateLimited);
+  });
+  it.for(["web", "app"] as const)(
+    "binds plugin %s consent, sealed tokens, refresh and revocation to the reviewed Host context",
+    async (finish, { storeFixture }) => {
+      const { store, accountId, deploymentId, now } = storeFixture;
+      const deployment = (await store.deploymentBinding(deploymentId))!;
+      const authority = {
+        credentialHash: "unused",
+        deploymentId,
+        hostInstanceId: deployment.activeHostInstanceId,
+      };
+      const recipient = generateOAuthBrokerEphemeralKeyPair();
+      const application = {
+        provider: "fixture",
+        revision: 7,
+        clientId: "fixture-client",
+        clientSecret: "fixture-secret",
+        allowedScopes: ["read", "write"],
+        oauth: {
+          authorizationUrl: "https://provider.example.test/authorize",
+          tokenUrl: "https://provider.example.test/token",
+          scopes: [],
+          scopeSeparator: " ",
+          usesPkce: true,
+          clientAuth: "body" as const,
+          identity: {
+            source: "userinfo" as const,
+            identityPath: "id",
+            userinfoUrl: "https://provider.example.test/userinfo",
+          },
+          revocation: {
+            clientAuth: "body" as const,
+            method: "post-form" as const,
+            tokenField: "token",
+            tokenSource: "refresh-token-preferred" as const,
+            url: "https://provider.example.test/revoke",
+          },
+        },
+      };
+      const providerFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = new URLSearchParams(String(init?.body));
+        expect(body.get("client_secret")).toBe("fixture-secret");
+        return Response.json({
+          access_token: "plugin-access",
+          refresh_token: "plugin-refresh",
+          scope: "read",
+          token_type: "Bearer",
+          expires_in: 3600,
+        });
+      });
+      const broker = new HostedOAuthBrokerService({
+        applications: [application],
+        store,
+        issuer: new URL("https://accounts.example.test"),
+        now: () => now,
+        fetch: providerFetch,
+        attemptContextEncryptionKey: Buffer.alloc(32, 12).toString("base64url"),
+      });
+      const input = CreatePluginOAuthAttemptRequestSchema.parse({
+        kind: "plugin",
+        attemptId: attemptIdAt(101),
+        expiresAt: new Date(now.getTime() + 60_000).toISOString(),
+        provider: "fixture",
+        registryRevision: 7,
+        requestedScopes: ["read"],
+        binding: {
+          accountSubject: { issuer: "https://accounts.example.test", subject: accountId },
+          accountLinkGeneration: "g".repeat(43),
+          deploymentAuthorityDigest: hostedOAuthDeploymentAuthorityDigest(deployment),
+          hostPublicKey: recipient.publicKey,
+          requirementDigest: "r".repeat(43),
+          redirectUrl: broker.callbackUrl("fixture"),
+        },
+        clientSurface: finish === "app" ? "desktop" : "web",
+        ...(finish === "app" ? { finish: "app", appReturnPort: 48_203 } : {}),
+        returnPath: "/plugins",
+      });
+      await expect(
+        broker.createAuthorizationAttempt(authority, { ...input, requestedScopes: ["admin"] }),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      await expect(
+        broker.createAuthorizationAttempt(authority, { ...input, registryRevision: 8 }),
+      ).rejects.toMatchObject({ code: "conflict" });
+      await expect(
+        broker.createAuthorizationAttempt(authority, {
+          ...input,
+          binding: { ...input.binding, redirectUrl: "https://attacker.example.test/callback" },
+        }),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      await expect(
+        broker.createAuthorizationAttempt(authority, {
+          ...input,
+          binding: {
+            ...input.binding,
+            accountSubject: {
+              ...input.binding.accountSubject,
+              issuer: "https://other.example.test",
+            },
+          },
+        }),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      const created = await broker.createAuthorizationAttempt(authority, input);
+      for (const change of [
+        { accountLinkGeneration: "h".repeat(43) },
+        { requirementDigest: "x".repeat(43) },
+        { hostPublicKey: generateOAuthBrokerEphemeralKeyPair().publicKey },
+      ]) {
+        await expect(
+          broker.createAuthorizationAttempt(authority, {
+            ...input,
+            binding: { ...input.binding, ...change },
+          }),
+        ).rejects.toMatchObject({ code: "conflict" });
+      }
+      const ticket = new URL(created.launchUrl).searchParams.get("ticket")!;
+      if (finish === "web") {
+        await expect(
+          broker.launchAuthorization(null, input.attemptId, ticket),
+        ).rejects.toMatchObject({ refusalReason: "sign-in-required" });
+        await expect(
+          broker.launchAuthorization(
+            ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`),
+            input.attemptId,
+            ticket,
+          ),
+        ).rejects.toMatchObject({ refusalReason: "account-mismatch" });
+      }
+      const launched = new URL(
+        await broker.launchAuthorization(
+          finish === "app" ? null : accountId,
+          input.attemptId,
+          ticket,
+        ),
+      );
+      expect(launched.searchParams.get("scope")).toBe("read");
+      const callback = {
+        provider: "fixture",
+        parameters: new URLSearchParams({
+          state: launched.searchParams.get("state")!,
+          code: "plugin-code",
+        }),
+        cookieHeader: `__Secure-opensteer.oauth.${input.attemptId}=${ticket}`,
+      };
+      await expect(
+        broker.completeAuthorization({ ...callback, cookieHeader: "" }),
+      ).rejects.toMatchObject({ refusalReason: "callback-claim-refused" });
+      const result = await broker.completeAuthorization(callback);
+      expect(result.status).toBe(finish === "app" ? "held" : "sealed");
+      if (finish === "app")
+        await proveAppReturn(broker, storeFixture, input.attemptId, result.returnUrl!);
+      await expect(
+        broker.pull({ ...authority, deploymentId: createId("deployment") }, input.attemptId),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      const pulled = await broker.pull(authority, input.attemptId);
+      expect(pulled.sealedResult).not.toBeNull();
+      const context = OAuthBrokerPluginAuthorizationContextSchema.parse({
+        provider: input.provider,
+        registryRevision: input.registryRevision,
+        requestedScopes: input.requestedScopes,
+        binding: input.binding,
+        attemptId: input.attemptId,
+        expiresAt: input.expiresAt,
+        schemaVersion: 2,
+      });
+      const bundle = OAuthBrokerTokenBundleSchema.parse(
+        openOAuthBrokerPayload(pulled.sealedResult!, recipient.privateKey, context),
+      );
+      expect(bundle).toMatchObject({
+        accessToken: "plugin-access",
+        refreshToken: "plugin-refresh",
+        grantedScopes: ["read"],
+      });
+      for (const change of [
+        { registryRevision: 8 },
+        { requestedScopes: ["write"] },
+        { binding: { ...context.binding, accountLinkGeneration: "h".repeat(43) } },
+        { binding: { ...context.binding, requirementDigest: "x".repeat(43) } },
+        { binding: { ...context.binding, redirectUrl: "https://attacker.example.test/callback" } },
+      ]) {
+        expect(() =>
+          openOAuthBrokerPayload(pulled.sealedResult!, recipient.privateKey, {
+            ...context,
+            ...change,
+          }),
+        ).toThrow();
+      }
+      expect(JSON.stringify(pulled)).not.toContain("plugin-access");
+      await expect(broker.completeAuthorization(callback)).rejects.toThrow();
+      await broker.acknowledge(authority, input.attemptId);
+      expect((await broker.pull(authority, input.attemptId)).sealedResult).toBeNull();
+      const refreshContext = OAuthBrokerPluginRefreshContextSchema.parse({
+        provider: input.provider,
+        registryRevision: input.registryRevision,
+        requestedScopes: input.requestedScopes,
+        binding: input.binding,
+        transactionId: refreshIdAt(101),
+        expiresAt: input.expiresAt,
+        schemaVersion: 2,
+      });
+      const { schemaVersion: _refreshVersion, ...refreshFields } = refreshContext;
+      const refresh = CreatePluginOAuthRefreshRequestSchema.parse({
+        ...refreshFields,
+        kind: "plugin",
+        brokerSealedCredential: sealOAuthBrokerPayload(
+          { refreshToken: bundle.refreshToken },
+          broker.metadata().encryptionPublicKey,
+          refreshContext,
+        ),
+        grantedScopes: bundle.grantedScopes,
+      });
+      expect(await broker.refresh(authority, refresh)).toMatchObject({ status: "sealed" });
+      const refreshed = await broker.pullRefresh(authority, refresh.transactionId);
+      expect(
+        openOAuthBrokerPayload(refreshed.sealedResult!, recipient.privateKey, refreshContext),
+      ).toMatchObject({ accessToken: "plugin-access" });
+      await expect(
+        broker.refresh(authority, {
+          ...refresh,
+          binding: { ...refresh.binding, accountLinkGeneration: "h".repeat(43) },
+        }),
+      ).rejects.toMatchObject({ code: "conflict" });
+      await expect(
+        broker.refresh(authority, { ...refresh, grantedScopes: ["admin"] }),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      const refusedContext = { ...refreshContext, transactionId: refreshIdAt(102) };
+      providerFetch.mockResolvedValueOnce(
+        Response.json({
+          access_token: "out-of-list-access",
+          refresh_token: "out-of-list-refresh",
+          scope: "read admin",
+          token_type: "Bearer",
+          expires_in: 3600,
+        }),
+      );
+      await expect(
+        broker.refresh(authority, {
+          ...refresh,
+          transactionId: refusedContext.transactionId,
+          brokerSealedCredential: sealOAuthBrokerPayload(
+            { refreshToken: bundle.refreshToken },
+            broker.metadata().encryptionPublicKey,
+            refusedContext,
+          ),
+        }),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      expect(await broker.pullRefresh(authority, refusedContext.transactionId)).toMatchObject({
+        status: "failed",
+        failureCode: "scope-escalation",
+        sealedResult: null,
+      });
+      await broker.acknowledgeRefresh(authority, refresh.transactionId);
+      const revokeContext = OAuthBrokerPluginRevocationContextSchema.parse({
+        ...refreshContext,
+        transactionId: HostedOAuthRevocationTransactionIdSchema.parse(`hov_${crypto.randomUUID()}`),
+      });
+      const { schemaVersion: _revokeVersion, ...revokeFields } = revokeContext;
+      await expect(
+        broker.revoke(authority, {
+          ...revokeFields,
+          kind: "plugin",
+          brokerSealedCredential: sealOAuthBrokerPayload(
+            { accessToken: bundle.accessToken, refreshToken: bundle.refreshToken },
+            broker.metadata().encryptionPublicKey,
+            revokeContext,
+          ),
+        }),
+      ).resolves.toMatchObject({ revoked: true });
+      expect(providerFetch).toHaveBeenCalledTimes(4);
+    },
+  );
+  it("relays a plugin's custom client parameters without exchanging its code or accepting another redirect or issuer", async ({
+    storeFixture,
+  }) => {
+    const { store, accountId, deploymentId, now } = storeFixture;
+    const deployment = (await store.deploymentBinding(deploymentId))!;
+    const authority = {
+      credentialHash: "unused",
+      deploymentId,
+      hostInstanceId: deployment.activeHostInstanceId,
+    };
+    const recipient = generateOAuthBrokerEphemeralKeyPair();
+    const providerFetch = vi.fn(async () => {
+      throw new Error("The relay must not exchange a custom client's code");
+    });
+    const broker = new HostedOAuthBrokerService({
+      applications: [],
+      store,
+      issuer: new URL("https://accounts.example.test"),
+      now: () => now,
+      fetch: providerFetch,
+      attemptContextEncryptionKey: Buffer.alloc(32, 14).toString("base64url"),
+    });
+    const relay = {
+      clientId: "custom-registered-client",
+      issuer: "https://custom.example.test",
+      authorizationEndpoint: "https://custom.example.test/authorize",
+      authorizationResponseIssuerParameterSupported: true,
+      usesPkce: true,
+      scopeSeparator: " ",
+    };
+    const state = "plugin:" + "s".repeat(43);
+    const authorizationUrl = new URL(relay.authorizationEndpoint);
+    authorizationUrl.search = new URLSearchParams({
+      state: state,
+      client_id: relay.clientId,
+      redirect_uri: broker.callbackUrl("custom"),
+      response_type: "code",
+      code_challenge_method: "S256",
+      code_challenge: "c".repeat(43),
+      scope: "read",
+    }).toString();
+    const input = CreatePluginOAuthCallbackRelayRequestSchema.parse({
+      kind: "plugin-relay",
+      attemptId: attemptIdAt(102),
+      expiresAt: new Date(now.getTime() + 60_000).toISOString(),
+      provider: "custom",
+      registryRevision: 1,
+      requestedScopes: ["read"],
+      binding: {
+        accountSubject: { issuer: "https://accounts.example.test", subject: accountId },
+        accountLinkGeneration: "g".repeat(43),
+        deploymentAuthorityDigest: hostedOAuthDeploymentAuthorityDigest(deployment),
+        hostPublicKey: recipient.publicKey,
+        requirementDigest: "r".repeat(43),
+        redirectUrl: broker.callbackUrl("custom"),
+      },
+      relay,
+      authorizationUrl: authorizationUrl.toString(),
+      clientSurface: "desktop",
+      finish: "app",
+    });
+    await expect(
+      broker.createCallbackRelay(authority, {
+        ...input,
+        binding: { ...input.binding, redirectUrl: "https://other.example.test/callback" },
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    const badRedirect = new URL(authorizationUrl);
+    badRedirect.searchParams.set("redirect_uri", "https://other.example.test/callback");
+    await expect(
+      broker.createCallbackRelay(authority, { ...input, authorizationUrl: badRedirect.toString() }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    const noPkce = new URL(authorizationUrl);
+    noPkce.searchParams.delete("code_challenge");
+    await expect(
+      broker.createCallbackRelay(authority, { ...input, authorizationUrl: noPkce.toString() }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    const nonPkceMcp = new URL(authorizationUrl);
+    nonPkceMcp.searchParams.set("redirect_uri", broker.callbackUrl("mcp"));
+    nonPkceMcp.searchParams.delete("code_challenge");
+    nonPkceMcp.searchParams.delete("code_challenge_method");
+    await expect(
+      broker.createCallbackRelay(authority, {
+        ...input,
+        provider: "mcp",
+        binding: { ...input.binding, redirectUrl: broker.callbackUrl("mcp") },
+        relay: { ...relay, usesPkce: false },
+        authorizationUrl: nonPkceMcp.toString(),
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    const created = await broker.createCallbackRelay(authority, input);
+    await expect(
+      broker.createCallbackRelay(authority, {
+        ...input,
+        relay: { ...relay, issuer: "https://other.example.test" },
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    const ticket = new URL(created.launchUrl).searchParams.get("ticket")!;
+    expect(await broker.launchAuthorization(null, input.attemptId, ticket)).toBe(
+      authorizationUrl.toString(),
+    );
+    const result = await broker.completeAuthorization({
+      provider: "custom",
+      cookieHeader: `__Secure-opensteer.oauth.${input.attemptId}=${ticket}`,
+      parameters: new URLSearchParams({
+        state: state,
+        code: "custom-code",
+        iss: relay.issuer,
+      }),
+    });
+    expect(result.status).toBe("held");
+    await proveAppReturn(broker, storeFixture, input.attemptId, result.returnUrl!);
+    const pulled = await broker.pull(authority, input.attemptId);
+    const context = OAuthBrokerPluginRelayContextSchema.parse({
+      provider: input.provider,
+      registryRevision: input.registryRevision,
+      requestedScopes: input.requestedScopes,
+      binding: input.binding,
+      attemptId: input.attemptId,
+      expiresAt: input.expiresAt,
+      relay,
+      schemaVersion: 2,
+    });
+    expect(openOAuthBrokerPayload(pulled.sealedResult!, recipient.privateKey, context)).toEqual({
+      parameters: [
+        ["state", state],
+        ["code", "custom-code"],
+        ["iss", relay.issuer],
+      ],
+    });
+    expect(() =>
+      openOAuthBrokerPayload(pulled.sealedResult!, recipient.privateKey, {
+        ...context,
+        relay: { ...relay, issuer: "https://other.example.test" },
+      }),
+    ).toThrow();
+    expect(providerFetch).not.toHaveBeenCalled();
+    await broker.acknowledge(authority, input.attemptId);
+    const nextUrl = new URL(authorizationUrl);
+    nextUrl.searchParams.set("state", "t".repeat(43));
+    const next = { ...input, attemptId: attemptIdAt(103), authorizationUrl: nextUrl.toString() };
+    const nextCreated = await broker.createCallbackRelay(authority, next);
+    const nextTicket = new URL(nextCreated.launchUrl).searchParams.get("ticket")!;
+    await broker.launchAuthorization(null, next.attemptId, nextTicket);
+    expect(
+      await broker.completeAuthorization({
+        provider: "custom",
+        cookieHeader: `__Secure-opensteer.oauth.${next.attemptId}=${nextTicket}`,
+        parameters: new URLSearchParams({
+          state: "t".repeat(43),
+          code: "wrong-issuer-code",
+          iss: "https://attacker.example.test",
+        }),
+      }),
+    ).toMatchObject({ status: "failed", failureCode: "invalid-provider-response" });
+    expect((await broker.pull(authority, next.attemptId)).sealedResult).toBeNull();
   });
 });
 
