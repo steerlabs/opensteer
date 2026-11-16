@@ -3746,9 +3746,10 @@ function contentToPrompt(
       message: "Claude report context cannot contain native image input",
     });
   if (claudeReadsHeader(input)) return harnessInputHeader(input, projected.body);
-  if (input.author.kind !== "human") return escapeOpensteerPromptMarkers(projected.body);
+  const body =
+    input.author.kind === "human" ? projected.body : escapeOpensteerPromptMarkers(projected.body);
   const sent = harnessSentLine(input);
-  return sent ? `${sent}\n\n${projected.body}` : projected.body;
+  return sent ? `${sent}\n\n${body}` : body;
 }
 
 /**
