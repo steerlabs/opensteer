@@ -213,6 +213,12 @@ integration("workspace tabs", () => {
       profileId: null,
       runtimeId: "test",
     });
+    // The database clock can be ahead of the Host clock, especially in a VM.
+    await database
+      .updateTable("browserSessions")
+      .set({ createdAt: new Date("2100-01-01T00:00:00.000Z") })
+      .where("id", "=", sessionId)
+      .execute();
     const tabId = id(),
       binding = { lineageId: sessionId, sessionId, surfaceId: tabId };
     const page: TabWrite = {
@@ -267,7 +273,9 @@ integration("workspace tabs", () => {
     });
     await database
       .updateTable("browserSessions")
-      .set({ createdAt: new Date(Date.now() + 1000) })
+      .set({
+        createdAt: sql<Date>`(select created_at + interval '1 second' from browser_sessions where id = ${sessionId})`,
+      })
       .where("id", "=", later)
       .execute();
     expect(
