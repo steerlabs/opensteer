@@ -1184,6 +1184,19 @@ try {
     }
   });
 
+  /** Shows only tabs with agents, or clears that. */
+  const filterTabs = async (page: Page, on: boolean) => {
+    if (on) {
+      await page.getByRole("button", { name: "Filter tabs", exact: true }).click();
+      await page.getByRole("menuitemradio", { name: "Tabs with agents" }).click();
+      await page.getByRole("button", { name: "Filter tabs: Tabs with agents" }).waitFor();
+    } else {
+      await page.getByRole("button", { name: "Clear tab filter" }).click();
+      await page.getByRole("button", { name: "Filter tabs", exact: true }).waitFor();
+    }
+    await settle(page);
+  };
+
   await check(
     "a tab filter draws fewer rows in the same box, the line where it stood",
     async () => {
@@ -1194,15 +1207,10 @@ try {
         await page.reload();
         await ready(page);
         const before = await layout(page);
-        await page.getByRole("button", { name: "Filter tabs", exact: true }).click();
-        await page.getByRole("menuitemradio", { name: "Tabs with agents" }).click();
-        await page.getByRole("button", { name: "Filter tabs: Tabs with agents" }).waitFor();
-        await settle(page);
+        await filterTabs(page, true);
         const filtered = await layout(page);
         await shot(page, "10-tabs-with-agents.png");
-        await page.getByRole("button", { name: "Clear tab filter" }).click();
-        await page.getByRole("button", { name: "Filter tabs", exact: true }).waitFor();
-        await settle(page);
+        await filterTabs(page, false);
         const cleared = await layout(page);
         expectThat(
           { tasks: before.tasks, tabs: [before.tabs, filtered.tabs] },
@@ -1221,6 +1229,53 @@ try {
         };
       } finally {
         await filtering.context.close();
+      }
+    },
+  );
+
+  await check(
+    "Tabs not yet sized keeps the box it fitted through a filter, and through a reset under it",
+    async () => {
+      const fitted = await openWorld();
+      const { page } = fitted;
+      try {
+        const before = await layout(page);
+        // A filter that leaves fewer rows than Tabs' default box holds.
+        await page.getByRole("button", { name: "Filter tabs", exact: true }).click();
+        const options = page.getByRole("menuitemradio");
+        const counts = await options.evaluateAll((items) =>
+          items.map((item) =>
+            item.getAttribute("aria-checked") === "true"
+              ? 0
+              : Number.parseInt(item.getAttribute("aria-description") ?? "", 10),
+          ),
+        );
+        const narrow = counts.findIndex((count) => count >= 1 && count <= 3);
+        expectThat({ counts }, narrow >= 0, "this check needs a filter leaving one to three tabs");
+        await options.nth(narrow).click();
+        await page.getByRole("button", { name: "Clear tab filter" }).waitFor();
+        await settle(page);
+        const filtered = await layout(page);
+        expectThat(
+          { stored: before.stored, whole: [before.tabs.whole, filtered.tabs.whole] },
+          before.stored === null && filtered.tabs.whole < before.tabs.whole,
+          "this check needs Tabs not yet sized, and the filter to draw fewer rows",
+        );
+        tabsStill(before, { ...filtered, tabs: before.tabs }, "filtered");
+        await dragLine(page, -60);
+        const { line } = await layout(page);
+        await page.mouse.dblclick(line!.x, line!.y + 2);
+        await settle(page);
+        const reset = await layout(page);
+        expectThat({ stored: reset.stored }, reset.stored === null, "the reset kept a height");
+        tabsStill(before, { ...reset, tabs: before.tabs }, "reset while filtered");
+        await filterTabs(page, false);
+        const cleared = await layout(page);
+        tabsStill(before, cleared, "the filter cleared");
+        expectThat({ errors: fitted.errors }, fitted.errors.length === 0, "page errors");
+        return { before: before.tabsHeight, rows: [before.tabs.whole, filtered.tabs.whole] };
+      } finally {
+        await fitted.context.close();
       }
     },
   );
