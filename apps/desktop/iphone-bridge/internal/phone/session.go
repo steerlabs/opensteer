@@ -37,6 +37,7 @@ type Session struct {
 	services  ios.RsdHandshakeResponse
 	announced bool
 	newRSD    func(context.Context) (RSD, error)
+	screen    *screenSession
 	media     *MediaSession
 	closed    bool
 }
@@ -150,9 +151,13 @@ func (s *Session) Close() error {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
 		s.closed = true
+		screen := s.screen
 		m := s.media
 		t := s.tunnel
 		s.mu.Unlock()
+		if screen != nil {
+			screen.close()
+		}
 		if m != nil {
 			s.closeErr = m.Close()
 		}

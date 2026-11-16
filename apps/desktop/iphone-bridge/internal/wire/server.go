@@ -226,6 +226,9 @@ func (s *Server) Run(parent context.Context, input io.ReadCloser, output io.Writ
 						if errors.Is(callCtx.Err(), context.DeadlineExceeded) {
 							code = DeadlineExceeded
 						}
+						if failure.Effect == "unknown" {
+							code = OutcomeUnknown
+						}
 						failure = &Failure{code, failure.Effect, failure.CompletedSteps}
 					}
 					result = ErrorResult{failure}
@@ -235,7 +238,11 @@ func (s *Server) Run(parent context.Context, input io.ReadCloser, output io.Writ
 					if errors.Is(callCtx.Err(), context.DeadlineExceeded) {
 						code = DeadlineExceeded
 					}
-					result = ErrorResult{Fail(code)}
+					if effect, ok := result.(interface{ EffectFailure(Reason) *Failure }); ok {
+						result = ErrorResult{effect.EffectFailure(code)}
+					} else {
+						result = ErrorResult{Fail(code)}
+					}
 				}
 				s.mu.Lock()
 				delete(s.pending, r.ID)

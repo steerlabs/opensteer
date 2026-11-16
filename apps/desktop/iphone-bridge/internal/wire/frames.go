@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -149,6 +150,9 @@ func StrictDecode(b []byte, v interface{}) error {
 }
 
 func exactFields(value interface{}, kind reflect.Type) bool {
+	if value == nil {
+		return false
+	}
 	if kind == reflect.TypeOf(json.RawMessage{}) {
 		return true
 	}
@@ -163,6 +167,7 @@ func exactFields(value interface{}, kind reflect.Type) bool {
 		return false
 	}
 	fields := make(map[string]reflect.Type)
+	optional := make(map[string]bool)
 	var add func(reflect.Type)
 	add = func(t reflect.Type) {
 		for i := 0; i < t.NumField(); i++ {
@@ -171,7 +176,8 @@ func exactFields(value interface{}, kind reflect.Type) bool {
 				add(f.Type)
 				continue
 			}
-			name := f.Tag.Get("json")
+			name, options, _ := strings.Cut(f.Tag.Get("json"), ",")
+			optional[name] = options == "omitempty"
 			if name != "" && name != "-" {
 				fields[name] = f.Type
 			}
@@ -179,7 +185,7 @@ func exactFields(value interface{}, kind reflect.Type) bool {
 	}
 	add(kind)
 	for name := range fields {
-		if _, ok := object[name]; !ok {
+		if _, ok := object[name]; !ok && !optional[name] {
 			return false
 		}
 	}

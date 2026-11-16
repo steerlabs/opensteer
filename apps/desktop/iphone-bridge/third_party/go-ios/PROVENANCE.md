@@ -37,5 +37,14 @@ Opensteer patches:
   automatically downloading the upstream go1.26.5 toolchain.
 
 No pymobiledevice3 or other GPL source/tests were copied. Apple developer images
-are not distributed by this module. Dependency licenses also remain in vendor;
+are not distributed by this module. Dependencies resolve through go.mod/go.sum without vendoring.
 THIRD_PARTY_NOTICES.md lists every module linked into the bridge.
+
+- N2 carries the upstream DTX encoder, message and primitive dictionary subset.
+  A supplied-net.Conn raw constructor bounds frame/fragment/message/aggregate
+  sizes and rejects compressed packets (compression is negotiated off). The AX
+  archive subset resolves unknown classes as inert dictionaries, limits object
+  counts/depth/UID cycles, and encodes only primitives, arrays and dictionaries.
+  There are no Objective-C factories, audit fallback or device fixtures.
+- PlistCodec.DecodeLimit lets installation-proxy consumers cap a chunk before
+  allocating its body. Native screen endpoints remain in internal/phone.

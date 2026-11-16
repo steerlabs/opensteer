@@ -7,6 +7,7 @@ replace github.com/danielpaulus/go-ios => ./third_party/go-ios
 require (
 	github.com/danielpaulus/go-ios v0.0.0-20261116112947-e5833ad1c5b6
 	github.com/google/uuid v1.1.2
+	golang.org/x/image v0.39.0
 	gvisor.dev/gvisor v0.0.0-20240405191320-0878b34101b5
 	howett.net/plist v1.0.1
 )
