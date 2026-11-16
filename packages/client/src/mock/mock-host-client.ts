@@ -8745,7 +8745,7 @@ class MockHostState {
       : fixture.phoneDisplay!.driver!.generation;
     const driver = {
       ...fixture.phoneDisplay!.driver!,
-      ...(prior?.phoneDisplay?.driver ?? {}),
+      ...prior?.phoneDisplay?.driver,
       attached: fixture.phoneDisplay!.driver!.attached,
       generation,
     };
@@ -8830,7 +8830,7 @@ class MockHostState {
     };
     const phone = {
       ...fixture,
-      ...(prior ?? {}),
+      ...prior,
       id: deviceId,
       name: target.kind === "new" ? target.name : prior!.name,
       drivers: [driver],

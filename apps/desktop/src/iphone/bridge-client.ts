@@ -229,7 +229,7 @@ export class IphoneBridgeClient implements IphoneNativeTransport {
   #fail(terminate = true): void {
     if (this.#closed) return;
     this.#closed = true;
-    for (const pending of [...this.#pending.values()])
+    for (const pending of Array.from(this.#pending.values()))
       pending.settle(
         new IphoneServiceError(
           "phone-disconnected",

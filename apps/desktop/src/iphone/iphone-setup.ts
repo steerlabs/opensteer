@@ -358,7 +358,7 @@ export class IphoneSetup {
       .map((c) => {
         const candidateId = previous.get(c.localPhoneId) ?? randomUUID();
         t.candidates.set(candidateId, c.localPhoneId);
-        const clean = (value: string) => value.replace(/[\u0000-\u001f\u007f]/gu, "").slice(0, 160);
+        const clean = (value: string) => value.replace(/\p{Cc}/gu, "").slice(0, 160);
         return {
           candidateId,
           name: clean(c.name),

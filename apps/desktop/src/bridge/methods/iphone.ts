@@ -323,7 +323,7 @@ export function iphoneHandlers(context: DesktopBridgeContext): {
     dispose: () => {
       unsubscribeAccess();
       pending.clear();
-      for (const id of [...owners.keys()]) cancel(id);
+      for (const id of Array.from(owners.keys())) cancel(id);
     },
   };
 }

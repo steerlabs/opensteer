@@ -800,7 +800,7 @@ export class IphoneService {
     void work.finally(() => this.#cleanups.delete(work)).catch(() => undefined);
   }
   #closeOwner(key: object): void {
-    for (const session of [...this.#sessions.values()])
+    for (const session of Array.from(this.#sessions.values()))
       if (session.key === key) this.#end(session, "no-session");
   }
   #invalidate(
@@ -934,12 +934,12 @@ export class IphoneService {
     if (native) this.#cleanup(native.close());
   }
   async #drain(): Promise<void> {
-    await Promise.allSettled([...this.#cleanups]);
+    await Promise.allSettled(this.#cleanups);
   }
   stop(): Promise<void> {
     this.#stopping ??= (async () => {
       this.#stopped = true;
-      for (const session of [...this.#sessions.values()]) this.#end(session, "cancelled");
+      for (const session of Array.from(this.#sessions.values())) this.#end(session, "cancelled");
       await this.#starting?.catch(() => undefined);
       await this.#drain();
       const native = this.#native;
@@ -957,7 +957,7 @@ export class IphoneService {
 function safeLabel(value: string): string {
   return (
     value
-      .replace(/[\u0000-\u001f\u007f]/gu, "")
+      .replace(/\p{Cc}/gu, "")
       .trim()
       .slice(0, 120) || "iPhone"
   );
