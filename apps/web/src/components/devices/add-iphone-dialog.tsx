@@ -1,5 +1,6 @@
 import { type DeploymentId } from "@opensteer/core";
 import { type HostClient, type HostSnapshot, type IphoneSetupPort } from "@opensteer/client/host";
+import type { IphoneScreenAttachCommand } from "@opensteer/protocol";
 import { phoneScreenMac } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
 import {
@@ -17,6 +18,10 @@ import { iphoneSetupWords, wifiRetryAction, type IphoneSetupWords } from "./ipho
 
 type Status = DesktopIphoneSetupStatus;
 type Candidate = Status["candidates"][number];
+export type ExistingIphoneTarget = Extract<
+  IphoneScreenAttachCommand["target"],
+  { kind: "existing" }
+>;
 /** What Opensteer is doing for the person right now; nothing is pressable meanwhile. */
 type Working = "begin" | "choose" | "check" | "skip-wifi" | Status["step"];
 
@@ -39,18 +44,21 @@ const selectMachines = (snapshot: HostSnapshot) => snapshot.machines;
  * Opensteer on this Mac (the port); the dialog shows its current step in the
  * person's words, carries on by itself while nothing is in the way, and stops
  * with one clear action when the iPhone, this Mac or the Host needs something.
- * Closing it cancels setup.
+ * Closing it cancels setup. With `existing`, it sets that iPhone up again
+ * under its own name; the Host keeps its approvals, tab and Stops.
  */
 export function AddIphoneDialog({
   client,
   deploymentId,
   deploymentName,
+  existing,
   onClose,
   port,
 }: {
   readonly client: HostClient;
   readonly deploymentId: DeploymentId;
   readonly deploymentName: string;
+  readonly existing?: ExistingIphoneTarget;
   readonly onClose: () => void;
   readonly port: IphoneSetupPort;
 }) {
@@ -94,7 +102,9 @@ export function AddIphoneDialog({
   function begin() {
     setChosen(null);
     setSlow(false);
-    void run("begin", () => port.begin({ deploymentId }));
+    void run("begin", () =>
+      port.begin({ deploymentId, ...(existing ? { target: existing } : {}) }),
+    );
   }
 
   useEffect(() => {
@@ -142,7 +152,7 @@ export function AddIphoneDialog({
   }
 
   async function attach(current: Status) {
-    const wanted = shownName.trim().slice(0, 120);
+    const wanted = again ? "" : shownName.trim().slice(0, 120);
     await run("attach", () =>
       port.attach({ setupId: current.setupId, ...(wanted ? { name: wanted } : {}) }),
     );
@@ -171,9 +181,15 @@ export function AddIphoneDialog({
     onClose();
   }
 
+  // A setup the Mac resumes may be for another iPhone than the one asked about.
+  const target = status ? status.target : (existing ?? null);
+  const again = target?.kind === "existing" ? target : null;
+  const againName =
+    (again && machines.find((machine) => machine.id === again.deviceId)?.name) || "the iPhone";
   const phoneName = chosen?.name || "the iPhone";
   const shownName = name ?? chosen?.name ?? "";
-  const displayName = shownName.trim() || "iPhone";
+  const displayName = again ? againName : shownName.trim() || "iPhone";
+  const adding = again ? `Connecting it to ${deploymentName}` : `Adding it to ${deploymentName}`;
   const added = status?.deviceId
     ? machines.find((machine) => machine.id === status.deviceId)
     : null;
@@ -182,7 +198,7 @@ export function AddIphoneDialog({
   function stage(): SetupStageProps {
     // A late Mac is the person's to know about even while another check is out.
     if (working && !(working === "check" && slow))
-      return workingStage(working, status, phoneName, deploymentName);
+      return workingStage(working, status, phoneName, adding);
     const reason = shownReason(status, thrown);
     const words = reason
       ? iphoneSetupWords(reason, {
@@ -211,8 +227,42 @@ export function AddIphoneDialog({
       });
     switch (status.step) {
       case "choose":
-        return chooseStage(status, reason, chosen, deploymentName, choose, () => check(status));
+        return chooseStage(
+          status,
+          reason,
+          chosen,
+          deploymentName,
+          again ? againName : null,
+          choose,
+          () => check(status),
+        );
       case "attach":
+        if (again)
+          return {
+            actions: (
+              <button
+                className="btn btn--primary"
+                onClick={() => void attach(status)}
+                type="button"
+              >
+                Connect it again
+              </button>
+            ),
+            body: (
+              <div className="phone-setup__more">
+                <p>
+                  {status.wifiEnabled
+                    ? "It works while it’s plugged into this Mac or on the same Wi‑Fi as it."
+                    : "It works while it’s plugged into this Mac."}
+                </p>
+              </div>
+            ),
+            detail: `It answered, and its screen came through. ${againName} keeps its name, approvals and tab.`,
+            icon: "eye",
+            step: stageIndex("attach"),
+            title: "This Mac can see the iPhone’s screen",
+            tone: "you",
+          };
         return {
           actions: (
             <button className="btn btn--primary" onClick={() => void attach(status)} type="button">
@@ -255,29 +305,32 @@ export function AddIphoneDialog({
               }),
               { onCheck: () => check(status), recovery: "check", step: stageIndex("confirm") },
             )
-          : workingStage("confirm", status, phoneName, deploymentName);
+          : workingStage("confirm", status, phoneName, adding);
       case "done":
         return {
-          actions: status.deviceId ? (
-            <Link className="btn btn--primary" onClick={close} to={deviceRoute(status.deviceId)}>
-              Open the iPhone’s page
-            </Link>
-          ) : null,
+          actions:
+            status.deviceId && !again ? (
+              <Link className="btn btn--primary" onClick={close} to={deviceRoute(status.deviceId)}>
+                Open the iPhone’s page
+              </Link>
+            ) : null,
           body: (
             <div className="phone-setup__more">
               <p>
                 {status.wifiEnabled
                   ? `It works while it’s plugged in or on the same Wi‑Fi as ${macName}.`
                   : `It works while it’s plugged into ${macName}.`}{" "}
-                Agents can’t use it until you allow them on its page.
+                {again
+                  ? "Agents can use it as you allowed before."
+                  : "Agents can’t use it until you allow them on its page."}
               </p>
             </div>
           ),
-          title: `${displayName} is added`,
+          title: again ? `${displayName} is connected again` : `${displayName} is added`,
           tone: "done",
         };
       default:
-        return workingStage(status.step, status, phoneName, deploymentName);
+        return workingStage(status.step, status, phoneName, adding);
     }
   }
 
@@ -291,7 +344,9 @@ export function AddIphoneDialog({
       }
       labelledBy="add-iphone-title"
       onClose={close}
-      title={<span id="add-iphone-title">Add an iPhone</span>}
+      title={
+        <span id="add-iphone-title">{again ? `Set up ${againName} again` : "Add an iPhone"}</span>
+      }
     >
       <SetupStage {...stage()} steps={rail.length} />
     </Dialog>
@@ -323,7 +378,7 @@ function workingStage(
   working: Working,
   status: Status | null,
   phoneName: string,
-  deploymentName: string,
+  adding: string,
 ): SetupStageProps {
   const step = status ? stageIndex(status.step) : undefined;
   switch (working) {
@@ -358,10 +413,10 @@ function workingStage(
       };
     case "attach":
     case "confirm":
-      return { step, title: `Adding it to ${deploymentName}`, tone: "working" };
+      return { step, title: adding, tone: "working" };
     case "check":
       return status?.step === "confirm"
-        ? { step, title: `Adding it to ${deploymentName}`, tone: "working" }
+        ? { step, title: adding, tone: "working" }
         : { step, title: "Checking again", tone: "working" };
     default:
       return { step, tone: "working", title: "Finishing" };
@@ -470,6 +525,7 @@ function chooseStage(
   reason: DesktopIphoneSetupReason | null,
   chosen: Candidate | null,
   deploymentName: string,
+  againName: string | null,
   onChoose: (candidate: Candidate) => void,
   onCheck: () => void,
 ): SetupStageProps {
@@ -544,7 +600,7 @@ function chooseStage(
       : "Plugged into this Mac with a cable for setup. You can add Wi‑Fi after the first screen check.",
     ...(notice ? { icon: "alert-circle" as const } : {}),
     step: 0,
-    title: "Which iPhone?",
+    title: againName ? `Which iPhone is ${againName}?` : "Which iPhone?",
     tone: "you",
   };
 }

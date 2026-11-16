@@ -104,6 +104,7 @@ export class IphoneService {
     candidateId: string,
     setupId: string,
     signal?: AbortSignal,
+    target: IphoneMapping["attachTarget"] = null,
   ): Promise<IphoneMapping> {
     const native = await this.#connect();
     const candidate = this.#roster.find(({ localPhoneId }) => localPhoneId === candidateId);
@@ -113,6 +114,25 @@ export class IphoneService {
       { candidateId },
       iphonePrivateIdentityResultSchema,
     );
+    const previous = this.#records.find((r) => r.udid === udid && r.setupId !== setupId);
+    if (previous && sameOwner(previous, owner)) {
+      const assigned = this.#slots
+        .get(owner.deploymentId)
+        ?.assignments.some(
+          (a) => a.deviceId === previous.deviceId && a.generation === previous.driverGeneration,
+        );
+      if (
+        target?.kind !== "existing" ||
+        previous.deviceId !== target.deviceId ||
+        previous.phase !== "bound" ||
+        assigned
+      )
+        throw new IphoneServiceError("phone-already-added");
+      // The Host detached this phone's Device; its old native ownership must go before a new one.
+      await this.#release(previous, true);
+      await this.store.remove(previous);
+      this.#records = await this.store.records();
+    }
     const record = await this.store.reserve({
       ...owner,
       udid,
@@ -125,7 +145,7 @@ export class IphoneService {
       wifiEnabledByOpensteer: false,
       setupComplete: false,
       detachKey: null,
-      attachTarget: null,
+      attachTarget: target,
     });
     this.#records = await this.store.records();
     try {

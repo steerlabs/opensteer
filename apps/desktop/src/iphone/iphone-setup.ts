@@ -49,9 +49,10 @@ export class IphoneSetup {
       if (transaction.owner.deploymentId === owner.deploymentId) await this.cancel(id);
     const pending = await this.#service.pending(owner);
     const setupId = pending?.setupId ?? randomUUID();
+    const resumed = pending?.attachTarget ?? target;
     const transaction: Transaction = {
       owner,
-      target: pending?.attachTarget ?? target,
+      target: resumed,
       state: {
         setupId,
         deploymentId: owner.deploymentId as DesktopIphoneSetupStatus["deploymentId"],
@@ -67,6 +68,7 @@ export class IphoneSetup {
         personAction: "choose-phone",
         candidates: [],
         attachCommand: null,
+        target: resumed ?? null,
         deviceId: pending?.deviceId ?? null,
         driverGeneration: pending?.driverGeneration ?? null,
         wifiEnabled: pending?.wifiEnabledByOpensteer ?? false,
@@ -95,7 +97,13 @@ export class IphoneSetup {
     if (!localId) throw new IphoneServiceError("candidate-gone");
     t.busy = true;
     try {
-      t.record = await this.#service.reserve(t.owner, localId, setupId, t.controller.signal);
+      t.record = await this.#service.reserve(
+        t.owner,
+        localId,
+        setupId,
+        t.controller.signal,
+        t.target ?? null,
+      );
       this.#active(t);
       t.state.step = "trust";
       t.state.reason = null;

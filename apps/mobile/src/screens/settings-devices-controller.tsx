@@ -260,7 +260,7 @@ export function DevicesSettingsController(): ReactNode {
                   key: "instructions",
                   kind: "text",
                   label:
-                    "Your agent sees and controls an iPhone's screen through one of your Macs, by cable or the same Wi-Fi. You set it up in Opensteer on that Mac. It isn't in this version yet.",
+                    "Your agent sees and controls an iPhone's screen through one of your Macs, by cable or the same Wi-Fi. Plug the iPhone into that Mac, open Devices in Opensteer there and choose Add a device, then iPhone screen control.",
                 },
               ],
             },

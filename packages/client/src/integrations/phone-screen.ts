@@ -96,7 +96,7 @@ export function phoneScreenStatus(machine: MachineSummary): PhoneScreenStatus | 
   }
 }
 
-/** Where setup happens: the Mac that drove it, or any Mac once disconnected. */
+/** Where setup happens: the Mac that drives it, or any of the person's Macs once disconnected. */
 export function phoneScreenSetupLine(
   machine: MachineSummary,
 ): { readonly label: string; readonly detail: string } | null {
@@ -107,7 +107,10 @@ export function phoneScreenSetupLine(
         label: `Set up on ${mac.name}`,
         detail: `Open Opensteer on ${mac.name}, the Mac connected to this iPhone.`,
       }
-    : { label: "Set up on a Mac", detail: "Open Opensteer on the Mac connected to this iPhone." };
+    : {
+        label: "Set up again on a Mac",
+        detail: "Plug it into one of your Macs and set it up again in Opensteer there.",
+      };
 }
 
 /** The two ways out, with what each keeps. */

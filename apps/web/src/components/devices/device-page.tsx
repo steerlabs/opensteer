@@ -20,7 +20,7 @@ import {
   phoneScreenRemovalCopy,
   phoneScreenStatus,
 } from "@opensteer/client/integrations";
-import { DeploymentIdSchema, TabTargetSchema } from "@opensteer/core";
+import { DeploymentIdSchema, DeviceIdSchema, TabTargetSchema } from "@opensteer/core";
 import type { ComputerAppSetupSummary as ComputerAppSetupRequest } from "@opensteer/client/integrations";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { useShell } from "../app-shell.js";
@@ -36,6 +36,7 @@ import { DeviceArt } from "../computers/device-art.js";
 import { HerePin } from "../computers/here-pin.js";
 import { useHereId } from "../computers/here.js";
 import { PhoneSection } from "../computers/phone-section.js";
+import { AddIphoneDialog, type ExistingIphoneTarget } from "./add-iphone-dialog.js";
 import { useDeploymentName } from "../deployment-name.js";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
@@ -247,6 +248,7 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
   const [removing, setRemoving] = useState(false);
   const [permissionReview, setPermissionReview] = useState(false);
   const [pluggingIn, setPluggingIn] = useState(false);
+  const [settingUpAgain, setSettingUpAgain] = useState<ExistingIphoneTarget | null>(null);
   const removalTitleId = useId();
   useEffect(() => setName(machine.name), [machine.name]);
 
@@ -275,6 +277,18 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
     screen?.tone ??
     (machine.status === "online" ? "online" : machine.status === "offline" ? "offline" : "waiting");
   const appsSwitch = switches.find((item) => item.capability === "apps");
+  const detachedGeneration = screenMac?.attached
+    ? undefined
+    : deviceMachine(machine).phoneDisplay?.driver?.generation;
+  const setUpAgain =
+    screenMac && detachedGeneration !== undefined && hostClient.iphoneSetup && deploymentId.success
+      ? () =>
+          setSettingUpAgain({
+            kind: "existing",
+            deviceId: DeviceIdSchema.parse(machine.id),
+            expectedGeneration: detachedGeneration,
+          })
+      : null;
 
   const screenTab = TabTargetSchema.safeParse({ kind: "phone", computerId: machine.id });
   function openScreen() {
@@ -419,6 +433,7 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
         }}
         onOpenScreen={workspace && screenTab.success ? openScreen : null}
         onPlugIn={() => setPluggingIn(true)}
+        onSetUpAgain={setUpAgain}
         setupHere={screenMacHere}
         wifiRow={
           screenMacHere && screenMac?.attached && hostClient.iphoneSetup && deploymentId.success ? (
@@ -710,6 +725,16 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
         >
           <p>{confirmation.body}</p>
         </Dialog>
+      ) : null}
+      {settingUpAgain && hostClient.iphoneSetup && deploymentId.success ? (
+        <AddIphoneDialog
+          client={hostClient}
+          deploymentId={deploymentId.data}
+          deploymentName={deploymentName}
+          existing={settingUpAgain}
+          onClose={() => setSettingUpAgain(null)}
+          port={hostClient.iphoneSetup}
+        />
       ) : null}
       {pluggingIn ? (
         <AddPhoneDialog

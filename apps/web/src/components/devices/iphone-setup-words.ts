@@ -409,6 +409,13 @@ export function iphoneSetupWords(
         title: "Another Mac controls this iPhone",
         yours: true,
       };
+    case "phone-already-added":
+      return {
+        detail: `It’s one of ${context.deploymentName}’s devices. Choose another iPhone, or set that one up again from its own page.`,
+        recovery: "check",
+        title: "This iPhone is already added",
+        yours: true,
+      };
     case "attach-conflict":
     case "device-not-owned":
       return {

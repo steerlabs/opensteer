@@ -31,6 +31,7 @@ export const DesktopIphoneSetupReasonSchema = z.enum([
   "device-not-owned",
   "driver-conflict",
   "attach-conflict",
+  "phone-already-added",
   "local-mapping-save-failed",
   "assignment-pending",
   "wifi-not-enabled",
@@ -114,6 +115,8 @@ export const DesktopIphoneSetupStatusSchema = z.strictObject({
     )
     .max(64),
   attachCommand: IphoneScreenAttachCommandSchema.nullable(),
+  /** The Device this setup adds or sets up again; `existing` keeps that Device's name. */
+  target: IphoneScreenAttachCommandSchema.shape.target.nullable().default(null),
   deviceId: z.string().max(128).nullable(),
   driverGeneration: z.number().int().positive().nullable(),
   wifiEnabled: z.boolean().default(false),

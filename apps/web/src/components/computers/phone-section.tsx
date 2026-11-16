@@ -36,6 +36,7 @@ export function PhoneSection({
   onChanged,
   onOpenScreen,
   onPlugIn,
+  onSetUpAgain = null,
   setupHere = false,
   wifiRow,
 }: {
@@ -51,7 +52,9 @@ export function PhoneSection({
   readonly onOpenScreen?: (() => void) | null;
   /** Opens setup over USB for an Android phone or updates its app. */
   readonly onPlugIn: () => void;
-  /** This window runs on the Mac that sets the phone up. */
+  /** Sets a disconnected iPhone up again here; absent where this window can't reach iPhones. */
+  readonly onSetUpAgain?: (() => void) | null;
+  /** This window runs on the Mac that drives the phone. */
   readonly setupHere?: boolean;
   /** Same Wi‑Fi for an iPhone, where this window runs on the Mac that drives it. */
   readonly wifiRow?: ReactNode;
@@ -95,12 +98,20 @@ export function PhoneSection({
   const statusDetail = !appsOn
     ? appsOffLine
     : (screen?.fix ?? (screen?.tone === "online" ? phoneUseStatusLine(view, machine.name) : null));
-  const setupRow = setupHere
+  const detached = view.driver?.attached === false;
+  const setupAgainHere = detached && onSetUpAgain !== null;
+  const setupRow = setupAgainHere
     ? {
-        label: "Set up on this Mac",
-        detail: "iPhone setup isn’t in this version of Opensteer yet.",
+        label: "Set up again on this Mac",
+        detail: `Plug ${machine.name} into this Mac with a cable. It keeps its name, approvals and tab.`,
       }
-    : phoneScreenSetupLine(machine);
+    : setupHere && !detached
+      ? {
+          label: "Finish on this Mac",
+          detail:
+            "Keep it plugged into this Mac and do what it asks above. If it still needs setup, disconnect screen control, then set it up again here.",
+        }
+      : phoneScreenSetupLine(machine);
 
   return (
     <section
@@ -109,7 +120,7 @@ export function PhoneSection({
     >
       {screen ? (
         <h2 className="settings-group__title" id={titleId}>
-          {view.driver?.attached === false ? "Screen control" : phoneUseCardTitle(view)}
+          {detached ? "Screen control" : phoneUseCardTitle(view)}
         </h2>
       ) : (
         <div className="section-heading">
@@ -254,6 +265,13 @@ export function PhoneSection({
               <span className="card__row-title">{setupRow.label}</span>
               <span className="card__row-detail card__row-detail--wrap">{setupRow.detail}</span>
             </span>
+            {setupAgainHere ? (
+              <span className="card__row-actions">
+                <button className="btn btn--small" onClick={onSetUpAgain} type="button">
+                  Set up again
+                </button>
+              </span>
+            ) : null}
           </div>
         ) : null}
       </div>
