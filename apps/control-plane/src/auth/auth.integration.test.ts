@@ -113,6 +113,7 @@ integration("Account OAuth freshness PostgreSQL boundary", () => {
     const auth = createControlPlaneAuth(database, { ...config, appReview });
     const authenticator = new ControlPlaneAuthenticator(auth, database, publicOrigin);
     const server = await createControlPlaneServer({
+      appReviewSignIn: true,
       auth,
       authenticator,
       connectLifecycle,

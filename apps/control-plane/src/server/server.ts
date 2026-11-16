@@ -74,6 +74,7 @@ const ConsentFormSchema = z.strictObject({
 export async function createControlPlaneServer(
   dependencies: {
     readonly appleSignIn?: AppleSignInConfig;
+    readonly appReviewSignIn?: boolean;
     readonly auth: ControlPlaneAuth;
     readonly authenticator: ControlPlaneAuthenticator;
     readonly connectLifecycle: ConnectLifecycleService;
@@ -284,6 +285,7 @@ function registerAccountPages(
   app: FastifyInstance,
   dependencies: {
     readonly appleSignIn?: AppleSignInConfig;
+    readonly appReviewSignIn?: boolean;
     readonly auth: ControlPlaneAuth;
     readonly fonts: BrowserPageFonts;
     readonly hostedOAuthBroker?: HostedOAuthBrokerService;
@@ -293,7 +295,7 @@ function registerAccountPages(
   portal: PortalRouter | undefined,
 ): void {
   const { auth, fonts, publicOrigin, store } = dependencies;
-  const appReviewSignIn = auth.options.plugins.some((plugin) => plugin.id === "app-review");
+  const appReviewSignIn = dependencies.appReviewSignIn === true;
   const sendAccountPage = (reply: FastifyReply, title: string, body: string) =>
     sendBrowserPage(reply, { body, fonts, layout: "card", title });
   const sendAuthorizationRestartPage = (reply: FastifyReply) =>
