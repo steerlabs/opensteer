@@ -71,11 +71,7 @@ export class MockComputerViews {
     }));
   }
   approved(): ApprovedComputerApp[] {
-    return this.#approvedDevices().flatMap((app) => {
-      const machine = this.#snapshot().machines.find(({ id }) => id === app.machineId);
-      const selfRunnerId = machine ? deviceMachine(machine).selfRunnerId : null;
-      return selfRunnerId ? [{ ...app, machineId: selfRunnerId }] : [];
-    });
+    return this.#approvedDevices();
   }
   #approvedDevices(): (Omit<ApprovedComputerApp, "machineId"> & { machineId: DeviceId })[] {
     const snapshot = this.#authenticated();
