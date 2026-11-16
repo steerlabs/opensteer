@@ -261,7 +261,6 @@ export async function runStateImportScenario(options: {
     localProfiles: { root },
     sessionFilesRoot: testSessionFilesRoot(),
     ticketVerifier: verifier,
-    acknowledgeProfileReady: async () => {},
   });
   await runtime.prepare();
   const binding = LocalProfileBindingSchema.parse({

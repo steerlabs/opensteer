@@ -61,17 +61,8 @@ async function fixture(existingRoot?: string) {
       release: vi.fn<LocalProfileEngine["release"]>(async () => "released"),
     } satisfies LocalProfileEngine,
   });
+  // The Host records readiness once an opened session is ready.
   const initialized = new Set<number>();
-  const acknowledge = vi.fn(
-    async (
-      identity: Extract<
-        import("@opensteer/protocol").BrowserAttachTicketIdentity,
-        { kind: "profile-local" }
-      >,
-    ) => {
-      initialized.add(Number(identity.binding.profileId.split("-").at(-1)));
-    },
-  );
   const verifier = new FakeTicketVerifier();
   const filesRoot = sessionFilesRoot(root);
   const timings: BrowserOpenTiming[] = [];
@@ -82,7 +73,6 @@ async function fixture(existingRoot?: string) {
     launcher,
     ticketVerifier: verifier,
     localProfiles: { root },
-    acknowledgeProfileReady: acknowledge,
     runtimeId: "runtime_test",
     sessionFilesRoot: filesRoot,
   });
@@ -105,7 +95,7 @@ async function fixture(existingRoot?: string) {
         kind: "profile-local",
         binding: binding(profile),
         initialized: initialized.has(profile),
-        readyUrl: "https://host.test/ready",
+        readyUrl: "http://127.0.0.1:9/ready",
       },
       sessionId: BrowserSessionIdSchema.parse(
         `bsn_00000000-0000-4000-8000-${String(session).padStart(12, "0")}`,
@@ -118,7 +108,12 @@ async function fixture(existingRoot?: string) {
     });
   const open = (profile: number, session: number, initial = false, signal?: AbortSignal) => {
     verifier.setClaims(String(session), claims(profile, session, initial));
-    return runtime.attach(String(session), new FakeSink(), signal ? { signal } : {});
+    return runtime
+      .attach(String(session), new FakeSink(), signal ? { signal } : {})
+      .then((attachment) => {
+        initialized.add(profile);
+        return attachment;
+      });
   };
   return {
     timings,
@@ -126,7 +121,7 @@ async function fixture(existingRoot?: string) {
     root,
     runtime,
     launcher,
-    acknowledge,
+    initialized,
     verifier,
     claims,
     open,
@@ -419,45 +414,40 @@ describe("native profile runtime", () => {
     await replay.close();
     expect(f.runtime.health().sessionCount).toBe(0);
   });
-  it("replays readiness acknowledgement without creating or importing an established store", async () => {
+  it("never recreates a used profile the Host still reports uninitialized", async () => {
     const f = await fixture();
-    const acknowledge = f.acknowledge.getMockImplementation()!;
-    f.acknowledge.mockImplementationOnce(async (identity) => {
-      await acknowledge(identity);
-      throw new Error("readiness response lost");
-    });
-    await expect(f.open(1, 1)).rejects.toThrow();
-    await (await f.open(1, 2)).close();
+    await (await f.open(1, 1)).close();
+    f.initialized.delete(1);
+    const profile = path.join(f.root, "profiles", f.binding(1).profileId);
+    await rm(profile, { recursive: true });
+    await expect(f.open(1, 2)).rejects.toThrow(/missing/);
     expect(f.launcher.localProfiles.createFiles).toHaveBeenCalledOnce();
     expect(f.launcher.launchCount).toBe(1);
-    expect(f.acknowledge).toHaveBeenCalledOnce();
-    const sentinel = path.join(
-      f.root,
-      "profiles",
-      f.binding(1).profileId,
-      "native",
-      "opensteer.v1.json",
-    );
-    await rm(path.dirname(sentinel), { recursive: true });
-    await expect(f.open(1, 3)).rejects.toThrow(/missing/);
-    expect(f.launcher.localProfiles.createFiles).toHaveBeenCalledOnce();
+    await expect(access(profile)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("does not launch a page until the Host acknowledges native readiness", async () => {
+  it("opens a new profile without calling the Host, after its store and receipt are durable", async () => {
     const f = await fixture();
-    const held = gate({ label: "Host profile completion", deadlineMs: 2000 });
-    f.acknowledge.mockImplementationOnce(() => held.enter());
-    const opening = f.open(1, 1, true);
+    const fetch = vi.fn(() => {
+      throw new Error("The runtime must not call the Host directly.");
+    });
+    vi.stubGlobal("fetch", fetch);
+    const profile = path.join(f.root, "profiles", f.binding(1).profileId);
+    const durable = vi.fn();
+    const launch = f.launcher.launch.bind(f.launcher);
+    vi.spyOn(f.launcher, "launch").mockImplementationOnce(async (request, signal) => {
+      await access(path.join(profile, "native", "opensteer.v1.json"));
+      await access(path.join(f.root, "created", `${f.binding(1).profileId}.json`));
+      durable();
+      return launch(request, signal);
+    });
     try {
-      await held.entered;
-      expect(f.launcher.launchCount).toBe(0);
-      held.release();
-      await (await opening).close();
-      expect(f.launcher.launchCount).toBe(1);
+      await (await f.open(1, 1, true)).close();
     } finally {
-      held.release();
-      await opening.catch(() => undefined);
+      vi.unstubAllGlobals();
     }
+    expect(durable).toHaveBeenCalledOnce();
+    expect(fetch).not.toHaveBeenCalled();
   });
   it("tombstones before closing, rejects stale tickets and inventories deletion", async () => {
     const f = await fixture();

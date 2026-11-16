@@ -464,6 +464,7 @@ function capabilityReference(lease: BrowserCapabilityLease): BrowserCapabilityRe
 
 function protocolError(error: unknown): ProtocolError {
   const relay = error instanceof BrowserRelayError ? error : undefined;
+  if (relay?.runtimeError) return relay.runtimeError;
   return {
     code: relay ? "forbidden" : "internal",
     message: (error instanceof Error ? error.message : "The browser relay failed.").slice(0, 2_000),

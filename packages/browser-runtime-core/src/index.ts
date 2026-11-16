@@ -18,6 +18,4 @@ export * from "./stream/frame.js";
 
 export type { BrowserOpenTiming } from "./runtime.js";
 
-export * from "./native-profile-ready.js";
-
 export { normalizeElectronCursor } from "./browser/cursor-hints.js";

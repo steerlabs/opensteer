@@ -12,7 +12,7 @@ import { gate } from "@opensteer/shared/test-support/observation";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { LocalBrowserRuntimeBridge } from "./browser-bridge.js";
+import { BrowserRelayError, LocalBrowserRuntimeBridge } from "./browser-bridge.js";
 import { BrowserModuleRelay } from "./browser-relay.js";
 import type { RunnerModuleStream } from "./module-connection.js";
 
@@ -320,6 +320,33 @@ describe("BrowserModuleRelay native profiles", () => {
       expect(f.messages.some((message) => message.type === "browser.attached")).toBe(false);
     } finally {
       held.release();
+      f.relay.detach();
+    }
+  });
+  it("reports the runtime's own attach refusal to the Host unchanged", async () => {
+    const f = fixture();
+    const error = {
+      code: "conflict",
+      message: "The established native browser profile data is missing.",
+      reason: "local-profile.storage-invalid",
+      retryable: false,
+    } as const;
+    vi.spyOn(f.bridge, "attach").mockRejectedValue(
+      new BrowserRelayError(error.message, { runtimeError: error }),
+    );
+    try {
+      await f.relay.attach(f.stream);
+      await f.send({ type: "capability.grant", lease: f.lease });
+      const failed = f.wait("browser.command-error");
+      await f.send({
+        type: "browser.attach",
+        capability: f.capability,
+        channelId: `bch_${randomUUID()}`,
+        attachTicket: "abc.def.ghi",
+      });
+      await failed;
+      expect(f.messages.at(-1)).toMatchObject({ type: "browser.command-error", error });
+    } finally {
       f.relay.detach();
     }
   });

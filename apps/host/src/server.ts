@@ -93,7 +93,6 @@ import {
 } from "@opensteer/control-plane-protocol";
 import {
   AttachmentIdSchema,
-  BrowserProfileIdSchema,
   CommandIdSchema,
   EnvironmentIdSchema,
   HarnessInstanceIdSchema,
@@ -319,7 +318,6 @@ import { unversionedRoute } from "./server/unversioned-route.js";
 import { normalizeHostError } from "./server/http-errors.js";
 import { installHostHttpBoundary } from "./server/host-http-boundary.js";
 import { hostInternalRoutePaths } from "./server/internal-routes.js";
-import { requestAbortSignal } from "./server/request-abort-signal.js";
 import { registerResponseCompression } from "./server/response-compression.js";
 import type { HostStaticDistribution } from "./server/static-distribution.js";
 import {
@@ -939,18 +937,6 @@ export async function createHostServer(
         .send(await localBootstrap.describe(request.headers.authorization));
     });
   }
-
-  app.post<{ Params: { profileId: string } }>(
-    "/v1/browser-profiles/:profileId/ready",
-    async (request, reply) => {
-      await dependencies.browser.acknowledgeNativeProfileReady(
-        BrowserProfileIdSchema.parse(request.params.profileId),
-        requireBearerToken(request),
-        requestAbortSignal(request.raw, reply.raw),
-      );
-      return { ready: true };
-    },
-  );
 
   const requireRpcSession = (context: HostApiServerContext) => {
     if (!context.session) {

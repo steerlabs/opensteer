@@ -42,7 +42,6 @@ export interface BrowserRuntimeConfig {
   host: string;
   port: number;
   profileRoot: string;
-  profileReadyTrustedHttpOrigin?: string;
   proxyUrl: string | undefined;
   publicKeys: ReadonlyMap<string, KeyObject>;
   runtimeId: string;
@@ -100,9 +99,6 @@ export function readBrowserRuntimeConfig(
     false,
   );
   const proxyUrl = browserProxyUrl(environment[browserRuntimeEnvironmentKeys.proxyUrl]);
-  const profileReadyTrustedHttpOrigin = trustedHttpOrigin(
-    environment.OPENSTEER_BROWSER_PROFILE_READY_INTERNAL_URL,
-  );
   const hosted = relay !== undefined;
   if (hosted && deploymentMode === "production" && !chromiumSandbox) {
     throw new Error("Production hosted Browser Runtime requires the Chromium sandbox.");
@@ -131,30 +127,10 @@ export function readBrowserRuntimeConfig(
     host: environment.OPENSTEER_BROWSER_HOST?.trim() || "127.0.0.1",
     port: portValue(environment.OPENSTEER_BROWSER_PORT),
     profileRoot,
-    ...(profileReadyTrustedHttpOrigin ? { profileReadyTrustedHttpOrigin } : {}),
     proxyUrl,
     publicKeys,
     runtimeId,
   };
-}
-
-function trustedHttpOrigin(value: string | undefined): string | undefined {
-  const text = optional(value);
-  if (!text) return undefined;
-  const url = new URL(text);
-  if (
-    url.protocol !== "http:" ||
-    url.username ||
-    url.password ||
-    url.pathname !== "/" ||
-    url.search ||
-    url.hash
-  ) {
-    throw new Error(
-      "OPENSTEER_BROWSER_PROFILE_READY_INTERNAL_URL must be an uncredentialed HTTP origin.",
-    );
-  }
-  return url.origin;
 }
 
 function mode(value: string | undefined): BrowserRuntimeConfig["deploymentMode"] {

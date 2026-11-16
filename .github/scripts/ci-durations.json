@@ -726,7 +726,6 @@
     "packages/browser-runtime-core/src/browser/tab-sleeper.test.ts": 1624,
     "packages/browser-runtime-core/src/browser/viewport-capture.test.ts": 1505,
     "packages/browser-runtime-core/src/local-profile-store.test.ts": 2062,
-    "packages/browser-runtime-core/src/native-profile-ready.test.ts": 1524,
     "packages/browser-runtime-core/src/native-profiles.test.ts": 2204,
     "packages/browser-runtime-core/src/passkeys.test.ts": 1544,
     "packages/browser-runtime-core/src/passkeys/decode.test.ts": 1532,
