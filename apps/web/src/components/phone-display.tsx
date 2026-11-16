@@ -1,5 +1,5 @@
 import { StreamedContextMenu } from "./browser/streamed-context-menu.js";
-import type { DisplayClientDiagnostic } from "@opensteer/protocol";
+import type { DisplayClientDiagnostic, PhoneDisplayView } from "@opensteer/protocol";
 import { reportDisplayDiagnostic, displayDiagnosticSource } from "../display-diagnostics.js";
 import {
   useCallback,
@@ -21,9 +21,12 @@ import {
   computerDisplayScope,
   computerDisplayAuthorityKey,
   computerDisplayStatus,
+  phoneViewerNavigation,
+  phoneViewerPower,
   sharedDisplayStreams,
   type DisplayLease,
   type DisplaySnapshot,
+  type PhoneNavigationTo,
 } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
 import {
@@ -32,7 +35,7 @@ import {
   type RemoteCaretPosition,
 } from "./remote-editing/remote-editing-proxy.js";
 import type { EditingContext } from "@opensteer/protocol/editing";
-import { Icon } from "./icon.js";
+import { Icon, type IconName } from "./icon.js";
 import {
   PhoneDisplayInput,
   committedInput,
@@ -806,21 +809,35 @@ function drawnPicture(canvas: HTMLCanvasElement) {
   });
 }
 
-const navigation = [
-  { to: "back", label: "Back", icon: "chevron-left" },
-  { to: "home", label: "Home", icon: "home" },
-  { to: "recents", label: "Recent apps", icon: "recents" },
-] as const;
+const navLabels: Partial<Record<PhoneNavigationTo, string>> = {
+  back: "Back",
+  home: "Home",
+  recents: "Recent apps",
+};
+const navIcons: Readonly<Record<PhoneNavigationTo, IconName>> = {
+  back: "chevron-left",
+  home: "home",
+  recents: "recents",
+  notifications: "bell",
+};
 
-/** The phone’s navigation whenever shared input is available. */
-export function PhoneControlBar({ display }: { readonly display: ComputerDisplayView }) {
+/** The phone’s navigation and power, as far as the Host says this phone has them. */
+export function PhoneControlBar({
+  display,
+  phone,
+}: {
+  readonly display: ComputerDisplayView;
+  readonly phone: PhoneDisplayView | null;
+}) {
   const input =
     display.snapshot.input === "available" && display.geometry !== null ? display.input : null;
+  const navigation = phoneViewerNavigation(phone);
+  const screenOff = display.snapshot.display?.state === "screen-off";
   const powerAvailable =
     !display.viewportEnabled &&
     display.snapshot.power === "available" &&
-    (display.snapshot.display?.state === "live" ||
-      display.snapshot.display?.state === "screen-off");
+    (display.snapshot.display?.state === "live" || screenOff) &&
+    phoneViewerPower(phone, screenOff ? "wake" : "lock");
   if ((!input || display.viewportEnabled) && !display.receipt && !powerAvailable) return null;
   return (
     <div className="phone-display__control surface-row">
@@ -840,21 +857,24 @@ export function PhoneControlBar({ display }: { readonly display: ComputerDisplay
           {display.snapshot.display?.state === "screen-off" ? "Wake phone" : "Lock phone"}
         </button>
       ) : null}
-      {input && !display.viewportEnabled ? (
+      {input && !display.viewportEnabled && navigation.length > 0 ? (
         <span className="phone-display__nav">
-          {navigation.map(({ icon, label, to }) => (
-            <button
-              aria-label={label}
-              className="icon-btn"
-              disabled={display.snapshot.display?.state !== "live"}
-              key={to}
-              onClick={() => input.nav(display.generation, to)}
-              title={label}
-              type="button"
-            >
-              <Icon name={icon} />
-            </button>
-          ))}
+          {navigation.map(({ label: advertised, to }) => {
+            const label = navLabels[to] ?? advertised;
+            return (
+              <button
+                aria-label={label}
+                className="icon-btn"
+                disabled={display.snapshot.display?.state !== "live"}
+                key={to}
+                onClick={() => input.nav(display.generation, to)}
+                title={label}
+                type="button"
+              >
+                <Icon name={navIcons[to]} />
+              </button>
+            );
+          })}
         </span>
       ) : null}
     </div>

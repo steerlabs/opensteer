@@ -253,6 +253,18 @@ export function DevicesSettingsController(): ReactNode {
               ],
             },
             {
+              key: "iphone-screen",
+              title: "iPhone screen control",
+              rows: [
+                {
+                  key: "instructions",
+                  kind: "text",
+                  label:
+                    "Your agent sees and controls an iPhone's screen through one of your Macs, by cable or the same Wi-Fi. You set it up in Opensteer on that Mac. It isn't in this version yet.",
+                },
+              ],
+            },
+            {
               key: "phone",
               title: "Agent Phone",
               rows: [

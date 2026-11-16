@@ -6,6 +6,7 @@ export * from "./bundled-icons.js";
 export * from "./connect-selection.js";
 export * from "./computer-apps.js";
 export * from "./computer-use.js";
+export * from "./phone-screen.js";
 export * from "./computer-watch-status.js";
 export * from "./computer-reasons.js";
 export * from "./computer-use-stops.js";

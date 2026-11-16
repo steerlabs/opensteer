@@ -51,7 +51,8 @@ vi.mock("@opensteer/client/react", () => ({
 vi.mock("@opensteer/client/integrations", () => ({
   isIphone: () => false,
   computerUseView: () => null,
-  phoneUseView: () => ({ access: "read-write", state: { kind: "ready" } }),
+  phoneScreenMac: () => null,
+  phoneUseView: () => ({ access: "read-write", canView: true, state: { kind: "ready" } }),
 }));
 vi.mock("@opensteer/client/computers", () => ({
   computerRole: () => null,

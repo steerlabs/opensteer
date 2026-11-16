@@ -18,7 +18,7 @@ import { SettingsError } from "../settings/primitives.js";
 import { cancelDeviceSetup } from "./device-access.js";
 import { localEnrollmentModules } from "./this-device.js";
 
-type Choice = "sign-in" | "agent-phone" | "server";
+type Choice = "sign-in" | "iphone-screen" | "agent-phone" | "server";
 
 const choices: readonly {
   readonly id: Choice;
@@ -32,6 +32,12 @@ const choices: readonly {
     title: "Sign in on it",
     detail:
       "A Mac or phone with the Opensteer app. Scan a code, open a link or use a pairing code.",
+  },
+  {
+    id: "iphone-screen",
+    icon: "phone",
+    title: "iPhone screen control",
+    detail: "An iPhone your agent controls through one of your Macs, by cable or Wi‑Fi.",
   },
   {
     id: "agent-phone",
@@ -91,14 +97,18 @@ export function AddDeviceDialog({
         <span id={titleId}>
           {choice === "sign-in"
             ? "Sign in on it"
-            : choice === "server"
-              ? "Add a server"
-              : "Add a device"}
+            : choice === "iphone-screen"
+              ? "Control an iPhone’s screen"
+              : choice === "server"
+                ? "Add a server"
+                : "Add a device"}
         </span>
       }
     >
       {choice === "sign-in" ? (
         <SignInOnIt homeName={homeName} />
+      ) : choice === "iphone-screen" ? (
+        <IphoneScreenOnMac />
       ) : choice === "server" ? (
         <AddServer />
       ) : (
@@ -122,6 +132,21 @@ export function AddDeviceDialog({
         </div>
       )}
     </Dialog>
+  );
+}
+
+/** Setup picks the physical phone, so it happens only in Opensteer on the Mac it connects to. */
+function IphoneScreenOnMac() {
+  return (
+    <div className="add-device__panel">
+      <p>
+        Your agent sees and controls the iPhone’s screen through one of your Macs, connected by
+        cable or the same Wi‑Fi. The iPhone doesn’t need Opensteer.
+      </p>
+      <p className="notice" role="status">
+        You set it up in Opensteer on that Mac. It isn’t in this version yet.
+      </p>
+    </div>
   );
 }
 

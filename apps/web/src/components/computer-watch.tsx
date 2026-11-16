@@ -2,7 +2,7 @@ import type { DisplayClientDiagnostic } from "@opensteer/protocol";
 import { NativeBrowserOverlay } from "./native-browser-overlays.js";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import type { HostClient } from "@opensteer/client/host";
+import { deviceMachine, type HostClient } from "@opensteer/client/host";
 import {
   canStreamComputerDisplay,
   canWatchComputer,
@@ -216,7 +216,12 @@ export function ComputerWatchView({
       phone={phone}
     />
   );
-  const control = phone ? <PhoneControlBar display={display} /> : null;
+  const control = phone ? (
+    <PhoneControlBar
+      display={display}
+      phone={machine ? (deviceMachine(machine).phoneDisplay ?? null) : null}
+    />
+  ) : null;
   return (
     <section aria-label={label} className="computer-watch">
       <header className="computer-watch__bar surface-row" ref={toolbarRef}>

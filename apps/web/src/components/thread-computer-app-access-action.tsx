@@ -4,14 +4,14 @@ import { useComputerAppApproval } from "./computer-apps/computer-app-approval.js
 import type { Request } from "@opensteer/core";
 import { fullAccessOnThisMac, mutationIdempotencyKey } from "@opensteer/client/host";
 import { computerAppAccessApproval, computerUseAccessLabel } from "@opensteer/client/integrations";
+import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { useState } from "react";
 import { hostsDeployment } from "@opensteer/client/computers";
 
 import { useShell } from "./app-shell.js";
 
 /**
- * An agent asked to use an app on a Mac, or the whole screen of an Android
- * phone.
+ * An agent asked to use an app on a Mac, or the whole screen of a phone.
  *
  * The computer owner can review and answer from this device. Decline takes
  * the pending setup request with it.
@@ -79,7 +79,7 @@ export function ThreadComputerAppAccessAction({
     setError(null);
     try {
       if (request.payload.kind !== "computer.app.access") return;
-      if (definitionId !== "android-phone") {
+      if (!isPhoneDisplayDefinitionId(definitionId)) {
         await approval.ask(request.payload.setupRequestId);
         return;
       }

@@ -372,7 +372,7 @@ function useOpenTabKeys(model: TabStore): ReadonlySet<string> {
 function GroupHead(props: { readonly group: StartPageGroup }): ReactNode {
   const { group } = props;
   const status = group.readiness === null ? null : computerNotReadyStatus(group.readiness);
-  const title = group.kind === "phone" ? `Agent Phone · ${group.label}` : group.label;
+  const title = group.kind === "phone" ? `Phone · ${group.label}` : group.label;
   return (
     <View
       accessibilityLabel={status === null ? title : `${title}, ${status.label}`}
