@@ -20,7 +20,7 @@ import type {
   ComputerUseSessionSummary,
   MachineSummary,
 } from "@opensteer/protocol";
-import { AppMark } from "./computer-apps/computer-use-section.js";
+import { AppMark } from "./computer-apps/app-icons.js";
 import { handleModalKeyDown } from "./dialog.js";
 import { Icon } from "./icon.js";
 import { PhoneControlBar, ComputerDisplayScreen, useComputerDisplay } from "./phone-display.js";

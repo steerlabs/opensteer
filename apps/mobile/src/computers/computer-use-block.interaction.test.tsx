@@ -64,6 +64,12 @@ vi.mock("../ui/sheet.js", () => ({
 }));
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+  CodeBlock: ({ text }: { text: string }) => <pre>{text}</pre>,
+  PrimaryButton: (props: { disabled?: boolean; label: string; onPress: () => void }) => (
+    <button aria-label={props.label} disabled={props.disabled} onClick={props.onPress}>
+      {props.label}
+    </button>
+  ),
   Notice: ({ detail, title }: { detail: string; title: string }) => (
     <div>
       <strong>{title}</strong>

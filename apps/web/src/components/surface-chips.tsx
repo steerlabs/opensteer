@@ -4,7 +4,7 @@ import { Link, useLocation } from "react-router";
 import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 import type { RunPage, TabDestination, TurnApp, TurnPhone } from "@opensteer/client/host";
 import type { ComputerAppIdentity } from "@opensteer/protocol";
-import { AppMark } from "./computer-apps/computer-use-section.js";
+import { AppMark } from "./computer-apps/app-icons.js";
 import { Icon } from "./icon.js";
 import { Popover } from "./popover.js";
 import { SiteMark } from "./site-mark.js";

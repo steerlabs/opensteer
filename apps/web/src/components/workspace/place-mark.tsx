@@ -1,7 +1,7 @@
 import { memo } from "react";
 import { type HostClient, type PlaceItem } from "@opensteer/client/host";
 import { useTabIcon } from "@opensteer/client/react";
-import { AppMark } from "../computer-apps/computer-use-section.js";
+import { AppMark } from "../computer-apps/app-icons.js";
 import { Icon } from "../icon.js";
 import { SiteMark } from "../site-mark.js";
 
