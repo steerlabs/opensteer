@@ -6,12 +6,11 @@ import {
   DeploymentAccessSnapshotSchema,
   type OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
-import { readComputerFacts } from "../../desktop/computer-facts.js";
+import { ComputerFactsStore, type ComputerFacts } from "../../desktop/computer-facts.js";
 import type { DesktopPlaces } from "../../desktop/places-context.js";
 import { mount, element, click } from "./workspace.interaction.test-support.js";
 
-vi.mock("../../desktop/computer-facts.js", () => ({ readComputerFacts: vi.fn() }));
-const readFacts = vi.mocked(readComputerFacts);
+const readFacts = vi.fn<(computer: { readonly id: string }) => Promise<ComputerFacts>>();
 let places: DesktopPlaces | null = null;
 vi.mock("../../desktop/places-context.js", async (original) => ({
   ...(await original<typeof import("../../desktop/places-context.js")>()),
@@ -42,7 +41,7 @@ function desktop(expired = false) {
     unread: false,
     teams: [{ id: teamId, name: "Acme", mentions: 7 }],
   };
-  readFacts.mockImplementation(async (_bridge, computer) =>
+  readFacts.mockImplementation(async (computer) =>
     computer.id === id ? { ...facts } : { homeName: null, needsYou: 0, unread: true, teams: [] },
   );
   const select = vi.fn(async () => undefined);
@@ -55,6 +54,7 @@ function desktop(expired = false) {
       checkDeployments,
       signIn,
     } as unknown as OpensteerDesktopBridge,
+    facts: new ComputerFactsStore(readFacts),
     onAddPlace,
     snapshot: DeploymentAccessSnapshotSchema.parse({
       account: {
@@ -147,8 +147,9 @@ it("desktop shows computers with team and attention facts, then closes on select
     row.textContent?.includes("Lab Mac"),
   )!;
   expect(lab.textContent).toContain("Acme");
-  expect(lab.querySelector('[aria-label="7 mentions in Acme"]')).not.toBeNull();
-  expect(lab.querySelector('[aria-label="3 requests need you"]')).not.toBeNull();
+  expect(lab.querySelector(".place-row__detail")?.textContent).toContain("Acme");
+  expect(lab.querySelector('[aria-label="7 mentions"]')).not.toBeNull();
+  expect(lab.querySelector('[aria-label="3 need you"]')).not.toBeNull();
   expect(computers.querySelector('[aria-label="Unread task results"]')).not.toBeNull();
   expect(document.body.textContent).not.toContain("Acme server");
   expect(document.body.textContent).not.toContain("Projects");
@@ -159,12 +160,19 @@ it("desktop shows computers with team and attention facts, then closes on select
 
   fixture.facts.needsYou = 1;
   await act(async () => window.dispatchEvent(new Event("focus")));
-  expect(lab.querySelector('[aria-label="1 requests need you"]')).not.toBeNull();
+  expect(lab.querySelector('[aria-label="1 need you"]')).not.toBeNull();
   await click(lab);
   expect(fixture.select).toHaveBeenCalledWith({ deploymentId: fixture.id });
   expect(document.querySelector(".popover")).toBeNull();
   expect(document.activeElement).toBe(element(".sidebar__place"));
+  // Reopened, the menu draws what each computer said last while it asks again.
+  readFacts.mockImplementation(() => new Promise<never>(() => undefined));
   await openMenu();
+  const reopened = [...document.querySelectorAll<HTMLButtonElement>(".popover .place-row")].find(
+    (row) => row.textContent?.includes("Lab Mac"),
+  )!;
+  expect(reopened.querySelector(".place-row__detail")?.textContent).toContain("Acme");
+  expect(reopened.querySelector('[aria-label="1 need you"]')).not.toBeNull();
   const add = [...document.querySelectorAll<HTMLButtonElement>(".popover button")].find(
     (button) => button.textContent === "Add a computer or server",
   );

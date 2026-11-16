@@ -361,7 +361,7 @@ function followed(before: Layout, after: Layout, dy: number): boolean {
 
 async function openWorld(
   options: {
-    readonly world?: "busy" | "stress";
+    readonly world?: "busy" | "stress" | "first-run";
     readonly team?: boolean;
     readonly height?: number;
     readonly width?: number;
@@ -473,7 +473,8 @@ async function openWorld(
   if (options.world) query.set("mock-world", options.world);
   if (options.team) query.set("mock-team", "");
   await page.goto(`${web.origin}/?${query}`);
-  await ready(page);
+  // A first run has no tasks to wait for.
+  await ready(page, options.world !== "first-run");
   return { context, page, errors };
 }
 
@@ -490,9 +491,9 @@ async function quiet(page: Page) {
 }
 
 /** Loaded, the world's own motion stopped, and the lists fitted. */
-async function ready(page: Page) {
+async function ready(page: Page, tasks = true) {
   await page.locator(".side-section--tabs .side-list > li").first().waitFor();
-  await page.locator(".side-section--tasks .side-list > li").first().waitFor();
+  if (tasks) await page.locator(".side-section--tasks .side-list > li").first().waitFor();
   // The world stops moving on its own, so every change is one a check makes.
   await page.evaluate(() =>
     (Reflect.get(window, "opensteerMock") as { scriptPlaces(): unknown }).scriptPlaces(),
@@ -684,12 +685,12 @@ try {
     const done = await layout(page);
     await page.getByRole("button", { name: "Back to Tasks" }).click();
     await page.locator("#sidebar-tasks", { hasText: "Tasks" }).waitFor();
-    await page.locator(".side-switch__option").nth(1).click();
+    await page.locator(`.side-switch [role="radio"]:not([data-value="tasks"])`).click();
     await page.locator(".side-section--tasks[aria-label='Team']").waitFor();
     await settle(page);
     const team = await layout(page);
     await shot(page, "02-team.png");
-    await page.locator(".side-switch__option").first().click();
+    await page.locator(`.side-switch [role="radio"][data-value="tasks"]`).click();
     await page.locator("#sidebar-tasks").waitFor();
     await settle(page);
     const back = await layout(page);
@@ -1148,42 +1149,53 @@ try {
   expectThat({ errors }, errors.length === 0, `page errors: ${errors.join("; ")}`);
   await context.close();
 
-  await check("with every tab in view, the line can shrink Tabs but not grow it", async () => {
-    const tall = await openWorld({ height: 2000 });
+  await check("with every tab in view, as on a first run, the line still grows Tabs", async () => {
+    const fitted = await openWorld({ world: "first-run" });
     try {
-      // Asked for more height than its rows take, Tabs shows them all.
-      await tall.page.evaluate((key) => localStorage.setItem(key, "5000"), heightKey);
-      await tall.page.reload();
-      await ready(tall.page);
-      const state = await layout(tall.page);
-      await dragLine(tall.page, -120);
-      const after = await layout(tall.page);
-      await shot(tall.page, "09-all-in-view.png");
+      const state = await layout(fitted.page);
       expectThat(
-        { tabs: state.tabs.overflows },
-        !state.tabs.overflows,
-        "this check needs every tab in view",
+        { whole: state.tabs.whole, overflows: state.tabs.overflows, stored: state.stored },
+        state.tabs.whole <= 2 && !state.tabs.overflows && state.stored === null,
+        "this check needs Tabs fitted to a row or two, every one in view",
       );
+      expectThat({ line: state.line }, state.line?.fixed === false, "the line is fixed");
+      await dragLine(fitted.page, -200);
+      const grown = await layout(fitted.page);
+      await shot(fitted.page, "09-first-run-grown.png");
       expectThat(
-        { stored: after.stored, height: [state.tabsHeight, after.tabsHeight] },
-        after.stored === 5000 && Math.abs(after.tabsHeight - state.tabsHeight) < 0.5,
-        "Tabs grew past its rows",
+        { height: [state.tabsHeight, grown.tabsHeight] },
+        Math.abs(grown.tabsHeight - state.tabsHeight - 200) < 1,
+        "Tabs did not grow with the line",
       );
-      await dragLine(tall.page, 80);
-      const shrunk = await layout(tall.page);
+      keptAsShown(grown, "grown");
+      describedAsShown(grown, "grown");
+      await dragLine(fitted.page, 80);
+      const shrunk = await layout(fitted.page);
       expectThat(
-        { height: [state.tabsHeight, shrunk.tabsHeight] },
-        shrunk.tabsHeight < state.tabsHeight - 0.5,
-        "Tabs did not shrink",
+        { height: [grown.tabsHeight, shrunk.tabsHeight] },
+        Math.abs(grown.tabsHeight - 80 - shrunk.tabsHeight) < 1,
+        "Tabs did not shrink with the line",
       );
       keptAsShown(shrunk, "shrunk");
-      describedAsShown(state, "with every tab in view");
-      expectThat({ errors: tall.errors }, tall.errors.length === 0, "page errors");
-      return { before: state.tabsHeight, shrunk: shrunk.tabsHeight };
+      expectThat({ errors: fitted.errors }, fitted.errors.length === 0, "page errors");
+      return { from: state.tabsHeight, grown: grown.tabsHeight, shrunk: shrunk.tabsHeight };
     } finally {
-      await tall.context.close();
+      await fitted.context.close();
     }
   });
+
+  /** Shows only tabs with agents, or clears that. */
+  const filterTabs = async (page: Page, on: boolean) => {
+    if (on) {
+      await page.getByRole("button", { name: "Filter tabs", exact: true }).click();
+      await page.getByRole("menuitemradio", { name: "Tabs with agents" }).click();
+      await page.getByRole("button", { name: "Filter tabs: Tabs with agents" }).waitFor();
+    } else {
+      await page.getByRole("button", { name: "Clear tab filter" }).click();
+      await page.getByRole("button", { name: "Filter tabs", exact: true }).waitFor();
+    }
+    await settle(page);
+  };
 
   await check(
     "a tab filter draws fewer rows in the same box, the line where it stood",
@@ -1195,15 +1207,10 @@ try {
         await page.reload();
         await ready(page);
         const before = await layout(page);
-        await page.getByRole("button", { name: "Filter tabs", exact: true }).click();
-        await page.getByRole("menuitemradio", { name: "Tabs with agents" }).click();
-        await page.getByRole("button", { name: "Filter tabs: Tabs with agents" }).waitFor();
-        await settle(page);
+        await filterTabs(page, true);
         const filtered = await layout(page);
         await shot(page, "10-tabs-with-agents.png");
-        await page.getByRole("button", { name: "Clear tab filter" }).click();
-        await page.getByRole("button", { name: "Filter tabs", exact: true }).waitFor();
-        await settle(page);
+        await filterTabs(page, false);
         const cleared = await layout(page);
         expectThat(
           { tasks: before.tasks, tabs: [before.tabs, filtered.tabs] },
@@ -1222,6 +1229,53 @@ try {
         };
       } finally {
         await filtering.context.close();
+      }
+    },
+  );
+
+  await check(
+    "Tabs not yet sized keeps the box it fitted through a filter, and through a reset under it",
+    async () => {
+      const fitted = await openWorld();
+      const { page } = fitted;
+      try {
+        const before = await layout(page);
+        // A filter that leaves fewer rows than Tabs' default box holds.
+        await page.getByRole("button", { name: "Filter tabs", exact: true }).click();
+        const options = page.getByRole("menuitemradio");
+        const counts = await options.evaluateAll((items) =>
+          items.map((item) =>
+            item.getAttribute("aria-checked") === "true"
+              ? 0
+              : Number.parseInt(item.getAttribute("aria-description") ?? "", 10),
+          ),
+        );
+        const narrow = counts.findIndex((count) => count >= 1 && count <= 3);
+        expectThat({ counts }, narrow >= 0, "this check needs a filter leaving one to three tabs");
+        await options.nth(narrow).click();
+        await page.getByRole("button", { name: "Clear tab filter" }).waitFor();
+        await settle(page);
+        const filtered = await layout(page);
+        expectThat(
+          { stored: before.stored, whole: [before.tabs.whole, filtered.tabs.whole] },
+          before.stored === null && filtered.tabs.whole < before.tabs.whole,
+          "this check needs Tabs not yet sized, and the filter to draw fewer rows",
+        );
+        tabsStill(before, { ...filtered, tabs: before.tabs }, "filtered");
+        await dragLine(page, -60);
+        const { line } = await layout(page);
+        await page.mouse.dblclick(line!.x, line!.y + 2);
+        await settle(page);
+        const reset = await layout(page);
+        expectThat({ stored: reset.stored }, reset.stored === null, "the reset kept a height");
+        tabsStill(before, { ...reset, tabs: before.tabs }, "reset while filtered");
+        await filterTabs(page, false);
+        const cleared = await layout(page);
+        tabsStill(before, cleared, "the filter cleared");
+        expectThat({ errors: fitted.errors }, fitted.errors.length === 0, "page errors");
+        return { before: before.tabsHeight, rows: [before.tabs.whole, filtered.tabs.whole] };
+      } finally {
+        await fitted.context.close();
       }
     },
   );
