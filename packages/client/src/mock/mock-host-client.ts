@@ -6402,11 +6402,6 @@ class MockHostState {
     };
     const firstRun = options.world === "first-run";
     this.snapshot = firstRun ? firstRunWorld(initial) : initial;
-    if (!firstRun && options.iphoneScreen !== "absent")
-      this.setIphoneScreenState(
-        options.iphoneScreen ?? "ready",
-        options.iphoneScreenHolding ?? false,
-      );
     this.applyAutomaticEligibility();
     for (const thread of this.snapshot.threads) {
       if (thread.icon === null && thread.purpose === "task") this.#provisionalIcons.add(thread.id);
@@ -6645,6 +6640,11 @@ class MockHostState {
         this.teamAsks,
       ),
     };
+    if (!firstRun && options.iphoneScreen !== "absent")
+      this.setIphoneScreenState(
+        options.iphoneScreen ?? "ready",
+        options.iphoneScreenHolding ?? false,
+      );
   }
 
   private readonly acceptedCommands = new Map<
