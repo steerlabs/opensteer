@@ -199,8 +199,6 @@ routing, and Watch never receives them ([Passwords](passwords.md#filling-for-peo
 
 ## Profile state
 
-Browser runtimes reach the Host only through their Runner's relay, never by a Host-minted address; the Host records a native profile's first readiness when its session becomes ready, and the owning device refuses to recreate a profile it already created.
-
 Profile listing, opening, CDP and tab reach follow the [Run resource authority
 rule](agent-orchestration.md#run-tool-authority); driving needs `read-write`. Only people create
 profiles; an agent asks with a browser-access Request. Private profile access is decided for the personal owner and current caller ceiling, never
@@ -220,8 +218,12 @@ its own storage when it learns of removal or leaves, including at sign-out.
 
 A profile's home and established storage identity are fixed. Missing directories, sentinels or
 cookie mirrors refuse open while preserving what remains; never create an empty replacement or
-fall back to another computer or Guest. An engine-owned directory never moves. There is no portable
-snapshot, sync or profile Vault key
+fall back to another computer or Guest. The owning device keeps its own record of every profile it
+created, so it refuses a missing one even before the Host knows it exists. The Host records that
+fact when the profile's first session becomes ready, before anyone can use it. A browser runtime
+reaches the Host only through its Runner's relay, never by an address the Host mints: the Host's
+own origin is usually loopback, which on another computer is that computer. An engine-owned
+directory never moves. There is no portable snapshot, sync or profile Vault key
 ([storage contract](../packages/protocol/src/browser-profile-storage.ts)).
 
 Electron roots live under `sessionData`, outside disposable Runner slots, because the Network
