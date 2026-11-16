@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { WindowIdSchema, OpensteerError } from "@opensteer/core";
 import { productToolOutput } from "./tool-output.js";
 import {
@@ -559,14 +560,14 @@ describeStore("agents answering task questions", (it) => {
       "device.access": {
         kind: "device.access",
         reason,
-        machineId: s.f.runnerId,
+        machineId: DeviceIdSchema.parse(s.f.runnerId),
         machineName: "Mac",
         access: "files",
       },
       "machine.full-disk-access": {
         kind: "machine.full-disk-access",
         reason,
-        machineId: s.f.runnerId,
+        machineId: DeviceIdSchema.parse(s.f.runnerId),
         machineName: "Mac",
       },
       "computer.app.access": {
@@ -575,7 +576,7 @@ describeStore("agents answering task questions", (it) => {
         access: "read",
         app: null,
         definitionId: "android-phone",
-        runnerId: s.f.runnerId,
+        deviceId: DeviceIdSchema.parse(s.f.runnerId),
         setupRequestId: randomUUID(),
       },
       "integration.input": {
@@ -905,7 +906,10 @@ async function place(
     {
       id,
       ownerId: f.userId,
-      computerId: value.kind === "browser" ? f.runnerId : value.machineId,
+      computerId:
+        value.kind === "browser"
+          ? await storeFixture.store.requireSelfDeviceId(f.runnerId)
+          : value.machineId,
       kind: value.kind === "browser" ? "page" : value.kind === "app" ? "window" : "phone",
       title,
       openedBy: "person",
@@ -1706,8 +1710,8 @@ describeStore("shaped agent task tools", (it) => {
       runtimeId: "test",
     });
     const values: PlaceIdentity[] = [
-      { kind: "app", machineId: nativeRunner, appKey: "com.apple.finder" },
-      { kind: "phone", machineId: nativeRunner, display: "main" },
+      { kind: "app", machineId: DeviceIdSchema.parse(nativeRunner), appKey: "com.apple.finder" },
+      { kind: "phone", machineId: DeviceIdSchema.parse(nativeRunner), display: "main" },
       { kind: "browser", sessionId, surfaceId: BrowserSurfaceIdSchema.parse("shared") },
       {
         kind: "browser",
@@ -2211,7 +2215,7 @@ describeStore("shaped agent task tools", (it) => {
       {
         id: tabId,
         ownerId: f.userId,
-        computerId: f.runnerId,
+        computerId: DeviceIdSchema.parse(f.runnerId),
         kind: "page",
         title: "Guest",
         url: "https://example.com",

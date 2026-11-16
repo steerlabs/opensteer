@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { createId, type AuthSessionId, type RunnerId, type UserId } from "@opensteer/core";
 import {
@@ -149,9 +150,9 @@ function leave(target: ReturnType<typeof identity>) {
 }
 async function policy(runnerId: RunnerId) {
   return db
-    .selectFrom("runners")
-    .select(["accessPolicy", "accessPolicyRevision", "revokedAt"])
-    .where("id", "=", runnerId)
+    .selectFrom("devices")
+    .select(["accessPolicy", "accessPolicyRevision", "removedAt as revokedAt"])
+    .where("id", "=", DeviceIdSchema.parse(runnerId))
     .executeTakeFirstOrThrow();
 }
 

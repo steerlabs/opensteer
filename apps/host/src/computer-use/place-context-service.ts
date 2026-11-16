@@ -19,7 +19,7 @@ interface PlaceContextDependencies {
   readonly computerUse: Pick<ComputerUseService, "eligibleInventory" | "sessionsForRunner">;
   readonly connections: Pick<IntegrationStore, "listConnections">;
   readonly integrations: Pick<IntegrationPlatformService, "listCallableTools">;
-  readonly store: Pick<OpensteerStore, "hasHumanIncludedPlace">;
+  readonly store: Pick<OpensteerStore, "hasHumanIncludedPlace" | "getDeviceSelfRunnerId">;
 }
 
 /** References are checked against current authority, without opening or borrowing a session. */
@@ -48,7 +48,7 @@ export class PlaceContextService {
     );
     if (!native.length) return;
     const inventory = await this.#dependencies.computerUse.eligibleInventory(input.ownerId);
-    for (const part of native) this.#assertNamed(inventory, part);
+    for (const part of native) await this.#assertNamed(inventory, part);
   }
 
   /** What a forwarded place must prove: its target may use it now, as a call would. */
@@ -74,7 +74,7 @@ export class PlaceContextService {
       threadId: input.threadId,
     });
     for (const part of native) {
-      const machine = this.#assertNamed(inventory, part);
+      const machine = await this.#assertNamed(inventory, part);
       if (!machine.ready)
         throw new OpensteerError({
           code: "conflict",
@@ -84,7 +84,7 @@ export class PlaceContextService {
         const allowedThread =
           input.busyThreadId === undefined ? input.threadId : input.busyThreadId;
         const held = this.#dependencies.computerUse
-          .sessionsForRunner(part.machineId)
+          .sessionsForRunner(machine.runnerId)
           .some((session) => session.display && session.threadId !== allowedThread);
         if (held)
           throw new OpensteerError({
@@ -96,7 +96,7 @@ export class PlaceContextService {
       const connection = connections.find(
         (candidate) =>
           candidate.status === "connected" &&
-          candidate.computer?.runnerId === part.machineId &&
+          candidate.computer?.runnerId === machine.runnerId &&
           !candidate.computer.blockedAt &&
           (part.type === "computer-app"
             ? candidate.definitionId === "macos-app" &&
@@ -119,12 +119,13 @@ export class PlaceContextService {
     }
   }
 
-  #assertNamed(
+  async #assertNamed(
     inventory: ComputerUseInventory,
     part: Extract<ContentPart, { readonly type: "computer-app" | "phone" }>,
-  ): ComputerUseInventory["machines"][number] {
+  ): Promise<ComputerUseInventory["machines"][number]> {
+    const runnerId = await this.#dependencies.store.getDeviceSelfRunnerId(part.machineId);
     const machine = (part.type === "phone" ? inventory.phones : inventory.machines).find(
-      (candidate) => candidate.runnerId === part.machineId,
+      (candidate) => candidate.runnerId === runnerId,
     );
     if (!machine)
       throw new OpensteerError({

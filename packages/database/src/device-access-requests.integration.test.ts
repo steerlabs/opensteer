@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { startPersonalQueuedRunFixture } from "./personal-run-fixture.test-support.js";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { createId, type RunnerId } from "@opensteer/core";
@@ -102,7 +103,7 @@ function ask(
   return f.store.requests.createDeviceAccessRequest(
     {
       callId,
-      machineId,
+      machineId: DeviceIdSchema.parse(machineId),
       access,
       reason: "Read the task's files",
       originatingRunId: run.run.id,
@@ -298,9 +299,9 @@ describeStore("device access Requests", (it) => {
       reason: "device-access-on",
     });
     await f.database
-      .updateTable("runners")
+      .updateTable("devices")
       .set({ ownerKind: "deployment", ownerUserId: null })
-      .where("id", "=", target)
+      .where("id", "=", DeviceIdSchema.parse(target))
       .execute();
     await expect(ask(f, run, target, "not-owned", "apps")).rejects.toMatchObject({
       code: "forbidden",
@@ -427,13 +428,13 @@ describeStore("device access Requests", (it) => {
     const nextTarget = await device(f, run);
     const next = await ask(f, run, nextTarget, "authority");
     await f.database
-      .updateTable("runners")
+      .updateTable("devices")
       .set({ ownerKind: "deployment", ownerUserId: null })
-      .where("id", "=", nextTarget)
+      .where("id", "=", DeviceIdSchema.parse(nextTarget))
       .execute();
     const { fulfillDeviceAccessRequestsInTransaction } = await import("./request-store.js");
     await withPersonalTransaction(f.database, (tx) =>
-      fulfillDeviceAccessRequestsInTransaction(tx, nextTarget, {
+      fulfillDeviceAccessRequestsInTransaction(tx, DeviceIdSchema.parse(nextTarget), {
         ...machineAccessPolicyDefault,
         browser: true,
       }),

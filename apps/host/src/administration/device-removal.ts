@@ -93,7 +93,11 @@ export async function signOutDeviceSession(
     const remove = () =>
       dependencies.store.revokeDeviceSession({ sessionId, userId: session.user.id });
     const result = binding?.deviceId
-      ? await withRemovalAdmission(dependencies, binding.deviceId, remove)
+      ? await withRemovalAdmission(
+          dependencies,
+          await dependencies.store.requireDeviceSelfRunnerId(binding.deviceId),
+          remove,
+        )
       : await remove();
     if (result.removed && result.runnerId)
       await finishRemoval(dependencies, result.runnerId, result.removed, afterResponse);

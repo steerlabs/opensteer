@@ -1663,10 +1663,18 @@ export class IntegrationPlatformService {
     readonly installationId: IntegrationInstallationId;
     readonly requestId: string;
   }): Promise<IntegrationUninstallOutcome> {
-    const runnerIds = await this.#store.listComputerRunnerIdsForInstallation(input.installationId);
+    const deviceIds = await this.#store.listComputerDeviceIdsForInstallation(input.installationId);
+    const runnerIds = (
+      await Promise.all(deviceIds.map((id) => this.#store.getDeviceSelfRunnerId(id)))
+    ).filter((id): id is RunnerId => id !== null);
     const mutation = await this.#withRunnerAdmissions(runnerIds, async () => {
       const removed = await this.#store.uninstall(input);
-      endComputerUseSessions(this.#computerUse, this.#definitions, removed.removedApps);
+      await endComputerUseSessions(
+        this.#computerUse,
+        this.#definitions,
+        removed.removedApps,
+        (id) => this.#store.getDeviceSelfRunnerId(id),
+      );
       return removed;
     });
     this.#publishRequestEvents(mutation.requestEvents);
@@ -2968,11 +2976,16 @@ export class IntegrationPlatformService {
                 app: scope.app.displayName,
                 bundleId: scope.app.bundleId,
                 computer: connection.runnerName,
-                runnerId: connection.runnerId,
+                runnerId: await this.#store.requireSelfDeviceId(connection.runnerId),
               }
             : null,
         ...(scope.kind === "display"
-          ? { phone: { computer: connection.runnerName, runnerId: connection.runnerId } }
+          ? {
+              phone: {
+                computer: connection.runnerName,
+                runnerId: await this.#store.requireSelfDeviceId(connection.runnerId),
+              },
+            }
           : {}),
         effect: catalogOperation.effect,
         integration: callable.installation.title,
@@ -3222,6 +3235,7 @@ export class IntegrationPlatformService {
       return bindNativeTab(
         {
           tabs: this.#tabs,
+          selfDeviceId: (runnerId) => this.#store.requireSelfDeviceId(runnerId),
           lookup: this.#nativeTabTarget,
           connections: async () => {
             const rows = await this.listCallableTools({

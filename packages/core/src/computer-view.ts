@@ -1,5 +1,6 @@
+import { DeviceIdSchema } from "./devices.js";
 import { z } from "zod";
-import { RunnerIdSchema, UserIdSchema } from "./ids.js";
+import { UserIdSchema } from "./ids.js";
 import { IsoDateTimeSchema } from "./models.js";
 import { ComputerAppIdentitySchema } from "./computer-app.js";
 
@@ -52,7 +53,7 @@ export const ComputerViewRecordSchema = z
   .strictObject({
     ownerUserId: UserIdSchema,
     connectionId: z.string().min(1).max(255),
-    machineId: RunnerIdSchema,
+    machineId: DeviceIdSchema,
     target: ComputerViewTargetSchema,
     window: ComputerViewWindowSchema.nullable().default(null),
     viewId: ComputerViewIdSchema,

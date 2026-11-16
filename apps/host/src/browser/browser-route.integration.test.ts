@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { hostApiVersionHeader } from "@opensteer/protocol";
 import { browserRows } from "./browser-rows.test-support.js";
@@ -335,9 +336,9 @@ integration("Host browser broker vertical", () => {
         },
       );
       const before = await runtime.store.database
-        .selectFrom("runners")
+        .selectFrom("devices")
         .select(["accessPolicy", "accessPolicyRevision"])
-        .where("id", "=", browserRuntime.runnerId)
+        .where("id", "=", DeviceIdSchema.parse(browserRuntime.runnerId))
         .executeTakeFirstOrThrow();
       await testRpcData(
         origin,

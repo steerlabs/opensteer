@@ -1,3 +1,5 @@
+import { DEVICE_DRIVERS_SQL, deviceDriversMigrationName } from "./device-model-migration.js";
+export { deviceDriversMigrationName } from "./device-model-migration.js";
 import { TABS_AND_APPS_SQL, tabsAndAppsMigrationName } from "./tabs-apps-migration.js";
 export { tabsAndAppsMigrationName } from "./tabs-apps-migration.js";
 import { localMachineOwnerEmail } from "@opensteer/core";
@@ -298,6 +300,11 @@ export function migrationProvider(): MigrationProvider {
         [tabsAndAppsMigrationName]: {
           async up(database) {
             await sql.raw(TABS_AND_APPS_SQL).execute(database);
+          },
+        },
+        [deviceDriversMigrationName]: {
+          async up(database) {
+            await sql.raw(DEVICE_DRIVERS_SQL).execute(database);
           },
         },
       };

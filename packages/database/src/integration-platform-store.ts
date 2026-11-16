@@ -17,6 +17,19 @@ export * from "./local-mcp-server-store.js";
 
 /** Stable facade over aggregate-specific integration persistence stores. */
 export class IntegrationPlatformStore {
+  readonly getDeviceSelfRunnerId: IntegrationConnectionAuthStore["getDeviceSelfRunnerId"];
+  readonly requireSelfDeviceId: IntegrationConnectionAuthStore["requireSelfDeviceId"];
+  readonly requireDeviceSelfRunnerId: IntegrationConnectionAuthStore["requireDeviceSelfRunnerId"];
+  readonly getDeviceComputerUsePolicy: IntegrationConnectionAuthStore["getDeviceComputerUsePolicy"];
+  readonly setDeviceComputerUsePolicy: IntegrationConnectionAuthStore["setDeviceComputerUsePolicy"];
+  readonly listDeviceComputerAppSetupRequests: IntegrationConnectionAuthStore["listDeviceComputerAppSetupRequests"];
+  readonly getDeviceComputerAppSetupRequest: IntegrationConnectionAuthStore["getDeviceComputerAppSetupRequest"];
+  readonly requestDeviceComputerAppSetup: IntegrationConnectionAuthStore["requestDeviceComputerAppSetup"];
+  readonly cancelDeviceComputerAppSetup: IntegrationConnectionAuthStore["cancelDeviceComputerAppSetup"];
+  readonly expireDeviceComputerAppSetupRequests: IntegrationConnectionAuthStore["expireDeviceComputerAppSetupRequests"];
+  readonly setDeviceComputerConnection: IntegrationConnectionAuthStore["setDeviceComputerConnection"];
+  readonly approveDeviceComputerAppAutomatically: IntegrationConnectionAuthStore["approveDeviceComputerAppAutomatically"];
+  readonly getDeviceComputerConnectionForCall: IntegrationConnectionAuthStore["getDeviceComputerConnectionForCall"];
   readonly computerOperations: ComputerOperationStore;
   readonly connections: IntegrationConnectionAuthStore;
   readonly grants: IntegrationGrantStore;
@@ -27,6 +40,7 @@ export class IntegrationPlatformStore {
   readonly install: IntegrationInstallStore["install"];
   readonly uninstall: IntegrationInstallStore["uninstall"];
   readonly listInstallations: IntegrationInstallStore["listInstallations"];
+  readonly listComputerDeviceIdsForInstallation: IntegrationInstallStore["listComputerDeviceIdsForInstallation"];
   readonly listComputerRunnerIdsForInstallation: IntegrationInstallStore["listComputerRunnerIdsForInstallation"];
   readonly listDiscoveryInventory: IntegrationInstallStore["listDiscoveryInventory"];
   readonly listServers: IntegrationInstallStore["listServers"];
@@ -41,6 +55,7 @@ export class IntegrationPlatformStore {
   readonly cancelComputerAppSetup: IntegrationConnectionAuthStore["cancelComputerAppSetup"];
   readonly expireComputerAppSetupRequests: IntegrationConnectionAuthStore["expireComputerAppSetupRequests"];
   /** A task's ask for one app on one Mac: the Request and its approval, together. */
+  readonly requestDeviceComputerAppAccess: RequestStore["requestDeviceComputerAppAccess"];
   readonly requestComputerAppAccess: RequestStore["requestComputerAppAccess"];
   readonly declineComputerAppAccessRequest: RequestStore["declineComputerAppAccessRequest"];
   readonly computerAppRunner: IntegrationConnectionAuthStore["computerAppRunner"];
@@ -76,13 +91,50 @@ export class IntegrationPlatformStore {
     this.specialists = new SpecialistStore(database);
     this.computerOperations = new ComputerOperationStore(database);
     this.connections = new IntegrationConnectionAuthStore(database);
+    this.getDeviceSelfRunnerId = this.connections.getDeviceSelfRunnerId.bind(this.connections);
+    this.requireSelfDeviceId = this.connections.requireSelfDeviceId.bind(this.connections);
+    this.requireDeviceSelfRunnerId = this.connections.requireDeviceSelfRunnerId.bind(
+      this.connections,
+    );
+    this.getDeviceComputerUsePolicy = this.connections.getDeviceComputerUsePolicy.bind(
+      this.connections,
+    );
+    this.setDeviceComputerUsePolicy = this.connections.setDeviceComputerUsePolicy.bind(
+      this.connections,
+    );
+    this.listDeviceComputerAppSetupRequests =
+      this.connections.listDeviceComputerAppSetupRequests.bind(this.connections);
+    this.getDeviceComputerAppSetupRequest = this.connections.getDeviceComputerAppSetupRequest.bind(
+      this.connections,
+    );
+    this.requestDeviceComputerAppSetup = this.connections.requestDeviceComputerAppSetup.bind(
+      this.connections,
+    );
+    this.cancelDeviceComputerAppSetup = this.connections.cancelDeviceComputerAppSetup.bind(
+      this.connections,
+    );
+    this.expireDeviceComputerAppSetupRequests =
+      this.connections.expireDeviceComputerAppSetupRequests.bind(this.connections);
+    this.setDeviceComputerConnection = this.connections.setDeviceComputerConnection.bind(
+      this.connections,
+    );
+    this.approveDeviceComputerAppAutomatically =
+      this.connections.approveDeviceComputerAppAutomatically.bind(this.connections);
+    this.getDeviceComputerConnectionForCall =
+      this.connections.getDeviceComputerConnectionForCall.bind(this.connections);
+
     this.grants = new IntegrationGrantStore(database);
     this.installations = new IntegrationInstallStore(database);
     this.localMcp = new LocalMcpServerStore(database);
     this.requests = new RequestStore(database);
+    this.requestDeviceComputerAppAccess = this.requests.requestDeviceComputerAppAccess.bind(
+      this.requests,
+    );
     this.install = this.installations.install.bind(this.installations);
     this.uninstall = this.installations.uninstall.bind(this.installations);
     this.listInstallations = this.installations.listInstallations.bind(this.installations);
+    this.listComputerDeviceIdsForInstallation =
+      this.installations.listComputerDeviceIdsForInstallation.bind(this.installations);
     this.listComputerRunnerIdsForInstallation =
       this.installations.listComputerRunnerIdsForInstallation.bind(this.installations);
     this.listDiscoveryInventory = this.installations.listDiscoveryInventory.bind(

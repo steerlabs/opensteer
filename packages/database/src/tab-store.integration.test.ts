@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { TabIdSchema, WindowIdSchema } from "@opensteer/core";
 import { createBrowserSessionId } from "@opensteer/protocol";
 import { sql } from "kysely";
@@ -38,7 +39,7 @@ integration("workspace tabs", () => {
     const write = (kind: "phone" | "app" | "window", extra: Partial<TabWrite> = {}): TabWrite => ({
       id: id(),
       ownerId,
-      computerId,
+      computerId: DeviceIdSchema.parse(computerId),
       kind,
       title: kind,
       openedBy: "person",
@@ -229,7 +230,7 @@ integration("workspace tabs", () => {
     const page: TabWrite = {
       id: tabId,
       ownerId,
-      computerId,
+      computerId: DeviceIdSchema.parse(computerId),
       kind: "page",
       title: "Saved",
       url: `https://example.com/saved?query=${"a".repeat(12000)}`,

@@ -1,3 +1,4 @@
+import type { RemovedComputerApp as RemovedDeviceComputerApp } from "@opensteer/database";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import {
   OpensteerError,
@@ -79,11 +80,6 @@ export type ComputerUseApprovalGateway = Pick<
 >;
 
 /** An app or a phone a removal took back, which any session holding it must stop using. */
-interface RemovedComputerApp {
-  readonly appKey: string | null;
-  readonly definitionId: string | null;
-  readonly runnerId: RunnerId;
-}
 
 /**
  * What a session holds when it holds this connection, or null for a computer
@@ -112,15 +108,18 @@ export function computerUseHoldingOf(
  * Removing an app or a phone takes its approval back, so any session holding
  * it ends now rather than running on authority nobody has any more.
  */
-export function endComputerUseSessions(
+export async function endComputerUseSessions(
   computerUse: Pick<ComputerUseService, "closeForConnection"> | null,
   definitions: readonly IntegrationDefinition[],
-  removed: readonly RemovedComputerApp[],
-): void {
+  removed: readonly RemovedDeviceComputerApp[],
+  selfRunner: (id: RemovedDeviceComputerApp["deviceId"]) => Promise<RunnerId | null>,
+): Promise<void> {
   if (!computerUse) return;
   for (const entry of removed) {
+    const runnerId = await selfRunner(entry.deviceId);
+    if (!runnerId) continue;
     const holding = computerUseHoldingOf(definitions, entry);
-    if (holding) computerUse.closeForConnection(entry.runnerId, holding);
+    if (holding) computerUse.closeForConnection(runnerId, holding);
   }
 }
 
@@ -649,7 +648,12 @@ export class ComputerAppApprovalService {
           : await this.#store.revokeComputerConnection(input);
       if (connection.connection.definitionId === androidPhoneDefinitionId)
         this.#onInputAccessWithdrawn(connection.runnerId);
-      endComputerUseSessions(this.#computerUse, this.#definitions, revoked.removedApps);
+      await endComputerUseSessions(
+        this.#computerUse,
+        this.#definitions,
+        revoked.removedApps,
+        (id) => this.#store.getDeviceSelfRunnerId(id),
+      );
       return revoked;
     });
     this.#publishRequestEvents(mutation.requestEvents);
@@ -671,7 +675,12 @@ export class ComputerAppApprovalService {
       connection.computer.runnerId,
       async () => {
         const mutation = await this.#store.blockComputerApp(input);
-        endComputerUseSessions(this.#computerUse, this.#definitions, mutation.removedApps);
+        await endComputerUseSessions(
+          this.#computerUse,
+          this.#definitions,
+          mutation.removedApps,
+          (id) => this.#store.getDeviceSelfRunnerId(id),
+        );
         return mutation;
       },
     );

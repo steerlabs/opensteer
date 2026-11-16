@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { TabIdSchema } from "@opensteer/core";
 import { TabStore } from "./tab-store.js";
 import { createId, type RunnerId, type UserId } from "@opensteer/core";
@@ -197,7 +198,7 @@ describeStore("browser profile homes", (it) => {
         {
           id: tabId,
           ownerId: run.userId,
-          computerId: home,
+          computerId: DeviceIdSchema.parse(home),
           kind: "page",
           title: "Saved",
           url: "https://example.test/",
@@ -240,7 +241,7 @@ describeStore("browser profile homes", (it) => {
       {
         id: replacementId,
         ownerId: run.userId,
-        computerId: run.runnerId,
+        computerId: DeviceIdSchema.parse(run.runnerId),
         kind: "page",
         title: "Reopened elsewhere",
         url: "https://retained.test/",
@@ -270,7 +271,7 @@ describeStore("browser profile homes", (it) => {
       await fixture.database
         .selectFrom("personalTabs")
         .select("closedAt")
-        .where("computerId", "=", home)
+        .where("computerId", "=", DeviceIdSchema.parse(home))
         .execute(),
     ).toEqual([{ closedAt: null }, { closedAt: null }]);
     expect(

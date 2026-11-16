@@ -713,7 +713,7 @@ export class ProductToolHandlers {
             : [],
         ),
       ),
-      this.#store.effectiveMachineOwners(events.flatMap((event) => machineOf(event) ?? [])),
+      this.#store.effectiveDeviceOwners(events.flatMap((event) => machineOf(event) ?? [])),
       Promise.all(requestIds.map((id) => this.#store.requests.get(id))),
       this.#readableMessages(
         caller,

@@ -1,3 +1,9 @@
+import {
+  lockDeviceRemovalInTransaction,
+  clearRemovedDeviceStopsInTransaction,
+} from "./device-removal-store.js";
+import type { DeviceId, DeviceDriverIdentity } from "@opensteer/core";
+import { upsertSelfDeviceInTransaction, getSelfDeviceId } from "./device-inventory-store.js";
 import { isDeepStrictEqual } from "node:util";
 import { canonicalRunnerPublicKeyPem } from "@opensteer/runner-auth";
 import { cancelPending } from "./request-cancellation.js";
@@ -275,14 +281,6 @@ async function activateRunnerConnection(
       message: "Runner execution environment binding is immutable",
     });
   }
-  // The first advertisement is the binding, and there is never a second one.
-  // A computer can reach here having enrolled reach-only and come back running
-  // agents: the grant already allowed it — `assertModulesWithinGrant` above
-  // refuses an agents module the enrollment never granted — and until now it
-  // simply had no environment to name.
-  if (bound.length === 0 && advertised.length > 0) {
-    await bindRunnerEnvironments(transaction, descriptor, existing.name);
-  }
   const environmentIds = bound.length === 0 ? advertised : bound;
   const seenAt = new Date();
   const row = await transaction
@@ -322,6 +320,16 @@ async function activateRunnerConnection(
       "revokedAt",
     ])
     .executeTakeFirstOrThrow(databaseOperationOptions());
+  await upsertSelfDeviceInTransaction(transaction, descriptor.runnerId);
+  // The first advertisement is the binding, and there is never a second one.
+  // A computer can reach here having enrolled reach-only and come back running
+  // agents: the grant already allowed it — `assertModulesWithinGrant` above
+  // refuses an agents module the enrollment never granted — and until now it
+  // simply had no environment to name.
+  if (bound.length === 0 && advertised.length > 0) {
+    await bindRunnerEnvironments(transaction, descriptor, existing.name);
+  }
+
   const connectionGeneration = Number(row.connectionGeneration);
   if (!Number.isSafeInteger(connectionGeneration) || connectionGeneration < 1) {
     throw new OpensteerError({
@@ -745,8 +753,6 @@ export async function listRunners(
   let query = database
     .selectFrom("runners")
     .select([
-      "accessPolicy",
-      "accessPolicyRevision",
       "deviceProfile",
       "allowedModules",
       "capabilities",
@@ -779,7 +785,27 @@ export async function listRunners(
     .orderBy("id", "asc")
     .limit(input.limit + 1)
     .execute(databaseOperationOptions());
-  const page = rows.slice(0, input.limit);
+  const devices = rows.length
+    ? await database
+        .selectFrom("devices")
+        .innerJoin("deviceDrivers", "deviceDrivers.deviceId", "devices.id")
+        .select(["deviceDrivers.runnerId", "devices.accessPolicy", "devices.accessPolicyRevision"])
+        .where("deviceDrivers.role", "=", "self")
+        .where(
+          "deviceDrivers.runnerId",
+          "in",
+          rows.map((row) => row.id),
+        )
+        .execute()
+    : [];
+  const page = rows.slice(0, input.limit).map((row) => {
+    const device = devices.find((device) => device.runnerId === row.id);
+    return {
+      ...row,
+      accessPolicy: device?.accessPolicy ?? machineAccessPolicyDefault,
+      accessPolicyRevision: device?.accessPolicyRevision ?? 1,
+    };
+  });
   const runnerIds = page.map((runner) => runner.id);
   const environments =
     runnerIds.length === 0
@@ -861,6 +887,8 @@ export async function revokeRunner(
     readonly allowOtherOwners?: boolean;
   } = {},
 ): Promise<{
+  readonly removedDeviceIds: readonly DeviceId[];
+  readonly detachedDeviceBindings: readonly DeviceDriverIdentity[];
   readonly endedSessionIds: readonly AuthSessionId[];
   readonly deletedBrowserProfiles: readonly {
     readonly id: BrowserProfileId;
@@ -948,7 +976,21 @@ export async function revokeRunner(
         (identity.ownerKind === "deployment" && options.allowDeployment) ||
         options.allowOtherOwners)
     ) {
+      const slots = await personalTransaction
+        .selectFrom("deviceDrivers")
+        .selectAll()
+        .where("runnerId", "=", runnerId)
+        .execute();
       return {
+        removedDeviceIds: slots.filter((slot) => slot.role === "self").map((slot) => slot.deviceId),
+        detachedDeviceBindings: slots
+          .filter((slot) => slot.role === "screen" && slot.detachedAt !== null)
+          .map((slot) => ({
+            deviceId: slot.deviceId,
+            role: slot.role,
+            runnerId: slot.runnerId,
+            generation: Number(slot.generation),
+          })),
         endedSessionIds: [],
         deletedBrowserProfiles: [],
         cancelledRequestIds: [],
@@ -985,6 +1027,7 @@ export async function revokeRunner(
       administrationCommand(transaction, options.administration, async () => {
         const revokedAt = new Date();
         await requireRunnerIsRevocable(transaction, runnerId);
+        const deviceEffects = await lockDeviceRemovalInTransaction(transaction, { runnerId });
         const result = await transaction
           .updateTable("runners")
           .set({
@@ -1030,6 +1073,7 @@ export async function revokeRunner(
           revokedAt,
         );
 
+        await clearRemovedDeviceStopsInTransaction(transaction, deviceEffects.removedDeviceIds);
         await recheck(transaction);
         const runEvents = await failRunsForRevokedRunner(transaction, runnerId, links);
         await transaction
@@ -1074,12 +1118,14 @@ export async function revokeRunner(
             .where("sessionId", "in", closedBrowserSessions)
             .execute(databaseOperationOptions());
         }
-        const revokedComputerConnections = await revokeComputerConnectionsInTransaction(
-          transaction,
-          {
-            runnerId,
-          },
-        );
+        const removals = [];
+        for (const deviceId of deviceEffects.removedDeviceIds)
+          removals.push(await revokeComputerConnectionsInTransaction(transaction, { deviceId }));
+        const revokedComputerConnections = {
+          cancelledRequestIds: removals.flatMap((r) => r.cancelledRequestIds),
+          requestEvents: removals.flatMap((r) => r.requestEvents),
+          connectionIds: removals.flatMap((r) => r.connectionIds),
+        };
 
         // A messaging service's accounts may move to another; a channel pinned
         // to this computer went with its app connection above.
@@ -1132,20 +1178,24 @@ export async function revokeRunner(
           reason: "resource-deleted",
           resolvedAt: revokedAt,
         });
-        await transaction
-          .selectFrom("authSessions")
-          .select("id")
-          .where("deviceId", "=", runnerId)
-          .orderBy("id")
-          // FOR UPDATE: These bound sessions are deleted below.
-          .forUpdate()
-          .execute();
-        const endedSessions = await transaction
-          .deleteFrom("authSessions")
-          .where("deviceId", "=", runnerId)
-          .returning("id")
-          .execute();
+        if (deviceEffects.removedDeviceIds.length)
+          await transaction
+            .selectFrom("authSessions")
+            .select("id")
+            .where("deviceId", "in", deviceEffects.removedDeviceIds)
+            .orderBy("id")
+            // FOR UPDATE: These bound sessions are deleted below.
+            .forUpdate()
+            .execute();
+        const endedSessions = deviceEffects.removedDeviceIds.length
+          ? await transaction
+              .deleteFrom("authSessions")
+              .where("deviceId", "in", deviceEffects.removedDeviceIds)
+              .returning("id")
+              .execute()
+          : [];
         return {
+          ...deviceEffects,
           endedSessionIds: endedSessions.map((row) => row.id),
           deletedBrowserProfiles: deletedBrowserProfiles.map(({ id, ownerId }) => ({
             id,
@@ -1203,6 +1253,13 @@ export async function renameRunner(
           message: "Active Runner not found",
         });
       }
+      const deviceId = await getSelfDeviceId(transaction, runnerId);
+      if (deviceId)
+        await transaction
+          .updateTable("devices")
+          .set({ name, updatedAt })
+          .where("id", "=", deviceId)
+          .execute();
       await transaction
         .updateTable("executionEnvironments")
         .set({
@@ -1213,7 +1270,7 @@ export async function renameRunner(
       await transaction
         .selectFrom("integrationConnections")
         .select("id")
-        .where("runnerId", "=", runnerId)
+        .where("deviceId", "=", deviceId)
         .where("connectionKind", "=", "computer")
         .where("status", "!=", "revoked")
         .orderBy("id", "asc")
@@ -1225,7 +1282,7 @@ export async function renameRunner(
           displayName: name,
           updatedAt,
         })
-        .where("runnerId", "=", runnerId)
+        .where("deviceId", "=", deviceId)
         .where("connectionKind", "=", "computer")
         .where("status", "!=", "revoked")
         .execute(databaseOperationOptions());
@@ -1814,19 +1871,6 @@ export async function enrollRunnerConnection(
       await transaction
         .insertInto("runners")
         .values({
-          accessPolicy: jsonValue(
-            enrollment.initialAccess
-              ? {
-                  ...machineAccessPolicyDefault,
-                  browser: enrollment.initialAccess.browser,
-                  apps: enrollment.initialAccess.apps,
-                  reach: enrollment.initialAccess.files ? "owner" : "nobody",
-                  commands: true,
-                  forwarding: true,
-                }
-              : machineAccessPolicyDefault,
-          ),
-          accessPolicyRevision: 1,
           allowedModules: jsonValue(enrollment.allowedModules),
           capabilities: jsonValue(input.descriptor.capabilities),
           connectionGeneration: 0,
@@ -1857,6 +1901,20 @@ export async function enrollRunnerConnection(
         .where("consumedAt", "is", null)
         .executeTakeFirstOrThrow(databaseOperationOptions());
     }
+    await upsertSelfDeviceInTransaction(
+      transaction,
+      input.descriptor.runnerId,
+      enrollment.initialAccess
+        ? {
+            ...machineAccessPolicyDefault,
+            browser: enrollment.initialAccess.browser,
+            apps: enrollment.initialAccess.apps,
+            reach: enrollment.initialAccess.files ? "owner" : "nobody",
+            commands: true,
+            forwarding: true,
+          }
+        : machineAccessPolicyDefault,
+    );
     await bindRunnerEnvironments(transaction, input.descriptor, enrollment.name);
     const connection = await activateRunnerConnection(transaction, input.descriptor);
     return connection;

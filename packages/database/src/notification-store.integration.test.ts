@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 
@@ -958,7 +959,7 @@ integration("notification decision boundary", () => {
                 requiredActor: "requester",
                 payload: {
                   kind: "machine.full-disk-access",
-                  machineId: fixture.runnerId,
+                  machineId: DeviceIdSchema.parse(fixture.runnerId),
                   machineName: "Test Mac",
                   reason: "Read files",
                 },
@@ -1917,7 +1918,7 @@ integration("notification decision boundary", () => {
         },
         {
           type: "computer-app",
-          machineId: fixture.runnerId,
+          machineId: DeviceIdSchema.parse(fixture.runnerId),
           app: {
             bundleId: "com.apple.Notes",
             displayName: "Notes",
@@ -1927,7 +1928,7 @@ integration("notification decision boundary", () => {
         },
         {
           type: "phone",
-          machineId: fixture.runnerId,
+          machineId: DeviceIdSchema.parse(fixture.runnerId),
           display: "main",
           name: "Pixel",
         },

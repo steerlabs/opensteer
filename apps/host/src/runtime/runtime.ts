@@ -740,8 +740,13 @@ export async function createHostRuntime(
     let displayStreams: DisplayStreamHub | undefined;
     let pluginPackages: PluginPackageService | undefined;
     const computerApps = new ComputerAppHub({
-      requireAgentAccess: (runnerId) =>
-        requireDeviceAccess(database, runnerId, "apps", runners.isRunnerConnected(runnerId)),
+      requireAgentAccess: async (runnerId) =>
+        requireDeviceAccess(
+          database,
+          await store.requireSelfDeviceId(runnerId),
+          "apps",
+          runners.isRunnerConnected(runnerId),
+        ),
       packageSource: (serverId, runnerId, launch) =>
         pluginPackages?.computerSource(serverId, runnerId, launch),
       knownDefinitionIds: () => computerAppDefinitionIds,
@@ -815,24 +820,28 @@ export async function createHostRuntime(
       authorizer: store,
       stops: {
         clear: (runId) => store.clearComputerUseStops(runId),
-        initial: await store.activeComputerUseStops(),
-        record: (runId, runnerId) => store.recordComputerUseStop({ runId, runnerId }),
+        initial: (
+          await Promise.all(
+            (await store.activeComputerUseStops()).map(async (stop) => {
+              const runnerId = await store.getDeviceSelfRunnerId(stop.deviceId);
+              return runnerId ? { runId: stop.runId, runnerId } : null;
+            }),
+          )
+        ).filter((stop): stop is NonNullable<typeof stop> => stop !== null),
+        record: async (runId, runnerId) =>
+          store.recordComputerUseStop({
+            runId,
+            deviceId: await store.requireSelfDeviceId(runnerId),
+          }),
       },
       onPlaceActivity: (input) => {
         void (async () => {
+          const deviceId = await store.requireSelfDeviceId(input.place.machineId);
           let query = database
             .selectFrom("personalTabs")
             .select(["id", "title"])
             .where("ownerId", "=", input.ownerId)
-            .where(
-              "computerId",
-              "=",
-              input.place.kind === "browser"
-                ? (() => {
-                    throw new Error("Expected a native target");
-                  })()
-                : input.place.machineId,
-            )
+            .where("computerId", "=", deviceId)
             .where("closedAt", "is", null);
           if (input.place.kind === "phone") query = query.where("kind", "=", "phone");
           else if (input.windowId) query = query.where("windowId", "=", input.windowId);
@@ -894,10 +903,15 @@ export async function createHostRuntime(
     };
     let logMissingBrowserActor: (sessionId: string, bindingId: string) => void = () => undefined;
     const browser = new BrowserService({
-      requireAgentAccess: (runnerId) =>
-        requireDeviceAccess(database, runnerId, "browser", runners.isRunnerConnected(runnerId)),
-      requireAgentVisibility: (runnerId) =>
-        requireDeviceAccess(database, runnerId, "browser", true),
+      requireAgentAccess: async (runnerId) =>
+        requireDeviceAccess(
+          database,
+          await store.requireSelfDeviceId(runnerId),
+          "browser",
+          runners.isRunnerConnected(runnerId),
+        ),
+      requireAgentVisibility: async (runnerId) =>
+        requireDeviceAccess(database, await store.requireSelfDeviceId(runnerId), "browser", true),
       detachRunnerAgents: async (runnerId) => {
         const sessions = await database
           .selectFrom("browserSessions")
@@ -1114,6 +1128,7 @@ export async function createHostRuntime(
     let logComputerLifecycle = (event: string, details: Readonly<Record<string, unknown>>) =>
       console.info(event, details);
     computerViews = new ComputerViewService({
+      selfDeviceId: (runnerId) => store.requireSelfDeviceId(runnerId),
       onPhoneView: (status) => app.log.info(status, "Phone owner view command"),
       hub: computerApps,
       connections: (ownerId) => integrationStore.listConnections(ownerId),
@@ -1149,12 +1164,13 @@ export async function createHostRuntime(
     });
     tabs = new TabService({
       store: tabStore,
+      devices: store,
       pages: browser.pageTabs,
       nativeTargets: nativeTabs,
       apps: { get: (owner, id) => requiredService(apps, "Apps").get(owner, id) },
       computer: async (owner, computer, db) => ({
         ...(await tabComputer(owner, computer, db)),
-        connected: runners.isRunnerConnected(computer),
+        connected: runners.isRunnerConnected(await store.requireDeviceSelfRunnerId(computer)),
       }),
       canRead: canReadTab,
       canReadTask: async (actor, id, db) =>
@@ -1191,10 +1207,18 @@ export async function createHostRuntime(
       },
       computers: async (owner, ids, db) =>
         new Map(
-          [...(await tabComputers(owner, ids, db))].map(([id, computer]) => [
-            id,
-            { ...computer, connected: runners.isRunnerConnected(id) },
-          ]),
+          await Promise.all(
+            [...(await tabComputers(owner, ids, db))].map(async ([id, computer]) => {
+              const runnerId = await store.getDeviceSelfRunnerId(id);
+              return [
+                id,
+                {
+                  ...computer,
+                  connected: runnerId !== null && runners.isRunnerConnected(runnerId),
+                },
+              ] as const;
+            }),
+          ),
         ),
       authorize: authorizeTabTarget,
       authorizeMembership: authorizeTabActor,
@@ -1542,12 +1566,16 @@ export async function createHostRuntime(
         return row.kind === "window"
           ? {
               kind: "window",
-              computerId: row.computerId,
+              computerId: await store.requireDeviceSelfRunnerId(row.computerId),
               windowId: row.windowId!,
               app: row.windowApp!,
               tabGeneration: row.generation,
             }
-          : { kind: "phone", computerId: row.computerId, tabGeneration: row.generation };
+          : {
+              kind: "phone",
+              computerId: await store.requireDeviceSelfRunnerId(row.computerId),
+              tabGeneration: row.generation,
+            };
       },
       credentialMaterializer: integrations,
       dataDirectory,
@@ -1760,7 +1788,7 @@ export async function createHostRuntime(
             {
               listCallableTools: (input) => integrationPlatform.listCallableTools(input),
               getComputerConnectionForCall: (input) =>
-                integrationPlatformStore.getComputerConnectionForCall(input),
+                integrationPlatformStore.getDeviceComputerConnectionForCall(input),
               onError: (error, failed) => reportIntegrationCallSubjectError(failed, error),
               runRequester: (input) => store.runRequester(input),
             },
@@ -2274,6 +2302,7 @@ export async function createHostRuntime(
       passwordSignIn: (operationId) => passwordSignIns.continuationState(operationId),
       commands,
       integrations: {
+        selfDeviceId: (runnerId) => store.requireSelfDeviceId(runnerId),
         computerUseMachines: (ownerUserId) =>
           integrationPlatform.computerAppApprovals.computerUseMachines(ownerUserId),
         computerUsePhones: (ownerUserId) =>

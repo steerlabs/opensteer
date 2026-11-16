@@ -1,11 +1,13 @@
+import type { OpensteerStore } from "@opensteer/database";
+import { requireSelfDeviceId } from "@opensteer/database";
 import { normalizeToolError } from "@opensteer/agent-tools";
 import {
   OpensteerError,
   TabIdSchema,
   TabSchema,
-  TabTargetSchema,
+  DeviceTabTargetSchema,
   type AppId,
-  type RunnerId,
+  type DeviceId,
   type Tab,
   type TabGroupId,
   type TabId,
@@ -70,12 +72,13 @@ export interface PageTabsPort {
 }
 export interface TabServiceOptions {
   store: TabStore;
+  devices: Pick<OpensteerStore, "requireSelfDeviceId" | "requireDeviceSelfRunnerId">;
   nativeTargets: NativeTabTargetsPort;
   pages: PageTabsPort;
   apps: Pick<AppTabPort, "get">;
   computer(
     ownerId: UserId,
-    computerId: RunnerId,
+    computerId: DeviceId,
     database: TabDatabase,
   ): Promise<{ name: string; connected: boolean; removed: boolean }>;
   /** Metadata reach includes offline computers; this must not depend on runtime connectivity. */
@@ -86,9 +89,9 @@ export interface TabServiceOptions {
   ): Promise<(row: TabRecord) => Promise<boolean>>;
   computers?(
     ownerId: UserId,
-    ids: RunnerId[],
+    ids: DeviceId[],
     database: TabDatabase,
-  ): Promise<Map<RunnerId, { name: string; connected: boolean; removed: boolean }>>;
+  ): Promise<Map<DeviceId, { name: string; connected: boolean; removed: boolean }>>;
   readableTasks?(
     actor: TabActor,
     ids: RunToolScope["threadId"][],
@@ -162,8 +165,15 @@ export class TabService implements TabServicePort {
         if (target.ownerId !== target.runClaims.requestedBy) notFound();
         const intent =
           target.kind === "window"
-            ? { kind: "window" as const, computerId: target.computerId, windowId: target.windowId }
-            : { kind: "phone" as const, computerId: target.computerId };
+            ? {
+                kind: "window" as const,
+                computerId: await options.devices.requireSelfDeviceId(target.computerId),
+                windowId: target.windowId,
+              }
+            : {
+                kind: "phone" as const,
+                computerId: await options.devices.requireSelfDeviceId(target.computerId),
+              };
         try {
           const opened = await this.open(
             { kind: "run", claims: target.runClaims },
@@ -402,9 +412,16 @@ export class TabService implements TabServicePort {
         usedBy: [],
       };
     else if (row.kind === "window")
-      live = await this.options.nativeTargets.windowState(ownerId, row.computerId, row.windowId!);
+      live = await this.options.nativeTargets.windowState(
+        ownerId,
+        await this.options.devices.requireDeviceSelfRunnerId(row.computerId),
+        row.windowId!,
+      );
     else if (row.kind === "phone")
-      live = await this.options.nativeTargets.phoneState(ownerId, row.computerId);
+      live = await this.options.nativeTargets.phoneState(
+        ownerId,
+        await this.options.devices.requireDeviceSelfRunnerId(row.computerId),
+      );
     else if (row.kind === "page")
       live = facts.live ?? (await this.options.pages.state(ownerId, row));
     else {
@@ -542,13 +559,13 @@ export class TabService implements TabServicePort {
   }
   async open(
     actor: TabActor,
-    target: TabTarget,
+    targetInput: TabTarget,
     key: string,
     membershipRevision?: number,
     /** The person typed a page's address. */
     typed = false,
   ): Promise<{ tab: Tab }> {
-    TabTargetSchema.parse(target);
+    const target = DeviceTabTargetSchema.parse(targetInput);
     const ownerId = owner(actor),
       database = this.options.store.database;
     await this.options.authorize(actor, target, database);
@@ -571,7 +588,7 @@ export class TabService implements TabServicePort {
         id,
         ownerId,
         kind: "app",
-        computerId: app.computerId,
+        computerId: await this.options.devices.requireSelfDeviceId(app.computerId),
         appId: app.appId,
         title: app.name,
         openedBy,
@@ -593,7 +610,7 @@ export class TabService implements TabServicePort {
       else {
         const window = await this.options.nativeTargets.resolveWindow(
           ownerId,
-          target.computerId,
+          await this.options.devices.requireDeviceSelfRunnerId(target.computerId),
           "windowId" in target ? { windowId: target.windowId } : { bundleId: target.bundleId },
         );
         write = {
@@ -621,7 +638,12 @@ export class TabService implements TabServicePort {
             .where("id", "=", target.appId)
             .where("ownerId", "=", ownerId)
             .executeTakeFirst();
-          if (!current || current.deleting || current.computerId !== write.computerId) notFound();
+          if (
+            !current ||
+            current.deleting ||
+            (await requireSelfDeviceId(tx, current.computerId)) !== write.computerId
+          )
+            notFound();
           if (current.latestVersion !== appFence!.version) conflict();
           if (appFence!.generation !== null) {
             const server = await tx
@@ -754,7 +776,7 @@ export class TabService implements TabServicePort {
         {
           tabId,
           tabGeneration: row.generation,
-          computerId: row.computerId,
+          computerId: await this.options.devices.requireDeviceSelfRunnerId(row.computerId),
           target:
             row.kind === "phone"
               ? { kind: "phone", display: "main" }

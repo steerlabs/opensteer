@@ -1,3 +1,4 @@
+import { upsertSelfDeviceInTransaction } from "@opensteer/database";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { createPersonalRunFixturePort } from "@opensteer/database/test-support/personal-run";
 
@@ -68,8 +69,6 @@ integration.sequential("Host computer-use approval transactions", () => {
     await database
       .insertInto("runners")
       .values({
-        accessPolicy: sql`'{"commands":false,"forwarding":false,"reach":"nobody","shares":[]}'::jsonb`,
-        accessPolicyRevision: 1,
         allowedModules: sql`'["integrations"]'::jsonb`,
         capabilities: sql`'[]'::jsonb`,
         connectionGeneration: 0,
@@ -88,6 +87,7 @@ integration.sequential("Host computer-use approval transactions", () => {
         revokedAt: null,
       })
       .execute();
+    await upsertSelfDeviceInTransaction(database, runnerId);
     // The desktop's approval key, which the owner registered on this Mac; the
     // Runner's own key above signs nothing the Host accepts as consent.
 
@@ -366,7 +366,7 @@ integration.sequential("Host computer-use approval transactions", () => {
     const onError = vi.fn();
     const sources = {
       listCallableTools: test.service.listCallableTools.bind(test.service),
-      getComputerConnectionForCall: test.persistence.getComputerConnectionForCall,
+      getComputerConnectionForCall: test.persistence.getDeviceComputerConnectionForCall,
       onError,
       runRequester: test.store.runRequester.bind(test.store),
     };

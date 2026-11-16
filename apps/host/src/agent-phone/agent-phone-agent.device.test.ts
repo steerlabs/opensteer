@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 /**
  * A real agent uses an Android phone, end to end: the shipped engine named by
  * OPENSTEER_AGENT_PHONE_AGENT_ENGINE (`claude` or `codex`), on this computer's
@@ -842,7 +843,10 @@ function auditPhoneTurn(events: readonly AgentEvent[], runnerId: RunnerId) {
   let rejecting = false;
   let unclassifiedLockedTaps = 0;
   for (const event of events) {
-    if (event.type === "tool.started" && event.data.integration?.phone?.runnerId === runnerId) {
+    if (
+      event.type === "tool.started" &&
+      event.data.integration?.phone?.runnerId === DeviceIdSchema.parse(runnerId)
+    ) {
       const operation = event.data.integration.operation.name;
       phoneCalls.set(event.data.callId, operation);
       safeEvents.push({

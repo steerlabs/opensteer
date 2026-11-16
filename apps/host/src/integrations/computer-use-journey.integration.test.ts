@@ -1,3 +1,5 @@
+import { upsertSelfDeviceInTransaction } from "@opensteer/database";
+import { DeviceIdSchema } from "@opensteer/core";
 import { personalTestExecution } from "../mcp/personal-execution.test-support.js";
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
@@ -294,7 +296,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           app: "Notes",
           bundleId: apps.notes.bundleId,
           computer: mac,
-          runnerId: world.macId,
+          runnerId: DeviceIdSchema.parse(world.macId),
         },
         effect: "read" as const,
         integration: "Computer use",
@@ -1670,8 +1672,18 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         store: new OpensteerStore(database),
       });
       const content: ContentPart[] = [
-        { type: "computer-app", machineId: world.macId, app: apps.notes, name: mac },
-        { type: "phone", machineId: world.phoneId!, display: "main", name: phone },
+        {
+          type: "computer-app",
+          machineId: DeviceIdSchema.parse(world.macId),
+          app: apps.notes,
+          name: mac,
+        },
+        {
+          type: "phone",
+          machineId: DeviceIdSchema.parse(world.phoneId!),
+          display: "main",
+          name: phone,
+        },
       ];
       const scope = {
         ownerId: world.owner.userId,
@@ -1792,7 +1804,14 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       await expect(
         places.assertUsable({
           ...scope,
-          parts: [{ type: "phone", machineId: world.phoneId!, name: phone, display: "other" }],
+          parts: [
+            {
+              type: "phone",
+              machineId: DeviceIdSchema.parse(world.phoneId!),
+              name: phone,
+              display: "other",
+            },
+          ],
         }),
       ).rejects.toMatchObject({ code: "bad_request" });
       const other = await world.startRun("Other task");
@@ -1824,7 +1843,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       // its sender must own them, and the agent finds out at use whether it may use them.
       const unapproved: ContentPart = {
         type: "computer-app",
-        machineId: world.macId,
+        machineId: DeviceIdSchema.parse(world.macId),
         app: apps.calendar,
         name: mac,
       };
@@ -1848,13 +1867,20 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       ).toEqual(approvalsBefore);
       const stranger = await send(
         run.threadId,
-        [{ type: "computer-app", machineId: createId("runner"), app: apps.notes, name: mac }],
+        [{ type: "computer-app", machineId: createId("device"), app: apps.notes, name: mac }],
         "native-place-stranger",
       );
       expect(stranger.statusCode, stranger.body).toBe(403);
       const wrongDisplay = await send(
         run.threadId,
-        [{ type: "phone", machineId: world.phoneId!, name: phone, display: "other" }],
+        [
+          {
+            type: "phone",
+            machineId: DeviceIdSchema.parse(world.phoneId!),
+            name: phone,
+            display: "other",
+          },
+        ],
         "native-place-wrong-display",
       );
       expect(wrongDisplay.statusCode, wrongDisplay.body).toBe(400);
@@ -3127,7 +3153,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       { runId: run.runId, bindingGeneration: replacement.bindingGeneration },
     ]);
     expect(await world.store.activeComputerUseStops()).toEqual([
-      { runId: run.runId, runnerId: phoneId },
+      { runId: run.runId, deviceId: DeviceIdSchema.parse(phoneId) },
     ]);
     await expect(world.computerUse.prepare(target, replacement)).rejects.toMatchObject({
       code: "stopped-by-user",
@@ -3141,9 +3167,10 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       onSessionsChanged: () => undefined,
       threadTitle: async () => "Replacement",
       stops: {
-        initial: await world.store.activeComputerUseStops(),
+        initial: await selfStops(world.store),
         clear: (id) => world.store.clearComputerUseStops(id),
-        record: (runId, runnerId) => world.store.recordComputerUseStop({ runId, runnerId }),
+        record: (runId, runnerId) =>
+          world.store.recordComputerUseStop({ runId, deviceId: DeviceIdSchema.parse(runnerId) }),
       },
     });
     await expect(restarted.prepare(target, replacement)).rejects.toMatchObject({
@@ -3175,7 +3202,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     expect(stopped.runId).toBe(run.runId);
     await vi.waitFor(() => expect(fakePhone.stopsRecorded).toEqual([stopped]));
     expect(await world.store.activeComputerUseStops()).toEqual([
-      { runId: run.runId, runnerId: phoneId },
+      { runId: run.runId, deviceId: DeviceIdSchema.parse(phoneId) },
     ]);
     // Reported again after a lost acknowledgement: recorded once, acknowledged again.
     fakePhone.reportStop(stopped);
@@ -3576,7 +3603,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     const summary = world.computerUse.sessionsForRunner(phoneId)[0]!;
     const phonePart: ContentPart = {
       type: "phone",
-      machineId: phoneId,
+      machineId: DeviceIdSchema.parse(phoneId),
       display: "main",
       name: phone,
     };
@@ -3969,6 +3996,7 @@ const tree = '[0] window "Groceries" (0,0 1200×900)\n  [1] button "New Note" (2
 /** What the continuation outbox reads, served by the platform under test. */
 function inventorySource(platform: IntegrationPlatformService): IntegrationInventorySource {
   return {
+    selfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
     computerUseMachines: (ownerUserId) =>
       platform.computerAppApprovals.computerUseMachines(ownerUserId),
     computerUsePhones: (ownerUserId) =>
@@ -4954,8 +4982,6 @@ async function createWorld(
     await database
       .insertInto("runners")
       .values({
-        accessPolicy: sql`'{"commands":false,"forwarding":false,"reach":"nobody","shares":[]}'::jsonb`,
-        accessPolicyRevision: 1,
         allowedModules: sql`'["integrations"]'::jsonb`,
         capabilities: sql`'[]'::jsonb`,
         connectionGeneration: 0,
@@ -4980,6 +5006,7 @@ async function createWorld(
         revokedAt: null,
       })
       .execute();
+    await upsertSelfDeviceInTransaction(database, runnerId);
     if (options.ownerUserId)
       await database
         .insertInto("runnerEnrollments")
@@ -5076,8 +5103,9 @@ async function createWorld(
     authorizer: store,
     stops: {
       clear: (runId) => store.clearComputerUseStops(runId),
-      initial: await store.activeComputerUseStops(),
-      record: (runId, runnerId) => store.recordComputerUseStop({ runId, runnerId }),
+      initial: await selfStops(store),
+      record: (runId, runnerId) =>
+        store.recordComputerUseStop({ runId, deviceId: DeviceIdSchema.parse(runnerId) }),
     },
     sweepIntervalMs: 3_600_000,
     threadTitle: async (threadId, ownerUserId) =>
@@ -5092,6 +5120,7 @@ async function createWorld(
   const macVersion = { value: 2 };
   const tabStore = new TabStore(database);
   const computerViews = new ComputerViewService({
+    selfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
     hub,
     connections: (ownerId) => connections.listConnections(ownerId),
     owners: (ids) => store.effectiveMachineOwners(ids),
@@ -5112,6 +5141,7 @@ async function createWorld(
   });
   const tabs = new TabService({
     store: tabStore,
+    devices: store,
     nativeTargets: nativeTabs,
     pages: {
       open: vi.fn(),
@@ -5123,7 +5153,7 @@ async function createWorld(
     apps: { get: vi.fn() },
     computer: async (ownerId, computerId, db) => ({
       ...(await tabComputer(ownerId, computerId, db)),
-      connected: hub.attached(computerId),
+      connected: hub.attached(await store.requireDeviceSelfRunnerId(computerId)),
     }),
     canRead: canReadTab,
     canReadTask: async () => true,
@@ -5144,12 +5174,16 @@ async function createWorld(
       return row.kind === "window"
         ? {
             kind: "window",
-            computerId: row.computerId,
+            computerId: await store.requireDeviceSelfRunnerId(row.computerId),
             windowId: row.windowId!,
             app: row.windowApp!,
             tabGeneration: row.generation,
           }
-        : { kind: "phone", computerId: row.computerId, tabGeneration: row.generation };
+        : {
+            kind: "phone",
+            computerId: await store.requireDeviceSelfRunnerId(row.computerId),
+            tabGeneration: row.generation,
+          };
     },
     adapters: [],
     authorizationSource: { providerAuthorizations: async () => ({}) },
@@ -5573,4 +5607,13 @@ function describeFakeAction(action: unknown): string {
   if (type === "type") return `Typed "${text ?? ""}"`;
   if (type === "click") return `Clicked element ${target?.index ?? "?"}`;
   return `Performed ${type}`;
+}
+
+async function selfStops(store: OpensteerStore) {
+  const result = [];
+  for (const stop of await store.activeComputerUseStops()) {
+    const runnerId = await store.getDeviceSelfRunnerId(stop.deviceId);
+    if (runnerId) result.push({ runId: stop.runId, runnerId });
+  }
+  return result;
 }

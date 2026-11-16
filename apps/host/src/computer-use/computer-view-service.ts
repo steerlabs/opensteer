@@ -1,3 +1,4 @@
+import type { DeviceId } from "@opensteer/core";
 import { randomUUID } from "node:crypto";
 import {
   OpensteerError,
@@ -43,6 +44,7 @@ export interface PhoneViewDiagnostic {
 }
 
 interface Options {
+  readonly selfDeviceId: (runnerId: RunnerId) => Promise<DeviceId>;
   readonly onPhoneView?: (status: PhoneViewDiagnostic) => void;
   readonly hub: Pick<ComputerAppHub, "ownerViewSupported" | "withRunnerAdmission" | "attached"> & {
     sendComputerView(input: {
@@ -102,6 +104,7 @@ type ApprovedNativeApp = {
   iconPng: null;
 };
 interface HeldView {
+  readonly runnerId: RunnerId;
   record: ComputerViewRecord;
   timer: NodeJS.Timeout | null;
   tabId: string;
@@ -175,9 +178,9 @@ export class ComputerViewService {
   async list(owner: UserId, machine: RunnerId): Promise<ComputerView[]> {
     return [...this.#views.values()]
       .filter(
-        ({ record }) =>
+        ({ record, runnerId }) =>
           record.ownerUserId === owner &&
-          record.machineId === machine &&
+          runnerId === machine &&
           record.state !== "closed" &&
           record.state !== "expired" &&
           Date.parse(record.expiresAt) > this.#now(),
@@ -189,9 +192,7 @@ export class ComputerViewService {
   holdsPhoneView(machine: RunnerId): boolean {
     return [...this.#views.values()].some(
       (view) =>
-        view.record.machineId === machine &&
-        view.record.target.kind === "phone" &&
-        this.#live(view),
+        view.runnerId === machine && view.record.target.kind === "phone" && this.#live(view),
     );
   }
 
@@ -231,7 +232,7 @@ export class ComputerViewService {
       command.type === "tab.view.open"
         ? command.target.kind === "phone"
         : held?.record.target.kind === "phone" && held.record.ownerUserId === owner;
-    const machineId = command.type === "tab.view.open" ? command.machineId : held?.record.machineId;
+    const machineId = command.type === "tab.view.open" ? command.machineId : held?.runnerId;
     const report = (
       state: PhoneViewDiagnostic["state"],
       view?: ComputerView,
@@ -322,9 +323,9 @@ export class ComputerViewService {
       )
         throw this.#refusal("computer-view-ended", "This tab was closed.");
       const held = [...this.#views.values()].find(
-        ({ record }) =>
+        ({ record, runnerId }) =>
           record.ownerUserId === owner &&
-          record.machineId === command.machineId &&
+          runnerId === command.machineId &&
           sameViewTarget(record.target, command.target) &&
           this.#views.get(record.viewId)?.tabId === command.tabId &&
           this.#views.get(record.viewId)?.tabGeneration === command.tabGeneration,
@@ -343,12 +344,13 @@ export class ComputerViewService {
       const now = this.#now();
       const view: HeldView = {
         timer: null,
+        runnerId: command.machineId,
         tabId: command.tabId,
         tabGeneration: command.tabGeneration,
         record: {
           ownerUserId: owner,
           connectionId: approved.connectionId,
-          machineId: command.machineId,
+          machineId: await this.#options.selfDeviceId(command.machineId),
           target: command.target,
           window: null,
           viewId: held?.record.viewId ?? ComputerViewIdSchema.parse(`cvw_${randomUUID()}`),
@@ -475,7 +477,7 @@ export class ComputerViewService {
     await this.#authorize(held, owner);
     if (held.record.state !== "ready")
       throw this.#refusal("computer-view-ended", "That phone view has ended.");
-    return held.record.machineId;
+    return held.runnerId;
   }
   async authorizeInput(
     source: Extract<DisplaySource, { kind: "owner-view" }>,
@@ -491,7 +493,7 @@ export class ComputerViewService {
       approved?.status !== "connected" ||
       approved.computer?.access !== "read-write" ||
       approved.computer.blockedAt !== null ||
-      approved.computer.runnerId !== held.record.machineId ||
+      approved.computer.runnerId !== held.runnerId ||
       (held.record.target.kind === "app"
         ? !approved.computer.app ||
           !computerAppIdentitiesEqual(approved.computer.app, held.record.target.app)
@@ -501,7 +503,7 @@ export class ComputerViewService {
         code: "forbidden",
         message: "Input requires a current read-write approval.",
       });
-    return held.record.machineId;
+    return held.runnerId;
   }
   isDisplayLive(
     source: Extract<DisplaySource, { kind: "owner-view" }>,
@@ -512,7 +514,7 @@ export class ComputerViewService {
     return (
       held !== undefined &&
       held.record.ownerUserId === owner &&
-      held.record.machineId === machine &&
+      held.runnerId === machine &&
       held.record.generation === source.generation &&
       held.record.state === "ready" &&
       this.#live(held)
@@ -524,8 +526,7 @@ export class ComputerViewService {
     reason: DisplayStreamReason,
   ): void {
     const held = this.#views.get(source.viewId);
-    if (!held || held.record.machineId !== machine || held.record.generation !== source.generation)
-      return;
+    if (!held || held.runnerId !== machine || held.record.generation !== source.generation) return;
     if (
       [
         "capacity",
@@ -566,7 +567,7 @@ export class ComputerViewService {
 
   disconnect(machine: RunnerId): void {
     for (const held of this.#views.values())
-      if (held.record.machineId === machine) this.#end(held, "disconnected");
+      if (held.runnerId === machine) this.#end(held, "disconnected");
   }
   async revalidate(): Promise<void> {
     await Promise.all(
@@ -623,7 +624,7 @@ export class ComputerViewService {
     if (!this.#live(view))
       throw this.#refusal("computer-view-ended", "The view ended. Reopen it explicitly.");
     try {
-      const approved = await this.#approvedTarget(owner, view.record.machineId, view.record.target);
+      const approved = await this.#approvedTarget(owner, view.runnerId, view.record.target);
       if (approved.connectionId !== view.record.connectionId)
         throw this.#refusal("computer-view-not-approved", "This approval changed.");
       if (!this.#live(view)) throw this.#refusal("computer-view-ended", "The view ended.");
@@ -688,7 +689,7 @@ export class ComputerViewService {
       type: "host.computer-view.removed",
       viewId: view.record.viewId,
       generation: view.record.generation,
-      machineId: view.record.machineId,
+      machineId: view.runnerId,
       reason,
     });
     if (reason !== "disconnected") void this.#send(view, "close").catch(() => undefined);
@@ -725,12 +726,12 @@ export class ComputerViewService {
   }
   #send(view: HeldView, operation: "open" | "close" | "renew", signal?: AbortSignal) {
     return this.#options.hub
-      .withRunnerAdmission(view.record.machineId, async () => {
+      .withRunnerAdmission(view.runnerId, async () => {
         if (operation !== "close" && !this.#live(view))
           throw this.#refusal("computer-view-ended", "The view ended.");
         return {
           outcome: this.#options.hub.sendComputerView({
-            runnerId: view.record.machineId,
+            runnerId: view.runnerId,
             request: {
               viewId: view.record.viewId,
               generation: view.record.generation,

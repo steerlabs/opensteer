@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import { RunnerIdSchema, UserIdSchema, WindowIdSchema } from "@opensteer/core";
 import type { IntegrationConnectionSummary } from "@opensteer/integration-core";
@@ -32,6 +33,7 @@ function harness(phone = false) {
   let windowRequests = 0;
   const logs: { event: string; details: Readonly<Record<string, unknown>> }[] = [];
   const service = new ComputerViewService({
+    selfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
     log: (event, details) => logs.push({ event, details }),
     connections: async () =>
       approved
