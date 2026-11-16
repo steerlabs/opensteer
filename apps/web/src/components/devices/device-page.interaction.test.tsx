@@ -2,6 +2,7 @@
 import { act } from "react";
 import { expect, it, vi } from "vitest";
 import { mutationIdempotencyKey } from "@opensteer/client/host";
+import { mockIphoneScreenDeviceId, mockIphoneScreenDriverId } from "@opensteer/client/mock";
 import { client, goTo, mount } from "../workspace/workspace.interaction.test-support.js";
 import { deviceRoute, devicesRoute } from "./device-routes.js";
 
@@ -42,4 +43,47 @@ it("cancels a device's setup from Devices, so its token can never join", async (
     { timeout: 2_000 },
   );
   expect(() => client.connectLocalRunner(minted.token)).toThrow(/not waiting to connect/);
+});
+
+it("disconnects an iPhone's screen control and keeps it, then removes only the iPhone", async () => {
+  const phoneId = mockIphoneScreenDeviceId;
+  const macId = mockIphoneScreenDriverId;
+  await mount(deviceRoute(phoneId));
+  const confirm = async (label: string) => {
+    const action = [...document.querySelectorAll(".dialog button")].find(
+      (entry) => entry.textContent?.trim() === label,
+    ) as HTMLButtonElement;
+    await act(async () => action.click());
+  };
+  const phone = () => client.getSnapshot().machines.find(({ id }) => id === phoneId);
+  await vi.waitFor(() => {
+    if (!button("Disconnect screen control")) throw new Error("No disconnect for the iPhone");
+  });
+  expect(document.body.textContent).toContain("Screen control through Alex’s MacBook Pro");
+
+  await act(async () => button("Disconnect screen control")!.click());
+  await confirm("Disconnect");
+  await vi.waitFor(
+    () => {
+      if (phone()?.phoneDisplay?.driver?.attached !== false)
+        throw new Error("Screen control never disconnected");
+    },
+    { timeout: 2_000 },
+  );
+  await vi.waitFor(() => {
+    if (button("Disconnect screen control"))
+      throw new Error("A detached iPhone still offers disconnect");
+  });
+  expect(document.body.textContent).toContain("Not connected");
+
+  await act(async () => button("Remove this iPhone")!.click());
+  expect(document.querySelector(".dialog")?.textContent).not.toContain("Browser profiles");
+  await confirm("Remove");
+  await vi.waitFor(
+    () => {
+      if (phone()) throw new Error("The iPhone was never removed");
+    },
+    { timeout: 2_000 },
+  );
+  expect(client.getSnapshot().machines.some(({ id }) => id === macId)).toBe(true);
 });

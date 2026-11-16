@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MockHostClient } from "@opensteer/client/mock";
+import { MockHostClient, mockIphoneScreenDevice } from "@opensteer/client/mock";
 import { sharedDisplayStreams } from "@opensteer/client/integrations";
 import { RunnerIdSchema, type TabTarget } from "@opensteer/core";
 import { runPlacePicture, type HostSnapshot } from "@opensteer/client/host";
@@ -108,6 +108,7 @@ vi.mock("./workspace/workspace-context.js", () => ({
 vi.mock("./workspace/tab-closer.js", () => ({ useTabCloser: () => () => undefined }));
 const { ComputerWatchView } = await import("./computer-watch.js");
 const { OwnerView } = await import("./workspace/owner-view.js");
+const { PhoneControlBar } = await import("./phone-display.js");
 
 /** Opens a window or phone tab the way a person does and answers this device's view of it. */
 async function ownView(target: TabTarget) {
@@ -1167,6 +1168,60 @@ describe("Mac owner viewer", () => {
 });
 
 describe("phone owner controls", () => {
+  it("offers only the navigation and power the Host advertises for the phone", () => {
+    const nav = vi.fn();
+    const power = vi.fn();
+    const display = {
+      snapshot: { input: "available", power: "available", display: { state: "live" } },
+      geometry: 3,
+      generation: 3,
+      input: { nav },
+      lease: { power },
+      viewportEnabled: false,
+      receipt: null,
+    } as unknown as Parameters<typeof PhoneControlBar>[0]["display"];
+    const iphone = mockIphoneScreenDevice("ready").phoneDisplay!;
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    act(() => root!.render(<PhoneControlBar display={display} phone={iphone} />));
+    expect(
+      [...container.querySelectorAll("button")].map((b) => b.getAttribute("aria-label")),
+    ).toEqual(["Home"]);
+    act(() => button("Home").click());
+    expect(nav).toHaveBeenCalledWith(3, "home");
+    act(() =>
+      root!.render(
+        <PhoneControlBar
+          display={display}
+          phone={{ ...iphone, actions: iphone.actions.filter((action) => action !== "navigate") }}
+        />,
+      ),
+    );
+    expect(container.querySelector("button")).toBeNull();
+    act(() =>
+      root!.render(
+        <PhoneControlBar
+          display={display}
+          phone={{
+            ...iphone,
+            navigationButtons: [
+              { id: "back", label: "Back" },
+              { id: "home", label: "Home" },
+              { id: "side", label: "Side button" },
+            ],
+            lock: true,
+          }}
+        />,
+      ),
+    );
+    expect(
+      [...container.querySelectorAll("button")].map(
+        (b) => b.textContent || b.getAttribute("aria-label"),
+      ),
+    ).toEqual(["Lock phone", "Back", "Home"]);
+  });
+
   it("follows lease input and power availability through screen-off and a locked screen", async () => {
     const pool = sharedDisplayStreams(client);
     const retain = pool.retain.bind(pool);
