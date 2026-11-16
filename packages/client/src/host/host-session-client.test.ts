@@ -9008,7 +9008,7 @@ describe("HttpHostClient owner views", () => {
     });
     let tab!: Tab;
     const host = ownerViewHost(
-      () => [machine],
+      () => [{ ...machine, kind: "agent-phone" }],
       async () => json({ tab, viewer: { kind: "phone", view } }),
     );
     tab = viewTab(host, "phone", view);

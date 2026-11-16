@@ -1,3 +1,7 @@
+import { OwnerViewRecords } from "../host/owner-view-records.js";
+import { TabViewers } from "../host/tab-viewers.js";
+import { setPhoneUseAccess } from "./computer-use.js";
+import { mockIphoneScreenDevice, mockIphoneScreenSource } from "../mock/mock-screen-devices.js";
 import { RunnerIdSchema } from "@opensteer/core";
 import { hostApiVersion, minimumHostApiVersion } from "@opensteer/deployment-authority";
 import type { NativeViewerSource } from "../host/surfaces.js";
@@ -1496,4 +1500,207 @@ it("retains picture authority through absent bindings but rejects explicit captu
     expect(computerDisplayAuthorityKey(refused, source, machine.id)).toBeNull();
     expect(computerDisplayScope(refused, source)).toBeNull();
   }
+});
+
+it("fences picture authority by phone Device and driver generation", () => {
+  const phone = mockIphoneScreenDevice();
+  const held = { sessionId, display: true, apps: [] };
+  const withHold = { ...phone, computerUse: { ...phone.computerUse!, sessions: [held] } };
+  const snapshot = {
+    session: "authenticated",
+    user: { id: "usr_1" },
+    deploymentId: "dep_1",
+    machines: [withHold],
+  } as unknown as HostSnapshot;
+  const first = computerDisplayAuthorityKey(snapshot, source, phone.id);
+  const scope = computerDisplayScope(snapshot, source);
+  const replacement = {
+    ...withHold,
+    phoneDisplay: {
+      ...phone.phoneDisplay!,
+      driver: { ...phone.phoneDisplay!.driver!, generation: 2 },
+    },
+  };
+  expect(
+    computerDisplayAuthorityKey(
+      { ...snapshot, machines: [replacement] } as unknown as HostSnapshot,
+      source,
+      phone.id,
+    ),
+  ).not.toBe(first);
+  expect(
+    computerDisplayScope(
+      { ...snapshot, machines: [replacement] } as unknown as HostSnapshot,
+      source,
+    ),
+  ).not.toBe(scope);
+  expect(
+    computerDisplayAuthorityKey(
+      { ...snapshot, machines: [mockIphoneScreenDevice("locked")] },
+      source,
+      phone.id,
+    ),
+  ).toBeNull();
+});
+
+it("invalidates only the replaced phone and refuses unadvertised navigation and power", () => {
+  const phone = mockIphoneScreenDevice();
+  const secondSource = {
+    kind: "task-session" as const,
+    sessionId: "cus_22222222-2222-4222-8222-222222222222",
+  };
+  const held = (device: typeof phone, id: string) => ({
+    ...device,
+    computerUse: { ...device.computerUse!, sessions: [{ sessionId: id, apps: [], display: true }] },
+  });
+  const first = held(phone, sessionId);
+  const second = held(
+    { ...phone, id: "dev_ffffffff-ffff-4fff-8fff-ffffffffffff" } as typeof phone,
+    secondSource.sessionId,
+  );
+  const snapshot = {
+    session: "authenticated",
+    user: { id: "usr_1" },
+    deploymentId: "dep_1",
+    machines: [first, second],
+  } as unknown as HostSnapshot;
+  streams.syncDevices(snapshot);
+  const firstLease = streams.retain({ scope: computerDisplayScope(snapshot, source)!, source });
+  const firstSocket = sockets.at(-1)!;
+  firstSocket.open();
+  firstSocket.json({
+    type: "display.state",
+    state: "live",
+    generation: 1,
+    width: 720,
+    height: 1280,
+    sharedInput: 1,
+    phoneOwnerControl: 1,
+  });
+  expect(firstLease.input(1, [{ kind: "nav", to: "back" }])).toBe(false);
+  expect(firstLease.input(1, [{ kind: "nav", to: "home" }])).toBe(true);
+  expect(firstLease.power("wake")).toBe(false);
+  expect(firstLease.power("lock")).toBe(false);
+  const secondLease = streams.retain({
+    scope: computerDisplayScope(snapshot, secondSource)!,
+    source: secondSource,
+  });
+  const secondSocket = opened();
+  streams.syncDevices({
+    ...snapshot,
+    machines: [
+      {
+        ...phone,
+        phoneDisplay: {
+          ...phone.phoneDisplay!,
+          driver: { ...phone.phoneDisplay!.driver!, generation: 2 },
+        },
+      },
+      second,
+    ],
+  } as unknown as HostSnapshot);
+  expect(firstSocket.closedWith).not.toBeNull();
+  expect(firstLease.getSnapshot()).toMatchObject({
+    connection: "closed",
+    display: null,
+    input: "unavailable",
+  });
+  expect(secondSocket.closedWith).toBeNull();
+  secondLease.release();
+  firstLease.release();
+});
+
+it("requires fresh owner authority and a new tab activation after a driver replacement", () => {
+  const phone = mockIphoneScreenDevice();
+  const records = new OwnerViewRecords();
+  const view = {
+    machineId: phone.id,
+    viewId: "cvw_11111111-1111-4111-8111-111111111111",
+    generation: 1,
+    driverGeneration: 1,
+    state: "ready",
+    target: { kind: "phone", display: "main" },
+  } as unknown as import("@opensteer/protocol").ComputerView;
+  const accepted = records.accept([phone], view)[0]!;
+  expect(accepted.computerUse?.ownerViews).toContain(view);
+  const tabs = new TabViewers();
+  tabs.set("phone-tab", { kind: "phone", view }, [accepted]);
+  const changed = {
+    ...phone,
+    phoneDisplay: {
+      ...phone.phoneDisplay!,
+      driver: { ...phone.phoneDisplay!.driver!, generation: 2 },
+    },
+  };
+  const reread = records.reread(changed, accepted, records.revision);
+  expect(reread.computerUse?.ownerViews).toEqual([]);
+  expect(records.accept([reread], view)[0]?.computerUse?.ownerViews).toEqual([]);
+  const fresh = { ...view, generation: 2, driverGeneration: 2 };
+  const reopened = records.accept([reread], fresh)[0]!;
+  expect(reopened.computerUse?.ownerViews).toContain(fresh);
+  expect(tabs.get("phone-tab", [reopened])).toBeNull();
+  tabs.set("phone-tab", { kind: "phone", view: fresh }, [reopened]);
+  expect(tabs.get("phone-tab", [reopened])).toMatchObject({ view: { generation: 2 } });
+});
+
+it("streams the iPhone mock with its access ceiling and hides its picture when locked", async () => {
+  vi.useRealTimers();
+  const client = new MockHostClient({
+    latencyMs: 0,
+    iphoneScreen: "read-only",
+    iphoneScreenHolding: true,
+  });
+  const pool = sharedDisplayStreams(client);
+  const source = mockIphoneScreenSource;
+  const scope = computerDisplayScope(client.getSnapshot(), source);
+  expect(scope).not.toBeNull();
+  const lease = pool.retain({ scope: scope!, source });
+  try {
+    await vi.waitFor(() => expect(lease.getSnapshot().display?.state).toBe("live"));
+    expect(lease.getSnapshot().input).toBe("unavailable");
+    const phone = client
+      .getSnapshot()
+      .machines.find((machine) => machine.phoneDisplay?.definitionId === "iphone-screen")!;
+    await setPhoneUseAccess(client, phone, "read-write");
+    await vi.waitFor(() => expect(lease.getSnapshot().input).toBe("available"));
+    client.setIphoneScreenState("locked");
+    expect(lease.getSnapshot()).toMatchObject({
+      connection: "closed",
+      display: null,
+      input: "unavailable",
+    });
+  } finally {
+    lease.release();
+    pool.dispose();
+    client.dispose();
+  }
+});
+
+it("keeps a self Mac stream open when only its Device metadata changes", () => {
+  const phone = mockIphoneScreenDevice();
+  const driver = phone.phoneDisplay!.driver!;
+  const machine = {
+    ...phone,
+    id: driver.runnerId,
+    kind: "computer",
+    selfRunnerId: driver.runnerId,
+    phoneDisplay: null,
+    drivers: [{ ...driver, role: "self" }],
+    computerUse: { ...phone.computerUse!, sessions: [{ sessionId, apps: [], display: true }] },
+  };
+  const snapshot = {
+    session: "authenticated",
+    user: { id: "usr_1" },
+    deploymentId: "dep_1",
+    machines: [machine],
+  } as unknown as HostSnapshot;
+  streams.syncDevices(snapshot);
+  const lease = streams.retain({ scope: "mac", source });
+  const socket = opened();
+  streams.syncDevices({
+    ...snapshot,
+    machines: [{ ...machine, name: "Renamed Mac" }],
+  } as unknown as HostSnapshot);
+  expect(socket.closedWith).toBeNull();
+  lease.release();
 });

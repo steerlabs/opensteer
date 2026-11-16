@@ -1,7 +1,16 @@
+import { deviceReasonLabel } from "../host/device-projection.js";
 import type { MachineSummary } from "@opensteer/protocol";
 
 /** Why no picture of a computer's app or phone can be asked for now, before any is asked. */
 export type ComputerNotReady =
+  | "not-connected"
+  | "driver-offline"
+  | "locked"
+  | "protected"
+  | "setup-required"
+  | "access-off"
+  | "approval-required"
+  | "runtime-failed"
   | "needs-update"
   | "updating"
   | "update-pending"
@@ -29,6 +38,33 @@ export function computerReadiness(input: {
   readonly supported: boolean;
 }): ComputerNotReady | null {
   const { machine } = input;
+  if (machine?.phoneDisplay) {
+    const availability = machine.phoneDisplay.view;
+    const reason = availability.reason?.kind;
+    if (availability.state === "ready") return null;
+    switch (reason) {
+      case "not-connected":
+      case "driver-offline":
+      case "locked":
+      case "protected":
+      case "access-off":
+      case "approval-required":
+      case "runtime-failed":
+      case "paused":
+      case "connecting":
+      case "permission-required":
+      case "unsupported":
+        return reason;
+      case "driver-update-required":
+        return "needs-update";
+      case "setup-required":
+      case "trust-required":
+      case "developer-mode-required":
+        return "setup-required";
+      default:
+        return "native-unavailable";
+    }
+  }
   if (machine?.status === "updating" || machine?.status === "update-pending") return machine.status;
   if (machine?.status === "needs-update") return "needs-update";
   if (machine?.status !== "online") return "offline";
@@ -97,6 +133,16 @@ export interface ComputerNotReadyStatus {
 
 export function computerNotReadyStatus(reason: ComputerNotReady): ComputerNotReadyStatus {
   switch (reason) {
+    case "not-connected":
+    case "driver-offline":
+      return { label: deviceReasonLabel({ kind: reason }), tone: "away" };
+    case "locked":
+    case "protected":
+    case "setup-required":
+    case "access-off":
+    case "approval-required":
+    case "runtime-failed":
+      return { label: deviceReasonLabel({ kind: reason }), tone: "attention" };
     case "offline":
       return { label: "Offline", tone: "away" };
     case "connecting":
@@ -129,14 +175,26 @@ export function computerReasonWords(
   names: { readonly target: string; readonly machine: string; readonly phone: boolean },
 ): string {
   switch (reason) {
+    case "not-connected":
+      return `${names.machine} is not connected.`;
+    case "driver-offline":
+      return `The computer driving ${names.machine} is offline.`;
+    case "setup-required":
+    case "trust-required":
+    case "developer-mode-required":
+      return `Finish screen setup on the Mac connected to ${names.machine}.`;
+    case "access-off":
+      return `Apps access is off for ${names.machine}.`;
+    case "approval-required":
+      return `Review screen access for ${names.machine}.`;
     case "updating":
-      return `Updating Agent Phone on ${names.machine}…`;
+      return `Updating Opensteer on ${names.machine}…`;
     case "update-pending":
       return `Tap Update on ${names.machine}.`;
     case "needs-update":
     case "agent-phone-outdated":
     case "computer-view-needs-update":
-      return `Update ${names.phone ? "Agent Phone" : "Opensteer"} on ${names.machine}.`;
+      return `Update Opensteer on ${names.machine}.`;
     case "offline":
       return `${names.machine} is offline.`;
     case "connecting":

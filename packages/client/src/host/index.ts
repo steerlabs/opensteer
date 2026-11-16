@@ -113,3 +113,5 @@ export * from "./composer-references.js";
 export * from "./transcript-files.js";
 
 export * from "./tabs-contract.js";
+export * from "./device-projection.js";
+export type { MachineAccessUpdateInput, IphoneScreenAttachInput } from "./device-commands.js";

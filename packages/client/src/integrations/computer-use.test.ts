@@ -9,6 +9,7 @@ import type {
 import type { ComputerUseSessionSummary, MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { computerAppRows } from "./computer-apps.js";
+import { DeviceMachineSummarySchema, MachineSummarySchema } from "@opensteer/protocol";
 import {
   canWatchComputer,
   computerAppAccessApproval,
@@ -39,6 +40,123 @@ const calendar = { bundleId: "com.apple.iCal", displayName: "Calendar", teamId: 
 /** Studio, seen from somewhere other than Studio. */
 const studio = { here: false, machineName: "Studio" };
 
+describe("Host-projected phone displays", () => {
+  const unsupported = {
+    supported: false,
+    enabled: false,
+    configurable: false,
+    state: "unsupported",
+    reason: { kind: "unsupported" },
+  };
+  const ready = { state: "ready", reason: null };
+  function screen() {
+    return DeviceMachineSummarySchema.parse({
+      ...machine({}),
+      id: "dev_33333333-3333-4333-8333-333333333333",
+      name: "iPhone screen",
+      kind: "phone",
+      device: { platform: "ios", form: "phone" },
+      access: null,
+      detail: null,
+      enrollmentId: null,
+      expiresAt: null,
+      lastSeenAt: null,
+      allowedModules: [],
+      modules: {},
+      ownership: "mine",
+      pinnedThreads: 0,
+      revocable: true,
+      selfRunnerId: null,
+      drivers: [],
+      capabilities: {
+        browser: unsupported,
+        files: unsupported,
+        apps: { ...ready, supported: true, enabled: true, configurable: true },
+      },
+      phoneDisplay: {
+        definitionId: "iphone-screen",
+        driver: {
+          role: "screen",
+          runnerId: mac,
+          runnerName: "Studio",
+          generation: 3,
+          attached: true,
+        },
+        control: ready,
+        view: ready,
+        input: ready,
+        navigationButtons: [{ id: "home", label: "Home" }],
+        actions: ["tap", "navigate"],
+        wake: false,
+        lock: null,
+        setup: { location: "driver-mac", driverRunnerId: mac, driverRunnerName: "Studio" },
+      },
+    });
+  }
+  it("selects the actual screen definition and driver without borrowing Mac modules", () => {
+    const device = screen();
+    const view = phoneUseView({
+      hostConnected: true,
+      connections: [],
+      definitions: [display(), { ...display(), id: "iphone-screen" }],
+      machine: device,
+    });
+    expect(view).toMatchObject({
+      definition: { id: "iphone-screen" },
+      driver: { runnerId: mac, runnerName: "Studio", generation: 3 },
+      navigationButtons: [{ id: "home", label: "Home" }],
+      wake: false,
+    });
+    expect(
+      computerUseView({
+        hostConnected: true,
+        connections: [],
+        definitions: [gui()],
+        machine: device,
+      }),
+    ).toBeNull();
+  });
+  it("does not infer display authority from the iOS platform or a future Host kind", () => {
+    const device = screen();
+    expect(
+      phoneUseView({
+        hostConnected: true,
+        connections: [],
+        definitions: [display()],
+        machine: { ...device, phoneDisplay: null },
+      }),
+    ).toBeNull();
+    const unknownKind = MachineSummarySchema.parse({ ...device, kind: "future-phone" });
+    expect(
+      phoneUseView({
+        hostConnected: true,
+        connections: [],
+        definitions: [{ ...display(), id: "iphone-screen" }],
+        machine: unknownKind,
+      }),
+    ).toBeNull();
+    expect(canWatchComputer(unknownKind)).toBe(false);
+    const unknownReason = MachineSummarySchema.parse({
+      ...device,
+      phoneDisplay: {
+        ...device.phoneDisplay!,
+        view: { state: "ready", reason: { kind: "future-reason" } },
+      },
+    });
+    expect(canWatchComputer(unknownReason)).toBe(false);
+    expect(
+      canWatchComputer({
+        ...device,
+        phoneDisplay: {
+          ...device.phoneDisplay!,
+          view: { state: "unavailable", reason: { kind: "locked" } },
+        },
+        computerUse: report("ready", { displayStreamSupported: true }),
+      }),
+    ).toBe(false);
+  });
+});
+
 describe("Agent Phone identity", () => {
   it.each(["online", "offline", "needs-update"] as const)(
     "does not offer whole-phone use for an Opensteer phone that is %s",
@@ -60,6 +178,22 @@ describe("Agent Phone identity", () => {
       ).toBeNull();
     },
   );
+
+  it("does not infer an Android browser-only phone display from its platform", () => {
+    const browser = machine({
+      device: { platform: "android", form: "phone" },
+      allowedModules: ["browser"],
+      modules: { browser: { readiness: "ready", checkedAt: null, detail: null } },
+    });
+    expect(
+      phoneUseView({
+        machine: browser,
+        connections: [],
+        definitions: [display()],
+        hostConnected: true,
+      }),
+    ).toBeNull();
+  });
 
   it("keeps current and older Agent Phones distinct from iPhones and Macs", () => {
     expect(isAgentPhone(phone({}))).toBe(true);
@@ -732,6 +866,7 @@ function display(): IntegrationDefinitionSummary {
 
 function phone(overrides: Partial<MachineSummary>): MachineSummary {
   return machine({
+    kind: overrides.device?.app === "opensteer" ? "phone" : "agent-phone",
     device: { form: "phone", platform: "android" },
     id: pixel,
     name: "Pixel",

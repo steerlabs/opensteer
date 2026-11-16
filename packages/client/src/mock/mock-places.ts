@@ -1,3 +1,4 @@
+import { mockAgentPhoneRunnerId } from "./mock-integration-fixtures.js";
 import type {
   MockBrowserSource as HostSnapshot,
   MockBrowserSession as BrowserSessionSummary,
@@ -425,7 +426,7 @@ export function seedMockPlaces(
     updatedAt: at,
   };
   for (const machine of machines)
-    if (machine.computerUse)
+    if (machine.id === mockAgentPhoneRunnerId && machine.computerUse)
       machine.computerUse = {
         ...machine.computerUse,
         sessions: machine.computerUse.sessions.map((session) =>

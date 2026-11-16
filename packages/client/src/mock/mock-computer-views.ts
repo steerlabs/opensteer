@@ -1,3 +1,5 @@
+import { isPhoneDisplayDefinitionId } from "@opensteer/core";
+import { deviceMachine, deviceDriverKey } from "../host/device-projection.js";
 import {
   computerAppIdentityKey,
   ComputerViewSchema,
@@ -19,6 +21,7 @@ export class MockComputerViews {
   readonly #update: (snapshot: HostSnapshot) => void;
   readonly #connections: () => readonly IntegrationConnectionSummary[];
   readonly #now: () => Date;
+  readonly #drivers = new Map<string, string | null>();
   readonly #results = new Map<string, { fingerprint: string; view: ComputerView }>();
   constructor(
     snapshot: () => HostSnapshot,
@@ -77,7 +80,10 @@ export class MockComputerViews {
           !(machine.ownership === "deployment" && machine.access?.ownerReachAvailable === true))
       )
         return [];
-      if (connection.definitionId !== "macos-app" && connection.definitionId !== "android-phone")
+      if (
+        connection.definitionId !== "macos-app" &&
+        !isPhoneDisplayDefinitionId(connection.definitionId)
+      )
         return [];
       if ((connection.definitionId === "macos-app") !== (computer.app !== null)) return [];
       const target: ApprovedComputerApp["target"] = computer.app
@@ -141,8 +147,8 @@ export class MockComputerViews {
     if (!approved)
       this.#refuse("computer-view-not-approved", "This app or phone needs an existing approval.");
     if (
-      machine?.device?.form === "phone"
-        ? machine.computerUse?.displayStreamSupported !== true
+      deviceMachine(machine).phoneDisplay
+        ? deviceMachine(machine).phoneDisplay?.view.state !== "ready"
         : machine?.computerUse?.ownerViewVersion !== 3
     )
       this.#refuse("computer-view-unsupported", "Update this computer to view apps and devices.");
@@ -189,7 +195,13 @@ export class MockComputerViews {
         );
         if (Date.parse(view.expiresAt) <= now)
           this.#put({ ...view, state: "expired", unavailableReason: "expired" });
-        else if (!valid || machine.status !== "online" || snapshot.connection === "offline")
+        else if (
+          !valid ||
+          machine.status !== "online" ||
+          snapshot.connection === "offline" ||
+          (this.#drivers.has(view.viewId) &&
+            this.#drivers.get(view.viewId) !== deviceDriverKey(machine))
+        )
           this.#put({
             ...view,
             state: "unavailable",
@@ -253,6 +265,10 @@ export class MockComputerViews {
       expiresAt: new Date(at + computerViewIdleMs[target.kind]).toISOString(),
       unavailableReason: null,
     });
+    this.#drivers.set(
+      view.viewId,
+      deviceDriverKey(this.#snapshot().machines.find((machine) => machine.id === machineId)!),
+    );
     this.#put(view);
     return view;
   }
