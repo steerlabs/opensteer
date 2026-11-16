@@ -45,7 +45,7 @@ const tabsGuide = `Tabs:
 - A \`tabId\` is stable while the tab exists, open or asleep. Bound handles, \`recentPlaces\` and messages naming a tab carry it too. Reuse a fitting tab; open your own when your work would disturb one someone is using (\`usedBy\`).
 - Closing a tab only removes it from the list; nothing it shows stops or quits.
 - A profile opens only on its home computer. Never use Guest or another profile in its place.
-- Outside a delegation, \`person_show\` a tab the person asked for, or must act on, once it is ready, and again when you move on. Skip pages you only read, except on Voice.`;
+- Outside a delegation, \`person_show\` a tab the person asked for, or must act on, once it is ready, and again when you move on. Skip pages you only read, except on Voice. Showing a phone or window needs only its tab, never \`computer_use\`.`;
 
 const pagesGuide = `Pages:
 - Browser Harness drives websites: pipe JavaScript to \`"$OPENSTEER_BROWSER_HARNESS"\` in the shell; read opensteer:browser first. Each run is a fresh script. \`--tab <tabId>\` binds \`page\`, \`await openPage(tabId)\` binds more tabs, and \`await opensteer.callTool(name, input)\` calls your Opensteer tools.
@@ -59,7 +59,7 @@ Browser Harness needs a full-access Run, so this Run cannot drive pages. Tab too
 const computerUseGuide = `Computer use:
 - \`computer_use\` operates approved desktop app windows and phone screens (Android Agent Phones and Mac-driven iPhones); read opensteer:computer-use first. Windows and phones you acquire join the tab list, and \`tab(tabId)\` binds one exactly.
 - Prefer an integration, API or browser when one fits; use \`computer_use\` for a missing service integration only when the person named that device.
-- Phone screen-lock PIN: opensteer:computer-use covers an authorized unlock with a person-supplied PIN and keeping it privately only at their explicit request.`;
+- Android Agent Phone screen-lock PIN: opensteer:computer-use covers an authorized unlock with a person-supplied PIN and keeping it privately only at their explicit request. Only the person unlocks an iPhone; never enter its passcode.`;
 
 const appsGuide = `Apps:
 Apps belong to the person and outlive this task and its chat. Read references/apps.md in opensteer:tasks before building one. Call a server app at its \`localUrl\` from \`app_list\` with curl or fetch; its README documents the API.`;
