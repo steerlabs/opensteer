@@ -243,6 +243,8 @@ async function main(): Promise<void> {
 
     const interpreter = `${layout.interpreter}${executableSuffix}`;
     await stageFile(interpreterSource, path.join(staging, interpreter));
+    // Script-engine version checks run before final artifact modes are applied.
+    await setFileMode(path.join(staging, interpreter), 0o755);
     artifacts.push({ mode: "executable", path: interpreter });
 
     // One staging pass per engine whose bytes this distribution ships: a file
