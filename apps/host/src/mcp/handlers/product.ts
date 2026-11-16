@@ -573,11 +573,9 @@ export class ProductToolHandlers {
       messages.map((m) => m.id),
     );
     const items = boundedThreadItems(
-      messages.map((m) => {
-        const item = messageItem(m, input.maxCharsPerItem, input.textOffset);
-        const teamSource = teamSources.get(m.id);
-        return teamSource ? { ...item, teamSource } : item;
-      }),
+      messages.map((m) =>
+        messageItem(m, input.maxCharsPerItem, input.textOffset, teamSources.get(m.id)),
+      ),
     );
     if (input.itemId && !items.length) throw forbidden("Item is unavailable in this task");
     const hasMore = items.length < messages.length || page.window.hasMore;
@@ -735,6 +733,10 @@ export class ProductToolHandlers {
     const readablePlaces = new Set(places.map((place) => place.sequence));
     const requestById = new Map(requests.flatMap((r) => (r ? [[r.id, r] as const] : [])));
     const readableMessages = new Map(messages.map((message) => [message.id, message]));
+    const teamSources = await this.#store.messageTeamSources(
+      threadId,
+      messages.map((message) => message.id),
+    );
     const mapped = page.items.flatMap((item) => {
       if (item.type === "message")
         return [
@@ -744,6 +746,7 @@ export class ProductToolHandlers {
               readableMessages.get(item.message.id)!,
               input.maxCharsPerItem,
               input.textOffset,
+              teamSources.get(item.message.id),
             ),
           },
         ];

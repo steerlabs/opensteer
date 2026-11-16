@@ -13,13 +13,16 @@ Done.
 ## Read the day
 
 Read your own recent history with `opensteer_task_read` (no `taskId`): your last handoff says when
-you last ran and where you read each source through. With no handoff yet, build the first picture
-from about the last four weeks.
+you last ran and where you read each source through. With no handoff yet, take the read positions
+in `memory/passes/nightly.md` if an older version left it, or else build the first picture from
+about the last four weeks.
 
-Then read everything since, in full, investigating however you judge useful:
-`opensteer_task_list` with `changedSince` lists every task with new messages, Voice included; read
-each with `opensteer_task_read`, newest first, paging back to where the new messages start. A
-task's report is no substitute for what the person said. A message from a team carries
+Then read everything since, in full, investigating however you judge useful. Note the time, then
+call `opensteer_task_list` with `changedSince` a few minutes before where your last handoff read
+tasks through, paged to the end: it lists every task with new messages, Voice included, and your
+own task, which you skip. Read each
+with `opensteer_task_read`, newest first, at least its `newMessages` messages. A task's report is
+no substitute for what the person said. A message from a team carries
 `teamSource`: keep its channel and audience beside every memory taken from it, and leave shared
 team facts to team knowledge. Read the light pass's history for today
 (its worker is the `taskId` of the `memory-light` automation in `opensteer_automation_list`): what
@@ -54,5 +57,6 @@ agent did, never a rule about the person.
 
 ## Ending
 
-End with a short handoff as your final reply: when you ran, what you read each source through, and
+End with a short handoff as your final reply: when you ran, the time you noted before listing tasks
+(tasks are read through then), what you read each other source through, and
 what changed in memory and the open list. Nothing else; the person does not read it.
