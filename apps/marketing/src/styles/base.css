@@ -183,12 +183,31 @@ button {
 .nav__end {
   margin-left: auto;
   display: flex;
+  align-items: center;
   gap: 8px;
 }
-@media (max-width: 720px) {
-  .nav__links,
+.nav__talk {
+  padding: 0 10px;
+  color: var(--text-soft);
+  font-size: 14px;
+  white-space: nowrap;
+  text-decoration: none;
+  transition: color 130ms;
+}
+.nav__talk:hover {
+  color: var(--text);
+}
+@media (max-width: 860px) {
   .nav__gh {
     display: none;
+  }
+}
+@media (max-width: 720px) {
+  .nav__links {
+    display: none;
+  }
+  .nav__talk {
+    padding: 0 4px;
   }
 }
 
