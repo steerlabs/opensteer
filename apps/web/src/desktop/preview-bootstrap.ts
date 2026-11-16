@@ -4,13 +4,9 @@ import type { DesktopDeploymentSummary } from "@opensteer/protocol/desktop";
 /** The one moment every preview record claims, so nothing in it reads as live. */
 export const previewDate = "2026-08-12T19:00:00.000Z";
 
-const previewBrowser = {
-  available: false,
-  groups: { rows: [], complete: true },
-  placements: [],
-  profiles: [],
-  tabs: [],
-};
+const previewBrowser = { available: false, placements: [], profiles: [] };
+/** No tabs: the place previewed is the whole page. */
+const previewTabs = { tabs: [], layout: { revision: 0, items: [] }, complete: true };
 
 /**
  * A complete, valid bootstrap for one selected place, with nothing in it but
@@ -34,7 +30,7 @@ export function previewBootstrap(
       voiceThreadId: null,
     },
     can: { createTasks: true, useVoice: true, manageComputers: true, managePrivateResources: true },
-    appTabs: [],
+    tabs: previewTabs,
     browser: previewBrowser,
     latestPlaces: [],
     environments: [
@@ -107,7 +103,7 @@ export function previewDeploymentSnapshot(deploymentId: string) {
   return {
     tasks: { recent: page, active: page, done: page },
     needsYou: { count: 0, entries: [], window },
-    resources: { appTabs: [], browser: previewBrowser },
+    resources: { tabs: previewTabs, browser: previewBrowser },
     messages: [],
     messageWindows: [],
     pendingRequests: [],

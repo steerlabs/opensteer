@@ -31,7 +31,7 @@ import {
   type ConversationRow,
   type MessageEntry,
   type RequesterLink,
-  type SurfaceDestination,
+  type TabDestination,
   type ThreadActivityIndicator,
   type TranscriptGroup,
   type TranscriptVoice,
@@ -75,12 +75,7 @@ import Animated from "react-native-reanimated";
 import { canRespondToRequests, showsHostLive } from "@opensteer/client/host";
 import type { ThreadDraftQuote } from "../client/thread-drafts.js";
 import type { ArtifactContentPart, ContentPart } from "@opensteer/core";
-import {
-  paramsDestination,
-  sameDestination,
-  surfaceRoute,
-  type OpensteerAppDestination,
-} from "../browser/surface-route.js";
+import { useOpenPlace, useShowTab } from "../tabs/viewer-open.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { color, material, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
@@ -859,40 +854,19 @@ function ThreadPaneForUser(
       ),
     [groups],
   );
-  const inFront = useCallback(
-    (destination: SurfaceDestination | OpensteerAppDestination) => {
-      const state = navigation.getState();
-      const current = state?.routes[state.index];
-      return (
-        current?.name === "WorkspaceBrowser" &&
-        sameDestination(paramsDestination(current.params), destination)
-      );
-    },
-    [navigation],
-  );
   const showTab = props.withPage?.showTab ?? null;
+  const showTabHere = useShowTab(deploymentId, threadId);
+  const openPlace = useOpenPlace(deploymentId, threadId);
+  // Beside a page, a page chip turns that page rather than stacking another.
   const openSurface = useCallback(
-    (destination: SurfaceDestination | OpensteerAppDestination) => {
-      if (inFront(destination)) return;
-      if (destination.kind === "browser" && showTab !== null) {
-        showTab(destination);
-        return;
-      }
-      navigation.dispatch(
-        StackActions.push("WorkspaceBrowser", surfaceRoute(deploymentId, threadId, destination)),
-      );
+    (destination: TabDestination) => {
+      const page = hostClient.getSnapshot().tabs.get(destination.tabId)?.kind === "page";
+      if (page && showTab !== null) showTab({ tabId: destination.tabId });
+      else openPlace(destination);
     },
-    [deploymentId, inFront, navigation, showTab, threadId],
+    [hostClient, openPlace, showTab],
   );
-  const appTabs = useMemo<TranscriptAppTabs>(
-    () => ({
-      leave: (appId) => {
-        if (inFront({ appId, kind: "opensteer-app" })) navigation.dispatch(StackActions.pop(1));
-      },
-      open: (appId) => openSurface({ appId, kind: "opensteer-app" }),
-    }),
-    [inFront, navigation, openSurface],
-  );
+  const appTabs = useMemo<TranscriptAppTabs>(() => ({ show: showTabHere }), [showTabHere]);
   const surfaces = useMemo<TranscriptSurfaces>(
     () => ({ hostClient, threadId, turns: surfaceTurns, open: openSurface }),
     [hostClient, openSurface, surfaceTurns, threadId],

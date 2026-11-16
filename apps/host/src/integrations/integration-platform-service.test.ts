@@ -39,6 +39,8 @@ import {
 } from "@opensteer/database";
 import {
   OpensteerError,
+  TabIdSchema,
+  WindowIdSchema,
   createToolOutput,
   RequestJsonObjectSchema,
   createId,
@@ -81,7 +83,7 @@ const caller: ToolCaller = { run: null, threadId: createId("thread") };
 const runCaller = (run: RunToolContext): ToolCaller => ({
   run: {
     ...run,
-    aud: "opensteer-integration-tools",
+    aud: "opensteer-run-tools",
     bindingGeneration: 1,
     environmentId: createId("environment"),
     exp: 2_000_000_000,
@@ -3893,7 +3895,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
       truncated: false,
       window: {
         ref: "window-1",
-        id: 7,
+        windowId: WindowIdSchema.parse("win_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
         frame: { height: 600, width: 800, x: 0, y: 0 },
         scale: 2,
         title: "Shopping",
@@ -4043,7 +4045,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
                 performed: null,
                 window: {
                   ref: "window-1",
-                  id: 7,
+                  windowId: WindowIdSchema.parse("win_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
                   title: "Shopping",
                   focused: true,
                   main: true,
@@ -4150,6 +4152,10 @@ describe("IntegrationPlatformService computer use gateway", () => {
     const computerUse = liveComputerUse ?? mockedComputerUse;
     const service = platform({
       adapters: [],
+      nativeTabs: {
+        acquired: vi.fn(async () => TabIdSchema.parse("native-fixture")),
+        captureMembership: vi.fn(async () => 0),
+      },
       computerApps,
       computerUse,
       definitions: [definition],
@@ -4646,6 +4652,7 @@ function platform(input: {
   readonly computerApps?: Partial<Pick<ComputerAppHub, ApprovalHubMember>> &
     Pick<ComputerAppHub, "appStatus" | "attached" | "send" | "withRunnerAdmission">;
   readonly computerUse?: ComputerUseGateway;
+  readonly nativeTabs?: ConstructorParameters<typeof IntegrationPlatformService>[0]["nativeTabs"];
   readonly definitions?: readonly ReturnType<typeof IntegrationDefinitionSchema.parse>[];
   readonly isRunnerConnected?: (runnerId: ReturnType<typeof createId<"runner">>) => boolean;
   readonly mcpImageContent?: () => Promise<boolean>;
@@ -4696,6 +4703,7 @@ function platform(input: {
         input.materializeForAdapter ?? vi.fn(async () => Promise.reject(new Error("unused"))),
     },
     ...(input.computerUse ? { computerUse: input.computerUse } : {}),
+    ...(input.nativeTabs ? { nativeTabs: input.nativeTabs } : {}),
     computerToolEnabled: () => true,
     computerUseVersion: () => 2,
     ...(input.mcpImageContent ? { mcpImageContent: input.mcpImageContent } : {}),

@@ -1,21 +1,19 @@
-import { PendingBrowserTabView } from "./pending-browser-tab.js";
-import { browserPlaceUnavailableReason, threadMark } from "@opensteer/client/host";
+import { actingOccupants, threadMark } from "@opensteer/client/host";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router";
 import type { ReactNode } from "react";
-import type { HostClient, PlaceItem, PersonalSurfaceDestination } from "@opensteer/client/host";
-import { BrowserSurfaceIdSchema } from "@opensteer/core";
-import { useHostSelector, usePhoneTabView, usePlaceList } from "@opensteer/client/react";
+import type { HostClient, PlaceItem } from "@opensteer/client/host";
+import { BrowserSurfaceIdSchema, type TabId } from "@opensteer/core";
+import { useHostSelector, usePlace, usePlaceActivity, usePlaceList } from "@opensteer/client/react";
 import { usePageVisible } from "../../ui-utils.js";
 import { PlaceBrowserView, type BrowserChromeSignIn } from "../browser/browser-view.js";
 import { useBrowserThreadPair } from "../browser/browser-thread-pair.js";
-import { ComputerWatchView } from "../computer-watch.js";
 import { Icon } from "../icon.js";
 import { useToastToolbar } from "../toast.js";
 import { SidebarRestoreButton } from "../sidebar-chrome.js";
 import { TaskMark, TaskBadge } from "./task-mark.js";
-import { AppTab, AppTabGone } from "./app-tab.js";
-import { useBrowserPresentations } from "./identity.js";
+import { AppTab } from "./app-tab.js";
+import { useListedBrowserPresentations } from "./identity.js";
 import { OwnerView } from "./owner-view.js";
 import { StartPage } from "./start-page.js";
 import {
@@ -86,24 +84,24 @@ function AppTabs({
   const { selection } = useWorkspace();
   const open = new Map(
     usePlaceList(hostClient).flatMap((place) =>
-      place.opensteerApp ? [[place.opensteerApp.appId, place] as const] : [],
+      place.kind === "app" ? [[place.key as string, place] as const] : [],
     ),
   );
   const selected =
-    selection.kind === "place" && selection.destination.kind === "opensteer-app"
-      ? selection.destination.appId
+    selection.kind === "place" && open.has(selection.destination.tabId)
+      ? selection.destination.tabId
       : null;
   const shown = useRef(new Set<string>());
   for (const appId of shown.current) if (!open.has(appId)) shown.current.delete(appId);
   if (selected && open.has(selected)) shown.current.add(selected);
-  return [...shown.current].map((appId) => (
+  return [...shown.current].map((tabId) => (
     <AppTab
       directory={directory}
       hostClient={hostClient}
-      key={appId}
+      key={tabId}
       leading={leading}
-      place={open.get(appId)!}
-      selected={appId === selected}
+      place={open.get(tabId)!}
+      selected={tabId === selected}
       trailing={trailing}
     />
   ));
@@ -129,25 +127,28 @@ function SelectedPlace({
   const { dock, nav, phone, selection } = useWorkspace();
   const { pathname } = useLocation();
   const toolbarRef = useToastToolbar();
-  const places = usePlaceList(hostClient);
-  const presentations = useBrowserPresentations(places);
+  const presentations = useListedBrowserPresentations(hostClient);
   const pageVisible = usePageVisible();
   const known = useRef(new Map<string, PlaceItem>());
   const placeKey = selection.kind === "place" ? destinationPlaceKey(selection.destination) : null;
-  const selectedTab =
-    selection.kind === "place" && selection.destination.kind === "browser"
-      ? selection.destination.tabId
-      : null;
-  const shownBrowser =
-    selection.kind === "place" && selection.destination.kind === "browser" && selectedTab
-      ? { sessionId: selection.destination.sessionId, tabId: selectedTab }
-      : null;
+  const live = usePlace(hostClient, placeKey) ?? null;
+  const activity = usePlaceActivity(hostClient, placeKey ?? "");
+  const liveOccupants = useMemo(
+    () => (live ? actingOccupants(live.occupants, activity) : null),
+    [live, activity],
+  );
+  const viewer = useHostSelector(hostClient, () =>
+    placeKey === null ? null : hostClient.tabViewer(placeKey),
+  );
+  const pageSession = viewer?.kind === "page" ? viewer.sessionId : null;
+  // The page view stays mounted from page to page, as a browser's does: while a newly selected
+  // page activates, it holds the last page's picture and waits for this page's own binding.
+  const lastPageSession = useRef<string | null>(null);
+  if (pageSession) lastPageSession.current = pageSession;
   const dockedThread = !phone && dock.open ? conversationAt(pathname) : null;
   const showBrowserTab = useCallback(
-    (
-      destination: { readonly sessionId: string; readonly tabId: string },
-      options: { replace: boolean },
-    ) => nav.showPlace({ kind: "browser", ...destination }, options),
+    (destination: { readonly tabId: TabId }, options: { replace: boolean }) =>
+      nav.showPlace({ kind: "tab", tabId: destination.tabId }, options),
     [nav],
   );
   const pair = useBrowserThreadPair({
@@ -156,89 +157,75 @@ function SelectedPlace({
       <TaskMark mark={threadMark(dockedThread, directory.snapshot)} size={16} />
     ) : null,
     onShow: showBrowserTab,
-    shown: shownBrowser,
-    threadId: shownBrowser ? dockedThread : null,
+    shown: live?.kind === "page" ? { tabId: live.key } : null,
+    threadId: live?.kind === "page" ? dockedThread : null,
   });
-  const live = placeKey
-    ? (places.find(
-        (item) =>
-          item.key === placeKey ||
-          (selectedTab &&
-            item.destination.kind === "browser" &&
-            item.destination.tabId === selectedTab),
-      ) ?? null)
-    : null;
-  const placements = useHostSelector(hostClient, (snapshot) => snapshot.browserPlacements);
-  const [activationError, setActivationError] = useState<{ tabId: string; message: string } | null>(
-    null,
-  );
+  const [activation, setActivation] = useState<{
+    readonly tabId: string;
+    readonly state: "activating" | "failed";
+    readonly message?: string;
+  } | null>(null);
   const [retry, setRetry] = useState(0);
-  const opening = useMemo(() => crypto.randomUUID(), [nav.placeOpening, retry, selectedTab]);
-  const durable = live?.personalTab;
-  const rowState = durable?.state;
-  const currentSessionId = live?.destination.kind === "browser" ? live.destination.sessionId : null;
-  const placement = placements.find((value) => value.runnerId === live?.device?.machineId);
-  const connected = hostConnected && placement?.available === true;
-  const lastingReason = browserPlaceUnavailableReason(
-    live?.identity ?? null,
-    durable?.unavailableReason,
-    placement?.unavailableReason,
-  );
-  const activate = hostClient.activatePersonalTab;
+  // The person's Open of this tab: spent by its first activation, renewed by Try again or Reopen.
+  // Only it may wake a phone; reactivating an expired view never does.
+  const open = useRef<{ tabId: string | null; wake: boolean }>({ tabId: placeKey, wake: true });
+  if (open.current.tabId !== placeKey) open.current = { tabId: placeKey, wake: true };
+  const tabState = live?.tab.state;
+  const kind = live?.kind;
+  // Selecting a tab opens (or wakes) this device's view of it; an unavailable tab says why instead.
+  const viewerReady =
+    viewer !== null &&
+    (viewer.kind === "app" ||
+      (viewer.kind === "page" && tabState === "open") ||
+      ((viewer.kind === "window" || viewer.kind === "phone") &&
+        viewer.view.state !== "closed" &&
+        viewer.view.state !== "expired"));
+  const needsActivation = placeKey !== null && !!kind && tabState !== "unavailable" && !viewerReady;
+  // A re-render, StrictMode or a second opening while one activation is on its way joins it.
+  const pendingActivation = useRef<{
+    readonly tabId: string;
+    readonly done: Promise<unknown>;
+  } | null>(null);
   useLayoutEffect(() => {
-    if (rowState === "live") {
-      if (
-        selection.kind === "place" &&
-        selection.destination.kind === "browser" &&
-        currentSessionId &&
-        currentSessionId !== selection.destination.sessionId &&
-        selectedTab
-      )
-        nav.succeedPlace({ kind: "browser", sessionId: currentSessionId, tabId: selectedTab });
-    }
-  }, [currentSessionId, nav, rowState, selectedTab, selection]);
-  const canActivate = !!selectedTab && !!durable && rowState !== "live" && !lastingReason;
-  const beginPlaceOperation = nav.beginPlaceOperation;
-  useLayoutEffect(() => {
-    if (!canActivate || !selectedTab || !activate) return;
+    if (!needsActivation || placeKey === null) return;
     let cancelled = false;
-    const finish = beginPlaceOperation({ replace: true });
-    setActivationError(null);
-    void activate
-      .call(hostClient, selectedTab, { opening })
-      .then((result) => {
-        if (!cancelled && result)
-          finish({ kind: "browser", sessionId: result.session.id, tabId: result.tabId });
-      })
-      .catch((error: unknown) => {
+    setActivation({ tabId: placeKey, state: "activating" });
+    let pending = pendingActivation.current;
+    if (pending?.tabId !== placeKey) {
+      const done = hostClient.activateTab(placeKey, { wake: open.current.wake });
+      open.current.wake = false;
+      pending = pendingActivation.current = { tabId: placeKey, done };
+      const settled = () => {
+        if (pendingActivation.current === pending) pendingActivation.current = null;
+      };
+      done.then(settled, settled);
+    }
+    pending.done.then(
+      () => {
+        if (!cancelled) setActivation(null);
+      },
+      (error: unknown) => {
         if (!cancelled)
-          setActivationError({
-            tabId: selectedTab,
-            message: error instanceof Error ? error.message : "This tab could not reopen.",
+          setActivation({
+            tabId: placeKey,
+            state: "failed",
+            message: error instanceof Error ? error.message : "This tab could not open.",
           });
-      });
+      },
+    );
     return () => {
       cancelled = true;
     };
-  }, [activate, beginPlaceOperation, canActivate, hostClient, opening, selectedTab]);
-  useEffect(() => {
-    if (
-      selection.kind !== "place" ||
-      selection.destination.kind !== "app" ||
-      selection.destination.windowId !== undefined ||
-      selection.destination.source?.kind !== "owner-view"
-    )
-      return;
-    const source = selection.destination.source;
-    const resolved = places.find(
-      (place) =>
-        place.ownerView?.viewId === source.viewId &&
-        place.ownerView.generation === source.generation,
-    );
-    if (resolved?.destination.kind === "app" && resolved.destination.windowId !== undefined)
-      nav.succeedPlace(resolved.destination);
-  }, [nav, places, selection]);
+  }, [hostClient, needsActivation, placeKey, retry]);
+  const activationError =
+    activation?.tabId === placeKey && activation.state === "failed"
+      ? (activation.message ?? null)
+      : null;
+  const reopenView = useCallback(async () => {
+    if (placeKey !== null) await hostClient.activateTab(placeKey, { wake: true });
+  }, [hostClient, placeKey]);
   if (live && placeKey) known.current.set(placeKey, live);
+  // A tab just closed keeps its chrome until its successor takes the middle.
   const place = live ?? (placeKey ? (known.current.get(placeKey) ?? null) : null);
   // The window is named for the tab in the middle, as a browser's window is.
   const windowTitle =
@@ -264,17 +251,18 @@ function SelectedPlace({
     [],
   );
   // Who is there now: an ended place has nobody in it.
-  const marks = live ? (
-    <OccupantMarks
-      className="place__marks"
-      directory={directory}
-      fallbackFocus={markFallback}
-      onOpen={openMark}
-      occupants={live.occupants}
-      placeTitle={live.title}
-      size={20}
-    />
-  ) : null;
+  const marks =
+    live && liveOccupants ? (
+      <OccupantMarks
+        className="place__marks"
+        directory={directory}
+        fallbackFocus={markFallback}
+        onOpen={openMark}
+        occupants={liveOccupants}
+        placeTitle={live.title}
+        size={20}
+      />
+    ) : null;
 
   if (selection.kind === "talk") return null;
   if (selection.kind === "launcher") {
@@ -284,119 +272,108 @@ function SelectedPlace({
       </section>
     );
   }
-  if (selection.kind === "pending")
-    return (
-      <PendingBrowserTabView
-        hostClient={hostClient}
-        idempotencyKey={selection.idempotencyKey}
-        leading={leading}
-        trailing={trailing}
-      />
-    );
   const { destination } = selection;
-  if (destination.kind === "opensteer-app" && live) return null;
+  if (place?.kind === "app") return null;
   // The address is the person's to type; a tab id it names is checked before use.
-  const tabId =
-    destination.kind === "browser" && destination.tabId
-      ? (BrowserSurfaceIdSchema.safeParse(destination.tabId).data ?? null)
-      : null;
+  const tabId = BrowserSurfaceIdSchema.safeParse(destination.tabId).data ?? null;
   return (
     <section
-      aria-label={place?.title ?? "Place"}
-      className={`place place--${destination.kind}`}
+      aria-label={place?.title ?? "Tab"}
+      className={`place place--${place?.kind ?? "tab"}`}
       data-place-key={placeKey ?? ""}
     >
-      {destination.kind === "browser" ? (
-        tabId ? (
-          <PlaceBrowserView
-            activationError={activationError?.tabId === tabId ? activationError.message : null}
-            chromeSignIn={chromeSignIn}
-            connected={connected}
-            lastingReason={lastingReason}
-            onRetry={() => setRetry((value) => value + 1)}
-            compact={phone}
-            pair={pair}
-            marks={marks}
-            hostClient={hostClient}
-            leading={leading}
-            onLeavePage={leaveToComposer}
-            onReportError={onReportError}
-            place={place}
-            presentation={presentations.bySession.get(destination.sessionId) ?? null}
-            sessionId={destination.sessionId}
-            tabId={tabId}
-            trailing={trailing}
-            visible={pageVisible}
-          />
-        ) : (
-          <div className="browser-view">
-            <div className="browser-toolbar surface-row" ref={toolbarRef}>
-              {leading}
-              <span className="launcher__spacer" />
-              {trailing}
-            </div>
-            <div className="browser-stage">
-              <div className="place-state" role="status">
-                <p className="place-state__title">This tab isn’t available</p>
-              </div>
-            </div>
-          </div>
-        )
-      ) : destination.kind === "opensteer-app" ? (
-        <AppTabGone
-          destination={destination}
-          hostClient={hostClient}
-          leading={leading}
-          trailing={trailing}
-        />
-      ) : destination.kind === "phone" ? (
-        <PhoneTab
-          destination={destination}
-          hostClient={hostClient}
-          hostConnected={hostConnected}
-          inFront={pageVisible}
-          leading={leading}
-          marks={marks}
-          place={live}
-          trailing={trailing}
-        />
-      ) : destination.source?.kind === "owner-view" ? (
+      {place?.kind === "window" || place?.kind === "phone" ? (
         <OwnerView
-          destination={destination}
-          marks={marks}
-          hostClient={hostClient}
-          hostConnected={hostConnected}
-          key={`${destination.source.viewId}:${destination.source.generation}`}
-          leading={leading}
-          place={place}
-          trailing={trailing}
-        />
-      ) : destination.computerSessionId === undefined ? (
-        <>
-          <div className="surface-row">
-            {leading}
-            <span className="launcher__spacer" />
-            {trailing}
-          </div>
-          <div className="place-state" role="status">
-            This view is not available in this client.
-          </div>
-        </>
-      ) : (
-        <ComputerWatchView
-          app={place?.icon.kind === "app" ? place.icon.app : null}
-          appKey={destination.appKey}
-          marks={marks}
           hostClient={hostClient}
           hostConnected={hostConnected}
           key={placeKey}
           leading={leading}
-          machineId={destination.machineId || null}
-          machines={hostClient.getSnapshot().machines}
-          sessionId={destination.computerSessionId}
+          machineId={place.device.machineId}
+          marks={marks}
+          onReopen={reopenView}
+          opening={activation?.tabId === placeKey && activation.state === "activating"}
+          phone={place.kind === "phone"}
+          place={place}
+          source={
+            (viewer?.kind === "window" || viewer?.kind === "phone") && viewer.view
+              ? {
+                  kind: "owner-view",
+                  viewId: viewer.view.viewId,
+                  generation: viewer.view.generation,
+                }
+              : null
+          }
           trailing={trailing}
-          visible
         />
+      ) : place?.kind === "page" && tabId && !(pageSession ?? lastPageSession.current) ? (
+        <div className="browser-view">
+          <div className="browser-toolbar surface-row" ref={toolbarRef}>
+            {leading}
+            <span className="launcher__spacer" />
+            {trailing}
+          </div>
+          <div className="browser-stage">
+            <div className="place-state" role="status">
+              {place.unavailableReason || activationError ? (
+                <>
+                  <p className="place-state__title">{place.unavailableReason ?? activationError}</p>
+                  {activationError ? (
+                    <button
+                      className="btn btn--small"
+                      onClick={() => {
+                        open.current.wake = true;
+                        setRetry((value) => value + 1);
+                      }}
+                      type="button"
+                    >
+                      Try again
+                    </button>
+                  ) : null}
+                </>
+              ) : (
+                <span aria-label={`Opening ${place.title}`} className="spinner" />
+              )}
+            </div>
+          </div>
+        </div>
+      ) : place?.kind === "page" && tabId ? (
+        <PlaceBrowserView
+          activationError={activationError}
+          awaitingBinding={pageSession === null}
+          chromeSignIn={chromeSignIn}
+          connected={hostConnected}
+          lastingReason={place.unavailableReason}
+          onRetry={() => {
+            open.current.wake = true;
+            setRetry((value) => value + 1);
+          }}
+          compact={phone}
+          pair={pair}
+          marks={marks}
+          hostClient={hostClient}
+          leading={leading}
+          onLeavePage={leaveToComposer}
+          onReportError={onReportError}
+          place={place}
+          presentation={presentations.byTab.get(tabId) ?? null}
+          sessionId={(pageSession ?? lastPageSession.current)!}
+          tabId={tabId}
+          trailing={trailing}
+          visible={pageVisible}
+        />
+      ) : (
+        <div className="browser-view">
+          <div className="browser-toolbar surface-row" ref={toolbarRef}>
+            {leading}
+            <span className="launcher__spacer" />
+            {trailing}
+          </div>
+          <div className="browser-stage">
+            <div className="place-state" role="status">
+              <p className="place-state__title">This tab isn’t available</p>
+            </div>
+          </div>
+        </div>
       )}
     </section>
   );
@@ -407,63 +384,6 @@ function SelectedPlace({
  * conversation, which carries no history state of its own: the opening's id,
  * the place it was opened from and any link it opens are read once, as it opens.
  */
-/** A phone's one tab: the person's own view, with the task's Watch until that view is there. */
-function PhoneTab({
-  destination,
-  hostClient,
-  hostConnected,
-  inFront,
-  leading,
-  marks,
-  place,
-  trailing,
-}: {
-  readonly destination: Extract<PersonalSurfaceDestination, { kind: "phone" }>;
-  readonly hostClient: HostClient;
-  readonly hostConnected: boolean;
-  readonly inFront: boolean;
-  readonly leading: ReactNode;
-  readonly marks: ReactNode;
-  readonly place: PlaceItem | null;
-  readonly trailing: ReactNode;
-}) {
-  const opening = usePhoneTabView(hostClient, destination.machineId, inFront);
-  if (place?.task && !place.ownerView)
-    return (
-      <ComputerWatchView
-        app={null}
-        appKey={null}
-        marks={marks}
-        hostClient={hostClient}
-        hostConnected={hostConnected}
-        key={place.task.sessionId}
-        leading={leading}
-        machineId={destination.machineId}
-        machines={hostClient.getSnapshot().machines}
-        sessionId={place.task.sessionId}
-        trailing={trailing}
-        visible
-      />
-    );
-  const view = place?.ownerView ?? null;
-  return (
-    <OwnerView
-      destination={destination}
-      marks={marks}
-      hostClient={hostClient}
-      hostConnected={hostConnected}
-      key={view ? `${view.viewId}:${view.generation}` : "open"}
-      leading={leading}
-      opening={opening}
-      place={place}
-      source={
-        view ? { kind: "owner-view", viewId: view.viewId, generation: view.generation } : null
-      }
-      trailing={trailing}
-    />
-  );
-}
-
 function StartPageSlot({
   hostClient,
   leading,

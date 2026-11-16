@@ -11,6 +11,7 @@ import { presentedFrom } from "./navigation-presentations.js";
 
 /** Screens that may be top-level. Anything else on Home, such as phone setup, is a drill-in. */
 const topLevelRoutes: ReadonlySet<string> = new Set([
+  "Apps",
   "DoneTasks",
   "Home",
   "NeedsYou",

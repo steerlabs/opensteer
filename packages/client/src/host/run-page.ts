@@ -1,6 +1,5 @@
-import { computerAppIdentityKey, type MachineSummary } from "@opensteer/protocol";
 import type { PlaceEnteredEventView } from "@opensteer/core";
-import type { BrowserSessionSummary } from "./client.js";
+import type { HostSnapshot } from "./client.js";
 
 export interface RunPageMemory {
   readonly folded: boolean;
@@ -105,34 +104,18 @@ export function runPageSize(input: {
 }
 
 /**
- * Whether this conversation's agent is acting in its Run's place right now. A
- * tab is shared, so it counts only when this conversation is the one acting
- * there; a Mac app or phone session is the Run's own.
+ * Whether this conversation's agent is acting in its Run's place right now:
+ * the Host's activity for that exact tab names this conversation. A window
+ * is never inferred from its app, so two windows of one app stay apart.
  */
 export function runPlaceActing(
   entry: PlaceEnteredEventView,
-  snapshot: {
-    readonly browserSessions: readonly BrowserSessionSummary[];
-    readonly machines: readonly MachineSummary[];
-  },
+  snapshot: Pick<HostSnapshot, "tabs">,
+  activity: readonly { readonly threadId: string }[],
   threadId: string,
 ): boolean {
-  const place = entry.data.place;
-  if (place.kind === "browser")
-    return snapshot.browserSessions.some(
-      (session) =>
-        session.state === "ready" &&
-        session.browserTabs
-          ?.sessionTab(session.id, place.surfaceId)
-          ?.occupants.some((occupant) => occupant.acting && occupant.threadId === threadId) ===
-          true,
-    );
-  const session = snapshot.machines
-    .find((machine) => machine.id === place.machineId)
-    ?.computerUse?.sessions.find((session) => session.runId === entry.runId);
-  if (session === undefined) return false;
-  return place.kind === "phone"
-    ? session.actingDisplay === true
-    : session.actingAppKeys.includes(place.appKey) &&
-        session.apps.some((app) => computerAppIdentityKey(app) === place.appKey);
+  return (
+    snapshot.tabs.get(entry.data.tabId) !== undefined &&
+    activity.some((record) => record.threadId === threadId)
+  );
 }

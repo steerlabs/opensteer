@@ -24,7 +24,10 @@
     "./voice": "./src/voice.ts",
     "./runner-auxiliary": "./src/runner-auxiliary.ts",
     "./keyed-stream": "./src/keyed-stream.ts",
-    "./browser-tabs": "./src/browser-tabs.ts"
+    "./browser-tabs": "./src/browser-tabs.ts",
+    "./tabs": "./src/tabs.ts",
+    "./apps": "./src/apps.ts",
+    "./agent-tool-relay": "./src/agent-tool-relay.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

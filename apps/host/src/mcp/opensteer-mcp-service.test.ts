@@ -87,13 +87,13 @@ function fixture() {
   const targets = new Map([[thread.id, thread]]);
   const messageId = createId("message");
   const personMessage = vi.fn(
-    async (_call: import("./handlers/index.js").ToolCall<"send_to_person">) => ({
+    async (_call: import("./handlers/index.js").ToolCall<"person_notify">) => ({
       messageId,
       unnamedSecret: "private",
     }),
   );
   const handlers = {
-    send_to_person: personMessage,
+    person_notify: personMessage,
     opensteer_task_send: vi.fn(async () => {
       throw new Error("Unexpected effect");
     }),
@@ -631,7 +631,7 @@ describe("Opensteer MCP spine", () => {
           jsonrpc: "2.0",
           id: 2,
           method: "tools/call",
-          params: { name: "send_to_person", arguments: { message: "waiting" } },
+          params: { name: "person_notify", arguments: { message: "waiting" } },
         },
         sessionId,
       );
@@ -890,7 +890,7 @@ describe("Opensteer MCP spine", () => {
           jsonrpc: "2.0",
           id: 1,
           method: "tools/call",
-          params: { name: "send_to_person", arguments: { message: "one authority" } },
+          params: { name: "person_notify", arguments: { message: "one authority" } },
         }),
       });
       expect(response.status).toBe(200);
@@ -955,9 +955,9 @@ describe("Opensteer MCP spine", () => {
       expect(names).toContain("opensteer_task_wait");
       expect(client.getInstructions()).toBeUndefined();
       expect(names).not.toContain("computer_use");
-      expect(names).not.toContain("show_to_person");
+      expect(names).not.toContain("person_show");
       await expect(
-        f.service.callTool("program", "send_to_person", { message: "hi" }, { operationKey: "p" }),
+        f.service.callTool("program", "person_notify", { message: "hi" }, { operationKey: "p" }),
       ).rejects.toThrow("unavailable to this caller");
       expect(f.personMessage).not.toHaveBeenCalled();
     } finally {
@@ -979,7 +979,17 @@ describe("Opensteer MCP spine", () => {
         }),
       ).resolves.toMatchObject({
         isError: true,
-        content: [{ type: "text", text: MANAGED_MEMORY_WAKE_SKIPPED }],
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              error: { code: "conflict", message: MANAGED_MEMORY_WAKE_SKIPPED, next: null },
+            }),
+          },
+        ],
+        structuredContent: {
+          error: { code: "conflict", message: MANAGED_MEMORY_WAKE_SKIPPED, next: null },
+        },
       });
     } finally {
       await client.close();
@@ -998,7 +1008,12 @@ describe("Opensteer MCP spine", () => {
     );
     const client = await connect(f.url, "run");
     try {
-      const text = "That task is busy. Queue it with opensteer_task_send.";
+      const error = {
+        code: "conflict",
+        message: "That task is busy.",
+        next: "Queue it with opensteer_task_send.",
+      };
+      const text = JSON.stringify({ error });
       await expect(
         client.callTool({
           name: "opensteer_task_send",
@@ -1008,7 +1023,7 @@ describe("Opensteer MCP spine", () => {
         isError: true,
         content: [{ type: "text", text }],
         structuredContent: {
-          error: { code: "conflict", message: text, reason: "thread-busy", retryable: false },
+          error,
         },
       });
       expect(f.options.onToolError).not.toHaveBeenCalled();
@@ -1051,7 +1066,13 @@ describe("Opensteer MCP spine", () => {
         });
         expect(result).toMatchObject({
           isError: true,
-          structuredContent: { error: { code: "internal", retryable: false } },
+          structuredContent: {
+            error: {
+              code: "internal_error",
+              message: "Opensteer hit an internal error.",
+              next: expect.stringContaining(advice),
+            },
+          },
         });
         const text = (result.content as [{ text: string }])[0].text;
         expect(text).toContain(advice);
@@ -1076,7 +1097,7 @@ describe("Opensteer MCP spine", () => {
       expect(names).not.toContain("computer_use");
       expect(names).not.toContain("saved_login_request");
       expect(names).not.toContain("chrome_cookies_request");
-      expect(names).not.toContain("send_to_person");
+      expect(names).not.toContain("person_notify");
     } finally {
       await client.close();
       await f.service.close();
@@ -1086,9 +1107,9 @@ describe("Opensteer MCP spine", () => {
     const f = fixture();
     const input = { message: "sent once" };
     expect(
-      await f.service.callTool("run", "send_to_person", input, { operationKey: "rpc-1" }),
+      await f.service.callTool("run", "person_notify", input, { operationKey: "rpc-1" }),
     ).not.toHaveProperty("unnamedSecret");
-    await f.service.callTool("run", "send_to_person", input, { operationKey: "rpc-2" });
+    await f.service.callTool("run", "person_notify", input, { operationKey: "rpc-2" });
     expect(f.personMessage).toHaveBeenCalledTimes(2);
     expect(f.personMessage.mock.calls.map(([call]) => call.operationKey)).toEqual([
       "rpc-1",
@@ -1098,10 +1119,10 @@ describe("Opensteer MCP spine", () => {
   it("rechecks live authority on a new call", async () => {
     const f = fixture();
     const input = { message: "once" };
-    await f.service.callTool("run", "send_to_person", input, { operationKey: "1" });
+    await f.service.callTool("run", "person_notify", input, { operationKey: "1" });
     f.callers.delete("run");
     await expect(
-      f.service.callTool("run", "send_to_person", input, { operationKey: "2" }),
+      f.service.callTool("run", "person_notify", input, { operationKey: "2" }),
     ).rejects.toThrow("expired");
     expect(f.personMessage).toHaveBeenCalledTimes(1);
   });
@@ -1148,7 +1169,7 @@ describe("Opensteer MCP spine", () => {
     await expect(
       f.service.callTool(
         "run",
-        "send_to_person",
+        "person_notify",
         { message: "hi", attribution: "spoofed" },
         { operationKey: "invalid" },
       ),
@@ -1167,7 +1188,13 @@ describe("Opensteer MCP spine", () => {
       );
       expect(result).toMatchObject({ isError: true });
       const text = (result.content as [{ text: string }])[0].text;
-      expect(text).toMatch(/^Opensteer hit an internal error\. /u);
+      expect(JSON.parse(text)).toEqual({
+        error: {
+          code: "internal_error",
+          message: "Opensteer hit an internal error.",
+          next: "Try once more, and if it fails again, tell the person.",
+        },
+      });
       expect(text).not.toContain("invalid_arguments");
       // Where the result broke the contract goes to the log, never what it held.
       const [logged] = vi.mocked(f.options.onToolError).mock.calls[0]!;
@@ -1184,7 +1211,7 @@ describe("Opensteer MCP spine", () => {
     try {
       await f.service.close();
       const result = await client.callTool({
-        name: "send_to_person",
+        name: "person_notify",
         arguments: { message: "after restart" },
       });
       expect(result.isError).not.toBe(true);

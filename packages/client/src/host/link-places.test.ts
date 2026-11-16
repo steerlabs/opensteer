@@ -1,8 +1,8 @@
-import { browserStoreFixture } from "../test-support/browser-snapshot.js";
-import type { BrowserGroupRow } from "@opensteer/protocol/browser-tabs";
+import { tabFixture, tabStoreFixture } from "../test-support/tab-fixtures.js";
 import type { MachineSummary } from "@opensteer/protocol";
+import { BrowserProfileIdSchema, RunnerIdSchema, TabIdSchema, type Tab } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
-import type { BrowserSessionSummary, HostSnapshot } from "./client.js";
+import type { HostSnapshot } from "./client.js";
 import {
   linkOnComputerNetwork,
   linkPlaces,
@@ -16,6 +16,16 @@ import type { StartPageProfileChoice } from "./start-page-model.js";
 const phone = "rnr_00000000-0000-4000-8000-000000000001";
 const mini = "rnr_00000000-0000-4000-8000-000000000002";
 const studio = "rnr_00000000-0000-4000-8000-000000000003";
+const shopping = "bpr_00000000-0000-4000-8000-0000000000a1";
+const bank = "bpr_00000000-0000-4000-8000-0000000000a2";
+const work = "bpr_00000000-0000-4000-8000-0000000000a3";
+const design = "bpr_00000000-0000-4000-8000-0000000000a4";
+const archive = "bpr_00000000-0000-4000-8000-0000000000a5";
+const profileNames: Record<string, string> = {
+  [shopping]: "Shopping",
+  [bank]: "Bank",
+  [work]: "Work",
+};
 
 function machine(id: string, name: string, overrides: Partial<MachineSummary> = {}) {
   return {
@@ -29,17 +39,19 @@ function machine(id: string, name: string, overrides: Partial<MachineSummary> = 
   } as MachineSummary;
 }
 
-function session(
-  runnerId: string,
-  profileId: string | null,
-  updatedAt: string,
-): BrowserSessionSummary {
-  return {
-    id: `bsn_${runnerId}_${profileId}_${updatedAt}`,
-    placement: { kind: "runner", runnerId },
-    profileId,
+let tabs = 0;
+function page(runnerId: string, profileId: string | null, updatedAt: string): Tab {
+  return tabFixture({
+    tabId: TabIdSchema.parse(`page-${++tabs}`),
+    computer: { computerId: RunnerIdSchema.parse(runnerId), name: runnerId },
+    profile: profileId
+      ? {
+          profileId: BrowserProfileIdSchema.parse(profileId),
+          name: profileNames[profileId] ?? profileId,
+        }
+      : null,
     updatedAt,
-  } as BrowserSessionSummary;
+  });
 }
 
 type Source = Parameters<typeof linkPlaces>[0];
@@ -48,11 +60,11 @@ function world(overrides: Partial<Source> = {}): Source {
   return {
     browserProfileHomes: [phone, mini, studio],
     browserProfiles: [
-      { homeRunnerId: phone, id: "bpr_shopping", name: "Shopping" },
-      { homeRunnerId: phone, id: "bpr_bank", name: "Bank" },
-      { homeRunnerId: mini, id: "bpr_work", name: "Work" },
+      { homeRunnerId: phone, id: shopping, name: "Shopping" },
+      { homeRunnerId: phone, id: bank, name: "Bank" },
+      { homeRunnerId: mini, id: work, name: "Work" },
     ],
-    browserSessions: [],
+    tabs: tabStoreFixture([]),
     machines: [machine(studio, "Studio Mac"), machine(mini, "Mac mini"), machine(phone, "iPhone")],
     ...overrides,
   };
@@ -91,42 +103,34 @@ describe("linkOnComputerNetwork", () => {
 describe("recentProfileOn", () => {
   it("chooses the profile most recently used on that device, from its own profiles only", () => {
     const snapshot = world({
-      browserSessions: [
-        session(phone, "bpr_bank", "2026-11-10T09:00:00.000Z"),
-        session(phone, "bpr_shopping", "2026-11-10T10:00:00.000Z"),
+      tabs: tabStoreFixture([
+        page(phone, bank, "2026-11-10T09:00:00.000Z"),
+        page(phone, shopping, "2026-11-10T10:00:00.000Z"),
         // Newer, but not this device's or not a profile at all.
-        session(mini, "bpr_work", "2026-11-10T11:00:00.000Z"),
-        session(phone, null, "2026-11-10T12:00:00.000Z"),
-      ],
+        page(mini, work, "2026-11-10T11:00:00.000Z"),
+        page(phone, null, "2026-11-10T12:00:00.000Z"),
+      ]),
     });
-    expect(recentProfileOn(snapshot, phone)).toBe("bpr_shopping");
-    expect(recentProfileOn(snapshot, mini)).toBe("bpr_work");
+    expect(recentProfileOn(snapshot, phone)).toBe(shopping);
+    expect(recentProfileOn(snapshot, mini)).toBe(work);
     expect(recentProfileOn(snapshot, studio)).toBeNull();
   });
 
-  it("counts saved tabs and breaks a tie by name", () => {
+  it("counts asleep tabs and breaks a tie by name", () => {
     const at = "2026-11-10T09:00:00.000Z";
-    const tied = world({ browserSessions: [session(phone, "bpr_shopping", at)] });
-    const saved = {
-      ...tied,
-      browserTabs: browserStoreFixture(
-        [
-          {
-            ...session(phone, "bpr_bank", at),
-            sessionId: "saved",
-            id: "saved",
-          } as unknown as BrowserGroupRow,
-        ],
-        [],
-      ),
-    } as unknown as Source;
-    expect(recentProfileOn(saved, phone)).toBe("bpr_bank");
+    const tied = world({
+      tabs: tabStoreFixture([
+        page(phone, shopping, at),
+        { ...page(phone, bank, at), state: "asleep" },
+      ]),
+    });
+    expect(recentProfileOn(tied, phone)).toBe(bank);
   });
 });
 
 describe("linkPlaces", () => {
   const recent = world({
-    browserSessions: [session(phone, "bpr_shopping", "2026-11-10T10:00:00.000Z")],
+    tabs: tabStoreFixture([page(phone, shopping, "2026-11-10T10:00:00.000Z")]),
   });
   const read = (url: string, snapshot: Source = recent, hereId: string | null = phone) =>
     linkPlaces(snapshot, { conversationRunnerId: studio, hereId, url });
@@ -136,7 +140,7 @@ describe("linkPlaces", () => {
     expect(places.tap).toMatchObject({
       id: phone,
       here: true,
-      target: { identity: { kind: "profile", profileId: "bpr_shopping" } },
+      target: { identity: { kind: "profile", profileId: shopping } },
     });
     expect(places.hold.map(({ name }) => name)).toEqual(["iPhone", "Studio Mac", "Mac mini"]);
     expect(places.hold[1]!.target).toEqual({
@@ -185,19 +189,19 @@ describe("new tab", () => {
     ...world(),
     browserProfiles: [
       ...world().browserProfiles,
-      { homeRunnerId: studio, id: "bpr_design", name: "Design" },
-      { homeRunnerId: null, id: "bpr_old", name: "Archive" },
+      { homeRunnerId: studio, id: design, name: "Design" },
+      { homeRunnerId: null, id: archive, name: "Archive" },
     ],
   };
   const choice = (identity: StartPageProfileChoice["identity"], name: string) =>
     ({ identity, presentation: { name } }) as StartPageProfileChoice;
   const profiles = [
-    choice({ kind: "profile", profileId: "bpr_work" }, "Work"),
-    choice({ kind: "profile", profileId: "bpr_design" }, "Design"),
-    choice({ kind: "profile", profileId: "bpr_old" }, "Archive"),
-    choice({ kind: "profile", profileId: "bpr_shopping" }, "Shopping"),
+    choice({ kind: "profile", profileId: work }, "Work"),
+    choice({ kind: "profile", profileId: design }, "Design"),
+    choice({ kind: "profile", profileId: archive }, "Archive"),
+    choice({ kind: "profile", profileId: shopping }, "Shopping"),
     choice({ kind: "guest" }, "Guest"),
-    choice({ kind: "profile", profileId: "bpr_bank" }, "Bank"),
+    choice({ kind: "profile", profileId: bank }, "Bank"),
   ];
 
   it("lists this device's profiles first, then each device's by name, then Guest", () => {
@@ -227,7 +231,7 @@ describe("new tab", () => {
     });
     expect(newTabTarget(snapshot, guest, null)).toEqual({ identity: guest });
     expect(newTabTarget(snapshot, profiles[0]!.identity, phone)).toEqual({
-      identity: { kind: "profile", profileId: "bpr_work" },
+      identity: { kind: "profile", profileId: work },
     });
   });
 

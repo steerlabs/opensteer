@@ -1,8 +1,19 @@
-import { createId, TeamMessageIdSchema } from "@opensteer/core";
+import { seedPrivatePublisher } from "./private-publisher.test-support.js";
+import {
+  AgentEventViewSchema,
+  createId,
+  createToolOutput,
+  parseReferenceHref,
+  PlaceEnteredEventViewSchema,
+  TabIdSchema,
+  tabReferenceHref,
+  TeamMessageIdSchema,
+} from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDatabase } from "./connection.js";
 import {
+  tabsAndAppsMigrationName,
   agentHomeSettingsMigrationName,
   MigrationLineageError,
   migrateToLatest,
@@ -26,6 +37,12 @@ import {
 } from "./personal-team-requests-store.js";
 import { personalTeamRunOutcome } from "./personal-team-run-store.js";
 import { AccountDirectoryStore } from "./account-directory-store.js";
+import { DeploymentSnapshotSchema } from "@opensteer/protocol";
+import { eventFromRow } from "./deployment-events.js";
+import { readAgentThreadActivity, readAgentThreadRecent } from "./agent-thread-history.js";
+import { latestNativePlaces } from "./browser-session-store.js";
+import { resolvePersonalReferences } from "./reference-store.js";
+import { readEmptyPersonalResources } from "./store.integration.test-support.js";
 
 let clone: TestDatabase;
 let database: Kysely<DatabaseSchema>;
@@ -1013,7 +1030,7 @@ describe("fresh personal/team lineage", () => {
     ["integration_connections", "computer_app", "jsonb", "NO"],
     ["plugin_owner_settings", "revision", "integer", "NO"],
     ["delegations", "revision", "integer", "NO"],
-    ["browser_tab_layouts", "tab_order", "jsonb", "NO"],
+    ["tab_layouts", "items", "jsonb", "NO"],
     ["machine_access_events", "id", "bigint", "YES"],
     ["mcp_oauth_credentials", "encrypted_state", "bytea", "NO"],
   ])("preserves the private storage contract for %s.%s", async (table, column, type, identity) => {
@@ -1320,5 +1337,281 @@ it("migrates baseline read positions, including the declared message-only and ne
   ).toEqual([
     { id: "msg_future-read", createdAt: "2099-01-01 00:00:00.000000" },
     { id: "msg_microsecond-unread", createdAt: "2026-01-02 00:00:00.000500" },
+  ]);
+});
+
+it("keeps pre-tabs/apps history and recent places readable without live tabs", async () => {
+  await migrateToLatest(database, migrationsBefore(tabsAndAppsMigrationName));
+  const publisher = await seedPrivatePublisher(database);
+  const browser = {
+    kind: "browser",
+    sessionId: `bsn_${crypto.randomUUID()}`,
+    surfaceId: "legacy/page:1",
+  };
+  const app = { kind: "app", machineId: publisher.runnerId, appKey: "com.apple.Notes" };
+  const phone = { kind: "phone", machineId: publisher.runnerId, display: "main" };
+  const places = [browser, app, phone, browser, app, phone];
+  const nativeWindow = { id: 42, title: "Notes" };
+  const unchanged = [
+    {
+      type: "app.published",
+      data: { appId: `app_${crypto.randomUUID()}`, version: 1, title: "Existing app" },
+    },
+    {
+      type: "tool.started",
+      data: {
+        callId: "computer:legacy",
+        tool: { namespace: "integrations", name: "computer.bind" },
+        arguments: { window: nativeWindow.id },
+      },
+    },
+    {
+      type: "tool.completed",
+      data: {
+        callId: "computer:legacy",
+        isError: false,
+        output: createToolOutput(JSON.stringify({ window: nativeWindow })),
+      },
+    },
+    { type: "place.entered", data: { tabId: "already-current", title: "Current", site: null } },
+  ];
+  const fixtures = [
+    ...places.map((place, index) => ({
+      type: "place.entered",
+      data: {
+        place,
+        title: `Historical ${index}`,
+        site: place.kind === "browser" ? "https://example.com" : null,
+      },
+    })),
+    ...unchanged,
+  ];
+  for (const fixture of fixtures)
+    await sql`with next as (update deployment_event_state set sequence=sequence+1 returning *)
+      insert into deployment_events(deployment_id,sequence,event_id,thread_id,run_id,environment_id,type,data)
+      select deployment_id,sequence,${createId("event")},${publisher.threadId},${publisher.runId},${publisher.environmentId},${fixture.type},${JSON.stringify(fixture.data)}::jsonb from next`.execute(
+      database,
+    );
+  const before = await database
+    .selectFrom("deploymentEvents")
+    .selectAll()
+    .orderBy("sequence")
+    .execute();
+  // These are valid pre-0026 rows, but the new strict event reader cannot read them yet.
+  expect(() => eventFromRow(before[0]!)).toThrow();
+  await migrateToLatest(database);
+  const after = await database
+    .selectFrom("deploymentEvents")
+    .selectAll()
+    .orderBy("sequence")
+    .execute();
+  expect(after.map(({ data: _data, ...row }) => row)).toEqual(
+    before.map(({ data: _data, ...row }) => row),
+  );
+  expect(after.slice(places.length)).toEqual(before.slice(places.length));
+  const events = after.map(eventFromRow);
+  for (const event of events) expect(AgentEventViewSchema.parse(event)).toEqual(event);
+  const migrated = events.slice(0, places.length).map((event, index) => {
+    const place = PlaceEnteredEventViewSchema.parse(event);
+    expect(place.data).toEqual({
+      tabId: place.data.tabId,
+      title: `Historical ${index}`,
+      site: places[index]!.kind === "browser" ? "https://example.com" : null,
+    });
+    return place;
+  });
+  const ids = migrated.map((event) => TabIdSchema.parse(event.data.tabId));
+  expect(ids.slice(0, 3)).toEqual(ids.slice(3));
+  expect(new Set(ids).size).toBe(3);
+  expect(ids[0]).toBe(browser.surfaceId);
+  for (const id of [ids[1], ids[2]])
+    expect(id).toMatch(/^tab_[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u);
+  const store = new OpensteerStore(database, {
+    readPersonalResources: readEmptyPersonalResources,
+  });
+  const owner = { ownerId: publisher.userId, threadId: publisher.threadId };
+  const page = await store.threadEventPageForOwner({ ...owner, placeEvents: "include" });
+  expect(page?.events).toEqual(events);
+  // These are the durable activity/recent-place readers used by opensteer_task_read.
+  const activity = await readAgentThreadActivity(database, { ...owner, limit: 100 });
+  expect(activity?.items).toEqual(
+    events
+      .toReversed()
+      .map((event) =>
+        event.type === "tool.started"
+          ? { ...event, data: { ...event.data, arguments: null } }
+          : event,
+      ),
+  );
+  const started = events.find((event) => event.type === "tool.started")!;
+  expect(
+    (await readAgentThreadActivity(database, { ...owner, limit: 1, itemId: started.sequence }))
+      ?.items,
+  ).toEqual([started]);
+  const recent = await readAgentThreadRecent(database, { ...owner, runLimit: 1 });
+  const placeEvents = events.filter((event) => event.type === "place.entered");
+  expect(recent?.places).toEqual(placeEvents.toReversed());
+  expect(await store.latestRunPlace(publisher.runId)).toEqual(placeEvents.at(-1));
+  const snapshot = await store.deploymentSnapshot({
+    viewerId: publisher.userId,
+    placeEvents: "include",
+    omitMessages: true,
+  });
+  expect(DeploymentSnapshotSchema.parse(snapshot).runPlaces).toEqual([placeEvents.at(-1)]);
+  expect(await latestNativePlaces(database, publisher.userId)).toMatchObject([
+    { taskId: publisher.threadId, tabId: "already-current" },
+  ]);
+  for (const id of ids)
+    expect(parseReferenceHref(tabReferenceHref(id))).toEqual({ kind: "tab", id });
+  expect(await resolvePersonalReferences(database, { ownerId: publisher.userId, ids })).toEqual(
+    [...new Set(ids)].map((id) => ({ id, status: "unavailable" })),
+  );
+  await migrateToLatest(database);
+  expect(
+    await database.selectFrom("deploymentEvents").selectAll().orderBy("sequence").execute(),
+  ).toEqual(after);
+});
+
+it("reaches the same tabs/apps schema fresh and after preserving existing publications", async () => {
+  await migrateToLatest(database, migrationsBefore(tabsAndAppsMigrationName));
+  const publisher = await seedPrivatePublisher(database);
+  const html = `app_${crypto.randomUUID()}`;
+  const server = `app_${crypto.randomUUID()}`;
+  const secondServer = `app_${crypto.randomUUID()}`;
+  for (const appId of [html, server, secondServer]) {
+    await sql`insert into apps(id,thread_id,run_id,title,latest_version) values(${appId},${publisher.threadId},${publisher.runId},'Preserved',1)`.execute(
+      database,
+    );
+    const serverSpec =
+      appId === server || appId === secondServer
+        ? JSON.stringify({
+            folder: { computerId: publisher.runnerId, path: "/tmp/migrated-server" },
+            command: "node server.mjs",
+          })
+        : null;
+    await sql`insert into app_versions(app_id,version,sha256,size_bytes,server,created_by_run,publish_key) values(${appId},1,${serverSpec ? null : "a".repeat(64)},${serverSpec ? null : 10},${serverSpec}::jsonb,${publisher.runId},${appId})`.execute(
+      database,
+    );
+  }
+  await migrateToLatest(database);
+  const rows = (
+    await sql<{
+      id: string;
+      ownerId: string;
+      computerId: string;
+      name: string;
+      threadId: string | null;
+      runId: string | null;
+    }>`select id,owner_id,computer_id,name,thread_id,run_id from apps order by id`.execute(database)
+  ).rows;
+  expect(rows).toHaveLength(3);
+  for (const row of rows)
+    expect(row).toMatchObject({
+      ownerId: publisher.userId,
+      computerId: publisher.runnerId,
+      name: "Preserved",
+      threadId: publisher.threadId,
+      runId: publisher.runId,
+    });
+  const ports = (
+    await sql<{
+      appId: string;
+      port: number;
+      desiredState: string;
+    }>`select app_id,port,desired_state from app_servers order by app_id`.execute(database)
+  ).rows;
+  expect(ports).toHaveLength(2);
+  expect(new Set(ports.map((row) => row.port)).size).toBe(2);
+  for (const row of ports) {
+    expect(row.port).toBeGreaterThanOrEqual(49152);
+    expect(row.port).toBeLessThanOrEqual(65535);
+    expect(row.desiredState).toBe("running");
+  }
+  await sql`delete from runs where id=${publisher.runId}`.execute(database);
+  expect((await sql`select run_id from apps`.execute(database)).rows).toEqual(
+    Array.from({ length: 3 }, () => ({ runId: null })),
+  );
+  await sql`update causal_chains set root_message_id=null where id=${publisher.causalChainId}`.execute(
+    database,
+  );
+  await sql`delete from threads where id=${publisher.threadId}`.execute(database);
+  expect((await sql`select thread_id from apps`.execute(database)).rows).toEqual(
+    Array.from({ length: 3 }, () => ({ threadId: null })),
+  );
+  expect((await sql`select * from app_versions`.execute(database)).rows).toHaveLength(3);
+  await migrateToLatest(database);
+  expect(
+    (await sql`select app_id,port,desired_state from app_servers order by app_id`.execute(database))
+      .rows,
+  ).toEqual(ports);
+  const upgraded = await catalog();
+  await sql`drop schema public cascade;create schema public`.execute(database);
+  await migrateToLatest(database);
+  expect(await catalog()).toEqual(upgraded);
+});
+
+it("enforces generic tab identity, descriptor shape, and fixed server ports on a fresh database", async () => {
+  await migrateToLatest(database);
+  const person = await seedPersonalFixture(database, "/tmp/tabs-contract-migration");
+  const tab = (id: string) =>
+    sql`insert into personal_tabs(id,owner_id,kind,computer_id,title,opened_by) values(${id},${person.userId},'phone',${person.runnerId},'Phone','"person"')`.execute(
+      database,
+    );
+  await tab("first");
+  await expect(tab("second")).rejects.toThrow(/unique/u);
+  await sql`update personal_tabs set closed_at=now() where id='first'`.execute(database);
+  await expect(tab("second")).rejects.toThrow(/unique/u);
+  await expect(
+    sql`insert into personal_tabs(id,owner_id,kind,computer_id,title,opened_by) values('page',${person.userId},'page',${person.runnerId},'Missing URL','"person"')`.execute(
+      database,
+    ),
+  ).rejects.toThrow(/check constraint/u);
+  const columns = (
+    await sql<{
+      tableName: string;
+      columnName: string;
+    }>`select table_name,column_name from information_schema.columns where table_schema='public' and table_name in ('apps','personal_tabs','runners','tab_layouts')`.execute(
+      database,
+    )
+  ).rows;
+  expect(columns.filter((row) => row.columnName === "tab_opened_at")).toEqual([]);
+  expect(
+    (
+      await sql`select to_regclass('browser_tab_layouts') as old_layout,to_regclass('browser_tab_groups') as old_groups,to_regclass('browser_tab_group_members') as old_members`.execute(
+        database,
+      )
+    ).rows,
+  ).toEqual([{ oldLayout: null, oldGroups: null, oldMembers: null }]);
+});
+
+it("keeps a server's recorded home when the publishing computer can no longer be derived", async () => {
+  await migrateToLatest(database, migrationsBefore(tabsAndAppsMigrationName));
+  const publisher = await seedPrivatePublisher(database);
+  const html = `app_${crypto.randomUUID()}`,
+    server = `app_${crypto.randomUUID()}`;
+  for (const appId of [html, server]) {
+    await sql`insert into apps(id,thread_id,run_id,title,latest_version) values(${appId},${publisher.threadId},${publisher.runId},'Existing',1)`.execute(
+      database,
+    );
+    const spec =
+      appId === server
+        ? JSON.stringify({
+            folder: { computerId: publisher.runnerId, path: "/tmp/saved-app" },
+            command: "node server.mjs",
+          })
+        : null;
+    await sql`insert into app_versions(app_id,version,sha256,size_bytes,server,created_by_run,publish_key) values(${appId},1,${spec ? null : "a".repeat(64)},${spec ? null : 10},${spec}::jsonb,${publisher.runId},${appId})`.execute(
+      database,
+    );
+  }
+  await sql`update execution_environments set runner_id=null where id=${publisher.environmentId}`.execute(
+    database,
+  );
+  await migrateToLatest(database);
+  expect((await sql`select id,computer_id from apps`.execute(database)).rows).toEqual([
+    { id: server, computerId: publisher.runnerId },
+  ]);
+  expect((await sql`select app_id from app_versions`.execute(database)).rows).toEqual([
+    { appId: server },
   ]);
 });

@@ -35,6 +35,8 @@ function host(read = vi.fn<HostClient["readBrowserTabIcon"]>(async () => blue)) 
   const listeners = new Set<() => void>();
   const client = {
     readBrowserTabIcon: read,
+    // A tab never shown on this device, asleep or awake elsewhere: its icon is the tab's own.
+    tabViewer: () => null,
     getSnapshot: () => ({ connection }),
     subscribe: (listener: () => void) => {
       listeners.add(listener);
@@ -62,7 +64,7 @@ async function mount(client: HostClient, ref: string | null = "same-ref", copies
             <PlaceMark
               key={index}
               hostClient={nextClient}
-              icon={{ kind: "site", sessionId: "same-session", ref: nextRef }}
+              icon={{ kind: "site", ref: nextRef, url: "https://example.com/", tabId: "tab" }}
             />
           ))}
         </>,
@@ -87,6 +89,7 @@ it("keeps the mark neutral before an icon reference exists and while its read is
   expect(container.querySelector(".site-mark > svg")).not.toBeNull();
   expect(read).not.toHaveBeenCalled();
   await render(owner.client, "new-ref");
+  expect(read).toHaveBeenCalledExactlyOnceWith("tab", "new-ref");
   expect(container.querySelector("img")).toBeNull();
   expect(container.textContent).toBe("");
   let finishDecode!: () => void;

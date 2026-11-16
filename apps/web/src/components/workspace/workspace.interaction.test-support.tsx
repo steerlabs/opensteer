@@ -370,29 +370,24 @@ async function click(target: Element) {
 
 function placeParams(search: string): string {
   const params = new URLSearchParams(search);
-  return ["panel", "browser", "browserTab", "computerSession", "app", "mac", "phone"]
-    .map((name) => `${name}=${params.get(name) ?? ""}`)
-    .join("&");
+  return ["panel", "tab"].map((name) => `${name}=${params.get(name) ?? ""}`).join("&");
 }
 
-function isMockPage(item: PlaceItem, source: MockHostClient = client): boolean {
-  if (item.destination.kind !== "browser") return false;
-  const { sessionId, tabId } = item.destination;
-  const row = tabId ? source.browserTabs.sessionTab(sessionId, tabId) : undefined;
-  return typeof row?.documentId === "string";
+/** A page tab whose browser is running now, so it shows without waking. */
+function isMockPage(item: PlaceItem): boolean {
+  return item.kind === "page" && item.tab.state === "open";
 }
 
 function pageTab(source: MockHostClient = client) {
   const place = placeList(source.getSnapshot()).find(
-    (item) => item.kind === "browser" && isMockPage(item, source) && item.occupants.length > 0,
+    (item) => isMockPage(item) && item.occupants.length > 0,
   );
-  if (!place || place.destination.kind !== "browser") throw new Error("Missing page tab");
+  if (!place) throw new Error("Missing page tab");
   return place;
 }
 
-function tabSearch(place: ReturnType<typeof pageTab>) {
-  if (place.destination.kind !== "browser") throw new Error("Not a browser place");
-  return `?panel=browser&browser=${place.destination.sessionId}&browserTab=${place.destination.tabId}`;
+function tabSearch(place: Pick<PlaceItem, "key">) {
+  return `?panel=browser&tab=${place.key}`;
 }
 
 function deferred<T>() {

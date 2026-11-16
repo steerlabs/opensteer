@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 import { placeList } from "@opensteer/client/host";
-import { PersonShowMessageSchema, computerAppIdentityKey } from "@opensteer/protocol";
+import { PersonShowMessageSchema } from "@opensteer/protocol";
 import { createId } from "@opensteer/core";
 import { VoiceController } from "@opensteer/client/voice";
 import { VoiceProvider } from "./context.js";
@@ -90,58 +90,15 @@ async function mount() {
     type: "host.show",
     runId: createId("run"),
     threadId: source.id,
-    target: { threadId: target.id },
+    target: { taskId: target.id },
   });
   return { host: state.host, snapshot, source, target, message };
 }
 
-it.each(["app", "phone"] as const)(
-  "opens the Run's current %s through shared navigation",
-  async (kind) => {
-    const f = await mount();
-    const machine = f.snapshot.machines.find((machine) =>
-      machine.computerUse?.sessions.some((session) => session.display === (kind === "phone")),
-    )!;
-    const session = machine.computerUse!.sessions.find(
-      (session) => session.display === (kind === "phone"),
-    )!;
-    const place =
-      kind === "app"
-        ? { kind, machineId: machine.id, appKey: computerAppIdentityKey(session.apps[0]!) }
-        : { kind, machineId: machine.id, display: "main" };
-    await act(async () =>
-      f.host.receivePersonShow(
-        PersonShowMessageSchema.parse({
-          ...f.message,
-          runId: session.runId,
-          target: { place, runId: session.runId },
-        }),
-      ),
-    );
-    expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
-      type: "PUSH",
-      payload: {
-        name: "WorkspaceBrowser",
-        params: {
-          deploymentId: f.snapshot.deploymentId,
-          scope: "tabs",
-          machineId: machine.id,
-          ...(kind === "app"
-            ? {
-                appKey: "appKey" in place ? place.appKey : null,
-                computerSessionId: session.sessionId,
-              }
-            : { phone: true }),
-        },
-      },
-    });
-  },
-);
-
 it("routes an authorized unloaded Thread through the existing Thread screen", async () => {
   const f = await mount();
   const threadId = createId("thread");
-  await act(async () => f.host.receivePersonShow({ ...f.message, target: { threadId } }));
+  await act(async () => f.host.receivePersonShow({ ...f.message, target: { taskId: threadId } }));
   expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
     type: "PUSH",
     payload: {
@@ -151,38 +108,41 @@ it("routes an authorized unloaded Thread through the existing Thread screen", as
   });
 });
 
-it("opens the exact requested tab from the active Thread", async () => {
-  const f = await mount();
-  const source = f.target;
+async function showPage(f: Awaited<ReturnType<typeof mount>>, close = false) {
   state.route = {
     key: "Thread",
     name: "Thread",
-    params: { deploymentId: f.snapshot.deploymentId, threadId: source.id },
+    params: { deploymentId: f.snapshot.deploymentId, threadId: f.target.id },
   };
-  const place = placeList(f.snapshot).find((place) => place.destination.kind === "browser")!;
-  if (place.destination.kind !== "browser") throw new Error("Expected a browser tab");
-  const { sessionId, tabId } = place.destination;
+  const { tabId } = placeList(f.snapshot).find((place) => place.kind === "page")!.destination;
+  if (close) await act(async () => void (await f.host.closeTabs([tabId])));
   await act(async () =>
     f.host.receivePersonShow(
       PersonShowMessageSchema.parse({
         ...f.message,
-        threadId: source.id,
+        threadId: f.target.id,
         target: { tabId },
       }),
     ),
   );
+  return tabId;
+}
+
+it("opens the exact requested tab from the active Thread, by its tabId alone", async () => {
+  const f = await mount();
+  const tabId = await showPage(f);
   expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
     type: "PUSH",
-    payload: {
-      name: "WorkspaceBrowser",
-      params: {
-        deploymentId: f.snapshot.deploymentId,
-        scope: "tabs",
-        sessionId,
-        tabId,
-      },
-    },
+    payload: { name: "WorkspaceBrowser", params: { deploymentId: f.snapshot.deploymentId, tabId } },
   });
+});
+
+it("shows nothing for a tab the complete list no longer has, and never a sibling", async () => {
+  const f = await mount();
+  const tabId = await showPage(f, true);
+  expect(f.host.getSnapshot().tabs.get(tabId)).toBeUndefined();
+  expect(f.host.getSnapshot().tabs.complete).toBe(true);
+  expect(state.dispatch).not.toHaveBeenCalled();
 });
 
 it("ignores inactive apps, covered routes and different Threads or Deployments, without replaying Show", async () => {

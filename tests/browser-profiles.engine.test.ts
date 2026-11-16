@@ -1,4 +1,5 @@
-import { browserInventory } from "./browser-sessions.test-support.js";
+import { runtimeBrowserCommand } from "./browser-sessions.test-support.js";
+
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -97,34 +98,25 @@ describe("live agent-created browser profile", () => {
       const afterFirst = await stack.api["bootstrap.get"]({});
       if (!afterFirst.ok) throw new Error(afterFirst.error.message);
       const { profiles } = afterFirst.data.browser;
-      const { browserSessions: sessions } = await browserInventory(stack);
-      const onSite = sessions.filter((session) =>
-        (session.browserTabs?.sessionTabs(session?.id) ?? []).some((tab) => tab.site === origin),
-      );
+      const sessions = afterFirst.data.tabs.tabs;
+      const onSite = sessions.filter((tab) => tab.kind === "page" && tab.url?.startsWith(origin));
       Object.assign(evidence, {
         profiles: profiles.map(({ id, name }) => ({ id, name })),
-        sessions: sessions.map((session) => ({
-          id: session.id,
-          profileId: session.profileId,
-          sites:
-            (session.browserTabs?.sessionTabs(session?.id) ?? []).map((tab) => tab.site) ?? null,
-          state: session.state,
-        })),
+        sessions,
       });
       const work = profiles.filter((profile) => profile.name.trim().toLowerCase() === "work");
       expect(work, "exactly one profile named work").toHaveLength(1);
       expect(onSite.length, "the account's site is open for the person").toBeGreaterThan(0);
       expect(
-        onSite.map((session) => session.profileId),
+        onSite.map((session) => session.profile?.profileId),
         "every browser on the account's site is the work profile",
       ).toEqual(onSite.map(() => work[0]!.id));
 
       // The person signs in, in the tab the agent left for them.
-      const signedIn = await stack.api["commands.dispatch"]({
+      const signedIn = await runtimeBrowserCommand(stack, {
         idempotencyKey: randomUUID(),
-        sessionId: onSite[0]!.id,
-        type: "browser.tab.open",
-        url: `${origin}/person-signed-in`,
+        target: { kind: "page", profileId: work[0]!.id, url: `${origin}/person-signed-in` },
+        type: "tab.open",
       });
       if (!signedIn.ok) throw new Error(signedIn.error.message);
 

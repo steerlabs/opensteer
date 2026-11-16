@@ -358,8 +358,8 @@ it("bounds buffered browser-open RPC headers independently of the generic respon
   });
   try {
     const result = client["commands.dispatch"]({
-      type: "browser.tab.open",
-      identity: { kind: "guest" },
+      type: "tab.open",
+      target: { kind: "page", url: "about:blank", guest: true },
       idempotencyKey: "buffered-open",
     });
     await vi.advanceTimersByTimeAsync(24_999);

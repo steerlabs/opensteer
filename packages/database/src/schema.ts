@@ -50,8 +50,6 @@ import type {
   AuthVerificationId,
   BrowserProfileId,
   BrowserSourceId,
-  BrowserTabGroupColor,
-  BrowserTabGroupId,
   CausalChainId,
   CommandId,
   CredentialId,
@@ -571,8 +569,6 @@ interface RunnerTable {
   enrolledAt: Timestamp;
   lastSeenAt: NullableTimestamp;
   revokedAt: NullableTimestamp;
-  /** An Agent Phone's tab: open from its first use until its owner closes it. */
-  tabOpenedAt: NullableTimestamp;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -1089,7 +1085,7 @@ interface RequestCallJoinTable {
   originatingRunId: RunId;
   callId: string;
   requestId: RequestId;
-  createdAt: Generated<Timestamp>;
+  createdAt: Timestamp;
 }
 
 interface RequestContinuationTable {
@@ -1419,25 +1415,6 @@ interface BrowserHistoryIconTable {
   origin: string;
   iconRef: string;
   favicon: string;
-}
-
-interface PersonalTabTable {
-  id: string;
-  createdAt: Timestamp;
-  groupId: BrowserSessionId;
-  sessionId: BrowserSessionId;
-  title: string;
-  url: string;
-  favicon: Generated<string | null>;
-  iconRef: Generated<string | null>;
-  order: number;
-  openerId: string | null;
-  state: "suspended" | "restoring" | "live";
-  closedBy: Generated<UserId | null>;
-  closedAfterTabId: Generated<string | null>;
-  closedTabGroupId: Generated<BrowserTabGroupId | null>;
-  reopenedAt: Generated<Date | null>;
-  closedAt: NullableTimestamp;
 }
 
 interface BrowserSessionTable {
@@ -1907,7 +1884,7 @@ interface ComputerUsePolicyTable {
 interface ComputerUseStopTable {
   runId: RunId;
   runnerId: RunnerId;
-  stoppedAt: Generated<Timestamp>;
+  stoppedAt: Timestamp;
 }
 
 interface ComputerAppSetupRequestTable {
@@ -1933,17 +1910,6 @@ interface ComputerAppSetupRequestTable {
   expiresAt: Timestamp;
 }
 
-export interface AppTable {
-  tabOpenedAt: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
-  id: string;
-
-  threadId: ThreadId;
-  runId: RunId;
-  title: string;
-  latestVersion: number;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
 export interface AppVersionTable {
   appId: string;
   version: number;
@@ -2111,6 +2077,7 @@ export interface DatabaseSchema {
 
   agentConnections: AgentConnectionTable;
   apps: AppTable;
+  appServers: AppServerTable;
   appVersions: AppVersionTable;
   attachments: AttachmentTable;
   computerUsePolicies: ComputerUsePolicyTable;
@@ -2226,23 +2193,7 @@ export interface DatabaseSchema {
   browserHistoryIcons: BrowserHistoryIconTable;
   browserSessions: BrowserSessionTable;
   personalTabs: PersonalTabTable;
-  browserTabLayouts: {
-    ownerId: UserId;
-    revision: Generated<string | number | bigint>;
-    tabOrder: ColumnType<string[] | null, string[] | null | undefined, string[] | null>;
-  };
-  browserTabGroups: {
-    id: BrowserTabGroupId;
-    ownerId: UserId;
-    title: string;
-    color: BrowserTabGroupColor;
-    collapsed: Generated<boolean>;
-    // Provenance outlives the creating Thread, as a browser session's opener does.
-    createdByThreadId: ThreadId | null;
-    createdAt: Timestamp;
-    updatedAt: Timestamp;
-  };
-  browserTabGroupMembers: { ownerId: UserId; tabId: string; groupId: BrowserTabGroupId };
+  tabLayouts: TabLayoutTable;
   browserTabOpens: {
     ownerId: UserId;
     idempotencyKey: string;
@@ -2295,7 +2246,7 @@ export interface DatabaseSchema {
   runnerPluginDataRemovals: {
     runnerId: RunnerId;
     pluginId: string;
-    createdAt: Generated<Timestamp>;
+    createdAt: Timestamp;
   };
   specialists: {
     removedAt: Generated<Date | null>;
@@ -2689,7 +2640,7 @@ export interface TeamAgentRecipientTable {
   channelId: TeamChannelId;
   rootId: TeamMessageId;
   enabled: boolean;
-  updatedAt: Generated<Timestamp>;
+  updatedAt: Timestamp;
 }
 export interface PersonalTeamRequestTable {
   kind: Generated<TeamAgentRequestKind>;
@@ -2826,4 +2777,54 @@ export interface TeamShareAskTable {
   replyMessageId: TeamMessageId | null;
   createdAt: Timestamp;
   changeSeq: string;
+}
+
+export interface PersonalTabTable {
+  id: import("@opensteer/core").TabId;
+  ownerId: UserId;
+  kind: import("@opensteer/core").TabKind;
+  computerId: RunnerId;
+  title: string;
+  url: string | null;
+  profileId: BrowserProfileId | null;
+  profileName: string | null;
+  appId: import("@opensteer/core").AppId | null;
+  windowId: import("@opensteer/core").WindowId | null;
+  windowApp: JsonColumn<ComputerAppIdentity | null>;
+  pageBinding: JsonColumn<import("@opensteer/core").PageBinding | null>;
+  favicon: string | null;
+  iconRef: string | null;
+  openerTabId: import("@opensteer/core").TabId | null;
+  openedBy: JsonColumn<import("@opensteer/core").TabOpenedBy>;
+  generation: Generated<number>;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  closedAt: NullableTimestamp;
+  closedPosition: JsonColumn<import("@opensteer/core").ClosedPosition | null>;
+}
+export interface TabLayoutTable {
+  ownerId: UserId;
+  revision: Generated<number>;
+  items: JsonColumn<import("@opensteer/core").TabLayout["items"]>;
+}
+export interface AppTable {
+  id: import("@opensteer/core").AppId;
+  ownerId: UserId;
+  computerId: RunnerId;
+  threadId: ThreadId | null;
+  runId: RunId | null;
+  name: string;
+  creationKey: string | null;
+  latestVersion: Generated<number>;
+  deleting: Generated<boolean>;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+export interface AppServerTable {
+  appId: import("@opensteer/core").AppId;
+  computerId: RunnerId;
+  port: number;
+  desiredState: "running" | "stopped";
+  generation: Generated<number>;
+  lastError: string | null;
 }

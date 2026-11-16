@@ -11,7 +11,7 @@ import {
   RunIdSchema,
   ThreadIdSchema,
   nextMarkColor,
-  type EventData,
+  type Tab,
 } from "@opensteer/core";
 import type { MachineSummary } from "@opensteer/protocol";
 import {
@@ -26,10 +26,10 @@ import {
   BrowserTabOpenResultSchema,
   ComputerUseSessionSummarySchema,
   HostedBrowserSessionSchema,
-  PlaceActivitySchema,
+  TabPlaceActivitySchema,
   PlaceIdentitySchema,
-  PersonalTabActivateResultSchema,
-  PersonalTabReopenResultSchema,
+  computerAppIdentityKey,
+  type PlaceIdentity,
   browserHistoryMaxEntries,
   browserHistoryRetentionMs,
   createBrowserSessionId,
@@ -39,8 +39,8 @@ import {
   type BrowserTabOpenResult,
   type PlaceOccupant,
 } from "@opensteer/protocol";
-import { browserTabArrangement, browserTabOrderTabs } from "../host/browser-tab-order.js";
 import type { BrowserWatchState } from "../host/browser-watch.js";
+import { mockWindowId } from "./mock-computer-views.js";
 import type { BrowserCommand, BrowserFrameView } from "../host/client.js";
 import { HostClientRequestError } from "../host/client.js";
 import { PlaceActivityStore } from "../host/place-activity.js";
@@ -59,12 +59,10 @@ const emptyWatch: BrowserWatchState = { frame: null, error: null, status: "unava
 /** How long a mock page takes to load, long enough to see its tab's spinner. */
 const mockPageLoadMs = 900;
 /** The window each scripted task is working in, by app; every app has its own. */
-const mockSessionWindows: Readonly<
-  Record<string, { readonly id: number; readonly title: string }>
-> = {
-  Keynote: { id: 301, title: "Q4 review" },
-  Notes: { id: 101, title: "Shopping list" },
-  Slack: { id: 201, title: "#launch" },
+const mockSessionWindows: Readonly<Record<string, string>> = {
+  Keynote: "Q4 review",
+  Notes: "Shopping list",
+  Slack: "#launch",
 };
 /** Each fixture picture decoded once, not again for every frame. */
 const decodedPages = new Map<string, Uint8Array<ArrayBuffer>>();
@@ -350,7 +348,8 @@ export function seedMockPlaces(
             ...session,
             windows: session.apps.map((app) => ({
               appKey: app.bundleId.toLowerCase(),
-              ...(mockSessionWindows[app.displayName] ?? { id: 900, title: "Untitled" }),
+              windowId: mockWindowId(machine.id, app.bundleId, 0),
+              title: mockSessionWindows[app.displayName] ?? "Untitled",
             })),
             actingAppKeys: session.apps.map((app) => app.bundleId.toLowerCase()),
             actingDisplay: false,
@@ -444,7 +443,6 @@ export function seedMockPlaces(
       };
   // Every device can hold browsers: the person's iPhone too, while Opensteer is open on it.
   machines.push({
-    tabOpenedAt: null,
     access: {
       activeSessions: [],
       ownerReachAvailable: false,
@@ -600,13 +598,23 @@ export interface MockPlaceScript {
   ): void;
 }
 
+/**
+ * Where the mock world says a Run began acting: its place as the world knows
+ * it, which the mock Host records as that place's tab.
+ */
+export interface MockPlaceEntry {
+  readonly place: PlaceIdentity;
+  readonly title: string;
+  readonly site: string | null;
+}
+
 /** All animation derives from elapsed injected-clock time and stable fixture IDs. */
 export class MockPlaceWorld {
   readonly input = new MockBrowserInput((sessionId, command) => this.command(sessionId, command));
   readonly #signInPage = new MockSignInPage(this.input.editing);
   readonly #history = new Map<string, BrowserHistory>();
   readonly #historyChanged: (profileId: string) => void;
-  readonly #entered: (runId: string, threadId: string, data: EventData<"place.entered">) => void;
+  readonly #entered: (runId: string, threadId: string, data: MockPlaceEntry) => void;
   readonly #historyOwner: string | undefined;
   readonly activity: PlaceActivityStore;
   readonly #watches = new Map<
@@ -639,20 +647,7 @@ export class MockPlaceWorld {
     string,
     { readonly width: number; readonly height: number; readonly revision: number }
   >();
-  readonly #closedTabs: {
-    ownerId: string | undefined;
-    at: number;
-    lineage: PersonalTabLineage;
-    tab: NonNullable<PersonalTabLineage["tabs"]>[number];
-    url: string;
-    preceding: string | null;
-    groupId: string | null;
-  }[] = [];
   readonly #restoreUrls = new Map<string, string>();
-  readonly #reopenedTabs = new Map<
-    string,
-    ReturnType<typeof PersonalTabReopenResultSchema.parse>
-  >();
   #scripted = false;
   #seq = 0;
   /**
@@ -669,8 +664,7 @@ export class MockPlaceWorld {
     now: () => Date,
     historyChanged: (profileId: string) => void = () => undefined,
     /** As the Host records it: a Run began acting in a tab. */
-    entered: (runId: string, threadId: string, data: EventData<"place.entered">) => void = () =>
-      undefined,
+    entered: (runId: string, threadId: string, data: MockPlaceEntry) => void = () => undefined,
   ) {
     this.#snapshot = snapshot;
     this.#historyChanged = historyChanged;
@@ -711,7 +705,7 @@ export class MockPlaceWorld {
         if (!liveRuns.has(record.runId))
           this.activity.apply({
             type: "host.place-activity-cleared",
-            place: record.place,
+            tabId: record.tabId,
             runId: record.runId,
             generation: record.generation,
             seq: record.seq + 1,
@@ -817,6 +811,28 @@ export class MockPlaceWorld {
       },
     };
   }
+  /**
+   * As the Host does for a window or phone: the Run's activity in that exact
+   * tab, which also enters it as the Run's place. It stays until the Run lets go.
+   */
+  actInNativeTab(runId: string, threadId: string, tabId: string): void {
+    const at = this.#now().getTime();
+    this.activity.apply({
+      type: "host.place-activity",
+      activity: TabPlaceActivitySchema.parse({
+        tabId,
+        threadId,
+        runId,
+        generation: 1,
+        seq: ++this.#seq,
+        order: ++this.#order,
+        at,
+        expiresAt: at + 15000,
+        pointer: null,
+        geometryRevision: 0,
+      }),
+    });
+  }
   actInPlace(threadId: string, placeKey: string): void {
     const snapshot = this.#snapshot();
     const place = placeList(snapshot).find((item) => item.key === placeKey);
@@ -825,9 +841,10 @@ export class MockPlaceWorld {
         candidate.threadId === threadId &&
         (candidate.status === "running" || candidate.status === "waiting"),
     );
-    if (!run || place?.destination.kind !== "browser" || place.availability !== "ready")
+    const tabId = place?.key;
+    const sessionId = tabId ? pageSessionOf(snapshot, tabId) : null;
+    if (!run || place?.kind !== "page" || place.availability !== "ready" || !sessionId || !tabId)
       throw new Error("The Run cannot act in this page.");
-    const { sessionId, tabId } = place.destination;
     const at = this.#now().toISOString();
     const browserSessions = snapshot.browserSessions.map((session) => {
       if (!session.catalog) return session;
@@ -907,12 +924,17 @@ export class MockPlaceWorld {
     const session = this.#snapshot().browserSessions.find((s) => s.id === sessionId);
     const tab = session?.surfaces.find((t) => t.id === surfaceId);
     if (!tab || session?.state !== "ready") return undefined;
+    const held = session.catalog?.tabs.find((candidate) => candidate.id === surfaceId);
     return {
+      // A Runtime that does not say keeps both directions offered.
+      canGoBack: held?.canGoBack ?? true,
+      canGoForward: held?.canGoForward ?? true,
       id: tab.id,
       state: "live",
       title: tab.title,
       url: tab.url,
-      documentId: tab.documentId ?? `document-${tab.id}`,
+      // The document the page's context reads name, so a chip and its read agree.
+      documentId: tab.documentId ?? held?.documentId ?? `document-${tab.id}`,
       geometryRevision: 1,
       loading: tab.loading ?? false,
       navigationFailed: false,
@@ -978,7 +1000,6 @@ export class MockPlaceWorld {
         sessionId,
         command.surfaceId,
         session.catalog.inventoryRevision ?? session.catalog.revision,
-        false,
       );
       return;
     }
@@ -1412,82 +1433,8 @@ export class MockPlaceWorld {
     this.#frames();
     return result;
   }
-  reopen(idempotencyKey: string) {
-    const snapshot = this.#snapshot();
-    const key = JSON.stringify([snapshot.user?.id, idempotencyKey]);
-    const replay = this.#reopenedTabs.get(key);
-    if (replay) return replay;
-    const source = this.#closedTabs.findLast(
-      (source) =>
-        source.ownerId === snapshot.user?.id &&
-        source.at >= this.#now().getTime() - 24 * 60 * 60_000,
-    );
-    if (!source) throw new Error("No recently closed tab to reopen.");
-    const lineage =
-      snapshot.browserGroups?.find((group) => group.id === source.lineage.id) ?? source.lineage;
-    if ((lineage.tabs?.length ?? 0) >= 64) throw new Error("Browser tab limit reached.");
-    const id = BrowserSurfaceIdSchema.parse(`surface_${crypto.randomUUID()}`);
-    const tab = {
-      ...source.tab,
-      id,
-      state: "suspended" as const,
-      createdAt: this.#now().toISOString(),
-    };
-    const group = {
-      ...lineage,
-      revision: lineage.revision + 1,
-      tabs: [...(lineage.tabs ?? []), tab],
-    };
-    const arrangement = browserTabArrangement(
-      snapshot.browserTabGroups ?? { revision: 0, groups: [] },
-      browserTabOrderTabs(snapshot.browserTabs),
-    );
-    const order = [...arrangement.order];
-    const target = snapshot.browserTabGroups?.groups.find((group) => group.id === source.groupId);
-    let at = source.preceding ? order.indexOf(source.preceding) + 1 : order.length;
-    if (
-      target &&
-      (!source.preceding || !target.tabIds.includes(BrowserSurfaceIdSchema.parse(source.preceding)))
-    )
-      at = Math.max(...target.tabIds.map((id) => order.indexOf(id))) + 1;
-    if (!target && source.preceding) {
-      const precedingGroup = arrangement.groupOf.get(source.preceding);
-      while (
-        precedingGroup &&
-        at < order.length &&
-        arrangement.groupOf.get(order[at]!) === precedingGroup
-      )
-        at++;
-    }
-    order.splice(at, 0, id);
-    const layout = {
-      revision: (snapshot.browserTabGroups?.revision ?? 0) + 1,
-      groups: (snapshot.browserTabGroups?.groups ?? []).map((group) =>
-        group.id === target?.id ? { ...group, tabIds: [...group.tabIds, id] } : group,
-      ),
-      order: order.map((id) => BrowserSurfaceIdSchema.parse(id)),
-    };
-    this.#restoreUrls.set(id, source.url);
-    this.#closedTabs.splice(this.#closedTabs.indexOf(source), 1);
-    this.#update({
-      ...snapshot,
-      browserGroups: [
-        ...(snapshot.browserGroups ?? []).filter((held) => held.id !== group.id),
-        group,
-      ],
-      browserTabGroups: layout,
-    });
-    const result = PersonalTabReopenResultSchema.parse({
-      type: "tab.reopen",
-      tabId: id,
-      groupId: group.id,
-      sessionId: group.session.id,
-      layout,
-    });
-    this.#reopenedTabs.set(key, result);
-    return result;
-  }
-  activatePersonalTab(tabId: string) {
+  /** Restores a sleeping page into its browser, as activating its tab does. */
+  restorePage(tabId: string) {
     const snapshot = this.#snapshot();
     const lineage = snapshot.browserGroups?.find((group) =>
       group.tabs?.some((tab) => tab.id === tabId),
@@ -1537,15 +1484,9 @@ export class MockPlaceWorld {
       ),
     });
     this.#frames();
-    return PersonalTabActivateResultSchema.parse({
-      type: "tab.activate",
-      tabId,
-      groupId: lineage.id,
-      sessionId: session.id,
-      session: { ...updated, updatedAt: this.#now().toISOString() },
-    });
+    return { session: updated };
   }
-  async close(sessionId: string, surfaceId: string, inventoryRevision: number, person = true) {
+  async close(sessionId: string, surfaceId: string, inventoryRevision: number) {
     const snapshot = this.#snapshot();
     const session = snapshot.browserSessions.find((session) => session.id === sessionId);
     const catalog = session?.catalog;
@@ -1562,24 +1503,6 @@ export class MockPlaceWorld {
         status: 404,
         message: "The tab is no longer open.",
       });
-    const lineage = snapshot.browserGroups?.find((group) => group.session.id === sessionId);
-    const tab = lineage?.tabs?.find((tab) => tab.id === surfaceId);
-    if (person && lineage && tab) {
-      const arrangement = browserTabArrangement(
-        snapshot.browserTabGroups ?? { revision: 0, groups: [] },
-        browserTabOrderTabs(snapshot.browserTabs),
-      );
-      const at = arrangement.order.indexOf(surfaceId);
-      this.#closedTabs.push({
-        ownerId: snapshot.user?.id,
-        at: this.#now().getTime(),
-        lineage,
-        tab,
-        url: session?.surfaces.find((tab) => tab.id === surfaceId)?.url ?? tab.site,
-        preceding: at > 0 ? arrangement.order[at - 1]! : null,
-        groupId: arrangement.groupOf.get(surfaceId) ?? null,
-      });
-    }
     const tabs = catalog.tabs
       .filter((tab) => tab.id !== surfaceId)
       .map((tab) => (tab.openerId === surfaceId ? { ...tab, openerId: null } : tab));
@@ -1717,12 +1640,11 @@ export class MockPlaceWorld {
       }
     }
   }
-  async icon(sessionId: string, iconRef: string): Promise<string | null> {
-    BrowserTabIconInputSchema.parse({ sessionId, iconRef });
-    const tab = this.#snapshot()
-      .browserSessions.find((session) => session.id === sessionId)
-      ?.catalog?.tabs.find((tab) => tab.iconRef === iconRef);
-    return BrowserTabIconResultSchema.parse({ favicon: tab ? iconData : null }).favicon;
+  /** As the Host serves it: a listed page tab's stored icon, awake or not. */
+  async icon(tabId: string, iconRef: string, row: Tab | undefined): Promise<string | null> {
+    BrowserTabIconInputSchema.parse({ tabId, iconRef });
+    const stored = row?.kind === "page" && row.iconRef === iconRef;
+    return BrowserTabIconResultSchema.parse({ favicon: stored ? iconData : null }).favicon;
   }
   #notify(key: string): void {
     for (const listener of this.#watchListeners.get(key) ?? []) listener();
@@ -1864,75 +1786,69 @@ export class MockPlaceWorld {
     }
     if (recorded) this.#update({ ...current, browserUses: uses });
     this.#seq++;
-    const places = placeList(this.#snapshot());
     const animatedRuns = new Set<string>();
-    // Seeded native sessions predate the browser actions animated by this tick.
-    for (const place of [
-      ...places.filter((place) => place.kind !== "browser"),
-      ...places.filter((place) => place.kind === "browser"),
-    ]) {
-      if (place.availability !== "ready" || place.destination.kind === "opensteer-app") continue;
-      for (const occupant of place.occupants.filter((occupant) => occupant.acting)) {
-        const runId = liveRuns.get(occupant.threadId);
-        if (!runId) continue;
-        const identity = PlaceIdentitySchema.parse(
-          place.destination.kind === "browser"
-            ? {
-                kind: "browser" as const,
-                sessionId: place.destination.sessionId,
-                surfaceId: place.destination.tabId,
-              }
-            : place.destination.kind === "app"
-              ? {
-                  kind: "app" as const,
-                  machineId: place.destination.machineId,
-                  appKey: place.destination.appKey,
-                }
-              : {
-                  kind: "phone" as const,
-                  machineId: place.destination.machineId,
-                  display: "main",
-                },
-        );
-        if (identity.kind !== "browser") {
-          const referenceKey = `${occupant.threadId}:${runId}:${place.key}`;
-          if (this.#nativeReferences.has(referenceKey)) continue;
-          this.#nativeReferences.add(referenceKey);
-          this.#entered(runId, occupant.threadId, {
-            place: identity,
-            title: place.title,
-            site: place.site,
+    for (const session of this.#snapshot().browserSessions) {
+      if (session.state !== "ready" || !session.catalog) continue;
+      for (const tab of session.catalog.tabs) {
+        if (tab.availability !== "ready") continue;
+        for (const occupant of tab.occupants.filter((occupant) => occupant.acting)) {
+          const runId = liveRuns.get(occupant.threadId);
+          if (!runId || animatedRuns.has(runId)) continue;
+          animatedRuns.add(runId);
+          const phase = (now - this.#started) / 2000 + tab.title.length;
+          // As the runtime does, a pointer is labelled with the page's current geometry.
+          const geometry = this.#viewports.get(this.#key(session.id, tab.id));
+          const activity = TabPlaceActivitySchema.parse({
+            tabId: tab.id,
+            threadId: occupant.threadId,
+            runId: RunIdSchema.parse(runId),
+            generation: 1,
+            seq: this.#seq,
+            order: ++this.#order,
+            at: now,
+            expiresAt: now + 15000,
+            pointer: { x: 0.5 + Math.sin(phase) * 0.25, y: 0.5 + Math.cos(phase * 0.7) * 0.25 },
+            geometryRevision: (geometry?.revision ?? 0) + 1,
           });
-          continue;
-        }
-        if (animatedRuns.has(runId)) continue;
-        animatedRuns.add(runId);
-        const phase = (now - this.#started) / 2000 + place.title.length;
-        // As the runtime does, a pointer is labelled with the page's current geometry.
-        const geometry = this.#viewports.get(this.#key(identity.sessionId, identity.surfaceId));
-        const activity = PlaceActivitySchema.parse({
-          place: identity,
-          threadId: occupant.threadId,
-          runId: RunIdSchema.parse(runId),
-          generation: 1,
-          seq: this.#seq,
-          order: ++this.#order,
-          at: now,
-          expiresAt: now + 15000,
-          pointer: { x: 0.5 + Math.sin(phase) * 0.25, y: 0.5 + Math.cos(phase * 0.7) * 0.25 },
-          geometryRevision: (geometry?.revision ?? 0) + 1,
-        });
-        this.activity.apply({ type: "host.place-activity", activity });
-        if (!this.#nativeReferences.has(runId)) {
-          this.#nativeReferences.add(runId);
-          this.#entered(runId, occupant.threadId, {
-            place: identity,
-            title: place.title,
-            site: place.site,
-          });
+          this.activity.apply({ type: "host.place-activity", activity });
+          if (!this.#nativeReferences.has(runId)) {
+            this.#nativeReferences.add(runId);
+            this.#entered(runId, occupant.threadId, {
+              place: PlaceIdentitySchema.parse({
+                kind: "browser",
+                sessionId: session.id,
+                surfaceId: tab.id,
+              }),
+              title: tab.title,
+              site: originOf(tab.site),
+            });
+          }
         }
       }
     }
+    // A task working on a phone or a Mac app has entered that place, as the Host records it.
+    for (const machine of current.machines)
+      for (const held of machine.computerUse?.sessions ?? []) {
+        const runId = liveRuns.get(held.threadId);
+        const app = held.apps.find((candidate) =>
+          held.actingAppKeys.includes(computerAppIdentityKey(candidate)),
+        );
+        // Only work acting there now has entered it; a Run acting in a page is there instead.
+        if (!runId || animatedRuns.has(runId) || (held.display ? !held.actingDisplay : !app))
+          continue;
+        const reference = `${held.threadId}:${runId}:${machine.id}:${held.display ? "phone" : "app"}`;
+        if (this.#nativeReferences.has(reference)) continue;
+        this.#nativeReferences.add(reference);
+        this.#entered(runId, held.threadId, {
+          place: PlaceIdentitySchema.parse(
+            held.display || !app
+              ? { kind: "phone", machineId: machine.id, display: "main" }
+              : { kind: "app", machineId: machine.id, appKey: computerAppIdentityKey(app) },
+          ),
+          title: held.display || !app ? machine.name : app.displayName,
+          site: null,
+        });
+      }
     this.#frames();
   }
   dispose(): void {
@@ -1956,4 +1872,15 @@ function originOf(url: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** The world session a page tab lives in now, by its surface. */
+function pageSessionOf(
+  snapshot: { readonly browserGroups?: readonly PersonalTabLineage[] | undefined },
+  tabId: string,
+): string | null {
+  return (
+    snapshot.browserGroups?.find((group) => group.tabs?.some((tab) => tab.id === tabId))?.session
+      .id ?? null
+  );
 }

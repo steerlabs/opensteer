@@ -971,13 +971,11 @@ it("bounds Deployment-wide Needs you and rolls navigation up without changing Re
         timeoutError: () => new Error("Snapshot resource reader never released"),
       });
       return {
-        appTabs: [],
+        tabs: { tabs: [], layout: { revision: 0, items: [] }, complete: true },
         browser: {
           available: false,
           placements: [],
           profiles: [],
-          groups: { rows: [], complete: true },
-          tabs: [],
         },
       };
     },

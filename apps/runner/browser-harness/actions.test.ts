@@ -46,7 +46,10 @@ class Socket extends EventEmitter {
       case "surface.open":
       case "page.wait":
       case "page.navigate":
-        result = { type: request.action.type, binding: this.binding };
+        result =
+          request.action.type === "surface.resume"
+            ? { type: request.action.type, binding: this.binding, dialog: null, reloaded: false }
+            : { type: request.action.type, binding: this.binding };
         break;
       case "page.info":
         result = {
@@ -144,15 +147,10 @@ function fixture(initialTargetId: string | null = binding.surfaceId) {
 }
 
 describe("actions Harness conformance", () => {
-  it("opens the first tab without a target and focuses before pressing or appending", async () => {
-    const { socket, harness } = fixture(null);
-    socket.tabs = [];
-    await harness.listTabs();
-    expect(socket.requests[0]).not.toHaveProperty("surfaceId");
-    await harness.newTab("https://first.test/");
-    const opened = socket.requests.find((request) => request.action.type === "surface.open");
-    expect(opened).not.toHaveProperty("surfaceId");
-    expect(opened).not.toHaveProperty("documentId");
+  it("resumes its bound tab without inventory and focuses before pressing or appending", async () => {
+    const { socket, harness } = fixture();
+    await harness.attach();
+    expect(socket.requests.map((request) => request.action.type)).toEqual(["surface.resume"]);
     const start = socket.requests.length;
     await harness.page.locator("input").focus();
     await harness.page.locator("input").press("Enter");
@@ -207,36 +205,8 @@ describe("actions Harness conformance", () => {
       expect(socket.requests.some((request) => request.action.type === "text.insert")).toBe(false);
     }
   });
-  it("lists every page before claiming an unknown tab", async () => {
-    const requests: { type: string; cursor?: string }[] = [];
-    const last = { ...binding, surfaceId: "tab-1000" };
-    const client = {
-      onEvent: () => {},
-      request: async (_binding: unknown, action: { type: string; cursor?: string }) => {
-        requests.push(action);
-        if (action.type !== "session.tabs") return { type: action.type, binding: last };
-        return action.cursor
-          ? { type: action.type, tabs: [last], nextCursor: null }
-          : { type: action.type, tabs: [binding], nextCursor: "999" };
-      },
-    };
-    const harness = createActionsHarness(client, last.surfaceId);
-    expect(await harness.listTabs()).toMatchObject([
-      { targetId: binding.surfaceId },
-      { targetId: last.surfaceId },
-    ]);
-    await harness.ensureRealTab();
-    expect(requests).toEqual([
-      { type: "session.tabs" },
-      { type: "session.tabs", cursor: "999" },
-      { type: "surface.attach" },
-      { type: "page.info" },
-    ]);
-  });
-
   it("maps page operations to the real bounded action schemas", async () => {
     const { socket, harness } = fixture();
-    expect(await harness.listTabs()).toMatchObject([{ targetId: binding.surfaceId }]);
     await harness.ensureRealTab();
     await harness.page
       .getByRole("dialog", { name: "Checkout" })

@@ -1,3 +1,4 @@
+import { ToolFailureSchema } from "@opensteer/core";
 import { beforeEach } from "vitest";
 import { clearPersonalMachineFixture } from "./personal-machine.test-support.js";
 import { startHeldRequest } from "./held-request.test-support.js";
@@ -272,19 +273,23 @@ integration("integration schemas", () => {
         operation: createAssistant.name,
       });
       expect(missing.isError).toBe(true);
-      expect(toolText(missing)).toContain('"/inputSchema/$defs/NoSuchType"');
+      expect(ToolFailureSchema.parse(JSON.parse(toolText(missing))).error.message).toContain(
+        '"/inputSchema/$defs/NoSuchType"',
+      );
       const pastEnd = await gateway.callRaw("integration_describe", {
         cursor: properties.schemaBytes + 10,
         path: "/inputSchema/properties",
         operation: createAssistant.name,
       });
       expect(pastEnd.isError).toBe(true);
-      expect(toolText(pastEnd)).toContain("past the end");
+      expect(ToolFailureSchema.parse(JSON.parse(toolText(pastEnd))).error.message).toContain(
+        "past the end",
+      );
       record("described parts", {
         allOutputDefinitions: allOutputDefinitions.summary,
         assistant: assistant.summary,
-        missing: toolText(missing),
-        pastEnd: toolText(pastEnd),
+        missing: ToolFailureSchema.parse(JSON.parse(toolText(missing))).error.message,
+        pastEnd: ToolFailureSchema.parse(JSON.parse(toolText(pastEnd))).error.message,
         properties: properties.summary,
       });
 
@@ -294,7 +299,9 @@ integration("integration schemas", () => {
       const invalidBody = { firstMessage: "Hello", unexpected: true };
       const refused = await call(createAssistant.name, { body: invalidBody });
       expect(refused.isError).toBe(true);
-      expect(toolText(refused)).toContain(refusalBody);
+      expect(ToolFailureSchema.parse(JSON.parse(toolText(refused))).error.message).toContain(
+        refusalBody,
+      );
       expect(upstream.received).toEqual([
         {
           body: JSON.stringify(invalidBody),
@@ -309,11 +316,13 @@ integration("integration schemas", () => {
       expect(upstream.received.at(-1)).toMatchObject({ method: "GET", url: "/assistant/asst_1" });
       const undeclared = await call(getAssistant.name, { id: "asst_1", voiceId: "v" });
       expect(undeclared.isError).toBe(true);
-      expect(toolText(undeclared)).toContain("invalid_arguments");
+      expect(ToolFailureSchema.parse(JSON.parse(toolText(undeclared))).error.message).toContain(
+        "invalid_arguments",
+      );
       record("called", {
         fetched: fetched.structuredContent,
-        refused: toolText(refused),
-        undeclared: toolText(undeclared),
+        refused: ToolFailureSchema.parse(JSON.parse(toolText(refused))).error.message,
+        undeclared: ToolFailureSchema.parse(JSON.parse(toolText(undeclared))).error.message,
         upstream: [...upstream.received],
       });
 
@@ -321,9 +330,14 @@ integration("integration schemas", () => {
       const beforeEscape = upstream.received.length;
       const escaped = await call(getAssistant.name, { id: ".." });
       expect(escaped.isError).toBe(true);
-      expect(toolText(escaped)).toContain("invalid_arguments");
+      expect(ToolFailureSchema.parse(JSON.parse(toolText(escaped))).error.message).toContain(
+        "invalid_arguments",
+      );
       expect(upstream.received).toHaveLength(beforeEscape);
-      record("path escape refused", toolText(escaped));
+      record(
+        "path escape refused",
+        ToolFailureSchema.parse(JSON.parse(toolText(escaped))).error.message,
+      );
 
       // 8. Rematerialized unchanged, every address holds; with one definition
       // changed, exactly the addresses whose schemas reach it are retired.
@@ -337,10 +351,14 @@ integration("integration schemas", () => {
         operation: createAssistant.name,
       });
       expect(stale.isError).toBe(true);
-      expect(toolText(stale)).toBe("Integration operation changed; search again");
+      expect(ToolFailureSchema.parse(JSON.parse(toolText(stale))).error.message).toBe(
+        "Integration operation changed; search again",
+      );
       const staleCall = await call(getAssistant.name, { id: "asst_1" });
       expect(staleCall.isError).toBe(true);
-      expect(toolText(staleCall)).toBe("Integration operation changed; search again");
+      expect(ToolFailureSchema.parse(JSON.parse(toolText(staleCall))).error.message).toBe(
+        "Integration operation changed; search again",
+      );
       const untouched = await describeAll(gateway, listLogs.name, "/outputSchema");
       expect(JSON.parse(untouched.joined)).toMatchObject({ type: "array" });
       const fresh = (await searchAll(gateway)).operations.find(({ name }) =>
@@ -353,8 +371,8 @@ integration("integration schemas", () => {
       });
       record("rematerialized", {
         changed: changed.summary,
-        stale: toolText(stale),
-        staleCall: toolText(staleCall),
+        stale: ToolFailureSchema.parse(JSON.parse(toolText(stale))).error.message,
+        staleCall: ToolFailureSchema.parse(JSON.parse(toolText(staleCall))).error.message,
         untouchedOperation: listLogs.name,
       });
     } catch (error) {

@@ -94,17 +94,19 @@ vi.mock("electron", () => {
         return (
           result ??
           Promise.resolve(
-            method === "Target.getTargetInfo"
-              ? { targetInfo: { targetId: "target-1" } }
-              : method === "Page.getFrameTree"
-                ? {
-                    frameTree: {
-                      frame: { id: "target-1", loaderId: "loader-1", url: this.getURL() },
-                    },
-                  }
-                : method === "Network.getAllCookies"
-                  ? { cookies: [] }
-                  : {},
+            method === "Target.attachToTarget"
+              ? { sessionId: "agent-native-session" }
+              : method === "Target.getTargetInfo"
+                ? { targetInfo: { targetId: "target-1" } }
+                : method === "Page.getFrameTree"
+                  ? {
+                      frameTree: {
+                        frame: { id: "target-1", loaderId: "loader-1", url: this.getURL() },
+                      },
+                    }
+                  : method === "Network.getAllCookies"
+                    ? { cookies: [] }
+                    : {},
           )
         );
       }),
@@ -1161,19 +1163,17 @@ describe("Electron geometry lifecycle", () => {
     }
   });
 
-  it("admits private platform composition without granting agents or derived gestures", async () => {
+  it("admits page composition and synthesized gestures for both platform and full-access agents", async () => {
     const { browser, page, view, unbind } = await launch();
     try {
       const platform = await page.cdp();
       const agent = await page.agentCdp();
       const composition = { text: "한", selectionStart: 1, selectionEnd: 1 };
-      await expect(agent.send("Input.imeSetComposition", composition)).rejects.toThrow(
-        /unavailable/,
-      );
+      await expect(agent.send("Input.imeSetComposition", composition)).resolves.toEqual({});
       for (const channel of [platform, agent])
-        await expect(channel.send("Input.synthesizeScrollGesture", { x: 5, y: 5 })).rejects.toThrow(
-          /unavailable/,
-        );
+        await expect(
+          channel.send("Input.synthesizeScrollGesture", { x: 5, y: 5 }),
+        ).resolves.toEqual({});
       await expect(platform.send("Input.imeSetComposition", composition)).resolves.toEqual({});
       const cancel = { text: "", selectionStart: 0, selectionEnd: 0 };
       await expect(platform.send("Input.imeSetComposition", cancel)).resolves.toEqual({});
@@ -1183,6 +1183,9 @@ describe("Electron geometry lifecycle", () => {
         ),
       ).toEqual([
         ["Input.imeSetComposition", composition],
+        ["Input.synthesizeScrollGesture", { x: 5, y: 5 }],
+        ["Input.synthesizeScrollGesture", { x: 5, y: 5 }],
+        ["Input.imeSetComposition", composition],
         ["Input.imeSetComposition", cancel],
       ]);
     } finally {
@@ -1191,12 +1194,12 @@ describe("Electron geometry lifecycle", () => {
     }
   });
 
-  it("allows private drag cleanup on the originating channel without granting it to agents", async () => {
+  it("allows page drag cancellation and private cleanup on the originating channel", async () => {
     const { browser, page, view } = await launch(false);
     const platform = await page.cdp();
     const agent = await page.agentCdp();
     try {
-      await expect(agent.send("Input.cancelDragging")).rejects.toThrow(/unavailable/);
+      await expect(agent.send("Input.cancelDragging")).resolves.toEqual({});
       await platform.cancelDragging!();
       await agent.cancelDragging!();
       expect(
@@ -1204,6 +1207,7 @@ describe("Electron geometry lifecycle", () => {
           ([method]) => method === "Input.cancelDragging",
         ),
       ).toEqual([
+        ["Input.cancelDragging", undefined],
         ["Input.cancelDragging", undefined],
         ["Input.cancelDragging", undefined],
       ]);
@@ -3250,4 +3254,49 @@ describe("native Electron profiles through the shared runtime", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+});
+
+it("routes root and attached cookie commands to the admitted native profile context", async () => {
+  electron.bootstrap = (method) =>
+    method === "Target.getTargetInfo"
+      ? Promise.resolve({
+          targetInfo: { targetId: "target-1", browserContextId: "native-profile-context" },
+        })
+      : undefined;
+  const browser = await new ElectronBrowserLauncher({
+    downloads: { accept: () => undefined },
+    pagePolicyPreloadPath: "/opensteer/browser-page-preload.cjs",
+  }).launch({
+    initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+    partitionKey: "session:bsn_00000000-0000-4000-8000-000000000306",
+    sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000306"),
+    storage: { kind: "guest" },
+  });
+  const { SessionCdpRouter } = await import("@opensteer/browser-core");
+  const router = new SessionCdpRouter(browser.cdp);
+  const targetId = await browser.context.pages()[0]!.targetId();
+  router.registerSession("agent", targetId, async () => true, "/files");
+  try {
+    const { sessionId } = (await router.send("agent", {
+      method: "Target.attachToTarget",
+      parameters: { targetId },
+    })) as { sessionId: string };
+    await router.send("agent", { method: "Storage.getCookies", sessionId });
+    await router.send("agent", { method: "Storage.getCookies" });
+    const native = electron.views.at(-1)!.webContents.debugger.sendCommand;
+    expect(native.mock.calls.filter(([method]) => method === "Storage.getCookies")).toEqual([
+      ["Storage.getCookies", { browserContextId: "native-profile-context" }],
+      ["Storage.getCookies", { browserContextId: "native-profile-context" }],
+    ]);
+    await expect(
+      router.send("agent", {
+        method: "Storage.setCookies",
+        parameters: { browserContextId: "foreign-context", cookies: [] },
+        sessionId,
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+  } finally {
+    await router.close();
+    await browser.close();
+  }
 });

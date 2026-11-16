@@ -229,11 +229,9 @@ integration("Host browser broker vertical", () => {
           frame.type === "browser.surface" && frame.surface ? [frame.surface] : [],
         );
       expect(surfaces.length).toBeGreaterThan(0);
-      for (const surface of surfaces) {
-        expect(surface.id).toBe("page-integration");
-        expect(surface).not.toHaveProperty("canGoBack");
-        expect(surface).not.toHaveProperty("canGoForward");
-      }
+      for (const surface of surfaces) expect(surface.id).toBe("page-integration");
+      // The page's history travels with the surface its viewer shows.
+      expect(surfaces.at(-1)).toMatchObject({ canGoBack: true, canGoForward: false });
       expect(frames.some((frame) => frame.type === "browser.surfaces.changed")).toBe(false);
     }
     const catalog = await browserRows(runtime.browser, owner.id, started.session.id);
@@ -275,10 +273,10 @@ integration("Host browser broker vertical", () => {
     expect(bootstrap.browser).toMatchObject({
       available: true,
       profiles: [{ name: "Integration browser" }],
-      groups: {
-        complete: true,
-        rows: [{ attachedRunIds: [], sessionId: started.session.id, state: "ready" }],
-      },
+    });
+    expect(bootstrap.tabs).toMatchObject({
+      complete: true,
+      tabs: [expect.objectContaining({ kind: "page", state: "open" })],
     });
     // Only an active Run holds a session; one that is not running holds nothing.
     const projectionRunId = createId("run");
@@ -295,11 +293,7 @@ integration("Host browser broker vertical", () => {
       {},
       { headers: { cookie } },
     );
-    expect(
-      detachedBootstrap.browser.groups.rows.find(
-        (session) => session.sessionId === started.session.id,
-      ),
-    ).toMatchObject({ acting: false, attachedRunIds: [] });
+    expect(detachedBootstrap.tabs.tabs.every((tab) => tab.usedBy.length === 0)).toBe(true);
 
     // A fresh session needs no profile and no grant, and carries no lease.
 

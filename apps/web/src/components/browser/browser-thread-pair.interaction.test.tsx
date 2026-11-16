@@ -11,36 +11,41 @@ import {
   mount,
 } from "../workspace/workspace.interaction.test-support.js";
 
-/** The seeded browser whose second tab a running task acts in and whose third it opened. */
+/** The seeded page a running task acts in, the page before it and the page it opened. */
 function taskBrowser() {
-  const session = client
-    .getSnapshot()
-    .browserSessions.find((candidate) =>
-      (candidate.browserTabs?.sessionTabs(candidate?.id) ?? []).some(
-        (tab) => tab.title === "Le Petit Jardin",
-      ),
-    )!;
-  const [reading, acting, confirm] = session.browserTabs?.sessionTabs(session?.id) ?? [];
-  const threadId = acting!.occupants[0]!.threadId;
-  const placeKey = (tabId: string) =>
-    placeList(client.getSnapshot()).find(
-      (place) => place.destination.kind === "browser" && place.destination.tabId === tabId,
-    )!.key;
-  return { session, threadId, reading: reading!, acting: acting!, confirm: confirm!, placeKey };
+  const places = placeList(client.getSnapshot());
+  const page = (title: string) => {
+    const place = places.find((candidate) => candidate.title === title)!;
+    return { id: place.key, title: place.title };
+  };
+  const acting = page("Le Petit Jardin");
+  const threadId = places.find((place) => place.key === acting.id)!.occupants[0]!.threadId;
+  return {
+    threadId,
+    reading: page("Your reading list"),
+    acting,
+    confirm: page("Confirm your reservation"),
+    placeKey: (tabId: string) => tabId,
+  };
 }
 
+/** The browser session this device was shown a page tab through. */
+function sessionOf(tabId: string): string {
+  const viewer = client.tabViewer(tabId);
+  if (viewer?.kind !== "page") throw new Error("That page was never shown here");
+  return viewer.sessionId;
+}
 const shownTab = () => element<HTMLElement>(".browser-view").dataset.browserTab;
 const following = () => document.querySelector('[aria-label="Following the agent"]');
 const liveCard = () => document.querySelector(".conv-header .viewfinder");
 
 it("follows the docked task's agent in place, stops for the person's tab and follows again from its live card", async () => {
   await mount(() => {
-    const { session, threadId, acting } = taskBrowser();
-    return `/tasks/${threadId}?panel=browser&browser=${session.id}&browserTab=${acting.id}`;
+    const { threadId, acting } = taskBrowser();
+    return `/tasks/${threadId}?panel=browser&tab=${acting.id}`;
   });
-  const { session, threadId, reading, acting, confirm, placeKey } = taskBrowser();
+  const { threadId, reading, acting, confirm, placeKey } = taskBrowser();
   expect(following(), "The agent's own tab never started following").not.toBeNull();
-  const stage = element(".browser-view");
   const composer = element("[data-composer-input]");
   const entries = history.length;
 
@@ -51,7 +56,6 @@ it("follows the docked task's agent in place, stops for the person's tab and fol
       timeout: 3_000,
     },
   );
-  expect(element(".browser-view")).toBe(stage);
   expect(element("[data-composer-input]")).toBe(composer);
   expect(history).toHaveLength(entries + 1);
   expect(history.at(-1)!.type).toBe("REPLACE");
@@ -70,7 +74,7 @@ it("follows the docked task's agent in place, stops for the person's tab and fol
     client.enterPlace(run.id, threadId, {
       place: {
         kind: "browser",
-        sessionId: BrowserSessionIdSchema.parse(session.id),
+        sessionId: BrowserSessionIdSchema.parse(sessionOf(acting.id)),
         surfaceId: BrowserSurfaceIdSchema.parse(acting.id),
       },
       title: acting.title,
@@ -95,8 +99,8 @@ it("follows the docked task's agent in place, stops for the person's tab and fol
 
 it("leaves the stage alone with the conversation put away", async () => {
   await mount(() => {
-    const { session, threadId, acting } = taskBrowser();
-    return `/tasks/${threadId}?panel=browser&browser=${session.id}&browserTab=${acting.id}`;
+    const { threadId, acting } = taskBrowser();
+    return `/tasks/${threadId}?panel=browser&tab=${acting.id}`;
   });
   const { threadId, reading, acting, placeKey } = taskBrowser();
   await click(element('button[aria-label="Hide the conversation"]'));

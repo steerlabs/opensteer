@@ -1,6 +1,5 @@
 import { createSettingsReadHandlers } from "./settings-read-handlers.js";
 import type { ComputerViewService } from "../computer-use/computer-view-service.js";
-import type { PhoneTabs } from "../computer-use/phone-tabs.js";
 import { OpensteerError, RunnerIdSchema } from "@opensteer/core";
 import { requireSession } from "../integrations/integration-rpc-context.js";
 import {
@@ -75,6 +74,12 @@ export function createHostApiHandlers(
   coreHandlers: Pick<
     HostApiHandlers,
     | "agentPhone.target.get"
+    | "apps.list"
+    | "apps.get"
+    | "tabs.get"
+    | "tabs.state"
+    | "machines.list"
+    | "bootstrap.get"
     | "assignment.get"
     | "thread.assignments.list"
     | "browser.searchSuggestions.get"
@@ -83,7 +88,6 @@ export function createHostApiHandlers(
     | "browser.history.get"
     | "browser.history.icons.get"
     | "thread.browserUsage.get"
-    | "apps.get"
     | "apps.view"
     | "attachment.get"
     | "attachment.upload"
@@ -93,7 +97,6 @@ export function createHostApiHandlers(
     | "teams.links.list"
     | "teams.threadTask.get"
     | "teams.replyTask.get"
-    | "bootstrap.get"
     | "harness.authentication.get"
     | "automaticModels.get"
     | "harness.catalog.refresh"
@@ -105,7 +108,6 @@ export function createHostApiHandlers(
     | "voice.say"
     | "voice.stop"
     | "machine.access.history"
-    | "machines.list"
     | "requests.list"
     | "run.attempts.list"
     | "tasks.list"
@@ -127,7 +129,6 @@ export function createHostApiHandlers(
     context: HostApiServerContext,
   ) => Promise<HostApiCommandOutput>,
   computerViews?: ComputerViewService,
-  phoneTabs?: PhoneTabs,
 ): Omit<
   HostApiHandlers,
   | "personal.remoteAccess.get"
@@ -234,11 +235,7 @@ export function createHostApiHandlers(
           code: "forbidden",
           message: "Team commands require a team Host",
         });
-      if (
-        command.type === "computer.view.open" ||
-        command.type === "computer.view.close" ||
-        command.type === "computer.view.renew"
-      ) {
+      if (command.type === "computer.view.close" || command.type === "computer.view.renew") {
         const owner = requireSession(context).user.id;
         if (!computerViews)
           throw new OpensteerError({
@@ -252,15 +249,6 @@ export function createHostApiHandlers(
             view: await computerViews.command(owner, command),
           }),
         );
-      }
-      if (command.type === "phone.tab.close") {
-        if (!phoneTabs)
-          throw new OpensteerError({
-            code: "conflict",
-            message: "This Host does not keep phone tabs.",
-          });
-        await phoneTabs.close(requireSession(context).user.id, command.machineId);
-        return rpcSuccess(hostApi["commands.dispatch"].success.parse({ type: command.type }));
       }
       if (isBrowserSourceCommand(command)) {
         return rpcSuccess(
@@ -305,6 +293,12 @@ export function createHostApiHandlers(
     },
   } satisfies Omit<
     HostApiHandlers,
+    | "machines.list"
+    | "bootstrap.get"
+    | "tabs.get"
+    | "tabs.state"
+    | "apps.list"
+    | "apps.get"
     | "personal.remoteAccess.get"
     | "connections.list"
     | "connections.authorization.get"

@@ -1,4 +1,4 @@
-import { seedBrowserSession } from "@opensteer/client/test-support";
+import { tabFixture } from "@opensteer/client/test-support";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
@@ -9,7 +9,7 @@ import { app, BrowserWindow, ipcMain, powerMonitor, protocol, systemPreferences 
 import { WebSocketServer } from "ws";
 import { z } from "zod";
 import { createId, emptyExecutionPreferences } from "@opensteer/core";
-import { BrowserServerMessageSchema, hostApi } from "@opensteer/protocol";
+import { BrowserServerMessageSchema, hostApi, BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import type { CdpSession } from "@opensteer/browser-runtime-core";
 import { DesktopLocalVisibility } from "../src/app/local-visibility.js";
 import { desktopWebPreferences } from "../src/app/electron-window.js";
@@ -19,7 +19,7 @@ import type { DesktopBridgeOptions } from "../src/bridge/context.js";
 /** Native lifecycle → real preload → shared client sockets and OwnerView effects. */
 export async function idleLifecyclePhase(platform: CdpSession, directory: string): Promise<void> {
   const sessionId = "bsn_00000000-0000-4000-8000-000000000044";
-  const surfaceId = "surface_00000000-0000-4000-8000-000000000044";
+  const surfaceId = BrowserSurfaceIdSchema.parse("surface_00000000-0000-4000-8000-000000000044");
   const selected = {
     id: createId("deployment"),
     access: "owner" as const,
@@ -45,7 +45,18 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
       voiceThreadId: null,
     },
     can: { createTasks: true, useVoice: true, manageComputers: true, managePrivateResources: true },
-    appTabs: [],
+    tabs: {
+      tabs: [
+        tabFixture({
+          tabId: surfaceId,
+          computer: { computerId: ids.runnerId, name: "Mac" },
+          title: "Idle smoke",
+          url: "about:blank",
+        }),
+      ],
+      layout: { revision: 1, items: [{ kind: "tab", tabId: surfaceId }] },
+      complete: true,
+    },
     latestPlaces: [],
     environments: [],
     harnesses: [],
@@ -81,38 +92,6 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
       available: true,
       placements: [],
       profiles: [],
-      profileGrants: [],
-      sessions: [
-        seedBrowserSession(
-          {
-            access: "read-write",
-            createdAt: new Date().toISOString(),
-            id: sessionId,
-            origin: "person",
-            placement: { kind: "runner", runnerId: ids.runnerId },
-            profileId: null,
-            runtimeId: "idle-smoke",
-            state: "ready",
-            updatedAt: new Date().toISOString(),
-          },
-          {
-            generation: 1,
-            revision: 1,
-            rows: [
-              {
-                id: surfaceId,
-                title: "Idle smoke",
-                site: "",
-                iconRef: null,
-                order: 0,
-                openerId: null,
-                availability: "ready",
-                occupants: [],
-              },
-            ],
-          },
-        ),
-      ],
     },
   });
   const server = createServer((request, response) => {

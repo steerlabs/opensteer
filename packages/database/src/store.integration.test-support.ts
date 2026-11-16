@@ -942,13 +942,11 @@ export const readEmptyPersonalResources: import("./snapshot-store.js").PersonalS
         "This fixture needs a resource snapshot collaborator for its private resources",
       );
     return {
-      appTabs: [],
+      tabs: { tabs: [], layout: { revision: 0, items: [] }, complete: true },
       browser: {
         available: false,
         placements: [],
         profiles: [],
-        groups: { rows: [], complete: true },
-        tabs: [],
       },
     };
   };

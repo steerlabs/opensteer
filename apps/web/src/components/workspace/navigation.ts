@@ -3,10 +3,9 @@ import { useLocation, useNavigate, useNavigationType, type To } from "react-rout
 import { z } from "zod";
 import {
   parseNavigationInput,
-  phonePlaceKey,
-  type PersonalSurfaceDestination as SurfaceDestination,
+  type TabDestination as SurfaceDestination,
 } from "@opensteer/client/host";
-import { AppIdSchema } from "@opensteer/core";
+import { TabIdSchema, type TabId } from "@opensteer/core";
 import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import { useTeams } from "../../team/team-attachments.js";
 import type { SidebarSides } from "@opensteer/client/team";
@@ -25,11 +24,16 @@ import type { SidebarSides } from "@opensteer/client/team";
  * The query parameters that name the place in the middle. `panel` alone is the
  * start page.
  */
-const placeParams = [
+const placeParams = ["panel", "tab"] as const;
+
+/** Addresses of the stage before places: read once, then replaced away. */
+const legacyParams = [
+  "browserWorkspace",
+  "surfaceThread",
+  "surfaces",
   "computerWindow",
   "computerView",
   "computerViewGeneration",
-  "panel",
   "browser",
   "browserTab",
   "pendingBrowserTab",
@@ -41,20 +45,14 @@ const placeParams = [
   "opensteerApp",
 ] as const;
 
-/** Addresses of the stage before places: read once, then replaced away. */
-const legacyParams = ["browserWorkspace", "surfaceThread", "surfaces"] as const;
-
 /** What the middle shows, as the address says it. */
 export type PlaceSelection =
   | { readonly kind: "talk" }
   | { readonly kind: "launcher" }
-  | { readonly kind: "pending"; readonly idempotencyKey: string }
   | { readonly kind: "place"; readonly destination: SurfaceDestination };
 
 export function placeSelection(params: URLSearchParams): PlaceSelection {
   if (!params.has("panel")) return { kind: "talk" };
-  const pending = params.get("pendingBrowserTab");
-  if (pending) return { kind: "pending", idempotencyKey: pending };
   const destination = placeDestination(params);
   return destination ? { kind: "place", destination } : { kind: "launcher" };
 }
@@ -101,53 +99,13 @@ export function startPageLink(state: unknown): StartPageLink | null {
 let openings = 0;
 
 function placeDestination(params: URLSearchParams): SurfaceDestination | null {
-  const appId = AppIdSchema.safeParse(params.get("opensteerApp"));
-  if (appId.success) return { kind: "opensteer-app", appId: appId.data };
-  const sessionId = params.get("browser");
-  const tabId = params.get("browserTab");
-  if (sessionId && tabId) return { kind: "browser", sessionId, tabId };
-  const phone = params.get("phone");
-  if (phone) return { kind: "phone", machineId: phone };
-  const computerSessionId = params.get("computerSession");
-  const viewId = params.get("computerView");
-  const generation = Number(params.get("computerViewGeneration"));
-  if (viewId && Number.isSafeInteger(generation) && generation > 0) {
-    const appKey = params.get("app");
-    const source = { kind: "owner-view" as const, viewId, generation };
-    if (appKey) {
-      const window = Number(params.get("computerWindow"));
-      return {
-        kind: "app",
-        machineId: params.get("mac") ?? "",
-        appKey,
-        source,
-        ...(params.has("computerWindow") && Number.isSafeInteger(window) && window >= 0
-          ? { windowId: window }
-          : {}),
-      };
-    }
-  }
-  const appKey = params.get("app");
-  if (computerSessionId && appKey) {
-    return { appKey, computerSessionId, kind: "app", machineId: params.get("mac") ?? "" };
-  }
-  return null;
+  const tabId = TabIdSchema.safeParse(params.get("tab"));
+  return tabId.success ? { kind: "tab", tabId: tabId.data } : null;
 }
 
-/** The place catalog's key for a destination; a browser address without its tab has none yet. */
-export function destinationPlaceKey(destination: SurfaceDestination): string | null {
-  switch (destination.kind) {
-    case "opensteer-app":
-      return `opensteer-app:${destination.appId}`;
-    case "browser":
-      return destination.tabId ? `browser:${destination.sessionId}:${destination.tabId}` : null;
-    case "app":
-      return destination.source?.kind === "owner-view"
-        ? `app:${destination.machineId}:${destination.appKey}:${destination.windowId ?? destination.source.viewId}`
-        : `app:${destination.machineId}:${destination.appKey}:task:${destination.computerSessionId}`;
-    case "phone":
-      return phonePlaceKey(destination.machineId);
-  }
+/** The tab catalog's key for a destination. */
+export function destinationPlaceKey(destination: SurfaceDestination): TabId {
+  return destination.tabId;
 }
 
 /** A destination as the address names it: two destinations are one place exactly when these match. */
@@ -167,33 +125,7 @@ function writePlace(params: URLSearchParams, selection: PlaceSelection): void {
   if (selection.kind === "talk") return;
   params.set("panel", "browser");
   if (selection.kind === "launcher") return;
-  if (selection.kind === "pending") {
-    params.set("pendingBrowserTab", selection.idempotencyKey);
-    return;
-  }
-  const { destination } = selection;
-  if (destination.kind === "opensteer-app") {
-    params.set("opensteerApp", destination.appId);
-    return;
-  }
-  if (destination.kind === "browser") {
-    params.set("browser", destination.sessionId);
-    if (destination.tabId) params.set("browserTab", destination.tabId);
-    return;
-  }
-  if (destination.kind === "phone") {
-    params.set("phone", destination.machineId);
-    return;
-  }
-  if (destination.source?.kind === "owner-view") {
-    params.set("computerView", destination.source.viewId);
-    params.set("computerViewGeneration", String(destination.source.generation));
-  } else if (destination.computerSessionId)
-    params.set("computerSession", destination.computerSessionId);
-  if (destination.windowId !== undefined)
-    params.set("computerWindow", String(destination.windowId));
-  params.set("app", destination.appKey);
-  params.set("mac", destination.machineId);
+  params.set("tab", selection.destination.tabId);
 }
 
 /** Only the place survives a change of conversation; a message anchor or request focus does not. */
@@ -231,10 +163,7 @@ function areaAddress(to: string, currentSearch: string): Address & { readonly ha
  * address naming only its session names the tab the session shows, once the
  * catalog can say which.
  */
-export function canonicalPlaceSearch(
-  search: string,
-  activeTabOf: (sessionId: string) => string | null | undefined,
-): string | null {
+export function canonicalPlaceSearch(search: string): string | null {
   const params = new URLSearchParams(search);
   let changed = false;
   for (const name of legacyParams) {
@@ -247,40 +176,12 @@ export function canonicalPlaceSearch(
     params.set("panel", "browser");
     changed = true;
   }
-  const sessionId = params.get("browser");
-  if (sessionId && !params.get("browserTab")) {
-    const tabId = activeTabOf(sessionId);
-    // Unknown yet: wait for the catalog rather than inventing a tab.
-    if (tabId === undefined) return changed ? searchString(params) : null;
-    if (tabId) {
-      params.set("browserTab", tabId);
-      changed = true;
-    }
-  }
-  if (sessionId && !params.has("panel")) {
-    params.set("panel", "browser");
-    changed = true;
-  }
   return changed ? searchString(params) : null;
 }
 
 /* ---- The last place the person chose, per deployment and user ---- */
 
-const RememberedPlaceSchema = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("browser"),
-    sessionId: z.string().min(1).max(200),
-    tabId: z.string().min(1).max(200),
-  }),
-  z.object({
-    kind: z.literal("app"),
-    appKey: z.string().min(1).max(512),
-    computerSessionId: z.string().min(1).max(200),
-    machineId: z.string().max(200),
-  }),
-  z.object({ kind: z.literal("phone"), machineId: z.string().min(1).max(200) }),
-  z.object({ kind: z.literal("opensteer-app"), appId: AppIdSchema }),
-]);
+const RememberedPlaceSchema = z.object({ kind: z.literal("tab"), tabId: TabIdSchema });
 
 const RememberedTalkSchema = z.object({
   kind: z.literal("talk"),
@@ -520,14 +421,6 @@ export interface WorkspaceNavigation {
       readonly replace?: boolean;
     },
   ) => void;
-  readonly showPendingBrowserTab: (
-    idempotencyKey: string,
-    options?: { readonly replace?: boolean; readonly address?: string },
-  ) => void;
-  readonly replacePendingBrowserTab: (
-    idempotencyKey: string,
-    destination: SurfaceDestination,
-  ) => void;
   /** Includes synchronous choices made since the last render. */
   readonly address: () => Address;
   /** Tab row, viewfinder, chip: the place only (opens Work from Talk). */
@@ -630,7 +523,6 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
       if (side !== "tasks" && !team?.viewer) return;
       // An opening still under way finishes only on the address it started from.
       const params = new URLSearchParams(address.search);
-      params.delete("pendingBrowserTab");
       const search = params.toString();
       bookmarks.bookmarks[side] = {
         pathname: address.pathname,
@@ -781,31 +673,6 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
     },
     [search],
   );
-  const currentScope = useRef({ deploymentId, userId });
-  currentScope.current = { deploymentId, userId };
-  const showPendingBrowserTab = useCallback<WorkspaceNavigation["showPendingBrowserTab"]>(
-    (idempotencyKey, options) =>
-      choosePlace({ kind: "pending", idempotencyKey }, undefined, {
-        ...options,
-        ...(options?.address === undefined
-          ? {}
-          : { state: { startAddress: options.address, startOpen: false } }),
-      }),
-    [choosePlace],
-  );
-  const replacePendingBrowserTab = useCallback<WorkspaceNavigation["replacePendingBrowserTab"]>(
-    (idempotencyKey, destination) => {
-      if (
-        currentScope.current.deploymentId !== deploymentId ||
-        currentScope.current.userId !== userId
-      )
-        return;
-      const selected = placeSelection(new URLSearchParams(latest.current.search));
-      if (selected.kind === "pending" && selected.idempotencyKey === idempotencyKey)
-        choosePlace({ kind: "place", destination }, undefined, { replace: true });
-    },
-    [choosePlace, deploymentId, userId],
-  );
   const showPlace = useCallback<WorkspaceNavigation["showPlace"]>(
     (destination, options) =>
       choosePlace({ kind: "place", destination }, undefined, {
@@ -905,8 +772,6 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
       placeSearch,
       showComputer,
       showLauncher,
-      showPendingBrowserTab,
-      replacePendingBrowserTab,
       showPlace,
       showPlaceWithConversation,
       succeedPlace,
@@ -928,8 +793,6 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
       placeSearch,
       showComputer,
       showLauncher,
-      showPendingBrowserTab,
-      replacePendingBrowserTab,
       showPlace,
       showPlaceWithConversation,
       succeedPlace,

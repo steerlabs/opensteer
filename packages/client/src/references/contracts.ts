@@ -5,6 +5,7 @@ import type {
   Request,
   RunId,
   RunnerId,
+  TabId,
   TeamPageLink,
   ThreadId,
   TriggerId,
@@ -36,7 +37,8 @@ export type ReferenceDestination =
   | { kind: "request"; threadId: ThreadId; requestId: RequestId; status: Request["status"] }
   | { kind: "automation"; triggerId: TriggerId }
   | { kind: "computer"; runnerId: RunnerId }
-  | { kind: "attachment"; attachmentId: AttachmentId };
+  | { kind: "attachment"; attachmentId: AttachmentId }
+  | { kind: "tab"; tabId: TabId };
 export type ReferenceState =
   | { state: "unresolved" }
   | { state: "available"; value: AvailableReference }

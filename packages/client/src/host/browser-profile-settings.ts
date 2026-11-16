@@ -23,7 +23,7 @@ export interface BrowserProfileSettingsRow {
 }
 
 export type BrowserProfileSettingsSource = PlaceListSource &
-  Pick<HostSnapshot, "browserProfileHomes">;
+  Pick<HostSnapshot, "browserProfileHomes" | "machines">;
 
 export function browserProfileSettingsRows(
   snapshot: BrowserProfileSettingsSource,

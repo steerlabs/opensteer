@@ -231,7 +231,7 @@ final class NativeSafetyRegressionTests: XCTestCase {
       snapshot: "0123456789abcdef",
       app: AppIdentity(bundleId: "com.example.Fixture", displayName: "Fixture", teamId: nil),
       window: Observation.WindowSummary(
-        ref: "ref-A", id: 1,
+        ref: "ref-A", windowId: "win_00000000-0000-4000-8000-000000000042",
         title: "Fixture",
         frame: Observation.Rect(CGRect(x: 0, y: 0, width: 1_024, height: 1_024)),
         scale: 1

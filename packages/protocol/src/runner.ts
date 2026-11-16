@@ -1,10 +1,17 @@
+import {
+  HostAppRequestSchema,
+  HostAppsSyncSchema,
+  RunnerAppResultSchema,
+  RunnerAppStateSchema,
+  RunnerAppsSyncResultSchema,
+} from "./apps.js";
 import { RunMaintenanceSchema } from "@opensteer/core";
 export { TeamTurnContextSchema, type TeamTurnContext } from "@opensteer/core";
 import { DelegationModelChoiceSchema } from "@opensteer/core";
 import { ComputerFolderSchema } from "@opensteer/core";
 import { RunnerSkillMetadataReportSchema } from "./runner-skill-metadata.js";
 import { RunnerSettingsReportSchema } from "./runner-agent-home-settings.js";
-import { HostAppRequestSchema, RunnerAppResultSchema } from "./apps.js";
+
 import { HostRunFileRequestSchema, RunnerRunFileResultSchema } from "./run-files.js";
 import { ChannelRuntimeCapabilitySchema } from "@opensteer/channel-core";
 import {
@@ -1732,6 +1739,8 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
   RunnerSkillMetadataReportSchema,
   RunnerSettingsReportSchema,
   RunnerAppResultSchema,
+  RunnerAppStateSchema,
+  RunnerAppsSyncResultSchema,
   RunnerRunFileResultSchema,
   z.strictObject({
     ...fencedMessageBase,
@@ -1936,6 +1945,7 @@ export type RunnerToHostMessage = z.infer<typeof RunnerToHostMessageSchema>;
 export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
   HostBackgroundTextSchema,
   RunnerChallengeSchema,
+  HostAppsSyncSchema,
   ...HostAppRequestSchema.options,
   ...HostRunFileRequestSchema.options,
   z.strictObject({

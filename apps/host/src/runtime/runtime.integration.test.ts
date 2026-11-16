@@ -510,6 +510,19 @@ integration("Host vertical slice", () => {
         headers: authorization(accessToken),
       },
     );
+    expect(bootstrap.tabs).toEqual({
+      tabs: [],
+      layout: { revision: 0, items: [] },
+      complete: true,
+    });
+    expect(
+      await testRpcData(
+        `http://127.0.0.1:${hostPort}`,
+        "tabs.state",
+        {},
+        { headers: authorization(accessToken) },
+      ),
+    ).toEqual(bootstrap.tabs);
     expect(bootstrap.environments).toEqual([]);
     expect(bootstrap.personalSettings).toBeNull();
     expect(bootstrap.can).toMatchObject({ createTasks: false, useVoice: false });

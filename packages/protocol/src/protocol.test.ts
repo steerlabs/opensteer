@@ -608,8 +608,10 @@ describe("wire protocol", () => {
     } as const;
     expect(RunnerToHostMessageSchema.parse(status)).toEqual(status);
     expect(
-      RunnerToHostMessageSchema.safeParse({ ...status, stdoutTail: "x".repeat(16 * 1_024 + 1) })
-        .success,
+      RunnerToHostMessageSchema.safeParse({
+        ...status,
+        stdoutTail: "x".repeat(16 * 1_024 + 1),
+      }).success,
     ).toBe(false);
   });
 

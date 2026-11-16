@@ -1,3 +1,4 @@
+import { TabIdSchema, type TabId } from "./ids.js";
 import {
   DeploymentIdSchema,
   MessageIdSchema,
@@ -217,6 +218,28 @@ export function parseMobileNeedsYouDeepLink(
       return null;
     const id = DeploymentIdSchema.safeParse(segments[2]);
     return id.success ? { deploymentId: id.data } : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface MobileTabDeepLink {
+  readonly deploymentId: DeploymentId;
+  readonly tabId: TabId;
+}
+export function buildMobileTabDeepLink(link: MobileTabDeepLink): string {
+  return `${mobileDeepLinkScheme}:/deployments/${DeploymentIdSchema.parse(link.deploymentId)}/tabs/${encodeURIComponent(TabIdSchema.parse(link.tabId))}`;
+}
+export function parseMobileTabDeepLink(value: string): MobileTabDeepLink | null {
+  const match = /^com\.opensteer\.mobile:\/deployments\/([^/?#]+)\/tabs\/([^/?#]+)$/u.exec(value);
+  if (!match) return null;
+  try {
+    const deploymentId = DeploymentIdSchema.safeParse(match[1]);
+    const decoded = decodeURIComponent(match[2]!);
+    const tabId = TabIdSchema.safeParse(decoded);
+    return deploymentId.success && tabId.success && encodeURIComponent(decoded) === match[2]
+      ? { deploymentId: deploymentId.data, tabId: tabId.data }
+      : null;
   } catch {
     return null;
   }

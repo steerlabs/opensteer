@@ -31,9 +31,9 @@ enum OwnerViewWindow {
     }
 
     @WorkActor
-    func summary() -> Wire.ViewStateResult.OwnerWindowSummary {
+    func summary() throws -> Wire.ViewStateResult.OwnerWindowSummary {
       Wire.ViewStateResult.OwnerWindowSummary(
-        id: target.windowID,
+        windowId: try WindowIdentities.retain(liveness, app: target.app),
         title: ActionDescription.clip(AXValueReader.copyString(element, kAXTitleAttribute) ?? "", to: 1024))
     }
 
@@ -103,7 +103,7 @@ enum OwnerViewWindow {
 
   /// No task state, tree walk, observation commit, selection mutation or overlay.
   static func open(
-    record: AppBundleRecord, windowID requestedWindowID: CGWindowID? = nil,
+    record: AppBundleRecord, windowID requestedWindowID: String,
     cancellation: SessionCancellation, budget: WorkBudget
   )
     async throws -> Binding
@@ -118,39 +118,21 @@ enum OwnerViewWindow {
       try cancellation.check()
       try budget.check()
     }
+    let identity: WindowLiveness
+    do { identity = try WindowIdentities.resolve(requestedWindowID) }
+    catch let error as OwnerViewWindow.Failure { throw error }
+    catch let error as HelperError where error == SessionWindows.closed {
+      throw Failure(reason: "window-closed")
+    }
     let state = AppSessionState(identity: record.identity, path: record.path)
-    _ = try await AppLaunch.ensureRunning(state, check: check)
-    try check()
     let pid = try AppProcess.verify(state)
-    let app = AXUIElementCreateApplication(pid)
-    AXUIElementSetMessagingTimeout(app, axMessagingTimeout)
-    // Only a bounded open prepares Chromium AX. Polling never enables AX,
-    // chooses another window, launches, or activates an application.
-    if ChromiumDetection.isChromiumLike(bundlePath: record.path, bundleId: record.identity.bundleId)
-    {
-      let status = AXUIElementSetAttributeValue(
-        app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-      if status != .attributeUnsupported {
-        try self.check(status, attribute: "AXManualAccessibility")
-        _ = await ManualAccessibility.settle(count: { ManualAccessibility.shallowCount(of: app) })
-        try check()
-      }
+    guard state.verified == identity.process, pid == identity.process.processIdentifier else {
+      throw Failure(reason: "window-closed")
     }
-    let window: AXUIElement
-    if let requestedWindowID {
-      guard
-        let selected = AXValueReader.copyElements(app, kAXWindowsAttribute).first(where: {
-          KeyWindow.windowID(of: $0) == requestedWindowID
-        })
-      else { throw Failure(reason: "window-closed") }
-      window = selected
-    } else {
-      window = try resolve(app)
-    }
-    let windowID = try self.windowID(window)
-    guard let process = state.verified else {
-      throw Failure(reason: "window-unreadable")
-    }
+    try check()
+    let window = identity.element
+    let windowID = identity.windowID
+    let process = identity.process
     return try bind(
       CaptureTarget(
         observationId: UUID().uuidString, app: record.identity, process: process,
@@ -189,42 +171,6 @@ enum OwnerViewWindow {
     try check(resolve(element, &identifier), attribute: "_AXUIElementGetWindow")
     guard identifier != 0 else { throw Failure(reason: "window-unreadable") }
     return identifier
-  }
-
-  private static func resolve(_ app: AXUIElement) throws -> AXUIElement {
-    var pid: pid_t = 0
-    guard AXUIElementGetPid(app, &pid) == .success else {
-      throw Failure(reason: "window-unreadable")
-    }
-    let validIDs = Set(AppWindows.all(processIdentifier: pid).map(\.window.windowID))
-
-    for attribute in [kAXFocusedWindowAttribute, kAXMainWindowAttribute] {
-      var value: CFTypeRef?
-      let status = AXUIElementCopyAttributeValue(app, attribute as CFString, &value)
-      if status == .noValue || status == .attributeUnsupported { continue }
-      try check(status, attribute: attribute)
-      guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else {
-        throw Failure(reason: "window-unreadable")
-      }
-      let candidate = unsafeBitCast(value, to: AXUIElement.self)
-      if let id = KeyWindow.windowID(of: candidate), validIDs.contains(id) { return candidate }
-    }
-    guard let windows = try read(app, kAXWindowsAttribute) as? [AXUIElement] else {
-      throw Failure(reason: "window-unreadable")
-    }
-    guard
-      let first = windows.first(where: { KeyWindow.windowID(of: $0).map(validIDs.contains) == true }
-      )
-    else { throw Failure(reason: "window-closed") }
-    return first
-  }
-
-  private static func read(_ element: AXUIElement, _ attribute: String) throws -> CFTypeRef {
-    var value: CFTypeRef?
-    try check(
-      AXUIElementCopyAttributeValue(element, attribute as CFString, &value), attribute: attribute)
-    guard let value else { throw Failure(reason: "window-unreadable") }
-    return value
   }
 
   private static func check(_ status: AXError, attribute: String) throws {

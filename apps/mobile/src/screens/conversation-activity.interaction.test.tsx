@@ -1,7 +1,6 @@
 // @vitest-environment happy-dom
 
 import type {
-  BrowserSessionSummary,
   HostClient,
   HostSnapshot,
   MessageEntry,
@@ -11,8 +10,8 @@ import type {
   TranscriptEntry,
 } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
-import { createId, RunIdSchema, ThreadIdSchema } from "@opensteer/core";
-import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
+import { tabFixture, tabStoreFixture } from "@opensteer/client/test-support";
+import { createId, RunIdSchema, TabIdSchema, ThreadIdSchema } from "@opensteer/core";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -81,6 +80,7 @@ vi.mock("@react-navigation/native", () => ({
   useIsFocused: () => true,
   useNavigation: () => ({
     dispatch: harness.dispatch,
+    getState: () => ({ index: 0, routes: [] }),
     goBack: harness.goBack,
     navigate: harness.navigate,
     setOptions: harness.setOptions,
@@ -347,34 +347,15 @@ describe("Run details", () => {
   });
 
   it("opens the exact browser tab used by this reply even when another tab is viewed", () => {
-    const browser = {
-      access: "read-write",
-      attachedRunIds: [],
-      dialog: null,
-      error: null,
-      id: "exact-browser",
-      origin: "agent",
-      placement: { kind: "runner", runnerId: "runner" },
-      profileId: null,
-      runtimeId: "runtime",
-      state: "ready",
-      tabs: [
-        {
-          active: true,
-          id: BrowserSurfaceIdSchema.parse("viewed-tab"),
-          title: "Other page",
-          url: "https://other.test",
-        },
-        {
-          active: false,
-          id: BrowserSurfaceIdSchema.parse("used-tab"),
-          title: "Research",
-          url: "https://research.test",
-        },
-      ],
-      viewerError: null,
-      viewerState: "synchronized",
-    } as BrowserSessionSummary;
+    // The page this reply used, beside another the person is looking at.
+    const tabs = tabStoreFixture([
+      tabFixture({ tabId: TabIdSchema.parse("viewed-tab"), title: "Other page" }),
+      tabFixture({
+        tabId: TabIdSchema.parse("used-tab"),
+        title: "Research",
+        url: "https://research.test/",
+      }),
+    ]);
     const browserUses = [
       {
         sessionId: "exact-browser",
@@ -387,19 +368,14 @@ describe("Run details", () => {
         pageSite: "https://research.test",
       },
     ];
-    fakeHost({ ...snapshotWith(answered), browserSessions: [browser], browserUses });
+    fakeHost({ ...snapshotWith(answered), tabs, browserUses });
     const sheet = activity(`turn:run:${runA}`);
     press(sheet, "Research, research.test");
     // The sheet closes first, so the page opens over the conversation rather than inside it.
     expect(harness.goBack).toHaveBeenCalledOnce();
     expect(harness.dispatch).toHaveBeenCalledWith({
       name: "WorkspaceBrowser",
-      params: {
-        deploymentId,
-        sessionId: "exact-browser",
-        tabId: "used-tab",
-        threadId: taskId,
-      },
+      params: { deploymentId, tabId: "used-tab", threadId: taskId },
       type: "PUSH",
     });
   });

@@ -3,15 +3,11 @@ import {
   localTeamReference,
   referenceIcon,
   teamPageIcon,
+  type IdReference as Reference,
 } from "@opensteer/client/references";
-import { useReference } from "@opensteer/client/react";
+import { useReference, useTabReference } from "@opensteer/client/react";
 import type { TeamSessionClient } from "@opensteer/client/team";
-import {
-  classifyHref,
-  type ClassifiedHref,
-  type Reference,
-  type TeamPageLink,
-} from "@opensteer/core";
+import { classifyHref, type ClassifiedHref, type TeamPageLink } from "@opensteer/core";
 import {
   createContext,
   useCallback,
@@ -76,16 +72,25 @@ export function ReferenceLink(props: {
   switch (link.kind) {
     case "reference":
       // Another person's Opensteer means nothing to a team reader: its words stay.
-      return navigation?.context.kind === "personal"
-        ? chip(
-            <PersonalChip
-              href={props.href}
-              label={props.label}
-              navigation={navigation}
-              reference={link.reference}
-            />,
-          )
-        : words(props.children);
+      return navigation?.context.kind !== "personal"
+        ? words(props.children)
+        : link.reference.kind === "tab"
+          ? chip(
+              <TabChip
+                href={props.href}
+                label={props.label}
+                navigation={navigation}
+                tabId={link.reference.id}
+              />,
+            )
+          : chip(
+              <PersonalChip
+                href={props.href}
+                label={props.label}
+                navigation={navigation}
+                reference={link.reference}
+              />,
+            );
     case "file":
       return navigation?.context.kind === "personal"
         ? chip(
@@ -172,6 +177,27 @@ function PersonalChip(props: {
       label={props.label}
       onPress={unavailable ? null : () => void navigation.open(props.href)}
       title={state.state === "available" ? state.value.title : props.label}
+    />
+  );
+}
+
+/** A tab in the person's list; a closed one stays a chip that opens nothing, never reopened. */
+function TabChip(props: {
+  readonly href: string;
+  readonly label: string;
+  readonly navigation: ReferenceNavigation;
+  readonly tabId: string;
+}): ReactNode {
+  const { navigation } = props;
+  const client = navigation.context.kind === "personal" ? navigation.context.client : null;
+  const state = useTabReference(client, props.tabId);
+  return (
+    <Chip
+      glyph={referenceSymbols.link}
+      href={props.href}
+      label={props.label}
+      onPress={state.state === "unavailable" ? null : () => void navigation.open(props.href)}
+      title={state.state === "available" ? state.tab.title.trim() || props.label : props.label}
     />
   );
 }

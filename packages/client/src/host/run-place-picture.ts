@@ -1,4 +1,4 @@
-import { placeIdentityKey, type PlaceEnteredEventView } from "@opensteer/core";
+import { type PlaceEnteredEventView } from "@opensteer/core";
 import {
   computerDisplayAuthorityKey,
   computerDisplayScope,
@@ -11,7 +11,8 @@ import {
 import { browserTabPicture, rememberBrowserLastPicture } from "./browser-last-picture.js";
 import type { HostClient } from "./client.js";
 import { hostSnapshotStore } from "./host-snapshot-store.js";
-import { runPlaceDestination, runPlaceSessionId } from "./run-place.js";
+import { runPlaceSessionId, runPlacePictureSession } from "./run-place.js";
+import { computerAppIdentityKey } from "@opensteer/protocol";
 import type { NativeViewerSource } from "./surfaces.js";
 import {
   emptyRunPlacePicture,
@@ -40,6 +41,8 @@ class PictureOwner {
   #stops: (() => void)[] = [];
   #streamStops: (() => void)[] = [];
   #streamKey: string | null = null;
+  #placeStop: (() => void) | null = null;
+  #activating: string | null = null;
   #source: NativeViewerSource | null = null;
   #authority: string | null = null;
   #display: DisplayLease | null = null;
@@ -85,7 +88,7 @@ class PictureOwner {
     if (this.#holds++ === 0) {
       this.#stops = [
         hostSnapshotStore(this.client).subscribe(this.#reconcile),
-        this.client.browserTabs.subscribe(this.#reconcile),
+        this.client.getSnapshot().tabs.subscribe(this.#reconcile),
         ...(runId === null ? [] : [this.client.subscribeRunPlace(runId, this.#reconcile)]),
       ];
     }
@@ -101,6 +104,8 @@ class PictureOwner {
         return;
       }
       for (const stop of this.#stops.splice(0)) stop();
+      this.#placeStop?.();
+      this.#placeStop = null;
       this.#stopStream();
       this.#set({ fresh: false });
     };
@@ -111,6 +116,8 @@ class PictureOwner {
     this.#reconciling = true;
     try {
       this.#stopStream();
+      this.#placeStop?.();
+      this.#placeStop = null;
       this.#entry = null;
       this.#source = null;
       this.#authority = null;
@@ -144,7 +151,12 @@ class PictureOwner {
         snapshot.session === "authenticated" && snapshot.user && this.#runId
           ? this.client.runPlace(this.#runId)
           : null;
-      const key = entry ? placeIdentityKey(entry.data.place) : null;
+      const key = entry?.data.tabId ?? null;
+      if (key !== this.picture.placeKey || (key !== null && this.#placeStop === null)) {
+        this.#placeStop?.();
+        this.#placeStop =
+          key === null ? null : this.client.subscribePlaceActivity(key, this.#reconcile);
+      }
       if (key !== this.picture.placeKey) {
         this.#stopStream();
         this.#source = null;
@@ -154,16 +166,32 @@ class PictureOwner {
       }
       this.#entry = entry;
       if (!entry) return;
-      const place = entry.data.place;
-      if (place.kind === "browser") {
-        const destination = runPlaceDestination(entry, snapshot);
-        if (destination?.kind !== "browser") return;
-        const { sessionId, tabId } = destination;
-        const groupId = this.client.browserTabs.groupForTab(tabId);
-        const tab = groupId
-          ? this.client.browserTabs.tab(groupId, tabId)
-          : this.client.browserTabs.sessionTab(sessionId, tabId);
-        const awake = tab === undefined || tab.state === "live";
+      const tabId = entry.data.tabId;
+      const tab = snapshot.tabs.get(tabId);
+      if (!tab || tab.state === "unavailable" || tab.kind === "app") {
+        this.#stopStream();
+        this.#set({ usable: false, fresh: false });
+        return;
+      }
+      if (tab.kind === "page") {
+        const viewer = this.client.tabViewer(tabId);
+        if (viewer?.kind !== "page") {
+          if (tab.state === "open" && this.#activating !== tabId) {
+            this.#activating = tabId;
+            void this.client
+              .activateTab(tabId)
+              .then(() => {
+                if (this.#activating === tabId) this.#activating = null;
+                this.#reconcile();
+              })
+              .catch(() => {
+                if (this.#activating === tabId) this.#activating = null;
+              });
+          }
+          return;
+        }
+        const { sessionId } = viewer;
+        const awake = tab.state === "open";
         const streamKey = JSON.stringify([sessionId, tabId, awake]);
         if (streamKey !== this.#streamKey) {
           this.#stopStream();
@@ -183,21 +211,38 @@ class PictureOwner {
         this.#browserPicture(sessionId, tabId, awake);
         return;
       }
-      const sessionId = runPlaceSessionId(entry, snapshot);
-      if (sessionId !== null)
+      const sessionId = runPlacePictureSession(
+        tab.kind,
+        runPlaceSessionId(entry, snapshot),
+        entry.runId,
+        this.client.placeActivity(tabId),
+      );
+      if (sessionId !== null) {
+        const app =
+          tab.kind === "window"
+            ? snapshot.machines
+                .find((machine) => machine.id === tab.computer.computerId)
+                ?.computerUse?.sessions.find((session) => session.sessionId === sessionId)
+                ?.apps.find((app) => app.bundleId === tab.bundleId)
+            : null;
         this.#source = {
           kind: "task-session",
           sessionId,
-          ...(place.kind === "app" ? { appKey: place.appKey } : {}),
+          ...(app ? { appKey: computerAppIdentityKey(app) } : {}),
         };
-      const authority = computerDisplayAuthorityKey(snapshot, this.#source, place.machineId);
+      }
+      const authority = computerDisplayAuthorityKey(
+        snapshot,
+        this.#source,
+        tab.computer.computerId,
+      );
       if (authority !== this.#authority) {
         this.#drawn = false;
         this.#authority = authority;
       }
       const scope = computerDisplayScope(snapshot, this.#source);
       const target =
-        this.#displayHolds > 0 && scope && authority && this.#source
+        sessionId !== null && this.#displayHolds > 0 && scope && authority && this.#source
           ? { scope, source: this.#source }
           : null;
       const streamKey = target ? computerDisplayTargetKey(target) : null;
@@ -222,9 +267,7 @@ class PictureOwner {
     const frame = state.frame;
     if (frame) rememberBrowserLastPicture(this.client.browserWatchFrames, sessionId, tabId, frame);
     const kept =
-      !awake || state.status !== "unavailable"
-        ? browserTabPicture(this.client, sessionId, tabId)
-        : null;
+      !awake || state.status !== "unavailable" ? browserTabPicture(this.client, tabId) : null;
     const width = frame?.header.rasterWidth ?? kept?.width;
     const height = frame?.header.rasterHeight ?? kept?.height;
     this.#set({
@@ -244,14 +287,19 @@ class PictureOwner {
         this.#drawn &&
         this.#presented &&
         snapshot?.connection === "open" &&
-        computerDisplayStatus(snapshot, this.#entry?.data.place.kind === "phone").reason === null,
+        computerDisplayStatus(
+          snapshot,
+          this.#entry !== null &&
+            this.client.getSnapshot().tabs.get(this.#entry.data.tabId)?.kind === "phone",
+        ).reason === null,
     });
   };
 
   report(placeKey: string, report: RunPlacePictureReport): void {
     if (
       placeKey !== this.picture.placeKey ||
-      this.#entry?.data.place.kind === "browser" ||
+      (this.#entry !== null &&
+        this.client.getSnapshot().tabs.get(this.#entry.data.tabId)?.kind === "page") ||
       this.#holds === 0 ||
       this.#authority === null ||
       this.#display === null ||

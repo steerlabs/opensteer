@@ -1,4 +1,3 @@
-import { groupSession } from "../host/browser-snapshot.js";
 import { placeList } from "../host/places.js";
 import type {
   BrowserSessionSummary,
@@ -8,23 +7,25 @@ import type {
   PersonalTabLineage,
 } from "../host/client.js";
 
+/** One page the mock world authors in a browser, as the mock Host lists it. */
+export interface MockCatalogTab {
+  id: import("@opensteer/protocol").BrowserSurfaceId;
+  title: string;
+  site: string;
+  iconRef: string | null;
+  order: number;
+  openerId: import("@opensteer/protocol").BrowserSurfaceId | null;
+  availability: "ready" | "starting" | "unavailable";
+  documentId: string | null;
+  occupants: import("@opensteer/protocol").PlaceOccupant[];
+  loading?: boolean | undefined;
+  navigationFailed?: boolean | undefined;
+  canGoBack?: boolean | undefined;
+  canGoForward?: boolean | undefined;
+}
 /** Authored mock world data, independent of the client snapshot projections. */
 export interface MockBrowserCatalog extends BrowserInventory {
-  readonly tabs: (Omit<
-    import("@opensteer/protocol/browser-tabs").BrowserTabRow,
-    | "state"
-    | "createdAt"
-    | "sessionId"
-    | "loading"
-    | "navigationFailed"
-    | "canGoBack"
-    | "canGoForward"
-  > & {
-    loading?: boolean | undefined;
-    navigationFailed?: boolean | undefined;
-    canGoBack?: boolean | undefined;
-    canGoForward?: boolean | undefined;
-  })[];
+  readonly tabs: MockCatalogTab[];
 }
 export interface MockBrowserSession extends BrowserSessionSummary {
   catalog?: MockBrowserCatalog;
@@ -35,24 +36,7 @@ export interface MockBrowserSource extends HostSnapshot {
   browserGroups?: PersonalTabLineage[] | undefined;
 }
 
-/**
- * The mock's own read of the place list. It shares the keyed store's
- * projection with the published snapshot, so it lists the sessions that
- * snapshot derives, from the keyed groups in the authored order: a read with
- * other sessions would rebuild every row a client holds.
- */
+/** The mock's own read of the tab list: the same projection the published snapshot draws. */
 export function mockPlaceList(snapshot: MockBrowserSource) {
-  const store = snapshot.browserTabs;
-  const order = new Map(snapshot.browserSessions.map((session, index) => [session.id, index]));
-  const sessions: BrowserSessionSummary[] = (store?.groups().ids ?? [])
-    .map((id) => store!.group(id)!)
-    .sort((a, b) => (order.get(a.sessionId) ?? Infinity) - (order.get(b.sessionId) ?? Infinity))
-    .map((group) => ({
-      ...groupSession(group),
-      dialog: null,
-      error: null,
-      viewerState: "disconnected",
-      viewerError: null,
-    }));
-  return placeList({ ...snapshot, browserSessions: sessions });
+  return placeList(snapshot);
 }

@@ -7,6 +7,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import type { Page } from "playwright-core";
+import type { MockHostClient } from "@opensteer/client/mock";
 import { expectThat, finishJourney, journeyChecks, openMockWeb } from "./mock-web-journey.js";
 
 const artifactDirectory = path.resolve(
@@ -48,7 +49,7 @@ async function webRows(page: Page) {
               row.querySelector(".side-tab-group__main")?.getAttribute("aria-expanded") === "true",
           },
         ];
-      if (row.dataset.group !== "web") return [];
+      if (!row.matches(".side-tab[data-kind]")) return [];
       return [
         {
           key: row.dataset.motionKey!,
@@ -317,11 +318,24 @@ async function openWorld(world: "busy" | "stress") {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(`${web.origin}/?mock-world=${world}`);
-  await page.locator('.side-tab[data-group="web"]').first().waitFor();
+  await page.locator('.side-tab[data-kind="page"]').first().waitFor();
   // The world stops moving on its own, so every change during a drag is one a check makes.
   await page.evaluate(() =>
     (Reflect.get(window, "opensteerMock") as { scriptPlaces(): unknown }).scriptPlaces(),
   );
+  // This journey moves page tabs: window, phone and app tabs leave the list (closing a tab
+  // only takes it off the list). The busy world's checks build their own one group.
+  await page.evaluate(async (ungroup) => {
+    const client = Reflect.get(window, "opensteerMock") as MockHostClient;
+    if (ungroup)
+      for (const item of client.getSnapshot().tabs.layout.items)
+        if (item.kind === "group") await client.deleteTabGroup(item.group.groupId);
+    const others = [...client.getSnapshot().tabs.rows.values()]
+      .filter((tab) => tab.kind !== "page")
+      .map((tab) => tab.tabId);
+    if (others.length) await client.closeTabs(others);
+  }, world === "busy");
+  await settle(page);
   return { context, page, errors };
 }
 
@@ -657,7 +671,7 @@ try {
       const closing = tabs.at(-1)!.key;
       await reveal(moving!.key);
       const target = await box(page, landing!.key);
-      const tabId = closing.split(":").at(-1)!;
+      const tabId = closing;
       const stats = await observe(page, () =>
         drag(page, moving!.key, target.y + target.height / 2, {
           during: () =>
@@ -665,9 +679,9 @@ try {
               (id) =>
                 (
                   Reflect.get(window, "opensteerMock") as {
-                    closePersonalTabs(ids: string[]): Promise<unknown>;
+                    closeTabs(ids: string[]): Promise<unknown>;
                   }
-                ).closePersonalTabs([id]),
+                ).closeTabs([id]),
               tabId,
             ),
         }),
@@ -696,10 +710,10 @@ try {
           (id) =>
             (
               Reflect.get(window, "opensteerMock") as {
-                closePersonalTabs(ids: string[]): Promise<unknown>;
+                closeTabs(ids: string[]): Promise<unknown>;
               }
-            ).closePersonalTabs([id]),
-          after!.key.split(":").at(-1)!,
+            ).closeTabs([id]),
+          after!.key,
         ),
     });
     const now = await keys(page);

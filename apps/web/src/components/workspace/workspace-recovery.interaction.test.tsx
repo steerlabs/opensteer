@@ -1,25 +1,16 @@
-import { placeIdentityKey } from "@opensteer/protocol";
-import { runPlaceDestination } from "@opensteer/client/host";
-import { sharedDisplayStreams } from "@opensteer/client/integrations";
 // @vitest-environment happy-dom
+import { runPlaceDestination } from "@opensteer/client/host";
+import { BrowserProfileIdSchema, type TabTarget } from "@opensteer/core";
 import { act } from "react";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 
-import { describe, expect, it, vi, type MockInstance } from "vitest";
-import type { MockHostClient } from "@opensteer/client/mock";
+import { describe, expect, it, vi } from "vitest";
 import type {
   DesktopPersonalTabCommand,
   DesktopWebLinkDelivery,
 } from "@opensteer/protocol/desktop";
 
-import {
-  HostClientRequestError,
-  placeList,
-  taskList,
-  workerAssignment,
-  type HostSnapshot,
-} from "@opensteer/client/host";
-import { staleBrowserTabInventoryReason } from "@opensteer/protocol";
+import { placeList, taskList, workerAssignment, type HostSnapshot } from "@opensteer/client/host";
 
 import { AppShell } from "../app-shell.js";
 
@@ -73,7 +64,7 @@ describe("the review's findings", () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     const place = pageTab();
     const other = placeList(client.getSnapshot()).find(
-      (item) => item.kind === "browser" && item.key !== place.key && isMockPage(item),
+      (item) => item.key !== place.key && isMockPage(item),
     )!;
     await settle(100);
     const answer = deferred<void>();
@@ -113,11 +104,9 @@ describe("the review's findings", () => {
       return `/tasks/${task.id}${tabSearch(pageTab(source))}`;
     });
     const place = pageTab();
-    if (place.destination.kind !== "browser" || !place.destination.tabId) throw new Error("tab");
-    const candidate = await client.readBrowserContextCandidate(
-      place.destination.sessionId,
-      place.destination.tabId,
-    );
+    const viewer = client.tabViewer(place.key);
+    if (viewer?.kind !== "page") throw new Error("The page was never shown");
+    const candidate = await client.readBrowserContextCandidate(viewer.sessionId, place.key);
     const reading = deferred<typeof candidate>();
     vi.spyOn(client, "readBrowserContextCandidate").mockImplementationOnce(() => reading.promise);
     const field = element<HTMLElement>("[data-composer-input]");
@@ -146,57 +135,49 @@ describe("the review's findings", () => {
   });
 
   it("3 · a delayed open from the start page keeps the conversation chosen meanwhile, and loses to a newer place choice", async () => {
-    await mount("/");
-    const target = placeList(client.getSnapshot()).find((item) => item.kind === "browser")!;
-    if (target.destination.kind !== "browser" || !target.destination.tabId)
-      throw new Error("Not a browser tab");
-    const result = await client.openBrowserTab(target.destination.sessionId);
-    const { tabId } = result;
-    const gates = [deferred<void>(), deferred<void>()];
-    let commands = 0;
-    const dispatch = client.rpc["commands.dispatch"];
-    const delayed: typeof dispatch = async (command, options) => {
-      if (command.type !== "browser.tab.open") return dispatch(command, options);
-      await withTimeout(gates[commands++]!.promise, 2_000, {
-        timeoutError: () => new Error("The start page browser command was never released."),
-      });
-      return { ok: true, data: result };
-    };
-    Object.defineProperty(client, "rpc", {
-      value: new Proxy(client.rpc, {
-        get: (target, name) => (name === "commands.dispatch" ? delayed : Reflect.get(target, name)),
-      }),
+    await mount((source) => {
+      // A profile has its own computer; Guest with two to choose from would be asked which.
+      const snapshot = source.getSnapshot();
+      localStorage.setItem(
+        `opensteer.browse-with.v1:${encodeURIComponent(snapshot.deploymentId!)}:${encodeURIComponent(snapshot.user!.id)}`,
+        JSON.stringify({ kind: "profile", profileId: snapshot.browserProfiles[0]!.id }),
+      );
+      return "/";
     });
-    const open = vi.spyOn(client, "beginBrowserTabOpen");
+    const real = client.openTab;
+    const gates = [deferred<void>(), deferred<void>()];
+    let opens = 0;
+    const open = vi.spyOn(client, "openTab").mockImplementation(async (target) => {
+      await withTimeout(gates[opens++]!.promise, 2_000, {
+        timeoutError: () => new Error("The start page's open was never released."),
+      });
+      return real(target);
+    });
     await click(element('.side-section--tabs .side-head__action[aria-label="New tab"]'));
     expect(element(".place").className).toContain("place--launcher");
-    expect(open).not.toHaveBeenCalled();
     await typeInto(element<HTMLInputElement>(".start-page__input"), "example.com");
     await pressEnter(element(".start-page__input"));
     expect(open).toHaveBeenCalledWith(
-      { identity: { kind: "guest" } },
-      expect.objectContaining({ url: "https://example.com/" }),
+      expect.objectContaining({ kind: "page", url: "https://example.com/" }),
+      { typed: true },
     );
-    const pendingKey = client.getSnapshot().pendingBrowserTabs![0]!.idempotencyKey;
-    expect(new URLSearchParams(history.at(-1)!.search).get("pendingBrowserTab")).toBe(pendingKey);
-    expect(element(".place").textContent).toContain("example.com");
-    // Choosing a conversation meanwhile keeps the pending tab selected.
+    // Choosing a conversation meanwhile keeps the start page in the middle until the tab is listed.
     const threadId = firstTaskId();
     await click(element(`.side-task[data-thread-id="${threadId}"] .side-task__main`));
     expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
-    expect(new URLSearchParams(history.at(-1)!.search).get("pendingBrowserTab")).toBe(pendingKey);
-    expect(element(".place").textContent).toContain("example.com");
+    expect(element(".place").className).toContain("place--launcher");
     await act(async () => gates[0]!.resolve());
     await settle(50);
     // The answer shows its tab in place of the start page and keeps the conversation now open.
+    const opened = await open.mock.results[0]!.value;
     expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
-    expect(new URLSearchParams(history.at(-1)!.search).get("browserTab")).toBe(tabId);
+    expect(new URLSearchParams(history.at(-1)!.search).get("tab")).toBe(opened.tabId);
     // Asked again, then another place chosen before the answer: the choice stands.
     await click(element('.side-section--tabs .side-head__action[aria-label="New tab"]'));
     await typeInto(element<HTMLInputElement>(".start-page__input"), "example.org");
     await pressEnter(element(".start-page__input"));
     const chosen = placeList(client.getSnapshot()).find(
-      (item) => item.kind === "browser" && item.key !== target.key,
+      (item) => item.kind === "page" && item.key !== opened.tabId,
     )!;
     await click(element(`.side-tab[data-place-key="${chosen.key}"] .side-tab__main`));
     const before = history.length;
@@ -255,14 +236,11 @@ describe("the review's findings", () => {
           release();
         };
       });
-      const run = source.getSnapshot().runQueue.find((run) => run.status === "running");
-      const latest = run ? source.runPlace(run.id) : null;
-      const other = placeList(source.getSnapshot()).find(
-        (item) =>
-          item.kind === "browser" &&
-          item.key !== (latest ? placeIdentityKey(latest.data.place) : null),
-      )!;
-      return `/tasks/${run!.threadId}${tabSearch(other)}`;
+      // A working Run acting in a page, which its viewfinder pictures; another page in the middle.
+      const run = source.getSnapshot().runQueue.find((candidate) => candidate.status === "running");
+      const [acting, other] = placeList(source.getSnapshot()).filter((item) => isMockPage(item));
+      source.actInPlace(run!.threadId, acting!.key);
+      return `/tasks/${run!.threadId}${tabSearch(other!)}`;
     });
     // The viewfinder takes its lease in an effect after mount; under a loaded
     // suite that can outlast any fixed pause, so each step waits for the lease
@@ -277,9 +255,10 @@ describe("the review's findings", () => {
       );
     let viewfinderKey = "";
     await leaseBecomes(() => {
-      const [, sessionId, tabId] =
-        element<HTMLButtonElement>(".viewfinder").dataset.placeKey!.split(":");
-      viewfinderKey = `${sessionId}:${tabId}`;
+      // The viewfinder names its tab; its picture is leased through the session it is shown in.
+      const tabId = element<HTMLButtonElement>(".viewfinder").dataset.placeKey!;
+      const viewer = client.tabViewer(tabId);
+      viewfinderKey = viewer?.kind === "page" ? `${viewer.sessionId}:${tabId}` : "";
       return viewfinderKey;
     }, 1);
     // The docked head holds no controls of its own; the computer's bar puts the
@@ -336,41 +315,24 @@ describe("the review's findings", () => {
     expect(document.activeElement?.id).toBe("sidebar-search");
   });
 
-  it("9 · closing a focused tab hands focus to its neighbour, with or without the question first", async () => {
+  it("9 · closing a focused tab hands focus to its neighbour, a tab work holds included", async () => {
     await mount("/");
-    const attached = (place: ReturnType<typeof placeList>[number]) =>
-      place.destination.kind === "browser"
-        ? (client
-            .getSnapshot()
-            .browserSessions.find(
-              (session) =>
-                place.destination.kind === "browser" && session.id === place.destination.sessionId,
-            )?.attachedRunIds.length ?? 0)
-        : 0;
-    const quiet = placeList(client.getSnapshot()).find(
-      (place) => place.closable && attached(place) === 0,
-    )!;
-    const close = element<HTMLButtonElement>(
-      `.side-tab[data-place-key="${quiet.key}"] .side-tab__close`,
-    );
-    close.focus();
-    await click(close);
-    await settle(150);
-    expect(close.isConnected).toBe(false);
-    expect(document.activeElement).not.toBe(document.body);
-    expect(document.activeElement?.closest(".side-tab, .side-new, .side-head")).not.toBeNull();
-    // Held by live work: asked first, then the same rescue.
-    const held = placeList(client.getSnapshot()).find(
-      (place) => place.closable && attached(place) > 0,
-    )!;
-    const heldClose = element<HTMLButtonElement>(
-      `.side-tab[data-place-key="${held.key}"] .side-tab__close`,
-    );
-    heldClose.focus();
-    await click(heldClose);
-    await click(element(".dialog .btn--danger"));
-    await settle(150);
-    expect(document.activeElement).not.toBe(document.body);
+    for (const used of [false, true]) {
+      const place = placeList(client.getSnapshot()).find(
+        (item) => item.occupants.length > 0 === used,
+      )!;
+      const close = element<HTMLButtonElement>(
+        `.side-tab[data-place-key="${place.key}"] .side-tab__close`,
+      );
+      close.focus();
+      await click(close);
+      await settle(150);
+      // No question first: a closed tab comes back with Reopen closed tab.
+      expect(document.querySelector(".dialog")).toBeNull();
+      expect(close.isConnected).toBe(false);
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement?.closest(".side-tab, .side-new, .side-head")).not.toBeNull();
+    }
   });
 
   it("10 · the count's exact request is focused once its panel can render, behind another one or late", async () => {
@@ -604,36 +566,6 @@ describe("stopping a task and finishing it: one Stop", () => {
   });
 });
 
-it("silently renews a stale close review and keeps the browser alive", async () => {
-  await mount("/");
-  const session = client
-    .getSnapshot()
-    .browserSessions.find(
-      (candidate) =>
-        candidate.state === "ready" &&
-        candidate.attachedRunIds.length > 0 &&
-        (candidate.browserTabs?.sessionTabs(candidate?.id) ?? []).length,
-    )!;
-  const tab = (session.browserTabs?.sessionTabs(session?.id) ?? [])[0]!;
-  const close = vi.spyOn(client, "closeBrowserTab").mockRejectedValueOnce(
-    new HostClientRequestError({
-      code: "conflict",
-      status: 409,
-      reason: staleBrowserTabInventoryReason,
-      message: "Tab inventory changed",
-    }),
-  );
-  await click(element(`[data-place-key="browser:${session.id}:${tab.id}"] .side-tab__close`));
-  await click(element(".dialog .btn--danger"));
-  await settle(100);
-  expect(close).toHaveBeenCalledOnce();
-  expect(document.querySelector(".dialog")).not.toBeNull();
-  expect(
-    client.getSnapshot().browserSessions.find((candidate) => candidate.id === session.id)?.state,
-  ).toBe("ready");
-  expect(document.querySelector(".toast--error")).toBeNull();
-});
-
 describe("a person's own view of an app on this Mac, in the desktop app", () => {
   const deploymentId = "dep_00000000-0000-4000-8000-000000000001";
   const desktopDeployment = {
@@ -689,7 +621,7 @@ describe("a person's own view of an app on this Mac, in the desktop app", () => 
     });
     // Another Mac's app is never brought forward from here.
     await click(element('.side-section--tabs .side-head__action[aria-label="New tab"]'));
-    await click(element(".start-tile[aria-label^='Keynote on']"));
+    await click(element(".start-tile[aria-label^='Keynote on Studio']"));
     await settle(80);
     expect(element(".owner-view__view-only").textContent).toBe("View only");
     expect(document.querySelector(".owner-view__use")).toBeNull();
@@ -769,7 +701,8 @@ describe("a desktop that is its own computer in another Mac's Opensteer", () => 
       onThisComputer: false,
       routes: [],
     } as unknown as NonNullable<Parameters<typeof AppShell>[0]["desktopDeployment"]>;
-    let open!: MockInstance<MockHostClient["beginBrowserTabOpen"]>;
+    // Every page this window opens, whether by tab.open from a link or by openTab.
+    const open = vi.fn<(target: TabTarget) => void>();
     await mount(
       (source) => {
         const snapshot = source.getSnapshot();
@@ -777,7 +710,16 @@ describe("a desktop that is its own computer in another Mac's Opensteer", () => 
           `opensteer.browse-with.v1:${encodeURIComponent(snapshot.deploymentId!)}:${encodeURIComponent(snapshot.user!.id)}`,
           '{"kind":"guest"}',
         );
-        open = vi.spyOn(source, "beginBrowserTabOpen");
+        const openTab = source.openTab;
+        vi.spyOn(source, "openTab").mockImplementation((target) => {
+          open(target);
+          return openTab(target);
+        });
+        const dispatch = source.dispatch.bind(source);
+        vi.spyOn(source, "dispatch").mockImplementation((command) => {
+          if (command.type === "tab.open") open(command.target as TabTarget);
+          return dispatch(command);
+        });
         return "/tasks/thr_00000000-0000-4000-8000-000000000002";
       },
       { shell: { desktopBridge, desktopDeployment } },
@@ -787,25 +729,19 @@ describe("a desktop that is its own computer in another Mac's Opensteer", () => 
     expect(deliver).toBeNull();
     await act(async () => statusAnswered.resolve());
     await settle(50);
-    const here = { identity: { kind: "guest" }, placement: { kind: "runner", runnerId: studio } };
+    const here = (url: unknown) => ({ kind: "page", url, guest: true, computerId: studio });
     const link = [...document.querySelectorAll<HTMLAnchorElement>(".md-prose a")].find(
       (anchor) => anchor.textContent === "storage mount guide",
     )!;
     await click(link);
-    expect(open).toHaveBeenLastCalledWith(
-      here,
-      expect.objectContaining({ url: "https://storage.example/docs/mounts" }),
-    );
+    expect(open).toHaveBeenLastCalledWith(here("https://storage.example/docs/mounts"));
     await click(element('.side-section--tabs .side-head__action[aria-label="New tab"]'));
     await typeInto(element<HTMLInputElement>(".start-page__input"), "example.com");
     await pressEnter(element(".start-page__input"));
-    expect(open).toHaveBeenLastCalledWith(
-      here,
-      expect.objectContaining({ url: "https://example.com/" }),
-    );
+    expect(open).toHaveBeenLastCalledWith(here("https://example.com/"));
     // A profile tab's menu: Open this page in… ▸ Guest.
     const profileTab = placeList(client.getSnapshot()).find(
-      (place) => place.kind === "browser" && place.identity?.kind === "profile",
+      (place) => place.kind === "page" && place.identity?.kind === "profile",
     )!;
     await act(async () =>
       element(`.side-tab[data-place-key="${profileTab.key}"]`).dispatchEvent(
@@ -833,23 +769,19 @@ describe("a desktop that is its own computer in another Mac's Opensteer", () => 
     await vi.waitFor(() => expect(open, "Open in never opened").toHaveBeenCalledTimes(opened + 1), {
       timeout: 1_000,
     });
-    expect(open).toHaveBeenLastCalledWith(here, expect.anything());
+    expect(open).toHaveBeenLastCalledWith(here(expect.any(String)));
     // A link clicked in another app, with Opensteer as the Mac's default browser.
     await vi.waitFor(() => expect(deliver, "The link receiver never subscribed").not.toBeNull(), {
       timeout: 1_000,
     });
     await act(async () => deliver!({ ...webLink, generation: deliveries[0]!.generation }));
-    await vi.waitFor(
-      () =>
-        expect(open).toHaveBeenLastCalledWith(here, expect.objectContaining({ url: webLink.url })),
-      { timeout: 1_000 },
-    );
+    await vi.waitFor(() => expect(open).toHaveBeenLastCalledWith(here(webLink.url)), {
+      timeout: 1_000,
+    });
   });
 });
 
 describe("the v7 web review's findings", () => {
-  const ownerViews = () =>
-    client.getSnapshot().machines.flatMap((machine) => machine.computerUse?.ownerViews ?? []);
   async function openTile(label: string) {
     if (!document.querySelector(".start-page")) {
       await click(element('.side-section--tabs .side-head__action[aria-label="New tab"]'));
@@ -865,104 +797,77 @@ describe("the v7 web review's findings", () => {
     const runId = client.getSnapshot().runQueue.find((run) => run.threadId === threadId)!.id;
     const before = client.runPlace(runId)!;
     const destination = runPlaceDestination(before, client.getSnapshot());
-    expect(before.data.place.kind).toBe("phone");
-    expect(destination).toMatchObject({ kind: "phone" });
+    expect(client.getSnapshot().tabs.get(before.data.tabId)?.kind).toBe("phone");
     expect(document.querySelector(".viewfinder .place-canvas")).not.toBeNull();
     await openTile("Pixel 7");
     expect(element(".owner-view")).toBeTruthy();
     const phones = placeList(client.getSnapshot()).filter((item) => item.kind === "phone");
-    // One phone is one row: the person's own view is in front of the task still holding it.
+    // One phone is one tab: the person's own view is in front of the task still using it.
     expect(phones).toHaveLength(1);
-    const row = phones[0]!;
-    expect(row.destination).toEqual(destination);
-    expect(row.ownerView?.target.kind).toBe("phone");
-    expect(row.task).not.toBeNull();
-    expect(row.occupants.map((occupant) => occupant.threadId)).toContain(threadId);
+    expect(phones[0]!.destination).toEqual(destination);
+    expect(phones[0]!.occupants.map((occupant) => occupant.threadId)).toContain(threadId);
     expect(runPlaceDestination(client.runPlace(runId)!, client.getSnapshot())).toEqual(destination);
-    // The person's view ending is not the task's: its reference stays live.
-    const view = ownerViews().find((candidate) => candidate.target.kind === "phone")!;
-    await act(async () => {
-      await client.closeComputerView(view.viewId, view.generation);
-    });
-    await settle(60);
-    expect(runPlaceDestination(client.runPlace(runId)!, client.getSnapshot())).toEqual(destination);
-    // The tab in front opens another, so it never falls back to needing a press.
-    expect(element(".place .owner-view")).toBeTruthy();
-    expect(
-      ownerViews().find((candidate) => candidate.target.kind === "phone")?.generation,
-    ).toBeGreaterThan(view.generation);
+    // The phone is in the middle now, so the conversation's viewfinder steps aside for it.
+    expect(document.querySelector(".viewfinder .computer-watch")).toBeNull();
   });
 
-  it("a phone's tab stays live through its task's end, without waking it, until the person closes it", async () => {
+  it("a phone's tab stays live through its task's end until the person closes it", async () => {
     const threadId = "thr_00000000-0000-4000-8000-000000000903";
     await mount(`/tasks/${threadId}`);
     await settle(200);
     const phone = () => placeList(client.getSnapshot()).find((place) => place.kind === "phone");
     const held = phone()!;
-    if (held.destination.kind !== "phone" || !held.task) throw new Error("No held phone");
-    const { machineId } = held.destination;
-    const open = vi.spyOn(client, "openComputerView");
-    const wake = vi.spyOn(sharedDisplayStreams(client), "armAutoWake");
-    await act(async () => goTo!({ pathname: "/", search: `?panel=browser&phone=${machineId}` }));
+    const session = client
+      .getSnapshot()
+      .machines.find((machine) => machine.id === held.device.machineId)
+      ?.computerUse?.sessions.find((candidate) => candidate.display)!;
+    const activate = vi.spyOn(client, "activateTab");
+    await act(async () => goTo!({ pathname: "/", search: `?panel=browser&tab=${held.key}` }));
     await settle(120);
-    expect(open).toHaveBeenCalledExactlyOnceWith(
-      machineId,
-      { kind: "phone", display: "main" },
-      { wake: false },
-    );
+    expect(activate).toHaveBeenCalledExactlyOnceWith(held.key, { wake: true });
     expect(element(".place .owner-view")).toBeTruthy();
     const address = history.at(-1);
-    const shown = phone()?.ownerView;
-    expect(shown).toBeTruthy();
+    const shown = client.tabViewer(held.key);
 
     await act(async () => {
-      await client.rpc["integration.computer.session.stop"]({ sessionId: held.task!.sessionId });
+      await client.rpc["integration.computer.session.stop"]({ sessionId: session.sessionId });
     });
     await settle(120);
-    // The agent stopping is not an event for the tab: same address, same view, no new open.
+    // The agent stopping is not an event for the tab: same address, and the person's view stays.
     expect(history.at(-1)).toEqual(address);
-    expect(phone()?.task).toBeNull();
-    expect(phone()?.ownerView?.viewId).toBe(shown?.viewId);
-    expect(phone()?.ownerView?.generation).toBe(shown?.generation);
+    expect(client.tabViewer(held.key)?.kind).toBe(shown?.kind);
     expect(element(".place .owner-view")).toBeTruthy();
-    expect(open).toHaveBeenCalledOnce();
-    expect(wake).not.toHaveBeenCalled();
 
-    await act(async () => client.closePhoneTab(machineId));
+    const activations = activate.mock.calls.length;
+    await act(async () => client.closeTabs([held.key]));
     await settle(120);
     expect(phone()).toBeUndefined();
-    expect(ownerViews().some((view) => view.target.kind === "phone")).toBe(false);
-    expect(open).toHaveBeenCalledOnce();
+    // The middle moves on to the tab beside it; the closed phone is never opened again.
+    expect(activate.mock.calls.slice(activations).map(([id]) => id)).not.toContain(held.key);
     expect(history.at(-1)?.search).not.toBe(address?.search);
   });
 
-  it("M6 · clearing recent sites never fails an owner view the Host already opened", async () => {
+  it("M6 · clearing recent sites never fails an owner view the Host is opening", async () => {
     await mount("/?panel=browser");
-    // Cleared at the moment the Host has opened the view, before its answer is read.
-    let cleared = false;
-    const stop = client.subscribe(() => {
-      if (cleared) return;
-      const opened = ownerViews().some(
-        (view) => view.target.kind === "app" && view.target.app.bundleId === "com.apple.iCal",
-      );
-      if (!opened) return;
-      cleared = true;
-      void client.browserHistory.clear("bpr_00000000-0000-4000-8000-000000000001");
+    // Cleared while the Host opens the view, before its answer is read.
+    const activateTab = client.activateTab;
+    vi.spyOn(client, "activateTab").mockImplementation(async (tabId) => {
+      const opening = activateTab(tabId);
+      await client.browserHistory.clear("bpr_00000000-0000-4000-8000-000000000001");
+      return opening;
     });
     await click(element(".start-tile[aria-label^='Calendar on']"));
     await settle(120);
-    stop();
-    expect(cleared).toBe(true);
     expect(document.querySelector(".toast--error")).toBeNull();
     expect(element(".owner-view").getAttribute("aria-label")).toContain("Calendar");
-    expect(new URLSearchParams(history.at(-1)!.search).has("computerView")).toBe(true);
+    expect(new URLSearchParams(history.at(-1)!.search).has("tab")).toBe(true);
   });
 
   it("m1 · typed navigation reaches Host history and its retained icon appears in New tab", async () => {
     const profileId = "bpr_00000000-0000-4000-8000-000000000001";
     await mount((source) => {
       const reading = placeList(source.getSnapshot()).find(
-        (item) => item.kind === "browser" && item.title === "Your reading list",
+        (item) => item.kind === "page" && item.title === "Your reading list",
       )!;
       return `/${tabSearch(reading)}`;
     });
@@ -1002,11 +907,15 @@ describe("the v7 web review's findings", () => {
   it("m2 · Clear browsing history and a profile pick leave the keyboard in the search field", async () => {
     const personal = {
       kind: "profile" as const,
-      profileId: "bpr_00000000-0000-4000-8000-000000000001",
+      profileId: BrowserProfileIdSchema.parse("bpr_00000000-0000-4000-8000-000000000001"),
     };
     await mount("/?panel=browser");
     await act(async () => {
-      await client.openBrowserTab({ identity: personal }, { url: "https://example.com/" });
+      await client.openTab({
+        kind: "page",
+        url: "https://example.com/",
+        profileId: personal.profileId,
+      });
       await client.browserHistory.load(personal.profileId);
     });
     if (!document.querySelector(".start-page"))
@@ -1060,13 +969,13 @@ describe("a computer that can't show its apps, on the start page", () => {
 
   it("an offline computer folds into one quiet line after the rest; its apps are found but never opened, and unfold in their own place when it's back", async () => {
     await openStartPage();
-    const asked = vi.spyOn(client, "openComputerView");
+    const asked = vi.spyOn(client, "openTab");
     expect(captions()).toEqual(["Mac mini", "Studio Mac", "Phone"]);
 
     await setStatus("Studio Mac", "offline");
     expect(captions()).toEqual(["Mac mini", "Phone", "Studio Mac"]);
     expect(captions(".start-apps__away")).toEqual(["Studio Mac"]);
-    expect(document.querySelector(".start-tile[aria-label^='Keynote on']")).toBeNull();
+    expect(document.querySelector(".start-tile[aria-label^='Keynote on Studio']")).toBeNull();
     const line = element<HTMLElement>(".start-apps__away .start-apps__row");
     expect(element(".start-apps__status", line).textContent).toBe("Offline");
     // Nothing to do there but wait, so nothing on it is offered.
@@ -1104,7 +1013,7 @@ describe("a computer that can't show its apps, on the start page", () => {
     await setStatus("Pixel 7", "online");
     expect(captions()).toEqual(["Mac mini", "Studio Mac", "Phone"]);
     expect(document.querySelector(".start-apps__away")).toBeNull();
-    await click(element(".start-tile[aria-label^='Keynote on']"));
+    await click(element(".start-tile[aria-label^='Keynote on Studio']"));
     await settle(120);
     expect(asked).toHaveBeenCalledTimes(1);
     expect(element(".owner-view").getAttribute("aria-label")).toContain("Keynote");
@@ -1141,9 +1050,13 @@ describe("a computer that can't show its apps, on the start page", () => {
     const field = element<HTMLInputElement>(".start-page__input");
     await act(async () => field.focus());
     await typeInto(field, "notes");
-    await act(async () => {
-      field.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowDown" }));
-    });
+    // The keyboard reaches the app, past the open Notes window's own row.
+    const activeTitle = () =>
+      element(".start-result.is-active .start-result__title").textContent ?? "";
+    for (let step = 0; step < 3 && activeTitle() !== "Notes"; step++)
+      await act(async () => {
+        field.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowDown" }));
+      });
     const notes = element<HTMLElement>(".start-result.is-active");
     expect(notes.querySelector(".start-result__title")?.textContent).toBe("Notes");
     expect(element(".start-result__action", notes).textContent).toBe("Needs permission");
@@ -1168,7 +1081,7 @@ describe("a computer that can't show its apps, on the start page", () => {
 
   it("a row that folds under the keyboard hands it to the search field; a row that stays keeps it", async () => {
     await openStartPage();
-    const keynote = element<HTMLButtonElement>(".start-tile[aria-label^='Keynote on']");
+    const keynote = element<HTMLButtonElement>(".start-tile[aria-label^='Keynote on Studio']");
     await act(async () => keynote.focus());
     expect(document.activeElement).toBe(keynote);
     await setStatus("Studio Mac", "offline");

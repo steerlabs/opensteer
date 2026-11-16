@@ -15,6 +15,12 @@ export const internalToolFailureCode = "internal";
  * retry is safe follows the tool: the Host never repeats an uncertain effect.
  */
 export function agentToolFailure(error: unknown, access: AgentToolAccess): AgentToolFailure {
+  if (error instanceof Error && error.name === "AbortError")
+    return {
+      code: "outcome_unknown",
+      message: "The tool call was cancelled; its outcome is unknown.",
+      next: "Observe before repeating an effectful call.",
+    };
   if (error instanceof z.ZodError) {
     return {
       code: "bad_request",

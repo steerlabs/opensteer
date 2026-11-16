@@ -1,6 +1,8 @@
+import { NeedsYouPageSchema } from "@opensteer/protocol";
 import { clearRunPageViews } from "../host/run-page-memory.js";
 import { clearRunPlacePictures } from "../host/run-place-picture.js";
 import { localReference } from "../references/local.js";
+import type { IdReference } from "../references/links.js";
 import { parseReferenceHref, type ReferenceId } from "@opensteer/core";
 import { AssetUrlStore } from "../host/asset-urls.js";
 import { ReferenceStore } from "../references/store.js";
@@ -25,15 +27,25 @@ import type {
 } from "./mock-browser-source.js";
 import { BrowserSessionIdSchema, previewToolOutput } from "@opensteer/core";
 import type { PersonalTabLineage } from "../host/client.js";
-import { mockBrowserRows } from "./mock-browser-stream.js";
-import { BrowserTabStore } from "../host/browser-tab-store.js";
-import { MockBrowserStream } from "./mock-browser-stream.js";
+import { MockTabCatalog, seedMockApps } from "./mock-tabs.js";
+import { placeList as tabPlaceList } from "../host/places.js";
+import type { WindowId } from "@opensteer/core";
+import { createTabsClient, type TabsClientPort } from "../host/tabs-client.js";
+import { TabViewers } from "../host/tab-viewers.js";
+import type { TabsClient } from "../host/tabs-contract.js";
+import { AgentEventViewSchema } from "@opensteer/core";
+import { TabIdSchema, type App, type TabId, type TabTarget } from "@opensteer/core";
+import type {
+  AppCommand,
+  AppCommandResult,
+  TabCommand,
+  TabCommandResult,
+} from "@opensteer/protocol";
 import { seedMockSubagents } from "./mock-subagents.js";
 import { seedMockSubagentScene, type MockSubagentScene } from "./mock-subagent-scenes.js";
 import { NodeDetailStore, type NodeDetailSubscription } from "../host/node-detail.js";
 
 import {
-  AppTabSchema,
   CreateBrowserProfileBodySchema,
   personalRemoteAdministrationChangedReason,
 } from "@opensteer/protocol";
@@ -78,7 +90,6 @@ import { RunPlaceStore } from "../host/run-place.js";
 import { compareTaskOrder } from "../host/task-entries.js";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import { isAgentPhone } from "../integrations/computer-use.js";
-import { PendingBrowserTabs } from "../host/pending-browser-tabs.js";
 import { BrowserPasskeys } from "../host/browser-passkeys.js";
 import { BrowserPreferences } from "../host/browser-preferences.js";
 import { emptySavedViewReadiness } from "../host/saved-host-view.js";
@@ -89,16 +100,12 @@ import {
   SpecialistManifestSchema,
   type SpecialistRegistration,
   type SpecialistManifest,
-  AgentEventSchema,
   PlaceEnteredEventViewSchema,
   AssignmentIdSchema,
-  placeIdentityKey,
-  type EventData,
   AssignmentSummarySchema,
   AssignmentViewSchema,
   AttachmentSchema,
   BrowserSurfaceIdSchema,
-  BrowserTabGroupIdSchema,
   DEFAULT_THREAD_ACCESS_MODE,
   DeploymentIdSchema,
   MessageIdSchema,
@@ -127,9 +134,7 @@ import {
   createId,
   defaultTaskSymbol,
   emptyExecutionPreferences,
-  groupBrowserTabs,
   markColorAllocationOrder,
-  moveBrowserTabs,
   moveQueueItem,
   nextMarkColor,
   notificationBodyMaxCharacters,
@@ -140,8 +145,8 @@ import {
   requestOptionDeclines,
   requestTitleText,
   sameProviderContinuationIdentity,
-  ungroupBrowserTabs,
   type AgentEvent,
+  AgentEventSchema,
   nodeDetailEventNodeId,
   ExecutionNodeIdSchema,
   compareSequence,
@@ -192,7 +197,6 @@ import {
 import type { PasswordSignInRequestResponse } from "@opensteer/protocol";
 import {
   AgentPhoneHostTargetSchema,
-  BrowserTabGroupColorSchema,
   ComputerUseSessionSummarySchema,
   HarnessInstanceCatalogSchema,
   type HarnessInstallation,
@@ -208,7 +212,6 @@ import {
   previousReleaseEligibility,
   rpcSuccess,
   taskLineMaxLength,
-  type BrowserTabLayout,
   type ComputerUseInstalledApp,
   type HarnessInstanceCatalog,
   type HarnessModelDescriptor,
@@ -246,25 +249,15 @@ import { z } from "zod";
 import { accessModeUnavailableReason } from "../host/access-modes.js";
 import { BrowserHistoryClient } from "../host/browser-history.js";
 import type { BrowserPreferencesStorage } from "../host/browser-preferences.js";
-import { BrowserTabGroupClient, removeGroupedTabs } from "../host/browser-tab-groups.js";
-import {
-  arrangedBrowserTabLayout,
-  browserTabArrangement,
-  browserTabOrderTabs,
-} from "../host/browser-tab-order.js";
 import type {
   BrowserCommand,
   BrowserFrameStore,
-  BrowserTabOpenInput,
-  BrowserTabOpenOptions,
-  PendingBrowserTab,
   CreateHarnessInstanceInput,
   CreateThreadInput,
   HarnessAuthenticationEnvelope,
   HarnessSummary,
   HostClient,
   HostSnapshot as PublicHostSnapshot,
-  BrowserSessionSummary as PublicBrowserSessionSummary,
   MachineAccessHistoryPage,
   MachineAccessUpdateOutcome,
   MessageEntry,
@@ -293,7 +286,6 @@ import {
   type WebSocketClient,
 } from "../host/host-session-client.js";
 import type { ClientLifecycle } from "../host/lifecycle.js";
-import { mockPlaceList as placeList } from "./mock-browser-source.js";
 import type { NativeViewerSource } from "../host/surfaces.js";
 import { threadStopTarget } from "../host/thread-activity.js";
 import {
@@ -316,7 +308,6 @@ import {
   withEditedMessage,
 } from "../host/transcript.js";
 import { ViewerScope, viewerScopeOf } from "../host/viewer-scope.js";
-import { PersonalTabActivations } from "../host/personal-tab-activations.js";
 import { mockAppIcons } from "./mock-app-icons.js";
 import {
   mockNightlyTriggerId,
@@ -353,6 +344,7 @@ import { MockPhoneDisplaySocket } from "./mock-phone-display.js";
 import {
   MockPlaceWorld,
   seedMockPlaces,
+  type MockPlaceEntry,
   type MockPlaceScript,
   type MockPlacesWorld,
 } from "./mock-places.js";
@@ -1494,7 +1486,6 @@ function mockEditable(item: PendingMockInput): boolean {
  */
 const mockMachines: readonly MachineSummary[] = [
   {
-    tabOpenedAt: null,
     // The Mac this deployment runs on: it offers Messages and can read it.
     apps: [
       {
@@ -1562,7 +1553,6 @@ const mockMachines: readonly MachineSummary[] = [
     runtimeVersion: null,
   },
   {
-    tabOpenedAt: null,
     // A Mac offering Messages that macOS has not let Opensteer read yet.
     apps: [
       {
@@ -1645,7 +1635,6 @@ const mockMachines: readonly MachineSummary[] = [
     runtimeVersion: null,
   },
   {
-    tabOpenedAt: null,
     // A Mac with Messages on that is asleep. `apps` is null because a computer
     // that is away reports nothing, so the row reads the connection alone and
     // says the change waits rather than claiming the app is broken.
@@ -1680,7 +1669,6 @@ const mockMachines: readonly MachineSummary[] = [
     runtimeVersion: null,
   },
   {
-    tabOpenedAt: mockAgentPhoneSession.openedAt,
     // An Android phone set up over USB: it lends its screen to one task.
     apps: [
       {
@@ -1723,7 +1711,6 @@ const mockMachines: readonly MachineSummary[] = [
     runtimeVersion: "0.1.117",
   },
   {
-    tabOpenedAt: null,
     // A service the deployment provisioned: it offers no apps and says so.
     apps: null,
     access: {
@@ -1919,7 +1906,7 @@ function mockNeedsYou(
     throw new Error("Invalid Needs-you cursor.");
   const entries = rows
       .slice(start, start + limit)
-      .map((entry) => hostApi["needsYou.get"].success.shape.entries.element.parse(entry)),
+      .map((entry) => NeedsYouPageSchema.shape.entries.element.parse(entry)),
     end = start + entries.length;
   return {
     count: rows.length,
@@ -1969,7 +1956,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       return rpcSuccess(
         hostApi["references.resolve"].success.parse({
           results: [...new Set(ids)].map((id) => {
-            const reference = parseReferenceHref(`opensteer:${id}`)!;
+            const reference = parseReferenceHref(`opensteer:${id}`) as IdReference;
             if (reference.kind === "request") {
               const request = client.referenceRequest(id);
               if (request && heldThread(snapshot, request.originatingThreadId))
@@ -2043,7 +2030,6 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     "connections.authorization.get": async ({ requestId }) =>
       rpcSuccess(client.connectionConsent(requestId)),
     "personal.remoteAccess.get": async () => rpcSuccess(client.remoteAdministration),
-    "apps.get": unsupportedMockRpc,
     "apps.view": unsupportedMockRpc,
     "attachment.get": async ({ attachmentId }) => rpcSuccess(client.getAttachment(attachmentId)),
     "attachment.upload": async ({ attachmentId }, context) =>
@@ -2212,12 +2198,57 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
         ...previousReleaseEligibility(new Date(client.nowIso())),
       });
     },
-    "browser.tabIcon.get": async ({ sessionId, iconRef }) => {
+    "browser.tabIcon.get": async (input) => {
       if (!client.places) return unsupportedMockRpc();
-      return rpcSuccess({ favicon: await client.places.icon(sessionId, iconRef) });
+      const tabId =
+        "tabId" in input
+          ? input.tabId
+          : client
+              .getSnapshot()
+              .browserSessions.find((session) => session.id === input.sessionId)
+              ?.surfaces.find(
+                (surface) => client.tabCatalog.store.get(surface.id)?.iconRef === input.iconRef,
+              )?.id;
+      if (!tabId) return rpcSuccess({ favicon: null });
+      const row = client.tabCatalog.store.get(tabId);
+      return rpcSuccess({ favicon: await client.places.icon(tabId, input.iconRef, row) });
     },
     "bootstrap.get": async () =>
       rpcSuccess(hostApi["bootstrap.get"].success.parse(client.bootstrap())),
+    "tabs.get": async ({ tabId }) => {
+      try {
+        client.publishedSnapshot();
+        return rpcSuccess(client.tabCatalog.tab(tabId));
+      } catch (error) {
+        return mockRefusal(error);
+      }
+    },
+    "tabs.state": async () => {
+      client.publishedSnapshot();
+      const tabs = client.tabCatalog.store;
+      return rpcSuccess({ tabs: [...tabs.rows.values()], layout: tabs.layout, complete: true });
+    },
+    "apps.list": async ({ query }) =>
+      rpcSuccess({
+        apps: client.apps.filter(
+          (app) =>
+            !query ||
+            app.name.toLocaleLowerCase().includes(query.toLocaleLowerCase()) ||
+            app.folder?.includes(query) === true,
+        ),
+      }),
+    "apps.get": async ({ appId }) => {
+      const app = client.apps.find((value) => value.appId === appId);
+      return app
+        ? rpcSuccess(app)
+        : mockRefusal(
+            new HostClientRequestError({
+              code: "not_found",
+              status: 404,
+              message: "This app is no longer published.",
+            }),
+          );
+    },
     "channel.connection.check": async (input) =>
       rpcSuccess(await client.checkChannelConnection(input.connectionId)),
     "channels.get": async () =>
@@ -2571,14 +2602,20 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       const all = client.nodeEvents.filter(
         (event) =>
           event.threadId === threadId &&
+          event.type !== "place.entered" &&
           nodeDetailEventNodeId(event) === nodeId &&
           (deviceAccessRequests === "include" || !isDeviceAccessRequestEvent(event)) &&
           (!through || compareSequence(event.sequence, through) <= 0) &&
           (!before || compareSequence(event.sequence, SequenceSchema.parse(before)) < 0),
       );
+      // The history page schema still names places by their old identity; tab places stay out.
       const events = all
         .slice(-limit)
-        .map((event) => (toolOutputs === "preview" ? previewToolOutput(event) : event));
+        .flatMap((event) =>
+          event.type === "place.entered"
+            ? []
+            : [toolOutputs === "preview" ? previewToolOutput(event) : event],
+        );
       const hasMore = all.length > events.length;
       return rpcSuccess(
         hostApi["node.events.list"].success.parse({
@@ -2794,18 +2831,6 @@ async function executeMockCommand(
       client.teamLinks.delete(command.teamId);
       return rpcSuccess({ type: command.type });
 
-    case "phone.tab.close":
-      client.closePhoneTab(command.machineId);
-      return rpcSuccess(hostApi["commands.dispatch"].success.parse({ type: command.type }));
-    case "app.tab.open":
-    case "app.tab.close":
-      client.setAppTab(command.appId, command.type === "app.tab.open");
-      return rpcSuccess(
-        hostApi["commands.dispatch"].success.parse({
-          type: command.type,
-          appTabs: [...(client.getSnapshot().appTabs ?? [])],
-        }),
-      );
     case "settings.plugin.enabled.set":
       return rpcSuccess(
         client.settings.mutate(
@@ -3435,193 +3460,49 @@ async function executeMockCommand(
       });
       return rpcSuccess({ type: command.type });
     }
-    case "browser.profile.rename":
-      return unsupportedMockRpc();
-    case "computer.view.open":
+    case "browser.profile.rename": {
+      const snapshot = client.getSnapshot();
+      const held = snapshot.browserProfiles.find((profile) => profile.id === command.profileId);
+      if (!held)
+        return mockRefusal(
+          new HostClientRequestError({
+            code: "not_found",
+            message: "Browser profile not found.",
+            status: 404,
+          }),
+        );
+      const profile = { ...held, name: command.name };
+      client.updatePlaces({
+        ...snapshot,
+        browserProfiles: snapshot.browserProfiles.map((value) =>
+          value.id === profile.id ? profile : value,
+        ),
+      });
+      return rpcSuccess(
+        hostApi["commands.dispatch"].success.parse({ type: command.type, profile }),
+      );
+    }
     case "computer.view.close":
     case "computer.view.renew":
       if (!client.computerViews) return unsupportedMockRpc();
-      return rpcSuccess({ type: command.type, view: client.computerViews.command(command) });
-    case "tabs.group": {
-      const layout = client.tabGroups;
-      const known = new Set(
-        placeList(client.getSnapshot()).flatMap((place) =>
-          place.kind === "browser" && place.destination.kind === "browser"
-            ? [place.destination.tabId]
-            : [],
-        ),
-      );
-      if (command.tabIds.some((id) => !known.has(id))) throw new Error("The tab is unavailable.");
-      const existing = command.groupId
-        ? layout.groups.find((group) => group.id === command.groupId)
-        : undefined;
-      if (command.groupId && !existing) throw new Error("The group no longer exists.");
-      const groupId = existing?.id ?? createId("browserTabGroup");
-      const color =
-        command.color ??
-        BrowserTabGroupColorSchema.options.reduce(
-          (least, color) =>
-            layout.groups.filter((group) => group.color === color).length <
-            layout.groups.filter((group) => group.color === least).length
-              ? color
-              : least,
-          "grey",
-        );
-      const next = removeGroupedTabs(layout, command.tabIds);
-      const group = {
-        id: groupId,
-        title: command.title ?? "",
-        color,
-        collapsed: false,
-        ...existing,
-        tabIds: [
-          ...(existing?.tabIds.filter((id) => !command.tabIds.includes(id)) ?? []),
-          ...new Set(command.tabIds),
-        ],
-      };
-      client.setTabGroups(
-        arrangedBrowserTabLayout(
-          {
-            ...layout,
-            revision: layout.revision + 1,
-            groups: [...next.groups.filter((held) => held.id !== groupId), group],
-          },
-          groupBrowserTabs(
-            browserTabArrangement(layout, browserTabOrderTabs(client.browserTabs)),
-            command.tabIds,
-            groupId,
-          ),
-        ),
-      );
-      return rpcSuccess({ type: command.type, groupId, layout: client.tabGroups });
-    }
-    case "tabs.ungroup":
-      client.setTabGroups(
-        arrangedBrowserTabLayout(
-          {
-            ...client.tabGroups,
-            revision: client.tabGroups.revision + 1,
-          },
-          ungroupBrowserTabs(
-            browserTabArrangement(client.tabGroups, browserTabOrderTabs(client.browserTabs)),
-            command.tabIds,
-          ),
-        ),
-      );
-      return rpcSuccess({ type: command.type, layout: client.tabGroups });
-    case "tabs.move": {
-      const result = moveBrowserTabs(
-        browserTabArrangement(client.tabGroups, browserTabOrderTabs(client.browserTabs)),
-        command,
-      );
-      if (!result.ok)
-        throw new HostClientRequestError({
-          message: result.message,
-          code: result.code,
-          status: result.code === "not_found" ? 404 : result.code === "conflict" ? 409 : 400,
-        });
-      client.setTabGroups(
-        arrangedBrowserTabLayout(
-          { ...client.tabGroups, revision: client.tabGroups.revision + 1 },
-          result.arrangement,
-        ),
-      );
-      return rpcSuccess({ type: command.type, layout: client.tabGroups });
-    }
-    case "tabGroup.update": {
-      if (!client.tabGroups.groups.some((group) => group.id === command.groupId))
-        throw new Error("The group no longer exists.");
-      const { title, color, collapsed } = command;
-      client.setTabGroups({
-        ...client.tabGroups,
-        revision: client.tabGroups.revision + 1,
-        groups: client.tabGroups.groups.map((group) =>
-          group.id === command.groupId
-            ? {
-                ...group,
-                ...(title === undefined ? {} : { title }),
-                ...(color === undefined ? {} : { color }),
-                ...(collapsed === undefined ? {} : { collapsed }),
-              }
-            : group,
-        ),
-      });
-      return rpcSuccess({ type: command.type, layout: client.tabGroups });
-    }
-    case "tabs.close": {
-      const closed: string[] = [];
-      const failed: { tabId: string; message: string }[] = [];
-      for (const tabId of new Set(command.tabIds)) {
-        const place = placeList(client.getSnapshot()).find(
-          (place) =>
-            place.kind === "browser" &&
-            place.destination.kind === "browser" &&
-            place.destination.tabId === tabId,
-        );
-        const sessionId =
-          place?.destination.kind === "browser" ? place.destination.sessionId : null;
-        const catalog = client
-          .getSnapshot()
-          .browserSessions.find((session) => session.id === sessionId)?.catalog;
-        try {
-          if (!catalog && place?.personalTab && place.personalTab.state !== "live") {
-            const snapshot = client.getSnapshot();
-            client.updatePlaces({
-              ...snapshot,
-              browserGroups: snapshot.browserGroups?.map((lineage) =>
-                lineage.tabs?.some((tab) => tab.id === tabId)
-                  ? {
-                      ...lineage,
-                      revision: lineage.revision + 1,
-                      tabs: lineage.tabs.filter((tab) => tab.id !== tabId),
-                    }
-                  : lineage,
-              ),
-            });
-            client.setTabGroups({
-              ...removeGroupedTabs(client.tabGroups, [tabId]),
-              order: client.tabGroups.order?.filter((id) => id !== tabId),
-            });
-            closed.push(tabId);
-            continue;
-          }
-          if (!client.places || !sessionId || !catalog) throw new Error("The tab is unavailable.");
-          await client.places.close(
-            sessionId,
-            tabId,
-            catalog.inventoryRevision ?? catalog.revision,
-          );
-          closed.push(tabId);
-        } catch (error) {
-          failed.push({ tabId, message: error instanceof Error ? error.message : String(error) });
-        }
-      }
-      return rpcSuccess(
-        hostApi["commands.dispatch"].success.parse({ type: command.type, closed, failed }),
-      );
-    }
-    case "tab.reopen": {
-      if (!client.places) return unsupportedMockRpc();
-      const result = client.places.reopen(command.idempotencyKey);
-      client.setTabGroups(result.layout);
-      return rpcSuccess(result);
-    }
-    case "tab.activate":
-      return client.places
-        ? rpcSuccess(client.places.activatePersonalTab(command.tabId))
-        : unsupportedMockRpc();
+      // The command result schema still names the old window shape; clients parse the view.
+      return rpcSuccess({
+        type: command.type,
+        view: client.computerViews.command(command),
+      } as never);
+    case "tab.open":
     case "tab.close":
-      return unsupportedMockRpc();
-    case "browser.tab.open": {
-      if (!client.places) return unsupportedMockRpc();
-      return rpcSuccess(await client.places.openTarget(command));
-    }
-    case "browser.tab.close": {
-      if (!client.places) return unsupportedMockRpc();
-      return rpcSuccess(
-        await client.places.close(command.sessionId, command.surfaceId, command.inventoryRevision),
-      );
-    }
+    case "tab.reopen":
+    case "tab.activate":
+    case "tab.organize":
+    case "tab.group.update":
+    case "tab.group.delete":
+      return rpcSuccess(await client.tabCommand(command));
+    case "app.rename":
+    case "app.start":
+    case "app.stop":
+    case "app.delete":
+      return rpcSuccess(client.appCommand(command));
     case "browser.session.close":
       await client.closeBrowser(command.sessionId);
       return unsupportedMockRpc();
@@ -3835,23 +3716,18 @@ function mockHarnessRecord(
 
 function mockBootstrap(
   snapshot: HostSnapshot,
+  tabs: import("../host/tab-store.js").TabStore,
   sourceConfigs: ReadonlyMap<string, Readonly<Record<string, string>>>,
 ) {
-  const rows = mockBrowserRows(snapshot);
   return {
     deploymentId: snapshot.deploymentId,
     personalSettings: snapshot.personalSettings,
     can: snapshot.can,
     sessionId: snapshot.sessionId,
-    appTabs: snapshot.appTabs ?? [],
+    tabs: { tabs: [...tabs.rows.values()], layout: tabs.layout, complete: true },
     latestPlaces: [],
     browser: {
       available: snapshot.browserAvailable,
-      tabGroupsVersion: 1,
-      tabGroups: snapshot.browserTabGroups,
-      tabRestoreVersion: snapshot.tabRestoreVersion,
-      groups: { rows: rows.groups, complete: true },
-      tabs: [...rows.tabs].map(([groupId, rows]) => ({ groupId, rows, complete: true })),
       placements: snapshot.browserPlacements,
       profiles: snapshot.browserProfiles,
       profileHomes: snapshot.browserProfileHomes,
@@ -3933,7 +3809,7 @@ export class MockHostClient implements HostClient {
         deviceAccessRequests,
         this.#state.teamAsks,
       ),
-      resources: { appTabs: snapshot.appTabs ?? [], browser: this.#state.bootstrap().browser },
+      resources: (({ tabs, browser }) => ({ tabs, browser }))(this.#state.bootstrap()),
     });
     const serializedBytes = new TextEncoder().encode(JSON.stringify(cut)).byteLength;
     return DeploymentSnapshotSchema.parse({ ...cut, serializedBytes });
@@ -3970,8 +3846,26 @@ export class MockHostClient implements HostClient {
     clear: () => undefined,
     setConnected: () => undefined,
   };
-  readonly openComputerView: HostClient["openComputerView"];
   readonly closeComputerView: HostClient["closeComputerView"];
+  readonly #viewers = new TabViewers();
+  tabViewer(tabId: string) {
+    const snapshot = this.getSnapshot();
+    return snapshot.tabs.get(tabId as TabId) ? this.#viewers.get(tabId, snapshot.machines) : null;
+  }
+  readonly openTab: TabsClient["openTab"];
+  readonly closeTabs: TabsClient["closeTabs"];
+  readonly reopenTab: TabsClient["reopenTab"];
+  readonly activateTab: TabsClient["activateTab"];
+  readonly organizeTabs: TabsClient["organizeTabs"];
+  readonly updateTabGroup: TabsClient["updateTabGroup"];
+  readonly deleteTabGroup: TabsClient["deleteTabGroup"];
+  readonly listApps: TabsClient["listApps"];
+  readonly getApp: TabsClient["getApp"];
+  readonly renameApp: TabsClient["renameApp"];
+  readonly startApp: TabsClient["startApp"];
+  readonly stopApp: TabsClient["stopApp"];
+  readonly deleteApp: TabsClient["deleteApp"];
+
   readonly renewComputerView: HostClient["renewComputerView"];
   readonly listComputerAppWindows: HostClient["listComputerAppWindows"];
   readonly listApprovedComputerApps: HostClient["listApprovedComputerApps"];
@@ -3994,8 +3888,6 @@ export class MockHostClient implements HostClient {
   get searchSuggestionRequests() {
     return this.#state.searchSuggestionRequests;
   }
-  readonly #tabGroups: BrowserTabGroupClient;
-  readonly #personalTabActivations: PersonalTabActivations;
   readonly #nodeDetails: NodeDetailStore;
   readonly #state: MockHostState;
   readonly #places: MockPlaceWorld;
@@ -4041,41 +3933,6 @@ export class MockHostClient implements HostClient {
       (runId, threadId, data) => this.#state.enterPlace(runId, threadId, data),
     );
     this.#state.places = this.#places;
-    this.#personalTabActivations = new PersonalTabActivations({
-      snapshot: this.#state.getSnapshot,
-      subscribe: (listener) => this.#state.subscribe(listener),
-      changed: (ids) =>
-        this.#state.updatePlaces({ ...this.#state.getSnapshot(), activatingPersonalTabs: ids }),
-      dispatch: async (tabId) => {
-        const dormant = this.#dormantBrowser;
-        // Only the journey's scripted tab waits to be finished; any other saved tab opens at once.
-        if (dormant?.tabId !== tabId) return this.#places.activatePersonalTab(tabId);
-        await new Promise<void>((resolve, reject) => {
-          dormant.finish = (error) => (error ? reject(new Error(error)) : resolve());
-        }).finally(() => {
-          dormant.finish = undefined;
-        });
-        const group = this.#state
-          .getSnapshot()
-          .browserGroups!.find((value) => value.session.id === dormant.session.id)!;
-        return {
-          type: "tab.activate",
-          groupId: group.id,
-          sessionId: group.session.id,
-          session: group.session,
-          tabId: BrowserSurfaceIdSchema.parse(tabId),
-        };
-      },
-      apply: (result) => {
-        const dormant = this.#dormantBrowser;
-        if (dormant?.tabId !== result.tabId) return;
-        const snapshot = this.#state.getSnapshot();
-        this.#state.updatePlaces({
-          ...snapshot,
-          browserSessions: [...snapshot.browserSessions, dormant.session],
-        });
-      },
-    });
     this.#ownerViews = new MockComputerViews(
       this.#state.getSnapshot,
       (snapshot) =>
@@ -4096,12 +3953,6 @@ export class MockHostClient implements HostClient {
       if (this.#viewer.change(scope)) {
         clearRunPageViews(this);
         clearRunPlacePictures(this);
-        this.#pendingBrowserTabs.clear();
-        this.#state.updatePlaces({
-          ...snapshot,
-          pendingBrowserTabs: this.#pendingBrowserTabs.rows,
-        });
-        this.#personalTabActivations.clear();
         this.#computerViews.clear();
       }
       this.#computerViews.setConnected(scope !== null && snapshot.connection !== "offline");
@@ -4183,29 +4034,25 @@ export class MockHostClient implements HostClient {
       available: () => true,
       nodes: (threadId) =>
         (this.getSnapshot().transcripts[threadId] ?? []).filter((entry) => entry.kind === "node"),
-      read: async (input) =>
-        unwrapRpcResult(
+      read: async (input) => {
+        const page = unwrapRpcResult(
           await this.rpc["node.events.list"]({
             ...input,
             nodeId: ExecutionNodeIdSchema.parse(input.nodeId),
             deviceAccessRequests: "include",
           }),
-        ),
+        );
+        return {
+          ...page,
+          events: page.events.map((event) => AgentEventViewSchema.parse(event)),
+        };
+      },
       sendWatch: (deploymentId, nodeId) => {
         const sequence = this.#state.nodeEvents.at(-1)?.sequence ?? SequenceSchema.parse("0");
         queueMicrotask(() => this.#nodeDetails.watched(deploymentId, nodeId, sequence));
         return true;
       },
     });
-    this.#tabGroups = new BrowserTabGroupClient(
-      this.rpc,
-      (browserTabGroups) =>
-        this.#state.updatePlaces({ ...this.#state.getSnapshot(), browserTabGroups }),
-      () => this.#viewer.generation,
-      () => browserTabOrderTabs(this.browserTabs),
-    );
-    this.#tabGroups.receive(this.#state.getSnapshot().browserTabGroups);
-    this.#state.projectTabGroups = () => this.#tabGroups.receive(this.#state.tabGroups);
     const views = computerViewMethods(
       this.rpc,
       () => undefined,
@@ -4221,17 +4068,6 @@ export class MockHostClient implements HostClient {
     );
     this.#computerViews = views;
     this.retainComputerView = views.retainComputerView;
-    this.openComputerView = async (...args) => {
-      const view = await views.openComputerView(...args);
-      if (view.target.kind === "phone") this.#state.openPhoneTab(view.machineId);
-      if (view.target.kind === "phone" && view.state === "ready" && args[2]?.wake !== false)
-        sharedDisplayStreams(this).armAutoWake({
-          kind: "owner-view",
-          viewId: view.viewId,
-          generation: view.generation,
-        });
-      return view;
-    };
     this.closeComputerView = (...args) => {
       sharedDisplayStreams(this).cancelAutoWake({
         kind: "owner-view",
@@ -4240,6 +4076,40 @@ export class MockHostClient implements HostClient {
       });
       return views.closeComputerView(...args);
     };
+    const tabs = createTabsClient({
+      store: this.#state.tabCatalog.store,
+      dispatch: async (command) => {
+        const result = unwrapRpcResult(await this.rpc["commands.dispatch"](command));
+        return result as Awaited<ReturnType<TabsClientPort["dispatch"]>>;
+      },
+      listApps: async (query) =>
+        unwrapRpcResult(await this.rpc["apps.list"](query ? { query } : {})).apps as App[],
+      getApp: async (appId) => unwrapRpcResult(await this.rpc["apps.get"]({ appId })) as App,
+      activated: (tab, viewer, wake) => {
+        this.#viewers.set(tab.tabId, viewer);
+        // Only the person's explicit Open may wake a phone, and only once.
+        if (wake && viewer.kind === "phone" && viewer.view.state === "ready")
+          sharedDisplayStreams(this).armAutoWake({
+            kind: "owner-view",
+            viewId: viewer.view.viewId,
+            generation: viewer.view.generation,
+          });
+        this.#state.emit();
+      },
+    });
+    this.openTab = tabs.openTab;
+    this.closeTabs = tabs.closeTabs;
+    this.reopenTab = tabs.reopenTab;
+    this.activateTab = tabs.activateTab;
+    this.organizeTabs = tabs.organizeTabs;
+    this.updateTabGroup = tabs.updateTabGroup;
+    this.deleteTabGroup = tabs.deleteTabGroup;
+    this.listApps = tabs.listApps;
+    this.getApp = tabs.getApp;
+    this.renameApp = tabs.renameApp;
+    this.startApp = tabs.startApp;
+    this.stopApp = tabs.stopApp;
+    this.deleteApp = tabs.deleteApp;
     this.renewComputerView = views.renewComputerView;
     this.listApprovedComputerApps = views.listApprovedComputerApps;
     this.listComputerAppWindows = views.listComputerAppWindows;
@@ -4268,16 +4138,13 @@ export class MockHostClient implements HostClient {
     for (const listener of this.#state.remoteAdministrationListeners) listener();
   }
 
-  get browserTabs() {
-    return this.#state.browserTabs;
-  }
   readonly #viewerSurfaces = new Map<
     string,
     import("@opensteer/protocol/browser-tabs").BrowserViewerSurface
   >();
   browserViewerSurface(sessionId: string, surfaceId: string) {
     const key = `${sessionId}\u0000${surfaceId}`;
-    const next = this.browserTabs.surface(sessionId, surfaceId);
+    const next = this.#places.viewerSurface(sessionId, surfaceId);
     const held = this.#viewerSurfaces.get(key);
     if (!next) this.#viewerSurfaces.delete(key);
     else if (held && JSON.stringify(held) === JSON.stringify(next)) return held;
@@ -4320,67 +4187,6 @@ export class MockHostClient implements HostClient {
     });
   }
 
-  #dormantBrowser: {
-    session: BrowserSessionSummary;
-    tabId: string;
-    finish?: ((error?: string) => void) | undefined;
-  } | null = null;
-
-  /** A saved tab whose activation is completed explicitly by the journey. */
-  scriptDormantBrowser(options: {
-    profileName: string;
-    connected?: boolean;
-    unavailableReason?: string;
-  }) {
-    this.#places.script();
-    const snapshot = this.#state.getSnapshot();
-    const session = snapshot.browserSessions.find(
-      (value) => value.profileId && value.catalog?.tabs.length,
-    );
-    if (!session?.catalog) throw new Error("No mock browser to suspend.");
-    const tab = session.catalog.tabs[0]!;
-    this.#dormantBrowser = {
-      session: {
-        ...session,
-        surfaces: session.surfaces.map((value) =>
-          value.id === tab.id ? { ...value, loading: true } : value,
-        ),
-        catalog: {
-          ...session.catalog,
-          tabs: session.catalog.tabs.map((value) =>
-            value.id === tab.id ? { ...value, loading: true } : value,
-          ),
-        },
-      },
-      tabId: tab.id,
-    };
-    this.#state.updatePlaces({
-      ...snapshot,
-      browserProfiles: snapshot.browserProfiles.map((profile) =>
-        profile.id === session.profileId ? { ...profile, name: options.profileName } : profile,
-      ),
-      browserPlacements: snapshot.browserPlacements.map((placement) =>
-        placement.runnerId === session.placement.runnerId
-          ? {
-              ...placement,
-              available: options.connected !== false,
-              unavailableReason: options.unavailableReason,
-            }
-          : placement,
-      ),
-      browserGroups: snapshot.browserGroups?.map((group) =>
-        group.session.id === session.id
-          ? {
-              ...group,
-              tabs: group.tabs?.map((row) => ({ ...row, state: "suspended" as const })),
-            }
-          : group,
-      ),
-      browserSessions: snapshot.browserSessions.filter((value) => value.id !== session.id),
-    });
-    return { sessionId: session.id, tabId: tab.id, title: tab.title, site: tab.site };
-  }
-
   /** A navigation can stay loading after the restored page has painted. */
   setBrowserLoading(tabId: string, loading: boolean): void {
     const snapshot = this.#state.getSnapshot();
@@ -4400,57 +4206,6 @@ export class MockHostClient implements HostClient {
             }
           : {}),
       })),
-    });
-  }
-
-  finishBrowserActivation(error?: string): void {
-    if (!this.#dormantBrowser?.finish) throw new Error("No browser activation is pending.");
-    this.#dormantBrowser.finish(error);
-  }
-
-  readonly activatePersonalTab: NonNullable<HostClient["activatePersonalTab"]> = (tabId, options) =>
-    this.#personalTabActivations.activate(tabId, options);
-
-  /** Connection, closure and lasting reasons can change while a saved tab waits. */
-  setDormantBrowserState(change: {
-    connected?: boolean;
-    unavailableReason?: string;
-    closed?: boolean;
-    accountChanged?: boolean;
-    restoring?: boolean;
-  }): void {
-    const dormant = this.#dormantBrowser;
-    if (!dormant) throw new Error("No saved browser tab is scripted.");
-    const snapshot = this.#state.getSnapshot();
-    this.#state.updatePlaces({
-      ...snapshot,
-      ...(change.accountChanged && snapshot.user
-        ? { user: { ...snapshot.user, id: createId("user") } }
-        : {}),
-      browserPlacements: snapshot.browserPlacements.map((placement) =>
-        placement.runnerId === dormant.session.placement.runnerId
-          ? {
-              ...placement,
-              ...(change.connected === undefined ? {} : { available: change.connected }),
-              ...(change.unavailableReason === undefined
-                ? {}
-                : { unavailableReason: change.unavailableReason }),
-            }
-          : placement,
-      ),
-      browserGroups: snapshot.browserGroups?.map((group) =>
-        group.session.id === dormant.session.id
-          ? {
-              ...group,
-              tabs: change.closed
-                ? []
-                : group.tabs?.map((row) => ({
-                    ...row,
-                    ...(change.restoring ? { state: "restoring" as const } : {}),
-                  })),
-            }
-          : group,
-      ),
     });
   }
 
@@ -4497,7 +4252,7 @@ export class MockHostClient implements HostClient {
   readonly subscribePlaceActivity = (placeKey: string, listener: () => void) =>
     this.#places.subscribeActivity(placeKey, listener);
   readonly runPlace = (runId: string) => this.#state.runPlaces.get(runId);
-  readonly enterPlace = (runId: string, threadId: string, data: EventData<"place.entered">) =>
+  readonly enterPlace = (runId: string, threadId: string, data: MockPlaceEntry) =>
     this.#state.enterPlace(runId, threadId, data);
   readonly actInPlace = (threadId: string, placeKey: string) =>
     this.#places.actInPlace(threadId, placeKey);
@@ -4506,7 +4261,7 @@ export class MockHostClient implements HostClient {
     machineId: string,
     sessionId: string,
     appKey: string,
-    window: { id: number; title: string },
+    window: { windowId: WindowId; title: string },
   ): void {
     const snapshot = this.#state.getSnapshot();
     this.#state.updatePlaces({
@@ -4536,114 +4291,14 @@ export class MockHostClient implements HostClient {
   }
   /** For journeys: cursors move only for the notices applied through the returned script. */
   readonly scriptPlaces = (): MockPlaceScript => this.#places.script();
+  /** The Host's `host.apps.changed` notice, as an app changing elsewhere sends it. */
+  readonly appsChanged = (): void => this.#state.appsChanged();
   readonly subscribeRunPlace = (runId: string, listener: () => void) => {
     this.#places.start();
     return this.#state.runPlaces.subscribe(runId, listener);
   };
   readonly readBrowserContextCandidate = (sessionId: string, tabId: string) =>
     this.#places.candidate(sessionId, tabId);
-  readonly #pendingBrowserTabs = new PendingBrowserTabs({
-    admitted: () => viewerScopeOf(this.#state.getSnapshot()) !== null,
-    open: async (target, options) => {
-      const { signal, ...payload } = options;
-      const started = this.#viewer.generation;
-      const opened = unwrapRpcResult(
-        await this.rpc["commands.dispatch"](
-          {
-            type: "browser.tab.open",
-            ...target,
-            ...payload,
-            idempotencyKey: options.idempotencyKey!,
-          },
-          signal ? { signal } : undefined,
-        ),
-      );
-      if (started !== this.#viewer.generation)
-        throw new HostClientRequestError({
-          code: "unauthorized",
-          status: 401,
-          message: "The signed-in account changed while the browser was opening.",
-        });
-      if (opened.type !== "browser.tab.open") throw new Error("Unexpected browser command result.");
-      return opened;
-    },
-    close: (result) =>
-      this.closeBrowserTab(
-        result.sessionId,
-        result.tabId,
-        this.#state.getSnapshot().browserSessions.find((session) => session.id === result.sessionId)
-          ?.catalog ?? { generation: 0, revision: 0, inventoryRevision: 0 },
-      ),
-    changed: (pendingBrowserTabs) => this.#state.updatePendingBrowserTabs(pendingBrowserTabs),
-  });
-  readonly beginBrowserTabOpen = this.#pendingBrowserTabs.begin;
-  readonly browserPresentationDeadline = this.#pendingBrowserTabs.presentationDeadline;
-  readonly markBrowserPagePresented = this.#pendingBrowserTabs.markPresented;
-  readonly dismissPendingBrowserTab = this.#pendingBrowserTabs.dismiss;
-  readonly openBrowserTab = async (
-    target: string | BrowserTabOpenInput,
-    options: BrowserTabOpenOptions = {},
-  ) => this.beginBrowserTabOpen(target, options).result;
-  readonly reopenPersonalTab = async () => {
-    const result = unwrapRpcResult(
-      await this.rpc["commands.dispatch"]({
-        type: "tab.reopen",
-        idempotencyKey: crypto.randomUUID(),
-      }),
-    );
-    if (result.type !== "tab.reopen") throw new Error("Unexpected tab reopen result.");
-    this.#tabGroups.receive(result.layout);
-    return result;
-  };
-  readonly groupBrowserTabs: HostClient["groupBrowserTabs"] = (ids, target) =>
-    this.#tabGroups.groupBrowserTabs(ids, target);
-  readonly moveBrowserTabs: HostClient["moveBrowserTabs"] = (move) =>
-    this.#tabGroups.moveBrowserTabs(move);
-  readonly ungroupBrowserTabs: HostClient["ungroupBrowserTabs"] = (ids) =>
-    this.#tabGroups.ungroupBrowserTabs(ids);
-  readonly updateBrowserTabGroup: HostClient["updateBrowserTabGroup"] = (id, update) =>
-    this.#tabGroups.updateBrowserTabGroup(id, update);
-  readonly closePersonalTabs: HostClient["closePersonalTabs"] = async (tabIds) => {
-    const result = unwrapRpcResult(
-      await this.rpc["commands.dispatch"]({
-        type: "tabs.close",
-        tabIds: tabIds.map((id) => BrowserSurfaceIdSchema.parse(id)),
-        idempotencyKey: crypto.randomUUID(),
-      }),
-    );
-    if (result.type !== "tabs.close") throw new Error("Unexpected tabs close result.");
-    this.#state.updatePlaces({
-      ...this.#state.getSnapshot(),
-      browserTabGroups: this.#tabGroups.receive(this.#state.tabGroups),
-    });
-    return result;
-  };
-  /** Apply a bootstrap layout from another actor, including stale rereads in journeys. */
-  readonly applyBrowserTabLayout = (layout: BrowserTabLayout | undefined) => {
-    if (layout && layout.revision >= this.#state.tabGroups.revision)
-      this.#state.setTabGroups(layout);
-    this.#state.updatePlaces({
-      ...this.#state.getSnapshot(),
-      browserTabGroups: this.#tabGroups.receive(layout),
-    });
-  };
-  readonly closeBrowserTab = (
-    sessionId: string,
-    surfaceId: string,
-    expected: Pick<
-      NonNullable<BrowserSessionSummary["catalog"]>,
-      "generation" | "revision" | "inventoryRevision"
-    >,
-  ) =>
-    this.#places
-      .close(sessionId, surfaceId, expected.inventoryRevision ?? expected.revision)
-      .then((result) => {
-        this.#state.updatePlaces({
-          ...this.#state.getSnapshot(),
-          browserTabGroups: this.#tabGroups.receive(this.#state.tabGroups),
-        });
-        return result;
-      });
   readonly browserWatchFrame = (sessionId: string, surfaceId: string) =>
     this.#places.watchFrame(sessionId, surfaceId);
   readonly browserWatchState = (sessionId: string, surfaceId: string) =>
@@ -4662,8 +4317,8 @@ export class MockHostClient implements HostClient {
   };
   readonly subscribeBrowserWatch = (sessionId: string, surfaceId: string, listener: () => void) =>
     this.#places.subscribeWatch(sessionId, surfaceId, listener);
-  readonly readBrowserTabIcon = (sessionId: string, iconRef: string) =>
-    this.#places.icon(sessionId, iconRef);
+  readonly readBrowserTabIcon = (tabId: string, iconRef: string) =>
+    this.#places.icon(tabId, iconRef, this.getSnapshot().tabs.get(tabId as TabId));
   readonly retainBrowserWatch = (sessionId: string, surfaceId: string): (() => void) =>
     this.retainBrowserViewer(sessionId, surfaceId);
   readonly subscribeLifecycle = (
@@ -4742,20 +4397,11 @@ export class MockHostClient implements HostClient {
       binaryChunks(input.source, input.signal),
     );
   }
-  async openAppTab(appId: string): Promise<void> {
-    this.#state.setAppTab(appId, true);
-  }
-  async closeAppTab(appId: string): Promise<void> {
-    this.#state.setAppTab(appId, false);
-  }
-  async closePhoneTab(machineId: string): Promise<void> {
-    this.#state.closePhoneTab(machineId);
-  }
   async viewApp(
     _appId: string,
     _theme: "light" | "dark",
     _signal?: AbortSignal,
-  ): Promise<{ app: import("@opensteer/core").OpensteerApp; url: string }> {
+  ): Promise<{ title: string; url: string }> {
     throw new Error("Published apps are unavailable in this preview.");
   }
 
@@ -5183,10 +4829,7 @@ export class MockHostClient implements HostClient {
     this.assetUrls.dispose();
     this.#nodeDetails.clear();
     this.#personShowListeners.clear();
-    this.#pendingBrowserTabs.dispose();
-    this.#personalTabActivations.dispose();
     this.browserHistory.dispose();
-    this.#state.updatePlaces({ ...this.#state.getSnapshot(), activatingPersonalTabs: [] });
     this.#computerViews.clear();
     this.#worldSubscription();
     this.#places.dispose();
@@ -5358,33 +5001,6 @@ export class MockHostClient implements HostClient {
     this.#places.command(sessionId, command);
   }
 
-  async startBrowser(
-    _deploymentId: string,
-    identity: import("../host/client.js").BrowserStartIdentity,
-    placement?: import("../host/client.js").BrowserPlacementSummary,
-    threadId?: string,
-    viewport?: Extract<BrowserCommand, { type: "surface.open" }>["viewport"],
-  ): Promise<PublicBrowserSessionSummary> {
-    const result = await this.dispatch({
-      idempotencyKey: `mock-browser:${crypto.randomUUID()}`,
-      input: {
-        ...(viewport ? { viewport } : {}),
-        ...(threadId ? { threadId: ThreadIdSchema.parse(threadId) } : {}),
-        ...(placement
-          ? { placement: { kind: "runner" as const, runnerId: placement.runnerId } }
-          : {}),
-        ...(identity.kind === "fresh"
-          ? { fresh: true as const }
-          : { profileId: identity.profileId }),
-      },
-      type: "browser.session.start",
-    });
-    if (result.type !== "browser.session.start") throw new Error("Browser command mismatch.");
-    const session = this.getSnapshot().browserSessions.find(({ id }) => id === result.session.id);
-    if (!session) throw new Error("The mock Browser Session was not projected.");
-    return session;
-  }
-
   async stopNode(threadId: string, nodeId: string): Promise<void> {
     await this.#state.stopNode(threadId, nodeId);
   }
@@ -5473,64 +5089,247 @@ class MockHostState {
   teamAsks: import("@opensteer/protocol").NeedsYouTeamAskEntry[] = [];
   readonly teamLinks = new Map<string, PersonalTeamLink>();
   nodeEvents: readonly import("@opensteer/core").AgentEventView[] = [];
-  openPhoneTab(machineId: string) {
-    this.update({
-      ...this.snapshot,
-      machines: this.snapshot.machines.map((machine) =>
-        machine.id === machineId
-          ? { ...machine, tabOpenedAt: machine.tabOpenedAt ?? this.now().toISOString() }
-          : machine,
-      ),
-    });
+  /** The mock Host's tab commands, over its tab catalog and browser world. */
+  /** The person's own tabs and apps answer only their signed-in owner, as the Host's scope does. */
+  #requireOwner(): void {
+    if (this.snapshot.session !== "authenticated")
+      throw new HostClientRequestError({
+        code: "unauthorized",
+        status: 401,
+        message: "Authentication required",
+      });
   }
-  /** As the Host does: the person's view goes with the tab, and a held phone refuses. */
-  closePhoneTab(machineId: string) {
-    const machine = this.snapshot.machines.find(({ id }) => id === machineId);
-    if (machine?.computerUse?.sessions.some(({ display }) => display))
-      throw new Error("An agent is using this phone. Stop it to close the tab.");
-    this.update({
-      ...this.snapshot,
-      machines: this.snapshot.machines.map((value) =>
-        value.id === machineId
-          ? {
-              ...value,
-              tabOpenedAt: null,
-              computerUse: value.computerUse && {
-                ...value.computerUse,
-                ownerViews: value.computerUse.ownerViews?.filter(
-                  ({ target }) => target.kind !== "phone",
-                ),
-              },
-            }
-          : value,
-      ),
-    });
-  }
-  setAppTab(appId: string, open: boolean) {
-    const appTabs = (this.snapshot.appTabs ?? []).filter((tab) => tab.appId !== appId);
-    if (open) {
-      const existing = this.snapshot.appTabs?.find((tab) => tab.appId === appId);
-      const origin = Object.entries(this.snapshot.transcripts).flatMap(([threadId, entries]) =>
-        entries
-          .filter((entry) => entry.kind === "app" && entry.appId === appId)
-          .map((entry) => ({ threadId, entry })),
-      )[0];
-      const thread = this.snapshot.threads.find((thread) => thread.id === origin?.threadId);
-      if (existing) appTabs.unshift(existing);
-      else if (origin?.entry.kind === "app" && thread)
-        appTabs.unshift(
-          AppTabSchema.parse({
-            appId,
-            title: origin.entry.title,
-            threadId: thread.id,
-
-            latestVersion: origin.entry.version,
-            openedAt: this.now().toISOString(),
-          }),
+  async tabCommand(command: TabCommand): Promise<TabCommandResult> {
+    this.#requireOwner();
+    const catalog = this.tabCatalog;
+    const republish = () => this.emit();
+    switch (command.type) {
+      case "tab.open": {
+        const tabId = await this.#openTab(
+          command.target,
+          command.idempotencyKey,
+          command.typed === true,
         );
-      else throw new Error("App not found");
+        republish();
+        return { type: command.type, tab: catalog.tab(tabId), layout: catalog.layout() };
+      }
+      case "tab.close": {
+        const result = catalog.close(command.tabIds);
+        republish();
+        return { type: command.type, ...result, layout: catalog.layout() };
+      }
+      case "tab.reopen": {
+        const tabId = catalog.reopen(command.tabId);
+        republish();
+        return { type: command.type, tab: catalog.tab(tabId), layout: catalog.layout() };
+      }
+      case "tab.activate":
+        return this.#activateTab(command.tabId);
+      case "tab.organize": {
+        const { type: _type, idempotencyKey: _key, ...input } = command;
+        catalog.organize(input);
+        republish();
+        return {
+          type: command.type,
+          tabs: command.tabIds.map((id) => catalog.tab(id)),
+          layout: catalog.layout(),
+        };
+      }
+      case "tab.group.update": {
+        const { type: _type, idempotencyKey: _key, ...input } = command;
+        const group = catalog.updateGroup(input);
+        republish();
+        return { type: command.type, group, layout: catalog.layout() };
+      }
+      case "tab.group.delete":
+        catalog.deleteGroup(command.groupId);
+        republish();
+        return { type: command.type, layout: catalog.layout() };
     }
-    this.update({ ...this.snapshot, appTabs });
+  }
+  async #openTab(target: TabTarget, idempotencyKey: string, typed = false): Promise<TabId> {
+    const catalog = this.tabCatalog;
+    if (target.kind === "page") {
+      if (!this.places) throw new Error("The browser is unavailable.");
+      const opened = await this.places.openTarget({
+        type: "browser.tab.open",
+        identity:
+          "profileId" in target
+            ? { kind: "profile", profileId: target.profileId }
+            : { kind: "guest" },
+        // As on the Host, Guest without a computer is placed only when one computer can browse.
+        ...("guest" in target && target.computerId
+          ? { placement: { kind: "runner", runnerId: target.computerId } }
+          : {}),
+        url: target.url,
+        ...(typed ? { typed: true } : {}),
+        idempotencyKey,
+      });
+      catalog.revealPage(opened.tabId);
+      return opened.tabId;
+    }
+    const held = catalog.singleton(target);
+    if (held) return held.tabId;
+    if (target.kind === "app") {
+      const app = this.apps.find((value) => value.appId === target.appId);
+      if (!app)
+        throw new HostClientRequestError({
+          code: "not_found",
+          status: 404,
+          message: "This app is no longer published.",
+        });
+      const tabId = TabIdSchema.parse(createId("tab"));
+      catalog.addNative({
+        tabId,
+        kind: "app",
+        computerId: app.computerId,
+        title: app.name,
+        appId: app.appId,
+        openedBy: "person",
+        createdAt: this.now().toISOString(),
+      });
+      return tabId;
+    }
+    const machine = this.snapshot.machines.find((value) => value.id === target.computerId);
+    if (!machine || machine.status !== "online")
+      throw new HostClientRequestError({
+        code: "conflict",
+        status: 409,
+        message: "This computer is offline.",
+      });
+    const tabId = TabIdSchema.parse(createId("tab"));
+    if (target.kind === "phone")
+      catalog.addNative({
+        tabId,
+        kind: "phone",
+        computerId: target.computerId,
+        title: machine.name,
+        openedBy: "person",
+        createdAt: this.now().toISOString(),
+      });
+    else {
+      const approved = this.computerViews
+        ?.approved()
+        .find(
+          (app) =>
+            app.machineId === target.computerId &&
+            app.target.kind === "app" &&
+            ("bundleId" in target ? app.target.app.bundleId === target.bundleId : true),
+        );
+      if (!approved || approved.target.kind !== "app")
+        throw new HostClientRequestError({
+          code: "access_denied",
+          status: 403,
+          message: "Approve this app first.",
+        });
+      catalog.addNative({
+        tabId,
+        kind: "window",
+        computerId: target.computerId,
+        title: approved.name,
+        appName: approved.target.app.displayName,
+        bundleId: approved.target.app.bundleId,
+        openedBy: "person",
+        createdAt: this.now().toISOString(),
+      });
+    }
+    return tabId;
+  }
+  #activateTab(tabId: TabId): TabCommandResult {
+    const tab = this.tabCatalog.tab(tabId);
+    if (tab.state === "unavailable")
+      throw new HostClientRequestError({
+        code: "conflict",
+        status: 409,
+        message: tab.unavailableReason!,
+      });
+    const done = (viewer: Extract<TabCommandResult, { type: "tab.activate" }>["viewer"]) => {
+      this.emit();
+      return { type: "tab.activate" as const, tab: this.tabCatalog.tab(tabId), viewer };
+    };
+    if (tab.kind === "app") return done({ kind: "app", appId: tab.appId! });
+    if (tab.kind === "page") {
+      const lineage = this.snapshot.browserGroups?.find((group) =>
+        group.tabs?.some((held) => held.id === tabId),
+      );
+      const session = this.snapshot.browserSessions.find((held) => held.id === lineage?.session.id);
+      if (!lineage || !session) throw new Error("This page is unavailable.");
+      const live =
+        session.state === "ready" && session.catalog?.tabs.some((held) => held.id === tabId);
+      const sessionId = live ? session.id : this.places!.restorePage(tabId).session.id;
+      return done({
+        kind: "page",
+        sessionId: BrowserSessionIdSchema.parse(sessionId),
+        surfaceId: tabId,
+      });
+    }
+    const native = this.tabCatalog.native(tabId)!;
+    if (!this.computerViews) throw new Error("This computer cannot show views.");
+    const view =
+      tab.kind === "phone"
+        ? this.computerViews.open(tab.computer.computerId, { kind: "phone", display: "main" })
+        : this.computerViews.open(tab.computer.computerId, {
+            kind: "app",
+            app: { bundleId: native.bundleId!, displayName: native.appName!, teamId: null },
+          });
+    return done({ kind: tab.kind, view });
+  }
+  /** As the real client does on `host.apps.changed`: an Apps page reads again. */
+  appsChanged(): void {
+    this.snapshot = { ...this.snapshot, appsRevision: this.snapshot.appsRevision + 1 };
+    this.emit();
+  }
+  /** The mock Host's person-side app lifecycle; servers start and stop at once. */
+  appCommand(command: AppCommand): AppCommandResult {
+    this.#requireOwner();
+    const index = this.apps.findIndex((app) => app.appId === command.appId);
+    const app = this.apps[index];
+    if (!app)
+      throw new HostClientRequestError({
+        code: "not_found",
+        status: 404,
+        message: "This app is no longer published.",
+      });
+    const at = this.now().toISOString();
+    const put = (next: App) => {
+      this.apps = this.apps.map((held) => (held.appId === next.appId ? next : held));
+      this.appsChanged();
+      return next;
+    };
+    switch (command.type) {
+      case "app.rename":
+        return { type: command.type, app: put({ ...app, name: command.name, updatedAt: at }) };
+      case "app.start":
+      case "app.stop": {
+        if (!app.server)
+          throw new HostClientRequestError({
+            code: "invalid_input",
+            status: 400,
+            message: "An HTML app has no server to start or stop.",
+          });
+        const state = command.type === "app.start" ? "running" : "stopped";
+        return {
+          type: command.type,
+          app: put({
+            ...app,
+            state,
+            updatedAt: at,
+            server: {
+              ...app.server,
+              desiredState: state,
+              state,
+              generation: app.server.generation + 1,
+              lastError: null,
+            },
+          }),
+        };
+      }
+      case "app.delete":
+        this.apps = this.apps.filter((held) => held.appId !== app.appId);
+        this.tabCatalog.removeApp(app.appId);
+        this.appsChanged();
+        return { type: command.type, appId: app.appId, deleted: true };
+    }
   }
 
   agentHomeSettings: AgentHomeSettings = {};
@@ -5856,7 +5655,8 @@ class MockHostState {
   }
 
   bootstrap() {
-    return mockBootstrap(this.snapshot, this.harnessSourceConfigs);
+    this.publishedSnapshot();
+    return mockBootstrap(this.snapshot, this.tabCatalog.store, this.harnessSourceConfigs);
   }
 
   receiveAgentInput(threadId: string, author: MessageEntry["author"], body: string): void {
@@ -6365,11 +6165,9 @@ class MockHostState {
   private snapshot: HostSnapshot;
   #published: PublicHostSnapshot | null = null;
   #pendingBrowserNotification: ReturnType<typeof setTimeout> | null = null;
-  readonly browserTabs = new BrowserTabStore(
-    () => {},
-    (sessionId, tabId) => this.places?.viewerSurface(sessionId, tabId),
-  );
-  #browserStream = new MockBrowserStream(this.browserTabs);
+  readonly tabCatalog = new MockTabCatalog();
+  /** The person's published apps, as the mock Host keeps them. */
+  apps: App[] = [];
   publishedSnapshot(): PublicHostSnapshot {
     if (!this.#published) this.publishBrowser();
     return this.#published!;
@@ -6378,29 +6176,19 @@ class MockHostState {
     this.emit();
   }
   private publishBrowser(): void {
-    if (
-      this.#published &&
-      (this.#published.deploymentId !== this.snapshot.deploymentId ||
-        this.#published.user?.id !== this.snapshot.user?.id ||
-        this.snapshot.session !== "authenticated")
-    ) {
-      this.browserTabs.clear();
-      this.#browserStream = new MockBrowserStream(this.browserTabs);
-      this.#published = null;
-    }
-    this.#published = this.#browserStream.publish(
-      withPublishedReplies(this.#published, this.snapshot),
+    this.tabCatalog.publish(this.snapshot);
+    const { browserGroups: _groups, ...published } = withPublishedReplies(
       this.#published,
+      this.snapshot,
     );
-  }
-  tabGroups: BrowserTabLayout = { revision: 0, groups: [], order: [] };
-  projectTabGroups: (() => BrowserTabLayout | undefined) | undefined;
-  setTabGroups(layout: BrowserTabLayout): void {
-    this.tabGroups = layout;
-    this.update({ ...this.snapshot, browserTabGroups: layout });
+    this.#published = { ...published, tabs: this.tabCatalog.store };
   }
 
   constructor(options: MockHostClientOptions = {}) {
+    this.tabCatalog.bind(
+      () => this.snapshot,
+      () => this.apps,
+    );
     this.automaticModels = options.automaticModels ?? "seeded";
     if (this.automaticModels === "edited") {
       this.agentHomeSettings = {
@@ -6505,9 +6293,7 @@ class MockHostState {
     this.now = options.now ?? (() => new Date());
     this.chrome = new MockChromeSignIns(this.now);
     const initial = {
-      ...seedMockTaskMarks(createInitialSnapshot()),
-
-      browserTabGroups: this.tabGroups,
+      ...seedMockTaskMarks(createInitialSnapshot(this.tabCatalog.store)),
 
       quietTasksAvailable: options.quietTasksAvailable ?? true,
       agentImagesAvailable: options.agentImagesAvailable ?? true,
@@ -6815,23 +6601,7 @@ class MockHostState {
   }
   seedPlaces(world: MockPlacesWorld = "seeded"): void {
     this.update(seedMockPlaces(this.snapshot, this.now(), world));
-    // A trip planned on two Macs: one group whose tabs run on both.
-    if (world !== "seeded")
-      this.setTabGroups({
-        ...this.tabGroups,
-        revision: this.tabGroups.revision + 1,
-        groups: [
-          {
-            id: BrowserTabGroupIdSchema.parse("btg_00000000-0000-4000-8000-000000000101"),
-            title: "Lisbon trip",
-            color: "cyan",
-            collapsed: false,
-            tabIds: ["mock-tab-0-4", "mock-tab-9-0", "mock-tab-9-1"].map((id) =>
-              BrowserSurfaceIdSchema.parse(id),
-            ),
-          },
-        ],
-      });
+    this.#seedTabs(world);
     this.#recentMarkColors.delete(`${this.snapshot.user?.id ?? mockUserId}:thread`);
     const template = this.integrations.connections.find(
       (connection) => connection.definitionId === "macos-app" && connection.status === "connected",
@@ -6848,6 +6618,7 @@ class MockHostState {
           app: { bundleId: "com.apple.Keynote", displayName: "Keynote", teamId: null },
         },
       });
+
     // The busy world's Mac mini has more approved apps than its row shows at once.
     if (world !== "seeded" && template?.computer)
       for (const [bundleId, displayName] of [
@@ -6864,16 +6635,64 @@ class MockHostState {
           computer: { ...template.computer, app: { bundleId, displayName, teamId: null } },
         });
   }
-  updatePendingBrowserTabs(pendingBrowserTabs: readonly PendingBrowserTab[]): void {
-    const published = this.publishedSnapshot();
-    this.snapshot = { ...this.snapshot, pendingBrowserTabs, revision: this.snapshot.revision + 1 };
-    this.#published = { ...published, pendingBrowserTabs, revision: this.snapshot.revision };
-    // Synchronous mock RPCs can settle thousands of opens in one microtask chain.
-    if (this.#pendingBrowserNotification !== null) return;
-    this.#pendingBrowserNotification = setTimeout(() => {
-      this.#pendingBrowserNotification = null;
-      for (const listener of this.listeners) listener();
-    }, 0);
+  /**
+   * One person's mixed workspace: a group holding a page, a Mac window, the
+   * Agent Phone and an app, beside a closed window and a stopped app.
+   */
+  #seedTabs(world: MockPlacesWorld): void {
+    const home = this.snapshot.machines.find((machine) => machine.id === mockMessagesRunnerId);
+    const thread = this.snapshot.threads[0]?.id ?? null;
+    this.apps = seedMockApps({ computerId: mockMessagesRunnerId, taskId: thread, now: this.now() });
+    this.emit();
+    if (!home) return;
+    const at = this.now().toISOString();
+    const native = (
+      key: string,
+      tab: Omit<Parameters<MockTabCatalog["addNative"]>[0], "tabId" | "createdAt" | "openedBy">,
+    ) => {
+      const tabId = TabIdSchema.parse(`tab_00000000-0000-4000-8000-0000000002${key}`);
+      this.tabCatalog.addNative({ tabId, createdAt: at, openedBy: "person", ...tab });
+      return tabId;
+    };
+    // A window of an app this Mac approved, so the person can open it.
+    const notes = native("01", {
+      kind: "window",
+      computerId: home.id,
+      title: "Launch plan",
+      appName: "Notes",
+      bundleId: "com.apple.Notes",
+    });
+    const phone = this.snapshot.machines.some((machine) => machine.id === mockAgentPhoneRunnerId)
+      ? native("02", { kind: "phone", computerId: mockAgentPhoneRunnerId, title: "Pixel 7" })
+      : null;
+    const ferry = native("03", {
+      kind: "app",
+      computerId: home.id,
+      title: this.apps[1]!.name,
+      appId: this.apps[1]!.appId,
+    });
+    native("04", {
+      kind: "window",
+      computerId: home.id,
+      title: "Old draft",
+      appName: "Pages",
+      bundleId: "com.apple.iWork.Pages",
+      closedWindow: true,
+    });
+    native("05", {
+      kind: "app",
+      computerId: home.id,
+      title: this.apps[2]!.name,
+      appId: this.apps[2]!.appId,
+    });
+    this.emit();
+    const firstPage = tabPlaceList(this.publishedSnapshot()).find((place) => place.kind === "page");
+    this.tabCatalog.group(
+      world === "seeded" ? "Launch prep" : "Lisbon trip",
+      "cyan",
+      [firstPage?.key, notes, phone, ferry].filter((id): id is TabId => !!id),
+    );
+    this.emit();
   }
   updatePlaces(snapshot: HostSnapshot): void {
     this.update(snapshot);
@@ -9761,7 +9580,6 @@ class MockHostState {
       machines: [
         ...this.snapshot.machines,
         {
-          tabOpenedAt: null,
           access: access
             ? {
                 activeSessions: [],
@@ -9958,7 +9776,6 @@ class MockHostState {
       machines: [
         ...this.snapshot.machines,
         {
-          tabOpenedAt: null,
           access: access
             ? {
                 activeSessions: [],
@@ -10827,15 +10644,31 @@ class MockHostState {
    * As the Host records it: a Run began acting in a tab other than the one it
    * entered last. Entering the same tab again records nothing.
    */
-  enterPlace(runId: string, threadId: string, data: EventData<"place.entered">): void {
+  enterPlace(runId: string, threadId: string, data: MockPlaceEntry): void {
     const thread = this.snapshot.threads.find(({ id }) => id === threadId);
     if (!thread) return;
     const transcript = this.snapshot.transcripts[threadId] ?? [];
+    // The mock world names a page by its surface, which is its tab's ID, and a phone or app by its computer.
+    const place = data.place;
+    const tabId =
+      place.kind === "browser"
+        ? place.surfaceId
+        : this.tabCatalog.nativeAt(place.machineId, (tab) =>
+            place.kind === "phone"
+              ? tab.kind === "phone"
+              : tab.kind === "window" &&
+                computerAppIdentityKey({
+                  bundleId: tab.bundleId ?? "",
+                  displayName: tab.appName ?? "",
+                  teamId: null,
+                }) === place.appKey,
+          );
+    if (!tabId) return;
     const last = this.runPlaces.get(runId);
-    if (last && placeIdentityKey(last.data.place) === placeIdentityKey(data.place)) return;
+    if (last?.data.tabId === tabId) return;
     const event = PlaceEnteredEventViewSchema.parse({
       createdAt: this.now().toISOString(),
-      data,
+      data: { tabId, title: data.title, site: data.site },
       environmentId: thread.environmentId,
       eventId: createId("event"),
       runId,
@@ -10844,6 +10677,7 @@ class MockHostState {
       type: "place.entered",
     });
     this.runPlaces.accept(event, false);
+    if (place.kind !== "browser") this.places?.actInNativeTab(runId, threadId, tabId);
     this.update({
       ...this.snapshot,
       transcripts: {
@@ -12307,7 +12141,7 @@ class MockHostState {
     }
   }
 
-  private emit(): void {
+  emit(): void {
     if (this.#pendingBrowserNotification !== null) clearTimeout(this.#pendingBrowserNotification);
     this.#pendingBrowserNotification = null;
     this.publishBrowser();
@@ -12642,31 +12476,9 @@ class MockHostState {
             group.tabs?.some((tab) => tab.state !== "live"),
         ),
       );
-      const known = new Set(
-        browserGroups.flatMap((lineage) => (lineage.tabs ?? []).map((tab) => tab.id)),
-      );
-      const removed = (this.snapshot.browserGroups ?? []).flatMap((lineage) =>
-        (lineage.tabs ?? []).filter((tab) => !known.has(tab.id)).map((tab) => tab.id),
-      );
-      if (removed.length)
-        this.tabGroups = {
-          ...removeGroupedTabs(this.tabGroups, removed),
-          order: this.tabGroups.order?.filter((id) => !removed.includes(id)),
-        };
-      snapshot = {
-        ...snapshot,
-        browserGroups,
-        tabRestoreVersion: 1,
-        ...(removed.length ? { browserTabGroups: this.tabGroups } : {}),
-      };
+      snapshot = { ...snapshot, browserGroups };
     }
-    this.snapshot = {
-      ...snapshot,
-      browserTabs: this.browserTabs,
-      revision: snapshot.revision + 1,
-    };
-    if (tabsChanged && this.projectTabGroups)
-      this.snapshot = { ...this.snapshot, browserTabGroups: this.projectTabGroups() };
+    this.snapshot = { ...snapshot, revision: snapshot.revision + 1 };
     if (this.assignments.size > 0) {
       this.snapshot = {
         ...this.snapshot,
@@ -12789,6 +12601,15 @@ class MockHostState {
    * unarchived Thread, most recently updated first, with its last reply and
    * why its latest Run failed. The same list is kept while nothing in it moved.
    */
+  // Every update rebuilds the list; parsing each reply's Markdown again cost ~0.4ms per task.
+  private readonly lineExcerpts = new Map<string, string | null>();
+  private lineExcerpt(text: string): string | null {
+    const held = this.lineExcerpts.get(text);
+    if (held !== undefined) return held;
+    const excerpt = plainTextExcerpt(text, taskLineMaxLength);
+    this.lineExcerpts.set(text, excerpt);
+    return excerpt;
+  }
   private taskList(held: TaskListState | null): TaskListState | null {
     if (!this.snapshot.user) return null;
     const entries = this.snapshot.threads
@@ -12809,9 +12630,9 @@ class MockHostState {
         return {
           failure:
             latestRun?.status === "failed" && latestRun.error
-              ? plainTextExcerpt(latestRun.error.message, taskLineMaxLength)
+              ? this.lineExcerpt(latestRun.error.message)
               : null,
-          lastReply: reply ? plainTextExcerpt(reply.body, taskLineMaxLength) : null,
+          lastReply: reply ? this.lineExcerpt(reply.body) : null,
           thread,
         };
       });
@@ -13145,7 +12966,7 @@ function withMockThreadMarks(
   }));
 }
 
-function createInitialSnapshot(): HostSnapshot {
+function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): HostSnapshot {
   const transcripts: Record<string, TranscriptEntry[]> = {
     [mockSlackThreadId]: mockComputerUseThreadTranscript(
       mockSlackThreadId,
@@ -13462,6 +13283,8 @@ function createInitialSnapshot(): HostSnapshot {
   };
 
   return {
+    tabs,
+    appsRevision: 0,
     assignments: {},
     threadAutomations: {},
     inputQueues: {},

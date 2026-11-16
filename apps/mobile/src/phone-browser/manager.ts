@@ -1311,8 +1311,12 @@ export class PhoneBrowserManager {
         )
           throw new PhoneBrowserError("stale-geometry", "The page geometry changed.");
         if (action.type === "surface.resume" || action.type === "surface.attach") {
+          const reloaded = !isLive(tab);
           await this.#claimCovered(tab, { channel, attachmentId: message.attachmentId });
-          result = { type: action.type, binding: actionBinding(tab) };
+          result =
+            action.type === "surface.resume"
+              ? { type: action.type, binding: actionBinding(tab), dialog: tab.dialog, reloaded }
+              : { type: action.type, binding: actionBinding(tab) };
         } else if (action.type === "surface.close") {
           await this.#closeTab(session, tab);
           result = { type: "surface.close", outcome: "closed" };

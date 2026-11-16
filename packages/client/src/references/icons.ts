@@ -30,6 +30,7 @@ const referenceIcons: Readonly<Record<ReferenceKind, ReferenceIconName>> = {
   automation: "clock",
   computer: "desktop",
   attachment: "paperclip",
+  tab: "link",
 };
 
 const teamPageIcons: Readonly<Record<TeamPageTarget["kind"], ReferenceIconName>> = {

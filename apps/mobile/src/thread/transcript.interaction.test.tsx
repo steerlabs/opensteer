@@ -1,6 +1,4 @@
-import { seedBrowserSession } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
-import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 
 import type { WebViewProps } from "react-native-webview";
 import { AccessibilityInfo, Linking } from "react-native";
@@ -10,13 +8,13 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   groupTranscriptEntries,
+  placeList,
   type DelegationEntry,
   type HostClient,
   type HostSnapshot,
   type MessageEntry,
   type NodeEntry,
   type PlaceEntry,
-  type BrowserSessionSummary,
   type ReasoningEntry,
   type RunEntry,
   type ToolEntry,
@@ -24,7 +22,7 @@ import {
 } from "@opensteer/client/host";
 import { mockComputerUseToolRefs, mockComputerUseTurn } from "@opensteer/client/mock";
 import { MockHostClient } from "@opensteer/client/mock";
-import { BrowserSessionIdSchema, ThreadIdSchema } from "@opensteer/core";
+import { ThreadIdSchema } from "@opensteer/core";
 import {
   TranscriptAppTabsContext,
   TranscriptSurfacesContext,
@@ -935,45 +933,18 @@ it("renders an addressed message as an assistant message in its own row", () => 
 describe("native page rail", () => {
   function fixture() {
     const client = new MockHostClient({ latencyMs: 0 });
-    const original = client
-      .getSnapshot()
-      .browserSessions.find(
-        (session) => (session.browserTabs?.sessionTabs(session?.id) ?? []).length,
-      )!;
-    const tab = (original.browserTabs?.sessionTabs(original?.id) ?? [])[0]!;
+    const tab = placeList(client.getSnapshot()).find((place) => place.kind === "page")!;
     const threadId = ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000001");
     const browserUses = [
       {
-        sessionId: original.id,
+        sessionId: "session",
         runId: run.runId!,
         threadId,
-        tabId: tab.id,
+        tabId: tab.key,
         firstUsedAt: run.createdAt,
         lastUsedAt: run.createdAt,
       },
     ];
-    const rawSession: BrowserSessionSummary = seedBrowserSession(
-      { ...original, attachedRunIds: [run.runId!] },
-      {
-        ...original.browserTabs!.inventory(original?.id)!,
-        rows: [
-          {
-            ...tab,
-            occupants: [{ threadId, holding: true, acting: true, lastActiveAt: run.createdAt }],
-          },
-        ],
-      },
-    );
-    const session = seedBrowserSnapshot(
-      seedBrowserSnapshot(
-        {
-          ...client.getSnapshot(),
-          tabRestoreVersion: undefined,
-          browserSessions: [rawSession],
-        } as import("@opensteer/client/host").HostSnapshot,
-        undefined,
-      ),
-    ).browserSessions[0]!;
     const stop: PlaceEntry = {
       kind: "place",
       id: "stop",
@@ -981,21 +952,13 @@ describe("native page rail", () => {
       runId: run.runId!,
       title: "Recorded page",
       site: "https://recorded.example",
-      place: {
-        kind: "browser",
-        sessionId: BrowserSessionIdSchema.parse(session.id),
-        surfaceId: tab.id,
-      },
+      tabId: tab.key,
     };
-    vi.spyOn(client, "getSnapshot").mockReturnValue({
-      ...client.getSnapshot(),
-      browserSessions: [session],
-      browserUses,
-    });
+    vi.spyOn(client, "getSnapshot").mockReturnValue({ ...client.getSnapshot(), browserUses });
     const open = vi.fn();
-    return { client, session, stop, open, surfaces: { hostClient: client, threadId, open } };
+    return { client, tab, stop, open, surfaces: { hostClient: client, threadId, open } };
   }
-  it("presses the exact destination, marks only the newest stop live, and disables an ended stop", () => {
+  it("presses the exact destination, marks only the newest stop live, and disables an ended stop", async () => {
     const f = fixture();
     const container = document.createElement("div");
     document.body.append(container);
@@ -1016,16 +979,8 @@ describe("native page rail", () => {
       expect(stops[0]!.getAttribute("aria-label")).not.toContain("agent working");
       expect(stops[1]!.getAttribute("aria-label")).toContain("agent working");
       act(() => stops[1]!.click());
-      expect(f.open).toHaveBeenCalledExactlyOnceWith({
-        kind: "browser",
-        sessionId: f.session.id,
-        tabId: (f.session.browserTabs?.sessionTabs(f.session?.id) ?? [])[0]!.id,
-      });
-      vi.mocked(f.client.getSnapshot).mockReturnValue({
-        ...f.client.getSnapshot(),
-        browserSessions: [{ ...f.session, state: "closed" }],
-      });
-      draw();
+      expect(f.open).toHaveBeenCalledExactlyOnceWith({ kind: "tab", tabId: f.tab.key });
+      await act(async () => void (await f.client.closeTabs([f.tab.key])));
       expect(container.querySelectorAll("button:disabled")).toHaveLength(2);
       act(() => container.querySelector<HTMLButtonElement>("button")!.click());
       expect(f.open).toHaveBeenCalledTimes(1);
@@ -1039,12 +994,12 @@ describe("native page rail", () => {
       const view = setup(false, f.surfaces);
       view.render([run, f.stop]);
       expect(
-        view.container.querySelector('[aria-label^="Recorded page"]')?.getAttribute("aria-label"),
+        view.container.querySelector(`[aria-label^="${f.tab.title}"]`)?.getAttribute("aria-label"),
       ).toContain("agent working");
       view.render([{ ...run, status: "completed" }, f.stop]);
       press(view.container, "Worked");
       expect(
-        view.container.querySelector('[aria-label^="Recorded page"]')?.getAttribute("aria-label"),
+        view.container.querySelector(`[aria-label^="${f.tab.title}"]`)?.getAttribute("aria-label"),
       ).not.toContain("agent working");
     } finally {
       f.client.dispose();
@@ -1057,17 +1012,9 @@ describe("native page rail", () => {
       try {
         const view = setup(conversation, f.surfaces);
         view.render([run, command, note]);
-        expect(
-          view.container.querySelector(
-            `button[aria-label^="${(f.session.browserTabs?.sessionTabs(f.session?.id) ?? [])[0]!.title}"]`,
-          ),
-        ).toBeNull();
+        expect(view.container.querySelector(`button[aria-label^="${f.tab.title}"]`)).toBeNull();
         view.render([{ ...run, status: "completed", replyMessageId: note.id }, command, note]);
-        expect(
-          view.container.querySelector(
-            `button[aria-label^="${(f.session.browserTabs?.sessionTabs(f.session?.id) ?? [])[0]!.title}"]`,
-          ),
-        ).not.toBeNull();
+        expect(view.container.querySelector(`button[aria-label^="${f.tab.title}"]`)).not.toBeNull();
       } finally {
         f.client.dispose();
       }
@@ -1090,15 +1037,7 @@ it("renders published apps in isolated native WebViews, caps inline height and r
   });
   vi.spyOn(client, "getSnapshot").mockImplementation(() => snapshot);
   const read = vi.spyOn(client, "viewApp").mockImplementation(async () => ({
-    app: {
-      id: appId,
-      threadId: createId("thread"),
-      runId: createId("run"),
-      title: `Budget ${version}`,
-      latestVersion: version,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    },
+    title: `Budget ${version}`,
     url: `${prefix}?version=${version}`,
   }));
   const container = document.createElement("div");
@@ -1201,47 +1140,22 @@ it("renders published apps in isolated native WebViews, caps inline height and r
 });
 
 /*
- * An app is one live copy on a client. What can go wrong: Open waits on the
- * Host before the page appears; the card keeps its WebView while the tab has
- * one too; closing the tab leaves the card without its app; a Host that refuses
- * the tab leaves the card dead, or the person on a page for a tab that never was.
+ * An app is one live copy on a client. What can go wrong: the card keeps its
+ * WebView while the tab has one too; closing the tab leaves the card without
+ * its app; Open opens some other tab, or none; a Host that refuses the tab
+ * leaves the card dead, or the person on a page for a tab that never was.
  */
 describe("an app's card and its tab", () => {
-  const appId = "app_11111111-1111-4111-8111-111111111111";
-  async function mount(openAppTab: (appId: string) => Promise<void>) {
-    const client = new MockHostClient();
-    const tabRow = {
-      appId,
-      latestVersion: 1,
-      openedAt: new Date().toISOString(),
-      threadId: createId("thread"),
-      title: "Budget",
-    };
-    let snapshot = client.getSnapshot();
-    const listeners = new Set<() => void>();
-    const publish = (appTabs: readonly (typeof tabRow)[]) => {
-      snapshot = { ...snapshot, appTabs };
-      for (const listener of listeners) listener();
-    };
-    vi.spyOn(client, "subscribe").mockImplementation((listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    });
-    vi.spyOn(client, "getSnapshot").mockImplementation(() => snapshot);
+  // The mock's published "Trip budget", which no tab holds yet.
+  const appId = "app_10000000-0000-4000-8000-000000000001";
+  async function mount() {
+    const client = new MockHostClient({ latencyMs: 0 });
     const view = vi.spyOn(client, "viewApp").mockImplementation(async () => ({
-      app: {
-        id: appId,
-        threadId: tabRow.threadId,
-        runId: createId("run"),
-        title: "Budget",
-        latestVersion: 1,
-        createdAt: tabRow.openedAt,
-        updatedAt: tabRow.openedAt,
-      },
+      title: "Budget",
       url: `https://host.test/v1/apps/${appId}/dark/${"a".repeat(43)}/`,
     }));
-    const open = vi.spyOn(client, "openAppTab").mockImplementation(openAppTab);
-    const tabs: TranscriptAppTabs = { leave: vi.fn(), open: vi.fn() };
+    const openTab = vi.spyOn(client, "openTab");
+    const tabs: TranscriptAppTabs = { show: vi.fn() };
     const container = document.createElement("div");
     document.body.append(container);
     const root = createRoot(container);
@@ -1254,7 +1168,7 @@ describe("an app's card and its tab", () => {
               entry={{
                 appId,
                 id: "app:event",
-                createdAt: tabRow.openedAt,
+                createdAt: new Date().toISOString(),
                 kind: "app",
                 title: "Budget",
                 version: 1,
@@ -1265,53 +1179,45 @@ describe("an app's card and its tab", () => {
         </TranscriptHostClientContext>,
       ),
     );
-    return { client, container, open, publish, tabRow, tabs, view };
+    return { client, container, openTab, tabs, view };
   }
   const frame = (container: HTMLElement) => container.querySelector("[data-app-webview]");
 
-  it("goes to the tab without waiting for the Host, runs no copy of its own, and comes back when it closes", async () => {
-    const answer = Promise.withResolvers<void>();
-    const f = await mount(() => answer.promise);
+  it("opens its one tab and shows it, runs no copy of its own meanwhile, and comes back when it closes", async () => {
+    const f = await mount();
     try {
       expect(frame(f.container)).not.toBeNull();
       await act(async () => press(f.container, "Open"));
-      expect(f.open).toHaveBeenCalledWith(appId);
-      expect(f.tabs.open).toHaveBeenCalledWith(appId);
-
-      await act(async () => f.publish([f.tabRow]));
+      expect(f.openTab).toHaveBeenCalledExactlyOnceWith({ appId, kind: "app" });
+      const tab = await f.openTab.mock.results[0]!.value;
+      expect(f.client.getSnapshot().tabs.get(tab.tabId)).toMatchObject({ kind: "app", appId });
+      expect(f.tabs.show).toHaveBeenCalledWith(tab.tabId);
       expect(frame(f.container)).toBeNull();
       expect(f.view).toHaveBeenCalledTimes(1);
-      expect(f.container.textContent).toContain("Open in Tabs");
       await act(async () => press(f.container, "Open in Tabs"));
-      expect(f.tabs.open).toHaveBeenCalledTimes(2);
-      expect(f.open).toHaveBeenCalledTimes(1);
+      expect(f.tabs.show).toHaveBeenCalledTimes(2);
 
-      await act(async () => f.publish([]));
+      await act(async () => void (await f.client.closeTabs([tab.tabId])));
       expect(frame(f.container)).not.toBeNull();
       expect(f.container.textContent).not.toContain("Open in Tabs");
-      await act(async () => answer.resolve());
-      expect(f.tabs.leave).not.toHaveBeenCalled();
     } finally {
       f.client.dispose();
     }
   });
 
-  it("says so when the Host refuses the tab, takes the page back and can try again", async () => {
-    const f = await mount(async () => {
-      throw new Error("This Host cannot open app tabs.");
-    });
+  it("says so when the Host refuses the tab, shows nothing and can try again", async () => {
+    const f = await mount();
     try {
+      f.openTab.mockRejectedValueOnce(new Error("This Host cannot open app tabs."));
       await act(async () => press(f.container, "Open"));
-      expect(f.tabs.leave).toHaveBeenCalledWith(appId);
+      expect(f.tabs.show).not.toHaveBeenCalled();
       expect(f.container.querySelector('[role="alert"]')?.textContent).toContain(
         "This Host cannot open app tabs.",
       );
       expect(frame(f.container)).not.toBeNull();
 
-      f.open.mockImplementation(async () => undefined);
       await act(async () => press(f.container, "Try again"));
-      expect(f.open).toHaveBeenCalledTimes(2);
-      expect(f.tabs.open).toHaveBeenCalledTimes(2);
+      expect(f.tabs.show).toHaveBeenCalledTimes(1);
       expect(f.container.querySelector('[role="alert"]')).toBeNull();
     } finally {
       f.client.dispose();

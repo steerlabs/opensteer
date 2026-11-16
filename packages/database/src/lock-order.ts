@@ -100,10 +100,8 @@ export const databaseLockOrder = [
   "trigger_occurrences",
   "advisory:personal-tab-reopen",
   "browser_sessions",
+  "tab_layouts",
   "personal_tabs",
-  "browser_tab_layouts",
-  "browser_tab_groups",
-  "browser_tab_group_members",
   // Personal reservations serialize browser and installation creation.
   "advisory:browser-sign-in",
   "advisory:browser-site-grants",
@@ -178,6 +176,7 @@ export const databaseLockOrder = [
   "attachments",
   "apps",
   "app_versions",
+  "app_servers",
   "channel_deliveries",
   "channel_link_codes",
   // Computer approvals and integration Grants precede Request settlement.

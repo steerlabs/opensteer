@@ -16,9 +16,6 @@ import { COMMAND_TIMEOUT, CdpProtocolError, createPage, evaluationResult } from 
 const MAX_MESSAGE_BYTES = 1_048_576;
 const MAX_EVENTS = 500;
 const STAGE_CHUNK_BYTES = 256 * 1_024;
-const INTERNAL_URLS = ["chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://"];
-/** More tabs than a person keeps open for one task. */
-const MANY_TABS = 6;
 const PERSON_ACTIVITY = {
   click: "clicked in this page",
   dialog: "answered a dialog in this page",
@@ -64,15 +61,6 @@ function pageDialogLine(dialog) {
   return `[opensteer] This page shows ${kind} dialog (${JSON.stringify(text)}); the page answers no other command until the dialog is answered with respondDialog({ accept: true or false }).`;
 }
 
-/**
- * One line when a session holds more tabs than a person would for one task,
- * or null. It counts the person's tabs too, so it asks only about the agent's.
- */
-function manyTabsLine(count) {
-  if (count <= MANY_TABS) return null;
-  return `[opensteer] This browser has ${count} tabs open. Keep the tabs useful for the task and preserve the person's tabs.`;
-}
-
 function navigableUrl(url) {
   const address = String(url);
   if (
@@ -108,6 +96,7 @@ export class CdpClient {
   #socket;
   #waiters = new Set();
   #listeners = new Set();
+  #closeListeners = new Set();
 
   constructor(socket) {
     this.#socket = socket;
@@ -157,7 +146,7 @@ export class CdpClient {
           cleanup();
           reject(
             new Error(
-              "Could not connect to this tab. Use listTabs() and switchTab(tabId) to choose it again.",
+              "Could not connect to this tab. Use tab_list and openPage(tabId) to bind it again.",
             ),
           );
         },
@@ -227,8 +216,15 @@ export class CdpClient {
     });
   }
 
+  onClose(listener) {
+    this.#closeListeners.add(listener);
+    if (this.#closedError) listener(this.#closedError);
+    return () => this.#closeListeners.delete(listener);
+  }
+
   close() {
-    this.#rejectPending(new Error("CDP client closed"));
+    this.#closedError = new Error("CDP client closed");
+    this.#rejectPending(this.#closedError);
     this.#socket.close(1000);
   }
 
@@ -280,6 +276,9 @@ export class CdpClient {
   }
 
   #rejectPending(error) {
+    this.#closedError = error;
+    for (const listener of this.#closeListeners) listener(error);
+    this.#closeListeners.clear();
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timeout);
       pending.reject(error);
@@ -296,9 +295,7 @@ export class CdpClient {
 export function createBrowserHarness(client, initialTargetId) {
   const operations = new AsyncLocalStorage();
   /**
-   * Operations still running on each tab attachment. Leaving a tab detaches it
-   * only once its own operations settle, so work started before a switch, such
-   * as a wait, finishes on the tab it began on.
+   * Explicit disposal keeps the page channel until its outstanding work settles.
    */
   const inFlight = new Map();
   const detachTarget = (departing) =>
@@ -307,7 +304,7 @@ export function createBrowserHarness(client, initialTargetId) {
     });
   let sessionId;
   let targetId;
-  let selectedTargetId = initialTargetId;
+  const selectedTargetId = initialTargetId;
   /**
    * The person's activity and resize the latest attach measured, before the
    * attach counted as a command.
@@ -317,7 +314,6 @@ export function createBrowserHarness(client, initialTargetId) {
   let attachedObservationPending = false;
   let notedActivity;
   let notedDialog;
-  let notedManyTabs = false;
   let notedResize;
 
   const notePersonActivity = (activity) => {
@@ -345,6 +341,8 @@ export function createBrowserHarness(client, initialTargetId) {
    * identities replayed by drainEvents, which never touch this state.
    */
   const openDialogs = new Map();
+  const dialogDescriptions = new Map();
+  const stale = new AbortController();
   let dialogSequence = 0;
   const dialogEvents = new Map();
   const dialogWatchers = new Map();
@@ -367,17 +365,19 @@ export function createBrowserHarness(client, initialTargetId) {
     for (const watcher of dialogWatchers.get(target) ?? []) watcher();
   };
   /** A dialog opened, or closed when `id` is undefined. */
-  const noteDialogEvent = (target, id) => {
+  const noteDialogEvent = (target, id, dialog) => {
     if (typeof target !== "string") return;
     dialogEvents.set(target, ++dialogSequence);
+    dialogDescriptions.set(target, id ? (dialog ?? { id }) : null);
     if (typeof id === "string") observeDialog(target, { id });
     setOpenDialog(target, typeof id === "string" ? id : undefined);
   };
   /** Target information requested when the dialog sequence stood at `sequence`. */
   const noteDialogSnapshot = (target, dialog, sequence) => {
     if (typeof target !== "string") return;
-    observeDialog(target, dialog);
     if ((dialogEvents.get(target) ?? 0) > sequence) return;
+    observeDialog(target, dialog);
+    dialogDescriptions.set(target, dialog ?? null);
     setOpenDialog(target, typeof dialog?.id === "string" ? dialog.id : undefined);
   };
   const watchDialogs = (target) => ({
@@ -396,33 +396,32 @@ export function createBrowserHarness(client, initialTargetId) {
     return result;
   };
   const notePageDialog = (dialog) => {
-    observeDialog(targetId, dialog);
     const line = pageDialogLine(dialog);
     if (!line || line === notedDialog) return;
     notedDialog = line;
     process.stderr.write(`${line}\n`);
   };
   client.onEvent((event) => {
+    if (
+      event.method === "Target.attachedToTarget" &&
+      attachedTargets.has(event.sessionId) &&
+      typeof event.params?.sessionId === "string"
+    )
+      attachedTargets.set(event.params.sessionId, event.params.targetInfo?.targetId);
+    if (event.method === "Target.detachedFromTarget" && attachedTargets.has(event.sessionId))
+      attachedTargets.delete(event.params?.sessionId);
     const target = attachedTargets.get(event.sessionId);
+    if (event.method === "Target.targetDestroyed" && event.params?.targetId === targetId)
+      stale.abort(new Error("This page handle is stale; bind it again with openPage(tabId)."));
     if (event.method === "Page.javascriptDialogClosed") noteDialogEvent(target, undefined);
     if (event.method === "Page.javascriptDialogOpening")
-      noteDialogEvent(target, event.params?.dialogId);
+      noteDialogEvent(target, event.params?.dialogId, {
+        id: event.params?.dialogId,
+        type: event.params?.type,
+        message: event.params?.message,
+      });
   });
 
-  const pages = async () => {
-    const tabs = [];
-    let cursor;
-    do {
-      const sequence = dialogSequence;
-      const result = await client.command("Opensteer.listTabs", cursor ? { cursor } : {});
-      for (const tab of result.tabs) {
-        noteDialogSnapshot(tab.targetId, tab.dialog, sequence);
-        tabs.push(tab);
-      }
-      cursor = result.nextCursor;
-    } while (cursor);
-    return tabs;
-  };
   const resumedNotice = (surfaceId) =>
     process.stderr.write(
       `[opensteer] Tab ${surfaceId} was asleep and has reloaded. Observe it again before acting; old page handles are invalid.\n`,
@@ -432,6 +431,10 @@ export function createBrowserHarness(client, initialTargetId) {
   const invalidateSurface = (surfaceId) => {
     for (const [id, surface] of attachedSurfaces) {
       if (surface !== surfaceId) continue;
+      if (id === sessionId)
+        stale.abort(
+          new Error("This page handle is stale after the tab reloaded; use openPage(tabId)."),
+        );
       invalidSessions.add(id);
       const target = attachedTargets.get(id);
       attachedSurfaces.delete(id);
@@ -443,7 +446,7 @@ export function createBrowserHarness(client, initialTargetId) {
     }
   };
 
-  const detach = async () => {
+  const detach = async ({ final = false } = {}) => {
     // Captured before waiting, so the session settled is the one detached.
     const departing = sessionId;
     if (departing) {
@@ -459,65 +462,66 @@ export function createBrowserHarness(client, initialTargetId) {
       });
       if (sessionId === departing) sessionId = undefined;
       const running = inFlight.get(departing);
-      if (running) running.detach = true;
-      else await detachTarget(departing);
+      if (!final) {
+        if (running) running.detach = true;
+        else await detachTarget(departing);
+      }
     }
     if (!sessionId) targetId = undefined;
   };
 
-  const attach = async (requestedTargetId = selectedTargetId) => {
-    await detach();
-    let nextTargetId = requestedTargetId;
-    const availablePages = await pages();
-    if (!nextTargetId)
-      throw new Error("Call switchTab(tabId) or newTab(url) before using page helpers.");
-    const named = availablePages.find(
-      (page) => page.targetId === nextTargetId || page.surfaceId === nextTargetId,
-    );
-    if (!named) {
-      throw new Error(
-        `Browser tab ${nextTargetId} is closed or unavailable. Use await listTabs() and choose the intended tab explicitly.`,
-      );
-    }
-    if (named.state === "suspended") {
-      const resumed = await client.command("Opensteer.resumeTab", { surfaceId: named.surfaceId });
-      if (resumed.reloaded) {
-        invalidateSurface(named.surfaceId);
-        resumedNotice(named.surfaceId);
-      }
-      nextTargetId = resumed.targetId;
-    } else nextTargetId = named.targetId;
-    if (typeof nextTargetId !== "string" || nextTargetId.length === 0) {
-      throw new Error("The browser did not provide the tab identity");
-    }
-    const attachSequence = dialogSequence;
-    const result = await client.command("Target.attachToTarget", {
-      flatten: true,
-      targetId: nextTargetId,
+  let attaching;
+  const attach = () => {
+    stale.signal.throwIfAborted();
+    if (sessionId) return Promise.resolve(sessionId);
+    attaching ??= (async () => {
+      if (!selectedTargetId) throw new Error("openPage(tabId) requires an explicit tab ID.");
+      const sequence = dialogSequence;
+      const resumed = await client.command("Opensteer.resumeTab", { surfaceId: selectedTargetId });
+      if (resumed.reloaded) resumedNotice(selectedTargetId);
+      if (typeof resumed.targetId !== "string" || !resumed.targetId.length)
+        throw new Error("The browser did not provide the tab identity");
+      targetId = resumed.targetId;
+      noteDialogSnapshot(targetId, resumed.dialog, sequence);
+      const attachSequence = dialogSequence;
+      const result = await client.command("Target.attachToTarget", {
+        flatten: true,
+        targetId,
+      });
+      if (typeof result.sessionId !== "string" || !result.sessionId.length)
+        throw new Error("The browser did not provide a tab connection");
+      sessionId = result.sessionId;
+      attachedTargets.set(sessionId, targetId);
+      attachedSurfaces.set(sessionId, selectedTargetId);
+      attachedActivity = resumed.userActivity;
+      attachedResize = resumed.pageResize;
+      attachedObservationPending = true;
+      notePersonActivity(attachedActivity);
+      notePageResize(attachedResize);
+      notePageDialog(resumed.dialog);
+      if (Object.hasOwn(result, "dialog"))
+        noteDialogSnapshot(targetId, result.dialog, attachSequence);
+      return sessionId;
+    })().finally(() => {
+      attaching = undefined;
     });
-    if (typeof result.sessionId !== "string" || result.sessionId.length === 0) {
-      throw new Error("The browser did not provide a tab connection");
-    }
-    sessionId = result.sessionId;
-    attachedTargets.set(sessionId, nextTargetId);
-    attachedSurfaces.set(sessionId, named.surfaceId);
-    targetId = nextTargetId;
-    selectedTargetId = nextTargetId;
-    attachedActivity = result.userActivity;
-    attachedResize = result.pageResize;
-    attachedObservationPending = true;
-    notePersonActivity(attachedActivity);
-    notePageResize(attachedResize);
-    notePageDialog(result.dialog);
-    noteDialogSnapshot(nextTargetId, result.dialog, attachSequence);
-    return sessionId;
+    return attaching;
   };
 
   const cdp = async (method, params = {}, requestedSessionId) => {
     const browserLevel =
-      method.startsWith("Target.") ||
+      [
+        "Target.getTargets",
+        "Target.getTargetInfo",
+        "Target.attachToTarget",
+        "Target.detachFromTarget",
+        "Target.createTarget",
+        "Target.closeTarget",
+        "Target.activateTarget",
+        "Target.setDiscoverTargets",
+        "Target.getBrowserContexts",
+      ].includes(method) ||
       method.startsWith("Browser.") ||
-      method === "Opensteer.listTabs" ||
       method === "Opensteer.resumeTab";
     const captured = operations.getStore();
     if (!browserLevel && !requestedSessionId && !captured?.sessionId && !sessionId) await attach();
@@ -525,6 +529,7 @@ export function createBrowserHarness(client, initialTargetId) {
       requestedSessionId ?? (browserLevel ? undefined : (captured?.sessionId ?? sessionId));
     if (pageSessionId === sessionId && !browserLevel) attachedObservationPending = false;
     try {
+      stale.signal.throwIfAborted();
       if (invalidSessions.has(pageSessionId))
         throw new Error(
           "This tab reloaded after sleeping. Observe it again and use fresh page handles.",
@@ -533,7 +538,7 @@ export function createBrowserHarness(client, initialTargetId) {
         const dialogId = params.dialogId ?? observedDialogs.get(attachedTargets.get(pageSessionId));
         if (typeof dialogId !== "string") {
           throw new Error(
-            "Read the dialog with currentTab(), listTabs(), pageInfo(), or drainEvents() before answering it.",
+            "Read the dialog with currentTab(), pageInfo(), or drainEvents() before answering it.",
           );
         }
         params = { ...params, dialogId };
@@ -552,7 +557,6 @@ export function createBrowserHarness(client, initialTargetId) {
         if (selectedSurface === result.surfaceId) {
           sessionId = undefined;
           targetId = undefined;
-          selectedTargetId = result.surfaceId;
         }
       }
       // A replacement may already be open; only the dialog answered here closed.
@@ -566,7 +570,7 @@ export function createBrowserHarness(client, initialTargetId) {
     } catch (error) {
       if (error.reason === "target-suspended")
         process.stderr.write(
-          `[opensteer] Tab ${attachedSurfaces.get(pageSessionId) ?? selectedTargetId} is asleep. Resume it with --tab or switchTab, then observe it again before acting; it will reload and old page handles are invalid.\n`,
+          `[opensteer] Tab ${attachedSurfaces.get(pageSessionId) ?? selectedTargetId} is asleep. Bind it with openPage(tabId), then observe it again before acting; it will reload and old page handles are invalid.\n`,
         );
       // A dialog is the usual reason a page stops answering.
       if (error instanceof CdpTimeoutError && pageSessionId && pageSessionId === sessionId) {
@@ -581,23 +585,6 @@ export function createBrowserHarness(client, initialTargetId) {
       throw error;
     }
   };
-
-  const listTabs = async ({ includeInternal = true } = {}) =>
-    (await pages())
-      .filter(
-        (target) =>
-          includeInternal || !INTERNAL_URLS.some((prefix) => (target.url ?? "").startsWith(prefix)),
-      )
-      .map((target) => ({
-        targetId: target.targetId,
-        state: target.state,
-        ...(target.surfaceId ? { surfaceId: target.surfaceId } : {}),
-        title: target.title ?? "",
-        url: target.url ?? "",
-        ...(target.userActivity ? { userActivity: target.userActivity } : {}),
-        ...(target.pageResize ? { pageResize: target.pageResize } : {}),
-        ...(target.dialog ? { dialog: target.dialog } : {}),
-      }));
 
   /**
    * Reading target information is not a page command, so the person's
@@ -620,7 +607,8 @@ export function createBrowserHarness(client, initialTargetId) {
     attachedObservationPending = false;
     notePersonActivity(userActivity);
     notePageResize(pageResize);
-    notePageDialog(info.dialog);
+    const dialog = dialogDescriptions.get(targetId) ?? undefined;
+    notePageDialog(dialog);
     return {
       targetId: info.targetId,
       ...(info.surfaceId ? { surfaceId: info.surfaceId } : {}),
@@ -628,109 +616,18 @@ export function createBrowserHarness(client, initialTargetId) {
       url: info.url ?? "",
       ...(userActivity ? { userActivity } : {}),
       ...(pageResize ? { pageResize } : {}),
-      ...(info.dialog ? { dialog: info.dialog } : {}),
+      ...(dialog ? { dialog } : {}),
     };
-  };
-
-  const normalizeTargetId = (target) =>
-    typeof target === "string"
-      ? target
-      : target && typeof target.targetId === "string"
-        ? target.targetId
-        : undefined;
-
-  const switchTab = async (target) => {
-    const requestedTargetId = target?.surfaceId ?? normalizeTargetId(target);
-    if (!requestedTargetId) throw new TypeError("switchTab requires a tab ID or tab object");
-    return attach(requestedTargetId);
   };
 
   const gotoUrl = async (url) => cdp("Page.navigate", { url: navigableUrl(url) });
+  const ensureRealTab = () => currentTab();
 
-  const newTab = async (url = "about:blank") => {
-    const address = navigableUrl(url);
-    const previousTargetId = selectedTargetId;
-    const { targetId: createdTargetId } = await client.command("Target.createTarget", {
-      url: "about:blank",
-    });
-    // A tab that went nowhere is closed, as a person closes one, and the
-    // program carries on in the page it was using.
-    const discard = async () => {
-      await detach();
-      selectedTargetId = previousTargetId;
-      await client
-        .command("Target.closeTarget", { targetId: createdTargetId })
-        .catch(() => undefined);
-    };
-    try {
-      await switchTab(createdTargetId);
-    } catch (error) {
-      await discard();
-      throw error;
-    }
-    const createdTabId = attachedSurfaces.get(sessionId) ?? createdTargetId;
-    if (address !== "about:blank") {
-      let navigation;
-      try {
-        navigation = await cdp("Page.navigate", { url: address });
-      } catch (error) {
-        if (error instanceof CdpTimeoutError) {
-          throw new Error(
-            `${address} is still loading in tab ${createdTabId}. Continue there with --tab ${createdTabId} or switchTab, or close it.`,
-            { cause: error },
-          );
-        }
-        await discard();
-        throw error;
-      }
-      if (navigation.errorText) {
-        const failure = `Could not open ${address}: ${navigation.errorText}`;
-        // The person taking the tab elsewhere also aborts this navigation;
-        // the tab is theirs then.
-        const { targetInfo } = await client
-          .command("Target.getTargetInfo", { targetId: createdTargetId })
-          .catch(() => ({}));
-        if (targetInfo?.userActivity?.sinceLastAgentCommand === true) {
-          throw new Error(`${failure}. The person is using tab ${createdTabId}, so it stays open.`);
-        }
-        await discard();
-        throw new Error(failure);
-      }
-    }
-    if (!notedManyTabs) {
-      const line = manyTabsLine(
-        await pages().then(
-          (found) => found.length,
-          () => 0,
-        ),
+  const js = async (expression, target) => {
+    if (target !== undefined)
+      throw new TypeError(
+        "js() is bound to this page; use openPage(tabId).js(expression) for another page.",
       );
-      if (line) {
-        notedManyTabs = true;
-        process.stderr.write(`${line}\n`);
-      }
-    }
-    return createdTabId;
-  };
-
-  const closeTab = async (target = targetId) => {
-    if (!target) target = (await currentTab()).targetId;
-    const requestedTargetId = normalizeTargetId(target);
-    if (!requestedTargetId) throw new TypeError("closeTab requires a tab ID or tab object");
-    return client.command("Target.closeTarget", { targetId: requestedTargetId });
-  };
-
-  const ensureRealTab = async () => {
-    const current = await currentTab();
-    if (INTERNAL_URLS.some((prefix) => current.url.startsWith(prefix))) {
-      throw new Error(
-        "The selected tab is a browser-internal page. Choose a website tab with switchTab(tabId), or open one with newTab(url).",
-      );
-    }
-    return current;
-  };
-
-  const js = async (expression, requestedTargetId) => {
-    if (requestedTargetId && requestedTargetId !== targetId) await switchTab(requestedTargetId);
     const response = await cdp("Runtime.evaluate", {
       awaitPromise: true,
       expression: String(expression),
@@ -889,7 +786,7 @@ export function createBrowserHarness(client, initialTargetId) {
             type: event.params?.type,
             message: event.params?.message,
           };
-          noteDialogEvent(binding.targetId, dialog.id);
+          noteDialogEvent(binding.targetId, dialog.id, dialog);
           const line = pageDialogLine(dialog);
           if (line && line !== notedDialog) {
             notedDialog = line;
@@ -1053,11 +950,14 @@ export function createBrowserHarness(client, initialTargetId) {
     captureScreenshot,
     cdp,
     clickAt,
-    closeTab,
     currentTab,
     detach,
     drainEvents: () => {
-      const events = client.drainEvents();
+      const events = client.drainEvents().filter((event) => {
+        if (event.sessionId) return attachedTargets.has(event.sessionId);
+        const target = event.params?.targetId ?? event.params?.targetInfo?.targetId;
+        return typeof target === "string" && [...attachedTargets.values()].includes(target);
+      });
       for (const event of events) {
         if (event.method === "Page.javascriptDialogOpening") {
           observeDialog(attachedTargets.get(event.sessionId), { id: event.params?.dialogId });
@@ -1071,8 +971,6 @@ export function createBrowserHarness(client, initialTargetId) {
     fillCard,
     gotoUrl,
     js,
-    listTabs,
-    newTab,
     pageInfo,
     page,
     pressKey,
@@ -1081,9 +979,74 @@ export function createBrowserHarness(client, initialTargetId) {
     setInputFiles,
     sleep,
     stageFiles,
-    switchTab,
     typeText,
     waitForElement,
     waitForLoad,
+    waitForNetworkIdle: (options) =>
+      networkIdle(client, cdp, () => new Set(attachedTargets.keys()), options, stale.signal),
   });
+}
+
+/** Observes requests that begin during this window; already-finished requests are unknown. */
+export async function networkIdle(
+  client,
+  cdp,
+  session,
+  { timeout = 10_000, idleMs = 500 } = {},
+  staleSignal,
+) {
+  for (const [name, value] of Object.entries({ timeout, idleMs }))
+    if (!Number.isInteger(value) || value < 1 || value > 300_000)
+      throw new TypeError(`${name} must be an integer from 1 to 300000 ms`);
+  const requests = new Set();
+  let idleTimer,
+    deadline,
+    done = false;
+  let finish;
+  const result = new Promise((resolve, reject) => {
+    finish = (error, value) => {
+      if (done) return;
+      done = true;
+      clearTimeout(idleTimer);
+      clearTimeout(deadline);
+      if (error) reject(error);
+      else resolve(value);
+    };
+  });
+  const armIdle = () => {
+    clearTimeout(idleTimer);
+    if (!requests.size && !done) idleTimer = setTimeout(() => finish(null, true), idleMs);
+  };
+  const removeEvent = client.onEvent((event) => {
+    const bound = session();
+    if (bound instanceof Set ? !bound.has(event.sessionId) : event.sessionId !== bound) return;
+    const { requestId, type } = event.params ?? {};
+    const key = `${event.sessionId}:${requestId}`;
+    if (event.method === "Network.requestWillBeSent") {
+      if (type !== "WebSocket" && type !== "EventSource") requests.add(key);
+      else requests.delete(key);
+    } else if (
+      ["Network.loadingFinished", "Network.loadingFailed"].includes(event.method) ||
+      (event.method === "Network.responseReceived" && ["WebSocket", "EventSource"].includes(type))
+    ) {
+      requests.delete(key);
+    } else return;
+    armIdle();
+  });
+  const removeClose = client.onClose((error) => finish(error));
+  const stale = () => finish(staleSignal.reason);
+  staleSignal?.addEventListener("abort", stale, { once: true });
+  if (staleSignal?.aborted) stale();
+  deadline = setTimeout(() => finish(null, false), timeout);
+  // Attach and enable count toward the same deadline. Do not disable Network: another waiter may use it.
+  void cdp("Network.enable").then(armIdle, (error) => finish(error));
+  try {
+    return await result;
+  } finally {
+    removeEvent();
+    removeClose();
+    staleSignal?.removeEventListener("abort", stale);
+    clearTimeout(idleTimer);
+    clearTimeout(deadline);
+  }
 }

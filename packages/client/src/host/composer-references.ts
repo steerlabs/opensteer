@@ -40,7 +40,7 @@ export function composerReferenceCandidates(
     category: "Recent tasks" | "Automations" | "Computers",
   ) => {
     const ref = ReferenceSchema.safeParse({ kind, id });
-    if (!ref.success || candidates.has(ref.data.id)) return;
+    if (!ref.success || ref.data.kind === "tab" || candidates.has(ref.data.id)) return;
     const label = referenceTitle(
       title,
       kind === "task" ? "Task" : kind === "automation" ? "Automation" : "Computer",

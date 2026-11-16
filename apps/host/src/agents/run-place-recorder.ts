@@ -1,10 +1,12 @@
 import { systemClock, type Clock } from "@opensteer/shared/clock";
-import { placeIdentityKey, type AgentEvent, type EventData, type RunId } from "@opensteer/core";
+import { type AgentEvent, type EventData, type RunId } from "@opensteer/core";
+
+type RunPlaceData = EventData<"place.entered">;
 
 interface RunPlaceWrite {
   readonly runId: RunId;
   readonly bindingGeneration: number;
-  readonly data: EventData<"place.entered">;
+  readonly data: RunPlaceData;
 }
 
 /** Called once a place is where the Run is, with when it got there and whether it was coalesced. */
@@ -52,7 +54,7 @@ export class RunPlaceRecorder {
   begin(
     runId: RunId,
     bindingGeneration: number,
-  ): (data: EventData<"place.entered">, settled?: RunPlaceSettled) => void {
+  ): (data: RunPlaceData, settled?: RunPlaceSettled) => void {
     if (this.#closed) return () => undefined;
     let admissions = this.#admissions.get(runId);
     if (admissions && admissions.generation > bindingGeneration) return () => undefined;
@@ -70,7 +72,7 @@ export class RunPlaceRecorder {
       const pending = this.#pending.get(runId);
       this.#cancelPending(runId);
       if (previous?.generation === bindingGeneration) {
-        if (previous.key === placeIdentityKey(data.place) && !pending) return;
+        if (previous.key === data.tabId && !pending) return;
         const remaining = previous.at + runPlaceIntervalMs - this.#clock.now();
         if (remaining > 0) {
           const cancel = this.#clock.schedule(() => this.#flushPending(runId), remaining);
@@ -99,7 +101,7 @@ export class RunPlaceRecorder {
     const { runId, bindingGeneration, data } = input;
     const last = {
       generation: bindingGeneration,
-      key: placeIdentityKey(data.place),
+      key: data.tabId,
       at: this.#clock.now(),
     };
     const previous = this.#last.get(runId);
@@ -132,7 +134,7 @@ export class RunPlaceRecorder {
   enter(
     runId: RunId,
     bindingGeneration: number,
-    data: EventData<"place.entered">,
+    data: RunPlaceData,
     settled?: RunPlaceSettled,
   ): void {
     this.begin(runId, bindingGeneration)(data, settled);

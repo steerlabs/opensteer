@@ -52,7 +52,12 @@ import {
   type TranscriptEntry,
 } from "@opensteer/client/host";
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
-import { useRunPage, useThreadInputQueue, useWaitingInputs } from "@opensteer/client/react";
+import {
+  useRunPage,
+  useTabsRevision,
+  useThreadInputQueue,
+  useWaitingInputs,
+} from "@opensteer/client/react";
 import { fromLivePage, useMediaQuery, usePageVisible, useWindowInForeground } from "../ui-utils.js";
 import { AgentTranscript, ConversationActivity } from "./agent-activity.js";
 import { useShell } from "./app-shell.js";
@@ -308,6 +313,12 @@ function ThreadView({
   }, [composerKey]);
   const inputQueue = useThreadInputQueue(hostClient, thread.id);
   const waiting = useWaitingInputs(hostClient, thread.id);
+  // Links in the transcript open tabs; a tab change gives them a new source to read.
+  const tabRevision = useTabsRevision(hostClient);
+  const tabSource = useMemo(
+    () => ({ tabs: snapshot.tabs, browserProfiles: snapshot.browserProfiles, tabRevision }),
+    [snapshot.tabs, snapshot.browserProfiles, tabRevision],
+  );
   // The composer's own record: words sent as new from an open edit are kept the same way.
   const pendingSends = usePendingSends(
     snapshot.deploymentId && snapshot.user?.id
@@ -962,7 +973,9 @@ function ThreadView({
   const room = useRoom(threadRef, pageHere && runPlace !== null);
   const typing = useTypingHere(threadRef, keyboardInset);
   // The owner opens a Mac app's or phone's stream only once a decoder here can draw it.
-  const decoding = useDisplayDecoding(runPlace !== null && runPlace.kind !== "browser");
+  const decoding = useDisplayDecoding(
+    runPlace !== null && (runPlace.kind === "window" || runPlace.kind === "phone"),
+  );
   // Some form of the place is drawn: the page or its row here, or the head's
   // picture, which yields to the row where the bar has no room for it.
   const pictureShown = (!work || phone || workspaceDock.open) && !placeInMiddle;
@@ -1192,7 +1205,7 @@ function ThreadView({
                         key={thread.id}
                         attachmentReader={hostClient}
                         activity={activity}
-                        browserSessions={snapshot.browserSessions}
+                        browserSessions={tabSource}
                         browserUses={snapshot.browserUses}
                         // A conversation (Opensteer, a direct message) reads as messages, each
                         // turn's steps behind its reply; work keeps its whole trace in view.
@@ -1331,7 +1344,7 @@ function ThreadView({
                       ? (activityOwnerAnchor ?? activityView.opener)
                       : (activityAnchor() ?? activityView.opener)
                   }
-                  browserSessions={snapshot.browserSessions}
+                  browserSessions={tabSource}
                   browserUses={snapshot.browserUses}
                   entries={conversation}
                   id={activityPanelId}

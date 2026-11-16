@@ -3,6 +3,7 @@ import { RunAgentToolsPlanSchema } from "@opensteer/protocol";
 import { agentToolsPlanForRun } from "../agents/agent-tools-plan.js";
 it("keeps standing team inventory stable across tasks and invalidates a warm plan when instructions or inventory change", () => {
   const input = {
+    capabilities: { tabs: true, pages: true, computerUse: true, apps: true },
     url: "http://127.0.0.1/mcp",
     token: "first",
     purpose: "task" as const,
@@ -64,6 +65,7 @@ vi.mock("@opensteer/shared/advertisedJsonSchema", async (importOriginal) => {
 it("revises a warm plan when the schema engines see changes", async () => {
   const { advertisedJsonSchema } = await import("@opensteer/shared/advertisedJsonSchema");
   const input = {
+    capabilities: { tabs: true, pages: true, computerUse: true, apps: true },
     url: "http://localhost/mcp",
     token: "token",
     purpose: "task" as const,
@@ -75,4 +77,34 @@ it("revises a warm plan when the schema engines see changes", async () => {
     properties: { added: { type: "string" } },
   });
   expect(agentToolsPlanForRun(input).toolsRevision).not.toBe(before.toolsRevision);
+});
+
+it("filters capability tools and invalidates a plan when driver reach changes", () => {
+  const input = {
+    url: "http://localhost/mcp",
+    token: "test",
+    purpose: "task" as const,
+    accessMode: "full-access" as const,
+    capabilities: { tabs: true, pages: true, computerUse: true, apps: true },
+  };
+  const ordinary = agentToolsPlanForRun(input);
+  const none = agentToolsPlanForRun({
+    ...input,
+    capabilities: { tabs: false, pages: false, computerUse: false, apps: false },
+  });
+  expect(ordinary.tools).toContain("tab_list");
+  expect(ordinary.tools).toContain("app_list");
+  for (const name of [
+    "tab_list",
+    "tab_open",
+    "person_show",
+    "app_publish",
+    "app_list",
+    "computer_use",
+  ])
+    expect(none.tools).not.toContain(name);
+  expect(
+    agentToolsPlanForRun({ ...input, capabilities: { ...input.capabilities, pages: false } })
+      .toolsRevision,
+  ).not.toBe(ordinary.toolsRevision);
 });

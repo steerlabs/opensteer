@@ -1,6 +1,8 @@
+import { request as httpsRequest } from "node:https";
 import { randomBytes } from "node:crypto";
 import {
   createServer,
+  request as httpRequest,
   type IncomingMessage,
   type ServerResponse,
   type Server as HttpServer,
@@ -18,8 +20,11 @@ import {
   browserAgentHostRoutePrefix,
   browserAgentRequestMaxBytes,
   browserAgentResponseMaxBytes,
-  browserAgentRoutePaths,
 } from "@opensteer/protocol/browser-agent";
+import {
+  agentToolHostRoutePath,
+  AgentToolRelayRequestSchema,
+} from "@opensteer/protocol/agent-tool-relay";
 import { BrowserAgentBackendSchema } from "@opensteer/protocol/browser-actions";
 
 const maximumFrameBytes = 1_024 * 1_024;
@@ -71,12 +76,13 @@ export class BrowserCdpRelay {
       const agentPath = pathname?.startsWith(`${this.#path}/agent/`)
         ? pathname.slice(`${this.#path}/agent/`.length)
         : undefined;
-      if (agentPath && Object.values(browserAgentRoutePaths).some((path) => path === agentPath)) {
-        if (request.method !== "GET" && request.method !== "POST") {
+      const tools = pathname === `${this.#path}/tools/call`;
+      if (tools || agentPath === "pages/bind") {
+        if (request.method !== "POST") {
           response.writeHead(405).end();
           return;
         }
-        const pending = this.#agentResponse(request, response, agentPath);
+        const pending = this.#agentResponse(request, response, tools ? "tools/call" : "pages/bind");
         this.#agentRequests.add(pending);
         void pending.finally(() => this.#agentRequests.delete(pending));
         return;
@@ -214,7 +220,24 @@ export class BrowserCdpRelay {
     }
     const generation = this.#generation;
     const controller = new AbortController();
-    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]);
+    const tools = path === "tools/call";
+    const deadline = request.headers["x-opensteer-deadline"];
+    const deadlineAt = typeof deadline === "string" ? Number(deadline) : undefined;
+    if (
+      deadlineAt !== undefined &&
+      (!Number.isSafeInteger(deadlineAt) || deadlineAt <= Date.now())
+    ) {
+      response.writeHead(400).end();
+      return;
+    }
+    const signal = tools
+      ? deadlineAt === undefined
+        ? controller.signal
+        : AbortSignal.any([
+            controller.signal,
+            AbortSignal.timeout(Math.max(1, Math.min(2_147_483_647, deadlineAt - Date.now()))),
+          ])
+      : AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]);
     const fenced = () => this.#closed || this.#suspended || generation !== this.#generation;
     this.#negotiations.add(controller);
     response.once("close", () => controller.abort());
@@ -240,7 +263,7 @@ export class BrowserCdpRelay {
         };
         const data = (chunk: Buffer) => {
           size += chunk.byteLength;
-          if (size > browserAgentRequestMaxBytes) {
+          if (size > (tools ? maximumFrameBytes : browserAgentRequestMaxBytes)) {
             response.writeHead(413).end();
             fail(new Error("Browser request exceeds its size limit"));
           } else chunks.push(chunk);
@@ -252,19 +275,25 @@ export class BrowserCdpRelay {
         if (signal.aborted) abort();
       });
       signal.throwIfAborted();
+      if (tools) AgentToolRelayRequestSchema.parse(JSON.parse(body.toString("utf8")));
       const url = new URL(this.#upstreamUrl);
       url.protocol = url.protocol === "wss:" ? "https:" : "http:";
-      url.pathname = `${browserAgentHostRoutePrefix}/${path}`;
+      url.pathname = tools ? agentToolHostRoutePath : `${browserAgentHostRoutePrefix}/${path}`;
       url.search = new URL(request.url ?? "", "http://relay.invalid").search;
-      const upstream = await fetch(url, {
+      const send = tools ? postTool : fetch;
+      const upstream = await send(url, {
         method: request.method ?? "GET",
-        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          ...(deadlineAt === undefined ? {} : { "x-opensteer-deadline": String(deadlineAt) }),
+        },
         ...(request.method === "POST" ? { body: body.toString("utf8") } : {}),
         redirect: "error",
         signal,
       });
       const result = await readBoundedJson(upstream, {
-        maximumBytes: browserAgentResponseMaxBytes,
+        maximumBytes: tools ? maximumBufferedBytes : browserAgentResponseMaxBytes,
         signal,
       }).catch((error: unknown) => {
         if (upstream.ok) throw error;
@@ -272,6 +301,14 @@ export class BrowserCdpRelay {
       });
       if (fenced()) {
         response.writeHead(403).end();
+        return;
+      }
+      if (tools) {
+        response.writeHead(upstream.status, {
+          "content-type": "application/json",
+          "cache-control": "no-store",
+        });
+        response.end(JSON.stringify(result));
         return;
       }
       const refusal = z
@@ -520,4 +557,42 @@ function safePathname(value: string | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+/** Long Request holds use the caller/Run lifetime, without fetch's implicit header timeout. */
+function postTool(url: URL, options: RequestInit): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const send = url.protocol === "https:" ? httpsRequest : httpRequest;
+    const request = send(
+      url,
+      {
+        method: "POST",
+        headers: Object.fromEntries(new Headers(options.headers)),
+        ...(options.signal ? { signal: options.signal } : {}),
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        let bytes = 0;
+        response.on("data", (chunk: Buffer) => {
+          bytes += chunk.byteLength;
+          if (bytes > maximumBufferedBytes) {
+            const error = new Error("Tool result exceeds the bounded tool transport");
+            request.destroy(error);
+            response.destroy(error);
+            reject(error);
+          } else chunks.push(chunk);
+        });
+        response.once("error", reject);
+        response.once("end", () =>
+          resolve(
+            new Response(Buffer.concat(chunks).toString("utf8"), {
+              status: response.statusCode ?? 502,
+            }),
+          ),
+        );
+      },
+    );
+    request.once("error", reject);
+    request.end(options.body);
+  });
 }

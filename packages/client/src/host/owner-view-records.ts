@@ -57,7 +57,6 @@ export class OwnerViewRecords {
       readonly machineId: string;
       readonly viewId: string;
       readonly generation: number;
-      readonly tabClosed?: true | undefined;
     },
   ): readonly MachineSummary[] {
     if (!this.#gone(removal)) {
@@ -71,7 +70,6 @@ export class OwnerViewRecords {
         ? machine
         : {
             ...machine,
-            tabOpenedAt: removal.tabClosed ? null : machine.tabOpenedAt,
             computerUse: {
               ...machine.computerUse,
               ownerViews: (machine.computerUse.ownerViews ?? []).filter(

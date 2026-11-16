@@ -2999,6 +2999,7 @@ integration("personal task delegation lifecycle", () => {
             "agent-tools-plan-v1",
           ],
           name: "Lent Mac",
+          modules: { agents: { computerTool: 1 } },
           runnerId,
         }),
         inspectHarnesses: async (

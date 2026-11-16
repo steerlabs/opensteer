@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createId, WaitingRequestSchema, type Request, type WaitingRequest } from "@opensteer/core";
 import { MemoryRouter } from "react-router";
 import { mockTmdbProposal } from "@opensteer/client/mock";
-import { BrowserTabStore, deriveSurface } from "@opensteer/client/host";
+import { deriveSurface, TabStore } from "@opensteer/client/host";
 import { InputSurface, RequestStack } from "./input-surface.js";
 import { resetQuestionSessionsForTests } from "./question-session.js";
 import { composerDraftKeyFor, composerDrafts } from "./composer-drafts.js";
@@ -65,9 +65,8 @@ const shell = vi.hoisted(() => ({
   reportActionError: vi.fn(),
   localExecutionStatus: null,
 }));
-const browserTabs = new BrowserTabStore();
-Object.assign(noPlaces, { browserTabs });
-Object.assign(shell.hostClient, { browserTabs });
+Object.assign(noPlaces, { tabs: new TabStore(), browserProfiles: [] });
+Object.assign(shell.hostClient, { tabViewer: () => null });
 vi.mock("./app-shell.js", () => ({ useShell: () => shell }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root;

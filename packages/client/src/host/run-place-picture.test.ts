@@ -3,16 +3,13 @@ import {
   BrowserSurfaceIdSchema,
   createId,
   PlaceEnteredEventViewSchema,
-  type PlaceEnteredEventView,
 } from "@opensteer/core";
-import {
-  computerAppIdentityKey,
-  encodeDisplayViewerFrame,
-  placeIdentityKey,
-} from "@opensteer/protocol";
+import { encodeDisplayViewerFrame } from "@opensteer/protocol";
 import { expect, it } from "vitest";
 import { sharedDisplayStreams, type DisplayFrame } from "../integrations/phone-display-stream.js";
-import { seedBrowserSession, replaceBrowserTabs } from "../test-support/browser-snapshot.js";
+import { tabFixture, tabStoreFixture } from "../test-support/tab-fixtures.js";
+import type { Tab, TabId } from "@opensteer/core";
+import type { TabViewer } from "@opensteer/protocol";
 import { BrowserWatchStore } from "./browser-watch.js";
 import { reconcileBrowserLastPictures } from "./browser-last-picture.js";
 import type { BrowserFrameStore, HostClient, HostSnapshot } from "./client.js";
@@ -27,7 +24,7 @@ import {
   subscribeRunPlacePicture,
 } from "./run-place-picture.js";
 
-type PlaceRef = PlaceEnteredEventView["data"]["place"];
+type PlaceRef = TabId;
 
 const sessionId = BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000001");
 const tabId = BrowserSurfaceIdSchema.parse("srf_00000000-0000-4000-8000-000000000001");
@@ -36,7 +33,8 @@ const displaySessionId = "cus_00000000-0000-4000-8000-000000000001";
 const threadId = createId("thread");
 const runId = createId("run");
 const machineId = createId("runner");
-const browserPlace: PlaceRef = { kind: "browser", sessionId, surfaceId: tabId };
+const browserPlace: PlaceRef = tabId;
+const nativeTabId = BrowserSurfaceIdSchema.parse("tab_native");
 
 class Socket implements WebSocketClient {
   binaryType: "arraybuffer" | "blob" = "blob";
@@ -142,12 +140,23 @@ function fixture(phone = true) {
     subscribe: (session, listener, surface) => store.subscribe(session, surface, listener),
     invalidationKey: store.invalidationKey,
   });
-  const session = seedBrowserSession(
-    { id: sessionId, state: "ready" },
-    {
-      rows: [{ id: tabId }, { id: otherTabId }],
-    },
+  const tabs = tabStoreFixture([
+    tabFixture({ tabId }),
+    tabFixture({ tabId: otherTabId }),
+    tabFixture({
+      tabId: nativeTabId,
+      kind: phone ? "phone" : "window",
+      ...(phone ? {} : { bundleId: app.bundleId }),
+      computer: { computerId: machineId, name: "Mac" },
+    }),
+  ]);
+  const viewers = new Map<string, TabViewer>(
+    [tabId, otherTabId].map((id) => [id, { kind: "page", sessionId, surfaceId: id } as TabViewer]),
   );
+  let activity: readonly { readonly runId: string; readonly threadId: string }[] = [
+    { runId, threadId },
+  ];
+  const activityListeners = new Set<() => void>();
   const places = new RunPlaceStore();
   const listeners = new Set<() => void>();
   let snapshot = {
@@ -171,7 +180,7 @@ function fixture(phone = true) {
         },
       },
     ],
-    browserTabs: session.browserTabs,
+    tabs,
   } as unknown as HostSnapshot;
   const client = {
     getSnapshot: () => snapshot,
@@ -181,7 +190,12 @@ function fixture(phone = true) {
         listeners.delete(listener);
       };
     },
-    browserTabs: session.browserTabs,
+    tabViewer: (id: string) => viewers.get(id) ?? null,
+    placeActivity: () => activity,
+    subscribePlaceActivity: (_tabId: string, listener: () => void) => {
+      activityListeners.add(listener);
+      return () => activityListeners.delete(listener);
+    },
     runPlace: places.get,
     subscribeRunPlace: places.subscribe,
     browserWatchState: watch.get,
@@ -199,15 +213,16 @@ function fixture(phone = true) {
     for (const frames of [client.browserWatchFrames, client.browserFrames])
       reconcileBrowserLastPictures(
         frames,
-        (sessionId, tabId) => session.browserTabs.sessionTab(sessionId, tabId)?.documentId,
-        (tabId) => {
-          const groupId = session.browserTabs.groupForTab(tabId);
-          return groupId ? session.browserTabs.group(groupId)?.sessionId : undefined;
+        (_sessionId, id) =>
+          tabs.get(id) ? (tabs.get(id)?.state === "asleep" ? null : "document") : undefined,
+        (id) => {
+          const viewer = viewers.get(id);
+          return viewer?.kind === "page" ? viewer.sessionId : undefined;
         },
       );
   };
   reconcilePictures();
-  const stopPictures = session.browserTabs.subscribe(reconcilePictures);
+  const stopPictures = tabs.subscribe(reconcilePictures);
   let sequence = 0;
   function enter(place: PlaceRef, id = runId) {
     const entry = PlaceEnteredEventViewSchema.parse({
@@ -218,7 +233,7 @@ function fixture(phone = true) {
       runId: id,
       sequence: String(++sequence),
       createdAt: "2026-11-15T12:00:00Z",
-      data: { place, title: "Place", site: null },
+      data: { tabId: place, title: "Place", site: null },
     });
     places.accept(entry);
   }
@@ -229,6 +244,18 @@ function fixture(phone = true) {
     sockets,
     displays,
     enter,
+    setActivity(next: typeof activity) {
+      activity = next;
+      for (const listener of activityListeners) listener();
+    },
+    setTabs(rows: readonly Tab[]) {
+      tabs.seed({ tabs: [...rows], layout: tabs.layout, complete: true });
+    },
+    rebind(id: string, sessionId: string) {
+      viewers.set(id, { kind: "page", sessionId, surfaceId: id } as TabViewer);
+      reconcilePictures();
+      for (const listener of listeners) listener();
+    },
     update(patch: Partial<HostSnapshot>) {
       snapshot = { ...snapshot, ...patch };
       for (const listener of listeners) listener();
@@ -255,7 +282,7 @@ it("holds the real browser watch across forms, keeps sleeping pictures and aspec
     socket.browserFrame();
     const frame = f.watch.get(sessionId, tabId).frame;
     expect(read()).toEqual({
-      placeKey: placeIdentityKey(browserPlace),
+      placeKey: browserPlace,
       usable: true,
       fresh: true,
       aspect: 4 / 3,
@@ -269,13 +296,10 @@ it("holds the real browser watch across forms, keeps sleeping pictures and aspec
     }
     f.watch.suspend(true);
     expect(read()).toMatchObject({ usable: true, fresh: false });
-    const tabs = f.client.browserTabs;
-    replaceBrowserTabs(
-      tabs,
-      sessionId,
-      tabs
-        .sessionTabs(sessionId)
-        .map((tab) => (tab.id === tabId ? { ...tab, state: "suspended", documentId: null } : tab)),
+    f.setTabs(
+      [...f.client.getSnapshot().tabs.rows.values()].map((tab) =>
+        tab.tabId === tabId ? { ...tab, state: "asleep" } : tab,
+      ),
     );
     expect(f.watch.get(sessionId, tabId).frame).toBeNull();
     expect(read()).toMatchObject({ usable: true, fresh: false, aspect: 4 / 3 });
@@ -290,7 +314,7 @@ it("holds the real browser watch across forms, keeps sleeping pictures and aspec
       () => true,
     );
     f.watch.suspend(false);
-    f.enter({ ...browserPlace, surfaceId: otherTabId });
+    f.enter(otherTabId);
     expect(read()).toMatchObject({ usable: false, fresh: false, aspect: 4 / 3 });
     const next = f.sockets.at(-1)!;
     next.open();
@@ -300,7 +324,7 @@ it("holds the real browser watch across forms, keeps sleeping pictures and aspec
     expect(read()).toMatchObject({ usable: false, fresh: false, aspect: 4 / 3 });
     release();
     const nextRun = createId("run");
-    f.enter({ ...browserPlace, surfaceId: otherTabId }, nextRun);
+    f.enter(otherTabId, nextRun);
     const end = retainRunPlacePicture(f.client, threadId, nextRun, false);
     expect(read().aspect).toBeNull();
     end();
@@ -310,15 +334,12 @@ it("holds the real browser watch across forms, keeps sleeping pictures and aspec
   }
 });
 
-it.each(["phone", "app"] as const)(
+it.each(["phone", "window"] as const)(
   "holds a %s display without leaking credit and fences cleared or revoked reports",
   (kind) => {
     const f = fixture(kind === "phone");
-    const place: PlaceRef =
-      kind === "phone"
-        ? { kind: "phone", machineId, display: "main" }
-        : { kind: "app", machineId, appKey: computerAppIdentityKey(app) };
-    const key = placeIdentityKey(place);
+    const place: PlaceRef = nativeTabId;
+    const key = place;
     f.enter(place);
     const release = retainRunPlacePicture(f.client, threadId, runId, true);
     const read = () => runPlacePicture(f.client, threadId);
@@ -397,28 +418,11 @@ it("keeps the same sleeping tab's picture through a replacement session and fenc
   try {
     f.sockets[0]!.open();
     f.sockets[0]!.browserFrame();
-    const tabs = f.client.browserTabs;
-    const rows = tabs.sessionTabs(sessionId);
-    replaceBrowserTabs(
-      tabs,
-      sessionId,
-      rows.map((tab) => ({ ...tab, state: "suspended", documentId: null })),
+    f.setTabs(
+      [...f.client.getSnapshot().tabs.rows.values()].map((tab) => ({ ...tab, state: "asleep" })),
     );
     const replacement = BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000002");
-    replaceBrowserTabs(
-      tabs,
-      sessionId,
-      rows.map((tab) => ({
-        ...tab,
-        sessionId: replacement,
-        state: "suspended",
-        documentId: null,
-      })),
-    );
-    const group = tabs.group(sessionId)!;
-    tabs.applyGroups({ op: "begin", generation: "replacement" });
-    tabs.applyGroups({ op: "rows", rows: [{ ...group, sessionId: replacement }] });
-    tabs.applyGroups({ op: "end", revision: 0, count: 1, meta: {} });
+    f.rebind(tabId, replacement);
     f.watch.reconcile(
       () => false,
       (session) => session === replacement,
@@ -436,25 +440,22 @@ it("keeps the same sleeping tab's picture through a replacement session and fenc
   }
 });
 
-it.each(["phone", "app"] as const)("holds no %s display until decoding is available", (kind) => {
+it.each(["phone", "window"] as const)("holds no %s display until decoding is available", (kind) => {
   const f = fixture(kind === "phone");
-  const place: PlaceRef =
-    kind === "phone"
-      ? { kind: "phone", machineId, display: "main" }
-      : { kind: "app", machineId, appKey: computerAppIdentityKey(app) };
+  const place: PlaceRef = nativeTabId;
   f.enter(place);
   const incapable = retainRunPlacePicture(f.client, threadId, runId, false);
   let capable = () => {};
   try {
     expect(f.displays).toHaveLength(0);
-    expect(attachRunPlaceDisplay(f.client, threadId, placeIdentityKey(place))).toBeNull();
+    expect(attachRunPlaceDisplay(f.client, threadId, place)).toBeNull();
     capable = retainRunPlacePicture(f.client, threadId, runId, true);
     expect(f.displays).toHaveLength(1);
     const socket = f.displays[0]!;
     socket.open();
     capable();
     expect(socket.readyState).toBe(3);
-    expect(attachRunPlaceDisplay(f.client, threadId, placeIdentityKey(place))).toBeNull();
+    expect(attachRunPlaceDisplay(f.client, threadId, place)).toBeNull();
   } finally {
     capable();
     incapable();
@@ -464,13 +465,13 @@ it.each(["phone", "app"] as const)("holds no %s display until decoding is availa
 
 it("requests a decodable picture after a delayed decoder attaches, coalescing repeated requests", () => {
   const f = fixture();
-  const place: PlaceRef = { kind: "phone", machineId, display: "main" };
+  const place: PlaceRef = nativeTabId;
   f.enter(place);
   const release = retainRunPlacePicture(f.client, threadId, runId, true);
   try {
     const socket = f.displays[0]!;
     socket.open();
-    const display = attachRunPlaceDisplay(f.client, threadId, placeIdentityKey(place))!;
+    const display = attachRunPlaceDisplay(f.client, threadId, place)!;
     socket.displayFrame(1);
     const requests = () =>
       socket.sent.filter((message) => message.type === "display.keyframe").length;
@@ -481,6 +482,43 @@ it("requests a decodable picture after a delayed decoder attaches, coalescing re
     expect(requests()).toBe(before + 1);
     stop();
     display.release();
+  } finally {
+    release();
+    f.dispose();
+  }
+});
+
+it("stops watching a window when its exact tab loses this Run's activity, including after remount", () => {
+  const f = fixture(false);
+  f.enter(nativeTabId);
+  const first = retainRunPlacePicture(f.client, threadId, runId, true);
+  first();
+  const release = retainRunPlacePicture(f.client, threadId, runId, true);
+  try {
+    const socket = f.displays.at(-1)!;
+    socket.open();
+    socket.receive({
+      type: "display.state",
+      state: "live",
+      generation: 1,
+      width: 720,
+      height: 1280,
+    });
+    reportRunPlacePicture(f.client, threadId, nativeTabId, {
+      kind: "drawn",
+      width: 720,
+      height: 1280,
+    });
+    expect(runPlacePicture(f.client, threadId)).toMatchObject({ usable: true, fresh: true });
+    f.setActivity([]);
+    expect(socket.readyState).toBe(3);
+    expect(attachRunPlaceDisplay(f.client, threadId, nativeTabId)).toBeNull();
+    reportRunPlacePicture(f.client, threadId, nativeTabId, { kind: "drawn", width: 1, height: 1 });
+    expect(runPlacePicture(f.client, threadId)).toMatchObject({
+      usable: true,
+      fresh: false,
+      aspect: 720 / 1280,
+    });
   } finally {
     release();
     f.dispose();

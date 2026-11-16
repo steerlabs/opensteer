@@ -1,3 +1,5 @@
+import { TABS_AND_APPS_SQL, tabsAndAppsMigrationName } from "./tabs-apps-migration.js";
+export { tabsAndAppsMigrationName } from "./tabs-apps-migration.js";
 import { localMachineOwnerEmail } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { Migrator, type MigrationProvider, type MigrationResultSet } from "kysely/migration";
@@ -291,6 +293,11 @@ export function migrationProvider(): MigrationProvider {
         [teamCopiesMigrationName]: {
           async up(database) {
             await sql.raw(TEAM_COPIES_SQL).execute(database);
+          },
+        },
+        [tabsAndAppsMigrationName]: {
+          async up(database) {
+            await sql.raw(TABS_AND_APPS_SQL).execute(database);
           },
         },
       };

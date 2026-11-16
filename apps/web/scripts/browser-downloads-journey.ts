@@ -48,11 +48,11 @@ const dismiss = async (page: Page) => {
     await page.locator(".toast__dismiss").first().click();
 };
 async function openBrowser(page: Page) {
-  await page.locator('.side-tab[data-group="web"]').first().waitFor();
+  await page.locator('.side-tab[data-kind="page"]').first().waitFor();
   await page.evaluate(() =>
     (Reflect.get(window, "opensteerMock") as MockHostClient).scriptPlaces(),
   );
-  await page.locator('.side-tab[data-group="web"] .side-tab__main').first().click();
+  await page.locator('.side-tab[data-kind="page"] .side-tab__main').first().click();
   await page.getByRole("button", { name: "Reload page", exact: true }).waitFor();
 }
 const screenshots: string[] = [];
@@ -493,7 +493,7 @@ try {
       await button(race).click();
       await panel(race).getByText("raced.zip", { exact: true }).waitFor();
       await race.keyboard.press("Escape");
-      await race.locator('.side-tab[data-group="web"] .side-tab__main').nth(1).click();
+      await race.locator('.side-tab[data-kind="page"] .side-tab__main').nth(1).click();
       await button(race).waitFor();
       const subscriptions = await race.evaluate(
         () => Reflect.get(window, "downloadSubscriptions") as number,

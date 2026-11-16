@@ -11,7 +11,6 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -20,60 +19,17 @@ import {
   browserTabPicture,
   pageSiteLabel,
   placeActivityPoint,
-  runPlaceActing,
   type HostClient,
-  type SurfaceDestination,
 } from "@opensteer/client/host";
-import { useHostSelector, useRunPlace, useRunPlaceBinding } from "@opensteer/client/react";
+import { useRunPlaceView, type RunPlaceView } from "@opensteer/client/react";
+export { useRunPlaceView, type RunPlaceView } from "@opensteer/client/react";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
-import { placeIdentityKey } from "@opensteer/protocol";
 import { useMediaQuery } from "../../ui-utils.js";
 import { Icon } from "../icon.js";
 import { AgentCursors } from "./agent-cursors.js";
 import { destinationPlaceKey } from "./navigation.js";
 import { RunPlaceCanvas, useRunPlacePictures } from "./run-place-picture.js";
 import { useWorkspace } from "./workspace-context.js";
-
-export interface RunPlaceView {
-  readonly placeKey: string;
-  /** The place as the conversation's shared picture names it. */
-  readonly pictureKey: string;
-  readonly destination: SurfaceDestination | null;
-  readonly binding?: SurfaceDestination | null;
-  /** The Run's session in a native place, whose picture the tile shows. */
-  readonly sessionId?: string | null;
-  readonly title: string;
-  readonly site: string | null;
-  readonly kind: "browser" | "app" | "phone";
-}
-
-/** A conversation's Run place as both of its pictures show it, with whether its agent acts there now. */
-export function useRunPlaceView(hostClient: HostClient, runId: string | null, threadId: string) {
-  const entry = useRunPlace(hostClient, runId);
-  const { destination, binding, sessionId } = useRunPlaceBinding(hostClient, entry);
-  const acting = useHostSelector(hostClient, (snapshot) =>
-    entry === null ? false : runPlaceActing(entry, snapshot, threadId),
-  );
-  const place = useMemo<RunPlaceView | null>(
-    () =>
-      entry === null
-        ? null
-        : {
-            placeKey:
-              (destination ? destinationPlaceKey(destination) : null) ??
-              placeIdentityKey(entry.data.place),
-            pictureKey: placeIdentityKey(entry.data.place),
-            destination,
-            binding,
-            sessionId,
-            kind: entry.data.place.kind,
-            title: entry.data.title,
-            site: entry.data.site,
-          },
-    [binding, destination, entry, sessionId],
-  );
-  return { acting, entry, place };
-}
 
 /**
  * A conversation's live page, folded small into its header: the place its
@@ -143,7 +99,7 @@ export const Viewfinder = memo(function Viewfinder({
       aria-label={`Show ${name}${acting ? ", agent working" : ""}`}
       className={[
         "viewfinder",
-        place.kind === "browser" ? "" : "viewfinder--native",
+        place.kind === "page" ? "" : "viewfinder--native",
         acting ? "viewfinder--acting" : "",
         usable && painted && !fresh ? "viewfinder--still" : "",
       ]
@@ -189,7 +145,9 @@ export function PlaceGlyph({ kind }: { readonly kind: RunPlaceView["kind"] }) {
   return (
     <Icon
       className="viewfinder__glyph"
-      name={kind === "browser" ? "globe" : kind === "phone" ? "phone" : "desktop"}
+      name={
+        kind === "page" ? "globe" : kind === "phone" ? "phone" : kind === "app" ? "app" : "desktop"
+      }
     />
   );
 }
@@ -197,7 +155,7 @@ export function PlaceGlyph({ kind }: { readonly kind: RunPlaceView["kind"] }) {
 /** The conversation's picture of this place: whether it has pixels, and whether they are current. */
 export function usePlacePicture(place: RunPlaceView | null) {
   const { picture } = useRunPlacePictures();
-  const usable = place !== null && picture.placeKey === place.pictureKey && picture.usable;
+  const usable = place !== null && picture.placeKey === place.placeKey && picture.usable;
   return { usable, fresh: usable && picture.fresh, aspect: usable ? picture.aspect : null };
 }
 
@@ -223,15 +181,15 @@ export function PlacePicture({
   readonly usable: boolean;
 }) {
   const { destination } = place;
-  if (place.kind === "browser")
-    return destination?.kind === "browser" && destination.tabId ? (
+  if (place.kind === "page")
+    return destination && place.pageSession ? (
       <BrowserFinder
-        key={`${destination.sessionId}:${destination.tabId}`}
+        key={`${place.pageSession}:${destination.tabId}`}
         enabled={enabled}
         hostClient={hostClient}
         onPainted={onPainted}
         placeKey={place.placeKey}
-        sessionId={destination.sessionId}
+        sessionId={place.pageSession}
         tabId={destination.tabId}
         threadId={threadId}
         usable={usable}
@@ -241,7 +199,7 @@ export function PlacePicture({
     <span className="viewfinder__native">
       <RunPlaceCanvas
         enabled={enabled}
-        mac={place.kind === "app"}
+        mac={place.kind === "window"}
         onPainted={onPainted}
         usable={usable}
       />
@@ -304,7 +262,7 @@ function BrowserFinder({
       [hostClient, sessionId, tabId],
     ),
   );
-  const cached = browserTabPicture(hostClient, sessionId, tabId);
+  const cached = browserTabPicture(hostClient, tabId);
   const painted = shown || cached !== null;
   useLayoutEffect(() => onPainted(painted), [onPainted, painted]);
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");

@@ -1,3 +1,4 @@
+import { WindowIdSchema, OpensteerError } from "@opensteer/core";
 import { productToolOutput } from "./tool-output.js";
 import {
   opensteer_subagent_read,
@@ -30,7 +31,7 @@ import {
   opensteer_task_read,
   opensteer_task_send,
   opensteer_task_list,
-  show_to_person,
+  person_show,
   opensteer_task_configure,
   opensteer_task_queue,
   opensteer_task_delegate,
@@ -48,8 +49,7 @@ import {
   needsYouPage,
   dispatchNodeStop,
   withDatabaseTransaction,
-  BrowserTabGroupStore,
-  PersonalTabStore,
+  TabStore,
   assignmentSummaryInTransaction,
   withDatabaseOperationSignal,
   AgentConnectionStore,
@@ -72,13 +72,10 @@ import {
 import { CommandService, KeyedAdmissionQueue, RealtimeHub } from "@opensteer/orchestration";
 import {
   createBrowserSessionId,
-  ComputerUseSessionSummarySchema,
-  mintComputerUseSessionId,
   type PendingAgentEvent,
   type PersonShowMessage,
 } from "@opensteer/protocol";
 import { BrowserService } from "../browser/browser-service.js";
-import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
 import { ThreadService } from "../threads/thread-service.js";
 import { ThreadWaitService } from "../threads/thread-wait.js";
 import { ProductToolHandlers } from "./handlers/product.js";
@@ -126,11 +123,6 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     >(() => []),
     authorizeDisplay: vi.fn(async () => f.runnerId),
   };
-  const browserTabs = new BrowserTabGroupService({
-    groups: new BrowserTabGroupStore(store.database),
-    browser,
-    publish: () => {},
-  });
   const threads = new ThreadService({
     store,
     commands,
@@ -149,12 +141,22 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     store,
     commands,
     browser,
-    browserTabs,
     threads,
     realtime,
     requestResponseVault: vault,
     questionNotices,
     computerUse,
+    tabs: {
+      get: async (owner, id) => {
+        const row = await new TabStore(store.database).get(owner, id);
+        if (!row) throw new OpensteerError({ code: "not_found", message: "Tab not found" });
+        return {} as import("@opensteer/core").Tab;
+      },
+      authorizeShow: async (claims, id) => {
+        if (!(await new TabStore(store.database).get(claims.requestedBy, id)))
+          throw new OpensteerError({ code: "not_found", message: "Tab not found" });
+      },
+    },
     personShow: async (_userId, frame) => {
       frames.push(frame);
       return 1;
@@ -197,9 +199,9 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
       operationKey: randomUUID(),
     });
   const show = (target: unknown, actor: RunCaller = caller) =>
-    product.show_to_person({
+    product.person_show({
       caller: actor,
-      input: show_to_person.input.parse({ target }),
+      input: person_show.input.parse({ target }),
       operationKey: randomUUID(),
     });
   return {
@@ -878,13 +880,67 @@ async function place(
   value: PlaceIdentity,
   title = "Place",
 ) {
+  const id =
+    value.kind === "browser"
+      ? value.surfaceId
+      : BrowserSurfaceIdSchema.parse(
+          value.kind === "app"
+            ? `window:${value.machineId}:${value.appKey}`
+            : `phone:${value.machineId}`,
+        );
+  if (
+    value.kind === "browser" &&
+    !(await storeFixture.store.getBrowserSessionForOwner(value.sessionId, f.userId))
+  )
+    await storeFixture.store.createBrowserSession({
+      id: value.sessionId,
+      ownerId: f.userId,
+      runnerId: f.runnerId,
+      origin: "agent",
+      profileId: null,
+      placementKey: "place",
+      runtimeId: "test",
+    });
+  await new TabStore(storeFixture.database).open(
+    {
+      id,
+      ownerId: f.userId,
+      computerId: value.kind === "browser" ? f.runnerId : value.machineId,
+      kind: value.kind === "browser" ? "page" : value.kind === "app" ? "window" : "phone",
+      title,
+      openedBy: "person",
+      ...(value.kind === "browser"
+        ? {
+            url: "https://example.com/",
+            pageBinding: { lineageId: value.sessionId, sessionId: value.sessionId, surfaceId: id },
+          }
+        : value.kind === "app"
+          ? {
+              windowId: WindowIdSchema.parse(`win_${randomUUID()}`),
+              windowApp: { bundleId: value.appKey, displayName: title, teamId: null },
+            }
+          : {}),
+    },
+    randomUUID(),
+  );
   return withDatabaseTransaction(storeFixture.database, (tx) =>
     appendHostDeploymentEvent(tx, {
       type: "place.entered",
       threadId: f.thread.id,
       runId: f.run.id,
       environmentId: f.environmentId,
-      data: { place: value, title, site: null },
+      data: {
+        tabId:
+          value.kind === "browser"
+            ? value.surfaceId
+            : BrowserSurfaceIdSchema.parse(
+                value.kind === "app"
+                  ? `window:${value.machineId}:${value.appKey}`
+                  : `phone:${value.machineId}`,
+              ),
+        title,
+        site: null,
+      },
     }),
   );
 }
@@ -1661,7 +1717,19 @@ describeStore("shaped agent task tools", (it) => {
     ];
     for (const value of values) await place(storeFixture, f, value);
     const owner = await s.read({ view: "activity" });
-    expect(owner.recentPlaces.map((p) => p.place)).toEqual(values.slice(0, 3).reverse());
+    expect(owner.recentPlaces.map((p) => p.tabId)).toEqual(
+      values
+        .map((value) =>
+          value.kind === "browser"
+            ? value.surfaceId
+            : BrowserSurfaceIdSchema.parse(
+                value.kind === "app"
+                  ? `window:${value.machineId}:${value.appKey}`
+                  : `phone:${value.machineId}`,
+              ),
+        )
+        .reverse(),
+    );
     const actor = { ...s.caller, userId: reader };
     await expect(s.read({ view: "activity" }, actor)).rejects.toMatchObject({ code: "forbidden" });
     const part = {
@@ -2139,10 +2207,18 @@ describeStore("shaped agent task tools", (it) => {
       profileId: null,
       runtimeId: "test",
     });
-    await new PersonalTabStore(storeFixture.database).recordChanges(
-      sessionId,
-      [{ id: tabId, title: "Guest", url: "https://example.com", order: 0, openerId: null }],
-      [],
+    await new TabStore(storeFixture.database).open(
+      {
+        id: tabId,
+        ownerId: f.userId,
+        computerId: f.runnerId,
+        kind: "page",
+        title: "Guest",
+        url: "https://example.com",
+        openedBy: "person",
+        pageBinding: { lineageId: sessionId, sessionId, surfaceId: tabId },
+      },
+      randomUUID(),
     );
     await place(
       storeFixture,
@@ -2153,10 +2229,10 @@ describeStore("shaped agent task tools", (it) => {
       },
       { kind: "browser", sessionId, surfaceId: tabId },
     );
-    await s.show({ runId: delegated.runId });
+    await s.show({ tabId });
     expect(s.frames.at(-1)).toMatchObject({
       runId: f.run.id,
-      target: { runId: delegated.runId, place: { surfaceId: tabId } },
+      target: { tabId },
     });
     const next = await s.product.opensteer_task_delegate({
       caller: s.caller,
@@ -2226,93 +2302,5 @@ describeStore("shaped agent task tools", (it) => {
         (await storeFixture.store.getThreadForOwner(f.thread.id, f.userId))!.title,
       ),
     });
-  });
-
-  it("shows another Run using the caller actor and emits both Run identities, with reach but no write ceiling", async ({
-    storeFixture,
-  }) => {
-    const f = await storeFixture.startRunFixture("shaped-show");
-    const s = setup(storeFixture, f);
-    const nativeRunner = f.runnerId;
-    const delegated = await storeFixture.store.delegateThread({
-      createdBy: f.userId,
-      environmentId: f.environmentId,
-      harnessInstanceId: f.harnessInstance.id,
-      modelSelection: testModelSelection,
-      origin: { kind: "run", parentRunId: f.run.id, parentThreadId: f.thread.id },
-      task: [{ type: "text", text: "Task" }],
-      title: "Task",
-      accessMode: "full-access",
-      idempotencyKey: "show-task",
-    });
-    const target = { ...f, run: delegated.run, thread: delegated.thread };
-    await expect(s.show({ runId: delegated.run.id })).rejects.toMatchObject({
-      next: "Read recentPlaces with opensteer_task_read.",
-    });
-    const sessionId = createBrowserSessionId();
-    const tabId = BrowserSurfaceIdSchema.parse("guest-task");
-    await storeFixture.store.createBrowserSession({
-      id: sessionId,
-      runnerId: f.runnerId,
-      origin: "agent",
-      ownerId: f.userId,
-      placementKey: "guest",
-      profileId: null,
-      runtimeId: "test",
-    });
-    await new PersonalTabStore(storeFixture.database).recordChanges(
-      sessionId,
-      [{ id: tabId, title: "Guest", url: "https://example.com", order: 0, openerId: null }],
-      [],
-    );
-    await place(storeFixture, target, { kind: "browser", sessionId, surfaceId: tabId });
-    await s.show({ runId: delegated.run.id }, { ...s.caller, accessMode: "approval-required" });
-    expect(s.frames[0]).toMatchObject({
-      runId: f.run.id,
-      target: { runId: delegated.run.id, place: { kind: "browser", surfaceId: tabId } },
-    });
-    await expect(
-      s.show(
-        { current: true },
-        { ...s.caller, claims: { ...s.caller.claims, runId: delegated.run.id } },
-      ),
-    ).rejects.toThrow("assigned it");
-    await place(storeFixture, target, {
-      kind: "app",
-      machineId: nativeRunner,
-      appKey: "com.apple.finder",
-    });
-    await expect(s.show({ runId: delegated.run.id })).rejects.toThrow("Run's app session ended");
-    const appSession = ComputerUseSessionSummarySchema.parse({
-      sessionId: mintComputerUseSessionId(),
-      runId: f.run.id,
-      threadId: f.thread.id,
-      threadTitle: "Other Run",
-      openedAt: new Date().toISOString(),
-      actionCount: 0,
-      apps: [{ bundleId: "com.apple.finder", displayName: "Finder", teamId: null }],
-      display: false,
-    });
-    s.computerUse.sessionsForRunner.mockReturnValue([appSession]);
-    await expect(s.show({ runId: delegated.run.id })).rejects.toThrow("Run's app session ended");
-    expect(s.computerUse.authorizeDisplay).not.toHaveBeenCalled();
-    s.computerUse.sessionsForRunner.mockReturnValue([{ ...appSession, runId: delegated.run.id }]);
-    await s.show({ runId: delegated.run.id });
-    s.computerUse.sessionsForRunner.mockReturnValue([]);
-    await expect(s.show({ runId: delegated.run.id })).rejects.toThrow("Run's app session ended");
-    await place(storeFixture, target, { kind: "phone", machineId: nativeRunner, display: "main" });
-    await storeFixture.database
-      .updateTable("runs")
-      .set({ status: "completed", completedAt: new Date() })
-      .where("id", "=", delegated.run.id)
-      .execute();
-    await s.show({ runId: delegated.run.id });
-    const reader = await storeFixture.store.createUser("Other person");
-    await expect(
-      s.show(
-        { runId: delegated.run.id },
-        { ...s.caller, userId: reader, claims: { ...s.caller.claims, requestedBy: reader } },
-      ),
-    ).rejects.toMatchObject({ code: "forbidden", message: "The personal owner is required." });
   });
 });

@@ -94,7 +94,6 @@ export function projectSavedTasks(snapshot: HostSnapshot): SavedTask[] {
     needsYou: null,
     requests: {},
     runQueue: [],
-    browserSessions: [],
     machines: [],
   });
   const groups = ["working", "ready", "done"] as const;

@@ -97,7 +97,6 @@ export interface RunnerInventoryRecord {
   readonly ownerUserId: UserId | null;
   readonly publicKeyFingerprint: string;
   readonly revokedAt: Date | null;
-  readonly tabOpenedAt: Date | null;
 }
 export interface RunnerEnrollmentIssuanceRecord {
   readonly deviceProfile: RunnerDeviceProfile | null;
@@ -764,7 +763,6 @@ export async function listRunners(
       "ownerUserId",
       "publicKeyFingerprint",
       "revokedAt",
-      "tabOpenedAt",
     ])
     .where((expression) =>
       expression.or([
@@ -982,13 +980,6 @@ export async function revokeRunner(
             .execute(databaseOperationOptions())
         ).map(({ id }) => id),
       );
-      await transaction
-        .selectFrom("personalTabs")
-        .select("id")
-        .where("groupId", "in", tabGroups(transaction))
-        .orderBy("id")
-        .forNoKeyUpdate()
-        .execute(databaseOperationOptions());
     })(personalTransaction);
     return (async (transaction) =>
       administrationCommand(transaction, options.administration, async () => {
@@ -1028,12 +1019,6 @@ export async function revokeRunner(
           )
         )
           throw new TransactionScopeChanged();
-        await transaction
-          .updateTable("personalTabs")
-          .set({ closedAt: revokedAt })
-          .where("groupId", "in", tabGroups(transaction))
-          .where("closedAt", "is", null)
-          .execute(databaseOperationOptions());
         await transaction
           .updateTable("browserSessions")
           .set((eb) => ({ tabRevision: eb("tabRevision", "+", 1) }))
@@ -1180,33 +1165,7 @@ export async function revokeRunner(
 }
 
 /** Reports whether this opened the tab, so an already open one changes nothing for anybody. */
-export async function openPhoneTab(
-  database: Kysely<DatabaseSchema>,
-  runnerId: RunnerId,
-): Promise<boolean> {
-  const result = await database
-    .updateTable("runners")
-    .set({
-      tabOpenedAt: new Date(),
-    })
-    .where("id", "=", runnerId)
-    .where("tabOpenedAt", "is", null)
-    .where("revokedAt", "is", null)
-    .executeTakeFirst(databaseOperationOptions());
-  return result.numUpdatedRows === 1n;
-}
-export async function closePhoneTab(
-  database: Kysely<DatabaseSchema>,
-  runnerId: RunnerId,
-): Promise<void> {
-  await database
-    .updateTable("runners")
-    .set({
-      tabOpenedAt: null,
-    })
-    .where("id", "=", runnerId)
-    .executeTakeFirst(databaseOperationOptions());
-}
+
 export async function renameRunner(
   database: Kysely<DatabaseSchema>,
   runnerId: RunnerId,

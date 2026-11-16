@@ -5,17 +5,15 @@ import {
   runPageRowHeight,
   type HostClient,
   type RunPlacePicture,
-  type SurfaceDestination,
+  type TabDestination,
 } from "@opensteer/client/host";
 import {
   useHostSelector,
   useRunPage,
-  useRunPlace,
-  useRunPlaceBinding,
+  useRunPlaceView,
+  type RunPlaceView,
   useRunPlacePicture,
 } from "@opensteer/client/react";
-import type { PlaceEnteredEventView } from "@opensteer/core";
-import { placeIdentityKey } from "@opensteer/protocol";
 import { useNavigationState } from "@react-navigation/native";
 import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
@@ -28,7 +26,7 @@ import {
 } from "react-native";
 import Animated, { FadeOutUp } from "react-native-reanimated";
 import { agentWorkingLabel } from "../browser/acting-dot.js";
-import { paramsDestination, sameDestination } from "../browser/surface-route.js";
+import { paramsTabId } from "../browser/surface-route.js";
 import { layoutRoute } from "../navigation-presentations.js";
 import { color, pillHeight, radius, space, touchTarget } from "../theme.js";
 import { useCellular } from "../ui/cellular.js";
@@ -46,7 +44,6 @@ import {
   pictureRadius,
   pictureWords,
   usePainted,
-  useRunPlaceActing,
 } from "./live-place.js";
 
 /** The row's picture: a pill's height, at about a desktop page's shape. */
@@ -66,7 +63,7 @@ interface SlotProps {
   readonly clearance: number;
   readonly hostClient: HostClient;
   readonly onInset: (inset: number) => void;
-  readonly onOpen: (destination: SurfaceDestination) => void;
+  readonly onOpen: (destination: TabDestination) => void;
   /** The Run a Stop would reach: the conversation's own. */
   readonly runId: string | null;
   readonly scrolledUp: boolean;
@@ -122,13 +119,13 @@ function PanePage(
   const column = useLayout().readingWidth + 2 * space[16];
   const yielding = props.yielding === true;
   const runId = authorized ? props.runId : null;
-  const placed = useRunPlace(hostClient, runId);
+  const { acting, place } = useRunPlaceView(hostClient, runId, threadId);
   const run = useRunPage({
     hostClient,
     threadId,
     runId,
     paneVisible: props.active,
-    displayCapable: displayCapable(placed),
+    displayCapable: displayCapable(place),
     visible: props.active && foreground,
     typing: keyboard || yielding,
     scrolledUp: props.scrolledUp,
@@ -143,9 +140,8 @@ function PanePage(
     headHasRoom: true,
     transcript: Math.round(runPageKeptTranscript * Math.min(fontScale, 2)),
   });
-  const { entry, page, shown } = run;
-  const binding = useRunPlaceBinding(hostClient, entry);
-  const open = (shown === "page" || shown === "row") && entry !== null;
+  const { page, shown } = run;
+  const open = (shown === "page" || shown === "row") && place !== null;
   useEffect(() => {
     if (!open) onInset(0);
   }, [onInset, open]);
@@ -155,11 +151,11 @@ function PanePage(
   const fullWidth = page !== null && page.width >= Math.floor(size.width);
   return (
     <RunPagePanel
-      key={placeIdentityKey(entry.data.place)}
+      key={place.placeKey}
       active={props.active && foreground}
       column={column}
-      destination={binding.destination}
-      entry={entry}
+      acting={acting}
+      place={place}
       hostClient={hostClient}
       onFold={run.fold}
       onInset={onInset}
@@ -170,7 +166,6 @@ function PanePage(
           : null
       }
       picture={run.picture}
-      sessionId={binding.sessionId}
       threadId={threadId}
       top={top}
     />
@@ -183,24 +178,23 @@ function PanePage(
  */
 function BesideRow(props: SlotProps): ReactNode {
   const { hostClient, onInset, threadId } = props;
-  const entry = useRunPlace(hostClient, props.runId);
-  const binding = useRunPlaceBinding(hostClient, entry);
+  const { acting, entry, place } = useRunPlaceView(hostClient, props.runId, threadId);
   const authorized = useHostSelector(hostClient, selectAuthorized);
   const foreground = useAppForeground();
   const column = useLayout().readingWidth + 2 * space[16];
   const current = useNavigationState(layoutRoute);
   const inFront =
     current?.name === "WorkspaceBrowser" &&
-    binding.destination !== null &&
-    sameDestination(paramsDestination(current.params), binding.destination);
-  const shown = entry !== null && authorized && !inFront;
+    place !== null &&
+    paramsTabId(current.params) === place.placeKey;
+  const shown = place !== null && authorized && !inFront;
   // Nothing else in this pane shows the place, so the row holds its picture itself.
   const picture = useRunPlacePicture(
     hostClient,
     threadId,
     entry?.runId ?? null,
     shown && props.active,
-    displayCapable(entry),
+    displayCapable(place),
   );
   useEffect(() => {
     if (!shown) onInset(0);
@@ -208,18 +202,17 @@ function BesideRow(props: SlotProps): ReactNode {
   if (!shown) return null;
   return (
     <RunPagePanel
-      key={placeIdentityKey(entry.data.place)}
+      key={place.placeKey}
       active={props.active && foreground}
       column={column}
-      destination={binding.destination}
-      entry={entry}
+      acting={acting}
+      place={place}
       hostClient={hostClient}
       onFold={null}
       onInset={onInset}
       onOpen={props.onOpen}
       page={null}
       picture={picture}
-      sessionId={binding.sessionId}
       threadId={threadId}
       top={props.top}
     />
@@ -233,12 +226,12 @@ function BesideRow(props: SlotProps): ReactNode {
 const RunPagePanel = memo(function RunPagePanel(props: {
   readonly active: boolean;
   readonly column: number;
-  readonly destination: SurfaceDestination | null;
-  readonly entry: PlaceEnteredEventView;
+  readonly acting: boolean;
+  readonly place: RunPlaceView;
   readonly hostClient: HostClient;
   readonly onFold: (() => void) | null;
   readonly onInset: (inset: number) => void;
-  readonly onOpen: (destination: SurfaceDestination) => void;
+  readonly onOpen: (destination: TabDestination) => void;
   /** The page's size, or null where only the row is drawn. */
   readonly page: {
     readonly fullWidth: boolean;
@@ -246,14 +239,12 @@ const RunPagePanel = memo(function RunPagePanel(props: {
     readonly width: number;
   } | null;
   readonly picture: RunPlacePicture;
-  readonly sessionId: string | null;
   readonly threadId: string;
   readonly top: number;
 }): ReactNode {
-  const { destination, entry, onFold, onInset, page, picture, top } = props;
-  const acting = useRunPlaceActing(props.hostClient, entry, props.threadId);
-  const [painted, setPainted] = usePainted(entry);
-  const { title, site } = entry.data;
+  const { acting, place, onFold, onInset, page, picture, top } = props;
+  const { destination, title, site } = place;
+  const [painted, setPainted] = usePainted(place);
   const siteLabel = site ? pageSiteLabel(site) : null;
   const corner = page === null ? pictureRadius : page.fullWidth ? 0 : radius.md;
   const folding = useMemo(
@@ -306,15 +297,13 @@ const RunPagePanel = memo(function RunPagePanel(props: {
         >
           <PlaceSurface
             active={props.active}
-            destination={destination}
-            entry={entry}
+            place={place}
             hostClient={props.hostClient}
             onPainted={setPainted}
-            sessionId={props.sessionId}
             threadId={props.threadId}
           />
           <PictureCover
-            entry={entry}
+            place={place}
             glyph={page === null ? 15 : null}
             painted={painted}
             picture={picture}

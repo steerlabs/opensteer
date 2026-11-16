@@ -1,8 +1,6 @@
 import type { PersonShowMessage } from "@opensteer/protocol";
 import type { HostSnapshot } from "./client.js";
-import { placeList } from "./places.js";
 import { heldThread } from "./task-list.js";
-import { runPlaceDestination } from "./run-place.js";
 import type { VoiceCallIdentity, VoiceTarget } from "../voice/contract.js";
 
 /** The platform reports the conversation on screen or beneath a place; other routes name none. */
@@ -42,16 +40,9 @@ export function handlePersonShow(
     if (!source) return false;
   }
   const target = message.target;
-  if ("threadId" in target) {
-    return navigate({ kind: "thread", threadId: target.threadId }) !== false;
-  }
-  if ("place" in target) {
-    const destination = runPlaceDestination({ runId: target.runId, data: target }, snapshot);
-    return destination !== null && navigate({ kind: "place", destination }) !== false;
-  }
-  const place = placeList(snapshot).find(
-    (place) => place.destination.kind === "browser" && place.destination.tabId === target.tabId,
-  );
-  if (!place || place.availability === "unavailable") return false;
-  return navigate({ kind: "place", destination: place.destination }) !== false;
+  if ("taskId" in target) return navigate({ kind: "thread", threadId: target.taskId }) !== false;
+  // Only that exact tab: a closed or unavailable one is never replaced by another.
+  const tab = snapshot.tabs.get(target.tabId);
+  if (!tab || tab.state === "unavailable") return false;
+  return navigate({ kind: "place", destination: { kind: "tab", tabId: tab.tabId } }) !== false;
 }

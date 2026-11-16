@@ -17,24 +17,24 @@ import {
   computerAppIdentityKey,
   computerViewIdleMs,
   computerViewMaxPerOwner,
-  type ApprovedComputerApp,
   type ComputerView,
   type DisplaySource,
   type DisplayStreamReason,
   type ComputerViewTarget,
   type ComputerAppIdentity,
   type OwnerWindowInfo,
-  type ComputerViewOpenCommand,
   type ComputerViewCloseCommand,
   type ComputerViewRenewCommand,
   type HostToClientMessage,
   type ComputerViewRefusalReason,
+  ComputerViewNativeResultSchema,
+  OwnerWindowInfoSchema,
 } from "@opensteer/protocol";
 import type { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 
 export interface PhoneViewDiagnostic {
   readonly machineId: RunnerId;
-  readonly operation: "computer.view.open" | "computer.view.renew" | "computer.view.close";
+  readonly operation: "tab.view.open" | "computer.view.renew" | "computer.view.close";
   readonly viewId: ComputerView["viewId"] | null;
   readonly generation: number | null;
   readonly state: ComputerView["state"] | "requested" | "refused";
@@ -44,15 +44,27 @@ export interface PhoneViewDiagnostic {
 
 interface Options {
   readonly onPhoneView?: (status: PhoneViewDiagnostic) => void;
-  readonly hub: Pick<
-    ComputerAppHub,
-    "ownerViewSupported" | "sendComputerView" | "withRunnerAdmission" | "attached"
-  > & {
+  readonly hub: Pick<ComputerAppHub, "ownerViewSupported" | "withRunnerAdmission" | "attached"> & {
+    sendComputerView(input: {
+      runnerId: RunnerId;
+      request: {
+        viewId: string;
+        generation: number;
+        leaseDurationMs: number;
+        target: ComputerViewTarget;
+        operation: "open" | "renew" | "close";
+        timeoutMs: number;
+      };
+      signal?: AbortSignal;
+    }): Promise<
+      | { kind: "ok"; value: import("@opensteer/protocol").ComputerViewNativeResult }
+      | { kind: "error"; code: string; message: string }
+    >;
     ownerWindows(
       runnerId: RunnerId,
       app: ComputerAppIdentity,
       options: { timeoutMs: number; signal?: AbortSignal },
-    ): Promise<OwnerWindowInfo[]>;
+    ): Promise<unknown>;
   };
   readonly connections: (owner: UserId) => Promise<readonly IntegrationConnectionSummary[]>;
   readonly owners: (
@@ -73,10 +85,27 @@ interface Options {
   readonly log?: (event: string, details: Readonly<Record<string, unknown>>) => void;
   readonly now?: () => number;
 }
-type ViewCommand = ComputerViewOpenCommand | ComputerViewCloseCommand | ComputerViewRenewCommand;
+type OpenViewCommand = {
+  type: "tab.view.open";
+  idempotencyKey: string;
+  machineId: RunnerId;
+  target: ComputerViewTarget;
+  tabId: string;
+  tabGeneration: number;
+};
+type ViewCommand = OpenViewCommand | ComputerViewCloseCommand | ComputerViewRenewCommand;
+type ApprovedNativeApp = {
+  connectionId: string;
+  machineId: RunnerId;
+  target: { kind: "app"; app: ComputerAppIdentity } | { kind: "phone"; display: string };
+  name: string;
+  iconPng: null;
+};
 interface HeldView {
   record: ComputerViewRecord;
   timer: NodeJS.Timeout | null;
+  tabId: string;
+  tabGeneration: number;
 }
 
 /** Ephemeral owner authority. No task, grant, observation or app reservation is borrowed. */
@@ -85,8 +114,8 @@ export class ComputerViewService {
   readonly #views = new Map<string, HeldView>();
   readonly #commands = new Map<string, { fingerprint: string; result: Promise<ComputerView> }>();
   readonly #turns = new Map<UserId, Promise<unknown>>();
-  /** Each phone's tab closes so far: an open received before one must not outlive it. */
-  readonly #tabCloses = new Map<RunnerId, number>();
+  /** Each tab's last closed generation: an open received before one must not outlive it. */
+  readonly #tabCloses = new Map<string, number>();
   readonly #now: () => number;
   #closed = false;
   constructor(options: Options) {
@@ -94,7 +123,7 @@ export class ComputerViewService {
     this.#now = options.now ?? Date.now;
   }
 
-  async approved(owner: UserId): Promise<ApprovedComputerApp[]> {
+  async approved(owner: UserId): Promise<ApprovedNativeApp[]> {
     const connections = await this.#options.connections(owner);
     const owners = await this.#options.owners([
       ...new Set(
@@ -127,7 +156,7 @@ export class ComputerViewService {
           };
         },
       );
-      const windows = await outcome;
+      const windows = OwnerWindowInfoSchema.array().parse(await outcome);
       const current = await this.#approvedTarget(owner, machine, target);
       if (current.connectionId !== approved.connectionId)
         throw this.#refusal("computer-view-not-approved", "This approval changed.");
@@ -166,26 +195,43 @@ export class ComputerViewService {
     );
   }
 
-  /** A tab closing takes the person's view of the phone with it, and any open still waiting. */
-  closePhoneViews(owner: UserId, machine: RunnerId): void {
-    this.#tabCloses.set(machine, (this.#tabCloses.get(machine) ?? 0) + 1);
+  openForTab(
+    owner: UserId,
+    input: {
+      tabId: string;
+      tabGeneration: number;
+      computerId: RunnerId;
+      target: ComputerViewTarget;
+    },
+    key: string,
+  ): Promise<ComputerView> {
+    return this.command(owner, {
+      type: "tab.view.open",
+      idempotencyKey: key,
+      machineId: input.computerId,
+      ...input,
+    });
+  }
+
+  async closeTabViews(owner: UserId, tabId: string, tabGeneration: number): Promise<void> {
+    const key = `${owner}:${tabId}`;
+    this.#tabCloses.set(key, Math.max(this.#tabCloses.get(key) ?? 0, tabGeneration));
     for (const view of this.#views.values())
       if (
         view.record.ownerUserId === owner &&
-        view.record.machineId === machine &&
-        view.record.target.kind === "phone"
+        view.tabId === tabId &&
+        view.tabGeneration <= tabGeneration
       )
-        this.#end(view, "closed", true);
+        this.#end(view, "closed");
   }
 
   async command(owner: UserId, command: ViewCommand): Promise<ComputerView> {
-    const held = command.type === "computer.view.open" ? null : this.#views.get(command.viewId);
+    const held = command.type === "tab.view.open" ? null : this.#views.get(command.viewId);
     const phone =
-      command.type === "computer.view.open"
+      command.type === "tab.view.open"
         ? command.target.kind === "phone"
         : held?.record.target.kind === "phone" && held.record.ownerUserId === owner;
-    const machineId =
-      command.type === "computer.view.open" ? command.machineId : held?.record.machineId;
+    const machineId = command.type === "tab.view.open" ? command.machineId : held?.record.machineId;
     const report = (
       state: PhoneViewDiagnostic["state"],
       view?: ComputerView,
@@ -195,9 +241,9 @@ export class ComputerViewService {
       this.#options.onPhoneView?.({
         machineId,
         operation: command.type,
-        viewId: view?.viewId ?? (command.type === "computer.view.open" ? null : command.viewId),
+        viewId: view?.viewId ?? (command.type === "tab.view.open" ? null : command.viewId),
         generation:
-          view?.generation ?? (command.type === "computer.view.open" ? null : command.generation),
+          view?.generation ?? (command.type === "tab.view.open" ? null : command.generation),
         state,
         reason: reason ?? view?.unavailableReason ?? null,
         expiresAt: view?.expiresAt ?? null,
@@ -236,7 +282,9 @@ export class ComputerViewService {
     }
     const receivedAt = this.#now();
     const tabCloses =
-      command.type === "computer.view.open" ? (this.#tabCloses.get(command.machineId) ?? 0) : 0;
+      command.type === "tab.view.open"
+        ? (this.#tabCloses.get(`${owner}:${command.tabId}`) ?? 0)
+        : 0;
     const before = this.#turns.get(owner) ?? Promise.resolve();
     // Revocation cannot wait for a native open/renew answer already in flight.
     const result =
@@ -266,18 +314,20 @@ export class ComputerViewService {
   ): Promise<ComputerView> {
     if (this.#closed)
       throw this.#refusal("computer-view-ended", "The Host ended this view. Reopen it explicitly.");
-    if (command.type === "computer.view.open") {
+    if (command.type === "tab.view.open") {
       const approved = await this.#approvedTarget(owner, command.machineId, command.target);
       if (
-        command.target.kind === "phone" &&
-        (this.#tabCloses.get(command.machineId) ?? 0) !== tabCloses
+        (this.#tabCloses.get(`${owner}:${command.tabId}`) ?? 0) >= command.tabGeneration ||
+        (this.#tabCloses.get(`${owner}:${command.tabId}`) ?? 0) !== tabCloses
       )
-        throw this.#refusal("computer-view-ended", "This phone's tab was closed.");
+        throw this.#refusal("computer-view-ended", "This tab was closed.");
       const held = [...this.#views.values()].find(
         ({ record }) =>
           record.ownerUserId === owner &&
           record.machineId === command.machineId &&
-          sameViewTarget(record.target, command.target),
+          sameViewTarget(record.target, command.target) &&
+          this.#views.get(record.viewId)?.tabId === command.tabId &&
+          this.#views.get(record.viewId)?.tabGeneration === command.tabGeneration,
       );
       if (held && this.#live(held) && held.record.state === "ready") {
         await this.#authorize(held, owner);
@@ -286,25 +336,20 @@ export class ComputerViewService {
       if (
         [...this.#views.values()].filter(
           (view) => view !== held && view.record.ownerUserId === owner && this.#live(view),
-        ).length >= computerViewMaxPerOwner &&
-        (command.target.kind !== "app" || command.target.window !== undefined)
+        ).length >= computerViewMaxPerOwner
       )
         throw this.#refusal("computer-view-limit", "Close a view before opening another.");
       if (held) this.#end(held, "closed");
       const now = this.#now();
       const view: HeldView = {
         timer: null,
+        tabId: command.tabId,
+        tabGeneration: command.tabGeneration,
         record: {
           ownerUserId: owner,
           connectionId: approved.connectionId,
           machineId: command.machineId,
-          target:
-            command.target.kind === "app" && approved.target.kind === "app"
-              ? {
-                  ...approved.target,
-                  ...(command.target.window === undefined ? {} : { window: command.target.window }),
-                }
-              : approved.target,
+          target: command.target,
           window: null,
           viewId: held?.record.viewId ?? ComputerViewIdSchema.parse(`cvw_${randomUUID()}`),
           generation: (held?.record.generation ?? 0) + 1,
@@ -350,8 +395,7 @@ export class ComputerViewService {
           (view.record.target.kind === "app" &&
             (!result.value.captureTargetId ||
               !result.value.window ||
-              (view.record.target.window !== undefined &&
-                view.record.target.window !== result.value.window.id))) ||
+              view.record.target.windowId !== result.value.window.windowId)) ||
           result.value.viewId !== view.record.viewId ||
           result.value.generation !== view.record.generation
         )
@@ -360,29 +404,6 @@ export class ComputerViewService {
             "This app or display is unavailable. Reopen it explicitly.",
           );
         const window = result.value.window ?? null;
-        if (view.record.target.kind === "app" && window) {
-          view.record = {
-            ...view.record,
-            target: { ...view.record.target, window: window.id },
-            window,
-          };
-          // Native open chooses the front window. Only that answer can identify an
-          // omitted target; never borrow a task's current window or an old view.
-          const duplicate = [...this.#views.values()].find(
-            (candidate) =>
-              candidate !== view &&
-              candidate.record.ownerUserId === owner &&
-              candidate.record.machineId === view.record.machineId &&
-              sameViewTarget(candidate.record.target, view.record.target) &&
-              candidate.record.state === "ready" &&
-              this.#live(candidate),
-          );
-          if (duplicate) {
-            await this.#authorize(duplicate, owner);
-            this.#end(view, "closed");
-            return this.#public(duplicate);
-          }
-        }
         if (
           [...this.#views.values()].filter(
             (candidate) => candidate.record.ownerUserId === owner && this.#live(candidate),
@@ -570,8 +591,8 @@ export class ComputerViewService {
   async #approvedTarget(
     owner: UserId,
     machine: RunnerId,
-    target: ComputerViewTarget,
-  ): Promise<ApprovedComputerApp> {
+    target: ApprovedNativeApp["target"],
+  ): Promise<ApprovedNativeApp> {
     const [owners, connections] = await Promise.all([
       this.#options.owners([machine]),
       this.#options.connections(owner),
@@ -646,7 +667,6 @@ export class ComputerViewService {
   #end(
     view: HeldView,
     reason: "closed" | "expired" | "revoked" | "disconnected" | "host-restarted",
-    tabClosed = false,
   ): void {
     if (view.record.state === "closed" || view.record.state === "expired") return;
     if (view.timer) clearTimeout(view.timer);
@@ -670,7 +690,6 @@ export class ComputerViewService {
       generation: view.record.generation,
       machineId: view.record.machineId,
       reason,
-      ...(tabClosed ? { tabClosed } : {}),
     });
     if (reason !== "disconnected") void this.#send(view, "close").catch(() => undefined);
     // Closed generations are needed only for bounded command replay and stale-generation checks.
@@ -727,14 +746,22 @@ export class ComputerViewService {
           }),
         };
       })
-      .then(({ outcome }) => outcome);
+      .then(async ({ outcome }) => {
+        const result = await outcome;
+        return result.kind === "error"
+          ? result
+          : { ...result, value: ComputerViewNativeResultSchema.parse(result.value) };
+      });
   }
   #refusal(reason: ComputerViewRefusalReason, message: string): OpensteerError {
     return new OpensteerError({ code: "conflict", reason, message });
   }
 }
 
-function sameApprovedTarget(left: ComputerViewTarget, right: ComputerViewTarget): boolean {
+function sameApprovedTarget(
+  left: ApprovedNativeApp["target"],
+  right: ApprovedNativeApp["target"],
+): boolean {
   return left.kind === "phone"
     ? right.kind === "phone" && left.display === right.display
     : right.kind === "app" &&
@@ -742,7 +769,7 @@ function sameApprovedTarget(left: ComputerViewTarget, right: ComputerViewTarget)
         computerAppIdentitiesEqual(left.app, right.app);
 }
 
-function approvedApp(connection: IntegrationConnectionSummary): ApprovedComputerApp | null {
+function approvedApp(connection: IntegrationConnectionSummary): ApprovedNativeApp | null {
   const computer = connection.computer;
   if (
     !computer ||
@@ -764,7 +791,6 @@ function approvedApp(connection: IntegrationConnectionSummary): ApprovedComputer
 function sameViewTarget(left: ComputerViewTarget, right: ComputerViewTarget): boolean {
   return (
     sameApprovedTarget(left, right) &&
-    (left.kind !== "app" ||
-      (right.kind === "app" && left.window !== undefined && left.window === right.window))
+    (left.kind !== "app" || (right.kind === "app" && left.windowId === right.windowId))
   );
 }

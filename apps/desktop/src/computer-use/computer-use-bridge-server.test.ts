@@ -138,7 +138,11 @@ describe("ComputerUseBridgeServer", () => {
         viewId: source.viewId,
         generation: 1,
         leaseDurationMs: 30_000,
-        target: { kind: "app", app: notes.identity },
+        target: {
+          kind: "app",
+          app: notes.identity,
+          windowId: "win_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        },
       });
       await socket.call(2, "display.start", {
         streamId,
@@ -187,7 +191,11 @@ describe("ComputerUseBridgeServer", () => {
         viewId,
         generation: 1,
         leaseDurationMs: 30_000,
-        target: { kind: "app", app: notes.identity },
+        target: {
+          kind: "app",
+          app: notes.identity,
+          windowId: "win_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        },
       });
     };
     const start = (viewId: string) => ({
@@ -241,7 +249,11 @@ describe("ComputerUseBridgeServer", () => {
         viewId,
         generation: 1,
         leaseDurationMs: 30_000,
-        target: { kind: "app", app: notes.identity },
+        target: {
+          kind: "app",
+          app: notes.identity,
+          windowId: "win_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        },
       });
     const source = (viewId: string) => ({ kind: "owner-view" as const, viewId, generation: 1 });
     const release = h.hold("display.start");

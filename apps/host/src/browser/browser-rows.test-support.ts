@@ -1,6 +1,5 @@
 import type { UserId } from "@opensteer/core";
 import { browserPageSite, type BrowserSessionId } from "@opensteer/protocol";
-import { browserSnapshotFromRows, browserLineages } from "@opensteer/client/test-support";
 import type { BrowserService } from "./browser-service.js";
 
 export async function browserRows(
@@ -8,49 +7,39 @@ export async function browserRows(
   ownerId: UserId,
   sessionId?: BrowserSessionId,
 ) {
-  const source = service.clientStreams.source;
-  const projection = await source.acquire(ownerId);
-  try {
-    const snapshot = browserSnapshotFromRows({
-      groups: { rows: [...projection.groups.values()], complete: true },
-      tabs: [...projection.tabs].map(([groupId, rows]) => ({
-        groupId,
-        rows: [...rows.values()],
-        complete: true,
-      })),
-    });
-    const groupId =
-      sessionId &&
-      [...projection.groups.values()].find(
-        (group) => group.sessionId === sessionId || group.id === sessionId,
-      )?.id;
-    const live = sessionId && source.ports.live(sessionId);
-    const tabs = groupId
-      ? [...(projection.tabs.get(groupId)?.values() ?? [])]
-      : live
-        ? [...live.records.values()].map((row) => ({
-            ...row,
-            site: browserPageSite(row.url),
-            iconRef: live.iconRef(row.id),
-            availability: live.ready ? ("ready" as const) : ("unavailable" as const),
-            occupants: service.tabOccupants(ownerId, sessionId!, row.id),
-          }))
-        : [];
-    return {
-      ...snapshot,
-      inventoryRevision:
-        (groupId
-          ? projection.groups.get(groupId)?.inventoryRevision
-          : live
-            ? live.inventoryRevision
-            : 0) ?? 0,
-      lineage: browserLineages(snapshot).find(
-        (group) => group.id === sessionId || group.session.id === sessionId,
-      ),
-      tabs,
-      groups: [...projection.groups.values()],
-    };
-  } finally {
-    source.release(projection);
-  }
+  const saved = await service.savedPages(ownerId, sessionId);
+  const inventory = sessionId ? service.pageInventory(sessionId) : undefined;
+  const records = inventory?.records;
+  const tabs = saved.length
+    ? saved
+        .filter((row) => !inventory?.ready || records?.has(row.id))
+        .map((row, order) => {
+          const live = records?.get(row.id);
+          return {
+            documentId: live?.documentId ?? null,
+            loading: live?.loading ?? false,
+            navigationFailed: live?.navigationFailed ?? false,
+            id: row.id,
+            sessionId: row.pageBinding?.sessionId,
+            title: row.title,
+            site: browserPageSite(row.url ?? ""),
+            iconRef: row.iconRef,
+            order,
+            openerId: row.openerTabId,
+            state: live?.state ?? "suspended",
+            canGoBack: live?.canGoBack ?? false,
+            canGoForward: live?.canGoForward ?? false,
+            availability: live ? "ready" : "unavailable",
+            occupants: sessionId ? service.tabOccupants(ownerId, sessionId, row.id) : [],
+          };
+        })
+    : [...(records?.values() ?? [])].map((row) => ({
+        ...row,
+        sessionId,
+        site: browserPageSite(row.url),
+        iconRef: inventory?.iconRef(row.id) ?? null,
+        availability: inventory?.ready ? "ready" : "unavailable",
+        occupants: sessionId ? service.tabOccupants(ownerId, sessionId, row.id) : [],
+      }));
+  return { tabs, inventoryRevision: inventory?.inventoryRevision ?? 0 };
 }

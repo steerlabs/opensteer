@@ -1,3 +1,5 @@
+import { TabIdSchema } from "@opensteer/core";
+import { TabStore } from "./tab-store.js";
 import { createId, type RunnerId, type UserId } from "@opensteer/core";
 import { createBrowserSessionId, type LocalProfileBinding } from "@opensteer/protocol";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -190,21 +192,22 @@ describeStore("browser profile homes", (it) => {
         placementKey: `runner:${home}`,
         runtimeId: "browser",
       });
-      await fixture.database
-        .insertInto("personalTabs")
-        .values({
-          id: `${sessionId}-tab`,
-          sessionId,
-          groupId: sessionId,
-          createdAt: new Date(),
-          order: 0,
-          openerId: null,
-          state: "suspended",
+      const tabId = TabIdSchema.parse(`${sessionId}-tab`);
+      await new TabStore(fixture.database).open(
+        {
+          id: tabId,
+          ownerId: run.userId,
+          computerId: home,
+          kind: "page",
           title: "Saved",
           url: "https://example.test/",
-          closedAt: null,
-        })
-        .execute();
+          profileId: profile.id,
+          profileName: profile.name,
+          openedBy: "person",
+          pageBinding: { lineageId: sessionId, sessionId, surfaceId: tabId },
+        },
+        `saved-${index}`,
+      );
     }
     const oldGuest = createBrowserSessionId();
     await fixture.store.createBrowserSession({
@@ -232,21 +235,20 @@ describeStore("browser profile homes", (it) => {
       placementKey: `runner:${run.runnerId}`,
       runtimeId: "browser",
     });
-    await fixture.database
-      .insertInto("personalTabs")
-      .values({
-        id: "replacement-guest-tab",
-        sessionId: replacementGuest,
-        groupId: oldGuest,
-        createdAt: new Date(),
-        order: 0,
-        openerId: null,
-        state: "suspended",
+    const replacementId = TabIdSchema.parse("replacement-guest-tab");
+    await new TabStore(fixture.database).open(
+      {
+        id: replacementId,
+        ownerId: run.userId,
+        computerId: run.runnerId,
+        kind: "page",
         title: "Reopened elsewhere",
         url: "https://retained.test/",
-        closedAt: null,
-      })
-      .execute();
+        openedBy: "person",
+        pageBinding: { lineageId: oldGuest, sessionId: replacementGuest, surfaceId: replacementId },
+      },
+      "replacement",
+    );
     const removed = await fixture.store.revokeRunner(home, run.userId, {
       administration: {
         requestedBy: run.userId,
@@ -268,14 +270,14 @@ describeStore("browser profile homes", (it) => {
       await fixture.database
         .selectFrom("personalTabs")
         .select("closedAt")
-        .where("groupId", "!=", oldGuest)
+        .where("computerId", "=", home)
         .execute(),
-    ).toEqual([{ closedAt: expect.any(Date) }, { closedAt: expect.any(Date) }]);
+    ).toEqual([{ closedAt: null }, { closedAt: null }]);
     expect(
       await fixture.database
         .selectFrom("personalTabs")
         .select("closedAt")
-        .where("id", "=", "replacement-guest-tab")
+        .where("id", "=", replacementId)
         .executeTakeFirstOrThrow(),
     ).toEqual({ closedAt: null });
     expect(

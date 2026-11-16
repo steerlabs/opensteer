@@ -1062,7 +1062,7 @@ export function createPage(environment) {
       },
       ariaSnapshot: () => page.locator("body").ariaSnapshot(),
     },
-    "Use locator(), getByRole(), getByText(), getByLabel(), evaluate() or cdp(). For history use cdp('Page.reload'); frames and networkidle are not supported.",
+    "Use locator(), getByRole(), getByText(), getByLabel(), evaluate() or cdp(). For history and frames use cdp(); use page.waitForNetworkIdle() to observe network idle.",
   );
   return {
     page,

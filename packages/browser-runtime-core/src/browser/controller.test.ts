@@ -111,6 +111,24 @@ describe("BrowserController", () => {
       );
     };
     try {
+      const live = ledger.snapshot();
+      const updates = sink.messages.filter((message) => message.type === "browser.tabs").length;
+      expect(await command(browserHostMethods.resumeTab, { surfaceId: id })).toMatchObject({
+        type: "cdp.result",
+        result: {
+          surfaceId: id,
+          targetId,
+          reloaded: false,
+          dialog: null,
+          userActivity: null,
+          pageResize: null,
+        },
+      });
+      expect(ledger.snapshot()).toEqual(live);
+      expect(sink.messages.filter((message) => message.type === "browser.tabs")).toHaveLength(
+        updates,
+      );
+      expect(create).not.toHaveBeenCalled();
       await ledger.sleep(id, () => null);
       expect(await command("Target.attachToTarget", { targetId, flatten: true })).toMatchObject({
         type: "cdp.error",

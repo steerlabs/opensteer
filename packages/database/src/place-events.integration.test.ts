@@ -1,5 +1,6 @@
+import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import { readEmptyPersonalResources } from "./store.integration.test-support.js";
-import { BrowserSessionIdSchema, BrowserSurfaceIdSchema } from "@opensteer/core";
+import { BrowserSessionIdSchema } from "@opensteer/core";
 import { PendingAgentEventSchema, DeploymentSnapshotSchema } from "@opensteer/protocol";
 import { expect } from "vitest";
 import { OpensteerStore } from "./store.js";
@@ -28,19 +29,19 @@ describeStore("durable Run place entries", (it) => {
       runId: f.run.id,
       bindingGeneration: f.bindingGeneration,
       data: {
-        place: a,
+        tabId: a.surfaceId,
         title: ("A".repeat(255) + "😀").slice(0, 256),
         site: "https://example.com",
       },
     };
-    const first = await store.recordRunPlace(input);
+    const first = await store.recordRunTabPlace(input);
     expect(first).toMatchObject({
       type: "place.entered",
       threadId: f.thread.id,
       environmentId: f.environmentId,
     });
     expect(
-      await store.recordRunPlace({
+      await store.recordRunTabPlace({
         ...input,
         data: {
           ...input.data,
@@ -51,16 +52,16 @@ describeStore("durable Run place entries", (it) => {
     expect(
       await new OpensteerStore(database, {
         readPersonalResources: readEmptyPersonalResources,
-      }).recordRunPlace(input),
+      }).recordRunTabPlace(input),
     ).toBeUndefined();
-    const second = await store.recordRunPlace({
+    const second = await store.recordRunTabPlace({
       ...input,
       data: {
         ...input.data,
-        place: b,
+        tabId: b.surfaceId,
       },
     });
-    const third = await store.recordRunPlace(input);
+    const third = await store.recordRunTabPlace(input);
     expect(
       await new OpensteerStore(database, {
         readPersonalResources: readEmptyPersonalResources,
@@ -70,12 +71,12 @@ describeStore("durable Run place entries", (it) => {
     expect(BigInt(first!.sequence)).toBeLessThan(BigInt(second!.sequence));
     expect(BigInt(second!.sequence)).toBeLessThan(BigInt(third!.sequence));
     expect(
-      await store.recordRunPlace({
+      await store.recordRunTabPlace({
         ...input,
         bindingGeneration: f.bindingGeneration + 1,
         data: {
           ...input.data,
-          place: b,
+          tabId: b.surfaceId,
         },
       }),
     ).toBeUndefined();
@@ -181,7 +182,7 @@ describeStore("durable Run place entries", (it) => {
     });
     expect(actors[0]?.threadId).toBe(f.thread.id);
     expect(
-      await store.recordRunPlace({
+      await store.recordRunTabPlace({
         ...input,
         runId: delegated.run.id,
         bindingGeneration: binding.bindingGeneration,
@@ -191,28 +192,20 @@ describeStore("durable Run place entries", (it) => {
       runId: delegated.run.id,
     });
     const appPlace = {
-      place: {
-        kind: "app" as const,
-        machineId: f.runnerId,
-        appKey: "com.apple.Notes",
-      },
+      tabId: BrowserSurfaceIdSchema.parse("native-tab"),
       title: "Notes",
       site: null,
     };
-    const native = await store.recordRunPlace({
+    const native = await store.recordRunTabPlace({
       ...input,
       data: appPlace,
     });
-    const phone = await store.recordRunPlace({
+    const phone = await store.recordRunTabPlace({
       ...input,
       runId: delegated.run.id,
       bindingGeneration: binding.bindingGeneration,
       data: {
-        place: {
-          kind: "phone",
-          machineId: f.runnerId,
-          display: "main",
-        },
+        tabId: BrowserSurfaceIdSchema.parse("phone-tab"),
         title: "Phone",
         site: null,
       },
@@ -294,11 +287,11 @@ describeStore("durable Run place entries", (it) => {
     expect(BigInt(third!.sequence)).toBeLessThan(BigInt(terminal.event.sequence));
     expect((await store.deploymentSnapshot(seedOptions)).runPlaces).toEqual([phone]);
     expect(
-      await store.recordRunPlace({
+      await store.recordRunTabPlace({
         ...input,
         data: {
           ...input.data,
-          place: b,
+          tabId: b.surfaceId,
         },
       }),
     ).toBeUndefined();

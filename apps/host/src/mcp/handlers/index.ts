@@ -1,7 +1,9 @@
+import { appToolHandlers } from "./apps.js";
+import { TabToolHandlers } from "./tabs.js";
 import { administrationToolHandlers, type AdministrationToolHandlers } from "./administration.js";
 import type { AppService } from "../../apps/app-service.js";
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
-import { requireRun } from "../operations.js";
+
 import type { ProductToolHandlers } from "./product.js";
 import type { IntegrationToolHandlers } from "./integrations.js";
 import type { TriggerToolHandlers } from "./triggers.js";
@@ -16,7 +18,8 @@ export function agentToolHandlers(options: {
   readonly product: ProductToolHandlers;
   readonly integrations: IntegrationToolHandlers;
   readonly triggers: TriggerToolHandlers;
-  readonly apps: Pick<AppService, "publish" | "listForCaller" | "fetch">;
+  readonly apps: Pick<AppService, "publish" | "list" | "start" | "stop" | "delete">;
+  readonly tabs: TabToolHandlers;
   readonly pluginInstall: (
     scope: RunToolScope,
     directory: string,
@@ -29,17 +32,18 @@ export function agentToolHandlers(options: {
     runId: RunId,
     threadId: ThreadId,
   ) => Promise<TeamAgentRequestId | null>;
-}): AgentToolHandlers {
+}): Partial<AgentToolHandlers> {
   const p = options.product,
     i = options.integrations,
     t = options.triggers;
-  const handlers: AgentToolHandlers = {
+  const handlers: Partial<AgentToolHandlers> = {
     ...administrationToolHandlers(options.administration, options.pluginInstall),
-    opensteer_app_publish: async (c) =>
-      await options.apps.publish(requireRun(c.caller).claims, c.operationKey, c.input),
-    opensteer_app_list: async (c) =>
-      await options.apps.listForCaller({ requestedBy: c.caller.userId }),
-    opensteer_app_call: async (c) => await options.apps.fetch(requireRun(c.caller).claims, c.input),
+    ...appToolHandlers(options.apps),
+    tab_list: (c) => options.tabs.tab_list(c),
+    tab_open: (c) => options.tabs.tab_open(c),
+    tab_close: (c) => options.tabs.tab_close(c),
+    tab_organize: (c) => options.tabs.tab_organize(c),
+    tab_group_update: (c) => options.tabs.tab_group_update(c),
     opensteer_ai_account_list: async (c) => await p.opensteer_ai_account_list(c),
     opensteer_task_create: Object.assign(
       async (c: ToolCall<"opensteer_task_create">) =>
@@ -82,17 +86,14 @@ export function agentToolHandlers(options: {
       },
     ),
     ask_person: async (c) => await p.ask_person(c),
-    send_to_person: async (c) => await p.send_to_person(c),
-    show_to_person: Object.assign(
-      async (c: ToolCall<"show_to_person">) => await p.show_to_person(c),
-      {
-        targets: async (c: ToolCall<"show_to_person">) =>
-          "taskId" in c.input.target ? [c.input.target.taskId] : [],
-        authorize: async (c: ToolCall<"show_to_person">) => {
-          await p.preparePersonShow(c);
-        },
+    person_notify: async (c) => await p.person_notify(c),
+    person_show: Object.assign(async (c: ToolCall<"person_show">) => await p.person_show(c), {
+      targets: async (c: ToolCall<"person_show">) =>
+        "taskId" in c.input.target ? [c.input.target.taskId] : [],
+      authorize: async (c: ToolCall<"person_show">) => {
+        await p.preparePersonShow(c);
       },
-    ),
+    }),
     opensteer_request_list: async (c) =>
       p.opensteer_request_answer({ ...c, input: { ...c.input, action: "list" } }),
     opensteer_request_read: async (c) =>

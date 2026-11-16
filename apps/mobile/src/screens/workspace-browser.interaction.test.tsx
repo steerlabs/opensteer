@@ -1,25 +1,31 @@
-import { seedBrowserSession } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
-import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 
 import { act, StrictMode, useEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BrowserEditingStore,
-  browserThreadAgentTab,
-  placeList,
+  TabStore,
   type BrowserSessionSummary,
   type HostSnapshot,
+  type PlaceActivity,
+  type PlaceOccupant,
 } from "@opensteer/client/host";
 import { Alert } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { fitOffer, pictureBox, pinched, slideFor } from "../browser/browser-page.js";
-import { BrowserPageContentPartSchema } from "@opensteer/core";
-import { BrowserSurfaceIdSchema, type MachineSummary } from "@opensteer/protocol";
-import type { BrowserTabRow } from "@opensteer/protocol/browser-tabs";
-import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
-import type { SurfacesRoute } from "../browser/surface-route.js";
+import {
+  BrowserPageContentPartSchema,
+  RunnerIdSchema,
+  TabIdSchema,
+  type App,
+  type Tab,
+  type TabId,
+} from "@opensteer/core";
+import type { BrowserViewerSurface } from "@opensteer/protocol/browser-tabs";
+import { MemoryPrivateFilesystem, tabFixture } from "@opensteer/client/test-support";
+import type { TabRoute } from "../browser/surface-route.js";
+import type { TabViewer } from "@opensteer/protocol";
 import {
   createThreadDraftStore,
   newTaskDraftKey,
@@ -31,10 +37,9 @@ import { WorkspaceBrowserScreen } from "./workspace-browser.js";
 /*
  * One tab, app or phone, by route. What can go wrong: a link's tab is swapped
  * for whatever tab is active; an ended browser is replaced by another; Chrome
- * sign-in is lost; another person's or deployment's tabs are shown; a saved
- * tab's lineage moving to a new session leaves the page on the old session; a
- * lineage the bounded catalog leaves out is read more than once or replaced by
- * a sibling; the bar names an agent from the route rather than the page's
+ * sign-in is lost; another person's or deployment's tabs are shown; anything
+ * but the person's own Open wakes a phone; moving between pages of one browser
+ * blanks the page; the bar names an agent from the route rather than the page's
  * occupants, or pushes a second copy of the Thread under it; Ask loses the
  * page; the route's origin changes what the screen shows.
  */
@@ -60,6 +65,10 @@ const state = vi.hoisted(() => ({
     readonly onDeactivate: () => void;
     readonly onUpdate: (event: { focalX: number; focalY: number; scale: number }) => void;
   },
+  swipe: null as null | {
+    readonly failOffsetY?: unknown;
+    readonly onDeactivate: (event: { translationX: number }) => void;
+  },
   safeArea: { bottom: 0, left: 0, right: 0, top: 0 },
   setOptions: vi.fn(),
   setParams: vi.fn(),
@@ -84,41 +93,62 @@ const state = vi.hoisted(() => ({
   /** Every claim of the active Thread a pane beside the page made. */
   conversationClaims: [] as string[],
   drafts: null as ThreadDraftStore | null,
+  /** Tabs besides the pages the snapshot's browsers list, such as apps and windows. */
+  extraTabs: [] as Tab[],
+  /** The Host has sent its whole tab list. */
+  tabsComplete: true,
+  /** What the Host's activation answers for a tab, when a test decides it. */
+  activate: null as null | ((tabId: string) => Promise<TabViewer>),
+  /** Told on every render, as the native stack tells a screen its focus changed. */
+  focusListeners: new Set<() => void>(),
+  focusEpoch: 0,
   popupFollow: null as {
     readonly tab: { readonly sessionId: string; readonly tabId: string } | null;
     readonly follow: (tabId: string) => void;
   } | null,
 }));
 
-vi.mock("@react-navigation/native", () => ({
-  StackActions: {
-    pop: (count: number) => ({ type: "POP", count }),
-    popTo: (name: string, params: object) => ({ name, params, type: "POP_TO" }),
-    popToTop: () => ({ type: "POP_TO_TOP" }),
-    push: (name: string, params: object) => ({ name, params, type: "PUSH" }),
-    replace: (name: string, params: object) => ({ name, params, type: "REPLACE" }),
-  },
-  useIsFocused: () => state.focused,
-  // The page's own stack: a screen over it while it is not drawn, and Home
-  // under it when a test opens it top-level, straight from the sidebar.
-  useNavigationState: (select: (navigation: object) => unknown) => {
-    const routes = [
-      ...(state.topLevel ? [{ key: "home", name: "Home" }] : []),
-      { key: "page", name: "WorkspaceBrowser" },
-      ...(state.drawn ? [] : [{ key: "over", name: "Thread" }]),
-    ];
-    return select({ index: routes.length - 1, routes });
-  },
-  useRoute: () => ({ key: "page" }),
-  useNavigation: () => ({
-    dispatch: state.dispatch,
-    getState: () => ({ index: state.routes.length - 1, routes: state.routes }),
-    goBack: state.goBack,
-    isFocused: () => state.navigationFocused,
-    setOptions: state.setOptions,
-    setParams: state.setParams,
-  }),
-}));
+vi.mock("@react-navigation/native", async () => {
+  const { useSyncExternalStore } = await vi.importActual<typeof import("react")>("react");
+  const subscribe = (listener: () => void) => {
+    state.focusListeners.add(listener);
+    return () => state.focusListeners.delete(listener);
+  };
+  return {
+    StackActions: {
+      pop: (count: number) => ({ type: "POP", count }),
+      popTo: (name: string, params: object) => ({ name, params, type: "POP_TO" }),
+      popToTop: () => ({ type: "POP_TO_TOP" }),
+      push: (name: string, params: object) => ({ name, params, type: "PUSH" }),
+      replace: (name: string, params: object) => ({ name, params, type: "REPLACE" }),
+    },
+    // Read through a store, so a memoized screen part hears focus change as it does natively.
+    useIsFocused: () => {
+      useSyncExternalStore(subscribe, () => state.focusEpoch);
+      return state.focused;
+    },
+    // The page's own stack: a screen over it while it is not drawn, and Home
+    // under it when a test opens it top-level, straight from the sidebar.
+    useNavigationState: (select: (navigation: object) => unknown) => {
+      const routes = [
+        ...(state.topLevel ? [{ key: "home", name: "Home" }] : []),
+        { key: "page", name: "WorkspaceBrowser" },
+        ...(state.drawn ? [] : [{ key: "over", name: "Thread" }]),
+      ];
+      return select({ index: routes.length - 1, routes });
+    },
+    useRoute: () => ({ key: "page" }),
+    useNavigation: () => ({
+      canGoBack: () => true,
+      dispatch: state.dispatch,
+      getState: () => ({ index: state.routes.length - 1, routes: state.routes }),
+      goBack: state.goBack,
+      isFocused: () => state.navigationFocused,
+      setOptions: state.setOptions,
+      setParams: state.setParams,
+    }),
+  };
+});
 vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 88 }));
 vi.mock("expo-haptics", () => ({
   ImpactFeedbackStyle: { Heavy: "heavy" },
@@ -140,12 +170,13 @@ vi.mock("react-native-webview", () => ({
     </div>
   ),
 }));
+// The screen's own hooks run for real over the fake client; only the snapshot
+// reads, the app view and the popup follow stand in.
 vi.mock("@opensteer/client/react", async () => {
   const actual =
     await vi.importActual<typeof import("@opensteer/client/react")>("@opensteer/client/react");
   return {
-    useActionReview: actual.useActionReview,
-    useBrowserAgentFollow: actual.useBrowserAgentFollow,
+    ...actual,
     useAppView: (...args: Parameters<typeof actual.useAppView>) =>
       state.realAppView
         ? actual.useAppView(...args)
@@ -165,34 +196,13 @@ vi.mock("@opensteer/client/react", async () => {
       state.popupFollow = { tab, follow };
     },
     useHostSelector: (_client: unknown, selector: (snapshot: HostSnapshot) => unknown) =>
-      selector(seedBrowserSnapshot(state.snapshot!)),
+      selector(currentSnapshot()!),
     useHostSnapshot: () => ({
-      snapshot: state.snapshot && seedBrowserSnapshot(state.snapshot),
+      snapshot: currentSnapshot(),
       loadError: null,
       reload: state.refresh,
     }),
-    usePlaceList: () => {
-      if (state.snapshot === null) throw new Error("Missing snapshot fixture");
-      return placeList(seedBrowserSnapshot(state.snapshot));
-    },
-    // The keyed tab reads, from the same fixture as the snapshot.
-    useBrowserSessionGroupId: (_client: unknown, sessionId: string | undefined) =>
-      sessionId === undefined
-        ? undefined
-        : seedBrowserSnapshot(state.snapshot!).browserTabs?.groupForSession(sessionId),
-    useBrowserTab: (_client: unknown, groupId?: string, tabId?: string) =>
-      groupId && tabId
-        ? seedBrowserSnapshot(state.snapshot!).browserTabs?.tab(groupId, tabId)
-        : undefined,
-    useBrowserTabs: (_client: unknown, groupId: string) => fixtureList(groupId),
-    useBrowserViewerSurface: (_client: unknown, sessionId?: string, tabId?: string) =>
-      sessionId && tabId ? fixtureSurface(sessionId, tabId) : undefined,
     useBrowserTabAwake: () => true,
-    // No Run place in these fixtures: the agent's tab is the one its Thread occupies.
-    useThreadAgentTab: (_client: unknown, threadId: string | null) =>
-      threadId === null
-        ? null
-        : browserThreadAgentTab(seedBrowserSnapshot(state.snapshot!).browserSessions, threadId),
   };
 });
 vi.mock("../ui/mobile-client-context.js", () => ({
@@ -387,6 +397,11 @@ vi.mock("react-native-gesture-handler", async () => ({
     state.pinch = config;
     return {};
   },
+  // The address bar's sideways swipe between tabs.
+  usePanGesture: (config: NonNullable<typeof state.swipe>) => {
+    if ("failOffsetY" in config) state.swipe = config;
+    return {};
+  },
 }));
 vi.mock(
   "react-native-worklets",
@@ -536,14 +551,15 @@ vi.mock("../browser/browser-stream.js", async (importOriginal) => ({
     );
   },
 }));
-vi.mock("../computers/mac-app-view.js", async () => {
+vi.mock("../computers/phone-display.js", async () => {
   const { ToolbarAsk } =
     await vi.importActual<typeof import("../browser/place-bar.js")>("../browser/place-bar.js");
   return {
-    MacAppPreview: () => null,
-    MacAppView: () => (
+    ComputerDisplay: () => null,
+    ComputerOwnerView: (props: { appKey: string | null; viewId: string; generation: number }) => (
       <div>
-        Mac app
+        {props.appKey === null ? "Phone" : `Mac app ${props.appKey}`} view {props.viewId}:
+        {props.generation}
         <ToolbarAsk />
       </div>
     ),
@@ -665,38 +681,62 @@ afterEach(() => {
   state.pageMounts = 0;
   state.conversationClaims = [];
   state.drafts = null;
+  state.extraTabs = [];
+  state.tabsComplete = true;
+  state.activate = null;
+  state.swipe = null;
+  tabs = new TabStore();
+  clientListeners.clear();
 });
 
 const agentHome = { computerId: "rnr_00000000-0000-4000-8000-000000000001", path: "/Users/alex" };
+/** The computer every fixture tab is on. */
+const studio = {
+  computerId: RunnerIdSchema.parse("rnr_00000000-0000-4000-8000-00000000000a"),
+  name: "Studio Mac",
+};
+const agentAt = "2026-10-13T00:00:00.000Z";
+type Occupant = Partial<Omit<PlaceOccupant, "threadId">> & {
+  readonly threadId: string;
+};
+
+/** One page of a fixture browser: its tab row, its viewer's surface, and who is in it. */
+interface Page {
+  readonly id: TabId;
+  readonly title: string;
+  readonly url: string;
+  readonly occupants?: readonly Occupant[];
+  readonly sizedByAgent?: boolean;
+}
+/** A browser session and the pages it holds, which become the Host's page tabs. */
+type FixtureSession = BrowserSessionSummary & { readonly pages: readonly Page[] };
+type PageInput = Omit<Page, "id"> & { readonly id: string };
+const firstPage: PageInput = { id: "page-1", title: "Page", url: "https://example.com" };
 
 function session(
   id: string,
   state: BrowserSessionSummary["state"] = "ready",
-): BrowserSessionSummary {
-  return seedBrowserSession(
-    {
-      access: "read-write",
-      attachedRunIds: [],
-      dialog: null,
-      error: null,
-      id,
-      origin: "agent",
-      placement: { kind: "runner", runnerId: "runner-a" },
-      profileId: null,
-      runtimeId: "runtime-a",
-      state,
-      viewerError: null,
-      viewerState: "synchronized",
-    },
-    undefined,
-    [{ active: true, id: "page-1", title: "Page", url: "https://example.com" }] as NonNullable<
-      Parameters<typeof seedBrowserSession>[2]
-    >,
-  );
+  pages: readonly PageInput[] = [firstPage],
+): FixtureSession {
+  return {
+    access: "read-write",
+    attachedRunIds: [],
+    dialog: null,
+    error: null,
+    id,
+    origin: "agent",
+    placement: { kind: "runner", runnerId: "runner-a" },
+    profileId: null,
+    runtimeId: "runtime-a",
+    state,
+    viewerError: null,
+    viewerState: "synchronized",
+    pages: pages.map((page) => ({ ...page, id: TabIdSchema.parse(page.id) })),
+  } as FixtureSession;
 }
 
 function snapshot(sessions: BrowserSessionSummary[]): HostSnapshot {
-  return seedBrowserSnapshot({
+  return {
     assignments: {},
     browserPlacements: [],
     browserProfiles: [],
@@ -721,35 +761,196 @@ function snapshot(sessions: BrowserSessionSummary[]): HostSnapshot {
     transcripts: {},
     user: { id: "user-a" },
     waitingRequests: [],
-  } as unknown as HostSnapshot);
+  } as unknown as HostSnapshot;
 }
 
-function fixtureRows(sessionId: string): ReadonlyMap<string, BrowserTabRow> | undefined {
-  const session = state.snapshot?.browserSessions.find(({ id }) => id === sessionId);
-  return session
-    ? new Map(session.browserTabs?.sessionTabs(sessionId).map((tab) => [tab.id, tab]))
-    : undefined;
+/** Every page the snapshot's browsers hold, with the browser holding it. */
+function pagesOf(raw: HostSnapshot | null) {
+  return (raw?.browserSessions ?? []).flatMap((held) =>
+    ((held as Partial<FixtureSession>).pages ?? []).map((page) => ({ session: held, page })),
+  );
 }
-function fixtureList(sessionId: string) {
-  const rows = fixtureRows(sessionId);
-  return { ids: rows ? [...rows.keys()] : [], syncing: false, whole: rows !== undefined };
+function pageIn(sessionId: string, tabId: string): Page | undefined {
+  return pagesOf(state.snapshot).find(
+    (held) => held.session.id === sessionId && held.page.id === tabId,
+  )?.page;
 }
-const fixtureTabs = {
-  sessionTab: (sessionId: string, tabId: string) => fixtureRows(sessionId)?.get(tabId),
-  sessionList: fixtureList,
-  tab: (groupId: string, tabId: string) => fixtureRows(groupId)?.get(tabId),
-};
-const fixtureSurface = (sessionId: string, tabId: string) =>
-  state.snapshot?.browserTabs?.surface(sessionId, tabId);
+
+/** A page's tab row: who uses it, and when they were last there. */
+function pageTab(page: Page): Tab {
+  const occupants = page.occupants ?? [];
+  const tab = tabFixture({
+    tabId: page.id,
+    title: page.title,
+    url: page.url,
+    computer: studio,
+    updatedAt:
+      occupants
+        .map(({ lastActiveAt }) => lastActiveAt ?? agentAt)
+        .sort()
+        .at(-1) ?? agentAt,
+  });
+  // The fixture's task ids are words, not the Host's ids, so they skip its schema.
+  const usedBy = [...new Set(occupants.map(({ threadId }) => threadId))]
+    .sort()
+    .map((taskId) => ({ taskId }));
+  return { ...tab, usedBy } as unknown as Tab;
+}
+/** A Mac window or a phone the person opened as a tab. */
+function nativeTab(phone: boolean, extra: Partial<Tab> = {}): Tab {
+  return tabFixture({
+    tabId: TabIdSchema.parse("tab_native"),
+    computer: studio,
+    ...(phone ? { kind: "phone", title: "Pixel" } : { kind: "window", title: "Notes" }),
+    ...extra,
+  });
+}
+
+/** The Host's one tab list on this device, kept up as each render's snapshot says. */
+let tabs = new TabStore();
+let tabsRevision = 0;
+function syncTabs(): void {
+  const listed = [
+    ...new Map(
+      [...pagesOf(state.snapshot).map(({ page }) => pageTab(page)), ...state.extraTabs].map(
+        (tab) => [tab.tabId, tab],
+      ),
+    ).values(),
+  ];
+  const layout = {
+    revision: ++tabsRevision,
+    items: listed.map((tab) => ({ kind: "tab" as const, tabId: tab.tabId })),
+  };
+  if (!state.tabsComplete) {
+    // A list still arriving: what is known so far, and more to come.
+    tabs.clear();
+    tabs.seed({ tabs: listed, layout, complete: false });
+    return;
+  }
+  tabs.apply({ op: "begin", generation: `fixture-${tabsRevision}` });
+  if (listed.length) tabs.apply({ op: "rows", rows: listed });
+  tabs.apply({ op: "end", revision: 0, count: listed.length, meta: { layout } });
+}
+
+const seededSnapshots = new WeakMap<object, HostSnapshot>();
+function currentSnapshot(): HostSnapshot | null {
+  const raw = state.snapshot;
+  if (raw === null) return null;
+  const held = seededSnapshots.get(raw);
+  if (held) return held;
+  const view = { ...raw, tabs } as HostSnapshot;
+  seededSnapshots.set(raw, view);
+  return view;
+}
+
+const nobodyActing: readonly PlaceActivity[] = [];
+const activities = new WeakMap<object, Map<string, readonly PlaceActivity[]>>();
+/** The Host's word for who acts in a tab now: its acting occupants. */
+function placeActivity(tabId: string): readonly PlaceActivity[] {
+  const raw = state.snapshot;
+  if (raw === null) return nobodyActing;
+  const held = activities.get(raw) ?? new Map<string, readonly PlaceActivity[]>();
+  activities.set(raw, held);
+  if (!held.has(tabId)) {
+    const acting = pagesOf(raw)
+      .filter(({ page }) => page.id === tabId)
+      .flatMap(({ page }) => page.occupants ?? [])
+      .filter(({ acting }) => acting === true)
+      .map(({ threadId }) => ({ placeKey: tabId, threadId }) as unknown as PlaceActivity);
+    held.set(tabId, acting.length ? acting : nobodyActing);
+  }
+  return held.get(tabId)!;
+}
+
+const surfaces = new WeakMap<Page, BrowserViewerSurface>();
+/** The page as the viewer bound to its browser draws it; the same object while the page is. */
+function viewerSurface(sessionId: string, tabId: string): BrowserViewerSurface | undefined {
+  const page = pageIn(sessionId, tabId);
+  if (page === undefined) return undefined;
+  const held = surfaces.get(page);
+  if (held) return held;
+  const surface = {
+    id: page.id,
+    title: page.title,
+    url: page.url,
+    state: "live",
+    documentId: `document-${page.id}`,
+    geometryRevision: 1,
+    loading: false,
+    navigationFailed: false,
+    sizedByAgent: page.sizedByAgent ?? false,
+    favicon: null,
+  } as unknown as BrowserViewerSurface;
+  surfaces.set(page, surface);
+  return surface;
+}
 
 const liveFeed = { status: "live", error: null, frame: null } as const;
-function setup(
-  params: Partial<SurfacesRoute> = {},
+
+/** Test route params: a tab's route, plus the browser a page test seeds it in. */
+type TestRoute = Omit<Partial<TabRoute>, "tabId"> & {
+  readonly sessionId?: string;
+  readonly tabId?: string;
+};
+
+/** The Host's activation: a page in the browser listing it, an app as itself. */
+async function activate(tabId: string): Promise<TabViewer> {
+  if (state.activate) return state.activate(tabId);
+  const tab = tabs.get(tabId);
+  if (tab?.kind === "app") return { appId: tab.appId!, kind: "app" };
+  const held = pagesOf(state.snapshot).find(({ page }) => page.id === tabId);
+  const browser = held?.session ?? state.snapshot?.browserSessions[0];
+  if (!browser) throw new Error("No browser holds this page.");
+  return { kind: "page", sessionId: browser.id as never, surfaceId: tabId as TabId };
+}
+/** The Host's viewer for a Mac window or a phone, as its activation answers. */
+function nativeViewer(phone: boolean, generation = 1): TabViewer {
+  const view = {
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    generation,
+    machineId: "rnr_00000000-0000-4000-8000-00000000000a",
+    state: "ready",
+    unavailableReason: null,
+    viewId: "owner-view",
+    window: null,
+    target: phone
+      ? { kind: "phone", display: "main" }
+      : {
+          kind: "app",
+          app: { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null },
+          windowId: "win_00000000-0000-4000-8000-000000000001",
+        },
+  };
+  return (phone ? { kind: "phone", view } : { kind: "window", view }) as unknown as TabViewer;
+}
+
+/** Lets the Host's answers land: activation, and anything it started. */
+async function settle(): Promise<void> {
+  for (let index = 0; index < 4; index += 1) await act(async () => undefined);
+}
+
+/** Who the fake client tells when the Host's snapshot changes. */
+const clientListeners = new Set<() => void>();
+
+async function setup(
+  params: TestRoute = {},
   options: { strict?: boolean; snapshot?: HostSnapshot } = {},
 ) {
-  state.hostClient.getSnapshot ??= () => state.snapshot && seedBrowserSnapshot(state.snapshot);
-  state.hostClient.browserTabs ??= fixtureTabs;
-  state.hostClient.browserViewerSurface ??= fixtureSurface;
+  state.hostClient.getSnapshot ??= currentSnapshot;
+  state.hostClient.subscribe ??= (listener: () => void) => {
+    clientListeners.add(listener);
+    return () => clientListeners.delete(listener);
+  };
+  state.hostClient.activateTab ??= vi.fn(activate);
+  state.hostClient.browserViewerSurface ??= viewerSurface;
+  state.hostClient.placeActivity ??= placeActivity;
+  state.hostClient.subscribePlaceActivity ??= () => () => undefined;
+  state.hostClient.runPlace ??= () => null;
+  state.hostClient.subscribeRunPlace ??= () => () => undefined;
+  state.hostClient.tabViewer ??= () => null;
+  state.hostClient.getApp ??= async (appId: string) => {
+    throw new Error(`No app ${appId}.`);
+  };
   state.drafts ??= createThreadDraftStore({
     filePath: "/private/drafts.json",
     now: () => new Date("2026-10-13T00:00:00.000Z"),
@@ -770,26 +971,35 @@ function setup(
       threadId: "thread-parent",
       ...(params.sessionId ? { tabId: "page-1" } : {}),
       ...params,
-    } as SurfacesRoute,
+    } as TestRoute,
   };
-  const render = () => {
-    Object.defineProperty(state.hostClient, "browserTabs", {
-      configurable: true,
-      get: () => seedBrowserSnapshot(state.snapshot!).browserTabs!,
+  const focus = () =>
+    act(() => {
+      state.focusEpoch += 1;
+      for (const listener of state.focusListeners) listener();
     });
-    return act(() =>
+  const render = async () => {
+    // As on a phone: what covers the page changes before the Host's next word arrives.
+    focus();
+    act(() => {
+      syncTabs();
+      for (const listener of clientListeners) listener();
+    });
+    act(() =>
       root.render(
         options.strict ? (
           <StrictMode>
-            <WorkspaceBrowserScreen route={route} />
+            <WorkspaceBrowserScreen route={route as unknown as { params: TabRoute }} />
           </StrictMode>
         ) : (
-          <WorkspaceBrowserScreen route={route} />
+          <WorkspaceBrowserScreen route={route as unknown as { params: TabRoute }} />
         ),
       ),
     );
+    focus();
+    await settle();
   };
-  render();
+  await render();
   return { container, render, route };
 }
 
@@ -829,15 +1039,14 @@ function header(): HTMLElement {
   return container;
 }
 
-function mailSession(id: string): BrowserSessionSummary {
-  return seedBrowserSession({ ...session(id) }, undefined, [
+function mailSession(id: string): FixtureSession {
+  return session(id, "ready", [
     {
-      active: true,
       id: "srf_00000000-0000-4000-8000-000000000001",
       title: "Mail",
       url: "https://mail.example.com/inbox",
     },
-  ] as unknown as NonNullable<Parameters<typeof seedBrowserSession>[2]>);
+  ]);
 }
 
 async function pressAsync(container: HTMLElement, label: string) {
@@ -857,39 +1066,20 @@ function press(container: HTMLElement, label: string) {
   act(() => button.click());
 }
 
-const agentAt = "2026-10-13T00:00:00.000Z";
-type Occupant = Partial<Omit<import("@opensteer/client/host").PlaceOccupant, "threadId">> & {
-  readonly threadId: string;
-};
-
-/** A browser whose one tab holds these occupants, as a Host that names who is in a tab lists them. */
-function occupied(id: string, occupants: readonly Occupant[]): BrowserSessionSummary {
-  return seedBrowserSession(
-    { ...session(id) },
+/** A browser whose one page holds these occupants, as a Host that names who is in a tab lists them. */
+function occupied(id: string, occupants: readonly Occupant[], pageId = "page-1"): FixtureSession {
+  return session(id, "ready", [
     {
-      generation: 1,
-      revision: 1,
-      rows: [
-        {
-          availability: "ready",
-          documentId: null,
-          iconRef: null,
-          id: "page-1",
-          occupants: occupants.map((occupant) => ({
-            acting: false,
-            holding: true,
-            home: false,
-            lastActiveAt: agentAt,
-            ...occupant,
-          })),
-          openerId: null,
-          order: 0,
-          site: "https://example.com",
-          title: "Page",
-        },
-      ],
+      ...firstPage,
+      id: pageId,
+      occupants: occupants.map((occupant) => ({
+        acting: false,
+        holding: true,
+        lastActiveAt: agentAt,
+        ...occupant,
+      })),
     },
-  ) as unknown as BrowserSessionSummary;
+  ]);
 }
 
 /** A snapshot whose directory holds the agents' Threads and Agent home. */
@@ -925,23 +1115,33 @@ function closeBeside(container: HTMLElement, title: string) {
 }
 
 describe("mobile pages", () => {
-  it("keeps a failed page on screen with its detail and no navigation", () => {
-    const { container, render } = setup({ sessionId: "chosen" });
+  /** Two pages of one browser, listed in that order. */
+  function twoPages(): HostSnapshot {
+    return snapshot([
+      session("chosen", "ready", [
+        firstPage,
+        { id: "page-2", title: "Next", url: "https://next.example.com" },
+      ]),
+    ]);
+  }
+
+  it("keeps a failed page on screen with its detail and no navigation", async () => {
+    const { container, render } = await setup({ sessionId: "chosen" });
     state.snapshot = snapshot([
       { ...session("chosen", "failed"), error: "The computer disconnected." },
     ]);
-    render();
+    await render();
     expect(container.textContent).toContain("This page stopped working");
     expect(container.textContent).toContain("The computer disconnected.");
     expect(state.dispatch).not.toHaveBeenCalled();
     expect(state.goBack).not.toHaveBeenCalled();
   });
 
-  it("keeps a closed exact page unavailable without activating a sibling", () => {
+  it("keeps a closed exact page unavailable without activating a sibling", async () => {
     state.hostClient = { sendBrowserCommand: vi.fn() };
-    const { container, render } = setup({ sessionId: "chosen", tabId: "missing-page" });
+    const { container, render } = await setup({ sessionId: "chosen", tabId: "missing-page" });
     state.snapshot = snapshot([mailSession("chosen")]);
-    render();
+    await render();
     expect(container.textContent).toContain("This tab was closed");
     expect(container.textContent).not.toContain("View this browser");
     expect(state.dispatch).not.toHaveBeenCalled();
@@ -949,41 +1149,42 @@ describe("mobile pages", () => {
     expect(container.textContent).not.toContain("Back to tabs");
   });
 
-  it("opens a popup the person's input opened over its page, ready to go back", () => {
+  it("opens a popup the person's input opened over its page, ready to go back", async () => {
     const chosen = mailSession("chosen");
-    const tabId = (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id;
-    const { render } = setup({ sessionId: chosen.id, tabId });
+    const tabId = chosen.pages[0]!.id;
+    const { render } = await setup({ sessionId: chosen.id, tabId });
     state.snapshot = snapshot([chosen]);
-    render();
+    await render();
     expect(state.popupFollow?.tab).toEqual({ sessionId: chosen.id, tabId });
     state.popupFollow?.follow("popup-tab");
     expect(state.dispatch).toHaveBeenLastCalledWith({
       type: "PUSH",
       name: "WorkspaceBrowser",
-      params: expect.objectContaining({
-        editAddress: false,
+      params: {
+        deploymentId: "deployment-a",
         popup: true,
-        sessionId: chosen.id,
         tabId: "popup-tab",
-      }),
+        threadId: "thread-parent",
+      },
     });
   });
 
-  it("leaves a followed popup that ended, to the page under it, once it is in front again", () => {
+  it("leaves a followed popup that ended, to the page under it, once it is in front again", async () => {
+    const { render } = await setup({ popup: true, sessionId: "chosen" }, { snapshot: twoPages() });
     state.focused = false;
     state.navigationFocused = false;
-    const { render } = setup(
-      { popup: true, sessionId: "chosen", tabId: "missing-page" },
-      { snapshot: snapshot([mailSession("chosen")]) },
-    );
-    expect(state.dispatch).not.toHaveBeenCalled();
+    state.snapshot = snapshot([mailSession("chosen")]);
+    await render();
+    expect(state.goBack).not.toHaveBeenCalled();
     state.focused = true;
     state.navigationFocused = true;
-    render();
-    expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({ type: "POP", count: 1 });
+    await render();
+    // A popup returns to the page that opened it, not to the tab beside it.
+    expect(state.goBack).toHaveBeenCalledOnce();
+    expect(state.setParams).not.toHaveBeenCalled();
   });
 
-  it("views a linked inactive page without activating it and targets its navigation", () => {
+  it("views a linked inactive page without activating it and targets its navigation", async () => {
     const sendBrowserCommand = vi.fn();
     state.hostClient = {
       sendBrowserCommand,
@@ -991,27 +1192,15 @@ describe("mobile pages", () => {
       browserFrames: { subscribe: () => () => undefined },
     };
     const chosen = mailSession("chosen");
-    const target = "srf_00000000-0000-4000-8000-000000000002" as NonNullable<
-      Parameters<typeof seedBrowserSession>[2]
-    >[number]["id"];
-    const { container, render } = setup({ sessionId: chosen.id, tabId: target });
+    const target = "srf_00000000-0000-4000-8000-000000000002";
+    const { container, render } = await setup({ sessionId: chosen.id, tabId: target });
     state.snapshot = snapshot([
-      seedBrowserSession({ ...chosen }, undefined, [
-        ...chosen
-          .browserTabs!.sessionTabs(chosen.id)
-          .map((row) => chosen.browserTabs!.surface(chosen.id, row.id)!),
-        {
-          ...chosen.browserTabs!.surface(
-            chosen.id,
-            chosen.browserTabs!.sessionTabs(chosen.id)[0]!.id,
-          )!,
-          id: target,
-          active: false,
-          title: "Second page",
-        },
+      session(chosen.id, "ready", [
+        ...chosen.pages,
+        { ...chosen.pages[0]!, id: target, title: "Second page" },
       ]),
     ]);
-    render();
+    await render();
     expect(
       container.querySelector("[data-expected-surface]")?.getAttribute("data-expected-surface"),
     ).toBe(target);
@@ -1023,41 +1212,41 @@ describe("mobile pages", () => {
     });
   });
 
-  it("says a page refused an action until its feed is admitted again, then gives the page's reason", () => {
+  it("says a page refused an action until its feed is admitted again, then gives the page's reason", async () => {
     const sendBrowserCommand = vi.fn(() => {
       throw new Error("The targeted browser control is not synchronized.");
     });
     state.hostClient = { sendBrowserCommand };
     const chosen = mailSession("chosen");
-    const { container, render } = setup({
+    const { container, render } = await setup({
       sessionId: chosen.id,
-      tabId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+      tabId: chosen.pages[0]!.id,
     });
     let feed: object = { ...liveFeed, admissionId: "admission-1" };
     state.hostClient.browserViewerState = () => feed;
     state.snapshot = snapshot([chosen]);
-    render();
+    await render();
     expect(() => press(container, "Reload")).not.toThrow();
     expect(container.textContent).toContain("The page is reconnecting");
     feed = { ...liveFeed, admissionId: "admission-2", inputError: "A dialog is open on the page." };
-    render();
+    await render();
     expect(container.textContent).not.toContain("The page is reconnecting");
     expect(container.textContent).toContain("A dialog is open on the page.");
   });
 
-  it("closes the page keyboard when the page refuses what was typed, and types afresh after", () => {
+  it("closes the page keyboard when the page refuses what was typed, and types afresh after", async () => {
     let refuse = false;
     const sendBrowserCommand = vi.fn(() => {
       if (refuse) throw new Error("The targeted browser control is not synchronized.");
     });
     state.hostClient = { sendBrowserCommand };
     const chosen = mailSession("chosen");
-    const { container, render } = setup({
+    const { container, render } = await setup({
       sessionId: chosen.id,
-      tabId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+      tabId: chosen.pages[0]!.id,
     });
     state.snapshot = snapshot([chosen]);
-    render();
+    await render();
     const field = () =>
       container.querySelector<HTMLInputElement>('input[aria-label="Type into the page"]');
     const type = (text: string) =>
@@ -1080,7 +1269,7 @@ describe("mobile pages", () => {
     press(container, "Tap the page");
     press(container, "Keyboard");
     type("x");
-    const surfaceId = (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id;
+    const surfaceId = chosen.pages[0]!.id;
     expect(sendBrowserCommand.mock.calls).toEqual([
       [chosen.id, { type: "clipboard.paste", surfaceId, text: "saved" }],
       [chosen.id, { type: "clipboard.paste", surfaceId, text: "!" }],
@@ -1088,382 +1277,135 @@ describe("mobile pages", () => {
     ]);
   });
 
-  it("selects a local pending tab immediately and keeps a later result from stealing focus", async () => {
-    const gate = Promise.withResolvers<{ sessionId: string; tabId: string }>();
-    const beginBrowserTabOpen = vi.fn(() => ({
-      idempotencyKey: "phone-open",
-      result: gate.promise,
-    }));
-    state.hostClient = {
-      beginBrowserTabOpen,
-      browserViewerState: () => liveFeed,
-      browserFrames: { subscribe: () => () => undefined },
-    };
-    const { render, route, container } = setup({ sessionId: "chosen" });
-    state.snapshot = snapshot([session("chosen")]);
-    render();
-    await pressAsync(menu(), "New tab");
-    expect(beginBrowserTabOpen).toHaveBeenCalledOnce();
-    expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
-      type: "REPLACE",
-      name: "WorkspaceBrowser",
-      params: {
-        deploymentId: "deployment-a",
-        threadId: "thread-parent",
-        pendingBrowserTab: "phone-open",
-      },
+  it("closes from the page's menu by taking the tab off the list, then shows the tab beside it", async () => {
+    const closeTabs = vi.fn(async (tabIds: readonly string[]) => ({ closed: tabIds, failed: [] }));
+    state.hostClient = { closeTabs };
+    const { render } = await setup({ sessionId: "chosen" }, { snapshot: twoPages() });
+    // An agent at work in the page is not asked about: closing never stops it.
+    await pressAsync(menu(), "Close tab");
+    expect(closeTabs).toHaveBeenCalledExactlyOnceWith(["page-1"]);
+    state.snapshot = snapshot([
+      session("chosen", "ready", [
+        { id: "page-2", title: "Next", url: "https://next.example.com" },
+      ]),
+    ]);
+    await render();
+    expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
+      editAddress: false,
+      popup: false,
+      tabId: "page-2",
     });
-    route.params = {
-      deploymentId: "deployment-a",
-      threadId: "thread-parent",
-      pendingBrowserTab: "phone-open",
-    };
-    state.snapshot = {
-      ...state.snapshot!,
-      pendingBrowserTabs: [
-        {
-          idempotencyKey: "phone-open",
-          target: { sessionId: "chosen" },
-          url: "https://waiting.example/",
-          state: "opening",
-        },
-      ],
-    };
-    render();
-    expect(container.textContent).toContain("Opening");
-    expect(container.textContent).toContain("waiting.example");
-    expect(container.textContent).not.toContain("https://waiting.example/");
-    expect(container.querySelector('[aria-label="https://waiting.example/"]')).not.toBeNull();
-    state.navigationFocused = false;
-    state.routes = [
-      { name: "Thread", params: { deploymentId: "deployment-a", threadId: "other" } },
-    ];
-    await act(async () => gate.resolve({ sessionId: "chosen", tabId: "new-page" }));
-    expect(state.dispatch).toHaveBeenCalledOnce();
+    expect(state.goBack).not.toHaveBeenCalled();
   });
 
-  it("keeps an ambiguous opening's address and completes it on the chosen available computer", async () => {
-    const gate = Promise.withResolvers<{ sessionId: string; tabId: string }>();
-    const beginBrowserTabOpen = vi.fn(() => ({
-      idempotencyKey: "chosen-computer",
-      result: gate.promise,
-    }));
-    const dismissPendingBrowserTab = vi.fn();
-    state.hostClient = { beginBrowserTabOpen, dismissPendingBrowserTab };
-    const ambiguousSnapshot: HostSnapshot = {
-      ...snapshot([]),
-      browserPlacements: [
-        {
-          runnerId: "available",
-          label: "Available Mac",
-          available: true,
-          kind: "runner",
-          runtimeId: null,
-          environmentIds: [],
-        },
-        {
-          runnerId: "offline",
-          label: "Offline Mac",
-          available: false,
-          kind: "runner",
-          runtimeId: null,
-          environmentIds: [],
-        },
-      ],
-      pendingBrowserTabs: [
-        {
-          idempotencyKey: "ambiguous",
-          target: { identity: { kind: "guest" } },
-          url: "https://waiting.example/",
-          state: "failed",
-          typed: true,
-          viewport: { width: 390, height: 612 },
-          error: {
-            code: "browser-placement-ambiguous",
-            message: "Choose a computer to browse on.",
-          },
-        },
-      ],
-    };
-    const { container } = setup(
-      { pendingBrowserTab: "ambiguous" },
-      { snapshot: ambiguousSnapshot },
-    );
-    expect(container.textContent).toContain("waiting.example");
-    expect(container.textContent).not.toContain("https://waiting.example/");
-    expect(container.querySelector('[aria-label="https://waiting.example/"]')).not.toBeNull();
-    expect(container.textContent).not.toContain("Open on Offline Mac");
-    await pressAsync(container, "Open on Available Mac");
-    expect(beginBrowserTabOpen).toHaveBeenCalledExactlyOnceWith(
-      { identity: { kind: "guest" }, placement: { kind: "runner", runnerId: "available" } },
-      { url: "https://waiting.example/", typed: true, viewport: { width: 390, height: 612 } },
-    );
-    expect(dismissPendingBrowserTab).toHaveBeenCalledExactlyOnceWith("ambiguous");
-    state.routes = [
+  it("lands on a tab still listed when its neighbour closed along with it", async () => {
+    const third = { id: "page-3", title: "Third", url: "https://third.example.com" };
+    const { render } = await setup(
+      { sessionId: "chosen" },
       {
-        name: "WorkspaceBrowser",
-        params: {
-          deploymentId: "deployment-a",
-          threadId: "thread-parent",
-          pendingBrowserTab: "chosen-computer",
-        },
+        snapshot: snapshot([
+          session("chosen", "ready", [
+            firstPage,
+            { id: "page-2", title: "Next", url: "https://next.example.com" },
+            third,
+          ]),
+        ]),
       },
-    ];
-    await act(async () => gate.resolve({ sessionId: "chosen", tabId: "new-page" }));
-    expect(state.dispatch).toHaveBeenLastCalledWith({
-      type: "REPLACE",
-      name: "WorkspaceBrowser",
-      params: {
-        deploymentId: "deployment-a",
-        threadId: "thread-parent",
-        sessionId: "chosen",
-        tabId: "new-page",
-        editAddress: true,
-      },
+    );
+    // Another device closes this tab and the one after it at once.
+    state.snapshot = snapshot([session("chosen", "ready", [third])]);
+    await render();
+    expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
+      editAddress: false,
+      popup: false,
+      tabId: "page-3",
     });
   });
 
-  it.each([false, true])(
-    "opens at the valid page size and replaces only the selected pending route (oversized=%s)",
-    async (oversized) => {
-      state.layout = { height: 612.4, width: oversized ? 8000 : 389.6 };
-      const gate = Promise.withResolvers<{ sessionId: string; tabId: string }>();
-      const beginBrowserTabOpen = vi.fn(() => ({
-        idempotencyKey: "phone-open",
-        result: gate.promise,
-      }));
-      state.hostClient = {
-        beginBrowserTabOpen,
-        browserViewerState: () => liveFeed,
-        browserFrames: { subscribe: () => () => undefined },
-      };
-      const { container, render, route } = setup({ sessionId: "chosen" });
-      state.snapshot = snapshot([session("chosen")]);
-      render();
-      await pressAsync(menu(), "New tab");
-      expect(beginBrowserTabOpen).toHaveBeenCalledExactlyOnceWith(
-        { sessionId: "chosen" },
-        oversized ? undefined : { viewport: { height: 612, width: 390 } },
-      );
-      state.routes = [
-        {
-          name: "WorkspaceBrowser",
-          params: {
-            deploymentId: "deployment-a",
-            threadId: "thread-parent",
-            pendingBrowserTab: "phone-open",
-          },
-        },
-      ];
-      await act(async () => gate.resolve({ sessionId: "chosen", tabId: "new-page" }));
-      expect(state.dispatch).toHaveBeenLastCalledWith({
-        type: "REPLACE",
-        name: "WorkspaceBrowser",
-        params: {
-          deploymentId: "deployment-a",
-          threadId: "thread-parent",
-          sessionId: "chosen",
-          tabId: "new-page",
-          editAddress: true,
-        },
-      });
-      route.params = {
-        deploymentId: "deployment-a",
-        threadId: "thread-parent",
-        sessionId: "chosen",
-        tabId: "new-page",
-        editAddress: true,
-      };
-      state.snapshot = snapshot([
-        seedBrowserSession({ ...session("chosen") }, undefined, [
-          { id: "new-page", active: false, title: "", url: "about:blank" },
-        ] as unknown as NonNullable<Parameters<typeof seedBrowserSession>[2]>),
-      ]);
-      render();
-      expect(
-        container.querySelector<HTMLInputElement>('input[aria-label="Website address"]')?.value,
-      ).toBe("");
-    },
-  );
-
-  it.each([false, true])(
-    "returns after a successful close, reviewing held work: %s",
-    async (held) => {
-      const chosen = session("chosen");
-      const closeBrowserTab = vi.fn(async () => ({}));
-      state.hostClient = {
-        getSnapshot: () => state.snapshot,
-        subscribe: () => () => undefined,
-        closeBrowserTab,
-      };
-      const { container, render } = setup({ sessionId: "chosen" });
-      state.routes = [
-        { name: "Thread" },
-        {
-          name: "WorkspaceBrowser",
-          params: { deploymentId: "deployment-a", threadId: "thread-parent", sessionId: "chosen" },
-        },
-      ];
-      state.snapshot = snapshot([
-        seedBrowserSession({ ...chosen, attachedRunIds: held ? ["run-1"] : [] }, {
-          generation: 1,
-          revision: 1,
-          rows: [
-            { id: "page-1", title: "Page", site: "https://example.com", order: 0, occupants: [] },
-          ],
-        } as unknown as NonNullable<NonNullable<Parameters<typeof seedBrowserSession>[1]>>),
-      ]);
-      render();
-      await pressAsync(menu(), "Close tab");
-      if (held) {
-        expect(closeBrowserTab).not.toHaveBeenCalled();
-        expect(container.textContent).toContain(
-          "An agent is working here. This tab closes for you and for the agent.",
-        );
-        await pressAsync(container, "Close tab");
-      }
-      expect(closeBrowserTab).toHaveBeenCalledExactlyOnceWith("chosen", "page-1", {
-        generation: 0,
-        revision: 1,
-        inventoryRevision: 1,
-      });
-      expect(state.goBack).not.toHaveBeenCalled();
-      expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({ type: "POP", count: 1 });
-    },
-  );
-
-  it("returns to the conversation past an earlier closed page when its last page closes", async () => {
-    const closeBrowserTab = vi.fn(async () => ({}));
-    state.hostClient = {
-      getSnapshot: () => state.snapshot,
-      subscribe: () => () => undefined,
-      closeBrowserTab,
-    };
-    const { render } = setup({ sessionId: "chosen" });
-    // A transcript chip on page A pushed page B; A has since closed elsewhere.
-    state.routes = [
-      { name: "Thread" },
-      {
-        name: "WorkspaceBrowser",
-        params: {
-          deploymentId: "deployment-a",
-          threadId: "thread-parent",
-          sessionId: "earlier",
-          tabId: "page-1",
-        },
-      },
-      {
-        name: "WorkspaceBrowser",
-        params: {
-          deploymentId: "deployment-a",
-          threadId: "thread-parent",
-          sessionId: "chosen",
-          tabId: "page-1",
-        },
-      },
-    ];
-    state.snapshot = snapshot([
-      seedBrowserSession({ ...session("chosen") }, {
-        generation: 1,
-        revision: 1,
-        rows: [
-          { id: "page-1", title: "Page", site: "https://example.com", order: 0, occupants: [] },
-        ],
-      } as unknown as NonNullable<NonNullable<Parameters<typeof seedBrowserSession>[1]>>),
-    ]);
-    render();
-    await pressAsync(menu(), "Close tab");
-    expect(state.goBack).not.toHaveBeenCalled();
-    expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({ type: "POP", count: 2 });
-  });
-
-  it("leaves the person where they are when a close completes after they opened another page", async () => {
-    let complete: (() => void) | undefined;
-    const closeBrowserTab = vi.fn(
-      () =>
-        new Promise((resolve) => {
-          complete = () => resolve({});
-        }),
+  it("goes back when the closed tab had nothing beside it, and says nothing of a sibling", async () => {
+    const { container, render } = await setup(
+      { sessionId: "chosen" },
+      { snapshot: snapshot([session("chosen")]) },
     );
-    state.hostClient = {
-      getSnapshot: () => state.snapshot,
-      subscribe: () => () => undefined,
-      closeBrowserTab,
-    };
-    const { render } = setup({ sessionId: "chosen" });
-    state.snapshot = snapshot([
-      seedBrowserSession({ ...session("chosen") }, {
-        generation: 1,
-        revision: 1,
-        rows: [
-          { id: "page-1", title: "Page", site: "https://example.com", order: 0, occupants: [] },
-        ],
-      } as unknown as NonNullable<NonNullable<Parameters<typeof seedBrowserSession>[1]>>),
-      session("other"),
-    ]);
-    render();
-    await pressAsync(menu(), "Close tab");
-    expect(closeBrowserTab).toHaveBeenCalledOnce();
-    // Another page was pushed over this one before the Host answered.
-    state.navigationFocused = false;
-    await act(async () => complete?.());
-    expect(state.goBack).not.toHaveBeenCalled();
-    expect(state.dispatch).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Viewing chosen");
+    state.snapshot = snapshot([mailSession("other")]);
+    await render();
+    expect(state.goBack).toHaveBeenCalledOnce();
+    expect(state.setParams).not.toHaveBeenCalled();
   });
 
-  it("returns to a live page under it after close, and no further", async () => {
-    const chosen = session("chosen");
-    const closeBrowserTab = vi.fn(async () => ({}));
-    state.hostClient = {
-      getSnapshot: () => state.snapshot,
-      subscribe: () => () => undefined,
-      closeBrowserTab,
-    };
-    const { render } = setup({ sessionId: "chosen" });
-    const catalog = {
-      generation: 1,
-      revision: 1,
-      tabs: [{ id: "page-1", title: "Page", site: "https://example.com", order: 0, occupants: [] }],
-    } as unknown as NonNullable<NonNullable<Parameters<typeof seedBrowserSession>[1]>>;
-    state.snapshot = snapshot([seedBrowserSession({ ...chosen }, catalog), occupied("other", [])]);
-    state.routes = [
-      { name: "Tabs" },
-      {
-        name: "WorkspaceBrowser",
-        params: { scope: "tabs", sessionId: "other", tabId: "page-1" },
-      },
-      { name: "WorkspaceBrowser", params: { sessionId: "chosen", tabId: "page-1" } },
-    ];
-    render();
-    await pressAsync(menu(), "Close tab");
-    expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({ type: "POP", count: 1 });
+  it("keeps its selection by tabId through a stream reset, and asks the Host only once", async () => {
+    const { container, render } = await setup({ sessionId: "chosen" }, { snapshot: twoPages() });
+    state.tabsComplete = false;
+    state.snapshot = snapshot([]);
+    await render();
+    expect(container.textContent).toContain("Opening…");
+    state.tabsComplete = true;
+    state.snapshot = twoPages();
+    await render();
+    expect(container.textContent).toContain("Viewing chosen");
+    expect(state.setParams).not.toHaveBeenCalled();
     expect(state.goBack).not.toHaveBeenCalled();
+    expect(state.hostClient.activateTab).toHaveBeenCalledOnce();
+  });
+
+  it("swipes to the next page of its browser in list order, and keeps it drawn while that opens", async () => {
+    const { container, render, route } = await setup(
+      { sessionId: "chosen" },
+      { snapshot: twoPages() },
+    );
+    // The first page has nothing before it.
+    act(() => state.swipe!.onDeactivate({ translationX: 200 }));
+    expect(state.setParams).not.toHaveBeenCalled();
+    act(() => state.swipe!.onDeactivate({ translationX: -200 }));
+    expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
+      editAddress: false,
+      popup: false,
+      tabId: "page-2",
+    });
+    const opening = Promise.withResolvers<TabViewer>();
+    state.activate = () => opening.promise;
+    route.params = { ...route.params, tabId: "page-2" };
+    await render();
+    expect(container.textContent).not.toContain("Opening…");
+    expect(container.textContent).toContain("Viewing chosen");
+    await act(async () =>
+      opening.resolve({ kind: "page", sessionId: "chosen" as never, surfaceId: "page-2" as TabId }),
+    );
+    expect(
+      container.querySelector("[data-expected-surface]")?.getAttribute("data-expected-surface"),
+    ).toBe("page-2");
   });
 
   it("stays on the page and explains a failed close", async () => {
-    const chosen = session("chosen");
-    state.hostClient = {
-      getSnapshot: () => state.snapshot,
-      subscribe: () => () => undefined,
-      closeBrowserTab: vi.fn(async () => {
-        throw new Error("Offline");
-      }),
-    };
-    const { container, render } = setup({ sessionId: "chosen" });
-    state.snapshot = snapshot([
-      seedBrowserSession({ ...chosen }, {
-        generation: 1,
-        revision: 1,
-        rows: [
-          { id: "page-1", occupants: [], order: 0, site: "https://example.com", title: "Page" },
-        ],
-      } as unknown as NonNullable<NonNullable<Parameters<typeof seedBrowserSession>[1]>>),
-    ]);
-    render();
+    const closeTabs = vi.fn(async () => ({
+      closed: [],
+      failed: [{ tabId: "page-1", error: { code: "conflict", message: "Try again.", next: null } }],
+    }));
+    state.hostClient = { closeTabs };
+    const { container } = await setup({ sessionId: "chosen" }, { snapshot: twoPages() });
     await pressAsync(menu(), "Close tab");
+    expect(container.textContent).toContain("Try again.");
+    expect(state.setParams).not.toHaveBeenCalled();
     expect(state.goBack).not.toHaveBeenCalled();
-    expect(state.dispatch).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("This tab could not be closed.");
+  });
+
+  it("opens New tab in the page's own profile over the page, so Back returns to it", async () => {
+    const openTab = vi.fn(async () => ({ tabId: "new-page" }));
+    state.hostClient = { openTab };
+    await setup({ sessionId: "chosen" }, { snapshot: twoPages() });
+    await pressAsync(menu(), "New tab");
+    expect(openTab).toHaveBeenCalledExactlyOnceWith({
+      computerId: "rnr_00000000-0000-4000-8000-00000000000a",
+      guest: true,
+      kind: "page",
+      url: "about:blank",
+    });
+    expect(state.dispatch).toHaveBeenLastCalledWith({
+      type: "PUSH",
+      name: "WorkspaceBrowser",
+      params: { deploymentId: "deployment-a", tabId: "new-page", threadId: "thread-parent" },
+    });
   });
 
   it("signs the page's site in with Chrome from the page's menu and reloads the page", async () => {
@@ -1477,20 +1419,18 @@ describe("mobile pages", () => {
     const sendBrowserCommand = vi.fn();
     state.hostClient = {
       dispatch,
-      getSnapshot: () => state.snapshot,
       retainBrowserViewer: () => () => undefined,
       rpc: {},
       sendBrowserCommand,
-      subscribe: () => () => undefined,
     };
     state.hostClient.browserViewerState = () => liveFeed;
     state.hostClient.browserFrames ??= { subscribe: () => () => undefined };
-    const { container, render } = setup({
+    const { container, render } = await setup({
       sessionId: "delegate",
       tabId: "srf_00000000-0000-4000-8000-000000000001",
     });
     state.snapshot = snapshot([mailSession("delegate")]);
-    render();
+    await render();
     // Not a permanent block under the page: it is asked for.
     expect(
       container
@@ -1553,12 +1493,12 @@ describe("mobile pages", () => {
     };
     state.hostClient.browserViewerState = () => liveFeed;
     state.hostClient.browserFrames ??= { subscribe: () => () => undefined };
-    const { container, render } = setup({
+    const { container, render } = await setup({
       sessionId: "delegate",
       tabId: "srf_00000000-0000-4000-8000-000000000001",
     });
     state.snapshot = snapshot([mailSession("delegate")]);
-    render();
+    await render();
 
     press(menu(), "Sign in with Chrome");
     // The site is remembered for the Workspace, which the action says before any tap.
@@ -1576,53 +1516,54 @@ describe("mobile pages", () => {
     expect(sendBrowserCommand).not.toHaveBeenCalled();
   });
 
-  it("keeps an exact browser link when the session ends or disappears", () => {
-    const { container, render } = setup({ sessionId: "chosen" });
-    state.snapshot = snapshot([session("other"), session("chosen")]);
-    render();
+  it("keeps an exact browser link when the session ends, and never shows another browser", async () => {
+    const { container, render } = await setup({ sessionId: "chosen" });
+    state.snapshot = snapshot([mailSession("other"), session("chosen")]);
+    await render();
     expect(container.textContent).toContain("Viewing chosen");
-    state.snapshot = snapshot([session("other"), session("chosen", "closed")]);
-    render();
-    expect(container.textContent).toContain("This tab was closed");
+    state.snapshot = snapshot([mailSession("other"), session("chosen", "closed")]);
+    await render();
+    expect(container.textContent).toContain("This page is asleep");
     expect(container.textContent).not.toContain("Viewing other");
-    state.snapshot = snapshot([session("other")]);
-    render();
-    expect(container.textContent).toContain("This tab was closed");
+    await pressAsync(container, "Open again");
+    // Open again is the person's own Open.
+    expect(state.hostClient.activateTab).toHaveBeenCalledTimes(2);
+    expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("page-1", { wake: true });
     expect(container.textContent).not.toContain("Viewing other");
     expect(state.dispatch).not.toHaveBeenCalled();
   });
 
-  it("refreshes coming back into view, not out from under a sheet, and keeps the exact view while other browsers arrive", () => {
-    const { container, render } = setup({ sessionId: "chosen" });
+  it("refreshes coming back into view, not out from under a sheet, and keeps the exact view while other browsers arrive", async () => {
+    const { container, render } = await setup({ sessionId: "chosen" });
     expect(state.refresh).toHaveBeenCalledTimes(1);
     state.snapshot = snapshot([session("chosen"), session("new")]);
-    render();
+    await render();
     expect(container.textContent).toContain("Viewing chosen");
     expect(container.textContent).not.toContain("Viewing new");
     state.focused = false;
-    render();
+    await render();
     state.focused = true;
-    render();
+    await render();
     expect(state.refresh).toHaveBeenCalledTimes(1);
     state.focused = false;
     state.drawn = false;
-    render();
+    await render();
     state.focused = true;
     state.drawn = true;
-    render();
+    await render();
     expect(state.refresh).toHaveBeenCalledTimes(2);
   });
 
-  it("refuses another deployment and a signed-out viewer", () => {
-    const { container, render } = setup({ sessionId: "chosen" });
+  it("refuses another deployment and a signed-out viewer", async () => {
+    const { container, render } = await setup({ sessionId: "chosen" });
     state.snapshot = snapshot([session("chosen")]);
     state.deploymentId = "deployment-b";
-    render();
+    await render();
     expect(container.textContent).toContain("This deployment is no longer open");
     expect(container.textContent).not.toContain("Viewing chosen");
     state.deploymentId = "deployment-a";
     state.snapshot = { ...state.snapshot, session: "authentication-required", user: null };
-    render();
+    await render();
     expect(container.textContent).toContain("Sign in to view this page");
     expect(container.textContent).not.toContain("Viewing chosen");
   });
@@ -1638,15 +1579,15 @@ describe("mobile pages", () => {
  */
 describe("the page's bar", () => {
   const sessionId = "bsn_00000000-0000-4000-8000-0000000000aa";
-  function openPage(occupants: readonly Occupant[], params: Partial<SurfacesRoute> = {}) {
-    const opened = setup({ sessionId, tabId: "page-1", ...params } as Partial<SurfacesRoute>);
+  async function openPage(occupants: readonly Occupant[], params: Partial<TestRoute> = {}) {
+    const opened = await setup({ sessionId, tabId: "page-1", ...params } as Partial<TestRoute>);
     state.snapshot = withAgents([occupied(sessionId, occupants)]);
-    opened.render();
+    await opened.render();
     return opened;
   }
 
-  it("opens the one agent's Thread, and goes back to it when it is the screen under the page", () => {
-    const { container } = openPage([{ acting: true, threadId: "thread-trip" }]);
+  it("opens the one agent's Thread, and goes back to it when it is the screen under the page", async () => {
+    const { container } = await openPage([{ acting: true, threadId: "thread-trip" }]);
     expect(container.querySelector('[data-testid="conversation-slot"]')).toBeNull();
     press(askMenu(), "Tokyo trip · Working here");
     expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
@@ -1665,8 +1606,8 @@ describe("the page's bar", () => {
     expect(state.dispatch).not.toHaveBeenCalled();
   });
 
-  it("offers several agents as a menu, working first, then most recent", () => {
-    openPage([
+  it("offers several agents as a menu, working first, then most recent", async () => {
+    await openPage([
       { lastActiveAt: "2026-10-13T00:05:00.000Z", threadId: "thread-trip" },
       { acting: true, lastActiveAt: "2026-10-13T00:01:00.000Z", threadId: "thread-agent" },
     ]);
@@ -1685,9 +1626,9 @@ describe("the page's bar", () => {
     });
   });
 
-  it("updates live occupants while keeping the companion after its agent departs", () => {
+  it("updates live occupants while keeping the companion after its agent departs", async () => {
     state.pair = { height: 1000, width: 744 };
-    const { container, render } = openPage([
+    const { container, render } = await openPage([
       { acting: true, threadId: "thread-trip" },
       { threadId: "thread-agent" },
     ]);
@@ -1702,13 +1643,13 @@ describe("the page's bar", () => {
         { acting: true, threadId: "thread-agent" },
       ]),
     ]);
-    render();
+    await render();
     expect(agentRows()[0]).toContain("Compare hotels");
     expect(container.querySelector('[data-testid="conversation-slot"]')?.textContent).toContain(
       "Thread thread-trip beside",
     );
     state.snapshot = withAgents([occupied(sessionId, [])]);
-    render();
+    await render();
     expect(agentRows()).toEqual([]);
     expect(menu().textContent).toContain("New task");
     expect(container.querySelector('[data-testid="conversation-slot"]')?.textContent).toContain(
@@ -1717,12 +1658,7 @@ describe("the page's bar", () => {
     press(container, "Tabs, 1");
     expect(state.dispatch).toHaveBeenLastCalledWith({
       name: "BrowserTabs",
-      params: {
-        deploymentId: "deployment-a",
-        sessionId,
-        tabId: "page-1",
-        threadId: "thread-trip",
-      },
+      params: { deploymentId: "deployment-a", tabId: "page-1", threadId: "thread-trip" },
       type: "PUSH",
     });
     closeBeside(container, "thread-trip");
@@ -1730,13 +1666,13 @@ describe("the page's bar", () => {
     press(container, "Tabs, 1");
     expect(state.dispatch).toHaveBeenLastCalledWith({
       name: "BrowserTabs",
-      params: { deploymentId: "deployment-a", sessionId, tabId: "page-1" },
+      params: { deploymentId: "deployment-a", tabId: "page-1" },
       type: "PUSH",
     });
   });
 
-  it("pushes an agent deeper in the stack and renders an old grid route without choosing a tab", () => {
-    openPage([{ threadId: "thread-trip" }]);
+  it("pushes an agent deeper in the stack", async () => {
+    await openPage([{ threadId: "thread-trip" }]);
     state.routes = [
       { name: "Thread", params: { threadId: "thread-trip" } },
       { name: "Thread", params: { threadId: "thread-agent" } },
@@ -1745,22 +1681,19 @@ describe("the page's bar", () => {
     press(askMenu(), "Tokyo trip · Idle");
     expect(state.goBack).not.toHaveBeenCalled();
     expect(state.dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "PUSH" }));
-    const legacy = setup({ threadId: "thread-trip" });
-    expect(legacy.container.textContent).toContain("This tab isn’t available");
-    expect(legacy.container.querySelector('[data-testid="page-toolbar"]')).toBeNull();
   });
 
-  it("offers New task offline", () => {
-    const { render } = openPage([]);
+  it("offers New task offline", async () => {
+    const { render } = await openPage([]);
     state.snapshot = { ...state.snapshot!, network: "offline" };
-    render();
+    await render();
     const ask = askMenu();
     press(ask, "New task");
     expect(state.dispatch).toHaveBeenCalledWith({ type: "POP_TO_TOP" });
   });
 
-  it("names nobody in an empty tab, and leaves Ask", () => {
-    const { container } = openPage([]);
+  it("names nobody in an empty tab, and leaves Ask", async () => {
+    const { container } = await openPage([]);
     expect(container.querySelector('[data-testid="page-toolbar"]')).not.toBeNull();
     // A streamed page keeps its bar standing; only a page on this phone floats one.
     expect(container.querySelector('[data-testid="local-page"]')).toBeNull();
@@ -1771,20 +1704,8 @@ describe("the page's bar", () => {
     ]);
   });
 
-  it("says an older Host's agent is working without naming or offering anyone", () => {
-    const { render } = openPage([]);
-    // The browser says it is acting, and its one tab names no occupant.
-    state.snapshot = withAgents([{ ...occupied(sessionId, []), acting: true }]);
-    render();
-    const ask = askMenu();
-    expect(ask.getAttribute("aria-label")).toBe("Agent working. Ask");
-    expect([...ask.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
-      "New task",
-    ]);
-  });
-
-  it("asks in Home's new task with the page on its one draft, this reader's alone", () => {
-    openPage([]);
+  it("asks in Home's new task with the page on its one draft, this reader's alone", async () => {
+    await openPage([]);
     const ask = askMenu();
     expect(ask.dataset["menuTitle"]).toBe("Ask about this page");
     const page = {
@@ -1805,13 +1726,11 @@ describe("the page's bar", () => {
   it.each([false, true])(
     "Ask on a native surface includes no invented web page (phone: %s)",
     async (phone) => {
-      const opened = setup({
-        machineId: "mac-a",
-        computerSessionId: "computer-a",
-        ...(phone ? { phone: true } : { appKey: "notes" }),
-      });
+      state.extraTabs = [nativeTab(phone)];
+      state.activate = async () => nativeViewer(phone);
+      const opened = await setup({ tabId: "tab_native" });
       state.snapshot = withAgents([]);
-      opened.render();
+      await opened.render();
       // A page an earlier Ask left on Home's draft does not stand for this one;
       // the words beside it stay.
       const earlier = BrowserPageContentPartSchema.parse({
@@ -1841,14 +1760,14 @@ describe("the page's bar", () => {
     },
   );
 
-  it("shows the same page whichever way it was reached", () => {
+  it("shows the same page whichever way it was reached", async () => {
     const occupants = [{ acting: true, threadId: "thread-trip" }];
-    const fromTask = openPage(occupants, { threadId: "thread-agent" });
-    const fromTabs = openPage(occupants, {
+    const fromTask = await openPage(occupants, { threadId: "thread-agent" });
+    const fromTabs = await openPage(occupants, {
       scope: "tabs",
       // A previous release's route from Tabs still named a conversation.
       threadId: "thread-agent",
-    } as unknown as Partial<SurfacesRoute>);
+    } as unknown as Partial<TestRoute>);
     expect(fromTabs.container.innerHTML).toBe(fromTask.container.innerHTML);
     // Who is here is the page's occupant, never the conversation the route names.
     expect(element(fromTabs.container, "Tokyo trip, working here. Ask")).not.toBeNull();
@@ -1857,48 +1776,38 @@ describe("the page's bar", () => {
 });
 
 /*
- * A page beside its agent's Thread as the window changes shape. What can go
- * wrong: the page's live channel remounts; a geometry change navigates; the
- * keyboard lifts the pane nobody is typing in; tabletop's fixed halves leave
- * the composer no room once the keyboard is up; a fold that has not been
- * measured yet is straddled; a phone draws a second pane.
- */
-/*
- * An Opensteer App as a place. What can go wrong: Ask goes anywhere but the
- * Thread that made it, or leaves an earlier page standing for it; the view
- * address reaches the route; there is no way to close it, or a failed close
- * loses the tab; a tab closed elsewhere keeps running; a link's bad id reaches
- * the Host; the keyboard lifts the wrong pane.
+ * An Opensteer App as a tab. What can go wrong: the view address reaches the
+ * route; there is no way to close it, or a failed close loses the tab; closing
+ * stops its server; a tab closed elsewhere keeps running; the keyboard lifts
+ * the wrong pane.
  */
 describe("an app open as a tab", () => {
-  const appId = "app_11111111-1111-4111-8111-111111111111";
-  const openTab = {
-    appId,
-    latestVersion: 1,
-    openedAt: "2026-11-04T10:00:00.000Z",
-    threadId: "thread-maker",
-    title: "Budget",
-  };
-  function openApp(params: Partial<SurfacesRoute> = { appId } as Partial<SurfacesRoute>) {
-    const closeAppTab = vi.fn(async (): Promise<void> => undefined);
+  const appId = "app_11111111-1111-4111-8111-111111111111" as Tab["appId"] & string;
+  const budget = () =>
+    tabFixture({
+      tabId: TabIdSchema.parse("tab_budget"),
+      kind: "app",
+      appId,
+      title: "Budget",
+      computer: studio,
+    });
+  /** The app open as its tab; `taskId` is the conversation the app record says made it. */
+  async function openApp(taskId: string | null = null) {
+    const closeTabs = vi.fn(async (tabIds: readonly string[]) => ({ closed: tabIds, failed: [] }));
     const viewApp = vi.fn(async () => ({
       app: { title: "Budget" },
       url: `https://host.test/v1/apps/${appId}/dark/token/`,
     }));
-    state.hostClient = { closeAppTab, viewApp };
-    const opened = setup(params);
-    state.snapshot = {
-      ...withAgents([]),
-      appTabs: [openTab] as unknown as NonNullable<HostSnapshot["appTabs"]>,
-    };
-    opened.render();
-    return { ...opened, closeAppTab, viewApp };
+    const getApp = vi.fn(async () => ({ appId, name: "Budget", taskId }) as unknown as App);
+    const stopApp = vi.fn();
+    state.hostClient = { closeTabs, getApp, stopApp, viewApp };
+    state.extraTabs = [budget()];
+    const opened = await setup({ tabId: "tab_budget" });
+    state.snapshot = withAgents([]);
+    await opened.render();
+    return { ...opened, closeTabs, getApp, stopApp, viewApp };
   }
   const webView = () => document.querySelector("[data-testid='app-webview']");
-  const pressAsk = () => {
-    const ask = element(header(), "Ask")!;
-    act(() => ask.click());
-  };
   /** The app's menu, behind its name in the native bar. */
   const appMenu = () => {
     const pill = element(header(), "Budget. Actions");
@@ -1906,215 +1815,61 @@ describe("an app open as a tab", () => {
     return pill;
   };
 
-  it("fills the page under its name in the native bar, with no bar of its own", () => {
-    openApp();
+  it("fills the page under its name in the native bar, with no bar of its own", async () => {
+    await openApp();
     expect(state.setOptions).toHaveBeenLastCalledWith(
       expect.objectContaining({ headerTransparent: true, title: "Budget" }),
     );
     expect(JSON.parse(webView()!.getAttribute("data-style")!)).toMatchObject({ flex: 1 });
     expect(document.querySelector("[data-testid='page-toolbar']")).toBeNull();
-    expect([...appMenu().querySelectorAll("button")].map((item) => item.textContent)).toEqual([
-      "Ask about this app",
-      "Open its conversation",
-      "Reload",
-      "Report a problem",
-      "Close tab",
-    ]);
+    expect(webView()?.getAttribute("data-uri")).toContain(appId);
   });
 
-  it("forgets the app's Thread when the agent shows a browser tab in its place", () => {
-    const { render, route } = openApp();
-    route.params = {
-      deploymentId: "deployment-a",
-      scope: "tabs",
-      sessionId: "browser-child",
-      tabId: "page-1",
-    };
-    state.snapshot = withAgents([occupied("browser-child", [])]);
-    render();
-    expect(element(header(), "Ask")?.dataset["menuTitle"]).not.toBeUndefined();
-  });
-
-  it("asks in the Thread that made it, going back when that Thread is under the page", () => {
-    const { container } = openApp();
-    expect(element(header(), "Ask")!.dataset["menuTitle"]).toBeUndefined();
-    pressAsk();
-    expect(state.dispatch).toHaveBeenLastCalledWith({
+  it("asks in and opens the conversation that made it, as its record says, and neither once that is gone", async () => {
+    const { getApp, render } = await openApp("thread-app");
+    const made = {
       name: "Thread",
-      params: { deploymentId: "deployment-a", threadId: "thread-maker" },
+      params: { deploymentId: "deployment-a", threadId: "thread-app" },
       type: "PUSH",
-    });
+    };
+    press(appMenu(), "Open its conversation");
+    expect(state.dispatch).toHaveBeenLastCalledWith(made);
     state.dispatch.mockClear();
-    state.routes = [
-      { name: "Thread", params: { threadId: "thread-maker" } },
-      { name: "WorkspaceBrowser" },
-    ];
-    pressAsk();
+    press(appMenu(), "Ask about this app");
+    expect(state.dispatch).toHaveBeenCalledExactlyOnceWith(made);
+    // The conversation is deleted: the app's next record names none.
+    getApp.mockResolvedValue({ appId, name: "Budget", taskId: null } as unknown as App);
+    state.snapshot = { ...state.snapshot!, appsRevision: 1 } as HostSnapshot;
+    await render();
+    expect(appMenu().textContent).not.toContain("Open its conversation");
+    expect(appMenu().textContent).not.toContain("Ask about this app");
+    expect(appMenu().textContent).toContain("New task");
+  });
+
+  it("closes only its tab from the bar, never its server, and leaves once the list drops it", async () => {
+    const { closeTabs, render, stopApp } = await openApp();
+    await pressAsync(appMenu(), "Close tab");
+    expect(closeTabs).toHaveBeenCalledExactlyOnceWith(["tab_budget"]);
+    expect(stopApp).not.toHaveBeenCalled();
+    state.extraTabs = [];
+    state.snapshot = withAgents([]);
+    await render();
     expect(state.goBack).toHaveBeenCalledOnce();
-    expect(state.dispatch).not.toHaveBeenCalled();
-    expect(container.textContent).not.toContain("beside");
-  });
-
-  it("opens that Thread beside the app where two fit, and keeps the app mounted", () => {
-    state.pair = { height: 760, width: 1100 };
-    const { container } = openApp();
-    const app = webView();
-    pressAsk();
-    expect(container.textContent).toContain("Thread thread-maker beside");
-    expect(state.dispatch).not.toHaveBeenCalled();
-    expect(webView()).toBe(app);
-  });
-
-  it("puts the native bar away beside its Thread, with Back and the app's menu in its own row", () => {
-    state.pair = { height: 760, width: 1100 };
-    const { container, closeAppTab } = openApp();
-    const row = () => container.querySelector<HTMLElement>("[data-testid='app-pane-bar']");
-    expect(row()).toBeNull();
-    pressAsk();
-    expect(headerShown()).toBe(false);
-    press(row()!, "Back");
-    expect(state.goBack).toHaveBeenCalledOnce();
-    press(element(row()!, "Budget. Actions")!, "Close tab");
-    expect(closeAppTab).toHaveBeenCalledWith(appId);
-  });
-
-  it("takes an earlier page off the Thread's draft, which it does not stand for", async () => {
-    openApp();
-    const earlier = BrowserPageContentPartSchema.parse({
-      sessionId: "bsn_00000000-0000-4000-8000-0000000000aa",
-      tabId: "page-1",
-      title: "Earlier page",
-      type: "browser-page",
-      url: "https://example.com",
-    });
-    await act(() =>
-      state.drafts!.writeDraftPage("deployment-a", "user-a", "thread-maker", earlier),
-    );
-    pressAsk();
-    expect(state.drafts!.readDraft("deployment-a", "user-a", "thread-maker")).toBeNull();
-  });
-
-  it("closes from the bar and leaves, past an app under it that has ended too", async () => {
-    const { container, closeAppTab, render } = openApp();
-    const answer = Promise.withResolvers<void>();
-    closeAppTab.mockReturnValue(answer.promise);
-    state.routes = [
-      { name: "Thread" },
-      { name: "WorkspaceBrowser", params: { appId: appId.replace("1111-4", "2222-4") } },
-      { name: "WorkspaceBrowser", params: { appId } },
-    ];
-    press(appMenu(), "Close tab");
-    expect(closeAppTab).toHaveBeenCalledWith(appId);
-    // The card under this page comes back at once, so this copy has already gone.
-    expect(webView()).toBeNull();
-    state.snapshot = { ...state.snapshot!, appTabs: [] };
-    render();
-    expect(container.textContent).not.toContain("This tab was closed");
-    await act(async () => answer.resolve());
-    expect(state.dispatch).toHaveBeenCalledWith({ count: 2, type: "POP" });
   });
 
   it("stays and explains a failed close, with the app back and a way to retry", async () => {
-    const { container, closeAppTab } = openApp();
-    closeAppTab.mockRejectedValueOnce(new Error("The Host refused."));
+    const { container, closeTabs } = await openApp();
+    closeTabs.mockRejectedValueOnce(new Error("The Host refused."));
     await pressAsync(appMenu(), "Close tab");
-    expect(container.textContent).toContain("The Host refused.");
+    expect(container.textContent).toContain("This tab could not be closed.");
     expect(webView()).not.toBeNull();
-    expect(state.dispatch).not.toHaveBeenCalled();
     await pressAsync(container, "Try again");
-    expect(closeAppTab).toHaveBeenCalledTimes(2);
-    expect(state.dispatch).toHaveBeenCalledWith({ count: 1, type: "POP" });
-  });
-
-  it("forgets a failed close when another app replaces the route", async () => {
-    const { container, closeAppTab, route, render } = openApp();
-    closeAppTab.mockRejectedValueOnce(new Error("A refused."));
-    await pressAsync(appMenu(), "Close tab");
-    expect(container.textContent).toContain("A refused.");
-    const nextId = appId.replace("1111-4", "2222-4");
-    state.snapshot = {
-      ...state.snapshot!,
-      appTabs: [{ ...openTab, appId: nextId }] as unknown as NonNullable<HostSnapshot["appTabs"]>,
-    };
-    route.params = { deploymentId: "deployment-a", scope: "tabs", appId: nextId };
-    render();
-    expect(container.textContent).not.toContain("A refused.");
-    expect(element(container, "Try again")).toBeNull();
-    expect(webView()?.getAttribute("data-uri")).toContain(nextId);
-    closeAppTab.mockRejectedValueOnce(new Error("B refused."));
-    await pressAsync(appMenu(), "Close tab");
-    expect(container.textContent).toContain("B refused.");
-    await pressAsync(container, "Try again");
-    expect(closeAppTab.mock.calls).toEqual([[appId], [nextId], [nextId]]);
-  });
-
-  it.each(["resolve", "reject"] as const)(
-    "ignores a stale close's %s after the route changes",
-    async (outcome) => {
-      const { container, closeAppTab, route, render } = openApp();
-      const answer = Promise.withResolvers<void>();
-      closeAppTab.mockReturnValue(answer.promise);
-      press(appMenu(), "Close tab");
-      const nextId = appId.replace("1111-4", "2222-4");
-      state.snapshot = {
-        ...state.snapshot!,
-        appTabs: [{ ...openTab, appId: nextId }] as unknown as NonNullable<HostSnapshot["appTabs"]>,
-      };
-      route.params = { deploymentId: "deployment-a", scope: "tabs", appId: nextId };
-      render();
-      expect(container.textContent).not.toContain("Closing…");
-      expect(webView()?.getAttribute("data-uri")).toContain(nextId);
-      await act(async () =>
-        outcome === "resolve" ? answer.resolve() : answer.reject(new Error("A refused.")),
-      );
-      expect(container.textContent).not.toContain("A refused.");
-      expect(state.dispatch).not.toHaveBeenCalled();
-      expect(state.goBack).not.toHaveBeenCalled();
-    },
-  );
-
-  it("ignores a superseded close attempt for the same app", async () => {
-    const { closeAppTab, container, route, render } = openApp();
-    const first = Promise.withResolvers<void>();
-    const second = Promise.withResolvers<void>();
-    closeAppTab.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
-    press(appMenu(), "Close tab");
-    const nextId = appId.replace("1111-4", "2222-4");
-    state.snapshot = {
-      ...state.snapshot!,
-      appTabs: [openTab, { ...openTab, appId: nextId }] as unknown as NonNullable<
-        HostSnapshot["appTabs"]
-      >,
-    };
-    route.params = { deploymentId: "deployment-a", scope: "tabs", appId: nextId };
-    render();
-    route.params = { deploymentId: "deployment-a", scope: "tabs", appId };
-    render();
-    press(appMenu(), "Close tab");
-    expect(closeAppTab).toHaveBeenCalledTimes(2);
-    await act(async () => first.resolve());
-    expect(state.dispatch).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("Closing…");
-    await act(async () => second.resolve());
-    expect(state.dispatch).toHaveBeenCalledOnce();
-  });
-
-  it("ignores a close completion after unmount", async () => {
-    const { closeAppTab } = openApp();
-    const answer = Promise.withResolvers<void>();
-    closeAppTab.mockReturnValue(answer.promise);
-    press(appMenu(), "Close tab");
-    const root = roots.shift()!;
-    act(() => root.unmount());
-    await act(async () => answer.resolve());
-    expect(state.dispatch).not.toHaveBeenCalled();
-    expect(state.goBack).not.toHaveBeenCalled();
+    expect(closeTabs).toHaveBeenCalledTimes(2);
   });
 
   it("retries a failed app load from the tab's Reload menu", async () => {
     state.realAppView = true;
-    const { container, viewApp } = openApp();
-    await act(async () => {});
+    const { container, viewApp } = await openApp();
     const first = webView();
     expect(first).not.toBeNull();
     await pressAsync(container, "Fail app load");
@@ -2126,90 +1881,199 @@ describe("an app open as a tab", () => {
     expect(webView()).not.toBe(first);
   });
 
-  it("does not move a person who left before the close finished", async () => {
-    openApp();
-    state.navigationFocused = false;
-    await pressAsync(appMenu(), "Close tab");
-    expect(state.dispatch).not.toHaveBeenCalled();
-  });
-
-  it("destroys the WebView when another screen covers its app page", () => {
-    const { render } = openApp();
+  it("destroys the WebView when another screen covers its app page", async () => {
+    const { render } = await openApp();
     const first = webView();
     expect(first).not.toBeNull();
     state.focused = false;
-    render();
+    await render();
     expect(webView()).toBeNull();
     state.focused = true;
-    render();
+    await render();
     expect(webView()).not.toBeNull();
     expect(webView()).not.toBe(first);
   });
 
-  it("keeps the WebView when the phone locks or another app comes forward", () => {
-    const { render } = openApp();
+  it("keeps the WebView when the phone locks or another app comes forward", async () => {
+    const { render } = await openApp();
     const first = webView();
     expect(first).not.toBeNull();
     state.foreground = false;
-    render();
+    await render();
     expect(webView()).toBe(first);
   });
 
-  it("waits for bootstrap before declaring a cold app route closed", () => {
-    const { container, render } = openApp();
-    state.snapshot = { ...state.snapshot!, deploymentShape: null, appTabs: [] };
-    render();
+  it("waits for the tab list before declaring a cold app route closed", async () => {
+    state.tabsComplete = false;
+    const { container } = await setup({ tabId: "tab_budget" }, { snapshot: withAgents([]) });
     expect(container.textContent).not.toContain("This tab was closed");
-    expect(container.textContent).toContain("Loading app");
+    expect(container.textContent).toContain("Opening…");
     expect(webView()).toBeNull();
   });
 
-  it("ends in place when the tab closes elsewhere, keeping its name and Ask", () => {
-    const { container, render } = openApp();
-    state.snapshot = { ...state.snapshot!, appTabs: [] };
-    render();
-    expect(container.textContent).toContain("This tab was closed");
-    expect(webView()).toBeNull();
-    expect(state.dispatch).not.toHaveBeenCalled();
-    expect(state.setOptions).toHaveBeenLastCalledWith(expect.objectContaining({ title: "Budget" }));
-    pressAsk();
-    expect(state.dispatch).toHaveBeenLastCalledWith(
-      expect.objectContaining({ name: "Thread", type: "PUSH" }),
-    );
-  });
-
-  it("shows nothing for a link with a malformed id", () => {
-    const { container } = openApp({
-      appId: "../../v1/rpc/bootstrap.get",
-    } as Partial<SurfacesRoute>);
-    expect(container.textContent).toContain("This tab isn’t available");
-    expect(webView()).toBeNull();
-  });
-
-  it("lifts for a field in the app, but not for a composer beside it", () => {
+  it("lifts for a field in the app, but not for a composer beside it", async () => {
     state.pair = { height: 760, width: 1100 };
-    const { render } = openApp();
+    const { render } = await openApp();
     const slot = () => document.querySelector("[data-testid='page-slot']")!;
     state.keyboard = true;
-    render();
+    await render();
     expect(slot().getAttribute("data-avoids")).toBe("true");
     state.focusedInput = {};
     state.keyboard = false;
-    render();
+    await render();
     state.keyboard = true;
-    render();
+    await render();
     expect(slot().getAttribute("data-avoids")).toBe("false");
   });
 });
 
+/*
+ * Every kind by its tabId: a Mac window and a phone show exactly the owner view
+ * the Host's activation answered, a closed tab offers Reopen and never a
+ * sibling, and an unavailable one says why.
+ */
+describe("any kind of tab, by its tabId", () => {
+  it.each([false, true])(
+    "shows the exact owner view the Host opened for it (phone: %s)",
+    async (phone) => {
+      state.extraTabs = [nativeTab(phone)];
+      state.activate = vi.fn(async () => nativeViewer(phone, 7));
+      const { container, render } = await setup(
+        { tabId: "tab_native" },
+        { snapshot: withAgents([]) },
+      );
+      expect(container.textContent).toContain(
+        `${phone ? "Phone" : "Mac app com.apple.notes"} view owner-view:7`,
+      );
+      // Only the person's Open may wake a phone: asking again on return to the foreground may not.
+      expect(state.hostClient.activateTab).toHaveBeenCalledExactlyOnceWith("tab_native", {
+        wake: true,
+      });
+      state.foreground = false;
+      await render();
+      state.foreground = true;
+      await render();
+      expect(state.hostClient.activateTab).toHaveBeenCalledTimes(2);
+      expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("tab_native", {
+        wake: false,
+      });
+      expect(container.textContent).toContain("view owner-view:7");
+    },
+  );
+
+  it("offers Reopen for a closed tab, and never shows another in its place", async () => {
+    const reopenTab = vi.fn(async () => {
+      state.extraTabs = [nativeTab(false)];
+      state.snapshot = withAgents([session("other")]);
+      return state.extraTabs[0]!;
+    });
+    state.hostClient = { reopenTab };
+    state.activate = async () => nativeViewer(false);
+    const { container, render } = await setup(
+      { tabId: "tab_native" },
+      { snapshot: withAgents([session("other")]) },
+    );
+    expect(container.textContent).toContain("This tab was closed");
+    expect(container.textContent).not.toContain("Viewing other");
+    expect(state.goBack).not.toHaveBeenCalled();
+    await pressAsync(container, "Reopen");
+    expect(reopenTab).toHaveBeenCalledExactlyOnceWith("tab_native");
+    await render();
+    expect(container.textContent).toContain("Mac app com.apple.notes view owner-view:1");
+  });
+
+  it.each([true, false])(
+    "never wakes a phone that comes back on its own (open first: %s)",
+    async (openFirst) => {
+      const offline = nativeTab(true, {
+        state: "unavailable",
+        unavailableCode: "computer-offline",
+        unavailableReason: "This phone is offline.",
+      });
+      state.extraTabs = [openFirst ? nativeTab(true) : offline];
+      state.activate = vi.fn(async () => nativeViewer(true, 7));
+      const { container, render } = await setup(
+        { tabId: "tab_native" },
+        { snapshot: withAgents([]) },
+      );
+      if (openFirst) {
+        expect(state.hostClient.activateTab).toHaveBeenCalledExactlyOnceWith("tab_native", {
+          wake: true,
+        });
+        // Its computer drops off and the viewer goes with it.
+        state.extraTabs = [offline];
+        await render();
+      }
+      expect(container.textContent).toContain("This phone is offline.");
+      expect(container.textContent).not.toContain("Try again");
+      state.extraTabs = [nativeTab(true)];
+      await render();
+      expect(container.textContent).toContain("Phone view owner-view:7");
+      expect(state.hostClient.activateTab).toHaveBeenCalledTimes(openFirst ? 2 : 1);
+      expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("tab_native", {
+        wake: false,
+      });
+    },
+  );
+
+  it("asks a paused phone again only when the person says so, and that may wake it", async () => {
+    state.extraTabs = [
+      nativeTab(true, {
+        state: "unavailable",
+        unavailableCode: "paused",
+        unavailableReason: "This phone is paused.",
+      }),
+    ];
+    state.activate = vi.fn(async () => {
+      state.extraTabs = [nativeTab(true)];
+      return nativeViewer(true, 2);
+    });
+    const { container, render } = await setup(
+      { tabId: "tab_native" },
+      { snapshot: withAgents([]) },
+    );
+    expect(container.textContent).toContain("This phone is paused.");
+    expect(container.textContent).toContain("Close tab");
+    expect(state.hostClient.activateTab).not.toHaveBeenCalled();
+    await pressAsync(container, "Try again");
+    expect(state.hostClient.activateTab).toHaveBeenCalledExactlyOnceWith("tab_native", {
+      wake: true,
+    });
+    await render();
+    expect(container.textContent).toContain("Phone view owner-view:2");
+    expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("tab_native", { wake: false });
+  });
+
+  it("says why an unavailable tab cannot open, and asks the Host nothing", async () => {
+    state.extraTabs = [
+      nativeTab(false, {
+        state: "unavailable",
+        unavailableCode: "window-closed",
+        unavailableReason: "Window closed",
+      }),
+    ];
+    const { container } = await setup({ tabId: "tab_native" }, { snapshot: withAgents([]) });
+    expect(container.textContent).toContain("Window closed");
+    expect(container.querySelector("button")?.textContent).toContain("Close tab");
+    expect(state.hostClient.activateTab).not.toHaveBeenCalled();
+  });
+});
+
+/*
+ * A page beside its agent's Thread as the window changes shape. What can go
+ * wrong: the page's live channel remounts; a geometry change navigates; the
+ * keyboard lifts the pane nobody is typing in; tabletop's fixed halves leave
+ * the composer no room once the keyboard is up; a fold that has not been
+ * measured yet is straddled; a phone draws a second pane.
+ */
 describe("a page beside its agent's thread", () => {
   /** One live page with an acting agent, opened, with the address field open when asked. */
-  function openPage(editAddress = false, occupants?: readonly Occupant[]) {
-    const opened = setup({ editAddress, sessionId: "browser-child", tabId: "page-1" });
+  async function openPage(editAddress = false, occupants?: readonly Occupant[]) {
+    const opened = await setup({ editAddress, sessionId: "browser-child", tabId: "page-1" });
     state.snapshot = withAgents([
       occupied("browser-child", occupants ?? [{ acting: true, threadId: "thread-agent" }]),
     ]);
-    opened.render();
+    await opened.render();
     return opened;
   }
 
@@ -2230,15 +2094,15 @@ describe("a page beside its agent's thread", () => {
   const second = (container: HTMLElement) =>
     container.querySelector('[data-testid="conversation-slot"]')?.textContent ?? null;
 
-  it("keeps the page mounted, and the agent's thread once beside it, shown only where two fit", () => {
-    const { container, render } = openPage();
+  it("keeps the page mounted, and the agent's thread once beside it, shown only where two fit", async () => {
+    const { container, render } = await openPage();
     expect(arrangement(container)).toBe("stacked");
     // A phone that has never had room for two never draws the thread.
     expect(second(container)).toBeNull();
     expect(state.conversationMounts).toBe(0);
 
     state.pair = { height: 1000, width: 744 };
-    render();
+    await render();
     expect(arrangement(container)).toBe("side");
     expect(second(container)).toContain("Thread thread-agent beside");
 
@@ -2246,13 +2110,13 @@ describe("a page beside its agent's thread", () => {
     state.regions = [
       { frame: { height: 20, width: 900, x: 0, y: 420 }, kind: "division", occludesContent: false },
     ];
-    render();
+    await render();
     expect(arrangement(container)).toBe("tabletop");
     expect(slot(container, "page").style).toMatchObject({ height: 420 });
 
     state.pair = { height: 760, width: 390 };
     state.regions = [];
-    render();
+    await render();
     expect(arrangement(container)).toBe("stacked");
     // Too narrow for two, the thread stays mounted out of view, and inert.
     const hidden = container.querySelector<HTMLElement>('[data-testid="conversation-slot"]')!;
@@ -2270,7 +2134,7 @@ describe("a page beside its agent's thread", () => {
     const claims = state.conversationClaims.length;
 
     state.pair = { height: 1000, width: 744 };
-    render();
+    await render();
     expect(arrangement(container)).toBe("side");
     expect(second(container)).toContain("Thread thread-agent beside");
     expect(
@@ -2287,28 +2151,28 @@ describe("a page beside its agent's thread", () => {
     expect(state.goBack).not.toHaveBeenCalled();
   });
 
-  it("uses hysteresis at the pair boundary and collapses for large text without remounting the page", () => {
+  it("uses hysteresis at the pair boundary and collapses for large text without remounting the page", async () => {
     state.pair = { height: 1000, width: 744 };
-    const { container, render } = openPage();
+    const { container, render } = await openPage();
     expect(arrangement(container)).toBe("side");
     state.pair = { height: 1000, width: 700 };
-    render();
+    await render();
     expect(arrangement(container)).toBe("side");
     state.fontScale = 2;
-    render();
+    await render();
     expect(arrangement(container)).toBe("stacked");
     state.fontScale = 1;
-    render();
+    await render();
     expect(arrangement(container)).toBe("stacked");
     state.pair = { height: 1000, width: 744 };
-    render();
+    await render();
     expect(arrangement(container)).toBe("side");
     expect(state.pageMounts).toBe(1);
   });
 
-  it("chooses whose thread is beside the page from the page's own menu", () => {
+  it("chooses whose thread is beside the page from the page's own menu", async () => {
     state.pair = { height: 1000, width: 744 };
-    const { container } = openPage(false, [
+    const { container } = await openPage(false, [
       { lastActiveAt: "2026-10-13T00:05:00.000Z", threadId: "thread-trip" },
       { acting: true, threadId: "thread-agent" },
     ]);
@@ -2325,8 +2189,8 @@ describe("a page beside its agent's thread", () => {
     expect(second(container)).toBeNull();
   });
 
-  it("draws one bar with the way out, on a phone and beside a thread", () => {
-    const { container, render } = openPage();
+  it("draws one bar with the way out, on a phone and beside a thread", async () => {
+    const { container, render } = await openPage();
     expect(headerShown()).toBe(false);
     // Ask stands in a phone's bar; the way out is its one chevron, the page's history is in More.
     expect(askMenu().textContent).toContain("New task");
@@ -2338,7 +2202,7 @@ describe("a page beside its agent's thread", () => {
     expect(state.goBack).toHaveBeenCalledOnce();
 
     state.pair = { height: 1000, width: 744 };
-    render();
+    await render();
     expect(headerShown()).toBe(false);
     // Beside a Thread, Ask is in More, and the row keeps the page's address room.
     expect(document.querySelector('[aria-label$=". Ask"]')).toBeNull();
@@ -2347,16 +2211,16 @@ describe("a page beside its agent's thread", () => {
     expect(state.goBack).toHaveBeenCalledTimes(2);
   });
 
-  it("leads with the Menu where the page was chosen from the sidebar, which has nothing to go back to", () => {
+  it("leads with the Menu where the page was chosen from the sidebar, which has nothing to go back to", async () => {
     state.topLevel = true;
-    const { container } = openPage();
+    const { container } = await openPage();
     expect(element(container, "Back")).toBeNull();
     press(container, "Menu");
     expect(state.openSidebar).toHaveBeenCalledOnce();
     expect(state.goBack).not.toHaveBeenCalled();
   });
 
-  it("leaves Back and Ask to the vertical bar, with no row over the page, and only there", () => {
+  it("leaves Back and Ask to the vertical bar, with no row over the page, and only there", async () => {
     const lastOptions = () =>
       Object.assign({}, ...state.setOptions.mock.calls.map(([value]) => value as object)) as {
         readonly headerTitle: () => ReactNode;
@@ -2364,7 +2228,7 @@ describe("a page beside its agent's thread", () => {
         readonly unstable_headerRightItems: () => readonly { readonly label: string }[];
       };
     state.safeArea = { bottom: 34, left: 0, right: 84, top: 0 };
-    const { container, render } = openPage();
+    const { container, render } = await openPage();
     expect(headerShown()).toBe(true);
     expect(lastOptions().headerTransparent).toBe(true);
     expect(lastOptions().headerTitle()).toBeNull();
@@ -2380,90 +2244,72 @@ describe("a page beside its agent's thread", () => {
 
     // A notch insets both sides, and the page's own bar carries them again.
     state.safeArea = { bottom: 21, left: 59, right: 59, top: 0 };
-    render();
+    await render();
     expect(headerShown()).toBe(false);
     expect(lastOptions().headerTransparent).toBe(false);
     expect(element(container, "Back")).not.toBeNull();
     expect(askMenu()).not.toBeNull();
   });
 
-  it("gives the native bar back when a tab has no page to draw, so it can still be left", () => {
-    const { container, render } = openPage();
+  it("gives the native bar back when a tab has no page to draw, so it can still be left", async () => {
+    const { container, render } = await openPage();
     expect(headerShown()).toBe(false);
-    state.snapshot = snapshot([]);
-    render();
-    expect(container.textContent).toContain("This tab was closed");
+    state.snapshot = withAgents([session("browser-child", "closed")]);
+    await render();
+    expect(container.textContent).toContain("This page is asleep");
     expect(container.querySelector('[data-testid="page-toolbar"]')).toBeNull();
     expect(headerShown()).toBe(true);
-    expect(header().textContent).toContain("Tab");
   });
 
-  it("follows the agent in place, stops for the person, and picks up again from the live card", () => {
+  it("follows the agent in place, stops for the person, and picks up again from the live card", async () => {
     vi.useFakeTimers();
     try {
       state.pair = { height: 1000, width: 744 };
-      const { container, render, route } = openPage();
+      const { container, render, route } = await openPage();
       const agentOn = (tabId: string) =>
         withAgents([
-          seedBrowserSession(
-            { ...occupied("browser-child", []) },
-            {
-              generation: 1,
-              revision: 1,
-              rows: ["page-1", "page-2"].map((id, order) => ({
-                availability: "ready",
-                documentId: null,
-                iconRef: null,
-                id,
-                occupants:
-                  id === tabId
-                    ? [
-                        {
-                          acting: true,
-                          holding: true,
-                          home: false,
-                          lastActiveAt: agentAt,
-                          threadId: "thread-agent",
-                        },
-                      ]
-                    : [],
-                openerId: null,
-                order,
-                site: "https://example.com",
-                title: id === "page-1" ? "Page" : "Flights",
-              })),
-            },
-          ) as unknown as BrowserSessionSummary,
+          session(
+            "browser-child",
+            "ready",
+            ["page-1", "page-2"].map((id) => ({
+              id,
+              occupants:
+                id === tabId
+                  ? [{ acting: true, lastActiveAt: agentAt, threadId: "thread-agent" }]
+                  : [],
+              title: id === "page-1" ? "Page" : "Flights",
+              url: "https://example.com",
+            })),
+          ),
         ]);
-      const showTab = (tabId: string) => {
+      const showTab = async (tabId: string) => {
         route.params = {
           deploymentId: "deployment-a",
           sessionId: "browser-child",
           tabId,
           threadId: "thread-parent",
         };
-        render();
+        await render();
       };
       state.snapshot = agentOn("page-1");
-      render();
+      await render();
       expect(element(container, "Address, example.com. Following the agent")).not.toBeNull();
 
       // The agent moves on; the page keeps up in place.
       state.snapshot = agentOn("page-2");
-      render();
+      await render();
       act(() => vi.advanceTimersByTime(1000));
       expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
         editAddress: false,
         popup: false,
-        sessionId: "browser-child",
         tabId: "page-2",
       });
-      showTab("page-2");
+      await showTab("page-2");
       expect(element(container, "Address, example.com. Following the agent")).not.toBeNull();
 
       // The person goes back to the first tab: following stops, and the page stays theirs.
       state.setParams.mockClear();
-      showTab("page-1");
+      await showTab("page-1");
       expect(element(container, "Address, example.com")).not.toBeNull();
       act(() => vi.advanceTimersByTime(5000));
       expect(state.setParams).not.toHaveBeenCalled();
@@ -2473,10 +2319,9 @@ describe("a page beside its agent's thread", () => {
       expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
         editAddress: false,
         popup: false,
-        sessionId: "browser-child",
         tabId: "page-2",
       });
-      showTab("page-2");
+      await showTab("page-2");
       expect(element(container, "Address, example.com. Following the agent")).not.toBeNull();
       expect(state.conversationMounts).toBe(1);
 
@@ -2485,15 +2330,14 @@ describe("a page beside its agent's thread", () => {
       press(container, "Tabs, 2");
       state.focused = false;
       state.snapshot = agentOn("page-1");
-      render();
+      await render();
       act(() => vi.advanceTimersByTime(5000));
       expect(state.setParams).not.toHaveBeenCalled();
       state.focused = true;
-      render();
+      await render();
       expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
         editAddress: false,
         popup: false,
-        sessionId: "browser-child",
         tabId: "page-1",
       });
     } finally {
@@ -2501,9 +2345,9 @@ describe("a page beside its agent's thread", () => {
     }
   });
 
-  it("keeps the automatic companion across in-place tab changes and departure, until closed", () => {
+  it("keeps the automatic companion across in-place tab changes and departure, until closed", async () => {
     state.pair = { height: 1000, width: 744 };
-    const { container, render, route } = openPage();
+    const { container, render, route } = await openPage();
     const mounts = state.conversationMounts;
     route.params = {
       deploymentId: "deployment-a",
@@ -2514,32 +2358,32 @@ describe("a page beside its agent's thread", () => {
     state.snapshot = withAgents([
       occupied("other-browser", [{ acting: true, threadId: "thread-trip" }]),
     ]);
-    render();
+    await render();
     expect(second(container)).toContain("Thread thread-agent beside");
     expect(state.conversationMounts).toBe(mounts);
     expect(menu().textContent).toContain("Tokyo trip · Working here");
     state.snapshot = withAgents([occupied("other-browser", [])]);
-    render();
+    await render();
     expect(second(container)).toContain("Thread thread-agent beside");
     closeBeside(container, "thread-agent");
     expect(second(container)).toBeNull();
     state.snapshot = withAgents([
       occupied("other-browser", [{ acting: true, threadId: "thread-trip" }]),
     ]);
-    render();
+    await render();
     expect(second(container)).toBeNull();
     press(askMenu(), "Tokyo trip · Working here");
     expect(second(container)).toContain("Thread thread-trip beside");
   });
 
-  it("gives the page the whole surface with no agent, until Ask opens a new task beside it", () => {
+  it("gives the page the whole surface with no agent, until Ask opens a new task beside it", async () => {
     state.pair = { height: 1000, width: 744 };
-    const opened = setup({
+    const opened = await setup({
       sessionId: "bsn_00000000-0000-4000-8000-0000000000aa",
       tabId: "page-1",
     });
     state.snapshot = withAgents([occupied("bsn_00000000-0000-4000-8000-0000000000aa", [])]);
-    opened.render();
+    await opened.render();
     const { container } = opened;
     expect(arrangement(container)).toBe("side");
     expect(second(container)).toBeNull();
@@ -2556,40 +2400,40 @@ describe("a page beside its agent's thread", () => {
     expect(second(container)).toBeNull();
   });
 
-  it("puts the bar away while typing into the page, and keeps it mounted", () => {
-    const { container, render } = openPage(true);
+  it("puts the bar away while typing into the page, and keeps it mounted", async () => {
+    const { container, render } = await openPage(true);
     press(container, "Tap the page");
     press(container, "Keyboard");
     state.keyboard = true;
-    render();
+    await render();
     expect(container.querySelector('[data-testid="page-toolbar"]')).toBeNull();
     expect(container.querySelector('[data-testid="page-typing"]')).not.toBeNull();
     expect(state.pageMounts).toBe(1);
   });
 
-  it("stays a single page until the pair's own surface is measured", () => {
+  it("stays a single page until the pair's own surface is measured", async () => {
     state.regionsReady = false;
     state.pair = { height: 1000, width: 744 };
-    const { container, render } = openPage();
+    const { container, render } = await openPage();
     expect(arrangement(container)).toBe("stacked");
     expect(second(container)).toBeNull();
     state.regionsReady = true;
-    render();
+    await render();
     expect(arrangement(container)).toBe("side");
     expect(state.conversationMounts).toBe(1);
   });
 
-  it("lifts only the pane being typed in", () => {
+  it("lifts only the pane being typed in", async () => {
     state.pair = { height: 1000, width: 744 };
     // The address field is open, so the page is what the keyboard is for.
-    const typingPage = openPage(true);
+    const typingPage = await openPage(true);
     state.keyboard = true;
-    typingPage.render();
+    await typingPage.render();
     expect(slot(typingPage.container, "page").avoids).toBe(true);
     expect(slot(typingPage.container, "conversation").avoids).toBe(false);
 
     // A page's own prompt takes the keyboard for its answer, as the address does.
-    const prompted = openPage();
+    const prompted = await openPage();
     expect(slot(prompted.container, "page").avoids).toBe(false);
     const [browser] = state.snapshot!.browserSessions;
     state.snapshot = {
@@ -2601,35 +2445,35 @@ describe("a page beside its agent's thread", () => {
         } as BrowserSessionSummary,
       ],
     };
-    prompted.render();
+    await prompted.render();
     expect(slot(prompted.container, "page").avoids).toBe(true);
     expect(slot(prompted.container, "conversation").avoids).toBe(false);
   });
 
-  it("lifts the thread for its composer, and leaves the page where it is", () => {
+  it("lifts the thread for its composer, and leaves the page where it is", async () => {
     state.pair = { height: 1000, width: 744 };
     state.keyboard = true;
-    const { container } = openPage();
+    const { container } = await openPage();
     expect(slot(container, "page").avoids).toBe(false);
     expect(slot(container, "conversation").avoids).toBe(true);
   });
 
-  it("gives up the page's half in tabletop when the composer needs the keyboard, and keeps both mounted", () => {
+  it("gives up the page's half in tabletop when the composer needs the keyboard, and keeps both mounted", async () => {
     state.pair = { height: 900, width: 900 };
     state.regions = [
       { frame: { height: 20, width: 900, x: 0, y: 420 }, kind: "division", occludesContent: false },
     ];
-    const { container, render } = openPage();
+    const { container, render } = await openPage();
     expect(slot(container, "page").style).toMatchObject({ height: 420 });
     state.keyboard = true;
-    render();
+    await render();
     const page = slot(container, "page").style;
     expect(page["height"]).toBeUndefined();
     expect(page).toMatchObject({ flexShrink: 1, maxHeight: 420, minHeight: 0 });
     expect(slot(container, "conversation").style).toMatchObject({ flexGrow: 1, flexShrink: 0 });
     expect(slot(container, "conversation").avoids).toBe(true);
     state.keyboard = false;
-    render();
+    await render();
     expect(slot(container, "page").style).toMatchObject({ height: 420 });
     expect(state.conversationMounts).toBe(1);
     expect(state.pageMounts).toBe(1);
@@ -2648,13 +2492,13 @@ describe("the status row", () => {
   const sessionId = "browser-child";
 
   /** The page, opened from `thread-agent`, with both agents in it and these at work. */
-  function openWatched(
+  async function openWatched(
     working: readonly string[],
-    params: Partial<SurfacesRoute> = { threadId: "thread-agent" },
+    params: Partial<TestRoute> = { threadId: "thread-agent" },
     waiting: readonly string[] = [],
   ) {
     state.hostClient.stopRun = vi.fn(async () => undefined);
-    const opened = setup({ sessionId, tabId: "page-1", ...params } as Partial<SurfacesRoute>);
+    const opened = await setup({ sessionId, tabId: "page-1", ...params } as Partial<TestRoute>);
     const base = withAgents([
       occupied(sessionId, [
         { acting: true, lastActiveAt: "2026-10-13T00:00:02.000Z", threadId: "thread-trip" },
@@ -2680,32 +2524,32 @@ describe("the status row", () => {
         request: { id: `request-${threadId}`, originatingThreadId: threadId },
       })),
     } as unknown as HostSnapshot;
-    opened.render();
+    await opened.render();
     return opened;
   }
 
   const row = (container: HTMLElement) =>
     container.querySelector<HTMLElement>('[data-testid="place-status"]');
 
-  it("speaks only for the conversation it was opened from, and stops that conversation's Run", () => {
-    const { container } = openWatched(["thread-agent", "thread-trip"]);
+  it("speaks only for the conversation it was opened from, and stops that conversation's Run", async () => {
+    const { container } = await openWatched(["thread-agent", "thread-trip"]);
     // Tokyo trip is acting and ranks first in the tab; the row is still Compare hotels'.
     expect(row(container)?.querySelector('[aria-label="Compare hotels: Working"]')).not.toBeNull();
     press(row(container)!, "Stop this run");
     expect(state.hostClient.stopRun).toHaveBeenCalledExactlyOnceWith("thread-agent");
   });
 
-  it("says nothing on a page opened from Tabs, or while its conversation has nothing to say", () => {
-    const fromTabs = openWatched(["thread-agent"], { scope: "tabs" });
+  it("says nothing on a page opened from Tabs, or while its conversation has nothing to say", async () => {
+    const fromTabs = await openWatched(["thread-agent"], {});
     expect(row(fromTabs.container)).toBeNull();
     for (const root of roots.splice(0)) act(() => root.unmount());
     // Another agent at work in the tab is not this conversation at work.
-    const idle = openWatched(["thread-trip"]);
+    const idle = await openWatched(["thread-trip"]);
     expect(row(idle.container)).toBeNull();
   });
 
-  it("says when the conversation needs the person, and Answer returns to it to answer there", () => {
-    const { container } = openWatched([], { threadId: "thread-agent" }, ["thread-agent"]);
+  it("says when the conversation needs the person, and Answer returns to it to answer there", async () => {
+    const { container } = await openWatched([], { threadId: "thread-agent" }, ["thread-agent"]);
     expect(row(container)?.textContent).toContain("Needs you");
     expect(element(row(container)!, "Stop this run")).toBeNull();
     state.routes = [
@@ -2718,9 +2562,10 @@ describe("the status row", () => {
     expect(state.dispatch).not.toHaveBeenCalled();
   });
 
-  it("leaves the row out while its conversation is beside the page, and only then", () => {
+  it("leaves the row out while its conversation is beside the page, and only then", async () => {
     state.pair = { height: 1000, width: 744 };
-    const { container } = openWatched(["thread-agent"], { threadId: "thread-trip" });
+    const working = ["thread-trip", "thread-agent"];
+    const { container } = await openWatched(working, { threadId: "thread-trip" });
     // Tokyo trip, first in the tab, is the conversation beside the page.
     expect(container.querySelector('[data-testid="beside-thread"]')?.textContent).toContain(
       "thread-trip",
@@ -2728,18 +2573,18 @@ describe("the status row", () => {
     expect(row(container)).toBeNull();
     for (const root of roots.splice(0)) act(() => root.unmount());
     // Opened from Compare hotels, whose conversation is not the one beside the page.
-    const other = openWatched(["thread-agent"]);
+    const other = await openWatched(working);
     expect(row(other.container)).not.toBeNull();
   });
 });
 
 describe("a page and its agent's thread around what the system reserves", () => {
-  function openPage() {
-    const opened = setup({ sessionId: "browser-child", tabId: "page-1" });
+  async function openPage() {
+    const opened = await setup({ sessionId: "browser-child", tabId: "page-1" });
     state.snapshot = withAgents([
       occupied("browser-child", [{ acting: true, threadId: "thread-agent" }]),
     ]);
-    opened.render();
+    await opened.render();
     return opened;
   }
   function styleOf(container: HTMLElement, selector: string): Record<string, unknown> {
@@ -2750,10 +2595,10 @@ describe("a page and its agent's thread around what the system reserves", () => 
   const conversationInsets = (container: HTMLElement) =>
     JSON.parse(container.querySelector<HTMLElement>("[data-insets]")?.dataset["insets"] ?? "{}");
 
-  it("keeps the page's own address, dialogs and picture clear of an obstruction over the page", () => {
+  it("keeps the page's own address, dialogs and picture clear of an obstruction over the page", async () => {
     state.pair = { height: 1000, width: 744 };
     state.regions = [{ frame: { height: 30, width: 30, x: 0, y: 300 }, kind: "occlusion" }];
-    const { container } = openPage();
+    const { container } = await openPage();
     expect(styleOf(container, '[data-testid="page-content"]')).toMatchObject({
       paddingBottom: 0,
       paddingLeft: 30,
@@ -2762,12 +2607,12 @@ describe("a page and its agent's thread around what the system reserves", () => 
     });
   });
 
-  it("keeps the stacked pair to one side of a fold it cannot split at", () => {
+  it("keeps the stacked pair to one side of a fold it cannot split at", async () => {
     state.pair = { height: 900, width: 720 };
     state.regions = [
       { frame: { height: 900, width: 20, x: 350, y: 0 }, kind: "division", occludesContent: true },
     ];
-    const { container } = openPage();
+    const { container } = await openPage();
     expect(styleOf(container, '[data-testid="pair-stacked"]')).toMatchObject({
       paddingBottom: 0,
       paddingEnd: 370,
@@ -2776,14 +2621,14 @@ describe("a page and its agent's thread around what the system reserves", () => 
     });
   });
 
-  it("keeps a page with nobody beside it to one side of a hinge the pair would be split at", () => {
+  it("keeps a page with nobody beside it to one side of a hinge the pair would be split at", async () => {
     state.pair = { height: 900, width: 1000 };
     state.regions = [
       { frame: { height: 900, width: 20, x: 480, y: 0 }, kind: "division", occludesContent: true },
     ];
-    const opened = setup({ sessionId: "browser-child", tabId: "page-1" });
+    const opened = await setup({ sessionId: "browser-child", tabId: "page-1" });
     state.snapshot = withAgents([occupied("browser-child", [])]);
-    opened.render();
+    await opened.render();
     expect(opened.container.querySelector('[data-testid="conversation-slot"]')).toBeNull();
     // Room for two at the hinge, but alone the page takes the larger side of it whole.
     expect(styleOf(opened.container, '[data-testid="pair-side"]')).toMatchObject({
@@ -2794,205 +2639,25 @@ describe("a page and its agent's thread around what the system reserves", () => 
     });
   });
 
-  it("clears an obstruction from where the conversation is while tabletop gives way to the keyboard", () => {
+  it("clears an obstruction from where the conversation is while tabletop gives way to the keyboard", async () => {
     state.pair = { height: 900, width: 900 };
     state.regions = [
       { frame: { height: 20, width: 900, x: 0, y: 420 }, kind: "division", occludesContent: false },
       { frame: { height: 40, width: 40, x: 0, y: 430 }, kind: "occlusion" },
     ];
-    const { container, render } = openPage();
+    const { container, render } = await openPage();
     // Below the fold the obstruction is at the conversation's top edge.
     expect(conversationInsets(container)).toMatchObject({ left: 0, top: 30 });
     // The composer types and the page gives up its half: the conversation is no
     // longer where the fold put it, so the obstruction is cleared from its side.
     state.keyboard = true;
-    render();
+    await render();
     expect(conversationInsets(container)).toMatchObject({ left: 40 });
   });
 });
 
-describe("saved tabs, global scope and native authority (hand-built snapshots)", () => {
-  const placement = { kind: "runner" as const, runnerId: "runner-a" };
-  function lineage(
-    sessionId: string,
-    tabs: readonly { id: string; sessionId: string; state: "live" | "suspended" }[],
-  ) {
-    return {
-      createdAt: "2026-10-13T00:00:00.000Z",
-      id: "lineage-a",
-      revision: 1,
-      session: { ...session(sessionId), placement },
-      tabs: tabs.map((tab, order) => ({
-        ...tab,
-        kind: "browser" as const,
-        openerId: null,
-        order,
-        site: "https://example.com",
-        title: "Saved page",
-      })),
-    };
-  }
-  function catalogued(id: string): BrowserSessionSummary {
-    return seedBrowserSession(
-      { ...session(id), placement, tabRestoreVersion: 1 },
-      {
-        generation: 1,
-        inventoryRevision: 1,
-        revision: 1,
-        rows: [
-          {
-            availability: "ready",
-            documentId: "document-1",
-            iconRef: null,
-            id: "page-1",
-            occupants: [],
-            openerId: null,
-            order: 0,
-            site: "https://example.com",
-            title: "Saved page",
-          },
-        ],
-      },
-    ) as unknown as BrowserSessionSummary;
-  }
-
-  it("follows a saved tab's lineage to its new session", () => {
-    const { container, render } = setup({ sessionId: "old" });
-    state.snapshot = seedBrowserSnapshot(
-      {
-        ...snapshot([catalogued("new")]),
-        browserPlacements: [{ available: true, label: "Mac mini", runnerId: "runner-a" }],
-        tabRestoreVersion: 1,
-      } as HostSnapshot,
-      [
-        lineage("new", [
-          { id: "page-1", sessionId: "new", state: "live" },
-        ]) as unknown as import("@opensteer/client/host").PersonalTabLineage,
-      ],
-    ) as unknown as HostSnapshot;
-    render();
-    expect(container.textContent).toContain("Viewing new");
-    expect(state.setParams).toHaveBeenCalledWith({ sessionId: "new" });
-    render();
-    expect(state.dispatch).not.toHaveBeenCalled();
-  });
-
-  it("returns from a confirmed closed lineage without opening a sibling", async () => {
-    const readPersonalTabs = vi.fn(async () => ({ ...lineage("old", []), tabs: [] }));
-    state.hostClient = {
-      browserFrames: { subscribe: () => () => undefined },
-      browserViewerState: () => liveFeed,
-      readPersonalTabs,
-    };
-    const { container, render } = setup({ sessionId: "old" });
-    state.snapshot = seedBrowserSnapshot(
-      { ...snapshot([catalogued("sibling")]), tabRestoreVersion: 1 } as HostSnapshot,
-      [],
-    ) as unknown as HostSnapshot;
-    render();
-    await act(async () => undefined);
-    await act(async () => undefined);
-    expect(readPersonalTabs).toHaveBeenCalledExactlyOnceWith("old");
-    expect(container.textContent).toContain("This tab was closed");
-    expect(container.textContent).not.toContain("Viewing sibling");
-    render();
-    await act(async () => undefined);
-    expect(readPersonalTabs).toHaveBeenCalledOnce();
-    expect(state.dispatch).toHaveBeenLastCalledWith({ type: "POP", count: 1 });
-    expect(state.setParams).not.toHaveBeenCalled();
-  });
-
-  // A restarted effect must still observe its pending lookup; a failed lookup
-  // must offer a real retry instead of claiming the tab is unavailable.
-  it("finishes a bounded lookup when React restarts the mounted screen effects", async () => {
-    const readPersonalTabs = vi.fn(async () => ({ ...lineage("old", []), tabs: [] }));
-    state.hostClient = { readPersonalTabs };
-    const { container } = setup(
-      { sessionId: "old" },
-      {
-        strict: true,
-        snapshot: seedBrowserSnapshot(
-          { ...snapshot([]), tabRestoreVersion: 1 } as HostSnapshot,
-          [],
-        ),
-      },
-    );
-    await act(async () => undefined);
-    expect(readPersonalTabs).toHaveBeenCalledExactlyOnceWith("old");
-    expect(container.textContent).toContain("This tab was closed");
-    expect(container.textContent).not.toContain("Looking for this tab");
-  });
-
-  it("keeps a failed lookup in place, then returns only after retry confirms closure", async () => {
-    const readPersonalTabs = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("The tab lookup was interrupted."))
-      .mockResolvedValueOnce({ ...lineage("old", []), tabs: [] });
-    state.hostClient = { readPersonalTabs };
-    const { container } = setup(
-      { sessionId: "old" },
-      {
-        snapshot: seedBrowserSnapshot(
-          { ...snapshot([]), tabRestoreVersion: 1 } as HostSnapshot,
-          [],
-        ),
-      },
-    );
-    await act(async () => undefined);
-    expect(container.textContent).toContain("The tab lookup was interrupted.");
-    expect(state.dispatch).not.toHaveBeenCalled();
-    await pressAsync(container, "Try again");
-    expect(readPersonalTabs.mock.calls).toEqual([["old"], ["old"]]);
-    expect(container.textContent).toContain("This tab was closed");
-    expect(state.dispatch).toHaveBeenLastCalledWith({ type: "POP", count: 1 });
-  });
-
-  it("names the task whose own session of an app the route opens, not another task holding it", () => {
-    const notes = { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null };
-    const hold = (sessionId: string, threadId: string) => ({
-      actingAppKeys: ["com.apple.notes"],
-      actor: { home: false, threadId },
-      apps: [notes],
-      display: false,
-      openedAt: "2026-10-13T00:00:00.000Z",
-      runId: `run-${threadId}`,
-      sessionId,
-      threadId,
-    });
-    const { container } = setup(
-      {
-        appKey: "com.apple.notes",
-        computerSessionId: "session-b",
-        machineId: "mac-a",
-        threadId: "thread-agent",
-      } as Partial<SurfacesRoute>,
-      {
-        snapshot: {
-          ...withAgents([]),
-          machines: [
-            {
-              computerUse: {
-                displayStreamSupported: true,
-                ownerViews: [],
-                sessions: [hold("session-a", "thread-agent"), hold("session-b", "thread-trip")],
-                state: "ready",
-              },
-              id: "mac-a",
-              name: "Mac mini",
-              status: "online",
-            } as unknown as MachineSummary,
-          ],
-        },
-      },
-    );
-    expect(container.textContent).toContain("Mac app");
-    expect(element(container, "Tokyo trip, working here. Ask")).not.toBeNull();
-    expect(container.textContent).not.toContain("Compare hotels");
-  });
-});
-
 describe("native page layout and controls", () => {
-  it("pins a wide page to the top and fits a tall page by height, centred", () => {
+  it("pins a wide page to the top and fits a tall page by height, centred", async () => {
     expect(pictureBox({ width: 400, height: 800 }, 2)).toEqual({
       width: 400,
       height: 200,
@@ -3005,7 +2670,7 @@ describe("native page layout and controls", () => {
     });
   });
 
-  it("offers Fit in the room a page leaves under or beside it, and never over the page", () => {
+  it("offers Fit in the room a page leaves under or beside it, and never over the page", async () => {
     const room = { height: 560, width: 870 };
     // A page fitted by its height, with real gutters: the words fit beside it.
     expect(fitOffer(room, { height: 560, left: 165, width: 540 })).toEqual({
@@ -3027,13 +2692,13 @@ describe("native page layout and controls", () => {
     });
   });
 
-  it("leaves a visible caret alone and clamps sliding to the page foot", () => {
+  it("leaves a visible caret alone and clamps sliding to the page foot", async () => {
     expect(slideFor({ x: 0.5, y: 0.2, height: 0.02 }, 800, 400)).toBe(0);
     expect(slideFor({ x: 0.5, y: 0.95, height: 0.02 }, 800, 400)).toBe(-400);
     expect(slideFor({ x: 0.5, y: 0.9, height: 0.02 }, 200, 400)).toBe(0);
   });
 
-  it("keeps the point under a pinch under the fingers as they spread and move, inside the page", () => {
+  it("keeps the point under a pinch under the fingers as they spread and move, inside the page", async () => {
     const size = { height: 300, width: 400 };
     const start = { focalX: 200, focalY: 100, scale: 1, x: 0, y: 0 };
     // Spread in place: the page point under the fingers stays put.
@@ -3072,16 +2737,16 @@ describe("native page layout and controls", () => {
     });
   });
 
-  function open() {
+  async function open() {
     const send = vi.fn();
     state.hostClient = { sendBrowserCommand: send, browserPreferences: {} };
     const chosen = mailSession("chosen");
-    const opened = setup({
+    const opened = await setup({
       sessionId: chosen.id,
-      tabId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+      tabId: chosen.pages[0]!.id,
     });
     state.snapshot = snapshot([chosen]);
-    opened.render();
+    await opened.render();
     return { ...opened, chosen, send };
   }
 
@@ -3098,8 +2763,8 @@ describe("native page layout and controls", () => {
   it.each([
     ["coffee near me", "https://www.google.com/search?q=coffee%20near%20me"],
     ["example.org", "https://example.org/"],
-  ])("navigates %s from the address editor", (text, url) => {
-    const { container, chosen, send } = open();
+  ])("navigates %s from the address editor", async (text, url) => {
+    const { container, chosen, send } = await open();
     press(container, "Address, mail.example.com");
     const input = changeAddress(container, text);
     act(() => {
@@ -3107,39 +2772,28 @@ describe("native page layout and controls", () => {
     });
     expect(send).toHaveBeenCalledExactlyOnceWith(chosen.id, {
       type: "navigation.go",
-      surfaceId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+      surfaceId: chosen.pages[0]!.id,
       typed: true,
       url,
     });
   });
 
-  it("cancels a draft address and switches a suggested tab in the page route", () => {
-    const { container, chosen, render, send } = open();
+  it("cancels a draft address and switches a suggested tab in the page route", async () => {
+    const { container, chosen, render, send } = await open();
     const other = {
-      ...(chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!,
-      id: BrowserSurfaceIdSchema.parse("srf_00000000-0000-4000-8000-000000000002"),
+      id: "srf_00000000-0000-4000-8000-000000000002",
       title: "Other",
       url: "https://other.example",
     };
-    state.snapshot = snapshot([
-      seedBrowserSession({ ...chosen }, undefined, [
-        ...chosen
-          .browserTabs!.sessionTabs(chosen.id)
-          .map((row) => chosen.browserTabs!.surface(chosen.id, row.id)!),
-        other,
-      ]),
-    ]);
-    render();
+    state.snapshot = snapshot([session(chosen.id, "ready", [...chosen.pages, other])]);
+    await render();
     press(container, "Address, mail.example.com");
     changeAddress(container, "discard this");
     press(container, "Cancel");
     press(container, "Address, mail.example.com");
     expect(
       container.querySelector<HTMLInputElement>('input[aria-label="Website address"]')?.value,
-    ).toBe(
-      chosen.browserTabs!.surface(chosen.id, chosen.browserTabs!.sessionTabs(chosen.id)[0]!.id)!
-        .url,
-    );
+    ).toBe(chosen.pages[0]!.url);
     changeAddress(container, "Other");
     press(container, "Other, other.example");
     expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
@@ -3150,14 +2804,14 @@ describe("native page layout and controls", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
-  it("offers Fit only for a wide band outside address editing and fits the stage", () => {
+  it("offers Fit only for a wide band outside address editing and fits the stage", async () => {
     state.layout = { width: 400, height: 800 };
-    const { container, send, chosen, render } = open();
+    const { container, send, chosen, render } = await open();
     expect(element(container, "Fit to screen")).not.toBeNull();
     press(container, "Fit to screen");
     expect(send).toHaveBeenCalledExactlyOnceWith(chosen.id, {
       type: "viewport.set",
-      surfaceId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+      surfaceId: chosen.pages[0]!.id,
       width: 400,
       height: 800,
     });
@@ -3165,13 +2819,13 @@ describe("native page layout and controls", () => {
     expect(element(container, "Fit to screen")).toBeNull();
     press(container, "Cancel");
     state.layout = { width: 400, height: 225 };
-    render();
+    await render();
     expect(element(container, "Fit to screen")).toBeNull();
   });
 
-  it("takes Fit away while a pinched page may reach into the room it stands in", () => {
+  it("takes Fit away while a pinched page may reach into the room it stands in", async () => {
     state.layout = { width: 400, height: 800 };
-    const { container } = open();
+    const { container } = await open();
     expect(element(container, "Fit to screen")).not.toBeNull();
     const at = { focalX: 100, focalY: 100 };
     act(() => state.pinch!.onActivate(at));
@@ -3186,22 +2840,14 @@ describe("native page layout and controls", () => {
     expect(element(container, "Fit to screen")).not.toBeNull();
   });
 
-  it("asks before fitting an agent-sized page, cancels without sending, and applies on Fit", () => {
+  it("asks before fitting an agent-sized page, cancels without sending, and applies on Fit", async () => {
     vi.mocked(Alert.alert).mockClear();
     state.layout = { width: 400, height: 800 };
-    const { container, send, chosen, render } = open();
+    const { container, send, chosen, render } = await open();
     state.snapshot = snapshot([
-      seedBrowserSession({ ...chosen }, undefined, [
-        {
-          ...chosen.browserTabs!.surface(
-            chosen.id,
-            chosen.browserTabs!.sessionTabs(chosen.id)[0]!.id,
-          )!,
-          sizedByAgent: true,
-        },
-      ]),
+      session(chosen.id, "ready", [{ ...chosen.pages[0]!, sizedByAgent: true }]),
     ]);
-    render();
+    await render();
     press(container, "Fit to screen");
     const buttons = vi.mocked(Alert.alert).mock.calls.at(-1)?.[2];
     expect(buttons?.map(({ text }) => text)).toEqual(["Cancel", "Fit"]);
@@ -3214,67 +2860,31 @@ describe("native page layout and controls", () => {
     });
     expect(send).toHaveBeenCalledExactlyOnceWith(chosen.id, {
       type: "viewport.set",
-      surfaceId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+      surfaceId: chosen.pages[0]!.id,
       width: 400,
       height: 800,
     });
   });
 
-  it("disables catalog-refused history and admits history from older Hosts", () => {
-    const { container, chosen, send, render } = open();
-    const catalog = occupied(chosen.id, []).browserTabs!.inventory(occupied(chosen.id, [])?.id)!;
+  // A page's viewer does not say whether history exists, so Back and Forward are always offered.
+  it("offers the page's history in More on a phone, and beside the address where it is wide", async () => {
+    const { container, chosen, send, render } = await open();
     const item = (label: string) =>
       [...menu().querySelectorAll("button")].find((button) => button.textContent === label);
-    state.snapshot = snapshot([
-      seedBrowserSession(
-        { ...chosen },
-        {
-          ...catalog,
-          rows: [
-            {
-              ...occupied(chosen.id, []).browserTabs!.sessionTabs(chosen.id)[0]!,
-              id: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
-              canGoBack: false,
-              canGoForward: false,
-            },
-          ],
-        },
-      ),
-    ]);
-    render();
     // A phone's address keeps its room: the page's history is in More, beside Forward.
     expect(element(container, "Previous page")).toBeNull();
-    expect(item("Back")?.disabled).toBe(true);
-    expect(item("Forward")?.disabled).toBe(true);
-    press(menu(), "Back");
-    press(menu(), "Forward");
-    expect(send).not.toHaveBeenCalled();
-    state.snapshot = snapshot([chosen]);
-    render();
     expect(item("Back")?.disabled).toBe(false);
     expect(item("Forward")?.disabled).toBe(false);
     press(menu(), "Back");
     press(menu(), "Forward");
     expect(send.mock.calls).toEqual([
-      [
-        chosen.id,
-        {
-          type: "navigation.back",
-          surfaceId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
-        },
-      ],
-      [
-        chosen.id,
-        {
-          type: "navigation.forward",
-          surfaceId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
-        },
-      ],
+      [chosen.id, { type: "navigation.back", surfaceId: chosen.pages[0]!.id }],
+      [chosen.id, { type: "navigation.forward", surfaceId: chosen.pages[0]!.id }],
     ]);
 
     // Where the page is wide, Back and Forward stand beside the address, as Safari's do on iPad.
     state.layout = { height: 900, width: 700 };
-    render();
+    await render();
     expect(item("Back")).toBeUndefined();
     expect(item("Forward")).toBeUndefined();
     press(container, "Previous page");
@@ -3287,12 +2897,12 @@ describe("native page layout and controls", () => {
     editing.negotiate("chosen", 1);
     state.hostClient = { browserFrames: { editing, subscribe: () => () => undefined } };
     const chosen = mailSession("chosen");
-    const { container, render } = setup({
+    const { container, render } = await setup({
       sessionId: chosen.id,
-      tabId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+      tabId: chosen.pages[0]!.id,
     });
     state.snapshot = snapshot([chosen]);
-    await act(async () => render());
+    await act(async () => await render());
     const input = () => container.querySelector<HTMLElement>("[data-page-input]");
     expect(input()?.dataset.focused).toBe("true");
     expect(input()?.dataset.softKeyboard).toBe("false");
@@ -3311,7 +2921,7 @@ describe("native page layout and controls", () => {
     act(() =>
       editing.receive(chosen.id, {
         type: "browser.editing",
-        surfaceId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+        surfaceId: chosen.pages[0]!.id,
         context: {
           contextId: "00000000-0000-4000-8000-000000000001",
           field: { kind: "text", multiline: false, sensitive: false },
@@ -3324,28 +2934,28 @@ describe("native page layout and controls", () => {
     expect(input()?.dataset.focused).toBe("true");
     expect(input()?.dataset.softKeyboard).toBe("false");
     state.focused = false;
-    render();
+    await render();
     expect(input()).toBeNull();
   });
 
-  it("opens the keyboard after a tapped negotiated page reports a field", () => {
+  it("opens the keyboard after a tapped negotiated page reports a field", async () => {
     const editing = new BrowserEditingStore(vi.fn());
     editing.negotiate("chosen", 1);
     state.hostClient = { browserFrames: { editing, subscribe: () => () => undefined } };
     const chosen = mailSession("chosen");
-    const { container, render } = setup({
+    const { container, render } = await setup({
       sessionId: chosen.id,
-      tabId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+      tabId: chosen.pages[0]!.id,
     });
     state.snapshot = snapshot([chosen]);
-    render();
+    await render();
     press(container, "Tap the page");
     expect(element(container, "Keyboard")).toBeNull();
     expect(container.querySelector('[data-testid="page-typing"]')).toBeNull();
     act(() =>
       editing.receive(chosen.id, {
         type: "browser.editing",
-        surfaceId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+        surfaceId: chosen.pages[0]!.id,
         context: {
           contextId: "00000000-0000-4000-8000-000000000001",
           field: { kind: "text", multiline: false, sensitive: false },
@@ -3358,7 +2968,7 @@ describe("native page layout and controls", () => {
   });
 });
 
-it("opens controller page actions only from matching streamed facts and offers one-shot Drag/select", () => {
+it("opens controller page actions only from matching streamed facts and offers one-shot Drag/select", async () => {
   const wire = vi.fn();
   const editing = new BrowserEditingStore(wire);
   editing.negotiate("chosen", 1);
@@ -3367,10 +2977,10 @@ it("opens controller page actions only from matching streamed facts and offers o
     browserFrames: { editing, subscribe: () => () => undefined },
   };
   const chosen = mailSession("chosen");
-  const surfaceId = (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id;
-  const { container, render } = setup({ sessionId: chosen.id, tabId: surfaceId });
+  const surfaceId = chosen.pages[0]!.id;
+  const { container, render } = await setup({ sessionId: chosen.id, tabId: surfaceId });
   state.snapshot = snapshot([chosen]);
-  render();
+  await render();
   expect(container.querySelector('section[aria-label="Page actions"]')).toBeNull();
   press(container, "Drag/select");
   expect(container.querySelector('[data-drag-select="true"]')).not.toBeNull();
@@ -3406,10 +3016,10 @@ it("fences a menu clipboard read when another page contact changes its destinati
   editing.negotiate("chosen", 2);
   state.hostClient = { browserFrames: { editing, subscribe: () => () => undefined } };
   const chosen = mailSession("chosen");
-  const surfaceId = (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id;
-  const { container, render } = setup({ sessionId: chosen.id, tabId: surfaceId });
+  const surfaceId = chosen.pages[0]!.id;
+  const { container, render } = await setup({ sessionId: chosen.id, tabId: surfaceId });
   state.snapshot = snapshot([chosen]);
-  render();
+  await render();
   const menu = () =>
     act(() =>
       editing.receive(chosen.id, {

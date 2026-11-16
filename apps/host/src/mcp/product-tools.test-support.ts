@@ -39,14 +39,7 @@ import {
 } from "@opensteer/core";
 import { TriggerControlInputSchema } from "@opensteer/triggers";
 import { z } from "zod";
-import {
-  AgentBrowserSessionSummarySchema,
-  BrowserSessionIdSchema,
-  BrowserTabReadInputSchema,
-  BrowserTabReadResultSchema,
-  BrowserTabWriteInputSchema,
-  BrowserTabWriteResultSchema,
-} from "@opensteer/protocol";
+import { AgentBrowserSessionSummarySchema, BrowserSessionIdSchema } from "@opensteer/protocol";
 import { DurableWindowCursorSchema, DurableWindowSchema } from "@opensteer/protocol";
 import { agentToolPayloadMaxSerializedBytes } from "@opensteer/protocol";
 
@@ -107,16 +100,7 @@ const ProductToolRequestUnionSchema = z.discriminatedUnion("type", [
     ...requestBase,
     type: z.literal("computer.access.request"),
   }),
-  z.strictObject({
-    ...requestBase,
-    input: BrowserTabReadInputSchema,
-    type: z.literal("browser.tab.read"),
-  }),
-  z.strictObject({
-    ...requestBase,
-    input: BrowserTabWriteInputSchema,
-    type: z.literal("browser.tab.write"),
-  }),
+
   z.strictObject({ ...requestBase, type: z.literal("browser.session.list") }),
   z.strictObject({
     ...requestBase,
@@ -165,7 +149,10 @@ const RequestCreationResultSchema = z.strictObject({
 });
 
 const ProductToolResultUnionSchema = z.discriminatedUnion("type", [
-  ThreadReadOutputSchema.safeExtend({ ...responseBase, type: z.literal("thread.read.result") }),
+  ThreadReadOutputSchema.safeExtend({
+    ...responseBase,
+    type: z.literal("thread.read.result"),
+  }),
   z.strictObject({
     ...responseBase,
     result: TaskSchema.extend({ delegationId: AssignmentIdSchema, runId: RunIdSchema }),
@@ -221,16 +208,7 @@ const ProductToolResultUnionSchema = z.discriminatedUnion("type", [
     sessions: z.array(AgentBrowserSessionSummaryStrictSchema).max(100),
     type: z.literal("browser.session.list.result"),
   }),
-  z.strictObject({
-    ...responseBase,
-    result: BrowserTabReadResultSchema,
-    type: z.literal("browser.tab.read.result"),
-  }),
-  z.strictObject({
-    ...responseBase,
-    result: BrowserTabWriteResultSchema,
-    type: z.literal("browser.tab.write.result"),
-  }),
+
   z.strictObject({
     ...responseBase,
     sessionId: BrowserSessionIdSchema.nullable(),
@@ -335,6 +313,7 @@ export class ProductToolsTestClient {
       },
     );
     const handlers = agentToolHandlers({
+      tabs: unavailable as never,
       administration: new Proxy(
         {},
         {
@@ -381,8 +360,8 @@ export class ProductToolsTestClient {
       "thread.interrupt": "opensteer_task_interrupt",
       "thread.update": "opensteer_task_update",
       "task.cancel": "opensteer_delegation_cancel",
-      "person.message": "send_to_person",
-      "person.show": "show_to_person",
+      "person.message": "person_notify",
+      "person.show": "person_show",
       "request.withdraw": "opensteer_request_withdraw",
     };
     name = taskNames[request.type] ?? name;
@@ -392,8 +371,6 @@ export class ProductToolsTestClient {
     const { type: _type, requestId, ...rest } = request;
     let input: Record<string, unknown> = rest;
     if (request.type === "thread.update" || request.type === "thread.interrupt")
-      input = request.input;
-    if (request.type === "browser.tab.read" || request.type === "browser.tab.write")
       input = request.input;
     if (request.type === "request.withdraw") input = { requestId: request.targetRequestId };
     if (request.type === "thread.message") {

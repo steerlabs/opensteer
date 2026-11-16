@@ -1,7 +1,6 @@
 import {
-  PlaceActivityNoticeSchema,
-  placeIdentityKey,
-  type PlaceActivity as WireActivity,
+  TabPlaceActivityNoticeSchema,
+  type TabPlaceActivity as WireActivity,
 } from "@opensteer/protocol";
 import type { BrowserBinaryFrameHeader } from "@opensteer/protocol/browser";
 export interface PlaceActivity extends WireActivity {
@@ -12,7 +11,7 @@ const empty: readonly PlaceActivity[] = [];
 const ledgerLimit = 4096;
 
 /**
- * Agents present in each place. A record stays until a clear notice, a newer
+ * Agents present in each tab, keyed by tab ID. A record stays until a clear notice, a newer
  * record for its thread there, the same Run acting in another place,
  * `reconcile` or `clear`: an agent that is thinking is still there. High-
  * frequency presence has no dependency on HostSnapshot or its subscribers.
@@ -38,11 +37,11 @@ export class PlaceActivityStore {
     };
   };
   apply(input: unknown): void {
-    const notice = PlaceActivityNoticeSchema.safeParse(input);
+    const notice = TabPlaceActivityNoticeSchema.safeParse(input);
     if (!notice.success) return;
     const message = notice.data;
     const value = message.type === "host.place-activity" ? message.activity : message;
-    const key = placeIdentityKey(value.place);
+    const key: string = value.tabId;
     const elsewhere = this.#runPlaces.get(value.runId);
     // Places flush on separate timers, so a Run's older record from the place
     // it left can arrive after its newer one from the place it is in now.
@@ -140,8 +139,7 @@ export function placeActivityPoint(
   geometry: PlaceActivityGeometry,
 ): PlaceActivityPoint {
   if (
-    activity.place.kind !== "browser" ||
-    activity.place.surfaceId !== geometry.surfaceId ||
+    activity.tabId !== geometry.surfaceId ||
     activity.geometryRevision !== geometry.geometryRevision ||
     !activity.pointer
   )
@@ -151,4 +149,18 @@ export function placeActivityPoint(
   const x = (activity.pointer.x * geometry.viewportWidth) / region.width;
   const y = (activity.pointer.y * geometry.viewportHeight) / region.height;
   return x <= 1 && y <= 1 ? { kind: "point", x, y } : hiddenPoint;
+}
+
+/** A tab's occupants, each marked acting while the Host reports its Run acting there now. */
+export function actingOccupants<
+  Occupant extends { readonly threadId: string; readonly acting: boolean },
+>(
+  occupants: readonly Occupant[],
+  activity: readonly Pick<PlaceActivity, "threadId">[],
+): readonly Occupant[] {
+  if (activity.length === 0) return occupants;
+  const acting = new Set(activity.map((record) => record.threadId as string));
+  return occupants.map((occupant) =>
+    acting.has(occupant.threadId) && !occupant.acting ? { ...occupant, acting: true } : occupant,
+  );
 }

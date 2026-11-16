@@ -1,3 +1,4 @@
+import { runtimeBrowserCommand } from "./browser-sessions.test-support.js";
 import { browserInventory } from "./browser-sessions.test-support.js";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -31,7 +32,7 @@ run("Browser Sessions through a whole deployment", () => {
     await browserAvailable(stack);
     const site = await loadingSite();
     addCleanup("test site", () => site.close());
-    const created = await stack.api["commands.dispatch"]({
+    const created = await runtimeBrowserCommand(stack, {
       type: "browser.profile.create",
       input: { name: "Work" },
       idempotencyKey: randomUUID(),
@@ -59,7 +60,7 @@ run("Browser Sessions through a whole deployment", () => {
     }));
     const startedAt = performance.now();
     const replies = await Promise.all(
-      commands.map((command) => stack.api["commands.dispatch"](command)),
+      commands.map((command) => runtimeBrowserCommand(stack, command)),
     );
     const results = replies.map((reply) => {
       if (!reply.ok || reply.data.type !== "browser.tab.open")
@@ -88,7 +89,7 @@ run("Browser Sessions through a whole deployment", () => {
         expect.objectContaining({ ok: true, data: expect.objectContaining({ url: command.url }) }),
       ),
     );
-    const replay = await stack.api["commands.dispatch"](commands[0]!);
+    const replay = await runtimeBrowserCommand(stack, commands[0]!);
     expect(replay).toMatchObject({
       ok: true,
       data: { sessionId, tabId: results[0]!.tabId, browserStarted: results[0]!.browserStarted },
@@ -100,23 +101,23 @@ run("Browser Sessions through a whole deployment", () => {
       outcome: { kind: "opened", tabId: results[0]!.tabId },
     });
     expect(
-      await stack.api["commands.dispatch"]({ ...commands[0]!, url: site.origin + "/changed" }),
+      await runtimeBrowserCommand(stack, { ...commands[0]!, url: site.origin + "/changed" }),
     ).toMatchObject({ ok: false, error: { code: "conflict" } });
     expect(
-      await stack.api["commands.dispatch"]({
+      await runtimeBrowserCommand(stack, {
         ...commands[0]!,
         idempotencyKey: randomUUID(),
         placement: { kind: "runner", runnerId: createId("runner") },
       }),
     ).toMatchObject({ ok: false, error: { reason: "browser-placement-unavailable" } });
     expect(
-      await stack.api["commands.dispatch"]({
+      await runtimeBrowserCommand(stack, {
         ...commands[0]!,
         idempotencyKey: randomUUID(),
         identity: { kind: "profile", profileId: createId("browserProfile") },
       }),
     ).toMatchObject({ ok: false, error: { reason: "browser-profile-unavailable" } });
-    const guest = await stack.api["commands.dispatch"]({
+    const guest = await runtimeBrowserCommand(stack, {
       type: "browser.tab.open",
       identity: { kind: "guest" },
       url: site.origin + "/guest",
@@ -139,16 +140,12 @@ run("Browser Sessions through a whole deployment", () => {
       expect(contexts.browserContextIds).toHaveLength(native ? 0 : 1);
       if (!native) expect(contexts.browserContextIds[0]).toEqual(expect.any(String));
     }
-    const after = await stack.host.browser.bootstrap(owner);
-    expect(
-      after.groups.rows.find((session) => session.sessionId === legacy.session.id)?.opener,
-    ).toEqual({
-      kind: "unknown",
-    });
+    const after = await stack.host.store.listBrowserSessions(owner);
+    expect(after.find((session) => session.id === legacy.session.id)?.opener).toBeNull();
     // Initialization is the real Host restart recovery path: open sessions fail; bindings survive.
     await stack.host.browser.stop(owner, sessionId);
     await stack.restartHost();
-    const endedReplay = await stack.api["commands.dispatch"](commands[0]!);
+    const endedReplay = await runtimeBrowserCommand(stack, commands[0]!);
     expect(endedReplay).toMatchObject({
       ok: true,
       data: { sessionId, tabId: results[0]!.tabId, browserStarted: results[0]!.browserStarted },
@@ -180,7 +177,7 @@ run("Browser Sessions through a whole deployment", () => {
     await browserAvailable(stack);
     const owner = await stack.host.store.firstUser();
     if (!owner) throw new Error("Missing owner");
-    const first = await stack.api["commands.dispatch"]({
+    const first = await runtimeBrowserCommand(stack, {
       type: "browser.tab.open",
       identity: { kind: "guest" },
       idempotencyKey: randomUUID(),
@@ -212,7 +209,7 @@ run("Browser Sessions through a whole deployment", () => {
     try {
       const at = performance.now();
       const session = await Promise.race([
-        stack.api["commands.dispatch"]({
+        runtimeBrowserCommand(stack, {
           type: "browser.tab.open",
           sessionId: initial.sessionId,
           idempotencyKey: randomUUID(),
@@ -232,7 +229,7 @@ run("Browser Sessions through a whole deployment", () => {
       });
       const identityAt = performance.now();
       const identity = await Promise.race([
-        stack.api["commands.dispatch"]({
+        runtimeBrowserCommand(stack, {
           type: "browser.tab.open",
           identity: { kind: "guest" },
           idempotencyKey: randomUUID(),
@@ -260,7 +257,7 @@ run("Browser Sessions through a whole deployment", () => {
       state: "starting",
     });
     const retryKey = randomUUID();
-    const starting = await stack.api["commands.dispatch"]({
+    const starting = await runtimeBrowserCommand(stack, {
       type: "browser.tab.open",
       sessionId: initial.sessionId,
       idempotencyKey: retryKey,
@@ -271,7 +268,7 @@ run("Browser Sessions through a whole deployment", () => {
       sessionId: initial.sessionId,
       state: "ready",
     });
-    const retry = await stack.api["commands.dispatch"]({
+    const retry = await runtimeBrowserCommand(stack, {
       type: "browser.tab.open",
       sessionId: initial.sessionId,
       idempotencyKey: retryKey,
@@ -288,7 +285,7 @@ run("Browser Sessions through a whole deployment", () => {
       runtimeId: "browser-e2e",
     });
     await stack.host.store.transitionBrowserSession({ sessionId: detached.id, state: "ready" });
-    const detachedReply = await stack.api["commands.dispatch"]({
+    const detachedReply = await runtimeBrowserCommand(stack, {
       type: "browser.tab.open",
       sessionId: detached.id,
       idempotencyKey: randomUUID(),
@@ -322,7 +319,7 @@ run("Browser Sessions through a whole deployment", () => {
       ownerId: owner.id,
       idempotencyKey: randomUUID(),
     });
-    const slow = stack.api["commands.dispatch"]({
+    const slow = runtimeBrowserCommand(stack, {
       type: "browser.tab.open",
       identity: { kind: "profile", profileId: slowProfile.id },
       url: `http://127.0.0.1:${(slowSite.address() as { port: number }).port}/blocked`,
@@ -333,7 +330,7 @@ run("Browser Sessions through a whole deployment", () => {
     try {
       const at = performance.now();
       const fast = await Promise.race([
-        stack.api["commands.dispatch"]({
+        runtimeBrowserCommand(stack, {
           type: "browser.tab.open",
           identity: { kind: "profile", profileId: fastProfile.id },
           idempotencyKey: randomUUID(),
@@ -375,7 +372,7 @@ run("Browser Sessions through a whole deployment", () => {
     addCleanup("test site", () => site.close());
     const owner = await stack.host.store.firstUser();
     if (!owner) throw new Error("Missing owner");
-    const initial = await stack.api["commands.dispatch"]({
+    const initial = await runtimeBrowserCommand(stack, {
       type: "browser.tab.open",
       identity: { kind: "guest" },
       url: site.origin + "/original",
@@ -398,12 +395,12 @@ run("Browser Sessions through a whole deployment", () => {
           throw new Error("Injected lost persistence acknowledgement after native page open");
         return settle(binding);
       });
-    const lost = await stack.api["commands.dispatch"](next);
+    const lost = await runtimeBrowserCommand(stack, next);
     failure.mockRestore();
     expect(lost.ok).toBe(false);
     const bound = await stack.host.store.getBrowserTabOpen(owner.id, next.idempotencyKey);
     expect(bound).toMatchObject({ chosenSessionId: first.sessionId, outcome: { kind: "pending" } });
-    const retry = await stack.api["commands.dispatch"](next);
+    const retry = await runtimeBrowserCommand(stack, next);
     if (!retry.ok || retry.data.type !== "browser.tab.open") throw new Error(JSON.stringify(retry));
     expect(retry.data.sessionId).toBe(first.sessionId);
     expect((await browserInventory(stack, retry.data.sessionId)).tabs).toHaveLength(2);
@@ -430,7 +427,7 @@ run("Browser Sessions through a whole deployment", () => {
           throw new Error("Injected initial-page outcome loss");
         return settle(binding);
       });
-    const startLost = await stack.api["commands.dispatch"](starting);
+    const startLost = await runtimeBrowserCommand(stack, starting);
     initialFailure.mockRestore();
     expect(startLost.ok).toBe(false);
     const initialBinding = await stack.host.store.getBrowserTabOpen(
@@ -439,7 +436,7 @@ run("Browser Sessions through a whole deployment", () => {
     );
     if (!initialBinding) throw new Error("Start binding was not persisted");
     expect(initialBinding.outcome.kind).toBe("pending");
-    const unknown = await stack.api["commands.dispatch"](starting);
+    const unknown = await runtimeBrowserCommand(stack, starting);
     expect(unknown).toMatchObject({
       ok: false,
       error: { reason: "browser-tab-open-failed" },
@@ -464,13 +461,17 @@ run("Browser Sessions through a whole deployment", () => {
       expect(response.statusCode, response.body).toBe(400);
       malformed.push({ status: response.statusCode, body: response.json<unknown>() });
     }
-    expect((await browserInventory(stack)).browserSessions).toHaveLength(2);
+    expect(
+      await stack.host.store.listBrowserSessions((await stack.host.store.firstUser())!.id),
+    ).toHaveLength(2);
     await stack.restartHost();
-    expect(await stack.api["commands.dispatch"](starting)).toMatchObject({
+    expect(await runtimeBrowserCommand(stack, starting)).toMatchObject({
       ok: false,
       error: { reason: "browser-tab-open-failed" },
     });
-    expect((await browserInventory(stack)).browserSessions).toHaveLength(2);
+    expect(
+      await stack.host.store.listBrowserSessions((await stack.host.store.firstUser())!.id),
+    ).toHaveLength(2);
     const directory =
       process.env.OPENSTEER_TAB_OPEN_E2E_ARTIFACT_DIR ??
       path.join(tmpdir(), "opensteer-tab-open-e2e");

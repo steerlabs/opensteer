@@ -1,3 +1,4 @@
+import { TabCommandSchema } from "./tabs.js";
 import { describe, expect, it } from "vitest";
 import {
   BrowserTabOpenCommandSchema,
@@ -6,11 +7,7 @@ import {
 } from "./browser.js";
 import { ComputerViewRefSchema } from "./computer-view-requests.js";
 import { HostIntegrationsComputerViewSchema } from "./computer-apps.js";
-import {
-  ComputerViewOpenCommandSchema,
-  ComputerViewSchema,
-  computerOwnerViewVersion,
-} from "./computer-view.js";
+import { ComputerViewSchema, computerOwnerViewVersion } from "./computer-view.js";
 import { MachineComputerUseSchema, ComputerUseHelloResultSchema } from "./computer-use.js";
 import { RunnerIdSchema, UserIdSchema, ThreadIdSchema, RunIdSchema } from "@opensteer/core";
 const machineId = RunnerIdSchema.parse("rnr_11111111-1111-4111-8111-111111111111");
@@ -95,15 +92,14 @@ describe("start-page wire contracts", () => {
       }).success,
     ).toBe(false);
     expect(
-      ComputerViewOpenCommandSchema.safeParse({
-        type: "computer.view.open",
-        machineId,
-        target: { kind: "phone", display: "main" },
+      TabCommandSchema.safeParse({
+        type: "tab.open",
+        target: { kind: "phone", computerId: machineId },
         idempotencyKey: "open",
       }).success,
     ).toBe(true);
     expect(
-      ComputerViewOpenCommandSchema.safeParse({
+      TabCommandSchema.safeParse({
         type: "computer.view.open",
         machineId,
         target: { kind: "phone", display: "main", runId: "fake" },

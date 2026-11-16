@@ -222,7 +222,7 @@ describe("MockHostClient", () => {
             ? {
                 type: kind,
                 sessionId: BrowserSessionIdSchema.parse(session.id),
-                tabId: client.browserTabs.sessionTabs(session.id)[0]!.id,
+                tabId: [...snapshot.tabs.rows.values()].find((row) => row.kind === "page")!.tabId,
                 title: "A page with a different name",
                 url: "https://example.com",
               }

@@ -125,7 +125,7 @@ it("silence rejects any assistant text and unknown forbidden tools, after an ear
     line({
       expect: {
         noAssistantText: true,
-        notCalls: ["send_to_person", "opensteer_task_send"],
+        notCalls: ["person_notify", "opensteer_task_send"],
         earlierTextMust: ["42"],
       },
     }),
@@ -135,7 +135,7 @@ it("silence rejects any assistant text and unknown forbidden tools, after an ear
   expect(grade(c.expect, [], "", "", "").every((c) => c.pass)).toBe(false);
   expect(grade(c.expect, [], "", "Nothing new", "42 services").every((c) => c.pass)).toBe(false);
   expect(
-    grade(c.expect, [{ tool: "send_to_person", args: {}, valid: false }], "", "", "42").every(
+    grade(c.expect, [{ tool: "person_notify", args: {}, valid: false }], "", "", "42").every(
       (c) => c.pass,
     ),
   ).toBe(false);

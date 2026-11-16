@@ -1,6 +1,6 @@
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
-import { conversationRoute, show } from "./navigation.js";
-import { VoiceController } from "@opensteer/client/voice";
+import { conversationRoute, show, type ShowTarget } from "./navigation.js";
+import { VoiceController, type VoiceTarget } from "@opensteer/client/voice";
 import { handlePersonShow } from "@opensteer/client/host";
 import { VoiceContext } from "@opensteer/client/react";
 import { AppState } from "react-native";
@@ -61,7 +61,9 @@ export function VoiceProvider({ children }: { readonly children: ReactNode }): R
           call: created.call(),
           threadId: here && route?.name === "Thread" ? (params?.threadId ?? null) : null,
         },
-        (target) => show(client.getSnapshot().selection.deploymentId, target),
+        (target) => {
+          return show(client.getSnapshot().selection.deploymentId, showTarget(target));
+        },
       );
       if (shown) created.showed(message);
     });
@@ -87,4 +89,9 @@ export function VoiceProvider({ children }: { readonly children: ReactNode }): R
 function BackgroundStop({ controller }: { readonly controller: VoiceController }): null {
   useVoiceBackgroundStop(controller);
   return null;
+}
+
+/** Where a show goes on this phone: `handlePersonShow` passes only a listed tab, never a closed one. */
+function showTarget(target: VoiceTarget): ShowTarget {
+  return target.kind === "thread" ? target : { kind: "tab", tabId: target.destination.tabId };
 }

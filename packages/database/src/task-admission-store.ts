@@ -694,7 +694,6 @@ async function removeAskTask(
     and not exists(select 1 from channel_conversations where active_thread_id = t.id)
     and not exists(select 1 from channel_deliveries d join messages m on m.id = d.message_id where m.thread_id = t.id)
     and not exists(select 1 from channel_ingress_events e join messages m on m.id = e.message_id where m.thread_id = t.id)
-    and not exists(select 1 from apps where thread_id = t.id)
     and not exists(select 1 from personal_settings where voice_thread_id = t.id)
     and not exists(select 1 from causal_chains c where c.root_message_id in (select id from messages where thread_id = t.id)
       and (exists(select 1 from runs where causal_chain_id = c.id)

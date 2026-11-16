@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  BrowserSessionIdSchema,
   BrowserSurfaceIdSchema,
   createId,
   createToolArguments,
@@ -854,11 +853,6 @@ describe("Opensteer's own steps", () => {
   });
 
   it("say what an action did, not which tool did it", () => {
-    expect(opensteer("browser_tab_write", { action: "restore", tabIds: ["t1"] })).toMatchObject({
-      activeLabel: "Restoring tabs",
-      hint: "",
-      label: "Restored tabs",
-    });
     expect(opensteer("opensteer_task_update", { title: "Tonight" })).toMatchObject({
       hint: "Tonight",
       hintKind: "prose",
@@ -2488,12 +2482,9 @@ describe("page stops", () => {
     runId: "run-a",
     createdAt: at(1),
     title: tab,
-    site: null,
-    place: {
-      kind: "browser",
-      sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000001"),
-      surfaceId: BrowserSurfaceIdSchema.parse(tab),
-    },
+    // A page has a site; only a window or phone place has none.
+    site: tab.includes(".") ? `https://${tab}` : `https://${tab.toLowerCase()}.example`,
+    tabId: BrowserSurfaceIdSchema.parse(tab),
   });
   it("groups commands across every A to B to A to B stop", () => {
     const a = stop("first"),
@@ -2512,7 +2503,7 @@ describe("page stops", () => {
         entries,
         places: [a, b],
         currentPlace: last,
-        head: { label: "Used A and B", detail: "4 steps" },
+        head: { label: "Used a.example and b.example", detail: "4 steps" },
       },
     ]);
     const turn = turns([run(), a])[0]!;

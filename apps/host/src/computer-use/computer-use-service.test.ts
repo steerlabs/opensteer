@@ -1,6 +1,5 @@
+import { WindowIdSchema } from "@opensteer/core";
 import {
-  BrowserSessionIdSchema,
-  BrowserSurfaceIdSchema,
   createId,
   OpensteerError,
   type RunId,
@@ -16,8 +15,7 @@ import {
   type ComputerUseObservation,
   type MachineAppStatus,
 } from "@opensteer/protocol";
-import { RunPlaceRecorder } from "../agents/run-place-recorder.js";
-import { withTimeout } from "@opensteer/shared/withTimeout";
+
 import { readFileSync } from "node:fs";
 import type { WebSocket } from "ws";
 import { DisplayStreamHub } from "./display-stream-hub.js";
@@ -107,7 +105,7 @@ function observation(overrides: Partial<ComputerUseObservation> = {}): ComputerU
     alone: false,
     window: {
       ref: "window-1",
-      id: 7,
+      windowId: WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000007"),
       frame: { x: 0, y: 0, width: 800, height: 600 },
       scale: 1,
       title: "Notes",
@@ -171,8 +169,6 @@ function macosApp(): MachineAppStatus {
 
 function harness(
   options: {
-    readonly beginPlaceEntry?: ComputerUseServiceOptions["beginPlaceEntry"];
-    readonly onPhoneHeld?: ComputerUseServiceOptions["onPhoneHeld"];
     readonly passwords?: ComputerUseServiceOptions["passwords"];
     readonly loginReceiver?: ComputerUseServiceOptions["loginReceiver"];
     readonly expireSetupRequests?: () => Promise<void>;
@@ -195,8 +191,6 @@ function harness(
   const state: { now: number } = { now: 1_000_000 };
   const service = new ComputerUseService({
     deploymentId: deploymentId,
-    ...(options.beginPlaceEntry ? { beginPlaceEntry: options.beginPlaceEntry } : {}),
-    ...(options.onPhoneHeld ? { onPhoneHeld: options.onPhoneHeld } : {}),
     ...(options.passwords ? { passwords: options.passwords } : {}),
     ...(options.loginReceiver ? { loginReceiver: options.loginReceiver } : {}),
     ...(options.expireSetupRequests ? { expireSetupRequests: options.expireSetupRequests } : {}),
@@ -387,50 +381,6 @@ async function act(
     service.release(lease);
   }
 }
-
-describe("native Run place admission", () => {
-  it("records app use but does not let a slow native completion reclaim a browser place", async () => {
-    const write = vi.fn(async (_input: { data: { place: { kind: string } } }) => undefined);
-    const recorder = new RunPlaceRecorder({ write, publish: vi.fn(), onError: vi.fn() });
-    const test = harness({
-      beginPlaceEntry: (runId, generation) => recorder.begin(runId, generation),
-    });
-    const gate = Promise.withResolvers<void>();
-    const drain = () =>
-      withTimeout(recorder.drain(context.runId), 1000, {
-        timeoutError: () => new Error("Native Run place writes did not drain"),
-      });
-    try {
-      await observe(test.service, callable, context);
-      await drain();
-      test.pending.push(gate.promise);
-      const slow = await sendAct(
-        test.service,
-        callable,
-        { actions: [{ type: "key", keys: "Escape" }], snapshot: "obs-1" },
-        context,
-      );
-      recorder.enter(context.runId, context.bindingGeneration, {
-        place: {
-          kind: "browser",
-          sessionId: BrowserSessionIdSchema.parse("bsn_11111111-1111-4111-8111-111111111111"),
-          surfaceId: BrowserSurfaceIdSchema.parse("A"),
-        },
-        title: "Page",
-        site: null,
-      });
-      gate.resolve();
-      await withTimeout(slow.settle(), 1000, {
-        timeoutError: () => new Error("The admitted native call did not settle"),
-      });
-      await drain();
-      expect(write.mock.calls.map(([input]) => input.data.place.kind)).toEqual(["app", "browser"]);
-    } finally {
-      gate.resolve();
-      await test.service.shutdown();
-    }
-  });
-});
 
 describe("ComputerUseService", () => {
   let test: Harness;
@@ -767,6 +717,20 @@ describe("ComputerUseService helper wire fixtures", () => {
     expect(observed.snapshot).toBe("9f2c41ab7e0d5638");
     expect(observed.app.bundleId).toBe("com.apple.Notes");
     expect(observed.elementCount).toBe(5);
+  });
+
+  it("refuses a valid bind reply for a different opaque identity", async () => {
+    const fixture = harness();
+    fixture.outcomes.push({ kind: "ok", value: wire.results["session.bind"] as never });
+    const lease = await fixture.service.prepare(callable, context);
+    try {
+      const sent = await fixture.service.sendWindowOperation(lease, callable, "bind", {
+        windowId: "win_00000000-0000-4000-8000-000000000099",
+      });
+      await expect(sent.settle()).rejects.toThrow("different window");
+    } finally {
+      fixture.service.release(lease);
+    }
   });
 
   it("reads session.act as the same envelope", async () => {
@@ -1509,29 +1473,13 @@ describe("display sessions on an Android phone", () => {
     });
   }
 
-  it("opens the phone's tab once, when the phone first answers a session", async () => {
-    const onPhoneHeld = vi.fn();
-    const test = harness({ onPhoneHeld });
+  it("reports the phone holder without changing tab membership", async () => {
+    const test = harness();
     await observePhone(test.service, context);
     await observePhone(test.service, context);
-    expect(onPhoneHeld).toHaveBeenCalledExactlyOnceWith(phoneId);
-  });
-
-  it("records a successful phone observation as entering its main display", async () => {
-    const complete = vi.fn();
-    const beginPlaceEntry = vi.fn(() => complete);
-    const test = harness({ beginPlaceEntry });
-    try {
-      await observePhone(test.service, context);
-      expect(beginPlaceEntry).toHaveBeenCalledWith(context.runId, context.bindingGeneration);
-      expect(complete).toHaveBeenCalledWith({
-        place: { kind: "phone", machineId: phoneId, display: "main" },
-        title: "Pixel 8",
-        site: null,
-      });
-    } finally {
-      await test.service.shutdown();
-    }
+    expect(test.service.nativeTargetUsers(context.requestedBy, phoneId)).toEqual([
+      { taskId: context.threadId },
+    ]);
   });
 
   it("lets the phone go when the first Run's frame never reached it", async () => {

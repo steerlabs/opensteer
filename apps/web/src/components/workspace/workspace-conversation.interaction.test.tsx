@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { MemoryRouter, useNavigate } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
-import { placeList, type HostSnapshot, type PlaceItem } from "@opensteer/client/host";
+import { placeList, type HostSnapshot } from "@opensteer/client/host";
 
 import { type WorkspaceNavigation } from "./navigation.js";
 import { WorkspaceLayout } from "./workspace-layout.js";
@@ -166,27 +166,6 @@ describe("the dock's slide always settles", () => {
   });
 });
 
-it("dismisses a close review when another client closes its target", async () => {
-  await mount("/");
-  const session = client
-    .getSnapshot()
-    .browserSessions.find(
-      (candidate) =>
-        candidate.state === "ready" &&
-        candidate.attachedRunIds.length > 0 &&
-        (candidate.browserTabs?.sessionTabs(candidate?.id) ?? []).length,
-    )!;
-  const tab = (session.browserTabs?.sessionTabs(session?.id) ?? [])[0]!;
-  await click(element(`[data-place-key="browser:${session.id}:${tab.id}"] .side-tab__close`));
-  expect(document.querySelector(".dialog")).not.toBeNull();
-  await act(async () =>
-    client.closeBrowserTab(session.id, tab.id, session.browserTabs!.inventory(session?.id)!),
-  );
-  await settle(100);
-  expect(document.querySelector(".dialog")).toBeNull();
-  expect(document.querySelector(".toast--error")).toBeNull();
-});
-
 describe("a reply's live picture belongs to its working Run", () => {
   /** The thread's one live picture folded into its header. */
   const pictures = () => [
@@ -197,7 +176,7 @@ describe("a reply's live picture belongs to its working Run", () => {
     [...row.querySelectorAll(".surface-chip__title")].map((title) => title.textContent);
   const browserPlaces = () =>
     placeList(client.getSnapshot()).filter(
-      (item) => item.kind === "browser" && item.availability === "ready",
+      (item) => item.kind === "page" && item.availability === "ready",
     );
   /** Waits for the render that shows this Run place. */
   async function pictureShows(key: string) {
@@ -218,15 +197,6 @@ describe("a reply's live picture belongs to its working Run", () => {
     await pictureShows(place.key);
     return { home, place };
   }
-  function tabOf(place: PlaceItem) {
-    const { destination } = place;
-    if (destination.kind !== "browser" || !destination.tabId) throw Error("Not a tab");
-    const session = client
-      .getSnapshot()
-      .browserSessions.find((candidate) => candidate.id === destination.sessionId)!;
-    return { session, tabId: destination.tabId };
-  }
-
   it("keeps another working Run's page out of this conversation's live spot", async () => {
     await mount(`/tasks/${task}`);
     const { place } = await workingIn("Coffee shortlist");
@@ -242,23 +212,6 @@ describe("a reply's live picture belongs to its working Run", () => {
     expect(picture()?.dataset.placeKey).not.toBe(place.key);
     await act(async () => goTo!(`/tasks/${task}`));
     await pictureShows(place.key);
-  });
-
-  it("a page whose browser ended keeps the Run card until the Run ends", async () => {
-    await mount(`/tasks/${task}`);
-    const { place } = await workingIn("Coffee shortlist");
-    const { session } = tabOf(place);
-    await act(async () => {
-      await client
-        .dispatch({
-          type: "browser.session.close",
-          sessionId: session.id,
-          idempotencyKey: `end-browser:${session.id}`,
-        })
-        .catch(() => undefined);
-    });
-    expect(picture()?.dataset.placeKey).toBe(place.key);
-    expect(picture()?.querySelector(".live-dot")).toBeNull();
   });
 
   it("a finished reply's page never follows the conversation afterwards", async () => {
@@ -332,10 +285,7 @@ describe("a reply's live picture belongs to its working Run", () => {
   it("closing its page keeps the card, then Run end hands off to its muted chip", async () => {
     await mount(`/tasks/${task}`);
     const { home, place } = await workingIn("Coffee shortlist");
-    const { session, tabId } = tabOf(place);
-    await act(async () =>
-      client.closeBrowserTab(session.id, tabId, session.browserTabs!.inventory(session?.id)!),
-    );
+    await act(async () => client.closeTabs([place.key]));
     expect(picture()?.dataset.placeKey).toBe(place.key);
     await act(async () => client.stopRun(home));
     expect(picture()).toBeNull();
@@ -374,17 +324,10 @@ describe("a reply's live picture belongs to its working Run", () => {
     expect(chipTitles(row)).toContain(place.title);
   });
 
-  it("a tab closed in a browser that stays open keeps its card and later mutes its chip", async () => {
+  it("a closed tab keeps its card and later mutes its chip", async () => {
     await mount(`/tasks/${task}`);
     const { home, place } = await workingIn("Your reading list");
-    const { session, tabId } = tabOf(place);
-    expect((session.browserTabs?.sessionTabs(session?.id) ?? []).length).toBeGreaterThan(1);
-    await act(async () =>
-      client.closeBrowserTab(session.id, tabId, session.browserTabs!.inventory(session?.id)!),
-    );
-    expect(
-      client.getSnapshot().browserSessions.find((candidate) => candidate.id === session.id)?.state,
-    ).toBe("ready");
+    await act(async () => client.closeTabs([place.key]));
     expect(picture()?.dataset.placeKey).toBe(place.key);
     await act(async () => client.stopRun(home));
     expect(picture()).toBeNull();
@@ -409,10 +352,7 @@ describe("a reply's live picture belongs to its working Run", () => {
     const next = browserPlaces().find((item) => item.title === "Coffee shortlist")!;
     await act(async () => client.actInPlace(home, next.key));
     expect(picture()!.dataset.placeKey).toBe(next.key);
-    const { session, tabId } = tabOf(held);
-    await act(async () =>
-      client.closeBrowserTab(session.id, tabId, session.browserTabs!.inventory(session?.id)!),
-    );
+    await act(async () => client.closeTabs([held.key]));
     // Closing another page does not change this Run's current place.
     expect(picture()!.dataset.placeKey).toBe(next.key);
   });
@@ -700,7 +640,7 @@ describe("a conversation's page above it at phone width", () => {
   }
   function browserPlace(title: string) {
     return placeList(client.getSnapshot()).find(
-      (item) => item.kind === "browser" && item.availability === "ready" && item.title === title,
+      (item) => item.kind === "page" && item.availability === "ready" && item.title === title,
     )!;
   }
   async function acts(title = "Coffee shortlist") {

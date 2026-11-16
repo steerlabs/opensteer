@@ -1,3 +1,4 @@
+import { BrowserSurfaceIdSchema } from "../packages/core/src/index.js";
 /**
  * Written against CONTRACTS.md before implementation. Failure journeys:
  * Guest copies lose later login; request replays duplicate approvals; restricted
@@ -71,7 +72,7 @@ const reportSchema = z
           .object({
             tabId: z.string(),
             state: z.string(),
-            profile: profileSchema.nullable(),
+            profile: z.object({ profileId: BrowserProfileIdSchema, name: z.string() }).nullable(),
           })
           .passthrough(),
       )
@@ -311,7 +312,9 @@ async function fulfillNewProfile(
   evidence.observations.push({
     requestId,
     profile,
-    sessionIds: bootstrap.data.browser.groups.rows.map((session) => session.sessionId),
+    sessionIds: (await stack.host.store.listBrowserSessions(bootstrap.data.user.id)).map(
+      (session) => session.id,
+    ),
   });
   if (people) {
     try {
@@ -383,7 +386,12 @@ run("Browser profiles through a whole deployment", () => {
       bootstrap.data.browser.profiles.map(({ name }) => name),
       ["Brex"],
     );
-    equal(evidence, "approval opened no session", bootstrap.data.browser.groups.rows.length, 0);
+    equal(
+      evidence,
+      "approval opened no session",
+      (await stack.host.store.listBrowserSessions(bootstrap.data.user.id)).length,
+      0,
+    );
     const profile = bootstrap.data.browser.profiles[0]!;
     await waitFor(
       async () =>
@@ -403,28 +411,20 @@ run("Browser profiles through a whole deployment", () => {
     const sessionId = (
       await stack.host.store.database
         .selectFrom("personalTabs")
-        .select("sessionId")
-        .where("id", "=", opened.report.opened!.tabId)
+        .select("pageBinding")
+        .where("id", "=", BrowserSurfaceIdSchema.parse(opened.report.opened!.tabId))
         .executeTakeFirstOrThrow()
-    ).sessionId!;
+    ).pageBinding!.sessionId;
     await waitFor(
       async () =>
         people[0]!
           .getSnapshot()
-          .browserSessions.some(
-            (session) =>
-              session.id === sessionId &&
-              (session.browserTabs?.sessionTabs(session?.id) ?? []).length,
-          ),
+          .tabs.get(BrowserSurfaceIdSchema.parse(opened.report.opened!.tabId)) !== undefined,
       10_000,
     );
     const client = people[0]!;
-    const pageId = (client
-      .getSnapshot()
-      .browserSessions.find((session) => session.id === sessionId)!
-      .browserTabs?.sessionTabs(
-        client.getSnapshot().browserSessions.find((session) => session.id === sessionId)!.id,
-      ) ?? [])[0]!.id;
+    const pageId = BrowserSurfaceIdSchema.parse(opened.report.opened!.tabId);
+    await client.activateTab(pageId);
     const release = client.retainBrowserWatch(sessionId, pageId);
     try {
       await waitFor(async () => client.browserWatchFrames.get(sessionId, pageId) !== null, 10_000);
@@ -598,14 +598,14 @@ run("Browser profiles through a whole deployment", () => {
       equal(
         evidence,
         `open ${identity.tabId} identity`,
-        tab!.profile?.id ?? null,
+        tab!.profile?.profileId ?? null,
         identity.profileId,
       );
       const sleeping = asleep.report.tabs!.find((row) => row.tabId === tab!.tabId);
       equal(
         evidence,
         `asleep ${tab!.tabId} identity`,
-        sleeping?.profile?.id ?? null,
+        sleeping?.profile?.profileId ?? null,
         identity.profileId,
       );
     }
@@ -646,7 +646,7 @@ run("Browser profiles through a whole deployment", () => {
     equal(
       evidence,
       "no session opened to trigger invalidation",
-      bootstrap.data.browser.groups.rows.length,
+      (await stack.host.store.listBrowserSessions(bootstrap.data.user.id)).length,
       0,
     );
   });
@@ -666,7 +666,12 @@ run("Browser profiles through a whole deployment", () => {
         );
       const bootstrap = await stack.api["bootstrap.get"]({});
       if (!bootstrap.ok) throw new Error(bootstrap.error.message);
-      equal(evidence, "Request opened no session", bootstrap.data.browser.groups.rows.length, 0);
+      equal(
+        evidence,
+        "Request opened no session",
+        (await stack.host.store.listBrowserSessions(bootstrap.data.user.id)).length,
+        0,
+      );
     },
   );
 

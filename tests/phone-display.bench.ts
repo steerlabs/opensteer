@@ -244,20 +244,27 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
         host.origin,
         "commands.dispatch",
         {
-          type: "computer.view.open",
-          machineId: setup.runnerId,
-          target: { kind: "phone", display: "main" },
+          type: "tab.open",
+          target: { kind: "phone", computerId: setup.runnerId },
           idempotencyKey: randomUUID(),
         },
         { headers: host.ownerHeaders },
       );
-      if (opened.type !== "computer.view.open") throw new Error("Unexpected open result");
+      if (opened.type !== "tab.open") throw new Error("Unexpected open result");
+      const activation = await testRpcData(
+        host.origin,
+        "commands.dispatch",
+        { type: "tab.activate", tabId: opened.tab.tabId, idempotencyKey: randomUUID() },
+        { headers: host.ownerHeaders },
+      );
+      if (activation.type !== "tab.activate" || activation.viewer.kind !== "phone")
+        throw new Error("Expected phone view");
       const source = {
         kind: "owner-view" as const,
-        viewId: opened.view.viewId,
-        generation: opened.view.generation,
+        viewId: activation.viewer.view.viewId,
+        generation: activation.viewer.view.generation,
       };
-      let heldView = opened.view;
+      let heldView = activation.viewer.view;
       let viewRenewals = 0;
       const viewRetainers = new ComputerViewRetainers(
         async (viewId, generation) => {

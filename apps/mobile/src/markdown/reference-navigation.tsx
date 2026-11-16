@@ -1,6 +1,7 @@
 import type { HostClient } from "@opensteer/client/host";
 import {
   refTarget,
+  tabReferenceState,
   type FileOpenInput,
   type PersonalReferenceNavigationPorts,
   type ReferenceDestination,
@@ -8,6 +9,7 @@ import {
 } from "@opensteer/client/references";
 import type { TeamSessionClient } from "@opensteer/client/team";
 import { classifyHref, teamPageUrl, type ThreadId } from "@opensteer/core";
+import { tabRoute } from "../browser/surface-route.js";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import * as Haptics from "expo-haptics";
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
@@ -125,6 +127,14 @@ export function PersonalReferenceProvider(props: {
           case "computer":
             navigation.navigate("Computer", { deploymentId, machineId: destination.runnerId });
             return;
+          case "tab":
+            navigation.dispatch(
+              StackActions.push(
+                "WorkspaceBrowser",
+                tabRoute(deploymentId, destination.tabId, threadId ?? undefined),
+              ),
+            );
+            return;
           case "attachment":
             // A stored attachment is the person's own, wherever it was sent: its preview and
             // Download are the file viewer's, read without a conversation.
@@ -163,8 +173,15 @@ export function PersonalReferenceProvider(props: {
           const { path, ...position } = link.file;
           return await ports.openFile({ source: { kind: "path", path }, ...position });
         }
+        // A tab opens only while it is in the list; a closed one is never reopened by a link.
+        const { reference } = link;
+        if (reference.kind === "tab") {
+          if (tabReferenceState(host.getSnapshot().tabs, reference.id).state === "available")
+            await ports.openReference({ kind: "tab", tabId: reference.id });
+          return;
+        }
         // Held or recently confirmed answers open at once; anything else is asked for now.
-        const answer = await host.references.resolve(link.reference.id);
+        const answer = await host.references.resolve(reference.id);
         currentHost(mobile, deploymentId, controller.signal);
         // Unavailable is drawn by the chip itself, from the same store.
         if (answer.status === "available") await ports.openReference(refTarget(answer));

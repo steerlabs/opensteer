@@ -1,7 +1,5 @@
-import { pageSiteLabel, type HostClient, type SurfaceDestination } from "@opensteer/client/host";
-import { useRunPageView, useRunPlace, useRunPlaceBinding } from "@opensteer/client/react";
-import type { PlaceEnteredEventView } from "@opensteer/core";
-import { placeIdentityKey } from "@opensteer/protocol";
+import { pageSiteLabel, type HostClient, type TabDestination } from "@opensteer/client/host";
+import { useRunPageView, useRunPlaceView, type RunPlaceView } from "@opensteer/client/react";
 import { useIsFocused } from "@react-navigation/native";
 import { memo, type ReactNode } from "react";
 import { Pressable, StyleSheet } from "react-native";
@@ -18,7 +16,6 @@ import {
   pictureRadius,
   pictureWords,
   usePainted,
-  useRunPlaceActing,
 } from "./live-place.js";
 
 /** Small enough to sit in the bar, so it asks for a small picture. */
@@ -35,37 +32,37 @@ export const foldedPageWidth = size.width + 2 * inset;
  */
 export const FoldedPage = memo(function FoldedPage(props: {
   readonly hostClient: HostClient;
-  readonly onOpen: (destination: SurfaceDestination) => void;
+  readonly onOpen: (destination: TabDestination) => void;
   readonly onUnfold: () => void;
   /** Whether the page fits above the conversation; without room the tab opens instead. */
   readonly room: boolean;
   readonly runId: string;
   readonly threadId: string;
 }): ReactNode {
-  const entry = useRunPlace(props.hostClient, props.runId);
-  if (entry === null) return null;
-  return <FoldedPicture {...props} key={placeIdentityKey(entry.data.place)} entry={entry} />;
+  const { acting, place } = useRunPlaceView(props.hostClient, props.runId, props.threadId);
+  if (place === null) return null;
+  return <FoldedPicture {...props} key={place.placeKey} acting={acting} place={place} />;
 });
 
 function FoldedPicture(props: {
-  readonly entry: PlaceEnteredEventView;
+  readonly acting: boolean;
+  readonly place: RunPlaceView;
   readonly hostClient: HostClient;
-  readonly onOpen: (destination: SurfaceDestination) => void;
+  readonly onOpen: (destination: TabDestination) => void;
   readonly onUnfold: () => void;
   readonly room: boolean;
   readonly threadId: string;
 }): ReactNode {
-  const { entry, hostClient, threadId } = props;
-  const { destination, sessionId } = useRunPlaceBinding(hostClient, entry);
+  const { acting, place, hostClient, threadId } = props;
+  const { destination } = place;
   const focused = useIsFocused();
   const sidebarVisible = useSidebarVisible();
   const foreground = useAppForeground();
   const active = focused && !sidebarVisible && foreground;
   // The picture the page itself would show: the conversation's pane holds it.
   const [{ picture }] = useRunPageView(hostClient, threadId);
-  const acting = useRunPlaceActing(hostClient, entry, threadId);
-  const [painted, setPainted] = usePainted(entry);
-  const { title, site } = entry.data;
+  const [painted, setPainted] = usePainted(place);
+  const { title, site } = place;
   const siteLabel = site ? pageSiteLabel(site) : null;
   return (
     <Pressable
@@ -83,14 +80,12 @@ function FoldedPicture(props: {
       <Animated.View entering={appear} pointerEvents="none" style={styles.picture}>
         <PlaceSurface
           active={active}
-          destination={destination}
-          entry={entry}
+          place={place}
           hostClient={hostClient}
           onPainted={setPainted}
-          sessionId={sessionId}
           threadId={threadId}
         />
-        <PictureCover entry={entry} glyph={13} painted={painted} picture={picture} />
+        <PictureCover place={place} glyph={13} painted={painted} picture={picture} />
         {acting ? <ActingRing radius={pictureRadius} /> : null}
       </Animated.View>
     </Pressable>

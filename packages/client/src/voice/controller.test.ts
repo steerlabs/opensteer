@@ -49,12 +49,7 @@ function setup(
   };
 }
 
-function step(
-  runId: string,
-  state: ToolEntry["state"],
-  name = "browser_tab_read",
-  id = "step",
-): ToolEntry {
+function step(runId: string, state: ToolEntry["state"], name = "tab_list", id = "step"): ToolEntry {
   return {
     kind: "tool",
     id,
@@ -466,7 +461,7 @@ describe("what the person sees", () => {
       PersonShowMessageSchema.parse({
         type: "host.show",
         ...call,
-        target: { threadId: chat },
+        target: { taskId: chat },
       });
     f.controller.showed(message(first));
     expect(shown).toHaveBeenCalledTimes(1);

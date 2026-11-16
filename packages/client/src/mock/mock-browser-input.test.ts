@@ -18,10 +18,13 @@ describe("mock basic browser input", () => {
       const loading = client.load();
       await vi.advanceTimersByTimeAsync(0);
       await loading;
-      const session = client
-        .getSnapshot()
-        .browserSessions.find((session) => session.profileId?.endsWith("0003"))!;
-      const tab = client.browserTabs.sessionTabs(session.id)[0]!;
+      const page = [...client.getSnapshot().tabs.rows.values()].find(
+        (row) => row.kind === "page" && row.profile?.profileId.endsWith("0003"),
+      )!;
+      const viewer = await client.activateTab(page.tabId);
+      if (viewer.kind !== "page") throw new Error("Expected a page viewer");
+      const session = { id: viewer.sessionId };
+      const tab = { id: viewer.surfaceId };
       const release = client.retainBrowserViewer(session.id, tab.id);
       const target = client.browserFrames.editing!.target(session.id, tab.id);
       expect(client.browserViewerState(session.id, tab.id).input).toBe("basic");

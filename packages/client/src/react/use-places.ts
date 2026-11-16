@@ -1,88 +1,44 @@
-import { placeIdentityKey, type PlaceEnteredEventView } from "@opensteer/core";
-import { runPlaceDestination, runPlaceSessionId } from "../host/run-place.js";
-import { browserTabStrip } from "../host/browser-tab-strip.js";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import type { TabId, PlaceEnteredEventView } from "@opensteer/core";
 import type { HostClient, HostSnapshot } from "../host/client.js";
-import {
-  placeList,
-  placeStructure,
-  placeByKey,
-  samePlaceListSource,
-  type PlaceItem,
-} from "../host/places.js";
+import { placeList, placeByKey, type PlaceItem } from "../host/places.js";
+import { actingOccupants } from "../host/place-activity.js";
+import { placeAgents, samePlaceAgents, type PlaceAgents } from "../host/place-agents.js";
+import { runPlaceDestination, runPlaceSessionId } from "../host/run-place.js";
 import { hostSnapshotStore } from "../host/host-snapshot-store.js";
 import { useHostSelector } from "./use-host-snapshot.js";
-const selectSource = (snapshot: HostSnapshot) => snapshot;
-function usePlaceSelection<T>(
-  hostClient: HostClient,
-  select: (source: HostSnapshot) => T,
-  structural = false,
-  enabled = true,
-) {
+
+const noPlaces: readonly PlaceItem[] = [];
+/** Every listed tab as drawn, in layout order. */
+export function usePlaceList(hostClient: HostClient, enabled = true) {
   const subscribe = useCallback(
     (listener: () => void) => {
       if (!enabled) return () => {};
+      const tabs = hostClient.getSnapshot().tabs.subscribe(listener);
       const host = hostSnapshotStore(hostClient).subscribe(listener);
-      const tabs = structural
-        ? hostClient.browserTabs.subscribeStructure(listener)
-        : hostClient.browserTabs.subscribe(listener);
       return () => {
-        host();
         tabs();
+        host();
       };
     },
-    [hostClient, structural, enabled],
+    [hostClient, enabled],
   );
-  const get = useCallback(() => select(hostClient.getSnapshot()), [hostClient, select]);
+  const get = useCallback(
+    () => (enabled ? placeList(hostClient.getSnapshot()) : noPlaces),
+    [hostClient, enabled],
+  );
   return useSyncExternalStore(subscribe, get, get);
-}
-const noPlaces: readonly PlaceItem[] = [];
-export function usePlaceList(hostClient: HostClient, enabled = true) {
-  const select = useCallback(
-    (source: HostSnapshot) => (enabled ? placeList(source) : noPlaces),
-    [enabled],
-  );
-  return usePlaceSelection(hostClient, select, false, enabled);
-}
-export function usePlaceStructure(hostClient: HostClient) {
-  return usePlaceSelection(hostClient, placeStructure, true);
 }
 function subscribePlace(hostClient: HostClient, key: string | null, listener: () => void) {
   if (key === null) return () => {};
-  const store = hostClient.browserTabs;
-  let source = hostClient.getSnapshot();
-  const host = hostSnapshotStore(hostClient).subscribe(() => {
-    const next = hostClient.getSnapshot();
-    if (!samePlaceListSource(source, next) || source.browserSessions !== next.browserSessions) {
-      source = next;
-      listener();
-    }
-  });
-  const separator = key.startsWith("browser:") ? key.indexOf(":", "browser:".length) : -1;
-  const sessionId = separator < 0 ? undefined : key.slice("browser:".length, separator);
-  const tabId = separator < 0 ? undefined : key.slice(separator + 1);
-  let releaseRow = () => {};
-  const bind = () => {
-    releaseRow();
-    const groupId = sessionId === undefined ? undefined : store.groupForSession(sessionId);
-    if (groupId !== undefined && tabId !== undefined) {
-      const row = store.subscribeTab(groupId, tabId, listener);
-      const group = store.subscribeGroup(groupId, listener);
-      releaseRow = () => {
-        row();
-        group();
-      };
-    }
-    listener();
-  };
-  const session = sessionId === undefined ? () => {} : store.subscribeSessionGroup(sessionId, bind);
-  bind();
+  const row = hostClient.getSnapshot().tabs.subscribeTab(key as TabId, listener);
+  const host = hostSnapshotStore(hostClient).subscribe(listener);
   return () => {
+    row();
     host();
-    session();
-    releaseRow();
   };
 }
+/** One tab as drawn; rerenders only for that tab or its profile. */
 export function usePlace(hostClient: HostClient, key: string | null) {
   const subscribe = useCallback(
     (listener: () => void) => subscribePlace(hostClient, key, listener),
@@ -121,6 +77,30 @@ export function usePlaceActivity(hostClient: HostClient, placeKey: string) {
   );
   const get = useCallback(() => hostClient.placeActivity(placeKey), [hostClient, placeKey]);
   return useSyncExternalStore(subscribe, get, get);
+}
+const nobody: PlaceAgents = { agents: [], unnamedActing: false };
+/**
+ * The agents using one tab that the reader can open, each working while the
+ * Host reports its Run acting in that very tab, working first. Redraws only
+ * when who is there, or who works, changes.
+ */
+export function usePlaceAgents(hostClient: HostClient, placeKey: string | null): PlaceAgents {
+  const place = usePlace(hostClient, placeKey);
+  const activity = usePlaceActivity(hostClient, placeKey ?? "");
+  const select = useCallback(
+    (snapshot: HostSnapshot) =>
+      place
+        ? placeAgents(
+            {
+              destination: place.destination,
+              occupants: actingOccupants(place.occupants, activity),
+            },
+            snapshot,
+          )
+        : nobody,
+    [activity, place],
+  );
+  return useHostSelector(hostClient, select, samePlaceAgents);
 }
 /** Retain only while visible; painting a frame returns its exact target's credit. */
 export function useBrowserWatch(
@@ -167,39 +147,34 @@ export function useRunPlace(hostClient: HostClient | null, runId: string | null)
   return useSyncExternalStore(subscribe, get, get);
 }
 
-const selectTabGroups = (snapshot: HostSnapshot) => snapshot.browserTabGroups;
-export function useBrowserTabStrip(hostClient: HostClient) {
-  const places = usePlaceList(hostClient);
-  const layout = useHostSelector(hostClient, selectTabGroups);
-  return useMemo(() => browserTabStrip(places, layout), [places, layout]);
-}
-
-export function useBrowserTabStripStructure(hostClient: HostClient) {
-  const places = usePlaceStructure(hostClient);
-  const layout = useHostSelector(hostClient, selectTabGroups);
-  return useMemo(() => browserTabStrip(places, layout), [places, layout]);
-}
-
+const selectSource = (snapshot: HostSnapshot) => snapshot;
 /** Catalog changes retarget a picture without subscribing the card to streaming text. */
 export function useRunPlaceBinding(hostClient: HostClient, entry: PlaceEnteredEventView | null) {
-  const source = useHostSelector(
-    hostClient,
-    selectSource,
-    (a, b) => a.machines === b.machines && a.browserSessions === b.browserSessions,
+  const source = useHostSelector(hostClient, selectSource, (a, b) => a.machines === b.machines);
+  const tabId = entry?.data.tabId ?? null;
+  const tabs = hostClient.getSnapshot().tabs;
+  const subscribe = useCallback(
+    (listener: () => void) =>
+      tabId === null ? () => {} : tabs.subscribeTab(tabId as TabId, listener),
+    [tabs, tabId],
   );
-  const tabRevision = useSyncExternalStore(
-    hostClient.browserTabs.subscribe,
-    () => hostClient.browserTabs.revision,
+  const read = useCallback(
+    () => (tabId === null ? undefined : tabs.get(tabId as TabId)),
+    [tabs, tabId],
   );
+  const tab = useSyncExternalStore(subscribe, read, read);
   const destination = useMemo(
     () => (entry ? runPlaceDestination(entry, source) : null),
-    [entry, source, tabRevision],
+    // The tab row decides whether the destination is listed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [entry, source, tab],
   );
   const sessionId = useMemo(
     () => (entry ? runPlaceSessionId(entry, source) : null),
-    [entry, source],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [entry, source, tab],
   );
-  const key = entry ? `${entry.runId}:${placeIdentityKey(entry.data.place)}` : null;
+  const key = entry ? `${entry.runId}:${entry.data.tabId}` : null;
   const retained = useRef({ key, destination, sessionId });
   if (retained.current.key !== key) retained.current = { key, destination, sessionId };
   else

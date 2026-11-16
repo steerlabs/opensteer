@@ -22,9 +22,12 @@ It's an early alpha.
 3. **Every surface.** Web, desktop and mobile (iOS and Android), plus enrolled
    computers and Agent Phones. A feature that works on one surface and is
    missing on the others is unfinished.
-4. **Secrets stay secret.** Credentials, saved passwords, pairing codes, push
-   tokens and signing material never reach logs, wire payloads they don't need
-   to be in, or the repo.
+4. **Secrets stay secret.** Credentials, saved passwords, cookies, pairing
+   codes, push tokens and signing material never reach logs, wire payloads they
+   don't need to be in, or the repo. Browser access granted to the person's
+   agent is deliberate: it sees cookies, page data and filled values in pages
+   it drives. That never extends to signing keys, pairing material or
+   unrelated credentials.
 
 ## A note from Tim
 

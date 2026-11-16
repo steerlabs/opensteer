@@ -16,13 +16,13 @@ it.each(["device-access-off", "device-offline"] as const)(
     expect(ComputerUseErrorSchema.parse({ error: wire }).error).toEqual(wire);
     expect(BrowserActionErrorSchema.parse(wire)).toEqual(wire);
     const result = agentToolFailureResult(failure);
-    expect(result.structuredContent.error).toMatchObject({
-      reason,
-      computerId: machineId,
-      capability: "apps",
+    expect(result.structuredContent.error).toEqual({
+      code: reason === "device-offline" ? "computer_offline" : "access_denied",
+      message: error.message,
+      next: expect.stringContaining(machineId),
     });
     expect(result.content[0]!.text).toContain(machineId);
-    expect(result.content[0]!.text).toContain(reason);
+    expect(JSON.parse(result.content[0]!.text)).toEqual(result.structuredContent);
     expect(result.content[0]!.text).toContain("apps");
     expect(result.content[0]!.text).toMatch(
       reason === "device-access-off" ? /computer_access_request/u : /do not request access/iu,

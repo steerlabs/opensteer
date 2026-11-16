@@ -27,7 +27,7 @@
     "test:sidebar-search": "tsx scripts/sidebar-search-journey.ts",
     "test:omnibox": "tsx scripts/omnibox-journey.ts",
     "test:tab-profile-filter": "tsx scripts/tab-profile-filter-journey.ts",
-    "test:browser-restore": "tsx scripts/browser-restore-journey.ts",
+    "test:tab-activation": "tsx scripts/tab-activation-journey.ts",
     "test:tab-reopen": "tsx scripts/tab-reopen-journey.ts",
     "test:browser-downloads": "tsx scripts/browser-downloads-journey.ts",
     "test:computer-windows": "tsx scripts/computer-windows-journey.ts"

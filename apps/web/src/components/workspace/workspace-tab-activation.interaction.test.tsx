@@ -5,28 +5,41 @@ import { placeList } from "@opensteer/client/host";
 import type { MockHostClient } from "@opensteer/client/mock";
 import { click, client, element, mount } from "./workspace.interaction.test-support.js";
 
-it("opens once across failed-restore snapshots, then retries on Retry and re-selection", async () => {
-  let activate!: MockInstance<MockHostClient["activatePersonalTab"]>;
+/*
+ * Ways selecting a tab can fail: activation repeats on every republished row,
+ * a failure leaves the middle blank with no way back, or Retry and choosing
+ * the tab again do nothing.
+ */
+it("activates a selected tab once across republished rows, then again on Try again and re-selection", async () => {
+  let activate!: MockInstance<MockHostClient["activateTab"]>;
   let tabId = "";
   await mount((source) => {
-    const saved = source.scriptDormantBrowser({ profileName: "Work" });
-    tabId = saved.tabId;
-    activate = vi.spyOn(source, "activatePersonalTab");
-    return `/?panel=browser&browser=${saved.sessionId}&browserTab=${saved.tabId}`;
+    const page = placeList(source.getSnapshot()).find((place) => place.kind === "page")!;
+    tabId = page.key;
+    activate = vi
+      .spyOn(source, "activateTab")
+      .mockRejectedValueOnce(new Error("The browser could not start."))
+      .mockRejectedValueOnce(new Error("Still unavailable."));
+    return `/?panel=browser&tab=${tabId}`;
   });
-  await act(async () => client.finishBrowserActivation("The browser could not start."));
+  // Selecting a tab is the person's Open: only it, Try again and choosing it again may wake a phone.
+  expect(activate).toHaveBeenCalledExactlyOnceWith(tabId, { wake: true });
+  expect(element(".place-state").textContent).toContain("The browser could not start.");
   for (let revision = 0; revision < 10; revision++)
-    await act(async () => client.setDormantBrowserState({ restoring: true }));
+    await act(async () => client.setBrowserLoading(tabId, revision % 2 === 0));
   expect(activate).toHaveBeenCalledTimes(1);
-  const firstOpening = activate.mock.calls[0]![1]?.opening;
-  expect(firstOpening).toEqual(expect.any(String));
+
   await click(element(".place-state .btn"));
   expect(activate).toHaveBeenCalledTimes(2);
-  const retryOpening = activate.mock.calls[1]![1]?.opening;
-  expect(retryOpening).not.toBe(firstOpening);
-  await act(async () => client.finishBrowserActivation("Still unavailable."));
-  const place = placeList(client.getSnapshot()).find((item) => item.personalTab?.id === tabId)!;
-  await click(element(`.side-tab[data-place-key="${place.key}"] .side-tab__main`));
-  expect(activate).toHaveBeenCalledTimes(3);
-  expect(activate.mock.calls[2]![1]?.opening).not.toBe(retryOpening);
+  expect(element(".place-state").textContent).toContain("Still unavailable.");
+
+  const other = placeList(client.getSnapshot()).find(
+    (place) => place.key !== tabId && place.kind === "window",
+  )!;
+  await click(element(`.side-tab[data-place-key="${other.key}"] .side-tab__main`));
+  await click(element(`.side-tab[data-place-key="${tabId}"] .side-tab__main`));
+  expect(activate.mock.calls).toEqual(
+    [tabId, tabId, other.key, tabId].map((id) => [id, { wake: true }]),
+  );
+  expect(document.querySelector(".place-state .btn")).toBeNull();
 });

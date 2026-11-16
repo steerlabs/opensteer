@@ -2,7 +2,6 @@ import {
   ReferenceIdSchema,
   parseReferenceHref,
   type AgentEventView,
-  type Reference,
   type ReferenceId,
 } from "@opensteer/core";
 import {
@@ -15,6 +14,7 @@ import type { HostSnapshot } from "../host/client.js";
 import type { ReferenceReadPorts, ReferenceState } from "./contracts.js";
 import { localReference } from "./local.js";
 import { heldThread } from "../host/task-list.js";
+import type { IdReference as Reference } from "./links.js";
 
 const unresolved: ReferenceState = { state: "unresolved" };
 const failed: ReferenceState = { state: "failed" };
@@ -67,7 +67,8 @@ export class ReferenceStore {
     const canonical = ReferenceIdSchema.parse(id);
     let entry = this.#entries.get(canonical);
     if (!entry) {
-      const ref = parseReferenceHref(`opensteer:${canonical}`)!;
+      // A canonical reference ID never names a tab, whose links carry `tab/`.
+      const ref = parseReferenceHref(`opensteer:${canonical}`) as Reference;
       entry = {
         ref,
         listeners: new Set(),

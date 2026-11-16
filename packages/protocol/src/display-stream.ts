@@ -57,7 +57,7 @@ export const DisplayStreamIdSchema = z
   .brand<"DisplayStreamId">();
 export type DisplayStreamId = z.infer<typeof DisplayStreamIdSchema>;
 /** Read only from previous-release viewers, whose Take over named a control; never issued. */
-export const LegacyDisplayControlIdSchema = z.string().regex(new RegExp(`^dcl_${uuid}$`, "i"));
+export const DisplayControlIdSchema = z.string().regex(new RegExp(`^dcl_${uuid}$`, "i"));
 
 /** Viewer authority is independent of the shared phone producer. */
 export const DisplaySourceSchema = z.discriminatedUnion("kind", [
@@ -320,7 +320,7 @@ export type DisplayViewerState = z.infer<typeof DisplayViewerStateSchema>;
  * Nothing takes control of a display, so it is never held; that release shows
  * no words for this reason and simply keeps its picture.
  */
-export const LegacyDisplayViewerControlSchema = z.strictObject({
+export const DisplayViewerControlSchema = z.strictObject({
   type: z.literal("display.control"),
   state: z.literal("refused"),
   reason: z.literal("released-by-owner"),
@@ -393,7 +393,7 @@ export const DisplayViewerClientMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("display.input"),
     ...DisplayInputSchema.shape,
     /** Sent only by a previous-release viewer; such a batch is never applied. */
-    controlId: LegacyDisplayControlIdSchema.optional(),
+    controlId: DisplayControlIdSchema.optional(),
   }),
   /**
    * Release everything this viewer holds on the display (touch, buttons, keys)

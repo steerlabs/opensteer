@@ -1,3 +1,4 @@
+import { TabReferenceSchema, TabIdSchema } from "@opensteer/core";
 import {
   ReferenceIdSchema,
   ThreadIdSchema,
@@ -17,6 +18,7 @@ export const ReferenceResolveInputSchema = z.strictObject({
 });
 const common = { status: z.literal("available"), title: z.string().min(1).max(256) };
 export const AvailableReferenceSchema = z.discriminatedUnion("kind", [
+  z.object({ ...common, kind: z.literal("tab"), id: TabIdSchema }),
   z.object({ ...common, kind: z.literal("task"), id: ThreadIdSchema }),
   z.object({
     ...common,
@@ -61,3 +63,11 @@ export type ReferenceResolveInput = z.infer<typeof ReferenceResolveInputSchema>;
 export type AvailableReference = z.infer<typeof AvailableReferenceSchema>;
 export type ReferenceResolution = z.infer<typeof ReferenceResolutionSchema>;
 export type ReferenceResolveResult = z.infer<typeof ReferenceResolveResultSchema>;
+
+export const TabReferenceResolveInputSchema = z.strictObject({
+  references: z.array(TabReferenceSchema).min(1).max(referenceResolveBatchSize),
+});
+export const TabReferenceResolutionSchema = z.union([
+  z.object({ ...common, kind: z.literal("tab"), id: TabIdSchema }),
+  z.object({ status: z.literal("unavailable"), kind: z.literal("tab"), id: TabIdSchema }),
+]);

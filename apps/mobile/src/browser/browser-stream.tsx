@@ -60,7 +60,7 @@ export interface BrowserStreamProps {
   readonly hostClient: Pick<
     HostClient,
     | "browserPresentationDeadline"
-    | "browserTabs"
+    | "getSnapshot"
     | "markBrowserPagePresented"
     | "acceptBrowserWatchFrame"
     | "browserFrames"
@@ -93,7 +93,7 @@ export interface BrowserStreamProps {
   readonly session: Pick<BrowserSessionSummary, "id" | "state">;
   /** Passive Run preview: retain the last presented picture of each recently visited tab. */
   readonly preserveLastFrame?: boolean;
-  /** Original Run session identity when its tab is rebound to a replacement session. */
+  /** What a preview stays one picture for while its tab is rebound to another session. */
   readonly previewSessionId?: string;
   /**
    * The Run place's picture owner holds this tab's watch: the view only draws
@@ -225,7 +225,7 @@ function BrowserStreamView({
   const feedError = feed.status === "unavailable" ? feed.error : null;
 
   // A Watch of a sleeping tab shows its last picture: watching it would wake it.
-  const awake = useBrowserTabAwake(hostClient, session.id, tabId);
+  const awake = useBrowserTabAwake(hostClient, tabId);
   // The client bounds how many browser targets it holds; past that it refuses, and says so.
   const [leaseError, setLeaseError] = useState<string | null>(null);
   useEffect(() => {

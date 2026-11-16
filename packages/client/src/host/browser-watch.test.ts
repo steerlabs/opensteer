@@ -185,6 +185,8 @@ describe("BrowserWatchStore", () => {
       geometryRevision: 1,
       loading: false,
       navigationFailed: false,
+      canGoBack: false,
+      canGoForward: false,
       sizedByAgent: false,
     };
     try {
@@ -625,6 +627,8 @@ describe("frames a target cannot read", () => {
             geometryRevision: 1,
             loading: false,
             navigationFailed: false,
+            canGoBack: false,
+            canGoForward: false,
             sizedByAgent: false,
           },
         }),

@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   AgentEventViewSchema,
   ModelSelectionSchema,
+  WindowIdSchema,
   ThreadAccessModeSchema,
   type RunId,
 } from "../packages/core/src/index.js";
@@ -294,7 +295,7 @@ function scriptedNotes() {
   const violations: string[] = [];
   const windows = (session: string): WindowInfo[] =>
     documents.map((document) => ({
-      id: document.id,
+      windowId: WindowIdSchema.parse(`win_${document.id}`),
       title: document.title,
       ref: `${session}:${document.id}`,
       focused: document.id === 71,
@@ -339,17 +340,21 @@ function scriptedNotes() {
         case "session.bind": {
           const window = windows(request.params.sessionId).find(
             (window) =>
-              window.id === (request.params.window ?? current.get(request.params.sessionId) ?? 71),
+              window.windowId ===
+              (request.params.windowId ??
+                WindowIdSchema.parse(`win_${current.get(request.params.sessionId) ?? 71}`)),
           );
           if (!window) return fail("That window is closed.");
-          current.set(request.params.sessionId, window.id);
+          current.set(request.params.sessionId, Number(window.windowId.slice(4)));
           return { result: { window: { ...window, current: true } } };
         }
         case "session.observe": {
           const window = windows(request.params.sessionId).find(
             (window) => window.ref === request.params.window,
           );
-          const document = documents.find((document) => document.id === window?.id);
+          const document = documents.find(
+            (document) => document.id === Number(window?.windowId?.slice(4)),
+          );
           if (!window || !document) return fail("That window is closed.");
           const snapshot = `snapshot-${++serial}`;
           snapshots.set(window.ref, snapshot);
@@ -380,7 +385,7 @@ function scriptedNotes() {
             truncated: false,
             window: {
               ref: window.ref,
-              id: window.id,
+              windowId: window.windowId,
               title: window.title,
               frame: window.frame,
               scale: 1,
@@ -392,7 +397,9 @@ function scriptedNotes() {
           const window = windows(request.params.sessionId).find(
             (window) => window.ref === request.params.window,
           );
-          const document = documents.find((document) => document.id === window?.id);
+          const document = documents.find(
+            (document) => document.id === Number(window?.windowId?.slice(4)),
+          );
           if (!window || !document) return fail("That window is closed.");
           const performed: string[] = [];
           for (const action of request.params.actions) {
@@ -419,7 +426,7 @@ function scriptedNotes() {
               );
             } else return fail(`Unexpected input: ${action.type}`);
           }
-          current.set(request.params.sessionId, window.id);
+          current.set(request.params.sessionId, Number(window.windowId.slice(4)));
           return { result: { performed, error: null } };
         }
         default:
@@ -439,7 +446,8 @@ function assertHelperJourney(
   });
   const listed = requests.findIndex((request) => request.method === "session.windows");
   const bound = requests.findIndex(
-    (request) => request.method === "session.bind" && request.params.window === recipesId,
+    (request) =>
+      request.method === "session.bind" && request.params.windowId === `win_${recipesId}`,
   );
   expect(listed, "agent listed Notes windows").toBeGreaterThanOrEqual(0);
   expect(bound, "agent explicitly bound Recipes after listing windows").toBeGreaterThan(listed);

@@ -1,5 +1,6 @@
+import { tabTools } from "./tabs.js";
+import { appTools } from "./apps.js";
 import { aiAccountTools } from "./ai-accounts.js";
-import { opensteer_app_publish, opensteer_app_list, opensteer_app_call } from "./apps.js";
 import {
   opensteer_request_list,
   opensteer_request_read,
@@ -32,7 +33,7 @@ import {
   opensteer_task_configure,
   opensteer_task_queue,
 } from "./threads.js";
-import { ask_person, send_to_person, show_to_person } from "./person.js";
+import { ask_person, person_notify, person_show } from "./person.js";
 import { browserTools } from "./browser.js";
 import { computerTools } from "./computer.js";
 import {
@@ -52,13 +53,12 @@ import {
 } from "./knowledge.js";
 export const agentTools = [
   ...aiAccountTools,
+  ...tabTools,
+  ...appTools,
   ...computerTools,
   ...browserTools,
   ...pluginTools,
   ...messagingBridgeTools,
-  opensteer_app_publish,
-  opensteer_app_list,
-  opensteer_app_call,
   opensteer_request_list,
   opensteer_request_read,
   opensteer_request_answer,
@@ -74,8 +74,8 @@ export const agentTools = [
   opensteer_delegation_status,
   opensteer_delegation_cancel,
   ask_person,
-  send_to_person,
-  show_to_person,
+  person_notify,
+  person_show,
   opensteer_task_send,
   opensteer_task_interrupt,
   opensteer_task_update,
@@ -119,3 +119,5 @@ export * from "./threads.js";
 export * from "./triggers.js";
 export * from "./integrations.js";
 export * from "./knowledge.js";
+
+export * from "./tabs.js";

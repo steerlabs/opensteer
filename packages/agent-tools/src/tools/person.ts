@@ -1,12 +1,11 @@
 import { defineAgentTool } from "../registry.js";
 import {
-  BrowserSurfaceIdSchema,
+  TabIdSchema,
   PersonMessageSchema,
   requestChoiceTextMaxLength,
   requestLabelMaxLength,
   requestTextMaxLength,
   requestTitleMaxLength,
-  RunIdSchema,
   ThreadIdSchema,
 } from "@opensteer/core";
 
@@ -19,8 +18,8 @@ import {
   RequestCreationOutputSchema,
 } from "./outputs.js";
 
-export const send_to_person = defineAgentTool({
-  name: "send_to_person",
+export const person_notify = defineAgentTool({
+  name: "person_notify",
   title: "Send to the person",
   description:
     "Send this Run’s requester a message in this task now, while work continues; it may notify their devices. It expects no answer: to get one, use ask_person. Refused on a delegation: ask the delegating task to tell the person. On a background wake, use it only for news worth interrupting the person for; send finds a task asked for to that task with opensteer_task_send queue, and otherwise just say briefly what happened in your final reply. Put the completed answer in your final reply without a duplicate message.",
@@ -30,22 +29,27 @@ export const send_to_person = defineAgentTool({
   callers: ["run"] as const,
 });
 
-export const show_to_person = defineAgentTool({
-  name: "show_to_person",
-  title: "Show the person a place",
+export const person_show = defineAgentTool({
+  name: "person_show",
+  title: "Show a tab or task",
   description:
-    "Bring your work into the person's view without waiting to be asked, on devices viewing this task. {current: true}: the page, Mac app or Agent Phone you are in, without a new browser attach or computer observation. {runId}: where a task's Run last worked, from recentPlaces in opensteer_task_read. {tabId}: a tab, even asleep, from Browser Harness listTabs(). {taskId}: a task. Refused on a delegation: tell the delegating task what to show. sent-unconfirmed is not proof anyone saw it.",
+    "Ask devices viewing this task to bring an explicit tab or task into view. tabId comes from tab_list or tab_open; taskId comes from opensteer_task_list or opensteer_task_read. Asleep tabs may wake. A closed or unavailable target is not replaced. Delegated tasks send the destination to their delegating task. sent-unconfirmed means delivery, not proof the person saw it.",
   input: z.strictObject({
     target: z.union([
-      z.strictObject({ current: z.literal(true) }),
-      z.strictObject({ runId: RunIdSchema }),
-      z.strictObject({ tabId: BrowserSurfaceIdSchema }),
-      z.strictObject({ taskId: ThreadIdSchema }),
+      z.strictObject({
+        tabId: TabIdSchema.describe(
+          "Tab ID(s) from tab_list, tab_open, or a bound computer_use handle.",
+        ),
+      }),
+      z.strictObject({
+        taskId: ThreadIdSchema.describe("Task ID from opensteer_task_list or opensteer_task_read."),
+      }),
     ]),
   }),
   output: PersonShowOutputSchema,
   access: "write",
   callers: ["run"] as const,
+  capability: "tabs",
 });
 
 /** The most questions one ask may hold, and the most answers one question may offer. */

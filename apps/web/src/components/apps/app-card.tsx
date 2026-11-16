@@ -1,5 +1,6 @@
 import { useAppView } from "@opensteer/client/react";
 import type { AppEntry, HostClient } from "@opensteer/client/host";
+import { AppIdSchema, type TabId } from "@opensteer/core";
 import {
   useContext,
   useEffect,
@@ -24,24 +25,27 @@ export function AppCard({ entry }: { readonly entry: AppEntry }) {
   const workspace = useOptionalWorkspace();
   const card = useRef<HTMLElement | null>(null);
   const { appId } = entry;
-  const tabTitle = useSyncExternalStore(
-    client?.subscribe ?? noSubscription,
-    () => client?.getSnapshot().appTabs?.find((tab) => tab.appId === appId)?.title ?? null,
-  );
+  // The app's one tab, while the person's list has it: then this card is a way there.
+  const appTab = useSyncExternalStore(client?.subscribe ?? noSubscription, () => {
+    if (!client) return null;
+    for (const tab of client.getSnapshot().tabs.rows.values())
+      if (tab.kind === "app" && tab.appId === appId) return tab;
+    return null;
+  });
   // The pressed control is replaced; the keyboard stays in this card.
   const keepFocus = () =>
     requestAnimationFrame(() =>
       card.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus(),
     );
-  const tab = client && workspace && tabTitle !== null;
+  const tab = client && workspace && appTab !== null;
   return (
     <section className={tab ? "app-card app-card--tab" : "app-card"} ref={card}>
       {tab ? (
         <AppTabRow
-          appId={appId}
           client={client}
           onClosed={keepFocus}
-          title={tabTitle}
+          tabId={appTab.tabId}
+          title={appTab.title}
           workspace={workspace}
         />
       ) : (
@@ -58,13 +62,13 @@ export function AppCard({ entry }: { readonly entry: AppEntry }) {
 }
 
 function AppTabRow({
-  appId,
   client,
   onClosed,
+  tabId,
   title,
   workspace,
 }: {
-  readonly appId: string;
+  readonly tabId: TabId;
   readonly client: HostClient;
   readonly onClosed: () => void;
   readonly title: string;
@@ -72,7 +76,7 @@ function AppTabRow({
 }) {
   const toast = useToast();
   const { nav, selection } = workspace;
-  const destination = { kind: "opensteer-app", appId } as const;
+  const destination = { kind: "tab", tabId } as const;
   const showing =
     selection.kind === "place" &&
     destinationPlaceKey(selection.destination) === destinationPlaceKey(destination);
@@ -100,7 +104,7 @@ function AppTabRow({
         className="icon-btn"
         onClick={() => {
           void client
-            .closeAppTab(appId)
+            .closeTabs([tabId])
             .catch((error: unknown) => toast.error(actionErrorMessage(error)));
           onClosed();
         }}
@@ -141,7 +145,7 @@ function LiveApp({
     return () => observer.disconnect();
   }, [card, near]);
   const { view, failed, retry } = useAppView(client, entry.appId, theme, near);
-  const title = view?.app.title ?? entry.title;
+  const title = view?.title || entry.title;
   return (
     <>
       <header className="app-card__header">
@@ -151,11 +155,14 @@ function LiveApp({
             type="button"
             className="btn btn--ghost btn--small"
             onClick={() => {
+              const show = workspace.nav.beginPlaceOperation();
               void client
-                .openAppTab(entry.appId)
+                .openTab({ kind: "app", appId: AppIdSchema.parse(entry.appId) })
+                .then((tab) => {
+                  show({ kind: "tab", tabId: tab.tabId });
+                  onOpened();
+                })
                 .catch((error: unknown) => toast.error(actionErrorMessage(error)));
-              workspace.nav.showPlace({ kind: "opensteer-app", appId: entry.appId });
-              onOpened();
             }}
           >
             Open

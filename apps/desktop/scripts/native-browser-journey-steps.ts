@@ -61,14 +61,13 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
   }
   async function open(route: string) {
     const result = await kit.context.api["commands.dispatch"]({
-      type: "browser.tab.open",
-      sessionId: kit.context.sessionId,
+      type: "tab.open",
+      target: { kind: "page", guest: true, url: `${kit.context.origin}${route}` },
       idempotencyKey: randomUUID(),
-      url: `${kit.context.origin}${route}`,
     });
-    assert(result.ok && result.data.type === "browser.tab.open");
-    await kit.selectNativePage(kit.context.sessionId, result.data.tabId);
-    return result.data.tabId;
+    assert(result.ok && result.data.type === "tab.open");
+    await kit.selectNativePage(kit.context.sessionId, result.data.tab.tabId);
+    return result.data.tab.tabId;
   }
   const nativeClick = (selector: string, page = true) => nativeJourneyClick(kit, selector, page);
   async function painted(name: string, purple: boolean) {
@@ -297,9 +296,7 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
       await kit.focusPage();
       const beforeBootstrap = await kit.context.api["bootstrap.get"]({});
       assert(beforeBootstrap.ok);
-      const tabs = beforeBootstrap.data.browser.tabs.find((group) =>
-        group.rows.some((row) => row.sessionId === kit.context.sessionId),
-      );
+      const tabs = beforeBootstrap.data.tabs;
       assert(tabs?.complete);
       let quit = 0,
         closed = 0;
@@ -344,14 +341,9 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
       }
       const afterBootstrap = await kit.context.api["bootstrap.get"]({});
       assert(afterBootstrap.ok);
-      const after = afterBootstrap.data.browser.tabs.find((group) =>
-        group.rows.some((row) => row.sessionId === kit.context.sessionId),
-      );
+      const after = afterBootstrap.data.tabs;
       assert(after?.complete);
-      assert.deepEqual(
-        after.rows.map(({ id, site, order }) => ({ id, site, order })),
-        tabs.rows.map(({ id, site, order }) => ({ id, site, order })),
-      );
+      assert.deepEqual(after, tabs);
       assert.equal(quit, 0);
       assert.equal(closed, 0);
       assert.deepEqual(menus, []);
@@ -518,14 +510,13 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
     const wireStart = kit.outgoing.length,
       traceStart = kit.artifacts.trace.length;
     const opened = await kit.context.api["commands.dispatch"]({
-      type: "browser.tab.open",
-      sessionId: page.sessionId,
-      url: `${kit.context.origin}/q`,
+      type: "tab.open",
+      target: { kind: "page", guest: true, url: `${kit.context.origin}/q` },
       idempotencyKey: randomUUID(),
     });
-    assert(opened.ok && opened.data.type === "browser.tab.open");
+    assert(opened.ok && opened.data.type === "tab.open");
     const source = [...kit.runtimeSources].find((source) => source.hasSession(page.sessionId));
-    const doomed = source?.presentSurface(page.sessionId, opened.data.tabId);
+    const doomed = source?.presentSurface(page.sessionId, opened.data.tab.tabId);
     assert(doomed);
     const doomedContents = electronPagePresentation(doomed.page)!.view.webContents;
     doomedContents.close({ waitForBeforeUnload: false });
@@ -538,7 +529,7 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
       await assert.rejects(
         kit.presentationCall("update", {
           presentationId: target.presentationId,
-          surfaceId: opened.data.tabId,
+          surfaceId: opened.data.tab.tabId,
         }),
       );
       assert(!shell.contentView.children.includes(electronPagePresentation(page.page)!.view));

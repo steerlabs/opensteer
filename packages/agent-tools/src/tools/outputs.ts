@@ -1,3 +1,5 @@
+import { TabIdSchema } from "@opensteer/core";
+import { AppSchema, AppListItemSchema } from "@opensteer/core";
 import {
   AgentBrowserSessionSummarySchema,
   ChromeCookiesResultSchema,
@@ -19,7 +21,6 @@ import {
   ModelProviderIdSchema,
   ModelSelectionSchema,
   PlaceContentPartSchema,
-  PlaceIdentitySchema,
   ProviderSessionIdSchema,
   RequestIdSchema,
   RequestKindSchema,
@@ -214,31 +215,6 @@ export const ThreadUpdateOutputSchema = z.object({
   doneAt: task.doneAt,
   doneWhenRunEnds: z.boolean(),
 });
-export const AppPublishOutputSchema = z.object({
-  appId: AppIdSchema,
-  version: z.number().int(),
-  message: z.string(),
-});
-export const AppListOutputSchema = z.object({
-  apps: z.array(
-    z.object({
-      id: AppIdSchema,
-      title: z.string(),
-      kind: z.enum(["html", "server"]),
-      folder: z.string().optional().describe("Server app folder: an absolute path in Agent home."),
-      start: z.string().optional(),
-      taskId: ThreadIdSchema,
-      latestVersion: z.number(),
-      updatedAt: z.string(),
-    }),
-  ),
-});
-export const AppFetchOutputSchema = z.object({
-  status: z.number(),
-  contentType: z.union([z.string(), z.array(z.string())]).optional(),
-  body: z.string(),
-  truncated: z.boolean(),
-});
 export const PluginInstallOutputSchema = z.object({
   pluginId: z.string().nullable(),
   issues: z
@@ -375,42 +351,7 @@ export const BrowserSessionCloseOutputSchema = z.object({
   closed: z.boolean(),
   sessionId: z.string().nullable(),
 });
-export const BrowserTabReadOutputSchema = z.object({
-  totalMatches: z.number().optional(),
-  groups: z.array(
-    z.object({
-      id: z.string(),
-      title: z.string(),
-      color: z.string(),
-      collapsed: z.boolean(),
-      createdBy: z.string(),
-      tabCount: z.number(),
-    }),
-  ),
-  tabs: z.array(
-    z.object({
-      tabId: z.string(),
-      title: z.string(),
-      matchedFields: z.array(z.string()).optional(),
-      site: z.string(),
-      state: z.string(),
-      sessionId: z.string().nullable(),
-      profileId: BrowserProfileIdSchema.nullable(),
-      groupId: z.string().nullable(),
-      position: z.number().optional(),
-      usedByThisTask: z.boolean(),
-      usedByOtherTask: z.boolean(),
-    }),
-  ),
-  nextCursor: z.string().nullable(),
-});
-export const BrowserTabWriteOutputSchema = z.object({
-  action: z.string(),
-  groupId: z.string().optional(),
-  closed: z.array(z.string()).optional(),
-  failed: z.array(z.object({ tabId: z.string(), message: z.string() })).optional(),
-  restored: z.array(z.object({ tabId: z.string(), sessionId: z.string() })).optional(),
-});
+
 export const SafeTriggerSchema = TriggerViewSchema.omit({
   webhookRouteKey: true,
   anchorThreadId: true,
@@ -591,7 +532,7 @@ export const ThreadReadOutputSchema = z
       .array(
         z.object({
           runId: RunSchema.shape.id,
-          place: PlaceIdentitySchema,
+          tabId: TabIdSchema,
           title: z.string(),
           site: z.string().nullable(),
         }),
@@ -613,3 +554,11 @@ export const UseCardOutputSchema = z.discriminatedUnion("status", [
   cardUnavailable,
 ]);
 export type UseCardOutput = z.infer<typeof UseCardOutputSchema>;
+
+export const AppPublishOutputSchema = z.object({
+  appId: AppIdSchema,
+  version: z.number().int().positive(),
+});
+export const AppListOutputSchema = z.object({ apps: z.array(AppListItemSchema).max(500) });
+export const AppLifecycleOutputSchema = z.object({ app: z.object(AppSchema.shape) });
+export const AppDeleteOutputSchema = z.object({ appId: AppIdSchema, deleted: z.literal(true) });

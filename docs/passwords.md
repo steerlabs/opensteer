@@ -16,8 +16,8 @@ skill](../.agents/skills/browser-and-passwords/SKILL.md).
 Authorization and input results carry metadata and status, never saved values. The TOTP seed stays
 in the broker, which releases only a current code. Agents must never read back, copy or reveal a
 saved field, and a successful input proves neither a website sign-in nor the intended account: the
-agent confirms both. After a browser fill, page scripts and agent JavaScript can read the value;
-there is no CDP read filter. App delivery does not verify the app's association with the site, so
+agent confirms both. After a browser fill, page scripts and the agent, which has full page and CDP
+access, can read the value. App delivery does not verify the app's association with the site, so
 the agent judges the package, publisher and install source. A tricked agent can expose the password.
 Secure-field observations suppress text, but screenshots and ordinary fields show what an app
 displays. Revoking or turning off cannot recall input, sign anything out or undo actions.

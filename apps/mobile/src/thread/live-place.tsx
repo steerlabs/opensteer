@@ -2,15 +2,12 @@ import {
   browserTabPicture,
   pageSiteLabel,
   reportRunPlacePicture,
-  runPlaceActing,
   type HostClient,
   type RunPlacePicture,
   type RunPlacePictureReport,
-  type SurfaceDestination,
 } from "@opensteer/client/host";
-import { useHostSelector, useRunPlaceDisplay } from "@opensteer/client/react";
-import type { PlaceEnteredEventView } from "@opensteer/core";
-import { placeIdentityKey } from "@opensteer/protocol";
+import { useRunPlaceDisplay, type RunPlaceView } from "@opensteer/client/react";
+import type { TabKind } from "@opensteer/core";
 import { useCallback, useState, type ReactNode } from "react";
 import { Image, StyleSheet, View } from "react-native";
 import Animated from "react-native-reanimated";
@@ -24,16 +21,13 @@ import { Symbol } from "../ui/symbol.js";
 
 interface SurfaceProps {
   readonly active: boolean;
-  readonly destination: SurfaceDestination | null;
-  readonly entry: PlaceEnteredEventView;
+  readonly place: RunPlaceView;
   readonly hostClient: HostClient;
   /**
    * Whether this view has drawn the place since it mounted. A Mac app's or
    * phone's view starts blank however long the conversation has had a picture.
    */
   readonly onPainted: (painted: boolean) => void;
-  /** The Run's session in a Mac app or phone. */
-  readonly sessionId: string | null;
   readonly threadId: string;
 }
 
@@ -43,19 +37,21 @@ interface SurfaceProps {
  * place's stream: the conversation's Run page holds it once, whichever form
  * shows it, so folding or unfolding never starts the picture over.
  */
-const surfaces: Record<
-  PlaceEnteredEventView["data"]["place"]["kind"],
-  (props: SurfaceProps) => ReactNode
-> = { browser: BrowserSurface, app: ComputerSurface, phone: ComputerSurface };
+const surfaces: Record<TabKind, (props: SurfaceProps) => ReactNode> = {
+  page: BrowserSurface,
+  window: ComputerSurface,
+  phone: ComputerSurface,
+  app: () => null,
+};
 
 /** Whether this binary can decode the place's picture; every binary decodes a phone's. */
-export function displayCapable(entry: PlaceEnteredEventView | null): boolean {
-  return entry?.data.place.kind !== "app" || macWindowVideoSupported();
+export function displayCapable(place: RunPlaceView | null): boolean {
+  return place?.kind !== "window" || macWindowVideoSupported();
 }
 
 /** The live picture of the place a conversation's Run is in, by the kind of place. */
 export function PlaceSurface(props: SurfaceProps): ReactNode {
-  const Surface = surfaces[props.entry.data.place.kind];
+  const Surface = surfaces[props.place.kind];
   return <Surface {...props} />;
 }
 
@@ -64,22 +60,16 @@ export function PlaceSurface(props: SurfaceProps): ReactNode {
  * picture the conversation kept as it mounts, a Mac app's or phone's only
  * once its first frame decodes.
  */
-export function usePainted(entry: PlaceEnteredEventView) {
-  return useState(entry.data.place.kind === "browser");
+export function usePainted(place: RunPlaceView) {
+  return useState(place.kind === "page");
 }
 
 function BrowserSurface(props: SurfaceProps): ReactNode {
-  const { destination } = props;
-  const place = props.entry.data.place;
-  const tabId = place.kind === "browser" ? place.surfaceId : "";
-  const sessionId =
-    destination?.kind === "browser"
-      ? destination.sessionId
-      : place.kind === "browser"
-        ? place.sessionId
-        : "";
+  const { place } = props;
+  const tabId = place.placeKey;
+  const sessionId = place.pageSession ?? "";
   // Not drawing live (inactive behind an alert or the app switcher), it shows the kept picture.
-  const kept = props.active ? null : browserTabPicture(props.hostClient, sessionId, tabId);
+  const kept = props.active ? null : browserTabPicture(props.hostClient, tabId);
   return kept ? (
     <Image
       accessibilityIgnoresInvertColors
@@ -91,9 +81,9 @@ function BrowserSurface(props: SurfaceProps): ReactNode {
     <BrowserStream
       active={props.active}
       hostClient={props.hostClient}
-      label={props.entry.data.title}
+      label={props.place.title}
       preserveLastFrame
-      previewSessionId={place.kind === "browser" ? place.sessionId : sessionId}
+      previewSessionId={tabId}
       session={{ id: sessionId, state: "ready" }}
       sharedWatch
       tabId={tabId}
@@ -102,9 +92,9 @@ function BrowserSurface(props: SurfaceProps): ReactNode {
 }
 
 function ComputerSurface(props: SurfaceProps): ReactNode {
-  const { entry, hostClient, onPainted, sessionId, threadId } = props;
-  const place = entry.data.place;
-  const placeKey = placeIdentityKey(place);
+  const { place, hostClient, onPainted, threadId } = props;
+  const sessionId = place.sessionId ?? null;
+  const placeKey = place.placeKey;
   const display = useRunPlaceDisplay(hostClient, threadId, placeKey);
   const report = useCallback(
     (picture: RunPlacePictureReport) => {
@@ -113,12 +103,12 @@ function ComputerSurface(props: SurfaceProps): ReactNode {
     },
     [hostClient, onPainted, placeKey, threadId],
   );
-  if (sessionId === null || place.kind === "browser") return null;
+  if (sessionId === null || !place.machineId) return null;
   return (
     <ComputerDisplay
       active={props.active}
       hostClient={hostClient}
-      label={entry.data.title}
+      label={place.title}
       machineId={place.machineId}
       phone={place.kind === "phone"}
       preserveLastFrame
@@ -126,7 +116,7 @@ function ComputerSurface(props: SurfaceProps): ReactNode {
       source={{
         kind: "task-session",
         sessionId,
-        ...(place.kind === "app" ? { appKey: place.appKey } : {}),
+        ...(place.kind === "window" && place.appKey ? { appKey: place.appKey } : {}),
       }}
     />
   );
@@ -140,18 +130,18 @@ function ComputerSurface(props: SurfaceProps): ReactNode {
  * whose own view has not drawn yet is covered as one with no picture.
  */
 export function PictureCover(props: {
-  readonly entry: PlaceEnteredEventView;
+  readonly place: RunPlaceView;
   readonly painted: boolean;
   readonly picture: RunPlacePicture;
   /** The glyph's size in a small form; null for a page. */
   readonly glyph: number | null;
 }): ReactNode {
-  const { entry } = props;
+  const { place } = props;
   const picture = props.painted ? props.picture : { ...props.picture, usable: false };
-  const kind = entry.data.place.kind;
+  const kind = place.kind;
   if (!picture.usable && props.glyph !== null) return <PlaceGlyph kind={kind} size={props.glyph} />;
   if (picture.usable && picture.fresh) return null;
-  const site = entry.data.site ? pageSiteLabel(entry.data.site) : null;
+  const site = place.site ? pageSiteLabel(place.site) : null;
   return (
     <Animated.View
       entering={picture.usable ? dim : appear}
@@ -164,9 +154,9 @@ export function PictureCover(props: {
         <>
           <Symbol name={placeSymbol(kind)} size={24} tint={color.muted} />
           <AppText numberOfLines={1} role="secondaryMedium" style={styles.coverTitle}>
-            {entry.data.title}
+            {place.title}
           </AppText>
-          {site && site !== entry.data.title ? (
+          {site && site !== place.title ? (
             <AppText numberOfLines={1} role="caption" tone="muted">
               {site}
             </AppText>
@@ -183,21 +173,8 @@ export function pictureWords(picture: RunPlacePicture): string {
 }
 
 /** Whether this conversation's agent acts in its Run's place right now. */
-export function useRunPlaceActing(
-  hostClient: HostClient,
-  entry: PlaceEnteredEventView | null,
-  threadId: string,
-): boolean {
-  return useHostSelector(hostClient, (snapshot) =>
-    entry === null ? false : runPlaceActing(entry, snapshot, threadId),
-  );
-}
-
 /** What stands for a place with no picture to show: its kind, never an empty frame. */
-export function PlaceGlyph(props: {
-  readonly kind: PlaceEnteredEventView["data"]["place"]["kind"];
-  readonly size: number;
-}): ReactNode {
+export function PlaceGlyph(props: { readonly kind: TabKind; readonly size: number }): ReactNode {
   return (
     <View pointerEvents="none" style={styles.glyph}>
       <Symbol name={placeSymbol(props.kind)} size={props.size} tint={color.muted} />
@@ -205,8 +182,14 @@ export function PlaceGlyph(props: {
   );
 }
 
-function placeSymbol(kind: PlaceEnteredEventView["data"]["place"]["kind"]) {
-  return kind === "browser" ? "globe" : kind === "phone" ? "smartphone" : "laptopcomputer";
+function placeSymbol(kind: TabKind) {
+  return kind === "page"
+    ? "globe"
+    : kind === "phone"
+      ? "smartphone"
+      : kind === "app"
+        ? "square.grid.2x2"
+        : "laptopcomputer";
 }
 
 /** Green says an agent is acting here, as everywhere else in the app. */

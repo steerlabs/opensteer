@@ -18,7 +18,7 @@ import {
   opensteer_task_send,
 } from "./index.js";
 import { saved_login_request } from "./browser.js";
-import { send_to_person } from "./person.js";
+import { person_notify } from "./person.js";
 import { opensteer_automation_list, opensteer_automation_create } from "./triggers.js";
 
 describe("Opensteer tool registry", () => {
@@ -52,7 +52,7 @@ describe("Opensteer tool registry", () => {
       .filter((t) => t.callers.some((c) => c === "program"))
       .map((t) => t.name);
     expect(programs).toContain("opensteer_task_delegate");
-    expect(programs).not.toContain("show_to_person");
+    expect(programs).not.toContain("person_show");
     expect(programs).not.toContain("computer_use");
   });
   it("exposes bounded waiting and connection work without human-only controls", () => {
@@ -75,7 +75,7 @@ describe("Opensteer tool registry", () => {
   });
   it("strips an unnamed secret from a tool result", () => {
     expect(
-      send_to_person.output.parse({
+      person_notify.output.parse({
         messageId: "msg_11111111-1111-4111-8111-111111111111",
         surpriseSecret: "never leave the Host",
       }),

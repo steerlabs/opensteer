@@ -1,13 +1,15 @@
 # Opensteer Apps
 
-Apps render on the person's device, inline in their Thread or as a tab beside it. Each card resolves
-its app ID to the latest publication, even in old history, and the origin Thread owns the app. Stored
-HTML and the database belong in the same backup as Host attachments. App authors follow the shipped
+Apps render on the person's device, inline in their Thread or as a tab. Each card resolves its app
+ID to the latest publication, even in old history. Stored HTML and the database belong in the same
+backup as Host attachments. App authors follow the shipped
 [apps reference](../apps/runner/agent-skills/skills/tasks/references/apps.md).
 
-An app stays beside its conversation so the person can ask for changes. App tabs belong to the
-personal owner and synchronize across their devices; team membership never exposes an app, its
-data or its viewing credentials. A client mounts one copy: moving or reloading an iframe loses its
+An app belongs to the personal owner, not to the Thread or Run that published it: those are
+nullable provenance, so deleting a chat never deletes or stops its apps, and any of the person's
+tasks may update one. Publishing adds a chat card, never a tab; a tab opens only when the person or
+an agent opens it, and an app has at most one. Team membership never exposes an app, its data or
+its viewing credentials. A client mounts one copy: moving or reloading an iframe loses its
 running state. Browser storage stays on one device and is unavailable on some routes, so
 cross-device data belongs in a server app.
 
@@ -16,11 +18,16 @@ Agent home on the hosting computer, and that folder holds source and data. Publi
 copies or rolls back files, so editing the folder can affect a running server. App versions record
 their owning computer and never move to the viewer's.
 
-Starting a server and `opensteer_app_call` need a full-access Run, because calling an app can run code with
-the computer user's full authority, and a Personal macOS Runner has no outer sandbox. Connected
-agents and programs publish or call apps through a managed Run; approving a connection grants no
-direct app-server authority. Servers use the program launch and containment paths, get the program
-environment allowlist plus `PORT`, and never receive an Opensteer tool credential.
+Starting a server needs a full-access Run, because its command runs with the computer user's full
+authority, and a Personal macOS Runner has no outer sandbox. Connected agents and programs publish
+apps through a managed Run; approving a connection grants no direct app-server authority. Servers
+use the program launch and containment paths, get the program environment allowlist plus `PORT`,
+and never receive an Opensteer tool credential.
+
+There is no tool for calling an app. The person's full-access agent on the hosting computer calls a
+server's `localUrl` (`http://127.0.0.1:<port>`) directly with curl or fetch. Opensteer does not
+mediate those requests, by design: that agent can already run anything the server can. Viewing
+still goes only through the gateway below, and `localUrl` carries no Opensteer token.
 
 A server's `start` is shell source for its hosting computer: `/bin/sh -c` on macOS and Linux,
 `cmd.exe /d /s /c` on Windows, passed as written. Windows uses cmd rather than PowerShell because
@@ -91,7 +98,18 @@ stay in the frame; other links open outside. A view capability lasts until Host 
 app and person, and every request checks current personal owner authority. Logout does not revoke a
 copied view URL, so clients keep it only in memory.
 
-Servers keep running for background work, restart lazily after a crash, and have no idle shutdown.
-They stop when republished as HTML or when the Runner loses its primary Host connection or
-stops. App replacement and explicit lifetime controls govern teardown. Only agents get
-the startup-failure log tail; viewer error pages omit it.
+## Server lifetime
+
+The Host persists each server's desired state, running or stopped, and one port chosen at first
+publication and reused across versions and restarts. A conflicting listener fails with
+`port_in_use`; Opensteer never moves a published app's port or kills a foreign process. Servers keep
+running for background work and have no idle shutdown. They stop when the Runner loses its primary
+Host connection; on reconnect the Host reconciles the complete set once, starting apps saved as
+running, while a stopped app stays stopped. Viewing never starts a server, and a failed start waits
+for an explicit Start, a new publication or the next reconnect, never a restart loop. Republishing
+as HTML stops the server and keeps its port reserved. Only agents get the startup-failure log tail;
+viewer error pages omit it.
+
+Deleting an app stops its server, closes its tabs, revokes viewing and removes its record, but never
+its folder. A deletion whose stop cannot be confirmed stays pending and finishes before any later
+start.

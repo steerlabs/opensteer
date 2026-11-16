@@ -3,12 +3,12 @@ import {
   MessageIdSchema,
   ThreadIdSchema,
   requestTitleText,
-  type Reference,
   type TeamPageLink,
 } from "@opensteer/core";
 import type { AvailableReference, TeamNote, TeamNotePreview, TeamTopic } from "@opensteer/protocol";
 import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import type { HostSnapshot } from "../host/client.js";
+import type { IdReference as Reference } from "./links.js";
 import { heldThread } from "../host/task-list.js";
 import type { TeamSessionSnapshot } from "../team/team-session-client.js";
 

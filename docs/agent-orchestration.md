@@ -206,9 +206,9 @@ stay on the personal Host; team viewers get only published replies and bounded s
 operations need effective ownership, and sensitive Request payloads stay hidden even on an item
 read. The [activity reader](../apps/host/src/mcp/thread-items.ts) owns the projection.
 
-Recent places are durable history, never proof a place is open. Showing another Run's place needs
-the caller's current authority and the target's live binding; it never borrows the target Run's
-power or substitutes another place.
+Recent places are durable history, never proof a tab is open. Showing a tab needs the caller's
+current authority; it never borrows another Run's power, reopens a closed tab or substitutes
+another tab.
 
 ## Pages and apps in a conversation
 

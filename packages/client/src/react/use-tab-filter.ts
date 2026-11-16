@@ -13,8 +13,8 @@ import { useHostSelector } from "./use-host-snapshot.js";
 
 /**
  * The devices the tab filter offers, with their counts, and the filter as it
- * stands. Its counts read every place, but it changes only with them, so a
- * title arriving renders nothing.
+ * stands. Its counts read every place, but only what the filter reads, so a
+ * title arriving recomputes and renders nothing.
  */
 export function useTabDeviceChoice(
   hostClient: HostClient,

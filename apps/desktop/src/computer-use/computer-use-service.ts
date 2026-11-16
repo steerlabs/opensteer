@@ -519,7 +519,7 @@ export class ComputerUseService {
           }
         }
       }
-      if (method === "view.windows") {
+      if (method === "view.windows" || method === "window.resolve") {
         await client.handshake(deadline);
         if (this.#ownerViewVersion !== 3)
           throw new ComputerUseHelperFailure(

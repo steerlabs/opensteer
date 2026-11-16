@@ -1,5 +1,6 @@
 import { callMcpTool } from "../../host/src/mcp/call-tool.test-support.js";
 import { createId } from "@opensteer/core";
+import { TabCommandResultSchema } from "@opensteer/protocol";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { startPersonalRuntime } from "../../host/src/runtime/personal-startup.test-support.js";
 /**
@@ -444,15 +445,25 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
     const sourceId = connected.id;
 
     // ---- 3. Owner signs a live hosted Browser Session in ----
+    const tabIds = new Map<string, string>();
     const startSession = async () => {
-      const started = await rpc.command({
-        input: { fresh: true, reuseExisting: false },
-        type: "browser.session.start",
-      });
-      return (started as unknown as { session: { id: string } }).session.id;
+      const opened = TabCommandResultSchema.parse(
+        await rpc.command({
+          type: "tab.open",
+          target: { kind: "page", url: "about:blank", guest: true },
+        }),
+      );
+      if (opened.type !== "tab.open") throw new Error("Wrong tab response");
+      const activated = TabCommandResultSchema.parse(
+        await rpc.command({ type: "tab.activate", tabId: opened.tab.tabId }),
+      );
+      if (activated.type !== "tab.activate" || activated.viewer.kind !== "page")
+        throw new Error("Wrong page viewer");
+      tabIds.set(activated.viewer.sessionId, opened.tab.tabId);
+      return activated.viewer.sessionId;
     };
     const sessionOne = await startSession();
-    const viewerOne = await Viewer.open(hostOrigin, sessionOne, headers);
+    const viewerOne = await Viewer.open(hostOrigin, sessionOne, headers, tabIds.get(sessionOne)!);
     cleanups.push(async () => viewerOne.close());
 
     /** Navigates the live session and returns what the synthetic server saw. */
@@ -651,7 +662,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
     });
 
     const sessionTwo = await startSession();
-    const viewerTwo = await Viewer.open(hostOrigin, sessionTwo, headers);
+    const viewerTwo = await Viewer.open(hostOrigin, sessionTwo, headers, tabIds.get(sessionTwo)!);
     cleanups.push(async () => viewerTwo.close());
 
     await step("agent: a standing grant signs a new session in with no Request", async () => {
@@ -850,7 +861,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
         type: "state.import",
       });
       await refused;
-      const viewer = await Viewer.open(hostOrigin, sessionOne, headers);
+      const viewer = await Viewer.open(hostOrigin, sessionOne, headers, tabIds.get(sessionOne)!);
       cleanups.push(async () => viewer.close());
       const after = await visit(viewer, "www.alpha.test");
       expect(after.cookies.get("__Host-e2e")).toBe(secrets.alpha);
@@ -1175,6 +1186,7 @@ class Viewer {
     origin: string,
     sessionId: string,
     headers: Readonly<Record<string, string>>,
+    surfaceId: string,
   ): Promise<Viewer> {
     const socket = new WebSocket(
       `${origin.replace(/^http/u, "ws")}/v1/browser-sessions/${sessionId}/connect`,
@@ -1197,10 +1209,6 @@ class Viewer {
     });
     await once(socket, "open");
     await snapshot;
-    const { browser } = await testRpcData(origin, "bootstrap.get", {}, { headers });
-    const group = browser.groups.rows.find((row) => row.sessionId === sessionId);
-    const surfaceId = browser.tabs.find((tabs) => tabs.groupId === group?.id)?.rows[0]?.id;
-    if (!surfaceId) throw new Error("The browser has no target surface.");
     const viewer = new Viewer(socket, surfaceId);
     viewer.send({ type: "stream.subscribe", surfaceId });
     await vi.waitFor(() => expect(viewer.#surface).not.toBeNull(), { timeout: 10_000 });

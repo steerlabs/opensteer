@@ -1,3 +1,4 @@
+import type { z } from "zod";
 import {
   ComputerUseBridgeFrameSchema,
   ComputerUseBridgeRequestSchema,
@@ -11,7 +12,6 @@ import {
   type ComputerUseBridgeEvent,
   type ComputerUseBridgeFrame,
   type ComputerUseBridgeMethod,
-  type ComputerUseBridgeRequest,
   type ComputerUseErrorCode,
 } from "@opensteer/protocol";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
@@ -23,6 +23,7 @@ import { delay } from "@opensteer/shared/delay";
  * running. It is short because the target is loopback on this very computer:
  * the answer is a connect or a refusal, never a network.
  */
+type NativeBridgeRequest = z.infer<typeof ComputerUseBridgeRequestSchema>;
 const connectTimeoutMs = 5_000;
 const minimumRetryDelayMs = 250;
 const maximumRetryDelayMs = 5_000;
@@ -301,7 +302,7 @@ export class ComputerUseBridgeClient {
     this.disconnect();
   }
 
-  #send(pending: PendingRequest, frame: ComputerUseBridgeRequest, deadline: number): void {
+  #send(pending: PendingRequest, frame: NativeBridgeRequest, deadline: number): void {
     const id = frame.id;
     this.#pending.set(id, pending);
     void this.#connect().then(

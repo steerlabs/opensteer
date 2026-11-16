@@ -33,8 +33,6 @@ export type MachineAccessView = NonNullable<MachineSummary["access"]>;
 /** The Runner registry row this projection needs. */
 export interface MachineRunnerInput {
   readonly deviceProfile: "iphone" | null;
-  /** Null unless this viewer effectively owns the phone. */
-  readonly tabOpenedAt?: Date | null;
   readonly phoneUpdate?: "downloading" | "installing" | "awaiting-user" | "failed" | null;
   readonly updateRequired?: "agent-phone-outdated" | "runner-outdated" | null;
   /** The enrollment's grant: what this computer may ever advertise. */
@@ -341,7 +339,6 @@ export function projectMachines(input: MachineProjectionInput): readonly Machine
           ? { ...projected, ...views, ownerViews: [...views.ownerViews] }
           : projected;
       })(),
-      tabOpenedAt: runner.tabOpenedAt?.toISOString() ?? null,
       detail: runner.phoneUpdate
         ? runner.phoneUpdate === "failed"
           ? `Agent Phone couldn’t update on ${runner.name}. Update over USB to try again.`
@@ -402,7 +399,6 @@ export function projectMachines(input: MachineProjectionInput): readonly Machine
       // A computer that has not connected yet reports nothing.
       apps: null,
       computerUse: null,
-      tabOpenedAt: null,
       detail: null,
       device: enrollment.deviceProfile === "iphone" ? { form: "phone", platform: "ios" } : null,
       enrollmentId: enrollment.id,

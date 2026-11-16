@@ -150,6 +150,7 @@ function createHostServer(dependencies: HostServerTestOverrides) {
           } as HostAuthenticator),
     browser: Object.assign(
       {
+        latestTabPlaces: async () => [],
         withRunnerAdmission: async <T>(_runnerId: RunnerId, action: () => Promise<T>) => action(),
       },
       complete.browser,
@@ -692,7 +693,9 @@ describe("rpc envelope", () => {
     const listRunners = vi.fn(async () => ({ nextCursor: null, runners: [] as const }));
     const app = await machinesServer({ listRunners });
     try {
-      const response = await injectRpcRequest(app, "machines.list", { futureClientField: true });
+      const response = await injectRpcRequest(app, "machines.list", {
+        futureClientField: true,
+      });
       expect(response.statusCode).toBe(400);
       expect(response.json()).toMatchObject({ error: { code: "bad_request" }, ok: false });
       expect(listRunners).not.toHaveBeenCalled();
@@ -1121,7 +1124,6 @@ describe("rpc envelope", () => {
                 ownerKind,
                 ownerUserId: ownerKind === "user" ? otherOwnerId : null,
                 revokedAt: null,
-                tabOpenedAt: new Date("2026-11-05T12:00:00.000Z"),
               },
             ],
           }),
@@ -1132,12 +1134,12 @@ describe("rpc envelope", () => {
         expect(response.statusCode, response.body).toBe(200);
         const machines = (
           rpcData(response) as {
-            machines: { apps: unknown; id: string; tabOpenedAt: string | null }[];
+            machines: { apps: unknown; id: string }[];
           }
         ).machines;
         const machine = machines.find((candidate) => candidate.id === runnerId);
         expect(machine?.apps).toEqual(expected ? apps : null);
-        expect(machine?.tabOpenedAt).toBe(expected ? "2026-11-05T12:00:00.000Z" : null);
+        expect(machine).not.toHaveProperty("tabOpenedAt");
       } finally {
         await app.close();
       }
@@ -2941,7 +2943,7 @@ describe("durable harness catalogs", () => {
         } as never,
         browser: {
           latestPlaces: async () => [],
-          bootstrap: async () => ({
+          workspaceBootstrap: async () => ({
             available: false,
             placements: [],
             profileGrants: [],

@@ -218,7 +218,7 @@ try {
         )!;
         expectThat({ covered }, !!covered, "the mock has no other profile tab to cover");
         profileId = covered.profileId!;
-        coveredKey = `browser:${covered.sessionId}:${covered.id}`;
+        coveredKey = covered.id;
         await page.locator(`.side-tab[data-place-key="${coveredKey}"] .side-tab__main`).click();
       }
       const beforeTabs = await mockTabs(page);
@@ -233,21 +233,12 @@ try {
         await reply.getByRole("link", { name: label, exact: true }).click();
         await page.waitForFunction(
           (url) => {
-            const params = new URLSearchParams(location.search);
-            const snapshot = (Reflect.get(window, "opensteerMock") as MockHostClient).getSnapshot();
-            return snapshot.browserSessions.some(
-              (session) =>
-                session.id === params.get("browser") &&
-                snapshot
-                  .browserTabs!.sessionTabs(session.id)
-                  .some(
-                    (tab) =>
-                      tab.id === params.get("browserTab") &&
-                      (Reflect.get(window, "opensteerMock") as MockHostClient).browserViewerSurface(
-                        session.id,
-                        tab.id,
-                      )?.url === url,
-                  ),
+            const tabId = new URLSearchParams(location.search).get("tab");
+            const client = Reflect.get(window, "opensteerMock") as MockHostClient;
+            const viewer = tabId ? client.tabViewer(tabId) : null;
+            return (
+              viewer?.kind === "page" &&
+              client.browserViewerSurface(viewer.sessionId, tabId!)?.url === url
             );
           },
           expected,
@@ -292,9 +283,7 @@ try {
         );
         expectThat(
           observed,
-          shown === `browser:${added[0]!.sessionId}:${added[0]!.id}` &&
-            address === expected &&
-            conversation,
+          shown === added[0]!.id && address === expected && conversation,
           "the tab or conversation is not shown",
         );
         await page.screenshot({
@@ -308,7 +297,7 @@ try {
         await reply.waitFor();
         const back = await documentState(page, document);
         await page.goForward();
-        await page.waitForURL((url) => url.searchParams.get("browserTab") === added[0]!.id);
+        await page.waitForURL((url) => url.searchParams.get("tab") === added[0]!.id);
         await page.locator(".browser-stage").waitFor();
         const forward = await documentState(page, document);
         const historyTabs = await mockTabs(page);
@@ -387,11 +376,9 @@ try {
         .getByRole("alert")
         .filter({ hasText: "Which computer" })
         .waitFor({ timeout: 5_000 });
-      const refusedAddress = await page
-        .locator(".browser-address .browser-address__display")
-        .getAttribute("aria-label");
+      const refusedAddress = await page.locator(".start-page__input").inputValue();
       const consumed = await page.evaluate(() => history.state.usr);
-      const chips = await page.getByRole("button", { name: /^Open on /u }).allTextContents();
+      const chips = await page.locator(".start-page__refusal button").allTextContents();
       const refusalCount = (await mockTabs(page)).length;
       const pendingUrl = page.url();
       await page.goBack();
@@ -399,18 +386,17 @@ try {
       await reply.waitFor();
       await page.goForward();
       await page.waitForURL(pendingUrl);
-      await page.getByRole("alert").filter({ hasText: "Which computer" }).waitFor();
+      await page.locator(".start-page__input").waitFor();
+      const forwardAddress = await page.locator(".start-page__input").inputValue();
       const historyTabs = await mockTabs(page);
       expectThat(
-        { beforeTabs, historyTabs },
-        JSON.stringify(historyTabs) === JSON.stringify(beforeTabs),
-        "Back/Forward retried the refused opening",
+        { beforeTabs, historyTabs, forwardAddress },
+        JSON.stringify(historyTabs) === JSON.stringify(beforeTabs) && forwardAddress === https,
+        "Back/Forward retried the refused opening, or lost its address",
       );
-      // A choice on the pending tab completes that same address.
-      await page
-        .getByRole("button", { name: /^Open on /u })
-        .first()
-        .click();
+      // Asking again explains again, and a computer chosen there completes that same address.
+      await page.locator(".start-page__input").press("Enter");
+      await page.locator(".start-page__refusal button").first().click();
       await page.locator(".browser-address input").waitFor();
       const chosenTabs = await mockTabs(page);
       expectThat(
@@ -455,10 +441,7 @@ try {
         "history or reload reran the refused arrival",
       );
       await page.locator(".start-page__input").press("Enter");
-      await page
-        .getByRole("button", { name: /^Open on /u })
-        .first()
-        .click();
+      await page.locator(".start-page__refusal button").first().click();
       await page.locator(".browser-address input").waitFor();
       const tabs = await mockTabs(page);
       expectThat(
@@ -570,19 +553,21 @@ async function clickWithoutOpening(page: Page, target: Locator): Promise<boolean
 
 async function mockTabs(page: Page) {
   return page.evaluate(() => {
-    const snapshot = (Reflect.get(window, "opensteerMock") as MockHostClient).getSnapshot();
-    return snapshot.browserSessions.flatMap((session) =>
-      snapshot.browserTabs!.sessionTabs(session.id).map((tab) => ({
-        id: tab.id,
-        sessionId: session.id,
-        profileId: session.profileId,
-        url:
-          (Reflect.get(window, "opensteerMock") as MockHostClient).browserViewerSurface(
-            session.id,
-            tab.id,
-          )?.url ?? tab.site,
-      })),
-    );
+    const client = Reflect.get(window, "opensteerMock") as MockHostClient;
+    return [...client.getSnapshot().tabs.rows.values()]
+      .filter((tab) => tab.kind === "page")
+      .map((tab) => {
+        const viewer = client.tabViewer(tab.tabId);
+        const sessionId = viewer?.kind === "page" ? (viewer.sessionId as string) : null;
+        return {
+          id: tab.tabId as string,
+          sessionId,
+          profileId: tab.profile?.profileId ?? null,
+          url:
+            (sessionId ? client.browserViewerSurface(sessionId, tab.tabId)?.url : undefined) ??
+            tab.url,
+        };
+      });
   });
 }
 

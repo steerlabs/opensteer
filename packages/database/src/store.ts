@@ -372,12 +372,6 @@ export class OpensteerStore {
   async leaveDevice(input: Parameters<typeof leaveDevice>[2]) {
     return leaveDevice(this.#database, this.#links, input);
   }
-  async openPhoneTab(runnerId: RunnerId): Promise<boolean> {
-    return runnerStore.openPhoneTab(this.#database, runnerId);
-  }
-  async closePhoneTab(runnerId: RunnerId): Promise<void> {
-    return runnerStore.closePhoneTab(this.#database, runnerId);
-  }
   async renameRunner(
     runnerId: RunnerId,
     ownerId: UserId,
@@ -710,8 +704,8 @@ export class OpensteerStore {
   async resolvePlaceActor(input: { readonly agentBindingId: string; readonly ownerId: UserId }) {
     return browserSessionStore.resolvePlaceActor(this.#database, input);
   }
-  recordRunPlace(input: Parameters<typeof browserSessionStore.recordRunPlace>[1]) {
-    return browserSessionStore.recordRunPlace(this.#database, input);
+  recordRunTabPlace(input: Parameters<typeof browserSessionStore.recordRunTabPlace>[1]) {
+    return browserSessionStore.recordRunTabPlace(this.#database, input);
   }
   latestRunPlace(runId: RunId) {
     return browserSessionStore.latestRunPlace(this.#database, runId);

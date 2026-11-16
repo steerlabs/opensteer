@@ -31,7 +31,6 @@ function machine(overrides: Partial<MachineSummary> = {}): MachineSummary {
     allowedModules: ["integrations", "shell"],
     apps: null,
     computerUse: null,
-    tabOpenedAt: null,
     detail: null,
     device: null,
     enrollmentId: "ren_fixture",

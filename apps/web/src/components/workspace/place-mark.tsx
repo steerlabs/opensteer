@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { type HostClient, type PlaceItem } from "@opensteer/client/host";
-import { useBrowserTabIcon } from "@opensteer/client/react";
+import { useTabIcon } from "@opensteer/client/react";
 import { AppMark } from "../computer-apps/computer-use-section.js";
 import { Icon } from "../icon.js";
 import { SiteMark } from "../site-mark.js";
@@ -27,7 +27,10 @@ export const PlaceMark = memo(function PlaceMark({
   if (icon.kind === "app") {
     return (
       <span aria-hidden className="place-mark">
-        <AppMark identity={icon.app} machineId={icon.machineId} />
+        <AppMark
+          identity={{ bundleId: icon.bundleId, displayName: icon.name, teamId: null }}
+          machineId={icon.machineId}
+        />
       </span>
     );
   }
@@ -40,7 +43,7 @@ export const PlaceMark = memo(function PlaceMark({
   }
   return (
     <span aria-hidden className="place-mark">
-      <SiteIcon hostClient={hostClient} iconRef={icon.ref} sessionId={icon.sessionId} />
+      <SiteIcon hostClient={hostClient} iconRef={icon.ref} tabId={icon.tabId ?? null} />
     </span>
   );
 });
@@ -48,11 +51,11 @@ export const PlaceMark = memo(function PlaceMark({
 function SiteIcon({
   hostClient,
   iconRef,
-  sessionId,
+  tabId,
 }: {
   readonly hostClient: HostClient;
   readonly iconRef: string | null;
-  readonly sessionId: string;
+  readonly tabId: string | null;
 }) {
-  return <SiteMark favicon={useBrowserTabIcon(hostClient, sessionId, iconRef)} />;
+  return <SiteMark favicon={useTabIcon(hostClient, tabId, iconRef)} />;
 }

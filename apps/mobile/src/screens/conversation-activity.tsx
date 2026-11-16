@@ -7,7 +7,7 @@ import {
   visibleTranscript,
   withoutOwnAssignment,
   type HostClient,
-  type SurfaceDestination,
+  type TabDestination,
 } from "@opensteer/client/host";
 import { useHostSnapshot, useThreadInputQueue } from "@opensteer/client/react";
 import {
@@ -18,7 +18,7 @@ import {
 } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
-import { surfaceRoute } from "../browser/surface-route.js";
+import { useOpenPlace } from "../tabs/viewer-open.js";
 import { color, space } from "../theme.js";
 import { TranscriptHostClientContext } from "../thread/attachment-views.js";
 import {
@@ -182,18 +182,15 @@ function ReplyActivity(props: {
     [deploymentId, focused, hostClient, navigation, threadId],
   );
   const memory = useRef(new Map<string, boolean>()).current;
+  const leave = useCallback(() => navigation.goBack(), [navigation]);
+  const openPlace = useOpenPlace(deploymentId, threadId, leave);
   const surfaces = useMemo<TranscriptSurfaces>(
     () => ({
       hostClient,
       threadId,
-      open: (destination: SurfaceDestination) => {
-        navigation.goBack();
-        navigation.dispatch(
-          StackActions.push("WorkspaceBrowser", surfaceRoute(deploymentId, threadId, destination)),
-        );
-      },
+      open: (destination: TabDestination) => openPlace(destination),
     }),
-    [deploymentId, hostClient, navigation, threadId],
+    [hostClient, openPlace, threadId],
   );
 
   if (activity === null && run !== null) {

@@ -1,5 +1,3 @@
-import { browserLineages } from "@opensteer/client/test-support";
-import { browserSnapshotFromRows } from "@opensteer/client/test-support";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -20,7 +18,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { app, nativeImage, webContents, type BrowserWindow, type WebContents } from "electron";
 import {
   HostBootstrapSchema,
-  BrowserTabOpenResultSchema,
+  TabOpenResultSchema,
   LocalProfileBindingSchema,
   BrowserSessionIdSchema,
 } from "@opensteer/protocol";
@@ -31,7 +29,6 @@ const State = z.object({
   p1: z.string(),
   pop: z.string(),
   f1: z.string(),
-  oldSessions: z.array(z.string()),
   rows: z.array(z.object({ id: z.string(), title: z.string(), order: z.number() })),
   icons: z.array(z.object({ id: z.string(), ref: z.string() })),
   tabGroup: z.object({ id: z.string(), title: z.string(), color: z.literal("purple") }).nullable(),
@@ -76,17 +73,26 @@ export async function runTabRestoreTrial(input: {
   let state = existsSync(statePath)
     ? State.parse(JSON.parse(readFileSync(statePath, "utf8")))
     : null;
-  const parseBootstrap = (input: unknown) => {
-    const value = HostBootstrapSchema.parse(input);
-    return { ...value, browserView: browserSnapshotFromRows(value.browser) };
-  };
-  const bootstrap = async () => parseBootstrap(await rpc("bootstrap.get"));
+  const bootstrap = async () => HostBootstrapSchema.parse(await rpc("bootstrap.get"));
   const rows = (value: Awaited<ReturnType<typeof bootstrap>>) =>
-    browserLineages(value.browserView)?.flatMap((group) => group.tabs ?? []) ?? [];
+    value.tabs.layout.items
+      .flatMap((item) => (item.kind === "tab" ? [item.tabId] : item.group.tabIds))
+      .flatMap((id, order) => {
+        const tab = value.tabs.tabs.find((tab) => tab.tabId === id);
+        return tab?.kind === "page" ? [{ ...tab, id: tab.tabId, order }] : [];
+      });
   const targets = (value: Awaited<ReturnType<typeof bootstrap>>) =>
-    value.browserView.browserSessions
-      .filter((session) => session.state === "ready")
-      .flatMap((session) => session.browserTabs?.sessionTabs(session?.id) ?? []);
+    rows(value).filter((tab) => tab.state === "open");
+  const groups = (value: Awaited<ReturnType<typeof bootstrap>>) =>
+    value.tabs.layout.items.flatMap((item) =>
+      item.kind === "group"
+        ? [{ ...item.group, id: item.group.groupId, title: item.group.name }]
+        : [],
+    );
+  const openPage = async (target: object) =>
+    TabOpenResultSchema.parse(
+      await rpc("commands.dispatch", { type: "tab.open", target, idempotencyKey: randomUUID() }),
+    ).tab;
   const page = (pathname: string) =>
     webContents
       .getAllWebContents()
@@ -229,14 +235,14 @@ export async function runTabRestoreTrial(input: {
   };
   const activate = (id: string) =>
     rpc("commands.dispatch", {
-      type: "workspace.tab.activate",
+      type: "tab.activate",
       tabId: id,
       idempotencyKey: `restore:${id}`,
     });
   const close = (id: string) =>
     rpc("commands.dispatch", {
-      type: "workspace.tab.close",
-      tabId: id,
+      type: "tab.close",
+      tabIds: [id],
       idempotencyKey: `close:${id}`,
     });
   const screenshot = async (phase = "final", sidebarOnly = false) => {
@@ -267,7 +273,7 @@ export async function runTabRestoreTrial(input: {
       );
       const icon = z.object({ favicon: z.string() }).parse(
         await rpc("browser.tabIcon.get", {
-          sessionId: tab.sessionId,
+          tabId: tab.tabId,
           iconRef: expected.ref,
         }),
       );
@@ -400,10 +406,9 @@ export async function runTabRestoreTrial(input: {
     const ids = memberIds().sort();
     await wait(async () => {
       const value = await bootstrap();
-      const group = value.browser.tabGroups?.groups.find((group) => group.id === expected.id);
+      const group = groups(value).find((group) => group.id === expected.id);
       const observed = await groupDom();
       return (
-        value.browser.tabGroupsVersion === 1 &&
         group?.title === expected.title &&
         group.color === expected.color &&
         group.collapsed === collapsed &&
@@ -417,8 +422,7 @@ export async function runTabRestoreTrial(input: {
       );
     }, phase);
     const value = await record(phase);
-    const group = value.browser.tabGroups?.groups.find((group) => group.id === expected.id);
-    assert.equal(value.browser.tabGroupsVersion, 1);
+    const group = groups(value).find((group) => group.id === expected.id);
     assert(group);
     assert.deepEqual(
       {
@@ -556,8 +560,10 @@ export async function runTabRestoreTrial(input: {
     const savedOrder = async () => {
       const value = await bootstrap();
       return {
-        order: value.browser.tabGroups?.order?.filter((id) => ours.includes(id)),
-        groups: value.browser.tabGroups?.groups,
+        order: rows(value)
+          .map((row) => row.id)
+          .filter((id) => ours.includes(id)),
+        groups: groups(value),
       };
     };
     try {
@@ -609,13 +615,13 @@ export async function runTabRestoreTrial(input: {
     await wait(
       async () =>
         Boolean(
-          (await bootstrap()).browser.tabGroups?.groups.some(
+          groups(await bootstrap()).some(
             (group) => group.title === title && group.tabIds.some((id) => id === state!.p1),
           ),
         ),
       "group title saved by Enter",
     );
-    const created = (await bootstrap()).browser.tabGroups!.groups.find(
+    const created = groups(await bootstrap()).find(
       (group) => group.title === title && group.tabIds.some((id) => id === state!.p1),
     )!;
     state.tabGroup = { id: created.id, title, color: "purple" };
@@ -623,18 +629,16 @@ export async function runTabRestoreTrial(input: {
     await menuItem(title);
     await wait(
       async () =>
-        (await bootstrap()).browser.tabGroups?.groups.find(
-          (group) => group.id === state!.tabGroup!.id,
-        )?.tabIds.length === 2,
+        groups(await bootstrap()).find((group) => group.id === state!.tabGroup!.id)?.tabIds
+          .length === 2,
       "second tab joined through its menu",
     );
     await editGroup();
     await click('[role="dialog"][aria-label="Edit tab group"] button[aria-label="purple"]');
     await wait(
       async () =>
-        (await bootstrap()).browser.tabGroups?.groups.find(
-          (group) => group.id === state!.tabGroup!.id,
-        )?.color === "purple",
+        groups(await bootstrap()).find((group) => group.id === state!.tabGroup!.id)?.color ===
+        "purple",
       "group recoloured through editor",
     );
     key("Escape");
@@ -671,7 +675,7 @@ export async function runTabRestoreTrial(input: {
     "workspace sidebar",
   );
 
-  const initial = parseBootstrap(
+  const initial = HostBootstrapSchema.parse(
     z
       .object({ ok: z.literal(true), data: z.unknown() })
       .parse(JSON.parse(readFileSync(path.join(root, `${trial}.before-window.json`), "utf8"))).data,
@@ -701,33 +705,20 @@ export async function runTabRestoreTrial(input: {
         input: { name: "Tab restoration" },
       }),
     );
-    const p1 = BrowserTabOpenResultSchema.parse(
-      await rpc("commands.dispatch", {
-        type: "browser.tab.open",
-        identity: { kind: "profile", profileId: created.profile.id },
-        url: `${fixture}/p1`,
-        idempotencyKey: randomUUID(),
-      }),
-    );
-    const p2 = BrowserTabOpenResultSchema.parse(
-      await rpc("commands.dispatch", {
-        type: "browser.tab.open",
-        sessionId: p1.sessionId,
-        url: `${fixture}/p2`,
-        idempotencyKey: randomUUID(),
-      }),
-    );
-    const f1 = BrowserTabOpenResultSchema.parse(
-      await rpc("commands.dispatch", {
-        type: "browser.tab.open",
-        identity: { kind: "guest" },
-        url: `${fixture}/f1`,
-        idempotencyKey: randomUUID(),
-      }),
-    );
-    assert.notEqual(p1.sessionId, f1.sessionId);
-    assert.equal(p1.session.profileId, created.profile.id);
-    assert.equal(f1.session.profileId, null);
+    const p1 = await openPage({
+      kind: "page",
+      profileId: created.profile.id,
+      url: `${fixture}/p1`,
+    });
+    const p2 = await openPage({
+      kind: "page",
+      profileId: created.profile.id,
+      url: `${fixture}/p2`,
+    });
+    const f1 = await openPage({ kind: "page", guest: true, url: `${fixture}/f1` });
+    assert.notEqual(p1.tabId, f1.tabId);
+    assert.equal(p1.profile?.profileId ?? null, created.profile.id);
+    assert.equal(f1.profile?.profileId ?? null, null);
     await wait(() => Boolean(page("/p1") && page("/f1")), "fixture pages");
     await click("#popup", page("/p1")!);
     await wait(
@@ -750,16 +741,14 @@ export async function runTabRestoreTrial(input: {
       p1: p1.tabId,
       pop: popup.id,
       f1: f1.tabId,
-      oldSessions: [p1.sessionId, f1.sessionId],
       rows: rows(value).map(({ id, title, order }) => ({ id, title, order })),
       icons: rows(value).map((row) => ({ id: row.id, ref: z.string().parse(row.iconRef) })),
       tabGroup: null,
     };
-    const group = browserLineages(value.browserView)!.find((group) =>
-      group.tabs?.some((tab) => tab.id === p1.tabId),
-    )!;
     assert.deepEqual(
-      group.tabs!.map((row) => row.id),
+      rows(value)
+        .filter((row) => row.profile?.profileId === p1.profile?.profileId)
+        .map((row) => row.id),
       [p1.tabId, popup.id],
     );
     save();
@@ -855,7 +844,7 @@ export async function runTabRestoreTrial(input: {
         await checkGroup("tab-groups-restored-collapsed", true);
         for (const id of memberIds()) {
           assert(!liveIds(value).includes(id), "Group membership must not reopen sleeping tabs");
-          assert.equal(rows(value).find((tab) => tab.id === id)?.state, "suspended");
+          assert.equal(rows(value).find((tab) => tab.id === id)?.state, "asleep");
         }
       });
       await groupPhase("groups-expand-without-opening-pages", async () => {
@@ -866,12 +855,7 @@ export async function runTabRestoreTrial(input: {
         await click(groupHeader());
         await checkGroup("tab-groups-before-member-selection", true);
       });
-      for (const id of state.oldSessions)
-        assert(
-          !value.browser.groups.rows.some(
-            (group) => group.sessionId === id && group.state === "ready",
-          ),
-        );
+
       await screenshot("reopened");
       await newTab();
       await close(state.pop);
@@ -881,7 +865,10 @@ export async function runTabRestoreTrial(input: {
       );
       const opened = await Promise.all([activate(state.p1), activate(state.p1)]);
       const bindings = opened.map(
-        (result) => z.object({ session: z.object({ id: z.string() }) }).parse(result).session.id,
+        (result) =>
+          z
+            .object({ viewer: z.object({ kind: z.literal("page"), sessionId: z.string() }) })
+            .parse(result).viewer.sessionId,
       );
       assert.equal(bindings[0], bindings[1]);
       await wait(() => Boolean(page("/p1")), "saved profile reopening");
@@ -912,21 +899,14 @@ export async function runTabRestoreTrial(input: {
       await groupPhase("groups-survive-second-launch", async () => {
         await checkGroup("tab-groups-before-crash", true);
         for (const id of memberIds())
-          assert.equal(rows(empty).find((tab) => tab.id === id)?.state, "suspended");
+          assert.equal(rows(empty).find((tab) => tab.id === id)?.state, "asleep");
       });
       await Promise.allSettled([activate(state.f1), close(state.f1)]);
       await wait(
         async () => !rows(await bootstrap()).some((row) => row.id === state!.f1) && !page("/f1"),
         "close wins activation",
       );
-      const f1 = BrowserTabOpenResultSchema.parse(
-        await rpc("commands.dispatch", {
-          type: "browser.tab.open",
-          identity: { kind: "guest" },
-          url: `${fixture}/f1b`,
-          idempotencyKey: randomUUID(),
-        }),
-      );
+      const f1 = await openPage({ kind: "page", guest: true, url: `${fixture}/f1b` });
       state.f1 = f1.tabId;
       await wait(
         async () =>
@@ -977,7 +957,7 @@ export async function runTabRestoreTrial(input: {
       await groupPhase("groups-survive-crash", async () => {
         await checkGroup("tab-groups-crash-restored-collapsed", true);
         assert.deepEqual(liveIds(value), [state!.f1]);
-        assert.equal(rows(value).find((tab) => tab.id === state!.p1)?.state, "suspended");
+        assert.equal(rows(value).find((tab) => tab.id === state!.p1)?.state, "asleep");
         assert.equal(
           (await groupDom()).active,
           true,
@@ -992,14 +972,7 @@ export async function runTabRestoreTrial(input: {
         await page("/p1")!.executeJavaScript("localStorage.getItem('restore-proof')"),
         "saved",
       );
-      const control = BrowserTabOpenResultSchema.parse(
-        await rpc("commands.dispatch", {
-          type: "browser.tab.open",
-          identity: { kind: "profile", profileId: state.profileId },
-          url: `${fixture}/control`,
-          idempotencyKey: randomUUID(),
-        }),
-      );
+      const control = await openPage({ kind: "page", guest: true, url: `${fixture}/control` });
       await wait(
         async () =>
           rows(await bootstrap()).some(
@@ -1015,7 +988,7 @@ export async function runTabRestoreTrial(input: {
         await menuItem("Ungroup");
         await wait(
           async () =>
-            !(await bootstrap()).browser.tabGroups?.groups.some((group) => group.id === groupId) &&
+            !groups(await bootstrap()).some((group) => group.id === groupId) &&
             !(await has(`[data-tab-group-id="${groupId}"]`)),
           "group removed without closing tabs",
         );
@@ -1045,7 +1018,7 @@ export async function runTabRestoreTrial(input: {
           const value = await bootstrap();
           return (
             memberIds().every((id) => !rows(value).some((tab) => tab.id === id)) &&
-            !value.browser.tabGroups?.groups.some((group) => group.id === groupId) &&
+            !groups(value).some((group) => group.id === groupId) &&
             !(await has(`[data-tab-group-id="${groupId}"]`))
           );
         }, "Close group removed exactly its tabs and header");

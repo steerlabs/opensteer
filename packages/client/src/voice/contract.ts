@@ -1,6 +1,6 @@
 import type { VoiceView } from "@opensteer/protocol/voice";
 import type { ActivityIcon, PasswordsSetupOffer } from "../host/agent-activity-model.js";
-import type { PersonalSurfaceDestination } from "../host/surfaces.js";
+import type { TabDestination } from "../host/surfaces.js";
 
 /**
  * A voice call is the person's microphone and speaker for their Voice Thread,
@@ -93,10 +93,10 @@ export class VoiceStartError extends Error {
   }
 }
 
-/** Where an agent's `show_to_person` takes the person. The app maps it to its own navigation. */
+/** Where an agent's `person_show` takes the person. The app maps it to its own navigation. */
 export type VoiceTarget =
   | { readonly kind: "thread"; readonly threadId: string }
-  | { readonly kind: "place"; readonly destination: PersonalSurfaceDestination };
+  | { readonly kind: "place"; readonly destination: TabDestination };
 
 export type VoicePhase =
   | "idle"

@@ -429,6 +429,7 @@ export class RunnerModuleConnection {
 
 function modulePrimaryMessageFence(message: PostAuthenticationHostMessage): RunnerConnectionFence {
   switch (message.type) {
+    case "host.apps.sync":
     case "host.app.start":
     case "host.app.connect":
     case "host.app.stop":

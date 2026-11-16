@@ -41,6 +41,7 @@ import {
   RunnerToHostMessageSchema,
   type RunnerCommand,
   type RunnerConnectionFence,
+  type RunnerAppResult,
   type RunnerOperationalReport,
   type RunnerToHostMessage,
 } from "@opensteer/protocol";
@@ -132,7 +133,7 @@ describe("AgentsWorkSession", () => {
       const execution = Promise.withResolvers<void>();
       const steering = Promise.withResolvers<void>();
       const calls: string[] = [];
-      const messages: RunnerOperationalReport[] = [];
+      const messages: Parameters<CausallyOrderedRunnerSink["send"]>[0][] = [];
       const sink = new CausallyOrderedRunnerSink({
         send: async (message) => void messages.push(message),
       });
@@ -140,6 +141,7 @@ describe("AgentsWorkSession", () => {
         observeAgentHomeSkills: () => undefined,
         observeAgentHomeSettings: async () => undefined,
         subscribeHarnessPreparation: () => () => undefined,
+        appServers: { observe: () => () => undefined },
         handleCommand: async (command: RunnerCommand) => {
           calls.push(command.type);
           if (command.type === "run.execute") await execution.promise;
@@ -236,7 +238,7 @@ describe("CausallyOrderedRunnerSink", () => {
       runId: createId("run"),
       threadId: createId("thread"),
     };
-    const messages: RunnerOperationalReport[] = [];
+    const messages: Parameters<CausallyOrderedRunnerSink["send"]>[0][] = [];
     const sink = new CausallyOrderedRunnerSink({
       send: async (message) => void messages.push(message),
     });
@@ -262,7 +264,7 @@ describe("CausallyOrderedRunnerSink", () => {
     }
   });
   it("reports an uncertain steer without converting it to a refusal", async () => {
-    const messages: RunnerOperationalReport[] = [];
+    const messages: Parameters<CausallyOrderedRunnerSink["send"]>[0][] = [];
     const sink = new CausallyOrderedRunnerSink({
       send: async (message) => void messages.push(message),
     });
@@ -293,7 +295,7 @@ describe("CausallyOrderedRunnerSink", () => {
       const runId = createId("run");
       const threadId = createId("thread");
       const environmentId = createId("environment");
-      const messages: RunnerOperationalReport[] = [];
+      const messages: Parameters<CausallyOrderedRunnerSink["send"]>[0][] = [];
       const sink = new CausallyOrderedRunnerSink({
         send: async (message) => void messages.push(message),
       });
@@ -338,9 +340,10 @@ describe("WebSocketMessageSink", () => {
         environmentId: createId("environment"),
       },
 
+      generation: 1,
       requestId: randomUUID(),
       type: "runner.app.result",
-    } satisfies RunnerOperationalReport;
+    } satisfies RunnerAppResult;
     const receive = () =>
       withTimeout(
         new Promise<unknown>((resolve) =>

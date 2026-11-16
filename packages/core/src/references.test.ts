@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createId, idSchema } from "./ids.js";
+import { createId, idSchema, TabIdSchema } from "./ids.js";
 import {
   formatReferenceLink,
   parseReferenceHref,
   referenceHref,
+  tabReferenceHref,
   ReferenceIdSchema,
   ReferenceSchema,
 } from "./references.js";
@@ -62,3 +63,21 @@ describe("personal references", () => {
     expect(formatReferenceLink(id, " \n ")).toBe("[task](" + referenceHref(id) + ")");
   });
 });
+
+it("parses explicit opaque tab links without swallowing bare domain IDs", () => {
+  const id = TabIdSchema.parse("a/b ?#🦊");
+  expect(parseReferenceHref(tabReferenceHref(id))).toEqual({ kind: "tab", id });
+  expect(ReferenceIdSchema.parse(id)).toBe(id);
+  expect(parseReferenceHref("opensteer:tab/%E0%A4%A")).toBeNull();
+  expect(parseReferenceHref("opensteer:tab/")).toBeNull();
+});
+
+it.each(["surface_abc", "bsf_ABC", "opaque-page-id"])(
+  "accepts page reference %s without changing its case",
+  (value) => {
+    const id = TabIdSchema.parse(value);
+    expect(ReferenceIdSchema.parse(id)).toBe(id);
+    expect(formatReferenceLink(id, "Page")).toBe(`[Page](${referenceHref(id)})`);
+    expect(parseReferenceHref(referenceHref(id))).toEqual({ kind: "tab", id });
+  },
+);

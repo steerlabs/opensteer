@@ -1,3 +1,4 @@
+import { CdpProductIsolation } from "./cdp-product-isolation.js";
 import { utf8Size } from "./bytes.js";
 
 export interface SessionCdpRouterPorts {
@@ -5,18 +6,9 @@ export interface SessionCdpRouterPorts {
   readonly isNormalizedAbsolutePath: (path: string) => boolean;
   readonly containsFile: (root: string, path: string) => boolean;
 }
-import {
-  agentObservationMethods,
-  agentPageCommandRefusal,
-  browserInternalsRefusal,
-  isAgentPageEvent,
-} from "./agent-cdp-policy.js";
+import { agentObservationMethods } from "./cdp-activity.js";
+export { agentObservationMethods } from "./cdp-activity.js";
 import { browserFrameFits, browserFrameLimits } from "./browser-frame-limits.js";
-import {
-  ExecutionContextInventory,
-  foreignObjectHandle,
-  type ExecutionContextEntry,
-} from "./execution-contexts.js";
 
 export type CdpParameters = Readonly<Record<string, unknown>>;
 
@@ -42,12 +34,15 @@ export interface CdpChannel {
 }
 
 export interface BrowserCdpBackend {
+  readonly protectProductWorlds?: boolean;
   /**
    * Opens a page channel that behaves as a fresh CDP session: its
    * `Runtime.enable` reports every live execution context before it resolves,
    * whatever other channels on the target have enabled.
    */
   attach(targetId: string): Promise<CdpChannel>;
+  assertScope?(method: string, parameters: CdpParameters): void;
+  scopeParameters?(method: string, parameters: CdpParameters): Promise<CdpParameters>;
   onEvent(listener: (method: string, parameters: CdpParameters) => void): () => void;
   send(method: string, parameters?: CdpParameters): Promise<unknown>;
 }
@@ -70,17 +65,11 @@ export class SessionCdpRouterError extends Error {
 
 interface AttachedChannel {
   readonly channel: CdpChannel;
-  /** Kept from the router's own Runtime subscription, never the agent's. */
-  readonly contexts: ExecutionContextInventory;
   /** Rejects once the router ends the session, answering every command still waiting on it. */
   readonly ending: PromiseWithResolvers<never>;
   readonly ended: AbortController;
-  /** Settles once the router's own Runtime.enable has reported every context. */
-  inventoried: Promise<void>;
   readonly physicalTargetId: string;
   removeListener: () => void;
-  /** Whether the agent asked for Runtime events on this session. */
-  runtimeEnabled: boolean;
   pageEnabled: boolean;
   readonly virtualSessionId: string;
 }
@@ -106,7 +95,6 @@ const defaultLimits: SessionCdpRouterLimits = {
   maxResultBytes: 432 * 1_024,
 };
 
-const allowedBrowserMethods = new Set(["Browser.getVersion"]);
 const maximumSessionFilesPerCommand = 64;
 const maximumUnclaimedPages = 256;
 
@@ -141,13 +129,11 @@ const windowsEditingCodes = new Map([
 /**
  * A small CDP namespace boundary. It preserves CDP commands and events while
  * replacing physical target/session identifiers with controller-local ones.
- * Site behavior belongs in skills; process, cross-session, native-focus, and
- * page-level agent ([policy](./agent-cdp-policy.ts)) boundaries belong here.
+ * Target and attachment ownership stay here; page CDP domains are unrestricted.
  */
 export class SessionCdpRouter {
   readonly #ports: SessionCdpRouterPorts;
   readonly #backend: BrowserCdpBackend;
-  readonly #machineClipboardShared: boolean;
   readonly #limits: SessionCdpRouterLimits;
   readonly #ownerByTargetId = new Map<string, string>();
   readonly #removeBackendListener: () => void;
@@ -164,10 +150,9 @@ export class SessionCdpRouter {
     backend: BrowserCdpBackend,
     ports: SessionCdpRouterPorts,
     limits: Partial<SessionCdpRouterLimits> = {},
-    machineClipboardShared = true,
+    _machineClipboardShared = true,
   ) {
     this.#ports = ports;
-    this.#machineClipboardShared = machineClipboardShared;
     this.#backend = backend;
     this.#limits = validateLimits({ ...defaultLimits, ...limits });
     this.#removeBackendListener = backend.onEvent((method, parameters) => {
@@ -282,11 +267,14 @@ export class SessionCdpRouter {
   /** The page an agent's attached CDP session drives, or null when it is not attached here. */
   attachedTargetId(sessionId: string, cdpSessionId: string): string | null {
     const state = this.#sessions.get(sessionId);
-    return (
-      state?.channels.get(cdpSessionId)?.physicalTargetId ??
-      state?.retiredTargets.get(cdpSessionId) ??
-      null
-    );
+    let attached = state?.channels.get(cdpSessionId);
+    while (attached?.channel instanceof ChildCdpChannel) {
+      const parent: CdpChannel = attached.channel.parent;
+      attached = [...(state?.channels.values() ?? [])].find(
+        (candidate) => candidate.channel === parent,
+      );
+    }
+    return attached?.physicalTargetId ?? state?.retiredTargets.get(cdpSessionId) ?? null;
   }
 
   /** Retains the actual Input handler for cleanup after an admitted agent press. */
@@ -346,18 +334,51 @@ export class SessionCdpRouter {
     this.#assertOpen();
     const state = this.#requireSession(sessionId);
     validateCommand(command, this.#limits.maxCommandBytes);
+    this.#assertScope(state, command.parameters ?? {});
+    this.#backend.assertScope?.(command.method, command.parameters ?? {});
     if (
-      !command.sessionId &&
-      !command.method.startsWith("Target.") &&
-      !allowedBrowserMethods.has(command.method)
-    ) {
-      throw new SessionCdpRouterError("forbidden", browserInternalsRefusal(command.method));
+      [
+        "Browser.close",
+        "Browser.crash",
+        "Browser.crashGpuProcess",
+        "Target.attachToBrowserTarget",
+        "Target.exposeDevToolsProtocol",
+        "Browser.setDockTile",
+        "Target.createBrowserContext",
+        "Target.disposeBrowserContext",
+        "Target.setRemoteLocations",
+        "Browser.executeBrowserCommand",
+      ].includes(command.method)
+    )
+      throw new SessionCdpRouterError(
+        "forbidden",
+        `${command.method} would reach the shared browser engine or runtime control channel.`,
+      );
+    if (this.#backend.scopeParameters && command.sessionId) {
+      command = {
+        ...command,
+        parameters: await this.#backend.scopeParameters(command.method, command.parameters ?? {}),
+      };
+      if (this.#requireSession(sessionId) !== state)
+        throw new SessionCdpRouterError("not_found", "Browser Session ended during routing.");
     }
-    const result = command.method.startsWith("Target.")
+    const targetRouting = [
+      "Target.attachToTarget",
+      "Target.getTargets",
+      "Target.getTargetInfo",
+      "Target.getBrowserContexts",
+      "Target.createTarget",
+      "Target.closeTarget",
+      "Target.activateTarget",
+      "Target.setDiscoverTargets",
+    ].includes(command.method);
+    const result = targetRouting
       ? await this.#sendTargetCommand(state, command)
       : command.sessionId
         ? await this.#sendAttachedCommand(state, command, beforeActivity)
-        : await this.#backend.send(command.method, command.parameters);
+        : command.method.startsWith("Target.")
+          ? await this.#sendTargetCommand(state, command)
+          : await this.#backend.send(command.method, command.parameters);
     this.admitPageResult(result);
     return result;
   }
@@ -376,6 +397,28 @@ export class SessionCdpRouter {
             return targetId !== null && this.#ownerByTargetId.get(targetId) === state.sessionId;
           }),
         };
+      }
+      case "Target.sendMessageToTarget": {
+        const virtualSessionId = requiredString(parameters, "sessionId");
+        const attached = state.channels.get(virtualSessionId);
+        if (!attached)
+          throw new SessionCdpRouterError("not_found", "CDP session is not attached here.");
+        let nested: Record<string, unknown>;
+        try {
+          nested = asRecord(JSON.parse(String(parameters.message)));
+        } catch {
+          throw new SessionCdpRouterError("bad_command", "Invalid nested CDP message.");
+        }
+        const result = await this.send(state.sessionId, {
+          method: requiredString(nested, "method"),
+          parameters: asRecord(nested.params),
+          sessionId: virtualSessionId,
+        });
+        this.#appendEvent(state, "Target.receivedMessageFromTarget", {
+          sessionId: virtualSessionId,
+          message: JSON.stringify({ id: nested.id, result }),
+        });
+        return {};
       }
       case "Target.getBrowserContexts":
         return this.#backend.send(command.method, parameters);
@@ -400,8 +443,16 @@ export class SessionCdpRouter {
         this.#claimTarget(state, targetId);
         return response;
       }
-      case "Target.attachToTarget":
-        return this.#attachTarget(state, requiredTargetId(parameters));
+      case "Target.attachToTarget": {
+        const targetId = requiredTargetId(parameters);
+        const existing = [...state.channels.values()].find(
+          (channel) =>
+            channel.physicalTargetId === targetId && channel.channel instanceof ChildCdpChannel,
+        );
+        return existing
+          ? { sessionId: existing.virtualSessionId }
+          : this.#attachTarget(state, targetId);
+      }
       case "Target.detachFromTarget": {
         const virtualSessionId = requiredString(parameters, "sessionId");
         const attached = state.channels.get(virtualSessionId);
@@ -430,6 +481,8 @@ export class SessionCdpRouter {
         return response;
       }
       default:
+        if (typeof parameters.targetId === "string")
+          return this.#backend.send(command.method, parameters);
         throw new SessionCdpRouterError(
           "forbidden",
           `${command.method} cannot be safely scoped to one Browser Session.`,
@@ -437,14 +490,7 @@ export class SessionCdpRouter {
     }
   }
 
-  /**
-   * The router enables Runtime on every page session itself and keeps that
-   * session's execution contexts, so it knows each frame's main world before
-   * anything the agent sends reaches the page, whether or not the agent ever
-   * enables Runtime. The session is the agent's once its channel opens, as an
-   * attach is in Chromium: a page under a JavaScript dialog reports no context
-   * until the dialog closes, and the agent needs the session to answer it.
-   */
+  /** Each attachment owns its page channel and all child channels opened through it. */
   async #attachTarget(state: SessionState, targetId: string): Promise<{ sessionId: string }> {
     this.#assertOwnedTarget(state, targetId);
     const channel = await this.#backend.attach(targetId);
@@ -457,13 +503,10 @@ export class SessionCdpRouter {
     }
     const attached: AttachedChannel = {
       channel,
-      contexts: new ExecutionContextInventory(),
       ending: Promise.withResolvers<never>(),
       ended: new AbortController(),
-      inventoried: Promise.resolve(),
       physicalTargetId: targetId,
       removeListener: () => undefined,
-      runtimeEnabled: false,
       pageEnabled: false,
       virtualSessionId: `cdp_${this.#ports.uuid()}`,
     };
@@ -472,16 +515,6 @@ export class SessionCdpRouter {
       this.#handlePageEvent(state, attached, method, parameters);
     });
     state.channels.set(attached.virtualSessionId, attached);
-    attached.inventoried = channel.send("Runtime.enable").then(
-      () => undefined,
-      (error: unknown) => {
-        if (state.channels.get(attached.virtualSessionId) === attached) {
-          this.#endChannel(state, attached);
-        }
-        throw error;
-      },
-    );
-    attached.inventoried.catch(() => undefined);
     return { sessionId: attached.virtualSessionId };
   }
 
@@ -496,10 +529,64 @@ export class SessionCdpRouter {
       (method === "Page.javascriptDialogOpening" || method === "Page.javascriptDialogClosed")
     )
       return;
-    const reported = attached.contexts.observe(method, parameters);
-    if (method.startsWith("Runtime.") && !attached.runtimeEnabled) return;
-    if (!isAgentPageEvent(method)) return;
-    if (!admitsAgentEvent(attached.contexts, method, parameters, reported)) return;
+    if (method === "Target.attachedToTarget") {
+      const info = asRecord(parameters.targetInfo);
+      const targetId = readString(info, "targetId");
+      const physicalSessionId = readString(parameters, "sessionId");
+      if (
+        !targetId ||
+        !physicalSessionId ||
+        !["iframe", "worker", "shared_worker", "service_worker"].includes(String(info.type))
+      )
+        return;
+      const owner = this.#ownerByTargetId.get(targetId);
+      if (owner && owner !== state.sessionId) return;
+      this.#claimTarget(state, targetId);
+      const channel = new ChildCdpChannel(
+        attached.channel,
+        physicalSessionId,
+        this.#backend.protectProductWorlds === true,
+      );
+      const child: AttachedChannel = {
+        channel,
+        ending: Promise.withResolvers<never>(),
+        ended: new AbortController(),
+        physicalTargetId: targetId,
+        virtualSessionId: `cdp_${this.#ports.uuid()}`,
+        pageEnabled: false,
+        removeListener: () => undefined,
+      };
+      child.ending.promise.catch(() => undefined);
+      child.removeListener = channel.onEvent((method, params) =>
+        this.#handlePageEvent(state, child, method, params),
+      );
+      state.channels.set(child.virtualSessionId, child);
+      this.#appendEvent(
+        state,
+        method,
+        { ...parameters, sessionId: child.virtualSessionId },
+        attached.virtualSessionId,
+      );
+      return;
+    }
+    if (method === "Target.receivedMessageFromTarget") return;
+    if (method === "Target.detachedFromTarget") {
+      const child = [...state.channels.values()].find(
+        (candidate) =>
+          candidate.channel instanceof ChildCdpChannel &&
+          candidate.channel.parent === attached.channel &&
+          candidate.channel.id === parameters.sessionId,
+      );
+      if (!child) return;
+      this.#appendEvent(
+        state,
+        method,
+        { ...parameters, sessionId: child.virtualSessionId },
+        attached.virtualSessionId,
+      );
+      this.#endChannel(state, child);
+      return;
+    }
     if (!state.channels.has(attached.virtualSessionId)) return;
     this.#appendEvent(state, method, parameters, attached.virtualSessionId);
   }
@@ -510,10 +597,6 @@ export class SessionCdpRouter {
       throw new SessionCdpRouterError("not_found", "CDP session is not attached here.");
     }
     const parameters = command.parameters ?? {};
-    const refusal =
-      agentPageCommandRefusal(command.method, parameters, this.#machineClipboardShared) ??
-      objectHandleRefusal(command.method, parameters, attached.contexts);
-    if (refusal) throw new SessionCdpRouterError("forbidden", refusal);
     if (command.method === "Page.navigate") {
       assertSafeNavigationUrl(parameters.url, false);
     }
@@ -540,37 +623,53 @@ export class SessionCdpRouter {
     command: CdpCommand,
     beforeActivity?: (targetId: string) => void,
   ): Promise<unknown> {
-    const opened = state.channels.get(command.sessionId ?? "");
-    // A dialog's answer is what lets a page under it report its contexts.
-    if (opened && command.method !== "Page.handleJavaScriptDialog") {
-      await Promise.race([opened.inventoried, opened.ending.promise]);
-    }
     const attached = this.#admitAttachedCommand(state, command);
     if (command.method === "Page.bringToFront") {
       return this.#activateTarget(state, attached.physicalTargetId);
     }
     if (command.method === "Page.enable") attached.pageEnabled = true;
     if (command.method === "Page.disable") attached.pageEnabled = false;
-    // The router's own subscription stays; the agent's only gates its events.
-    if (command.method === "Runtime.enable") {
-      if (attached.runtimeEnabled) return {};
-      attached.runtimeEnabled = true;
-      for (const context of attached.contexts.entries()) {
-        if (!context.mainWorld) continue;
+    let parameters = command.parameters;
+    if (command.method === "Target.setAutoAttach") parameters = { ...parameters, flatten: false };
+    if (
+      command.method === "Target.sendMessageToTarget" ||
+      command.method === "Target.detachFromTarget"
+    ) {
+      const child = state.channels.get(String(parameters?.sessionId));
+      if (!(child?.channel instanceof ChildCdpChannel) || child.channel.parent !== attached.channel)
+        throw new SessionCdpRouterError("forbidden", "CDP attachment is outside this page.");
+      if (command.method === "Target.sendMessageToTarget") {
+        let nested: unknown;
+        try {
+          nested = JSON.parse(String(parameters?.message));
+        } catch {
+          throw new SessionCdpRouterError("bad_command", "Invalid nested CDP message.");
+        }
+        const message = asRecord(nested);
+        const result = await this.send(
+          state.sessionId,
+          {
+            method: requiredString(message, "method"),
+            parameters: asRecord(message.params),
+            sessionId: child.virtualSessionId,
+          },
+          beforeActivity,
+        );
         this.#appendEvent(
           state,
-          "Runtime.executionContextCreated",
-          { context: context.description },
+          "Target.receivedMessageFromTarget",
+          {
+            sessionId: child.virtualSessionId,
+            message: JSON.stringify({ id: message.id, result }),
+          },
           attached.virtualSessionId,
         );
+        return {};
       }
+      this.#endChannel(state, child);
       return {};
     }
-    if (command.method === "Runtime.disable") {
-      attached.runtimeEnabled = false;
-      return {};
-    }
-    let parameters = command.parameters;
+
     if (command.method === "Input.dispatchKeyEvent") {
       // Like viewer input.key, agent keys belong to the page. Native OS codes
       // opt macOS into browser shortcut routing and synchronous cursor IPC.
@@ -612,13 +711,6 @@ export class SessionCdpRouter {
       ),
       attached.ending.promise,
     ]);
-    const foreign = foreignObjectHandle(result, attached.contexts, "message");
-    if (foreign !== null) {
-      throw new SessionCdpRouterError(
-        "forbidden",
-        `${command.method} returned ${foreign} from outside a frame's main world: agents operate only frames' main worlds.`,
-      );
-    }
     return result;
   }
 
@@ -633,7 +725,14 @@ export class SessionCdpRouter {
   }
 
   #handleBrowserEvent(method: string, parameters: CdpParameters): void {
-    if (this.#closed || !method.startsWith("Target.")) return;
+    if (this.#closed) return;
+    if (!method.startsWith("Target.")) {
+      const targetId = readString(parameters, "targetId") ?? readString(parameters, "frameId");
+      const ownerId = targetId ? this.#ownerByTargetId.get(targetId) : undefined;
+      const owner = ownerId ? this.#sessions.get(ownerId) : undefined;
+      if (owner) this.#appendEvent(owner, method, parameters);
+      return;
+    }
     const targetInfo = asRecord(parameters.targetInfo);
     const targetId = readString(targetInfo, "targetId") ?? readString(parameters, "targetId");
     if (!targetId) return;
@@ -643,7 +742,12 @@ export class SessionCdpRouter {
         readString(targetInfo, "openerId") ?? readString(targetInfo, "parentId");
       const ownerId = parentTargetId ? this.#ownerByTargetId.get(parentTargetId) : undefined;
       const owner = ownerId ? this.#sessions.get(ownerId) : undefined;
-      if (owner) {
+      if (
+        owner &&
+        ["page", "iframe", "worker", "shared_worker", "service_worker"].includes(
+          String(targetInfo.type),
+        )
+      ) {
         this.#claimTarget(owner, targetId);
       }
     }
@@ -708,6 +812,10 @@ export class SessionCdpRouter {
     if (state.channels.get(attached.virtualSessionId) === attached) {
       state.channels.delete(attached.virtualSessionId);
     }
+    for (const child of state.channels.values()) {
+      if (child.channel instanceof ChildCdpChannel && child.channel.parent === attached.channel)
+        this.#endChannel(state, child);
+    }
     attached.removeListener();
     const ended = new SessionCdpRouterError(
       "not_found",
@@ -741,6 +849,23 @@ export class SessionCdpRouter {
     }
   }
 
+  #assertScope(state: SessionState, parameters: CdpParameters): void {
+    for (const key of ["targetId", "openerId"]) {
+      const target = parameters[key];
+      if (typeof target === "string") this.#assertOwnedTarget(state, target);
+    }
+    // Browser contexts are checked and supplied by the profile-owned backend.
+    if (
+      parameters.sessionId !== undefined &&
+      !state.channels.has(String(parameters.sessionId)) &&
+      !state.retiredTargets.has(String(parameters.sessionId))
+    )
+      throw new SessionCdpRouterError(
+        "forbidden",
+        "CDP attachment is outside this Browser Session.",
+      );
+  }
+
   #assertOwnedTarget(state: SessionState, targetId: string): void {
     if (this.#ownerByTargetId.get(targetId) !== state.sessionId) {
       throw new SessionCdpRouterError("forbidden", "CDP target is outside this Browser Session.");
@@ -756,51 +881,6 @@ export class SessionCdpRouter {
   #assertOpen(): void {
     if (this.#closed) throw new SessionCdpRouterError("conflict", "CDP router is closed.");
   }
-}
-
-/**
- * Every object handle a command names must belong to a frame's main world
- * that this page session reported. A handle that does not parse, or names a
- * context the session never reported, is refused as surely as one that names
- * an isolated, preload or platform world.
- */
-function objectHandleRefusal(
-  method: string,
-  parameters: CdpParameters,
-  contexts: ExecutionContextInventory,
-): string | null {
-  const foreign = foreignObjectHandle(parameters, contexts, "command");
-  if (foreign === null) return null;
-  return `${method} ${foreign} does not name an object in a frame's main world: agents operate only frames' main worlds, not other script worlds.`;
-}
-
-/**
- * Admits a page event only when everything it carries comes from a frame's
- * main world: context events for main worlds, console messages and exceptions
- * raised in one, and no object handle from anywhere else.
- */
-function admitsAgentEvent(
-  contexts: ExecutionContextInventory,
-  method: string,
-  parameters: CdpParameters,
-  reported: ExecutionContextEntry | null,
-): boolean {
-  switch (method) {
-    case "Runtime.executionContextCreated":
-    case "Runtime.executionContextDestroyed":
-      return reported?.mainWorld === true;
-    case "Runtime.consoleAPICalled":
-      if (!contexts.isMainWorld(parameters.executionContextId)) return false;
-      break;
-    case "Runtime.exceptionThrown":
-      if (!contexts.isMainWorld(asRecord(parameters.exceptionDetails).executionContextId)) {
-        return false;
-      }
-      break;
-    default:
-      break;
-  }
-  return foreignObjectHandle(parameters, contexts, "message") === null;
 }
 
 function validateCommand(command: CdpCommand, maxBytes: number): void {
@@ -969,4 +1049,90 @@ function agentObjectGroups(
 function readString(value: Readonly<Record<string, unknown>>, key: string): string | null {
   const candidate = value[key];
   return typeof candidate === "string" && candidate.length <= 512 ? candidate : null;
+}
+
+/** A nested page target has its own CDP namespace, never the browser's control session. */
+class ChildCdpChannel implements CdpChannel {
+  readonly #pending = new Map<
+    number,
+    { method: string; parameters: CdpParameters; reply: PromiseWithResolvers<unknown> }
+  >();
+  readonly #listeners = new Set<(method: string, parameters: CdpParameters) => void>();
+  readonly #remove: () => void;
+  #next = 1;
+  #closed = false;
+  readonly #isolation: CdpProductIsolation | undefined;
+  readonly parent: CdpChannel;
+  readonly id: string;
+  constructor(parent: CdpChannel, id: string, protectProductWorlds = false) {
+    this.#isolation = protectProductWorlds ? new CdpProductIsolation() : undefined;
+    this.parent = parent;
+    this.id = id;
+    this.#remove = parent.onEvent((method, params) => {
+      if (method !== "Target.receivedMessageFromTarget" || params.sessionId !== id) return;
+      let message: Record<string, unknown>;
+      try {
+        message = asRecord(JSON.parse(String(params.message)));
+      } catch {
+        return;
+      }
+      if (typeof message.id === "number") {
+        const pending = this.#pending.get(message.id);
+        this.#pending.delete(message.id);
+        if (message.error)
+          pending?.reply.reject(
+            new Error(String(asRecord(message.error).message ?? "Child CDP command failed")),
+          );
+        else if (pending) {
+          try {
+            this.#isolation?.observeResult(pending.method, pending.parameters, message.result);
+            pending.reply.resolve(message.result ?? {});
+          } catch (error) {
+            pending.reply.reject(error);
+          }
+        }
+      } else if (typeof message.method === "string") {
+        if (this.#isolation && !this.#isolation.observe(message.method, asRecord(message.params)))
+          return;
+        for (const listener of this.#listeners) listener(message.method, asRecord(message.params));
+      }
+    });
+  }
+  onEvent(listener: (method: string, parameters: CdpParameters) => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+  async send(method: string, parameters?: CdpParameters): Promise<unknown> {
+    if (this.#closed) throw new Error("Child CDP attachment closed");
+    const id = this.#next++;
+    const pending = Promise.withResolvers<unknown>();
+    this.#isolation?.assertCommand(method, parameters ?? {});
+    if (
+      this.#isolation &&
+      method === "Runtime.addBinding" &&
+      parameters?.executionContextId === undefined &&
+      parameters?.executionContextName === undefined
+    )
+      parameters = { ...parameters, executionContextName: "" };
+    this.#pending.set(id, { method, parameters: parameters ?? {}, reply: pending });
+    void this.parent
+      .send("Target.sendMessageToTarget", {
+        sessionId: this.id,
+        message: JSON.stringify({ id, method, params: parameters }),
+      })
+      .catch(pending.reject);
+    return pending.promise;
+  }
+  async close(): Promise<void> {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#remove();
+    this.#listeners.clear();
+    for (const pending of this.#pending.values())
+      pending.reply.reject(new Error("Child CDP attachment closed"));
+    this.#pending.clear();
+    await this.parent
+      .send("Target.detachFromTarget", { sessionId: this.id })
+      .catch(() => undefined);
+  }
 }

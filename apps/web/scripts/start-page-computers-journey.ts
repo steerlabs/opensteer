@@ -68,17 +68,14 @@ try {
     await page.locator(keynote).waitFor();
     await page.evaluate(() => {
       const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-      const open = client.openComputerView.bind(client);
+      const open = client.openTab;
       Reflect.set(window, "viewsAsked", 0);
-      // Handed over as an argument, the counter gets no injected name helper the page lacks.
-      Reflect.set(
-        client,
-        "openComputerView",
-        (...args: Parameters<MockHostClient["openComputerView"]>) => {
+      // A Mac app or phone opens as a window or phone tab; a page is not a view.
+      Reflect.set(client, "openTab", (...args: Parameters<MockHostClient["openTab"]>) => {
+        if (args[0].kind === "window" || args[0].kind === "phone")
           Reflect.set(window, "viewsAsked", Number(Reflect.get(window, "viewsAsked")) + 1);
-          return open(...args);
-        },
-      );
+        return open(...args);
+      });
     });
   };
   const setStatus = (name: string, status: Status) =>
@@ -296,6 +293,7 @@ try {
       await page.locator(away).waitFor();
       const afterFold = await focused();
       await page.locator(pixel).focus();
+      const onPixel = await focused();
       await setStatus("Studio Mac", "online");
       await page.locator(keynote).waitFor();
       const afterUnfold = await focused();
@@ -312,6 +310,7 @@ try {
       const observed = {
         before,
         afterFold,
+        onPixel,
         afterUnfold,
         afterAboveFolds,
         onLine,
@@ -325,7 +324,9 @@ try {
       );
       expectThat(
         observed,
-        afterUnfold === "Pixel 7" && afterAboveFolds === "Pixel 7",
+        onPixel?.startsWith("Pixel 7") === true &&
+          afterUnfold === onPixel &&
+          afterAboveFolds === onPixel,
         "a row that stayed lost the keyboard",
       );
       expectThat(
@@ -399,68 +400,6 @@ try {
     );
     return observed;
   });
-
-  for (const conversationOpen of [true, false]) {
-    await check(
-      `a search opens its page at the size of the pane it is shown in (${conversationOpen ? "conversation open" : "conversation hidden"})`,
-      async () => {
-        // A window that is not focused never resizes its page, so the size the
-        // New tab opens a page at is the size that page is shown at until then.
-        // Wide enough that the pane is above the page's floor width, so the two
-        // sizes are equal rather than scaled.
-        await page.setViewportSize({ height: 900, width: 1680 });
-        await openStartPage();
-        if (!conversationOpen) {
-          await page.getByRole("button", { name: "Hide the conversation", exact: true }).click();
-          await page.locator(".workspace--dock-closed").waitFor();
-        }
-        await page.evaluate(() => {
-          const client = Reflect.get(window, "opensteerMock") as MockHostClient;
-          const open = client.beginBrowserTabOpen.bind(client);
-          Reflect.set(
-            client,
-            "beginBrowserTabOpen",
-            (...args: Parameters<MockHostClient["beginBrowserTabOpen"]>) => {
-              Reflect.set(window, "openedAt", args[1]?.viewport ?? null);
-              return open(...args);
-            },
-          );
-        });
-        const field = page.getByRole("combobox", { name: "Search websites and apps" });
-        await field.fill("al di là Trattoria");
-        const content = await page
-          .locator(".start-page__column")
-          .evaluate((node) => node.getBoundingClientRect().height);
-        await field.press("Enter");
-        // The mock has two computers, so the New tab asks which one to browse on.
-        await page.getByRole("button", { name: "Open on Mac mini", exact: true }).click();
-        await page.locator(".browser-address input").waitFor();
-        const stage = page.locator(".browser-stage");
-        await stage.waitFor();
-        const observed = {
-          content,
-          openedAt: await page.evaluate(() => Reflect.get(window, "openedAt") as unknown),
-          stage: await stage.evaluate((node) => {
-            const rect = node.getBoundingClientRect();
-            return { height: Math.round(rect.height), width: Math.round(rect.width) };
-          }),
-        };
-        await shot(`8-search-opened-${conversationOpen ? "paired" : "alone"}.png`);
-        await page.setViewportSize({ height: 900, width: 1280 });
-        expectThat(
-          observed,
-          observed.content < observed.stage.height && observed.stage.width >= 768,
-          "the New tab's results fill its pane, so the size it measures is not tested",
-        );
-        expectThat(
-          observed,
-          JSON.stringify(observed.openedAt) === JSON.stringify(observed.stage),
-          "the page opened at a size other than the pane it is shown in",
-        );
-        return observed;
-      },
-    );
-  }
 
   await check(
     "a first read of the approved apps that fails is read again, without reopening the tab",

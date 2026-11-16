@@ -46,10 +46,16 @@ it("lists standing team tools when the owner has a link, and never for non-Run c
       .success,
   ).toBe(false);
 });
+const allCapabilities = { tabs: true, pages: true, computerUse: true, apps: true };
 it("snapshots the personal/team guide and model-facing inventory", () => {
   const guides = {
-    ordinary: platformGuideForRun({ purpose: "task" }),
-    team: platformGuideForRun({ purpose: "task", teamsAvailable: true, knowledge: true }),
+    ordinary: platformGuideForRun({ purpose: "task", capabilities: allCapabilities }),
+    team: platformGuideForRun({
+      purpose: "task",
+      capabilities: allCapabilities,
+      teamsAvailable: true,
+      knowledge: true,
+    }),
     connection: connectionInstructions,
   };
   expect(guides).toMatchSnapshot();
@@ -58,6 +64,7 @@ it("snapshots the personal/team guide and model-facing inventory", () => {
       name: tool.name,
       callers: tool.callers,
       access: tool.access,
+      description: tool.description,
       input: z.toJSONSchema(tool.input, { io: "input" }),
     })),
   ).toMatchSnapshot();

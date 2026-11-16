@@ -8,7 +8,6 @@ import { describe, expect, it } from "vitest";
 import type { z } from "zod";
 import { ClientToHostMessageSchema, HostToClientMessageSchema } from "./client.js";
 import { hostApi } from "./host-api.js";
-import { personQuestionApiVersion } from "./person-questions.js";
 import { TeamCommandSchema } from "./team-api.js";
 import {
   json,
@@ -38,12 +37,7 @@ const optInFrames = new Set<string>([]);
  * baseline records, and a test proves it. Raising the minimum past the version
  * drops the entry.
  */
-const projectedSince: Readonly<Record<string, number>> = {
-  // Older apps are served these without `person.question` Requests (person-questions.ts).
-  "output rpc needsYou.get": personQuestionApiVersion,
-  "output host frame host.snapshot": personQuestionApiVersion,
-  "output host frame host.events": personQuestionApiVersion,
-};
+const projectedSince: Readonly<Record<string, number>> = {};
 
 function personalWire(): PersonalWire {
   const teamCommands = new Set<string>(

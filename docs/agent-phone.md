@@ -95,9 +95,10 @@ a keyguard that needs no credential. Lock is not Stop.
 
 ## The tab
 
-The phone's tab carries no authority and outlives task sessions, because agents release before
-replying. Viewing uses its own owner lease rather than extending a task hold. A closed tab or ended
-view must not be resurrected by a late response or another viewer's renewal.
+The phone's one tab carries no authority and outlives task sessions, because agents release before
+replying. Closing it never stops the phone or a Run holding it. Viewing uses its own owner lease
+rather than extending a task hold. A closed tab or ended view must not be resurrected by a late
+response, an agent's action or another viewer's renewal.
 
 ## Live display
 

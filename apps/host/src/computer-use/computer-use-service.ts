@@ -2,11 +2,11 @@ import { randomUUID } from "node:crypto";
 import {
   createId,
   OpensteerError,
-  type EventData,
   type RunId,
   type RunnerId,
   type ThreadId,
   type UserId,
+  type WindowId,
   type DeploymentId,
 } from "@opensteer/core";
 import { getIntegrationDefinition } from "@opensteer/integration-catalog";
@@ -320,20 +320,16 @@ export interface ComputerUseServiceOptions {
   readonly passwords?: Pick<PasswordSignInService, "seal" | "validateLease">;
   readonly loginReceiver?: (runnerId: RunnerId) => LoginReceiverKey | null;
   readonly onSessionEnded?: (sessionId: ComputerUseSessionId) => void;
-  readonly onPhoneHeld?: (runnerId: RunnerId) => void;
   readonly onAuthorityRevoked?: (
     context: Pick<ComputerUseContext, "runId" | "bindingGeneration">,
   ) => void;
-  readonly beginPlaceEntry?: (
-    runId: RunId,
-    bindingGeneration: number,
-  ) => (data: EventData<"place.entered">) => void;
   readonly onPlaceActivity?: (input: {
     ownerId: UserId;
     threadId: ThreadId;
     runId: RunId;
     generation: number;
     place: PlaceIdentity;
+    windowId?: WindowId;
     title: string;
     at: number;
     ended: boolean;
@@ -410,8 +406,9 @@ interface Session {
   /** The acting apps its owner was last told about. */
   announcedActing: string;
   apps: ComputerAppIdentity[];
-  readonly windows: Map<string, { ref: string; id: number; title: string }>;
-  readonly windowRefs: Map<string, { ref: string; id: number; title: string }>;
+  readonly acquiredWindows: Map<string, Set<WindowId>>;
+  readonly windows: Map<string, { ref: string; windowId: WindowId; title: string }>;
+  readonly windowRefs: Map<string, { ref: string; windowId: WindowId; title: string }>;
   /**
    * The display this session holds, for a phone, from the moment its first
    * call reserved it; null for a Mac's session, which holds apps instead.
@@ -497,7 +494,6 @@ export class ComputerUseService {
   readonly #machineOwners: ComputerUseServiceOptions["machineOwners"];
   readonly #now: () => number;
   readonly #onSessionsChanged: () => void;
-  readonly #onPhoneHeld: ComputerUseServiceOptions["onPhoneHeld"];
   readonly #onAuthorityRevoked: ComputerUseServiceOptions["onAuthorityRevoked"];
   readonly #onSessionEnded: NonNullable<ComputerUseServiceOptions["onSessionEnded"]>;
   readonly #onPresenceChanged: NonNullable<ComputerUseServiceOptions["onPresenceChanged"]>;
@@ -527,7 +523,6 @@ export class ComputerUseService {
   readonly #stopWrites = new Map<string, Promise<void>>();
   /** Sessions the Host has let go whose close the Mac has not yet answered. */
   readonly #undeliveredCloses = new Set<Session>();
-  readonly #beginPlaceEntry: ComputerUseServiceOptions["beginPlaceEntry"];
   readonly #onPlaceActivity: ComputerUseServiceOptions["onPlaceActivity"];
   readonly #resolveActor: ComputerUseServiceOptions["resolveActor"];
   readonly #threadTitle: ComputerUseServiceOptions["threadTitle"];
@@ -552,7 +547,6 @@ export class ComputerUseService {
     this.#now = options.now ?? (() => Date.now());
     this.#onSessionsChanged = options.onSessionsChanged;
     this.#onSessionEnded = options.onSessionEnded ?? (() => undefined);
-    this.#onPhoneHeld = options.onPhoneHeld;
     this.#onPresenceChanged = options.onPresenceChanged ?? (() => undefined);
     this.#actingWindowMs = options.actingWindowMs ?? computerUseActingWindowMs;
     this.#authorizer = options.authorizer;
@@ -560,7 +554,6 @@ export class ComputerUseService {
     this.#stopped = new Set(
       options.stops.initial.map((stop) => stopKey(stop.runId, stop.runnerId)),
     );
-    this.#beginPlaceEntry = options.beginPlaceEntry;
     this.#onPlaceActivity = options.onPlaceActivity;
     this.#resolveActor = options.resolveActor;
     this.#threadTitle = options.threadTitle;
@@ -759,7 +752,6 @@ export class ComputerUseService {
     const { session, authority } = this.#spend(lease);
     const key = sessionKey(session.runId, session.authority.bindingGeneration, session.runnerId);
     let addedApp = false;
-    let enterPlace: ((data: EventData<"place.entered">) => void) | undefined;
     const requestId = RunnerAuxiliaryRequestIdSchema.parse(`cai:${randomUUID()}`);
     const saved = new Map<number, LoginText>();
     if (operation === "act" && Array.isArray(params.actions)) {
@@ -937,7 +929,6 @@ export class ComputerUseService {
         session.dispatched = true;
         if (target.kind === "app") this.#noteActing(session, computerAppIdentityKey(target.app));
 
-        enterPlace = this.#beginPlaceEntry?.(session.runId, session.authority.bindingGeneration);
         return this.#hub.sendComputerUse({
           access: target.access,
           app: target.kind === "app" ? target.app : null,
@@ -998,11 +989,6 @@ export class ComputerUseService {
             (operation === "act" && (result.performed?.length ?? 0) > 0)) &&
           this.#sessions.get(key) === session
         ) {
-          enterPlace?.({
-            place: { kind: "phone", machineId: session.runnerId, display: "main" },
-            title: session.runnerName,
-            site: null,
-          });
           if (operation === "act" && (result.performed?.length ?? 0) > 0) {
             this.#noteActing(session, target.definitionId);
             this.#publishPlaceActivity(session, target.definitionId, false);
@@ -1017,15 +1003,6 @@ export class ComputerUseService {
           )
         ) {
           this.#noteActing(session, computerAppIdentityKey(target.app));
-          enterPlace?.({
-            place: {
-              kind: "app",
-              machineId: session.runnerId,
-              appKey: computerAppIdentityKey(target.app),
-            },
-            title: target.app.displayName.slice(0, 256),
-            site: null,
-          });
           this.#publishPlaceActivity(session, computerAppIdentityKey(target.app), false);
         }
         if (requested > 0 && this.#sessions.get(key) === session) {
@@ -1053,6 +1030,7 @@ export class ComputerUseService {
       this.#publishPlaceActivity(session, appKey, true);
       session.actedAt.delete(appKey);
       session.windows.delete(appKey);
+      session.acquiredWindows.delete(appKey);
       session.apps = session.apps.filter((app) => computerAppIdentityKey(app) !== appKey);
     };
     if (outcome.kind === "error") {
@@ -1101,6 +1079,16 @@ export class ComputerUseService {
     let result: ComputerUseDispatchResult;
     try {
       result = parseComputerUseResult(target, operation, outcome.value);
+      if (
+        operation === "bind" &&
+        !result.error &&
+        typeof params.windowId === "string" &&
+        result.window?.windowId !== params.windowId
+      )
+        throw new ComputerUseError(
+          "failed",
+          "The Mac returned a different window than the one requested.",
+        );
     } catch (error) {
       this.#forgetAfter(session, "failed");
       throw error;
@@ -1132,9 +1120,22 @@ export class ComputerUseService {
           ? session.windowRefs.get(params.window)
           : undefined);
       if (window) {
+        if (operation === "bind" || operation === "observe") {
+          const heldWindows = session.acquiredWindows.get(appKey) ?? new Set<WindowId>();
+          heldWindows.add(window.windowId);
+          session.acquiredWindows.set(appKey, heldWindows);
+        }
         const previous = session.windows.get(appKey);
-        session.windows.set(appKey, { ref: window.ref, id: window.id, title: window.title });
-        session.windowRefs.set(window.ref, { ref: window.ref, id: window.id, title: window.title });
+        session.windows.set(appKey, {
+          ref: window.ref,
+          windowId: window.windowId,
+          title: window.title,
+        });
+        session.windowRefs.set(window.ref, {
+          ref: window.ref,
+          windowId: window.windowId,
+          title: window.title,
+        });
         windowChanged = previous?.ref !== window.ref || previous.title !== window.title;
       } else if (operation === "act" && typeof params.window === "string") {
         // The ref has been bound already. It stays current across input calls.
@@ -1146,7 +1147,6 @@ export class ComputerUseService {
     session.confirmed = true;
     session.lastUsedAt = this.#now();
     if (wasUnconfirmed || addedApp || windowChanged) this.#onSessionsChanged();
-    if (wasUnconfirmed && session.display !== null) this.#onPhoneHeld?.(session.runnerId);
     const owners = this.#appOwners.get(session.runnerId) ?? new Map<string, Session>();
     owners.set(computerUseHolderKey(holdingOf(target)), session);
     this.#appOwners.set(session.runnerId, owners);
@@ -1178,6 +1178,7 @@ export class ComputerUseService {
       actionCount: 0,
       activityTimer: undefined,
       apps: [],
+      acquiredWindows: new Map(),
       windows: new Map(),
       windowRefs: new Map(),
       confirmed: false,
@@ -1450,6 +1451,31 @@ export class ComputerUseService {
 
   threadTitle(threadId: ThreadId, ownerUserId: UserId): Promise<string | null> {
     return this.#threadTitle(threadId, ownerUserId);
+  }
+
+  nativeTargetUsers(
+    ownerId: UserId,
+    runnerId: RunnerId,
+    windowId?: WindowId,
+  ): Array<{ taskId: ThreadId }> {
+    return [
+      ...new Set(
+        this.#snapshot()
+          .filter(
+            (session) =>
+              session.ownerUserId === ownerId &&
+              session.runnerId === runnerId &&
+              session.confirmed &&
+              this.#holds(session) &&
+              (windowId === undefined
+                ? session.display !== null
+                : [...session.acquiredWindows.values()].some((windows) => windows.has(windowId))),
+          )
+          .map((session) => session.threadId),
+      ),
+    ]
+      .sort()
+      .map((taskId) => ({ taskId }));
   }
 
   /** The Run holding each app, or the display, on this computer, keyed by `computerUseHolderKey`. */
@@ -1949,6 +1975,7 @@ export class ComputerUseService {
       runId: session.runId,
       generation: session.authority.bindingGeneration,
       place,
+      ...(session.windows.get(key) ? { windowId: session.windows.get(key)!.windowId } : {}),
       title: app?.displayName ?? session.runnerName,
       at: this.#now(),
       ended,
@@ -2055,7 +2082,7 @@ function summarize(
     apps: session.apps.map((app) => ({ ...app })),
     windows: [...session.windows]
       .filter(([appKey]) => session.apps.some((app) => computerAppIdentityKey(app) === appKey))
-      .map(([appKey, window]) => ({ appKey, id: window.id, title: window.title })),
+      .map(([appKey, window]) => ({ appKey, windowId: window.windowId, title: window.title })),
     display: session.display !== null,
     openedAt: session.openedAt,
     runId: session.runId,

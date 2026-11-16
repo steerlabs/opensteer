@@ -1,3 +1,5 @@
+import { TabIdSchema } from "@opensteer/core";
+import { TabStore } from "./tab-store.js";
 import { randomUUID } from "node:crypto";
 import { createId } from "@opensteer/core";
 import { LocalProfileBindingSchema, createBrowserSessionId } from "@opensteer/protocol";
@@ -62,10 +64,21 @@ it("archives a profile's saved tabs and history while retaining its exact native
       values(${sessionId},${sessionId},'person',${profileId},'personal',${p.runnerId},'browser','ready')`.execute(
       database,
     );
-    const tabId = `${sessionId}-tab`;
-    await sql`insert into personal_tabs(id,group_id,session_id,title,url,"order",state)
-      values(${tabId},${sessionId},${sessionId},'Saved','https://example.com/',0,'suspended')`.execute(
-      database,
+    const tabId = TabIdSchema.parse(`${sessionId}-tab`);
+    await new TabStore(database).open(
+      {
+        id: tabId,
+        ownerId: p.userId,
+        computerId: p.runnerId,
+        kind: "page",
+        title: "Saved",
+        url: "https://example.com/",
+        profileId,
+        profileName: "Personal",
+        openedBy: "person",
+        pageBinding: { lineageId: sessionId, sessionId, surfaceId: tabId },
+      },
+      "saved",
     );
     await sql`insert into browser_history_entries(profile_id,url,origin,title,typed_count,visit_count)
       values(${profileId},'https://example.com/','https://example.com','History',1,1)`.execute(
@@ -96,7 +109,7 @@ it("archives a profile's saved tabs and history while retaining its exact native
           .where("id", "=", tabId)
           .executeTakeFirstOrThrow()
       ).closedAt,
-    ).toBeInstanceOf(Date);
+    ).toBeNull();
     expect(await listBrowserProfileErasureJobs(database, p.runnerId)).toMatchObject([{ binding }]);
     await database.transaction().execute(async (tx) => {
       const now = new Date();

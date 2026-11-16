@@ -63,13 +63,15 @@ it("tells every copy about a committed change and nothing about a rolled-back on
     { kind: "member", userId: fixture.userId },
     expect.objectContaining({ kind: "typing", typing: true }),
   ];
-  // Each copy hears on its own connection, so neither arrives before the other.
   await vi.waitFor(
     () => {
-      expect(seenA).toEqual(expected);
-      expect(seenB).toEqual(expected);
+      expect(seenA, "copy A did not receive the committed notifications").toEqual(expected);
+      expect(seenB, "copy B did not receive the committed notifications").toEqual(expected);
     },
-    { timeout: 5_000, interval: 20 },
+    {
+      timeout: 5_000,
+      interval: 20,
+    },
   );
 });
 

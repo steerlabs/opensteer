@@ -1,19 +1,20 @@
 import {
   messagePages,
-  phoneTabOpen,
   placePage,
   replyPlaces,
   type HostClient,
   type HostSnapshot,
   type PlaceEntry,
-  type SurfaceDestination,
+  type TabDestination,
   type Turn,
 } from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
+import { useHostSelector, useTabsRevision } from "@opensteer/client/react";
+import { RunnerIdSchema } from "@opensteer/core";
 import type {
   BrowserPageContentPart,
   ComputerAppContentPart,
   PhoneContentPart,
+  TabId,
 } from "@opensteer/core";
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 import { Image, Pressable, StyleSheet, View } from "react-native";
@@ -35,7 +36,7 @@ export interface TranscriptSurfaces {
   /** Each stretch's turn key finds the gathered work of its owning reply. */
   readonly turns?: ReadonlyMap<string, SurfaceTurn>;
   /** Opens exactly this page or app; nothing stands in for one that has gone. */
-  readonly open: (destination: SurfaceDestination) => void;
+  readonly open: (destination: TabDestination) => void;
 }
 
 export const TranscriptSurfacesContext = createContext<TranscriptSurfaces | null>(null);
@@ -45,9 +46,8 @@ export const TranscriptSurfacesContext = createContext<TranscriptSurfaces | null
  * changes with every streamed token, so a card never redraws on one.
  */
 export interface TranscriptAppTabs {
-  readonly open: (appId: string) => void;
-  /** Takes back the page `open` put in front, once its tab turns out not to exist. */
-  readonly leave: (appId: string) => void;
+  /** Shows the app's tab, opened from this conversation. */
+  readonly show: (tabId: TabId) => void;
 }
 
 export const TranscriptAppTabsContext = createContext<TranscriptAppTabs | null>(null);
@@ -71,10 +71,11 @@ function IncludedPages(props: {
   readonly pages: readonly BrowserPageContentPart[];
   readonly surfaces: TranscriptSurfaces;
 }): ReactNode {
-  const sessions = useHostSelector(props.surfaces.hostClient, selectBrowserSessions);
+  const source = useTabSource(props.surfaces.hostClient);
+  const pages = useMemo(() => messagePages(props.pages, source), [props.pages, source]);
   return (
     <View style={styles.pages}>
-      {messagePages(props.pages, sessions).map((page) => (
+      {pages.map((page) => (
         <SurfaceChip
           ended={page.ended}
           favicon={page.favicon}
@@ -125,14 +126,23 @@ function IncludedPlaces(props: {
             />
           );
         const machine = machines.find(({ id }) => id === part.machineId);
-        const open = connection === "connected" && machine !== undefined && phoneTabOpen(machine);
+        // A phone opens its one tab, which wakes it only for this explicit Open.
+        const open = connection === "connected" && machine !== undefined;
         return (
           <SurfaceChip
             ended={!open}
             favicon={null}
             glyph="smartphone"
             key={`phone:${part.machineId}:${part.display}`}
-            onPress={() => props.surfaces.open({ kind: "phone", machineId: part.machineId })}
+            onPress={() => {
+              // The person's Open of its one tab, which may wake it once when shown.
+              const computerId = RunnerIdSchema.safeParse(part.machineId);
+              if (!computerId.success) return;
+              void props.surfaces.hostClient
+                .openTab({ kind: "phone", computerId: computerId.data })
+                .then((tab) => props.surfaces.open({ kind: "tab", tabId: tab.tabId }))
+                .catch(() => undefined);
+            }}
             secondary={null}
             title={part.name}
           />
@@ -164,49 +174,46 @@ function RunSurfaces(props: {
 }): ReactNode {
   const { surfaces } = props;
   const turn = surfaces.turns?.get(props.turnKey ?? "") ?? props.turn;
-  const sessions = useHostSelector(surfaces.hostClient, selectBrowserSessions);
+  const source = useTabSource(surfaces.hostClient);
   const uses = useHostSelector(surfaces.hostClient, selectBrowserUses);
-  const machines = useHostSelector(surfaces.hostClient, selectMachines);
-  const connection = useHostSelector(surfaces.hostClient, selectConnection);
   const [open, setOpen] = useState(false);
   const chips = useMemo(
     (): readonly Chip[] =>
-      replyPlaces(turn, uses, sessions, connection === "connected" ? machines : []).map(
-        (place): Chip =>
-          place.kind === "page"
+      replyPlaces(turn, uses, source).map((place): Chip =>
+        place.kind === "page"
+          ? {
+              acting: place.page.acting,
+              destination: place.page.destination,
+              ended: place.page.ended,
+              favicon: place.page.favicon,
+              glyph: "globe",
+              key: place.page.key,
+              secondary: place.page.site,
+              title: place.page.title,
+            }
+          : place.kind === "phone"
             ? {
-                acting: place.page.acting,
-                destination: place.page.destination,
-                ended: place.page.ended,
-                favicon: place.page.favicon,
-                glyph: "globe",
-                key: place.page.key,
-                secondary: place.page.site,
-                title: place.page.title,
+                acting: false,
+                destination: place.phone.destination,
+                ended: place.phone.ended,
+                favicon: null,
+                glyph: "smartphone",
+                key: place.phone.key,
+                secondary: null,
+                title: place.phone.title,
               }
-            : place.kind === "phone"
-              ? {
-                  acting: false,
-                  destination: place.phone.destination,
-                  ended: place.phone.ended,
-                  favicon: null,
-                  glyph: "smartphone",
-                  key: place.phone.key,
-                  secondary: null,
-                  title: place.phone.title,
-                }
-              : {
-                  acting: place.app.acting,
-                  destination: place.app.destination,
-                  ended: place.app.ended,
-                  favicon: null,
-                  glyph: "laptopcomputer",
-                  key: place.app.key,
-                  secondary: null,
-                  title: place.app.title,
-                },
+            : {
+                acting: place.app.acting,
+                destination: place.app.destination,
+                ended: place.app.ended,
+                favicon: null,
+                glyph: "laptopcomputer",
+                key: place.app.key,
+                secondary: null,
+                title: place.app.title,
+              },
       ),
-    [connection, machines, turn, uses, sessions],
+    [source, turn, uses],
   );
   if (chips.length === 0) return null;
   const shown = open ? chips : chips.slice(0, shownChips);
@@ -271,13 +278,11 @@ function PlaceStop(props: {
   readonly surfaces: TranscriptSurfaces;
 }): ReactNode {
   const { surfaces } = props;
-  const sessions = useHostSelector(surfaces.hostClient, selectBrowserSessions);
-  const page = useMemo(
-    () => placePage(props.entry, sessions, surfaces.threadId),
-    [props.entry, sessions, surfaces.threadId],
-  );
+  const source = useTabSource(surfaces.hostClient);
+  const page = useMemo(() => placePage(props.entry, source), [props.entry, source]);
   if (page === null) return null;
-  const acting = props.latest && page.acting && !page.ended;
+  // An agent is in one tab at a time: the live turn's latest stop, while its tab is listed.
+  const acting = props.latest && !page.ended;
   if (props.markOnly)
     return (
       <View style={{ flexDirection: "row" }}>
@@ -342,7 +347,7 @@ function PlaceStop(props: {
 
 interface Chip {
   readonly acting: boolean;
-  readonly destination: SurfaceDestination | null;
+  readonly destination: TabDestination | null;
   readonly ended: boolean;
   readonly favicon: string | null;
   readonly glyph: "globe" | "laptopcomputer" | "smartphone";
@@ -432,7 +437,6 @@ function SurfaceChip(props: {
 
 /** The Mac apps a Run is holding now, one per app per Mac. */
 const selectBrowserUses = (snapshot: HostSnapshot) => snapshot.browserUses;
-const selectBrowserSessions = (snapshot: HostSnapshot) => snapshot.browserSessions;
 const selectMachines = (snapshot: HostSnapshot) => snapshot.machines;
 const selectConnection = (snapshot: HostSnapshot) => snapshot.connection;
 
@@ -479,3 +483,19 @@ const styles = StyleSheet.create({
   site: { flexShrink: 3, maxWidth: "45%" },
   title: { flexShrink: 1 },
 });
+
+/**
+ * The tab list and profiles chips are named from, as one value that changes
+ * with any tab row, so a chip shows its tab's current title.
+ */
+function useTabSource(hostClient: HostClient): Pick<HostSnapshot, "tabs" | "browserProfiles"> {
+  const revision = useTabsRevision(hostClient);
+  const profiles = useHostSelector(hostClient, selectProfiles);
+  return useMemo(
+    () => ({ browserProfiles: profiles, tabs: hostClient.getSnapshot().tabs }),
+    // A new revision is a new value: a chip reads the rows it changed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [hostClient, profiles, revision],
+  );
+}
+const selectProfiles = (snapshot: HostSnapshot) => snapshot.browserProfiles;

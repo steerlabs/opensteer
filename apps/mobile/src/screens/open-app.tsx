@@ -1,29 +1,36 @@
 import {
   HostClientRequestError,
-  mutationIdempotencyKey,
   newTabProfiles,
   newTabTarget,
   profileAwayWords,
   startPageIndex,
   type HostClient,
   type HostSnapshot,
-  type PlaceItem,
   type StartPageGroup,
   type StartPageProfileChoice,
-  type PersonalSurfaceDestination,
+  pageOpenTarget,
+  type TabStore,
 } from "@opensteer/client/host";
 import { computerNotReadyStatus, computerReasonWords } from "@opensteer/client/integrations";
-import { useHostSelector, usePlaceList } from "@opensteer/client/react";
-import type { ApprovedComputerApp, ComputerViewTarget, OwnerWindowInfo } from "@opensteer/protocol";
+import { useHostSelector } from "@opensteer/client/react";
+import { RunnerIdSchema, type TabId, type TabTarget } from "@opensteer/core";
+import type { ApprovedComputerApp, OwnerWindowInfo } from "@opensteer/protocol";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { ActivityIndicator, Pressable, SectionList, StyleSheet, View } from "react-native";
-import { showPendingBrowserTab } from "../browser/pending-tab-route.js";
-import { tabsRoute } from "../browser/surface-route.js";
+import { tabRoute } from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { MacAppIcon } from "../computers/app-mark.js";
 import { useHereDeviceId } from "../computers/here-device.js";
-import { openOwnerView } from "../computers/open-owner-view.js";
 import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
 import { NativeMenu } from "../thread/composer-menu.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
@@ -39,9 +46,9 @@ export type OpenAppScreenProps = StaticScreenProps<{ readonly deploymentId: stri
  * and Agent Phones, from the phone, the way the new-tab page offers them on a
  * computer. A profile opens on the device it lives on. Each Mac lists the apps it lets
  * Opensteer use, by their own icons, and how many windows each has open. A
- * choice opens the person's own view of exactly that app or window over the
- * screen this sheet came from; one already open is switched to, never opened
- * twice. Approving an app stays on its Mac.
+ * choice opens that app, window or phone as a tab in the one list and shows it
+ * over the screen this sheet came from; the Host reuses a window's or phone's
+ * one tab, so nothing opens twice. Approving an app stays on its Mac.
  */
 export function OpenAppScreen(props: OpenAppScreenProps): ReactNode {
   const { deploymentId } = props.route.params;
@@ -77,7 +84,7 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
   const insets = useContentInsets();
   const machines = useHostSelector(hostClient, selectMachines);
   const connected = useHostSelector(hostClient, selectConnected);
-  const places = usePlaceList(hostClient);
+  const openKeys = useOpenTabKeys(hostClient.getSnapshot().tabs);
   const browserProfiles = useHostSelector(hostClient, selectProfiles);
   const browserProfileHomes = useHostSelector(hostClient, selectHomes);
   const browsing = useHostSelector(hostClient, selectBrowsing);
@@ -133,6 +140,7 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
     );
     for (const app of apps) {
       if (app.target.kind !== "app") continue;
+      // Each window by its opaque handle, so a pick opens exactly that window.
       void hostClient.listComputerAppWindows(app.machineId, app.target.app).then(
         (list) => {
           if (current) setWindows((held) => new Map(held).set(app.connectionId, list));
@@ -160,17 +168,59 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
     const index = startPageIndex({ snapshot, places: [], localMachineId: hereId });
     return newTabProfiles(snapshot, index.profiles, hereId);
   }, [browserProfileHomes, browserProfiles, browsing, connection, hereId, hostClient, machines]);
-  const openTab = useCallback(
-    (profile: StartPageProfileChoice) => {
-      const target = newTabTarget({ browserProfileHomes, machines }, profile.identity, hereId);
-      const opening = hostClient.beginBrowserTabOpen(target, {
-        idempotencyKey: mutationIdempotencyKey("new-tab"),
-      });
+  const stillHere = useCallback(
+    () =>
+      mounted.current &&
+      navigation.isFocused() &&
+      hostClient.getSnapshot().deploymentId === deploymentId,
+    [deploymentId, hostClient, navigation],
+  );
+  const show = useCallback(
+    (tabId: TabId, editAddress = false) => {
       // The sheet goes first, so the tab opens over the screen it came from.
       navigation.goBack();
-      showPendingBrowserTab(navigation, { deploymentId, scope: "tabs" }, opening, {});
+      navigation.dispatch(
+        StackActions.push("WorkspaceBrowser", {
+          ...tabRoute(deploymentId, tabId),
+          ...(editAddress ? { editAddress } : {}),
+        }),
+      );
     },
-    [browserProfileHomes, deploymentId, hereId, hostClient, machines, navigation],
+    [deploymentId, navigation],
+  );
+  /** Opens the target as a tab and shows it, unless the person left meanwhile. */
+  const openTarget = useCallback(
+    async (target: TabTarget, key: string, name: string, phone: boolean) => {
+      setOpening(key);
+      setFailure(null);
+      try {
+        const tab = await hostClient.openTab(target);
+        if (stillHere()) show(tab.tabId, target.kind === "page");
+      } catch (error) {
+        if (!mounted.current) return;
+        const machineId = "computerId" in target ? target.computerId : null;
+        const machine = hostClient.getSnapshot().machines.find(({ id }) => id === machineId);
+        setFailure(
+          error instanceof HostClientRequestError && error.reason !== undefined
+            ? computerReasonWords(error.reason, {
+                machine: machine?.name ?? "This computer",
+                phone,
+                target: name,
+              })
+            : operationDetail(error, `${name} didn’t open.`),
+        );
+      } finally {
+        if (mounted.current) setOpening(null);
+      }
+    },
+    [hostClient, show, stillHere],
+  );
+  const openTab = useCallback(
+    (profile: StartPageProfileChoice) => {
+      const input = newTabTarget({ browserProfileHomes, machines }, profile.identity, hereId);
+      void openTarget(pageOpenTarget(input, "about:blank"), "new-tab", "The new tab", false);
+    },
+    [browserProfileHomes, hereId, machines, openTarget],
   );
 
   const sections = useMemo(
@@ -183,59 +233,10 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
     [groups],
   );
 
-  const show = useCallback(
-    (destination: PersonalSurfaceDestination) => {
-      // The sheet goes first, so the view opens over the screen it came from.
-      navigation.goBack();
-      navigation.dispatch(
-        StackActions.push("WorkspaceBrowser", tabsRoute(deploymentId, destination)),
-      );
-    },
-    [deploymentId, navigation],
-  );
-
-  const openApp = useCallback(
-    async (app: ApprovedComputerApp, target: ComputerViewTarget, key: string) => {
-      const held = heldView(places, app, target);
-      if (held !== null) {
-        show(held.destination);
-        return;
-      }
-      setOpening(key);
-      setFailure(null);
-      try {
-        const destination = await openOwnerView(
-          hostClient,
-          app.machineId,
-          target,
-          () =>
-            mounted.current &&
-            navigation.isFocused() &&
-            hostClient.getSnapshot().deploymentId === deploymentId,
-        );
-        if (destination !== null) show(destination);
-      } catch (error) {
-        if (!mounted.current) return;
-        const machine = hostClient.getSnapshot().machines.find(({ id }) => id === app.machineId);
-        setFailure(
-          error instanceof HostClientRequestError && error.reason !== undefined
-            ? computerReasonWords(error.reason, {
-                machine: machine?.name ?? "This computer",
-                phone: app.target.kind === "phone",
-                target: app.name,
-              })
-            : operationDetail(error, `${app.name} didn’t open.`),
-        );
-      } finally {
-        if (mounted.current) setOpening(null);
-      }
-    },
-    [deploymentId, hostClient, navigation, places, show],
-  );
   const open = useCallback(
-    (app: ApprovedComputerApp, target: ComputerViewTarget, key: string) =>
-      void openApp(app, target, key),
-    [openApp],
+    (app: ApprovedComputerApp, target: TabTarget, key: string) =>
+      void openTarget(target, key, app.name, app.target.kind === "phone"),
+    [openTarget],
   );
 
   const renderItem = useCallback(
@@ -247,12 +248,12 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
         hostClient={hostClient}
         last={index === section.data.length - 1}
         onOpen={open}
-        openWindows={openWindows(places, item, windows.get(item.connectionId))}
+        open={openKeys.has(openKey(item))}
         opening={opening}
         windows={windows.get(item.connectionId)}
       />
     ),
-    [connected, hostClient, open, opening, places, windows],
+    [connected, hostClient, open, openKeys, opening, windows],
   );
 
   return (
@@ -330,54 +331,41 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
 }
 
 /**
- * The person's own open view of exactly this target, if one is live: a phone's
- * screen, or a Mac app's view of the very window named. An app open naming no
- * window is the Host's to resolve to the front window, so it never matches
- * here; nor does a task's hold on the app.
+ * What a row opens with a tap: a phone, a Mac app's only window when the Mac
+ * has handed over its handle, or otherwise the app, for the Host to bind.
  */
-function heldView(
-  places: readonly PlaceItem[],
-  app: ApprovedComputerApp,
-  target: ComputerViewTarget,
-): PlaceItem | null {
-  return (
-    places.find((place) => {
-      const view = place.ownerView;
-      if (view === null || view.machineId !== app.machineId || view.state === "closed")
-        return false;
-      if (target.kind === "phone") return view.target.kind === "phone";
-      if (view.target.kind !== "app") return false;
-      if (view.target.app.bundleId.toLowerCase() !== target.app.bundleId.toLowerCase())
-        return false;
-      return target.window !== undefined && view.window?.id === target.window;
-    }) ?? null
-  );
+function rowTarget(app: ApprovedComputerApp, window: OwnerWindowInfo | undefined): TabTarget {
+  const computerId = RunnerIdSchema.parse(app.machineId);
+  if (app.target.kind === "phone") return { computerId, kind: "phone" };
+  return window
+    ? { computerId, kind: "window", windowId: window.windowId }
+    : { bundleId: app.target.app.bundleId, computerId, kind: "window" };
 }
 
-/**
- * What a row opens with a tap: a phone's screen, or a Mac app's only window
- * when the Mac has said which it is; otherwise the app, for the Host to resolve.
- */
-function rowTarget(
-  app: ApprovedComputerApp,
-  windows: readonly OwnerWindowInfo[] | null | undefined,
-): ComputerViewTarget {
-  return app.target.kind === "app" && windows?.length === 1
-    ? { ...app.target, window: windows[0]!.id }
-    : app.target;
+/** A phone's, or a Mac app's, key among the tabs already in the list. */
+function openKey(app: ApprovedComputerApp): string {
+  return app.target.kind === "phone"
+    ? `phone:${app.machineId}`
+    : `window:${app.machineId}:${app.target.app.bundleId.toLowerCase()}`;
 }
 
-/** The ids of this app's windows (or the phone's screen, as 0) the person already has open. */
-function openWindows(
-  places: readonly PlaceItem[],
-  app: ApprovedComputerApp,
-  windows: readonly OwnerWindowInfo[] | null | undefined,
-): readonly number[] {
-  if (app.target.kind === "phone") return heldView(places, app, app.target) ? [0] : [];
-  const target = app.target;
-  return (windows ?? []).flatMap((window) =>
-    heldView(places, app, { ...target, window: window.id }) ? [window.id] : [],
+/** The phones and Mac apps that already have a tab, as `openKey`s; redrawn only when that set changes. */
+function useOpenTabKeys(model: TabStore): ReadonlySet<string> {
+  const read = useCallback(() => {
+    const keys: string[] = [];
+    for (const tab of model.rows.values()) {
+      if (tab.kind === "phone") keys.push(`phone:${tab.computer.computerId}`);
+      if (tab.kind === "window" && tab.bundleId !== undefined)
+        keys.push(`window:${tab.computer.computerId}:${tab.bundleId.toLowerCase()}`);
+    }
+    return keys.sort().join("\n");
+  }, [model]);
+  const subscribe = useCallback(
+    (listener: () => void) => model.subscribeStructure(listener),
+    [model],
   );
+  const joined = useSyncExternalStore(subscribe, read, read);
+  return useMemo(() => new Set(joined.split("\n")), [joined]);
 }
 
 /** A computer's name over its apps, with why it can't open them when it can't. */
@@ -430,19 +418,16 @@ const AppRow = memo(function AppRow(props: {
   readonly first: boolean;
   readonly hostClient: HostClient;
   readonly last: boolean;
-  readonly onOpen: (app: ApprovedComputerApp, target: ComputerViewTarget, key: string) => void;
-  /** Windows already open as the person's own views; a single-window row is open when its is. */
-  readonly openWindows: readonly number[];
+  readonly onOpen: (app: ApprovedComputerApp, target: TabTarget, key: string) => void;
+  /** The phone, or one of this app's windows, already has a tab. */
+  readonly open: boolean;
   readonly opening: string | null;
   readonly windows: readonly OwnerWindowInfo[] | null | undefined;
 }): ReactNode {
   const { app, windows } = props;
   const busy = props.opening !== null && props.opening.startsWith(app.connectionId);
-  const tapTarget = rowTarget(app, windows);
-  const open =
-    tapTarget.kind === "phone"
-      ? props.openWindows.length > 0
-      : tapTarget.window !== undefined && props.openWindows.includes(tapTarget.window);
+  const tapTarget = rowTarget(app, windows?.length === 1 ? windows[0] : undefined);
+  const { open } = props;
   const detail = app.target.kind === "phone" ? "Screen" : windowWords(windows, open);
   const style = ({ pressed }: { readonly pressed: boolean }) => [
     styles.row,
@@ -499,11 +484,10 @@ const AppRow = memo(function AppRow(props: {
         onPresent={noop}
         onSettle={noop}
         options={windows.map((window) => ({
-          id: String(window.id),
+          id: window.windowId,
           label: window.title || "Untitled window",
-          selected: props.openWindows.includes(window.id),
           onPress: () =>
-            props.onOpen(app, { ...target, window: window.id }, `${app.connectionId}:${window.id}`),
+            props.onOpen(app, rowTarget(app, window), `${app.connectionId}:${window.windowId}`),
         }))}
         style={styles.menu}
         title={app.name}

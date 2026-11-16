@@ -1,3 +1,5 @@
+import type { TabServicePort } from "../../tabs/ports.js";
+import { PersonShowTargetSchema } from "@opensteer/core";
 type DelegationCall = ToolCall<"opensteer_task_delegate"> & {
   input: ToolCall<"opensteer_task_delegate">["input"] & { create?: true };
 };
@@ -57,7 +59,6 @@ import {
   type Request,
   type AssignmentSummary,
   compareSequence,
-  placeIdentityKey,
   ThreadIdSchema,
   MessageIdSchema,
   type AgentEvent,
@@ -81,7 +82,6 @@ import { computerAppIdentityKey } from "@opensteer/protocol";
 import type { BrowserService } from "../../browser/browser-service.js";
 import type { BrowserSourceService } from "../../browser/browser-source-service.js";
 import type { SavedLoginService } from "../../browser/saved-logins.js";
-import type { BrowserTabGroupService } from "../../browser/browser-tab-group-service.js";
 import type { PlaceContextService } from "../../computer-use/place-context-service.js";
 import type { ComputerUseService } from "../../computer-use/computer-use-service.js";
 
@@ -133,11 +133,26 @@ const unknownEnvironment = "Selected execution environment does not exist";
 const chooseExecutionNext = "See the current choices with opensteer_ai_account_list.";
 
 export class ProductToolHandlers {
+  async #readableTabPlaces<T extends { tabId: import("@opensteer/core").TabId }>(
+    owner: UserId,
+    rows: readonly T[],
+  ): Promise<T[]> {
+    const visible = await Promise.all(
+      rows.map(
+        async (row) =>
+          await this.#tabs?.get?.(owner, row.tabId).then(
+            () => true,
+            () => false,
+          ),
+      ),
+    );
+    return rows.filter((_, i) => visible[i]);
+  }
+
   readonly #deploymentId: DeploymentId;
   readonly #threads: ThreadService;
   readonly #realtime: Pick<RealtimeHub, "observe" | "sendToUsers">;
-  readonly #computerUse:
-    Pick<ComputerUseService, "sessionsForRunner" | "authorizeDisplay"> | undefined;
+  readonly #tabs: Pick<TabServicePort, "authorizeShow" | "get"> | undefined;
   readonly #personShow:
     | ((userId: RunToolScope["requestedBy"], message: PersonShowMessage) => Promise<number>)
     | undefined;
@@ -157,7 +172,6 @@ export class ProductToolHandlers {
     | "openAgentSession"
     | "requestAccess"
   >;
-  readonly #browserTabs: BrowserTabGroupService | undefined;
   readonly #canRunHarness: (environmentId: EnvironmentId, driverKind: HarnessId) => boolean;
   readonly #harnessAccessModes: (
     environmentId: EnvironmentId,
@@ -179,10 +193,8 @@ export class ProductToolHandlers {
     readonly threads: ThreadService;
     readonly realtime: Pick<RealtimeHub, "observe" | "sendToUsers">;
     readonly computerUse?: Pick<ComputerUseService, "sessionsForRunner" | "authorizeDisplay">;
-    readonly personShow?: (
-      userId: RunToolScope["requestedBy"],
-      message: PersonShowMessage,
-    ) => Promise<number>;
+    readonly personShow?: (userId: UserId, message: PersonShowMessage) => Promise<number>;
+    readonly tabs?: Pick<TabServicePort, "authorizeShow" | "get">;
     readonly supportsLoginFill?: (scope: RunToolScope) => boolean;
     readonly browserSources: Pick<BrowserSourceService, "agentCopyChromeCookies">;
     readonly savedLogins: Pick<SavedLoginService, "useSavedLogin" | "useCard">;
@@ -199,7 +211,6 @@ export class ProductToolHandlers {
       | "openAgentSession"
       | "requestAccess"
     >;
-    readonly browserTabs?: BrowserTabGroupService;
     readonly canRunHarness: (environmentId: EnvironmentId, driverKind: HarnessId) => boolean;
     /** The access modes an engine enforces on a computer; undefined when it cannot run there. */
     readonly harnessAccessModes: (
@@ -221,7 +232,7 @@ export class ProductToolHandlers {
     this.#threads = options.threads;
     this.#memoryPasses = options.memoryPasses;
     this.#realtime = options.realtime;
-    this.#computerUse = options.computerUse;
+    this.#tabs = options.tabs;
     this.#personShow = options.personShow;
     this.#supportsLoginFill = options.supportsLoginFill ?? (() => false);
     this.#browserSources = options.browserSources;
@@ -229,7 +240,6 @@ export class ProductToolHandlers {
     this.#deviceAccess = options.deviceAccess;
     this.#machineFullDiskAccess = options.machineFullDiskAccess;
     this.#browser = options.browser;
-    this.#browserTabs = options.browserTabs;
     this.#canRunHarness = options.canRunHarness;
     this.#harnessAccessModes = options.harnessAccessModes;
     this.#commands = options.commands;
@@ -273,91 +283,31 @@ export class ProductToolHandlers {
       }),
     }));
   }
-  async preparePersonShow({ caller, input }: ToolCall<"show_to_person">) {
+  async preparePersonShow({ caller, input }: ToolCall<"person_show">) {
+    const target = PersonShowTargetSchema.parse(input.target);
     const claims = requireRun(caller).claims;
     if (await this.#store.runAssignment(claims.runId))
       throw forbidden(assignedRunRefusal, assignedRunNext);
-
-    if (!this.#personShow) throw badRequest("Showing places is unavailable on this Host.");
-    let target: PersonShowMessage["target"];
-    if ("current" in input.target || "runId" in input.target) {
-      const targetRunId = "runId" in input.target ? input.target.runId : claims.runId;
-      if (targetRunId !== claims.runId) {
-        const run = await this.#store.database
-          .selectFrom("runs")
-          .select("threadId")
-          .where("id", "=", targetRunId)
-          .executeTakeFirst();
-        const thread = run
-          ? await this.#store.getThreadForOwner(run.threadId, claims.requestedBy)
-          : null;
-        if (!thread) throw forbidden("Run is unavailable to this user");
-      }
-      await this.#browser.drainRunPlaces(targetRunId);
-      const current = await this.#store.latestRunPlace(targetRunId);
-      if (!current)
-        throw badRequest(
-          "This Run has not worked in a place yet.",
-          "current" in input.target
-            ? "Pass target.tabId from Browser Harness listTabs()."
-            : "Read recentPlaces with opensteer_task_read.",
-        );
-      target = { place: current.data.place, runId: targetRunId };
-      const place = current.data.place;
-      if (place.kind === "phone") {
-        // A phone's tab outlives the Run's hold, and agents release before they reply.
-        const owners = await this.#store.effectiveMachineOwners([place.machineId]);
-        if (owners.get(place.machineId)?.effectiveOwner !== claims.requestedBy)
-          throw forbidden("This Run's current place is unavailable.");
-      } else if (place.kind === "app") {
-        const session = this.#computerUse
-          ?.sessionsForRunner(place.machineId)
-          .find(
-            (session) =>
-              session.runId === targetRunId &&
-              session.apps.some((app) => computerAppIdentityKey(app) === place.appKey),
-          );
-        if (!session || !this.#computerUse) throw forbidden("This Run's app session ended.");
-        await this.#computerUse.authorizeDisplay(
-          session.sessionId,
-          claims.requestedBy,
-          place.appKey,
-        );
-      }
-    } else target = "taskId" in input.target ? { threadId: input.target.taskId } : input.target;
-    const tabId =
-      "tabId" in target
-        ? target.tabId
-        : "place" in target && target.place.kind === "browser"
-          ? target.place.surfaceId
-          : null;
-    if (tabId !== null) {
-      if (!this.#browserTabs) throw badRequest("Saved tabs are unavailable on this Host.");
-      await this.#browserTabs.authorizeShow(
-        {
-          kind: "agent",
-          ownerId: claims.requestedBy,
-          threadId: claims.threadId,
-          agentBindingId: `run:${claims.runId}`,
-        },
-        tabId,
-      );
-    } else if ("threadId" in target) {
-      const targetThread = await this.#store.getThreadForOwner(target.threadId, claims.requestedBy);
-      if (!targetThread) throw forbidden("task is unavailable to this user");
-    }
+    if (!this.#personShow) throw badRequest("Showing tabs is unavailable on this Host.");
+    if ("tabId" in target) {
+      if (!this.#tabs) throw badRequest("Tabs are unavailable on this Host.");
+      await this.#tabs.authorizeShow(claims, target.tabId);
+    } else if (!(await this.#store.getThreadForOwner(target.taskId, claims.requestedBy)))
+      throw new OpensteerError({ code: "not_found", message: "Task not found." });
     return target;
   }
 
-  async show_to_person(call: ToolCall<"show_to_person">) {
+  async person_show(call: ToolCall<"person_show">) {
     const { caller, input, operationKey } = call;
     const claims = requireRun(caller).claims;
-    const requestId = operationId(caller, operationKey, "show_to_person");
+    const requestId = operationId(caller, operationKey, "person_show");
     const target = await this.preparePersonShow(call);
     if (!this.#personShow) throw badRequest("Showing places is unavailable on this Host.");
     const admission = await this.#store.admitRunToolCall(
-      runAdmission(caller, "show_to_person", input, requestId),
+      runAdmission(caller, "person_show", input, requestId),
     );
+    if (!admission.wasDuplicate && "tabId" in target)
+      await this.#tabs!.authorizeShow(claims, target.tabId);
     const connectedDevices = admission.wasDuplicate
       ? 0
       : await this.#personShow(claims.requestedBy, {
@@ -376,14 +326,14 @@ export class ProductToolHandlers {
     };
   }
 
-  async send_to_person({ caller, input, operationKey }: ToolCall<"send_to_person">) {
+  async person_notify({ caller, input, operationKey }: ToolCall<"person_notify">) {
     const claims = requireRun(caller).claims;
-    const requestId = operationId(caller, operationKey, "send_to_person");
+    const requestId = operationId(caller, operationKey, "person_notify");
     if (await this.#store.runAssignment(claims.runId))
       throw forbidden(assignedRunRefusal, assignedRunNext);
 
     const result = await this.#commands.publishPersonMessage({
-      admission: runAdmission(caller, "send_to_person", input, requestId),
+      admission: runAdmission(caller, "person_notify", input, requestId),
       message: input.message,
     });
     return {
@@ -569,14 +519,14 @@ export class ProductToolHandlers {
     const seen = new Set<string>();
     const references = recent.places.flatMap((event) => {
       if (!event.runId) return [];
-      const key = `${event.runId}:${placeIdentityKey(event.data.place)}`;
+      const key = `${event.runId}:${event.data.tabId}`;
       if (seen.has(key)) return [];
       seen.add(key);
       return [{ threadId: thread.id, runId: event.runId, ...event.data }];
     });
-    const recentPlaces = (await this.#browser.readablePlaces(caller.userId, references))
+    const recentPlaces = (await this.#readableTabPlaces(caller.userId, references))
       .slice(0, 10)
-      .map(({ runId, place, title, site }) => ({ runId, place, title, site }));
+      .map(({ runId, tabId, title, site }) => ({ runId, tabId, title, site }));
     const context = {
       thread: { ...thread, link: formatReferenceLink(thread.id, thread.title) },
       recentRuns: recent.runs.map(({ modelSelection, ...run }) => ({
@@ -755,11 +705,11 @@ export class ProductToolHandlers {
           : [],
     );
     const [places, owners, requests, messages] = await Promise.all([
-      this.#browser.readablePlaces(
+      this.#readableTabPlaces(
         caller.userId,
         events.flatMap((event) =>
           event.type === "place.entered"
-            ? [{ threadId, place: event.data.place, sequence: event.sequence }]
+            ? [{ threadId, tabId: event.data.tabId, sequence: event.sequence }]
             : [],
         ),
       ),

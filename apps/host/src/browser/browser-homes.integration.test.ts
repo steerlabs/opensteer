@@ -245,7 +245,7 @@ describeStore("Host browser homes", (it) => {
 
     const { browser, placements } = service(fixture);
     try {
-      expect((await browser.bootstrap(run.userId)).profileHomes).toEqual([run.runnerId]);
+      expect((await browser.workspaceBootstrap(run.userId)).profileHomes).toEqual([run.runnerId]);
       const home = await computer(fixture, run.userId);
       const foreign = createId("runner");
       placements.push({
@@ -257,7 +257,7 @@ describeStore("Host browser homes", (it) => {
         label: "Other member's Mac",
         environmentIds: [run.environmentId],
       });
-      const bootstrap = await browser.bootstrap(run.userId);
+      const bootstrap = await browser.workspaceBootstrap(run.userId);
       expect(bootstrap.profileHomes?.sort()).toEqual([run.runnerId, home].sort());
       expect(bootstrap.placements).toEqual([]);
       expect(bootstrap.available).toBe(false);
@@ -313,7 +313,7 @@ describeStore("Host browser homes", (it) => {
           .where("profileId", "=", profile.id)
           .executeTakeFirstOrThrow(),
       ).toEqual({ state: "unconfirmed", deletedAt: null });
-      const removed = await browser.bootstrap(run.userId);
+      const removed = await browser.workspaceBootstrap(run.userId);
       expect(removed.profileHomes).toEqual([run.runnerId]);
       expect(removed.profiles).toEqual([]);
       expect(removed.profileDeletions ?? []).toEqual([]);

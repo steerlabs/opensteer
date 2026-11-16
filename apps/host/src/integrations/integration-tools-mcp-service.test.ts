@@ -1,3 +1,4 @@
+import { ToolFailureSchema } from "@opensteer/core";
 import { createIntegrationMcpFixture } from "../mcp/integration-fixture.test-support.js";
 import { agentTools } from "@opensteer/agent-tools";
 
@@ -824,12 +825,14 @@ describe("Opensteer MCP integration access classes", () => {
       callExtra("write-under-read"),
     )) as { content: readonly { text: string }[]; isError: boolean };
     expect(response).toMatchObject({
-      content: [
-        {
-          text: 'Linear operation Create issue makes changes, and the owner has read access as Work. Call integration_request with integration "linear" and access "read-write"; do not retry this call until it is fulfilled.',
-          type: "text",
+      structuredContent: {
+        error: {
+          code: "access_denied",
+          next: null,
+          message:
+            'Linear operation Create issue makes changes, and the owner has read access as Work. Call integration_request with integration "linear" and access "read-write"; do not retry this call until it is fulfilled.',
         },
-      ],
+      },
       isError: true,
     });
   });
@@ -1000,9 +1003,16 @@ describe("Opensteer MCP integration access classes", () => {
       },
       callExtra("narrowed-computer-write"),
     );
-    expect(errorText(response)).toBe(
-      'Studio Mac allows reading only. Ask for read-write to send: call integration_request with integration "apple-messages" and access "read-write"; do not retry this call until it is fulfilled.',
-    );
+    expect(response).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: "access_denied",
+          message:
+            'Studio Mac allows reading only. Ask for read-write to send: call integration_request with integration "apple-messages" and access "read-write"; do not retry this call until it is fulfilled.',
+        },
+      },
+    });
   });
 
   it("does not short-circuit a read-write request above a computer's read-only ceiling", async () => {
@@ -1290,11 +1300,14 @@ describe("Opensteer MCP integration access classes", () => {
         callExtra("missing-account"),
       ),
     ).resolves.toMatchObject({
-      content: [
-        {
-          text: "The requested account is not available for this integration. Search again for its current account identity.",
+      structuredContent: {
+        error: {
+          code: "not_found",
+          next: null,
+          message:
+            "The requested account is not available for this integration. Search again for its current account identity.",
         },
-      ],
+      },
       isError: true,
     });
     expect(requests.createIntegrationAccessRequest).not.toHaveBeenCalled();
@@ -1916,7 +1929,9 @@ function result(value: unknown): Record<string, unknown> {
 }
 
 function errorText(value: unknown): string {
-  return (value as { content: readonly { text: string }[] }).content[0]?.text ?? "";
+  const response = value as { isError?: boolean; content: readonly { text: string }[] };
+  const text = response.content[0]?.text ?? "";
+  return response.isError ? ToolFailureSchema.parse(JSON.parse(text)).error.message : text;
 }
 
 describe("computer use discovery", () => {
@@ -1952,9 +1967,14 @@ describe("computer use discovery", () => {
       callExtra("mac-unknown"),
     );
     expect(answer).toMatchObject({ isError: true });
-    expect(errorText(answer)).toBe(
-      `No Mac set up for computer use has computerId ${unknown}. Search "Computer use" with integration_search to list your Macs and their computerIds.`,
-    );
+    expect(answer).toMatchObject({
+      structuredContent: {
+        error: {
+          code: "not_found",
+          message: `No Mac set up for computer use has computerId ${unknown}. Search "Computer use" with integration_search to list your Macs and their computerIds.`,
+        },
+      },
+    });
     expect(installedComputerApps).not.toHaveBeenCalled();
   });
   it("queries the Mac without icons and annotates blocked and unapproved results", async () => {

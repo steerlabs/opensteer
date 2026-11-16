@@ -72,15 +72,17 @@ function readEphemeralRange(): readonly [number, number] {
  * before listening. Claims last for this process, including after TCP teardown:
  * reusing a number would reintroduce delayed-listen and TIME_WAIT collisions.
  * UDP sockets are unreferenced; process exit releases them even after a crash.
+ * An explicit range permits ephemeral ports when the product requires that range.
  */
-export async function freePort(): Promise<number> {
-  const [first, last] = readEphemeralRange();
-  const minimum = 1024;
-  const count = 65536 - minimum;
+export async function freePort(range?: readonly [number, number]): Promise<number> {
+  const ephemeral = range ? undefined : readEphemeralRange();
+  const [minimum, maximum] = range ?? [1024, 65535];
+  const count = maximum - minimum + 1;
   const start = randomInt(count);
   for (let offset = 0; offset < count; offset++) {
     const port = minimum + ((start + offset) % count);
-    if ((port >= first && port <= last) || fetchBlockedPorts.has(port)) continue;
+    if ((ephemeral && port >= ephemeral[0] && port <= ephemeral[1]) || fetchBlockedPorts.has(port))
+      continue;
     const claim = createSocket("udp4");
     const probe = createServer();
     let retained = false;

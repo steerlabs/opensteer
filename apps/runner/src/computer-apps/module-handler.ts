@@ -1,3 +1,8 @@
+import {
+  RunnerIntegrationsWindowResolvedSchema,
+  type HostIntegrationsWindowResolve,
+  type RunnerIntegrationsWindowResolved,
+} from "@opensteer/protocol";
 import { RunFiles } from "../attachments/run-files.js";
 import { MacWindowVideoRelay, type MacVideoEvent } from "./mac-window-video-relay.js";
 import type { RunnerTransportPolicy } from "@opensteer/runner-client";
@@ -81,6 +86,7 @@ type IntegrationsStatus = Pick<
 >;
 
 type OutboundEvent =
+  | Pick<RunnerIntegrationsWindowResolved, "requestId" | "result" | "type">
   | Pick<RunnerIntegrationsPasswordSignInEvent, "type" | "event">
   | Pick<RunnerIntegrationsPasswordSignInResult, "type" | "requestId" | "result">
   | MacVideoEvent
@@ -246,6 +252,7 @@ export class ComputerAppModuleHandler {
       case "host.integrations.invoke":
         await this.#registerInvoke(message);
         return;
+      case "host.integrations.window-resolve":
       case "host.integrations.computer-app-windows":
         this.#registerComputerView(message);
         return;
@@ -309,7 +316,10 @@ export class ComputerAppModuleHandler {
   }
 
   #registerComputerView(
-    message: HostIntegrationsComputerView | HostIntegrationsComputerAppWindows,
+    message:
+      | HostIntegrationsComputerView
+      | HostIntegrationsComputerAppWindows
+      | HostIntegrationsWindowResolve,
   ): void {
     const stream = this.#stream;
     if (!stream || this.#inFlight.has(message.requestId)) return;
@@ -328,7 +338,8 @@ export class ComputerAppModuleHandler {
     void (async () => {
       let result:
         | RunnerIntegrationsComputerViewResult["result"]
-        | RunnerIntegrationsComputerAppWindowsResult["result"];
+        | RunnerIntegrationsComputerAppWindowsResult["result"]
+        | RunnerIntegrationsWindowResolved["result"];
       const timer = setTimeout(() => abort.abort(), message.timeoutMs);
       timer.unref();
       try {
@@ -336,6 +347,14 @@ export class ComputerAppModuleHandler {
           result = { kind: "error", code: "unsupported", message: computerUseUnsupportedSentence };
         else if (!admitted)
           result = { kind: "error", code: "unavailable", message: "That computer is busy." };
+        else if (message.type === "host.integrations.window-resolve")
+          result = {
+            kind: "ok",
+            value: await this.#computerUse.resolveTabWindow(message.target, {
+              signal: abort.signal,
+              deadline: receivedAt + message.timeoutMs,
+            }),
+          };
         else if (message.type === "host.integrations.computer-app-windows")
           result = {
             kind: "ok",
@@ -348,7 +367,7 @@ export class ComputerAppModuleHandler {
           };
       } catch (error) {
         const code =
-          message.type === "host.integrations.computer-app-windows"
+          message.type !== "host.integrations.computer-view"
             ? error instanceof ComputerUseBridgeError
               ? error.code
               : "failed"
@@ -374,7 +393,15 @@ export class ComputerAppModuleHandler {
       if (this.#inFlight.get(message.requestId)?.abort !== abort || this.#stream !== stream) return;
       this.#inFlight.delete(message.requestId);
       const response = { ...stream.fence, requestId: message.requestId, result };
-      if (message.type === "host.integrations.computer-app-windows")
+      if (message.type === "host.integrations.window-resolve")
+        await this.#send(
+          stream,
+          RunnerIntegrationsWindowResolvedSchema.parse({
+            ...response,
+            type: "runner.integrations.window-resolved",
+          }),
+        );
+      else if (message.type === "host.integrations.computer-app-windows")
         await this.#send(
           stream,
           RunnerIntegrationsComputerAppWindowsResultSchema.parse({

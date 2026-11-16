@@ -29,7 +29,7 @@ export function computerObservationContent(
         ...(observation.tree ? [observation.tree] : []),
         ...("windows" in observation && observation.windows.length
           ? [
-              `Windows: ${JSON.stringify(observation.windows.map(({ id, title, current }) => ({ id, title, current })))}`,
+              `Windows: ${JSON.stringify(observation.windows.map(({ windowId, title, current }) => ({ windowId, title, current })))}`,
             ]
           : []),
         ...("blockedBy" in observation && observation.blockedBy.length

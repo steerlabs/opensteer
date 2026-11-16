@@ -4,7 +4,8 @@ import { createRoot } from "react-dom/client";
 import { expect, test, vi } from "vitest";
 import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
-import { BrowserSessionIdSchema, hostApi } from "@opensteer/protocol";
+import { TabIdSchema, TabSchema, type Tab } from "@opensteer/core";
+import { BrowserSessionIdSchema, hostApi, type TabBootstrap } from "@opensteer/protocol";
 import { KeyedStreamReceiver } from "@opensteer/protocol/keyed-stream";
 import type {
   BrowserTabRecord,
@@ -97,92 +98,63 @@ test.each([false, true])(
     if (!bootstrap.ok) throw new Error("The seed Host did not provide bootstrap metadata");
     const base = bootstrap.data;
     const sessionId = BrowserSessionIdSchema.parse(admission.sessionId);
-    const browser = (): HostedBrowserBootstrap => {
+    const tabId = TabIdSchema.parse(f.surfaceId);
+    const browser = (): HostedBrowserBootstrap => ({
+      ...base.browser,
+      placements: [
+        {
+          kind: "runner",
+          runnerId: f.fence.runnerId,
+          runtimeId: "phone-runtime",
+          label: "Phone",
+          environmentIds: [],
+          available: true,
+        },
+      ],
+    });
+    // The phone's own pages, listed as the Host lists them: awake while live, asleep otherwise.
+    const tabs = (): TabBootstrap => {
       const receiver = new KeyedStreamReceiver<BrowserTabRecord, BrowserTabStreamMeta>();
       for (const message of f.server())
         if (message.type === "browser.tabs") receiver.apply(message.stream);
-      const records = [...receiver.rows.values()];
+      const rows: Tab[] = [...receiver.rows.values()].map((record) =>
+        TabSchema.parse({
+          tabId: record.id,
+          kind: "page",
+          title: record.title,
+          url: record.url || "about:blank",
+          profile: null,
+          computer: { computerId: f.fence.runnerId, name: "Phone" },
+          groupId: null,
+          state: record.state === "live" ? "open" : "asleep",
+          openedBy: "person",
+          usedBy: [],
+          createdAt: new Date(f.clock.now()).toISOString(),
+          updatedAt: new Date(f.clock.now()).toISOString(),
+        }),
+      );
       return {
-        ...base.browser,
-        placements: [
-          {
-            kind: "runner",
-            runnerId: f.fence.runnerId,
-            runtimeId: "phone-runtime",
-            label: "Phone",
-            environmentIds: [],
-            available: true,
-          },
-        ],
-        groups: {
-          complete: true,
-          rows: [
-            {
-              ...base.browser.groups!.rows[0]!,
-              id: sessionId,
-              sessionId,
-              state: "ready",
-              access: "read-write",
-              origin: "person",
-              placement: { kind: "runner", runnerId: f.fence.runnerId },
-              profileId: null,
-              runtimeId: "phone-runtime",
-              tabCount: records.length,
-            },
-          ],
-        },
-        tabs: [
-          {
-            groupId: sessionId,
-            complete: true,
-            rows: records.map((record) => ({
-              id: record.id,
-              sessionId,
-              title: record.title,
-              site: record.url,
-              iconRef: null,
-              order: record.order,
-              openerId: record.openerId,
-              createdAt: new Date(f.clock.now()).toISOString(),
-              state: record.state === "live" ? "live" : "suspended",
-              availability: "ready",
-              documentId: record.documentId,
-              loading: record.loading,
-              navigationFailed: record.navigationFailed,
-              canGoBack: record.canGoBack,
-              canGoForward: record.canGoForward,
-              occupants: [],
-            })),
-          },
-        ],
+        tabs: rows,
+        layout: { revision: 1, items: rows.map((row) => ({ kind: "tab", tabId: row.tabId })) },
+        complete: true,
       };
     };
     const sockets: { url: string; socket: Socket }[] = [];
     const dispatch = vi.fn(async () => {
-      await f.client({
-        type: "cdp.command",
-        requestId: uuid(),
-        command: {
-          method: "Opensteer.resumeTab",
-          parameters: { surfaceId: f.surfaceId },
-        },
-      });
+      // The Host restores the sleeping page on the phone that keeps it.
+      if (restore)
+        await f.client({
+          type: "cdp.command",
+          requestId: uuid(),
+          command: {
+            method: "Opensteer.resumeTab",
+            parameters: { surfaceId: f.surfaceId },
+          },
+        });
       return {
         type: "tab.activate",
-        tabId: f.surfaceId,
-        groupId: sessionId,
-        sessionId,
-        session: {
-          id: sessionId,
-          access: "read-write",
-          origin: "person",
-          state: "ready",
-          createdAt: new Date(f.clock.now()).toISOString(),
-          updatedAt: new Date(f.clock.now()).toISOString(),
-          placement: { kind: "runner", runnerId: f.fence.runnerId },
-          profileId: null,
-          runtimeId: "phone-runtime",
-        },
+        tab: tabs().tabs.find((tab) => tab.tabId === tabId),
+        viewer: { kind: "page", sessionId, surfaceId: tabId },
       };
     });
     const client = new HttpHostClient({
@@ -200,11 +172,15 @@ test.each([false, true])(
         if (name === "bootstrap.get")
           return Response.json({
             ok: true,
-            data: { ...base, deploymentId: f.deploymentId, browser: browser() },
+            data: { ...base, deploymentId: f.deploymentId, browser: browser(), tabs: tabs() },
           });
         const raw = url.searchParams.get("input") ?? init?.body;
         const payload = hostApi[name].payload.parse(typeof raw === "string" ? JSON.parse(raw) : {});
-        if (name === "commands.dispatch" && "type" in payload && payload.type === "tab.activate")
+        if (
+          name === "commands.dispatch" &&
+          "type" in payload &&
+          hostApi["commands.dispatch"].payload.parse(payload).type === "tab.activate"
+        )
           return Response.json({ ok: true, data: await dispatch() });
         return Response.json(await seed.rpc[name](payload as never));
       },
@@ -239,12 +215,14 @@ test.each([false, true])(
           snapshot: {
             ...seed.deploymentSnapshot(String(++sequence)),
             deploymentId: f.deploymentId,
-            resources: { appTabs: [], browser: browser() },
+            resources: { tabs: tabs(), browser: browser() },
           },
         });
       realtime.open();
       publish();
       realtime.receive({ type: "host.synchronized", sequence: "1" });
+      // The screen's own activation binds a live page's viewer before the page draws.
+      if (!restore) await client.activateTab(tabId);
       await act(async () => render(front));
       expect(container.textContent).toBe("Opening…");
       expect(present).not.toHaveBeenCalled();

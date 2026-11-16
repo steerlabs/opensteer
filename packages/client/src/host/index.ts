@@ -5,7 +5,6 @@ export * from "./agent-activity-model.js";
 export * from "./conversation-presentation.js";
 export * from "./client.js";
 export * from "./deployment-policy.js";
-export * from "./phone-tab.js";
 export * from "./browser-access.js";
 export * from "./browser-profile-settings.js";
 export * from "./browser-sign-in.js";
@@ -55,7 +54,11 @@ export * from "./browser-history.js";
 export * from "./navigation-input.js";
 export * from "./computer-view-retention.js";
 export * from "./action-review.js";
-export * from "./browser-tab-strip.js";
+export * from "./tab-strip.js";
+export * from "./tab-store.js";
+export * from "./tabs-client.js";
+export * from "./apps.js";
+export type { TabsClient, TabsReadModel, TabsHostSnapshot } from "./tabs-contract.js";
 export * from "./tab-list.js";
 
 export * from "./browser-preferences.js";
@@ -86,10 +89,7 @@ export * from "./connected-agents.js";
 
 export * from "./automatic-models.js";
 
-export type { AppTab } from "@opensteer/protocol";
-
 export * from "./browser-last-picture.js";
-export * from "./browser-thread-tabs.js";
 export * from "./browser-agent-follow.js";
 export * from "./harness-authentication.js";
 export * from "./account-name.js";
@@ -99,7 +99,6 @@ export * from "./subagent-model.js";
 export * from "./subagent-now.js";
 export * from "./node-detail.js";
 
-export { BrowserTabStore, type BrowserTabKey, type BrowserTabList } from "./browser-tab-store.js";
 export * from "./personal-team-links.js";
 export * from "./personal-stream-cache.js";
 export * from "./needs-you.js";
@@ -112,3 +111,5 @@ export * from "./asset-urls.js";
 
 export * from "./composer-references.js";
 export * from "./transcript-files.js";
+
+export * from "./tabs-contract.js";

@@ -1,4 +1,3 @@
-import { seedBrowserSession } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 
 import { act, useEffect, type ReactNode } from "react";
@@ -14,9 +13,16 @@ import type {
   BrowserFrameStore,
   BrowserFrameView,
   BrowserSessionSummary,
+  HostClient,
+  HostSnapshot,
 } from "@opensteer/client/host";
-import { BrowserCursorStore, BrowserTabStore, browserTabPicture } from "@opensteer/client/host";
-import { BrowserSurfaceIdSchema, TargetedBrowserClientMessageSchema } from "@opensteer/protocol";
+import { BrowserCursorStore, browserTabPicture } from "@opensteer/client/host";
+import { tabFixture, tabStoreFixture } from "@opensteer/client/test-support";
+import {
+  BrowserSessionIdSchema,
+  BrowserSurfaceIdSchema,
+  TargetedBrowserClientMessageSchema,
+} from "@opensteer/protocol";
 import type { PictureMetadata, PictureOutcome } from "../computers/phone-display-native.js";
 import { BrowserStream, type BrowserStreamProps } from "./browser-stream.js";
 
@@ -158,26 +164,22 @@ afterEach(() => {
 
 const surfaceId = BrowserSurfaceIdSchema.parse("srf_00000000-0000-4000-8000-000000000001");
 function session(viewerState: BrowserSessionSummary["viewerState"]): BrowserSessionSummary {
-  return seedBrowserSession(
-    {
-      access: "read-write",
-      attachedRunIds: [],
-      dialog: null,
-      error: null,
-      id: "bsn_00000000-0000-4000-8000-000000000001",
-      origin: "agent",
-      placement: { kind: "runner", runnerId: "runner-a" },
-      profileId: null,
-      runtimeId: "runtime-a",
-      state: "ready",
-      viewerError: null,
-      viewerState,
-      watchViewerError: null,
-      watchViewerState: "synchronized",
-    },
-    undefined,
-    [{ active: true, id: surfaceId, title: "A page", url: "https://example.com" }],
-  );
+  return {
+    access: "read-write",
+    attachedRunIds: [],
+    dialog: null,
+    error: null,
+    id: "bsn_00000000-0000-4000-8000-000000000001",
+    origin: "agent",
+    placement: { kind: "runner", runnerId: "runner-a" },
+    profileId: null,
+    runtimeId: "runtime-a",
+    state: "ready",
+    viewerError: null,
+    viewerState,
+    watchViewerError: null,
+    watchViewerState: "synchronized",
+  };
 }
 function frame(): BrowserFrameView {
   return {
@@ -238,9 +240,17 @@ function setup(interactive = true, cursor?: BrowserCursorStore) {
   const dropFeed = (after = 0) => {
     taken = after;
   };
-  const hostClient: BrowserStreamProps["hostClient"] = {
+  // The listed, awake page tab this device activated into the session.
+  const listed = {
+    tabs: tabStoreFixture([tabFixture({ tabId: surfaceId, title: "A page" })]),
+  } as unknown as HostSnapshot;
+  const hostClient: BrowserStreamProps["hostClient"] & Pick<HostClient, "tabViewer"> = {
     acceptBrowserWatchFrame: vi.fn(),
-    browserTabs: new BrowserTabStore(),
+    getSnapshot: () => listed,
+    tabViewer: (tabId) =>
+      tabId === surfaceId
+        ? { kind: "page", sessionId: BrowserSessionIdSchema.parse(sessionId), surfaceId }
+        : null,
     browserFrames: frames,
     browserWatchFrames: frames,
     retainBrowserViewer: vi.fn(() => {
@@ -741,7 +751,7 @@ describe.each(["image", "picture"] as const)(
 
     it("keeps one picture for the tab's row as it leaves, never per frame or from before a revocation", async () => {
       const { decode, emit, gap, hostClient, render } = setup();
-      const kept = () => browserTabPicture(hostClient, sessionId, surfaceId)?.uri ?? null;
+      const kept = () => browserTabPicture(hostClient, surfaceId)?.uri ?? null;
       render("synchronized");
       emit();
       await decode();

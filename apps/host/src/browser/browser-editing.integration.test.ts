@@ -1,3 +1,4 @@
+import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import {
   connectCallerMachine,
   startPrivateMachineHost,
@@ -263,10 +264,9 @@ integration("Host and Chromium editing contract", () => {
           Buffer.from(screenshot.data, "base64"),
         );
       };
-      const bootstrap = await runtime.browser.bootstrap(owner.id);
-      const surfaceId = bootstrap.tabs.find((group) => group.groupId === opened.session.id)?.rows[0]
-        ?.id;
-      if (!surfaceId) throw new Error("Missing browser tab in bootstrap");
+      const id = runtime.browser.pageInventory(opened.session.id)?.records.keys().next().value;
+      if (!id) throw new Error("Missing browser target");
+      const surfaceId = BrowserSurfaceIdSchema.parse(id);
       for (const viewer of [person, other, old])
         viewer.send({ type: "stream.subscribe", surfaceId, frames: false });
       await vi.waitFor(() => {
@@ -464,6 +464,31 @@ integration("Host and Chromium editing contract", () => {
       expect(await evaluate("filePaste")).toMatchObject({ trusted: true, type: "image/png" });
       checks.push("10 MB PNG trusted file paste through Host and Runner relay");
       await evaluate("t.onpaste=null;t.value='';t.focus()");
+      const shiftSettled = (action: "down" | "up") =>
+        vi.waitFor(
+          async () =>
+            expect(
+              z
+                .array(
+                  z.object({
+                    step: z.string(),
+                    type: z.string().optional(),
+                    action: z.string().optional(),
+                    code: z.string().optional(),
+                  }),
+                )
+                .parse(await engineTrace!())
+                .some(
+                  (event) =>
+                    event.step === "input.done" &&
+                    event.type === "input.key" &&
+                    event.action === action &&
+                    event.code === "ShiftLeft",
+                ),
+              "The native key action did not complete",
+            ).toBe(true),
+          { timeout: 5000 },
+        );
       person.send({
         type: "input.key",
         surfaceId,
@@ -472,6 +497,7 @@ integration("Host and Chromium editing contract", () => {
         code: "ShiftLeft",
         modifiers: ["shift"],
       });
+      await shiftSettled("down");
       for (let index = 0; index < 40; index++) {
         const id = randomUUID();
         other.send({
@@ -495,6 +521,7 @@ integration("Host and Chromium editing contract", () => {
         code: "ShiftLeft",
         modifiers: [],
       });
+      await shiftSettled("up");
       const recovered = randomUUID();
       other.send({
         type: "clipboard.paste-data",

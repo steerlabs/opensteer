@@ -1,562 +1,320 @@
-import { withTimeout } from "@opensteer/shared/withTimeout";
-import { randomUUID } from "node:crypto";
-import { afterEach, describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
+import { BrowserRuntime, type BrowserAttachment } from "@opensteer/browser-runtime-core";
 import {
-  BrowserSurfaceIdSchema,
-  browserHostMethods,
-  type BrowserSessionId,
-} from "@opensteer/protocol";
+  FakeIsolatingLauncher,
+  FakeContext,
+  FakePage,
+} from "@opensteer/browser-runtime-core/test-support";
+import { TabStore, type DatabaseSchema } from "@opensteer/database";
 import {
-  BrowserAgentTabListResultSchema,
-  BrowserAgentTabOpenResultSchema,
-  BrowserAgentTabUseResultSchema,
-} from "@opensteer/protocol/browser-agent";
-import { BrowserTabGroupStore, PersonalTabStore } from "@opensteer/database";
-import {
-  connectCallerMachine,
-  createMachineAccessDatabase,
-  dispatchCallerRun,
-  enrollmentToken,
-  startPrivateMachineHost,
-  stopRun,
-} from "../integrations/personal-machine.test-support.js";
-import { BrowserTabGroupService } from "./browser-tab-group-service.js";
-import { startBrowserRuntime } from "./browser-runtime.test-support.js";
+  createStoreFixture,
+  personalBrowserRepository,
+} from "@opensteer/database/test-support/store";
+import { ownTestDatabaseProducer } from "@opensteer/database/test-support/database";
+import { BrowserAttachTicketClaimsSchema, type InitialPageReady } from "@opensteer/protocol";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { EventEmitter } from "node:events";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { sql, type Kysely } from "kysely";
+import { describe, expect, it, vi } from "vitest";
+import { BrowserService, type BrowserRuntimeConnection } from "./browser-service.js";
+import { BrowserAttachTicketSigner } from "./browser-ticket.js";
+import type { RunToolScope } from "../agents/run-tool-tokens.js";
 
-const integration = describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL);
-const cleanups: (() => Promise<void>)[] = [];
-afterEach(async () => {
-  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
-});
-
-async function setup() {
-  const database = await createMachineAccessDatabase(process.env.OPENSTEER_TEST_DATABASE_URL!);
-  cleanups.push(() => database.drop());
-  const host = await startPrivateMachineHost(database.url, { remoteAccess: true });
-  cleanups.push(() => host.close());
-  const caller = await connectCallerMachine(host, {
-    name: "Tabs caller",
-    token: await host.hostingRunnerEnrollmentToken,
-  });
-  cleanups.push(() => caller.close());
-  const run = await dispatchCallerRun(host, caller, { key: "tabs", title: "Tabs" });
-  const runtime = await startBrowserRuntime(
-    host.hostPort,
-    await enrollmentToken(host, {
-      allowedModules: ["browser"],
-      idempotencyKey: "browser",
-      name: "Tabs computer",
-    }),
-    {
-      agentReady: true,
-      personalTabs: true,
-      targetedStreaming: true,
-      surfaceState: true,
-      uniqueTabs: true,
-      tabCommands: true,
-    },
-  );
-  cleanups.push(() => runtime.close());
-  await vi.waitFor(() => expect(host.runtime.browser.available).toBe(true), { timeout: 2000 });
-  const browser = host.runtime.browser;
-  const actor = {
-    ownerId: host.ownerId,
-    agentBindingId: `run:${run.runId}`,
-    threadId: run.threadId,
-    environmentId: host.ownerEnvironmentId,
-  };
-  const request = async (path: string, body?: unknown, token = run.toolsToken) =>
-    fetch(new URL(`/internal/v1/browser-agent/${path}`, host.origin), {
-      method: body === undefined ? "GET" : "POST",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
-  const guest = (operationKey = randomUUID()) =>
-    browser.openAgentTab(actor, { identity: { kind: "guest" }, operationKey });
-  return { host, caller, run, runtime, browser, actor, request, guest };
-}
-
-integration("agent tabs", () => {
-  it("reuses Guest within a task, separates tasks, replays opens, and joins a person's live profile browser", async () => {
-    const f = await setup();
-    const key = randomUUID();
-    const first = await f.guest(key);
-    expect(await f.guest(key)).toEqual(first);
-    const second = await f.guest();
-    expect(second.sessionId).toBe(first.sessionId);
-    expect(second.tabId).not.toBe(first.tabId);
-    const other = await dispatchCallerRun(f.host, f.caller, { key: "other", title: "Other task" });
-    const otherGuest = await f.browser.openAgentTab(
-      { ...f.actor, agentBindingId: `run:${other.runId}`, threadId: other.threadId },
-      { identity: { kind: "guest" }, operationKey: randomUUID() },
-    );
-    expect(otherGuest.sessionId).not.toBe(first.sessionId);
-    const profile = await f.host.store.createBrowserProfile({
-      ownerId: f.host.ownerId,
-      name: "Work",
-      homeRunnerId: f.runtime.runnerId,
-      idempotencyKey: randomUUID(),
-    });
-    const person = await f.browser.openTab(f.host.ownerId, {
-      type: "browser.tab.open",
-      identity: { kind: "profile", profileId: profile.id },
-      idempotencyKey: randomUUID(),
-    });
-    const before = f.runtime.connectionCount();
-    const joined = await f.browser.openAgentTab(f.actor, {
-      identity: { kind: "profile", profile: "wOrK" },
-      operationKey: randomUUID(),
-    });
-    expect(joined.sessionId).toBe(person.sessionId);
-    expect(f.runtime.connectionCount()).toBe(before);
-    expect(
-      (await f.host.store.getBrowserSessionForOwner(otherGuest.sessionId, f.host.ownerId))?.opener,
-    ).toMatchObject({ kind: "task", threadId: other.threadId });
-    expect(
-      (await f.host.store.listActiveBrowserSessionsForAgentBinding(f.actor.agentBindingId)).map(
-        (r) => r.id,
-      ),
-    ).toContain(person.sessionId);
-    await expect(
-      f.browser.openAgentTab(f.actor, {
-        identity: { kind: "profile", profile: "Missing" },
-        operationKey: randomUUID(),
-      }),
-    ).rejects.toMatchObject({ message: expect.stringContaining("browser_profile_list") });
-    await f.host.store.createBrowserProfile({
-      ownerId: f.host.ownerId,
-      name: "WORK",
-      homeRunnerId: f.runtime.runnerId,
-      idempotencyKey: randomUUID(),
-    });
-    await expect(
-      f.browser.openAgentTab(f.actor, {
-        identity: { kind: "profile", profile: "Work" },
-        operationKey: randomUUID(),
-      }),
-    ).rejects.toMatchObject({ message: expect.stringContaining("ambiguous") });
-    // Guest's computer is chosen only among this person's browser computers.
-    await expect(
-      f.browser.openAgentTab(f.actor, {
-        identity: { kind: "guest", computer: createId("runner") },
-        operationKey: randomUUID(),
-      }),
-    ).rejects.toMatchObject({
-      message: expect.stringContaining("does not run a connected browser"),
-    });
-  });
-
-  it("serializes concurrent opens of one profile through browser startup", async () => {
-    const f = await setup();
-    const profile = await f.host.store.createBrowserProfile({
-      ownerId: f.host.ownerId,
-      name: "Research",
-      homeRunnerId: f.runtime.runnerId,
-      idempotencyKey: randomUUID(),
-    });
-    const before = f.runtime.connectionCount();
-    const tabs = await Promise.all(
-      [1, 2, 3].map(() =>
-        f.browser.openAgentTab(f.actor, {
-          identity: { kind: "profile", profile: profile.id },
-          operationKey: randomUUID(),
+class RuntimeConnection extends EventEmitter implements BrowserRuntimeConnection {
+  readyState = 1;
+  initialPage: InitialPageReady | undefined;
+  readonly attachment: Promise<BrowserAttachment>;
+  readonly commands: string[] = [];
+  constructor(runtime: BrowserRuntime, ticket: string) {
+    super();
+    this.attachment = Promise.resolve()
+      .then(() =>
+        runtime.attach(ticket, {
+          sendFrame: async () => {},
+          sendServer: async (message) => {
+            if (this.readyState === 1)
+              this.emit("message", Buffer.from(JSON.stringify(message)), false);
+          },
         }),
-      ),
-    );
-    expect(new Set(tabs.map((tab) => tab.sessionId)).size).toBe(1);
-    expect(new Set(tabs.map((tab) => tab.tabId)).size).toBe(3);
-    expect(f.runtime.connectionCount() - before).toBe(1);
-  });
-
-  it("rechecks a revoked Run after profile preparation before starting a browser", async () => {
-    const f = await setup();
-    const profile = await f.host.store.createBrowserProfile({
-      ownerId: f.host.ownerId,
-      name: "Held",
-      homeRunnerId: f.runtime.runnerId,
-      idempotencyKey: randomUUID(),
-    });
-    const entered = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    const original = f.host.store.getBrowserProfileStorage.bind(f.host.store);
-    const held = vi
-      .spyOn(f.host.store, "getBrowserProfileStorage")
-      .mockImplementation(async (id) => {
-        entered.resolve();
-        await withTimeout(release.promise, 3000, {
-          timeoutError: () => new Error("profile preparation was not released"),
-        });
-        return original(id);
-      });
-    const opening = f.browser.openAgentTab(f.actor, {
-      identity: { kind: "profile", profile: profile.id },
-      operationKey: randomUUID(),
-    });
-    const result = opening.catch((error: unknown) => error);
-    try {
-      await withTimeout(entered.promise, 2000, {
-        timeoutError: () => new Error("profile preparation never started"),
-      });
-      await stopRun(f.host, f.run, "revoke-preparing-open");
-    } finally {
-      release.resolve();
-    }
-    expect(await result).toBeInstanceOf(Error);
-    expect(f.runtime.connectionCount()).toBe(0);
-    held.mockRestore();
-  });
-
-  it("uses a usable live tab without restore eligibility, wakes asleep tabs, and restores an ended browser", async () => {
-    const f = await setup();
-    const opened = await f.guest();
-    f.runtime.publishTabs(
-      {
-        surfaces: [
-          {
-            id: opened.tabId,
-            title: "Live application page",
-            url: "file:///unrestorable",
-            state: "live",
-          },
-        ],
-      },
-      opened.sessionId,
-    );
-    await f.browser.flushPendingTabDescriptors();
-    expect(await f.browser.useAgentTab(f.actor, opened.tabId)).toMatchObject({
-      ...opened,
-      reloaded: false,
-    });
-    f.runtime.publishTabs(
-      {
-        surfaces: [
-          {
-            id: opened.tabId,
-            title: "Saved page",
-            url: "https://saved.test/path",
-            state: "suspended",
-          },
-        ],
-      },
-      opened.sessionId,
-    );
-    await vi.waitFor(
-      () => expect(f.browser.tabStateOf(opened.sessionId, opened.tabId)).toBe("suspended"),
-      { timeout: 2000 },
-    );
-    expect(await f.browser.useAgentTab(f.actor, opened.tabId)).toMatchObject({
-      ...opened,
-      reloaded: true,
-    });
-    f.runtime.sendServer({ type: "browser.status", state: "closed" }, opened.sessionId);
-    await vi.waitFor(
-      async () =>
-        expect(
-          (await f.host.store.getBrowserSessionForOwner(opened.sessionId, f.host.ownerId))?.state,
-        ).toBe("closed"),
-      { timeout: 2000 },
-    );
-    const restored = await f.browser.useAgentTab(f.actor, opened.tabId);
-    expect(restored.tabId).toBe(opened.tabId);
-    expect(restored.sessionId).not.toBe(opened.sessionId);
-    expect(restored.reloaded).toBe(true);
-  });
-
-  it("reopens a dormant tab in its restarted browser as the agent's page", async () => {
-    const f = await setup();
-    const kept = await f.guest();
-    const saved = await f.guest();
-    f.runtime.publishTabs(
-      {
-        surfaces: [
-          { id: kept.tabId, title: "Kept", url: "https://kept.test/", state: "live" },
-          { id: saved.tabId, title: "Saved", url: "https://saved.test/", state: "live" },
-        ],
-      },
-      kept.sessionId,
-    );
-    await f.browser.flushPendingTabDescriptors();
-    f.runtime.sendServer({ type: "browser.status", state: "closed" }, kept.sessionId);
-    await vi.waitFor(
-      async () =>
-        expect(
-          (await f.host.store.getBrowserSessionForOwner(kept.sessionId, f.host.ownerId))?.state,
-        ).toBe("closed"),
-      { timeout: 2000 },
-    );
-    // Restoring one tab restarts its browser; its sibling stays dormant until used.
-    await f.browser.useAgentTab(f.actor, kept.tabId);
-    const before = f.runtime.receivedCommands().length;
-    await f.browser.useAgentTab(f.actor, saved.tabId).catch(() => undefined);
-    const reopen = f.runtime
-      .receivedCommands()
-      .slice(before)
-      .map(
-        (message) =>
-          (message as { command?: { method?: string; parameters?: Record<string, unknown> } })
-            .command,
       )
-      .find(
-        (command) =>
-          command?.method === browserHostMethods.openTab &&
-          command.parameters?.idempotencyKey === `restore:${saved.tabId}`,
-      );
-    expect(reopen?.parameters?.operationAuthority).toEqual(expect.any(String));
-  });
-
-  it("lists the person's arrangement with complete URLs, identity, filters, pagination and totals without waking tabs", async () => {
-    const f = await setup();
-    const opened = await f.guest();
-    const a = BrowserSurfaceIdSchema.parse("a".repeat(512)),
-      b = BrowserSurfaceIdSchema.parse("catalog-b"),
-      c = BrowserSurfaceIdSchema.parse("catalog-c");
-    f.runtime.publishTabs(
-      {
-        surfaces: [
-          { id: a, title: "Alpha", url: "https://search.test/a?needle=one#full", state: "live" },
-          { id: b, title: "Beta", url: "https://search.test/b?needle=two", state: "suspended" },
-          { id: c, title: "Gamma", url: "https://elsewhere.test/c", state: "live" },
-        ],
-      },
-      opened.sessionId,
-    );
-    await vi.waitFor(() => expect(f.browser.tabStateOf(opened.sessionId, b)).toBe("suspended"), {
-      timeout: 2000,
-    });
-    await f.browser.flushPendingTabDescriptors();
-    const groups = new BrowserTabGroupService({
-      groups: new BrowserTabGroupStore(f.host.store.database),
-      browser: f.browser,
-      publish: () => undefined,
-    });
-    await groups.move(
-      { kind: "person", ownerId: f.host.ownerId },
-      {
-        item: { tabIds: [c] },
-        to: { groupId: null, before: { tabId: a } },
-        idempotencyKey: randomUUID(),
-      },
-    );
-    const first = BrowserAgentTabListResultSchema.parse(
-      await (await f.request("tabs?limit=1")).json(),
-    );
-    expect(first).toMatchObject({
-      total: 3,
-      tabs: [{ tabId: c, profile: null, computer: "Tabs computer" }],
-      nextCursor: expect.any(String),
-    });
-    const second = BrowserAgentTabListResultSchema.parse(
-      await (await f.request(`tabs?limit=1&cursor=${first.nextCursor}`)).json(),
-    );
-    expect(second).toMatchObject({
-      total: 3,
-      tabs: [{ tabId: a, url: "https://search.test/a?needle=one#full" }],
-    });
-    const filtered = BrowserAgentTabListResultSchema.parse(
-      await (await f.request("tabs?query=needle&state=asleep")).json(),
-    );
-    expect(filtered).toMatchObject({
-      total: 1,
-      tabs: [{ tabId: b, state: "asleep" }],
-      nextCursor: null,
-    });
-    expect((await f.request(`tabs?state=asleep&cursor=${first.nextCursor}`)).status).toBe(400);
-    const profile = await f.host.store.createBrowserProfile({
-      ownerId: f.host.ownerId,
-      name: "Catalog identity",
-      homeRunnerId: f.runtime.runnerId,
-      idempotencyKey: randomUUID(),
-    });
-    const named = await f.browser.openAgentTab(f.actor, {
-      identity: { kind: "profile", profile: profile.id },
-      operationKey: randomUUID(),
-    });
-    const byProfile = BrowserAgentTabListResultSchema.parse(
-      await (await f.request("tabs?query=Catalog%20identity")).json(),
-    );
-    expect(byProfile).toMatchObject({
-      total: 1,
-      tabs: [
-        {
-          tabId: named.tabId,
-          profile: { id: profile.id, name: profile.name },
-          usedByThisTask: true,
-        },
-      ],
-    });
-    await groups.group(
-      { kind: "person", ownerId: f.host.ownerId },
-      { tabIds: [a, b], title: "Needle group", idempotencyKey: randomUUID() },
-    );
-    const byGroup = BrowserAgentTabListResultSchema.parse(
-      await (await f.request("tabs?query=Needle%20group")).json(),
-    );
-    expect(byGroup.total).toBe(2);
-    // Groups come back whatever the query matched, so an agent can find one to change.
-    const unmatched = BrowserAgentTabListResultSchema.parse(
-      await (await f.request("tabs?query=no-such-tab")).json(),
-    );
-    expect(unmatched.total).toBe(0);
-    expect(unmatched.groups).toEqual([
-      expect.objectContaining({ title: "Needle group", tabCount: 2, createdBy: "person" }),
-    ]);
-    expect(f.browser.tabStateOf(opened.sessionId, b)).toBe("suspended");
-  });
-
-  it("refuses driving and mutations at a read-only ceiling, hides another owner's tab and refuses revoked Runs", async () => {
-    const f = await setup();
-    const opened = await f.guest();
-    await f.host.store.database
-      .updateTable("runs")
-      .set({ accessMode: "approval-required" })
-      .where("id", "=", f.run.runId)
-      .execute();
-    expect((await f.request("tabs")).status).toBe(200);
-    for (const [path, body] of [
-      ["tabs/use", { tabId: opened.tabId }],
-      ["tabs/open", { identity: { kind: "guest" }, operationKey: randomUUID() }],
-      ["tabs/close", { tabIds: [opened.tabId], operationKey: randomUUID() }],
-      ["tabs/organize", { action: "group", tabIds: [opened.tabId], operationKey: randomUUID() }],
-    ] as const) {
-      const response = await f.request(path, body);
-      expect(response.status).toBe(403);
-      expect(await response.json()).toMatchObject({
-        error: { message: expect.stringContaining("read-only") },
+      .then((attachment) => {
+        this.initialPage = attachment.initialPage;
+        return attachment;
       });
-    }
-    await expect(
-      f.browser.agentBackend({ ...f.actor, sessionId: opened.sessionId }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    await expect(
-      f.browser.attachCdpForAgent({ ...f.actor, sessionId: opened.sessionId }, () => undefined),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    await expect(
-      f.browser.attachActionsForAgent({ ...f.actor, sessionId: opened.sessionId }, () => undefined),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    await f.host.store.database
-      .updateTable("runs")
-      .set({ accessMode: "full-access" })
-      .where("id", "=", f.run.runId)
+    void this.attachment.catch((error) => this.emit("error", error));
+  }
+  send(data: string, _options: { binary: false }, callback: (error?: Error) => void): void {
+    const message = JSON.parse(data) as { command?: { method: string } };
+    if (message.command) this.commands.push(message.command.method);
+    void this.attachment
+      .then((attachment) => attachment.handle(data))
+      .then(
+        () => callback(),
+        (error) => callback(error),
+      );
+  }
+  close(): void {
+    if (this.readyState !== 1) return;
+    this.readyState = 3;
+    void this.attachment
+      .then(
+        (attachment) => attachment.close(),
+        () => undefined,
+      )
+      .finally(() => this.emit("close", 1000, Buffer.from("closed")));
+  }
+  terminate(): void {
+    this.close();
+  }
+}
+const integration = describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL);
+integration("page tab adapter", () => {
+  it("binds live pages without a resume and restores an ended session once without changing membership", async () => {
+    const fixture = await createStoreFixture(),
+      f = await fixture.startRunFixture("page-tabs");
+    const root = await mkdtemp(join(tmpdir(), "opensteer-tab-runtime-"));
+    const { database, store } = fixture;
+    await database
+      .updateTable("runners")
+      .set({ allowedModules: sql`'["agents","browser"]'::jsonb` })
+      .where("id", "=", f.runnerId)
       .execute();
-    await expect(
-      f.browser.useAgentTab({ ...f.actor, ownerId: createId("user") }, opened.tabId),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    await stopRun(f.host, f.run, "revoke-tabs");
-    expect((await f.request("tabs")).status).toBe(403);
-    await expect(f.browser.useAgentTab(f.actor, opened.tabId)).rejects.toThrow();
-  });
-
-  it("pins sign-in to the exact surface and refuses a stale session binding", async () => {
-    const f = await setup();
-    const opened = await f.guest();
-    const sibling = await f.guest();
-    const target = await f.browser.signInTarget({ ...f.actor, tabId: opened.tabId });
-    expect(target).toMatchObject({ sessionId: opened.sessionId, tabId: opened.tabId });
-    f.browser.setRequestPins("exact", [
-      { sessionId: opened.sessionId, runId: f.run.runId, surfaceId: opened.tabId },
-    ]);
+    const tabs = new TabStore(database as unknown as Kysely<DatabaseSchema>);
+    const launcher = new FakeIsolatingLauncher();
+    const runtime = new BrowserRuntime({
+      runtimeId: "tabs-test",
+      launcher,
+      sessionFilesRoot: root,
+      ticketVerifier: {
+        verify: async (token) =>
+          BrowserAttachTicketClaimsSchema.parse(
+            JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString()),
+          ),
+      },
+    });
+    const connections: RuntimeConnection[] = [],
+      errors: unknown[] = [];
+    const browser = new BrowserService({
+      deploymentId: f.deploymentId,
+      hostOrigin: new URL("http://127.0.0.1"),
+      personal: true,
+      repository: personalBrowserRepository(store),
+      tabs,
+      tabPlaces: { write: async () => undefined, publish: () => {}, notice: () => {} },
+      signer: new BrowserAttachTicketSigner({
+        keyId: "test",
+        privateKey: generateKeyPairSync("ed25519").privateKey,
+      }),
+      onDeploymentEvent: () => {},
+      onSessionsChanged: () => {},
+      onError: (error) => errors.push(error),
+      targetResolver: {
+        placements: () => [
+          {
+            kind: "runner",
+            runnerId: f.runnerId,
+            runtimeId: "tabs-test",
+            label: "Computer",
+            available: true,
+            agents: true,
+            environmentIds: [f.environmentId],
+          },
+        ],
+        resolve: (placement) =>
+          placement.runnerId === f.runnerId
+            ? {
+                runtimeId: "tabs-test",
+                placementKey: "test",
+                cdpBoundary: true,
+                sharedControl: true,
+                targetControl: true,
+                surfaceState: 1,
+                tabRestoreVersion: true,
+                connect: (ticket) => {
+                  const connection = new RuntimeConnection(runtime, ticket);
+                  connections.push(connection);
+                  return connection;
+                },
+              }
+            : undefined,
+      },
+    });
+    await ownTestDatabaseProducer(fixture.databaseUrl, async () => ({
+      close: async () => {
+        await browser.close();
+        await runtime.shutdown();
+        await rm(root, { recursive: true, force: true });
+      },
+    }));
+    const claims: RunToolScope = {
+      aud: "opensteer-run-tools",
+      iss: "opensteer-host",
+      iat: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + 3600,
+      jti: randomUUID(),
+      requestedBy: f.userId,
+      threadId: f.threadId,
+      runId: f.runId,
+      environmentId: f.environmentId,
+      runnerId: f.runnerId,
+      runnerBootId: f.runnerBootId,
+      bindingGeneration: f.bindingGeneration,
+    };
+    const actor = { kind: "run", claims } as const;
+    const descriptor = await browser.pageTabs.open(
+      actor,
+      { kind: "page", url: "https://example.com/saved", guest: true },
+      "page",
+    );
+    const initialContext = [...launcher.browsersByPartition.values()].at(-1)!
+      .context as FakeContext;
+    const initialOpener = initialContext.pages()[0]!;
+    initialContext.addPage(
+      new FakePage({
+        opener: initialOpener,
+        title: "Initial popup",
+        url: "https://example.com/initial-popup",
+      }),
+    );
     await vi.waitFor(
       () =>
-        expect(f.runtime.receivedCommands()).toContainEqual(
-          expect.objectContaining({ type: "session.state", pinned: [opened.tabId] }),
-        ),
-      { timeout: 2000 },
-    );
-    expect(sibling.sessionId).toBe(opened.sessionId);
-    await expect(
-      f.browser.signInTarget({
-        ...f.actor,
-        tabId: opened.tabId,
-        sessionId: "bsn_00000000-0000-4000-8000-000000000000" as BrowserSessionId,
-      }),
-    ).rejects.toMatchObject({ code: "conflict" });
-    f.browser.setRequestPins("exact", []);
-    const tabs = new PersonalTabStore(f.host.store.database);
-    await tabs.close(f.host.ownerId, opened.tabId);
-    await expect(f.browser.signInTarget({ ...f.actor, tabId: opened.tabId })).rejects.toMatchObject(
-      { code: "conflict" },
-    );
-  });
-
-  it("authenticates the routes and returns tab bindings through the Run token", async () => {
-    const f = await setup();
-    expect((await f.request("tabs", undefined, "bad-token")).status).toBe(401);
-    const response = await f.request("tabs/open", {
-      identity: { kind: "guest" },
-      operationKey: "route-key",
-    });
-    expect(response.status, await response.clone().text()).toBe(200);
-    const opened = BrowserAgentTabOpenResultSchema.parse(await response.json());
-    const used = await f.request("tabs/use", { tabId: opened.tabId });
-    expect(used.status, await used.clone().text()).toBe(200);
-    expect(BrowserAgentTabUseResultSchema.parse(await used.json())).toMatchObject({
-      ...opened,
-      reloaded: false,
-    });
-    const closed = await f.request("tabs/close", {
-      tabIds: [opened.tabId],
-      operationKey: "close-key",
-    });
-    expect(closed.status, await closed.clone().text()).toBe(200);
-    expect(await closed.json()).toEqual({ closed: [opened.tabId], failed: [] });
-    expect(f.runtime.receivedCommands()).toContainEqual(
-      expect.objectContaining({
-        type: "cdp.command",
-        command: expect.objectContaining({ method: browserHostMethods.closeTab }),
-      }),
-    );
-  });
-  it("keeps Browser-off from landing between an agent's admission and its open", async () => {
-    const f = await setup();
-    await f.guest();
-    const order: string[] = [];
-    const entered = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    const original = f.browser.withRunnerAdmission.bind(f.browser);
-    let holding = true;
-    const lane = vi
-      .spyOn(f.browser, "withRunnerAdmission")
-      .mockImplementation((runnerId, action) => {
-        if (!holding) return original(runnerId, action);
-        holding = false;
-        return original(runnerId, async () => {
-          entered.resolve();
-          await withTimeout(release.promise, 3000, {
-            timeoutError: () => new Error("the held admission was not released"),
-          });
-          const result = await action();
-          order.push("agent-sent");
-          return result;
-        });
-      });
-    const opening = f.guest();
-    await withTimeout(entered.promise, 2000, {
-      timeoutError: () => new Error("the open never entered the computer's admission lane"),
-    });
-    const off = f.browser.withRunnerAdmission(f.runtime.runnerId, async () => {
-      order.push("off");
-    });
-    release.resolve();
-    await opening;
-    await off;
-    lane.mockRestore();
-    expect(order).toEqual(["agent-sent", "off"]);
-  });
-
-  it("lists an offline computer's tabs instead of failing the whole list", async () => {
-    const f = await setup();
-    const opened = await f.guest();
-    await f.runtime.close();
-    // Using the tab is what needs its computer; that refusal shows it went offline.
-    await vi.waitFor(
-      async () =>
-        expect((await f.request("tabs/use", { tabId: opened.tabId })).status).not.toBe(200),
+        expect(
+          [...browser.pageInventory(descriptor.pageBinding!.sessionId)!.records.values()].some(
+            (page) => page.url === "https://example.com/initial-popup",
+          ),
+        ).toBe(true),
       { timeout: 3000 },
     );
-    const response = await f.request("tabs");
-    expect(response.status, await response.clone().text()).toBe(200);
-    const listed = BrowserAgentTabListResultSchema.parse(await response.json());
-    expect(listed.tabs.map((tab) => tab.tabId)).toContain(opened.tabId);
+    await browser.flushPendingTabDescriptors();
+    expect((await tabs.snapshot(f.userId)).rows).toEqual([]);
+    await tabs.open(descriptor, "page");
+    await browser.pageTabs.admitted!(descriptor);
+    expect(
+      (await tabs.snapshot(f.userId)).rows.some(
+        (page) => page.url === "https://example.com/initial-popup",
+      ),
+    ).toBe(true);
+    let row = await tabs.get(f.userId, descriptor.id);
+    if (!row) throw new Error("Admitted page missing");
+    const first = await withTimeout(browser.bindPage(claims, row), 3000, {
+      timeoutError: () => new Error("Live page bind did not complete"),
+    });
+    expect(first).toMatchObject({
+      tabId: row.id,
+      sessionId: row.pageBinding!.sessionId,
+      reloaded: false,
+    });
+    expect(connections.flatMap((connection) => connection.commands)).not.toContain(
+      "Opensteer.resumeTab",
+    );
+    expect(
+      await browser.signInTarget({ ownerId: f.userId, tabId: row.id, sessionId: first.sessionId }),
+    ).toMatchObject({ tabId: row.id });
+    let viewerOpen = true;
+    const viewer = await browser.attach(
+      f.userId,
+      first.sessionId,
+      {
+        id: "viewer",
+        isOpen: () => viewerOpen,
+        close: () => {
+          viewerOpen = false;
+        },
+        send: async () => {},
+      },
+      { authSessionId: createId("authSession"), mode: "control", signedIn: async () => true },
+    );
+    await viewer.handle(
+      Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: row.id, frames: false })),
+      false,
+    );
+    const siblingWrite = await browser.pageTabs.open(
+      actor,
+      { kind: "page", url: "https://example.com/sibling", guest: true },
+      "sibling",
+    );
+    await tabs.open(siblingWrite, "sibling");
+    await browser.pageTabs.admitted!(siblingWrite);
+    const sibling = (await tabs.get(f.userId, siblingWrite.id))!;
+    expect(sibling.pageBinding?.sessionId).toBe(first.sessionId);
+    const oldRow = row;
+    await tabs.close(f.userId, [row.id], "close-held");
+    await expect(
+      viewer.handle(
+        Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: row.id, frames: false })),
+        false,
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(
+      await browser.signInTarget({ ownerId: f.userId, tabId: row.id, sessionId: first.sessionId }),
+    ).toBeNull();
+    expect(connections.flatMap((connection) => connection.commands)).not.toContain(
+      "Opensteer.closeTab",
+    );
+    await tabs.reopen(f.userId, row.id, "reopen");
+    row = (await tabs.get(f.userId, row.id))!;
+    let nextViewerOpen = true;
+    const nextViewer = await browser.attach(
+      f.userId,
+      first.sessionId,
+      {
+        id: "next-viewer",
+        isOpen: () => nextViewerOpen,
+        close: () => {
+          nextViewerOpen = false;
+        },
+        send: async () => {},
+      },
+      { authSessionId: createId("authSession"), mode: "control", signedIn: async () => true },
+    );
+    await nextViewer.handle(
+      Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: row.id, frames: false })),
+      false,
+    );
+    await browser.pageTabs.closeViewers(f.userId, oldRow);
+    expect(viewerOpen).toBe(false);
+    expect(nextViewerOpen).toBe(true);
+    viewer.close();
+    nextViewer.close();
+    await browser.stop(f.userId, first.sessionId);
+    expect(await tabs.get(f.userId, row.id)).toMatchObject({ id: row.id, generation: 3 });
+    const restored = await withTimeout(browser.bindPage(claims, row), 3000, {
+      timeoutError: () => new Error("Page restoration did not complete"),
+    });
+    expect(restored.tabId).toBe(row.id);
+    expect(restored.sessionId).not.toBe(first.sessionId);
+    expect(restored.reloaded).toBe(true);
+    expect((await browser.bindPage(claims, (await tabs.get(f.userId, row.id))!)).reloaded).toBe(
+      false,
+    );
+    const restoredContext = [...launcher.browsersByPartition.values()].at(-1)!
+      .context as FakeContext;
+    const siblingRestored = await browser.bindPage(claims, sibling);
+    expect(siblingRestored.sessionId).not.toBe(restored.sessionId);
+    expect(connections).toHaveLength(3);
+    const context = restoredContext;
+    const opener = context.pages()[0] as FakePage;
+    opener.navigate("https://example.com/after-sibling", "A after sibling restoration");
+    context.addPage(
+      new FakePage({ opener, title: "Popup after sibling", url: "https://example.com/popup" }),
+    );
+    await vi.waitFor(
+      async () => {
+        await browser.flushPendingTabDescriptors();
+        expect((await tabs.get(f.userId, row.id))?.url).toBe("https://example.com/after-sibling");
+        expect(
+          (await tabs.snapshot(f.userId)).rows.some(
+            (row) => row.url === "https://example.com/popup",
+          ),
+        ).toBe(true);
+      },
+      { timeout: 3000 },
+    );
+    expect((await tabs.snapshot(f.userId)).rows).toHaveLength(4);
+    expect(errors).toEqual([]);
   });
 });

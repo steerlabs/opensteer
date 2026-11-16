@@ -1,3 +1,8 @@
+import {
+  HostIntegrationsWindowResolveSchema,
+  ComputerUseWindowResolveResultSchema,
+  type RunnerIntegrationsWindowResolved,
+} from "@opensteer/protocol";
 import { type DisplaySource, type MacWindowTarget } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
 import { OpensteerError, type RunId, type RunnerId } from "@opensteer/core";
@@ -329,6 +334,10 @@ interface AttachedIntegrations {
     RunnerAuxiliaryRequestId,
     (target: MacWindowTarget | null) => void
   >;
+  readonly pendingWindowQueries: Map<
+    RunnerAuxiliaryRequestId,
+    (result: RunnerIntegrationsWindowResolved["result"]) => void
+  >;
   readonly pendingOwnerWindows: Map<
     RunnerAuxiliaryRequestId,
     (result: RunnerIntegrationsComputerAppWindowsResult["result"]) => void
@@ -403,6 +412,7 @@ export class ComputerAppHub {
       displayAvailable: false,
       pendingViews: new Map(),
       pendingOwnerWindows: new Map(),
+      pendingWindowQueries: new Map(),
       displayResolutions: new Map(),
       mcpSessions: new Map(),
       peer,
@@ -512,6 +522,10 @@ export class ComputerAppHub {
     }
     if (message.type === "runner.integrations.display.resolved") {
       entry.displayResolutions.get(message.requestId)?.(message.target);
+      return;
+    }
+    if (message.type === "runner.integrations.window-resolved") {
+      entry.pendingWindowQueries.get(message.requestId)?.(message.result);
       return;
     }
     if (message.type === "runner.integrations.computer-app-windows-result") {
@@ -801,6 +815,10 @@ export class ComputerAppHub {
     );
   }
 
+  displayUnavailableReason(runnerId: RunnerId): "unsupported" | null {
+    const entry = this.#byRunner.get(runnerId);
+    return entry?.displayAvailable === false ? "unsupported" : null;
+  }
   async ownerWindows(
     runnerId: RunnerId,
     app: ComputerAppIdentity,
@@ -865,6 +883,87 @@ export class ComputerAppHub {
       }, options.timeoutMs + computerUseAnswerGraceMs);
       timer.unref();
       entry.pendingOwnerWindows.set(requestId, finish);
+      options.signal?.addEventListener("abort", abort, { once: true });
+      void this.#submit(entry, frame).then(
+        (submitted) => {
+          if (submitted === "sent") return;
+          finish({
+            kind: "error",
+            code: "failed",
+            message: "The window listing could not be sent.",
+          });
+          if (submitted === "timed-out") this.#dropForSubmissionTimeout(entry, null);
+        },
+        () => finish({ kind: "error", code: "failed", message: "The computer disconnected." }),
+      );
+      if (options.signal?.aborted) abort();
+    });
+  }
+
+  async resolveWindow(
+    runnerId: RunnerId,
+    target: { windowId: import("@opensteer/core").WindowId } | { app: ComputerAppIdentity },
+    options: { timeoutMs: number; signal?: AbortSignal },
+  ): Promise<import("./../computer-use/native-tab-targets.js").NativeWindowQueryResult> {
+    const entry = this.#byRunner.get(runnerId);
+    if (this.#closed || !entry || Date.parse(entry.stream.streamLeaseExpiresAt) <= Date.now())
+      throw new ComputerAppWindowsError("offline", "That computer is offline.");
+    if (
+      !this.ownerViewSupported(runnerId) ||
+      entry.stream.identity.modules.integrations?.platform !== "darwin"
+    )
+      throw new ComputerAppWindowsError(
+        "incompatible-version",
+        "Update Opensteer on that Mac to list its windows.",
+      );
+    if (options.signal?.aborted)
+      throw new ComputerAppWindowsError("failed", "The window listing was cancelled.");
+    if (entry.pendingWindowQueries.size >= 128)
+      throw new ComputerAppWindowsError("busy", "That computer is busy.");
+    const requestId = RunnerAuxiliaryRequestIdSchema.parse(`cai:${randomUUID()}`);
+    const frame = HostIntegrationsWindowResolveSchema.parse({
+      ...entry.stream.fence,
+      type: "host.integrations.window-resolve",
+      module: "integrations",
+      target,
+      requestId,
+      timeoutMs: options.timeoutMs,
+    });
+    return new Promise((resolve, reject) => {
+      const finish = (result: RunnerIntegrationsWindowResolved["result"]) => {
+        if (!entry.pendingWindowQueries.delete(requestId)) return;
+        clearTimeout(timer);
+        options.signal?.removeEventListener("abort", abort);
+        if (result.kind === "error") {
+          reject(new ComputerAppWindowsError(result.code, result.message));
+          return;
+        }
+        const parsed = ComputerUseWindowResolveResultSchema.safeParse(result.value);
+        if (!parsed.success) {
+          reject(
+            new ComputerAppWindowsError(
+              "failed",
+              "The computer returned an unreadable window list.",
+            ),
+          );
+          return;
+        }
+        resolve(parsed.data);
+      };
+      const abort = () => {
+        finish({ kind: "error", code: "failed", message: "The window listing was cancelled." });
+        void this.#cancel(entry, requestId);
+      };
+      const timer = setTimeout(() => {
+        finish({
+          kind: "error",
+          code: "failed",
+          message: "The computer did not list its windows in time.",
+        });
+        void this.#cancel(entry, requestId);
+      }, options.timeoutMs + computerUseAnswerGraceMs);
+      timer.unref();
+      entry.pendingWindowQueries.set(requestId, finish);
       options.signal?.addEventListener("abort", abort, { once: true });
       void this.#submit(entry, frame).then(
         (submitted) => {
@@ -1543,6 +1642,8 @@ export class ComputerAppHub {
     for (const settle of entry.pendingPasswords.values()) settle({ type: "unavailable" });
     for (const settle of entry.displayResolutions.values()) settle(null);
     entry.displayResolutions.clear();
+    for (const finish of entry.pendingWindowQueries.values())
+      finish({ kind: "error", code: "failed", message: "The computer disconnected." });
     for (const finish of entry.pendingOwnerWindows.values())
       finish({ kind: "error", code: "failed", message });
     for (const pending of entry.pendingViews.values())

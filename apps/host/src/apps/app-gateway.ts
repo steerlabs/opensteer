@@ -50,7 +50,7 @@ export function hasAppAuthority(headers: IncomingHttpHeaders): boolean {
 }
 
 interface AppGatewayOptions {
-  apps: Pick<AppService, "get" | "response" | "connect">;
+  apps: Pick<AppService, "get" | "response" | "connect" | "onRevoked">;
   identity: Pick<IdentityService, "isSessionCurrent">;
   signingKey: Uint8Array;
   canonicalOrigin: string;
@@ -61,9 +61,18 @@ interface AppGatewayOptions {
 export class AppGateway {
   readonly #tickets = new Map<string, { identity: AppIdentity; expiry: number }>();
   readonly #sockets = new Map<Duplex, number>();
+  readonly #admitted = new Map<string, Set<{ controller: AbortController; socket: Duplex }>>();
   readonly #options: AppGatewayOptions;
   constructor(options: AppGatewayOptions) {
     this.#options = options;
+    // Deleting an app ends its live responses and upgrades at once, not at the next recheck.
+    options.apps.onRevoked((appId) => {
+      for (const { controller, socket } of this.#admitted.get(appId) ?? []) {
+        controller.abort();
+        socket.destroy();
+      }
+      this.#admitted.delete(appId);
+    });
   }
 
   entryUrl(
@@ -403,7 +412,7 @@ export class AppGateway {
       !(await this.#options.identity.isSessionCurrent(identity.sessionId, identity.userId))
     )
       throw new Error("App session ended");
-    await this.#options.apps.get(identity.appId, identity.userId);
+    await this.#options.apps.get(identity.userId, identity.appId);
   }
   #track(socket: Duplex, controller: AbortController): () => void {
     this.#sockets.set(socket, (this.#sockets.get(socket) ?? 0) + 1);
@@ -424,6 +433,20 @@ export class AppGateway {
     return cleanup;
   }
   #recheck(identity: AppIdentity, controller: AbortController, socket: Duplex): void {
+    if (controller.signal.aborted) return;
+    const admitted = this.#admitted.get(identity.appId) ?? new Set();
+    const entry = { controller, socket };
+    admitted.add(entry);
+    this.#admitted.set(identity.appId, admitted);
+    controller.signal.addEventListener(
+      "abort",
+      () => {
+        admitted.delete(entry);
+        if (!admitted.size && this.#admitted.get(identity.appId) === admitted)
+          this.#admitted.delete(identity.appId);
+      },
+      { once: true },
+    );
     let timer: ReturnType<typeof setTimeout>;
     const schedule = () => {
       if (controller.signal.aborted) return;

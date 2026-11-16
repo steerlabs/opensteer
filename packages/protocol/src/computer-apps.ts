@@ -1,4 +1,8 @@
 import {
+  ComputerUseWindowResolveParamsSchema,
+  ComputerUseWindowResolveResultSchema,
+} from "./computer-use.js";
+import {
   MacOwnerInputResetParamsSchema,
   MacOwnerInputVersionSchema,
   MacOwnerInputParamsSchema,
@@ -341,6 +345,7 @@ export const HostIntegrationsMcpCloseSchema = z.strictObject({
 export type HostIntegrationsMcpClose = z.infer<typeof HostIntegrationsMcpCloseSchema>;
 
 export type HostIntegrationsOperation =
+  | HostIntegrationsWindowResolve
   | HostIntegrationsPluginDataRemove
   | HostIntegrationsPasswordSignIn
   | z.infer<typeof HostIntegrationsDisplayResolveSchema>
@@ -758,6 +763,30 @@ export const RunnerIntegrationsDisplaySourceEndedSchema = z.strictObject({
   reason: z.enum(["session-ended", "owner-ended", "owner-expired", "owner-revoked"]),
 });
 
+export const HostIntegrationsWindowResolveSchema = z.strictObject({
+  ...integrationsFrameBase,
+  type: z.literal("host.integrations.window-resolve"),
+  target: ComputerUseWindowResolveParamsSchema,
+  requestId: RunnerAuxiliaryRequestIdSchema,
+  timeoutMs: z.number().int().min(1).max(30000),
+});
+export type HostIntegrationsWindowResolve = z.infer<typeof HostIntegrationsWindowResolveSchema>;
+export const RunnerIntegrationsWindowResolvedSchema = z.strictObject({
+  ...integrationsFrameBase,
+  type: z.literal("runner.integrations.window-resolved"),
+  requestId: RunnerAuxiliaryRequestIdSchema,
+  result: z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("ok"), value: ComputerUseWindowResolveResultSchema }),
+    z.strictObject({
+      kind: z.literal("error"),
+      code: ComputerUseErrorCodeSchema,
+      message: z.string().min(1).max(1000),
+    }),
+  ]),
+});
+export type RunnerIntegrationsWindowResolved = z.infer<
+  typeof RunnerIntegrationsWindowResolvedSchema
+>;
 export const HostToIntegrationsModuleMessageSchema = z
   .discriminatedUnion("type", [
     HostIntegrationsPasswordSignInSchema,
@@ -778,6 +807,7 @@ export const HostToIntegrationsModuleMessageSchema = z
     HostIntegrationsInvokeSchema,
     HostIntegrationsComputerUseSchema,
     HostIntegrationsComputerAppWindowsSchema,
+    HostIntegrationsWindowResolveSchema,
     HostIntegrationsComputerViewSchema,
     HostIntegrationsComputerUseStopRecordedSchema,
     HostIntegrationsCancelSchema,
@@ -804,6 +834,7 @@ export const IntegrationsModuleEventSchema = z
     RunnerIntegrationsDisplayClipboardSchema,
     RunnerIntegrationsStatusSchema,
     RunnerIntegrationsComputerAppWindowsResultSchema,
+    RunnerIntegrationsWindowResolvedSchema,
     RunnerIntegrationsComputerViewResultSchema,
     RunnerIntegrationsResultSchema,
     RunnerIntegrationsComputerUseResultSchema,

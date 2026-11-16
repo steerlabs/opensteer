@@ -1,4 +1,4 @@
-import { DeviceRefusalContextSchema } from "@opensteer/protocol";
+import { ComputerUseTabRequestSchema, DeviceRefusalContextSchema } from "@opensteer/protocol";
 import { utf8Prefix } from "@opensteer/core";
 import { z } from "zod";
 
@@ -28,25 +28,32 @@ export const ReplContentSchema = z.discriminatedUnion("type", [
   }),
 ]);
 export type ReplContent = z.infer<typeof ReplContentSchema>;
-export const ReplRequestSchema = z.object({
-  operation: z.enum([
-    "apps",
-    "phones",
-    "windows",
-    "bind",
-    "observe",
-    "click",
-    "type",
-    "key",
-    "setValue",
-    "scroll",
-    "act",
-    "release",
-    "sleep",
-  ]),
-  target: z.string().max(256).nullable(),
-  args: z.record(z.string(), z.json()),
-});
+export const ReplRequestSchema = z
+  .object({
+    operation: z.enum([
+      "apps",
+      "phones",
+      "tab",
+      "windows",
+      "bind",
+      "observe",
+      "click",
+      "type",
+      "key",
+      "setValue",
+      "scroll",
+      "act",
+      "release",
+      "sleep",
+    ]),
+    target: z.string().max(256).nullable(),
+    args: z.record(z.string(), z.json()),
+  })
+  .superRefine((request, context) => {
+    if (request.operation !== "tab") return;
+    const parsed = ComputerUseTabRequestSchema.safeParse(request);
+    if (!parsed.success) for (const issue of parsed.error.issues) context.addIssue({ ...issue });
+  });
 export type ReplRequest = z.infer<typeof ReplRequestSchema>;
 export const ReplReplySchema = z.object({
   value: z.json(),

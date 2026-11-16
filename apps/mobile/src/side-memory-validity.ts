@@ -1,8 +1,11 @@
-import { placeDestinationEnded, type HostSnapshot } from "@opensteer/client/host";
+import type { HostSnapshot } from "@opensteer/client/host";
 import { isRecord } from "@opensteer/shared/isRecord";
-import { paramsDestination } from "./browser/surface-route.js";
+import { paramsTabId } from "./browser/surface-route.js";
 
-/** List absence, initial bootstrap and failed reads never establish deletion. */
+/**
+ * List absence, initial bootstrap and failed reads never establish deletion: a
+ * tab route is gone only when the connected Host's complete list lacks its tab.
+ */
 export function personalRouteInvalid(
   route: { readonly name: string; readonly params?: object | undefined },
   snapshot: HostSnapshot,
@@ -18,22 +21,8 @@ export function personalRouteInvalid(
     snapshot.can === null
   )
     return false;
-  const destination = paramsDestination(params);
-  if (destination === null) return false;
-  if (destination.kind === "browser") {
-    const group = snapshot.browserTabs?.groupForSession(destination.sessionId);
-    if (group === undefined || !snapshot.browserTabs?.tabs(group).whole) return false;
-  } else if (destination.kind === "opensteer-app") {
-    if (snapshot.appTabs === undefined) return false;
-  } else {
-    const machine = snapshot.machines.find((row) => row.id === destination.machineId);
-    if (machine === undefined || (destination.kind === "app" && !machine.computerUse)) return false;
-    if (
-      destination.kind === "app" &&
-      destination.source?.kind === "owner-view" &&
-      machine.computerUse?.ownerViews === undefined
-    )
-      return false;
-  }
-  return placeDestinationEnded(snapshot, destination);
+  const tabId = paramsTabId(params);
+  const tabs = snapshot.tabs;
+  if (tabId === null || tabs.syncing || !tabs.complete) return false;
+  return tabs.get(tabId) === undefined;
 }

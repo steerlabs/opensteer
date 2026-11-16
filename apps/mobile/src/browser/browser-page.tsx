@@ -2,23 +2,18 @@ import { useTabSuggestions } from "./tab-suggestions.js";
 import { BrowserPageMenu, type BrowserPageMenuAction } from "./browser-page-menu.js";
 import { editingClipboardMaxBytes } from "@opensteer/protocol/editing";
 import {
-  useActionReview,
-  useBrowserSessionGroupId,
-  useBrowserTab,
-  useBrowserTabs,
   useBrowserViewerSurface,
+  usePlaceActivity,
+  useTab,
+  useTabStrip,
 } from "@opensteer/client/react";
-import { ActionReviewSheet } from "../ui/action-review.js";
 import {
   passkeyNotice,
   passwordSaveResultMessage,
-  browserActingTabId,
   browserSiteForTab,
   browserTabTitle,
   parseNavigationInput,
-  reviewHostAction,
   webSearchUrl,
-  type BrowserTabOpenHandle,
   type BrowserCommand,
   type BrowserSessionSummary,
   type HostClient,
@@ -159,12 +154,12 @@ export function BrowserPage(props: {
   readonly session: BrowserSessionSummary;
   readonly tabId: string;
   readonly editAddress: boolean;
-  readonly onOpenTab: (opening: BrowserTabOpenHandle) => void;
+  /** A new tab of this browser's profile, at this address, opened by the person. */
+  readonly onOpenTab: (url: string) => void;
   /** Another tab of this browser, chosen from its address or its suggestions. */
   readonly onSwitchTab: (tabId: string) => void;
   /** This browser's tabs, as a sheet. */
   readonly onShowTabs: () => void;
-  readonly onClosed: () => void;
   /** Which way the page came from another tab, by tab order; 0 when it opened here. */
   readonly arrival?: -1 | 0 | 1;
   /** The device the page runs on, where that is not this one. */
@@ -182,10 +177,26 @@ export function BrowserPage(props: {
   const [prompt, setPrompt] = useState<{ readonly id: string; readonly text: string } | null>(null);
   const promptText = prompt?.id === dialog?.id ? (prompt?.text ?? "") : "";
   // This tab's own row, and the exact page a viewer holds: nothing of the other tabs.
-  const groupId = useBrowserSessionGroupId(hostClient, session.id);
-  const row = useBrowserTab(hostClient, groupId, tabId);
-  const catalogTab = row?.documentId == null ? undefined : row;
+  const listed = useTab(hostClient, tabId);
   const viewer = useBrowserViewerSurface(hostClient, session.id, tabId);
+  // The row as the page chrome reads it: the viewer's page adds what the page shows now.
+  const row = useMemo(
+    () =>
+      listed
+        ? {
+            title: listed.title,
+            site: listed.url ?? "",
+            documentId: viewer?.documentId ?? null,
+            loading: viewer?.loading ?? false,
+            navigationFailed: viewer?.navigationFailed ?? false,
+            // Until the page is shown, both directions stay offered.
+            canGoBack: viewer?.canGoBack ?? true,
+            canGoForward: viewer?.canGoForward ?? true,
+          }
+        : undefined,
+    [listed, viewer],
+  );
+  const catalogTab = row?.documentId == null ? undefined : row;
   // A page waking keeps its row's title and site until it commits: never a blank address.
   const committed =
     viewer && !(row?.site && (viewer.url === "" || viewer.url === "about:blank"))
@@ -239,7 +250,6 @@ export function BrowserPage(props: {
   const [dragSelect, setDragSelect] = useState(false);
   const [inputEpoch, setInputEpoch] = useState(0);
   const [signingIn, setSigningIn] = useState(false);
-  const openingTab = useRef(false);
   useEffect(() => () => onTyping(false), [onTyping]);
   const [aspect, setAspect] = useState(defaultPageAspect);
   const [drawnGeometry, setDrawnGeometry] = useState<number | null>(null);
@@ -372,8 +382,7 @@ export function BrowserPage(props: {
   );
   const channelReady =
     interactive && props.connected && session.state === "ready" && feed.status === "live";
-  const { review: closeReview, ask: askClose, dismiss: dismissClose } = useActionReview(hostClient);
-  const ready = channelReady && closeReview === null;
+  const ready = channelReady;
   // A tap the page answers by focusing a field brings the keyboard up, as a
   // tap on a field does in Safari. Only a page that reports its fields can say
   // so; on an older one the tap offers the keyboard instead.
@@ -483,35 +492,21 @@ export function BrowserPage(props: {
     setAddressDraft(null);
     setAddressOpen(false);
   };
+  // Closing takes the tab off the list; an agent working in it keeps working.
   const closeTab = () => {
-    const action = { kind: "close-tab", sessionId: session.id, tabId } as const;
-    if (session.attachedRunIds.length > 0) askClose(action);
-    else
-      void reviewHostAction(hostClient, action)
-        ?.confirm()
-        .then((closed) => {
-          if (closed) props.onClosed();
-        })
-        .catch((error: unknown) =>
-          setProblem(operationDetail(error, "This tab could not be closed.")),
-        );
+    void hostClient
+      .closeTabs([surfaceId])
+      .then((result) => {
+        const failed = result.failed.find((item) => item.tabId === surfaceId);
+        if (failed) setProblem(failed.error.message);
+      })
+      .catch((error: unknown) =>
+        setProblem(operationDetail(error, "This tab could not be closed.")),
+      );
   };
   const openTab = () => {
-    if (openingTab.current) return;
-    openingTab.current = true;
     props.onSteer?.();
-    try {
-      const size = viewport();
-      props.onOpenTab(
-        hostClient.beginBrowserTabOpen(
-          { sessionId: session.id },
-          size ? { viewport: size } : undefined,
-        ),
-      );
-    } catch (error) {
-      openingTab.current = false;
-      setProblem(operationDetail(error, "A new tab could not be opened."));
-    }
+    props.onOpenTab("about:blank");
   };
   // Fit takes away a size an agent chose for its own work, so it asks first.
   const fit = () => {
@@ -539,15 +534,31 @@ export function BrowserPage(props: {
   const signInSite =
     session.state === "ready" && tab ? browserSiteForTab({ navigationFailed, url: tab.url }) : null;
   const pageUrl = site === null ? null : (tab?.url ?? null);
-  const acting = browserActingTabId(session) === tabId;
+  // An agent acts in this very tab now, as the Host's activity for it says.
+  const acting = usePlaceActivity(hostClient, tabId).length > 0;
   const loading = liveTab?.loading === true || catalogTab?.loading === true;
   // A browser that reports where its history goes says so; one that does not
   // leaves both ways open, as it did before it could say.
   const canGoBack = catalogTab?.canGoBack !== false;
   const canGoForward = catalogTab?.canGoForward !== false;
 
-  const tabIds = useBrowserTabs(hostClient, groupId ?? "").ids;
-  const tabs = useTabSuggestions(hostClient, groupId ?? "", addressOpen);
+  // The pages of this same browser, profile and computer, in the one list's order.
+  const strip = useTabStrip(hostClient);
+  const browser =
+    listed?.kind === "page"
+      ? `${listed.computer.computerId}:${listed.profile?.profileId ?? ""}`
+      : null;
+  const tabIds = useMemo(() => {
+    const tabs = hostClient.getSnapshot().tabs;
+    return strip.ordered.filter((id) => {
+      const other = tabs.get(id);
+      return (
+        other?.kind === "page" &&
+        `${other.computer.computerId}:${other.profile?.profileId ?? ""}` === browser
+      );
+    }) as readonly string[];
+  }, [browser, hostClient, strip]);
+  const tabs = useTabSuggestions(hostClient, addressOpen);
   const otherTabs = useMemo(() => tabs.filter(({ id }) => id !== tabId), [tabId, tabs]);
   const position = useMemo(() => tabIds.indexOf(tabId), [tabId, tabIds]);
   const switchBy = useCallback(
@@ -617,13 +628,7 @@ export function BrowserPage(props: {
         })
         .catch(() => setProblem("Clipboard unavailable."));
     } else if (action === "open-link" && pageMenu.linkUrl) {
-      try {
-        props.onOpenTab(
-          hostClient.beginBrowserTabOpen({ sessionId: session.id }, { url: pageMenu.linkUrl }),
-        );
-      } catch (error) {
-        setProblem(operationDetail(error, "A new tab could not be opened."));
-      }
+      props.onOpenTab(pageMenu.linkUrl);
     }
     editing.dismissMenu();
   };
@@ -828,7 +833,7 @@ export function BrowserPage(props: {
   const editor = (
     <AddressEditor
       draft={addressDraft ?? (tab?.url === "about:blank" ? "" : tab?.url) ?? ""}
-      editable={closeReview === null}
+      editable
       onCancel={() => {
         setAddressDraft(null);
         setAddressOpen(false);
@@ -898,16 +903,6 @@ export function BrowserPage(props: {
         style={styles.page}
         testID="browser-page"
       >
-        <ActionReviewSheet
-          review={closeReview}
-          title="Close this tab?"
-          detail="An agent is working here. This tab closes for you and for the agent."
-          confirmLabel="Close tab"
-          cancelLabel="Cancel"
-          onClose={dismissClose}
-          onConfirmed={props.onClosed}
-          onError={(error) => setProblem(operationDetail(error, "This tab could not be closed."))}
-        />
         {top && !floats ? (addressOpen ? editor : bar) : null}
         <View style={[styles.native, { marginBottom: -bleed }]} testID="local-page">
           <PageChromeProvider value={chrome}>{props.nativeContent}</PageChromeProvider>
@@ -965,16 +960,6 @@ export function BrowserPage(props: {
           onDismiss={editing.dismissMenu}
         />
       ) : null}
-      <ActionReviewSheet
-        review={closeReview}
-        title="Close this tab?"
-        detail="An agent is working here. This tab closes for you and for the agent."
-        confirmLabel="Close tab"
-        cancelLabel="Cancel"
-        onClose={dismissClose}
-        onConfirmed={props.onClosed}
-        onError={(error) => setProblem(operationDetail(error, "This tab could not be closed."))}
-      />
       {top ? (addressOpen ? editor : bar) : null}
       {dragSelect ? (
         <AppText role="caption" tone="muted">
@@ -999,9 +984,7 @@ export function BrowserPage(props: {
                   documentId={liveTab?.documentId}
                   hostClient={hostClient}
                   interactive
-                  inputEnabled={
-                    interactive && closeReview === null && !addressOpen && pageMenu === null
-                  }
+                  inputEnabled={interactive && !addressOpen && pageMenu === null}
                   inputEpoch={`${navigationKey}:${keyboardOpen}:${slideTo}`}
                   dragSelect={dragSelect}
                   onDragEnd={() => setDragSelect(false)}
