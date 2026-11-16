@@ -33,6 +33,10 @@ export interface BridgeEnvelope {
 }
 
 export interface DesktopBridgeOptions {
+  readonly iphone?: {
+    readonly service: import("../iphone/iphone-service.js").IphoneService;
+    readonly setup: import("../iphone/iphone-setup.js").IphoneSetup;
+  };
   readonly mcpAuthorizationLinks?: Pick<
     import("../app/mcp-authorization-links.js").McpAuthorizationLinks,
     "clear"

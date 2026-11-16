@@ -8,6 +8,7 @@ import {
 } from "./device-commands.js";
 import { visibleDeviceMachines, deviceDriverKey } from "./device-projection.js";
 import { DeviceIdSchema } from "@opensteer/core";
+import { createIphoneSetupPort, type IphoneSetupPort } from "./iphone-setup.js";
 import { clearRunPageViews } from "./run-page-memory.js";
 import { clearRunPlacePictures } from "./run-place-picture.js";
 import { ReferenceStore } from "../references/store.js";
@@ -409,6 +410,7 @@ export type HostCapabilityReader = (options?: {
 }) => Promise<readonly HostCapability[]>;
 
 export interface HttpHostClientOptions {
+  readonly iphoneSetup?: import("@opensteer/protocol/desktop").DesktopIphoneSetupBridge;
   readonly assetRoute?: AssetRoute;
   readonly desktopMedia?: boolean;
   readonly deviceAccessRequests?: "include";
@@ -449,6 +451,7 @@ type AttachmentRead = {
 
 export class HttpHostClient {
   readonly browserPasskeys: BrowserPasskeys;
+  readonly iphoneSetup: IphoneSetupPort | undefined;
   readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;
   readonly retainComputerView: OwnerViewHostClient["retainComputerView"];
@@ -917,6 +920,9 @@ export class HttpHostClient {
     this.#deviceAccessRequests = options.deviceAccessRequests === "include";
     this.#streamCache = options.streamCache;
     this.browserPasskeys = new BrowserPasskeys(options.passkeys);
+    this.iphoneSetup = options.iphoneSetup
+      ? createIphoneSetupPort(options.iphoneSetup, (command) => this.dispatch(command))
+      : undefined;
     this.#viewerPlatform = options.viewerPlatform ?? null;
     this.#readCapabilities =
       typeof options.capabilities === "function" ? options.capabilities : null;

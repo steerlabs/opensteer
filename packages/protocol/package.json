@@ -29,7 +29,8 @@
     "./browser-tabs": "./src/browser-tabs.ts",
     "./tabs": "./src/tabs.ts",
     "./apps": "./src/apps.ts",
-    "./agent-tool-relay": "./src/agent-tool-relay.ts"
+    "./agent-tool-relay": "./src/agent-tool-relay.ts",
+    "./iphone-bridge": "./src/iphone-bridge.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
