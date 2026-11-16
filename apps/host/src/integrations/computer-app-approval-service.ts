@@ -272,11 +272,15 @@ export class ComputerAppApprovalService {
           message: "This app changed since it was requested. Request access again.",
         });
     }
-    if (request.kind !== "server" || !request.server) return { request, app };
+    const name =
+      request.app?.displayName ??
+      request.server?.installationTitle ??
+      this.#definitions.find(({ id }) => id === request.definitionId)?.name;
+    const named = { request, app, ...(name === undefined ? {} : { name }) };
+    if (request.kind !== "server" || !request.server) return named;
     const { launch, serverId } = request.server;
     return {
-      request,
-      app,
+      ...named,
       savedSecrets: await this.#localMcpSecrets.saved(
         serverId,
         launch,

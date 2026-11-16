@@ -1947,6 +1947,8 @@ const hostApiGroup3 = defineRpc({
       app: z
         .object({ ...ComputerUseResolvedAppSchema.shape, identity: ComputerAppIdentityViewSchema })
         .nullable(),
+      /** What is being approved, as a person knows it; an older Host sends none. */
+      name: z.string().min(1).max(255).optional(),
       /** Which of a server's secrets already have a value, which allowing can keep. */
       savedSecrets: z.array(LocalMcpSecretNameSchema).max(localMcpMaxSecrets).optional(),
     }),

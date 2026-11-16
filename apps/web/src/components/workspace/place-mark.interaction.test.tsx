@@ -8,7 +8,7 @@ import type { HostClient, HostConnectionState } from "@opensteer/client/host";
 import { PlaceMark } from "./place-mark.js";
 import { ProfileAvatar } from "./identity.js";
 
-vi.mock("../computer-apps/computer-use-section.js", () => ({ AppMark: () => null }));
+vi.mock("../computer-apps/app-icons.js", () => ({ AppMark: () => null }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 // Failure inventory: rejected/null reads, disconnected reads, reconnect with

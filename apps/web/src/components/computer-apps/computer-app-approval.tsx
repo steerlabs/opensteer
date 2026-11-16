@@ -1,29 +1,33 @@
 import { Dialog } from "../dialog.js";
+import { Icon } from "../icon.js";
 import { useComputerAppApproval as useOwnerComputerAppApproval } from "@opensteer/client/react";
 import {
-  computerAppApprovalDetails,
   computerAppApprovalSecretFields,
   localMcpSecretsToSend,
   type ComputerAppApprovalReview,
+  type ComputerAppApprovalView,
 } from "@opensteer/client/integrations";
 import type { HostClient } from "@opensteer/client/host";
-import { useState } from "react";
+import { useId, useState } from "react";
+import { AppMark } from "./app-icons.js";
 import { LocalMcpSecretFields } from "./local-mcp-secret-fields.js";
 
 /** Details live only while this owner is reviewing; no native approval bridge. */
 export function useComputerAppApproval(hostClient: HostClient) {
-  const { ask, review, error, busy, close, answer } = useOwnerComputerAppApproval(hostClient);
-  const dialog = review ? (
-    <ApprovalDialog
-      // A new review starts with empty fields.
-      key={review.request.id}
-      answer={answer}
-      busy={busy}
-      close={close}
-      error={error}
-      review={review}
-    />
-  ) : null;
+  const { ask, review, view, error, busy, close, answer } = useOwnerComputerAppApproval(hostClient);
+  const dialog =
+    review && view ? (
+      <ApprovalDialog
+        // A new review starts with empty fields.
+        key={review.request.id}
+        answer={answer}
+        busy={busy}
+        close={close}
+        error={error}
+        review={review}
+        view={view}
+      />
+    ) : null;
   return { ask, dialog };
 }
 
@@ -36,7 +40,10 @@ function ApprovalDialog(props: {
   readonly close: () => void;
   readonly error: string | null;
   readonly review: ComputerAppApprovalReview;
+  readonly view: ComputerAppApprovalView;
 }) {
+  const { view } = props;
+  const titleId = useId();
   const fields = computerAppApprovalSecretFields(props.review);
   const [values, setValues] = useState<Readonly<Record<string, string>>>({});
   const [invalid, setInvalid] = useState<string | null>(null);
@@ -51,38 +58,87 @@ function ApprovalDialog(props: {
   };
   const error = invalid ?? props.error;
   return (
-    <Dialog title="Allow agent access?" onClose={props.close}>
-      <pre
-        style={{
-          whiteSpace: "pre-wrap",
-          overflowWrap: "anywhere",
-          maxHeight: "60vh",
-          overflowY: "auto",
-        }}
-      >
-        {computerAppApprovalDetails(props.review)}
-      </pre>
+    <Dialog
+      footer={
+        <>
+          {error ? (
+            <p className="form-actions__error" role="alert">
+              {error}
+            </p>
+          ) : null}
+          <button
+            className="btn btn--ghost"
+            disabled={props.busy}
+            onClick={() => void props.answer("deny")}
+            type="button"
+          >
+            Don't allow
+          </button>
+          <button className="btn btn--primary" disabled={props.busy} onClick={allow} type="button">
+            Allow
+          </button>
+        </>
+      }
+      labelledBy={titleId}
+      narrow
+      onClose={props.close}
+      title={
+        <span className="app-approval__head">
+          <ApprovalMark view={view} />
+          <span className="app-approval__heading">
+            <span className="app-approval__title">{view.title}</span>
+            {view.context ? <span className="app-approval__context">{view.context}</span> : null}
+          </span>
+        </span>
+      }
+    >
+      <ul className="app-approval__abilities">
+        {view.abilities.map((ability) => (
+          <li
+            className={ability.allowed ? undefined : "app-approval__ability--denied"}
+            key={ability.text}
+          >
+            <Icon name={ability.allowed ? "check" : "close"} />
+            {ability.text}
+          </li>
+        ))}
+      </ul>
+      {view.warning ? (
+        <p className="notice notice--warn app-approval__warning">
+          <Icon name="alert-circle" />
+          {view.warning}
+        </p>
+      ) : null}
       <LocalMcpSecretFields
         disabled={props.busy}
         fields={fields}
         onChange={(name, value) => setValues((current) => ({ ...current, [name]: value }))}
         values={values}
       />
-      {error ? <p role="alert">{error}</p> : null}
-      <div className="form-actions">
-        <button
-          className="btn"
-          disabled={props.busy}
-          onClick={() => void props.answer("deny")}
-          type="button"
-        >
-          Don't allow
-        </button>
-        <button className="btn btn--primary" disabled={props.busy} onClick={allow} type="button">
-          Allow
-        </button>
-      </div>
+      {view.details ? (
+        <details className="app-approval__details">
+          <summary>
+            <Icon name="chevron-right" />
+            {view.details.label}
+          </summary>
+          <pre>{view.details.text}</pre>
+        </details>
+      ) : null}
     </Dialog>
+  );
+}
+
+function ApprovalMark({ view }: { readonly view: ComputerAppApprovalView }) {
+  return (
+    <span className="app-approval__mark">
+      {view.app ? (
+        <AppMark identity={view.app} machineId={view.runnerId} />
+      ) : (
+        <span className="intg-icon">
+          <Icon name={view.kind === "server" ? "puzzle" : "app"} />
+        </span>
+      )}
+    </span>
   );
 }
 

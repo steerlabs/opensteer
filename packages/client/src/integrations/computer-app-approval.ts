@@ -1,3 +1,4 @@
+import type { ComputerAppIdentity } from "@opensteer/protocol";
 import {
   LocalMcpSecretValueSchema,
   localMcpLaunchSecrets,
@@ -108,32 +109,114 @@ export async function setLocalMcpServerSecrets(
     throw new Error("The secrets were not saved.");
 }
 
-/** Only transient owner review surfaces may render these details. */
-export function computerAppApprovalDetails(review: ComputerAppApprovalReview): string {
+/** One thing an approval lets agents do, or keeps from them. */
+export interface ComputerAppApprovalAbility {
+  readonly allowed: boolean;
+  readonly text: string;
+}
+
+/**
+ * An approval as every surface shows it: what it is for, what agents may then
+ * do, and the technical facts folded away. Only transient owner review
+ * surfaces may render it.
+ */
+export interface ComputerAppApprovalView {
+  readonly kind: "app" | "policy" | "server";
+  /** The question, naming what is approved. */
+  readonly title: string;
+  readonly name: string;
+  /** Why it was asked: the agent's reason or the task it came from. */
+  readonly context: string | null;
+  /** A Mac app, whose own icon marks it; other approvals draw a generic mark. */
+  readonly app: ComputerAppIdentity | null;
+  readonly runnerId: string;
+  readonly abilities: readonly ComputerAppApprovalAbility[];
+  readonly warning: string | null;
+  readonly details: { readonly label: string; readonly text: string } | null;
+}
+
+export function computerAppApprovalView(
+  review: ComputerAppApprovalReview,
+  /** The computer it is on, where the person has more than one to tell apart. */
+  computerName: string | null = null,
+): ComputerAppApprovalView {
   const { request, app } = review;
-  if (request.kind === "server" && request.server) {
-    // The fields below the details ask for its secrets; their values never appear here.
-    const { launch } = request.server;
-    const shown = launch.type === "stdio" ? { ...launch, secrets: undefined } : launch;
-    return `${request.server.installationTitle} · ${request.server.name}\n\n${JSON.stringify(shown, null, 2)}\n\nThis server runs on the selected computer as its login user.${
-      localMcpLaunchSecrets(launch).length > 0
-        ? " It receives what you enter below as environment variables."
-        : ""
-    }`;
-  }
+  const on = computerName ? `on ${computerName}` : "on this computer";
+  const base = {
+    kind: request.kind,
+    context:
+      request.reason ??
+      (request.threadTitle
+        ? `For “${request.threadTitle}”`
+        : computerName
+          ? `On ${computerName}`
+          : null),
+    runnerId: request.runnerId,
+  };
   if (request.kind === "policy")
-    return "Agents acting for you can see and control new apps on this computer whenever a task needs them, including apps installed later, browsers, Finder, Mail and System Settings and their signed-in accounts. Password managers, terminals and automation tools stay off limits. Existing apps still need your approval for more access. Blocked apps stay blocked.";
-  return [
-    app?.identity.displayName ?? request.app?.displayName ?? request.definitionId,
-    request.access === "read-write" ? "Agents can see and change data." : "Agents can read data.",
-    app?.path,
-    app?.risk === "elevated"
-      ? "This app can reach your files, signed-in accounts or system settings. Agents can use whatever its interface offers."
-      : null,
-    request.threadTitle,
-    "your Opensteer",
-    request.reason,
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+    return {
+      ...base,
+      title: "Allow apps automatically?",
+      name: "Any app",
+      app: null,
+      abilities: [
+        { allowed: true, text: "Use any app a task needs, including new ones" },
+        { allowed: false, text: "Never password managers or terminals" },
+        { allowed: false, text: "Apps you limited or blocked stay that way" },
+      ],
+      warning: "This includes browsers, Mail and System Settings, signed in as you.",
+      details: null,
+    };
+  if (request.kind === "server" && request.server) {
+    const { launch } = request.server;
+    const name = review.name ?? request.server.installationTitle;
+    // The fields below the review ask for its secrets; their values never appear here.
+    return {
+      ...base,
+      title: `Allow ${name}?`,
+      name,
+      app: null,
+      abilities: [
+        { allowed: true, text: `Runs ${on} as you` },
+        ...(localMcpLaunchSecrets(launch).length > 0
+          ? [{ allowed: true, text: "Gets the keys you enter below" }]
+          : []),
+      ],
+      warning: null,
+      details: {
+        label: "How it runs",
+        text:
+          launch.type === "stdio"
+            ? [
+                [launch.command, ...launch.args].join(" "),
+                `in ${launch.cwd}`,
+                ...Object.entries(launch.env).map(([key, value]) => `${key}=${value}`),
+              ].join("\n")
+            : [
+                launch.url,
+                ...Object.entries(launch.headers).map(([key, value]) => `${key}: ${value}`),
+              ].join("\n"),
+      },
+    };
+  }
+  const identity = app?.identity ?? request.app;
+  const name = review.name ?? identity?.displayName ?? request.definitionId;
+  const writes = request.access === "read-write";
+  // A Mac app is used through its window; any other app through its data.
+  const mac = identity !== null;
+  return {
+    ...base,
+    title: `Allow ${name}?`,
+    name,
+    app: identity,
+    abilities: [
+      { allowed: true, text: mac ? "See what’s on screen" : "Read its data" },
+      writes
+        ? { allowed: true, text: mac ? "Click, type and make changes" : "Add and change things" }
+        : { allowed: false, text: "No changes" },
+    ],
+    warning:
+      app?.risk === "elevated" ? "It can reach your files, signed-in accounts or settings." : null,
+    details: app ? { label: "Details", text: app.path } : null,
+  };
 }

@@ -7,7 +7,7 @@ import { MemoryRouter } from "react-router";
 import { afterEach, expect, it, vi } from "vitest";
 import { SurfaceChip, type ChipSurface } from "./surface-chips.js";
 
-vi.mock("./computer-apps/computer-use-section.js", () => ({ AppMark: () => null }));
+vi.mock("./computer-apps/app-icons.js", () => ({ AppMark: () => null }));
 vi.mock("./workspace/workspace-context.js", () => ({ useOptionalWorkspace: () => null }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | null = null;
