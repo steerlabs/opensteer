@@ -1,4 +1,5 @@
-import { createId } from "@opensteer/core";
+import { createId, DeviceIdSchema } from "@opensteer/core";
+import { machineAccessPolicyDefault } from "@opensteer/protocol";
 import { enrollTestRunner } from "@opensteer/database/test-support/store";
 import { describe, expect, it, vi } from "vitest";
 import { sql } from "kysely";
@@ -11,7 +12,7 @@ import { createPersonalOwnerFixture } from "../runtime/personal-owner.test-suppo
 import { AdministrationToolHandlers } from "./handlers/administration.js";
 
 describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)("computer_list pagination", () => {
-  it("keeps Runner metadata on pages beyond 100 self Devices", async () => {
+  it("keeps Runner metadata across pages for self and screen drivers", async () => {
     const f = await createPersonalOwnerFixture();
     try {
       if (!f.resources) throw new Error("Personal owner resources missing");
@@ -51,6 +52,34 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)("computer_list paginat
           tokenSuffix: id,
         });
       }
+      const driverId = [...ids].sort().at(-1)!;
+      const phoneId = DeviceIdSchema.parse(createId("device"));
+      await f.database
+        .insertInto("devices")
+        .values({
+          id: phoneId,
+          deploymentId: f.deployment.id,
+          ownerKind: "user",
+          ownerUserId: f.ownerId,
+          name: "Travel iPhone",
+          kind: "phone",
+          platform: "ios",
+          form: "phone",
+          accessPolicy: sql`${JSON.stringify({ ...machineAccessPolicyDefault, browser: false, apps: false, reach: "nobody" })}::jsonb`,
+          accessPolicyRevision: 1,
+          removedAt: null,
+        })
+        .execute();
+      await f.database
+        .insertInto("deviceDrivers")
+        .values({
+          deviceId: phoneId,
+          role: "screen",
+          runnerId: driverId,
+          generation: 1,
+          detachedAt: null,
+        })
+        .execute();
       const handler = new AdministrationToolHandlers(
         new AdministrationService(
           {
@@ -74,13 +103,20 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)("computer_list paginat
       const first = await handler.computer_list({ caller, input: {}, operationKey: "first" });
       expect(first.computers).toHaveLength(100);
       expect(first.nextCursor).not.toBeNull();
+      expect(first.computers.some((computer) => computer.selfRunnerId === driverId)).toBe(false);
+      expect(first.computers.find((computer) => computer.computerId === phoneId)).toMatchObject({
+        drivers: [{ role: "screen", runnerId: driverId, runnerName: `Computer ${driverId}` }],
+        phoneDisplay: {
+          setup: { driverRunnerId: driverId, driverRunnerName: `Computer ${driverId}` },
+        },
+      });
       const second = await handler.computer_list({
         caller,
         input: { cursor: first.nextCursor! },
         operationKey: "second",
       });
       expect(second.nextCursor).toBeNull();
-      expect(second.computers).toHaveLength(2);
+      expect(second.computers).toHaveLength(3);
       const remaining = ids.filter(
         (id) => !first.computers.some((computer) => computer.selfRunnerId === id),
       );

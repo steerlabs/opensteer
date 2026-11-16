@@ -978,13 +978,21 @@ export class ComputerUseService {
         checkSession();
         session.route ??= route;
         if (target.kind === "display") {
+          const status = this.#hub.deviceStatus?.(session.deviceId);
+          const refreshReadiness =
+            operation === "observe" &&
+            (status?.operations.some(
+              ({ operation, state }) => operation === "observe" && state === "ready",
+            ) ||
+              status?.availability.reason?.kind === "locked" ||
+              status?.availability.reason?.kind === "protected");
           if (
             route?.role === "screen" &&
-            this.#hub.deviceStatus?.(session.deviceId)?.availability.state !== "ready"
+            status?.availability.state !== "ready" &&
+            !refreshReadiness
           )
             throw new ComputerUseError("unsupported", "This phone is not ready for control.");
           if (operation === "act") {
-            const status = this.#hub.deviceStatus?.(session.deviceId);
             if (route?.role === "screen") {
               if (!status || status.availability.state !== "ready")
                 throw new ComputerUseError("unsupported", "This phone is not ready for input.");
@@ -992,7 +1000,9 @@ export class ComputerUseService {
                 actions: status.actions,
                 navigationButtons: status.navigationButtons,
                 wake: status.wake,
-                input: status.inputVersion === 1,
+                input: status.operations.some(
+                  ({ operation, state }) => operation === "act" && state === "ready",
+                ),
                 loginText: false,
               });
             }

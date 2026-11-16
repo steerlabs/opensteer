@@ -10,6 +10,8 @@ import {
 } from "@opensteer/core";
 import { computerAppIdentityKey, type ComputerAppIdentity } from "@opensteer/integration-core";
 import {
+  RunnerAuxiliaryFrameFenceSchema,
+  type RunnerIntegrationsDeviceStatus,
   computerUseMaxTimeoutMs,
   mintComputerUseSessionId,
   type AndroidPhoneObservation,
@@ -2264,4 +2266,141 @@ it("lists only the matching display definition and excludes the iPhone data app"
   } finally {
     await host.service.shutdown();
   }
+});
+
+describe("iPhone agent readiness", () => {
+  function iphone() {
+    const deviceId = DeviceIdSchema.parse(createId("device"));
+    const route = {
+      deviceId,
+      runnerId,
+      role: "screen" as const,
+      generation: 1,
+      auxiliaryFence: RunnerAuxiliaryFrameFenceSchema.parse({
+        runnerId,
+        module: "integrations",
+        bootId: `rbt_${crypto.randomUUID()}`,
+        auxiliaryStreamId: `rax_${crypto.randomUUID()}`,
+        connectionGeneration: 1,
+        connectionId: `rcn_${crypto.randomUUID()}`,
+        connectionLeaseId: `rls_${crypto.randomUUID()}`,
+      }),
+    };
+    const status: RunnerIntegrationsDeviceStatus = {
+      ...route.auxiliaryFence,
+      module: "integrations",
+      type: "runner.integrations.device-status",
+      deviceId,
+      driverGeneration: 1,
+      definitionId: "iphone-screen",
+      availability: { state: "ready", reason: null },
+      operations: ["observe", "act", "close", "installed_apps"].map((operation) => ({
+        operation,
+        state: "ready",
+        detail: null,
+        remedy: null,
+      })),
+      actions: ["tap", "navigate", "launch", "wait"],
+      navigationButtons: [{ id: "home", label: "Home" }],
+      wake: false,
+      lock: false,
+      displayVersion: null,
+      ownerViewVersion: null,
+      inputVersion: null,
+      powerVersion: null,
+    };
+    let current = status;
+    const host = harness({
+      hub: {
+        captureRoute: async () => route,
+        routeCurrent: () => true,
+        deviceStatus: () => current,
+      },
+    });
+    const callable = { deviceId, deviceName: "iPhone", ownerUserId };
+    const target = {
+      kind: "display",
+      definitionId: "iphone-screen",
+      access: "read-write",
+    } as const;
+    const dispatch = async (
+      operation: (lease: ComputerUseLease) => Promise<ComputerUseDispatch>,
+    ) => {
+      const lease = await host.service.prepare(callable, context);
+      try {
+        return await (await operation(lease)).settle();
+      } finally {
+        host.service.release(lease);
+      }
+    };
+    return {
+      host,
+      status,
+      setStatus: (next: RunnerIntegrationsDeviceStatus) => {
+        current = next;
+      },
+      act: (actions: unknown) =>
+        dispatch((lease) =>
+          host.service.sendAct(lease, target, { observationId: "phone-obs-1", actions }, false),
+        ),
+      observe: () => dispatch((lease) => host.service.sendObserve(lease, target, false)),
+    };
+  }
+
+  it("taps, navigates and launches with production capabilities and no owner input stream", async () => {
+    const f = iphone();
+    try {
+      const result = await f.act([
+        { type: "tap", target: { x: 10, y: 20 } },
+        { type: "navigate", to: "home" },
+        { type: "launch", appId: "example.app" },
+      ]);
+      expect(result.error).toBeNull();
+      expect(f.host.sent[0]?.params).toMatchObject({
+        actions: [{ type: "tap" }, { type: "navigate" }, { type: "launch" }],
+      });
+      f.setStatus({
+        ...f.status,
+        inputVersion: 1,
+        operations: f.status.operations.map((operation) => ({
+          ...operation,
+          state: operation.operation === "act" ? "unavailable" : "ready",
+        })),
+      });
+      await expect(f.act([{ type: "navigate", to: "home" }])).rejects.toThrow(
+        "input is unavailable",
+      );
+      f.setStatus({ ...f.status, actions: ["wait"] });
+      await expect(f.act([{ type: "tap", target: { x: 10, y: 20 } }])).rejects.toThrow(
+        "does not advertise tap",
+      );
+      expect(f.host.sent).toHaveLength(1);
+    } finally {
+      await f.host.service.shutdown();
+    }
+  });
+
+  it.each(["locked", "protected"] as const)(
+    "observes again after %s without replacing the driver",
+    async (kind) => {
+      const f = iphone();
+      f.setStatus({
+        ...f.status,
+        availability: { state: "unavailable", reason: { kind } },
+        operations: f.status.operations.map((operation) => ({
+          ...operation,
+          state: "unavailable",
+        })),
+      });
+      try {
+        await expect(f.act([{ type: "navigate", to: "home" }])).rejects.toThrow("not ready");
+        expect((await f.observe()).error).toBeNull();
+        f.setStatus(f.status);
+        expect((await f.act([{ type: "navigate", to: "home" }])).error).toBeNull();
+        expect(f.host.sent.map(({ operation }) => operation)).toEqual(["observe", "act"]);
+      } finally {
+        await f.host.service.shutdown();
+      }
+    },
+  );
 });

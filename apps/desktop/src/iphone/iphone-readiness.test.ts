@@ -107,5 +107,50 @@ it.each(["read", "read-write"] as const)(
       expect(result.error).toBeNull();
       expect(f.native.calls.filter(({ method }) => method === "phone.perform")).toHaveLength(1);
     } else expect(status.navigationButtons).toEqual([]);
+
+    const ready = f.native.ready.bind(f.native);
+    let physicallyLocked = true;
+    vi.spyOn(f.native, "ready").mockImplementation((control) => {
+      if (!physicallyLocked) return ready(control);
+      f.native.roster = {
+        revision: f.native.roster.revision + 1,
+        candidates: f.native.roster.candidates.map((candidate) => ({
+          ...candidate,
+          reason: "phone-locked",
+          capabilities: {
+            ...candidate.capabilities!,
+            observe: "phone-locked",
+            act: "phone-locked",
+            launch: "phone-locked",
+          },
+        })),
+      };
+      f.native.publish();
+    });
+    const epoch = f.native.epoch;
+    f.native.ready(false);
+    await vi.waitFor(
+      () =>
+        expect(
+          events.filter((event) => event.type === "runner.integrations.device-status").at(-1)
+            ?.availability.reason?.kind,
+        ).toBe("locked"),
+      { timeout: 1000 },
+    );
+    expect((await f.service.targets(ownerA.deploymentId))[0]?.ready).toBe(false);
+    physicallyLocked = false;
+    const refreshed = await connection.observe(context, { includeScreenshot: true });
+    expect(refreshed.observation.screenshot).not.toBeNull();
+    expect(f.native.epoch).toBe(epoch);
+    const recovered = events
+      .filter((event) => event.type === "runner.integrations.device-status")
+      .at(-1)!;
+    expect(recovered.availability).toEqual({ state: "ready", reason: null });
+    expect(recovered.operations).toContainEqual(
+      expect.objectContaining({
+        operation: "act",
+        state: access === "read-write" ? "ready" : "unavailable",
+      }),
+    );
   },
 );

@@ -31,7 +31,8 @@ import {
   type PhoneScreenDisplayFrame,
 } from "@opensteer/runner";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import type { ComputerUseContext } from "../computer-use/computer-use-service.js";
+import { callMcpTool } from "../mcp/call-tool.test-support.js";
+import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import { openAuxiliaryStream } from "./computer-apps.test-support.js";
 import {
   closed,
@@ -75,6 +76,7 @@ function fakeScreenPort() {
   const status = async (
     deviceId: DeviceId,
     availability: RunnerIntegrationsDeviceStatus["availability"] = { state: "ready", reason: null },
+    inputVersion: 1 | null = 1,
   ) => {
     const assignment = assignments.get(deviceId);
     if (!sink || !assignment) throw new Error("Screen port has no assigned Device");
@@ -91,12 +93,12 @@ function fakeScreenPort() {
       })),
       availability,
       navigationButtons: [{ id: "home", label: "Home" }],
-      actions: ["wait", "navigate"],
+      actions: ["tap", "navigate", "launch", "wait"],
       wake: false,
       lock: false,
       displayVersion: 1,
       ownerViewVersion: 1,
-      inputVersion: 1,
+      inputVersion,
       powerVersion: null,
     });
   };
@@ -188,6 +190,7 @@ integration("iPhone screen routing on an authenticated Mac", () => {
     const caller = await connectCallerMachine(host, {
       name: "Hosting computer",
       token: host.hostingRunnerEnrollmentToken,
+      computerTool: 1,
     });
     closers.unshift(() => caller.close());
     const macId = createId("runner");
@@ -293,12 +296,13 @@ integration("iPhone screen routing on an authenticated Mac", () => {
     ).rejects.toThrow(/approval/);
     const platform = new IntegrationPlatformStore(host.store.database);
     const definition = getIntegrationDefinition("iphone-screen")!;
+    const installationId = createIntegrationId("installation");
     await platform.install({
       actorUserId: host.ownerId,
       adapterSnapshot: null,
       requestId: randomUUID(),
       installation: {
-        id: createIntegrationId("installation"),
+        id: installationId,
         name: definition.id,
         title: definition.name,
         description: definition.description,
@@ -398,6 +402,20 @@ integration("iPhone screen routing on an authenticated Mac", () => {
           computer && "deviceId" in computer && computer.deviceId === first.deviceId,
       ),
     ).toBe(true);
+    const connection = approved.connections.find(
+      ({ computer }) => computer && "deviceId" in computer && computer.deviceId === first.deviceId,
+    );
+    if (!connection) throw new Error("The first iPhone has no approved connection");
+    await platform.createGrant({
+      access: "read-write",
+      alias: "First iPhone",
+      connectionId: connection.id,
+      createdBy: host.ownerId,
+      installationId,
+      isDefault: true,
+      ownerUserId: host.ownerId,
+      providerAuthorizations: {},
+    });
     const run = await dispatchCallerRun(host, caller, {
       key: "iphone-screen-run",
       title: "Use the phones",
@@ -405,7 +423,7 @@ integration("iPhone screen routing on an authenticated Mac", () => {
     closers.unshift(() => run.complete());
     const claims = JSON.parse(
       Buffer.from(run.toolsToken.split(".")[1]!, "base64url").toString(),
-    ) as ComputerUseContext;
+    ) as RunToolScope;
     const target = {
       kind: "display" as const,
       definitionId: "iphone-screen" as const,
@@ -427,6 +445,19 @@ integration("iPhone screen routing on an authenticated Mac", () => {
         computerUse.release(lease);
       }
     };
+    await port.status(first.deviceId, { state: "ready", reason: null }, null);
+    await vi.waitFor(
+      () => expect(computerApps.deviceStatus(first.deviceId)?.inputVersion).toBeNull(),
+      { timeout: 5_000 },
+    );
+    const facts = await callMcpTool(host.origin, run.toolsToken, "computer_use", {
+      code: `return (await phones()).find((phone) => phone.computerId === ${JSON.stringify(first.deviceId)}).actions`,
+    });
+    expect(facts.isError, JSON.stringify(facts)).toBeUndefined();
+    expect(facts.content).toContainEqual({
+      type: "text",
+      text: '["tap","navigate","launch","wait"]',
+    });
     const firstSession = await observe(first.deviceId);
     await observe(second.deviceId);
     expect(port.observes.map(({ deviceId }) => deviceId)).toEqual([
@@ -448,6 +479,11 @@ integration("iPhone screen routing on an authenticated Mac", () => {
     );
     expect((await sent.settle()).error).toBeNull();
     expect(port.actions[0]?.deviceId).toBe(first.deviceId);
+    await port.status(first.deviceId);
+    await vi.waitFor(
+      () => expect(computerApps.deviceStatus(first.deviceId)?.inputVersion).toBe(1),
+      { timeout: 5_000 },
+    );
     const views = [];
     for (const [index, phone] of [first, second].entries()) {
       const view = await computerViews.openForTab(

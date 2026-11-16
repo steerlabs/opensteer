@@ -293,19 +293,27 @@ export class AdministrationToolHandlers {
       computerIds(store, caller.userId),
     ]);
     const pageDeviceIds = new Set(page.devices.map((device) => device.id));
-    const runnerPage = await store.listRunners({
-      ids: drivers
-        .filter(
-          (driver) =>
-            pageDeviceIds.has(driver.deviceId) && driver.role === "self" && !driver.detachedAt,
-        )
-        .map((driver) => driver.runnerId),
-      ownerId: caller.userId,
-      includeDeployment: true,
-      includeOtherOwners: false,
-      limit: 100,
-    });
-    const byRunner = new Map(runnerPage.runners.map((runner) => [runner.id, runner]));
+    const runnerIds = [
+      ...new Set(
+        drivers
+          .filter((driver) => pageDeviceIds.has(driver.deviceId))
+          .map((driver) => driver.runnerId),
+      ),
+    ];
+    const runnerPages = [];
+    for (let offset = 0; offset < runnerIds.length; offset += 100) {
+      runnerPages.push(
+        await store.listRunners({
+          ids: runnerIds.slice(offset, offset + 100),
+          ownerId: caller.userId,
+          includeDeployment: true,
+          includeOtherOwners: false,
+          limit: 100,
+        }),
+      );
+    }
+    const pageRunners = runnerPages.flatMap((page) => page.runners);
+    const byRunner = new Map(pageRunners.map((runner) => [runner.id, runner]));
     const connections = await this.service.dependencies.integrations.platform.deviceConnections(
       caller.userId,
     );
@@ -316,7 +324,7 @@ export class AdministrationToolHandlers {
       access: new Map(),
       apps: new Map(page.devices.map((device) => [device.id, hub.status(device.id) ?? []])),
       threadsByEnvironment: new Map(),
-      runners: runnerPage.runners.map((runner) => ({
+      runners: pageRunners.map((runner) => ({
         ...runner,
         modules: runner.moduleDescriptors,
         ownerName: null,

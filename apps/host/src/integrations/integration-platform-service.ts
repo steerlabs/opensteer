@@ -3432,7 +3432,9 @@ export class IntegrationPlatformService {
     if (definitionId === iphoneScreenDefinitionId) {
       const status = this.#computerApps.deviceStatus(deviceId);
       const attached = await this.#deviceApps.attached(deviceId);
-      const input = status?.inputVersion === 1;
+      const input = status?.operations.some(
+        ({ operation, state }) => operation === "act" && state === "ready",
+      );
       return {
         definitionId,
         platform: "ios",
