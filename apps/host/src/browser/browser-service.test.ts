@@ -7406,6 +7406,59 @@ it("keeps workspace descriptors after a runtime retires and closes viewers grace
   expect(peer.closed?.code).toBe(1000);
 });
 
+it.each(["generation admission", "a concurrent durable open"])(
+  "retains descriptors received before %s",
+  async (race) => {
+    const keys = generateKeyPairSync("ed25519"),
+      runtime = await startFakeRuntime(keys.publicKey, "host-primary"),
+      ownerId = createId("user"),
+      repository = new MemoryBrowserRepository(ownerId),
+      memory = memoryTabs(),
+      service = freshService({
+        keys,
+        runtime,
+        repository,
+        tabs: memory.store,
+        tabRestoreVersion: true,
+      });
+    const initial = await service.pageTabs.open(
+      { kind: "person", ownerId },
+      { kind: "page", guest: true, url: "about:blank" },
+      "initial",
+    );
+    await memory.add(initial);
+    vi.spyOn(repository, "listBrowserSessionViewers").mockResolvedValue({ userIds: [ownerId] });
+    await service.pageTabs.admitted!(initial);
+    const id = BrowserSurfaceIdSchema.parse("new-page");
+    const write: TabWrite = {
+      ...initial,
+      id,
+      title: "New tab",
+      pageBinding: { ...initial.pageBinding!, surfaceId: id },
+    };
+    await memory.add(write);
+    if (race === "a concurrent durable open") {
+      vi.spyOn(memory.store, "get").mockResolvedValueOnce(null);
+      vi.spyOn(memory.store, "open").mockResolvedValueOnce({
+        tabIds: [id],
+        layout: { revision: 1, items: [{ kind: "tab", tabId: id }] },
+      });
+    }
+    runtime.publishTabs({ surfaces: [{ id, active: true, title: "Ready page" }] });
+    await vi.waitFor(() =>
+      expect(service.pageInventory(initial.pageBinding!.sessionId)?.records.get(id)?.title).toBe(
+        "Ready page",
+      ),
+    );
+    await service.flushPendingTabDescriptors();
+    if (race === "generation admission") {
+      expect(memory.rows.get(id)?.title).toBe("New tab");
+      await service.pageTabs.admitted!(write);
+    }
+    expect(memory.rows.get(id)?.title).toBe("Ready page");
+  },
+);
+
 it("closes durable rows only on a change removal, never an interrupted or committed snapshot", async () => {
   const keys = generateKeyPairSync("ed25519");
   const runtime = await startFakeRuntime(keys.publicKey, "host-primary");

@@ -3067,21 +3067,9 @@ export class BrowserService {
     const ownerId = (await this.#repository.listBrowserSessionViewers(record.id))?.userIds[0];
     if (!ownerId) return pending;
     for (const descriptor of descriptors) {
-      const row = await tabs.get(ownerId, descriptor.id, true);
+      let row = await tabs.get(ownerId, descriptor.id, true);
       const binding: PageBinding = { lineageId, sessionId: record.id, surfaceId: descriptor.id };
-      if (row && !row.closedAt) {
-        const generation = this.#workspacePageGenerations.get(`${record.id}:${row.id}`);
-        if (generation === undefined) continue;
-        await tabs.updatePage(
-          ownerId,
-          row.id,
-          generation,
-          binding,
-          descriptor,
-          this.#restoringPages.has(row.id),
-        );
-        if (descriptor.url !== "about:blank") this.#restoringPages.delete(row.id);
-      } else if (!row && !descriptor.openerId && record.origin === "person") {
+      if (!row && !descriptor.openerId && record.origin === "person") {
         const profile = record.profileId
           ? (await this.#repository.listBrowserProfiles(ownerId)).find(
               (profile) => profile.id === record.profileId,
@@ -3103,7 +3091,6 @@ export class BrowserService {
         await tabs.open(write, `person-page:${record.id}:${descriptor.id}`, async (tx) =>
           authorizeTabTarget({ kind: "person", ownerId }, write, tx),
         );
-        this.#workspacePageGenerations.set(`${record.id}:${descriptor.id}`, 1);
       } else if (!row && descriptor.openerId) {
         const opener = await tabs.get(ownerId, descriptor.openerId, true);
         if (!opener) {
@@ -3128,7 +3115,31 @@ export class BrowserService {
           },
           `popup:${record.id}:${descriptor.id}`,
         );
-        this.#workspacePageGenerations.set(`${record.id}:${descriptor.id}`, 1);
+      }
+      if (!row) {
+        row = await tabs.get(ownerId, descriptor.id, true);
+        if (row)
+          this.#workspacePageGenerations.set(`${record.id}:${descriptor.id}`, row.generation);
+      }
+      if (!row) {
+        pending.add(descriptor.id);
+        continue;
+      }
+      if (!row.closedAt) {
+        const generation = this.#workspacePageGenerations.get(`${record.id}:${row.id}`);
+        if (generation === undefined) {
+          pending.add(row.id);
+          continue;
+        }
+        await tabs.updatePage(
+          ownerId,
+          row.id,
+          generation,
+          binding,
+          descriptor,
+          this.#restoringPages.has(row.id),
+        );
+        if (descriptor.url !== "about:blank") this.#restoringPages.delete(row.id);
       }
     }
     for (const tabId of closed) {

@@ -149,6 +149,7 @@ describe("realtime version negotiation", () => {
     const browserEntered = Promise.withResolvers<void>();
     const releasePersonal = Promise.withResolvers<void>();
     const releaseBrowser = Promise.withResolvers<void>();
+    let subscriptions = 0;
     const { close, socket } = await realtimeSocket(
       async () => {
         personalEntered.resolve();
@@ -159,7 +160,7 @@ describe("realtime version negotiation", () => {
         tabs: {
           streams: {
             subscribe: () => {
-              browserEntered.resolve();
+              if (++subscriptions === 2) browserEntered.resolve();
               return { ready: releaseBrowser.promise, close: () => {} };
             },
           },
@@ -182,6 +183,7 @@ describe("realtime version negotiation", () => {
       await withTimeout(personalEntered.promise, 1000, {
         timeoutError: () => new Error("Personal stream never became pending"),
       });
+      socket.send(JSON.stringify({ type: "client.browser.resync" }));
       await withTimeout(browserEntered.promise, 1000, {
         timeoutError: () => new Error("Browser stream never became pending"),
       });

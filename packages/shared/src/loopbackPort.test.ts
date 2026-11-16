@@ -39,7 +39,8 @@ it("keeps a later listener safe from a competing ephemeral allocation", async ()
 });
 
 it("does not hand concurrent callers the same port during delayed binding", async () => {
-  const ports = await Promise.all(Array.from({ length: 64 }, () => freePort()));
+  const ports = await Promise.all(Array.from({ length: 64 }, () => freePort([49_152, 65_535])));
+  expect(ports.every((port) => port >= 49_152 && port <= 65_535)).toBe(true);
   expect(new Set(ports).size).toBe(ports.length);
   const servers = ports.map(() => createServer());
   try {

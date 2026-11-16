@@ -48,7 +48,9 @@ integration("workspace tabs", () => {
   }
   it("keeps one mixed layout and singleton identity across concurrent opens, close, replay and reopen", async () => {
     const { tabs, write, ownerId } = await fixture();
-    const phone = write("phone"),
+    const phone = write("phone", {
+        id: TabIdSchema.parse("tab_00000000-0000-4000-8000-000000000000"),
+      }),
       app = write("app", { appId: `app_${randomUUID()}` });
     const window = write("window", {
       windowId: WindowIdSchema.parse(`win_${randomUUID()}`),
@@ -81,6 +83,9 @@ integration("workspace tabs", () => {
     const reopened = await tabs.reopen(ownerId, app.id, "reopen");
     expect(tabLayoutIds(reopened.layout)).toEqual(ids);
     expect(await tabs.get(ownerId, app.id)).toMatchObject({ id: app.id, generation: 3 });
+    await tabs.close(ownerId, [phone.id], "close-phone");
+    expect((await tabs.open({ ...phone, id: id() }, "reopen-phone")).tabIds).toEqual([phone.id]);
+    expect(await tabs.get(ownerId, phone.id)).toMatchObject({ generation: 3 });
     expect((await tabs.snapshot(ownerId)).rows).toHaveLength(3);
   });
   it("moves whole groups, rejects stale anchors atomically, retains empty groups and dissolves in place", async () => {
@@ -326,8 +331,13 @@ integration("workspace tabs", () => {
   });
   it("removes open and closed app records inside the app deletion transaction without disturbing other kinds", async () => {
     const { tabs, database, ownerId, write } = await fixture();
-    const app = write("app", { appId: `app_${randomUUID()}` }),
-      phone = write("phone");
+    const app = write("app", {
+        id: TabIdSchema.parse("tab_00000000-0000-4000-8000-000000000000"),
+        appId: `app_${randomUUID()}`,
+      }),
+      phone = write("phone", {
+        id: TabIdSchema.parse("tab_ffffffff-ffff-4fff-bfff-ffffffffffff"),
+      });
     await tabs.open(app, "app");
     await tabs.open(phone, "phone");
     await tabs.close(ownerId, [app.id], "close");

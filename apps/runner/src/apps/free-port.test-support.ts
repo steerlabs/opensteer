@@ -1,31 +1,10 @@
-import { createServer, type Server } from "node:net";
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 
-/** Distinct loopback ports the OS just released; its ephemeral range is the app port range. */
+/** Claims distinct ports within the fixed app range, independently of the OS ephemeral range. */
 export async function freeAppPorts(count: number): Promise<number[]> {
-  const listeners: Server[] = [];
-  try {
-    for (let index = 0; index < count; index++) {
-      const listener = createServer();
-      listeners.push(listener);
-      await new Promise<void>((resolve, reject) => {
-        listener.once("error", reject);
-        listener.listen(0, "127.0.0.1", resolve);
-      });
-    }
-    return listeners.map((listener) => {
-      const address = listener.address();
-      if (!address || typeof address === "string" || address.port < 49_152)
-        throw new Error("No free port in the app port range");
-      return address.port;
-    });
-  } finally {
-    await Promise.all(
-      listeners.map((listener) => new Promise<void>((resolve) => listener.close(() => resolve()))),
-    );
-  }
+  return Promise.all(Array.from({ length: count }, () => freePort([49_152, 65_535])));
 }
 
 export async function freeAppPort(): Promise<number> {
-  const [port] = await freeAppPorts(1);
-  return port!;
+  return freePort([49_152, 65_535]);
 }

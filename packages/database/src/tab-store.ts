@@ -339,11 +339,17 @@ export class TabStore {
       tx: TabTransaction,
       state: { rows: TabRecord[]; layout: TabLayout },
     ) => Promise<TabId[]>,
-    includeClosed: TabId[] | "latest" = [],
+    includeClosed: TabId[] | "latest" | TabWrite = [],
   ): Promise<TabMutation> {
     z.string().min(1).max(255).parse(key);
     return withPersonalTransaction(this.database, async (tx) => {
-      const state = await this.#lock(tx, ownerId, includeClosed);
+      let closed: TabId[] | "latest";
+      if (Array.isArray(includeClosed) || includeClosed === "latest") closed = includeClosed;
+      else {
+        const singleton = await this.singleton(ownerId, includeClosed, tx);
+        closed = [includeClosed.id, ...(singleton ? [singleton.id] : [])];
+      }
+      const state = await this.#lock(tx, ownerId, closed);
       const request = canonicalJson(input);
       const replay = await tx
         .selectFrom("commands")
@@ -482,7 +488,7 @@ export class TabStore {
         } else insert(layout, input.id);
         return [input.id];
       },
-      [input.id],
+      input,
     );
   }
   close(
@@ -836,8 +842,8 @@ export class TabStore {
       .where("appId", "=", appId)
       .execute(databaseOperationOptions());
     for (const ownerId of [...new Set(owned.map((row) => row.ownerId))].sort()) {
-      const { layout } = await this.#lock(tx, ownerId);
       const ids = owned.filter((row) => row.ownerId === ownerId).map((row) => row.id);
+      const { layout } = await this.#lock(tx, ownerId, ids);
       removeIds(layout, new Set(ids));
       await tx
         .deleteFrom("personalTabs")

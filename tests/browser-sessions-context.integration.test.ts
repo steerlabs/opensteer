@@ -596,17 +596,24 @@ run("Browser Sessions through a whole deployment", () => {
         parameters: { targetId: created.targetId, flatten: true },
       }),
     );
-    await waitFor(
-      async () =>
-        client
-          .getSnapshot()
-          .browserUses?.some((use) => use.runId === runA && use.tabId === babbage.surfaceId) ===
-          true &&
-        runtimeRows().find((tab) => tab.id === babbage.surfaceId)?.title === "Charles Babbage" &&
-        client.getSnapshot().tabs.get(BrowserSurfaceIdSchema.parse(babbage.surfaceId))?.title ===
-          "Charles Babbage",
-      15_000,
-      "Babbage must appear in Run A usage and the tab catalog",
+    await vi.waitFor(
+      () =>
+        expect(
+          {
+            used:
+              client
+                .getSnapshot()
+                .browserUses?.some(
+                  (use) => use.runId === runA && use.tabId === babbage.surfaceId,
+                ) === true,
+            runtimeTitle: runtimeRows().find((tab) => tab.id === babbage.surfaceId)?.title,
+            catalogTitle: client
+              .getSnapshot()
+              .tabs.get(BrowserSurfaceIdSchema.parse(babbage.surfaceId))?.title,
+          },
+          "Babbage must appear in Run A usage and the tab catalog",
+        ).toEqual({ used: true, runtimeTitle: "Charles Babbage", catalogTitle: "Charles Babbage" }),
+      { timeout: 15_000, interval: 50 },
     );
     expect(note("Run A created Babbage").pagesA.map((page) => page.title)).toEqual([
       "Ada Lovelace — updated",

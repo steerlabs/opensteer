@@ -370,12 +370,6 @@ export class AppStore {
             message: "The app changed while its server was starting. Check app_list and retry.",
           });
       }
-      if (input.server)
-        await tx
-          .updateTable("appServers")
-          .set({ desiredState: "running" })
-          .where("appId", "=", app.id)
-          .execute();
       const version = app.latestVersion + 1;
       if (input.expectedVersion !== undefined && input.expectedVersion !== version)
         throw new OpensteerError({
@@ -402,7 +396,13 @@ export class AppStore {
         })
         .execute();
       let retiredServer: { generation: number } | null = null;
-      if (!input.server) {
+      if (input.server)
+        await tx
+          .updateTable("appServers")
+          .set({ desiredState: "running" })
+          .where("appId", "=", app.id)
+          .execute();
+      else {
         const retired = await tx
           .updateTable("appServers")
           .set((eb) => ({
@@ -506,6 +506,7 @@ export class AppStore {
   ): Promise<AppRecord> {
     return withPersonalTransaction(this.database, async (tx) => {
       await authorize?.(tx);
+      await removeTabs(tx, appId);
       const app = await lockApp(tx, ownerId, appId, true);
       await tx.updateTable("apps").set({ deleting: true }).where("id", "=", app.id).execute();
       await tx
@@ -513,7 +514,6 @@ export class AppStore {
         .set((eb) => ({ desiredState: "stopped", generation: eb("generation", "+", 1) }))
         .where("appId", "=", app.id)
         .execute();
-      await removeTabs(tx, app.id);
       const [record] = await this.#records(tx, (query) => query.where("apps.id", "=", app.id));
       if (!record) throw missing();
       return record;
@@ -530,8 +530,6 @@ export class AppStore {
         .selectFrom("apps")
         .select(["id", "deleting"])
         .where("id", "=", appId)
-        // FOR UPDATE: Deletes this app row after removing its tab membership.
-        .forUpdate()
         .executeTakeFirst();
       if (!app) return [];
       const tabs = app.deleting ? [] : await removeTabs(tx, appId);

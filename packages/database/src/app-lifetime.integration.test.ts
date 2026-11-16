@@ -1,7 +1,8 @@
-import { createId } from "@opensteer/core";
+import { createId, TabIdSchema } from "@opensteer/core";
 import { sql } from "kysely";
 import { expect, it } from "vitest";
 import { AppStore, appPortFirst } from "./app-store.js";
+import { TabStore } from "./tab-store.js";
 import { createDatabase } from "./connection.js";
 import { seedPrivatePublisher } from "./private-publisher.test-support.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -130,6 +131,28 @@ it("keeps person-owned apps and their fixed port through versions, HTML conversi
         (row) => row.createdByRun,
       ),
     ).toEqual([null, null]);
+
+    const tabs = new TabStore(database);
+    const tabId = TabIdSchema.parse(`tab_${crypto.randomUUID()}`);
+    await tabs.open(
+      {
+        id: tabId,
+        kind: "app",
+        appId: other.appId,
+        ownerId: p.userId,
+        computerId: p.agentHome.computerId,
+        title: "Notes",
+        openedBy: "person",
+      },
+      "open-app",
+    );
+    await tabs.close(p.userId, [tabId], "close-app");
+    const deleting = await store.markDeleting(p.userId, other.appId, (tx, appId) =>
+      tabs.removeTabs(tx, appId),
+    );
+    expect(deleting.deleting).toBe(true);
+    expect(deleting.server?.desiredState).toBe("stopped");
+    expect(await tabs.get(p.userId, tabId, true)).toBeNull();
 
     const removing: string[] = [];
     await store.remove(reservation.appId, async (tx, appId) => {
