@@ -3,7 +3,7 @@ import { approvalElicitation, type ApprovalResponse } from "apps/contracts";
 import { Clock, Effect, Redacted, Schema } from "effect";
 import type { HostCrypto } from "./host-crypto.ts";
 import {
-  defaultToolApprovalLimits,
+  ToolApprovalTtlMs,
   ToolApprovalIssuer,
   ToolApprovalNotFound,
   ToolInvocation,
@@ -113,7 +113,7 @@ export function makeToolApprovals(
         const id = ApprovalRequestId.make(`apr_${yield* next}`);
         yield* Effect.annotateCurrentSpan("pluginEngine.approval.id", id);
         const expiresAt = new Date(
-          (yield* Clock.currentTimeMillis) + defaultToolApprovalLimits.ttlMs,
+          (yield* Clock.currentTimeMillis) + (yield* ToolApprovalTtlMs),
         );
         const payload = yield* Schema.encodeEffect(ApprovalPayload)({
           invocation,

@@ -502,6 +502,7 @@ export class CatalogUnavailable extends Schema.TaggedError<CatalogUnavailable>()
  * size of a result: `execute` and `call` return the whole value, or fail with the platform's error.
  */
 export const McpLimits = Schema.Struct({
+  interactionTtlMs: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
   timeoutMs: Schema.Int.check(Schema.isGreaterThan(0)),
   maxToolCalls: Schema.Int.check(Schema.isGreaterThan(0)),
 });

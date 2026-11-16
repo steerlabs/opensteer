@@ -1,0 +1,424 @@
+import { z } from "zod";
+
+export const JsonSchema = z.json();
+export type PluginJson = z.infer<typeof JsonSchema>;
+const object = z.record(z.string(), JsonSchema);
+const id = z.string().min(1);
+const files = z.array(
+  z.union([
+    z.strictObject({ path: id, content: z.string() }),
+    z.strictObject({ path: id, content: z.string(), encoding: z.literal("base64") }),
+    z.strictObject({ path: id, object: id, size: z.number().int().nonnegative() }),
+  ]),
+);
+export const CallerSchema = z.strictObject({ caller: id, mode: z.enum(["ask", "automatic"]) });
+export type PluginCaller = z.infer<typeof CallerSchema>;
+export const ConsentSchema = z.strictObject({
+  digest: z.string().regex(/^[a-f0-9]{64}$/u),
+  sites: z.array(z.string()),
+  credential: z.enum(["sealed", "value"]),
+});
+export type PluginConsent = z.infer<typeof ConsentSchema>;
+const plugin = z.strictObject({ plugin: id });
+const target = { plugin: id, requirement: id, scope: z.enum(["app", "user"]) };
+const answer = z.strictObject({
+  action: z.enum(["accept", "decline", "cancel"]),
+  content: object.optional(),
+});
+// HTTP bodies cross IPC as base64; a response stream is pulled one chunk at a time.
+const raw = z.strictObject({
+  url: z.string().url(),
+  method: id,
+  headers: z.record(z.string(), z.string()),
+  body: z.string(),
+});
+export const RawResponseSchema = z.strictObject({
+  status: z.number().int(),
+  headers: z.record(z.string(), z.string()),
+  body: z.string(),
+  stream: z.string().optional(),
+});
+export const SourceFilesSchema = files;
+export const CatalogEntrySchema = z.object({
+  id,
+  package: id,
+  name: id,
+  description: z.string(),
+  category: z.string().optional(),
+  icons: z.array(object),
+  auth: z.array(object),
+});
+export const CatalogPageInputSchema = z.strictObject({
+  search: z.string().optional(),
+  cursor: z.string().optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+});
+export const CatalogPageSchema = z.strictObject({
+  items: z.array(CatalogEntrySchema),
+  cursor: z.string().nullable(),
+  feed: object,
+});
+export const PluginSummarySchema = z.object({
+  id,
+  name: id,
+  slug: id,
+  activeVersion: z.string().nullable(),
+});
+export const PluginSchema = PluginSummarySchema.extend({
+  requirements: z
+    .object({
+      accounts: z.record(
+        z.string(),
+        z
+          .object({
+            scope: z.enum(["app", "user"]),
+            provider: id,
+            definition: object,
+            cardinality: z.enum(["one", "many"]),
+          })
+          .catchall(JsonSchema),
+      ),
+    })
+    .catchall(JsonSchema),
+}).catchall(JsonSchema);
+export const AccountSchema = z.object({ id, provider: id, label: z.string() }).catchall(JsonSchema);
+export const VersionSchema = z.object({ id }).catchall(JsonSchema);
+const toolIndex = z
+  .object({
+    version: id,
+    items: z.array(
+      z
+        .object({ name: id, description: z.string().optional(), readOnly: z.boolean().optional() })
+        .catchall(JsonSchema),
+    ),
+  })
+  .catchall(JsonSchema);
+const interaction = z
+  .object({
+    status: z.enum(["approval-required", "input-required"]),
+    requestId: id,
+    expiresAt: z.number(),
+    elicitation: object,
+    invocation: object.optional(),
+    tool: object.optional(),
+  })
+  .catchall(JsonSchema);
+const agentResult = z
+  .object({
+    status: z.string(),
+    execution: z
+      .object({
+        ok: z.boolean(),
+        value: JsonSchema.optional(),
+        error: object.optional(),
+        toolCalls: z.array(object),
+      })
+      .catchall(JsonSchema)
+      .optional(),
+  })
+  .catchall(JsonSchema);
+export const ExecutionSchema = z.strictObject({
+  id,
+  caller: id,
+  state: z.enum([
+    "running",
+    "waiting",
+    "answered",
+    "completed",
+    "cancelled",
+    "expired",
+    "interrupted",
+    "failed",
+  ]),
+  interaction: interaction.nullable(),
+  result: agentResult.optional(),
+  reason: z.string().optional(),
+});
+export type PluginExecution = z.infer<typeof ExecutionSchema>;
+const call = z.strictObject({ path: id, input: JsonSchema });
+const search = z.strictObject({
+  query: z.string().optional(),
+  namespace: z.string().optional(),
+  limit: z.number().int().positive().optional(),
+  offset: z.number().int().nonnegative().optional(),
+});
+const execution = z.strictObject({ execution: id });
+const management = z.enum([
+  "schedules.list",
+  "schedules.definitions",
+  "schedules.configure",
+  "schedules.update",
+  "schedules.remove",
+  "schedules.runNow",
+  "schedules.runs",
+  "schedules.approval",
+  "schedules.answer",
+  "workflows.list",
+  "workflowRuns.start",
+  "workflowRuns.list",
+  "workflowRuns.get",
+  "workflowRuns.stop",
+  "webhooks.list",
+  "webhooks.definitions",
+  "webhooks.sources",
+  "webhooks.link",
+  "webhooks.unlink",
+  "webhooks.remove",
+  "webhooks.confirmRemoval",
+  "webhookSetup.read",
+  "webhookSetup.complete",
+]);
+
+export const operations = {
+  health: {
+    input: z.strictObject({}),
+    output: z.strictObject({ pid: z.number().int(), rss: z.number(), startupMs: z.number() }),
+  },
+  catalogList: { input: CatalogPageInputSchema, output: CatalogPageSchema },
+  catalogDetail: { input: z.strictObject({ id }), output: CatalogEntrySchema },
+  list: { input: z.strictObject({}), output: z.array(PluginSummarySchema) },
+  detail: {
+    input: plugin,
+    output: z.strictObject({
+      plugin: PluginSchema,
+      tools: toolIndex.nullable(),
+      skills: JsonSchema,
+      links: z.array(object),
+      versions: JsonSchema,
+      schedules: JsonSchema,
+      webhooks: JsonSchema,
+      workflows: JsonSchema,
+      hasPage: z.boolean(),
+    }),
+  },
+  install: {
+    input: z.discriminatedUnion("kind", [
+      z.strictObject({
+        kind: z.literal("files"),
+        files,
+        plugin: id.optional(),
+        name: id.optional(),
+      }),
+      z.strictObject({ kind: z.literal("catalog"), id }),
+      z.strictObject({
+        kind: z.enum(["mcp", "openapi", "graphql"]),
+        url: z.string().url(),
+        name: id,
+      }),
+    ]),
+    output: z.discriminatedUnion("status", [
+      z.strictObject({
+        status: z.literal("installed"),
+        plugin: PluginSchema,
+        version: VersionSchema,
+      }),
+      z.strictObject({ status: z.literal("build-error"), error: object }),
+    ]),
+  },
+  export: { input: z.strictObject({ plugin: id, version: id.optional() }), output: files },
+  versions: { input: plugin, output: z.array(VersionSchema) },
+  activate: { input: z.strictObject({ plugin: id, version: id }), output: JsonSchema },
+  remove: { input: plugin, output: JsonSchema },
+  accounts: { input: z.strictObject({}), output: z.array(AccountSchema) },
+  createApiKeyAccount: {
+    input: z.strictObject({
+      provider: id,
+      method: id,
+      fields: object,
+      label: z.string().optional(),
+    }),
+    output: AccountSchema,
+  },
+  removeAccount: { input: z.strictObject({ account: id }), output: JsonSchema },
+  reviewAccountLink: { input: z.strictObject(target), output: ConsentSchema },
+  linkAccount: {
+    input: z.strictObject({ ...target, account: id, consent: ConsentSchema }),
+    output: JsonSchema,
+  },
+  unlinkAccount: { input: z.strictObject({ ...target, account: id }), output: JsonSchema },
+  search: {
+    input: search,
+    output: z
+      .object({
+        items: z.array(
+          z.strictObject({
+            path: id,
+            description: z.string(),
+            input: z.string(),
+            inputTruncated: z.literal(true).optional(),
+          }),
+        ),
+        namespaces: z.array(object),
+        remaining: z.number().int(),
+        next: search.nullable(),
+      })
+      .catchall(JsonSchema),
+  },
+  describe: {
+    input: z.strictObject({ paths: z.array(id).min(1).max(100) }),
+    output: z.object({
+      items: z.array(z.strictObject({ path: id, description: z.string(), signature: z.string() })),
+      namespaces: z.array(object),
+      missing: z.array(z.strictObject({ path: id, matches: z.array(z.string()) })),
+    }),
+  },
+  call: {
+    input: z.strictObject({ calls: z.union([call, z.array(call).min(1)]) }),
+    output: ExecutionSchema,
+  },
+  execute: { input: z.strictObject({ code: z.string().max(65536) }), output: ExecutionSchema },
+  resume: { input: execution, output: ExecutionSchema },
+  answer: { input: z.strictObject({ execution: id, response: answer }), output: ExecutionSchema },
+  cancel: { input: execution, output: ExecutionSchema },
+  executions: { input: z.strictObject({}), output: z.array(ExecutionSchema) },
+  skills: {
+    input: z.strictObject({
+      app: id.optional(),
+      name: id.optional(),
+      file: id.optional(),
+      version: id.optional(),
+      revision: id.optional(),
+    }),
+    output: JsonSchema,
+  },
+  skillFiles: {
+    input: plugin,
+    output: z.strictObject({ plugin: id, version: id, digest: id, files }),
+  },
+  manage: { input: z.strictObject({ operation: management, input: object }), output: JsonSchema },
+  webhook: {
+    input: z.strictObject({ plugin: id, subscription: id, request: raw }),
+    output: RawResponseSchema,
+  },
+  page: { input: z.strictObject({ plugin: id, request: raw }), output: RawResponseSchema },
+} as const;
+export type PluginOperation = keyof typeof operations;
+export type PluginInput<K extends PluginOperation> = z.infer<(typeof operations)[K]["input"]>;
+export type PluginOutput<K extends PluginOperation> = z.infer<(typeof operations)[K]["output"]>;
+export const AuthorizationSchema = z.strictObject({
+  ...CallerSchema.shape,
+  operation: id,
+  plugin: id.optional(),
+  tool: id.optional(),
+  execution: id.optional(),
+});
+export type PluginAuthorization = z.infer<typeof AuthorizationSchema>;
+export const AuthorizationResultSchema = z.strictObject({
+  allowed: z.boolean(),
+  grants: z.record(z.string(), z.enum(["all", "read-only", "off"])).optional(),
+});
+export type PluginAuthorizationResult = z.infer<typeof AuthorizationResultSchema>;
+export const HostToolSchema = z.strictObject({
+  name: id,
+  description: z.string(),
+  inputSchema: object,
+  outputSchema: object.optional(),
+  readOnly: z.boolean().optional(),
+});
+export const HostProviderSchema = z.strictObject({
+  id,
+  name: id,
+  slug: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u),
+  version: id,
+  tools: z.array(HostToolSchema),
+});
+export type PluginHostProvider = z.infer<typeof HostProviderSchema>;
+export const callbackOperations = {
+  authorize: { input: AuthorizationSchema, output: AuthorizationResultSchema },
+  providers: { input: CallerSchema, output: z.array(HostProviderSchema) },
+  providerCall: {
+    input: z.strictObject({
+      ...CallerSchema.shape,
+      execution: id,
+      plugin: id,
+      tool: id,
+      input: JsonSchema,
+    }),
+    output: JsonSchema,
+  },
+  eventAuthorize: { input: object, output: z.boolean() },
+} as const;
+export type PluginCallback = keyof typeof callbackOperations;
+export const EngineErrorSchema = z.strictObject({
+  code: z.enum([
+    "unavailable",
+    "interrupted",
+    "cancelled",
+    "forbidden",
+    "invalid",
+    "consent-changed",
+    "engine",
+  ]),
+  message: z.string(),
+  tag: z.string().optional(),
+});
+export class PluginServiceError extends Error {
+  readonly code: z.infer<typeof EngineErrorSchema>["code"];
+  readonly tag: string | undefined;
+  constructor(code: z.infer<typeof EngineErrorSchema>["code"], message: string, tag?: string) {
+    super(message);
+    this.name = "PluginServiceError";
+    this.code = code;
+    this.tag = tag;
+  }
+}
+export const EngineInitSchema = z.strictObject({
+  databaseUrl: id,
+  directory: id,
+  owner: id,
+  secret: z.string().regex(/^[a-f0-9]{64}$/u),
+  origin: z.string().url(),
+  bridge: id,
+  catalogUrl: z.string().url().optional(),
+  npmRegistry: z.string().url().optional(),
+  selfOrigin: z.strictObject({ origin: id, address: id }).optional(),
+  limits: z.strictObject({
+    timeoutMs: z.number().int().positive(),
+    maxToolCalls: z.number().int().positive(),
+    interactionTtlMs: z.number().int().positive(),
+  }),
+});
+export type EngineInit = z.infer<typeof EngineInitSchema>;
+const requestMembers = Object.entries(operations).map(([operation, schemas]) =>
+  z.strictObject({
+    type: z.literal("request"),
+    id,
+    operation: z.literal(operation),
+    context: CallerSchema,
+    input: schemas.input,
+  }),
+);
+const callbackMembers = Object.entries(callbackOperations).map(([operation, schemas]) =>
+  z.strictObject({
+    type: z.literal("callback"),
+    id,
+    operation: z.literal(operation),
+    input: schemas.input,
+  }),
+);
+export const HostMessageSchema = z.union([
+  z.strictObject({ type: z.literal("init"), config: EngineInitSchema }),
+  z.union(requestMembers),
+  z.strictObject({ type: z.literal("cancel"), id }),
+  z.strictObject({ type: z.literal("callbackResult"), id, result: JsonSchema }),
+  z.strictObject({ type: z.literal("callbackError"), id, error: EngineErrorSchema }),
+  z.strictObject({ type: z.literal("stop") }),
+  z.strictObject({ type: z.literal("streamPull"), id }),
+]);
+export const EngineMessageSchema = z.union([
+  z.strictObject({ type: z.literal("diagnostic"), phase: z.string() }),
+  z.strictObject({ type: z.literal("ready"), pid: z.number().int(), startupMs: z.number() }),
+  z.strictObject({ type: z.literal("result"), id, result: JsonSchema }),
+  z.strictObject({ type: z.literal("error"), id, error: EngineErrorSchema }),
+  z.strictObject({ type: z.literal("fatal"), error: EngineErrorSchema }),
+  z.union(callbackMembers),
+  z.strictObject({ type: z.literal("callbackCancel"), id }),
+  z.strictObject({
+    type: z.literal("streamChunk"),
+    id,
+    done: z.boolean(),
+    chunk: z.string().optional(),
+    error: z.string().optional(),
+  }),
+  z.strictObject({ type: z.literal("execution"), execution: ExecutionSchema }),
+]);

@@ -76,6 +76,7 @@ export const ToolApprovalLimits = Schema.Struct({
 export type ToolApprovalLimits = typeof ToolApprovalLimits.Type;
 /** Current consume-once approval lifetime; this does not extend a live tool invocation. */
 export const defaultToolApprovalLimits = ToolApprovalLimits.make({ ttlMs: 15 * 60 * 1000 });
+export const ToolApprovalTtlMs = Context.Reference<number>("pluginEngine/ToolApprovalTtlMs", { defaultValue: () => defaultToolApprovalLimits.ttlMs });
 
 /**
  * Names where a host issued a call, such as one person's run from its dashboard. A pending approval

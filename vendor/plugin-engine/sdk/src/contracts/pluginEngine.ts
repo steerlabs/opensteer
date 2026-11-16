@@ -42,6 +42,7 @@ import type {
   ApprovalRequestId,
   OwnerId,
   StorageError,
+  VersionId,
 } from "./shared.ts";
 import type { BlobStorage } from "./blobs.ts";
 import type { MarkdownReader, MarkdownUnavailable } from "./markdown.ts";
@@ -129,7 +130,7 @@ export interface ResourceLifecycle {
    * owner it expects, and uses the result only when the accounts it read match.
    */
   readonly appResolving: (
-    app: { readonly id: AppId; readonly owner: OwnerId },
+    app: { readonly id: AppId; readonly owner: OwnerId; readonly version?: VersionId },
     accounts: readonly Pick<Account, "id" | "owner">[],
     appUses: readonly AppAccountUse[],
   ) => Effect.Effect<ReadonlySet<AccountId>, StorageError>;
@@ -143,6 +144,7 @@ export interface ResourceLifecycle {
     owner: OwnerId,
     apps: ReadonlyArray<{
       readonly id: AppId;
+      readonly version?: VersionId;
       readonly accounts: readonly Pick<Account, "id" | "owner">[];
       readonly appUses: readonly AppAccountUse[];
     }>,
