@@ -25,15 +25,23 @@ describe("Browser Harness element actions / real hosted Chromium", () => {
           parameters,
           sessionId,
         );
-      kit.hooks.before = async (method, _parameters, sessionId) => {
-        if (method !== "Target.detachFromTarget" || probed !== undefined) return;
+      // Probe right after the operation's own group is released; the script's last
+      // detach is not awaited, so it is not a point the release can be observed at.
+      kit.hooks.after = async (method, parameters) => {
+        if (
+          method !== "Runtime.releaseObjectGroup" ||
+          typeof parameters?.objectGroup !== "string" ||
+          !parameters.objectGroup.startsWith("opensteer-op-") ||
+          probed !== undefined
+        )
+          return;
         const used = kit.trace.find(
           (e) =>
             e.method === "Runtime.callFunctionOn" &&
             typeof e.parameters?.objectGroup === "string" &&
             e.parameters.objectGroup.startsWith("opensteer-op-"),
         );
-        handle = { objectId: used?.parameters?.objectId, sessionId: used?.sessionId ?? sessionId };
+        handle = { objectId: used?.parameters?.objectId, sessionId: used?.sessionId };
         // A fresh object on the same live session must still resolve, so a failing
         // probe below means the handle was released, not that the session is gone.
         const fresh = await agent(

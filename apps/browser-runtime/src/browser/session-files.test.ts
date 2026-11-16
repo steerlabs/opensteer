@@ -189,14 +189,17 @@ describe("Browser Session files and profile saving in real Chromium", () => {
         { action: "accept", files: [] },
         page,
       );
-      await refuse(
-        "page downloads",
+      // Agents have the whole browser: download behaviour is theirs to set, routed to
+      // the admitted profile's context; naming another context is still refused.
+      await cdp.send(
         "Browser.setDownloadBehavior",
         { behavior: "allow", downloadPath: "/tmp" },
         page,
       );
-      await refuse("browser downloads", "Browser.setDownloadBehavior", {
+      await cdp.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: "/tmp" });
+      await refuse("foreign context downloads", "Browser.setDownloadBehavior", {
         behavior: "allow",
+        browserContextId: "FOREIGN-CONTEXT",
         downloadPath: "/tmp",
       });
       await refuse(stageFileMethod, stageFileMethod, {
