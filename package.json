@@ -80,6 +80,7 @@
     "@opensteer/plugin-engine-mcp": "workspace:*",
     "@opensteer/plugin-engine-app-source": "workspace:*",
     "@opensteer/plugin-engine-catalog": "workspace:*",
+    "@opensteer/plugin-source": "workspace:*",
     "apps": "workspace:*",
     "effect": "4.1.4",
     "@effect/platform-node": "4.1.4",
