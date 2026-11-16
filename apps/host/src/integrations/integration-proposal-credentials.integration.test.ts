@@ -1,5 +1,5 @@
 import { ToolFailureSchema } from "@opensteer/core";
-import { startHeldRequest } from "./held-request.test-support.js";
+import { startHeldRequest } from "../mcp/held-request.test-support.js";
 /**
  * Real Host/PostgreSQL proposal, review, connection and repair journey.
  * Asserts refusal of unsafe checks and malformed guidance, approval integrity,
@@ -34,15 +34,15 @@ import { integrationDefinitions } from "@opensteer/integration-catalog";
 import { IntegrationInstallStore, createDatabase } from "@opensteer/database";
 import { sql } from "kysely";
 import { createHostRuntime } from "../runtime/runtime.js";
-import { operation, operations, toolText } from "./computer-apps.test-support.js";
+import { operation, operations, toolText } from "../computer-apps/computer-apps.test-support.js";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
-import { integrationGateway } from "./computer-apps.test-support.js";
+import { integrationGateway } from "../computer-apps/computer-apps.test-support.js";
 import {
   connectCallerMachine,
   createMachineAccessDatabase,
   dispatchCallerRun,
   startPrivateMachineHost,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 
 // Count real resolutions inside the adapter; a spy on its barrel misses internal imports.
 const resolutions = vi.hoisted(() => ({ count: 0 }));

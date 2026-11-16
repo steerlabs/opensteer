@@ -1,4 +1,4 @@
-import { sealOAuthBrokerPayload } from "@opensteer/integration-auth";
+import { sealOAuthBrokerPayload } from "@opensteer/control-plane-protocol/broker-sealing";
 import { createId, OpensteerError } from "@opensteer/core";
 import { createHash, randomBytes } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
@@ -13,7 +13,7 @@ import {
   startPrivateMachineHost,
   connectCallerMachine,
   dispatchCallerRun,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 
 const sdk = vi.hoisted(() => {
   class Transport {

@@ -17,7 +17,7 @@ import type { AppsListInputSchema } from "@opensteer/protocol";
 import { appFrameContentSecurityPolicy, appFrameHeaders } from "@opensteer/shared/appFrame";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { requireSession } from "../integrations/integration-rpc-context.js";
+import { requireSession } from "../server/rpc-context.js";
 import type { AppGateway } from "./app-gateway.js";
 import type { AppService } from "./app-service.js";
 

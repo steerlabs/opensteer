@@ -20,7 +20,7 @@ import {
   generateOAuthBrokerEphemeralKeyPair,
   openOAuthBrokerPayload,
   sealOAuthBrokerPayload,
-} from "@opensteer/integration-auth";
+} from "@opensteer/control-plane-protocol/broker-sealing";
 import {
   CreateHostedOAuthRevocationRequestSchema,
   OAuthBrokerRevocationContextSchema,

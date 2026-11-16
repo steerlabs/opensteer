@@ -8,7 +8,7 @@ import type {
   ThreadCallerAuthority,
 } from "@opensteer/database";
 import { callerThread, type AgentCaller, type RunCaller } from "./agent-caller.js";
-import { mcpToolCallId } from "../integrations/mcp-call-id.js";
+import { mcpToolCallId } from "./call-id.js";
 import { write as assertThreadAccess } from "./tool-access.js";
 
 export function fingerprint(input: unknown): string {

@@ -11,12 +11,12 @@ import {
   type LoginReceiverKey,
   SealedLoginEnvelopeSchema,
 } from "@opensteer/protocol";
-import { openAuxiliaryStream } from "../integrations/computer-apps.test-support.js";
+import { openAuxiliaryStream } from "../computer-apps/computer-apps.test-support.js";
 import {
   closed,
   waitForMessage,
   type PrimaryConnection,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 
 export const passwordFixture = {
   site: "https://passwords-fixture.test",

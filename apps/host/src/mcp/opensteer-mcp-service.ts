@@ -39,7 +39,7 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { RequestHold } from "./request-hold.js";
-import { mcpToolCallId } from "../integrations/mcp-call-id.js";
+import { mcpToolCallId } from "./call-id.js";
 import { agentToolFailure, internalToolFailureCode } from "./agent-tool-failure.js";
 import { mcpResourceMetadataPath } from "./connections/connection-oauth.js";
 import { AgentCallerResolver, type AgentCaller, type RunCaller } from "./agent-caller.js";

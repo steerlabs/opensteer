@@ -39,13 +39,13 @@ import { join, resolve } from "node:path";
 import WebSocket from "ws";
 import { vi } from "vitest";
 import { testRpcData } from "../server/test-host-api-request.js";
-import { createHostRuntime, type PersonalHostRuntime } from "../runtime/runtime.js";
-import type { MachineAccessHost as BaseMachineAccessHost } from "../runtime/machine-access.test-support.js";
+import { createHostRuntime, type PersonalHostRuntime } from "./runtime.js";
+import type { MachineAccessHost as BaseMachineAccessHost } from "./machine-access.test-support.js";
 import {
   configurePersonalRemoteAccess,
   enrollmentToken,
   createMachineAccessDatabase,
-} from "../runtime/personal-machine.test-support.js";
+} from "./personal-machine.test-support.js";
 export { freePort, configurePersonalRemoteAccess, enrollmentToken, createMachineAccessDatabase };
 export type MachineAccessDatabase = Awaited<ReturnType<typeof createMachineAccessDatabase>>;
 export interface PrivateMachineHost extends BaseMachineAccessHost {

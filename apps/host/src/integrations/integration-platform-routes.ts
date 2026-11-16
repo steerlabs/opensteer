@@ -23,7 +23,7 @@ import type { IntegrationDashboardService } from "./integration-dashboard-servic
 import type { IntegrationPlatformService } from "./integration-platform-service.js";
 import type { McpOAuthService } from "./mcp-oauth-service.js";
 import { registerOAuthCallbackRoute } from "./integration-authorization-routes.js";
-import { requirePersonalSession, requireSurface } from "./integration-rpc-context.js";
+import { requirePersonalSession, requireSurface } from "../server/rpc-context.js";
 
 export interface IntegrationPlatformRpcOptions {
   readonly authenticator: HostAuthenticator;

@@ -18,6 +18,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@opensteer/shared": "workspace:*",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

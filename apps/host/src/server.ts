@@ -247,7 +247,7 @@ import {
 } from "./agents/harness-catalogs.js";
 import type { RunnerAuthenticator } from "./agents/runner-authenticator.js";
 import type { AttachmentService } from "./attachments/attachment-service.js";
-import type { RunFileRelay } from "./integrations/run-file-relay.js";
+import type { RunFileRelay } from "./agents/run-file-relay.js";
 import { browserRuntimeCompatibilityReason } from "./browser/browser-runtime-compatibility.js";
 import type { BrowserSourceService } from "./browser/browser-source-service.js";
 import type { PasswordSignInService } from "./browser/password-sign-in-service.js";

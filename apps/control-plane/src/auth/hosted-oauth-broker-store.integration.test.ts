@@ -19,7 +19,7 @@ import {
   openOAuthBrokerPayload,
   sealOAuthBrokerPayload,
   hostedOAuthDeploymentAuthorityDigest,
-} from "@opensteer/integration-auth";
+} from "@opensteer/control-plane-protocol/broker-sealing";
 import { integrationDefinitions } from "@opensteer/integration-catalog";
 import { authorizationDigest } from "@opensteer/integration-core/digest";
 import { createHash } from "node:crypto";

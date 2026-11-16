@@ -15,7 +15,6 @@
   },
   "dependencies": {
     "@opensteer/core": "workspace:*",
-    "@opensteer/integration-core": "workspace:*",
     "@opensteer/protocol": "workspace:*",
     "@opensteer/runner-auth": "workspace:*",
     "@opensteer/shared": "workspace:*",

@@ -1,5 +1,5 @@
 import { beforeEach } from "vitest";
-import { clearPersonalMachineFixture } from "./personal-machine.test-support.js";
+import { clearPersonalMachineFixture } from "../runtime/private-machine-host.test-support.js";
 /** Host-owner consent, exact launch binding, Runner execution and teardown on real sockets. */
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -20,7 +20,7 @@ import {
   startFakeDesktop,
   toolText,
   toolReadiness,
-} from "./computer-apps.test-support.js";
+} from "../computer-apps/computer-apps.test-support.js";
 import {
   connectCallerMachine,
   configurePersonalRemoteAccess,
@@ -29,7 +29,7 @@ import {
   startPrivateMachineHost,
   waitForCondition,
   type MachineAccessHost,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 
 const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = baseDatabaseUrl ? describe : describe.skip;

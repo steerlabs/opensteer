@@ -115,9 +115,9 @@ import {
   OpenApiAdapterConfigSchema,
   openApiCredentialDisclosure,
   probeMcpEndpointShape,
-  validateJsonSchema,
   validateProposedOpenApiCheck,
 } from "@opensteer/integration-adapters";
+import { validateJsonSchema } from "@opensteer/shared/jsonSchemaValidation";
 import { integrationDefinitions } from "@opensteer/integration-catalog";
 import { settingsCatalogEntries } from "./catalog-presentation.js";
 import {
@@ -169,7 +169,7 @@ import {
   type ComputerAppInvokeInput,
   type ComputerAppInvokeSend,
 } from "../computer-apps/computer-app-hub.js";
-import type { RunFileRelay } from "./run-file-relay.js";
+import type { RunFileRelay } from "../agents/run-file-relay.js";
 import type { RunnerRunFileResult } from "@opensteer/protocol";
 import type { RunnerRegistry } from "@opensteer/orchestration";
 import { ComputerMcpTransport } from "./computer-mcp-transport.js";

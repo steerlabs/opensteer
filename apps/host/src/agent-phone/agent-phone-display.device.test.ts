@@ -37,7 +37,7 @@ import {
   createMachineAccessDatabase,
   freePort,
   stopRun,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
   assertNoPhoneApprovalActivity,
@@ -3106,7 +3106,7 @@ it.each([
 });
 
 async function openPhoneOwnerView(
-  host: import("../integrations/personal-machine.test-support.js").MachineAccessHost,
+  host: import("../runtime/private-machine-host.test-support.js").MachineAccessHost,
   computerId: import("@opensteer/core").RunnerId,
 ) {
   const opened = await testRpcData(

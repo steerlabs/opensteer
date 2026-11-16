@@ -37,7 +37,7 @@ import {
   enrollmentToken,
   type MachineAccessHost,
   type PrimaryConnection,
-} from "./personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 
 /**
  * A Mac as a Host meets it: its primary connection, its `integrations`

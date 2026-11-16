@@ -43,7 +43,7 @@ import { stagePhonePin } from "./agent-phone-pin.test-support.js";
 import { PasswordsJourneyEvidence } from "../browser/passwords-evidence.test-support.js";
 import { startPersonalPasswordsBridge } from "../browser/passwords-personal-bridge.test-support.js";
 import { testRpcData } from "../server/test-host-api-request.js";
-import { waitForValue } from "../integrations/personal-machine.test-support.js";
+import { waitForValue } from "../runtime/private-machine-host.test-support.js";
 import { passwordFixture } from "../browser/passwords-authority.test-support.js";
 import { AndroidPhoneActionSchema } from "@opensteer/protocol";
 import { browserSiteFromUrl } from "@opensteer/browser-profile/source-state";
@@ -69,7 +69,7 @@ import {
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { startVerticalStack, type VerticalStack } from "../agents/vertical-stack.test-support.js";
-import { freePort } from "../integrations/personal-machine.test-support.js";
+import { freePort } from "../runtime/private-machine-host.test-support.js";
 import {
   readObservation,
   writeDeviceTestManifest,

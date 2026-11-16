@@ -107,7 +107,7 @@ import {
   waitForMessage,
   type CallerMachine,
   type MachineAccessDatabase,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
   assertNoPhoneApprovalActivity,

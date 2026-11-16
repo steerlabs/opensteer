@@ -1,7 +1,7 @@
 import { ToolFailureSchema } from "@opensteer/core";
 import { beforeEach } from "vitest";
-import { clearPersonalMachineFixture } from "./personal-machine.test-support.js";
-import { startHeldRequest } from "./held-request.test-support.js";
+import { clearPersonalMachineFixture } from "../runtime/private-machine-host.test-support.js";
+import { startHeldRequest } from "../mcp/held-request.test-support.js";
 import { startUpstream } from "./integration-schemas.test-support.js";
 /**
  * A large API's schemas through the integration gateway, end to end on real
@@ -43,14 +43,14 @@ import {
 } from "@opensteer/integration-core";
 import { standaloneToolSchema } from "@opensteer/integration-core/tool-schemas";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
-import { integrationGateway, toolText } from "./computer-apps.test-support.js";
+import { integrationGateway, toolText } from "../computer-apps/computer-apps.test-support.js";
 import {
   connectCallerMachine,
   createMachineAccessDatabase,
   dispatchCallerRun,
   startPrivateMachineHost,
   type MachineAccessHost,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 import { maximumDescribeBytes } from "./integration-describe.js";
 
 const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;

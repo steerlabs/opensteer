@@ -19,7 +19,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { createMachineAccessDatabase } from "../integrations/personal-machine.test-support.js";
+import { createMachineAccessDatabase } from "../runtime/private-machine-host.test-support.js";
 import { integrationCallSubject } from "./integration-call-subject.js";
 import { operationAddress } from "./integration-operation.js";
 import {

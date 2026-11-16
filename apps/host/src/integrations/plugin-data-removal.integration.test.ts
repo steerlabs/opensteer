@@ -8,11 +8,11 @@ import { type HostApiCommand, runnerIntegrationsProtocolVersion } from "@openste
 import { LocalMcpServers } from "@opensteer/runner";
 import { IntegrationPlatformStore } from "@opensteer/database";
 import { testRpcData } from "../server/test-host-api-request.js";
-import { connectComputerAppMachine } from "./computer-apps.test-support.js";
+import { connectComputerAppMachine } from "../computer-apps/computer-apps.test-support.js";
 import {
   createMachineAccessDatabase,
   startPrivateMachineHost,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 
 let database: Awaited<ReturnType<typeof createMachineAccessDatabase>>;
 beforeAll(async () => {

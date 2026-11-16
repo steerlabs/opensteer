@@ -116,7 +116,7 @@ import {
   createMcpAdapter,
   createOpenApiAdapter,
 } from "@opensteer/integration-adapters";
-import { hostedOAuthDeploymentAuthorityDigest } from "@opensteer/integration-auth";
+import { hostedOAuthDeploymentAuthorityDigest } from "@opensteer/control-plane-protocol/broker-sealing";
 import { computerAppIntegrations, integrationDefinitions } from "@opensteer/integration-catalog";
 import { listedDefinitionName } from "../integrations/catalog-presentation.js";
 import {
@@ -174,7 +174,7 @@ import {
   AttachmentService,
   RunAttachmentsTokenService,
 } from "../attachments/attachment-service.js";
-import { RunFileRelay } from "../integrations/run-file-relay.js";
+import { RunFileRelay } from "../agents/run-file-relay.js";
 import { AppStore } from "@opensteer/database";
 import { AppService } from "../apps/app-service.js";
 import { BrowserLocalProfiles } from "../browser/browser-local-profiles.js";

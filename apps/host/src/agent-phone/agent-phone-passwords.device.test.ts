@@ -26,7 +26,7 @@ import {
   freePort,
   startPrivateMachineHost,
   stopRun,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 import {
   acquireAndroidDevice,
   buildE2eAgentPhone,

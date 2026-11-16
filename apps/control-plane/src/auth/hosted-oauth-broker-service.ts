@@ -43,17 +43,19 @@ import {
   exchangeDeclarativeAuthorizationToken,
   oauthAuthorizationFailure,
   oauthUserDeniedAuthorization,
-  generateOAuthBrokerEphemeralKeyPair,
   OAuth2Error,
   oauthAuthorizationResponseState,
   oauthFailureKind,
-  openOAuthBrokerPayload,
   refreshDeclarativeCredential,
   revokeDeclarativeCredential,
-  sealOAuthBrokerPayload,
   validateOAuthAuthorizationResponse,
-  hostedOAuthDeploymentAuthorityDigest,
 } from "@opensteer/integration-auth";
+import {
+  generateOAuthBrokerEphemeralKeyPair,
+  openOAuthBrokerPayload,
+  sealOAuthBrokerPayload,
+  hostedOAuthDeploymentAuthorityDigest,
+} from "@opensteer/control-plane-protocol/broker-sealing";
 import { integrationDefinitions } from "@opensteer/integration-catalog";
 import {
   integrationAuthorizationBrowserReturn,

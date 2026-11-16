@@ -66,7 +66,7 @@ import type {
   ComputerAppInvokeOutcome,
 } from "../computer-apps/computer-app-hub.js";
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
-import { validateJsonSchema } from "@opensteer/integration-adapters";
+import { validateJsonSchema } from "@opensteer/shared/jsonSchemaValidation";
 import {
   ComputerUseError,
   ComputerUseService,

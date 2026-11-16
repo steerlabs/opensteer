@@ -1,4 +1,4 @@
-import { sealOAuthBrokerPayload } from "@opensteer/integration-auth";
+import { sealOAuthBrokerPayload } from "@opensteer/control-plane-protocol/broker-sealing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createIntegrationId } from "@opensteer/integration-core";

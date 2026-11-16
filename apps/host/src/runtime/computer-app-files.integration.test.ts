@@ -10,7 +10,7 @@ import {
 } from "@opensteer/protocol";
 import { ComputerAppError, RunFiles, type ComputerAppProvider } from "@opensteer/runner";
 import type WebSocket from "ws";
-import { startHeldRequest } from "../integrations/held-request.test-support.js";
+import { startHeldRequest } from "../mcp/held-request.test-support.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
   connectComputerAppMachine,

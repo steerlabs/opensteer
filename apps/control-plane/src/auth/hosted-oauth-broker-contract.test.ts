@@ -12,7 +12,7 @@ import {
   generateOAuthBrokerEphemeralKeyPair,
   hostedOAuthDeploymentAuthorityDigest,
   openOAuthBrokerPayload,
-} from "@opensteer/integration-auth";
+} from "@opensteer/control-plane-protocol/broker-sealing";
 import { slackIntegration } from "@opensteer/integration-catalog";
 import { authorizationDigest } from "@opensteer/integration-core/digest";
 import { HostedOAuthBrokerService } from "./hosted-oauth-broker-service.js";

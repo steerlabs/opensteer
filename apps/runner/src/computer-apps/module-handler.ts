@@ -7,7 +7,7 @@ import { RunFiles } from "../attachments/run-files.js";
 import { MacWindowVideoRelay, type MacVideoEvent } from "./mac-window-video-relay.js";
 import type { RunnerTransportPolicy } from "@opensteer/runner-client";
 import type { RunnerIntegrationsComputerViewResult } from "@opensteer/protocol";
-import { validateJsonSchema } from "@opensteer/integration-adapters";
+import { validateJsonSchema } from "@opensteer/shared/jsonSchemaValidation";
 import { getIntegrationDefinition } from "@opensteer/integration-catalog";
 import {
   isComputerAppDefinition,

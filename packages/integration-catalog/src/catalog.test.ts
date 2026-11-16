@@ -5,8 +5,8 @@ import {
   openApiAdapter,
   OpenApiAdapterConfigSchema,
   type GoogleService,
-  validateJsonSchema,
 } from "@opensteer/integration-adapters";
+import { validateJsonSchema } from "@opensteer/shared/jsonSchemaValidation";
 import {
   IntegrationDefinitionSchema,
   integrationDefinitionSummary,

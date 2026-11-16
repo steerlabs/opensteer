@@ -18,7 +18,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import type { CallableIntegrationTool, RequestStore } from "@opensteer/database";
-import { validateJsonSchema } from "@opensteer/integration-adapters";
+import { validateJsonSchema } from "@opensteer/shared/jsonSchemaValidation";
 import type { RunCapabilityClaims } from "../agents/run-capability.js";
 import type { ToolCaller } from "./integration-platform-service.js";
 

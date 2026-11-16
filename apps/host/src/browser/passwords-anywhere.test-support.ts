@@ -15,7 +15,7 @@ import {
   startPrivateMachineHost,
   waitForValue,
   waitForExecute,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 import { hostInternalRoutePaths } from "../server/internal-routes.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 import { passwordFixture, startPasswordsAuthority } from "./passwords-authority.test-support.js";

@@ -1,5 +1,5 @@
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { startHeldRequest } from "../integrations/held-request.test-support.js";
+import { startHeldRequest } from "../mcp/held-request.test-support.js";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

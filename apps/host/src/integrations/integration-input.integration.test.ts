@@ -1,4 +1,4 @@
-import { clearPersonalMachineFixture } from "./personal-machine.test-support.js";
+import { clearPersonalMachineFixture } from "../runtime/private-machine-host.test-support.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -15,14 +15,14 @@ import {
   integrationGateway,
   operation,
   toolText,
-} from "./computer-apps.test-support.js";
+} from "../computer-apps/computer-apps.test-support.js";
 import {
   connectCallerMachine,
   createMachineAccessDatabase,
   dispatchCallerRun,
   startPrivateMachineHost,
   type MachineAccessHost,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 import { IntegrationPlatformService } from "./integration-platform-service.js";
 import { createHostRuntime } from "../runtime/runtime.js";
 import { ownTestDatabaseProducer } from "@opensteer/database/test-support/database";

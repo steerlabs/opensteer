@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { validateJsonSchema } from "../packages/integration-adapters/src/index.js";
+import { validateJsonSchema } from "../packages/shared/src/jsonSchemaValidation.js";
 import { getIntegrationDefinition } from "../packages/integration-catalog/src/index.js";
 import { parseComputerAppConfig } from "../packages/integration-core/src/computer-app.js";
 import { computerAppOperationContract } from "../packages/integration-core/src/computer-app-tools.js";

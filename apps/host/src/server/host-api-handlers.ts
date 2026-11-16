@@ -1,7 +1,7 @@
 import { createSettingsReadHandlers } from "./settings-read-handlers.js";
 import type { ComputerViewService } from "../computer-use/computer-view-service.js";
 import { OpensteerError, RunnerIdSchema } from "@opensteer/core";
-import { requireSession } from "../integrations/integration-rpc-context.js";
+import { requireSession } from "./rpc-context.js";
 import {
   hostApi,
   rpcSuccess,

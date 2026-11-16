@@ -1,5 +1,5 @@
 import { ToolFailureSchema } from "@opensteer/core";
-import { startHeldRequest } from "./held-request.test-support.js";
+import { startHeldRequest } from "../mcp/held-request.test-support.js";
 /**
  * Real Host RPC, integration MCP, PostgreSQL and a local HTTP upstream prove
  * the no-health-check API-key incident and its repair. No service/store mocks.
@@ -40,7 +40,7 @@ import {
   operation,
   operations,
   toolText,
-} from "./computer-apps.test-support.js";
+} from "../computer-apps/computer-apps.test-support.js";
 import {
   acceptCallerRun,
   connectCallerMachine,
@@ -49,7 +49,7 @@ import {
   startPrivateMachineHost,
   waitForExecute,
   type MachineAccessHost,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 
 const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;

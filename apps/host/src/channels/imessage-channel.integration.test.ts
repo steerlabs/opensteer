@@ -1,5 +1,5 @@
 import { beforeEach } from "vitest";
-import { clearPersonalMachineFixture } from "../integrations/personal-machine.test-support.js";
+import { clearPersonalMachineFixture } from "../runtime/private-machine-host.test-support.js";
 /**
  * iMessage through a Mac, end to end on real parts: one real Host over its
  * real sockets, a Mac Runner's real `integrations` and `messaging` modules as
@@ -51,7 +51,7 @@ import {
   setComputerApp,
   startFakeDesktop,
   type FakeDesktopAnswer,
-} from "../integrations/computer-apps.test-support.js";
+} from "../computer-apps/computer-apps.test-support.js";
 import {
   connectCallerMachine,
   createMachineAccessDatabase,
@@ -59,7 +59,7 @@ import {
   waitForCondition,
   waitForExecute,
   type CallerMachine,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 
 const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = baseDatabaseUrl ? describe : describe.skip;

@@ -30,7 +30,7 @@ import {
   createMachineAccessDatabase,
   freePort,
   type CallerMachine,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
   Redaction,

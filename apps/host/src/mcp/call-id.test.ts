@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mcpToolCallId } from "./mcp-call-id.js";
+import { mcpToolCallId } from "./call-id.js";
 
 describe("mcpToolCallId", () => {
   it("replays only the same protocol call identity", () => {

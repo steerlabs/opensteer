@@ -1,7 +1,7 @@
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { messageItem } from "../mcp/thread-items.js";
 import type { AgentTriggerManager } from "../mcp/handlers/triggers.js";
-import { mcpToolCallId } from "../integrations/mcp-call-id.js";
+import { mcpToolCallId } from "../mcp/call-id.js";
 import { fingerprint } from "../mcp/operations.js";
 import { ProductToolRequestSchema } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";

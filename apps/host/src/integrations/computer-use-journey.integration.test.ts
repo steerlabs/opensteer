@@ -9,7 +9,7 @@ import {
 import type {
   ComputerAppApprovalAnswer,
   ComputerAppApprovalOutcome,
-} from "./computer-apps.test-support.js";
+} from "../computer-apps/computer-apps.test-support.js";
 type ComputerAppApprovalList = {
   readonly approvals: readonly {
     readonly request: import("@opensteer/integration-core").ComputerAppSetupRequest;
@@ -99,7 +99,7 @@ import { signHostDiscovery } from "../identity/host-keys.js";
 import {
   createMachineAccessDatabase,
   startPrivateMachineHost,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 import { projectMachines } from "../runtime/machines.js";
 import { createHostRuntime } from "../runtime/runtime.js";
 import { createHostServer } from "../server.js";

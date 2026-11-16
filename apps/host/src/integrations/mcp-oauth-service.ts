@@ -3,11 +3,11 @@ import {
   OAuthBrokerMcpCallbackRelayContextSchema,
   OAuthBrokerMcpAuthorizationResponseSchema,
 } from "@opensteer/control-plane-protocol";
+import { oauthAuthorizationResponseState } from "@opensteer/integration-auth";
 import {
   generateOAuthBrokerEphemeralKeyPair,
   openOAuthBrokerPayload,
-  oauthAuthorizationResponseState,
-} from "@opensteer/integration-auth";
+} from "@opensteer/control-plane-protocol/broker-sealing";
 import { integrationSchemaDigest } from "@opensteer/integration-core/digest";
 import {
   accountReturnPort,

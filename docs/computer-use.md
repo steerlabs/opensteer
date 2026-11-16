@@ -107,7 +107,7 @@ Mac. Agents name an attachment by id, never a path, and the helper opens it by d
 A file moves for one live tool call. When the Run is on the Mac's own Runner it never leaves that
 computer, so a photo does not reach a team server. When the Run is elsewhere it streams through
 the Host, because Runners reach the Host and never each other; nothing is spooled, and the
-[relay](../apps/host/src/integrations/run-file-relay.ts) ends with the call. Exports land in the
+[relay](../apps/host/src/agents/run-file-relay.ts) ends with the call. Exports land in the
 Thread's attachment directory and go at the end of the Run. Files an agent sends must already be in
 Agent home or that directory: the Runner checks, so a send cannot read what the Run could not.
 Trigger and Watch programs have no Run, so their file operations refuse.

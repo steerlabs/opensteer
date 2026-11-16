@@ -25,7 +25,7 @@ import {
   stopRun,
   waitForMessage,
   closed,
-} from "../integrations/personal-machine.test-support.js";
+} from "../runtime/private-machine-host.test-support.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 
 const integration = describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL);

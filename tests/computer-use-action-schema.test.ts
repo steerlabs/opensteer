@@ -1,4 +1,4 @@
-import { validateJsonSchema } from "../packages/integration-adapters/src/index.js";
+import { validateJsonSchema } from "../packages/shared/src/jsonSchemaValidation.js";
 import { LoginTextSchema } from "../packages/protocol/src/password-sign-in.js";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { describe, expect, it } from "vitest";

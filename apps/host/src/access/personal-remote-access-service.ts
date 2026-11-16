@@ -4,7 +4,7 @@ import { PersonalDesktopUpdateStore } from "@opensteer/database";
 import {
   generateOAuthBrokerEphemeralKeyPair,
   openOAuthBrokerPayload,
-} from "@opensteer/integration-auth";
+} from "@opensteer/control-plane-protocol/broker-sealing";
 import {
   PersonalRemoteAdministration,
   requirePersonalAdministrator,

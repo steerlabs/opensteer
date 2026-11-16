@@ -8,7 +8,7 @@ import {
   type MachineSummary,
   type OtherDevice,
 } from "@opensteer/protocol";
-import { requireSession } from "../integrations/integration-rpc-context.js";
+import { requireSession } from "./rpc-context.js";
 
 export function createSettingsReadHandlers(options: {
   readonly otherDevices: (

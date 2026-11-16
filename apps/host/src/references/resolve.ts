@@ -12,7 +12,7 @@ import {
 } from "@opensteer/protocol";
 import type { Kysely } from "kysely";
 import type { z } from "zod";
-import { requireSession } from "../integrations/integration-rpc-context.js";
+import { requireSession } from "../server/rpc-context.js";
 
 type PersonalReferenceResolver = (
   database: Kysely<DatabaseSchema>,

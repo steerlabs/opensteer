@@ -11,7 +11,7 @@ import {
   type TranscriptFileContentInput,
 } from "@opensteer/protocol";
 import { OpensteerError } from "@opensteer/core";
-import { requireSession } from "../integrations/integration-rpc-context.js";
+import { requireSession } from "../server/rpc-context.js";
 import { AssetService } from "../assets/asset-service.js";
 import { TranscriptFileAccess, type FileActor } from "./transcript-file-access.js";
 import { fileUnavailable } from "./rooted-file-reader.js";

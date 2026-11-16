@@ -1,4 +1,4 @@
-import { sealOAuthBrokerPayload } from "@opensteer/integration-auth";
+import { sealOAuthBrokerPayload } from "@opensteer/control-plane-protocol/broker-sealing";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   AccountLinkGenerationSchema,
