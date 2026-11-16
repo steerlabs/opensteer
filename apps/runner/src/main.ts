@@ -47,6 +47,8 @@ import {
 import { prepareMessagingModule, type PreparedMessagingModule } from "./messaging/prepare.js";
 import { shutdownSignals } from "@opensteer/shared/processControl";
 
+import type { PhoneScreenDriver } from "./computer-apps/phone-screen-driver.js";
+
 const RUNTIME_VERSION = "0.0.0";
 
 /**
@@ -114,6 +116,7 @@ export async function runRunnerDaemon(
     readonly onRevoked?: () => void;
     /** Credentials the supervisor delivered off the environment. */
     readonly secrets?: Readonly<Record<string, string>>;
+    readonly phoneScreens?: PhoneScreenDriver;
   } = {},
 ): Promise<void> {
   const config = consumeRunnerConfig(environment, options.secrets);
@@ -155,8 +158,14 @@ export async function runRunnerDaemon(
           identity,
           logger,
           signal: shutdown.signal,
+          ...(options.phoneScreens ? { phoneScreens: options.phoneScreens } : {}),
         })
-      : await startReachOnlyRunner({ applicationConfig, config, logger });
+      : await startReachOnlyRunner({
+          applicationConfig,
+          config,
+          logger,
+          ...(options.phoneScreens ? { phoneScreens: options.phoneScreens } : {}),
+        });
     const device = await describeRunnerDevice({
       platform: process.platform,
       runnerKind: config.runnerKind,
@@ -206,6 +215,7 @@ export async function runRunnerDaemon(
  */
 async function startAgentsRunner(input: {
   readonly applicationConfig: RunnerApplicationConfig;
+  readonly phoneScreens?: PhoneScreenDriver;
   readonly bootId: RunnerDescriptor["bootId"];
   readonly config: RunnerConfig;
   readonly environment: NodeJS.ProcessEnv;
@@ -232,6 +242,7 @@ async function startAgentsRunner(input: {
         ...(config.computerUseBridge ? { computerUseBridge: config.computerUseBridge } : {}),
         dataDirectory: config.dataDirectory,
         platform: process.platform,
+        ...(input.phoneScreens ? { phoneScreens: input.phoneScreens } : {}),
       })
     : undefined;
   const messagingModule = config.modules.includes("messaging")
@@ -358,7 +369,7 @@ async function startAgentsRunner(input: {
     close: async () => {
       clearInterval(pluginPruner);
       await messagingModule?.module.close();
-      integrationsModule?.close?.();
+      await integrationsModule?.close?.();
       await runtime.close();
     },
     ...(integrationsModule ? { integrationsModule } : {}),
@@ -377,6 +388,7 @@ async function startAgentsRunner(input: {
  */
 async function startReachOnlyRunner(input: {
   readonly applicationConfig: RunnerApplicationConfig;
+  readonly phoneScreens?: PhoneScreenDriver;
   readonly config: RunnerConfig;
   readonly logger: JsonRunnerLogger;
 }): Promise<StartedRunner> {
@@ -399,6 +411,7 @@ async function startReachOnlyRunner(input: {
           : {}),
         dataDirectory: input.config.dataDirectory,
         platform: process.platform,
+        ...(input.phoneScreens ? { phoneScreens: input.phoneScreens } : {}),
       })
     : undefined;
   const messagingModule = input.config.modules.includes("messaging")
@@ -416,7 +429,7 @@ async function startReachOnlyRunner(input: {
   return {
     close: async () => {
       await messagingModule?.module.close();
-      integrationsModule?.close?.();
+      await integrationsModule?.close?.();
     },
     ...(integrationsModule ? { integrationsModule } : {}),
     ...(messagingModule ? { messagingModule } : {}),

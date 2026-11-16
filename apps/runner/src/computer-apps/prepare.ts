@@ -8,6 +8,7 @@ import {
 import { ComputerUseHandler } from "./computer-use-handler.js";
 import { LocalMcpServers } from "./local-mcp-servers.js";
 import type { ComputerAppProvider } from "./provider.js";
+import type { PhoneScreenDriver } from "./phone-screen-driver.js";
 import { computerAppProviders } from "./registry.js";
 
 export interface PreparedIntegrationsModule {
@@ -19,12 +20,13 @@ export interface PreparedIntegrationsModule {
    * the computer-use frames are the same Mac and must be the same socket.
    */
   readonly computerUse?: ComputerUseHandler;
+  readonly phoneScreens?: PhoneScreenDriver;
   readonly descriptor: RunnerIntegrationsModule;
   /** The MCP servers this computer runs, on every platform the module is prepared on. */
   readonly localMcp: LocalMcpServers;
   readonly providers: readonly ComputerAppProvider[];
   /** Releases what preparation opened. Called when the Runner stops. */
-  readonly close?: () => void;
+  readonly close?: () => Promise<void> | void;
 }
 
 /**
@@ -36,6 +38,7 @@ export function prepareIntegrationsModule(options: {
   readonly computerUseBridge?: { readonly token: string; readonly url: URL };
   /** Runner state root; obsolete local consent caches are removed at startup. */
   readonly dataDirectory: string;
+  readonly phoneScreens?: PhoneScreenDriver;
   readonly helperBinary?: string;
   readonly platform: NodeJS.Platform;
 }): PreparedIntegrationsModule | undefined {
@@ -61,6 +64,7 @@ export function prepareIntegrationsModule(options: {
     platform === "darwin" && options.computerUseBridge
       ? new ComputerUseHandler({ bridge: options.computerUseBridge })
       : undefined;
+  const phoneScreens = platform === "darwin" ? options.phoneScreens : undefined;
   const providers = computerAppProviders(
     platform,
     computerUse
@@ -74,7 +78,11 @@ export function prepareIntegrationsModule(options: {
     ...(options.helperBinary
       ? { files: { dataDirectory: options.dataDirectory, helperBinary: options.helperBinary } }
       : {}),
-    close: () => computerUse?.close(),
+    close: async () => {
+      computerUse?.close();
+      await phoneScreens?.shutdown();
+    },
+    ...(phoneScreens ? { phoneScreens } : {}),
     ...(computerUse ? { computerUse } : {}),
     localMcp: new LocalMcpServers({
       stateDirectory: path.join(options.dataDirectory, "private", "harness-state"),
@@ -95,6 +103,7 @@ export function prepareIntegrationsModule(options: {
             cardUse: 1,
           }
         : {}),
+      ...(phoneScreens ? { screenDrivers: 1 as const } : {}),
       pluginDataRemoval: 1,
       ...(options.helperBinary ? { appFiles: 1 as const } : {}),
       platform,

@@ -1,5 +1,17 @@
+import { z } from "zod";
 import {
   RunnerIntegrationsWindowResolvedSchema,
+  DeviceDriverTargetSchema,
+  PhoneDisplayDispatchObserveParamsSchema,
+  IphoneScreenDispatchActParamsSchema,
+  PhoneDisplayCloseParamsSchema,
+  PhoneDisplayInstalledAppsParamsSchema,
+  PhoneDisplayOperationSchema,
+  getPhoneDisplayCodec,
+  type DeviceDriverTarget,
+  type DeviceScreenDriverAssignment,
+  type HostIntegrationsDeviceDrivers,
+  type HostToIntegrationsModuleMessage,
   type HostIntegrationsWindowResolve,
   type RunnerIntegrationsWindowResolved,
 } from "@opensteer/protocol";
@@ -38,6 +50,11 @@ import type { RunnerModuleStream } from "@opensteer/runner-client";
 import type { RunnerLogger } from "../host/host-connection.js";
 import { ComputerUseBridgeError } from "./computer-use-bridge-client.js";
 import type { ComputerUseHandler } from "./computer-use-handler.js";
+import type {
+  PhoneScreenDriver,
+  PhoneScreenDriverConnection,
+  PhoneScreenDriverEvent,
+} from "./phone-screen-driver.js";
 import type { LocalMcpFrame, LocalMcpServers } from "./local-mcp-servers.js";
 import { computerUseUnsupportedSentence } from "./macos-app-provider.js";
 import {
@@ -60,6 +77,7 @@ export interface ComputerAppModuleHandlerOptions {
    * there.
    */
   readonly computerUse?: ComputerUseHandler;
+  readonly phoneScreens?: PhoneScreenDriver;
   readonly videoTransport?: RunnerTransportPolicy;
   /** The MCP servers this computer runs: the Host admits only the exact launch the owner approved. */
   readonly localMcp?: LocalMcpServers;
@@ -70,6 +88,7 @@ export interface ComputerAppModuleHandlerOptions {
 
 interface InFlightInvoke {
   readonly abort: AbortController;
+  readonly target?: DeviceDriverTarget;
 }
 
 type Result = RunnerIntegrationsResult["result"];
@@ -89,14 +108,21 @@ type OutboundEvent =
   | Pick<RunnerIntegrationsWindowResolved, "requestId" | "result" | "type">
   | Pick<RunnerIntegrationsPasswordSignInEvent, "type" | "event">
   | Pick<RunnerIntegrationsPasswordSignInResult, "type" | "requestId" | "result">
+  | PhoneScreenDriverEvent
   | MacVideoEvent
   | Pick<RunnerIntegrationsComputerAppWindowsResult, "requestId" | "result" | "type">
-  | Pick<RunnerIntegrationsComputerViewResult, "requestId" | "result" | "type">
+  | Pick<
+      RunnerIntegrationsComputerViewResult,
+      "requestId" | "result" | "type" | "deviceId" | "driverGeneration"
+    >
   | LocalMcpFrame
   | IntegrationsStatus
   | Pick<RunnerIntegrationsComputerUseEvent, "event" | "type">
   | Pick<RunnerIntegrationsResult, "requestId" | "result" | "type">
-  | Pick<RunnerIntegrationsComputerUseResult, "requestId" | "result" | "type">;
+  | Pick<
+      RunnerIntegrationsComputerUseResult,
+      "requestId" | "result" | "type" | "deviceId" | "driverGeneration"
+    >;
 
 /** What an app is told to say when this Runner cannot name the reason. */
 const providerFailureSentence = "The app could not complete this request.";
@@ -133,6 +159,11 @@ const computerUseMessageMaxLength = 1_000;
 export class ComputerAppModuleHandler {
   readonly #files: RunFiles | undefined;
   readonly #computerUse: ComputerUseHandler | undefined;
+  readonly #phoneScreens: PhoneScreenDriver | undefined;
+  #screenConnection: PhoneScreenDriverConnection | undefined;
+  readonly #assignments = new Map<DeviceDriverTarget["deviceId"], DeviceScreenDriverAssignment>();
+  readonly #screenInFlight = new Map<string, InFlightInvoke>();
+  readonly #screenStatus = new Map<string, string>();
   readonly #videoTransport: RunnerTransportPolicy | undefined;
   #video: MacWindowVideoRelay | undefined;
   readonly #localMcp: LocalMcpServers | undefined;
@@ -167,6 +198,7 @@ export class ComputerAppModuleHandler {
   constructor(options: ComputerAppModuleHandlerOptions) {
     this.#files = options.files;
     this.#computerUse = options.computerUse;
+    this.#phoneScreens = options.phoneScreens;
     this.#videoTransport = options.videoTransport;
     this.#localMcp = options.localMcp;
     this.#logger = options.logger;
@@ -184,6 +216,13 @@ export class ComputerAppModuleHandler {
   attach(stream: RunnerModuleStream): void {
     this.#stopAttachedStream();
     this.#stream = stream;
+    if (stream.screenDrivers === 1) {
+      this.#screenConnection = this.#phoneScreens?.connect({
+        fence: stream.fence,
+        emit: (event) => this.#sendScreenEvent(stream, event),
+        ...(this.#videoTransport ? { transport: this.#videoTransport } : {}),
+      });
+    }
     this.#computerUse?.negotiateLoginText(stream.loginText === 1);
     if (this.#computerUse && this.#videoTransport)
       this.#video = new MacWindowVideoRelay(
@@ -232,6 +271,17 @@ export class ComputerAppModuleHandler {
       throw new Error("Computer app control message exceeds its size limit");
     }
     const message = HostToIntegrationsModuleMessageSchema.parse(JSON.parse(frame.toString("utf8")));
+    if (message.type === "host.integrations.device-drivers") {
+      this.#replaceScreenAssignments(message);
+      return;
+    }
+    if ("deviceId" in message && message.deviceId !== undefined) {
+      await this.#handleScreenFrame({
+        ...message,
+        ...DeviceDriverTargetSchema.parse(messageTarget(message)),
+      });
+      return;
+    }
     switch (message.type) {
       case "host.integrations.mac-owner.input-reset":
       case "host.integrations.mac-owner.input":
@@ -262,6 +312,9 @@ export class ComputerAppModuleHandler {
       case "host.integrations.computer-use":
         await this.#registerComputerUse(message);
         return;
+      case "host.integrations.display.power":
+      case "host.integrations.computer-use-stop-recorded":
+        return;
       case "host.integrations.cancel":
         this.#inFlight
           .get(message.requestId)
@@ -286,6 +339,157 @@ export class ComputerAppModuleHandler {
       case "host.auxiliary.lease-renewed":
         throw new Error("The integrations module received an out-of-sequence handshake message");
     }
+  }
+
+  #replaceScreenAssignments(message: HostIntegrationsDeviceDrivers): void {
+    if (this.#stream?.screenDrivers !== 1 || !this.#screenConnection)
+      throw new Error("Screen drivers were not negotiated on this stream");
+    this.#assignments.clear();
+    for (const driver of message.drivers) this.#assignments.set(driver.deviceId, driver);
+    for (const [key, work] of this.#screenInFlight) {
+      if (
+        work.target &&
+        this.#assignments.get(work.target.deviceId)?.generation !== work.target.driverGeneration
+      ) {
+        this.#screenInFlight.delete(key);
+        work.abort.abort(new Error("Screen driver assignment ended"));
+      }
+    }
+    for (const key of this.#screenStatus.keys()) {
+      if (
+        !message.drivers.some(
+          (driver) =>
+            key ===
+            screenTargetKey({ deviceId: driver.deviceId, driverGeneration: driver.generation }),
+        )
+      )
+        this.#screenStatus.delete(key);
+    }
+    this.#screenConnection.replaceAssignments(message.drivers);
+  }
+
+  #assigned(target: DeviceDriverTarget): boolean {
+    return (
+      this.#stream?.screenDrivers === 1 &&
+      this.#screenConnection !== undefined &&
+      this.#assignments.get(target.deviceId)?.generation === target.driverGeneration
+    );
+  }
+
+  async #sendScreenEvent(stream: RunnerModuleStream, event: PhoneScreenDriverEvent): Promise<void> {
+    if (this.#stream !== stream || !this.#assigned(event)) return;
+    if (event.type === "runner.integrations.device-status") {
+      const key = screenTargetKey(event);
+      const fingerprint = JSON.stringify(event);
+      if (this.#screenStatus.get(key) === fingerprint) return;
+      this.#screenStatus.set(key, fingerprint);
+    }
+    await this.#send(stream, event);
+  }
+
+  async #handleScreenFrame(
+    message: Extract<
+      HostToIntegrationsModuleMessage,
+      { deviceId?: DeviceDriverTarget["deviceId"] | undefined }
+    > &
+      DeviceDriverTarget,
+  ): Promise<void> {
+    const stream = this.#stream;
+    if (!stream) return;
+    const connection = this.#screenConnection;
+    if (!connection || !this.#assigned(message)) {
+      if (message.type === "host.integrations.computer-use")
+        await this.#sendComputerUseResult(
+          stream,
+          message.requestId,
+          {
+            kind: "error",
+            code: "unsupported",
+            message: "That screen driver is not assigned on this stream.",
+          },
+          undefined,
+          messageTarget(message),
+        );
+      else if (message.type === "host.integrations.computer-view")
+        await this.#send(stream, {
+          ...messageTarget(message),
+          type: "runner.integrations.computer-view-result",
+          requestId: message.requestId,
+          result: {
+            kind: "error",
+            code: "stale-generation",
+            message: "That screen driver is not assigned on this stream.",
+          },
+        });
+      return;
+    }
+    switch (message.type) {
+      case "host.integrations.computer-use":
+        await this.#registerComputerUse(message);
+        return;
+      case "host.integrations.cancel":
+        this.#screenInFlight
+          .get(screenRequestKey(message, message.requestId))
+          ?.abort.abort(new Error("Screen request cancelled"));
+        connection.cancel(message);
+        return;
+      case "host.integrations.computer-use-stop-recorded":
+        connection.stopRecorded(message);
+        return;
+      case "host.integrations.computer-view":
+        this.#registerComputerView(message);
+        return;
+      default:
+        connection.display(message);
+    }
+  }
+
+  async #runScreenOperation(
+    connection: PhoneScreenDriverConnection,
+    message: HostIntegrationsComputerUse,
+    signal: AbortSignal,
+    receivedAt: number,
+  ): Promise<ComputerAppValue> {
+    const context = {
+      ...DeviceDriverTargetSchema.parse(messageTarget(message)),
+      requestId: message.requestId,
+      sessionId: message.sessionId,
+      runId: message.runId,
+      access: message.access,
+      threadTitle: message.threadTitle,
+      deadline: receivedAt + message.timeoutMs,
+      signal,
+    };
+    const operation = PhoneDisplayOperationSchema.parse(message.operation);
+    let value: unknown;
+    switch (operation) {
+      case "observe":
+        value = await connection.observe(
+          context,
+          PhoneDisplayDispatchObserveParamsSchema.parse(message.params),
+        );
+        break;
+      case "act": {
+        const params = IphoneScreenDispatchActParamsSchema.safeParse(message.params);
+        if (!params.success)
+          throw new ComputerUseBridgeError("failed", "The phone action parameters are invalid.");
+        value = await connection.act(context, params.data);
+        break;
+      }
+      case "close":
+        value = await connection.close(
+          context,
+          PhoneDisplayCloseParamsSchema.parse(message.params),
+        );
+        break;
+      case "installed_apps":
+        value = await connection.installedApps(
+          context,
+          PhoneDisplayInstalledAppsParamsSchema.parse(message.params),
+        );
+        break;
+    }
+    return z.json().parse(getPhoneDisplayCodec("iphone-screen").decodeResult(operation, value));
   }
 
   async #passwordSignIn(message: HostIntegrationsPasswordSignIn): Promise<void> {
@@ -322,9 +526,13 @@ export class ComputerAppModuleHandler {
       | HostIntegrationsWindowResolve,
   ): void {
     const stream = this.#stream;
-    if (!stream || this.#inFlight.has(message.requestId)) return;
+    const target = "deviceId" in message ? messageTarget(message) : undefined;
+    const calls = target ? this.#screenInFlight : this.#inFlight;
+    const key = target ? screenRequestKey(target, message.requestId) : message.requestId;
+    if (!stream || calls.has(key)) return;
+    const connection = target ? this.#screenConnection : undefined;
     const abort = new AbortController();
-    this.#inFlight.set(message.requestId, { abort });
+    calls.set(key, { abort, ...(target ? { target } : {}) });
     // Listing an app's windows only reads what is open — the helper never
     // starts an app or asks it for a window to list it — so a start page's
     // lists for every app never wait on, or are refused for, agent work.
@@ -343,7 +551,25 @@ export class ComputerAppModuleHandler {
       const timer = setTimeout(() => abort.abort(), message.timeoutMs);
       timer.unref();
       try {
-        if (!this.#computerUse)
+        if (target) {
+          if (!connection || message.type !== "host.integrations.computer-view")
+            result = {
+              kind: "error",
+              code: "unsupported",
+              message: "That screen view is not available.",
+            };
+          else
+            result = !admitted
+              ? { kind: "error", code: "unavailable", message: "That computer is busy." }
+              : {
+                  kind: "ok",
+                  value: await connection.ownerView(
+                    { ...message, ...target },
+                    abort.signal,
+                    receivedAt,
+                  ),
+                };
+        } else if (!this.#computerUse)
           result = { kind: "error", code: "unsupported", message: computerUseUnsupportedSentence };
         else if (!admitted)
           result = { kind: "error", code: "unavailable", message: "That computer is busy." };
@@ -390,9 +616,9 @@ export class ComputerAppModuleHandler {
           if (occupies) this.#executing--;
         }
       }
-      if (this.#inFlight.get(message.requestId)?.abort !== abort || this.#stream !== stream) return;
-      this.#inFlight.delete(message.requestId);
-      const response = { ...stream.fence, requestId: message.requestId, result };
+      if (calls.get(key)?.abort !== abort || this.#stream !== stream) return;
+      calls.delete(key);
+      const response = { ...stream.fence, ...target, requestId: message.requestId, result };
       if (message.type === "host.integrations.window-resolve")
         await this.#send(
           stream,
@@ -612,31 +838,56 @@ export class ComputerAppModuleHandler {
     const receivedAt = Date.now();
     const stream = this.#stream;
     if (!stream) throw new Error("The integrations module stream is detached");
-    if (this.#inFlight.has(message.requestId)) {
+    const target = messageTarget(message);
+    const calls = target ? this.#screenInFlight : this.#inFlight;
+    const key = target ? screenRequestKey(target, message.requestId) : message.requestId;
+    if (calls.has(key)) {
       this.#logger.info("Ignoring a duplicate computer use request", {
         requestId: message.requestId,
       });
       return;
     }
-    const computerUse = this.#computerUse;
+    const connection = target ? this.#screenConnection : undefined;
+    const computerUse = target
+      ? connection
+        ? {
+            run: (frame: HostIntegrationsComputerUse, signal: AbortSignal, receivedAt: number) =>
+              this.#runScreenOperation(connection, frame, signal, receivedAt),
+          }
+        : undefined
+      : this.#computerUse;
     if (!computerUse) {
-      await this.#sendComputerUseResult(stream, message.requestId, {
-        code: "unsupported",
-        kind: "error",
-        message: computerUseUnsupportedSentence,
-      });
+      await this.#sendComputerUseResult(
+        stream,
+        message.requestId,
+        {
+          code: "unsupported",
+          kind: "error",
+          message: computerUseUnsupportedSentence,
+        },
+        undefined,
+        target,
+      );
       return;
     }
     if (occupiesSlot(message.operation) && this.#executing >= computerAppMaxConcurrentInvokes) {
-      await this.#sendComputerUseResult(stream, message.requestId, {
-        code: "failed",
-        kind: "error",
-        message: computerUseCapacitySentence,
-      });
+      await this.#sendComputerUseResult(
+        stream,
+        message.requestId,
+        {
+          code: "failed",
+          kind: "error",
+          message: target
+            ? "The screen driver is at its computer-use capacity."
+            : computerUseCapacitySentence,
+        },
+        undefined,
+        target,
+      );
       return;
     }
     const abort = new AbortController();
-    this.#inFlight.set(message.requestId, { abort });
+    calls.set(key, { abort, ...(target ? { target } : {}) });
     void this.#runComputerUse(stream, computerUse, message, abort, receivedAt).catch(
       (error: unknown) => {
         this.#logger.error("Computer use result could not be sent", {
@@ -649,7 +900,7 @@ export class ComputerAppModuleHandler {
 
   async #runComputerUse(
     stream: RunnerModuleStream,
-    computerUse: ComputerUseHandler,
+    computerUse: Pick<ComputerUseHandler, "run">,
     message: HostIntegrationsComputerUse,
     abort: AbortController,
     receivedAt: number,
@@ -660,6 +911,9 @@ export class ComputerAppModuleHandler {
     // The slot belongs to the work, exactly as it does for an invoke: the
     // helper finishes the batch it started whatever this end decides, so a
     // cancelled `act` must not free a slot for a second batch in the same app.
+    const target = messageTarget(message);
+    const calls = target ? this.#screenInFlight : this.#inFlight;
+    const key = target ? screenRequestKey(target, message.requestId) : message.requestId;
     const slot = occupiesSlot(message.operation);
     if (slot) this.#executing += 1;
     const releaseSlot = (): void => {
@@ -672,34 +926,45 @@ export class ComputerAppModuleHandler {
       const value = await Promise.race([work, rejectedWhenAborted(abort.signal)]);
       result = { kind: "ok", value };
     } catch (error) {
-      result = this.#computerUseError(error, message.operation, abort.signal.aborted);
+      result = this.#computerUseError(
+        error,
+        message.operation,
+        abort.signal.aborted,
+        target !== undefined,
+      );
     }
 
-    const active = this.#inFlight.get(message.requestId);
+    const active = calls.get(key);
     if (active?.abort !== abort) return;
     if (abort.signal.aborted && message.operation === "act" && result.kind === "error") {
-      await this.#sendComputerUseResult(stream, message.requestId, result, message.operation);
+      await this.#sendComputerUseResult(
+        stream,
+        message.requestId,
+        result,
+        message.operation,
+        target,
+      );
       // Written native actions still own their slot. Forward their final
       // receipt on this exact stream for the Host's audit collector only.
       try {
         const value = await work;
-        if (this.#inFlight.get(message.requestId)?.abort === abort)
+        if (calls.get(key)?.abort === abort)
           await this.#sendComputerUseResult(
             stream,
             message.requestId,
             { kind: "ok", value },
             message.operation,
+            target,
           );
       } catch {
         // The cancellation acknowledgement already reported the unknown outcome.
       } finally {
-        if (this.#inFlight.get(message.requestId)?.abort === abort)
-          this.#inFlight.delete(message.requestId);
+        if (calls.get(key)?.abort === abort) calls.delete(key);
       }
       return;
     }
-    this.#inFlight.delete(message.requestId);
-    await this.#sendComputerUseResult(stream, message.requestId, result, message.operation);
+    calls.delete(key);
+    await this.#sendComputerUseResult(stream, message.requestId, result, message.operation, target);
     if (result.kind === "error" && result.code === "permission-required") {
       this.#queueInspection(stream);
     }
@@ -709,6 +974,7 @@ export class ComputerAppModuleHandler {
     error: unknown,
     operation: HostIntegrationsComputerUse["operation"],
     aborted: boolean,
+    screen = false,
   ): ComputerUseResult {
     if (aborted) {
       // `act` is the one operation that changes the app, and the helper does
@@ -725,6 +991,14 @@ export class ComputerAppModuleHandler {
     if (error instanceof ComputerUseBridgeError) {
       return { code: error.code, kind: "error", message: boundedSentence(error.message) };
     }
+    if (screen)
+      return operation === "act"
+        ? {
+            code: "outcome-unknown",
+            kind: "error",
+            message: "The actions may already have taken effect.",
+          }
+        : { code: "failed", kind: "error", message: "The phone could not complete this request." };
     this.#logger.error("Computer use failed", {
       reason: error instanceof Error ? error.message : String(error),
     });
@@ -866,9 +1140,15 @@ export class ComputerAppModuleHandler {
     requestId: HostIntegrationsComputerUse["requestId"],
     result: ComputerUseResult,
     operation?: HostIntegrationsComputerUse["operation"],
+    target?: DeviceDriverTarget,
   ): Promise<void> {
     if (this.#stream !== stream) return;
-    const event = { requestId, result, type: "runner.integrations.computer-use-result" } as const;
+    const event = {
+      ...target,
+      requestId,
+      result,
+      type: "runner.integrations.computer-use-result",
+    } as const;
     const fits = IntegrationsModuleEventSchema.safeParse({
       ...stream.fence,
       module: "integrations",
@@ -879,6 +1159,7 @@ export class ComputerAppModuleHandler {
       fits
         ? event
         : {
+            ...target,
             requestId,
             result:
               operation === "act"
@@ -926,6 +1207,13 @@ export class ComputerAppModuleHandler {
   }
 
   #stopAttachedStream(): void {
+    this.#assignments.clear();
+    this.#screenStatus.clear();
+    for (const work of this.#screenInFlight.values())
+      work.abort.abort(new Error("Screen stream detached"));
+    this.#screenInFlight.clear();
+    this.#screenConnection?.detach();
+    this.#screenConnection = undefined;
     this.#video?.close();
     this.#video = undefined;
     this.#detachComputerUseEvents?.();
@@ -1003,4 +1291,22 @@ function rejectedWhenAborted(signal: AbortSignal): Promise<never> {
     }
     signal.addEventListener("abort", () => reject(signal.reason), { once: true });
   });
+}
+
+function messageTarget(message: {
+  deviceId?: DeviceDriverTarget["deviceId"] | undefined;
+  driverGeneration?: number | undefined;
+}): DeviceDriverTarget | undefined {
+  return message.deviceId === undefined || message.driverGeneration === undefined
+    ? undefined
+    : {
+        deviceId: message.deviceId,
+        driverGeneration: message.driverGeneration,
+      };
+}
+function screenTargetKey(target: DeviceDriverTarget): string {
+  return JSON.stringify([target.deviceId, target.driverGeneration]);
+}
+function screenRequestKey(target: DeviceDriverTarget, requestId: string): string {
+  return JSON.stringify([target.deviceId, target.driverGeneration, requestId]);
 }

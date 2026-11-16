@@ -353,7 +353,12 @@ export class ComputerUseHandler {
     signal: AbortSignal,
     receivedAt = this.#now(),
   ): Promise<ComputerViewNativeResult> {
-    if (frame.version !== macOwnerViewVersion || frame.target.kind !== "app") {
+    if (
+      frame.deviceId !== undefined ||
+      frame.driverGeneration !== undefined ||
+      frame.version !== macOwnerViewVersion ||
+      frame.target.kind !== "app"
+    ) {
       throw new ComputerUseBridgeError("unsupported", "That owner view is not supported.");
     }
     const authority = {
@@ -449,6 +454,11 @@ export class ComputerUseHandler {
     signal: AbortSignal,
     receivedAt: number = this.#now(),
   ): Promise<ComputerAppValue> {
+    if (frame.deviceId !== undefined || frame.driverGeneration !== undefined)
+      throw new ComputerUseBridgeError(
+        "unsupported",
+        "External screens cannot use the Mac helper.",
+      );
     const deadline = receivedAt + frame.timeoutMs;
     const options = (): RequestOptions => ({ deadline, signal });
     switch (frame.operation) {

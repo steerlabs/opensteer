@@ -13,7 +13,7 @@ import {
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
 import { moduleReadiness } from "./fence-ledger.js";
 import { RunnerModuleConnection, type RunnerModuleStream } from "./module-connection.js";
@@ -25,6 +25,39 @@ afterEach(async () => {
 });
 
 describe("RunnerModuleConnection", () => {
+  it.each([false, true])(
+    "propagates screen-driver negotiation on a module-only connection: %s",
+    async (negotiated) => {
+      const host = await startHostStub({
+        module: "integrations",
+        screenDrivers: negotiated,
+        streamLeaseMs: () => 120_000,
+        onAuxiliaryClose: () => undefined,
+      });
+      const streams: RunnerModuleStream[] = [];
+      const connection = moduleConnection(
+        host.url,
+        {
+          logger: { error: () => undefined, info: () => undefined },
+          onStream: (stream) => {
+            streams.push(stream);
+          },
+          onStreamClosed: () => undefined,
+        },
+        "integrations",
+      );
+      const stop = new AbortController();
+      const run = connection.run(stop.signal);
+      stopping.push(async () => {
+        stop.abort();
+        await run;
+      });
+      await vi.waitFor(() => expect(streams).toHaveLength(1), { timeout: 2000 });
+      if (negotiated) expect(streams[0]).toHaveProperty("screenDrivers", 1);
+      else expect(streams[0]).not.toHaveProperty("screenDrivers");
+    },
+  );
+
   it("reconnects the module stream after its lease runs out", async () => {
     // The Host stops renewing the stream lease while the module runtime is
     // down. That must read as a disconnect: the stream closes, the run loop
@@ -72,6 +105,7 @@ function moduleConnection(
     ConstructorParameters<typeof RunnerModuleConnection>[0],
     "logger" | "onStream" | "onStreamClosed"
   >,
+  module: "browser" | "integrations" = "browser",
 ): RunnerModuleConnection {
   const pair = generateKeyPairSync("ed25519");
   const runnerId = createId("runner");
@@ -91,7 +125,10 @@ function moduleConnection(
     descriptor: (current): RunnerDescriptor => ({
       bootId,
       capabilities: [],
-      modules: { browser: { wireVersion: 2, runtimeId: "browser-runtime-test" } },
+      modules:
+        module === "browser"
+          ? { browser: { wireVersion: 2, runtimeId: "browser-runtime-test" } }
+          : { integrations: { platform: "darwin", protocolVersion: 6, screenDrivers: 1 } },
       name: "Browser runtime",
       runnerId: current.runnerId,
       runnerKind: "managed",
@@ -106,10 +143,10 @@ function moduleConnection(
         lastConnectionGeneration: connectionGeneration,
       }),
     },
-    module: "browser",
+    module,
     mode: "development",
     onStreamFrame: async () => undefined,
-    readiness: () => moduleReadiness("browser", "ready"),
+    readiness: () => moduleReadiness(module, "ready"),
     ...overrides,
   });
 }
@@ -121,9 +158,12 @@ function moduleConnection(
  * under the Runner, and the Runner has to come back for the second.
  */
 async function startHostStub(options: {
+  readonly module?: "browser" | "integrations";
+  readonly screenDrivers?: boolean;
   readonly onAuxiliaryClose: (code: number) => void;
   readonly streamLeaseMs: (attempt: number) => number;
 }): Promise<{ readonly url: URL }> {
+  const module = options.module ?? "browser";
   const server = createServer();
   await new Promise<void>((ready) => server.listen(0, "127.0.0.1", ready));
   const address = server.address() as AddressInfo;
@@ -142,7 +182,7 @@ async function startHostStub(options: {
             challengeId: RunnerChallengeIdSchema.parse(`rch_${randomUUID()}`),
             expiresAt: new Date(Date.now() + 30_000).toISOString(),
             hostSessionId: "h".repeat(32),
-            module: "browser",
+            module,
             nonce: "n".repeat(32),
             type: "host.auxiliary.challenge",
           }),
@@ -154,8 +194,9 @@ async function startHostStub(options: {
             JSON.stringify({
               ...fence,
               auxiliaryStreamId: RunnerAuxiliaryStreamIdSchema.parse(`rax_${randomUUID()}`),
+              ...(options.screenDrivers ? { screenDrivers: 1 } : {}),
               heartbeatIntervalMs: 60_000,
-              module: "browser",
+              module,
               serverTime: new Date().toISOString(),
               streamLeaseExpiresAt: new Date(
                 Date.now() + options.streamLeaseMs(attempt),
@@ -194,7 +235,7 @@ async function startHostStub(options: {
         socket.send(
           JSON.stringify({
             ...fence,
-            allowedModules: ["browser"],
+            allowedModules: [module],
             connectionLeaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
             environmentIds: runnerEnvironmentIds(message.descriptor),
             heartbeatIntervalMs: 60_000,

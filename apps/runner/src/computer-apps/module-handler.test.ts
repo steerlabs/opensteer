@@ -6,6 +6,10 @@ import {
 import { computerAppOperationContract } from "@opensteer/integration-core/computer-app-tools";
 import {
   IntegrationsModuleEventSchema,
+  ComputerUseSessionIdSchema,
+  HostIntegrationsComputerUseSchema,
+  type DeviceScreenDriverAssignment,
+  type HostIntegrationsComputerUse,
   RunnerAuxiliaryRequestIdSchema,
   RunnerAuxiliaryStreamIdSchema,
   RunnerBootIdSchema,
@@ -17,6 +21,8 @@ import {
 import type { RunnerModuleStream } from "@opensteer/runner-client";
 import { createId } from "@opensteer/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { FakePhoneScreenDriver } from "./phone-screen-driver.test-support.js";
+import type { ComputerUseHandler } from "./computer-use-handler.js";
 import { ComputerAppModuleHandler } from "./module-handler.js";
 import {
   ComputerAppError,
@@ -398,12 +404,15 @@ describe("ComputerAppModuleHandler", () => {
 
 function setup(
   options: {
+    readonly phoneScreens?: FakePhoneScreenDriver;
+    readonly computerUse?: ComputerUseHandler;
+    readonly screenDrivers?: 1;
     readonly info?: (message: string, details?: Readonly<Record<string, unknown>>) => void;
     readonly inspect?: ComputerAppProvider["inspect"];
     readonly invoke?: ComputerAppProvider["invoke"];
   } = {},
 ) {
-  const first = createStream();
+  const first = createStream(options.screenDrivers);
   const provider = {
     definitionId: "apple-messages",
     inspect:
@@ -414,17 +423,19 @@ function setup(
   const handler = new ComputerAppModuleHandler({
     logger: { error: vi.fn(), info: options.info ?? vi.fn() },
     providers: [provider],
+    ...(options.phoneScreens ? { phoneScreens: options.phoneScreens } : {}),
+    ...(options.computerUse ? { computerUse: options.computerUse } : {}),
   });
   handlers.push(handler);
   handler.attach(first.stream);
   return {
     events: first.events,
-    handle: async (message: InvokeInput | CancelInput) =>
+    handle: async (message: object) =>
       await handler.handleFrame(Buffer.from(JSON.stringify({ ...fence, ...message })), false),
     handler,
     /** Supersedes the attached stream the way a reconnect does. */
     openStream: () => {
-      const next = createStream();
+      const next = createStream(options.screenDrivers);
       handler.attach(next.stream);
       return next;
     },
@@ -445,7 +456,7 @@ function readyInspection(): readonly ComputerAppOperationInspection[] {
   }));
 }
 
-function createStream(): {
+function createStream(screenDrivers?: 1): {
   readonly events: IntegrationsModuleEvent[];
   readonly stream: RunnerModuleStream;
 } {
@@ -453,6 +464,7 @@ function createStream(): {
   return {
     events,
     stream: {
+      ...(screenDrivers === 1 ? { screenDrivers } : {}),
       browserAttachPublicKeys: undefined,
       fence,
       send: vi.fn(async (frame: Buffer | string) => {
@@ -463,7 +475,6 @@ function createStream(): {
 }
 
 type InvokeInput = Omit<HostIntegrationsInvoke, keyof typeof fence | "module">;
-type CancelInput = { readonly requestId: string; readonly type: "host.integrations.cancel" };
 
 function invoke(requestId: string, selected: ComputerAppOperation): InvokeInput {
   return {
@@ -517,3 +528,408 @@ async function eventually(assertion: () => void): Promise<void> {
     }
   }
 }
+
+const phoneAssignment: DeviceScreenDriverAssignment = {
+  deviceId: createId("device"),
+  role: "screen",
+  definitionId: "iphone-screen",
+  generation: 1,
+};
+const phoneTarget = { deviceId: phoneAssignment.deviceId, driverGeneration: 1 };
+function phoneCall(requestId: string, target = phoneTarget): HostIntegrationsComputerUse {
+  return HostIntegrationsComputerUseSchema.parse({
+    ...fence,
+    ...target,
+    type: "host.integrations.computer-use",
+    definitionId: "iphone-screen",
+    requestId,
+    runId: createId("run"),
+    sessionId: ComputerUseSessionIdSchema.parse("cus_00000000-0000-4000-8000-000000000001"),
+    access: null,
+    app: null,
+    operation: "installed_apps",
+    params: {},
+    threadTitle: null,
+    timeoutMs: 1000,
+  });
+}
+function phoneResults(events: readonly IntegrationsModuleEvent[]) {
+  return events.filter((event) => event.type === "runner.integrations.computer-use-result");
+}
+const assignments = (drivers: readonly DeviceScreenDriverAssignment[]) => ({
+  type: "host.integrations.device-drivers",
+  drivers,
+});
+
+describe("assigned phone screens", () => {
+  it("accepts assignments and emits per-device status only on a negotiated stream", async () => {
+    const screens = new FakePhoneScreenDriver();
+    const legacy = setup({ phoneScreens: screens });
+    await expect(legacy.handle(assignments([phoneAssignment]))).rejects.toThrow(/negotiat/i);
+    await legacy.handle(phoneCall("unnegotiated"));
+    expect(screens.connections).toHaveLength(0);
+    expect(legacy.events.some((event) => event.type === "runner.integrations.device-status")).toBe(
+      false,
+    );
+    expect(phoneResults(legacy.events)[0]?.result).toMatchObject({
+      kind: "error",
+      code: "unsupported",
+    });
+    const absent = setup({ screenDrivers: 1 });
+    await expect(absent.handle(assignments([phoneAssignment]))).rejects.toThrow(/negotiat/i);
+    const modern = setup({ phoneScreens: screens, screenDrivers: 1 });
+    await modern.handle(assignments([phoneAssignment]));
+    await vi.waitFor(
+      () =>
+        expect(
+          modern.events.some((event) => event.type === "runner.integrations.device-status"),
+        ).toBe(true),
+      { timeout: 1000 },
+    );
+    await screens.connections[0]!.emitStatus(phoneAssignment);
+    expect(
+      modern.events.filter((event) => event.type === "runner.integrations.device-status"),
+    ).toHaveLength(1);
+    await modern.handle(phoneCall("assigned"));
+    await vi.waitFor(
+      () =>
+        expect(phoneResults(modern.events)[0]).toMatchObject({
+          ...phoneTarget,
+          result: { kind: "ok", value: { apps: [], total: 0 } },
+        }),
+      { timeout: 1000 },
+    );
+  });
+
+  it("replaces the full list, aborting omitted work and suppressing omitted or stale status", async () => {
+    const screens = new FakePhoneScreenDriver();
+    const fixture = setup({ phoneScreens: screens, screenDrivers: 1 });
+    const other = { ...phoneAssignment, deviceId: createId("device") };
+    await fixture.handle(assignments([phoneAssignment, other]));
+    const connection = screens.connections[0]!;
+    const pending = deferred<{ apps: []; total: number }>();
+    connection.installedApps.mockReturnValueOnce(pending.promise);
+    await fixture.handle(phoneCall("omitted"));
+    const context = connection.installedApps.mock.calls[0]![0];
+    await fixture.handle(assignments([other]));
+    expect(context.signal.aborted).toBe(true);
+    expect(connection.assignments).toEqual([other]);
+    const length = fixture.events.length;
+    await connection.emitStatus(phoneAssignment);
+    expect(fixture.events).toHaveLength(length);
+    pending.resolve({ apps: [], total: 0 });
+    await fixture.handle(phoneCall("removed"));
+    expect(connection.installedApps).toHaveBeenCalledTimes(1);
+    expect(
+      phoneResults(fixture.events).find((event) => event.requestId === "removed")?.result,
+    ).toMatchObject({ kind: "error" });
+  });
+
+  it("refuses unknown and stale targets before the port or Mac can have an effect", async () => {
+    const screens = new FakePhoneScreenDriver();
+    const mac = {
+      run: vi.fn(),
+      onEvent: vi.fn(),
+      onGrantsChanged: vi.fn(),
+      onPasswordEvent: vi.fn(),
+      negotiateLoginText: vi.fn(),
+      releaseSessions: vi.fn(),
+      ownerViewVersion: () => undefined,
+    } as unknown as ComputerUseHandler;
+    const fixture = setup({ phoneScreens: screens, screenDrivers: 1, computerUse: mac });
+    await fixture.handle(assignments([{ ...phoneAssignment, generation: 2 }]));
+    const connection = screens.connections[0]!;
+    await fixture.handle(phoneCall("stale"));
+    await fixture.handle(
+      phoneCall("unknown", { deviceId: createId("device"), driverGeneration: 1 }),
+    );
+    expect(phoneResults(fixture.events)).toHaveLength(2);
+    expect(phoneResults(fixture.events).every((event) => event.result.kind === "error")).toBe(true);
+    expect(connection.installedApps).not.toHaveBeenCalled();
+    expect(mac.run).not.toHaveBeenCalled();
+    for (const type of ["host.integrations.display.stop", "host.integrations.display.refresh"])
+      await fixture.handle({
+        ...phoneTarget,
+        type,
+        display: "main",
+        streamId: "dsp_00000000-0000-4000-8000-000000000001",
+      });
+    expect(connection.display).not.toHaveBeenCalled();
+  });
+
+  it("old cancel and close cannot affect the replacement generation or its request id", async () => {
+    const screens = new FakePhoneScreenDriver();
+    const fixture = setup({ phoneScreens: screens, screenDrivers: 1 });
+    await fixture.handle(assignments([phoneAssignment]));
+    const connection = screens.connections[0]!;
+    const old = deferred<{ apps: []; total: number }>();
+    const current = deferred<{ apps: []; total: number }>();
+    connection.installedApps.mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
+    await fixture.handle(phoneCall("same"));
+    await fixture.handle(assignments([{ ...phoneAssignment, generation: 2 }]));
+    await fixture.handle(phoneCall("same", { ...phoneTarget, driverGeneration: 2 }));
+    const published = fixture.events.length;
+    await connection.emitStatus(phoneAssignment);
+    expect(fixture.events).toHaveLength(published);
+    const active = connection.installedApps.mock.calls[1]![0];
+    await fixture.handle({ ...phoneTarget, requestId: "same", type: "host.integrations.cancel" });
+    await fixture.handle({ ...phoneCall("old-close"), operation: "close" });
+    expect(active.signal.aborted).toBe(false);
+    expect(connection.cancel).not.toHaveBeenCalled();
+    expect(connection.close).not.toHaveBeenCalled();
+    await fixture.handle({
+      ...phoneTarget,
+      driverGeneration: 2,
+      requestId: "same",
+      type: "host.integrations.cancel",
+    });
+    expect(active.signal.aborted).toBe(true);
+    expect(connection.cancel).toHaveBeenCalledOnce();
+    old.resolve({ apps: [], total: 0 });
+    current.resolve({ apps: [], total: 0 });
+    fixture.handler.detach();
+    expect(connection.detach).toHaveBeenCalledOnce();
+  });
+
+  it("routes canonical operations, Stop acknowledgements, owner views and display controls by tuple", async () => {
+    const screens = new FakePhoneScreenDriver();
+    const fixture = setup({ phoneScreens: screens, screenDrivers: 1 });
+    await fixture.handle(assignments([phoneAssignment]));
+    const connection = screens.connections[0]!;
+    const base = phoneCall("observe");
+    const observation = {
+      capturedAt: "2026-10-01T00:00:00Z",
+      elementCount: 0,
+      foreground: null,
+      geometry: { width: 390, height: 844 },
+      locked: null,
+      secureLock: null,
+      observationId: "obs-1",
+      rotation: 0 as const,
+      screen: "on" as const,
+      screenshot: null,
+      screenshotUnavailable: "not-requested" as const,
+      tree: "",
+      truncated: false,
+    };
+    connection.observe.mockResolvedValue({ observation });
+    connection.act.mockResolvedValue({ error: null, observation, performed: [] });
+    await fixture.handle({
+      ...base,
+      access: "read",
+      operation: "observe",
+      params: { includeScreenshot: false },
+    });
+    await fixture.handle({
+      ...base,
+      requestId: "act",
+      access: "read-write",
+      operation: "act",
+      params: {
+        includeScreenshot: false,
+        observationId: "obs-1",
+        actions: [{ type: "launch", appId: "test-app" }],
+      },
+    });
+    await fixture.handle({ ...base, requestId: "close", operation: "close" });
+    await vi.waitFor(() => expect(phoneResults(fixture.events)).toHaveLength(3), { timeout: 1000 });
+    expect(connection.act.mock.calls[0]?.[1].actions).toEqual([
+      { type: "launch", appId: "test-app" },
+    ]);
+    expect(connection.close.mock.calls[0]?.[0]).toMatchObject(phoneTarget);
+    await fixture.handle({
+      ...base,
+      requestId: "invalid-phone-action",
+      access: "read-write",
+      operation: "act",
+      params: {
+        includeScreenshot: false,
+        observationId: "obs-1",
+        actions: [{ type: "launch", packageName: "com.example.app" }],
+      },
+    });
+    await vi.waitFor(() => expect(phoneResults(fixture.events)).toHaveLength(4), { timeout: 1000 });
+    expect(connection.act).toHaveBeenCalledOnce();
+    expect(
+      phoneResults(fixture.events).find((event) => event.requestId === "invalid-phone-action")
+        ?.result,
+    ).toMatchObject({ kind: "error", code: "failed" });
+    connection.act.mockRejectedValueOnce(new Error("Unclassified native failure"));
+    await fixture.handle({
+      ...base,
+      requestId: "unknown-phone-effect",
+      access: "read-write",
+      operation: "act",
+      params: {
+        includeScreenshot: false,
+        observationId: "obs-1",
+        actions: [{ type: "launch", appId: "test-app" }],
+      },
+    });
+    await vi.waitFor(
+      () =>
+        expect(
+          phoneResults(fixture.events).find((event) => event.requestId === "unknown-phone-effect")
+            ?.result,
+        ).toMatchObject({ kind: "error", code: "outcome-unknown" }),
+      { timeout: 1000 },
+    );
+    await fixture.handle({
+      ...phoneTarget,
+      type: "host.integrations.computer-use-stop-recorded",
+      sessionId: base.sessionId,
+      runId: base.runId,
+    });
+    expect(connection.stopRecorded.mock.calls[0]?.[0]).toMatchObject(phoneTarget);
+    await connection.options.emit({
+      ...phoneTarget,
+      type: "runner.integrations.computer-use-event",
+      event: {
+        event: "session.stopped",
+        params: { sessionId: base.sessionId, runId: base.runId, reason: "user" },
+      },
+    });
+    expect(
+      fixture.events.find((event) => event.type === "runner.integrations.computer-use-event"),
+    ).toMatchObject(phoneTarget);
+    const view = {
+      ...phoneTarget,
+      type: "host.integrations.computer-view",
+      version: 1,
+      viewId: "cvw_00000000-0000-4000-8000-000000000002",
+      generation: 7,
+      leaseDurationMs: 1000,
+      target: { kind: "phone", display: "main" },
+      operation: "open",
+      requestId: "view",
+      timeoutMs: 1000,
+    };
+    connection.ownerView.mockResolvedValue({
+      viewId: view.viewId,
+      generation: 7,
+      state: "ready",
+      captureTargetId: null,
+    });
+    await fixture.handle(view);
+    await vi.waitFor(
+      () =>
+        expect(
+          fixture.events.find((event) => event.type === "runner.integrations.computer-view-result"),
+        ).toMatchObject({ ...phoneTarget, result: { kind: "ok" } }),
+      { timeout: 1000 },
+    );
+    const display = { ...phoneTarget, streamId: "dsp_00000000-0000-4000-8000-000000000003" };
+    const source = { kind: "task-session", sessionId: base.sessionId };
+    const frames = [
+      {
+        type: "host.integrations.display.start",
+        display: "main",
+        dataTicket: "aaaa.bbbb.cccc",
+        revision: 1,
+        sources: [source],
+        maxLongSide: 800,
+        maxFps: 15,
+      },
+      { type: "host.integrations.display.demand", display: "main", revision: 2, sources: [source] },
+      { type: "host.integrations.display.refresh", display: "main" },
+      {
+        type: "host.integrations.display.input",
+        sessionId: base.sessionId,
+        geometry: 1,
+        sequence: 1,
+        events: [{ kind: "nav", to: "home" }],
+      },
+      { type: "host.integrations.display.input-reset", sessionId: base.sessionId },
+      { type: "host.integrations.display.power", source, sequence: 2, action: "wake" },
+      { type: "host.integrations.display.stop", display: "main" },
+    ];
+    for (const frame of frames) await fixture.handle({ ...display, ...frame });
+    expect(
+      connection.display.mock.calls.map(([frame]) => ({
+        type: frame.type,
+        deviceId: frame.deviceId,
+        driverGeneration: frame.driverGeneration,
+      })),
+    ).toEqual(frames.map((frame) => ({ type: frame.type, ...phoneTarget })));
+    await fixture.handle(assignments([]));
+    await fixture.handle({ ...view, requestId: "old-view" });
+    await fixture.handle({
+      ...phoneTarget,
+      type: "host.integrations.computer-use-stop-recorded",
+      sessionId: base.sessionId,
+      runId: base.runId,
+    });
+    expect(connection.ownerView).toHaveBeenCalledOnce();
+    expect(connection.stopRecorded).toHaveBeenCalledOnce();
+  });
+
+  it("keeps canceled work's capacity across stream replacement", async () => {
+    const screens = new FakePhoneScreenDriver();
+    const fixture = setup({ phoneScreens: screens, screenDrivers: 1 });
+    await fixture.handle(assignments([phoneAssignment]));
+    const connection = screens.connections[0]!;
+    const pending = Array.from({ length: 4 }, () => deferred<{ apps: []; total: number }>());
+    for (const item of pending) connection.installedApps.mockReturnValueOnce(item.promise);
+    for (let index = 0; index < 4; index++) {
+      await fixture.handle(phoneCall(`held-${index}`));
+      await fixture.handle({
+        ...phoneTarget,
+        type: "host.integrations.cancel",
+        requestId: `held-${index}`,
+      });
+    }
+    const next = fixture.openStream();
+    await fixture.handle(assignments([phoneAssignment]));
+    const current = screens.connections[1]!;
+    await fixture.handle(phoneCall("full"));
+    expect(current.installedApps).not.toHaveBeenCalled();
+    expect(phoneResults(next.events)[0]?.result).toMatchObject({ kind: "error" });
+    await connection.options.emit({
+      ...phoneTarget,
+      type: "runner.integrations.computer-use-event",
+      event: {
+        event: "session.stopped",
+        params: { sessionId: phoneCall("late-event").sessionId, reason: "user" },
+      },
+    });
+    expect(
+      next.events.some((event) => event.type === "runner.integrations.computer-use-event"),
+    ).toBe(false);
+    expect(
+      next.events.filter((event) => event.type === "runner.integrations.device-status"),
+    ).toHaveLength(1);
+    for (const item of pending) item.resolve({ apps: [], total: 0 });
+    expect(phoneResults(next.events).some((event) => event.requestId.startsWith("held-"))).toBe(
+      false,
+    );
+  });
+
+  it("preserves untargeted Mac self and Android v4 frames", async () => {
+    const run = vi.fn(async () => ({ apps: [], total: 0 }));
+    const mac = {
+      run,
+      onEvent: vi.fn(),
+      onGrantsChanged: vi.fn(),
+      onPasswordEvent: vi.fn(),
+      negotiateLoginText: vi.fn(),
+      releaseSessions: vi.fn(),
+      ownerViewVersion: () => undefined,
+    } as unknown as ComputerUseHandler;
+    const fixture = setup({ computerUse: mac });
+    const {
+      deviceId: _device,
+      driverGeneration: _generation,
+      definitionId: _definition,
+      ...self
+    } = phoneCall("mac-self");
+    await fixture.handle(self);
+    await fixture.handle({ ...self, requestId: "android-v4", definitionId: "android-phone" });
+    await vi.waitFor(() => expect(phoneResults(fixture.events)).toHaveLength(2), { timeout: 1000 });
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(
+      phoneResults(fixture.events).every(
+        (event) => event.deviceId === undefined && event.driverGeneration === undefined,
+      ),
+    ).toBe(true);
+  });
+});
