@@ -25,6 +25,7 @@ const nativeSentinelSchema = z.strictObject({
   version: z.literal(1),
   binding: LocalProfileBindingSchema,
 });
+const creationReceiptSchema = nativeSentinelSchema;
 type Tombstone = Extract<HeldLocalProfile, { phase: "deleted" }>;
 // Root exclusivity across processes belongs to the caller. Logical runtimes may
 // restart while Electron's path-keyed Sessions still own their native stores.
@@ -82,6 +83,9 @@ export class LocalProfileStore {
       const tombstones = path.join(canonical, "tombstones");
       await realDirectoryIfPresent(tombstones);
       await discardPrivateFileTemporaryFiles(tombstones, tombstoneName);
+      const receipts = path.join(canonical, "created");
+      await realDirectoryIfPresent(receipts);
+      await discardPrivateFileTemporaryFiles(receipts, tombstoneName);
       for (const name of await names(path.join(canonical, "profiles"))) {
         if (!/^bpr_[a-f0-9-]+$/iu.test(name)) throw invalid();
         const directory = path.join(canonical, "profiles", name);
@@ -139,7 +143,8 @@ export class LocalProfileStore {
     await this.assertNotDeleted(binding);
     const directory = this.directory(binding);
     if (await realDirectoryIfPresent(this.profile(binding))) return this.requireReady(binding);
-    if (initialized)
+    // The receipt keeps a used profile from being recreated empty if the Host missed its readiness.
+    if (initialized || (await this.created(binding)))
       throw invalid(
         "The established native browser profile data is missing. Restore its original storage.",
       );
@@ -164,12 +169,19 @@ export class LocalProfileStore {
       signal.throwIfAborted();
       await rename(staging, this.profile(binding));
       await syncDirectory(path.join(this.root, "profiles"));
+      // After publication: a crash before this write leaves a directory requireReady heals.
+      await this.recordCreated(binding);
       return directory;
     } finally {
       await rm(staging, { recursive: true, force: true });
     }
   }
   async requireReady(binding: LocalProfileBinding): Promise<string> {
+    const directory = await this.verifyReady(binding);
+    if (!(await this.created(binding))) await this.recordCreated(binding);
+    return directory;
+  }
+  private async verifyReady(binding: LocalProfileBinding): Promise<string> {
     await this.assertNotDeleted(binding);
     const known = this.knownBindings.get(binding.profileId);
     if (known && !sameLocalBinding(known, binding))
@@ -221,6 +233,10 @@ export class LocalProfileStore {
       await syncDirectory(path.join(this.root, "profiles"));
     if (await realDirectoryIfPresent(this.profile(binding)))
       throw invalid("The browser profile directory still exists after erasure.");
+    if (await realDirectoryIfPresent(path.join(this.root, "created"))) {
+      await rm(this.receipt(binding), { force: true });
+      await syncDirectory(path.join(this.root, "created"));
+    }
     await replacePrivateFileAtomically(
       path.join(this.root, "tombstones", `${binding.profileId}.json`),
       JSON.stringify({ phase: "deleted", binding, deletionId, erasure: "deleted" }),
@@ -241,10 +257,27 @@ export class LocalProfileStore {
       if (!sentinel) throw invalid("The native browser profile sentinel is missing.");
       this.validate(sentinel.binding);
       if (sentinel.binding.profileId !== name) throw invalid();
-      await this.requireReady(sentinel.binding);
+      await this.verifyReady(sentinel.binding);
       claims.set(name, { phase: "ready", binding: sentinel.binding });
     }
     return [...claims.values()];
+  }
+  private receipt(binding: LocalProfileBinding): string {
+    return path.join(this.root, "created", `${binding.profileId}.json`);
+  }
+  private async created(binding: LocalProfileBinding): Promise<boolean> {
+    this.validate(binding);
+    await realDirectoryIfPresent(path.join(this.root, "created"));
+    const receipt = await readJson(this.receipt(binding), creationReceiptSchema);
+    if (receipt && !sameLocalBinding(receipt.binding, binding))
+      throw invalid("The native browser profile was created under a different binding.");
+    return receipt !== undefined;
+  }
+  private async recordCreated(binding: LocalProfileBinding): Promise<void> {
+    await replacePrivateFileAtomically(
+      this.receipt(binding),
+      JSON.stringify({ version: 1, binding }),
+    );
   }
   private async tombstones(): Promise<Tombstone[]> {
     const claims: Tombstone[] = [];

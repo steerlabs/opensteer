@@ -3192,7 +3192,6 @@ describe("native Electron profiles through the shared runtime", () => {
       launcher,
       ticketVerifier: verifier,
       localProfiles: { root },
-      acknowledgeProfileReady: async () => {},
       runtimeId: "runtime_test",
       sessionFilesRoot: sessionFilesRoot(root),
     });

@@ -1101,7 +1101,6 @@ export async function runPageSleepRestoreTrial(root: string): Promise<void> {
         localProfiles: { root: profileRoot },
         sessionFilesRoot: sessionFilesRoot(profileRoot),
         ticketVerifier: verifier,
-        acknowledgeProfileReady: async () => {},
         memoryBudgetBytes: 100 * 1024 ** 2,
       });
       const sink = new FakeSink();
