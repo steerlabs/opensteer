@@ -1862,10 +1862,15 @@ export async function createHostRuntime(
             publishDeploymentEvent(event);
           }
         },
-        onAppState: (identity, state) =>
-          apps?.onAppState(identity.runnerId, identity.connectionId, state),
+        onAppState: (identity, state) => {
+          void apps
+            ?.onAppState(identity.runnerId, identity.connectionId, state)
+            .catch((error) => app.log.warn({ err: error }, "App state report failed"));
+        },
         onDisconnect: async (identity, scope) => {
-          apps?.onRunnerDisconnected(identity.runnerId, identity.connectionId);
+          void apps
+            ?.onRunnerDisconnected(identity.runnerId, identity.connectionId)
+            .catch((error) => app.log.warn({ err: error }, "App disconnect handling failed"));
           tabs?.changed();
           // Before the recovery work, which is retried until it succeeds: the
           // row is already offline, and a repeated "reread the list" costs a

@@ -32,7 +32,7 @@ it("runs a server-style app with relative JSON POST, assets, incremental SSE and
       import {createRoot} from 'react-dom/client';
       import {AppCard} from './src/components/apps/app-card.tsx';
       import {TranscriptHostClientContext} from './src/components/attachments/message-attachments.tsx';
-      const snapshot = {connection:'connected',session:'authenticated',appVersions:{}};
+      const snapshot = {connection:'connected',session:'authenticated',appVersions:{},tabs:{rows:new Map()}};
       const client = {subscribe:()=>()=>{},getSnapshot:()=>snapshot,viewApp:async()=>({title:'Chart',url:location.origin+'${appPrefix}'})};
       localStorage.setItem('session','secret');window.appHeights=[];window.appReady=false;
       addEventListener('message',e=>{if(e.data.type==='isolation-result')window.appResult=e.data.result;if(e.data.type==='opensteer-app:size')window.appHeights.push(e.data.height);if(e.data.type==='opensteer-app:ready')window.appReady=true});
