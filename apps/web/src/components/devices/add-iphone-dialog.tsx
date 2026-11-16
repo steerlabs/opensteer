@@ -1,5 +1,6 @@
 import { type DeploymentId } from "@opensteer/core";
 import { type HostClient, type HostSnapshot, type IphoneSetupPort } from "@opensteer/client/host";
+import { phoneScreenMac } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
 import {
   DesktopIphoneSetupReasonSchema,
@@ -12,12 +13,12 @@ import { SetupStage, type SetupStageProps } from "../computers/setup-stage.js";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
 import { deviceRoute } from "./device-routes.js";
-import { iphoneSetupWords, type IphoneSetupWords } from "./iphone-setup-words.js";
+import { iphoneSetupWords, wifiRetryAction, type IphoneSetupWords } from "./iphone-setup-words.js";
 
 type Status = DesktopIphoneSetupStatus;
 type Candidate = Status["candidates"][number];
 /** What Opensteer is doing for the person right now; nothing is pressable meanwhile. */
-type Working = "begin" | "choose" | "check" | Status["step"];
+type Working = "begin" | "choose" | "check" | "skip-wifi" | Status["step"];
 
 /** Steps Opensteer carries on with by itself while nothing stands in the way. */
 const automaticSteps = ["trust", "developer-mode", "prepare", "observe"] as const;
@@ -34,7 +35,7 @@ const confirmDeadlineMs = 30_000;
 const selectMachines = (snapshot: HostSnapshot) => snapshot.machines;
 
 /**
- * Adding an iPhone whose screen this Mac controls, over USB or the same Wi-Fi. Setup runs in
+ * Adding an iPhone whose screen this Mac controls, over USB or the same Wi‑Fi. Setup runs in
  * Opensteer on this Mac (the port); the dialog shows its current step in the
  * person's words, carries on by itself while nothing is in the way, and stops
  * with one clear action when the iPhone, this Mac or the Host needs something.
@@ -141,9 +142,15 @@ export function AddIphoneDialog({
   }
 
   async function attach(current: Status) {
-    const wanted = name?.trim();
+    const wanted = shownName.trim().slice(0, 120);
     await run("attach", () =>
       port.attach({ setupId: current.setupId, ...(wanted ? { name: wanted } : {}) }),
+    );
+  }
+
+  function chooseWifi(current: Status, action: "enable" | "disable" | "pair" | "skip") {
+    void run(action === "skip" ? "skip-wifi" : "wifi", () =>
+      port.wifi({ setupId: current.setupId, action }),
     );
   }
 
@@ -153,12 +160,7 @@ export function AddIphoneDialog({
       void run("check", () => port.status({ setupId: current.setupId }));
     else if (current.step === "attach") void attach(current);
     else if (current.step === "wifi")
-      void run("wifi", () =>
-        port.wifi({
-          setupId: current.setupId,
-          action: current.reason === "wifi-pairing-required" ? "pair" : "enable",
-        }),
-      );
+      chooseWifi(current, wifiRetryAction(current.reason, "enable"));
     else {
       const step = current.step;
       void run(step, () => port.advance({ setupId: current.setupId, step }));
@@ -170,7 +172,12 @@ export function AddIphoneDialog({
   }
 
   const phoneName = chosen?.name || "the iPhone";
-  const displayName = name?.trim() || chosen?.name || "iPhone";
+  const shownName = name ?? chosen?.name ?? "";
+  const displayName = shownName.trim() || "iPhone";
+  const added = status?.deviceId
+    ? machines.find((machine) => machine.id === status.deviceId)
+    : null;
+  const macName = (added && phoneScreenMac(added)?.name) || "this Mac";
 
   function stage(): SetupStageProps {
     // A late Mac is the person's to know about even while another check is out.
@@ -184,33 +191,8 @@ export function AddIphoneDialog({
           step: status?.step ?? "choose",
         })
       : null;
-    if (status?.step === "wifi")
-      return {
-        title: "Also use it over Wi-Fi?",
-        detail:
-          words?.detail ??
-          "Keep this Mac and the iPhone on the same Wi-Fi. You can keep using the cable, too.",
-        tone: "you",
-        step: stageIndex("wifi"),
-        actions: (
-          <>
-            <button className="btn btn--primary" onClick={() => check(status)} type="button">
-              {status.reason === "wifi-pairing-required"
-                ? "Pair for Wi-Fi"
-                : "Also use it over Wi-Fi"}
-            </button>
-            <button
-              className="btn"
-              onClick={() =>
-                void run("wifi", () => port.wifi({ setupId: status.setupId, action: "skip" }))
-              }
-              type="button"
-            >
-              Continue with USB
-            </button>
-          </>
-        ),
-      };
+    if (status?.step === "wifi" && words?.recovery !== "restart")
+      return wifiStage(status, words, phoneName, (action) => chooseWifi(status, action));
     // Without a setup on the Mac, the way forward is a new one.
     if (!status || (words && words.recovery !== "check"))
       return reasonStage(
@@ -247,12 +229,12 @@ export function AddIphoneDialog({
                   maxLength={120}
                   onChange={(event) => setName(event.target.value)}
                   placeholder={chosen?.name || "iPhone"}
-                  value={name ?? chosen?.name ?? ""}
+                  value={shownName}
                 />
               </label>
               <p>
                 {status.wifiEnabled
-                  ? "Use a cable or the same Wi-Fi as this Mac."
+                  ? "It works while it’s plugged into this Mac or on the same Wi‑Fi as it."
                   : "It works while it’s plugged into this Mac."}
               </p>
             </div>
@@ -284,10 +266,10 @@ export function AddIphoneDialog({
           body: (
             <div className="phone-setup__more">
               <p>
-                Agents can’t use it until you allow them on its page.{" "}
                 {status.wifiEnabled
-                  ? "Keep it on the same Wi-Fi as this Mac, or plug it in."
-                  : "Keep it plugged into this Mac."}
+                  ? `It works while it’s plugged in or on the same Wi‑Fi as ${macName}.`
+                  : `It works while it’s plugged into ${macName}.`}{" "}
+                Agents can’t use it until you allow them on its page.
               </p>
             </div>
           ),
@@ -368,7 +350,12 @@ function workingStage(
     case "observe":
       return { step, title: "Taking a first look at the screen", tone: "working" };
     case "wifi":
-      return { step, title: "Setting up same Wi-Fi access", tone: "working" };
+      return {
+        detail: "If the iPhone asks, tap Trust and enter its passcode.",
+        step,
+        title: "Turning on Wi‑Fi access",
+        tone: "working",
+      };
     case "attach":
     case "confirm":
       return { step, title: `Adding it to ${deploymentName}`, tone: "working" };
@@ -393,7 +380,7 @@ function reasonStage(
     actions:
       options.recovery === "none" ? null : (
         <button className="btn btn--primary" onClick={options.onCheck} type="button">
-          {options.recovery === "restart" ? "Start again" : "Check again"}
+          {options.recovery === "restart" ? "Start again" : (words.action ?? "Check again")}
         </button>
       ),
     body: words.instructions ? (
@@ -414,6 +401,66 @@ function reasonStage(
     ...(options.step === undefined ? {} : { step: options.step }),
     title: words.title,
     tone: words.yours ? "you" : "problem",
+  };
+}
+
+/**
+ * The optional Wi‑Fi step: what it changes, and after a typed reason, the one
+ * thing that fixes it. Going on with the cable alone is always a way out.
+ */
+function wifiStage(
+  status: Status,
+  words: IphoneSetupWords | null,
+  phoneName: string,
+  onWifi: (action: "enable" | "disable" | "pair" | "skip") => void,
+): SetupStageProps {
+  const pluggedIn = (primary: boolean) => (
+    <button
+      className={primary ? "btn btn--primary" : "btn"}
+      onClick={() => onWifi("skip")}
+      type="button"
+    >
+      Only when plugged in
+    </button>
+  );
+  if (!words)
+    return {
+      actions: (
+        <>
+          <button className="btn btn--primary" onClick={() => onWifi("enable")} type="button">
+            Use Wi‑Fi too
+          </button>
+          {pluggedIn(false)}
+        </>
+      ),
+      body: (
+        <div className="phone-setup__more">
+          <p>If macOS asks to let Opensteer find devices on your network, allow it.</p>
+        </div>
+      ),
+      detail: `After this, ${phoneName} works while it’s plugged into this Mac or on the same Wi‑Fi as it. Not on other networks or over cellular.`,
+      icon: "wifi",
+      step: stageIndex("wifi"),
+      title: "Also use it over Wi‑Fi?",
+      tone: "you",
+    };
+  const shown = reasonStage(words, {
+    onCheck: () => onWifi(wifiRetryAction(status.reason, "enable")),
+    recovery: words.recovery,
+    step: stageIndex("wifi"),
+  });
+  return {
+    ...shown,
+    ...(words.yours ? { icon: "wifi" as const } : {}),
+    actions:
+      words.recovery === "none" ? (
+        pluggedIn(true)
+      ) : (
+        <>
+          {shown.actions}
+          {pluggedIn(false)}
+        </>
+      ),
   };
 }
 
@@ -494,7 +541,7 @@ function chooseStage(
     cue: "Your turn",
     detail: notice
       ? `${notice.title}. ${notice.detail}`
-      : "Plugged into this Mac with a cable for setup. You can choose Wi-Fi access after the first screen check.",
+      : "Plugged into this Mac with a cable for setup. You can add Wi‑Fi after the first screen check.",
     ...(notice ? { icon: "alert-circle" as const } : {}),
     step: 0,
     title: "Which iPhone?",

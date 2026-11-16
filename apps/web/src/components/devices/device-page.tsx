@@ -19,7 +19,7 @@ import {
   phoneScreenRemovalCopy,
   phoneScreenStatus,
 } from "@opensteer/client/integrations";
-import { TabTargetSchema } from "@opensteer/core";
+import { DeploymentIdSchema, TabTargetSchema } from "@opensteer/core";
 import type { ComputerAppSetupSummary as ComputerAppSetupRequest } from "@opensteer/integration-core";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { useShell } from "../app-shell.js";
@@ -58,6 +58,7 @@ import {
   useAccessSwitch,
 } from "./device-access-switches.js";
 import { deviceNotificationsOn, setDeviceNotifications } from "./device-preferences.js";
+import { IphoneWifiRow } from "./iphone-wifi-row.js";
 import { computerAppIdFromHash, devicesRoute } from "./device-routes.js";
 import { useThisDevice } from "./this-device.js";
 
@@ -228,6 +229,8 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
   const phone = Boolean(deviceMachine(machine).phoneDisplay);
   const screenMac = phoneScreenMac(machine);
   const screen = phoneScreenStatus(machine);
+  const screenMacHere = desktopBridge !== null && screenMac?.runnerId === hereId;
+  const deploymentId = DeploymentIdSchema.safeParse(snapshot.deploymentId);
   const workspace = useOptionalWorkspace();
   const leavesHere = here && !home && device !== null;
   const homeName = snapshot.machines.find(hostsDeployment)?.name ?? deploymentName;
@@ -415,7 +418,19 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
         }}
         onOpenScreen={workspace && screenTab.success ? openScreen : null}
         onPlugIn={() => setPluggingIn(true)}
-        setupHere={desktopBridge !== null && screenMac?.runnerId === hereId}
+        setupHere={screenMacHere}
+        wifiRow={
+          screenMacHere && screenMac?.attached && hostClient.iphoneSetup && deploymentId.success ? (
+            <IphoneWifiRow
+              deploymentId={deploymentId.data}
+              deploymentName={deploymentName}
+              deviceId={machine.id}
+              macName={screenMac.name}
+              port={hostClient.iphoneSetup}
+              revision={snapshot.machineRevision}
+            />
+          ) : null
+        }
       />
     ) : (
       <ComputerAppsSection

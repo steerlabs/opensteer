@@ -11,6 +11,8 @@ import type {
 export type IphoneSetupRecovery = "check" | "restart" | "none";
 
 export interface IphoneSetupWords {
+  /** The button that answers it, when that isn't "Check again". */
+  readonly action?: string;
   /** Where the person acts, when it's their move. */
   readonly cue?: "On the iPhone" | "On this Mac";
   readonly detail: string;
@@ -23,6 +25,14 @@ export interface IphoneSetupWords {
 }
 
 const replug = "Unplug the iPhone, plug it back in, unlock it, then check again.";
+
+/** What trying Wi‑Fi again asks the Mac to do after a reason. */
+export function wifiRetryAction(
+  reason: DesktopIphoneSetupReason | null,
+  last: "enable" | "disable" | "pair",
+): "enable" | "disable" | "pair" {
+  return reason === "wifi-pairing-required" || reason === "wifi-identity-mismatch" ? "pair" : last;
+}
 
 /** Plain words and one way forward for each typed reason setup can stop on. */
 export function iphoneSetupWords(
@@ -95,11 +105,70 @@ export function iphoneSetupWords(
         yours: true,
       };
     case "identity-mismatch":
-    case "wifi-identity-mismatch":
       return {
         detail: "The phone that answered isn’t the one you chose. Choose it again.",
         recovery: "check",
         title: "That’s a different iPhone",
+        yours: false,
+      };
+    case "wifi-not-enabled":
+      return {
+        action: "Try again",
+        detail:
+          "The iPhone didn’t switch it on. Keep it unlocked and plugged into this Mac, then try again.",
+        recovery: "check",
+        title: "Wi‑Fi access didn’t turn on",
+        yours: true,
+      };
+    case "local-network-permission-required":
+      return {
+        action: "Try again",
+        cue: "On this Mac",
+        detail:
+          "macOS asks before an app looks for devices on your Wi‑Fi. Allow it for Opensteer, then try again.",
+        instructions: [
+          "Open System Settings → Privacy & Security → Local Network.",
+          "Turn on Opensteer.",
+          "Then try again here.",
+        ],
+        recovery: "check",
+        title: "Let Opensteer find the iPhone on your network",
+        yours: true,
+      };
+    case "wifi-phone-not-found":
+      return {
+        action: "Try again",
+        cue: "On the iPhone",
+        detail:
+          "Join it to the same Wi‑Fi as this Mac and unlock it, then try again. Some guest and office networks keep devices apart.",
+        recovery: "check",
+        title: "This Mac can’t find the iPhone on Wi‑Fi",
+        yours: true,
+      };
+    case "wifi-pairing-required":
+      return {
+        action: "Pair again",
+        cue: "On the iPhone",
+        detail:
+          "Keep it unlocked and plugged into this Mac. If it asks, tap Trust and enter its passcode.",
+        recovery: "check",
+        title: "Pair the iPhone for Wi‑Fi",
+        yours: true,
+      };
+    case "wifi-transport-unsupported":
+      return {
+        detail: "It still works while it’s plugged into this Mac.",
+        recovery: "none",
+        title: "This iPhone can’t be used over Wi‑Fi",
+        yours: true,
+      };
+    case "wifi-identity-mismatch":
+      return {
+        action: "Pair again",
+        detail:
+          "Another phone on this network answered for it, so Opensteer didn’t use it. Keep this iPhone plugged in and pair again.",
+        recovery: "check",
+        title: "A different iPhone answered on Wi‑Fi",
         yours: false,
       };
     case "unsupported-ios":
@@ -393,5 +462,5 @@ const stepWords: Readonly<Record<DesktopIphoneSetupStatus["step"], string>> = {
   observe: "looking at the screen",
   prepare: "preparing developer services",
   trust: "pairing with the iPhone",
-  wifi: "setting up Wi-Fi access",
+  wifi: "setting up Wi‑Fi access",
 };

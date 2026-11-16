@@ -129,3 +129,66 @@ it("cancels the setup the Mac began after the dialog already closed", async () =
   await act(async () => resolveBegin(status({})));
   expect(port.cancel).toHaveBeenCalledWith({ setupId });
 });
+
+function wifiPort(failures: readonly DesktopIphoneSetupStatus[]) {
+  const replies = [...failures];
+  let wifiEnabled = false;
+  return {
+    ...fakePort(),
+    choose: vi.fn(async () => status({ step: "observe", personAction: "continue" })),
+    advance: vi.fn(async () => status({ step: "wifi", personAction: "choose-wifi" })),
+    wifi: vi.fn(async ({ action }: { action: string }) => {
+      const failure = action === "skip" ? undefined : replies.shift();
+      if (failure) return failure;
+      wifiEnabled = action !== "skip";
+      return status({ step: "attach", personAction: "continue", wifiEnabled });
+    }),
+    attach: vi.fn(async (_input: { setupId: string; name?: string }) =>
+      status({
+        step: "done",
+        personAction: "none",
+        deviceId: "dev_55555555-5555-4555-8555-555555555555",
+        wifiEnabled,
+      }),
+    ),
+  };
+}
+
+it("offers Wi‑Fi after the first look and adds the iPhone under its shown name when kept to the cable", async () => {
+  const port = wifiPort([]);
+  await render(port);
+  await click("Choose Sam’s iPhone");
+  await vi.waitFor(() => expect(document.body.textContent).toContain("Also use it over Wi‑Fi?"), {
+    timeout: 1000,
+  });
+
+  await click("Only when plugged in");
+  expect(port.wifi).toHaveBeenCalledExactlyOnceWith({ setupId, action: "skip" });
+  await click("Add iPhone");
+  expect(port.attach).toHaveBeenCalledExactlyOnceWith({ setupId, name: "Sam’s iPhone" });
+  expect(document.body.textContent).toContain("It works while it’s plugged into this Mac.");
+});
+
+it("retries Wi‑Fi with the fix each reason names, then adds it for the same Wi‑Fi", async () => {
+  const port = wifiPort([
+    status({ step: "wifi", reason: "wifi-not-enabled", personAction: "retry" }),
+    status({ step: "wifi", reason: "wifi-pairing-required", personAction: "retry" }),
+  ]);
+  await render(port);
+  await click("Choose Sam’s iPhone");
+  await vi.waitFor(() => expect(document.body.textContent).toContain("Also use it over Wi‑Fi?"), {
+    timeout: 1000,
+  });
+
+  await click("Use Wi‑Fi too");
+  expect(document.body.textContent).toContain("Wi‑Fi access didn’t turn on");
+  await click("Try again");
+  expect(document.body.textContent).toContain("Pair the iPhone for Wi‑Fi");
+  await click("Pair again");
+  expect(port.wifi.mock.calls.map(([input]) => input.action)).toEqual(["enable", "enable", "pair"]);
+
+  await click("Add iPhone");
+  expect(document.body.textContent).toContain(
+    "It works while it’s plugged in or on the same Wi‑Fi as this Mac.",
+  );
+});

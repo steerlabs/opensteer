@@ -37,6 +37,7 @@ export function PhoneSection({
   onOpenScreen,
   onPlugIn,
   setupHere = false,
+  wifiRow,
 }: {
   /** The device's Apps switch, for a phone whose card is its whole page. */
   readonly appsSwitch?: ReactNode;
@@ -52,6 +53,8 @@ export function PhoneSection({
   readonly onPlugIn: () => void;
   /** This window runs on the Mac that sets the phone up. */
   readonly setupHere?: boolean;
+  /** Same Wi‑Fi for an iPhone, where this window runs on the Mac that drives it. */
+  readonly wifiRow?: ReactNode;
 }) {
   const [busy, setBusy] = useState<"access" | "stop" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -144,6 +147,7 @@ export function PhoneSection({
             </span>
           </div>
         )}
+        {wifiRow}
         {appsSwitch}
         {showAccess ? (
           <div className="card__row phone-section__access">
