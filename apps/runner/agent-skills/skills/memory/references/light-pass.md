@@ -29,8 +29,8 @@ as the moment deserves. Skim what is routine; dig in when something might matter
    Your own task and the nightly pass's appear there too; skip them. Tasks linked from the open
    list are items you raised: read them for the person's answers. A message from a team carries
    `teamSource`, its channel and audience; keep it beside anything you repeat from it. Read
-   the mail, Messages and calendar connected to the owner (`integration_search` with `limit` 20 or
-   less, then `integration_call`) from where your last handoff stopped.
+   the mail, Messages and calendar connected to the owner (`integration_search` with a `query`
+   such as "mail", "messages" or "calendar" and `limit` 20 or less, then `integration_call`) from where your last handoff stopped.
 4. **Keep the open list true**, then **decide** each open item, both below.
 5. **End with your handoff**, below.
 

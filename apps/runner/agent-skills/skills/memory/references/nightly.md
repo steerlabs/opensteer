@@ -27,7 +27,8 @@ no substitute for what the person said. A message from a team carries
 team facts to team knowledge. Read the light pass's history for today
 (its worker is the `taskId` of the `memory-light` automation in `opensteer_automation_list`): what
 it raised, what the person answered or dismissed. Read the connected mail, Messages and calendar
-(`integration_search` with `limit` 20 or less, then `integration_call`) from where your last
+(`integration_search` with a `query` such as "mail", "messages" or "calendar" and `limit` 20 or
+less, then `integration_call`) from where your last
 handoff stopped. Then read all of `memory/`.
 
 ## Keep the record
