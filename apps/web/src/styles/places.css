@@ -223,10 +223,20 @@
   line-height: 1.45;
 }
 
+.place-menu__heading {
+  justify-content: space-between;
+  white-space: nowrap;
+}
+
 .place-menu__note {
-  margin: var(--space-6) var(--space-10) var(--space-2);
-  color: var(--muted);
-  font-size: var(--text-xs);
+  overflow: hidden;
+  font-weight: var(--weight-normal);
+  text-overflow: ellipsis;
+}
+
+.place-menu__note .link-btn {
+  padding: 0;
+  font: inherit;
 }
 
 /* The sidebar's place button marks an Account sign-in that ended on its own. */

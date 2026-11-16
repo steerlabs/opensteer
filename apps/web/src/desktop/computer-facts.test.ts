@@ -45,15 +45,26 @@ it("shares a read already under way, keeps what an unreachable computer said las
   expect([...store.getSnapshot().keys()]).toEqual(["a"]);
 });
 
-it("a read of a set that changed while it ran never overwrites the newer one", async () => {
-  const stale = deferred();
-  const read = vi.fn((row: DeploymentAccessDeployment) =>
-    row.canonicalOrigin === "https://old.example.test" ? stale.promise : Promise.resolve(said(9)),
-  );
+it("a read of a set that changed while it ran never overwrites the newer one, even back to the same set", async () => {
+  const first = deferred();
+  const moved = deferred();
+  const again = deferred();
+  const read = vi
+    .fn<(row: DeploymentAccessDeployment) => Promise<ComputerFacts>>()
+    .mockReturnValueOnce(first.promise)
+    .mockReturnValueOnce(moved.promise)
+    .mockReturnValueOnce(again.promise);
   const store = new ComputerFactsStore(read);
-  const old = store.refresh([computer("a", "https://old.example.test")]);
-  await store.refresh([computer("a")]);
-  stale.resolve(said(1));
-  await old;
-  expect(store.getSnapshot().get("a")?.needsYou).toBe(9);
+  const a = [computer("a")];
+  const reads = [
+    store.refresh(a),
+    store.refresh([computer("a", "https://moved.example.test")]),
+    store.refresh(a),
+  ];
+  again.resolve(said(3));
+  moved.resolve(said(2));
+  first.resolve(said(1));
+  await Promise.all(reads);
+  expect(read).toHaveBeenCalledTimes(3);
+  expect(store.getSnapshot().get("a")?.needsYou).toBe(3);
 });

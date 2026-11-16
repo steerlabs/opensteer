@@ -43,9 +43,26 @@ export function PlaceMenuPlaces({
   const signedIn = snapshot.account.status === "signed-in";
   return (
     <div className="picker__section place-menu__places">
-      <p aria-hidden className="picker__heading">
-        Your computers
-      </p>
+      {/* A failed refresh says so on this line, so it never moves the menu open above it. */}
+      <div className="picker__heading place-menu__heading">
+        <span aria-hidden>Your computers</span>
+        {signedIn && snapshot.directoryFailure ? (
+          <span
+            className="place-menu__note"
+            role="status"
+            title="Couldn’t refresh your list. Check your connection."
+          >
+            Couldn’t refresh ·{" "}
+            <button
+              className="link-btn"
+              onClick={() => void bridge.checkDeployments().catch(() => undefined)}
+              type="button"
+            >
+              Try again
+            </button>
+          </span>
+        ) : null}
+      </div>
       <PlaceList
         busy={pending}
         explainCurrent
@@ -83,18 +100,6 @@ export function PlaceMenuPlaces({
         onSignIn={() => run(() => bridge.signIn())}
         pending={pending}
       />
-      {signedIn && snapshot.directoryFailure ? (
-        <p className="place-menu__note" role="status">
-          Couldn’t refresh your list. Check your connection.{" "}
-          <button
-            className="link-btn"
-            onClick={() => void bridge.checkDeployments().catch(() => undefined)}
-            type="button"
-          >
-            Try again
-          </button>
-        </p>
-      ) : null}
       <ErrorNotice message={error} />
     </div>
   );
