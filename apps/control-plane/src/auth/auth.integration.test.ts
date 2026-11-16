@@ -105,6 +105,172 @@ integration("Account OAuth freshness PostgreSQL boundary", () => {
     await database.destroy();
   });
 
+  it("admits only the configured App Review credentials into a normal Account session", async () => {
+    const appReview = {
+      email: "appreview@opensteer.com",
+      password: "review-test-password-with-at-least-24-characters",
+    };
+    const auth = createControlPlaneAuth(database, { ...config, appReview });
+    const authenticator = new ControlPlaneAuthenticator(auth, database, publicOrigin);
+    const server = await createControlPlaneServer({
+      auth,
+      authenticator,
+      connectLifecycle,
+      portalOrigin: config.portalOrigin,
+      publicOrigin,
+      store,
+    });
+    const signIn = (
+      fields: Record<string, string>,
+      origin = publicOrigin.origin,
+      navigate = false,
+    ) =>
+      server.inject({
+        method: "POST",
+        url: "/sign-in/app-review",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          origin,
+          ...(navigate
+            ? { accept: "text/html", "sec-fetch-mode": "navigate", "sec-fetch-site": "same-origin" }
+            : {}),
+        },
+        payload: new URLSearchParams({ ...appReview, ...fields }).toString(),
+      });
+    try {
+      const page = await server.inject({ method: "GET", url: "/sign-in" });
+      expect(page.body).toContain("Sign in with email");
+      expect((await signIn({ password: "wrong" })).statusCode).toBe(401);
+      expect((await signIn({ email: "another@example.test" })).statusCode).toBe(401);
+      expect((await signIn({}, "https://attacker.test.invalid")).statusCode).toBe(403);
+      const direct = await auth.handler(
+        new Request(new URL("/api/auth/sign-in/app-review", publicOrigin), {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: "https://attacker.test.invalid" },
+          body: JSON.stringify({ ...appReview, callbackURL: publicOrigin.origin }),
+        }),
+      );
+      expect(direct.status).toBe(403);
+      const forged = await signIn({ oauth_query: "client_id=forged&sig=invalid" });
+      expect(forged.statusCode).toBe(400);
+      expect(
+        await database
+          .selectFrom("users")
+          .select("id")
+          .where("email", "!=", `owner-${accountId}@example.test`)
+          .execute(),
+      ).toEqual([]);
+
+      for (const path of ["/sign-in/email", "/sign-up/email"]) {
+        const refused = await server.inject({
+          method: "POST",
+          url: `/api/auth${path}`,
+          headers: { "content-type": "application/json", origin: publicOrigin.origin },
+          payload: { ...appReview, name: "Unwanted signup" },
+        });
+        expect(refused.statusCode).toBe(404);
+      }
+
+      const authorization = await beginAuthorization(server, "", "login consent");
+      const verifier = authorization.searchParams.get("test_verifier")!;
+      authorization.searchParams.delete("test_verifier");
+      const signedIn = await signIn({
+        email: " APPREVIEW@OPENSTEER.COM ",
+        oauth_query: authorization.search.slice(1),
+      });
+      expect(signedIn.statusCode, signedIn.body).toBe(302);
+      const cookies = [signedIn.headers["set-cookie"]]
+        .flat()
+        .filter((value): value is string => typeof value === "string");
+      const sessionCookie = cookies.find((cookie) =>
+        cookie.startsWith("__Secure-__Host-opensteer.account="),
+      );
+      expect(sessionCookie).toBeTruthy();
+      expect(sessionCookie).toContain("HttpOnly");
+      expect(sessionCookie).toContain("Secure");
+      expect(sessionCookie).toContain("SameSite=Lax");
+      const cookie = sessionCookie!.split(";")[0]!;
+      const session = await auth.api.getSession({ headers: new Headers({ cookie }) });
+      expect(session?.user).toMatchObject({ email: appReview.email, emailVerified: true });
+      const reviewerId = ControlPlaneAccountIdSchema.parse(session!.user.id);
+      await expect(
+        authenticator.authenticate(new Headers({ cookie }), { fresh: true }),
+      ).resolves.toMatchObject({ accountId: reviewerId, kind: "session" });
+      const consent = new URL(String(signedIn.headers.location), publicOrigin);
+      expect(consent.pathname).toBe("/consent");
+      consent.searchParams.set("test_verifier", verifier);
+      const tokens = await consentAndExchange(server, cookie, consent);
+      await expect(
+        authenticator.authenticate(new Headers({ authorization: `Bearer ${tokens.accessToken}` })),
+      ).resolves.toMatchObject({ accountId: reviewerId, kind: "bearer" });
+
+      const browserAuthorization = await beginAuthorization(server, "", "login consent");
+      browserAuthorization.searchParams.delete("test_verifier");
+      const browserSignIn = await signIn(
+        { oauth_query: browserAuthorization.search.slice(1) },
+        publicOrigin.origin,
+        true,
+      );
+      expect(browserSignIn.statusCode, browserSignIn.body).toBe(302);
+      expect(new URL(String(browserSignIn.headers.location), publicOrigin).pathname).toBe(
+        "/consent",
+      );
+
+      const returnTo = `${publicOrigin.origin}/v1/oauth-broker/launch/hoa_${crypto.randomUUID()}?ticket=${"t".repeat(43)}`;
+      const hosted = await signIn({ return_to: returnTo });
+      expect(hosted.statusCode, hosted.body).toBe(302);
+      expect(hosted.headers.location).toBe(returnTo);
+      expect(
+        await database
+          .selectFrom("users")
+          .select("id")
+          .where("email", "=", appReview.email)
+          .execute(),
+      ).toHaveLength(1);
+
+      await database.deleteFrom("authRateLimits").execute();
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        expect((await signIn({ password: "wrong" })).statusCode).toBe(401);
+      }
+      expect((await signIn({})).statusCode).toBe(429);
+    } finally {
+      await server.close();
+    }
+
+    await database.deleteFrom("users").where("email", "=", appReview.email).execute();
+    const offAuth = createControlPlaneAuth(database, config);
+    const off = await createControlPlaneServer({
+      auth: offAuth,
+      authenticator: new ControlPlaneAuthenticator(offAuth, database, publicOrigin),
+      connectLifecycle,
+      portalOrigin: config.portalOrigin,
+      publicOrigin,
+      store,
+    });
+    try {
+      const page = await off.inject({ method: "GET", url: "/sign-in" });
+      expect(page.body).not.toContain("Sign in with email");
+      for (const url of ["/sign-in/app-review", "/api/auth/sign-in/app-review"]) {
+        const refused = await off.inject({
+          method: "POST",
+          url,
+          headers: { "content-type": "application/json", origin: publicOrigin.origin },
+          payload: appReview,
+        });
+        expect(refused.statusCode).toBe(404);
+      }
+      expect(
+        await database
+          .selectFrom("users")
+          .select("id")
+          .where("email", "=", appReview.email)
+          .execute(),
+      ).toEqual([]);
+    } finally {
+      await off.close();
+    }
+  });
+
   it("persists authTime, requires prompt=login step-up, and preserves it across rotation", async () => {
     const auth = createControlPlaneAuth(database, config);
     const authenticator = new ControlPlaneAuthenticator(auth, database, publicOrigin);

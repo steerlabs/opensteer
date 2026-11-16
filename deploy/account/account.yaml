@@ -19,6 +19,8 @@ spec:
         path: "account-auth"
       - resourceName: "projects/opensteer-staging/secrets/opensteer-account-runtime/versions/10"
         path: "account-runtime.json"
+      - resourceName: "projects/opensteer-staging/secrets/opensteer-account-app-review/versions/1"
+        path: "account-app-review"
 ---
 apiVersion: v1
 kind: Service
@@ -158,6 +160,11 @@ spec:
                 readFileSync("/var/run/opensteer-raw/account-auth"),
                 { mode: 0o600 }
               );
+              writeFileSync(
+                "/var/run/opensteer-runtime/secrets/OPENSTEER_APP_REVIEW_PASSWORD",
+                readFileSync("/var/run/opensteer-raw/account-app-review"),
+                { mode: 0o600 }
+              );
           resources:
             requests: { cpu: 100m, memory: 128Mi }
             limits: { cpu: 100m, memory: 128Mi }
@@ -174,6 +181,10 @@ spec:
           envFrom:
             - configMapRef: { name: account-env }
           env:
+            - {
+                name: OPENSTEER_APP_REVIEW_PASSWORD_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_APP_REVIEW_PASSWORD,
+              }
             - {
                 name: OPENSTEER_CONTROL_PLANE_AUTH_SECRET_FILE,
                 value: /var/run/opensteer-runtime/secrets/OPENSTEER_CONTROL_PLANE_AUTH_SECRET,

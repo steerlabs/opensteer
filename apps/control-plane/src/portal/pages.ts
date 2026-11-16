@@ -78,13 +78,17 @@ export function signInBody(input: {
   readonly reauthorization: boolean;
   readonly hostedOAuth?: boolean;
   readonly appleSignIn?: boolean;
+  readonly appReviewSignIn?: boolean;
 }): string {
   const apple = input.appleSignIn
     ? `<form method="post" action="/sign-in/apple">${input.hiddenFields}<button class="btn btn--block btn--apple" type="submit">${appleMark()}Continue with Apple</button></form>`
     : "";
+  const email = input.appReviewSignIn
+    ? `<details><summary class="fine">Sign in with email</summary><form class="form" method="post" action="/sign-in/app-review">${input.hiddenFields}<label class="field"><input type="email" name="email" aria-label="Email" placeholder="Email" autocomplete="username" required></label><label class="field"><input type="password" name="password" aria-label="Password" placeholder="Password" autocomplete="current-password" required></label><button class="btn btn--block" type="submit">Sign in</button></form></details>`
+    : "";
   return card({
     head: `${brandMark()}<h1 class="title">${input.reauthorization ? "Confirm it’s you" : "Sign in to Opensteer"}</h1>`,
-    content: `${input.hostedOAuth ? '<p class="lead">Use the Opensteer Account linked to that Opensteer to continue connecting.</p>' : ""}<div class="sign-in-options">${apple}<form method="post" action="/sign-in/google">${input.hiddenFields}<button class="btn btn--block" type="submit">${googleMark()}Continue with Google</button></form></div>`,
+    content: `${input.hostedOAuth ? '<p class="lead">Use the Opensteer Account linked to that Opensteer to continue connecting.</p>' : ""}<div class="sign-in-options">${apple}<form method="post" action="/sign-in/google">${input.hiddenFields}<button class="btn btn--block" type="submit">${googleMark()}Continue with Google</button></form>${email}</div>`,
   });
 }
 
