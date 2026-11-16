@@ -36,7 +36,10 @@ await win.observe({ screenshot: true }); // look again, with a picture
   `setValue(index, value)`, `scroll(target, direction, amount)`; a target is an element index or
   `[x, y]` screenshot pixels. Actions never look again: call `observe()` when you need to see the
   result. `Window.act([...])` sends several actions as one batch.
-- `phones()` and `phone(query)` give a `Phone` (see below). `sleep(ms)` pauses.
+- `phones()` and `phone(name or computerId)` give a `Phone`: `observe()`, `tap`, `longPress`,
+  `swipe`, `drag`, `scroll`, `type`, `clear`, `navigate(button)`, `launch(appId)`, `wake`,
+  `wait(ms)`, `installedApps({ query })` and `release()`. Its `navigation` and `actions` say what
+  that phone accepts; see [phones](phones.md). `sleep(ms)` pauses.
 
 Errors throw `ComputerError` with `code`, a plain `message`, and `performed` (what completed before
 the failure). Catch them in code when you can recover; never repeat an action whose outcome is
@@ -64,5 +67,5 @@ Refusals are plain sentences. The ones you will meet: the app or phone is busy w
 (carry on or tell the person; do not loop); `stale-observation` (observe that window again; nothing
 ran); `outcome-unknown` (look before repeating anything); the window closed (pick another from
 `windows()`; its tab says "Window closed"); a missing macOS permission, an offline computer or an out-of-date Opensteer (only the
-person can fix it; tell them); stopped by the person (do not use that Mac or phone again in this
-task unless they ask).
+person can fix it; tell them); ended before it was sent (nothing happened; observe again); stopped
+by the person (do not use that Mac or phone again in this task unless they ask).

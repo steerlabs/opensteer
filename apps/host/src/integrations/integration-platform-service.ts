@@ -164,7 +164,13 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ErrorCode, McpError, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import {
   HostIntegrationsInvokeSchema,
+  AndroidPhoneNavigationSchema,
   ComputerUseBindParamsSchema,
+  PhoneDisplayActionTypeSchema,
+  PhoneDisplayInstalledAppsParamsSchema,
+  iphoneScreenDefinitionId,
+  type DeviceAvailability,
+  type PhoneDisplayDefinitionId,
   computerUseHeadline,
   computerUseActHeadline,
   computerUseToolRequiredSentence,
@@ -371,6 +377,7 @@ export class IntegrationPlatformService {
     | "requireAgentAccess"
     | "withRunnerAdmission"
     | "removePluginData"
+    | "deviceStatus"
   >;
   readonly #dataDirectory: string;
   readonly #definitions: readonly IntegrationDefinition[];
@@ -3349,6 +3356,8 @@ export class IntegrationPlatformService {
             )
               return null;
             const app = connection.connection.computer?.app;
+            const transport = row.server.transport;
+            const definitionId = transport.type === "computer" ? transport.definitionId : null;
             return {
               id: row.grant.connectionId,
               name: app?.displayName ?? connection.runnerName,
@@ -3357,6 +3366,9 @@ export class IntegrationPlatformService {
               computerId: connection.deviceId,
               access:
                 row.grant.access === "read" || connection.access === "read" ? "read" : "read-write",
+              ...(isPhoneDisplayDefinitionId(definitionId)
+                ? await this.#replPhoneControls(connection.deviceId, definitionId)
+                : {}),
             };
           }),
       );
@@ -3367,6 +3379,44 @@ export class IntegrationPlatformService {
       this.#replTargets.set(key, targets);
       return { value: usable };
     }
+    if (request.operation === "installedApps") {
+      const owner = caller.run.requestedBy;
+      const connectionId = IntegrationConnectionIdSchema.parse(request.target);
+      const row = (
+        await this.listCallableTools({ ownerUserId: owner, threadId: caller.threadId })
+      ).find(
+        (candidate) =>
+          candidate.grant.connectionId === connectionId &&
+          candidate.tool.name === "observe" &&
+          candidate.server.transport.type === "computer" &&
+          isPhoneDisplayDefinitionId(candidate.server.transport.definitionId),
+      );
+      const connection = row
+        ? await this.#store.getDeviceComputerConnectionForCall({ connectionId, ownerUserId: owner })
+        : null;
+      if (
+        !row ||
+        row.server.transport.type !== "computer" ||
+        !isPhoneDisplayDefinitionId(row.server.transport.definitionId) ||
+        !connection ||
+        connection.runnerRevoked
+      )
+        throw refused(
+          "forbidden",
+          "This phone is no longer approved for this task. Search integrations for current access.",
+        );
+      const { phones } = await this.computerAppApprovals.computerUseInventory(owner);
+      const installed = await this.computerAppApprovals.installedComputerApps(
+        {
+          ...PhoneDisplayInstalledAppsParamsSchema.parse(request.args),
+          actorUserId: owner,
+          deviceId: connection.deviceId,
+          definitionId: row.server.transport.definitionId,
+        },
+        phones,
+      );
+      return { value: z.json().parse(installed) };
+    }
     return this.callComputerOperation(
       caller,
       IntegrationConnectionIdSchema.parse(request.target),
@@ -3375,6 +3425,51 @@ export class IntegrationPlatformService {
       request.signal,
       request.deadline,
     );
+  }
+
+  /** What a phone handle may send, as the Host enforces it at dispatch. */
+  async #replPhoneControls(deviceId: DeviceId, definitionId: PhoneDisplayDefinitionId) {
+    if (definitionId === iphoneScreenDefinitionId) {
+      const status = this.#computerApps.deviceStatus(deviceId);
+      const attached = await this.#deviceApps.attached(deviceId);
+      const input = status?.inputVersion === 1;
+      return {
+        definitionId,
+        platform: "ios",
+        navigation: status?.navigationButtons.map(({ id }) => id) ?? [],
+        actions: (status?.actions ?? []).filter(
+          (action) =>
+            (action !== "wake" || status?.wake === true) &&
+            (input || action === "wait" || action === "wake"),
+        ),
+        availability:
+          status?.availability ??
+          ({
+            state: "unavailable",
+            reason: { kind: attached ? "unreported" : "driver-offline" },
+          } satisfies DeviceAvailability),
+      };
+    }
+    const attached = await this.#deviceApps.attached(deviceId);
+    const operations = (await this.#deviceApps.appStatus(deviceId, definitionId))?.operations ?? [];
+    const blocked = operations.some(({ state }) => state === "ready")
+      ? null
+      : !attached
+        ? "driver-offline"
+        : operations.some(({ state }) => state === "permission-required")
+          ? "permission-required"
+          : operations.some(({ state }) => state === "unavailable")
+            ? "paused"
+            : "unreported";
+    return {
+      definitionId,
+      platform: "android",
+      navigation: AndroidPhoneNavigationSchema.options,
+      actions: PhoneDisplayActionTypeSchema.options,
+      availability: (blocked === null
+        ? { state: "ready", reason: null }
+        : { state: "unavailable", reason: { kind: blocked } }) satisfies DeviceAvailability,
+    };
   }
 
   readonly #computerOperationSettlements = new Map<string, { runId: RunId; done: Promise<void> }>();
