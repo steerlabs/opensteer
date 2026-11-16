@@ -64,25 +64,31 @@ export const RunnerAuxiliaryAuthenticateSchema = z.strictObject({
 });
 export type RunnerAuxiliaryAuthenticate = z.infer<typeof RunnerAuxiliaryAuthenticateSchema>;
 
-export const RunnerAuxiliaryWelcomeSchema = z.strictObject({
-  ...RunnerConnectionFenceSchema.shape,
-  auxiliaryStreamId: RunnerAuxiliaryStreamIdSchema,
-  /**
-   * Carried on the browser stream's welcome because the relay verifies attach
-   * tickets itself; a messaging stream never receives them.
-   */
-  browserAttachPublicKeys: BrowserAttachPublicKeysSchema.optional(),
-  browserWireVersion: z.literal(2).optional(),
-  /** Opt in only when the descriptor offers it; old Hosts receive no new status fields. */
-  passkeys: z.literal(1).optional(),
-  loginText: z.literal(1).optional(),
-  passwordSignIn: z.literal(2).optional(),
-  heartbeatIntervalMs: z.number().int().min(1_000).max(300_000),
-  module: RunnerAuxiliaryModuleSchema,
-  serverTime: IsoDateTimeSchema,
-  streamLeaseExpiresAt: IsoDateTimeSchema,
-  type: z.literal("host.auxiliary.welcome"),
-});
+export const RunnerAuxiliaryWelcomeSchema = z
+  .strictObject({
+    ...RunnerConnectionFenceSchema.shape,
+    auxiliaryStreamId: RunnerAuxiliaryStreamIdSchema,
+    /**
+     * Carried on the browser stream's welcome because the relay verifies attach
+     * tickets itself; a messaging stream never receives them.
+     */
+    browserAttachPublicKeys: BrowserAttachPublicKeysSchema.optional(),
+    browserWireVersion: z.literal(2).optional(),
+    /** Opt in only when the descriptor offers it; old Hosts receive no new status fields. */
+    passkeys: z.literal(1).optional(),
+    loginText: z.literal(1).optional(),
+    screenDrivers: z.literal(1).optional(),
+    passwordSignIn: z.literal(2).optional(),
+    heartbeatIntervalMs: z.number().int().min(1_000).max(300_000),
+    module: RunnerAuxiliaryModuleSchema,
+    serverTime: IsoDateTimeSchema,
+    streamLeaseExpiresAt: IsoDateTimeSchema,
+    type: z.literal("host.auxiliary.welcome"),
+  })
+  .refine(
+    (welcome) => welcome.screenDrivers === undefined || welcome.module === "integrations",
+    "Screen drivers are negotiated on integrations only",
+  );
 export type RunnerAuxiliaryWelcome = z.infer<typeof RunnerAuxiliaryWelcomeSchema>;
 
 export const RunnerAuxiliaryRejectedSchema = z.strictObject({

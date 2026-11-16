@@ -49,3 +49,5 @@ export * from "./hrefs.js";
 
 export * from "./tabs.js";
 export * from "./tool-error.js";
+
+export * from "./devices.js";

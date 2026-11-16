@@ -1,3 +1,5 @@
+import { DeviceKindSchema } from "@opensteer/core";
+import { DeviceViewSchema } from "./devices.js";
 import { MachineComputerUseSchema } from "./computer-use.js";
 import { z } from "zod";
 import {
@@ -64,25 +66,14 @@ export const MachineDeviceSchema = z
   });
 export type MachineDevice = z.infer<typeof MachineDeviceSchema>;
 
-/**
- * A computer doing work for a Deployment.
- *
- * A Machine is a Runner: one enrollment, one key, one connection generation.
- * The browser relay and the messaging transport are modules of that identity
- * rather than enrollments of their own, so this row is a direct projection of
- * the Runner and needs no merging.
- */
-export const MachineKindSchema = z.enum([
-  "home",
-  "computer",
-  "phone",
-  "agent-phone",
-  "server",
-  "unknown",
-]);
+export const MachineKindSchema = DeviceKindSchema;
 export type MachineKind = z.infer<typeof MachineKindSchema>;
 
 export const MachineSummarySchema = z.object({
+  selfRunnerId: DeviceViewSchema.shape.selfRunnerId.optional(),
+  drivers: DeviceViewSchema.shape.drivers.optional(),
+  capabilities: DeviceViewSchema.shape.capabilities.optional(),
+  phoneDisplay: DeviceViewSchema.shape.phoneDisplay.optional(),
   kind: z
     .string()
     .transform((kind) => MachineKindSchema.safeParse(kind).data ?? "unknown")
@@ -153,7 +144,7 @@ export const MachineSummarySchema = z.object({
    * The grant: every module this computer may ever advertise, fixed when it
    * was added. `modules` says what it is advertising now, which may be less.
    */
-  allowedModules: z.array(RunnerModuleNameSchema).min(1).max(5),
+  allowedModules: z.array(RunnerModuleNameSchema).max(5),
   modules: z.object({
     agents: MachineModuleSummarySchema.optional(),
     browser: MachineModuleSummarySchema.optional(),
@@ -169,3 +160,19 @@ export const MachineSummarySchema = z.object({
   status: z.enum(["online", "offline", "pending", "needs-update", "updating", "update-pending"]),
 });
 export type MachineSummary = z.infer<typeof MachineSummarySchema>;
+
+export const DeviceMachineSummarySchema = MachineSummarySchema.extend({
+  ...DeviceViewSchema.shape,
+})
+  .refine((machine) => machine.status !== "pending", "Pending enrollment is not a Device")
+  .refine(
+    (machine) =>
+      machine.selfRunnerId !== null ||
+      (machine.allowedModules.length === 0 &&
+        Object.keys(machine.modules).length === 0 &&
+        machine.runtimeVersion === null &&
+        machine.fullDiskAccess === null &&
+        machine.pinnedThreads === 0),
+    "A Device without a self Runner has no execution modules or runtime",
+  );
+export type DeviceMachineSummary = z.infer<typeof DeviceMachineSummarySchema>;
