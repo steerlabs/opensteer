@@ -30,7 +30,7 @@ afterEach(() => {
 const task = "[Fix \\[the\\] build 🦊](opensteer:thr_12345678-1234-4234-8234-123456789abc)";
 const channel = "[design](https://team.example/c/tch_12345678-1234-4234-8234-123456789abc)";
 
-function mount(initial: string, scope: ComposerScope = "personal") {
+function mount(initial: string, scope: ComposerScope = "personal", className?: string) {
   const node = document.createElement("div");
   document.body.append(node);
   root = createRoot(node);
@@ -41,6 +41,7 @@ function mount(initial: string, scope: ComposerScope = "personal") {
     act(() =>
       root.render(
         <ComposerEditor
+          {...(className ? { className } : {})}
           fieldAttributes={{ "aria-label": "Message" }}
           onChange={(text, change) => {
             changes.push({ text, change });
@@ -67,6 +68,12 @@ function mount(initial: string, scope: ComposerScope = "personal") {
 }
 
 describe("composer editor", () => {
+  it("styles the editable element itself, so its whole box takes the caret", () => {
+    const { field } = mount("", "personal", "composer__input");
+    expect(field.classList.contains("composer__input")).toBe(true);
+    expect(field.isContentEditable || field.getAttribute("contenteditable")).toBeTruthy();
+  });
+
   it("rebuilds references from Markdown and gives the source back byte for byte", () => {
     const source = `Before ${task}\nthen ${channel} and \\[not a link\\](x) \`${task}\``;
     const { editor, field } = mount(source);
