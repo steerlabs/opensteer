@@ -27,7 +27,8 @@ no substitute for what the person said. A message from a team carries
 team facts to team knowledge. Read the light pass's history for today
 (its worker is the `taskId` of the `memory-light` automation in `opensteer_automation_list`): what
 it raised, what the person answered or dismissed. Read the connected mail, Messages and calendar
-from where your last handoff stopped. Then read all of `memory/`.
+(`integration_search` with `limit` 20 or less, then `integration_call`) from where your last
+handoff stopped. Then read all of `memory/`.
 
 ## Keep the record
 
@@ -38,7 +39,8 @@ from where your last handoff stopped. Then read all of `memory/`.
   A shortened line keeps who said it and its `(said …)` source; if it can't, leave it in the notes.
 - **The person's instructions are theirs.** Never write, move or reword them. If they seem to have
   given a lasting instruction nobody saved, add an item to the open list quoting it, so the light
-  pass can ask them once; never ask about one they removed or declined.
+  pass can ask them once, and keep it out of the summary and notes: until the person confirms in a
+  task, it is not theirs. Never ask about one they removed or declined.
 - **The open list.** Add promises and requests the light pass missed, especially ones said on calls
   or in long threads, following [the open list](light-pass.md#the-open-list) rules. Close what the
   day's evidence settled. Mark anything urgent as urgent; the morning's first light pass decides

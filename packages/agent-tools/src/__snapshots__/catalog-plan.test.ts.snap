@@ -3219,6 +3219,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
         },
         "limit": {
           "default": 10,
+          "description": "At most 20; page with cursor.",
           "maximum": 20,
           "minimum": 1,
           "type": "integer",
