@@ -236,7 +236,10 @@ Personal memory is ordinary files in `~/Opensteer`, reaching eligible Runs throu
 a Request. Standing instructions belong outside `## Memory`, and only the Run that heard the person
 writes one. Only the nightly pass curates; it reapplies recorded forgets, and forgetting stops
 memory workers before erasing files. Missing model capacity means waiting, not memory off.
-Continuity lives in files rather than replayed provider history.
+Each pass starts a fresh engine session. Its continuity is Agent home's files and its worker's own
+task history, which it reads deliberately. The Host's wake says only which pass is due and when;
+the pass works out what changed itself, as any agent can with `opensteer_task_list`'s
+`changedSince`.
 
 The nightly pass is an independent background job. It reads every task, including work started
 from team threads, and Voice; it keeps each memory's source and who could see it. It remembers

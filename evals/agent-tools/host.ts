@@ -521,7 +521,7 @@ function defaultResult(name: string): unknown {
     case "integration_search":
       return { operations: [], integrations: [], catalog: [], total: 0 };
     case "opensteer_task_list":
-      return { tasks: [], nextCursor: null };
+      return { tasks: [], hasMore: false, nextCursor: null };
     case "opensteer_request_list":
       return { requests: [] };
     case "browser_profile_list":

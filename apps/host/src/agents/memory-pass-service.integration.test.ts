@@ -1109,130 +1109,20 @@ describeStore("managed memory passes", (it) => {
     });
     expect(nextSession!.id).not.toBe(firstSession!.id);
   });
-  it("lists what a light pass must read, with no old wakes, and skips an idle wake", async ({
+  it("admits each due light wake as sent, without old wakes, even when nothing changed", async ({
     storeFixture: f,
   }) => {
     const base = await fixture(f, "activity");
     await service(f).instance.ensureForPersonal();
     const light = (await role(f, base.userId)).trigger;
-    const thread = async (
-      title: string,
-      patch: {
-        listed?: boolean;
-      },
-    ) => {
-      const { thread } = await f.store.createThread({
-        createdBy: base.userId,
-        environmentId: base.environmentId,
-        harnessInstanceId: base.harnessInstance.id,
-        idempotencyKey: `activity-${title}`,
-        modelSelection: base.thread.modelSelection,
-        title,
-      });
-      if (Object.keys(patch).length === 0) return thread;
-      await f.database.transaction().execute(async (transaction) => {
-        await sql`set local session_replication_role = replica`.execute(transaction);
-        await transaction.updateTable("threads").set(patch).where("id", "=", thread.id).execute();
-      });
-      return thread;
-    };
-    const voice = await thread("Voice", {
-      listed: false,
-    });
-    const shared = await thread("Shared channel", {});
     const first = await wake(f, light, (await tick(f, base, light)).occurrence.id, "activity-1");
-    expect(wakeText(first).join("\n")).toContain("No new tasks");
+    expect(wakeText(first)).toEqual(["Memory pass due"]);
     await finish(f, first.run!, "completed");
-    await expect(
-      wake(f, light, (await tick(f, base, light)).occurrence.id, "activity-idle"),
-    ).rejects.toThrow(MANAGED_MEMORY_WAKE_SKIPPED);
-    await delivered(f, base, voice.id, "activity-voice");
-    await delivered(f, base, shared.id, "activity-shared");
-    await delivered(f, base, base.thread.id, "activity-chat");
-    await f.enqueueHumanTrigger({
-      content: [
-        {
-          type: "text",
-          text: "Still waiting behind a Run",
-        },
-      ],
-      idempotencyKey: "activity-waiting",
-      requestedBy: base.userId,
-      threadId: (await thread("Waiting", {})).id,
-    });
-    const next = await tick(f, base, light);
-    const second = await wake(f, light, next.occurrence.id, "activity-2");
-    const text = wakeText(second).join("\n");
-    expect(text).toContain(`"Voice": taskId ${voice.id}, 1 new messages`);
-    expect(text).toContain(`taskId ${base.thread.id}, 1 new messages`);
-    expect(text).toContain(shared.id);
-    expect(text).not.toContain("Waiting");
-    expect(text).not.toContain(light.anchorThreadId);
+    // What to read is the pass's own decision, so a quiet half hour still wakes it.
+    const second = await wake(f, light, (await tick(f, base, light)).occurrence.id, "activity-2");
+    expect(wakeText(second)).toEqual(["Memory pass due"]);
     await f.store.claimCommand(second.command!.id, "activity-dispatcher");
     expect((await f.store.loadRunDispatchContext(second.command!.id)).initialContext).toBeNull();
-
-    // A replay keeps what the wake froze, though the world has moved on.
-    await delivered(f, base, voice.id, "activity-after-freeze");
-    const replay = await wake(f, light, next.occurrence.id, "activity-2");
-    expect(wakeText(replay)).toEqual(wakeText(second));
-
-    // A failed pass read nothing durable, so its conversations come back.
-    await finish(f, second.run!, "failed");
-
-    // Another Trigger's work on this worker says nothing about what memory read.
-    await sql`update messages set created_at = created_at - interval '1 hour'
-      where thread_id in (${voice.id}, ${light.anchorThreadId})`.execute(f.database);
-    await sql`update thread_inputs set updated_at = updated_at - interval '1 hour'
-      where thread_id in (${voice.id}, ${light.anchorThreadId})`.execute(f.database);
-    const nightly = (await role(f, base.userId, "memory-nightly")).trigger;
-    // A light-pass boundary can arrive while the nightly fixture starts.
-    await f.database
-      .updateTable("triggers")
-      .set({ nextFireAt: new Date(Date.now() - 1_000) })
-      .where("id", "=", light.id)
-      .execute();
-    const other = await f.store.enqueueThreadInput({
-      content: [
-        {
-          type: "text",
-          text: "Unrelated work",
-        },
-      ],
-      idempotencyKey: "activity-other-trigger",
-      policy: "queue",
-      requestedBy: base.userId,
-      source: {
-        kind: "trigger",
-        occurrenceId: (await tick(f, base, nightly)).occurrence.id,
-      },
-      threadId: light.anchorThreadId,
-    });
-    await finish(f, other.run!, "completed");
-    const retried = await wake(f, light, (await tick(f, base, light)).occurrence.id, "activity-3");
-    expect(wakeText(retried).join("\n")).toContain(`"Voice": taskId ${voice.id}, 2 new messages`);
-
-    // A published report is readable before any Run consumes it.
-    await finish(f, retried.run!, "completed");
-    const reported = await thread("Reported", {});
-    await f.store.enqueueThreadInput({
-      content: [
-        {
-          type: "text",
-          text: "The ferry is booked",
-        },
-      ],
-      idempotencyKey: "activity-report",
-      policy: "report",
-      requestedBy: base.userId,
-      source: {
-        kind: "human",
-      },
-      threadId: reported.id,
-    });
-    const after = await wake(f, light, (await tick(f, base, light)).occurrence.id, "activity-4");
-    expect(wakeText(after).join("\n")).toContain(
-      `"Reported": taskId ${reported.id}, 1 new messages`,
-    );
   });
   it("replays an accepted pass's wake without choosing its model again", async ({
     storeFixture: f,

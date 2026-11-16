@@ -178,6 +178,8 @@ export const ThreadSummarySchema = z.object({
   taskStatus: AssignmentStatusSchema.nullable(),
   title: z.string().nullable(),
   updatedAt: task.updatedAt,
+  newMessages: z.number().int().positive().optional(),
+  firstNewAt: task.updatedAt.optional(),
 });
 export const ThreadListOutputSchema = z.object({
   tasks: z.array(ThreadSummarySchema).max(50),
