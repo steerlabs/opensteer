@@ -41,6 +41,10 @@ func (plistCodec PlistCodec) Encode(message interface{}) ([]byte, error) {
 // Decode reads a Lockdown Message from the provided reader and
 // sends it to the ResponseChannel
 func (plistCodec PlistCodec) Decode(r io.Reader) ([]byte, error) {
+	return plistCodec.DecodeLimit(r, maxMessageSize)
+}
+
+func (plistCodec PlistCodec) DecodeLimit(r io.Reader, limit uint32) ([]byte, error) {
 	if r == nil {
 		return nil, errors.New("Reader was nil")
 	}
@@ -50,7 +54,7 @@ func (plistCodec PlistCodec) Decode(r io.Reader) ([]byte, error) {
 		return nil, err
 	}
 	length := binary.BigEndian.Uint32(buf)
-	if length > maxMessageSize {
+	if length > limit || length == 0 {
 		return nil, fmt.Errorf("lockdown payload length %d exceeds maximum allowed size %d", length, maxMessageSize)
 	}
 	payloadBytes := make([]byte, length)

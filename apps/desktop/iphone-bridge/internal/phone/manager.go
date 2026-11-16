@@ -31,6 +31,8 @@ type localPhone struct {
 	inspection  Inspection
 	routeCtx    context.Context
 	routeCancel context.CancelFunc
+	apps        map[string]bool
+	appsEpoch   uint64
 	access      string
 }
 type imageOption struct {
@@ -135,6 +137,9 @@ func (m *Manager) Call(ctx context.Context, r wire.Request) (interface{}, error)
 	case "session.close":
 		params := p.(*wire.CloseParams)
 		return wire.Empty{}, m.closeSession(params.BindingToken, params.SessionID)
+	// N2 screen operations.
+	case "phone.observe", "phone.perform", "phone.installedApps":
+		return m.screenOperation(ctx, p)
 	case "phone.forget":
 		params := p.(*wire.ForgetParams)
 		return wire.Empty{}, m.forget(params)
