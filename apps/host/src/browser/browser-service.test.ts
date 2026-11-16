@@ -195,6 +195,13 @@ function nativeProfileOptions() {
         listPendingBrowserProfileDeletions: async () => [],
         getBrowserProfileStorage: async (id: BrowserProfileId) =>
           bindings.get(id) ?? { kind: "unbound" },
+        acknowledgeBrowserProfileReady: async (
+          binding: import("@opensteer/protocol").LocalProfileBinding,
+        ) => {
+          const storage = bindings.get(binding.profileId);
+          if (storage?.kind !== "local") throw new Error("Native profile was not bound.");
+          bindings.set(binding.profileId, { ...storage, initialized: true });
+        },
         bindBrowserProfile: async (binding: import("@opensteer/protocol").LocalProfileBinding) => {
           const storage = { kind: "local" as const, binding, initialized: false };
           bindings.set(binding.profileId, storage);

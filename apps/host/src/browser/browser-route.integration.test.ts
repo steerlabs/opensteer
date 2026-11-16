@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { hostApiVersionHeader } from "@opensteer/protocol";
 import { browserRows } from "./browser-rows.test-support.js";
@@ -17,7 +18,7 @@ import { BrowserServerMessageSchema, decodeBrowserFrameEnvelope } from "@openste
 import { sql } from "kysely";
 import { writeFile } from "node:fs/promises";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
@@ -129,7 +130,13 @@ integration("Host browser broker vertical", () => {
     });
     expect(browserRuntime.connectionCount()).toBe(1);
     const profileClaims = browserRuntime.lastClaims();
-    expect(profileClaims?.identity.kind).toBe("profile-local");
+    expect(profileClaims?.identity).toMatchObject({ kind: "profile-local", initialized: false });
+    await expect(
+      runtime.store.getBrowserProfileStorage(createdProfile.profile.id),
+    ).resolves.toMatchObject({
+      kind: "local",
+      initialized: true,
+    });
     expect(profileClaims?.initialNavigation).toMatchObject({ url: "https://example.com/" });
     await expectUpgradeRejected(
       `ws://127.0.0.1:${hostPort}/v1/browser-sessions/${started.session.id}/connect`,
@@ -294,6 +301,115 @@ integration("Host browser broker vertical", () => {
       { headers: { cookie } },
     );
     expect(detachedBootstrap.tabs.tabs.every((tab) => tab.usedBy.length === 0)).toBe(true);
+
+    const laterAcknowledgment = vi.spyOn(runtime.store, "acknowledgeBrowserProfileReady");
+    const reopened = await testRpcData(
+      origin,
+      "commands.dispatch",
+      {
+        idempotencyKey: "browser-profile-reopen",
+        input: { profileId: createdProfile.profile.id, reuseExisting: false },
+        type: "browser.session.start",
+      },
+      { headers: sessionHeaders },
+    );
+    expect(reopened.type).toBe("browser.session.start");
+    expect(browserRuntime.lastClaims()?.identity).toMatchObject({
+      kind: "profile-local",
+      initialized: true,
+    });
+
+    expect(laterAcknowledgment).not.toHaveBeenCalled();
+    laterAcknowledgment.mockRestore();
+
+    const unavailableProfile = await testRpcData(
+      origin,
+      "commands.dispatch",
+      {
+        idempotencyKey: "browser-profile-archived-before-ready",
+        input: { name: "Archived before readiness", homeRunnerId: browserRuntime.runnerId },
+        type: "browser.profile.create",
+      },
+      { headers: sessionHeaders },
+    );
+    if (unavailableProfile.type !== "browser.profile.create")
+      throw new Error("Profile command mismatch.");
+    const acknowledge = runtime.store.acknowledgeBrowserProfileReady.bind(runtime.store);
+    const acknowledgment = vi
+      .spyOn(runtime.store, "acknowledgeBrowserProfileReady")
+      .mockImplementationOnce(async (binding) => {
+        const database = createDatabase({ connectionString: databaseUrl! });
+        try {
+          await database
+            .updateTable("browserProfiles")
+            .set({ archivedAt: new Date() })
+            .where("id", "=", binding.profileId)
+            .execute();
+        } finally {
+          await database.destroy();
+        }
+        await acknowledge(binding);
+      });
+    const transitions = vi.spyOn(runtime.store, "transitionBrowserSession");
+    try {
+      await expect(
+        testRpcData(
+          origin,
+          "commands.dispatch",
+          {
+            idempotencyKey: "browser-open-archived-before-ready",
+            input: { profileId: unavailableProfile.profile.id, reuseExisting: false },
+            type: "browser.session.start",
+          },
+          { headers: sessionHeaders },
+        ),
+      ).rejects.toThrow();
+      const failedClaims = browserRuntime.lastClaims()!;
+      const database = createDatabase({ connectionString: databaseUrl! });
+      try {
+        const failed = await database
+          .selectFrom("browserSessions")
+          .select("state")
+          .where("id", "=", failedClaims.sessionId)
+          .executeTakeFirstOrThrow();
+        expect(failed.state).toBe("failed");
+        const profile = await database
+          .selectFrom("browserProfiles")
+          .select("initialized")
+          .where("id", "=", unavailableProfile.profile.id)
+          .executeTakeFirstOrThrow();
+        expect(profile.initialized).toBe(false);
+      } finally {
+        await database.destroy();
+      }
+      expect(runtime.browser.pageInventory(failedClaims.sessionId)).toBeUndefined();
+      const refusedViewer = new WebSocket(
+        `ws://127.0.0.1:${hostPort}/v1/browser-sessions/${failedClaims.sessionId}/connect`,
+        { headers: { cookie, origin, [hostApiVersionHeader]: String(hostApiVersion) } },
+      );
+      const refusedMessages: WebSocket.RawData[] = [];
+      refusedViewer.on("message", (raw) => refusedMessages.push(raw));
+      try {
+        expect(
+          (
+            await withTimeout(waitForClose(refusedViewer), 5_000, {
+              timeoutError: () => new Error("Failed browser viewer was not closed."),
+            })
+          ).code,
+        ).toBe(4002);
+        expect(refusedMessages).toEqual([]);
+      } finally {
+        refusedViewer.terminate();
+      }
+      expect(
+        transitions.mock.calls
+          .filter(([input]) => input.sessionId === failedClaims.sessionId)
+          .map(([input]) => input.state),
+      ).not.toContain("ready");
+    } finally {
+      acknowledgment.mockRestore();
+      transitions.mockRestore();
+    }
 
     // A fresh session needs no profile and no grant, and carries no lease.
 

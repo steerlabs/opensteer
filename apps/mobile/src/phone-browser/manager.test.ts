@@ -20,6 +20,19 @@ import { phoneBrowserDescriptor, phoneBrowserRunnerDescriptor } from "./descript
 import { setup, uuid } from "./manager.test-support.js";
 
 describe("phone browser manager", () => {
+  test.each(["ios", "android"] as const)(
+    "%s opens a native profile without an initial URL at about:blank",
+    async (platform) => {
+      const fixture = await setup(platform, { initialNavigation: { operationKey: "blank-open" } });
+      expect(fixture.native.tabs.get(fixture.surfaceId)?.metadata.url).toBe("about:blank");
+      expect(fixture.native.output).toContainEqual(
+        expect.objectContaining({
+          type: "browser.attached",
+          initialPage: expect.objectContaining({ navigation: "blank" }),
+        }),
+      );
+    },
+  );
   test("a live Host capability renewal preserves channels, local views and agent authority", async () => {
     const fixture = await setup();
     await fixture.present();
