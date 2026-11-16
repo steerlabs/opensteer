@@ -587,6 +587,17 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       expect(JSON.stringify(rows)).not.toContain('"hello"');
       const discovery = json(await gateway.call("integration_search", { query: "Android phone" }));
       expect(JSON.stringify(discovery)).not.toContain("toolRef");
+      const listed = await gateway.call("computer_use", {
+        code: 'const [entry]=await phones(); const p=await phone("Pixel 8"); return [entry.definitionId, entry.platform, entry.navigation, entry.availability, await p.installedApps({query:"mess"})]',
+      });
+      expect(listed.isError, JSON.stringify(listed)).toBeUndefined();
+      expect(JSON.parse(text(listed).split("\n").at(-1)!)).toEqual([
+        "android-phone",
+        "android",
+        ["back", "home", "recents", "notifications", "quickSettings"],
+        { state: "ready", reason: null },
+        { apps: [{ label: "Messages", appId: "com.google.android.apps.messaging" }], total: 1 },
+      ]);
       const initialTabs = await world.tabStore.snapshot(world.owner.userId);
       expect(initialTabs.rows).toHaveLength(1);
       const nativeTab = initialTabs.rows[0]!;
@@ -3240,7 +3251,11 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       await gateway.call("integration_search", { computerId: phoneId, query: "Messages" }),
     );
     expect(result.apps).toEqual([
-      { label: "Messages", packageName: "com.google.android.apps.messaging" },
+      {
+        label: "Messages",
+        appId: "com.google.android.apps.messaging",
+        packageName: "com.google.android.apps.messaging",
+      },
     ]);
     expect(fakePhone.frames.at(-1)).toMatchObject({
       definitionId: "android-phone",
@@ -3490,6 +3505,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
           computerToolEnabled: true,
           name: phone,
           computerId: phoneId,
+          definitionId: "android-phone",
           state: "ready",
         },
       ],
@@ -3556,6 +3572,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       callable: true,
       computerToolEnabled: true,
       computerId: phoneId,
+      definitionId: "android-phone",
       state: "ready",
     });
     expect(granted).not.toHaveProperty("toolRefs");

@@ -131,7 +131,7 @@ export const BrowserFixtureSchema = z.strictObject({
     )
     .default([]),
   computers: z
-    .array(z.strictObject({ computerId: z.string().regex(/^rnr_/u), name: z.string() }))
+    .array(z.strictObject({ computerId: z.string().regex(/^(?:rnr|dev)_/u), name: z.string() }))
     .default([]),
   /** Where Guest pages open when no computer is named. */
   hostingComputer: z.string().default("This Mac"),
@@ -253,7 +253,8 @@ export const CaseSchema = z
             args: z.record(z.string(), z.json()).default({}),
             path: z.array(z.string().min(1)).min(1),
             pattern: regex,
-            after: call.extend({ result: z.json() }),
+            /** Only calls after the first valid one matching this count; absent checks every call. */
+            after: call.extend({ result: z.json() }).optional(),
           }),
         )
         .default([]),
