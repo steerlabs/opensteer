@@ -25,6 +25,7 @@ import { DeviceRemovedScreen, DeviceSignInScreen } from "../components/devices/d
 import { membershipRecord } from "../components/devices/this-device.js";
 import { observeLocalExecutionStatus } from "./local-execution-status.js";
 import { DesktopPlacesProvider, type DesktopPlaces } from "./places-context.js";
+import { ComputerFactsStore, readComputerFacts } from "./computer-facts.js";
 import { thisComputerLabel } from "./places.js";
 import { pendingSetupStep } from "../components/first-run/setup-memory.js";
 import { SetupOpening } from "../components/first-run/setup-opening.js";
@@ -258,6 +259,10 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
 
   useEffect(() => () => hostClient?.dispose(), [hostClient]);
 
+  const facts = useMemo(
+    () => new ComputerFactsStore((computer) => readComputerFacts(bridge, computer)),
+    [bridge],
+  );
   const places = useMemo<DesktopPlaces | null>(
     () =>
       snapshot
@@ -269,11 +274,12 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
                 await bridge.select(input);
               },
             },
+            facts,
             onAddPlace: () => setScreen("pairing"),
             snapshot,
           }
         : null,
-    [bridge, snapshot],
+    [bridge, facts, snapshot],
   );
 
   useEffect(() => {

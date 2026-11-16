@@ -313,7 +313,7 @@ export function DesktopChooser({
   const [signingOut, setSigningOut] = useState(false);
   usePlaceChecks(bridge, true);
   const facts = useComputerFacts(
-    bridge,
+    places.facts,
     snapshot.deployments.filter((row) => deploymentPolicy({ kind: row.kind }).services.personal),
   );
   const rows = placeRows(snapshot, { thisComputer: thisComputerLabel(), facts });
