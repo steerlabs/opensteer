@@ -46,7 +46,7 @@ import { useHostSelector, usePlaceList } from "@opensteer/client/react";
 import { computerGlyph, orderDevices } from "@opensteer/client/computers";
 import type { ApprovedComputerApp, OwnerWindowInfo } from "@opensteer/protocol";
 import { actionErrorMessage } from "../../ui-utils.js";
-import { AppMark } from "../computer-apps/computer-use-section.js";
+import { AppMark } from "../computer-apps/app-icons.js";
 import { computerIcon } from "../computers/device-art.js";
 import { DeviceLabel } from "../computers/device-label.js";
 import { useHereId } from "../computers/here.js";

@@ -6,7 +6,7 @@ import { useToolOutput } from "@opensteer/client/react";
 import { copyText } from "@opensteer/shared/clipboard";
 import { voiceCallSeed } from "@opensteer/core";
 import { AppCard } from "./apps/app-card.js";
-import { AppMark } from "./computer-apps/computer-use-section.js";
+import { AppMark } from "./computer-apps/app-icons.js";
 import { useTaskSnapshot } from "./task-rows.js";
 import { taskMark, threadMark } from "@opensteer/client/host";
 import {

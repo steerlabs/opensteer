@@ -90,9 +90,8 @@ export class MemoryPassService {
         this.options.onChanged();
       }
     }
-    const zone = TimeZoneSchema.safeParse(
-      await store.notificationState.timeZoneFor(settings.ownerId),
-    );
+    // Memory passes run on this computer, so they keep its clock.
+    const zone = TimeZoneSchema.safeParse(Intl.DateTimeFormat().resolvedOptions().timeZone);
     if (!zone.success) return;
     const present = await store.database
       .selectFrom("triggers")

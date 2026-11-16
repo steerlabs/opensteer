@@ -80,6 +80,10 @@ export const teamAgentAsksMigrationName = "0012_team_agent_asks";
 export const teamPrincipalsMigrationName = "0015_team_principals";
 export const teamPartnerLinksMigrationName = "0016_team_partner_links";
 export const agentHomeSettingsMigrationName = "0023_agent_home_settings";
+const messageOriginMigrationName = "0027_message_origin";
+const MESSAGE_ORIGIN_SQL = `
+alter table messages add column origin jsonb;
+`;
 export function migrationProvider(): MigrationProvider {
   return {
     async getMigrations() {
@@ -300,8 +304,13 @@ export function migrationProvider(): MigrationProvider {
             await sql.raw(TABS_AND_APPS_SQL).execute(database);
           },
         },
+        [messageOriginMigrationName]: {
+          async up(database) {
+            await sql.raw(MESSAGE_ORIGIN_SQL).execute(database);
+          },
+        },
         // opensteer_task_list's changedSince reads only messages written or delivered after it.
-        "0027_changed_since_indexes": {
+        "0028_changed_since_indexes": {
           async up(database) {
             await sql`create index messages_created_at on messages(created_at);
               create index thread_inputs_updated_at on thread_inputs(updated_at)`.execute(database);

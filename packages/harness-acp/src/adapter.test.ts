@@ -817,8 +817,8 @@ async function setup(scenario: Scenario, real: { readonly agent?: string } = {})
         context: {
           assignment: null,
           teamTurnContext: null,
-          requesterTimeZone: null,
           threadState: { previousAssignment: null, previousRun: null },
+          startedAt: "2026-08-22T00:00:00.000Z",
         },
         environment,
         inputs: [

@@ -18,6 +18,8 @@ interface DialogProps {
   /** Where focus goes back to on close, when that is not what had it as the dialog opened. */
   returnFocusTo?: HTMLElement | null;
   title: ReactNode;
+  /** A short question with two answers, which a full-width dialog would strand. */
+  narrow?: boolean;
   wide?: boolean;
 }
 
@@ -43,6 +45,7 @@ function DialogContent({
   onClose,
   returnFocusTo = null,
   title,
+  narrow,
   wide,
 }: DialogProps) {
   const dialogRef = useRef<HTMLDivElement | null>(null);
@@ -80,7 +83,7 @@ function DialogContent({
       />
       <div
         ref={dialogRef}
-        className={wide ? "dialog dialog--wide" : "dialog"}
+        className={wide ? "dialog dialog--wide" : narrow ? "dialog dialog--narrow" : "dialog"}
         id={id}
         role="dialog"
         aria-modal="true"

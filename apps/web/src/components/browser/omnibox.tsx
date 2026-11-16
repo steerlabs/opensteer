@@ -27,7 +27,7 @@ import { SiteMark } from "../site-mark.js";
 import { useToast } from "../toast.js";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { PlaceMark } from "../workspace/place-mark.js";
-import { AppMark } from "../computer-apps/computer-use-section.js";
+import { AppMark } from "../computer-apps/app-icons.js";
 
 const requestClocks = new WeakMap<HostClient, { at: number }>();
 export function omniboxChoosable(row: StartPageResult): boolean {

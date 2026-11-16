@@ -94,7 +94,6 @@ it("records a successful Codex command with large inline arguments without faili
       providerSessionStateLayout: "thread",
       providerSessionReference: null,
       requestedBy: createId("user"),
-      requesterTimeZone: null,
       runId: createId("run"),
       threadId: createId("thread"),
       taskPurpose: "task",

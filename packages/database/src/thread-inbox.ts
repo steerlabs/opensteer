@@ -2981,6 +2981,10 @@ export async function enqueueThreadInputInTransaction(
       content: jsonValue(content),
       id: messageId,
       kind: facts.kind,
+      origin:
+        request.source.kind === "human" && request.source.origin
+          ? jsonValue(request.source.origin)
+          : null,
       runId: steerRun?.id ?? null,
       sequence: thread.nextMessageSequence,
       threadId: thread.id,

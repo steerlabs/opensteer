@@ -2080,46 +2080,6 @@ integration("notification decision boundary", () => {
       await expect(notifications.accountSubjects(fixture.ownerId)).resolves.toEqual([]);
     });
   });
-  describe("viewer state", () => {
-    it("records the time zone a person's client reports", async ({ storeFixture }) => {
-      const { createFixture, notificationState, database } = storeFixture;
-      const fixture = await createFixture("time-zone");
-      await expect(notificationState.timeZoneFor(fixture.ownerId)).resolves.toBeNull();
-      await expect(
-        notificationState.setTimeZone({
-          timeZone: "America/Los_Angeles",
-          userId: fixture.ownerId,
-        }),
-      ).resolves.toBe("America/Los_Angeles");
-      await expect(notificationState.timeZoneFor(fixture.ownerId)).resolves.toBe(
-        "America/Los_Angeles",
-      );
-      await expect(
-        notificationState.setTimeZone({
-          timeZone: "Mars/Olympus_Mons",
-          userId: fixture.ownerId,
-        }),
-      ).rejects.toThrow();
-      await database
-        .updateTable("users")
-        .set({
-          disabledAt: new Date(),
-        })
-        .where("id", "=", fixture.ownerId)
-        .execute();
-      await expect(
-        notificationState.setTimeZone({
-          timeZone: "Europe/Paris",
-          userId: fixture.ownerId,
-        }),
-      ).rejects.toMatchObject({
-        code: "forbidden",
-      });
-      await expect(notificationState.timeZoneFor(fixture.ownerId)).resolves.toBe(
-        "America/Los_Angeles",
-      );
-    });
-  });
   describe("task list", () => {
     /** A Thread as a person creates it before sending anything: no Run, no message. */
 

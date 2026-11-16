@@ -1,6 +1,7 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { HostClient } from "../host/index.js";
 import {
+  computerAppApprovalView,
   reviewComputerAppApproval,
   respondComputerAppApproval,
   type ComputerAppApprovalReview,
@@ -107,5 +108,15 @@ export function useComputerAppApproval(hostClient: HostClient) {
       setBusy(false);
     }
   }
-  return { ask, review, error, busy, close: clear, answer };
+  const view = useMemo(() => {
+    if (!review) return null;
+    const { machines } = hostClient.getSnapshot();
+    // A computer is named only where there is another to tell it from.
+    const computer =
+      machines.length > 1
+        ? (machines.find(({ id }) => id === review.request.runnerId)?.name ?? null)
+        : null;
+    return computerAppApprovalView(review, computer);
+  }, [hostClient, review]);
+  return { ask, review, view, error, busy, close: clear, answer };
 }

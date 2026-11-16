@@ -2,7 +2,6 @@ import {
   DelegationModelChoiceSchema,
   HarnessInstanceIdSchema,
   ThreadAccessModeSchema,
-  TimeZoneSchema,
 } from "@opensteer/core";
 import { z } from "zod";
 import { defineAgentTool } from "../registry.js";
@@ -88,7 +87,7 @@ export const opensteer_defaults_read = defineAgentTool({
   name: "opensteer_defaults_read",
   title: "Read new-task defaults",
   description:
-    "Read the person's name and time zone, and what a new task starts with: its AI account, model and access mode.",
+    "Read the person's name and what a new task starts with: its AI account, model and access mode.",
   input: z.strictObject({}),
   output: DefaultsReadOutputSchema,
   access: "read",
@@ -99,7 +98,7 @@ export const opensteer_defaults_update = defineAgentTool({
   name: "opensteer_defaults_update",
   title: "Change new-task defaults",
   description:
-    "Change what a new task starts with, or the person's time zone, and return what changed. The access mode cannot exceed your own ceiling, and nothing here changes an existing task.",
+    "Change what a new task starts with and return what changed. The access mode cannot exceed your own ceiling, and nothing here changes an existing task.",
   input: z
     .strictObject({
       selection: z
@@ -110,14 +109,10 @@ export const opensteer_defaults_update = defineAgentTool({
         .optional()
         .describe("AI account and model from opensteer_ai_account_list."),
       accessMode: ThreadAccessModeSchema.optional(),
-      timeZone: TimeZoneSchema.optional().describe("IANA zone, such as America/New_York."),
     })
     .refine(
-      (input) =>
-        input.selection !== undefined ||
-        input.accessMode !== undefined ||
-        input.timeZone !== undefined,
-      "Name a selection, an access mode or a time zone",
+      (input) => input.selection !== undefined || input.accessMode !== undefined,
+      "Name a selection or an access mode",
     ),
   output: DefaultsUpdateOutputSchema,
   access: "settings",

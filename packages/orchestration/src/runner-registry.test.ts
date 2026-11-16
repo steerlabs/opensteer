@@ -2323,7 +2323,6 @@ function executeCommand(
       providerSessionReference: null,
       providerSessionStateLayout: "session",
       requestedBy: createId("user"),
-      requesterTimeZone: null,
       runId: createId("run"),
       threadId: createId("thread"),
 

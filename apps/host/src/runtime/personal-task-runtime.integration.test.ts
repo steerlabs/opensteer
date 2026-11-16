@@ -2,7 +2,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryPassService } from "../agents/memory-pass-service.js";
-import { TimeZoneSchema } from "@opensteer/core";
 import { expect, it } from "vitest";
 import { createId } from "@opensteer/core";
 import {
@@ -59,14 +58,6 @@ it("executes a private task through the real Host and Runner with a fake Codex e
       JSON.stringify(turn.events),
     ).toBe(true);
     expect(turn.assistantText).toContain("Done.");
-    const settings = await runtime.host.store.database
-      .selectFrom("personalSettings")
-      .select("ownerId")
-      .executeTakeFirstOrThrow();
-    await runtime.host.store.notificationState.setTimeZone({
-      userId: settings.ownerId,
-      timeZone: TimeZoneSchema.parse("America/New_York"),
-    });
     const memory = new MemoryPassService({
       store: runtime.host.store,
       runners: {

@@ -1,5 +1,11 @@
 import { HarnessInputSchema } from "@opensteer/protocol";
-import { createId, SequenceSchema, TeamSourceSchema, TeamTurnContextSchema } from "@opensteer/core";
+import {
+  createId,
+  SequenceSchema,
+  TeamSourceSchema,
+  TeamTurnContextSchema,
+  type MessageOrigin,
+} from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
   resolvedInputParts,
@@ -14,58 +20,28 @@ import type { HarnessRunContext } from "./types.js";
 
 describe("harnessThreadContextPrompt", () => {
   const noState = { previousAssignment: null, previousRun: null } as const;
-  const context = (requesterTimeZone: string | null): HarnessRunContext => ({
+  // 18:13 UTC is 2:13 PM in New York while daylight saving time is in effect.
+  const started = "2026-10-08T18:13:00.000Z";
+  const context = (startedAt = started): HarnessRunContext => ({
     teamTurnContext: null,
     assignment: null,
-    requesterTimeZone,
     threadState: noState,
+    startedAt,
   });
-  // 18:13 UTC is 2:13 PM in New York while daylight saving time is in effect.
-  const started = new Date("2026-10-08T18:13:00.000Z");
 
-  it("states the person's zone and their local time when the Run started", () => {
-    const prompt = harnessThreadContextPrompt(context("America/New_York"), started);
-
-    expect(prompt.split("\n")).toEqual([
+  it("states the time on this computer in words and as a schedulable local time", () => {
+    expect(harnessThreadContextPrompt(context(), "America/New_York").split("\n")).toEqual([
       "[Opensteer task context]",
-      "Person's time zone: America/New_York. Their local time when this Run started: Thursday, October 8, 2026, 2:13 PM EDT (2026-10-08T14:13-04:00).",
+      "Now: Thursday, October 8, 2026, 2:13 PM EDT (2026-10-08T14:13-04:00), in this computer's time zone, America/New_York.",
       "[End Opensteer task context]",
     ]);
   });
 
-  it("tells the agent to ask when the person's zone is unknown", () => {
-    expect(harnessThreadContextPrompt(context(null), started).split("\n")).toEqual([
-      "[Opensteer task context]",
-      "Person's time zone: unknown. Ask before scheduling anything for a clock time.",
-      "[End Opensteer task context]",
-    ]);
-  });
-
-  it("keeps the zone's reported name, with a two-digit hour after midnight", () => {
-    // Intl canonicalizes this zone to its retired spelling, Asia/Calcutta.
-    const prompt = harnessThreadContextPrompt(
-      context("Asia/Kolkata"),
-      new Date("2026-10-08T18:35:00.000Z"),
-    );
-
-    expect(prompt).toContain("Person's time zone: Asia/Kolkata.");
-    expect(prompt).toContain("Friday, October 9, 2026, 12:05 AM");
-    expect(prompt).toContain("(2026-10-09T00:05+05:30)");
-  });
-
-  it("writes UTC's offset in the form a one-shot schedule accepts", () => {
-    expect(harnessThreadContextPrompt(context("UTC"), started)).toContain(
-      "(2026-10-08T18:13+00:00)",
-    );
-  });
-
-  it("degrades to asking when this computer's time zone data lacks the zone", () => {
-    const prompt = harnessThreadContextPrompt(context("Mars/Olympus_Mons"), started);
-
-    expect(prompt).toContain(
-      "Person's time zone: Mars/Olympus_Mons, which this computer's time zone data does not recognize. Ask before scheduling anything for a clock time.",
-    );
-    expect(prompt.match(/\[End Opensteer task context\]/gu)).toHaveLength(1);
+  it("writes a two-digit hour after midnight and UTC's offset as a schedule accepts them", () => {
+    const kolkata = harnessThreadContextPrompt(context("2026-10-08T18:35:00.000Z"), "Asia/Kolkata");
+    expect(kolkata).toContain("Friday, October 9, 2026, 12:05 AM");
+    expect(kolkata).toContain("(2026-10-09T00:05+05:30)");
+    expect(harnessThreadContextPrompt(context(), "UTC")).toContain("(2026-10-08T18:13+00:00)");
   });
 
   it("keeps the task and history facts alongside the time line", () => {
@@ -75,15 +51,15 @@ describe("harnessThreadContextPrompt", () => {
       {
         teamTurnContext: null,
         assignment: { id: assignmentId, objective: "Plan", origin: "run", parentThreadId },
-        requesterTimeZone: "America/New_York",
         threadState: noState,
+        startedAt: started,
       },
-      started,
+      "America/New_York",
     );
     const lines = prompt.split("\n");
 
     expect(lines[0]).toBe("[Opensteer task context]");
-    expect(lines[1]).toMatch(/^Person's time zone: America\/New_York\./u);
+    expect(lines[1]).toMatch(/^Now: Thursday, October 8, 2026, 2:13 PM EDT /u);
     expect(lines[2]).toBe(
       `Delegation: ${assignmentId}, from task ${parentThreadId}. Its final reply returns there when the delegation closes.`,
     );
@@ -91,23 +67,20 @@ describe("harnessThreadContextPrompt", () => {
   });
 
   it("does not claim a settled return necessarily sent a result message", () => {
-    const prompt = harnessThreadContextPrompt(
-      {
-        ...context(null),
-        threadState: {
-          previousRun: null,
-          previousAssignment: {
-            id: createId("delegation"),
-            origin: "run",
-            parentThreadId: createId("thread"),
-            status: "completed",
-            finishedAt: started.toISOString(),
-            returnStatus: "delivered",
-          },
+    const prompt = harnessThreadContextPrompt({
+      ...context(),
+      threadState: {
+        previousRun: null,
+        previousAssignment: {
+          id: createId("delegation"),
+          origin: "run",
+          parentThreadId: createId("thread"),
+          status: "completed",
+          finishedAt: started,
+          returnStatus: "delivered",
         },
       },
-      started,
-    );
+    });
     expect(prompt).toContain(
       "its return is settled; a result message was sent only if it had something to return",
     );
@@ -116,14 +89,62 @@ describe("harnessThreadContextPrompt", () => {
 
   it("starts every Run's turn with the thread context, and a steer with none", () => {
     const turn = {
-      context: context(null),
+      context: context(),
       reports: { messages: [], omittedCount: 0, throughSequence: null },
     };
-
-    expect(harnessTurnPreamble(turn, () => "")).toBe(
-      harnessThreadContextPrompt(context(null), started),
-    );
+    expect(harnessTurnPreamble(turn, () => "")).toBe(harnessThreadContextPrompt(context()));
     expect(harnessTurnPreamble(null, () => "")).toBeUndefined();
+  });
+});
+
+describe("a person's input header", () => {
+  const input = (origin?: MessageOrigin) =>
+    HarnessInputSchema.parse({
+      author: {
+        kind: "human",
+        displayName: "Alex",
+        principalId: "principal-alex",
+        userId: createId("user"),
+      },
+      content: [{ type: "text", text: "Remind me at 9" }],
+      createdAt: "2026-10-08T18:13:00.000Z",
+      kind: "input",
+      messageId: createId("message"),
+      ...(origin ? { origin } : {}),
+    });
+  const sent = (origin?: MessageOrigin) =>
+    harnessInputHeader(input(origin), "Remind me at 9", "America/New_York").split("\n")[2];
+
+  it("states when it was sent in the sender's zone, and from which app", () => {
+    expect(sent({ app: "ios", device: "phone", timeZone: "Europe/Paris" })).toBe(
+      "Sent: Thursday, October 8, 2026, 8:13 PM GMT+2 (2026-10-08T20:13+02:00), from the iPhone app; that device's time zone is Europe/Paris.",
+    );
+    expect(sent({ app: "desktop", device: "computer", timeZone: "America/New_York" })).toBe(
+      "Sent: Thursday, October 8, 2026, 2:13 PM EDT (2026-10-08T14:13-04:00), from the desktop app.",
+    );
+    expect(sent({ app: "web", device: "tablet" })).toBe(
+      "Sent: Thursday, October 8, 2026, 2:13 PM EDT (2026-10-08T14:13-04:00), from a web browser on a tablet.",
+    );
+  });
+
+  it("uses this computer's zone where the sender's is unknown or unrecognized", () => {
+    expect(sent()).toBe("Sent: Thursday, October 8, 2026, 2:13 PM EDT (2026-10-08T14:13-04:00).");
+    expect(sent({ app: "android", device: "phone", timeZone: "Mars/Olympus_Mons" })).toBe(
+      "Sent: Thursday, October 8, 2026, 2:13 PM EDT (2026-10-08T14:13-04:00), from the Android app on a phone; that device reports time zone Mars/Olympus_Mons, which this computer does not recognize.",
+    );
+  });
+
+  it("leaves the line off everything a person did not send", () => {
+    const agent = HarnessInputSchema.parse({
+      ...input(),
+      author: {
+        kind: "agent",
+        displayName: "Planner",
+        runId: createId("run"),
+        threadId: createId("thread"),
+      },
+    });
+    expect(harnessInputHeader(agent, "", "America/New_York")).not.toContain("Sent:");
   });
 });
 
@@ -216,6 +237,8 @@ describe("team member input", () => {
       );
       expect(header.match(/\[Opensteer input\]/gu)).toHaveLength(1);
       expect(header).toContain("［Opensteer input］");
+      // A teammate's own words carry when they were sent; their agent's do not.
+      expect(header.includes("\nSent: ")).toBe(actor === "human");
     },
   );
 });
@@ -318,7 +341,7 @@ describe("team turn preamble", () => {
   });
   const context: HarnessRunContext = {
     assignment: null,
-    requesterTimeZone: null,
+    startedAt: "2026-10-08T18:13:00.000Z",
     teamTurnContext: null,
     threadState: { previousRun: null, previousAssignment: null },
   };

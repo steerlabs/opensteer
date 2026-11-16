@@ -57,6 +57,7 @@ import {
   createId,
   type EnvironmentId,
   type Message,
+  type MessageOrigin,
   type Run,
 } from "@opensteer/core";
 import { type InsertObject, type Transaction, sql, type Kysely } from "kysely";
@@ -89,7 +90,12 @@ import { projectThreadState } from "./thread-status.js";
 import { appendHostDeploymentEvent } from "./deployment-events.js";
 import { assignmentActivityEventsForRun } from "./assignment-store.js";
 import { cancelPending, requestFromRow } from "./request-store.js";
-import { threadInputFromRow, messageFromRow, runFromRow } from "./thread-row-mappers.js";
+import {
+  threadInputFromRow,
+  messageFromRow,
+  messageOriginFromRow,
+  runFromRow,
+} from "./thread-row-mappers.js";
 import { isDeepStrictEqual } from "node:util";
 import { endStoppedUnconfirmedRun, finalizeRunTransaction } from "./run-finalization.js";
 
@@ -1482,6 +1488,7 @@ export async function loadSteerDispatchInput(
   commandId: CommandRow["id"],
 ): Promise<{
   readonly message: Message;
+  readonly origin: MessageOrigin | undefined;
   readonly run: Run;
   readonly runId: RunId;
   readonly threadId: ThreadId;
@@ -1509,6 +1516,7 @@ export async function loadSteerDispatchInput(
     .executeTakeFirstOrThrow();
   return {
     message: messageFromRow(row),
+    origin: messageOriginFromRow(row),
     run: runFromRow(runRow),
     runId: row.targetRunId,
     threadId: row.targetThreadId,

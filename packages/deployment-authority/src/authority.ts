@@ -183,6 +183,8 @@ export const HostCapabilitySchema = z.enum([
   "personal-session-header",
   /** Threads can be renamed, and a new one can ask to be named from its first message. */
   "thread-titles-v1",
+  /** `thread.sendMessage` and `voice.start` accept the sender's `origin`. */
+  "message-origin-v1",
 
   "task-marks-v1",
   /**

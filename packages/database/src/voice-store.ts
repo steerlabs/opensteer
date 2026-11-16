@@ -11,6 +11,7 @@ import {
   type RunId,
   type ThreadAccessMode,
   type ThreadId,
+  type MessageOrigin,
   type UserId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
@@ -141,6 +142,7 @@ export async function startVoiceCall(
     environmentId: EnvironmentId;
     harnessInstanceId: HarnessInstanceId;
     accessMode?: ThreadAccessMode;
+    origin?: MessageOrigin;
   },
 ) {
   return withPersonalTransaction(database, async (tx) => {
@@ -197,6 +199,7 @@ export async function startVoiceCall(
       requestedBy: input.ownerId,
       source: {
         kind: "human",
+        ...(input.origin ? { origin: input.origin } : {}),
       },
       content: [
         {

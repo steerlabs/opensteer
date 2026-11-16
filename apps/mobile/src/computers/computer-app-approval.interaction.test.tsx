@@ -8,6 +8,7 @@ vi.mock("react-native", () => ({
   Modal: ({ children, visible }: { children?: ReactNode; visible?: boolean }) =>
     visible ? <div>{children}</div> : null,
   Platform: { OS: "ios", Version: "26" },
+  Pressable: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   ScrollView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   StyleSheet: { create: (styles: object) => styles, hairlineWidth: 1 },
   View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
@@ -16,8 +17,11 @@ vi.mock("../ui/sheet.js", () => ({
   Sheet: ({ children, open }: { children?: ReactNode; open: boolean }) =>
     open ? <div>{children}</div> : null,
 }));
+vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
+vi.mock("./app-mark.js", () => ({ MacAppIcon: () => null }));
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+  CodeBlock: ({ text }: { text: string }) => <pre>{text}</pre>,
   Field: (props: {
     hint?: string;
     input: {
@@ -39,6 +43,11 @@ vi.mock("../ui/primitives.js", () => ({
         value={props.input.value}
       />
     </label>
+  ),
+  PrimaryButton: (props: { busy?: boolean; label: string; onPress: () => void }) => (
+    <button disabled={props.busy} onClick={props.onPress}>
+      {props.label}
+    </button>
   ),
   SecondaryButton: (props: { disabled?: boolean; label: string; onPress: () => void }) => (
     <button disabled={props.disabled} onClick={props.onPress}>
@@ -82,7 +91,7 @@ it("asks a phone for a server's secrets and sends what was entered", async () =>
   }));
   const dispatch = vi.fn(async () => ({ type: "integration.computer.setup.respond" }));
   const host = {
-    getSnapshot: () => ({ user: { id: "owner" } }),
+    getSnapshot: () => ({ machines: [], user: { id: "owner" } }),
     subscribe: () => () => {},
     rpc: { "integration.computer.setup.review": review },
     dispatch,

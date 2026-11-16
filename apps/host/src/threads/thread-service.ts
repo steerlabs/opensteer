@@ -228,6 +228,7 @@ export class ThreadService {
             actor.kind === "person"
               ? {
                   kind: "human",
+                  ...(command.origin ? { origin: command.origin } : {}),
                 }
               : messageSource(actor, command.idempotencyKey),
           threadId: command.threadId,

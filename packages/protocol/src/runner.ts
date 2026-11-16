@@ -31,6 +31,7 @@ import {
   MessageContentSchema,
   MessageIdSchema,
   MessageKindSchema,
+  MessageOriginSchema,
   MessageQuoteSchema,
   MessageSchema,
   ModelIdSchema,
@@ -201,21 +202,8 @@ export const RunExecutionContextSchema = z.strictObject({
   providerSessionReference: z.string().min(1).max(2_048).nullable(),
   machineAccess: MachineAccessRunContextSchema,
   requestedBy: UserIdSchema,
-  /**
-   * The zone the requester's client last reported, null when none has. Checked
-   * for shape, not against this runtime's `Intl`: a Runner whose time zone
-   * data predates a name the Host accepted would otherwise refuse the whole
-   * command and drop its connection, rather than run without the local time.
-   */
-  requesterTimeZone: z
-    .string()
-    .trim()
-    .min(1)
-    .max(64)
-    .regex(/^[A-Za-z0-9_+:/-]+$/u)
-    .nullable()
-    // A Host that predates the field sends none, and its Runs still run.
-    .default(null),
+  /** Sent by Hosts from before `message-origin-v1`; unused. */
+  requesterTimeZone: z.string().max(64).nullable().optional(),
   runId: RunIdSchema,
   threadId: ThreadIdSchema,
   taskPurpose: TaskPurposeSchema,
@@ -246,6 +234,8 @@ export const HarnessInputSchema = z
     createdAt: IsoDateTimeSchema,
     kind: MessageKindSchema.exclude(["assistant"]),
     messageId: MessageIdSchema,
+    /** Sent only to a Runner advertising `message-origin-v1`. */
+    origin: MessageOriginSchema.optional(),
     quote: MessageQuoteSchema.optional(),
     /** A teammate's ask whose words the owner edited before approving it. */
     ownerEdited: z.literal(true).optional(),

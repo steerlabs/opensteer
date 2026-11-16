@@ -439,13 +439,13 @@ it("allows nightly summary curation while protecting instructions and resisting 
   }
 });
 
-it("models managed workers without Assignments and gives the deletion reminder a known zone", async () => {
+it("models managed workers without Assignments and sends the deletion reminder from a known zone", async () => {
   const cases = await memoryCases();
   for (const c of cases.filter(
     (entry) => entry.profile === "delegated" && typeof entry.turns[0] !== "string",
   ))
     expect(c.assigned, c.id).toBe(false);
-  expect(cases.find((c) => c.id === "memory-stop-while-running")!.requesterTimeZone).toBe(
+  expect(cases.find((c) => c.id === "memory-stop-while-running")!.origin?.timeZone).toBe(
     "America/New_York",
   );
 });

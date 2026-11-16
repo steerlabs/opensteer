@@ -22,6 +22,7 @@ import type {
   ArtifactContentPart,
   Attachment,
   MessageId,
+  MessageOrigin,
   ModelSelection,
   RunId,
   ComputerFolder,
@@ -97,6 +98,7 @@ export interface VerticalStack {
     readonly text: string;
     readonly threadId: ThreadId;
     readonly attachments?: readonly ArtifactContentPart[];
+    readonly origin?: MessageOrigin;
     readonly onQueued?: (runId: RunId) => Promise<RunId | void>;
   }): Promise<VerticalTurn>;
   restartHost(outage?: {
@@ -285,6 +287,7 @@ export function createPersonalVerticalStack(
     readonly text: string;
     readonly threadId: ThreadId;
     readonly attachments?: readonly ArtifactContentPart[];
+    readonly origin?: MessageOrigin;
   }) => {
     const response = await runtime.api["commands.dispatch"]({
       type: "thread.sendMessage",
@@ -292,6 +295,7 @@ export function createPersonalVerticalStack(
       delivery: "queue",
       threadId: input.threadId,
       content: [{ type: "text", text: input.text }, ...(input.attachments ?? [])],
+      ...(input.origin ? { origin: input.origin } : {}),
     });
     if (!response.ok) throw new Error(response.error.message);
     if (response.data.type !== "thread.sendMessage")

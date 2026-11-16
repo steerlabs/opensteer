@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { MessageOrigin } from "@opensteer/core";
 import type { HostApiClient } from "@opensteer/protocol";
 import {
   VoiceSessionIdSchema,
@@ -25,6 +26,7 @@ export interface CodexVoiceProviderInput extends VoiceTimers {
   readonly harnessInstanceId: string;
   /** Fresh lowercase UUID v4 for each call. */
   readonly createId: () => string;
+  readonly origin?: MessageOrigin | undefined;
 }
 
 const transcriptEvent = z.object({
@@ -321,6 +323,7 @@ export function createCodexVoiceProvider(input: CodexVoiceProviderInput): VoiceP
             environmentId: input.environmentId,
             harnessInstanceId: input.harnessInstanceId,
             offer: sdp,
+            ...(input.origin ? { origin: input.origin } : {}),
           },
           { signal },
         );

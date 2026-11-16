@@ -651,21 +651,19 @@ integration("Notifications", () => {
     await record("approval, stop and failure", since);
   }, 120_000);
 
-  it("gives the agent the person's time zone and local time", async () => {
-    const updated = await stack.api["commands.dispatch"]({
-      idempotencyKey: randomUUID(),
-      timeZone: "America/New_York",
-      type: "viewer.timeZone.update",
-    });
-    if (!updated.ok) throw new Error(`Time zone update failed: ${updated.error.code}`);
+  it("gives the agent this computer's time and where and when the person sent the message", async () => {
     const since = received.length;
     const turn = await stack.sendMessage({
       text: "What time is it for me?",
       threadId: rootTask,
+      origin: { app: "ios", device: "phone", timeZone: "Asia/Tokyo" },
     });
     await waitForNotification(received, since, (n) => n.runId === turn.runId, "time zone reply");
     const turns = await capturedTurns(capturePath);
-    expect(turns.at(-1)).toContain("Person's time zone: America/New_York.");
+    expect(turns.at(-1)).toMatch(/^Now: .+, in this computer's time zone, [\w/+-]+\.$/mu);
+    expect(turns.at(-1)).toMatch(
+      /Sent: .+ GMT\+9 \(\d{4}-\d\d-\d\dT\d\d:\d\d\+09:00\), from the iPhone app; that device's time zone is Asia\/Tokyo\./u,
+    );
     await record("time zone", since);
   }, 120_000);
   it("H6/H10 retries a network failure while reading the Account acknowledgement", async () => {
