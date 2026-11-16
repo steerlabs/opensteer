@@ -1,3 +1,5 @@
+import { deviceAccessCommand } from "../host/device-commands.js";
+import { mockIphoneScreenDevice } from "../mock/mock-screen-devices.js";
 import { describe, expect, it } from "vitest";
 import { createId, type AuthSessionSummary } from "@opensteer/core";
 import { MachineSummarySchema, deviceAccess } from "@opensteer/protocol";
@@ -239,4 +241,41 @@ describe("device access rows", () => {
       { capability: "files", kind: "switch", on: true },
     ]);
   });
+});
+
+it("uses Host Device capabilities even when a screen Device has no modules", () => {
+  const phone = mockIphoneScreenDevice();
+  const canonical = { ...phone, ownership: "deployment" as const };
+  expect(
+    devicesView({ machines: [canonical], sessions: [], hereId: null }).devices.map(
+      ({ machine }) => machine.id,
+    ),
+  ).toEqual([phone.id]);
+  expect(deviceAccessRows(phone, true)).toEqual([{ capability: "apps", kind: "switch", on: true }]);
+  expect(
+    deviceAccessRows(
+      {
+        ...phone,
+        capabilities: {
+          ...phone.capabilities,
+          apps: { ...phone.capabilities.apps, supported: false },
+        },
+      },
+      true,
+    ),
+  ).toEqual([]);
+});
+
+it("keeps self access editable on v60 and refuses screen Device commands there", () => {
+  const phone = mockIphoneScreenDevice();
+  const input = {
+    deviceId: "rnr_11111111-1111-4111-8111-111111111111",
+    expectedRevision: 1,
+    policy: phone.access!.policy,
+  };
+  expect(deviceAccessCommand(input, "legacy", false)).toHaveProperty("runnerId", input.deviceId);
+  expect(deviceAccessCommand(input, "current", true)).toHaveProperty("deviceId", input.deviceId);
+  expect(() =>
+    deviceAccessCommand({ ...input, deviceId: phone.id }, "older-screen", false),
+  ).toThrow(/Update/);
 });

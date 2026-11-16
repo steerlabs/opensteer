@@ -1,3 +1,26 @@
+import {
+  DeviceIntegrationConnectionSummarySchema,
+  type DeviceIntegrationConnectionSummary,
+} from "@opensteer/integration-core";
+import { clientRpcSuccessSchema } from "../host/device-readers.js";
+import {
+  clientCommandSchema,
+  deviceAccessCommand,
+  deviceDriversApiVersion,
+  type MachineAccessUpdateInput,
+} from "../host/device-commands.js";
+import { deviceMachine, deviceDriverKey } from "../host/device-projection.js";
+import {
+  mockIphoneScreenDevice,
+  mockIphoneScreenSession,
+  type MockIphoneScreenState,
+} from "./mock-screen-devices.js";
+import { DeviceIdSchema, isPhoneDisplayDefinitionId } from "@opensteer/core";
+import {
+  DeviceMachineAccessUpdateCommandSchema,
+  type IphoneScreenAttachCommand,
+  type IphoneScreenDetachCommand,
+} from "@opensteer/protocol";
 import { NeedsYouPageSchema } from "@opensteer/protocol";
 import { clearRunPageViews } from "../host/run-page-memory.js";
 import { clearRunPlacePictures } from "../host/run-place-picture.js";
@@ -89,7 +112,7 @@ import type { PersonShowMessage, PluginRow } from "@opensteer/protocol";
 import { RunPlaceStore } from "../host/run-place.js";
 import { compareTaskOrder } from "../host/task-entries.js";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
-import { isAgentPhone } from "../integrations/computer-use.js";
+
 import { BrowserPasskeys } from "../host/browser-passkeys.js";
 import { BrowserPreferences } from "../host/browser-preferences.js";
 import { emptySavedViewReadiness } from "../host/saved-host-view.js";
@@ -202,7 +225,6 @@ import {
   type HarnessInstallation,
   HostApiErrorSchema,
   HostedBrowserSessionSchema,
-  androidPhoneDefinitionId,
   browserUsageTabsPerRun,
   browserUsageSessionsPerRead,
   computerAppIdentityKey,
@@ -279,7 +301,7 @@ import type {
 import { HostClientRequestError, mainDoneTasks } from "../host/client.js";
 import { computerViewMethods } from "../host/computer-views.js";
 import type { ExecutionChoice, ExecutionSelection } from "../host/execution-preferences.js";
-import { createInMemoryHostApiClient } from "../host/host-api-client.js";
+import { dispatchDeviceCommand, createInMemoryHostApiClient } from "../host/host-api-client.js";
 import {
   rpcErrorStatus,
   unwrapRpcResult,
@@ -1762,6 +1784,8 @@ export interface MockHostClientOptions {
   memoryPasses?: "active" | "off" | "waiting-for-model";
   /** `seeded`: devices reached through agent-made plugins, with their setup tasks. */
   devices?: "seeded" | "absent";
+  iphoneScreen?: MockIphoneScreenState | "absent";
+  iphoneScreenHolding?: boolean;
   readonly browserPreferencesStorage?: BrowserPreferencesStorage;
   readonly quietTasksAvailable?: boolean;
   readonly agentImagesAvailable?: boolean;
@@ -2408,7 +2432,11 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     "integration.repositoryAccess.check": (input) =>
       client.checkRepositoryAccess(input.connectionId).then(rpcSuccess).catch(mockRefusal),
     "integrations.get": async () =>
-      rpcSuccess(hostApi["integrations.get"].success.parse(await client.loadIntegrations())),
+      rpcSuccess(
+        clientRpcSuccessSchema("integrations.get").parse(
+          await client.loadIntegrations(),
+        ) as RpcData<"integrations.get">,
+      ),
     // The preview keeps no durable session history to page back through.
     "machine.access.history": async () => rpcSuccess({ nextCursor: null, sessions: [] }),
     "machines.list": async () => rpcSuccess({ machines: await client.loadMachines() }),
@@ -3122,6 +3150,10 @@ async function executeMockCommand(
         ...(await client.cancelHarnessAuthentication(command)),
         type: command.type,
       });
+    case "iphone.screen.attach":
+      return rpcSuccess(client.attachIphoneScreen(command));
+    case "iphone.screen.detach":
+      return rpcSuccess(client.detachIphoneScreen(command));
     case "machine.revoke":
       await client.revokeMachine(command.machineId);
       return rpcSuccess({ type: command.type });
@@ -3133,7 +3165,9 @@ async function executeMockCommand(
       return rpcSuccess({ type: command.type });
     case "machine.access.update": {
       const revision = await client.updateMachineAccess(
-        command.runnerId,
+        "deviceId" in command
+          ? DeviceMachineAccessUpdateCommandSchema.parse(command).deviceId
+          : command.runnerId,
         command.policy,
         command.expectedRevision,
       );
@@ -3720,6 +3754,7 @@ function mockBootstrap(
   sourceConfigs: ReadonlyMap<string, Readonly<Record<string, string>>>,
 ) {
   return {
+    apiVersion: deviceDriversApiVersion,
     deploymentId: snapshot.deploymentId,
     personalSettings: snapshot.personalSettings,
     can: snapshot.can,
@@ -4086,7 +4121,7 @@ export class MockHostClient implements HostClient {
         unwrapRpcResult(await this.rpc["apps.list"](query ? { query } : {})).apps as App[],
       getApp: async (appId) => unwrapRpcResult(await this.rpc["apps.get"]({ appId })) as App,
       activated: (tab, viewer, wake) => {
-        this.#viewers.set(tab.tabId, viewer);
+        this.#viewers.set(tab.tabId, viewer, this.#state.getSnapshot().machines);
         // Only the person's explicit Open may wake a phone, and only once.
         if (wake && viewer.kind === "phone" && viewer.view.state === "ready")
           sharedDisplayStreams(this).armAutoWake({
@@ -4356,13 +4391,34 @@ export class MockHostClient implements HostClient {
             ),
       );
     const socket = new MockPhoneDisplaySocket(
-      !phone ? "ended" : phone.computerUse?.displayStreamSupported ? "live" : "unsupported",
-      () =>
-        source.kind === "task-session" ||
-        this.#state.computerViews?.inputAvailable(source.viewId, source.generation) === true,
+      !phone || (phone.phoneDisplay && phone.phoneDisplay.view.state !== "ready")
+        ? "ended"
+        : phone.computerUse?.displayStreamSupported
+          ? "live"
+          : "unsupported",
+      () => {
+        const current = this.getSnapshot().machines.find(({ id }) => id === phone?.id);
+        return Boolean(
+          current &&
+          (!current.phoneDisplay || current.phoneDisplay.input.state === "ready") &&
+          (source.kind === "task-session" ||
+            this.#state.computerViews?.inputAvailable(source.viewId, source.generation) === true),
+        );
+      },
       phone?.device?.form === "phone",
     );
-    const unsubscribe = this.subscribe(() => socket.refreshAuthority());
+    const driverKey = phone ? deviceDriverKey(phone) : null;
+    const unsubscribe = this.subscribe(() => {
+      const current = this.getSnapshot().machines.find(({ id }) => id === phone?.id);
+      if (
+        driverKey &&
+        (!current ||
+          deviceDriverKey(current) !== driverKey ||
+          (current.phoneDisplay && current.phoneDisplay.view.state !== "ready"))
+      )
+        socket.close(4003, "Display authority ended");
+      else socket.refreshAuthority();
+    });
     socket.addEventListener("close", unsubscribe);
     return socket;
   }
@@ -4896,18 +4952,35 @@ export class MockHostClient implements HostClient {
     if (result.type !== "machine.session.bind") throw new Error("Device binding command mismatch.");
   }
 
-  async updateMachineAccess(input: {
-    readonly expectedRevision: number;
-    readonly policy: MachineAccessPolicy;
-    readonly runnerId: string;
-  }): Promise<MachineAccessUpdateOutcome> {
+  async attachIphoneScreen(input: Parameters<HostClient["attachIphoneScreen"]>[0]) {
     const result = await this.dispatch({
-      expectedRevision: input.expectedRevision,
-      idempotencyKey: `mock-machine-access:${crypto.randomUUID()}`,
-      policy: input.policy,
-      runnerId: input.runnerId,
-      type: "machine.access.update",
+      ...input,
+      type: "iphone.screen.attach",
+      idempotencyKey: input.idempotencyKey ?? crypto.randomUUID(),
     });
+    if (result.type !== "iphone.screen.attach") throw new Error("Screen attach command mismatch.");
+    return result;
+  }
+  async detachIphoneScreen(input: Parameters<HostClient["detachIphoneScreen"]>[0]) {
+    const result = await this.dispatch({
+      ...input,
+      deviceId: DeviceIdSchema.parse(input.deviceId),
+      type: "iphone.screen.detach",
+      idempotencyKey: input.idempotencyKey ?? crypto.randomUUID(),
+    });
+    if (result.type !== "iphone.screen.detach") throw new Error("Screen detach command mismatch.");
+    return result;
+  }
+  setIphoneScreenState(state: MockIphoneScreenState, holding = false): void {
+    this.#state.setIphoneScreenState(state, holding);
+  }
+
+  async updateMachineAccess(input: MachineAccessUpdateInput): Promise<MachineAccessUpdateOutcome> {
+    const command = deviceAccessCommand(input, `mock-machine-access:${crypto.randomUUID()}`, true);
+    const result =
+      command.type === "machine.access.update" && "deviceId" in command
+        ? unwrapRpcResult(await dispatchDeviceCommand(this.rpc, command))
+        : await this.dispatch(command);
     if (result.type !== "machine.access.update") {
       throw new Error("Access settings command mismatch.");
     }
@@ -6300,6 +6373,11 @@ class MockHostState {
     };
     const firstRun = options.world === "first-run";
     this.snapshot = firstRun ? firstRunWorld(initial) : initial;
+    if (!firstRun && options.iphoneScreen !== "absent")
+      this.setIphoneScreenState(
+        options.iphoneScreen ?? "ready",
+        options.iphoneScreenHolding ?? false,
+      );
     this.applyAutomaticEligibility();
     for (const thread of this.snapshot.threads) {
       if (thread.icon === null && thread.purpose === "task") this.#provisionalIcons.add(thread.id);
@@ -6544,15 +6622,42 @@ class MockHostState {
     string,
     { command: string; result: ReturnType<typeof executeMockCommand> }
   >();
-  executeCommandOnce(input: HostApiCommand): ReturnType<typeof executeMockCommand> {
-    const command = hostApi["commands.dispatch"].payload.parse(input);
+  async executeCommandOnce(input: HostApiCommand): ReturnType<typeof executeMockCommand> {
+    const command = clientCommandSchema.parse(input);
+    if (command.type === "machine.access.update" && "deviceId" in command) {
+      const revision = await this.updateMachineAccess(
+        command.deviceId,
+        command.policy,
+        command.expectedRevision,
+      );
+      return rpcSuccess(
+        revision === null
+          ? { type: command.type, outcome: "conflict" as const }
+          : { type: command.type, outcome: "updated" as const, revision },
+      );
+    }
+    if (command.type === "integration.computer.setup.set" && "deviceId" in command.input) {
+      const { deviceId, ...input } = command.input;
+      const machine = this.snapshot.machines.find(({ id }) => id === deviceId);
+      if (!machine) throw mockNotFound("Device not found.");
+      const selfRunnerId = deviceMachine(machine).selfRunnerId;
+      if (
+        !selfRunnerId &&
+        (input.definitionId !== machine.phoneDisplay?.definitionId || input.app !== null)
+      )
+        throw mockBadRequest("That is not this Device’s phone display.");
+      const connection = selfRunnerId
+        ? await this.setComputerAppConnection({ ...input, runnerId: selfRunnerId })
+        : this.setScreenAccess(deviceId, input.access);
+      return rpcSuccess({ type: command.type, connection } as RpcData<"commands.dispatch">);
+    }
     if (
       command.type !== "settings.plugin.enabled.set" &&
       command.type !== "thread.sendMessage" &&
       command.type !== "thread.icon.set" &&
       command.type !== "harness.create"
     )
-      return executeMockCommand(this, command);
+      return executeMockCommand(this, hostApi["commands.dispatch"].payload.parse(command));
     const key = `${this.snapshot.user?.id ?? mockUserId}:${command.idempotencyKey}`;
     const serialized = JSON.stringify(command);
     const previous = this.acceptedCommands.get(key);
@@ -8508,6 +8613,268 @@ class MockHostState {
     return this.sessions;
   }
 
+  readonly #screenConnections = new Map<string, DeviceIntegrationConnectionSummary>();
+  setScreenAccess(
+    deviceId: string,
+    access: "read" | "read-write",
+  ): DeviceIntegrationConnectionSummary {
+    const machine = this.snapshot.machines.find(({ id }) => id === deviceId);
+    if (!machine || machine.phoneDisplay?.definitionId !== "iphone-screen")
+      throw mockNotFound("Screen Device not found.");
+    const template = this.integrations.connections.find(({ computer }) => computer?.app === null)!;
+    const existing = this.#screenConnections.get(deviceId);
+    const connection = DeviceIntegrationConnectionSummarySchema.parse({
+      ...template,
+      id: existing?.id ?? createIntegrationId("connection"),
+      definitionId: "iphone-screen",
+      provider: "iphone-screen",
+      displayName: machine.name,
+      status: "connected",
+      statusDetail: null,
+      statusReason: null,
+      computer: { deviceId, access, app: null, blockedAt: null, policyRevision: null },
+    });
+    this.#screenConnections.set(deviceId, connection);
+    const view =
+      machine.phoneDisplay.view.reason?.kind === "approval-required"
+        ? { state: "ready" as const, reason: null }
+        : machine.phoneDisplay.view;
+    const control =
+      machine.phoneDisplay.control.reason?.kind === "approval-required"
+        ? view
+        : machine.phoneDisplay.control;
+    if (machine.phoneDisplay)
+      this.update({
+        ...this.snapshot,
+        machines: this.snapshot.machines.map((entry) =>
+          entry !== machine
+            ? entry
+            : {
+                ...entry,
+                phoneDisplay: {
+                  ...entry.phoneDisplay!,
+                  view,
+                  control,
+                  input:
+                    access === "read"
+                      ? { state: "disabled", reason: { kind: "approval-required" } }
+                      : view,
+                },
+                computerUse: entry.computerUse
+                  ? {
+                      ...entry.computerUse,
+                      sessions:
+                        access === "read" && existing?.computer?.access === "read-write"
+                          ? []
+                          : entry.computerUse.sessions,
+                    }
+                  : null,
+              },
+        ),
+      });
+    return connection;
+  }
+  readonly #screenReplays = new Map<
+    string,
+    {
+      fingerprint: string;
+      result:
+        | import("@opensteer/protocol").IphoneScreenAttachResult
+        | import("@opensteer/protocol").IphoneScreenDetachResult;
+    }
+  >();
+  setIphoneScreenState(state: MockIphoneScreenState, holding = false): void {
+    const fixture = mockIphoneScreenDevice(state);
+    if (holding && fixture.phoneDisplay?.control.state === "ready")
+      fixture.computerUse!.sessions = [mockIphoneScreenSession];
+    const prior = this.snapshot.machines.find(({ id }) => id === fixture.id);
+    const generation = prior?.phoneDisplay?.driver
+      ? prior.phoneDisplay.driver.generation +
+        Number(prior.phoneDisplay.driver.attached !== fixture.phoneDisplay!.driver!.attached)
+      : fixture.phoneDisplay!.driver!.generation;
+    const driver = {
+      ...fixture.phoneDisplay!.driver!,
+      ...(prior?.phoneDisplay?.driver ?? {}),
+      attached: fixture.phoneDisplay!.driver!.attached,
+      generation,
+    };
+    const phone = {
+      ...fixture,
+      ...(prior?.access
+        ? {
+            access: {
+              ...prior.access,
+              policy: { ...prior.access.policy, apps: state !== "apps-off" },
+            },
+          }
+        : {}),
+      drivers: [driver],
+      phoneDisplay: {
+        ...fixture.phoneDisplay!,
+        driver,
+        setup: {
+          location: "driver-mac" as const,
+          driverRunnerId: driver.runnerId,
+          driverRunnerName: driver.runnerName,
+        },
+      },
+    };
+    this.update({
+      ...this.snapshot,
+      machines: [...this.snapshot.machines.filter(({ id }) => id !== fixture.id), phone],
+    });
+    this.setScreenAccess(fixture.id, state === "read-only" ? "read" : "read-write");
+  }
+  #screenReplay(command: IphoneScreenAttachCommand | IphoneScreenDetachCommand) {
+    const held = this.#screenReplays.get(command.idempotencyKey);
+    if (held && held.fingerprint !== JSON.stringify(command))
+      throw mockConflict("Idempotency key already used for another screen command.");
+    return held?.result;
+  }
+  attachIphoneScreen(
+    command: IphoneScreenAttachCommand,
+  ): import("@opensteer/protocol").IphoneScreenAttachResult {
+    const replay = this.#screenReplay(command);
+    if (replay) {
+      if (replay.type !== command.type) throw mockConflict("Screen command changed.");
+      return replay;
+    }
+    const mac = this.snapshot.machines.find(({ id }) => id === command.driverRunnerId);
+    if (
+      !mac ||
+      mac.device?.platform !== "macos" ||
+      !mac.allowedModules.includes("integrations") ||
+      (mac.ownership !== "mine" && mac.kind !== "home")
+    )
+      throw mockBadRequest("Choose an owned Mac with integrations for screen setup.");
+    const target = command.target;
+    const prior =
+      target.kind === "existing"
+        ? this.snapshot.machines.find(({ id }) => id === target.deviceId)
+        : null;
+    if (
+      target.kind === "existing" &&
+      (!prior ||
+        prior.selfRunnerId !== null ||
+        prior.phoneDisplay?.definitionId !== "iphone-screen")
+    )
+      throw mockNotFound("Screen Device not found.");
+    if (
+      prior &&
+      target.kind === "existing" &&
+      prior.phoneDisplay?.driver?.generation !== target.expectedGeneration
+    )
+      throw mockConflict("The driver generation changed. Refresh this device.");
+    const generation = (prior?.phoneDisplay?.driver?.generation ?? 0) + 1;
+    const fixture = mockIphoneScreenDevice("setup-needed");
+    const deviceId = prior
+      ? DeviceIdSchema.parse(prior.id)
+      : DeviceIdSchema.parse(`dev_${crypto.randomUUID()}`);
+    const driver = {
+      ...fixture.phoneDisplay!.driver!,
+      runnerId: command.driverRunnerId,
+      runnerName: mac.name,
+      generation,
+      attached: true,
+    };
+    const phone = {
+      ...fixture,
+      ...(prior ?? {}),
+      id: deviceId,
+      name: target.kind === "new" ? target.name : prior!.name,
+      drivers: [driver],
+      computerUse: { ...fixture.computerUse!, sessions: [], ownerViews: [] },
+      phoneDisplay: {
+        ...fixture.phoneDisplay!,
+        driver,
+        setup: {
+          location: "driver-mac" as const,
+          driverRunnerId: driver.runnerId,
+          driverRunnerName: driver.runnerName,
+        },
+      },
+    };
+    if (!prior && phone.access)
+      phone.access = { ...phone.access, policy: { ...phone.access.policy, apps: false } };
+    const enabled = phone.access ? deviceAccess(phone.access.policy).apps : false;
+    const control = enabled
+      ? phone.phoneDisplay.control
+      : { state: "disabled" as const, reason: { kind: "access-off" as const } };
+    phone.capabilities = {
+      ...phone.capabilities!,
+      apps: { ...phone.capabilities!.apps, enabled, ...control },
+    };
+    phone.phoneDisplay = { ...phone.phoneDisplay, control };
+    this.update({
+      ...this.snapshot,
+      machines: [...this.snapshot.machines.filter(({ id }) => id !== deviceId), phone],
+    });
+    const result = { type: command.type, deviceId, generation };
+    this.#screenReplays.set(command.idempotencyKey, {
+      fingerprint: JSON.stringify(command),
+      result,
+    });
+    return result;
+  }
+  detachIphoneScreen(
+    command: IphoneScreenDetachCommand,
+  ): import("@opensteer/protocol").IphoneScreenDetachResult {
+    const replay = this.#screenReplay(command);
+    if (replay) {
+      if (replay.type !== command.type) throw mockConflict("Screen command changed.");
+      return replay;
+    }
+    const phone = this.snapshot.machines.find(({ id }) => id === command.deviceId);
+    if (
+      !phone ||
+      phone.selfRunnerId !== null ||
+      phone.phoneDisplay?.definitionId !== "iphone-screen"
+    )
+      throw mockNotFound("Screen Device not found.");
+    if (phone.phoneDisplay.driver?.generation !== command.expectedGeneration)
+      throw mockConflict("The driver generation changed. Refresh this device.");
+    const generation = command.expectedGeneration + 1;
+    this.update({
+      ...this.snapshot,
+      machines: this.snapshot.machines.map((machine) =>
+        machine === phone ? this.detachedScreen(machine, generation) : machine,
+      ),
+    });
+    const result = { type: command.type, deviceId: command.deviceId, generation };
+    this.#screenReplays.set(command.idempotencyKey, {
+      fingerprint: JSON.stringify(command),
+      result,
+    });
+    return result;
+  }
+  private detachedScreen(machine: MachineSummary, generation: number): MachineSummary {
+    const display = machine.phoneDisplay!;
+    const driver = { ...display.driver!, generation, attached: false };
+    const availability = {
+      state: "unavailable" as const,
+      reason: { kind: "not-connected" as const },
+    };
+    return {
+      ...machine,
+      status: "offline",
+      drivers: [driver],
+      capabilities: {
+        ...machine.capabilities!,
+        apps: { ...machine.capabilities!.apps, ...availability },
+      },
+      phoneDisplay: {
+        ...display,
+        driver,
+        control: availability,
+        view: availability,
+        input: availability,
+      },
+      computerUse: machine.computerUse
+        ? { ...machine.computerUse, sessions: [], ownerViews: [] }
+        : null,
+    };
+  }
+
   async loadMachines() {
     return this.snapshot.machines.map((machine) => ({ ...machine }));
   }
@@ -8515,6 +8882,7 @@ class MockHostState {
   async revokeMachine(machineId: string): Promise<void> {
     if (this.snapshot.machines.find((machine) => machine.id === machineId)?.kind === "home")
       throw new Error("Home cannot be removed");
+    this.#screenConnections.delete(machineId);
     this.sessions = this.sessions.filter((session) => session.deviceId !== machineId);
     let snapshot = this.snapshot;
     for (const request of Object.values(snapshot.requests).flat()) {
@@ -8543,7 +8911,15 @@ class MockHostState {
       browserProfiles: snapshot.browserProfiles.filter(
         (profile) => profile.homeRunnerId !== machineId,
       ),
-      machines: snapshot.machines.filter((machine) => machine.id !== machineId),
+      machines: snapshot.machines
+        .filter((machine) => machine.id !== machineId)
+        .map((machine) =>
+          machine.phoneDisplay?.driver?.role === "screen" &&
+          machine.phoneDisplay.driver.runnerId === machineId &&
+          machine.phoneDisplay.driver.attached
+            ? this.detachedScreen(machine, machine.phoneDisplay.driver.generation + 1)
+            : machine,
+        ),
     });
   }
 
@@ -8551,7 +8927,9 @@ class MockHostState {
     if (
       !this.snapshot.machines.some(
         (machine) =>
-          machine.id === machineId && (machine.ownership === "mine" || machine.kind === "home"),
+          machine.id === machineId &&
+          deviceMachine(machine).selfRunnerId !== null &&
+          (machine.ownership === "mine" || machine.kind === "home"),
       )
     )
       throw new Error("Device not found");
@@ -8608,6 +8986,39 @@ class MockHostState {
   async disconnectIntegration(
     connectionId: string,
   ): Promise<Omit<CommandOutputOf<"integration.disconnect">, "type">> {
+    const screen = [...this.#screenConnections.values()].find(({ id }) => id === connectionId);
+    if (screen?.computer) {
+      const deviceId = screen.computer.deviceId;
+      this.#screenConnections.delete(deviceId);
+      const unavailable = {
+        state: "unavailable" as const,
+        reason: { kind: "approval-required" as const },
+      };
+      this.update({
+        ...this.snapshot,
+        machines: this.snapshot.machines.map((machine) =>
+          machine.id !== deviceId || !machine.phoneDisplay
+            ? machine
+            : {
+                ...machine,
+                phoneDisplay: {
+                  ...machine.phoneDisplay,
+                  view:
+                    machine.phoneDisplay.view.state === "ready"
+                      ? unavailable
+                      : machine.phoneDisplay.view,
+                  control:
+                    machine.phoneDisplay.control.state === "ready"
+                      ? unavailable
+                      : machine.phoneDisplay.control,
+                  input: unavailable,
+                },
+              },
+        ),
+      });
+      this.endComputerUseSessions(deviceId, null);
+      return { notice: null, revokedUpstream: false };
+    }
     const timestamp = this.now().toISOString();
     const computerConnection = this.integrations.connections.find(
       (connection) => connection.id === connectionId && connection.computer !== null,
@@ -8894,18 +9305,17 @@ class MockHostState {
       throw new Error(`${definition.name} can only be read.`);
     }
     const machine = this.ownedComputer(input.runnerId);
-    if (machine.device?.platform === "ios") {
+    if (!deviceMachine(machine).phoneDisplay && machine.device?.platform === "ios") {
       this.ownedComputer(input.runnerId);
       if (!definition.computerApp.platforms.includes("ios"))
         throw new Error("This app is not supported on this computer.");
     }
     const phone =
-      input.definitionId === androidPhoneDefinitionId &&
+      isPhoneDisplayDefinitionId(input.definitionId) &&
       input.app === null &&
-      machine.device?.form === "phone" &&
-      isAgentPhone(machine);
-    if (input.definitionId === androidPhoneDefinitionId && !phone) {
-      throw new Error("That is not an Android phone connection.");
+      deviceMachine(machine).phoneDisplay?.definitionId === input.definitionId;
+    if (isPhoneDisplayDefinitionId(input.definitionId) && !phone) {
+      throw new Error("That is not this device’s phone display connection.");
     }
     if (phone && "setupRequestId" in input) {
       throw new Error("Phone access is set by its owner in Opensteer.");
@@ -9098,7 +9508,11 @@ class MockHostState {
     unavailableReason?: "offline" | "not-ready";
   } {
     const machine = this.ownedComputer(input.runnerId);
-    if (machine.device?.platform === "android")
+    if (
+      deviceMachine(machine).phoneDisplay ||
+      machine.selfRunnerId === null ||
+      deviceMachine(machine).kind === "phone"
+    )
       throw new HostClientRequestError({
         code: "bad_request",
         status: 400,
@@ -9690,6 +10104,39 @@ class MockHostState {
           : entry,
       ),
     });
+    const updatedMachine = this.snapshot.machines.find(({ id }) => id === machineId);
+    if (updatedMachine?.phoneDisplay?.definitionId === "iphone-screen") {
+      const enabled = deviceAccess(updatedMachine.access!.policy).apps;
+      const availability = enabled
+        ? updatedMachine.phoneDisplay.control.reason?.kind === "access-off"
+          ? updatedMachine.phoneDisplay.view
+          : updatedMachine.phoneDisplay.control
+        : { state: "disabled" as const, reason: { kind: "access-off" as const } };
+      this.update({
+        ...this.snapshot,
+        machines: this.snapshot.machines.map((machine) =>
+          machine !== updatedMachine
+            ? machine
+            : {
+                ...machine,
+                capabilities: {
+                  ...machine.capabilities!,
+                  apps: { ...machine.capabilities!.apps, enabled, ...availability },
+                },
+                phoneDisplay: {
+                  ...machine.phoneDisplay!,
+                  control: availability,
+                  view: machine.phoneDisplay!.view,
+                  input:
+                    this.#screenConnections.get(machineId)?.computer?.access === "read"
+                      ? { state: "disabled", reason: { kind: "approval-required" } }
+                      : machine.phoneDisplay!.view,
+                },
+                computerUse: { ...machine.computerUse!, sessions: [] },
+              },
+        ),
+      });
+    }
     const enabled = deviceAccess(
       this.snapshot.machines.find((entry) => entry.id === machineId)!.access!.policy,
     );
@@ -9922,7 +10369,10 @@ class MockHostState {
       applications: [...this.integrations.applications],
       authorizationSurface: "canonical",
       callbackUrls: { ...this.integrations.callbackUrls },
-      connections: [...this.integrations.connections],
+      connections: [
+        ...this.integrations.connections,
+        ...this.#screenConnections.values(),
+      ] as RpcData<"integrations.get">["connections"],
       hostedOAuthDisclosure: mockHostedOAuthDisclosure,
       isAdministrator: true,
       providerAuthorizations: { ...this.integrations.providerAuthorizations },
@@ -13841,6 +14291,7 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
     searchSuggestionsAvailable: true,
     iphoneAppsAvailable: true,
     devicesAvailable: true,
+    deviceDriversAvailable: true,
     ownerViewWindowsAvailable: true,
     voiceAvailable: true,
 

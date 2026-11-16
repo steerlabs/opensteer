@@ -1,3 +1,4 @@
+import type { MachineAccessUpdateInput, IphoneScreenAttachInput } from "./device-commands.js";
 import type { TabsClient } from "./tabs-contract.js";
 import type { TeamRunDelivery, TeamSource } from "@opensteer/core";
 import type { PersonShowMessage } from "@opensteer/protocol";
@@ -69,7 +70,6 @@ import type {
   HostApiCommandInput,
   HostApiCommandOutput,
   HostEnvironmentStatus,
-  MachineAccessPolicy,
   MachineSummary,
   OwnerWindowInfo,
   ShellSessionHistoryEntry,
@@ -907,6 +907,7 @@ export interface HostSnapshot {
   iphoneAppsAvailable: boolean;
   /** The Host serves `devices-v1`: device setup choices, session binding and the Browser and Apps switches. */
   devicesAvailable?: boolean;
+  deviceDriversAvailable?: boolean;
   ownerViewWindowsAvailable?: boolean;
   /** The Host advertises voice-run-v1: a call's agent runs as a Run with Opensteer's tools. */
   voiceAvailable?: boolean;
@@ -1356,11 +1357,15 @@ export interface HostClient extends TabsClient {
     readonly machineId: string;
     readonly proof: import("@opensteer/protocol").DeviceSessionBindingProof;
   }): Promise<void>;
-  updateMachineAccess(input: {
-    readonly expectedRevision: number;
-    readonly policy: MachineAccessPolicy;
-    readonly runnerId: string;
-  }): Promise<MachineAccessUpdateOutcome>;
+  attachIphoneScreen(
+    input: IphoneScreenAttachInput,
+  ): Promise<import("@opensteer/protocol").IphoneScreenAttachResult>;
+  detachIphoneScreen(input: {
+    readonly deviceId: string;
+    readonly expectedGeneration: number;
+    readonly idempotencyKey?: string;
+  }): Promise<import("@opensteer/protocol").IphoneScreenDetachResult>;
+  updateMachineAccess(input: MachineAccessUpdateInput): Promise<MachineAccessUpdateOutcome>;
 }
 
 export class HostClientRequestError extends Error {

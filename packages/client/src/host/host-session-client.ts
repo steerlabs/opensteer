@@ -1,3 +1,13 @@
+import type { HostClient } from "./client.js";
+import {
+  clientCommandSchema,
+  deviceAccessCommand,
+  deviceDriversApiVersion,
+  deviceDriversCapability,
+  type MachineAccessUpdateInput,
+} from "./device-commands.js";
+import { visibleDeviceMachines, deviceDriverKey } from "./device-projection.js";
+import { DeviceIdSchema } from "@opensteer/core";
 import { clearRunPageViews } from "./run-page-memory.js";
 import { clearRunPlacePictures } from "./run-place-picture.js";
 import { ReferenceStore } from "../references/store.js";
@@ -96,17 +106,16 @@ import {
   HostToClientMessageSchema,
   DeploymentSnapshotSchema,
   browserUsageRunBatchSize,
-  hostApi,
   threadPageMaxItems,
   deploymentSnapshotMaxThreads,
   type BrowserSessionUsageProjection,
   type DurableWindow,
+  hostApi,
   type HostApiClient,
   type HostApiCommand,
   type HostApiCommandInput,
   type HostApiCommandOutput,
   type HostToClientMessage,
-  type MachineAccessPolicy,
   type RealtimeFrameDiagnostic,
   type RpcResult,
   type DeploymentSnapshot,
@@ -135,7 +144,7 @@ import type {
 import { HostClientRequestError, isHostRefusal, mainDoneTasks } from "./client.js";
 import { browserProfileHomeCommand } from "./browser-access.js";
 import type { ExecutionChoice, ExecutionSelection } from "./execution-preferences.js";
-import { createHttpHostApiClient } from "./host-api-client.js";
+import { dispatchDeviceCommand, createHttpHostApiClient } from "./host-api-client.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
 import { RunPlaceStore } from "./run-place.js";
 import {
@@ -183,7 +192,7 @@ import {
   realtimeFrameLoss,
 } from "./realtime-frames.js";
 
-type HostCapability = AuthorityHostCapability | "node-detail-v1";
+type HostCapability = AuthorityHostCapability | "node-detail-v1" | "device-drivers-v1";
 
 const defaultRefreshIntervalMs = 15_000;
 const historyPageTurns = 10;
@@ -582,7 +591,9 @@ export class HttpHostClient {
     );
     if (mode === "watch") url.searchParams.set("mode", mode);
     const passkeys = this.browserPasskeys.optIn(
-      this.#capabilities?.filter((capability) => capability !== "node-detail-v1"),
+      this.#capabilities?.filter(
+        (capability) => capability !== "node-detail-v1" && capability !== "device-drivers-v1",
+      ),
     );
     if (mode === "control" && passkeys) url.searchParams.set("passkeys", passkeys);
     if (mode === "control") {
@@ -680,7 +691,7 @@ export class HttpHostClient {
       // A tab the stream closed while its activation was answering stays closed;
       // one a still-loading list has not reached yet is bound as answered.
       if (this.#tabs.complete && !this.#tabs.get(tab.tabId)) return;
-      this.#viewers.set(tab.tabId, viewer);
+      this.#viewers.set(tab.tabId, viewer, this.#snapshot.machines);
       if (viewer.kind === "page") this.#bindPage(tab, viewer.sessionId);
       else if (viewer.kind !== "app") this.#acceptOwnerView(viewer.view, wake);
       else this.#update(this.#snapshot);
@@ -706,7 +717,19 @@ export class HttpHostClient {
       machines: [...this.#ownerViews.accept(this.#snapshot.machines, view)],
     });
     // Only the person's explicit Open may wake a phone, and only once.
-    if (wake && view.target.kind === "phone" && view.state === "ready")
+    if (
+      wake &&
+      view.target.kind === "phone" &&
+      view.state === "ready" &&
+      this.#snapshot.machines.some(
+        (machine) =>
+          machine.id === view.machineId &&
+          machine.phoneDisplay?.wake === true &&
+          machine.computerUse?.ownerViews?.some(
+            (held) => held.viewId === view.viewId && held.generation === view.generation,
+          ),
+      )
+    )
       sharedDisplayStreams(this).armAutoWake({
         kind: "owner-view",
         viewId: view.viewId,
@@ -1118,9 +1141,19 @@ export class HttpHostClient {
   };
 
   async dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput> {
-    const parsedCommand = hostApi["commands.dispatch"].payload.parse(
+    const parsedCommand = clientCommandSchema.parse(
       browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes),
     );
+    const screenCommand =
+      parsedCommand.type === "iphone.screen.attach" ||
+      parsedCommand.type === "iphone.screen.detach" ||
+      (parsedCommand.type === "machine.access.update" && "deviceId" in parsedCommand) ||
+      (parsedCommand.type === "integration.computer.setup.set" &&
+        "deviceId" in parsedCommand.input) ||
+      ((parsedCommand.type === "machine.rename" || parsedCommand.type === "machine.revoke") &&
+        parsedCommand.machineId.startsWith("dev_"));
+    if (screenCommand && !this.#snapshot.deviceDriversAvailable)
+      throw new Error("Update this Opensteer to manage screen device drivers.");
     const needsDevices =
       parsedCommand.type === "machine.session.bind" ||
       (parsedCommand.type === "machine.access.update" &&
@@ -1135,7 +1168,14 @@ export class HttpHostClient {
         throw new Error("This Host does not support task marks.");
       return this.#setThreadIcon(parsedCommand);
     }
-    return this.#dispatchCommand(parsedCommand);
+    if (parsedCommand.type === "machine.access.update" && "deviceId" in parsedCommand)
+      return unwrapRpcResult(await dispatchDeviceCommand(this.rpc, parsedCommand));
+    if (
+      parsedCommand.type === "integration.computer.setup.set" &&
+      "deviceId" in parsedCommand.input
+    )
+      return unwrapRpcResult(await dispatchDeviceCommand(this.rpc, parsedCommand));
+    return this.#dispatchCommand(hostApi["commands.dispatch"].payload.parse(parsedCommand));
   }
 
   async #dispatchCommand(parsedCommand: HostApiCommand): Promise<HostApiCommandOutput> {
@@ -2954,18 +2994,39 @@ export class HttpHostClient {
     if (result.type !== "machine.session.bind") throw new Error("Device binding command mismatch.");
   }
 
-  async updateMachineAccess(input: {
-    readonly expectedRevision: number;
-    readonly policy: MachineAccessPolicy;
-    readonly runnerId: string;
-  }): Promise<MachineAccessUpdateOutcome> {
+  async attachIphoneScreen(input: Parameters<HostClient["attachIphoneScreen"]>[0]) {
     const result = await this.dispatch({
-      expectedRevision: input.expectedRevision,
-      idempotencyKey: mutationIdempotencyKey("machine-access"),
-      policy: input.policy,
-      runnerId: input.runnerId,
-      type: "machine.access.update",
+      ...input,
+      type: "iphone.screen.attach",
+      idempotencyKey: input.idempotencyKey ?? mutationIdempotencyKey("iphone-attach"),
     });
+    if (result.type !== "iphone.screen.attach") throw new Error("Screen attach command mismatch.");
+    await this.refresh();
+    return result;
+  }
+
+  async detachIphoneScreen(input: Parameters<HostClient["detachIphoneScreen"]>[0]) {
+    const result = await this.dispatch({
+      ...input,
+      deviceId: DeviceIdSchema.parse(input.deviceId),
+      type: "iphone.screen.detach",
+      idempotencyKey: input.idempotencyKey ?? mutationIdempotencyKey("iphone-detach"),
+    });
+    if (result.type !== "iphone.screen.detach") throw new Error("Screen detach command mismatch.");
+    await this.refresh();
+    return result;
+  }
+
+  async updateMachineAccess(input: MachineAccessUpdateInput): Promise<MachineAccessUpdateOutcome> {
+    const command = deviceAccessCommand(
+      input,
+      mutationIdempotencyKey("machine-access"),
+      this.#snapshot.deviceDriversAvailable === true,
+    );
+    const result =
+      "deviceId" in command && command.type === "machine.access.update"
+        ? unwrapRpcResult(await dispatchDeviceCommand(this.rpc, command))
+        : await this.dispatch(command);
     if (result.type !== "machine.access.update") {
       throw new Error("Access settings command mismatch.");
     }
@@ -3540,6 +3601,9 @@ export class HttpHostClient {
       searchSuggestionsAvailable: capabilities.includes("browser-search-suggestions-v1"),
       iphoneAppsAvailable: capabilities.includes("iphone-apps-v1"),
       devicesAvailable: capabilities.includes("devices-v1"),
+      deviceDriversAvailable:
+        this.#servedApiVersion >= deviceDriversApiVersion &&
+        capabilities.includes(deviceDriversCapability),
       voiceAvailable: capabilities.includes("voice-run-v1"),
       ownerViewWindowsAvailable: capabilities.includes("ownerViewWindows"),
     });
@@ -3587,6 +3651,12 @@ export class HttpHostClient {
       generation = this.#viewerGeneration;
     }
     this.#servedApiVersion = payload.apiVersion ?? minimumHostApiVersion;
+    this.#snapshot = {
+      ...this.#snapshot,
+      deviceDriversAvailable:
+        this.#servedApiVersion >= deviceDriversApiVersion &&
+        this.#capabilities?.includes(deviceDriversCapability) === true,
+    };
     const environments = payload.environments.map((environment) => ({ ...environment }));
     const harnesses = payload.harnesses.map(({ config, ...harness }) => ({
       ...harness,
@@ -3623,7 +3693,7 @@ export class HttpHostClient {
         quietTaskDays: payload.quietTaskDays,
         identityConfig: payload.identityConfig,
         threads,
-        machines: payload.machines.map((machine) =>
+        machines: visibleDeviceMachines(payload.machines).map((machine) =>
           this.#ownerViews.reread(
             withNewerComputerPresence(machine, this.#snapshot.machines, patchedSince),
             this.#snapshot.machines.find((current) => current.id === machine.id),
@@ -5546,9 +5616,14 @@ function withNewerComputerPresence(
     return { ...machine };
   }
   const known = new Map(
-    previous.flatMap((candidate) =>
-      (candidate.computerUse?.sessions ?? []).map((session) => [session.sessionId, session]),
-    ),
+    previous
+      .filter(
+        (candidate) =>
+          candidate.id === machine.id && deviceDriverKey(candidate) === deviceDriverKey(machine),
+      )
+      .flatMap((candidate) =>
+        (candidate.computerUse?.sessions ?? []).map((session) => [session.sessionId, session]),
+      ),
   );
   return {
     ...machine,
