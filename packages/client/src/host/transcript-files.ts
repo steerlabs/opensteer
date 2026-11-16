@@ -22,6 +22,14 @@ export type TranscriptFileState =
 export type TranscriptFileDownload =
   | ({ readonly status: "ok" } & TranscriptFileContent)
   | { readonly status: "unavailable" | "offline" | "failed" };
+export type TranscriptFileOriginal =
+  | {
+      readonly status: "ok";
+      readonly name: string;
+      readonly mediaType: string;
+      readonly bytes: Uint8Array;
+    }
+  | { readonly status: "unavailable" | "offline" | "failed" };
 interface Operation<T> {
   readonly controller: AbortController;
   readonly promise: Promise<T>;
@@ -180,6 +188,19 @@ export class TranscriptFileController {
         return { status: isOffline(error) ? "offline" : "failed" };
       }
     });
+  }
+  /** A file's original bytes when only its source is known, as a copy or save of it needs. */
+  async original(
+    threadId: string | null,
+    source: FileSource,
+    signal?: AbortSignal,
+  ): Promise<TranscriptFileOriginal> {
+    const opened = await this.open(threadId, source, signal);
+    if (opened.status !== "ok")
+      return { status: opened.status === "unavailable" ? "unavailable" : opened.status };
+    const content = await this.download(threadId, opened.resource, signal);
+    if (content.status !== "ok") return content;
+    return { status: "ok", name: opened.name, mediaType: opened.mediaType, bytes: content.bytes };
   }
   #assertCurrent(controller: AbortController, generation: number) {
     if (this.#disposed || controller.signal.aborted || generation !== this.#generation)
