@@ -1,9 +1,10 @@
+import { deviceCapabilities } from "../../server/device-machine-projection.js";
 import { deviceAccessStates } from "@opensteer/database";
 import type { z } from "zod";
 import {
   OpensteerError,
   formatReferenceLink,
-  RunnerIdSchema,
+  DeviceIdSchema,
   type ExecutionPreferencesViewSchema,
   type EnvironmentId,
   type HarnessInstanceId,
@@ -292,47 +293,85 @@ export class AdministrationToolHandlers {
   async computer_list({ caller, input }: ToolCall<"computer_list">) {
     const { store, runners } = this.service.dependencies;
     await this.service.actor(caller);
-    const after = input.cursor === undefined ? undefined : RunnerIdSchema.safeParse(input.cursor);
+    const after = input.cursor === undefined ? undefined : DeviceIdSchema.safeParse(input.cursor);
     if (after && !after.success)
       throw new OpensteerError({
         code: "bad_request",
         message: "cursor is not from computer_list. Start again without it.",
       });
-    const [page, computers] = await Promise.all([
-      store.listRunners({
+    const [page, runnerPage, drivers, computers] = await Promise.all([
+      store.listDevices({
         ...(after?.data ? { after: after.data } : {}),
+        ownerId: caller.userId,
+        includeDeployment: true,
+        limit: 100,
+      }),
+      store.listRunners({
         ownerId: caller.userId,
         includeDeployment: true,
         includeOtherOwners: false,
         limit: 100,
       }),
+      store.listDeviceDrivers({ includeDetached: true }),
       computerIds(store, caller.userId),
     ]);
+    const byRunner = new Map(runnerPage.runners.map((runner) => [runner.id, runner]));
     return {
       nextCursor: page.nextCursor,
       computers: await Promise.all(
-        page.runners
-          .filter((runner) => runner.kind !== "managed")
-          .map(async (runner) => {
-            const environmentId = computers.environmentId(runner.id);
-            return {
-              computerId: runner.id,
-              link: formatReferenceLink(runner.id, runner.name),
-              name: runner.name,
-              online: runners.isRunnerConnected(runner.id),
-              hosting: environmentId !== undefined,
-              canRunTasks: environmentId !== undefined && this.canExecute(environmentId),
-              capabilities: runner.capabilities,
-              revoked: runner.revokedAt !== null,
-              access: deviceAccessStates(
-                runner.accessPolicy,
+        page.devices.map(async (device) => {
+          const self = drivers.find(
+            (driver) =>
+              driver.deviceId === device.id && driver.role === "self" && !driver.detachedAt,
+          );
+          const runner = self ? byRunner.get(self.runnerId) : undefined;
+          const environmentId = self ? computers.environmentId(self.runnerId) : undefined;
+          const live = this.service.dependencies.deviceState?.status(device.id);
+          const access = runner
+            ? deviceAccessStates(
+                device.accessPolicy,
                 runner.allowedModules,
                 runner.moduleDescriptors,
-                runner.kind === "main" && runner.ownerKind === "deployment",
-              ),
-              sessions: await store.listActiveShellSessions(runner.id),
-            };
-          }),
+                device.kind === "home",
+              )
+            : {
+                browser: "unsupported" as const,
+                files: "unsupported" as const,
+                apps: device.accessPolicy.apps ? ("enabled" as const) : ("disabled" as const),
+              };
+          return {
+            computerId: device.id,
+            ...(self ? { link: formatReferenceLink(self.runnerId, device.name) } : {}),
+            name: device.name,
+            kind: device.kind,
+            selfRunnerId: self?.runnerId ?? null,
+            drivers: drivers
+              .filter((driver) => driver.deviceId === device.id)
+              .map((driver) => ({
+                role: driver.role,
+                runnerId: driver.runnerId,
+                generation: driver.generation,
+                attached: driver.detachedAt === null,
+                runnerName: byRunner.get(driver.runnerId)?.name ?? "Computer",
+              })),
+            online: live?.connected ?? (self ? runners.isRunnerConnected(self.runnerId) : false),
+            hosting: environmentId !== undefined,
+            canRunTasks: environmentId !== undefined && this.canExecute(environmentId),
+            capabilities: runner?.capabilities ?? [],
+            deviceCapabilities: deviceCapabilities(
+              device,
+              runner
+                ? { allowedModules: [...runner.allowedModules], modules: runner.moduleDescriptors }
+                : undefined,
+              live?.connected ?? (self ? runners.isRunnerConnected(self.runnerId) : false),
+              live?.phoneDisplay,
+            ),
+            ...(live?.phoneDisplay ? { phoneDisplay: live.phoneDisplay } : {}),
+            revoked: device.removedAt !== null,
+            access,
+            sessions: self ? await store.listActiveShellSessions(self.runnerId) : [],
+          };
+        }),
       ),
     };
   }

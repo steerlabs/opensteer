@@ -1,3 +1,7 @@
+import {
+  projectDeviceMachines,
+  type DeviceMachineLivePort,
+} from "./server/device-machine-projection.js";
 import type { TabService } from "./tabs/tab-service.js";
 import type { AgentToolActivityStore, DatabaseSchema } from "@opensteer/database";
 import { registerAgentToolRoute } from "./mcp/agent-tool-route.js";
@@ -10,6 +14,7 @@ import { createTranscriptFileHandlers, type TranscriptFiles } from "./threads/tr
 import { describeSessionDevice } from "@opensteer/shared/sessionDevice";
 import type { AssetService } from "./assets/asset-service.js";
 import type { DeviceAccessService } from "./administration/device-access-service.js";
+import type { DeviceDriverManagementPort } from "./administration/device-driver-service.js";
 import { consumeAnonymousRateLimit } from "./identity/anonymous-rate-limit.js";
 import {
   deviceAccess,
@@ -371,6 +376,8 @@ const HarnessAuthenticationParamsSchema = z.strictObject({
 const machinePageLimit = 100;
 
 export interface HostServerDependencies {
+  readonly deviceDrivers?: DeviceDriverManagementPort;
+  readonly deviceState?: DeviceMachineLivePort;
   readonly assets?: AssetService;
   readonly transcriptFiles?: TranscriptFiles;
   readonly execution: Pick<PersonalExecution, "canExecute">;
@@ -1047,7 +1054,7 @@ export async function createHostServer(
       computerUsePolicies.set(
         runner.id,
         await dependencies.integrations.platform.computerAppApprovals.computerUsePolicy({
-          runnerId: runner.id,
+          deviceId: await dependencies.store.requireSelfDeviceId(runner.id),
           ownerUserId: ownerId,
         }),
       );
@@ -1138,11 +1145,29 @@ export async function createHostServer(
     return readiness;
   };
 
-  const machineSummaries = async (session: NonNullable<HostApiServerContext["session"]>) =>
-    projectMachines({
-      ...(await machineRegistryRows(session)),
-      deploymentOwnsMainComputer: true,
-    });
+  const machineSummaries = async (session: NonNullable<HostApiServerContext["session"]>) => {
+    const [registry, devices, drivers] = await Promise.all([
+      machineRegistryRows(session),
+      dependencies.store.listDevices({
+        ownerId: session.user.id,
+        includeDeployment: true,
+        limit: machinePageLimit,
+      }),
+      dependencies.store.listDeviceDrivers({ includeDetached: true }),
+    ]);
+    const selfMachines = projectMachines({ ...registry, deploymentOwnsMainComputer: true });
+    return [
+      ...projectDeviceMachines({
+        devices: devices.devices,
+        drivers,
+        selfMachines,
+        runnerNames: new Map(registry.runners.map((runner) => [runner.id, runner.name])),
+        runnerConnected: (id) => dependencies.runners.isRunnerConnected(id),
+        ...(dependencies.deviceState ? { live: dependencies.deviceState } : {}),
+      }),
+      ...selfMachines.filter((machine) => machine.status === "pending"),
+    ];
+  };
 
   const coreRpcHandlers = {
     ...createReferenceHandlers(dependencies.store, resolvePersonalReferences),
@@ -1685,7 +1710,11 @@ export async function createHostServer(
     const session = requireRpcSession(context);
     const userId = session.user.id;
     if (isAdministrationCommand(command))
-      return administration.execute({ kind: "person", userId }, command, context.afterResponse);
+      return administration.execute(
+        { kind: "person", userId, sessionId: session.id },
+        command,
+        context.afterResponse,
+      );
     switch (command.type) {
       case "settings.plugin.enabled.set": {
         const result = await dependencies.integrations.platform.store.settings.setEnabled(
@@ -2240,39 +2269,53 @@ export async function createHostServer(
         );
         return { type: command.type };
       case "machine.access.update": {
-        await requireMachineAccessManagement(
-          dependencies.store,
-          {
-            userId: session.user.id,
-          },
-          command.runnerId,
+        const deviceId =
+          "deviceId" in command
+            ? command.deviceId
+            : await dependencies.store.requireSelfDeviceId(command.runnerId);
+        const ownership = (await dependencies.store.effectiveDeviceOwners([deviceId])).get(
+          deviceId,
         );
-        const result = await dependencies.shellControl.withMachineAdmission(command.runnerId, () =>
-          dependencies.computerApps.withRunnerAdmission(command.runnerId, () =>
-            dependencies.browser.withRunnerAdmission(command.runnerId, async () => {
-              const result = await dependencies.store.updateMachineAccessPolicy({
-                allowDeployment: true,
-                expectedRevision: command.expectedRevision,
-                idempotency: { key: command.idempotencyKey, requestedBy: userId },
-                ownerId: userId,
-                policy: command.policy,
-                runnerId: command.runnerId,
-              });
-              if (result.outcome === "updated" && !result.replayed) {
-                if (result.changed.shell)
-                  await dependencies.shellControl.endMachineSessions(
-                    command.runnerId,
-                    "policy-changed",
-                  );
-                if (result.changed.browser && !deviceAccess(command.policy).browser)
-                  await dependencies.browser.disableAgentAccess(command.runnerId);
-                if (result.changed.apps && !deviceAccess(command.policy).apps)
-                  await dependencies.computerApps.disableAgentAccess(command.runnerId);
-              }
-              return result;
-            }),
-          ),
-        );
+        if (!ownership || !machineIsManagedBy(ownership, userId))
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "Only this Device's owner can change access.",
+          });
+        const runnerId = await dependencies.store.getDeviceSelfRunnerId(deviceId);
+        const change = async () => {
+          const result = await dependencies.store.updateDeviceAccessPolicy({
+            deviceId,
+            ownerId: userId,
+            allowDeployment: true,
+            expectedRevision: command.expectedRevision,
+            policy: command.policy,
+            idempotency: { key: command.idempotencyKey, requestedBy: userId },
+            ...("runnerId" in command ? { legacyRunnerId: command.runnerId } : {}),
+          });
+          if (result.outcome === "updated" && !result.replayed) {
+            if (runnerId && result.changed.shell)
+              await dependencies.shellControl.endMachineSessions(runnerId, "policy-changed");
+            if (runnerId && result.changed.browser && !deviceAccess(command.policy).browser)
+              await dependencies.browser.disableAgentAccess(runnerId);
+            if (result.changed.apps && !deviceAccess(command.policy).apps) {
+              if (dependencies.deviceDrivers)
+                await dependencies.deviceDrivers.disableAgentAccess(deviceId);
+              else if (runnerId) await dependencies.computerApps.disableAgentAccess(runnerId);
+            }
+          }
+          return result;
+        };
+        const enterRunner = () =>
+          runnerId
+            ? dependencies.shellControl.withMachineAdmission(runnerId, () =>
+                dependencies.computerApps.withRunnerAdmission(runnerId, () =>
+                  dependencies.browser.withRunnerAdmission(runnerId, change),
+                ),
+              )
+            : change();
+        const result = dependencies.deviceDrivers
+          ? await dependencies.deviceDrivers.withAdmission(deviceId, enterRunner)
+          : await enterRunner();
         if (result.outcome === "conflict")
           return { outcome: "conflict" as const, type: command.type };
         for (const event of result.requestEvents) dependencies.publishDeploymentEvent?.(event);
@@ -2951,10 +2994,12 @@ export function advertisedCapabilities(
     | "personalRemoteAccess"
     | "passkeys"
     | "notificationPreviews"
+    | "deviceDrivers"
   >,
 ): readonly HostCapability[] {
   return [
     "devices-v1",
+    ...(dependencies.deviceDrivers ? ["device-drivers-v1" as const] : []),
     "automatic-models-v1",
     "task-attachments",
     ...(dependencies.notificationPreviews ? ["notification-preview-v1" as const] : []),

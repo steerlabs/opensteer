@@ -1,9 +1,10 @@
 import type { DeviceId, RunnerId } from "@opensteer/core";
-import { refused, type TabId, type UserId } from "@opensteer/core";
+import { isPhoneDisplayDefinitionId, refused, type TabId, type UserId } from "@opensteer/core";
 import { ComputerUseTabBindingSchema } from "@opensteer/protocol";
 import {
   computerAppIdentitiesEqual,
   type IntegrationConnectionSummary,
+  type DeviceIntegrationConnectionSummary,
 } from "@opensteer/integration-core";
 import type { TabServicePort } from "../../tabs/ports.js";
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
@@ -15,9 +16,11 @@ export interface NativeTabBindingOptions {
   selfDeviceId(runnerId: RunnerId): Promise<DeviceId>;
   tabs: Pick<TabServicePort, "get" | "authorizeShow">;
   lookup(ownerId: UserId, tabId: TabId): Promise<NativeReplTabTarget>;
-  connections(): Promise<readonly IntegrationConnectionSummary[]>;
+  connections(): Promise<
+    readonly (IntegrationConnectionSummary | DeviceIntegrationConnectionSummary)[]
+  >;
   bind(
-    connection: IntegrationConnectionSummary,
+    connection: IntegrationConnectionSummary | DeviceIntegrationConnectionSummary,
     target: NativeReplTabTarget,
     beforeAcquired: () => Promise<void>,
   ): Promise<ReplReply>;
@@ -58,12 +61,16 @@ export async function bindNativeTab(
     (await options.selfDeviceId(target.computerId)) !== tab.computer.computerId
   )
     throw refused("not_found", "This tab is unavailable.");
+  const targetDeviceId = await options.selfDeviceId(target.computerId);
   const connection = (await options.connections()).find(
     (entry) =>
-      entry.computer?.runnerId === target.computerId &&
+      entry.computer &&
+      ("deviceId" in entry.computer
+        ? entry.computer.deviceId === targetDeviceId
+        : entry.computer.runnerId === target.computerId) &&
       (target.kind === "phone"
-        ? entry.definitionId === "android-phone"
-        : entry.computer.app && computerAppIdentitiesEqual(entry.computer.app, target.app)),
+        ? isPhoneDisplayDefinitionId(entry.definitionId)
+        : entry.computer?.app && computerAppIdentitiesEqual(entry.computer.app, target.app)),
   );
   if (!connection) throw refused("not_found", "This tab is unavailable.");
   await authorize();

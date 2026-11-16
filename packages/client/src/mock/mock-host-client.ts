@@ -3302,6 +3302,7 @@ async function executeMockCommand(
         type: command.type,
       });
     case "integration.computer.setup.request":
+      if ("deviceId" in command.input) return client.executeCommandOnce(command);
       return rpcSuccess({
         type: command.type,
         request: client.requestComputerAppSetup(command.input),
@@ -3310,6 +3311,7 @@ async function executeMockCommand(
       client.cancelComputerAppSetup(command.requestId);
       return rpcSuccess({ type: command.type });
     case "integration.computer.setup.set":
+      if ("deviceId" in command.input) return client.executeCommandOnce(command);
       return rpcSuccess({
         connection: await client.setComputerAppConnection(command.input),
         type: command.type,
@@ -6636,6 +6638,17 @@ class MockHostState {
           : { type: command.type, outcome: "updated" as const, revision },
       );
     }
+    if (command.type === "integration.computer.setup.request" && "deviceId" in command.input) {
+      const { deviceId, ...input } = command.input;
+      const machine = this.snapshot.machines.find(({ id }) => id === deviceId);
+      const self = machine ? deviceMachine(machine).selfRunnerId : null;
+      if (!self || (input.kind === "app" && isPhoneDisplayDefinitionId(input.definitionId)))
+        throw mockBadRequest("Allow phone access from any Opensteer app.");
+      return rpcSuccess({
+        type: command.type,
+        request: this.requestComputerAppSetup({ ...input, runnerId: self }),
+      });
+    }
     if (command.type === "integration.computer.setup.set" && "deviceId" in command.input) {
       const { deviceId, ...input } = command.input;
       const machine = this.snapshot.machines.find(({ id }) => id === deviceId);
@@ -9212,8 +9225,13 @@ class MockHostState {
    * the pending request; anything else replaces it.
    */
   requestComputerAppSetup(
-    input: ParsedCommandOf<"integration.computer.setup.request">["input"],
+    input: Extract<
+      ParsedCommandOf<"integration.computer.setup.request">["input"],
+      { runnerId: string }
+    >,
   ): ComputerAppSetupRequest {
+    if (input.kind === "app" && isPhoneDisplayDefinitionId(input.definitionId))
+      throw mockBadRequest("Allow phone access from any Opensteer app.");
     const machine = this.ownedComputer(input.runnerId);
     if (
       machine.device?.platform === "ios" &&
@@ -9283,7 +9301,9 @@ class MockHostState {
 
   /** Applies owner-set phone access, a reduction or an exact pending request. */
   async setComputerAppConnection(
-    input: ParsedCommandOf<"integration.computer.setup.set">["input"] | MockMacAnswer,
+    input:
+      | Extract<ParsedCommandOf<"integration.computer.setup.set">["input"], { runnerId: string }>
+      | MockMacAnswer,
   ): Promise<IntegrationConnectionSummary | null> {
     if (input.kind === "policy") {
       const pending = this.computerAppSetupRequests.get(input.setupRequestId);

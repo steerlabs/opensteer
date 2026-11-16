@@ -45,6 +45,8 @@ import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import type {
   AppTabPort,
   NativeTabTargetsPort,
+  DeviceNativeTabTargetsPort,
+  DeviceNativeTargetAcquired,
   NativeTabTargetState,
   PageAgentBinding,
   TabActor,
@@ -74,6 +76,7 @@ export interface TabServiceOptions {
   store: TabStore;
   devices: Pick<OpensteerStore, "requireSelfDeviceId" | "requireDeviceSelfRunnerId">;
   nativeTargets: NativeTabTargetsPort;
+  deviceNativeTargets?: DeviceNativeTabTargetsPort;
   pages: PageTabsPort;
   apps: Pick<AppTabPort, "get">;
   computer(
@@ -157,39 +160,37 @@ export class TabService implements TabServicePort {
       pending?: Promise<{ rows: ReadonlyMap<TabId, Tab>; layout: TabLayout }>;
     }
   >();
+  async acquired(target: DeviceNativeTargetAcquired): Promise<TabId> {
+    if (target.ownerId !== target.runClaims.requestedBy) notFound();
+    const intent =
+      target.kind === "phone"
+        ? { kind: "phone" as const, computerId: target.computerId }
+        : { kind: "window" as const, computerId: target.computerId, windowId: target.windowId };
+    try {
+      const opened = await this.open(
+        { kind: "run", claims: target.runClaims },
+        intent,
+        target.key,
+        target.membershipRevision,
+      );
+      return opened.tab.tabId;
+    } catch (error) {
+      if (error instanceof OpensteerError && error.code === "conflict") {
+        const existing = await this.options.store.singleton(target.ownerId, intent);
+        if (existing?.closedAt) return existing.id;
+      }
+      throw error;
+    }
+  }
   constructor(options: TabServiceOptions) {
     this.options = options;
     this.streams = new TabStreams((ownerId) => this.#catalog(ownerId), options.onError);
     this.#stopAcquired = options.nativeTargets.onTargetAcquired(
-      async (target) => {
-        if (target.ownerId !== target.runClaims.requestedBy) notFound();
-        const intent =
-          target.kind === "window"
-            ? {
-                kind: "window" as const,
-                computerId: await options.devices.requireSelfDeviceId(target.computerId),
-                windowId: target.windowId,
-              }
-            : {
-                kind: "phone" as const,
-                computerId: await options.devices.requireSelfDeviceId(target.computerId),
-              };
-        try {
-          const opened = await this.open(
-            { kind: "run", claims: target.runClaims },
-            intent,
-            target.key,
-            target.membershipRevision,
-          );
-          return opened.tab.tabId;
-        } catch (error) {
-          if (error instanceof OpensteerError && error.code === "conflict") {
-            const existing = await options.store.singleton(target.ownerId, intent);
-            if (existing?.closedAt) return existing.id;
-          }
-          throw error;
-        }
-      },
+      async (target) =>
+        this.acquired({
+          ...target,
+          computerId: await options.devices.requireSelfDeviceId(target.computerId),
+        }),
       async (ownerId) => (await options.store.snapshot(ownerId)).layout.revision,
     );
   }
@@ -418,10 +419,12 @@ export class TabService implements TabServicePort {
         row.windowId!,
       );
     else if (row.kind === "phone")
-      live = await this.options.nativeTargets.phoneState(
-        ownerId,
-        await this.options.devices.requireDeviceSelfRunnerId(row.computerId),
-      );
+      live = this.options.deviceNativeTargets
+        ? await this.options.deviceNativeTargets.phoneState(ownerId, row.computerId)
+        : await this.options.nativeTargets.phoneState(
+            ownerId,
+            await this.options.devices.requireDeviceSelfRunnerId(row.computerId),
+          );
     else if (row.kind === "page")
       live = facts.live ?? (await this.options.pages.state(ownerId, row));
     else {
@@ -771,19 +774,31 @@ export class TabService implements TabServicePort {
       await this.options.apps.get(ownerId, row.appId!);
       viewer = { kind: "app", appId: row.appId! };
     } else {
-      const view = await this.options.nativeTargets.openOwnerView(
-        ownerId,
-        {
-          tabId,
-          tabGeneration: row.generation,
-          computerId: await this.options.devices.requireDeviceSelfRunnerId(row.computerId),
-          target:
-            row.kind === "phone"
-              ? { kind: "phone", display: "main" }
-              : { kind: "app", app: row.windowApp!, windowId: row.windowId! },
-        },
-        key,
-      );
+      const view =
+        row.kind === "phone" && this.options.deviceNativeTargets
+          ? await this.options.deviceNativeTargets.openOwnerView(
+              ownerId,
+              {
+                tabId,
+                tabGeneration: row.generation,
+                computerId: row.computerId,
+                target: { kind: "phone", display: "main" },
+              },
+              key,
+            )
+          : await this.options.nativeTargets.openOwnerView(
+              ownerId,
+              {
+                tabId,
+                tabGeneration: row.generation,
+                computerId: await this.options.devices.requireDeviceSelfRunnerId(row.computerId),
+                target:
+                  row.kind === "phone"
+                    ? { kind: "phone", display: "main" }
+                    : { kind: "app", app: row.windowApp!, windowId: row.windowId! },
+              },
+              key,
+            );
       viewer = { kind: row.kind, view };
     }
     this.changed(ownerId, [tabId]);
