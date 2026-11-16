@@ -93,7 +93,7 @@ export class VoiceStartError extends Error {
   }
 }
 
-/** Where an agent's `person_show` takes the person. The app maps it to its own navigation. */
+/** Where an agent's `show_to_person` takes the person. The app maps it to its own navigation. */
 export type VoiceTarget =
   | { readonly kind: "thread"; readonly threadId: string }
   | { readonly kind: "place"; readonly destination: TabDestination };

@@ -88,6 +88,10 @@
   max-width: 44rem;
 }
 
+.dialog--narrow {
+  max-width: 25rem;
+}
+
 @keyframes dialog-in {
   from {
     opacity: 0;
@@ -138,6 +142,148 @@
 
 .dialog__footer .form-actions__error {
   text-align: left;
+}
+
+/* Allowing agents an app, plugin server or automatic approval: the thing
+   approved and why up top, what agents may then do, the technical facts folded. */
+.app-approval__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  min-width: 0;
+}
+
+.app-approval__mark {
+  display: grid;
+  flex: none;
+}
+
+.app-approval__mark .intg-icon {
+  --intg-icon-size: 36px;
+  border-radius: 9px;
+}
+
+.app-approval__mark .computer-use__app-mark {
+  padding: 0;
+}
+
+.app-approval__mark .intg-icon--monogram,
+.app-approval__mark .intg-icon:not(.computer-use__app-mark) {
+  border-color: var(--rim-plate);
+  background: var(--sheen) var(--fill-plate);
+  color: var(--text-soft);
+  font-size: var(--text-root);
+}
+
+.app-approval__mark .intg-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.app-approval__heading {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.app-approval__title {
+  overflow-wrap: anywhere;
+}
+
+.app-approval__context {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-normal);
+  line-height: 1.4;
+}
+
+.app-approval__abilities {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.app-approval__abilities li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+}
+
+.app-approval__abilities svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--green);
+}
+
+.app-approval__abilities .app-approval__ability--denied,
+.app-approval__abilities .app-approval__ability--denied svg {
+  color: var(--muted);
+}
+
+.notice.app-approval__warning {
+  margin: 0;
+  padding: var(--space-8) var(--space-10);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-md);
+}
+
+.notice.app-approval__warning > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.app-approval__details > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  width: fit-content;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  list-style: none;
+}
+
+.app-approval__details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.app-approval__details > summary:hover {
+  color: var(--text-soft);
+}
+
+.app-approval__details > summary svg {
+  width: 11px;
+  height: 11px;
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.app-approval__details[open] > summary svg {
+  transform: rotate(90deg);
+}
+
+.app-approval__details pre {
+  max-height: 12rem;
+  margin: var(--space-6) 0 0;
+  padding: var(--space-8) var(--space-10);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-code);
+  color: var(--muted);
+  font: var(--text-xs) / 1.5 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .permission-review__kicker {

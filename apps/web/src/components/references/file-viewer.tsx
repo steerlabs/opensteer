@@ -16,6 +16,8 @@ import type { ThreadId } from "@opensteer/core";
 import type { FileResource, FileSource } from "@opensteer/protocol";
 import { attachmentDetail } from "../attachments/attachment-parts.js";
 import { handleModalKeyDown } from "../dialog.js";
+import { saveFile } from "../file-actions.js";
+import { openImageRead, useImageActions, type ImageActions } from "../image-actions.js";
 import { Icon } from "../icon.js";
 import { NativeBrowserOverlay } from "../native-browser-overlays.js";
 import { referenceGlyphs } from "./reference-glyphs.js";
@@ -23,7 +25,6 @@ import { referenceGlyphs } from "./reference-glyphs.js";
 /** Each line's height in the text view; lines are drawn only near the screen. */
 export const fileLineHeight = 20;
 const overscan = 40;
-const downloadUrlLifetimeMs = 30_000;
 
 function pathParts(source: FileSource): { readonly name: string; readonly dir: string } {
   if (source.kind !== "path") return { name: "Attachment", dir: "" };
@@ -82,6 +83,18 @@ export function FileViewer({
   const parts = pathParts(input.source);
   const name = shown?.name ? (shown.name.split(/[\\/]/u).at(-1) ?? shown.name) : parts.name;
   const retry = () => setAttempt((value) => value + 1);
+  const imageRead = useMemo(
+    () =>
+      shown?.preview.kind === "image"
+        ? openImageRead(client, threadId, {
+            resource: shown.resource,
+            name,
+            mediaType: shown.mediaType,
+          })
+        : null,
+    [client, name, shown, threadId],
+  );
+  const image = useImageActions(imageRead);
   return (
     <NativeBrowserOverlay>
       <div
@@ -111,6 +124,17 @@ export function FileViewer({
               </h2>
               {parts.dir ? <FolderPath dir={parts.dir} /> : null}
             </div>
+            {image.copy ? (
+              <button
+                aria-label="Copy image"
+                className="icon-btn"
+                onClick={image.copy}
+                title="Copy image"
+                type="button"
+              >
+                <Icon name="copy" />
+              </button>
+            ) : null}
             {shown ? (
               <DownloadButton
                 client={client}
@@ -132,6 +156,7 @@ export function FileViewer({
           <div className="file-viewer__body">
             <FileBody
               client={client}
+              imageTarget={image.target}
               input={input}
               name={name}
               retry={retry}
@@ -140,6 +165,7 @@ export function FileViewer({
             />
           </div>
         </div>
+        {image.menu}
       </div>
     </NativeBrowserOverlay>
   );
@@ -163,6 +189,7 @@ function FolderPath({ dir }: { readonly dir: string }) {
 
 function FileBody({
   client,
+  imageTarget,
   input,
   name,
   retry,
@@ -170,6 +197,7 @@ function FileBody({
   threadId,
 }: {
   readonly client: HostClient;
+  readonly imageTarget: ImageActions["target"];
   readonly input: FileOpenInput;
   readonly name: string;
   readonly retry: () => void;
@@ -239,6 +267,7 @@ function FileBody({
           <TranscriptImageContext value={{ client, threadId }}>
             <ViewerImage
               name={name}
+              target={imageTarget}
               onStale={retry}
               revision={state.resource.revision}
               source={input.source}
@@ -383,8 +412,10 @@ function ViewerImage({
   onStale,
   revision,
   source,
+  target,
 }: {
   readonly name: string;
+  readonly target: ImageActions["target"];
   readonly onStale: () => void;
   readonly revision: string;
   readonly source: FileSource;
@@ -398,9 +429,13 @@ function ViewerImage({
   return (
     <>
       <div
+        aria-label={name}
         className={
           original ? "file-viewer__image file-viewer__image--original" : "file-viewer__image"
         }
+        // Focusable so the keyboard can scroll an original and open its menu.
+        tabIndex={0}
+        {...target}
       >
         {image.failed ? (
           <ViewerState body="Its preview couldn't be loaded." icon="help-circle" title={name} />
@@ -465,16 +500,7 @@ function DownloadButton({
             );
           return;
         }
-        // Saved, never opened in place: an opaque type keeps the browser from rendering it.
-        const url = URL.createObjectURL(
-          new Blob([result.bytes as Uint8Array<ArrayBuffer>], { type: "application/octet-stream" }),
-        );
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download = name;
-        anchor.rel = "noopener";
-        anchor.click();
-        window.setTimeout(() => URL.revokeObjectURL(url), downloadUrlLifetimeMs);
+        saveFile(result.bytes as Uint8Array<ArrayBuffer>, name);
       })
       .catch(() => {
         if (mounted.current) setError("Couldn't download this file.");

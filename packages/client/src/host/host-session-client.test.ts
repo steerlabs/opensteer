@@ -8182,6 +8182,51 @@ describe("HttpHostClient notifications", () => {
     vi.restoreAllMocks();
     client.dispose();
   });
+
+  it.each([true, false])(
+    "states a message's app, device and send-time zone only to a Host that reads them (%s)",
+    async (reads) => {
+      const workspace = makeDeployment();
+      let zone = "America/New_York";
+      const resolvedOptions = Intl.DateTimeFormat.prototype.resolvedOptions;
+      vi.spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions").mockImplementation(function (
+        this: Intl.DateTimeFormat,
+      ) {
+        return { ...resolvedOptions.call(this), timeZone: zone };
+      });
+      const commands: Record<string, unknown>[] = [];
+      const client = createHttpHostClient({
+        capabilities: reads ? ["message-origin-v1"] : [],
+        origin: { app: "ios", device: "phone" },
+        fetch: async (input, init) => {
+          const url = new URL(input instanceof Request ? input.url : input.toString());
+          if (url.pathname !== "/v1/rpc/commands.dispatch") return json(bootstrap([workspace]));
+          commands.push(rpcPayload(url, init));
+          return json({ error: { code: "bad_request", message: "Recorded" } }, 400);
+        },
+        refreshIntervalMs: 0,
+        timeZoneReports: "observed",
+        webSocketFactory: () => new FakeSocket(),
+      });
+      await client.load();
+      zone = "Asia/Tokyo";
+      await client
+        .dispatch({
+          content: [{ text: "Remind me at 9", type: "text" }],
+          idempotencyKey: "send-1",
+          threadId: createId("thread"),
+          type: "thread.sendMessage",
+        })
+        .catch(() => undefined);
+      const sent = commands.find((command) => command.type === "thread.sendMessage");
+      expect(sent?.origin).toEqual(
+        reads ? { app: "ios", device: "phone", timeZone: "Asia/Tokyo" } : undefined,
+      );
+      expect(commands.some((command) => command.type === "viewer.timeZone.update")).toBe(!reads);
+      vi.restoreAllMocks();
+      client.dispose();
+    },
+  );
 });
 
 describe("HttpHostClient Run activity and live streams", () => {

@@ -8,10 +8,10 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { ProductToolHandlers } from "./handlers/product.js";
 import type { RunCaller } from "./agent-caller.js";
-import { person_show } from "@opensteer/agent-tools/tools";
+import { show_to_person } from "@opensteer/agent-tools/tools";
 
 const integration = describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL);
-integration("explicit person_show", () => {
+integration("explicit show_to_person", () => {
   it("delivers the exact tab or task, deduplicates delivery, and refuses a closed tab", async () => {
     const fixture = await createStoreFixture(),
       f = await fixture.startRunFixture("show");
@@ -83,14 +83,14 @@ integration("explicit person_show", () => {
     };
     const call = {
       caller,
-      input: person_show.input.parse({ target: { tabId } }),
+      input: show_to_person.input.parse({ target: { tabId } }),
       operationKey: "show-phone",
     };
-    expect(await product.person_show(call)).toEqual({
+    expect(await product.show_to_person(call)).toEqual({
       status: "sent-unconfirmed",
       connectedDevices: 1,
     });
-    expect(await product.person_show(call)).toEqual({
+    expect(await product.show_to_person(call)).toEqual({
       status: "already-requested",
       connectedDevices: 0,
     });
@@ -99,7 +99,7 @@ integration("explicit person_show", () => {
     ]);
     devices = 0;
     expect(
-      await product.person_show({
+      await product.show_to_person({
         caller,
         input: { target: { taskId: f.threadId } },
         operationKey: "task",
@@ -107,11 +107,13 @@ integration("explicit person_show", () => {
     ).toEqual({ status: "no-device-connected", connectedDevices: 0 });
     expect(messages[1]?.target).toEqual({ taskId: f.threadId });
     await tabs.close(f.userId, [tabId], "close");
-    await expect(product.person_show({ ...call, operationKey: "closed" })).rejects.toMatchObject({
-      code: "not_found",
-    });
+    await expect(product.show_to_person({ ...call, operationKey: "closed" })).rejects.toMatchObject(
+      {
+        code: "not_found",
+      },
+    );
     expect(messages).toHaveLength(2);
-    expect(person_show.input.safeParse({ target: { current: true } }).success).toBe(false);
-    expect(person_show.input.safeParse({ target: { runId: f.runId } }).success).toBe(false);
+    expect(show_to_person.input.safeParse({ target: { current: true } }).success).toBe(false);
+    expect(show_to_person.input.safeParse({ target: { runId: f.runId } }).success).toBe(false);
   });
 });

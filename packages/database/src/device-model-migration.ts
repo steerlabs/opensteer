@@ -1,4 +1,4 @@
-export const deviceDriversMigrationName = "0027_device_drivers";
+export const deviceDriversMigrationName = "0028_device_drivers";
 
 export const DEVICE_DRIVERS_SQL = `
 create table devices (

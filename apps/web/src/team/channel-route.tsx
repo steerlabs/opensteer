@@ -30,6 +30,9 @@ import {
   ChannelScreen,
   ThreadPane,
 } from "../components/team/channel-view.js";
+import { saveFile } from "../components/file-actions.js";
+import { ImageUnavailableError } from "../components/image-actions.js";
+import { TeamFileReadContext } from "../components/team/message-body.js";
 import { MessageList } from "../components/team/message-list.js";
 import { AgentUnavailable, TeamComposer } from "../components/team/team-composer.js";
 import type {
@@ -469,30 +472,22 @@ function ChannelScreenFor({
   const requestRoot = (requestId: string) =>
     [...(thread?.requests ?? []), ...(timeline?.requests ?? [])].find((row) => row.id === requestId)
       ?.threadRootId ?? null;
-  const openFile = (file: FileView) => {
-    const held = [...(timeline?.messages ?? []), ...(thread?.messages ?? [])]
-      .flatMap((message) => message.attachments)
-      .find((candidate) => candidate.id === file.id);
-    if (!held) return;
-    void client
-      .file(held, true)
-      .then((blob) => {
-        if (!blob) return;
-        client.owner?.assertCurrent();
-        const url = URL.createObjectURL(new Blob([blob], { type: held.mediaType }));
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = held.filename;
-        link.click();
-        const revoke = () => URL.revokeObjectURL(url);
-        const release = client.owner?.own(revoke);
-        setTimeout(() => {
-          release?.();
-          revoke();
-        }, 60_000);
-      })
+  const readFile = useCallback(
+    async (file: FileView): Promise<File> => {
+      const held = [...(timeline?.messages ?? []), ...(thread?.messages ?? [])]
+        .flatMap((message) => message.attachments)
+        .find((candidate) => candidate.id === file.id);
+      const blob = held ? await client.file(held, true) : null;
+      if (!held || !blob) throw new ImageUnavailableError("This file isn't available anymore.");
+      client.owner?.assertCurrent();
+      return new File([blob], held.filename, { type: held.mediaType });
+    },
+    [client, thread, timeline],
+  );
+  const openFile = (file: FileView) =>
+    void readFile(file)
+      .then((original) => saveFile(original, original.name))
       .catch(report);
-  };
   const dispatch = (command: Parameters<(typeof client.rpc)["commands.dispatch"]>[0]) =>
     void client.rpc["commands.dispatch"](command).then(unwrapRpcResult).catch(report);
   const messageActions = {
@@ -852,7 +847,8 @@ function ChannelScreenFor({
     );
 
   // Docked beside a page, a thread takes the channel's place in the dock, with ‹ back.
-  if (docked && threadPane) return threadPane;
+  if (docked && threadPane)
+    return <TeamFileReadContext value={readFile}>{threadPane}</TeamFileReadContext>;
 
   const sidePane =
     pane === "details" ? (
@@ -883,43 +879,49 @@ function ChannelScreenFor({
         ? ({ kind: "unreachable" } as const)
         : ({ kind: "reconnecting" } as const);
   return (
-    <ChannelScreen
-      banner={
-        <>
-          <ConnectionBanner notice={notice} onRetry={() => client.connect()} team={team.name} />
-          {timeline?.channel?.share?.state === "disconnected" ||
-          timeline?.channel?.share?.updateRequired ? (
-            <p className="team-share-notice" role="status">
-              {channel.shareLabel}. {channel.shareDetail}
-            </p>
-          ) : null}
-        </>
-      }
-      channel={channel}
-      lead={work ? null : drawer ? <DrawerButton /> : <SidebarRestoreButton />}
-      menu={{
-        onOpenDetails: () => setPane("details"),
-        onOpenMembers: () => setPane("members"),
-        onSearch: searchChannel,
-        onMarkRead: () => {
-          const latest = timeline?.messages.at(-1)?.id;
-          if (latest) void client.markRead(channelId, latest).catch(report);
-        },
-        onCopyLink: () =>
-          void navigator.clipboard
-            .writeText(teamPageUrl({ origin: team.origin, target: { kind: "channel", channelId } }))
-            .then(() => toast.success("Link copied"))
-            .catch(report),
-        onLeave: can?.leave ? () => dispatch({ type: "team.channel.leave", channelId }) : undefined,
-      }}
-      onTab={(tab) =>
-        go(channelPath(team.teamId, channelId, { tab: tab === "messages" ? null : tab }))
-      }
-      pane={sidePane}
-      tab={place.tab}
-    >
-      {tabBody}
-    </ChannelScreen>
+    <TeamFileReadContext value={readFile}>
+      <ChannelScreen
+        banner={
+          <>
+            <ConnectionBanner notice={notice} onRetry={() => client.connect()} team={team.name} />
+            {timeline?.channel?.share?.state === "disconnected" ||
+            timeline?.channel?.share?.updateRequired ? (
+              <p className="team-share-notice" role="status">
+                {channel.shareLabel}. {channel.shareDetail}
+              </p>
+            ) : null}
+          </>
+        }
+        channel={channel}
+        lead={work ? null : drawer ? <DrawerButton /> : <SidebarRestoreButton />}
+        menu={{
+          onOpenDetails: () => setPane("details"),
+          onOpenMembers: () => setPane("members"),
+          onSearch: searchChannel,
+          onMarkRead: () => {
+            const latest = timeline?.messages.at(-1)?.id;
+            if (latest) void client.markRead(channelId, latest).catch(report);
+          },
+          onCopyLink: () =>
+            void navigator.clipboard
+              .writeText(
+                teamPageUrl({ origin: team.origin, target: { kind: "channel", channelId } }),
+              )
+              .then(() => toast.success("Link copied"))
+              .catch(report),
+          onLeave: can?.leave
+            ? () => dispatch({ type: "team.channel.leave", channelId })
+            : undefined,
+        }}
+        onTab={(tab) =>
+          go(channelPath(team.teamId, channelId, { tab: tab === "messages" ? null : tab }))
+        }
+        pane={sidePane}
+        tab={place.tab}
+      >
+        {tabBody}
+      </ChannelScreen>
+    </TeamFileReadContext>
   );
 }
 

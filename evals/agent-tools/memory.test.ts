@@ -126,7 +126,7 @@ it("requires quiet background work and one valid notification for important news
     ),
   ).toBe(false);
   const important = cases.find((c) => c.id === "memory-important-item")!.expect;
-  const message = { tool: "person_notify", args: { message: "Important news" }, valid: true };
+  const message = { tool: "send_to_person", args: { message: "Important news" }, valid: true };
   expect(grade(important, [mail, message], "").every((c) => c.pass)).toBe(true);
   expect(grade(important, [mail, { ...message, valid: false }], "").every((c) => c.pass)).toBe(
     false,
@@ -365,13 +365,13 @@ it("accepts source-only tuning and rejects program edits or resuming a paused li
   ).toBe(false);
 });
 
-it("models managed workers without Assignments and gives the deletion reminder a known zone", async () => {
+it("models managed workers without Assignments and sends the deletion reminder from a known zone", async () => {
   const cases = await memoryCases();
   for (const c of cases.filter(
     (entry) => entry.profile === "delegated" && typeof entry.turns[0] !== "string",
   ))
     expect(c.assigned, c.id).toBe(false);
-  expect(cases.find((c) => c.id === "memory-stop-while-running")!.requesterTimeZone).toBe(
+  expect(cases.find((c) => c.id === "memory-stop-while-running")!.origin?.timeZone).toBe(
     "America/New_York",
   );
 });

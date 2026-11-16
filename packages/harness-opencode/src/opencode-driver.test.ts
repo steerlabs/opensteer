@@ -41,8 +41,8 @@ import { TESTED_OPENCODE_VERSION } from "./config.js";
 const noThreadContext = {
   teamTurnContext: null,
   assignment: null,
-  requesterTimeZone: null,
   threadState: { previousAssignment: null, previousRun: null },
+  startedAt: "2026-08-22T00:00:00.000Z",
 };
 
 const fakeServer = fileURLToPath(

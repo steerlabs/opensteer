@@ -56,8 +56,8 @@ import { CodexHarnessConfigSchema, MINIMUM_CODEX_CLI_VERSION } from "./config.js
 const noThreadContext = {
   assignment: null,
   teamTurnContext: null,
-  requesterTimeZone: null,
   threadState: { previousAssignment: null, previousRun: null },
+  startedAt: "2026-08-22T00:00:00.000Z",
 };
 
 const fakeServer = fileURLToPath(
@@ -336,10 +336,13 @@ describe("Codex app-server harness", () => {
       await writer!.note("view during the turn");
       await writer!.speak("finish the turn");
       await vi.waitFor(() => expect(spoken).toEqual(["the reply"]), { timeout: 2000 });
-      await vi.waitFor(async () => expect(await injected()).toHaveLength(1), { timeout: 2000 });
-      expect((await injected())[0]).toContain("view during the turn");
-      await writer!.note("view between turns");
       await vi.waitFor(async () => expect(await injected()).toHaveLength(2), { timeout: 2000 });
+      // The call's clock and where it was placed from went in before realtime started.
+      expect((await injected())[0]).toContain("Now: Saturday, August 22, 2026");
+      expect((await injected())[0]).toContain("Sent: ");
+      expect((await injected())[1]).toContain("view during the turn");
+      await writer!.note("view between turns");
+      await vi.waitFor(async () => expect(await injected()).toHaveLength(3), { timeout: 2000 });
     } finally {
       lifetime.abort();
       await execution;

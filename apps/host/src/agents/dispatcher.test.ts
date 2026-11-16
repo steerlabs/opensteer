@@ -638,52 +638,33 @@ describe("HostCommandDispatcher model selection", () => {
     });
     expect(dispatch).not.toHaveBeenCalled();
   });
-  it("tells the Run the time zone its requester's client last reported", async () => {
-    const { dispatch, requestedBy, run, timeZoneFor } = dispatchRun({
-      models: [gpt5],
-      modelSelection: {
-        modelId: "gpt-5",
-        options: {},
-        providerId: "openai",
-      },
-      requesterTimeZone: "America/New_York",
-    });
-    await run();
-    expect(timeZoneFor).toHaveBeenCalledWith(requestedBy);
-    expect(dispatch).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        context: expect.objectContaining({
-          requesterTimeZone: "America/New_York",
-        }),
-      }),
-      expect.any(AbortSignal),
-      expect.objectContaining({
-        connectionGeneration: 7,
-      }),
-    );
-  });
-  it("says plainly that the requester's time zone is unknown when no client reported one", async () => {
-    const { dispatch, run } = dispatchRun({
-      models: [gpt5],
-      modelSelection: {
-        modelId: "gpt-5",
-        options: {},
-        providerId: "openai",
-      },
-    });
-    await run();
-    expect(dispatch).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        context: expect.objectContaining({
-          requesterTimeZone: null,
-        }),
-      }),
-      expect.any(AbortSignal),
-      expect.objectContaining({
-        connectionGeneration: 7,
-      }),
-    );
-  });
+  it.each([true, false])(
+    "hands a person's message origin only to a Runner that reads it (%s)",
+    async (reads) => {
+      const origin = { app: "ios", device: "phone", timeZone: "Europe/Paris" } as const;
+      const message = {
+        author: { kind: "human", displayName: "Alex", principalId: "principal-alex" },
+        content: [{ type: "text", text: "Remind me at 9" }],
+        createdAt: "2026-10-08T18:13:00.000Z",
+        id: createId("message"),
+        kind: "input",
+      };
+      const { dispatch, run } = dispatchRun({
+        capabilities: [...readerCapabilities, ...(reads ? ["message-origin-v1"] : [])],
+        inputs: [message],
+        inputOrigins: new Map([[message.id, origin]]),
+        models: [gpt5],
+        modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
+      });
+      await run();
+      const sent = dispatch.mock.calls.at(-1)![0] as Extract<
+        RunnerCommand,
+        { type: "run.execute" }
+      >;
+      expect(sent.inputs[0]!.origin).toEqual(reads ? origin : undefined);
+      expect(sent.context).not.toHaveProperty("requesterTimeZone");
+    },
+  );
   it("refuses the new tool plan on an old Runner with a visible update reason", async () => {
     const { dispatch, run } = dispatchRun({
       capabilities: [
@@ -705,30 +686,6 @@ describe("HostCommandDispatcher model selection", () => {
       message: "Update this computer to use Opensteer tools.",
     });
     expect(dispatch).not.toHaveBeenCalled();
-  });
-  it("asks a Runner that cannot carry the requester's time zone to update instead of running", async () => {
-    const { dispatch, run, timeZoneFor } = dispatchRun({
-      capabilities: [
-        "native-session-continuation-v1",
-        "assignments-v1",
-        "thread-state-v1",
-        "execution-plane-v2",
-        "agent-tools-plan-v1",
-      ],
-      models: [gpt5],
-      modelSelection: {
-        modelId: "gpt-5",
-        options: {},
-        providerId: "openai",
-      },
-      requesterTimeZone: "America/New_York",
-    });
-    await expect(run()).rejects.toMatchObject({
-      disposition: "failed",
-      message: "Update this Runner so agents know the person's time zone.",
-    });
-    expect(dispatch).not.toHaveBeenCalled();
-    expect(timeZoneFor).not.toHaveBeenCalled();
   });
   it("asks a Runner that may leave a message steered into a conversation unanswered to update", async () => {
     const older = [
@@ -848,6 +805,13 @@ describe("HostCommandDispatcher model selection", () => {
       admit.mockRestore();
     }
   });
+  const readerCapabilities = [
+    "native-session-continuation-v1",
+    "assignments-v1",
+    "thread-state-v1",
+    "execution-plane-v2",
+    "agent-tools-plan-v1",
+  ];
   function dispatchRun(input: {
     readonly specialistId?: string;
     readonly capabilities?: readonly string[];
@@ -857,7 +821,8 @@ describe("HostCommandDispatcher model selection", () => {
     readonly hasHistoricalAttachments?: boolean;
     readonly models: readonly unknown[];
     readonly modelSelection: unknown;
-    readonly requesterTimeZone?: string | null;
+    readonly inputs?: readonly unknown[];
+    readonly inputOrigins?: ReadonlyMap<string, unknown>;
   }) {
     const models = input.models.map((model) => HarnessModelDescriptorSchema.parse(model));
     const modelSelection = ModelSelectionSchema.parse(input.modelSelection);
@@ -868,7 +833,6 @@ describe("HostCommandDispatcher model selection", () => {
     const runId = createId("run");
     const threadId = createId("thread");
     const dispatch = vi.fn(async (_command: RunnerCommand, _signal: AbortSignal) => undefined);
-    const timeZoneFor = vi.fn(async () => input.requesterTimeZone ?? null);
     const specialistQuery = {
       selectFrom: () => specialistQuery,
       innerJoin: () => specialistQuery,
@@ -919,14 +883,7 @@ describe("HostCommandDispatcher model selection", () => {
         identityForEnvironment: () => ({
           bootId: "boot-run",
           connectionGeneration: 7,
-          capabilities: input.capabilities ?? [
-            "native-session-continuation-v1",
-            "assignments-v1",
-            "thread-state-v1",
-            "requester-time-zone-v1",
-            "execution-plane-v2",
-            "agent-tools-plan-v1",
-          ],
+          capabilities: input.capabilities ?? readerCapabilities,
           name: "Run computer",
           runnerId: computerId,
           modules: { agents: {} },
@@ -976,7 +933,8 @@ describe("HostCommandDispatcher model selection", () => {
             itemCount: 0,
             hasEarlier: false,
           },
-          inputs: [],
+          inputs: input.inputs ?? [],
+          inputOrigins: input.inputOrigins ?? new Map(),
           reports: {
             messages: [],
             omittedCount: 0,
@@ -1002,9 +960,6 @@ describe("HostCommandDispatcher model selection", () => {
             accessMode: "full-access",
           },
         }),
-        notificationState: {
-          timeZoneFor,
-        },
         recordHarnessCatalogs: async ({
           catalogs,
         }: Parameters<OpensteerStore["recordHarnessCatalogs"]>[0]) => catalogs,
@@ -1026,7 +981,6 @@ describe("HostCommandDispatcher model selection", () => {
       dispatch,
       requestedBy,
       run: () => dispatcher.dispatch(command as CommandRow, new AbortController().signal),
-      timeZoneFor,
     };
   }
 });
@@ -1166,6 +1120,7 @@ describe("HostCommandDispatcher run planning", () => {
               hasEarlier: false,
             },
             inputs: [],
+            inputOrigins: new Map(),
             reports: {
               messages: [],
               omittedCount: 0,
@@ -1189,9 +1144,6 @@ describe("HostCommandDispatcher run planning", () => {
               teamOrigin: null,
             },
           }),
-          notificationState: {
-            timeZoneFor: async () => null,
-          },
           recordHarnessCatalogs: async ({
             catalogs,
           }: Parameters<OpensteerStore["recordHarnessCatalogs"]>[0]) => catalogs,

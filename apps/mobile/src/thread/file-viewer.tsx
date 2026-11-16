@@ -14,6 +14,13 @@ import {
   Text,
   View,
 } from "react-native";
+import {
+  ImageHold,
+  openImageSource,
+  personalImageSource,
+  useImageActions,
+  type ImageActionsSource,
+} from "../images/image-actions.js";
 import { shareFileBytes } from "../platform/attachment-draft-files.js";
 import { DeploymentGate, useAttachedHost } from "../screens/deployment-gate.js";
 import { color, radius, space, type } from "../theme.js";
@@ -77,24 +84,31 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
   const file = shown.status === "ok" ? shown : shown.status === "offline" ? shown.cached : null;
   const path = source.kind === "path" ? source.path : null;
   const name = file?.name ?? baseName(path) ?? "Attachment";
+  const imageSource =
+    file === null
+      ? personalImageSource(client, params.threadId, source, name)
+      : openImageSource(client, params.threadId, { ...file, name });
+  const imageActions = useImageActions(imageSource);
   const folder = path === null ? null : path.slice(0, Math.max(0, path.length - name.length - 1));
   const retry = () => setAttempt((count) => count + 1);
   const download =
     file === null
       ? null
-      : () => {
-          setSaving(true);
-          void client.transcriptFiles
-            .download(params.threadId, file.resource)
-            .then(async (result) => {
-              if (result.status === "ok")
-                await shareFileBytes(result.bytes, file.name, result.metadata.contentType);
-              else if (result.status === "unavailable") setShown({ status: "unavailable" });
-              else Alert.alert("Couldn't download this", "Try again.");
-            })
-            .catch(() => Alert.alert("Couldn't download this", "Try again."))
-            .finally(() => setSaving(false));
-        };
+      : file.preview.kind === "image"
+        ? () => imageActions.act("share")
+        : () => {
+            setSaving(true);
+            void client.transcriptFiles
+              .download(params.threadId, file.resource)
+              .then(async (result) => {
+                if (result.status === "ok")
+                  await shareFileBytes(result.bytes, file.name, result.metadata.contentType);
+                else if (result.status === "unavailable") setShown({ status: "unavailable" });
+                else Alert.alert("Couldn't download this", "Try again.");
+              })
+              .catch(() => Alert.alert("Couldn't download this", "Try again."))
+              .finally(() => setSaving(false));
+          };
   return (
     <View style={[styles.screen, { paddingBottom: insets.bottom }]}>
       <View style={[styles.header, { paddingTop: insets.top + space[8] }]}>
@@ -114,11 +128,18 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
             </Text>
           ) : null}
         </View>
+        {file?.preview.kind === "image" ? (
+          <HeaderAction
+            icon="square.on.square"
+            label="Copy"
+            onPress={() => imageActions.act("copy")}
+          />
+        ) : null}
         {download ? (
           <HeaderAction
             disabled={saving}
             icon="square.and.arrow.up"
-            label="Download"
+            label="Share"
             onPress={download}
           />
         ) : null}
@@ -139,7 +160,7 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
             />
           ) : null}
           {file.preview.truncated ? (
-            <Banner text="Only the start of this file is shown. Download it to see all of it." />
+            <Banner text="Only the start of this file is shown. Share it to see all of it." />
           ) : null}
           <TextLines
             endLine={params.endLine ?? params.line ?? null}
@@ -150,6 +171,7 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
       ) : file.preview.kind === "image" ? (
         <TranscriptImageContext value={{ client, threadId: params.threadId }}>
           <ImageSurface
+            actionsSource={imageSource}
             name={file.name}
             onStale={retry}
             revision={file.resource.revision}
@@ -163,7 +185,7 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
             {`${file.mediaType} · ${byteSize(file.sizeBytes)}`}
           </AppText>
           {download ? (
-            <SecondaryButton busy={saving} compact label="Download" onPress={download} />
+            <SecondaryButton busy={saving} compact label="Share" onPress={download} />
           ) : null}
         </View>
       )}
@@ -173,7 +195,7 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
 
 function HeaderAction(props: {
   readonly disabled?: boolean;
-  readonly icon: "square.and.arrow.up" | "xmark";
+  readonly icon: "square.and.arrow.up" | "xmark" | "square.on.square";
   readonly label: string;
   readonly onPress: () => void;
 }): ReactNode {
@@ -300,6 +322,7 @@ function TextLines(props: {
  * Download stays on what is shown.
  */
 function ImageSurface(props: {
+  readonly actionsSource: ImageActionsSource;
   readonly name: string;
   readonly onStale: () => void;
   readonly revision: string;
@@ -325,22 +348,24 @@ function ImageSurface(props: {
           maximumZoomScale={4}
           minimumZoomScale={1}
         >
-          <Image
-            accessibilityLabel={props.name}
-            cachePolicy="memory-disk"
-            contentFit="contain"
-            key={image.retry}
-            onError={image.onError}
-            source={
-              image.image && !stale
-                ? {
-                    cacheKey: `${image.deploymentId}:${image.image.revision}:${variant}:v1`,
-                    uri: image.image.source,
-                  }
-                : null
-            }
-            style={styles.image}
-          />
+          <ImageHold source={props.actionsSource} style={{ flex: 1 }}>
+            <Image
+              accessibilityLabel={props.name}
+              cachePolicy="memory-disk"
+              contentFit="contain"
+              key={image.retry}
+              onError={image.onError}
+              source={
+                image.image && !stale
+                  ? {
+                      cacheKey: `${image.deploymentId}:${image.image.revision}:${variant}:v1`,
+                      uri: image.image.source,
+                    }
+                  : null
+              }
+              style={styles.image}
+            />
+          </ImageHold>
         </ScrollView>
       )}
       {variant === "preview" ? (

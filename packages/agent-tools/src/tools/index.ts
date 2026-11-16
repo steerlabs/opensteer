@@ -33,7 +33,7 @@ import {
   opensteer_task_configure,
   opensteer_task_queue,
 } from "./threads.js";
-import { ask_person, person_notify, person_show } from "./person.js";
+import { ask_person, send_to_person, show_to_person } from "./person.js";
 import { browserTools } from "./browser.js";
 import { computerTools } from "./computer.js";
 import {
@@ -74,8 +74,8 @@ export const agentTools = [
   opensteer_delegation_status,
   opensteer_delegation_cancel,
   ask_person,
-  person_notify,
-  person_show,
+  send_to_person,
+  show_to_person,
   opensteer_task_send,
   opensteer_task_interrupt,
   opensteer_task_update,

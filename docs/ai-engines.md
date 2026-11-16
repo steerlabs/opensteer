@@ -178,9 +178,12 @@ its own rather than inferring it from the ACP version.
 
 Providers cache the prompt as an exact prefix (tools, then system text, then history), so tool
 lists and system or developer text must be byte-identical from Run to Run; anything that changes
-per Run (time, computers, team source, reports) travels with the turn. Codex gets application
-context as keyed turn values, each under its silent 1,000-token truncation, and never retracts a
-dropped key, so the driver keeps every emitted key beside the conversation and empties retired ones
+per Run (time, computers, team source, reports) travels with the turn. A person's app and time
+zone belong to the message they sent (`origin`), never to the person, so devices in different zones
+never overwrite each other, and a stored input renders the same header bytes whenever it is
+replayed. Codex gets application context as keyed turn values, each under its silent 1,000-token
+truncation, and never retracts a dropped key, so the driver keeps every emitted key beside the
+conversation and empties retired ones
 ([additional-context.ts](../packages/harness-codex/src/additional-context.ts)); compaction drops
 those values without Codex resending them, so they are reinjected after the turn completes, never
 during it. Engines without a resumable system channel send stable guidance once per engine process

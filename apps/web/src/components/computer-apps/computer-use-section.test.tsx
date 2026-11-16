@@ -504,6 +504,7 @@ async function mount(input: MountInput) {
     // Stop outcomes are kept per signed-in person on one deployment.
     getSnapshot: () => ({
       deploymentId: "dep_00000000-0000-4000-8000-000000000001",
+      machines: [],
       session: "authenticated",
       user: { id: "usr_00000000-0000-4000-8000-000000000001" },
     }),

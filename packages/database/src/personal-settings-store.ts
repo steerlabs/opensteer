@@ -45,7 +45,6 @@ export async function initializePersonalSettings(
       agentHomeComputerId: agentHome.computerId,
       agentHomePath: agentHome.path,
       voiceThreadId: null,
-      timeZone: null,
       quietTaskDays: 0,
       executionPreferences: emptyExecutionPreferences,
     })

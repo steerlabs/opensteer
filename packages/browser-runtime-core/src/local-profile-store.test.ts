@@ -70,6 +70,56 @@ describe("LocalProfileStore", () => {
     expect(await readFile(path.join(directory, "opensteer.v1.json"))).toEqual(sentinel);
   });
 
+  it("records creation outside the profile so a used profile is never recreated empty", async () => {
+    const { root, store, binding } = await setup();
+    const files = vi.fn(async () => {});
+    const signal = new AbortController().signal;
+    const receipt = path.join(root, "created", `${binding.profileId}.json`);
+    const directory = await store.provision(binding, false, files, signal);
+    expect(JSON.parse(await readFile(receipt, "utf8"))).toEqual({ version: 1, binding });
+    await rm(path.dirname(directory), { recursive: true });
+    await expect(store.provision(binding, false, files, signal)).rejects.toThrow(
+      /established.*missing/,
+    );
+    expect(files).toHaveBeenCalledOnce();
+    expect(await readdir(path.join(root, "profiles"))).toEqual([]);
+    const other = { ...binding, bindingId: "00000000-0000-4000-8000-000000000002" };
+    await expect(store.provision(other, false, files, signal)).rejects.toThrow(/different binding/);
+    expect(files).toHaveBeenCalledOnce();
+  });
+
+  it("heals a receipt lost between publication and its write, and erasure removes it", async () => {
+    const { root, store, binding } = await setup();
+    const signal = new AbortController().signal;
+    const receipt = path.join(root, "created", `${binding.profileId}.json`);
+    const directory = await store.provision(binding, false, async () => {}, signal);
+    await rm(receipt);
+    await store.close();
+    const next = await LocalProfileStore.acquire(root, "chromium");
+    stores.push(next);
+    expect(await next.inventory()).toEqual([{ phase: "ready", binding }]);
+    await expect(readFile(receipt)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await next.provision(binding, false, async () => {}, signal)).toBe(directory);
+    expect(JSON.parse(await readFile(receipt, "utf8"))).toEqual({ version: 1, binding });
+    await next.erase(binding, "00000000-0000-4000-8000-000000000003");
+    await expect(readFile(receipt)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(next.provision(binding, false, async () => {}, signal)).rejects.toThrow(/deleted/);
+  });
+
+  it("refuses a ready profile whose receipt names a different binding", async () => {
+    const { root, store, binding } = await setup();
+    await store.provision(binding, false, async () => {}, new AbortController().signal);
+    await writeFile(
+      path.join(root, "created", `${binding.profileId}.json`),
+      JSON.stringify({
+        version: 1,
+        binding: { ...binding, bindingId: "00000000-0000-4000-8000-000000000002" },
+      }),
+      { mode: 0o600 },
+    );
+    await expect(store.requireReady(binding)).rejects.toThrow(/different binding/);
+  });
+
   it("discards interrupted identity publication without promoting its contents", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "native-atomic-"));
     roots.push(root);
@@ -215,6 +265,7 @@ describe("LocalProfileStore", () => {
     await expect(readFile(path.join(directory, "anything"))).rejects.toMatchObject({
       code: "ENOENT",
     });
+    expect(await readdir(path.join(root, "created"))).toEqual([]);
     expect(await next.inventory()).toEqual([
       {
         phase: "deleted",

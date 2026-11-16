@@ -399,15 +399,14 @@ export function durableHistoryWindowNotice(context: HarnessSessionContext): stri
 
 /**
  * What the Host stated about a Run's Thread when it dispatched the Run: the
- * task the Run belongs to, the requester's time zone, and what the engine's
- * own history cannot show.
+ * task the Run belongs to and what the engine's own history cannot show.
  */
 export interface HarnessRunContext {
   readonly teamTurnContext: TeamTurnContext | null;
   readonly assignment: AssignmentRunContext | null;
-  /** An IANA name as the Host accepted it, which this Runner may not know. */
-  readonly requesterTimeZone: string | null;
   readonly threadState: RunThreadState;
+  /** When this computer started the Run; every rendering of its context reads this, never the clock. */
+  readonly startedAt: string;
 }
 
 export interface HarnessRunInput {

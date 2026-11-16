@@ -279,7 +279,19 @@ describe("owner-session computer app approvals", () => {
       ownerUserId,
     });
     expect(review.app?.path).toBe("/System/Applications/Notes.app");
+    expect(review.name).toBe(app.displayName);
     expect(computerUse.resolveApp).toHaveBeenCalledWith({ app: app.bundleId, deviceId });
+  });
+  it("names an app that has no Mac identity by its catalog title, not its id", async () => {
+    const { service } = fixture({ ...request, app: null, definitionId: "iphone-location" });
+    const review = await service.reviewComputerAppSetup({
+      setupRequestId: request.id,
+      ownerUserId,
+    });
+    expect(review.name).toBe(
+      integrationDefinitions.find(({ id }) => id === "iphone-location")!.name,
+    );
+    expect(review.name).not.toBe("iphone-location");
   });
   it("never consults the helper for a non-owner", async () => {
     const { service, store, computerUse } = fixture();

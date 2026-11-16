@@ -183,7 +183,6 @@ export class AdministrationService {
     if (
       command.type.startsWith("harness.") ||
       command.type === "execution.preferences.remember" ||
-      command.type === "viewer.timeZone.update" ||
       command.type === "viewer.quietTasks.update" ||
       command.type === "settings.idleCompaction.set" ||
       command.type === "browser.site.remove"
@@ -376,14 +375,7 @@ export class AdministrationService {
         };
       }
       case "viewer.timeZone.update":
-        return {
-          timeZone: await dependencies.store.notificationState.setTimeZone({
-            administration,
-            timeZone: command.timeZone,
-            userId,
-          }),
-          type: command.type,
-        };
+        return { timeZone: command.timeZone, type: command.type };
 
       case "execution.preferences.remember": {
         // A preference is a hint the Host re-validates when a Thread actually

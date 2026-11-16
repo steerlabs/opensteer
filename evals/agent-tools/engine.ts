@@ -269,11 +269,11 @@ export async function runEngine(input: {
                 }
               : null,
           teamTurnContext: c.teamContext ?? null,
-          requesterTimeZone: c.requesterTimeZone ?? null,
           threadState: { previousAssignment: null, previousRun: null },
+          startedAt: new Date().toISOString(),
         },
         environment: p.environment,
-        inputs: [inputForCaseTurn(turn)],
+        inputs: [inputForCaseTurn(turn, c.origin)],
         reports: { messages: [], omittedCount: 0, throughSequence: null },
         runId: createId("run"),
         requestedBy: host.scope.requestedBy,

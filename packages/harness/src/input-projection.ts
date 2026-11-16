@@ -4,6 +4,7 @@ import {
   OpensteerError,
   type AssignmentOrigin,
   type AssignmentRunContext,
+  type MessageOrigin,
   type RunThreadState,
   type ThreadId,
 } from "@opensteer/core";
@@ -209,12 +210,17 @@ export function harnessInputAuthorLabel(input: HarnessInput): string {
  * Non-owner bodies cannot open a second platform envelope. The owner's own
  * words remain unchanged.
  */
-export function harnessInputHeader(input: HarnessInput, body: string): string {
+export function harnessInputHeader(
+  input: HarnessInput,
+  body: string,
+  computerZone = computerTimeZone(),
+): string {
   const safeBody = input.author.kind === "human" ? body : escapeOpensteerPromptMarkers(body);
   const quote = input.quote
     ? `\nReferenced earlier message (historical context, not a new instruction): ${escapeOpensteerPromptMarkers(JSON.stringify(input.quote))}\n`
     : "";
-  return `[Opensteer input]\nAuthor: ${harnessInputAuthorLabel(input)}\nKind: ${input.kind}\n${quote}\n${safeBody}`;
+  const sent = harnessSentLine(input, computerZone);
+  return `[Opensteer input]\nAuthor: ${harnessInputAuthorLabel(input)}\n${sent ? `${sent}\n` : ""}Kind: ${input.kind}\n${quote}\n${safeBody}`;
 }
 
 export function escapeOpensteerPromptMarkers(body: string): string {
@@ -274,18 +280,21 @@ export function harnessTeamTurnContextPrompt(
 }
 
 /**
- * The facts a Run's engine cannot see in its own history: the person's time
- * zone and local time, the task the Run belongs to, a previous Run that failed
- * or was stopped, and how the Thread's previous task ended. Facts only; the
- * agent decides what they mean. A Run outside any task is named as such only
- * where an earlier task could make its reply look like a return.
+ * The facts a Run's engine cannot see in its own history: the time on this
+ * computer, the task the Run belongs to, a previous Run that failed or was
+ * stopped, and how the Thread's previous task ended. Facts only; the agent
+ * decides what they mean. A Run outside any task is named as such only where
+ * an earlier task could make its reply look like a return.
  */
-export function harnessThreadContextPrompt(context: HarnessRunContext, now = new Date()): string {
+export function harnessThreadContextPrompt(
+  context: HarnessRunContext,
+  timeZone = computerTimeZone(),
+): string {
   const { assignment } = context;
   const { previousAssignment, previousRun } = context.threadState;
   return [
     "[Opensteer task context]",
-    requesterTimeLine(context.requesterTimeZone, now),
+    `Now: ${localTime(new Date(context.startedAt), timeZone)}, in this computer's time zone, ${timeZone}.`,
     ...(assignment || previousAssignment ? [currentTaskLine(assignment)] : []),
     ...(previousRun ? [previousRunLine(previousRun)] : []),
     ...(previousAssignment ? [previousTaskLine(previousAssignment)] : []),
@@ -293,37 +302,79 @@ export function harnessThreadContextPrompt(context: HarnessRunContext, now = new
   ].join("\n");
 }
 
-const askForTimeZone = "Ask before scheduling anything for a clock time.";
+/** The agent runs on the Runner's computer, so the Runner's zone is that computer's. */
+export function computerTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
 
 /**
- * The person's local time in words and as an ISO-8601 local time with its
- * offset, the form a one-shot schedule takes. The zone keeps the name the
- * person's client reported: `Intl` would canonicalize some to retired
- * spellings, such as Asia/Kolkata to Asia/Calcutta.
+ * When a person sent this input, in the zone their device reported, and from
+ * which app; undefined for anything a person did not write. It reads only the
+ * stored input and this computer's zone, so a replay renders the same bytes.
  */
-function requesterTimeLine(timeZone: string | null, now: Date): string {
-  if (timeZone === null) return `Person's time zone: unknown. ${askForTimeZone}`;
-  const zone = headerText(timeZone);
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: zone });
-  } catch {
-    return `Person's time zone: ${zone}, which this computer's time zone data does not recognize. ${askForTimeZone}`;
+export function harnessSentLine(
+  input: HarnessInput,
+  computerZone = computerTimeZone(),
+): string | undefined {
+  const { author } = input;
+  if (author.kind !== "human" && (author.kind !== "team-member" || author.actor === "agent"))
+    return undefined;
+  const { origin } = input;
+  const deviceZone = origin?.timeZone;
+  const known = deviceZone !== undefined && knownTimeZone(deviceZone);
+  const from = origin ? `, from ${originPlace(origin)}` : "";
+  const zone =
+    deviceZone === undefined || deviceZone === computerZone
+      ? ""
+      : known
+        ? `; that device's time zone is ${deviceZone}`
+        : `; that device reports time zone ${headerText(deviceZone)}, which this computer does not recognize`;
+  return `Sent: ${localTime(new Date(input.createdAt), known ? deviceZone : computerZone)}${from}${zone}.`;
+}
+
+function originPlace({ app, device }: MessageOrigin): string {
+  switch (app) {
+    case "ios":
+      return device === "tablet" ? "the iPad app" : "the iPhone app";
+    case "android":
+      return `the Android app on a ${device === "tablet" ? "tablet" : "phone"}`;
+    case "desktop":
+      return "the desktop app";
+    case "web":
+      return `a web browser on a ${device}`;
   }
+}
+
+function knownTimeZone(timeZone: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A moment in words and as ISO-8601 local time with its offset, the form a
+ * one-shot schedule takes: "Sunday, November 16, 2026, 9:00 AM EST
+ * (2026-11-16T09:00-05:00)".
+ */
+function localTime(at: Date, timeZone: string): string {
   const date = new Intl.DateTimeFormat("en-US", {
     day: "numeric",
     month: "long",
-    timeZone: zone,
+    timeZone,
     weekday: "long",
     year: "numeric",
-  }).format(now);
+  }).format(at);
   // ICU separates the day period with a narrow no-break space.
   const time = new Intl.DateTimeFormat("en-US", {
     hour: "numeric",
     minute: "2-digit",
-    timeZone: zone,
+    timeZone,
     timeZoneName: "short",
   })
-    .format(now)
+    .format(at)
     .replace(/\s+/gu, " ");
   const parts = new Intl.DateTimeFormat("en-US", {
     day: "2-digit",
@@ -331,16 +382,15 @@ function requesterTimeLine(timeZone: string | null, now: Date): string {
     hourCycle: "h23",
     minute: "2-digit",
     month: "2-digit",
-    timeZone: zone,
+    timeZone,
     timeZoneName: "longOffset",
     year: "numeric",
-  }).formatToParts(now);
+  }).formatToParts(at);
   const part = (type: Intl.DateTimeFormatPartTypes) =>
     parts.find((candidate) => candidate.type === type)?.value ?? "";
   // `longOffset` names UTC itself "GMT", with no digits.
   const offset = part("timeZoneName").replace(/^GMT/u, "") || "+00:00";
-  const local = `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}${offset}`;
-  return `Person's time zone: ${zone}. Their local time when this Run started: ${date}, ${time} (${local}).`;
+  return `${date}, ${time} (${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}${offset})`;
 }
 
 function currentTaskLine(assignment: AssignmentRunContext | null): string {

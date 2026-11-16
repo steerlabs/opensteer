@@ -64,7 +64,9 @@ integration("workspace tabs", () => {
       tabs.open(window, "window"),
     ]);
     expect(results[0]!.tabIds).toEqual(results[1]!.tabIds);
-    const ids = [results[0]!.tabIds[0]!, app.id, window.id];
+    // Either concurrent open may win, and its id becomes the phone's.
+    const phoneId = results[0]!.tabIds[0]!;
+    const ids = [phoneId, app.id, window.id];
     const grouped = await tabs.organize(
       ownerId,
       { tabIds: ids, group: { name: "Work", color: "blue" } },
@@ -84,9 +86,9 @@ integration("workspace tabs", () => {
     const reopened = await tabs.reopen(ownerId, app.id, "reopen");
     expect(tabLayoutIds(reopened.layout)).toEqual(ids);
     expect(await tabs.get(ownerId, app.id)).toMatchObject({ id: app.id, generation: 3 });
-    await tabs.close(ownerId, [phone.id], "close-phone");
-    expect((await tabs.open({ ...phone, id: id() }, "reopen-phone")).tabIds).toEqual([phone.id]);
-    expect(await tabs.get(ownerId, phone.id)).toMatchObject({ generation: 3 });
+    await tabs.close(ownerId, [phoneId], "close-phone");
+    expect((await tabs.open({ ...phone, id: id() }, "reopen-phone")).tabIds).toEqual([phoneId]);
+    expect(await tabs.get(ownerId, phoneId)).toMatchObject({ generation: 3 });
     expect((await tabs.snapshot(ownerId)).rows).toHaveLength(3);
   });
   it("moves whole groups, rejects stale anchors atomically, retains empty groups and dissolves in place", async () => {

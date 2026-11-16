@@ -692,7 +692,6 @@ describe("wire protocol", () => {
         providerSessionReference: null,
         providerSessionStateLayout: "session",
         requestedBy: createId("user"),
-        requesterTimeZone: "America/New_York",
         runId: createId("run"),
         threadId,
       },

@@ -10,7 +10,7 @@ import {
 import { useHostSelector } from "@opensteer/client/react";
 import type { ComputerView } from "@opensteer/protocol";
 import { actionErrorMessage, usePageVisible } from "../../ui-utils.js";
-import { AppMark } from "../computer-apps/computer-use-section.js";
+import { AppMark } from "../computer-apps/app-icons.js";
 import { ComputerStopButton } from "../computer-watch.js";
 import { ComputerDisplayScreen, PhoneControlBar, useComputerDisplay } from "../phone-display.js";
 import {

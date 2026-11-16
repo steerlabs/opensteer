@@ -28,36 +28,13 @@ describe("readBrowserRuntimeConfig", () => {
     expect(
       readBrowserRuntimeConfig({
         ...base,
-        OPENSTEER_BROWSER_PROFILE_READY_INTERNAL_URL: "http://host:4310",
         OPENSTEER_BROWSER_PROXY_URL: "http://browser-egress:4313",
         OPENSTEER_CHROMIUM_SANDBOX: "true",
       }),
     ).toMatchObject({
       chromiumSandbox: true,
-      profileReadyTrustedHttpOrigin: "http://host:4310",
       proxyUrl: "http://browser-egress:4313",
     });
-  });
-
-  it("accepts only one explicit private HTTP origin for Host profile state", () => {
-    const base = {
-      OPENSTEER_BROWSER_ATTACH_PUBLIC_KEYS: JSON.stringify({ host: publicKey }),
-      OPENSTEER_BROWSER_PROFILE_ROOT: "/profiles",
-      OPENSTEER_BROWSER_RUNTIME_ID: "runtime_main",
-      OPENSTEER_CHROMIUM_EXECUTABLE: "/usr/bin/chromium",
-    };
-    expect(
-      readBrowserRuntimeConfig({
-        ...base,
-        OPENSTEER_BROWSER_PROFILE_READY_INTERNAL_URL: "http://host:4310",
-      }).profileReadyTrustedHttpOrigin,
-    ).toBe("http://host:4310");
-    expect(() =>
-      readBrowserRuntimeConfig({
-        ...base,
-        OPENSTEER_BROWSER_PROFILE_READY_INTERNAL_URL: "http://host:4310/private",
-      }),
-    ).toThrow(/HTTP origin/i);
   });
 
   it("allows dynamic Host key bootstrap only when a device bridge token is configured", () => {

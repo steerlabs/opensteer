@@ -168,6 +168,21 @@ it("downloads schema-checked bytes on demand and coalesces identical resource re
   expect(openFile).not.toHaveBeenCalled();
   readFile.mockRejectedValueOnce(new OpensteerError({ code: "not_found", message: "Missing" }));
   expect(await controller.download(threadId, resource)).toEqual({ status: "unavailable" });
+  // A copy or save knows only the source: it reads the revision the open names.
+  expect(await controller.original(threadId, source)).toEqual({
+    status: "ok",
+    name: "report.txt",
+    mediaType: "text/plain",
+    bytes: new Uint8Array([1, 2, 3]),
+  });
+  expect(readFile).toHaveBeenLastCalledWith(
+    { threadId, resource: { kind: "home", key: "opaque", revision: "1" } },
+    expect.any(AbortSignal),
+  );
+  openFile.mockResolvedValueOnce({ status: "unavailable" });
+  expect(await controller.original(threadId, { kind: "path", path: "/gone" })).toEqual({
+    status: "unavailable",
+  });
 });
 it("shows an opened image from the preview its open minted, without minting it again", async () => {
   const assetUrls = vi.fn(async () => ({ assets: [] }));

@@ -692,5 +692,22 @@
       "Working tree from base 059294a2e05a80f2f348cbfb7625e1cff26fc0aa, including the starting-Run admission change. Reproduced in this investigation: the first complete-file run passed; a planned four-worker run alongside identities, editing and viewer plus two headless browser workers failed the unchanged 5,000 ms initial cold catalog deadline. Diagnostics at 5,712 ms showed 109 complete groups of 64 tabs, 41 empty groups and the 110th group still streaming. Teardown finished; this is not the historical browser-shutdown stall.",
       "Command: OPENSTEER_LOCK_ORDER_MODE=enforce pnpm test:integration -- apps/host/src/browser/browser-presence.integration.test.ts tests/browser-sessions-identities.integration.test.ts tests/browser-sessions-viewer.integration.test.ts apps/host/src/browser/browser-editing.integration.test.ts, concurrent with the four selected real-browser files. Evidence: /tmp/opensteer-browser-flakes.o7v38s/integration-load-1.log. Acceptance: measure source projection, publication and shared-client application separately; reproduce the responsible bound with controlled ordering, keep all 150 × 64 identities and 64 × 16 occupants, and retain the 5,000 ms deadline."
     ]
+  },
+  {
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "quarantined",
+    "firstSeen": "2026-11-16T02:10:51Z",
+    "deadline": "2026-11-23T02:10:51Z",
+    "sha": "1a0d6b311bec7c55b602285f0b633e5bbda4e26b",
+    "file": "tests/browser-sessions-context.integration.test.ts",
+    "name": [
+      "Browser Sessions through a whole deployment",
+      "answers dialogs through the Host's CDP route without waiting on the command a dialog blocks"
+    ],
+    "evidence": [
+      "Fails intermittently since #638 (unified tabs, Browser Harness openPage and the reworked agent CDP bridge): on its branch at 03bdfdb28 (https://github.com/steerlabs/opensteer/actions/runs/43790574948), on main at 1a0d6b311 (https://github.com/steerlabs/opensteer/actions/runs/43922680655) and on a docs-only PR at a0d74d4a1 (https://github.com/steerlabs/opensteer/actions/runs/43925614504). Main passed on the runs between them.",
+      "Measured locally with the silence window widened: no program hung. Under load (load average 30-110) single Browser Harness programs took 5-15.4 s and every one finished; one dialog answer alone took 6.5 s. Before the fake engine reported progress, a turn of four or five programs exceeded waitForInput's 15 s no-event window (2 of 3 runs failed). With each program reported as a Codex command item, 17 of 18 runs passed; the failure was one program still running after 15 s at moderate load. Remaining work: why a single program can take over 15 s under load (gotoUrl/waitForLoad, Page.handleJavaScriptDialog latency through the agent CDP bridge)."
+    ]
   }
 ]

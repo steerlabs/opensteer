@@ -2,7 +2,6 @@ import { DeviceIdSchema } from "@opensteer/core";
 import { sql } from "kysely";
 import {
   createId,
-  TimeZoneSchema,
   ThreadAccessModeSchema,
   type HarnessInstanceId,
   type MessageId,
@@ -28,12 +27,12 @@ import {
 import { expect, vi } from "vitest";
 import { MemoryPassService, memoryPassWaitingReason } from "./memory-pass-service.js";
 import { memoryPassProgram } from "./memory-pass-program.js";
+const computerZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 async function fixture(
   f: StoreFixture,
   suffix: string,
   options: {
     light?: boolean;
-    zone?: boolean;
     accessMode?: Thread["accessMode"];
   } = {},
 ) {
@@ -45,13 +44,6 @@ async function fixture(
       modelSelection: base.thread.modelSelection,
     },
   });
-  if (options.zone === false)
-    await f.database.updateTable("personalSettings").set({ timeZone: null }).execute();
-  if (options.zone !== false)
-    await f.store.notificationState.setTimeZone({
-      userId: base.userId,
-      timeZone: TimeZoneSchema.parse("America/New_York"),
-    });
   await f.database
     .updateTable("runners")
     .set({
@@ -407,7 +399,7 @@ describeStore("managed memory passes", (it) => {
       schedule: {
         kind: "cron",
         expression: "*/30 8-22 * * *",
-        timezone: "America/New_York",
+        timezone: computerZone,
       },
     });
     expect(nightly.revision.source).toEqual({
@@ -415,7 +407,7 @@ describeStore("managed memory passes", (it) => {
       schedule: {
         kind: "cron",
         expression: "0 3 * * *",
-        timezone: "America/New_York",
+        timezone: computerZone,
       },
     });
     expect(await f.database.selectFrom("runs").selectAll().execute()).toHaveLength(0);
@@ -508,21 +500,14 @@ describeStore("managed memory passes", (it) => {
     });
     expect((await role(f, base.userId, "memory-nightly")).trigger.status).toBe("active");
   });
-  it("defers missing owner setup, no zone and unreadable files, but never waits on a model", async ({
+  it("defers missing owner setup and unreadable files, but never waits on a model", async ({
     storeFixture: f,
   }) => {
     await service(f).instance.ensureForPersonal();
     const base = await fixture(f, "prerequisites", {
-      zone: false,
       light: false,
     });
     const s = service(f);
-    await s.instance.ensureForPersonal();
-    expect(s.preview).not.toHaveBeenCalled();
-    await f.store.notificationState.setTimeZone({
-      userId: base.userId,
-      timeZone: TimeZoneSchema.parse("UTC"),
-    });
     s.preview.mockRejectedValueOnce(new Error("Storage unreadable"));
     await s.instance.ensureForPersonal();
     expect(

@@ -76,6 +76,8 @@ import {
   compatibleModelDescriptors,
   compatibleModelHint,
   compatibleEndpointHost,
+  harnessSentLine,
+  harnessThreadContextPrompt,
   harnessTurnPreamble,
   nativeImageBase64Budget,
   nativeImageNeedsPreparation,
@@ -1557,6 +1559,25 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       });
       this.#ensureRunStarted(active);
       active.root = "idle";
+      // Before realtime starts, so no turn is running to lose its spoken reply.
+      const seed = run.inputs.find(isVoiceCallSeed);
+      await client.request("thread/inject_items", {
+        threadId,
+        items: [
+          {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: [harnessThreadContextPrompt(run.context), seed && harnessSentLine(seed)]
+                  .filter(Boolean)
+                  .join("\n"),
+              },
+            ],
+          },
+        ],
+      });
       await startRealtime(client, threadId, call, this.#config.startupTimeoutMs);
       await withTimeout(this.#voiceSdp.promise, this.#config.startupTimeoutMs, {
         signal: call.signal,

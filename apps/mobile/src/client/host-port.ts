@@ -19,7 +19,7 @@ import {
   type HostCapabilityReader,
   type BrowserPreferencesStorage,
 } from "@opensteer/client/host";
-import { DeploymentIdSchema, type DeploymentId } from "@opensteer/core";
+import { DeploymentIdSchema, type DeploymentId, type MessageOrigin } from "@opensteer/core";
 import type { HostCapability } from "@opensteer/deployment-authority";
 import { isSameHost } from "@opensteer/deployment-authority";
 import {
@@ -90,6 +90,7 @@ export function createNetworkHostPort(options: {
   readonly fetch: HostFetch;
   readonly lifecycle: ClientLifecycle;
   readonly now: () => Date;
+  readonly origin: Omit<MessageOrigin, "timeZone">;
   readonly openWebSocket: (
     url: string,
     headers: Readonly<Record<string, string>>,
@@ -150,6 +151,7 @@ export function createNetworkHostPort(options: {
         capabilities,
         fetch: network.fetch,
         lifecycle: options.lifecycle,
+        origin: options.origin,
         webSocketFactory: network.webSocketFactory,
       });
       registerPhoneEnrollmentHost(client, {

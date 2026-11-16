@@ -33,7 +33,7 @@ import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import * as WebBrowser from "expo-web-browser";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AppState, Platform, StyleSheet, View } from "react-native";
+import { AppState, Dimensions, Platform, StyleSheet, View } from "react-native";
 import {
   NavigationContainerRefContext,
   StackActions,
@@ -351,6 +351,17 @@ function mobileClient(): MobileRoot {
           lifecycle,
           now: () => new Date(),
           openWebSocket: openReactNativeSocket,
+          origin: {
+            app: Platform.OS === "ios" ? "ios" : "android",
+            // Android names no tablet; 600dp is its own large-screen breakpoint.
+            device: (
+              Platform.OS === "ios"
+                ? Platform.isPad
+                : Math.min(Dimensions.get("screen").width, Dimensions.get("screen").height) >= 600
+            )
+              ? "tablet"
+              : "phone",
+          },
         }),
     iphoneApps: iphone.owner,
     oauthIdentity,

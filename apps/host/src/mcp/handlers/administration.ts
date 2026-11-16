@@ -125,41 +125,25 @@ export class AdministrationToolHandlers {
     }
   }
   async defaultsCommands(c: ToolCall<"opensteer_defaults_update">) {
-    const { selection, accessMode, timeZone } = c.input;
+    const { selection, accessMode } = c.input;
     const account = selection
       ? await this.#account(c.caller.userId, selection.aiAccountId)
       : undefined;
+    if (!account && !accessMode) return [];
     return [
-      ...(account || accessMode
-        ? [
-            this.#write(c, "opensteer_defaults_update", {
-              type: "execution.preferences.remember",
-              ...(accessMode ? { accessMode } : {}),
-              ...(account && selection
-                ? {
-                    selection: {
-                      environmentId: account.environmentId,
-                      harnessInstanceId: account.id,
-                      modelSelection: selection.model,
-                    },
-                  }
-                : {}),
-            }),
-          ]
-        : []),
-      ...(timeZone
-        ? [
-            command({
-              type: "viewer.timeZone.update",
-              timeZone,
-              idempotencyKey: operationId(
-                c.caller,
-                c.operationKey,
-                "opensteer_defaults_update:time_zone",
-              ),
-            }),
-          ]
-        : []),
+      this.#write(c, "opensteer_defaults_update", {
+        type: "execution.preferences.remember",
+        ...(accessMode ? { accessMode } : {}),
+        ...(account && selection
+          ? {
+              selection: {
+                environmentId: account.environmentId,
+                harnessInstanceId: account.id,
+                modelSelection: selection.model,
+              },
+            }
+          : {}),
+      }),
     ];
   }
   computerCommand(c: ToolCall<"computer_update"> | ToolCall<"computer_remove">) {
@@ -274,12 +258,11 @@ export class AdministrationToolHandlers {
   async opensteer_defaults_read({ caller }: ToolCall<"opensteer_defaults_read">) {
     const store = this.service.dependencies.store;
     await this.service.actor(caller);
-    const [preferences, timeZone, owner] = await Promise.all([
+    const [preferences, owner] = await Promise.all([
       store.getExecutionPreferences(caller.userId),
-      store.notificationState.timeZoneFor(caller.userId),
       store.ownerProfile.read(),
     ]);
-    return { ...defaultsView(preferences), timeZone, ownerName: owner?.name ?? null };
+    return { ...defaultsView(preferences), ownerName: owner?.name ?? null };
   }
   async opensteer_defaults_update(c: ToolCall<"opensteer_defaults_update">) {
     let changed: Record<string, unknown> = { ok: true };
@@ -287,7 +270,6 @@ export class AdministrationToolHandlers {
       const output = await this.service.execute(c.caller, next);
       if (output.type === "execution.preferences.remember")
         changed = { ...changed, ...defaultsView(output.preferences) };
-      if (output.type === "viewer.timeZone.update") changed.timeZone = output.timeZone;
     }
     return changed;
   }

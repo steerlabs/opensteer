@@ -29,6 +29,12 @@ export function encodeBase64Url(bytes: Uint8Array): string {
   return output;
 }
 
+/** Padded standard base64, as native image and clipboard APIs take it. */
+export function encodeBase64(bytes: Uint8Array): string {
+  const raw = encodeBase64Url(bytes).replaceAll("-", "+").replaceAll("_", "/");
+  return raw.padEnd(Math.ceil(raw.length / 4) * 4, "=");
+}
+
 /** Throws unless `value` is the one canonical spelling of the bytes it names. */
 export function decodeBase64Url(value: string): Uint8Array {
   // A final group of one character carries six bits, which cannot complete a

@@ -108,7 +108,6 @@ describeStore("MCP administration", (it) => {
     "set_default",
     "set_model_limits",
     "remember_execution",
-    "set_time_zone",
     "computer_rename",
   ] as const) {
     it(`replays ${action} after a person changes it and refuses changed input`, async ({
@@ -201,17 +200,6 @@ describeStore("MCP administration", (it) => {
             idempotencyKey: randomUUID(),
           };
           observe = () => f.store.getExecutionPreferences(run.userId);
-          break;
-        case "set_time_zone":
-          name = "opensteer_defaults_update";
-          input = { timeZone: "UTC" };
-          different = { timeZone: "Europe/Paris" };
-          person = {
-            type: "viewer.timeZone.update",
-            timeZone: "America/New_York",
-            idempotencyKey: randomUUID(),
-          };
-          observe = () => f.store.notificationState.timeZoneFor(run.userId);
           break;
         case "computer_rename":
           name = "computer_update";

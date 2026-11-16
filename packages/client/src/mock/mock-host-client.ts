@@ -9111,6 +9111,11 @@ class MockHostState {
             running: false,
           }
         : null,
+      name:
+        request.app?.displayName ??
+        request.server?.installationTitle ??
+        mockIphoneAppDefinitions.find(({ id }) => id === request.definitionId)?.name ??
+        request.definitionId,
     };
   }
   async respondComputerAppSetup(setupRequestId: string, decision: "allow" | "deny"): Promise<void> {

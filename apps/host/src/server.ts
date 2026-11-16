@@ -112,7 +112,6 @@ import {
 } from "@opensteer/control-plane-protocol";
 import {
   AttachmentIdSchema,
-  BrowserProfileIdSchema,
   CommandIdSchema,
   EnvironmentIdSchema,
   HarnessInstanceIdSchema,
@@ -330,7 +329,7 @@ import {
   setBrowserSourceExtensionCors,
   type BrowserSourceRpcOptions,
 } from "./server/browser-source-registration.js";
-import { drainConnectionsWithin } from "./server/connection-drain.js";
+import { closeWebSocketsWithin } from "./server/connection-drain.js";
 import type { EgressService } from "./server/egress-service.js";
 import { createHostApiHandlers, type CoreCommand } from "./server/host-api-handlers.js";
 import { installPersonalVersionGate, registerHostApi } from "./server/host-api-registration.js";
@@ -338,7 +337,6 @@ import { unversionedRoute } from "./server/unversioned-route.js";
 import { normalizeHostError } from "./server/http-errors.js";
 import { installHostHttpBoundary } from "./server/host-http-boundary.js";
 import { hostInternalRoutePaths } from "./server/internal-routes.js";
-import { requestAbortSignal } from "./server/request-abort-signal.js";
 import { registerResponseCompression } from "./server/response-compression.js";
 import type { HostStaticDistribution } from "./server/static-distribution.js";
 import {
@@ -532,7 +530,7 @@ export async function createHostServer(
       maxPayload: maxBrowserRelayFrameBytes,
       perMessageDeflate: false,
     },
-    preClose: closeWebSocketsWithin(webSocketShutdownGraceMs),
+    preClose: closeWebSocketsWithin(webSocketShutdownGraceMs, httpShutdownGraceMs),
   });
   app.addContentTypeParser(
     ["application/octet-stream", "application/x-www-form-urlencoded", "text/plain"],
@@ -960,18 +958,6 @@ export async function createHostServer(
         .send(await localBootstrap.describe(request.headers.authorization));
     });
   }
-
-  app.post<{ Params: { profileId: string } }>(
-    "/v1/browser-profiles/:profileId/ready",
-    async (request, reply) => {
-      await dependencies.browser.acknowledgeNativeProfileReady(
-        BrowserProfileIdSchema.parse(request.params.profileId),
-        requireBearerToken(request),
-        requestAbortSignal(request.raw, reply.raw),
-      );
-      return { ready: true };
-    },
-  );
 
   const requireRpcSession = (context: HostApiServerContext) => {
     if (!context.session) {
@@ -3241,6 +3227,7 @@ export function advertisedCapabilities(
     ...(dependencies.notificationPreviews ? ["notification-preview-v1" as const] : []),
     "voice-run-v1",
     "thread-titles-v1",
+    "message-origin-v1",
     "task-marks-v1",
     "task-family-v1",
     "snapshot-messages-omit-v1",
@@ -4338,34 +4325,6 @@ function attachRealtimeSocket(
       }
     }
   })().catch(failed);
-}
-
-/**
- * Ends every WebSocket when the Host stops. Each is asked to close first, so a
- * live peer hears why; one that has not finished closing by the deadline is
- * terminated. A peer whose transport is already gone never answers a close
- * frame, and waiting out the socket's own thirty-second close timeout would
- * hold a Host restart hostage to the slowest dead connection.
- */
-function closeWebSocketsWithin(graceMs: number): (this: FastifyInstance, done: () => void) => void {
-  return function preClose(done) {
-    // Fastify closes the HTTP server once this finishes; the drain then keeps
-    // a request answered mid-shutdown from holding it in keep-alive.
-    drainConnectionsWithin(this.server, httpShutdownGraceMs);
-    const server = this.websocketServer;
-    for (const client of server.clients) client.close(1001, "Host is shutting down");
-    const deadline = setTimeout(() => {
-      for (const client of server.clients) client.terminate();
-    }, graceMs);
-    deadline.unref();
-    server.close(() => {
-      clearTimeout(deadline);
-      done();
-    });
-    if (server.clients.size === 0) {
-      clearTimeout(deadline);
-    }
-  };
 }
 
 function jsonPeer<Message>(

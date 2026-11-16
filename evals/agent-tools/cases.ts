@@ -2,7 +2,8 @@ import { z } from "zod";
 import {
   createId,
   ThreadAccessModeSchema,
-  TimeZoneSchema,
+  MessageOriginSchema,
+  type MessageOrigin,
   TeamTurnContextSchema,
 } from "@opensteer/core";
 import { HarnessInputSchema } from "@opensteer/protocol";
@@ -203,7 +204,8 @@ export const CaseSchema = z
     machineAccessNotice: z.string().min(1).optional(),
     /** The operating system of the computer hosting the Run, as its Runner reports it. */
     hostingPlatform: z.enum(["darwin", "linux", "win32"]).default("darwin"),
-    requesterTimeZone: TimeZoneSchema.optional(),
+    /** Where the person's turns come from, as their app states it. */
+    origin: MessageOriginSchema.optional(),
     engines: z
       .array(z.enum(["claude", "codex", "cursor", "opencode", "pi"]))
       .min(1)
@@ -301,8 +303,10 @@ export function parseCases(text: string): EvalCase[] {
   return cases;
 }
 
-export function inputForCaseTurn(turn: EvalCase["turns"][number]) {
+export function inputForCaseTurn(turn: EvalCase["turns"][number], origin?: MessageOrigin) {
+  const human = typeof turn === "string" || turn.author.kind === "human";
   return HarnessInputSchema.parse({
+    ...(origin && human ? { origin } : {}),
     author:
       typeof turn === "string"
         ? { kind: "human", displayName: "Eval user", principalId: "eval" }

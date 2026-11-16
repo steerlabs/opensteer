@@ -1192,6 +1192,8 @@ export interface HostClient extends TabsClient {
   ): Promise<{ readonly applied: boolean }>;
 
   dispatch(command: ClientCommandInput): Promise<HostApiCommandOutput>;
+  /** Where a message sent now comes from; `dispatch` adds it to `thread.sendMessage`. */
+  messageOrigin?(): import("@opensteer/core").MessageOrigin | undefined;
   dispose(): void;
   getSnapshot(): HostSnapshot;
   load(): Promise<void>;

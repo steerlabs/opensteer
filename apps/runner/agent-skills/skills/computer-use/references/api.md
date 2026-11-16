@@ -47,7 +47,7 @@ unknown without looking first.
 
 ## Working well
 
-Outside a delegation, show your work without being asked: once a window or phone the person asked for, or must act on, is ready, call `person_show({ target: { tabId: win.tabId } })`, and again when you move to another they need. `sent-unconfirmed` reports delivery to connected devices, not viewing. Do not repeat Show to force focus. On a delegation, `queue` the delegating task the `tabId` and why it matters.
+Outside a delegation, show your work without being asked: once a window or phone the person asked for, or must act on, is ready, call `show_to_person({ target: { tabId: win.tabId } })`, and again when you move to another they need. `sent-unconfirmed` reports delivery to connected devices, not viewing. Do not repeat Show to force focus. On a delegation, `queue` the delegating task the `tabId` and why it matters.
 
 - Look, act, look. Indices come from the window's latest `observe()` and stay valid until you
   observe that window again; after something on screen changes, observe before targeting it.

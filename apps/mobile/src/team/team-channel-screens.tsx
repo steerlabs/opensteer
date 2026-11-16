@@ -1,6 +1,7 @@
 import { useTeamShareParticipants } from "@opensteer/client/react";
 import { teamMentions, teamMessage } from "@opensteer/shared/teamMentions";
-import { shareTeamFile } from "./team-file-export.js";
+import { TeamImageSources } from "./team-image-hold.js";
+import { teamImageSource, shareTeamFile } from "./team-file-export.js";
 import { MenuView, type MenuComponentRef } from "@expo/ui/community/menu";
 import { PersonalTeamLinks, watchTeamReplyRead, unwrapRpcResult } from "@opensteer/client/host";
 import {
@@ -960,79 +961,96 @@ function Place(props: {
   const byId = (id: string) => view.messages.find((message) => message.id === id) ?? null;
   return (
     <View style={styles.fill}>
-      {props.children({
-        actions: {
-          onHold: (id) => setHeld(byId(id)),
-          onOpenAttachment: (messageId, fileId) => void openFile(messageId, fileId).catch(report),
-          onOpenThread: (id) =>
-            navigation.navigate("TeamThread", { teamId, channelId, rootId: id }),
-          onOpenTask: (messageId) => void openTask(null, messageId).catch(report),
-          onDecideAsk: async (control, decision) => {
-            if (personal === null) return;
-            // Answering starts the reader's agent on the ask, with their AI companies.
-            if (decision === "approve" && !(await authorizeAiSharing(aiSharing, personal))) return;
-            void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-            await personal
-              .decideTeamAsk(
-                decision === "approve"
-                  ? {
-                      decision,
-                      expectedRevision: control.expectedRevision,
-                      requestId: control.requestId,
-                      teamId: control.teamId,
-                    }
-                  : { decision, requestId: control.requestId, teamId: control.teamId },
-              )
-              .catch((error: unknown) => {
-                void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-                report(error);
-              });
+      <TeamImageSources
+        value={(id) => {
+          const file = view.messages
+            .flatMap((message) => message.attachments)
+            .find((file) => file.id === id);
+          if (!file)
+            return {
+              name: "Image",
+              read: async () => {
+                throw new Error("Image unavailable");
+              },
+            };
+          return teamImageSource(session, file);
+        }}
+      >
+        {props.children({
+          actions: {
+            onHold: (id) => setHeld(byId(id)),
+            onOpenAttachment: (messageId, fileId) => void openFile(messageId, fileId).catch(report),
+            onOpenThread: (id) =>
+              navigation.navigate("TeamThread", { teamId, channelId, rootId: id }),
+            onOpenTask: (messageId) => void openTask(null, messageId).catch(report),
+            onDecideAsk: async (control, decision) => {
+              if (personal === null) return;
+              // Answering starts the reader's agent on the ask, with their AI companies.
+              if (decision === "approve" && !(await authorizeAiSharing(aiSharing, personal)))
+                return;
+              void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              await personal
+                .decideTeamAsk(
+                  decision === "approve"
+                    ? {
+                        decision,
+                        expectedRevision: control.expectedRevision,
+                        requestId: control.requestId,
+                        teamId: control.teamId,
+                      }
+                    : { decision, requestId: control.requestId, teamId: control.teamId },
+                )
+                .catch((error: unknown) => {
+                  void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+                  report(error);
+                });
+            },
+            onOpenAskTask: (threadId) => {
+              const deploymentId = mobile.getSnapshot().selection.deploymentId;
+              if (deploymentId !== null) navigation.navigate("Thread", { deploymentId, threadId });
+            },
+            onUnsent: (messageId, choice) => {
+              const clientMessageId = messageId.replace(/^pending:/, "");
+              const pending = snapshot.pending.find(
+                (row) => row.command.clientMessageId === clientMessageId,
+              );
+              if (pending === undefined) return;
+              const done =
+                choice === "retry"
+                  ? session.reconcilePending()
+                  : choice === "edit"
+                    ? session
+                        .editPending(clientMessageId, pending.command.bodyMarkdown)
+                        .then(() => setText(pending.command.bodyMarkdown))
+                    : session.discardPending(clientMessageId);
+              void done.catch(report);
+            },
+            onCardAction: (requestId, action) => {
+              if (action === "cancel" || action === "stop")
+                void command(session, {
+                  type: "team.agent.request.cancel",
+                  requestId: TeamAgentRequestIdSchema.parse(requestId),
+                }).catch(report);
+              else void openTask(requestId, null).catch(report);
+            },
+            onOpenCardTask: (requestId) => void openTask(requestId, null).catch(report),
+            onLoadOlder: () =>
+              void session
+                .loadPage(rootId === null ? "channel" : "thread", "before")
+                .catch(() => undefined),
+            onFollowingChange: setFollowing,
+            onVisibleMessages: setVisible,
           },
-          onOpenAskTask: (threadId) => {
-            const deploymentId = mobile.getSnapshot().selection.deploymentId;
-            if (deploymentId !== null) navigation.navigate("Thread", { deploymentId, threadId });
-          },
-          onUnsent: (messageId, choice) => {
-            const clientMessageId = messageId.replace(/^pending:/, "");
-            const pending = snapshot.pending.find(
-              (row) => row.command.clientMessageId === clientMessageId,
-            );
-            if (pending === undefined) return;
-            const done =
-              choice === "retry"
-                ? session.reconcilePending()
-                : choice === "edit"
-                  ? session
-                      .editPending(clientMessageId, pending.command.bodyMarkdown)
-                      .then(() => setText(pending.command.bodyMarkdown))
-                  : session.discardPending(clientMessageId);
-            void done.catch(report);
-          },
-          onCardAction: (requestId, action) => {
-            if (action === "cancel" || action === "stop")
-              void command(session, {
-                type: "team.agent.request.cancel",
-                requestId: TeamAgentRequestIdSchema.parse(requestId),
-              }).catch(report);
-            else void openTask(requestId, null).catch(report);
-          },
-          onOpenCardTask: (requestId) => void openTask(requestId, null).catch(report),
-          onLoadOlder: () =>
-            void session
-              .loadPage(rootId === null ? "channel" : "thread", "before")
-              .catch(() => undefined),
-          onFollowingChange: setFollowing,
-          onVisibleMessages: setVisible,
-        },
-        asks,
-        banner,
-        closed,
-        composer,
-        items,
-        jump,
-        typing: typingLine(snapshot.typing[typingKey] ?? [], viewerId, directory),
-        viewerId,
-      })}
+          asks,
+          banner,
+          closed,
+          composer,
+          items,
+          jump,
+          typing: typingLine(snapshot.typing[typingKey] ?? [], viewerId, directory),
+          viewerId,
+        })}
+      </TeamImageSources>
       {held === null ? null : (
         <MenuView
           actions={heldActions.map(({ destructive, id, title }) => ({

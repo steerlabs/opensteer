@@ -29,7 +29,6 @@
     "@opensteer/browser-core": "workspace:*",
     "@opensteer/browser-profile": "workspace:*",
     "@opensteer/core": "workspace:*",
-    "@opensteer/deployment-authority": "workspace:*",
     "@opensteer/protocol": "workspace:*",
     "@opensteer/shared": "workspace:*",
     "ws": "catalog:",

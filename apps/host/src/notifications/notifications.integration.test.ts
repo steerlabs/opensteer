@@ -401,7 +401,7 @@ integration("Notifications", () => {
               "queue",
               rootTask,
               "Reminder: buy groceries " +
-                toolCall("person_notify", {
+                toolCall("send_to_person", {
                   message: "Groceries milestone ready.",
                 }) +
                 " [[reply Reminder: buy groceries]]",
@@ -545,7 +545,7 @@ integration("Notifications", () => {
         await opensteer.callTool("opensteer_task_delegate", {
           message: ${JSON.stringify(
             "Summarize the inbox. " +
-              toolCall("person_notify", {
+              toolCall("send_to_person", {
                 message: "Inbox milestone ready.",
               }) +
               " [[reply Inbox summary ready.]]",
@@ -558,7 +558,7 @@ integration("Notifications", () => {
       },
     });
     await runTrigger(stack, trigger);
-    const taskReply = await waitForReplyIn(stack, "Inbox summary", "Tool person_notify failed:");
+    const taskReply = await waitForReplyIn(stack, "Inbox summary", "Tool send_to_person failed:");
     const taskThread = await stack.host.store.database
       .selectFrom("messages")
       .select("threadId")
@@ -576,7 +576,7 @@ integration("Notifications", () => {
 
     // The task's result arrives in The task as a continuation; the task's reply to it
     // is the one alert, and the task's own reply alerts nobody.
-    const result = await waitForMessage(stack, rootTask, "Tool person_notify failed:", 30_000);
+    const result = await waitForMessage(stack, rootTask, "Tool send_to_person failed:", 30_000);
     const relayRun = await waitFor(
       async () =>
         (
@@ -651,21 +651,19 @@ integration("Notifications", () => {
     await record("approval, stop and failure", since);
   }, 120_000);
 
-  it("gives the agent the person's time zone and local time", async () => {
-    const updated = await stack.api["commands.dispatch"]({
-      idempotencyKey: randomUUID(),
-      timeZone: "America/New_York",
-      type: "viewer.timeZone.update",
-    });
-    if (!updated.ok) throw new Error(`Time zone update failed: ${updated.error.code}`);
+  it("gives the agent this computer's time and where and when the person sent the message", async () => {
     const since = received.length;
     const turn = await stack.sendMessage({
       text: "What time is it for me?",
       threadId: rootTask,
+      origin: { app: "ios", device: "phone", timeZone: "Asia/Tokyo" },
     });
     await waitForNotification(received, since, (n) => n.runId === turn.runId, "time zone reply");
     const turns = await capturedTurns(capturePath);
-    expect(turns.at(-1)).toContain("Person's time zone: America/New_York.");
+    expect(turns.at(-1)).toMatch(/^Now: .+, in this computer's time zone, [\w/+-]+\.$/mu);
+    expect(turns.at(-1)).toMatch(
+      /Sent: .+ GMT\+9 \(\d{4}-\d\d-\d\dT\d\d:\d\d\+09:00\), from the iPhone app; that device's time zone is Asia\/Tokyo\./u,
+    );
     await record("time zone", since);
   }, 120_000);
   it("H6/H10 retries a network failure while reading the Account acknowledgement", async () => {

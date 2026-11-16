@@ -95,6 +95,7 @@ vi.mock("../ui/primitives.js", () => ({
   ),
 }));
 vi.mock("../ui/sheet.js", () => ({ Sheet: () => null }));
+vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("../ui/screen.js", () => ({
   Screen: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   useListContentInsets: () => ({}),
