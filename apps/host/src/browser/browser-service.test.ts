@@ -33,6 +33,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import type { BrowserHistoryStore, TabStore, TabRecord, TabWrite } from "@opensteer/database";
+import { databaseOperation } from "@opensteer/database";
 import {
   BrowserAttachTicketClaimsSchema,
   browserCaptureMaxTargets,
@@ -621,6 +622,45 @@ describe("BrowserService", () => {
     await expect(service.start({ ownerId, fresh: true })).rejects.toMatchObject({
       code: "runner_offline",
     });
+    expect((await repository.listBrowserSessions(ownerId))[0]?.state).toBe("failed");
+  });
+
+  it("bounds a first native profile's readiness write when the open has no deadline", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const profile = repository.addHostedProfile("Locked");
+    const options = nativeProfileOptions();
+    const acknowledged = Promise.withResolvers<void>();
+    // Like the store's lock wait, the write ends only when its database deadline cancels it.
+    vi.spyOn(options.localProfiles, "acknowledgeReady").mockImplementation(() => {
+      acknowledged.resolve();
+      const signal = databaseOperation()?.signal;
+      return new Promise((_, reject) =>
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true }),
+      );
+    });
+    const service = new BrowserService({
+      ...options,
+      ...profileStateOptions,
+      repository,
+      connectTimeoutMs: 500,
+      signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
+      targetResolver: runnerTarget({ url: runtime.url }),
+    });
+    cleanups.push(() => service.close());
+    const opening = service.start({ ownerId, profileId: profile.id });
+    void opening.catch(() => undefined);
+    await withTimeout(acknowledged.promise, 2_000, {
+      timeoutError: () => new Error("The first open never recorded readiness."),
+    });
+    expect((await repository.listBrowserSessions(ownerId))[0]?.state).toBe("starting");
+    await expect(
+      withTimeout(opening, 2_000, {
+        timeoutError: () => new Error("A held profile lock kept the open pending."),
+      }),
+    ).rejects.toMatchObject({ code: "runner_offline" });
     expect((await repository.listBrowserSessions(ownerId))[0]?.state).toBe("failed");
   });
 
