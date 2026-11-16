@@ -14,6 +14,7 @@ import { computerAppIdentitiesEqual } from "@opensteer/integration-core";
 import type { ComputerViewService } from "./computer-view-service.js";
 import type {
   NativeTabTargetsPort,
+  DeviceNativeTabTargetsPort,
   NativeTabTargetState,
   NativeTargetAcquired,
   NativeTargetAcquiredHandler,
@@ -202,7 +203,9 @@ export class NativeTabTargets implements NativeTabTargetsPort {
   }
   openOwnerView(
     ownerId: UserId,
-    input: Parameters<NativeTabTargetsPort["openOwnerView"]>[1],
+    input: Omit<Parameters<DeviceNativeTabTargetsPort["openOwnerView"]>[1], "computerId"> & {
+      computerId: ComputerTargetId;
+    },
     key: string,
   ): Promise<ComputerView> {
     return this.#options.views.openForTab(ownerId, input, key);

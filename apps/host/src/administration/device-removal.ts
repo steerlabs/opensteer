@@ -162,9 +162,14 @@ export function changeDeviceDrivers<T>(
   input: { readonly deviceIds: readonly DeviceId[]; readonly runnerIds: readonly RunnerId[] },
   commit: () => Promise<T>,
 ): Promise<T> {
-  return deviceMembershipTurn(dependencies.store, () =>
-    dependencies.computerApps.withDeviceAdmissions(input.deviceIds, async () => {
-      const ids = [...new Set(input.runnerIds)].sort();
+  return deviceMembershipTurn(dependencies.store, async () => {
+    const bindings = await Promise.all(
+      input.deviceIds.map((deviceId) => dependencies.store.listDeviceDrivers({ deviceId })),
+    );
+    return dependencies.computerApps.withDeviceAdmissions(input.deviceIds, async () => {
+      const ids = [
+        ...new Set([...input.runnerIds, ...bindings.flat().map(({ runnerId }) => runnerId)]),
+      ].sort();
       const enter = (index: number): Promise<T> =>
         index < ids.length
           ? dependencies.computerApps.withRunnerAdmission(ids[index]!, () => enter(index + 1))
@@ -172,6 +177,6 @@ export function changeDeviceDrivers<T>(
       const result = await enter(0);
       await dependencies.computerApps.refreshDeviceDrivers();
       return result;
-    }),
-  );
+    });
+  });
 }

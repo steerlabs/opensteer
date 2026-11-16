@@ -1,11 +1,12 @@
 import { normalizeToolOutput } from "@opensteer/core";
 import {
   AndroidPhoneObservationSchema,
-  PhoneDisplayObservationResultSchema,
-  getPhoneDisplayCodec,
   readComputerUseResultHeadline,
   type AndroidPhoneObservation,
   type ComputerUseObservation,
+  PhoneDisplayObservationResultSchema,
+  getPhoneDisplayCodec,
+  type PhoneDisplayObservation,
 } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
 import { computerObservationContent } from "./computer-use-tool-result.js";
@@ -67,8 +68,8 @@ describe("computer observation emission", () => {
 describe("phone observation emission", () => {
   function phoneObservation(
     overrides: Partial<AndroidPhoneObservation> = {},
-  ): AndroidPhoneObservation {
-    return AndroidPhoneObservationSchema.parse({
+  ): PhoneDisplayObservation {
+    const observation = AndroidPhoneObservationSchema.parse({
       capturedAt: "2026-10-11T10:00:00.000Z",
       elementCount: 2,
       foreground: { label: "Messages", packageName: "com.google.android.apps.messaging" },
@@ -84,6 +85,9 @@ describe("phone observation emission", () => {
       truncated: false,
       ...overrides,
     });
+    return PhoneDisplayObservationResultSchema.parse(
+      getPhoneDisplayCodec("android-phone").decodeResult("observe", { observation }),
+    ).observation;
   }
   const hidden = {
     elementCount: 0,
@@ -110,16 +114,12 @@ describe("phone observation emission", () => {
   it("reports secure lock facts and keeps a failed screenshot tree usable", () => {
     const { text } = normalizeToolOutput(
       computerObservationContent(
-        PhoneDisplayObservationResultSchema.parse(
-          getPhoneDisplayCodec("android-phone").decodeResult("observe", {
-            observation: phoneObservation({
-              locked: true,
-              screenshot: null,
-              screenshotUnavailable: "failed",
-              secureLock: true,
-            }),
-          }),
-        ).observation,
+        phoneObservation({
+          locked: true,
+          screenshot: null,
+          screenshotUnavailable: "failed",
+          secureLock: true,
+        }),
         true,
         "Pixel 8",
       ),

@@ -1,3 +1,4 @@
+import { computerTargetId } from "@opensteer/client/host";
 import { useThreadServerApprovals } from "@opensteer/client/react";
 import { useShell } from "../app-shell.js";
 import { ComputerSetupApprovals } from "./computer-app-approval.js";
@@ -12,7 +13,7 @@ export function ThreadServerApprovals({ threadId }: { readonly threadId: string 
       <div className="card">
         <ComputerSetupApprovals
           detail={(request) =>
-            `Wants to run on ${snapshot.machines.find((machine) => machine.id === request.runnerId)?.name ?? "your computer"}`
+            `Wants to run on ${snapshot.machines.find((machine) => machine.id === computerTargetId(request))?.name ?? "your computer"}`
           }
           hostClient={hostClient}
           onChanged={reload}

@@ -52,14 +52,22 @@ export function computerObservationContent(
         ...("screenshotUnavailable" in observation &&
         observation.screenshotUnavailable === "screen-off"
           ? [
-              'The screen is off, so there is nothing to see. Act with {"type":"wake"} to turn it on.',
+              'The screen is off, so there is nothing to see. If this Device advertises wake, act with {"type":"wake"}; otherwise ask the person to turn it on.',
             ]
           : "screenshotUnavailable" in observation &&
               observation.screenshotUnavailable === "opensteer-app"
             ? [
-                'The Opensteer Agent Phone app is in front. Agents may not see or operate it, so nothing of the screen is shared. Act with {"type":"navigate","to":"home"}, or launch another app, to continue.',
+                "The Opensteer app is in front. Agents may not see or operate it, so nothing of the screen is shared. Use an advertised navigation button, or launch an app returned by installed_apps, to continue.",
               ]
-            : []),
+            : "screenshotUnavailable" in observation &&
+                observation.screenshotUnavailable === "locked"
+              ? [
+                  "The phone is locked. Ask the person to unlock it physically; do not enter a passcode.",
+                ]
+              : "screenshotUnavailable" in observation &&
+                  observation.screenshotUnavailable === "protected"
+                ? ["The phone is showing protected content, so no screen content is shared."]
+                : []),
         ...(!renderImages
           ? ["Screenshot unavailable in this engine."]
           : !screenshot &&

@@ -597,7 +597,11 @@ describeStore("MCP administration", (it) => {
         withMachineAdmission: async (_id: unknown, effect: () => Promise<unknown>) => effect(),
         endMachineSessions: vi.fn(),
       },
+      publishDeploymentEvent: vi.fn(),
       computerApps: {
+        withDeviceAdmissions: async (_ids: unknown, effect: () => Promise<unknown>) => effect(),
+        forgetDevice: vi.fn(),
+        refreshDeviceDrivers: async () => {},
         withRunnerAdmission: async (_id: unknown, effect: () => Promise<unknown>) => effect(),
         detachRunner: vi.fn(),
       },
@@ -790,7 +794,9 @@ describeStore("MCP administration", (it) => {
       listConnections: async () => [],
       definitions: [],
       adapters: [],
-      computerApps: {},
+      computerApps: {
+        withDeviceAdmissions: async (_ids: unknown, effect: () => Promise<unknown>) => effect(),
+      },
       credentialMaterializer: {},
       authorizationSource: {},
       mcpOauth: {},
@@ -1042,7 +1048,9 @@ describeStore("MCP administration", (it) => {
       listConnections: async () => [],
       definitions: [],
       adapters: [],
-      computerApps: {},
+      computerApps: {
+        withDeviceAdmissions: async (_ids: unknown, effect: () => Promise<unknown>) => effect(),
+      },
       credentialMaterializer: {},
       authorizationSource: {},
       mcpOauth: {},

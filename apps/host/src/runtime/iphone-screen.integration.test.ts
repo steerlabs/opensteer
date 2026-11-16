@@ -25,7 +25,6 @@ import {
   type PhoneScreenDisplayFrame,
 } from "@opensteer/runner";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { changeDeviceDrivers } from "../administration/device-removal.js";
 import type { ComputerUseContext } from "../computer-use/computer-use-service.js";
 import { openAuxiliaryStream } from "./computer-apps.test-support.js";
 import {
@@ -248,27 +247,21 @@ integration("iPhone screen routing on an authenticated Mac", () => {
       await closed(socket);
     });
     const { computerApps, computerUse, computerViews, displayStreams } = host.runtime;
-    const session = await host.store.database
-      .selectFrom("authSessions")
-      .select("id")
-      .where("userId", "=", host.ownerId)
-      .executeTakeFirstOrThrow();
     const attach = (name: string) =>
-      changeDeviceDrivers(
-        { store: host.store, computerApps },
-        { deviceIds: [], runnerIds: [macId] },
-        () =>
-          host.store.attachIphoneScreen({
-            userId: host.ownerId,
-            sessionId: session.id,
-            idempotencyKey: randomUUID(),
-            driverRunnerId: macId,
-            driverConnectionGeneration:
-              computerApps.screenDriverConnection(macId)!.connectionGeneration,
-            negotiatedScreenDrivers: computerApps.screenDriverConnection(macId)!.screenDrivers,
-            target: { kind: "new", name },
-          }),
-      );
+      testRpcData(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "iphone.screen.attach",
+          idempotencyKey: randomUUID(),
+          driverRunnerId: macId,
+          target: { kind: "new", name },
+        },
+        { headers: host.ownerHeaders },
+      ).then((result) => {
+        if (result.type !== "iphone.screen.attach") throw new Error("Unexpected attach result");
+        return result;
+      });
     const first = await attach("First iPhone");
     const second = await attach("Second iPhone");
     await vi.waitFor(
@@ -326,34 +319,78 @@ integration("iPhone screen routing on an authenticated Mac", () => {
       ],
     });
     for (const phone of [first, second]) {
-      await host.store.updateDeviceAccessPolicy({
-        deviceId: phone.deviceId,
-        ownerId: host.ownerId,
-        allowDeployment: false,
-        expectedRevision: 1,
-        policy: { ...machineAccessPolicyDefault, browser: false, apps: true },
-      });
-      await platform.setDeviceComputerConnection({
-        deviceId: phone.deviceId,
-        actorUserId: host.ownerId,
-        access: "read-write",
-        app: null,
-        definitionId: "iphone-screen",
-        definitionDigest: integrationDefinitionDigest(definition),
-        createIfMissing: true,
-        requestId: randomUUID(),
-        tools: () => [],
-      });
+      await testRpcData(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "machine.access.update",
+          deviceId: phone.deviceId,
+          expectedRevision: 1,
+          policy: { ...machineAccessPolicyDefault, browser: false, apps: true },
+          idempotencyKey: randomUUID(),
+        },
+        { headers: host.ownerHeaders },
+      );
+      await testRpcData(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "integration.computer.setup.set",
+          idempotencyKey: randomUUID(),
+          input: {
+            kind: "app",
+            deviceId: phone.deviceId,
+            definitionId: "iphone-screen",
+            access: "read-write",
+            app: null,
+          },
+        },
+        { headers: host.ownerHeaders },
+      );
     }
     const macDevice = await host.store.getDevice(await host.store.requireSelfDeviceId(macId));
     if (!macDevice) throw new Error("The authenticated Mac has no self Device");
-    await host.store.updateDeviceAccessPolicy({
-      deviceId: macDevice.id,
-      ownerId: host.ownerId,
-      allowDeployment: false,
-      expectedRevision: macDevice.accessPolicyRevision,
-      policy: { ...macDevice.accessPolicy, apps: false },
+    await testRpcData(
+      host.origin,
+      "commands.dispatch",
+      {
+        type: "machine.access.update",
+        deviceId: macDevice.id,
+        expectedRevision: macDevice.accessPolicyRevision,
+        policy: { ...macDevice.accessPolicy, apps: false },
+        idempotencyKey: randomUUID(),
+      },
+      { headers: host.ownerHeaders },
+    );
+    const projected = await testRpcData(
+      host.origin,
+      "machines.list",
+      {},
+      { headers: host.ownerHeaders },
+    );
+    expect(projected.machines.find(({ id }) => id === first.deviceId)).toMatchObject({
+      selfRunnerId: null,
+      allowedModules: [],
+      modules: {},
+      capabilities: { apps: { state: "ready", enabled: true }, browser: { supported: false } },
+      phoneDisplay: {
+        definitionId: "iphone-screen",
+        driver: { runnerId: macId },
+        control: { state: "ready" },
+      },
     });
+    const approved = await testRpcData(
+      host.origin,
+      "integrations.get",
+      {},
+      { headers: host.ownerHeaders },
+    );
+    expect(
+      approved.connections.some(
+        ({ computer }) =>
+          computer && "deviceId" in computer && computer.deviceId === first.deviceId,
+      ),
+    ).toBe(true);
     const run = await dispatchCallerRun(host, caller, {
       key: "iphone-screen-run",
       title: "Use the phones",
@@ -491,48 +528,49 @@ integration("iPhone screen routing on an authenticated Mac", () => {
       },
       randomUUID(),
     );
-    await changeDeviceDrivers(
-      { store: host.store, computerApps },
-      { deviceIds: [first.deviceId], runnerIds: [macId] },
-      () =>
-        host.store.detachIphoneScreen({
-          deviceId: first.deviceId,
-          expectedGeneration: 1,
-          userId: host.ownerId,
-          sessionId: session.id,
-          idempotencyKey: randomUUID(),
-        }),
+    await testRpcData(
+      host.origin,
+      "commands.dispatch",
+      {
+        type: "iphone.screen.detach",
+        deviceId: first.deviceId,
+        expectedGeneration: 1,
+        idempotencyKey: randomUUID(),
+      },
+      { headers: host.ownerHeaders },
     );
     expect(() => displayStreams.claimDataSocket(staleTicket)).toThrow();
     expect(computerApps.deviceStatus(second.deviceId)?.availability.state).toBe("ready");
     expect((await host.store.activeComputerUseStops())[0]?.deviceId).toBe(first.deviceId);
-    const effects = await changeDeviceDrivers(
-      { store: host.store, computerApps },
-      { deviceIds: [second.deviceId], runnerIds: [macId] },
-      () => host.store.removeDevice(second.deviceId, host.ownerId),
+    await testRpcData(
+      host.origin,
+      "commands.dispatch",
+      {
+        type: "machine.revoke",
+        machineId: second.deviceId,
+        idempotencyKey: randomUUID(),
+      },
+      { headers: host.ownerHeaders },
     );
-    for (const id of effects.removedDeviceIds) computerApps.forgetDevice(id, true);
     expect((await host.store.runnerForAuthentication(macId))?.revokedAt).toBeNull();
     expect(await computerViews.list(host.ownerId, second.deviceId)).toEqual([]);
     await vi.waitFor(() => expect(port.assignments.size).toBe(0), { timeout: 5_000 });
     expect(await host.store.getDevice(DeviceIdSchema.parse(macId))).toMatchObject({
       removedAt: null,
     });
-    const replacement = await changeDeviceDrivers(
-      { store: host.store, computerApps },
-      { deviceIds: [first.deviceId], runnerIds: [macId] },
-      () =>
-        host.store.attachIphoneScreen({
-          userId: host.ownerId,
-          sessionId: session.id,
-          idempotencyKey: randomUUID(),
-          driverRunnerId: macId,
-          driverConnectionGeneration:
-            computerApps.screenDriverConnection(macId)!.connectionGeneration,
-          negotiatedScreenDrivers: computerApps.screenDriverConnection(macId)!.screenDrivers,
-          target: { kind: "existing", deviceId: first.deviceId, expectedGeneration: 2 },
-        }),
+    const replacement = await testRpcData(
+      host.origin,
+      "commands.dispatch",
+      {
+        type: "iphone.screen.attach",
+        driverRunnerId: macId,
+        idempotencyKey: randomUUID(),
+        target: { kind: "existing", deviceId: first.deviceId, expectedGeneration: 2 },
+      },
+      { headers: host.ownerHeaders },
     );
+    if (replacement.type !== "iphone.screen.attach")
+      throw new Error("Unexpected replacement result");
     expect(replacement.generation).toBe(3);
     await vi.waitFor(
       () => expect(computerApps.deviceStatus(first.deviceId)?.driverGeneration).toBe(3),

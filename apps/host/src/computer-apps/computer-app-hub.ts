@@ -1932,6 +1932,10 @@ export class ComputerAppHub {
     }
   }
 
+  async requireDeviceAgentAccess(deviceId: DeviceId): Promise<void> {
+    await this.#options.requireDeviceAgentAccess?.(deviceId);
+  }
+
   async requireAgentAccess(runnerId: RunnerId): Promise<void> {
     await this.#options.requireAgentAccess?.(runnerId);
   }

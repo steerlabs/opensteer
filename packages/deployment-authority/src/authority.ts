@@ -152,6 +152,7 @@ export const HostCapabilitySchema = z.enum([
   "team-shared-agents-v1",
   /** Device setup and switches, plus explicit opt-in to device-access Request reads. */
   "devices-v1",
+  "device-drivers-v1",
   "automatic-models-v1",
   "notification-preview-v1",
   "tab-reopen-v1",

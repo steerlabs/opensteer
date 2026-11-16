@@ -1,10 +1,13 @@
+import { computerTargetId } from "@opensteer/client/host";
+import type {
+  IntegrationDashboard,
+  IntegrationConnectionSummary,
+} from "@opensteer/client/integrations";
 import { SurfaceMenu } from "../surface-menu.js";
 import { useState, type ReactNode } from "react";
 import { requestAgentProposedDetail } from "@opensteer/core";
 import type {
   IntegrationAccess,
-  IntegrationConnectionSummary,
-  IntegrationDashboard,
   IntegrationPlatformDashboardView,
 } from "@opensteer/integration-core";
 import type { MachineSummary } from "@opensteer/protocol";
@@ -365,7 +368,7 @@ export function IntegrationDetail({
               // neither ready nor something to disconnect from here.
               const blocked = Boolean(computer.blockedAt);
               const machineName =
-                machines.find(({ id }) => id === computer.runnerId)?.name ?? "that Mac";
+                machines.find(({ id }) => id === computerTargetId(computer)!)?.name ?? "that Mac";
               return (
                 <div className="card__row" key={connection.id}>
                   <div className="card__row-body">
@@ -397,7 +400,7 @@ export function IntegrationDetail({
                   <div className="card__row-actions">
                     <Link
                       className="btn btn--small"
-                      to={`/settings/devices/${encodeURIComponent(computer.runnerId)}`}
+                      to={`/settings/devices/${encodeURIComponent(computerTargetId(computer)!)}`}
                     >
                       Manage
                     </Link>

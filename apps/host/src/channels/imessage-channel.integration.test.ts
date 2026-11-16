@@ -128,7 +128,7 @@ integration("iMessage channel", () => {
       const desktop = await startFakeDesktop((request) => messages.answer(request));
       closers.unshift(() => desktop.close());
       const dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-imessage-runner-"));
-      const integrations = prepareIntegrationsModule({
+      const integrations = await prepareIntegrationsModule({
         computerUseBridge: { token: desktop.token, url: desktop.url },
         dataDirectory,
         platform: "darwin",

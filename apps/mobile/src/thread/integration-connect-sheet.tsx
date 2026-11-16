@@ -1,3 +1,4 @@
+import { computerTargetId } from "@opensteer/client/host";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import {
   isPhoneDisplayDefinitionId,
@@ -1179,8 +1180,9 @@ function ReviewStep(props: {
     selectedComputerConnection?.computer === null ||
     selectedComputerConnection?.computer === undefined
       ? null
-      : (props.machines.find(({ id }) => id === selectedComputerConnection.computer?.runnerId) ??
-        null);
+      : (props.machines.find(
+          ({ id }) => id === computerTargetId(selectedComputerConnection.computer),
+        ) ?? null);
   const selectedComputerState =
     selectedComputerConnection === null || plan.definition === null
       ? null

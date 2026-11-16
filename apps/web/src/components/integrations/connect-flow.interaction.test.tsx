@@ -1,3 +1,4 @@
+import type { IntegrationDashboard } from "@opensteer/client/integrations";
 // @vitest-environment happy-dom
 
 import { act } from "react";
@@ -7,7 +8,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createIntegrationId,
   type IntegrationAuthorizationStatus,
-  type IntegrationDashboard,
 } from "@opensteer/integration-core";
 import type { IntegrationDefinitionSummary } from "@opensteer/integration-core/adapter";
 import { ConnectFlow } from "./connect-flow.js";

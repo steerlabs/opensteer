@@ -1,9 +1,7 @@
 import type {
   ComputerAppIdentity,
-  ComputerAppSetupSummary as ComputerAppSetupRequest,
   ComputerUseAppApproval,
   IntegrationAccess,
-  IntegrationConnectionSummary,
   IntegrationDefinitionSummaryView,
 } from "@opensteer/integration-core";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
@@ -754,9 +752,9 @@ export function computerAppAccessApproval(input: {
 
 /** What a Mac's computer use block reads beyond the machine the snapshot carries. */
 export interface ComputerUseData {
-  readonly connections: readonly IntegrationConnectionSummary[];
+  readonly connections: readonly ClientComputerConnection[];
   readonly definitions: readonly IntegrationDefinitionSummaryView[];
-  readonly setupRequests: readonly ComputerAppSetupRequest[];
+  readonly setupRequests: readonly ClientComputerSetupRequest[];
 }
 
 export async function loadComputerUseData(

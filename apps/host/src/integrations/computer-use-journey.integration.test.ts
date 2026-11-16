@@ -3420,14 +3420,14 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
               "Locked: no",
               "Secure lock: no",
               "Foreground app: none",
-              'The screen is off, so there is nothing to see. Act with {"type":"wake"} to turn it on.',
+              'The screen is off, so there is nothing to see. If this Device advertises wake, act with {"type":"wake"}; otherwise ask the person to turn it on.',
             ]
           : [
               "Screen: on",
               "Locked: no",
               "Secure lock: no",
               "Foreground app: Opensteer Agent Phone (com.opensteer.agentphone)",
-              'The Opensteer Agent Phone app is in front. Agents may not see or operate it, so nothing of the screen is shared. Act with {"type":"navigate","to":"home"}, or launch another app, to continue.',
+              "The Opensteer app is in front. Agents may not see or operate it, so nothing of the screen is shared. Use an advertised navigation button, or launch an app returned by installed_apps, to continue.",
             ],
       );
       await world.close();
@@ -3508,7 +3508,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     ).toEqual(
       toolRefusal(
         "invalid_input",
-        `${phone} is an Android phone, which is asked for whole: call app_access_request {computerId, access, reason} without app.`,
+        `${phone} is a phone, which is asked for whole: call app_access_request {computerId, access, reason} without app.`,
       ),
     );
 
@@ -3947,7 +3947,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
         computerId: runnerId,
       });
     const unknown = (runnerId: string) =>
-      `No Android phone set up for agents has computerId ${runnerId}. Search "Android phone" with integration_search to list your phones and their computerIds.`;
+      `No phone display set up for agents has computerId ${runnerId}. Search "Phone display" with integration_search to list your phones and their computerIds.`;
 
     expect(await ask(strangers)).toEqual(toolRefusal("invalid_input", unknown(strangers)));
     const nobody = createId("runner");
@@ -5250,7 +5250,7 @@ async function createWorld(
   await fakePhone?.attach();
   /** The person on the Mac allows one approval; throws with the Host's refusal. */
   const allowOnMac = async (
-    setup: import("@opensteer/integration-core").ComputerAppSetupRequest,
+    setup: Pick<import("@opensteer/integration-core").ComputerAppSetupRequest, "id">,
   ) => {
     const outcome = await fakeMac.answer(setup.id, {
       setupRequestId: setup.id,

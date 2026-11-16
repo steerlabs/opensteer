@@ -1,3 +1,4 @@
+import { computerTargetId } from "@opensteer/client/host";
 import { useEffect, useId, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 import {
@@ -20,7 +21,7 @@ import {
   phoneScreenStatus,
 } from "@opensteer/client/integrations";
 import { DeploymentIdSchema, TabTargetSchema } from "@opensteer/core";
-import type { ComputerAppSetupSummary as ComputerAppSetupRequest } from "@opensteer/integration-core";
+import type { ComputerAppSetupSummary as ComputerAppSetupRequest } from "@opensteer/client/integrations";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { useShell } from "../app-shell.js";
 import {
@@ -473,7 +474,9 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
           machine,
         })}
         platform={apps.data.platform}
-        setupRequests={apps.data.setupRequests.filter((request) => request.runnerId === machine.id)}
+        setupRequests={apps.data.setupRequests.filter(
+          (request) => computerTargetId(request) === machine.id,
+        )}
       />
     )
   ) : null;

@@ -1,12 +1,16 @@
 import type { AgentEvent, RequestId, RequestResponse, UserId } from "@opensteer/core";
-import { RunnerIdSchema } from "@opensteer/core";
+import { DeviceIdSchema } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import type { RunnerRegistry } from "@opensteer/orchestration";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import type { ContinuationService } from "../agents/continuation-service.js";
 
 interface DeviceAccessServiceOptions {
-  readonly store: Pick<OpensteerStore, "requests" | "requireSelfDeviceId">;
+  readonly store: Pick<OpensteerStore, "requests" | "getDeviceSelfRunnerId">;
+  readonly deviceOnline?: (
+    id: import("@opensteer/core").DeviceId,
+    capability: "browser" | "apps" | "files",
+  ) => boolean;
   readonly runners: Pick<RunnerRegistry, "isRunnerConnected">;
   readonly onDeploymentEvent: (event: AgentEvent) => void;
   readonly continuations: Pick<ContinuationService, "notify">;
@@ -23,8 +27,8 @@ export class DeviceAccessService {
     readonly reason: string;
     readonly claims: RunToolScope;
   }) {
-    const runnerId = RunnerIdSchema.parse(input.machineId);
-    const machineId = await this.#options.store.requireSelfDeviceId(runnerId);
+    const machineId = DeviceIdSchema.parse(input.machineId);
+    const self = await this.#options.store.getDeviceSelfRunnerId(machineId);
     const created = await this.#options.store.requests.createDeviceAccessRequest(
       {
         callId: input.callId,
@@ -35,7 +39,9 @@ export class DeviceAccessService {
         originatingRunId: input.claims.runId,
         requestedBy: input.claims.requestedBy,
       },
-      () => this.#options.runners.isRunnerConnected(runnerId),
+      () =>
+        this.#options.deviceOnline?.(machineId, input.access) ??
+        (self !== null && this.#options.runners.isRunnerConnected(self)),
     );
     for (const event of created.events) this.#options.onDeploymentEvent(event);
     return {

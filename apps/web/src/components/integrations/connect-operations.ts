@@ -1,8 +1,8 @@
+import type { IntegrationDashboard } from "@opensteer/client/integrations";
 import type { IntegrationAuthorizationTracking } from "../../integrations/use-integration-authorization-tracking.js";
 import type {
   IntegrationAuthorizationStart,
   IntegrationAuthorizationStatus,
-  IntegrationDashboard,
   IntegrationOAuthApplicationSource,
   IntegrationProviderApplication,
   SaveIntegrationProviderApplication,

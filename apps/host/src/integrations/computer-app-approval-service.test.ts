@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import type { IntegrationPlatformStore } from "@opensteer/database";
-import type { RunnerId, UserId } from "@opensteer/core";
+import { DeviceIdSchema, createId, type RunnerId, type UserId } from "@opensteer/core";
 import { integrationDefinitions } from "@opensteer/integration-catalog";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
-import { createIntegrationId, type ComputerAppSetupRequest } from "@opensteer/integration-core";
+import {
+  createIntegrationId,
+  type DeviceComputerAppSetupRequest as ComputerAppSetupRequest,
+} from "@opensteer/integration-core";
+import type { DeviceComputerOption } from "./device-computer-gateway.js";
 import {
   ComputerAppApprovalService,
   type ComputerUseApprovalGateway,
@@ -11,10 +15,11 @@ import {
 
 const ownerUserId = "usr_00000000-0000-4000-8000-000000000001" as UserId;
 const runnerId = "rnr_00000000-0000-4000-8000-000000000002" as RunnerId;
+const deviceId = DeviceIdSchema.parse(runnerId);
 const app = { bundleId: "com.apple.Notes", displayName: "Notes", teamId: "APPLECOMP1" };
 const request: ComputerAppSetupRequest = {
   id: "00000000-0000-4000-8000-000000000003",
-  runnerId,
+  deviceId,
   ownerUserId,
   deploymentId:
     "dep_00000000-0000-4000-8000-000000000004" as ComputerAppSetupRequest["deploymentId"],
@@ -47,22 +52,32 @@ const serverRequest: ComputerAppSetupRequest = {
 function fixture(pending = request, compatibilityReason: string | null = null) {
   const store = {
     connections: { assertOwner: vi.fn(async () => undefined) },
+    requireDeviceSelfRunnerId: vi.fn(async () => runnerId),
+    getDeviceSelfRunnerId: vi.fn(async () => runnerId),
+    requireSelfDeviceId: vi.fn(async () => deviceId),
     computerAppRunner: vi.fn(async () => null),
-    requestComputerAppSetup: vi.fn(),
-    getComputerUsePolicy: vi.fn(async () => ({ appApproval: "ask" })),
-    getComputerAppSetupRequest: vi.fn(async () => pending),
+    requestDeviceComputerAppSetup: vi.fn(),
+    requestDeviceComputerAppAccess: vi.fn(),
+    getDeviceComputerUsePolicy: vi.fn(async () => ({ appApproval: "ask" })),
+    getDeviceComputerAppSetupRequest: vi.fn(async () => pending),
     listInstallations: vi.fn(async () => []),
     localMcp: {
       approve: vi.fn(async () => ({ launchDigest: "launch", serverId: "ims_server" })),
       decline: vi.fn(),
     },
-    setComputerConnection: vi.fn(),
-    setComputerUsePolicy: vi.fn(),
-    cancelComputerAppSetup: vi.fn(async () => ({ requestEvents: [] })),
+    setDeviceComputerConnection: vi.fn(),
+    setDeviceComputerUsePolicy: vi.fn(),
+    cancelDeviceComputerAppSetup: vi.fn(async () => ({ requestEvents: [] })),
     requests: { declineComputerAppAccessRequest: vi.fn(async () => ({ events: [], request: {} })) },
   };
   const computerUse = {
-    eligibleMachines: vi.fn(async () => [{ runnerId }]),
+    eligibleInventory: vi.fn(
+      async (): Promise<{
+        machines: readonly DeviceComputerOption[];
+        phones: readonly DeviceComputerOption[];
+      }> => ({ machines: [], phones: [] }),
+    ),
+    eligibleMachines: vi.fn(async () => [{ deviceId, definitionId: "macos-app" }]),
     resolveApp: vi.fn(async () => ({
       identity: app,
       allowed: true,
@@ -79,9 +94,10 @@ function fixture(pending = request, compatibilityReason: string | null = null) {
   const changed = vi.fn();
   const service = new ComputerAppApprovalService({
     computerApps: {
-      withRunnerAdmission: admission,
+      withAdmission: admission,
       compatibilityReason: () => compatibilityReason,
       attached: () => true,
+      requireAgentAccess: async () => {},
     } as never,
     computerUse: computerUse as unknown as ComputerUseApprovalGateway,
     definitions: integrationDefinitions,
@@ -105,6 +121,66 @@ const answer = {
 };
 
 describe("owner-session computer app approvals", () => {
+  it("requests the iPhone Device's display definition and retains its name in the owner's decision", async () => {
+    const { service, store, computerUse } = fixture();
+    const phoneId = DeviceIdSchema.parse(createId("device"));
+    computerUse.eligibleInventory.mockResolvedValue({
+      machines: [],
+      phones: [
+        {
+          deviceId: phoneId,
+          definitionId: "iphone-screen",
+          name: "Travel iPhone",
+          ready: true,
+          state: "ready",
+        },
+      ],
+    });
+    Object.assign(computerUse, { threadTitle: async () => "Travel" });
+    store.requestDeviceComputerAppAccess.mockResolvedValue({
+      kind: "computer",
+      request: { id: "pending-phone" },
+      replayed: false,
+      requestEvents: [],
+    });
+    const result = await service.requestComputerAppAccess({
+      deviceId: phoneId,
+      access: "read",
+      app: null,
+      reason: "Read the map",
+      ownerUserId,
+      originatingRunId: createId("run"),
+      threadId: createId("thread"),
+    });
+    expect(result).toMatchObject({
+      status: "pending",
+      nextAction: expect.stringContaining("any Opensteer app"),
+    });
+    expect(store.requestDeviceComputerAppAccess).toHaveBeenCalledWith(
+      expect.objectContaining({ deviceId: phoneId, definitionId: "iphone-screen", app: null }),
+    );
+    expect(computerUse.resolveApp).not.toHaveBeenCalled();
+  });
+  it.each(["android-phone", "iphone-screen"] as const)(
+    "requires owner-any-client approval for %s, without a Mac helper setup",
+    async (definitionId) => {
+      const { service, store } = fixture();
+      await expect(
+        service.requestComputerAppSetup({
+          kind: "app",
+          definitionId,
+          app: null,
+          access: "read",
+          deviceId,
+          actorUserId: ownerUserId,
+        }),
+      ).rejects.toMatchObject({
+        code: "forbidden",
+        message: "Allow phone access from any Opensteer app.",
+      });
+      expect(store.requestDeviceComputerAppSetup).not.toHaveBeenCalled();
+    },
+  );
   it("refuses setup on an incompatible computer before creating an approval", async () => {
     const { service, store, admission } = fixture(request, "Update Opensteer on this computer.");
     await expect(
@@ -113,12 +189,12 @@ describe("owner-session computer app approvals", () => {
         definitionId: "apple-calendar",
         app: null,
         access: "read",
-        runnerId,
+        deviceId,
         actorUserId: ownerUserId,
       }),
     ).rejects.toMatchObject({ code: "conflict", message: "Update Opensteer on this computer." });
     expect(admission).toHaveBeenCalledOnce();
-    expect(store.requestComputerAppSetup).not.toHaveBeenCalled();
+    expect(store.requestDeviceComputerAppSetup).not.toHaveBeenCalled();
   });
   it("passes the authenticated session through owner denial and task decline", async () => {
     const { service, store } = fixture();
@@ -127,7 +203,7 @@ describe("owner-session computer app approvals", () => {
       decision: "deny",
       settlementSessionId: "session",
     });
-    expect(store.cancelComputerAppSetup).toHaveBeenCalledWith({
+    expect(store.cancelDeviceComputerAppSetup).toHaveBeenCalledWith({
       requestId: request.id,
       ownerUserId,
       settlementSessionId: "session",
@@ -177,7 +253,7 @@ describe("owner-session computer app approvals", () => {
       },
     ] as never);
     await service.respondComputerAppSetup({ ...answer, settlementSessionId: "session" });
-    expect(store.setComputerUsePolicy).toHaveBeenCalledWith(
+    expect(store.setDeviceComputerUsePolicy).toHaveBeenCalledWith(
       expect.objectContaining({ settlementSessionId: "session", ownerUserId }),
     );
   });
@@ -203,11 +279,11 @@ describe("owner-session computer app approvals", () => {
       ownerUserId,
     });
     expect(review.app?.path).toBe("/System/Applications/Notes.app");
-    expect(computerUse.resolveApp).toHaveBeenCalledWith({ app: app.bundleId, runnerId });
+    expect(computerUse.resolveApp).toHaveBeenCalledWith({ app: app.bundleId, deviceId });
   });
   it("never consults the helper for a non-owner", async () => {
     const { service, store, computerUse } = fixture();
-    store.getComputerUsePolicy.mockRejectedValue(new Error("Only this computer’s owner"));
+    store.getDeviceComputerUsePolicy.mockRejectedValue(new Error("Only this computer’s owner"));
     await expect(
       service.reviewComputerAppSetup({ setupRequestId: request.id, ownerUserId }),
     ).rejects.toThrow("owner");
@@ -217,7 +293,7 @@ describe("owner-session computer app approvals", () => {
     const { service, computerUse, store } = fixture();
     computerUse.resolveApp.mockRejectedValue(new Error("offline"));
     await expect(service.respondComputerAppSetup(answer)).rejects.toThrow("verify");
-    expect(store.setComputerConnection).not.toHaveBeenCalled();
+    expect(store.setDeviceComputerConnection).not.toHaveBeenCalled();
   });
   it("refuses changed identities and denied apps before allowing", async () => {
     const { service, computerUse, store } = fixture();
@@ -239,7 +315,7 @@ describe("owner-session computer app approvals", () => {
       running: false,
     });
     await expect(service.respondComputerAppSetup(answer)).rejects.toThrow("denied");
-    expect(store.setComputerConnection).not.toHaveBeenCalled();
+    expect(store.setDeviceComputerConnection).not.toHaveBeenCalled();
   });
   it("refuses first installation from another personal owner", async () => {
     const { service, install, store } = fixture();
@@ -253,7 +329,7 @@ describe("owner-session computer app approvals", () => {
       code: "forbidden",
     });
     expect(install).not.toHaveBeenCalled();
-    expect(store.setComputerConnection).not.toHaveBeenCalled();
+    expect(store.setDeviceComputerConnection).not.toHaveBeenCalled();
   });
   it("revalidates the approving session after waiting in admission and grants nothing when it was revoked", async () => {
     const { service, store, admission, changed } = fixture(serverRequest);

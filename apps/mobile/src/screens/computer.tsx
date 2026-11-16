@@ -1,3 +1,4 @@
+import { computerTargetId } from "@opensteer/client/host";
 import { SettingsDeviceCapabilities } from "./settings-device-capabilities.js";
 import { ComputerSetupApprovals } from "../computers/computer-app-approval.js";
 import { ActivityIndicator, ScrollView, View } from "react-native";
@@ -261,7 +262,7 @@ function ComputerDetail(props: {
             <ComputerSetupApprovals
               hostClient={props.hostClient}
               requests={(data.data?.setupRequests ?? []).filter(
-                (request) => request.runnerId === machine.id && request.kind !== "app",
+                (request) => computerTargetId(request) === machine.id && request.kind !== "app",
               )}
               onChanged={data.reload}
             />
