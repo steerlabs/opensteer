@@ -40,7 +40,7 @@ const (
 	Unsupported             Reason = "unsupported"
 )
 
-var Reasons = []Reason{NativeServiceFailed, Cancelled, DeadlineExceeded, CandidateGone, IdentityMismatch, USBMuxUnavailable, TrustRequired, TrustPending, TrustDenied, PhoneLocked, PairingRevoked, PairingFailed, DeveloperModeRequired, DeveloperModeUnknown, ImageMissing, ImageIncompatible, ImageMountFailed, PersonalizationNetwork, PersonalizationRejected, TunnelFailed, ServiceMissing, ProtocolUnsupported, UnsupportedIOS, QualificationRequired, PhoneInUse, MediaRequired, MediaConflict, PhoneDisconnected, OwnedElsewhere, StaleEpoch, NoSession, NotInitialized, Unsupported}
+var Reasons = append([]Reason{NativeServiceFailed, Cancelled, DeadlineExceeded, CandidateGone, IdentityMismatch, USBMuxUnavailable, TrustRequired, TrustPending, TrustDenied, PhoneLocked, PairingRevoked, PairingFailed, DeveloperModeRequired, DeveloperModeUnknown, ImageMissing, ImageIncompatible, ImageMountFailed, PersonalizationNetwork, PersonalizationRejected, TunnelFailed, ServiceMissing, ProtocolUnsupported, UnsupportedIOS, QualificationRequired, PhoneInUse, MediaRequired, MediaConflict, PhoneDisconnected, OwnedElsewhere, StaleEpoch, NoSession, NotInitialized, Unsupported}, screenReasons...)
 
 type Failure struct {
 	Code           Reason `json:"code"`
@@ -177,7 +177,10 @@ func Params(r Request) (interface{}, error) {
 	case "session.close":
 		v = &CloseParams{}
 	default:
-		return nil, ErrProtocol
+		v = screenParams(r.Method)
+		if v == nil {
+			return nil, ErrProtocol
+		}
 	}
 	if len(r.Params) == 0 || r.Params[0] != '{' {
 		return nil, ErrProtocol
@@ -230,6 +233,9 @@ func Params(r Request) (interface{}, error) {
 		if !validID(p.BindingToken) || !validID(p.SessionID) {
 			return nil, ErrProtocol
 		}
+	}
+	if err := validateScreenParams(v); err != nil {
+		return nil, err
 	}
 	return v, nil
 }
