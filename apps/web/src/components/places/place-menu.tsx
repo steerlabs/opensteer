@@ -17,11 +17,11 @@ export function PlaceMenuPlaces({
   readonly onClose: () => void;
   readonly places: DesktopPlaces;
 }) {
-  const { bridge, onAddPlace, snapshot } = places;
+  const { bridge, facts: factsStore, onAddPlace, snapshot } = places;
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const computers = snapshot.deployments.filter((row) => row.kind === "personal");
-  const facts = useComputerFacts(bridge, computers);
+  const facts = useComputerFacts(factsStore, computers);
   useEffect(() => {
     const check = () => void bridge.checkDeployments().catch(() => undefined);
     check();
@@ -42,60 +42,60 @@ export function PlaceMenuPlaces({
   };
   const signedIn = snapshot.account.status === "signed-in";
   return (
-    <>
-      <div className="picker__section place-menu__places">
-        <PlaceList
-          busy={pending}
-          explainCurrent
-          label="Your computers"
-          onCheck={() => void bridge.checkDeployments().catch(() => undefined)}
-          onOpen={(row) => {
-            if (row.current) {
-              onClose();
-              return;
-            }
-            run(() => bridge.select({ deploymentId: DeploymentIdSchema.parse(row.id) }), onClose);
-          }}
-          onRemove={(row) =>
-            run(() => bridge.removeFromAccount({ deploymentId: DeploymentIdSchema.parse(row.id) }))
-          }
-          rows={rows}
-        />
-        <PlaceSignInCard
-          account={snapshot.account}
-          onCancel={() => run(() => bridge.cancel())}
-          onSignIn={() => run(() => bridge.signIn())}
-          pending={pending}
-        />
-        {signedIn && snapshot.directoryFailure ? (
-          <p className="place-menu__note" role="status">
-            Couldn’t refresh your list. Check your connection.{" "}
-            <button
-              className="link-btn"
-              onClick={() => void bridge.checkDeployments().catch(() => undefined)}
-              type="button"
-            >
-              Try again
-            </button>
-          </p>
-        ) : null}
-        <ErrorNotice message={error} />
-      </div>
-      <div className="picker__section">
-        <button
-          className="picker__row"
-          onClick={() => {
+    <div className="picker__section place-menu__places">
+      <p aria-hidden className="picker__heading">
+        Your computers
+      </p>
+      <PlaceList
+        busy={pending}
+        explainCurrent
+        label="Your computers"
+        onCheck={() => void bridge.checkDeployments().catch(() => undefined)}
+        onOpen={(row) => {
+          if (row.current) {
             onClose();
-            onAddPlace();
-          }}
-          type="button"
-        >
-          <span aria-hidden className="picker__check picker__check--icon">
-            <Icon name="plus" />
-          </span>
-          <span className="picker__label">Add a computer or server</span>
-        </button>
-      </div>
-    </>
+            return;
+          }
+          run(() => bridge.select({ deploymentId: DeploymentIdSchema.parse(row.id) }), onClose);
+        }}
+        onRemove={(row) =>
+          run(() => bridge.removeFromAccount({ deploymentId: DeploymentIdSchema.parse(row.id) }))
+        }
+        rows={rows}
+      />
+      <button
+        className="place-panel__action"
+        onClick={() => {
+          onClose();
+          onAddPlace();
+        }}
+        type="button"
+      >
+        <span aria-hidden className="place-row__check" />
+        <span aria-hidden className="place-row__mark">
+          <Icon name="plus" />
+        </span>
+        <span className="place-row__name">Add a computer or server</span>
+      </button>
+      <PlaceSignInCard
+        account={snapshot.account}
+        onCancel={() => run(() => bridge.cancel())}
+        onSignIn={() => run(() => bridge.signIn())}
+        pending={pending}
+      />
+      {signedIn && snapshot.directoryFailure ? (
+        <p className="place-menu__note" role="status">
+          Couldn’t refresh your list. Check your connection.{" "}
+          <button
+            className="link-btn"
+            onClick={() => void bridge.checkDeployments().catch(() => undefined)}
+            type="button"
+          >
+            Try again
+          </button>
+        </p>
+      ) : null}
+      <ErrorNotice message={error} />
+    </div>
   );
 }

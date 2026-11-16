@@ -8,6 +8,7 @@ import {
   type DeploymentAccessDeployment,
   type OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
+import { ComputerFactsStore } from "../../desktop/computer-facts.js";
 import { PlaceMenuPlaces } from "./place-menu.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -17,6 +18,8 @@ afterEach(() => {
   root = null;
   document.body.replaceChildren();
 });
+
+const unanswered = () => new Promise<never>(() => undefined);
 
 async function mount(overrides: Partial<DeploymentAccessDeployment> = {}, expired = false) {
   const id = createId("deployment");
@@ -67,7 +70,12 @@ async function mount(overrides: Partial<DeploymentAccessDeployment> = {}, expire
   const bridge = { select, checkDeployments, signIn } as unknown as OpensteerDesktopBridge;
   root = createRoot(document.body.appendChild(document.createElement("div")));
   await act(async () =>
-    root?.render(<PlaceMenuPlaces onClose={onClose} places={{ bridge, snapshot, onAddPlace }} />),
+    root?.render(
+      <PlaceMenuPlaces
+        onClose={onClose}
+        places={{ bridge, facts: new ComputerFactsStore(unanswered), snapshot, onAddPlace }}
+      />,
+    ),
   );
   return { id, select, checkDeployments, signIn, onClose, onAddPlace };
 }
