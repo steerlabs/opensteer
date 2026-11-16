@@ -29,6 +29,8 @@ describe("integration platform OAuth routes", () => {
       dashboard: {} as never,
       mcpOauth: {} as McpOAuthService,
       pluginsChanged: changed,
+      devices: {} as never,
+      localServers: {} as never,
       platform: {
         store: {
           connections: { assertOwner: vi.fn(async () => undefined) },
@@ -80,6 +82,8 @@ describe("integration platform OAuth routes", () => {
       authenticator: {} as HostAuthenticator,
       dashboard: {} as never,
       mcpOauth: {} as McpOAuthService,
+      devices: {} as never,
+      localServers: {} as never,
       platform: {
         store: {
           connections: { assertOwner: vi.fn(async () => undefined) },
@@ -121,9 +125,10 @@ describe("integration platform OAuth routes", () => {
       authenticator: {} as HostAuthenticator,
       dashboard: {} as never,
       mcpOauth: {} as McpOAuthService,
+      devices: { computerAppApprovals: { setComputerConnection } } as never,
+      localServers: {} as never,
       platform: {
         store: { connections: { assertOwner: vi.fn(async () => undefined) } },
-        computerAppApprovals: { setComputerConnection },
       } as never,
     };
 
@@ -151,6 +156,8 @@ describe("integration platform OAuth routes", () => {
       authenticator: {} as HostAuthenticator,
       dashboard: {} as never,
       mcpOauth: {} as McpOAuthService,
+      devices: {} as never,
+      localServers: {} as never,
       platform: {
         store: { connections: { assertOwner: vi.fn(async () => undefined) } },
         uninstallIntegration,
@@ -205,6 +212,8 @@ describe("integration platform OAuth routes", () => {
       } as unknown as HostAuthenticator,
       dashboard: {} as never,
       mcpOauth: { identifyAuthorizationCallback } as unknown as McpOAuthService,
+      devices: {} as never,
+      localServers: {} as never,
       platform: { store: { connections: { assertOwner: vi.fn(async () => undefined) } } } as never,
     });
 
@@ -250,6 +259,8 @@ describe("integration platform OAuth routes", () => {
           handleAuthorizationCallback,
           identifyAuthorizationCallback: vi.fn(async () => attemptId),
         } as unknown as McpOAuthService,
+        devices: {} as never,
+        localServers: {} as never,
         platform: {
           store: { connections: { assertOwner: vi.fn(async () => undefined) } },
         } as never,

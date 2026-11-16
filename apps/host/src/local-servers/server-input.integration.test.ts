@@ -23,7 +23,7 @@ import {
   startPrivateMachineHost,
   type MachineAccessHost,
 } from "../runtime/private-machine-host.test-support.js";
-import { IntegrationPlatformService } from "./integration-platform-service.js";
+import { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
 import { createHostRuntime } from "../runtime/runtime.js";
 import { ownTestDatabaseProducer } from "@opensteer/database/test-support/database";
 

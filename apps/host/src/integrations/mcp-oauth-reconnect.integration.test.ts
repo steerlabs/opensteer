@@ -1,4 +1,8 @@
 import { sealOAuthBrokerPayload } from "@opensteer/control-plane-protocol/broker-sealing";
+import {
+  createIntegrationPlatform,
+  type IntegrationPlatformTestHarness,
+} from "./integration-platform.test-support.js";
 import { createId, OpensteerError } from "@opensteer/core";
 import { createHash, randomBytes } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
@@ -75,7 +79,6 @@ vi.mock("@modelcontextprotocol/sdk/client/streamableHttp.js", () => ({
 }));
 
 import { McpOAuthService } from "./mcp-oauth-service.js";
-import { IntegrationPlatformService } from "./integration-platform-service.js";
 
 const baseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = baseUrl ? describe : describe.skip;
@@ -303,7 +306,7 @@ integration("MCP OAuth reconnect", () => {
             })
             .executeTakeFirstOrThrow();
         }
-        let platform!: IntegrationPlatformService;
+        let platform!: IntegrationPlatformTestHarness;
         const oauth = new McpOAuthService({
           ...(appFinish
             ? {
@@ -324,7 +327,7 @@ integration("MCP OAuth reconnect", () => {
           onConnectionConnected: (input) =>
             platform.connectionConnected(input).then(() => undefined),
         });
-        platform = new IntegrationPlatformService({
+        platform = createIntegrationPlatform({
           store,
           secretVault: new AesGcmSecretVault(
             new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),

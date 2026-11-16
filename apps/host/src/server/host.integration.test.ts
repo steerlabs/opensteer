@@ -1653,6 +1653,8 @@ describe("rpc envelope", () => {
           service: (kind === "provider" ? { returnAuthorization } : {}) as never,
           mcpOauth: (kind === "mcp" ? { returnAuthorization } : {}) as never,
           platform: {} as never,
+          devices: {} as never,
+          localServers: {} as never,
           skills: {} as never,
         },
       });
@@ -1714,6 +1716,8 @@ describe("rpc envelope", () => {
           authAttempts: {} as never,
           continuations: {} as never,
           dashboard: {} as never,
+          devices: {} as never,
+          localServers: {} as never,
           mcpOauth: {} as never,
           platform: {
             store: {
@@ -1787,6 +1791,8 @@ describe("rpc envelope", () => {
           authAttempts: {} as never,
           continuations: {} as never,
           dashboard: {} as never,
+          devices: {} as never,
+          localServers: {} as never,
           mcpOauth: {} as never,
           platform: {
             store: {

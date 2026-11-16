@@ -56,6 +56,7 @@ import {
   type IntegrationProposalRefusal,
   type IntegrationProposalSelectedAuth,
 } from "../../integrations/integration-platform-service.js";
+import type { DeviceService } from "../../devices/device-service.js";
 
 import {
   pendingOnComputerNextAction,
@@ -68,7 +69,7 @@ import {
   phoneRequestShape,
   unknownComputerUseMac,
   unknownPhone,
-} from "../../integrations/computer-use-discovery.js";
+} from "../../devices/computer-use-discovery.js";
 
 import { DescribeInputSchema, ProposeInputSchema } from "@opensteer/agent-tools/integrations";
 import type { ToolCall } from "./types.js";
@@ -106,12 +107,21 @@ export class IntegrationToolHandlers {
   readonly #definitions: readonly IntegrationDefinition[];
   readonly #onEvent: (event: AgentEvent) => void;
   readonly #platform: IntegrationPlatformService;
+  readonly #devices: Pick<
+    DeviceService,
+    "computerAppApprovals" | "computerToolEnabled" | "computerUseVersion" | "runComputerCode"
+  >;
   constructor(options: {
     readonly definitions: readonly IntegrationDefinition[];
+    readonly devices: Pick<
+      DeviceService,
+      "computerAppApprovals" | "computerToolEnabled" | "computerUseVersion" | "runComputerCode"
+    >;
     readonly onEvent: (event: AgentEvent) => void;
     readonly platform: IntegrationPlatformService;
   }) {
     this.#definitions = options.definitions;
+    this.#devices = options.devices;
     this.#onEvent = options.onEvent;
     this.#platform = options.platform;
   }
@@ -178,12 +188,12 @@ export class IntegrationToolHandlers {
   }
   async computer_use(call: ToolCall<"computer_use">) {
     const run = requireRun(call.caller).claims;
-    if (!(await this.#platform.computerToolEnabled(run)))
+    if (!(await this.#devices.computerToolEnabled(run)))
       throw refused(
         "conflict",
         "computer_use is not available on this computer yet. Update Opensteer on it to use it.",
       );
-    return this.#platform.runComputerCode(
+    return this.#devices.runComputerCode(
       { run, threadId: run.threadId },
       call.input.code,
       call.signal ?? AbortSignal.timeout(100_000),
@@ -431,15 +441,15 @@ export class IntegrationToolHandlers {
     runnerId?: z.infer<typeof RunnerIdSchema>,
   ) {
     const nextCursor = (more: boolean) => (more ? String(offset + limit) : null);
-    const computerEnabled = "runId" in scope && (await this.#platform.computerToolEnabled(scope));
+    const computerEnabled = "runId" in scope && (await this.#devices.computerToolEnabled(scope));
     if (runnerId) {
-      const inventory = await this.#platform.computerAppApprovals.computerUseInventory(
+      const inventory = await this.#devices.computerAppApprovals.computerUseInventory(
         scope.requestedBy,
       );
       const machine = inventory.machines.find((machine) => machine.runnerId === runnerId);
       const phone = inventory.phones.find((phone) => phone.runnerId === runnerId);
       if (phone) {
-        const installed = await this.#platform.computerAppApprovals.installedComputerApps(
+        const installed = await this.#devices.computerAppApprovals.installedComputerApps(
           {
             actorUserId: scope.requestedBy,
             runnerId,
@@ -462,7 +472,7 @@ export class IntegrationToolHandlers {
       }
       if (!machine) throw refused("not_found", unknownComputerUseMac(runnerId));
       const [installed, callable, pending] = await Promise.all([
-        this.#platform.computerAppApprovals.installedComputerApps(
+        this.#devices.computerAppApprovals.installedComputerApps(
           {
             actorUserId: scope.requestedBy,
             runnerId,
@@ -485,7 +495,7 @@ export class IntegrationToolHandlers {
             ? `${machine.name} is offline.`
             : `${machine.name} isn’t ready to list apps yet.`,
         );
-      const holders = this.#platform.computerAppApprovals.computerAppHolders(runnerId);
+      const holders = this.#devices.computerAppApprovals.computerAppHolders(runnerId);
       const apps = installed.apps.map(({ identity }) => {
         const key = computerAppIdentityKey(identity);
         const approved = machine.apps.find(({ bundleId }) => bundleId.toLowerCase() === key);
@@ -513,7 +523,7 @@ export class IntegrationToolHandlers {
             !discovery.inUse &&
             computerEnabled &&
             machine.state === "ready" &&
-            this.#platform.computerUseVersion(runnerId) === 2,
+            this.#devices.computerUseVersion(runnerId) === 2,
           ...(approved?.status === "approved" ? { access: approved.access } : {}),
 
           ...(discovery.pending ? { pending: discovery.pending } : {}),
@@ -528,7 +538,7 @@ export class IntegrationToolHandlers {
           name: machine.name,
           state: machine.state,
           computerToolEnabled: computerEnabled,
-          computerUseVersion: this.#platform.computerUseVersion(runnerId),
+          computerUseVersion: this.#devices.computerUseVersion(runnerId),
           appApproval: machine.appApproval,
         },
         apps,
@@ -663,7 +673,7 @@ export class IntegrationToolHandlers {
       }),
     );
     const [{ machines: computers, phones }, pending] = await Promise.all([
-      this.#platform.computerAppApprovals.computerUseInventory(scope.requestedBy),
+      this.#devices.computerAppApprovals.computerUseInventory(scope.requestedBy),
       this.#pendingComputerApprovals(scope),
     ]);
     // Every definition stays listed, so nothing is withheld because the wording
@@ -689,15 +699,14 @@ export class IntegrationToolHandlers {
               ? {
                   computers: computers.map(({ runnerId, name, state, appApproval, apps }) => {
                     const machine = { name, state, appApproval };
-                    const holders =
-                      this.#platform.computerAppApprovals.computerAppHolders(runnerId);
+                    const holders = this.#devices.computerAppApprovals.computerAppHolders(runnerId);
                     return {
                       computerId: runnerId,
                       name,
                       state,
                       appApproval,
                       computerToolEnabled: computerEnabled,
-                      computerUseVersion: this.#platform.computerUseVersion(runnerId),
+                      computerUseVersion: this.#devices.computerUseVersion(runnerId),
                       apps: [
                         ...apps.map(({ connectionId, ...app }) => {
                           const key = app.bundleId.toLowerCase();
@@ -727,7 +736,7 @@ export class IntegrationToolHandlers {
                               !discovery.inUse &&
                               computerEnabled &&
                               state === "ready" &&
-                              this.#platform.computerUseVersion(runnerId) === 2,
+                              this.#devices.computerUseVersion(runnerId) === 2,
 
                             ...(discovery.pending ? { pending: discovery.pending } : {}),
                             ...(discovery.inUse ? { inUse: discovery.inUse } : {}),
@@ -765,7 +774,7 @@ export class IntegrationToolHandlers {
                       const toolRefs = connection
                         ? computerToolRefs(callable, connection.connectionId)
                         : {};
-                      const holder = this.#platform.computerAppApprovals
+                      const holder = this.#devices.computerAppApprovals
                         .computerAppHolders(runnerId)
                         .get(
                           computerUseHolderKey({
@@ -917,7 +926,7 @@ export class IntegrationToolHandlers {
     if (replay.payload?.kind === "computer.app.access" && replay.status === "pending") {
       const runnerId = replay.payload.runnerId;
       const { machines: macs, phones } =
-        await this.#platform.computerAppApprovals.computerUseInventory(scope.requestedBy);
+        await this.#devices.computerAppApprovals.computerUseInventory(scope.requestedBy);
       const computer = [...macs, ...phones].find((machine) => machine.runnerId === runnerId);
       if (computer)
         return computerAppPendingResult(replay, true, pendingOnComputerNextAction(computer.name));
@@ -1114,7 +1123,7 @@ export class IntegrationToolHandlers {
     if (input.app === undefined) return this.#requestPhone(scope, input, callId);
     const app = input.app;
     const { machines: macs, phones } =
-      await this.#platform.computerAppApprovals.computerUseInventory(scope.requestedBy);
+      await this.#devices.computerAppApprovals.computerUseInventory(scope.requestedBy);
     const named = input.computerId
       ? macs.find(({ runnerId }) => runnerId === input.computerId)
       : (macs.find(({ runnerId }) => runnerId === scope.runnerId) ??
@@ -1142,7 +1151,7 @@ export class IntegrationToolHandlers {
               .join(", ")}.`,
       );
     }
-    const created = await this.#platform.computerAppApprovals.requestComputerAppAccess({
+    const created = await this.#devices.computerAppApprovals.requestComputerAppAccess({
       access: input.access,
       app,
       reason: input.reason,
@@ -1165,7 +1174,7 @@ export class IntegrationToolHandlers {
     input: Omit<z.infer<typeof AppAccessRequestInputSchema>, "operationKey">,
     callId: string,
   ) {
-    const { machines, phones } = await this.#platform.computerAppApprovals.computerUseInventory(
+    const { machines, phones } = await this.#devices.computerAppApprovals.computerUseInventory(
       scope.requestedBy,
     );
     const phone = phones.find(({ runnerId }) => runnerId === input.computerId);
@@ -1180,7 +1189,7 @@ export class IntegrationToolHandlers {
             : unknownPhone(input.computerId ?? ""),
       );
     }
-    const created = await this.#platform.computerAppApprovals.requestComputerAppAccess({
+    const created = await this.#devices.computerAppApprovals.requestComputerAppAccess({
       access: input.access,
       app: null,
       reason: input.reason,
@@ -1199,9 +1208,7 @@ const phoneRequestRefusal = `An Android phone is requested one phone at a time: 
 
 /** What a task's ask for an app or a phone answers, pending or ready for computer. */
 function computerAccessResult(
-  created: Awaited<
-    ReturnType<IntegrationPlatformService["computerAppApprovals"]["requestComputerAppAccess"]>
-  >,
+  created: Awaited<ReturnType<DeviceService["computerAppApprovals"]["requestComputerAppAccess"]>>,
   scope: AnyIntegrationToolsScope,
 ) {
   if (created.status === "pending") {

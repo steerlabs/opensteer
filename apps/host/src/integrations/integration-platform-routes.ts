@@ -19,6 +19,8 @@ import { unversionedRoute } from "../server/unversioned-route.js";
 import type { HostAuthenticator } from "../identity/auth.js";
 import type { IntegrationDashboardService } from "./integration-dashboard-service.js";
 import type { IntegrationPlatformService } from "./integration-platform-service.js";
+import type { DeviceService } from "../devices/device-service.js";
+import type { LocalServerService } from "../local-servers/local-server-service.js";
 import type { McpOAuthService } from "./mcp-oauth-service.js";
 import { registerOAuthCallbackRoute } from "./integration-authorization-routes.js";
 import { requirePersonalSession, requireSurface } from "../server/rpc-context.js";
@@ -28,6 +30,9 @@ export interface IntegrationPlatformRpcOptions {
   readonly deploymentId?: DeploymentId;
   readonly dashboard: Pick<IntegrationDashboardService, "platformDashboard">;
   readonly platform: IntegrationPlatformService;
+  /** Computer app and phone approvals, and grants, which the device service keeps. */
+  readonly devices: Pick<DeviceService, "computerAppApprovals" | "createGrant" | "revokeGrant">;
+  readonly localServers: Pick<LocalServerService, "removePluginData" | "setServerSecrets">;
   readonly mcpOauth: McpOAuthService;
   readonly pluginsChanged?: (viewers: readonly UserId[]) => void;
 }
@@ -55,7 +60,7 @@ export function createIntegrationPlatformRpcHandlers(
       });
     },
     "integration.computer.policy.get": async (input, context) => {
-      const { appApproval } = await options.platform.computerAppApprovals.computerUsePolicy({
+      const { appApproval } = await options.devices.computerAppApprovals.computerUsePolicy({
         ...input,
         ownerUserId: (await requirePersonalSession(context, options.platform.store.connections))
           .user.id,
@@ -65,7 +70,7 @@ export function createIntegrationPlatformRpcHandlers(
     "integration.computer.apps.installed": async (input, context) =>
       rpcSuccess(
         hostApi["integration.computer.apps.installed"].success.parse(
-          await options.platform.computerAppApprovals.installedComputerApps({
+          await options.devices.computerAppApprovals.installedComputerApps({
             ...input,
             actorUserId: (await requirePersonalSession(context, options.platform.store.connections))
               .user.id,
@@ -73,7 +78,7 @@ export function createIntegrationPlatformRpcHandlers(
         ),
       ),
     "integration.computer.session.stop": async (input, context) => {
-      await options.platform.computerAppApprovals.stopComputerUseSession({
+      await options.devices.computerAppApprovals.stopComputerUseSession({
         actorUserId: (await requirePersonalSession(context, options.platform.store.connections))
           .user.id,
         sessionId: input.sessionId,
@@ -82,7 +87,7 @@ export function createIntegrationPlatformRpcHandlers(
     },
     "integration.computer.setup.review": async (input, context) =>
       rpcSuccess(
-        await options.platform.computerAppApprovals.reviewComputerAppSetup({
+        await options.devices.computerAppApprovals.reviewComputerAppSetup({
           ...input,
           ownerUserId: (await requirePersonalSession(context, options.platform.store.connections))
             .user.id,
@@ -187,7 +192,7 @@ async function executeIntegrationPlatformCommand(
   const session = await requirePersonalSession(context, options.platform.store.connections);
   if (isIntegrationAdministrationCommand(command))
     return executeIntegrationAdministration(
-      { platform: options.platform },
+      { devices: options.devices, localServers: options.localServers, platform: options.platform },
       { userId: session.user.id },
       command,
       context.requestId,
@@ -196,7 +201,7 @@ async function executeIntegrationPlatformCommand(
     case "integration.computer.policy.set":
       return {
         type: command.type,
-        ...(await options.platform.computerAppApprovals.setComputerUsePolicy({
+        ...(await options.devices.computerAppApprovals.setComputerUsePolicy({
           ...command.input,
           settlementSessionId: session.id,
           ownerUserId: session.user.id,
@@ -204,7 +209,7 @@ async function executeIntegrationPlatformCommand(
         })),
       };
     case "integration.computer.app.block":
-      await options.platform.computerAppApprovals.blockComputerApp({
+      await options.devices.computerAppApprovals.blockComputerApp({
         connectionId: command.connectionId,
         ownerUserId: session.user.id,
         requestId: context.requestId,
@@ -214,21 +219,21 @@ async function executeIntegrationPlatformCommand(
       return {
         type: command.type,
         request: ComputerAppSetupRequestViewSchema.parse(
-          await options.platform.computerAppApprovals.requestComputerAppSetup({
+          await options.devices.computerAppApprovals.requestComputerAppSetup({
             ...command.input,
             actorUserId: session.user.id,
           }),
         ),
       };
     case "integration.computer.setup.cancel":
-      await options.platform.computerAppApprovals.cancelComputerAppSetup({
+      await options.devices.computerAppApprovals.cancelComputerAppSetup({
         settlementSessionId: session.id,
         requestId: command.requestId,
         ownerUserId: session.user.id,
       });
       return { type: command.type };
     case "integration.computer.setup.respond":
-      await options.platform.computerAppApprovals.respondComputerAppSetup({
+      await options.devices.computerAppApprovals.respondComputerAppSetup({
         settlementSessionId: session.id,
         setupRequestId: command.setupRequestId,
         decision: command.decision,
@@ -249,14 +254,14 @@ async function executeIntegrationPlatformCommand(
       });
       return { type: command.type };
     case "integration.server.secrets.set":
-      await options.platform.setServerSecrets({
+      await options.localServers.setServerSecrets({
         actorUserId: session.user.id,
         secrets: command.secrets,
         serverId: command.serverId,
       });
       return { type: command.type };
     case "integration.computer.setup.set": {
-      const connection = await options.platform.computerAppApprovals.setComputerConnection({
+      const connection = await options.devices.computerAppApprovals.setComputerConnection({
         ...command.input,
         settlementSessionId: session.id,
         actorUserId: session.user.id,
@@ -319,7 +324,7 @@ async function executeIntegrationPlatformCommand(
     }
     case "integration.grant.create": {
       const input = command.input;
-      const grant = await options.platform.createGrant({
+      const grant = await options.devices.createGrant({
         access: input.access,
         alias: input.alias,
         connectionId: input.connectionId,

@@ -16,6 +16,7 @@ import type { DeploymentId, UserId } from "@opensteer/core";
 import type { IntegrationDashboardService } from "./integration-dashboard-service.js";
 import type { IntegrationService } from "./integration-service.js";
 import type { IntegrationPlatformService } from "./integration-platform-service.js";
+import type { DeviceService } from "../devices/device-service.js";
 import { registerOAuthCallbackRoute } from "./integration-authorization-routes.js";
 import { requirePersonalSession, requireSurface } from "../server/rpc-context.js";
 
@@ -27,7 +28,8 @@ export interface IntegrationRpcOptions {
   readonly dashboard: Pick<IntegrationDashboardService, "providerDashboard">;
   readonly integrations: IntegrationService;
   readonly pluginsChanged?: (viewers: readonly UserId[]) => void;
-  readonly platform: Pick<IntegrationPlatformService, "computerAppApprovals" | "store">;
+  readonly devices: Pick<DeviceService, "computerAppApprovals">;
+  readonly platform: Pick<IntegrationPlatformService, "store">;
 }
 
 export function createIntegrationRpcHandlers(
@@ -87,7 +89,7 @@ async function executeIntegrationCommand(
   const session = await requirePersonalSession(context, options.platform.store.connections);
   if (command.type === "integration.disconnect")
     return disconnectIntegration(
-      { platform: options.platform, integrations: options.integrations },
+      { devices: options.devices, platform: options.platform, integrations: options.integrations },
       { userId: session.user.id },
       command.connectionId,
       context.requestId,

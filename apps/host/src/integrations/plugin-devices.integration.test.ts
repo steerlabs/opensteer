@@ -1,4 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import {
+  createIntegrationPlatform,
+  type IntegrationPlatformTestOptions,
+} from "./integration-platform.test-support.js";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +15,6 @@ import {
   describeStore,
   reachOnlyModules,
 } from "@opensteer/database/test-support/store";
-import { IntegrationPlatformService } from "./integration-platform-service.js";
 import { executeIntegrationAdministration } from "./integration-administration.js";
 
 describeStore("plugin devices", (test) => {
@@ -34,21 +37,17 @@ describeStore("plugin devices", (test) => {
     const platform = new IntegrationPlatformStore(f.database);
     const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-device-"));
     const changed = vi.fn();
-    const service = new IntegrationPlatformService({
+    const service = createIntegrationPlatform({
       store: platform,
       dataDirectory: directory,
       adapters: [],
       definitions: [],
       authorizationSource: { providerAuthorizations: async () => ({}) },
       listConnections: async () => [],
-      credentialMaterializer: {} as ConstructorParameters<
-        typeof IntegrationPlatformService
-      >[0]["credentialMaterializer"],
-      computerApps: {} as ConstructorParameters<
-        typeof IntegrationPlatformService
-      >[0]["computerApps"],
+      credentialMaterializer: {} as IntegrationPlatformTestOptions["credentialMaterializer"],
+      computerApps: {} as IntegrationPlatformTestOptions["computerApps"],
       isRunnerConnected: () => false,
-      mcpOauth: {} as ConstructorParameters<typeof IntegrationPlatformService>[0]["mcpOauth"],
+      mcpOauth: {} as IntegrationPlatformTestOptions["mcpOauth"],
       secretVault: new AesGcmSecretVault(
         new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
       ),
@@ -289,7 +288,7 @@ describeStore("plugin devices", (test) => {
       const orphan = join(directory, "plugins", "data", "failed-install");
       await mkdir(orphan);
       await writeFile(join(orphan, "pairing"), "stranded");
-      await service.recoverPluginData();
+      await service.localServers.recoverPluginData();
       expect(await readFile(join(legacy, "pairing"), "utf8")).toBe("retained");
       await expect(readFile(join(orphan, "pairing"))).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
@@ -306,21 +305,19 @@ describeStore("plugin devices", (test) => {
     const foreign = createId("user");
     const directory = await mkdtemp(join(tmpdir(), "plugin-removal-authority-"));
     const removeRunnerData = vi.fn(async () => undefined);
-    const service = new IntegrationPlatformService({
+    const service = createIntegrationPlatform({
       store: platform,
       dataDirectory: directory,
       adapters: [],
       definitions: [],
       authorizationSource: { providerAuthorizations: async () => ({}) },
       listConnections: async () => [],
-      credentialMaterializer: {} as ConstructorParameters<
-        typeof IntegrationPlatformService
-      >[0]["credentialMaterializer"],
-      computerApps: { removePluginData: removeRunnerData } as unknown as ConstructorParameters<
-        typeof IntegrationPlatformService
-      >[0]["computerApps"],
+      credentialMaterializer: {} as IntegrationPlatformTestOptions["credentialMaterializer"],
+      computerApps: {
+        removePluginData: removeRunnerData,
+      } as unknown as IntegrationPlatformTestOptions["computerApps"],
       isRunnerConnected: () => false,
-      mcpOauth: {} as ConstructorParameters<typeof IntegrationPlatformService>[0]["mcpOauth"],
+      mcpOauth: {} as IntegrationPlatformTestOptions["mcpOauth"],
       secretVault: new AesGcmSecretVault(
         new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
       ),
@@ -369,7 +366,7 @@ describeStore("plugin devices", (test) => {
       ).rejects.toMatchObject({ code: "forbidden" });
       await expect(
         executeIntegrationAdministration(
-          { platform: service },
+          { devices: service.devices, localServers: service.localServers, platform: service },
           { userId: foreign },
           { type: "plugin.remove", pluginId, idempotencyKey: "denied" },
           "denied",
@@ -385,7 +382,7 @@ describeStore("plugin devices", (test) => {
       );
       expect(removeRunnerData).not.toHaveBeenCalled();
       await executeIntegrationAdministration(
-        { platform: service },
+        { devices: service.devices, localServers: service.localServers, platform: service },
         { userId: run.userId },
         { type: "plugin.remove", pluginId, idempotencyKey: "remove" },
         "remove",

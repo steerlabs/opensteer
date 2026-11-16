@@ -9,7 +9,7 @@ import {
 import type { IntegrationStore, OpensteerStore } from "@opensteer/database";
 import { computerAppIdentitiesEqual } from "@opensteer/integration-core/computer-app";
 import type { BrowserService } from "../browser/browser-service.js";
-import type { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
+import type { DeviceService } from "../devices/device-service.js";
 import type { ComputerUseService } from "./computer-use-service.js";
 
 type ComputerUseInventory = Awaited<ReturnType<ComputerUseService["eligibleInventory"]>>;
@@ -18,7 +18,7 @@ interface PlaceContextDependencies {
   readonly browser: Pick<BrowserService, "assertPagesUsable">;
   readonly computerUse: Pick<ComputerUseService, "eligibleInventory" | "sessionsForRunner">;
   readonly connections: Pick<IntegrationStore, "listConnections">;
-  readonly integrations: Pick<IntegrationPlatformService, "listCallableTools">;
+  readonly integrations: Pick<DeviceService, "listCallableTools">;
   readonly store: Pick<OpensteerStore, "hasHumanIncludedPlace">;
 }
 

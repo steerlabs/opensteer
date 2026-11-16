@@ -16,8 +16,8 @@ import { BrowserSignInRequestResponseSchema } from "@opensteer/protocol/browser-
 import { CoalescedWake } from "@opensteer/shared/coalescedWake";
 import { z } from "zod";
 import type { PasswordSignInContinuationState } from "../browser/password-sign-in-service.js";
-import type { ComputerAppApprovalService } from "../integrations/computer-app-approval-service.js";
-import { computerToolRefs } from "../integrations/computer-use-discovery.js";
+import type { ComputerAppApprovalService } from "../devices/computer-app-approval-service.js";
+import { computerToolRefs } from "../devices/computer-use-discovery.js";
 import type { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
 const defaultIntervalMs = 5_000;
 const cancelledContinuationReason = "Continuation delivery was cancelled by Thread input admission";

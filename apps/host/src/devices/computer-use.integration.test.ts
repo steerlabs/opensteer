@@ -1,4 +1,5 @@
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
+import { createIntegrationPlatform } from "../integrations/integration-platform.test-support.js";
 import { createPersonalRunFixturePort } from "@opensteer/database/test-support/personal-run";
 
 import { createId } from "@opensteer/core";
@@ -20,12 +21,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMachineAccessDatabase } from "../runtime/private-machine-host.test-support.js";
-import { integrationCallSubject } from "./integration-call-subject.js";
-import { operationAddress } from "./integration-operation.js";
-import {
-  IntegrationPlatformService,
-  type ComputerUseGateway,
-} from "./integration-platform-service.js";
+import { integrationCallSubject } from "../integrations/integration-call-subject.js";
+import { operationAddress } from "../integrations/integration-operation.js";
+
+import { type ComputerUseGateway } from "./device-service.js";
 
 const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = baseDatabaseUrl ? describe : describe.skip;
@@ -124,7 +123,7 @@ integration.sequential("Host computer-use approval transactions", () => {
       sendWindowOperation: vi.fn(),
       stop: vi.fn(),
     };
-    const service = new IntegrationPlatformService({
+    const service = createIntegrationPlatform({
       adapters: [],
       authorizationSource: { providerAuthorizations: async () => ({}) },
       listConnections: (owner) => connections.listConnections(owner),
@@ -185,13 +184,13 @@ integration.sequential("Host computer-use approval transactions", () => {
       threadId: task.threadId,
     };
     async function automatic() {
-      const request = await service.computerAppApprovals.requestComputerAppSetup({
+      const request = await service.devices.computerAppApprovals.requestComputerAppSetup({
         kind: "policy",
         appApproval: "automatic",
         actorUserId: task.userId,
         runnerId,
       });
-      await service.computerAppApprovals.setComputerConnection({
+      await service.devices.computerAppApprovals.setComputerConnection({
         kind: "policy",
         appApproval: "automatic",
         setupRequestId: request.id,
@@ -206,7 +205,7 @@ integration.sequential("Host computer-use approval transactions", () => {
         ({ kind }) => kind === "app",
       );
       if (!request) throw new Error("Expected app setup request");
-      return service.computerAppApprovals.setComputerConnection({
+      return service.devices.computerAppApprovals.setComputerConnection({
         kind: "app",
         app: notes,
         access,
@@ -243,7 +242,9 @@ integration.sequential("Host computer-use approval transactions", () => {
       });
     };
 
-    const requested = await test.service.computerAppApprovals.requestComputerAppAccess(test.input);
+    const requested = await test.service.devices.computerAppApprovals.requestComputerAppAccess(
+      test.input,
+    );
 
     expect(requested).toMatchObject({
       status: "pending",
@@ -257,7 +258,9 @@ integration.sequential("Host computer-use approval transactions", () => {
 
   it("stores task context, exposes owner review context, and atomically fulfils the app Request with tools and a Workspace grant", async () => {
     const test = await fixture();
-    const requested = await test.service.computerAppApprovals.requestComputerAppAccess(test.input);
+    const requested = await test.service.devices.computerAppApprovals.requestComputerAppAccess(
+      test.input,
+    );
     expect(requested.status).toBe("pending");
     const [setup] = await test.persistence.listComputerAppSetupRequests(test.task.userId);
     expect(setup).toMatchObject({
@@ -270,7 +273,7 @@ integration.sequential("Host computer-use approval transactions", () => {
     const connection = await test.approve("read-write");
     expect(connection?.displayName).toBe("Notes on Alex's Mac");
     expect(
-      await test.service.computerAppApprovals.requestComputerAppAccess(test.input),
+      await test.service.devices.computerAppApprovals.requestComputerAppAccess(test.input),
     ).toMatchObject({ status: "already-available" });
     expect(
       (
@@ -296,7 +299,7 @@ integration.sequential("Host computer-use approval transactions", () => {
     const test = await fixture();
     await test.automatic();
     expect(
-      await test.service.computerAppApprovals.requestComputerAppAccess(test.input),
+      await test.service.devices.computerAppApprovals.requestComputerAppAccess(test.input),
     ).toMatchObject({ status: "fulfilled" });
     expect(
       (
@@ -312,21 +315,21 @@ integration.sequential("Host computer-use approval transactions", () => {
     const [connection] = await test.connections.listConnections(test.task.userId);
     // Nothing reads which policy revision approved an app, so it is not written.
     expect(connection?.computer?.policyRevision).toBeNull();
-    await test.service.computerAppApprovals.setComputerUsePolicy({
+    await test.service.devices.computerAppApprovals.setComputerUsePolicy({
       runnerId: test.input.runnerId,
       ownerUserId: test.task.userId,
       appApproval: "ask",
       requestId: "ask",
     });
     expect(await test.connections.listConnections(test.task.userId)).toEqual([connection]);
-    await test.service.computerAppApprovals.blockComputerApp({
+    await test.service.devices.computerAppApprovals.blockComputerApp({
       connectionId: connection!.id,
       ownerUserId: test.task.userId,
       requestId: "block",
     });
     await test.automatic();
     await expect(
-      test.service.computerAppApprovals.requestComputerAppAccess(test.input),
+      test.service.devices.computerAppApprovals.requestComputerAppAccess(test.input),
     ).rejects.toThrow("Notes is blocked on Alex's Mac.");
     expect(
       await test.service.listCallableTools({
@@ -334,7 +337,7 @@ integration.sequential("Host computer-use approval transactions", () => {
         threadId: test.task.threadId,
       }),
     ).toEqual([]);
-    await test.service.computerAppApprovals.requestComputerAppSetup({
+    await test.service.devices.computerAppApprovals.requestComputerAppSetup({
       kind: "app",
       app: notes,
       access: "read",
@@ -351,7 +354,7 @@ integration.sequential("Host computer-use approval transactions", () => {
 
   it("attributes historical integration_call computer events only to their own grant", async () => {
     const test = await fixture();
-    await test.service.computerAppApprovals.requestComputerAppAccess(test.input);
+    await test.service.devices.computerAppApprovals.requestComputerAppAccess(test.input);
     await test.approve("read-write");
     // Old transcripts still resolve their saved references; agents now use computer.
     const act = (
@@ -431,7 +434,7 @@ integration.sequential("Host computer-use approval transactions", () => {
     const [grant] = await test.persistence.listGrants({
       ownerUserId: task.userId,
     });
-    await test.service.revokeGrant({
+    await test.service.devices.revokeGrant({
       grantId: grant!.id,
       ownerUserId: task.userId,
       requestId: "revoke-for-subject",
@@ -444,14 +447,14 @@ integration.sequential("Host computer-use approval transactions", () => {
 
   it("never widens an existing connection automatically and routes grant-only requests through ordinary access", async () => {
     const test = await fixture();
-    await test.service.computerAppApprovals.requestComputerAppAccess({
+    await test.service.devices.computerAppApprovals.requestComputerAppAccess({
       ...test.input,
       access: "read",
     });
     const connection = await test.approve("read");
     await test.automatic();
     expect(
-      await test.service.computerAppApprovals.requestComputerAppAccess({
+      await test.service.devices.computerAppApprovals.requestComputerAppAccess({
         ...test.input,
         callId: "widen",
       }),
@@ -462,18 +465,18 @@ integration.sequential("Host computer-use approval transactions", () => {
     const [grant] = await test.persistence.listGrants({
       ownerUserId: test.task.userId,
     });
-    await test.service.revokeGrant({
+    await test.service.devices.revokeGrant({
       grantId: grant!.id,
       ownerUserId: test.task.userId,
       requestId: "revoke-grant",
     });
-    await test.service.computerAppApprovals.setComputerUsePolicy({
+    await test.service.devices.computerAppApprovals.setComputerUsePolicy({
       runnerId: test.input.runnerId,
       ownerUserId: test.task.userId,
       appApproval: "ask",
       requestId: "ask",
     });
-    const requested = await test.service.computerAppApprovals.requestComputerAppAccess({
+    const requested = await test.service.devices.computerAppApprovals.requestComputerAppAccess({
       ...test.input,
       access: "read",
       callId: "grant-only",
@@ -481,7 +484,7 @@ integration.sequential("Host computer-use approval transactions", () => {
     expect(requested).toMatchObject({ status: "pending", request: { kind: "integration.access" } });
     await test.automatic();
     expect(
-      await test.service.computerAppApprovals.requestComputerAppAccess({
+      await test.service.devices.computerAppApprovals.requestComputerAppAccess({
         ...test.input,
         access: "read",
         callId: "grant-automatic",
@@ -501,7 +504,7 @@ integration.sequential("Host computer-use approval transactions", () => {
 
   it("keeps a computer-app reason longer than 500 characters on the grant-only request", async () => {
     const test = await fixture();
-    await test.service.computerAppApprovals.requestComputerAppAccess({
+    await test.service.devices.computerAppApprovals.requestComputerAppAccess({
       ...test.input,
       access: "read",
     });
@@ -509,14 +512,14 @@ integration.sequential("Host computer-use approval transactions", () => {
     const [grant] = await test.persistence.listGrants({
       ownerUserId: test.task.userId,
     });
-    await test.service.revokeGrant({
+    await test.service.devices.revokeGrant({
       grantId: grant!.id,
       ownerUserId: test.task.userId,
       requestId: "revoke-grant",
     });
     const reason = "Add every item from the shared shopping list. ".repeat(20).trim();
     expect(reason.length).toBeGreaterThan(500);
-    const requested = await test.service.computerAppApprovals.requestComputerAppAccess({
+    const requested = await test.service.devices.computerAppApprovals.requestComputerAppAccess({
       ...test.input,
       access: "read",
       callId: "grant-only-long-reason",

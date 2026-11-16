@@ -11,14 +11,22 @@ import { OpensteerMcpService } from "./opensteer-mcp-service.js";
 
 type IntegrationOptions = ConstructorParameters<typeof IntegrationToolHandlers>[0];
 export function createIntegrationMcpFixture(
-  options: IntegrationOptions & {
+  options: Omit<IntegrationOptions, "devices"> & {
+    /** The platform's own device service when absent, or the platform fake itself. */
+    readonly devices?: IntegrationOptions["devices"];
     readonly publicUrl: URL;
 
     readonly runTokens: { authenticate(token: string): Promise<RunCapabilityClaims<string>> };
     readonly triggerTokens: { authenticate(token: string): Promise<IntegrationToolsTriggerScope> };
   },
 ) {
-  const integration = new IntegrationToolHandlers(options);
+  const integration = new IntegrationToolHandlers({
+    ...options,
+    devices:
+      options.devices ??
+      (options.platform as { readonly devices?: IntegrationOptions["devices"] }).devices ??
+      (options.platform as unknown as IntegrationOptions["devices"]),
+  });
   const unavailable = new Proxy(
     {},
     {

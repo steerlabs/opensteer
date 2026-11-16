@@ -5,7 +5,7 @@ import { formatIssues } from "@opensteer/shared/validationIssues";
 import { z } from "zod";
 import { ComputerMcpSessionError } from "../computer-apps/computer-app-hub.js";
 import { ComputerUseError } from "../computer-use/computer-use-service.js";
-import { IntegrationAuthorizationRequiredError } from "../integrations/integration-platform-service.js";
+import { IntegrationAuthorizationRequiredError } from "../devices/integration-authorization-required.js";
 
 export const internalToolFailureCode = "internal";
 

@@ -54,7 +54,7 @@ import {
 } from "@opensteer/protocol";
 import type { z } from "zod";
 import type { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
-import type { LocalMcpSecrets } from "./local-mcp-secrets.js";
+import type { LocalMcpSecrets } from "../local-servers/local-mcp-secrets.js";
 import {
   ComputerUseError,
   computerUseDefinitionId,

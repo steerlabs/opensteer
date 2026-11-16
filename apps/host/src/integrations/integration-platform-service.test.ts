@@ -1,4 +1,9 @@
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import {
+  createIntegrationPlatform,
+  type IntegrationPlatformTestHarness,
+  type IntegrationPlatformTestOptions,
+} from "./integration-platform.test-support.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -55,11 +60,8 @@ import {
 } from "@opensteer/protocol";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  carriesApproval,
-  IntegrationAuthorizationRequiredError,
-  IntegrationPlatformService,
-} from "./integration-platform-service.js";
+import { IntegrationAuthorizationRequiredError } from "./integration-platform-service.js";
+import { carriesApproval } from "../local-servers/local-server-service.js";
 import { localMcpLaunchDigest } from "@opensteer/integration-core/digest";
 import type {
   ComputerAppHub,
@@ -72,11 +74,8 @@ import {
   ComputerUseService,
   type ComputerUseServiceOptions,
 } from "../computer-use/computer-use-service.js";
-import type {
-  ComputerUseGateway,
-  RunToolContext,
-  ToolCaller,
-} from "./integration-platform-service.js";
+import type { ComputerUseGateway } from "../devices/device-service.js";
+import type { RunToolContext, ToolCaller } from "../agents/tool-caller.js";
 
 /** A call with no Run behind it, as a Trigger occurrence makes. */
 const caller: ToolCaller = { run: null, threadId: createId("thread") };
@@ -99,7 +98,7 @@ const runCaller = (run: RunToolContext): ToolCaller => ({
 });
 
 let testDataDirectory: string;
-const services: IntegrationPlatformService[] = [];
+const services: IntegrationPlatformTestHarness[] = [];
 beforeEach(async () => {
   testDataDirectory = await mkdtemp(join(tmpdir(), "personal-platform-test-"));
 });
@@ -718,14 +717,16 @@ describe("IntegrationPlatformService computer connections", () => {
       runnerId,
     };
 
-    await expect(service.computerAppApprovals.setComputerConnection(input)).rejects.toMatchObject({
+    await expect(
+      service.devices.computerAppApprovals.setComputerConnection(input),
+    ).rejects.toMatchObject({
       code: "conflict",
       message: `Studio Mac is offline. Turn ${computerDefinition.name} on when it is back.`,
     });
     existing = true;
-    await expect(service.computerAppApprovals.setComputerConnection(input)).resolves.toEqual(
-      connection,
-    );
+    await expect(
+      service.devices.computerAppApprovals.setComputerConnection(input),
+    ).resolves.toEqual(connection);
     expect(setComputerConnection).toHaveBeenCalledTimes(2);
   });
 
@@ -773,7 +774,7 @@ describe("IntegrationPlatformService computer connections", () => {
       },
     });
     await expect(
-      service.computerAppApprovals.disconnectComputerConnection({
+      service.devices.computerAppApprovals.disconnectComputerConnection({
         connectionId: callable.grant.connectionId!,
         ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
         requestId: "disconnect-computer",
@@ -1165,13 +1166,13 @@ describe("IntegrationPlatformService computer invocation", () => {
       );
       await lookupStarted;
       if (mutation === "revoke") {
-        await service.revokeGrant({
+        await service.devices.revokeGrant({
           grantId: callable.grant.id,
           ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
           requestId: "revoke-race",
         });
       } else if (mutation === "downgrade") {
-        await service.createGrant({
+        await service.devices.createGrant({
           access: "read",
           alias: callable.grant.alias,
           connectionId: callable.grant.connectionId,
@@ -1181,7 +1182,7 @@ describe("IntegrationPlatformService computer invocation", () => {
           ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
         });
       } else if (mutation === "narrow") {
-        await service.computerAppApprovals.setComputerConnection({
+        await service.devices.computerAppApprovals.setComputerConnection({
           kind: "app",
           app: null,
           access: "read",
@@ -1192,7 +1193,7 @@ describe("IntegrationPlatformService computer invocation", () => {
           runnerId,
         });
       } else if (mutation === "disconnect") {
-        await service.computerAppApprovals.disconnectComputerConnection({
+        await service.devices.computerAppApprovals.disconnectComputerConnection({
           connectionId: callable.grant.connectionId!,
           ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
           requestId: "disconnect-race",
@@ -3428,9 +3429,7 @@ describe("IntegrationPlatformService MCP credential refresh", () => {
         credentialRevision: () => (call === 1 ? clientRevision : 8),
         responseRedactor: () => ({ redactText: (text: string) => text }),
       } as unknown as Awaited<
-        ReturnType<
-          ConstructorParameters<typeof IntegrationPlatformService>[0]["mcpOauth"]["providerFor"]
-        >
+        ReturnType<IntegrationPlatformTestOptions["mcpOauth"]["providerFor"]>
       >;
     });
     const connect = vi.spyOn(Client.prototype, "connect").mockResolvedValue(undefined);
@@ -3467,9 +3466,7 @@ describe("IntegrationPlatformService MCP credential refresh", () => {
         credentialRevision: () => snapshot,
         responseRedactor: () => ({ redactText: (text: string) => text }),
       } as unknown as Awaited<
-        ReturnType<
-          ConstructorParameters<typeof IntegrationPlatformService>[0]["mcpOauth"]["providerFor"]
-        >
+        ReturnType<IntegrationPlatformTestOptions["mcpOauth"]["providerFor"]>
       >;
     });
     const connect = vi.spyOn(Client.prototype, "connect").mockResolvedValue(undefined);
@@ -3511,9 +3508,7 @@ describe("IntegrationPlatformService MCP credential refresh", () => {
         credentialRevision: () => (first ? firstRevision : snapshot),
         responseRedactor: () => ({ redactText: (text: string) => text }),
       } as unknown as Awaited<
-        ReturnType<
-          ConstructorParameters<typeof IntegrationPlatformService>[0]["mcpOauth"]["providerFor"]
-        >
+        ReturnType<IntegrationPlatformTestOptions["mcpOauth"]["providerFor"]>
       >;
     });
     const connect = vi.spyOn(Client.prototype, "connect").mockImplementation(async () => {
@@ -3660,7 +3655,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       },
     });
 
-    await service.computerAppApprovals.requestComputerAppAccess({
+    await service.devices.computerAppApprovals.requestComputerAppAccess({
       reason: "Read my notes",
       access: "read",
       app: "Notes",
@@ -3681,7 +3676,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       requestEvents: [],
       setupRequest: {} as never,
     });
-    await service.computerAppApprovals.requestComputerAppAccess({
+    await service.devices.computerAppApprovals.requestComputerAppAccess({
       reason: "Read my notes",
       access: "read",
       app: "Notes",
@@ -3733,7 +3728,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
           requestComputerAppSetup,
         },
       });
-      const asking = service.computerAppApprovals.requestComputerAppSetup({
+      const asking = service.devices.computerAppApprovals.requestComputerAppSetup({
         kind: "app",
         app: null,
         access: "read",
@@ -3788,7 +3783,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       store: { cancelComputerAppSetup, requestComputerAppSetup },
     });
 
-    await service.computerAppApprovals.requestComputerAppSetup({
+    await service.devices.computerAppApprovals.requestComputerAppSetup({
       kind: "app",
       app: null,
       access: "read",
@@ -3796,7 +3791,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       definitionId: computerDefinition.id,
       runnerId: createId("runner"),
     });
-    await service.computerAppApprovals.cancelComputerAppSetup({
+    await service.devices.computerAppApprovals.cancelComputerAppSetup({
       ownerUserId: createId("user"),
       requestId: "setup-request",
     });
@@ -3830,7 +3825,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       store: { expireComputerAppSetupRequests },
     });
 
-    await service.computerAppApprovals.expireComputerAppSetupRequests();
+    await service.devices.computerAppApprovals.expireComputerAppSetupRequests();
 
     expect(expireComputerAppSetupRequests).toHaveBeenCalledOnce();
     expect(onDeploymentEvent).toHaveBeenCalledWith(requestEvent);
@@ -3854,7 +3849,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       },
     });
 
-    await service.computerAppApprovals.expireComputerAppSetupRequests();
+    await service.devices.computerAppApprovals.expireComputerAppSetupRequests();
 
     expect(onRequestsChanged).not.toHaveBeenCalled();
   });
@@ -4227,7 +4222,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
   }
 
   function operate(
-    service: IntegrationPlatformService,
+    service: IntegrationPlatformTestHarness,
     callable: CallableIntegrationTool,
     args: Readonly<Record<string, unknown>>,
     who: ToolCaller,
@@ -4245,7 +4240,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
         : phone
           ? {}
           : { window: "window-1", includeScreenshot: true };
-    return service.callComputerOperation(
+    return service.devices.callComputerOperation(
       who,
       callable.grant.connectionId!,
       callable.tool.name,
@@ -4296,7 +4291,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
         const settled = vi.fn();
         void call.then(settled, settled);
         await vi.waitFor(() => expect(passwords.seal).toHaveBeenCalledTimes(1));
-        const revoke = f.service.revokeGrant({
+        const revoke = f.service.devices.revokeGrant({
           grantId: f.callable.grant.id,
           ownerUserId: who.run!.requestedBy,
           requestId: "revoke-during-seal",
@@ -4652,22 +4647,20 @@ function platform(input: {
   readonly computerApps?: Partial<Pick<ComputerAppHub, ApprovalHubMember>> &
     Pick<ComputerAppHub, "appStatus" | "attached" | "send" | "withRunnerAdmission">;
   readonly computerUse?: ComputerUseGateway;
-  readonly nativeTabs?: ConstructorParameters<typeof IntegrationPlatformService>[0]["nativeTabs"];
+  readonly nativeTabs?: IntegrationPlatformTestOptions["nativeTabs"];
   readonly definitions?: readonly ReturnType<typeof IntegrationDefinitionSchema.parse>[];
   readonly isRunnerConnected?: (runnerId: ReturnType<typeof createId<"runner">>) => boolean;
   readonly mcpImageContent?: () => Promise<boolean>;
-  readonly mcpOauth?: ConstructorParameters<typeof IntegrationPlatformService>[0]["mcpOauth"];
+  readonly mcpOauth?: IntegrationPlatformTestOptions["mcpOauth"];
   readonly markAdapterAuthorizationRequired?: () => Promise<void>;
   readonly materializeForAdapter?: IntegrationAdapterCredentialMaterializer["materializeForAdapter"];
   readonly onDeploymentEvent?: (event: AgentEvent) => void;
   readonly onConnectionsChanged?: () => void;
-  readonly onSettingsChanged?: ConstructorParameters<
-    typeof IntegrationPlatformService
-  >[0]["onSettingsChanged"];
+  readonly onSettingsChanged?: IntegrationPlatformTestOptions["onSettingsChanged"];
   readonly onRequestsChanged?: () => void;
   readonly store?: Partial<IntegrationPlatformStore>;
-}): IntegrationPlatformService {
-  const service = new IntegrationPlatformService({
+}): IntegrationPlatformTestHarness {
+  const service = createIntegrationPlatform({
     listConnections: input.listConnections ?? (async () => []),
     secretVault: new AesGcmSecretVault(
       new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
@@ -5181,13 +5174,13 @@ describe("computer app request matrix", () => {
 
   it("reads the Thread's name before the Mac's admission turn", async () => {
     const test = fixture();
-    await test.service.computerAppApprovals.requestComputerAppAccess(test.input);
+    await test.service.devices.computerAppApprovals.requestComputerAppAccess(test.input);
     expect(test.threadReadInsideAdmission).toEqual([false]);
   });
   it("returns already available and toolRefs when the requested access is callable", async () => {
     const test = fixture({ connectionAccess: "read-write", callableAccess: "read-write" });
     expect(
-      await test.service.computerAppApprovals.requestComputerAppAccess(test.input),
+      await test.service.devices.computerAppApprovals.requestComputerAppAccess(test.input),
     ).toMatchObject({
       status: "already-available",
       toolRefs: { observe: expect.any(String), act: expect.any(String) },

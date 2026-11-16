@@ -70,12 +70,14 @@ export function hostServerTestDependencies(
       authAttempts: inert(),
       continuations: inert(),
       dashboard: inert(),
-      mcpOauth: inert(),
-      platform: {
+      devices: {
         computerAppApprovals: {
           computerUsePolicy: async () => ({ appApproval: "ask", approvalKeyId: null }),
         },
-      } as unknown as HostServerDependencies["integrations"]["platform"],
+      } as unknown as HostServerDependencies["integrations"]["devices"],
+      localServers: inert(),
+      mcpOauth: inert(),
+      platform: inert(),
       service: inert(),
       skills: inert(),
     },

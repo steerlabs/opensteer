@@ -1,37 +1,14 @@
 import { agentToolFailureResult } from "@opensteer/agent-tools";
-import { randomUUID } from "node:crypto";
-import type { NativeTabTargets, NativeReplTabTarget } from "../computer-use/native-tab-targets.js";
-import type { TabServicePort } from "../tabs/ports.js";
-import type { RunToolScope } from "../agents/run-tool-tokens.js";
-import { TabIdSchema, WindowIdSchema, type TabId } from "@opensteer/core";
-import { bindNativeTab } from "../computer-use/computer-repl/native-tab-binding.js";
-import { isNodeError } from "@opensteer/shared/nodeError";
-import { readdir, realpath } from "node:fs/promises";
-import { assertPluginDataId, removePluginData } from "@opensteer/shared/privateFiles";
+import { createHash } from "node:crypto";
+import { basename } from "node:path";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
-import { z } from "zod";
-import {
-  ComputerReplService,
-  type ComputerReplInvocation,
-} from "../computer-use/computer-repl/computer-repl-service.js";
-import type { ReplReply, ReplContent } from "../computer-use/computer-repl/messages.js";
-import { canonicalJson } from "@opensteer/shared/canonicalJson";
-import type { RunCapabilityClaims } from "../agents/run-capability.js";
-import type {
-  ComputerAppIdentity,
-  IntegrationConnectionSummary,
-} from "@opensteer/integration-core";
-import { pluginDeviceFromManifest, computerAppIdentityKey } from "@opensteer/integration-core";
+import { pluginDeviceFromManifest } from "@opensteer/integration-core";
 import { safeMessage } from "@opensteer/shared/safeMessage";
-import { localMcpLaunchSecrets } from "@opensteer/integration-core";
 import {
   readAgentPluginName,
   loadAgentPlugin,
   type LoadedAgentPluginServer,
 } from "@opensteer/agent-plugins";
-
-import { createHash } from "node:crypto";
-import { basename } from "node:path";
 import { isLoopbackHostname } from "@opensteer/core";
 import { sha256Base64Url } from "@opensteer/core/crypto";
 import {
@@ -54,8 +31,6 @@ import {
   IntegrationProposalDescriptionSchema,
   IntegrationServerIdSchema,
   IntegrationServerTransportSchema,
-  accessCoversEffect,
-  computerAppNamesApp,
   createIntegrationId,
   integrationCredentialRejectedDetail,
   integrationDefinitionSummary,
@@ -71,9 +46,9 @@ import {
   type IntegrationAdapterSnapshot,
   type IntegrationAccess,
   type IntegrationConnectionId,
+  type IntegrationConnectionSummary,
   type IntegrationDefinition,
   type IntegrationDefinitionSummary,
-  type IntegrationGrant,
   type IntegrationInstallManifest,
   type IntegrationInstallation,
   type IntegrationInstallationId,
@@ -81,19 +56,9 @@ import {
   type IntegrationProposalManifest,
   type IntegrationProposalSource,
   type IntegrationServer,
-  type IntegrationServerId,
   type IntegrationToolCatalog,
   type IntegrationToolMaterial,
-  type LocalMcpLaunch,
 } from "@opensteer/integration-core";
-import type {
-  ComputerAppDefinition,
-  ComputerAppOperation,
-} from "@opensteer/integration-core/computer-app";
-import {
-  computerAppOperationContract,
-  computerAppTools,
-} from "@opensteer/integration-core/computer-app-tools";
 import {
   type IntegrationAdapterCredentialMaterializer,
   type IntegrationProviderAuthorizationSource,
@@ -101,7 +66,6 @@ import {
 import {
   integrationDefinitionDigest,
   integrationSchemaDigest,
-  localMcpLaunchDigest,
 } from "@opensteer/integration-core/digest";
 import { boundedToolDescription, boundedToolTitle } from "@opensteer/integration-core/tool-schemas";
 import {
@@ -117,12 +81,10 @@ import {
   probeMcpEndpointShape,
   validateProposedOpenApiCheck,
 } from "@opensteer/integration-adapters";
-import { validateJsonSchema } from "@opensteer/shared/jsonSchemaValidation";
 import { integrationDefinitions } from "@opensteer/integration-catalog";
 import { settingsCatalogEntries } from "./catalog-presentation.js";
 import {
   type CallableIntegrationTool,
-  type CreateIntegrationGrantInput,
   type DiscoveredIntegrationServer,
   type InstallIntegrationInput,
   type IntegrationPlatformStore,
@@ -134,162 +96,44 @@ import {
   OpensteerError,
   refused,
   RequestResponseSchema,
-  UserIdSchema,
   type AgentEvent,
   type Request,
   type RequestId,
   type RequestResponse,
-  type RunId,
   type RunnerId,
-  type ThreadId,
   type UserId,
 } from "@opensteer/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { ErrorCode, McpError, type Tool } from "@modelcontextprotocol/sdk/types.js";
-import {
-  HostIntegrationsInvokeSchema,
-  ComputerUseBindParamsSchema,
-  androidPhoneDefinitionId,
-  computerUseHeadline,
-  computerUseActHeadline,
-  computerUseToolRequiredSentence,
-  computerUseUpdateMacSentence,
-} from "@opensteer/protocol";
 import {
   McpOAuthReauthorizationError,
   type McpOAuthService,
   type RedactingOAuthClientProvider,
 } from "./mcp-oauth-service.js";
+import type { ToolCaller } from "../agents/tool-caller.js";
+import type { DeviceService } from "../devices/device-service.js";
+import { IntegrationAuthorizationRequiredError } from "../devices/integration-authorization-required.js";
 import {
-  ComputerMcpSessionError,
-  type ComputerAppHub,
-  type ComputerAppInvokeInput,
-  type ComputerAppInvokeSend,
-} from "../computer-apps/computer-app-hub.js";
-import type { RunFileRelay } from "../agents/run-file-relay.js";
-import type { RunnerRunFileResult } from "@opensteer/protocol";
-import type { RunnerRegistry } from "@opensteer/orchestration";
-import { ComputerMcpTransport } from "./computer-mcp-transport.js";
-import { LocalMcpSecrets } from "./local-mcp-secrets.js";
-import { IntegrationInput, integrationInputTimeoutMs } from "./integration-input.js";
+  pendingLocalServer,
+  runsOnComputer,
+  type LocalServerService,
+} from "../local-servers/local-server-service.js";
 import {
-  ComputerUseError,
-  computerUseDefinitionId,
-  type ComputerUseDispatchResult,
-  type ComputerUseLease,
-  type ComputerUseScope,
-  type ComputerUseService,
-} from "../computer-use/computer-use-service.js";
-import {
-  ComputerAppApprovalService,
-  computerUseHoldingOf,
-  endComputerUseSessions,
-  type ComputerUseApprovalGateway,
-} from "./computer-app-approval-service.js";
-import { computerObservationContent } from "./computer-use-tool-result.js";
-import {
-  iphoneAppsUnavailableDetail,
-  computerAppSentence,
-  computerAppAvailabilityDetail,
-  phoneAvailabilityDetail,
-  computerAppTransportUnavailableDetail,
-} from "./computer-app-availability.js";
+  answeredMcpError,
+  connectMcpClient,
+  emptyToolCatalog,
+  listTools,
+  maximumToolsPerServer,
+  objectValue,
+  safeMessageOptions,
+  sanitizeToolResult,
+  toolCallTimeoutMs,
+  type UpstreamClient,
+} from "../local-servers/mcp-clients.js";
 
-const connectionTimeoutMs = 15_000;
-const toolCallTimeoutMs = 60_000;
-const maximumToolsPerServer = 2_000;
-const maximumToolPages = 100;
-const maximumToolResultBytes = 2 * 1_024 * 1_024;
-
-/** The Run one tool call belongs to, for the operations that need one. */
-export interface RunToolContext {
-  readonly runId: RunId;
-  readonly threadId: ThreadId;
-}
-
-/**
- * Who one tool call is for: the Thread asking, whose lineage decides whether
- * it reaches its owner's Main, and its Run when there is one. A Trigger
- * occurrence produces no Run, and the one thing that requires a Run says so
- * itself rather than every other transport carrying a context it never reads.
- */
-export interface ToolCaller {
-  readonly run: RunCapabilityClaims<string> | null;
-  readonly threadId: ThreadId;
-}
-
-/** What moving a file between a Run and a computer app needs from the Host. */
-export interface RunFilePort {
-  /** Whether this Runner's apps can move files for an operation. */
-  appFiles(runnerId: RunnerId): boolean;
-  readonly relay: RunFileRelay;
-  request: RunnerRegistry["requestRunFile"];
-  /** Whether this Runner can give a Run files and take them from it. */
-  runFiles(runnerId: RunnerId): boolean;
-}
-
-type ComputerPlacement = NonNullable<
-  Awaited<ReturnType<IntegrationPlatformStore["getComputerConnectionForCall"]>>
->;
-type JsonObject = Readonly<Record<string, unknown>>;
-
-interface RunFileRoute {
-  close(failure?: Error): void;
-  readonly files: NonNullable<ComputerAppInvokeInput["files"]>;
-  /** The Run's side, when it is on another Runner. */
-  readonly peer?: Promise<RunnerRunFileResult>;
-}
-
-/**
- * Which engine one call's Thread runs on, asked as the person running it: the
- * Thread is theirs, and this Host reads no Thread on nobody's behalf.
- */
-export interface EngineCapabilityQuery extends RunToolContext {
-  readonly ownerUserId: UserId;
-}
-
-/** What `callTool`, the rpc surface and `integration_request` need of sessions. */
-export type ComputerUseGateway = ComputerUseApprovalGateway &
-  Pick<
-    ComputerUseService,
-    "prepare" | "release" | "releaseSession" | "sendAct" | "sendObserve" | "sendWindowOperation"
-  >;
-
-/** An MCP client the Host holds, or is opening, for one of an installation's servers. */
-interface OpenClient {
-  /** Aborted when the client is let go: an open under way ends where it is. */
-  readonly cancel: AbortController;
-  readonly client: Promise<UpstreamClient>;
-  readonly installationId: IntegrationInstallationId;
-}
-
-interface UpstreamClient {
-  readonly client: Client;
-  /** For a server a computer runs, its session's transport, which says why it ended. */
-  readonly computer: ComputerMcpTransport | null;
-  readonly fingerprint: string;
-  /** Lets this client go, and not whichever client later holds its place. */
-  readonly letGo: () => void;
-  readonly responseRedactor: (() => CredentialResponseRedactor) | null;
-  readonly credentialRevision?: () => number | null;
-}
-
-export class IntegrationAuthorizationRequiredError extends Error {
-  readonly callable: CallableIntegrationTool;
-
-  constructor(callable: CallableIntegrationTool) {
-    // The title can come from a document an agent researched, and this message
-    // is read by an agent, so it is quoted rather than spliced into prose.
-    super(
-      `"${callable.installation.title}" account authorization is required. Search again for current readiness and call integration_request if this task still needs access.`,
-    );
-    this.name = "IntegrationAuthorizationRequiredError";
-    this.callable = callable;
-  }
-}
+export { IntegrationAuthorizationRequiredError };
 
 interface DiscoveredServerResult extends DiscoveredIntegrationServer {
   readonly authorizationRequired: boolean;
@@ -340,40 +184,51 @@ export interface IntegrationUninstallOutcome {
   readonly removedConnections: number;
 }
 
+/** What service integrations reach of the device service, where the two meet. */
+type ServiceDevicePort = Pick<
+  DeviceService,
+  | "callTool"
+  | "endSessionsForRemovedApps"
+  | "installDefinition"
+  | "prepareDefinition"
+  | "verifyConnectionForFulfillment"
+  | "withAvailability"
+  | "withConnectionAdmission"
+  | "withRunnerAdmissions"
+>;
+
+/** What service integrations reach of the local-server service. */
+type ServiceLocalServerPort = Pick<
+  LocalServerService,
+  | "callTool"
+  | "clients"
+  | "pluginComputer"
+  | "requestLocalServerApprovals"
+  | "retainedServer"
+  | "startApprovedServers"
+  | "updateComputer"
+>;
+
+/**
+ * Service integrations: catalog presets and their built-in installs,
+ * proposals, remote MCP servers, Agent Plugin installs, access Requests and
+ * calls through the OpenAPI, GraphQL and remote MCP adapters. A computer
+ * app's tool is the device service's to call, and a server a computer runs
+ * is the local-server service's.
+ */
 export class IntegrationPlatformService {
   readonly #listConnections: (
     ownerUserId: UserId,
   ) => Promise<readonly IntegrationConnectionSummary[]>;
-  /**
-   * Every MCP client the Host holds or is opening: by server and connection
-   * for calls, and by server alone while a computer's server is listed.
-   */
-  readonly #clients = new Map<string, OpenClient>();
-  /**
-   * The servers a computer runs whose tools are being listed, one listing per
-   * server at a time, each listed once more when asked again meanwhile.
-   */
-  readonly #discoveries = new Map<IntegrationServerId, { again: boolean }>();
-  #closed = false;
   readonly #adapters: ReadonlyMap<IntegrationAdapterKind, IntegrationAdapter>;
   readonly #authorizationSource: IntegrationProviderAuthorizationSource;
   readonly #credentialMaterializer: IntegrationAdapterCredentialMaterializer;
-  readonly #computerApps: Pick<
-    ComputerAppHub,
-    | "appStatus"
-    | "attached"
-    | "openMcpSession"
-    | "send"
-    | "requireAgentAccess"
-    | "withRunnerAdmission"
-    | "removePluginData"
-  >;
   readonly #dataDirectory: string;
   readonly #definitions: readonly IntegrationDefinition[];
+  readonly #devices: ServiceDevicePort;
+  readonly #localServers: ServiceLocalServerPort;
   readonly #publicFetch: typeof fetch;
   readonly #store: IntegrationPlatformStore;
-  readonly #localSecrets: LocalMcpSecrets;
-  readonly #personal: boolean;
   readonly #mcpOauth: Pick<McpOAuthService, "providerFor">;
   readonly #onDeploymentEvent: (event: AgentEvent) => void;
   readonly #onConnectionsChanged: () => void;
@@ -382,26 +237,8 @@ export class IntegrationPlatformService {
     ownerUserId?: UserId;
   }) => Promise<void>;
   readonly #onRequestsChanged: () => void;
-  readonly #isRunnerConnected: (runnerId: RunnerId) => boolean;
-  readonly #computerUse: ComputerUseGateway | null;
-  readonly #onTabUsed: ((claims: RunToolScope, tabId: TabId, title: string) => void) | undefined;
-  readonly #nativeTabs: Pick<NativeTabTargets, "acquired" | "captureMembership"> | undefined;
-  readonly #tabs: Pick<TabServicePort, "get" | "authorizeShow"> | undefined;
-  readonly #nativeTabTarget:
-    ((ownerId: UserId, tabId: TabId) => Promise<NativeReplTabTarget>) | undefined;
-  readonly computerRepl: ComputerReplService;
-  readonly #computerToolEnabled: (
-    context: RunCapabilityClaims<string>,
-  ) => boolean | Promise<boolean>;
-  readonly #computerUseVersion: (runnerId: RunnerId) => number | undefined;
-  readonly #runFiles: RunFilePort | undefined;
-  readonly #mcpImageContent: (context: EngineCapabilityQuery) => Promise<boolean>;
-  /** Who may use which app on which Mac; this service only dispatches the calls. */
-  readonly computerAppApprovals: ComputerAppApprovalService;
-  readonly inputRequests: IntegrationInput;
 
   constructor(options: {
-    readonly personal?: boolean;
     readonly listConnections: (
       ownerUserId: UserId,
     ) => Promise<readonly IntegrationConnectionSummary[]>;
@@ -409,46 +246,11 @@ export class IntegrationPlatformService {
     readonly authorizationSource: IntegrationProviderAuthorizationSource;
     readonly dataDirectory: string;
     readonly credentialMaterializer: IntegrationAdapterCredentialMaterializer;
-    readonly computerApps: Pick<
-      ComputerAppHub,
-      | "appStatus"
-      | "reportsApp"
-      | "compatibilityReason"
-      | "attached"
-      | "machinesFor"
-      | "openMcpSession"
-      | "send"
-      | "requireAgentAccess"
-      | "withRunnerAdmission"
-      | "removePluginData"
-    >;
-    /**
-     * Sessions for the one definition whose connections name an app's whole
-     * interface. Absent leaves every `gui` tool row uncallable, which is what
-     * a Host built without it should answer rather than pretending.
-     */
-    readonly computerUse?: ComputerUseGateway | null;
-    readonly onTabUsed?: (claims: RunToolScope, tabId: TabId, title: string) => void;
-    readonly nativeTabs?: Pick<NativeTabTargets, "acquired" | "captureMembership">;
-    readonly tabs?: Pick<TabServicePort, "get" | "authorizeShow">;
-    readonly nativeTabTarget?: (ownerId: UserId, tabId: TabId) => Promise<NativeReplTabTarget>;
-    /**
-     * Whether this Run's engine renders MCP image content blocks. An engine
-     * that does not gets the tree and a sentence saying the picture is not
-     * available here, rather than a block it would drop or choke on.
-     */
-    readonly computerToolEnabled?: (
-      context: RunCapabilityClaims<string>,
-    ) => boolean | Promise<boolean>;
-    readonly computerUseVersion?: (runnerId: RunnerId) => number | undefined;
-    readonly runFiles?: RunFilePort;
-    readonly computerReplTime?: Pick<
-      ConstructorParameters<typeof ComputerReplService>[0],
-      "clock" | "wait"
-    >;
-    readonly mcpImageContent?: (context: EngineCapabilityQuery) => Promise<boolean>;
-    readonly longRequestHold?: (run: RunCapabilityClaims<string>) => Promise<boolean>;
     readonly definitions?: readonly IntegrationDefinition[];
+    /** Calls, availability and installs of computer apps, at each seam they cross. */
+    readonly devices: ServiceDevicePort;
+    /** The servers computers run, and the MCP clients the Host holds. */
+    readonly localServers: ServiceLocalServerPort;
     readonly mcpOauth: Pick<McpOAuthService, "providerFor">;
     readonly onDeploymentEvent: (event: AgentEvent) => void;
     readonly onConnectionsChanged: () => void;
@@ -456,24 +258,17 @@ export class IntegrationPlatformService {
       installationId?: string;
       ownerUserId?: UserId;
     }) => Promise<void>;
-    readonly onInputAccessWithdrawn?: (runnerId: RunnerId) => void;
     readonly onRequestsChanged: () => void;
-    readonly isRunnerConnected: (runnerId: RunnerId) => boolean;
     /**
      * How the Host reaches providers, proposal sources and remote MCP servers:
      * public HTTPS only, unless a test points it at an upstream of its own.
      */
     readonly publicFetch?: typeof fetch;
-    /** Seals what computer owners enter for their MCP servers' secrets. */
-    readonly secretVault: ConstructorParameters<typeof LocalMcpSecrets>[0];
     readonly store: IntegrationPlatformStore;
   }) {
     this.#publicFetch = options.publicFetch ?? createPublicHttpsFetch();
-    this.#localSecrets = new LocalMcpSecrets(options.secretVault);
-    this.#personal = options.personal ?? false;
     this.#authorizationSource = options.authorizationSource;
     this.#listConnections = options.listConnections;
-    this.#computerApps = options.computerApps;
     this.#dataDirectory = options.dataDirectory;
     const secureFetch: typeof fetch = (target, init) =>
       this.#publicFetch(target, { ...init, redirect: "manual" });
@@ -485,56 +280,14 @@ export class IntegrationPlatformService {
     this.#adapters = new Map(adapters.map((adapter) => [adapter.kind, adapter]));
     this.#credentialMaterializer = options.credentialMaterializer;
     this.#definitions = options.definitions ?? integrationDefinitions;
+    this.#devices = options.devices;
+    this.#localServers = options.localServers;
     this.#mcpOauth = options.mcpOauth;
     this.#onDeploymentEvent = options.onDeploymentEvent;
     this.#onConnectionsChanged = options.onConnectionsChanged;
     this.#onSettingsChanged = options.onSettingsChanged ?? (async () => undefined);
     this.#onRequestsChanged = options.onRequestsChanged;
-    this.#isRunnerConnected = options.isRunnerConnected;
-    this.#computerUse = options.computerUse ?? null;
-    this.#nativeTabs = options.nativeTabs;
-    this.#onTabUsed = options.onTabUsed;
-    this.#tabs = options.tabs;
-    this.#nativeTabTarget = options.nativeTabTarget;
-    // Silence is not a declaration: an engine that has not said it renders MCP
-    // image content is treated as one that does not, exactly as an older
-    // Runner's unstated `steering` is treated as unsupported.
-    this.#mcpImageContent = options.mcpImageContent ?? (async () => false);
     this.#store = options.store;
-    this.inputRequests = new IntegrationInput({
-      requests: options.store.requests,
-      longRequestHold: options.longRequestHold ?? (async () => false),
-      publish: (events) => this.#publishRequestEvents(events),
-    });
-    this.#computerToolEnabled = options.computerToolEnabled ?? (() => false);
-    this.#computerUseVersion = options.computerUseVersion ?? (() => undefined);
-    this.#runFiles = options.runFiles;
-    this.computerRepl = new ComputerReplService({
-      ...options.computerReplTime,
-      invoke: async () => {
-        throw refused("conflict", "Computer code requires an authenticated execution.");
-      },
-    });
-    this.computerAppApprovals = new ComputerAppApprovalService({
-      computerApps: options.computerApps,
-      computerUse: this.#computerUse,
-      definitions: this.#definitions,
-      installCatalogDefinition: (input) => this.installCatalogDefinition(input),
-      listCallableTools: (scope) => this.listCallableTools(scope),
-      listConnections: this.#listConnections,
-      localMcpSecrets: this.#localSecrets,
-      onConnectionsChanged: this.#onConnectionsChanged,
-      ...(options.onInputAccessWithdrawn
-        ? { onInputAccessWithdrawn: options.onInputAccessWithdrawn }
-        : {}),
-      onLocalServerApproved: (approved) => {
-        void this.#discoverComputerServer(approved.serverId).catch((error: unknown) =>
-          console.warn("An approved MCP server could not be started", error),
-        );
-      },
-      publishRequestEvents: (events) => this.#publishRequestEvents(events),
-      store: this.#store,
-    });
   }
 
   definitionSummary(definition: IntegrationDefinition) {
@@ -565,159 +318,7 @@ export class IntegrationPlatformService {
         input.ownerUserId,
       ),
     });
-    const computerApps = this.#computerApps;
-    const connections = new Map<
-      IntegrationConnectionId,
-      ReturnType<IntegrationPlatformStore["getComputerConnectionForCall"]>
-    >();
-    const connectionFor = (connectionId: IntegrationConnectionId) => {
-      const pending = connections.get(connectionId);
-      if (pending) return pending;
-      const loaded = this.#store.getComputerConnectionForCall({
-        connectionId,
-        ownerUserId: input.ownerUserId,
-      });
-      connections.set(connectionId, loaded);
-      return loaded;
-    };
-    // What each computer that runs an MCP server is called, read once and
-    // only when an entry has such a server.
-    let computerNames: Promise<ReadonlyMap<RunnerId, string>> | undefined;
-    const computerName = async (runnerId: RunnerId) => {
-      computerNames ??= this.#store.localMcp
-        .list()
-        .then(
-          (servers) =>
-            new Map(
-              servers.flatMap(({ runnerId: id, runnerName }) =>
-                id && runnerName ? [[id, runnerName] as const] : [],
-              ),
-            ),
-        );
-      return (await computerNames).get(runnerId) ?? "its computer";
-    };
-    return Promise.all(
-      inventory.map(async (entry) => {
-        const computerServers = new Map(
-          entry.servers.flatMap((server) =>
-            server.transport.type === "computer"
-              ? [[server.id, server.transport.definitionId] as const]
-              : [],
-          ),
-        );
-        const runnerServers = new Map(
-          entry.servers.flatMap((server) =>
-            server.transport.type === "runner" && server.transport.runnerId
-              ? [[server.id, server.transport.runnerId] as const]
-              : [],
-          ),
-        );
-        if (computerServers.size === 0 && runnerServers.size === 0) return entry;
-        const overlay = async (
-          readiness: (typeof entry.readiness.servers)[number],
-          operation?: string,
-        ) => {
-          // Availability must not erase an outstanding authorization requirement.
-          if (readiness.code !== "READY") return readiness;
-          const runnerId = runnerServers.get(readiness.serverId);
-          if (runnerId) {
-            // A server a computer runs is there exactly while that computer is.
-            if (computerApps.attached(runnerId)) return readiness;
-            return {
-              ...readiness,
-              code: "INTEGRATION_UNAVAILABLE" as const,
-              detail: computerAppTransportUnavailableDetail(
-                entry.installation.title,
-                await computerName(runnerId),
-                this.#isRunnerConnected(runnerId),
-              ),
-              provider: null,
-              requiredAccess: null,
-            };
-          }
-          const definitionId = computerServers.get(readiness.serverId);
-          if (!definitionId || readiness.connectionId === null) return readiness;
-          const connection = await connectionFor(readiness.connectionId);
-          if (!connection) return readiness;
-          const status = computerApps.appStatus(connection.runnerId, definitionId);
-          const attached = computerApps.attached(connection.runnerId);
-          const operationStatus =
-            operation === undefined
-              ? null
-              : (status?.operations.find((candidate) => candidate.operation === operation) ?? null);
-          const runnerConnected = this.#isRunnerConnected(connection.runnerId);
-          const operationStatuses =
-            operation === undefined ? (status?.operations ?? null) : operationStatus;
-          const detail =
-            definitionId === androidPhoneDefinitionId
-              ? phoneAvailabilityDetail({
-                  attached,
-                  phone: connection.runnerName,
-                  runnerConnected,
-                  status: operationStatuses,
-                })
-              : connection.deviceProfile === "iphone" && (!runnerConnected || !attached)
-                ? iphoneAppsUnavailableDetail(connection.runnerName)
-                : computerAppAvailabilityDetail({
-                    // A Computer use account is one app, which is what comes back.
-                    app:
-                      connection.connection.computer?.app?.displayName ?? entry.installation.title,
-                    attached,
-                    computer: connection.runnerName,
-                    runnerConnected,
-                    status: operationStatuses,
-                  });
-          return detail === null
-            ? readiness
-            : {
-                ...readiness,
-                code: "INTEGRATION_UNAVAILABLE" as const,
-                detail,
-                provider: null,
-                requiredAccess: null,
-              };
-        };
-        const tools = await Promise.all(
-          entry.readiness.tools.map(async ({ readiness, toolId }) => ({
-            readiness: await overlay(
-              readiness,
-              entry.tools.find((tool) => tool.id === toolId)?.name,
-            ),
-            toolId,
-          })),
-        );
-        return {
-          ...entry,
-          accounts: await Promise.all(
-            entry.accounts.map(async (account) => {
-              if (![...computerServers.values()].includes(computerUseDefinitionId)) return account;
-              const connection = await connectionFor(account.connectionId);
-              const app = connection?.connection.computer?.app;
-              return app && connection
-                ? { ...account, account: `${app.displayName} on ${connection.runnerName}` }
-                : account;
-            }),
-          ),
-          readiness: {
-            servers: await Promise.all(
-              entry.readiness.servers.map(async (readiness) => {
-                const serverTools = tools.filter(
-                  (tool) =>
-                    tool.readiness.serverId === readiness.serverId &&
-                    tool.readiness.connectionId === readiness.connectionId,
-                );
-                if (serverTools.some((tool) => tool.readiness.code === "READY")) return readiness;
-                // Every computer-app operation is reported separately. When no
-                // exposed tool is ready, carry that tool's concrete blocker to
-                // the server instead of folding in an unrelated ready operation.
-                return serverTools[0]?.readiness ?? (await overlay(readiness));
-              }),
-            ),
-            tools,
-          },
-        };
-      }),
-    );
+    return this.#devices.withAvailability(inventory, input);
   }
 
   async listCallableTools(input: IntegrationRequester) {
@@ -817,57 +418,6 @@ export class IntegrationPlatformService {
     return fulfilled;
   }
 
-  async createGrant(input: Omit<CreateIntegrationGrantInput, "providerAuthorizations">) {
-    const providerAuthorizations = await this.#authorizationSource.providerAuthorizations(
-      input.ownerUserId,
-    );
-    const create = () => this.#store.createGrant({ ...input, providerAuthorizations });
-    if (!input.connectionId) return create();
-    const computer = await this.#store.getComputerConnectionForCall({
-      connectionId: input.connectionId,
-      ownerUserId: input.ownerUserId,
-    });
-    return computer ? this.#computerApps.withRunnerAdmission(computer.runnerId, create) : create();
-  }
-
-  async revokeGrant(input: {
-    readonly administration?: AdministrationCommandIdentity | undefined;
-    readonly grantId: IntegrationGrant["id"];
-    readonly ownerUserId: UserId;
-    readonly requestId: string;
-  }): Promise<void> {
-    const grant = (await this.#store.listGrants(input)).find(({ id }) => id === input.grantId);
-    const computer = grant?.connectionId
-      ? await this.#store.getComputerConnectionForCall({
-          connectionId: grant.connectionId,
-          ownerUserId: input.ownerUserId,
-        })
-      : null;
-    const revoke = async () => {
-      await this.#store.revokeGrant(input);
-      // The task's session on that app, or on that phone, ran on this
-      // grant, so it ends with it rather than at its next call.
-      const holding = computer
-        ? computerUseHoldingOf(this.#definitions, {
-            appKey: computer.connection.computer?.app
-              ? computerAppIdentityKey(computer.connection.computer.app)
-              : null,
-            definitionId: computer.connection.definitionId,
-          })
-        : null;
-      if (computer && holding) {
-        for (const [key, targets] of this.#replTargets)
-          if (grant?.connectionId && targets.has(grant.connectionId)) {
-            const caller = this.#replCallers.get(key);
-            if (caller?.run)
-              this.resetComputerGeneration(caller.run.runId, caller.run.bindingGeneration);
-          }
-        this.#computerUse?.closeForConnection(computer.runnerId, holding);
-      }
-    };
-    await (computer ? this.#computerApps.withRunnerAdmission(computer.runnerId, revoke) : revoke());
-  }
-
   async resolveRequest(input: {
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
@@ -914,7 +464,7 @@ export class IntegrationPlatformService {
             preparedFulfillment,
           });
         }
-        this.#invalidateInstallation(installed.installation.id);
+        this.#localServers.clients.invalidateInstallation(installed.installation.id);
         for (const event of installed.requestEvents) this.#onDeploymentEvent(event);
         return { grant: null, installation: installed.installation, request: installed.request };
       }
@@ -956,16 +506,10 @@ export class IntegrationPlatformService {
           response,
         });
       };
-      const computer =
+      const resolved =
         connectionId && connectionKind === "computer"
-          ? await this.#store.getComputerConnectionForCall({
-              connectionId,
-              ownerUserId: input.resolvedBy,
-            })
-          : null;
-      const resolved = computer
-        ? await this.#computerApps.withRunnerAdmission(computer.runnerId, resolve)
-        : await resolve();
+          ? await this.#devices.withConnectionAdmission(connectionId, input.resolvedBy, resolve)
+          : await resolve();
       for (const event of resolved.events) this.#onDeploymentEvent(event);
       return { grant: resolved.grant, installation: null, request: resolved.request };
     }
@@ -994,7 +538,8 @@ export class IntegrationPlatformService {
       ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
       response,
     });
-    if (resolved.installation) this.#invalidateInstallation(resolved.installation.id);
+    if (resolved.installation)
+      this.#localServers.clients.invalidateInstallation(resolved.installation.id);
     this.#publishRequestEvents(resolved.requestEvents);
     for (const event of resolved.events) this.#onDeploymentEvent(event);
     return { grant: null, installation: resolved.installation, request: resolved.request };
@@ -1022,32 +567,7 @@ export class IntegrationPlatformService {
       });
     }
     if (kind === "computer") {
-      const connection = await this.#store.getComputerConnectionForCall({
-        connectionId,
-        ownerUserId,
-      });
-      if (!connection) {
-        throw new OpensteerError({ code: "forbidden", message: "Computer app is unavailable" });
-      }
-      const servers = await this.#store.listServers(request.installationId);
-      const matches = servers.some(
-        (server) =>
-          (request.requestedServerId === null || server.id === request.requestedServerId) &&
-          server.connectionRequirement.kind === "computer" &&
-          server.connectionRequirement.definitionId === connection.connection.definitionId,
-      );
-      if (!matches) {
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Computer app does not belong to this integration",
-        });
-      }
-      if (request.access === "read-write" && connection.access === "read") {
-        throw new OpensteerError({
-          code: "forbidden",
-          message: `${connection.runnerName} allows reading only. Allow sending there first.`,
-        });
-      }
+      await this.#devices.verifyConnectionForFulfillment(connectionId, ownerUserId, request);
       return;
     }
     if (kind !== "provider-account") return;
@@ -1103,7 +623,9 @@ export class IntegrationPlatformService {
       ? (await this.#store.localMcp.list()).filter((s) => s.installationId === previous.id)
       : [];
     const runnerId = plugin.servers.some(runsOnComputer)
-      ? await this.#pluginComputer(await this.#updateComputer(input, previousServers))
+      ? await this.#localServers.pluginComputer(
+          await this.#localServers.updateComputer(input, previousServers),
+        )
       : null;
     if (plugin.manifest.name === "opensteer")
       throw new OpensteerError({
@@ -1122,7 +644,7 @@ export class IntegrationPlatformService {
     ) {
       if (setupThreadId !== undefined) {
         await this.#store.plugins.recordSetupThread(pluginId, setupThreadId);
-        await this.requestLocalServerApprovals();
+        await this.#localServers.requestLocalServerApprovals();
         await this.#onSettingsChanged({ installationId: previous.id });
       }
       return { installation: previous, issues: plugin.issues };
@@ -1131,7 +653,7 @@ export class IntegrationPlatformService {
     const servers = await Promise.all(
       plugin.servers.map((server) =>
         runnerId !== null && runsOnComputer(server)
-          ? computerServer(server, runnerId, basename(plugin.root), pluginId)
+          ? pendingLocalServer(server, runnerId, basename(plugin.root), pluginId)
           : this.#discoverServer(server),
       ),
     );
@@ -1172,14 +694,7 @@ export class IntegrationPlatformService {
           );
       },
       retainedServer: (existing, discovered) =>
-        existing.transport.type === "runner" && discovered.transport.type === "runner"
-          ? {
-              carryApproval:
-                this.#personal &&
-                carriesApproval(existing, existing.transport, discovered.transport),
-              secrets: this.#localSecrets.prune(existing.id, discovered.transport.launch),
-            }
-          : null,
+        this.#localServers.retainedServer(existing, discovered),
       actorUserId: input.actorUserId,
       adapterSnapshot: null,
       installation: {
@@ -1212,234 +727,14 @@ export class IntegrationPlatformService {
     await this.#onSettingsChanged({ installationId: mutation.installation.id });
     const installation = this.#acceptInstallMutation(mutation);
     if (runnerId !== null) {
-      await this.requestLocalServerApprovals();
+      await this.#localServers.requestLocalServerApprovals();
       // Installed again as it was, a server keeps its computer's approval and
       // is listed again now rather than when that computer next reconnects.
-      this.#startApprovedServers((server) => server.installationId === installation.id);
+      this.#localServers.startApprovedServers(
+        (server) => server.installationId === installation.id,
+      );
     }
     return { installation, issues: plugin.issues };
-  }
-
-  /**
-   * The computer an install asks for. An agent's update stays on the plugin's
-   * computer while it is enrolled, not the computer of the Run that updated it;
-   * a person's names one or keeps it.
-   */
-  async #updateComputer(
-    input: { readonly runnerId?: RunnerId | undefined; readonly threadId?: unknown },
-    previousServers: readonly { readonly runnerId: RunnerId | null; readonly status: string }[],
-  ): Promise<RunnerId | undefined> {
-    // A removed server keeps the computer it last ran on; a current one says where the plugin is.
-    const previous =
-      (
-        previousServers.find((s) => s.runnerId && s.status !== "disabled") ??
-        previousServers.find((s) => s.runnerId)
-      )?.runnerId ?? null;
-    const kept =
-      previous !== null && (await this.#store.localMcp.computerName(previous)) !== null
-        ? previous
-        : undefined;
-    return input.threadId ? (kept ?? input.runnerId) : (input.runnerId ?? kept);
-  }
-
-  /** The computer a plugin's own servers run on: the one named, or the Main one. */
-  async #pluginComputer(runnerId: RunnerId | undefined): Promise<RunnerId> {
-    const chosen = runnerId ?? (await this.#store.localMcp.mainComputer());
-    if (!chosen) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message:
-          "This plugin runs its servers on a computer. Choose the computer that runs them: this Deployment has no Main computer.",
-      });
-    }
-    if ((await this.#store.localMcp.computerName(chosen)) === null) {
-      throw new OpensteerError({
-        code: "not_found",
-        message: "That computer is not part of this Deployment.",
-      });
-    }
-    if ((await this.#store.computerAppRunner(chosen))?.deviceProfile === "iphone")
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Local servers can't run on an iPhone.",
-      });
-    return chosen;
-  }
-
-  /**
-   * The owner of the computer that runs an approved server gave some of its
-   * secrets new values. Its sessions end, so the next one starts with them,
-   * and it lists its tools again.
-   */
-  async setServerSecrets(input: {
-    readonly actorUserId: UserId;
-    readonly secrets: Readonly<Record<string, string>>;
-    readonly serverId: IntegrationServerId;
-  }): Promise<void> {
-    const server = await this.#store.localMcp.get(input.serverId);
-    if (!server)
-      throw new OpensteerError({ code: "not_found", message: "That server isn't installed." });
-    await this.#store.localMcp.setSecrets({
-      actorUserId: input.actorUserId,
-      launchDigest: server.launchDigest,
-      secrets: this.#localSecrets.update(server.id, server.launch, input.secrets),
-      serverId: server.id,
-    });
-    for (const [key, open] of this.#clients) {
-      if (key.startsWith(`${server.id}:`)) this.#letGo(key, open);
-    }
-    void this.#discoverComputerServer(server.id).catch((error: unknown) =>
-      console.warn("An MCP server could not be started with its new secrets", error),
-    );
-  }
-
-  /**
-   * Asks each computer about the servers pinned to it that it has not
-   * approved as they now launch, and sends each one its approvals again.
-   */
-  async requestLocalServerApprovals(): Promise<void> {
-    const changed = await this.#store.localMcp.requestApprovals();
-    if (changed.length > 0) this.#onConnectionsChanged();
-  }
-
-  async deliverPluginDataRemovals(runnerId?: RunnerId): Promise<void> {
-    for (const pending of await this.#store.plugins.pendingDataRemovals(runnerId))
-      await this.#computerApps.removePluginData(pending.runnerId, pending.pluginId);
-  }
-
-  async recoverPluginData(): Promise<void> {
-    const directory = `${await realpath(this.#dataDirectory)}/plugins/data`;
-    const plugins = await this.#store.plugins.list();
-    const retained = new Set(plugins.map((plugin) => plugin.id));
-    // Package snapshots and pre-migration name-based data are not orphan plugin state.
-    retained.add("packages");
-    for (const installation of await this.#store.listInstallations())
-      if (installation.id === installation.pluginId) retained.add(installation.name);
-    let entries: string[];
-    try {
-      entries = await readdir(directory);
-    } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") return;
-      throw error;
-    }
-    for (const id of entries) {
-      if (retained.has(id)) continue;
-      try {
-        assertPluginDataId(id);
-      } catch {
-        continue;
-      }
-      await removePluginData(directory, id);
-    }
-  }
-
-  async removePluginData(pluginId: string): Promise<void> {
-    await removePluginData(`${await realpath(this.#dataDirectory)}/plugins/data`, pluginId);
-    await this.deliverPluginDataRemovals();
-  }
-
-  /**
-   * A computer's stream attached. Servers it approved and has not started
-   * yet — approved while it was offline, or whose start failed — start now.
-   */
-  computerRunnerAttached(runnerId: RunnerId): void {
-    void this.deliverPluginDataRemovals(runnerId).catch((error: unknown) =>
-      console.warn("Plugin data removal could not be delivered", error),
-    );
-    this.#startApprovedServers((server) => server.runnerId === runnerId);
-  }
-
-  /** Lists every approved server `which` names that is not listed yet. */
-  #startApprovedServers(
-    which: (
-      server: Awaited<ReturnType<IntegrationPlatformStore["localMcp"]["list"]>>[number],
-    ) => boolean,
-  ): void {
-    void (async () => {
-      for (const server of await this.#store.localMcp.list()) {
-        if (
-          which(server) &&
-          server.status === "needs-attention" &&
-          server.approvedLaunchDigest === server.launchDigest
-        ) {
-          await this.#discoverComputerServer(server.id);
-        }
-      }
-    })().catch((error: unknown) =>
-      console.warn("MCP servers could not start on a computer", error),
-    );
-  }
-
-  /**
-   * Starts a server its computer approved, once, to learn its tools. A
-   * computer that is offline starts it when it is back. Asked again while it
-   * runs, it lists once more after, from what is on record then.
-   */
-  async #discoverComputerServer(serverId: IntegrationServerId): Promise<void> {
-    if (this.#closed) return;
-    const running = this.#discoveries.get(serverId);
-    if (running) {
-      running.again = true;
-      return;
-    }
-    const discovery = { again: true };
-    this.#discoveries.set(serverId, discovery);
-    try {
-      while (discovery.again && !this.#closed) {
-        discovery.again = false;
-        await this.#discoverOnce(serverId);
-      }
-    } finally {
-      this.#discoveries.delete(serverId);
-    }
-    this.#onConnectionsChanged();
-    const server = await this.#store.localMcp.get(serverId);
-    if (server) await this.#onSettingsChanged({ installationId: server.installationId });
-  }
-
-  async #discoverOnce(serverId: IntegrationServerId): Promise<void> {
-    const server = await this.#store.localMcp.get(serverId);
-    if (this.#closed) return;
-    if (
-      !server?.runnerId ||
-      server.status === "disabled" ||
-      server.approvedLaunchDigest !== server.launchDigest
-    ) {
-      return;
-    }
-    const { launchDigest, runnerId } = server;
-    // Held with the calls' clients, so whatever lets the server go ends its
-    // listing too.
-    const key = `${serverId}:listing`;
-    const listing = this.#open(key, server.installationId, async (signal) => ({
-      client: await this.#connect(
-        { id: serverId, transport: { launch: server.launch, runnerId, type: "runner" } },
-        undefined,
-        signal,
-      ),
-      computer: null,
-      fingerprint: launchDigest,
-      responseRedactor: null,
-    }));
-    const { signal } = listing.cancel;
-    try {
-      const tools = await listTools((await listing.client).client);
-      if (signal.aborted) return;
-      await this.#store.localMcp.recordTools({ launchDigest, serverId, tools });
-    } catch (error) {
-      if (signal.aborted) return;
-
-      await this.#store.localMcp.recordFailure({
-        detail:
-          error instanceof ComputerMcpSessionError && error.code === "offline"
-            ? `${server.runnerName ?? "Its computer"} is offline; the server starts when it is back.`
-            : safeMessage(error, safeMessageOptions),
-        launchDigest,
-        serverId,
-      });
-    } finally {
-      this.#letGo(key, listing);
-    }
   }
 
   async installRemoteMcp(input: {
@@ -1560,6 +855,8 @@ export class IntegrationPlatformService {
         installations.push(current);
         continue;
       }
+      // A computer app's built-in is the device service's to reconcile.
+      if (isComputerAppDefinition(definition)) continue;
       // A snapshot with unknown key destinations must be repaired by reinstalling,
       // never replaced from a live catalog document during startup.
       const summary = IntegrationDefinitionSummarySchema.safeParse(current.manifest.definition);
@@ -1615,6 +912,7 @@ export class IntegrationPlatformService {
     if (!definition) {
       throw new OpensteerError({ code: "not_found", message: "Catalog integration was not found" });
     }
+    if (isComputerAppDefinition(definition)) return this.#devices.installDefinition(input);
     const digest = integrationDefinitionDigest(definition);
     if (digest !== input.digest) {
       throw new OpensteerError({
@@ -1658,13 +956,14 @@ export class IntegrationPlatformService {
     readonly requestId: string;
   }): Promise<IntegrationUninstallOutcome> {
     const runnerIds = await this.#store.listComputerRunnerIdsForInstallation(input.installationId);
-    const mutation = await this.#withRunnerAdmissions(runnerIds, async () => {
+    const mutation = await this.#devices.withRunnerAdmissions(runnerIds, async () => {
       const removed = await this.#store.uninstall(input);
-      endComputerUseSessions(this.#computerUse, this.#definitions, removed.removedApps);
+      this.#devices.endSessionsForRemovedApps(removed.removedApps);
       return removed;
     });
     this.#publishRequestEvents(mutation.requestEvents);
-    for (const serverId of mutation.removedServerIds) this.#dropClient(serverId);
+    for (const serverId of mutation.removedServerIds)
+      this.#localServers.clients.dropServer(serverId);
     this.#onConnectionsChanged();
     return {
       cancelledRequests: mutation.cancelledRequestIds.length,
@@ -1763,25 +1062,27 @@ export class IntegrationPlatformService {
     readonly definition: IntegrationDefinition;
   }): Promise<PreparedIntegrationMaterial> {
     const { definition } = input;
+    if (isComputerAppDefinition(definition))
+      return this.#devices.prepareDefinition({
+        ...(input.current ? { current: input.current } : {}),
+        definition,
+      });
     const requirement = connectionRequirement(definition);
     let adapterSnapshot: IntegrationAdapterSnapshot | null = null;
     let catalog: IntegrationToolCatalog = emptyToolCatalog;
     let status: "active" | "needs-attention" = "active";
     let statusDetail: string | null = null;
     let summary = this.definitionSummary(definition);
-    let transport: IntegrationServer["transport"] =
-      definition.adapter === "computer"
-        ? { definitionId: definition.id, type: "computer" }
-        : {
-            adapter: definition.adapter,
-            definitionId: definition.id,
-            type: "adapter",
-          };
+    if (definition.adapter === "computer") {
+      throw new Error("Computer apps are installed from their own definitions");
+    }
+    let transport: IntegrationServer["transport"] = {
+      adapter: definition.adapter,
+      definitionId: definition.id,
+      type: "adapter",
+    };
     try {
-      if (isComputerAppDefinition(definition)) {
-        // Computer tools belong to one connection and are materialized by the
-        // store callback, never as server-level authority.
-      } else if (definition.adapter === "mcp" && requirement.kind !== "provider") {
+      if (definition.adapter === "mcp" && requirement.kind !== "provider") {
         const config = McpAdapterConfigSchema.parse(definition.config);
         if (config.transport !== "remote") {
           throw new Error("Catalog MCP integrations must use a remote transport");
@@ -1829,14 +1130,6 @@ export class IntegrationPlatformService {
     const digest = integrationDefinitionDigest(definition);
     return {
       adapterSnapshot,
-      ...(isComputerAppDefinition(definition)
-        ? {
-            computerConnectionTools: (
-              connectionId: IntegrationConnectionId,
-              access: IntegrationAccess,
-            ) => computerAppTools(definition, access, connectionId),
-          }
-        : {}),
       installation: {
         description: definition.description,
         id: input.current?.id ?? createIntegrationId("installation"),
@@ -1904,7 +1197,7 @@ export class IntegrationPlatformService {
     mutation: Awaited<ReturnType<IntegrationPlatformStore["install"]>>,
   ): IntegrationInstallation {
     this.#publishRequestEvents(mutation.requestEvents);
-    this.#invalidateInstallation(mutation.installation.id);
+    this.#localServers.clients.invalidateInstallation(mutation.installation.id);
     return mutation.installation;
   }
 
@@ -2366,7 +1659,7 @@ export class IntegrationPlatformService {
     // before its arguments are, so a row that lags the catalog says it is
     // being updated rather than calling a valid call invalid.
     if (callable.server.transport.type === "computer") {
-      return this.#callComputerTool(callable, args, caller, signal);
+      return this.#devices.callTool(callable, args, caller, signal);
     }
     // Every other upstream validates its own arguments and its refusal reaches
     // the agent as it was written, so the Host holds no copy of a schema here.
@@ -2376,7 +1669,7 @@ export class IntegrationPlatformService {
       >;
     }
     if (callable.server.transport.type === "runner") {
-      return this.#callComputerServerTool(callable, args, caller, signal);
+      return this.#localServers.callTool(callable, args, caller, signal);
     }
     let upstream: UpstreamClient | undefined;
     try {
@@ -2446,908 +1739,6 @@ export class IntegrationPlatformService {
         retryable: !upstream || integrationToolEffect(callable.tool.annotations) !== "write",
       });
     }
-  }
-
-  /**
-   * A tool of an MCP server one computer runs. What went wrong is said the
-   * way a computer app says it — which computer, and whether a change may
-   * already have happened — because a lost answer to a write is not a
-   * failure a caller may simply retry.
-   */
-  async #callComputerServerTool(
-    callable: CallableIntegrationTool,
-    args: Readonly<Record<string, unknown>>,
-    caller: ToolCaller,
-    signal?: AbortSignal,
-  ): Promise<Awaited<ReturnType<Client["callTool"]>>> {
-    const server = await this.#store.localMcp.get(callable.server.id);
-    let responseRedactor = createCredentialResponseRedactor([]);
-    const refusal = (text: string) =>
-      sanitizeToolResult(
-        { content: [{ text, type: "text" as const }], isError: true },
-        responseRedactor,
-      );
-    let upstream: UpstreamClient;
-    try {
-      upstream = await this.#client(callable);
-    } catch (error) {
-      return refusal(await this.#computerServerRefusal(callable, server, error));
-    }
-    const call = this.inputRequests.start(
-      upstream.client,
-      callable,
-      caller,
-      signal,
-      server?.runnerName ?? "its computer",
-    );
-    try {
-      const result = await upstream.client.callTool(
-        { arguments: { ...args }, name: callable.tool.name },
-        undefined,
-        {
-          maxTotalTimeout: integrationInputTimeoutMs,
-          signal: call.signal,
-          timeout: integrationInputTimeoutMs,
-        },
-      );
-      return sanitizeToolResult(result, call.redactor());
-    } catch (error) {
-      responseRedactor = call.redactor();
-      if (answeredMcpError(error)) {
-        // The server answered, with an error: nothing about it is uncertain.
-        return refusal(
-          responseRedactor
-            .redactText(
-              `${callable.installation.title} could not complete ${callable.tool.title}: ${error.message}`,
-            )
-            .slice(0, 2_000),
-        );
-      }
-      if (call.timedOut || !call.signal.aborted) upstream.letGo();
-      const computer = server?.runnerName ?? "Its computer";
-      const closed = upstream.computer?.closeError ?? null;
-      if (integrationToolEffect(callable.tool.annotations) === "write") {
-        return refusal(
-          `${computer} did not confirm this${
-            closed?.code === "too-large" ? ": its answer was too large to carry" : ""
-          }. Check whether it happened before trying again.`,
-        );
-      }
-      return refusal(
-        closed?.code === "too-large"
-          ? `${callable.installation.title}'s answer was too large to carry from ${computer}; ask for less.`
-          : `${computer} did not answer. Try again.`,
-      );
-    } finally {
-      await this.inputRequests.finish(upstream.client, call);
-    }
-  }
-
-  /** Why a computer did not start a server's session, as a caller reads it. */
-  async #computerServerRefusal(
-    callable: CallableIntegrationTool,
-    server: Awaited<ReturnType<IntegrationPlatformStore["localMcp"]["get"]>>,
-    error: unknown,
-  ): Promise<string> {
-    const title = callable.installation.title;
-    if (!server || server.status === "disabled") {
-      return `${title} was removed or changed; find its tools again.`;
-    }
-    if (!server.runnerId || !server.runnerName) {
-      return `${title} has no computer to run on. Install its plugin again, choosing one.`;
-    }
-    if (!(error instanceof ComputerMcpSessionError)) {
-      return `${title} did not start on ${server.runnerName}: ${safeMessage(error, safeMessageOptions)}`;
-    }
-    switch (error.code) {
-      case "offline":
-        return computerAppTransportUnavailableDetail(
-          title,
-          server.runnerName,
-          this.#isRunnerConnected(server.runnerId),
-        );
-      case "unapproved":
-      case "failed":
-      case "too-large":
-        return `${title} did not start on ${server.runnerName}: ${error.message}`;
-    }
-  }
-
-  computerToolEnabled(context: RunCapabilityClaims<string>): boolean | Promise<boolean> {
-    return this.#computerToolEnabled(context);
-  }
-
-  computerUseVersion(runnerId: RunnerId): number | undefined {
-    return this.#computerUseVersion(runnerId);
-  }
-
-  /** The same catalog pin and fresh admission fence for every computer row. */
-  async #computerAuthority(callable: CallableIntegrationTool, caller: ToolCaller) {
-    const transport = callable.server.transport;
-    if (transport.type !== "computer")
-      throw new Error("Computer-backed integration server is invalid");
-    const connectionId = callable.grant.connectionId;
-    if (!connectionId) throw new IntegrationAuthorizationRequiredError(callable);
-    const found = this.#definitions.find(({ id }) => id === transport.definitionId);
-    const definition =
-      found &&
-      isComputerAppDefinition(found) &&
-      callable.installation.provenance.definitionId === found.id &&
-      callable.installation.provenance.definitionDigest === integrationDefinitionDigest(found)
-        ? found
-        : undefined;
-    const operation = definition?.config.operations.find(({ name }) => name === callable.tool.name);
-    if (
-      !definition ||
-      !operation ||
-      callable.tool.schemaDigest !==
-        integrationSchemaDigest({
-          inputSchema: operation.inputSchema,
-          outputSchema: operation.outputSchema,
-        })
-    )
-      throw new OpensteerError({
-        code: "conflict",
-        message: `${callable.installation.title} is being updated; search again`,
-        retryable: true,
-      });
-    const ownerUserId = UserIdSchema.parse(callable.grant.ownerUserId);
-    const [placement, providerAuthorizations] = await Promise.all([
-      this.#store.getComputerConnectionForCall({ connectionId, ownerUserId }),
-      this.#authorizationSource.providerAuthorizations(ownerUserId),
-    ]);
-    if (!placement) throw new IntegrationAuthorizationRequiredError(callable);
-    const admit = <Result>(
-      send: (
-        connection: NonNullable<typeof placement>,
-        access: IntegrationAccess,
-      ) => Promise<Result>,
-    ) =>
-      this.#computerApps.withRunnerAdmission(placement.runnerId, async () => {
-        await this.#computerApps.requireAgentAccess(placement.runnerId);
-        const [connection, authority] = await Promise.all([
-          this.#store.getComputerConnectionForCall({ connectionId, ownerUserId }),
-          this.#store.listCallableTools({
-            ownerUserId,
-            providerAuthorizations,
-            threadId: caller.threadId,
-          }),
-        ]);
-        const current = authority.find(
-          (candidate) =>
-            candidate.grant.id === callable.grant.id &&
-            candidate.tool.id === callable.tool.id &&
-            candidate.tool.schemaDigest === callable.tool.schemaDigest &&
-            candidate.installation.provenance.definitionDigest ===
-              callable.installation.provenance.definitionDigest,
-        );
-        if (
-          !connection ||
-          !current ||
-          connection.connection.status !== "connected" ||
-          connection.runnerRevoked ||
-          connection.runnerId !== placement.runnerId ||
-          connection.connection.definitionId !== definition.id ||
-          connection.connection.computer?.runnerId !== connection.runnerId ||
-          !accessCoversEffect(connection.access, operation.effect) ||
-          !accessCoversEffect(current.grant.access, operation.effect)
-        )
-          throw new IntegrationAuthorizationRequiredError(callable);
-        if (
-          definition.id === computerUseDefinitionId &&
-          this.#computerUseVersion(connection.runnerId) !== 2
-        )
-          throw new ComputerUseError(
-            "incompatible-version",
-            computerUseUpdateMacSentence(connection.runnerName),
-          );
-        return send(
-          connection,
-          connection.access === "read" || current.grant.access === "read" ? "read" : "read-write",
-        );
-      });
-    return { definition, operation, ownerUserId, placement, admit };
-  }
-
-  async #callComputerTool(
-    callable: CallableIntegrationTool,
-    args: Readonly<Record<string, unknown>>,
-    caller: ToolCaller,
-    signal?: AbortSignal,
-  ): Promise<Awaited<ReturnType<Client["callTool"]>>> {
-    const transport = callable.server.transport;
-    if (
-      transport.type === "computer" &&
-      (transport.definitionId === computerUseDefinitionId ||
-        transport.definitionId === androidPhoneDefinitionId)
-    )
-      return {
-        content: [{ type: "text", text: computerUseToolRequiredSentence }],
-        isError: true,
-      };
-    const { definition, operation, placement, admit } = await this.#computerAuthority(
-      callable,
-      caller,
-    );
-    const [issue] = validateJsonSchema(operation.inputSchema, args);
-    if (issue)
-      throw new OpensteerError({
-        code: "bad_request",
-        message: `Invalid ${operation.title} arguments at ${issue.path}: ${issue.message}`,
-      });
-    const route = this.#runFileRoute(operation, args, caller, placement, signal);
-    if (typeof route === "string")
-      return { content: [{ type: "text", text: route }], isError: true };
-    try {
-      return await this.#finishComputerTool(
-        await admit(async (connection, access) =>
-          this.#computerApps.send({
-            access,
-            arguments: HostIntegrationsInvokeSchema.shape.arguments.parse(args),
-            contract: computerAppOperationContract(operation),
-            definitionId: definition.id,
-            effect: operation.effect,
-            ...(route ? { files: route.files } : {}),
-            operation: operation.name,
-            runnerId: connection.runnerId,
-            ...(signal ? { signal } : {}),
-          }),
-        ),
-        route,
-        callable,
-        operation,
-        placement,
-      );
-    } finally {
-      route?.close();
-    }
-  }
-
-  /**
-   * How this call's files reach its Run, a sentence saying why they cannot, or
-   * undefined when none move. The Run's own Runner keeps them on that computer;
-   * only a Run elsewhere sends bytes through the Host.
-   */
-  #runFileRoute(
-    operation: ComputerAppOperation,
-    args: Readonly<Record<string, unknown>>,
-    caller: ToolCaller,
-    placement: { readonly runnerId: RunnerId; readonly runnerName: string },
-    signal: AbortSignal | undefined,
-  ): RunFileRoute | string | undefined {
-    const paths =
-      operation.files === "send" && Array.isArray(args.files) ? args.files.map(String) : [];
-    if (!operation.files || (operation.files === "send" && paths.length === 0)) return undefined;
-    const run = caller.run;
-    if (!run) return "Files move only inside a task. Delegate a task to do this.";
-    const port = this.#runFiles;
-    if (!port?.appFiles(placement.runnerId))
-      return `Update Opensteer on ${placement.runnerName} to use ${operation.title}.`;
-    if (!port.runFiles(run.runnerId))
-      return "Update Opensteer on the computer running this task to move files.";
-    const execution = { bindingGeneration: run.bindingGeneration, runId: run.runId };
-    if (run.runnerId === placement.runnerId)
-      return { close: () => undefined, files: { run: execution } };
-    const relays = (operation.files === "send" ? paths : [""]).map(() => port.relay.open());
-    const close = (failure?: Error) => relays.forEach((relay) => relay.close(failure));
-    const stop = new AbortController();
-    const onAbort = () => stop.abort();
-    signal?.addEventListener("abort", onAbort, { once: true });
-    const peer = port.request(
-      run.runnerId,
-      operation.files === "send"
-        ? {
-            execution,
-            files: paths.map((path, index) => ({ path, transfer: relays[index]!.upload })),
-            type: "host.run-file.send",
-          }
-        : {
-            execution,
-            transfers: relays.map(({ download }) => download),
-            type: "host.run-file.receive",
-          },
-      stop.signal,
-    );
-    // A refused path ends the Source Runner's wait at once, before anything is sent.
-    const settled = peer.then(
-      (result) => {
-        if (!result.ok) close(new Error(result.message));
-        return result;
-      },
-      (error: unknown) => {
-        close(error instanceof Error ? error : undefined);
-        throw error;
-      },
-    );
-    settled.catch(() => undefined);
-    return {
-      close: (failure) => {
-        close(failure);
-        signal?.removeEventListener("abort", onAbort);
-        stop.abort();
-      },
-      files: {
-        transfers: relays.map((relay) =>
-          operation.files === "send" ? relay.download : relay.upload,
-        ),
-      },
-      peer: settled,
-    };
-  }
-
-  async #finishComputerTool(
-    sent: ComputerAppInvokeSend,
-    route: RunFileRoute | undefined,
-    callable: CallableIntegrationTool,
-    operation: ComputerAppOperation,
-    placement: ComputerPlacement,
-  ): Promise<Awaited<ReturnType<Client["callTool"]>>> {
-    const answer = await sent.outcome;
-    if (answer.kind !== "ok") route?.close();
-    const peer = route?.peer ? await route.peer.catch(() => null) : undefined;
-    // A send keeps the app's answer unless the app definitely never sent: a transfer error
-    // must never hide a send that may have happened.
-    const peerDecides =
-      operation.files === "export" || (answer.kind !== "ok" && answer.code !== "outcome-unknown");
-    if (peerDecides && peer?.ok === false && peer.message)
-      return { content: [{ type: "text", text: peer.message }], isError: true };
-    const delivered = peer?.paths?.[0];
-    if (answer.kind === "ok" && operation.files === "export" && peer !== undefined && !delivered)
-      return {
-        content: [{ type: "text", text: "The file did not reach this task. Try again." }],
-        isError: true,
-      };
-    const outcome =
-      answer.kind === "ok" && delivered
-        ? { ...answer, value: { ...(answer.value as JsonObject), path: delivered } }
-        : answer;
-    if (outcome.kind === "ok")
-      return sanitizeToolResult(
-        {
-          content: [{ type: "text", text: JSON.stringify(outcome.value) }],
-          ...(typeof outcome.value === "object" &&
-          outcome.value !== null &&
-          !Array.isArray(outcome.value)
-            ? {
-                structuredContent: HostIntegrationsInvokeSchema.shape.arguments.parse(
-                  outcome.value,
-                ),
-              }
-            : {}),
-        },
-        null,
-      );
-    let message: string;
-    switch (outcome.code) {
-      case "offline":
-        message =
-          placement.deviceProfile === "iphone"
-            ? iphoneAppsUnavailableDetail(placement.runnerName)
-            : computerAppTransportUnavailableDetail(
-                callable.installation.title,
-                placement.runnerName,
-                this.#isRunnerConnected(placement.runnerId),
-              );
-        break;
-      case "permission-required":
-        message = computerAppSentence(outcome.message, placement.runnerName);
-        break;
-      case "invalid-arguments":
-      case "failed":
-        message = outcome.message;
-        break;
-      case "unsupported":
-        message = `Update Opensteer on ${placement.runnerName} to use ${operation.title}.`;
-        break;
-      case "outcome-unknown":
-        message = `${placement.runnerName} did not confirm this. Check whether it happened before trying again.`;
-        break;
-      case "lost":
-        message = `${placement.runnerName} did not answer. Try again.`;
-        break;
-      case "busy":
-        message = `${placement.runnerName} is busy with other requests. Try again in a moment.`;
-        break;
-    }
-    return sanitizeToolResult({ content: [{ type: "text", text: message }], isError: true }, null);
-  }
-
-  /** Internal authority path. Window discovery/observation use read; input uses write. */
-  async callComputerOperation(
-    caller: ToolCaller,
-    target: IntegrationConnectionId,
-    operation: string,
-    args: Readonly<Record<string, unknown>>,
-    signal?: AbortSignal,
-    deadline?: number,
-    beforeAcquired?: () => Promise<void>,
-  ): Promise<ReplReply> {
-    const run = caller.run;
-    if (!run || !this.#computerUse)
-      throw refused("forbidden", "Computer use requires a running task.");
-    const row =
-      operation === "release"
-        ? "release"
-        : ["windows", "bind", "observe"].includes(operation)
-          ? "observe"
-          : "act";
-    const callable = (
-      await this.listCallableTools({
-        ownerUserId: run.requestedBy,
-        threadId: caller.threadId,
-      })
-    ).find(
-      (candidate) =>
-        candidate.grant.connectionId === target &&
-        candidate.tool.name === row &&
-        candidate.server.transport.type === "computer" &&
-        (candidate.server.transport.definitionId === computerUseDefinitionId ||
-          candidate.server.transport.definitionId === androidPhoneDefinitionId),
-    );
-    if (!callable) {
-      const connection =
-        row === "act"
-          ? await this.#store.getComputerConnectionForCall({
-              connectionId: target,
-              ownerUserId: run.requestedBy,
-            })
-          : null;
-      if (
-        connection?.access === "read" &&
-        connection.connection.definitionId === androidPhoneDefinitionId
-      )
-        throw new ComputerUseError(
-          "failed",
-          `${connection.runnerName} allows seeing only. Ask for read-write access to act: call app_access_request {computerId, access, reason} with access "read-write"; do not retry this call until it is fulfilled.`,
-        );
-      throw refused(
-        "forbidden",
-        row === "act"
-          ? "This task does not have read-write access to this app or phone. Request read-write access before acting."
-          : "This app or phone is no longer approved for this task. Search integrations for current access.",
-      );
-    }
-    const {
-      definition,
-      operation: catalogOperation,
-      ownerUserId,
-      placement,
-      admit,
-    } = await this.#computerAuthority(callable, caller);
-    const computerUse = this.#computerUse;
-    const mac = definition.id === computerUseDefinitionId;
-    if (!this.#computerApps.attached(placement.runnerId))
-      throw new ComputerUseError(
-        "offline",
-        mac
-          ? computerAppTransportUnavailableDetail(
-              placement.connection.computer?.app?.displayName ?? callable.installation.title,
-              placement.runnerName,
-              this.#isRunnerConnected(placement.runnerId),
-            )
-          : phoneAvailabilityDetail({
-              attached: false,
-              phone: placement.runnerName,
-              runnerConnected: this.#isRunnerConnected(placement.runnerId),
-              status: null,
-            })!,
-      );
-    const rawArgs = { ...args };
-    delete rawArgs.emit;
-    const internalArgs = row === "observe" && mac ? { operation, ...rawArgs } : rawArgs;
-    if (operation === "bind" && mac) {
-      ComputerUseBindParamsSchema.parse(rawArgs);
-    } else if (row !== "act" && operation !== "bind") {
-      const [issue] = validateJsonSchema(catalogOperation.inputSchema, internalArgs);
-      if (issue)
-        throw refused(
-          "bad_request",
-          `Invalid ${operation} arguments at ${issue.path}: ${issue.message}`,
-        );
-    }
-    let lease: ComputerUseLease | undefined;
-    let started: Extract<AgentEvent, { type: "tool.started" }> | undefined;
-    let result: ComputerUseDispatchResult | undefined;
-    let released = false;
-    let audit: Promise<readonly string[]> | undefined;
-    let auditCompletion: Promise<void> | undefined;
-    let finishOperation: ((error?: unknown) => void) | undefined;
-    const start = async (connection: NonNullable<typeof placement>, scope: ComputerUseScope) => {
-      if (started) return;
-      const subject = {
-        account: callable.grant.alias,
-        computerApp:
-          scope.kind === "app"
-            ? {
-                app: scope.app.displayName,
-                bundleId: scope.app.bundleId,
-                computer: connection.runnerName,
-                runnerId: connection.runnerId,
-              }
-            : null,
-        ...(scope.kind === "display"
-          ? { phone: { computer: connection.runnerName, runnerId: connection.runnerId } }
-          : {}),
-        effect: catalogOperation.effect,
-        integration: callable.installation.title,
-        operation: { name: callable.tool.name, title: callable.tool.title },
-      };
-      started = await this.#store.computerOperations.start({
-        context: run,
-        operation,
-        subject,
-        ...(typeof args.window === "number" ? { window: args.window } : {}),
-      });
-      const callId = started.data.callId;
-      let resolve!: () => void;
-      let reject!: (error: unknown) => void;
-      const done = new Promise<void>((yes, no) => {
-        resolve = yes;
-        reject = no;
-      });
-      this.#computerOperationSettlements.set(callId, { runId: run.runId, done });
-      void done.catch((error: unknown) =>
-        console.warn("Computer operation audit could not be saved", { callId, error }),
-      );
-      finishOperation = (error?: unknown) => {
-        this.#computerOperationSettlements.delete(callId);
-        if (error === undefined) resolve();
-        else reject(error);
-      };
-      this.#onDeploymentEvent(started);
-    };
-    const membershipRevision =
-      operation === "bind" ? await this.#nativeTabs?.captureMembership(ownerUserId) : undefined;
-    try {
-      if (operation !== "release")
-        lease = await computerUse.prepare(
-          { ownerUserId, runnerId: placement.runnerId, runnerName: placement.runnerName },
-          run,
-        );
-      const initial = await admit(async (connection, access) => {
-        const scope = computerUseScope(definition, connection.connection.computer?.app ?? null);
-        if (!scope) throw new IntegrationAuthorizationRequiredError(callable);
-        return { scope, access };
-      });
-      const scope = initial.scope;
-      const authorizedTarget = { ...scope, access: initial.access };
-      const guarded = <Result>(send: () => Promise<Result>) =>
-        admit(async (connection, access) => {
-          authorizedTarget.access = access;
-          if (
-            canonicalJson(
-              computerUseScope(definition, connection.connection.computer?.app ?? null),
-            ) !== canonicalJson(scope)
-          )
-            throw new IntegrationAuthorizationRequiredError(callable);
-          await start(connection, scope);
-          return send();
-        });
-      if (operation === "release")
-        released = await guarded(() => computerUse.releaseSession(run, placement.runnerId));
-      else if (lease) {
-        const dispatch =
-          row === "act"
-            ? await computerUse.sendAct(
-                lease,
-                authorizedTarget,
-                rawArgs,
-                !mac,
-                signal,
-                guarded,
-                deadline,
-              )
-            : await guarded(() =>
-                mac
-                  ? computerUse.sendWindowOperation(
-                      lease!,
-                      authorizedTarget,
-                      operation,
-                      rawArgs,
-                      signal,
-                      deadline,
-                    )
-                  : computerUse.sendObserve(
-                      lease!,
-                      authorizedTarget,
-                      operation !== "bind",
-                      signal,
-                      deadline,
-                    ),
-              );
-        audit = dispatch.audit;
-        result = await dispatch.settle();
-      }
-      const performed = result?.performed ?? [];
-      const appName = scope.kind === "app" ? scope.app.displayName : placement.runnerName;
-      const stoppedBecause = result?.error?.message ?? null;
-      const headline =
-        row === "observe"
-          ? computerUseHeadline({ appName, performed: stoppedBecause ? [] : null, stoppedBecause })
-          : computerUseActHeadline({
-              performed: operation === "release" ? [`Released ${placement.runnerName}`] : performed,
-              stoppedBecause,
-            });
-      if (started) {
-        const event = await this.#store.computerOperations.complete(started, {
-          status: signal?.aborted ? "cancelled" : result?.error ? "failed" : "succeeded",
-          headline,
-          performed,
-        });
-        if (event) this.#onDeploymentEvent(event);
-      }
-      const content: ReplContent[] = performed.map((text) => ({ type: "text", text }));
-      if (result?.observation && operation !== "bind" && args.emit !== false) {
-        const renderImages = await this.#mcpImageContent({
-          ownerUserId,
-          runId: run.runId,
-          threadId: run.threadId,
-        });
-        content.push(
-          ...computerObservationContent(result.observation, renderImages, placement.runnerName),
-        );
-      }
-      if (result?.error)
-        throw Object.assign(result.error, {
-          performed,
-          content,
-          value: JSON.parse(JSON.stringify(result)),
-        });
-      const value =
-        operation === "release"
-          ? { released }
-          : operation === "windows"
-            ? result?.windows?.map(({ windowId, title }) => ({ windowId, title }))
-            : operation === "bind"
-              ? { window: result?.window }
-              : mac && row === "act"
-                ? { performed }
-                : result;
-      if (operation === "bind") {
-        if (!this.#nativeTabs || run.aud !== "opensteer-run-tools")
-          throw refused("conflict", "The tab service is unavailable.");
-        signal?.throwIfAborted();
-        await beforeAcquired?.();
-        const runClaims: RunToolScope = { ...run, aud: "opensteer-run-tools" };
-        const common = {
-          ownerId: ownerUserId,
-          runClaims,
-          computerId: placement.runnerId,
-          key: randomUUID(),
-          membershipRevision: membershipRevision!,
-        };
-        const tabId = await this.#nativeTabs.acquired(
-          mac
-            ? {
-                ...common,
-                kind: "window",
-                windowId: WindowIdSchema.parse(result?.window?.windowId),
-              }
-            : { ...common, kind: "phone" },
-        );
-        this.#onTabUsed?.(runClaims, tabId, result?.window?.title ?? placement.runnerName);
-        return {
-          value: z.json().parse(
-            mac
-              ? { window: result?.window, tabId }
-              : {
-                  tabId,
-                  connectionId: target,
-                  name: placement.runnerName,
-                  computerId: placement.runnerId,
-                },
-          ),
-          content,
-        };
-      }
-      return { value: z.json().parse(JSON.parse(JSON.stringify(value))), content };
-    } catch (caught) {
-      const error =
-        caught instanceof ComputerUseError && caught.code === "permission-required" && mac
-          ? Object.assign(
-              new ComputerUseError(
-                caught.code,
-                computerAppSentence(caught.message, placement.runnerName),
-                caught.retryable,
-              ),
-              { performed: result?.performed ?? [] },
-            )
-          : caught instanceof ComputerUseError && caught.code === "incompatible-version" && mac
-            ? Object.assign(
-                new ComputerUseError(
-                  caught.code,
-                  computerUseUpdateMacSentence(placement.runnerName),
-                  caught.retryable,
-                ),
-                { performed: result?.performed ?? [] },
-              )
-            : caught instanceof ComputerUseError && caught.code === "outcome-unknown"
-              ? Object.assign(
-                  new ComputerUseError(
-                    caught.code,
-                    `${caught.message} The actions may already have taken effect. Do not repeat them. Observe the ${mac ? "app" : "phone"} before deciding the next action.`,
-                    caught.retryable,
-                  ),
-                  { performed: result?.performed ?? [] },
-                )
-              : caught;
-      if (started) {
-        const record = started;
-        const known =
-          error instanceof Error && "performed" in error && Array.isArray(error.performed)
-            ? error.performed.filter((value): value is string => typeof value === "string")
-            : [];
-        // The MCP response ends now. Native receipts settle independently and
-        // Run-end finalization waits for this bounded, fenced audit lifetime.
-        auditCompletion = (async () => {
-          const performed = (await audit) ?? known;
-          const event = await this.#store.computerOperations.complete(record, {
-            status: signal?.aborted ? "cancelled" : "failed",
-            headline: computerUseActHeadline({
-              performed,
-              stoppedBecause: error instanceof Error ? error.message : "Computer operation failed",
-            }),
-            performed,
-          });
-          if (event) this.#onDeploymentEvent(event);
-        })();
-      }
-      throw error;
-    } finally {
-      if (lease) computerUse.release(lease);
-      if (auditCompletion)
-        void auditCompletion.then(
-          () => finishOperation?.(),
-          (error: unknown) => finishOperation?.(error),
-        );
-      else finishOperation?.();
-    }
-  }
-
-  async #invokeComputerRepl(
-    caller: ToolCaller,
-    request: ComputerReplInvocation,
-  ): Promise<ReplReply> {
-    if (!caller?.run) throw refused("conflict", "This computer context has ended.");
-    if (request.operation === "tab") {
-      if (!this.#tabs || !this.#nativeTabTarget || caller.run.aud !== "opensteer-run-tools")
-        throw refused("not_found", "This tab is unavailable.");
-      const claims: RunToolScope = { ...caller.run, aud: "opensteer-run-tools" };
-      return bindNativeTab(
-        {
-          tabs: this.#tabs,
-          lookup: this.#nativeTabTarget,
-          connections: async () => {
-            const rows = await this.listCallableTools({
-              ownerUserId: claims.requestedBy,
-              threadId: caller.threadId,
-            });
-            return (await this.#listConnections(claims.requestedBy)).filter((entry) =>
-              rows.some(
-                (row) => row.grant.connectionId === entry.id && row.tool.name === "observe",
-              ),
-            );
-          },
-          bind: (connection, target, beforeAcquired) =>
-            this.callComputerOperation(
-              caller,
-              connection.id,
-              "bind",
-              target.kind === "window" ? { windowId: target.windowId } : {},
-              request.signal,
-              request.deadline,
-              beforeAcquired,
-            ),
-        },
-        claims,
-        TabIdSchema.parse(request.target),
-      );
-    }
-    if (request.operation === "apps" || request.operation === "phones") {
-      const rows = await this.listCallableTools({
-        ownerUserId: caller.run.requestedBy,
-        threadId: caller.threadId,
-      });
-      const entries = await Promise.all(
-        rows
-          .filter(
-            (row) =>
-              row.tool.name === "observe" &&
-              row.server.transport.type === "computer" &&
-              row.server.transport.definitionId ===
-                (request.operation === "apps" ? computerUseDefinitionId : androidPhoneDefinitionId),
-          )
-          .map(async (row) => {
-            if (!row.grant.connectionId) return null;
-            const connection = await this.#store.getComputerConnectionForCall({
-              connectionId: row.grant.connectionId,
-              ownerUserId: caller.run!.requestedBy,
-            });
-            if (
-              !connection ||
-              connection.runnerRevoked ||
-              connection.connection.status !== "connected"
-            )
-              return null;
-            const app = connection.connection.computer?.app;
-            return {
-              id: row.grant.connectionId,
-              name: app?.displayName ?? connection.runnerName,
-              ...(app ? { bundleId: app.bundleId } : {}),
-              computer: connection.runnerName,
-              computerId: connection.runnerId,
-              access:
-                row.grant.access === "read" || connection.access === "read" ? "read" : "read-write",
-            };
-          }),
-      );
-      const usable = entries.filter((entry) => entry !== null);
-      const key = `${request.context.runId}:${request.context.generation}`;
-      const targets = this.#replTargets.get(key) ?? new Set<string>();
-      for (const entry of usable) targets.add(entry.id);
-      this.#replTargets.set(key, targets);
-      return { value: usable };
-    }
-    return this.callComputerOperation(
-      caller,
-      IntegrationConnectionIdSchema.parse(request.target),
-      request.operation,
-      request.args,
-      request.signal,
-      request.deadline,
-    );
-  }
-
-  readonly #computerOperationSettlements = new Map<string, { runId: RunId; done: Promise<void> }>();
-  readonly #replCallers = new Map<string, ToolCaller>();
-  readonly #replTargets = new Map<string, Set<string>>();
-  async runComputerCode(caller: ToolCaller, code: string, signal: AbortSignal) {
-    const run = caller.run;
-    if (!run || !(await this.computerToolEnabled(run)))
-      throw refused(
-        "conflict",
-        "Update Opensteer on the computer this task runs on to use computer_use.",
-      );
-    const key = `${run.runId}:${run.bindingGeneration}`;
-    for (const [old, entry] of this.#replCallers)
-      if (entry.run?.runId === run.runId && old !== key) this.#replCallers.delete(old);
-    this.#replCallers.set(key, caller);
-    return this.computerRepl.execute(
-      { runId: run.runId, generation: run.bindingGeneration },
-      code,
-      signal,
-      (request) => this.#invokeComputerRepl(caller, request),
-    );
-  }
-
-  async endComputerRun(runId: RunId): Promise<void> {
-    this.inputRequests.endRun(runId);
-    for (const [key, caller] of this.#replCallers)
-      if (caller.run?.runId === runId) {
-        this.#replCallers.delete(key);
-        this.#replTargets.delete(key);
-      }
-    await this.computerRepl.endRun(runId);
-    await Promise.all(
-      [...this.#computerOperationSettlements.values()]
-        .filter((record) => record.runId === runId)
-        .map((record) => record.done),
-    );
-    for (const event of await this.#store.computerOperations.finalize(runId))
-      this.#onDeploymentEvent(event);
-  }
-
-  resetComputerGeneration(runId: RunId, generation: number): void {
-    this.#replCallers.delete(`${runId}:${generation}`);
-    this.#replTargets.delete(`${runId}:${generation}`);
-    this.computerRepl.resetGeneration(runId, generation);
-  }
-
-  endComputerGeneration(runId: RunId, generation: number): void {
-    this.inputRequests.endRun(runId, generation);
-    this.#replCallers.delete(`${runId}:${generation}`);
-    this.#replTargets.delete(`${runId}:${generation}`);
-    this.computerRepl.endGeneration(runId, generation);
   }
 
   async #callAdapterTool(
@@ -3562,25 +1953,6 @@ export class IntegrationPlatformService {
     );
   }
 
-  async close(): Promise<void> {
-    await this.inputRequests.close();
-    await this.computerRepl.close();
-    await Promise.allSettled(
-      [...this.#computerOperationSettlements.values()].map((record) => record.done),
-    );
-    this.#closed = true;
-    const opens = [...this.#clients.values()];
-    this.#clients.clear();
-    for (const open of opens) open.cancel.abort();
-    const settled = await Promise.allSettled(opens.map(({ client }) => client));
-    await Promise.allSettled(
-      settled.flatMap((result) =>
-        result.status === "fulfilled" ? [result.value.client.close()] : [],
-      ),
-    );
-  }
-
-  /** A server the Host reaches over the internet, listed once as it is installed. */
   async #discoverServer(server: LoadedAgentPluginServer): Promise<DiscoveredServerResult> {
     const id = createIntegrationId("server");
     const transport = IntegrationServerTransportSchema.parse(remoteTransport(server));
@@ -3624,264 +1996,58 @@ export class IntegrationPlatformService {
   async #client(callable: CallableIntegrationTool): Promise<UpstreamClient> {
     const { server } = callable;
     const connectionId = callable.grant.connectionId;
-    const key = `${server.id}:${connectionId ?? "deployment"}`;
-    const fingerprint = integrationSchemaDigest({ connectionId, transport: server.transport });
-    const authProvider = connectionId
-      ? await this.#mcpOauth.providerFor({
-          connectionId,
-          ownerUserId: callable.grant.ownerUserId as UserId,
-          serverId: server.id,
-        })
-      : undefined;
-    const current = this.#clients.get(key);
-    if (current) {
-      return current.client.then(async (value) => {
-        if (value.fingerprint === fingerprint) {
-          const clientRevision = value.credentialRevision?.();
-          const storedRevision = authProvider?.credentialRevision();
-          if (clientRevision === storedRevision) return value;
-          if (clientRevision == null || storedRevision == null || !connectionId)
-            throw new Error("MCP credential revision is unavailable");
-          if (storedRevision <= clientRevision) return value;
-          const latest = await this.#mcpOauth.providerFor({
-            connectionId,
-            ownerUserId: callable.grant.ownerUserId as UserId,
-            serverId: server.id,
-          });
-          if (this.#clients.get(key) !== current) return this.#client(callable);
-          const latestRevision = latest.credentialRevision();
-          const currentRevision = value.credentialRevision?.();
-          if (latestRevision == null || currentRevision == null)
-            throw new Error("MCP credential revision is unavailable");
-          if (latestRevision <= currentRevision) return value;
-        }
-        this.#letGo(key, current);
-        return this.#client(callable);
+    const authorization = () =>
+      this.#mcpOauth.providerFor({
+        connectionId: connectionId!,
+        ownerUserId: callable.grant.ownerUserId as UserId,
+        serverId: server.id,
       });
-    }
-    // Another call may have started this client meanwhile; it is shared.
-    if (this.#clients.has(key)) return this.#client(callable);
-    return this.#open(key, callable.installation.id, async (signal) => {
-      let client: Client;
-      try {
-        client = await this.#connect(server, authProvider, signal);
-      } catch (error) {
-        const revision = authProvider?.credentialRevision();
-        if (error instanceof UnauthorizedError && revision !== null && revision !== undefined)
-          throw new McpOAuthReauthorizationError(revision);
-        throw error;
-      }
-      return {
-        client,
-        // Kept here because the SDK lets go of a transport once it closes.
-        computer: client.transport instanceof ComputerMcpTransport ? client.transport : null,
-        fingerprint,
-        ...(authProvider ? { credentialRevision: () => authProvider.credentialRevision() } : {}),
-        responseRedactor: authProvider ? () => authProvider.responseRedactor() : null,
-      };
-    }).client;
-  }
-
-  /**
-   * Refuses to open a server on a computer unless it is still installed there,
-   * launched exactly so, and approved so.
-   */
-  async #assertComputerServerCurrent(
-    serverId: IntegrationServerId,
-    transport: { readonly launch: LocalMcpLaunch; readonly runnerId: RunnerId },
-  ): Promise<void> {
-    const current = await this.#store.localMcp.get(serverId);
-    if (
-      !current ||
-      current.status === "disabled" ||
-      current.runnerId !== transport.runnerId ||
-      current.launchDigest !== localMcpLaunchDigest(transport.launch) ||
-      current.approvedLaunchDigest !== current.launchDigest
-    ) {
-      throw refused("conflict", "It was removed or changed as this started; find its tools again.");
-    }
-  }
-
-  /** Holds a client under `key` from the moment it starts opening. */
-  #open(
-    key: string,
-    installationId: IntegrationInstallationId,
-    connect: (signal: AbortSignal) => Promise<Omit<UpstreamClient, "letGo">>,
-  ): OpenClient {
-    if (this.#closed) throw refused("conflict", "The integration platform has closed.");
-    const cancel = new AbortController();
-    const open: OpenClient = {
-      cancel,
-      client: connect(cancel.signal).then(
-        (value) => {
-          // A session that ended — a computer gone offline, a server that
-          // stopped — leaves a client that can only fail, so it is not kept.
-          value.client.onclose = () => {
-            this.inputRequests.forget(value.client);
-            if (this.#clients.get(key) === open) this.#clients.delete(key);
-          };
-          return { ...value, letGo: () => this.#letGo(key, open) };
-        },
-        (error: unknown) => {
-          if (this.#clients.get(key) === open) this.#clients.delete(key);
+    return this.#localServers.clients.client(callable, {
+      authorization,
+      connect: async (authProvider, signal) => {
+        try {
+          return await this.#connect(server, authProvider, signal);
+        } catch (error) {
+          const revision = authProvider?.credentialRevision();
+          if (error instanceof UnauthorizedError && revision !== null && revision !== undefined)
+            throw new McpOAuthReauthorizationError(revision);
           throw error;
-        },
-      ),
-      installationId,
-    };
-    this.#clients.set(key, open);
-    return open;
+        }
+      },
+    });
   }
 
-  /** Lets a client go: one still opening stops there, and an open one closes. */
-  #letGo(key: string, open: OpenClient): void {
-    if (this.#clients.get(key) === open) this.#clients.delete(key);
-    open.cancel.abort();
-    void open.client.then(({ client }) => client.close()).catch(() => undefined);
-  }
-
-  /**
-   * An MCP client for one server. The Host itself reaches only servers on
-   * the internet; a server that starts a program or listens on a loopback
-   * runs on its computer, which the session is carried to.
-   */
+  /** An MCP client for a server the Host itself reaches: on the internet, over HTTPS. */
   async #connect(
     server: Pick<IntegrationServer, "id" | "transport">,
     authProvider?: RedactingOAuthClientProvider,
     signal?: AbortSignal,
   ): Promise<Client> {
     const { transport } = server;
-    const client = new Client(
-      { name: "opensteer-integration-host", version: "1.0.0" },
-      transport.type === "runner" ? { capabilities: { elicitation: { form: {} } } } : {},
-    );
-    if (transport.type === "runner") this.inputRequests.register(client);
-    let sdkTransport: Transport;
-    let computer: ComputerMcpTransport | null = null;
+    const client = new Client({ name: "opensteer-integration-host", version: "1.0.0" }, {});
     if (transport.type === "adapter") {
       throw new Error("Adapter-backed servers do not create upstream MCP clients");
     } else if (transport.type === "computer") {
       throw new Error("Computer-backed servers do not create upstream MCP clients");
     } else if (transport.type === "runner") {
-      if (!transport.runnerId) {
-        throw refused(
-          "conflict",
-          "No computer runs this MCP server; install its plugin again, choosing one.",
-        );
-      }
-      // Every open is held in `#clients` before it gets here, so a removal or
-      // change either finds it and ends it or is read here first: nothing
-      // starts on the computer for a server as it no longer is.
-      await this.#assertComputerServerCurrent(server.id, {
-        launch: transport.launch,
-        runnerId: transport.runnerId,
-      });
-      // Read after that check: changing them ends every session this opens.
-      const secrets = await this.#localSecrets.values(
-        server.id,
-        transport.launch,
-        await this.#store.localMcp.secrets(server.id, transport.runnerId),
-      );
-      signal?.throwIfAborted();
-      computer = new ComputerMcpTransport(this.#computerApps, {
-        authorize: () =>
-          this.#assertComputerServerCurrent(server.id, {
-            launch: transport.launch,
-            runnerId: transport.runnerId!,
-          }),
-        launch: transport.launch,
-        runnerId: transport.runnerId,
-        secrets,
-        serverId: server.id,
-      });
-      sdkTransport = computer;
-    } else {
-      const url = new URL(transport.url);
-      if (url.protocol !== "https:" || isLoopbackHostname(url.hostname)) {
-        throw refused("bad_request", "The Host reaches MCP servers on the internet, over HTTPS");
-      }
-      sdkTransport = new StreamableHTTPClientTransport(url, {
-        ...(authProvider ? { authProvider } : {}),
-        fetch: (target, init) => this.#publicFetch(target, { ...init, redirect: "manual" }),
-        requestInit: { headers: transport.headers, redirect: "manual" },
-      }) as unknown as Transport;
+      throw new Error("A server a computer runs opens through that computer");
     }
-    // Given up while opening: closing the client ends its transport, which
-    // for a computer ends the session it is starting there.
-    const abandon = () => void client.close().catch(() => undefined);
-    signal?.addEventListener("abort", abandon, { once: true });
-    try {
-      signal?.throwIfAborted();
-      await client.connect(sdkTransport, {
-        maxTotalTimeout: connectionTimeoutMs,
-        timeout: connectionTimeoutMs,
-      });
-      return client;
-    } catch (error) {
-      await client.close().catch(() => undefined);
-      this.inputRequests.forget(client);
-      // The computer's own reason says more than the SDK's "Connection closed".
-      throw computer?.closeError ?? error;
-    } finally {
-      signal?.removeEventListener("abort", abandon);
+    const url = new URL(transport.url);
+    if (url.protocol !== "https:" || isLoopbackHostname(url.hostname)) {
+      throw refused("bad_request", "The Host reaches MCP servers on the internet, over HTTPS");
     }
-  }
-
-  /**
-   * An installation changed: every session its servers have open or are
-   * opening ends — listings, and servers it retired or that wait on their
-   * computer, included — and what is next opened reads it as it is now.
-   */
-  #invalidateInstallation(installationId: IntegrationInstallationId): void {
-    for (const [key, open] of this.#clients) {
-      if (open.installationId === installationId) this.#letGo(key, open);
-    }
-  }
-
-  /** A server was removed: every client of it goes, its listing included. */
-  #dropClient(serverId: IntegrationServer["id"]): void {
-    const prefix = `${serverId}:`;
-    for (const [key, open] of this.#clients) {
-      if (key.startsWith(prefix)) this.#letGo(key, open);
-    }
-  }
-
-  async #withRunnerAdmissions<Result>(
-    runnerIds: readonly RunnerId[],
-    task: () => Promise<Result>,
-  ): Promise<Result> {
-    const ordered = [...new Set(runnerIds)].sort((left, right) => left.localeCompare(right));
-    const computerApps = ordered.length > 0 ? this.#computerApps : null;
-    const enter = (index: number): Promise<Result> => {
-      const runnerId = ordered[index];
-      return runnerId && computerApps
-        ? computerApps.withRunnerAdmission(runnerId, () => enter(index + 1))
-        : task();
-    };
-    return enter(0);
+    const sdkTransport = new StreamableHTTPClientTransport(url, {
+      ...(authProvider ? { authProvider } : {}),
+      fetch: (target, init) => this.#publicFetch(target, { ...init, redirect: "manual" }),
+      requestInit: { headers: transport.headers, redirect: "manual" },
+    }) as unknown as Transport;
+    return connectMcpClient(client, sdkTransport, signal, (error) => error);
   }
 
   #publishRequestEvents(events: readonly AgentEvent[]): void {
     for (const event of events) this.#onDeploymentEvent(event);
     if (events.length > 0) this.#onRequestsChanged();
   }
-}
-
-/** Mirrors the connection an access decision fulfills, for both Main and project payloads. */
-/**
- * What a session on this connection operates, from its definition and the
- * connection alone: the app it names, or a phone's whole display. Null for a
- * connection that does not fit its definition — an app-naming one with no
- * app, a display one that names an app, or a display this Host does not know
- * how to operate — which nobody may operate.
- */
-function computerUseScope(
-  definition: ComputerAppDefinition,
-  app: ComputerAppIdentity | null,
-): ComputerUseScope | null {
-  if (computerAppNamesApp(definition.config)) return app ? { app, kind: "app" } : null;
-  if (definition.id !== androidPhoneDefinitionId || app !== null) return null;
-  return { definitionId: androidPhoneDefinitionId, kind: "display" };
 }
 
 function fulfillmentConnectionId(response: RequestResponse): IntegrationConnectionId | null {
@@ -3891,186 +2057,9 @@ function fulfillmentConnectionId(response: RequestResponse): IntegrationConnecti
     : null;
 }
 
-/**
- * Whether an Agent Plugin's server runs on a computer rather than being
- * reached by the Host: a program to start, or a server on a loopback, which
- * only the computer it is on can reach.
- */
-function runsOnComputer(server: LoadedAgentPluginServer): boolean {
-  return server.type === "stdio" || isLoopbackHostname(new URL(server.url).hostname);
-}
-
 function remoteTransport(server: LoadedAgentPluginServer): IntegrationServer["transport"] {
   if (server.type === "stdio") throw new Error("A program server runs on a computer");
   return { headers: { ...server.headers }, type: server.type, url: server.url };
-}
-
-function computerLaunch(server: LoadedAgentPluginServer): LocalMcpLaunch {
-  return server.type === "stdio"
-    ? {
-        args: [...server.args],
-        command: server.command,
-        cwd: server.cwd,
-        env: { ...server.env },
-        ...(server.secrets ? { secrets: server.secrets.map((secret) => ({ ...secret })) } : {}),
-        type: "stdio",
-      }
-    : { headers: { ...server.headers }, type: "streamable-http", url: server.url };
-}
-
-function portableComputerLaunch(server: LoadedAgentPluginServer): LocalMcpLaunch {
-  const launch = computerLaunch(server);
-  if (launch.type !== "stdio") return launch;
-  const root = launch.env.PLUGIN_ROOT!;
-  const data = launch.env.PLUGIN_DATA!;
-  const portable = (value: string) =>
-    value.replaceAll(root, "${PLUGIN_ROOT}").replaceAll(data, "${PLUGIN_DATA}");
-  return {
-    ...launch,
-    command: portable(launch.command),
-    cwd: portable(launch.cwd),
-    args: launch.args.map(portable),
-    env: Object.fromEntries(Object.entries(launch.env).map(([k, v]) => [k, portable(v)])),
-  };
-}
-
-/** A plugin server pinned to its computer, waiting for that computer's approval. */
-/**
- * Whether a Personal Deployment's update keeps a server's approval: on the same
- * computer, approved as it launched, not declined, and asking for no secret it
- * didn't, whose value its owner would have to enter.
- */
-export function carriesApproval(
-  existing: { readonly approvedLaunchDigest: string | null; readonly status: string },
-  previous: { readonly launch: LocalMcpLaunch; readonly runnerId: RunnerId | null },
-  next: { readonly launch: LocalMcpLaunch; readonly runnerId: RunnerId | null },
-): boolean {
-  const declared = new Set(localMcpLaunchSecrets(previous.launch).map(({ name }) => name));
-  return (
-    previous.runnerId === next.runnerId &&
-    existing.status !== "disabled" &&
-    existing.approvedLaunchDigest === localMcpLaunchDigest(previous.launch) &&
-    localMcpLaunchSecrets(next.launch).every(({ name }) => declared.has(name))
-  );
-}
-
-function computerServer(
-  server: LoadedAgentPluginServer,
-  runnerId: RunnerId,
-  packageDigest: string,
-  pluginId: string,
-): DiscoveredServerResult {
-  return {
-    authorizationRequired: false,
-    catalog: emptyToolCatalog,
-    connectionRequirement: { kind: "none" },
-    id: createIntegrationId("server"),
-    name: server.name,
-    status: "needs-attention",
-    statusDetail: "Waiting for approval on the computer that runs it.",
-    transport: IntegrationServerTransportSchema.parse({
-      launch: { ...portableComputerLaunch(server), packageDigest, pluginId },
-      runnerId,
-      type: "runner",
-    }),
-  };
-}
-
-/**
- * Every tool a server lists, page by page, as the Host records them. The
- * whole listing is bounded — by pages, by time, and by a cursor that comes
- * back — so a server that pages forever is refused rather than waited on.
- * An MCP tool's schema is self-contained, so a server's catalog shares nothing.
- */
-async function listTools(client: Client): Promise<readonly IntegrationToolMaterial[]> {
-  const listed: Tool[] = [];
-  const cursors = new Set<string>();
-  const deadline = Date.now() + 4 * connectionTimeoutMs;
-  let cursor: string | undefined;
-  do {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0 || cursors.size >= maximumToolPages) {
-      throw refused("conflict", "The MCP server did not finish listing its tools");
-    }
-    const page = await client.listTools(cursor === undefined ? undefined : { cursor }, {
-      maxTotalTimeout: remaining,
-      timeout: Math.min(connectionTimeoutMs, remaining),
-    });
-    listed.push(...page.tools);
-    if (listed.length > maximumToolsPerServer) {
-      throw refused("conflict", `MCP server exposes more than ${maximumToolsPerServer} tools`);
-    }
-    cursor = page.nextCursor;
-    if (cursor !== undefined) {
-      if (cursors.has(cursor))
-        throw refused("conflict", "The MCP server listed the same page twice");
-      cursors.add(cursor);
-    }
-  } while (cursor !== undefined);
-  return listed.map((tool): IntegrationToolMaterial => ({
-    annotations: objectValue(tool.annotations ?? {}),
-    connectionId: null,
-    description: boundedToolDescription(tool.description),
-    id: createIntegrationId("tool"),
-    inputSchema: objectValue(tool.inputSchema),
-    name: tool.name,
-    outputSchema: tool.outputSchema ? objectValue(tool.outputSchema) : null,
-    status: "active",
-    title: boundedToolTitle(tool.title ?? tool.annotations?.title, tool.name),
-  }));
-}
-
-const emptyToolCatalog: IntegrationToolCatalog = { definitions: {}, tools: [] };
-
-function objectValue(value: unknown): Readonly<Record<string, unknown>> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw refused("conflict", "MCP tool schema must be an object");
-  }
-  return value as Readonly<Record<string, unknown>>;
-}
-
-function sanitizeToolResult<T>(result: T, responseRedactor: CredentialResponseRedactor | null): T {
-  const serialized = JSON.stringify(result);
-  if (serialized === undefined) throw refused("conflict", "Integration result is not serializable");
-  if (Buffer.byteLength(serialized, "utf8") > maximumToolResultBytes) {
-    throw refused("conflict", `Integration result exceeds ${maximumToolResultBytes} bytes`);
-  }
-  if (!responseRedactor) return result;
-  // Secret numbers and booleans can be JSON scalars; preserve the MCP envelope.
-  const redact = (value: unknown, protocol = false): unknown => {
-    if (typeof value === "string") return responseRedactor.redactText(value);
-    if (typeof value === "number" || typeof value === "boolean") {
-      const text = String(value);
-      const redacted = responseRedactor.redactText(text);
-      return redacted === text ? value : redacted;
-    }
-    if (Array.isArray(value)) return value.map((entry) => redact(entry));
-    if (value && typeof value === "object")
-      return Object.fromEntries(
-        Object.entries(value).map(([key, entry]) => [
-          protocol &&
-          [
-            "content",
-            "structuredContent",
-            "isError",
-            "type",
-            "text",
-            "data",
-            "mimeType",
-            "_meta",
-          ].includes(key)
-            ? key
-            : responseRedactor.redactText(key),
-          protocol && (key === "type" || key === "isError")
-            ? entry
-            : protocol && key === "content" && Array.isArray(entry)
-              ? entry.map((block) => redact(block, true))
-              : redact(entry),
-        ]),
-      );
-    return value;
-  };
-  return redact(JSON.parse(serialized), true) as T;
 }
 
 function sanitizeAdapterError(
@@ -4430,15 +2419,6 @@ function adapterCatalog(
   };
 }
 
-/** An MCP server's own error answer, as opposed to a connection that lost it. */
-function answeredMcpError(error: unknown): error is McpError {
-  return (
-    error instanceof McpError &&
-    error.code !== ErrorCode.ConnectionClosed &&
-    error.code !== ErrorCode.RequestTimeout
-  );
-}
-
 function withDeadline<T>(promise: Promise<T>, timeoutMs: number, signal?: AbortSignal): Promise<T> {
   if (signal?.aborted) return Promise.reject(signal.reason);
   return new Promise<T>((resolve, reject) => {
@@ -4462,12 +2442,6 @@ function withDeadline<T>(promise: Promise<T>, timeoutMs: number, signal?: AbortS
     );
   });
 }
-
-const safeMessageOptions = {
-  fallback: "Integration operation failed",
-  maximumLength: 1_000,
-  singleLine: true,
-} as const;
 
 const proposalFailureOptions = {
   fallback: "the source did not answer with a usable schema",

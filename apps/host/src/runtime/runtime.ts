@@ -117,7 +117,8 @@ import {
   createOpenApiAdapter,
 } from "@opensteer/integration-adapters";
 import { hostedOAuthDeploymentAuthorityDigest } from "@opensteer/control-plane-protocol/broker-sealing";
-import { computerAppIntegrations, integrationDefinitions } from "@opensteer/integration-catalog";
+import { integrationDefinitions } from "@opensteer/integration-catalog";
+import { computerAppIntegrations, deviceDefinitions } from "@opensteer/integration-catalog/devices";
 import { listedDefinitionName } from "../integrations/catalog-presentation.js";
 import { resolveIntegrationDeploymentPosture } from "@opensteer/integration-core/models";
 import { type ComputerAppPlatform } from "@opensteer/integration-core/computer-app";
@@ -207,11 +208,13 @@ import { DefaultIntegrationAuthAttemptLifecycle } from "../integrations/integrat
 import { integrationCallSubject } from "../integrations/integration-call-subject.js";
 import { IntegrationDashboardService } from "../integrations/integration-dashboard-service.js";
 import { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
+import { DeviceService } from "../devices/device-service.js";
+import { LocalServerService } from "../local-servers/local-server-service.js";
 import {
   IntegrationService,
   type IntegrationConnectionConnected,
 } from "../integrations/integration-service.js";
-import { PluginPackageService } from "../integrations/plugin-package-service.js";
+import { PluginPackageService } from "../local-servers/plugin-package-service.js";
 import { IntegrationToolHandlers } from "../mcp/handlers/integrations.js";
 import { McpOAuthService } from "../integrations/mcp-oauth-service.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
@@ -757,21 +760,21 @@ export async function createHostRuntime(
       },
       onDisplayEvent: (runnerId, event) => displayStreams?.handlePhoneEvent(runnerId, event),
       onPluginDataRemoved: (runnerId, pluginId) =>
-        integrationPlatform.store.plugins.confirmDataRemoval(runnerId, pluginId),
-      onRunnerAttached: (runnerId) => integrationPlatform.computerRunnerAttached(runnerId),
+        integrationPlatformStore.plugins.confirmDataRemoval(runnerId, pluginId),
+      onRunnerAttached: (runnerId) => localServers.computerRunnerAttached(runnerId),
     });
     computerUse = new ComputerUseService({
       deploymentId: deployment.id,
       onSessionEnded: (sessionId) => displayStreams?.endSession(sessionId),
       onAuthorityRevoked: ({ runId, bindingGeneration }) =>
-        integrationPlatform.resetComputerGeneration(runId, bindingGeneration),
+        devices.resetComputerGeneration(runId, bindingGeneration),
       // The same minute tick that ends idle sessions settles the approvals
-      // nobody answered; `integrationPlatform` exists long before it fires.
+      // nobody answered; `devices` exists long before it fires.
       // A server a computer runs keeps waiting for its approval: an expired
       // ask is asked again rather than left with nothing to answer.
       expireSetupRequests: async () => {
-        await integrationPlatform.computerAppApprovals.expireComputerAppSetupRequests();
-        await integrationPlatform.requestLocalServerApprovals();
+        await devices.computerAppApprovals.expireComputerAppSetupRequests();
+        await localServers.requestLocalServerApprovals();
       },
       hub: computerApps,
       loginReceiver: (runnerId) => computerApps.loginReceiver(runnerId),
@@ -1408,7 +1411,7 @@ export async function createHostRuntime(
           .catch((error) => reportComputerUseTeardownError(runId, error));
         tabs?.changed();
         computerUse?.closeForRun(runId);
-        integrationPlatform
+        devices
           .endComputerRun(runId)
           .catch((error: unknown) => reportComputerUseTeardownError(runId, error));
       },
@@ -1427,7 +1430,7 @@ export async function createHostRuntime(
       browser.endRevokedRunActors(grants);
       computerUse?.endGrantSessions(grants);
       for (const grant of grants)
-        integrationPlatform.endComputerGeneration(grant.runId, grant.bindingGeneration);
+        devices.endComputerGeneration(grant.runId, grant.bindingGeneration);
       void shellHub?.endGrantSessions(grants, "run-ended").catch(() => undefined);
     });
     const onAssignmentReturn = assignmentReturnReaction({
@@ -1517,13 +1520,44 @@ export async function createHostRuntime(
         )
       );
     };
-    const integrationPlatform = new IntegrationPlatformService({
+    const isRunnerConnected = (runnerId: RunnerId) =>
+      requiredService(runnerRegistry, "Runner registry").isRunnerConnected(runnerId);
+    const onConnectionsChanged = () => {
+      void computerViews
+        ?.revalidate()
+        .catch((error: unknown) => reportComputerUseSweepError(error));
+      notifyMachinesChanged(realtime, "integration.connections");
+      void channelService?.syncRuntimes();
+    };
+    const onSettingsChanged = async ({
+      installationId,
+      ownerUserId,
+    }: {
+      installationId?: string;
+      ownerUserId?: UserId;
+    }) => {
+      if (ownerUserId) realtime.sendToUsers([ownerUserId], { type: "host.plugins-changed" });
+      else notices.notify(installationId ? { installationId } : {});
+    };
+    const publishRequestEvents = (events: readonly AgentEvent[]) => {
+      for (const event of events) publishDeploymentEvent(event);
+      if (events.length > 0) notifyIntegrationContinuations();
+    };
+    const localServers = new LocalServerService({
+      computerApps,
+      dataDirectory,
+      isRunnerConnected,
       longRequestHold: (run) => longRequestHold(run.runId),
+      onConnectionsChanged,
+      onSettingsChanged,
       personal: true,
-      adapters: integrationAdapters,
+      publishRequestEvents,
       secretVault: integrationVault,
+      store: integrationPlatformStore,
+    });
+    const devices = new DeviceService({
       listConnections: (ownerUserId) => integrationStore.listConnections(ownerUserId),
-      authorizationSource: integrations,
+      providerAuthorizations: (ownerUserId) => integrations.providerAuthorizations(ownerUserId),
       computerApps,
       computerUse,
       nativeTabs,
@@ -1547,11 +1581,9 @@ export async function createHostRuntime(
             }
           : { kind: "phone", computerId: row.computerId, tabGeneration: row.generation };
       },
-      credentialMaterializer: integrations,
-      dataDirectory,
-      definitions: integrationDefinitions,
-      isRunnerConnected: (runnerId) =>
-        requiredService(runnerRegistry, "Runner registry").isRunnerConnected(runnerId),
+      definitions: deviceDefinitions,
+      isRunnerConnected,
+      localServers,
       // The engine a Thread runs on and the model it runs decide together
       // whether a tool result's picture is a block they render or a sentence
       // saying the picture is unavailable here. Both are read from the
@@ -1604,29 +1636,35 @@ export async function createHostRuntime(
           modelSelection: thread.modelSelection,
         });
       },
-      mcpOauth,
       onInputAccessWithdrawn: (runnerId) => displayStreams?.withdrawOwnerInput(runnerId),
-      onConnectionsChanged: () => {
-        void computerViews
-          ?.revalidate()
-          .catch((error: unknown) => reportComputerUseSweepError(error));
-        notifyMachinesChanged(realtime, "integration.connections");
-        void channelService?.syncRuntimes();
-      },
-      onSettingsChanged: async ({ installationId, ownerUserId }) => {
-        if (ownerUserId) realtime.sendToUsers([ownerUserId], { type: "host.plugins-changed" });
-        else notices.notify(installationId ? { installationId } : {});
-      },
+      onConnectionsChanged,
+      onSettingsChanged,
+      onRequestsChanged: () => notifyIntegrationContinuations(),
+      onDeploymentEvent: publishDeploymentEvent,
+      store: integrationPlatformStore,
+    });
+    const integrationPlatform = new IntegrationPlatformService({
+      adapters: integrationAdapters,
+      listConnections: (ownerUserId) => integrationStore.listConnections(ownerUserId),
+      authorizationSource: integrations,
+      credentialMaterializer: integrations,
+      dataDirectory,
+      definitions: integrationDefinitions,
+      devices,
+      localServers,
+      mcpOauth,
+      onConnectionsChanged,
+      onSettingsChanged,
       onRequestsChanged: () => notifyIntegrationContinuations(),
       onDeploymentEvent: publishDeploymentEvent,
       ...(options.integrationFetch ? { publicFetch: options.integrationFetch } : {}),
       store: integrationPlatformStore,
     });
     for (const event of await toolActivity.finalize()) publishDeploymentEvent(event);
-    observeIntegrationInput = (event) => integrationPlatform.inputRequests.observe(event);
+    observeIntegrationInput = (event) => localServers.inputRequests.observe(event);
     // Before accepting installs: their data folder can precede the plugin transaction.
-    await integrationPlatform.recoverPluginData();
-    await integrationPlatform.inputRequests.recover();
+    await localServers.recoverPluginData();
+    await localServers.inputRequests.recover();
     for (const event of await integrationPlatformStore.computerOperations.finalize())
       publishDeploymentEvent(event);
     const integrationDashboard = new IntegrationDashboardService({
@@ -1641,11 +1679,15 @@ export async function createHostRuntime(
     });
     await integrationPlatform.backfillApiKeyDisclosures();
     await integrationPlatform.bindOpenApiTools();
+    await devices.ensureBuiltIns({
+      actorUserId: null,
+      requestId: "startup:ensure-built-in-integrations",
+    });
     await integrationPlatform.ensureBuiltIns({
       actorUserId: null,
       requestId: "startup:ensure-built-in-integrations",
     });
-    await integrationPlatform.requestLocalServerApprovals();
+    await localServers.requestLocalServerApprovals();
     for (const event of await store.recoverThreadWorkQueues()) publishDeploymentEvent(event);
     await store.restartExecutionLeases(new Date(executionNow() + config.executionLeaseMs));
     // Runs outlive a Host restart on their leases and continue when their
@@ -2256,9 +2298,9 @@ export async function createHostRuntime(
       commands,
       integrations: {
         computerUseMachines: (ownerUserId) =>
-          integrationPlatform.computerAppApprovals.computerUseMachines(ownerUserId),
+          devices.computerAppApprovals.computerUseMachines(ownerUserId),
         computerUsePhones: (ownerUserId) =>
-          integrationPlatform.computerAppApprovals.computerUsePhones(ownerUserId),
+          devices.computerAppApprovals.computerUsePhones(ownerUserId),
         listCallableTools: (input) => integrationPlatform.listCallableTools(input),
         listDiscoveryInventory: (input) => integrationPlatform.listDiscoveryInventory(input),
       },
@@ -2333,7 +2375,7 @@ export async function createHostRuntime(
       browser,
       computerUse,
       connections: integrationStore,
-      integrations: integrationPlatform,
+      integrations: devices,
       store,
     });
 
@@ -2431,6 +2473,7 @@ export async function createHostRuntime(
     await apps.collectGarbage();
     const integrationTools = new IntegrationToolHandlers({
       definitions: integrationDefinitions,
+      devices,
       onEvent: publishDeploymentEvent,
       platform: integrationPlatform,
     });
@@ -2515,7 +2558,13 @@ export async function createHostRuntime(
           realtime,
           publishDeploymentEvent,
           reconcileIdleCompaction: () => idleCompactionService?.reconcile() ?? Promise.resolve(),
-          integrations: { platform: integrationPlatform, service: integrations, continuations },
+          integrations: {
+            continuations,
+            devices,
+            localServers,
+            platform: integrationPlatform,
+            service: integrations,
+          },
         },
         (id) => administrationCatalogs?.schedule(id),
       ),
@@ -2753,6 +2802,8 @@ export async function createHostRuntime(
           authAttempts: integrationAuthAttempts,
           continuations,
           dashboard: integrationDashboard,
+          devices,
+          localServers,
           mcpOauth,
           platform: integrationPlatform,
           service: integrations,
@@ -3095,7 +3146,10 @@ export async function createHostRuntime(
           await linkServices?.links.stop();
         });
         await step("administration catalogs", () => administrationCatalogs?.close());
-        await step("integration platform", () => integrationPlatform.close());
+        await step("integration platform", async () => {
+          await devices.close();
+          await localServers.close();
+        });
         await step("browser", () => browser.close());
         await step("password sign-ins", () => passwordSignIns.close());
         browserSources.close();

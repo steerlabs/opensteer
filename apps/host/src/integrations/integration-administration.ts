@@ -3,6 +3,8 @@ import { type UserId } from "@opensteer/core";
 import type { HostApiCommand, HostApiCommandOutput } from "@opensteer/protocol";
 import type { IntegrationPlatformService } from "./integration-platform-service.js";
 import type { IntegrationService } from "./integration-service.js";
+import type { DeviceService } from "../devices/device-service.js";
+import type { LocalServerService } from "../local-servers/local-server-service.js";
 export const integrationAdministrationCommandTypes = [
   "integration.disconnect",
   "integration.mcp.disconnect",
@@ -25,6 +27,8 @@ export interface AdministrationActor {
   readonly userId: UserId;
 }
 type Options = {
+  readonly devices: Pick<DeviceService, "computerAppApprovals" | "revokeGrant">;
+  readonly localServers: Pick<LocalServerService, "removePluginData">;
   readonly platform: IntegrationPlatformService;
   readonly integrations?: IntegrationService;
 };
@@ -76,7 +80,7 @@ export async function executeIntegrationAdministration(
           });
       }
       await options.platform.store.plugins.remove(command.pluginId, administration);
-      await options.platform.removePluginData(command.pluginId);
+      await options.localServers.removePluginData(command.pluginId);
       return { type: command.type };
     }
     case "plugin.update":
@@ -99,7 +103,7 @@ export async function executeIntegrationAdministration(
       return { ...outcome, type: command.type };
     }
     case "integration.grant.revoke":
-      await options.platform.revokeGrant({
+      await options.devices.revokeGrant({
         administration,
         grantId: command.grantId,
         ownerUserId: actor.userId,
@@ -108,7 +112,11 @@ export async function executeIntegrationAdministration(
       return { type: command.type };
     case "integration.disconnect":
       return disconnectIntegration(
-        { platform: options.platform, integrations: requiredIntegrations(options) },
+        {
+          devices: options.devices,
+          platform: options.platform,
+          integrations: requiredIntegrations(options),
+        },
         actor,
         command.connectionId,
         requestId,
@@ -119,7 +127,8 @@ export async function executeIntegrationAdministration(
 
 export async function disconnectIntegration(
   options: {
-    readonly platform: Pick<IntegrationPlatformService, "store" | "computerAppApprovals">;
+    readonly devices: Pick<DeviceService, "computerAppApprovals">;
+    readonly platform: Pick<IntegrationPlatformService, "store">;
     readonly integrations: IntegrationService;
   },
   actor: AdministrationActor,
@@ -135,7 +144,7 @@ export async function disconnectIntegration(
   };
   const disconnected =
     (await options.platform.store.getConnectionKind(input)) === "computer"
-      ? await options.platform.computerAppApprovals.disconnectComputerConnection(input)
+      ? await options.devices.computerAppApprovals.disconnectComputerConnection(input)
       : await options.integrations.disconnect(input);
   return { ...disconnected, type: "integration.disconnect" as const };
 }

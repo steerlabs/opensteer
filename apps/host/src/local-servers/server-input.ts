@@ -20,7 +20,7 @@ import {
 import type { CallableIntegrationTool, RequestStore } from "@opensteer/database";
 import { validateJsonSchema } from "@opensteer/shared/jsonSchemaValidation";
 import type { RunCapabilityClaims } from "../agents/run-capability.js";
-import type { ToolCaller } from "./integration-platform-service.js";
+import type { ToolCaller } from "../agents/tool-caller.js";
 
 const toolTimeoutMs = 60_000;
 export const integrationInputTimeoutMs = 180_000;

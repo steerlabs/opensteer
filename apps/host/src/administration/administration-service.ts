@@ -50,7 +50,7 @@ export type AdministrationDependencies = Pick<
   readonly publishDeploymentEvent: (event: import("@opensteer/core").AgentEvent) => void;
   readonly integrations: Pick<
     HostServerDependencies["integrations"],
-    "platform" | "service" | "continuations"
+    "devices" | "localServers" | "platform" | "service" | "continuations"
   >;
 };
 const coreTypes = [
@@ -281,6 +281,8 @@ export class AdministrationService {
     if (isIntegrationAdministrationCommand(command)) {
       const result = await executeIntegrationAdministration(
         {
+          devices: dependencies.integrations.devices,
+          localServers: dependencies.integrations.localServers,
           platform: dependencies.integrations.platform,
           integrations: dependencies.integrations.service,
         },

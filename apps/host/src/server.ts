@@ -291,6 +291,8 @@ import {
   type IntegrationPlatformRpcOptions,
 } from "./integrations/integration-platform-routes.js";
 import type { IntegrationPlatformService } from "./integrations/integration-platform-service.js";
+import type { DeviceService } from "./devices/device-service.js";
+import type { LocalServerService } from "./local-servers/local-server-service.js";
 import {
   createIntegrationRpcHandlers,
   registerIntegrationRoutes,
@@ -422,10 +424,12 @@ export interface HostServerDependencies {
     readonly authAttempts: IntegrationAuthAttemptLifecycle;
     readonly continuations: ContinuationService;
     readonly dashboard: IntegrationDashboardService;
+    readonly devices: DeviceService;
+    readonly localServers: LocalServerService;
     readonly mcpOauth: McpOAuthService;
     readonly platform: IntegrationPlatformService;
     readonly service: IntegrationService;
-    readonly skills: import("./integrations/plugin-package-service.js").PluginPackageService;
+    readonly skills: import("./local-servers/plugin-package-service.js").PluginPackageService;
   };
   /** Shared with Runner registration so live sign-in attempts resume on reconnect. */
   readonly harnessAuthenticationCoordinator: HarnessAuthenticationCoordinator;
@@ -636,6 +640,7 @@ export async function createHostServer(
     authenticator: dependencies.authenticator,
     dashboard: dependencies.integrations.dashboard,
     deploymentId: dependencies.discovery.document.deploymentId,
+    devices: dependencies.integrations.devices,
     integrations: dependencies.integrations.service,
     platform: dependencies.integrations.platform,
   };
@@ -646,6 +651,8 @@ export async function createHostServer(
     authenticator: dependencies.authenticator,
     dashboard: dependencies.integrations.dashboard,
     deploymentId: dependencies.discovery.document.deploymentId,
+    devices: dependencies.integrations.devices,
+    localServers: dependencies.integrations.localServers,
     platform: dependencies.integrations.platform,
     mcpOauth: dependencies.integrations.mcpOauth,
   };
@@ -1032,7 +1039,7 @@ export async function createHostServer(
         continue;
       computerUsePolicies.set(
         runner.id,
-        await dependencies.integrations.platform.computerAppApprovals.computerUsePolicy({
+        await dependencies.integrations.devices.computerAppApprovals.computerUsePolicy({
           runnerId: runner.id,
           ownerUserId: ownerId,
         }),
@@ -1895,7 +1902,7 @@ export async function createHostServer(
           await (async (): Promise<void> => {
             switch (pending.kind) {
               case "integration.input":
-                await dependencies.integrations.platform.inputRequests.respond(input);
+                await dependencies.integrations.localServers.inputRequests.respond(input);
                 return;
               // A sign-in is answered by `browser.sign-in.respond`, which can
               // deliver it; a saved-password sign-in is approved only on its
@@ -1940,7 +1947,7 @@ export async function createHostServer(
               // Allow uses integration.computer.setup.respond to consume exact
               // owner-reviewed setup. This generic path only declines.
               case "computer.app.access":
-                await dependencies.integrations.platform.computerAppApprovals.declineComputerAppAccess(
+                await dependencies.integrations.devices.computerAppApprovals.declineComputerAppAccess(
                   input,
                 );
                 dependencies.integrations.continuations.notify();

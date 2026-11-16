@@ -1,4 +1,9 @@
 import { personalTestExecution } from "../mcp/personal-execution.test-support.js";
+import {
+  createIntegrationPlatform,
+  type IntegrationPlatformTestHarness,
+  type IntegrationPlatformTestOptions,
+} from "../integrations/integration-platform.test-support.js";
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
@@ -107,7 +112,6 @@ import { createHostServer } from "../server.js";
 import { hostServerTestDependencies } from "../server/host-server-test-harness.js";
 import { injectRpcRequest, testRpcData } from "../server/test-host-api-request.js";
 import { notifyComputerPresence } from "../shell/machine-access-events.js";
-import { IntegrationPlatformService } from "./integration-platform-service.js";
 
 /**
  * The whole computer-use journey as a model walks it: the real gateway MCP
@@ -416,7 +420,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         data: { callId: "outer-computer", isError: false, output: { text: "Finished" } },
       });
       await commit({ ...outer, ordinal: 3, type: "run.completed", data: { status: "completed" } });
-      await world.platform.endComputerRun(first.runId);
+      await world.platform.devices.endComputerRun(first.runId);
       const second = await startRun(world.store, world.owner, "Next turn", first.threadId);
       const next = await world.gateway(second);
       expect(
@@ -713,7 +717,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         expect(JSON.stringify(rows)).toContain("This step was cancelled.");
       });
       expect(fake.received("act")).toBe(1);
-      await world.platform.endComputerRun(run.runId);
+      await world.platform.devices.endComputerRun(run.runId);
       expect((await gateway.call("computer_use", { code: "return 3" })).isError).toBe(true);
     } finally {
       resume();
@@ -788,7 +792,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         );
         if (started?.type !== "tool.started") throw new Error("Missing admitted batch");
         if (termination === "MCP cancellation") abort.abort();
-        else ending = world.platform.endComputerRun(run.runId);
+        else ending = world.platform.devices.endComputerRun(run.runId);
         const cancelled = await pending;
         expect(cancelled.isError).toBe(true);
         if (termination === "MCP cancellation")
@@ -800,7 +804,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
               },
             },
           });
-        ending ??= world.platform.endComputerRun(run.runId);
+        ending ??= world.platform.devices.endComputerRun(run.runId);
         const before = (await world.store.eventsAfter(SequenceSchema.parse("0"))).filter(
           (event) => event.type === "tool.completed" && event.data.callId === started.data.callId,
         );
@@ -1134,7 +1138,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         })
       ).find((row) => row.connectionId === connection.id);
       if (!grant) throw new Error("Missing phone grant");
-      await world.platform.revokeGrant({
+      await world.platform.devices.revokeGrant({
         grantId: grant.id,
         ownerUserId: world.owner.userId,
 
@@ -2220,7 +2224,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         });
         // Pressing Stop again, from anywhere, is harmless and sends nothing.
         await world.computerUse.stop(observe.sessionId, world.owner.userId);
-        await world.platform.computerAppApprovals.stopComputerUseSession({
+        await world.platform.devices.computerAppApprovals.stopComputerUseSession({
           actorUserId: world.owner.userId,
           sessionId: observe.sessionId,
         });
@@ -2251,7 +2255,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     const world = await createWorld(database, { withoutComputerUse: true });
     try {
       await expect(
-        world.platform.computerAppApprovals.stopComputerUseSession({
+        world.platform.devices.computerAppApprovals.stopComputerUseSession({
           actorUserId: world.owner.userId,
           sessionId: ComputerUseSessionIdSchema.parse(`cus_${randomUUID()}`),
         }),
@@ -2536,7 +2540,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     // One Don't allow on the Mac declines every Thread waiting on it.
     const textEditA = await ask(a, "TextEdit", "read");
     const textEditB = await ask(b, "TextEdit", "read");
-    await world.platform.computerAppApprovals.cancelComputerAppSetup({
+    await world.platform.devices.computerAppApprovals.cancelComputerAppSetup({
       requestId: (await approvalFor("TextEdit")).id,
       ownerUserId: world.owner.userId,
     });
@@ -2619,7 +2623,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     expect(await world.appAccess()).toMatchObject({ TextEdit: "read" });
     // The person declines it from anywhere; the thread is told to carry on without it.
     const { request: declined } =
-      await world.platform.computerAppApprovals.declineComputerAppAccess({
+      await world.platform.devices.computerAppApprovals.declineComputerAppAccess({
         requestId: widen.requestId,
         resolvedBy: world.owner.userId,
         response: { kind: "external", value: { decision: "declined" } },
@@ -2680,7 +2684,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     );
 
     // Blocking keeps the connection, removes the tools, and refuses a new ask.
-    await world.platform.computerAppApprovals.blockComputerApp({
+    await world.platform.devices.computerAppApprovals.blockComputerApp({
       connectionId: (await world.connectionFor("Calendar")).id,
       ownerUserId: world.owner.userId,
       requestId: "block-calendar",
@@ -2727,7 +2731,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
 
     // Turning automatic off keeps every connection, block included.
     const before = await world.appAccess();
-    await world.platform.computerAppApprovals.setComputerUsePolicy({
+    await world.platform.devices.computerAppApprovals.setComputerUsePolicy({
       runnerId: world.macId,
       ownerUserId: world.owner.userId,
       appApproval: "ask",
@@ -3730,7 +3734,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     })();
     await phoneCode(other, "await p.observe()");
     const [session] = world.computerUse.sessionsForRunner(phoneId);
-    await world.platform.computerAppApprovals.stopComputerUseSession({
+    await world.platform.devices.computerAppApprovals.stopComputerUseSession({
       actorUserId: world.owner.userId,
       sessionId: session!.sessionId,
     });
@@ -3764,7 +3768,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
             ownerUserId: world.owner.userId,
           })
         ).find(({ connectionId }) => connectionId === connection.id);
-        await world.platform.revokeGrant({
+        await world.platform.devices.revokeGrant({
           grantId: grant!.id,
           ownerUserId: world.owner.userId,
           requestId: "revoke-phone-grant",
@@ -3772,7 +3776,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
         break;
       }
       case "lowering the access":
-        await world.platform.computerAppApprovals.setComputerConnection({
+        await world.platform.devices.computerAppApprovals.setComputerConnection({
           access: "read",
           actorUserId: world.owner.userId,
           app: null,
@@ -3784,7 +3788,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
         });
         break;
       case "turning the phone off":
-        await world.platform.computerAppApprovals.disconnectComputerConnection({
+        await world.platform.devices.computerAppApprovals.disconnectComputerConnection({
           connectionId: connection.id,
           ownerUserId: world.owner.userId,
           requestId: "phone-off",
@@ -3824,7 +3828,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     ).find((row) => row.tool.name === "act");
     if (!actRow) throw new Error("Missing internal act authority");
     const retiredAct = { account: actRow.grant.connectionId, operation: actRow.tool.name };
-    await world.platform.computerAppApprovals.setComputerConnection({
+    await world.platform.devices.computerAppApprovals.setComputerConnection({
       access: "read",
       actorUserId: world.owner.userId,
       app: null,
@@ -3932,7 +3936,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     const world = await createWorld(database, { phone: true });
     const { fakePhone, phoneId } = phoneOf(world);
     const set = (access: "read" | "read-write") =>
-      world.platform.computerAppApprovals.setComputerConnection({
+      world.platform.devices.computerAppApprovals.setComputerConnection({
         access,
         actorUserId: world.owner.userId,
         app: null,
@@ -3952,7 +3956,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     expect(await world.phoneConnection()).toMatchObject({ computer: { access: "read" } });
     expect(fakePhone.lists).toEqual([]);
     await expect(
-      world.platform.computerAppApprovals.requestComputerAppSetup({
+      world.platform.devices.computerAppApprovals.requestComputerAppSetup({
         actorUserId: world.owner.userId,
         appApproval: "automatic",
         kind: "policy",
@@ -3968,12 +3972,12 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
 const tree = '[0] window "Groceries" (0,0 1200×900)\n  [1] button "New Note" (20,10 80×40)';
 
 /** What the continuation outbox reads, served by the platform under test. */
-function inventorySource(platform: IntegrationPlatformService): IntegrationInventorySource {
+function inventorySource(platform: IntegrationPlatformTestHarness): IntegrationInventorySource {
   return {
     computerUseMachines: (ownerUserId) =>
-      platform.computerAppApprovals.computerUseMachines(ownerUserId),
+      platform.devices.computerAppApprovals.computerUseMachines(ownerUserId),
     computerUsePhones: (ownerUserId) =>
-      platform.computerAppApprovals.computerUsePhones(ownerUserId),
+      platform.devices.computerAppApprovals.computerUsePhones(ownerUserId),
     listCallableTools: (input) => platform.listCallableTools(input),
     listDiscoveryInventory: (input) => platform.listDiscoveryInventory(input),
   };
@@ -4932,10 +4936,8 @@ async function createWorld(
     readonly releasedMacRunner?: boolean;
     readonly ownerViews?: boolean;
     readonly passwords?: ConstructorParameters<typeof ComputerUseService>[0]["passwords"];
-    readonly onTabUsed?: ConstructorParameters<typeof IntegrationPlatformService>[0]["onTabUsed"];
-    readonly computerReplTime?: ConstructorParameters<
-      typeof IntegrationPlatformService
-    >[0]["computerReplTime"];
+    readonly onTabUsed?: IntegrationPlatformTestOptions["onTabUsed"];
+    readonly computerReplTime?: IntegrationPlatformTestOptions["computerReplTime"];
   } = {},
 ) {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), "opensteer-computer-use-journey-"));
@@ -5054,7 +5056,7 @@ async function createWorld(
     machineOwners: (runnerIds) => store.effectiveMachineOwners(runnerIds),
     onSessionsChanged: () => undefined,
     onAuthorityRevoked: ({ runId, bindingGeneration }) =>
-      platform.resetComputerGeneration(runId, bindingGeneration),
+      platform.devices.resetComputerGeneration(runId, bindingGeneration),
     ...(options.onPlaceActivity
       ? {
           onPlaceActivity: options.onPlaceActivity,
@@ -5134,7 +5136,7 @@ async function createWorld(
       throw error;
     },
   });
-  const platform = new IntegrationPlatformService({
+  const platform = createIntegrationPlatform({
     nativeTabs,
     tabs,
     ...(options.onTabUsed ? { onTabUsed: options.onTabUsed } : {}),
@@ -5188,7 +5190,7 @@ async function createWorld(
     if (setupRequestId !== answer.setupRequestId)
       return { kind: "refused", message: "This answer names another request." };
     try {
-      await platform.computerAppApprovals.respondComputerAppSetup({
+      await platform.devices.computerAppApprovals.respondComputerAppSetup({
         setupRequestId,
         decision: answer.kind,
         actorUserId: owner.userId,
@@ -5249,7 +5251,7 @@ async function createWorld(
       setup: import("@opensteer/integration-core/computer-app-setup").ComputerAppSetupRequest,
     ) {
       if (!fakePhone || setup.kind !== "app") throw new Error("Expected phone access Request.");
-      await platform.computerAppApprovals.setComputerConnection({
+      await platform.devices.computerAppApprovals.setComputerConnection({
         access: setup.access,
         actorUserId: owner.userId,
         app: null,
@@ -5298,7 +5300,7 @@ async function createWorld(
         kind: "deny",
       }),
     async automaticOnMac() {
-      const request = await platform.computerAppApprovals.requestComputerAppSetup({
+      const request = await platform.devices.computerAppApprovals.requestComputerAppSetup({
         kind: "policy",
         appApproval: "automatic",
         actorUserId: owner.userId,
@@ -5325,7 +5327,7 @@ async function createWorld(
 let mcpRequestId = 0;
 
 async function openGateway(
-  platform: IntegrationPlatformService,
+  platform: IntegrationPlatformTestHarness,
   userId: UserId,
   run: Awaited<ReturnType<typeof startRun>>,
   trigger: boolean,

@@ -101,6 +101,7 @@ describeStore("Settings invocation admission", (test) => {
     } as unknown as IntegrationPlatformService;
     const handlers = new IntegrationToolHandlers({
       definitions: [],
+      devices: platform as never,
       onEvent: () => undefined,
       platform,
     });

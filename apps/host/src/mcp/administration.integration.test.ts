@@ -1,5 +1,9 @@
 import { createChannelId } from "@opensteer/channel-core";
 import {
+  createIntegrationPlatform,
+  type IntegrationPlatformTestOptions,
+} from "../integrations/integration-platform.test-support.js";
+import {
   enrollTestRunner,
   personalBrowserRepository,
 } from "@opensteer/database/test-support/store";
@@ -21,7 +25,6 @@ import { ShellSessionIdSchema } from "@opensteer/protocol";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
 import { IntegrationService } from "../integrations/integration-service.js";
 import {
   AdministrationService,
@@ -745,7 +748,7 @@ describeStore("MCP administration", (it) => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-admin-plugin-"));
     const source = join(directory, "source");
     await mkdir(source);
-    const platform = new IntegrationPlatformService({
+    const platform = createIntegrationPlatform({
       store,
       dataDirectory: join(directory, "data"),
       listConnections: async () => [],
@@ -760,7 +763,7 @@ describeStore("MCP administration", (it) => {
       onDeploymentEvent: vi.fn(),
       onConnectionsChanged: vi.fn(),
       onRequestsChanged: vi.fn(),
-    } as unknown as ConstructorParameters<typeof IntegrationPlatformService>[0]);
+    } as unknown as IntegrationPlatformTestOptions);
     const agent = mcp(
       {
         store: f.store,
@@ -969,7 +972,7 @@ describeStore("MCP administration", (it) => {
         transportKind: null,
       })
       .execute();
-    const platform = new IntegrationPlatformService({
+    const platform = createIntegrationPlatform({
       store,
       dataDirectory: "unused",
       listConnections: async () => [],
@@ -984,7 +987,7 @@ describeStore("MCP administration", (it) => {
       onDeploymentEvent: vi.fn(),
       onConnectionsChanged: vi.fn(),
       onRequestsChanged: vi.fn(),
-    } as unknown as ConstructorParameters<typeof IntegrationPlatformService>[0]);
+    } as unknown as IntegrationPlatformTestOptions);
     const agent = mcp(
       {
         store: f.store,

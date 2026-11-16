@@ -194,8 +194,10 @@ async function serveMcp(
         integrationStore.listDiscoveryInventory({ ...input, providerAuthorizations: {} }),
       listCallableTools: (input: IntegrationRequester) =>
         integrationStore.listCallableTools({ ...input, providerAuthorizations: {} }),
-      computerAppApprovals: { computerUseInventory: async () => ({ machines: [], phones: [] }) },
     } as unknown as ConstructorParameters<typeof IntegrationToolHandlers>[0]["platform"],
+    devices: {
+      computerAppApprovals: { computerUseInventory: async () => ({ machines: [], phones: [] }) },
+    } as unknown as ConstructorParameters<typeof IntegrationToolHandlers>[0]["devices"],
   });
   service = new OpensteerMcpService({
     realtime,

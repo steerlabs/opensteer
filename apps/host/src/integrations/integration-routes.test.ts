@@ -121,8 +121,8 @@ describe("integration routes", () => {
         authenticator: {} as HostAuthenticator,
         dashboard: {} as never,
         integrations: { disconnect } as unknown as IntegrationService,
+        devices: { computerAppApprovals: { disconnectComputerConnection } } as never,
         platform: {
-          computerAppApprovals: { disconnectComputerConnection },
           store: {
             connections: { assertOwner: vi.fn(async () => undefined) },
             getConnectionKind: vi.fn(async () => "computer"),
@@ -169,6 +169,7 @@ describe("integration routes", () => {
         handleAuthorizationCallback,
         identifyAuthorizationCallback: vi.fn(async () => attemptId),
       } as unknown as IntegrationService,
+      devices: {} as never,
       platform: { store: { connections: { assertOwner: vi.fn(async () => undefined) } } } as never,
     });
     const response = await app.inject({
@@ -235,6 +236,7 @@ describe("integration routes", () => {
           handleAuthorizationCallback,
           identifyAuthorizationCallback: vi.fn(async () => attemptId),
         } as unknown as IntegrationService,
+        devices: {} as never,
         platform: {
           store: { connections: { assertOwner: vi.fn(async () => undefined) } },
         } as never,
@@ -271,6 +273,7 @@ describe("integration routes", () => {
       } as unknown as HostAuthenticator,
       dashboard: {} as never,
       integrations: { identifyAuthorizationCallback } as unknown as IntegrationService,
+      devices: {} as never,
       platform: { store: { connections: { assertOwner: vi.fn(async () => undefined) } } } as never,
     });
 

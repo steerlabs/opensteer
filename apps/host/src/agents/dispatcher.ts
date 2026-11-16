@@ -52,7 +52,7 @@ import {
   openRequestResponse,
   type RequestResponseVault,
 } from "../identity/request-response-vault.js";
-import type { PluginPackagesTokenService } from "../integrations/plugin-package-service.js";
+import type { PluginPackagesTokenService } from "../local-servers/plugin-package-service.js";
 import type { EgressService } from "../server/egress-service.js";
 import { computeMachineAccess } from "../shell/machine-access-run-context.js";
 import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
