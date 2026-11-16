@@ -70,6 +70,22 @@ type Request struct {
 	Params          json.RawMessage `json:"params"`
 }
 type Empty struct{}
+
+// Main-process-only: never project this result into public phone status.
+type IdentityParams struct {
+	CandidateID string `json:"candidateId"`
+}
+type IdentityResult struct {
+	UDID string `json:"udid"`
+}
+type ForgetBindingParams struct {
+	UDID             string `json:"udid"`
+	DeploymentID     string `json:"deploymentId"`
+	HostInstanceID   string `json:"hostInstanceId"`
+	RunnerID         string `json:"runnerId"`
+	DeviceID         string `json:"deviceId"`
+	DriverGeneration uint64 `json:"driverGeneration"`
+}
 type PhoneRef struct {
 	LocalPhoneID string `json:"localPhoneId"`
 	NativeEpoch  uint64 `json:"nativeEpoch"`
@@ -99,6 +115,7 @@ type BindingParams struct {
 }
 type TokenParams struct {
 	BindingToken string `json:"bindingToken"`
+	Forget       bool   `json:"forget,omitempty"`
 }
 type SessionParams struct {
 	BindingToken string `json:"bindingToken"`
@@ -160,6 +177,10 @@ func Params(r Request) (interface{}, error) {
 		v = &Empty{}
 	case "init":
 		v = &InitParams{}
+	case "phone.identity":
+		v = &IdentityParams{}
+	case "binding.forget":
+		v = &ForgetBindingParams{}
 	case "setup.inspect", "setup.pair":
 		v = &PhoneRef{}
 	case "phone.forget":
@@ -192,6 +213,14 @@ func Params(r Request) (interface{}, error) {
 		return p.LocalPhoneID != "" && len(p.LocalPhoneID) <= 128 && p.NativeEpoch > 0 && p.NativeEpoch <= 9007199254740991
 	}
 	switch p := v.(type) {
+	case *ForgetBindingParams:
+		if !validID(p.UDID) || !validID(p.DeploymentID) || !validID(p.HostInstanceID) || !validID(p.RunnerID) || !validID(p.DeviceID) || p.DriverGeneration == 0 || p.DriverGeneration > 9007199254740991 {
+			return nil, ErrProtocol
+		}
+	case *IdentityParams:
+		if !validID(p.CandidateID) {
+			return nil, ErrProtocol
+		}
 	case *PhoneRef:
 		if !validRef(*p) {
 			return nil, ErrProtocol

@@ -1,4 +1,17 @@
 import {
+  DesktopIphoneSetupBeginSchema,
+  DesktopIphoneDetachInputSchema,
+  DesktopIphoneDetachCompleteSchema,
+  DesktopIphoneDetachStatusSchema,
+  DesktopIphoneSetupChooseSchema,
+  DesktopIphoneSetupAdvanceSchema,
+  DesktopIphoneSetupCompleteSchema,
+  DesktopIphoneSetupFailureSchema,
+  DesktopIphoneSetupIdSchema,
+  DesktopIphoneSetupStatusSchema,
+  type DesktopIphoneSetupBridge,
+} from "@opensteer/protocol/desktop";
+import {
   DesktopIntegrationAuthorizationReturnSchema,
   DesktopIntegrationAuthorizationSubscriptionSchema,
   DesktopFinishIntegrationAuthorizationInputSchema,
@@ -421,6 +434,91 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       ipcRenderer.removeListener(desktopBridgeChannels.localVisibilityChanged, receive);
     };
   },
+  iphoneSetup: {
+    detach: async (input) =>
+      DesktopIphoneDetachStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneDetach,
+          DesktopIphoneDetachInputSchema.parse(input),
+        ),
+      ),
+    completeDetach: async (input) => {
+      await invoke(
+        desktopBridgeChannels.iphoneDetachComplete,
+        DesktopIphoneDetachCompleteSchema.parse(input),
+      );
+    },
+    pendingDetaches: async (input) =>
+      DesktopIphoneDetachStatusSchema.array()
+        .max(64)
+        .parse(
+          await invoke(
+            desktopBridgeChannels.iphonePendingDetaches,
+            DesktopIphoneSetupBeginSchema.parse(input),
+          ),
+        ),
+    begin: async (input) =>
+      DesktopIphoneSetupStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneSetupBegin,
+          DesktopIphoneSetupBeginSchema.parse(input),
+        ),
+      ),
+    choose: async (input) =>
+      DesktopIphoneSetupStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneSetupChoose,
+          DesktopIphoneSetupChooseSchema.parse(input),
+        ),
+      ),
+    advance: async (input) =>
+      DesktopIphoneSetupStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneSetupAdvance,
+          DesktopIphoneSetupAdvanceSchema.parse(input),
+        ),
+      ),
+    complete: async (input) =>
+      DesktopIphoneSetupStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneSetupComplete,
+          DesktopIphoneSetupCompleteSchema.parse(input),
+        ),
+      ),
+    failed: async (input) =>
+      DesktopIphoneSetupStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneSetupFailed,
+          DesktopIphoneSetupFailureSchema.parse(input),
+        ),
+      ),
+    status: async (input) =>
+      DesktopIphoneSetupStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneSetupStatus,
+          DesktopIphoneSetupIdSchema.parse(input),
+        ),
+      ),
+    cancel: async (input) => {
+      await invoke(
+        desktopBridgeChannels.iphoneSetupCancel,
+        DesktopIphoneSetupIdSchema.parse(input),
+      );
+    },
+    subscribe: (input, listener) => {
+      const target = DesktopIphoneSetupIdSchema.parse(input);
+      const receive = (_event: Electron.IpcRendererEvent, value: unknown) => {
+        const state = DesktopIphoneSetupStatusSchema.parse(value);
+        if (state.setupId === target.setupId) listener(state);
+      };
+      ipcRenderer.on(desktopBridgeChannels.iphoneSetupChanged, receive);
+      void invoke(desktopBridgeChannels.iphoneSetupSubscribe, target).catch(() => undefined);
+      return () => {
+        ipcRenderer.removeListener(desktopBridgeChannels.iphoneSetupChanged, receive);
+        void invoke(desktopBridgeChannels.iphoneSetupUnsubscribe, target).catch(() => undefined);
+      };
+    },
+  } satisfies DesktopIphoneSetupBridge,
   agentPhoneAdb: {
     open: async (input) =>
       DesktopAgentPhoneAdbOpenResultSchema.parse(

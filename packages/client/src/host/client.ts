@@ -1072,6 +1072,7 @@ export interface HostClient extends TabsClient {
   ): import("@opensteer/protocol/browser-tabs").BrowserViewerSurface | undefined;
   /** A Host without a network supplies its own; every other client reaches updates by route. */
   readonly desktopUpdates?: DesktopUpdates;
+  readonly iphoneSetup?: import("./iphone-setup.js").IphoneSetupPort | undefined;
   readonly browserPasskeys?: BrowserPasskeys;
   /** Popups this client's own input opens from one tab, as each one opens. */
   readonly subscribeBrowserPopups?: (

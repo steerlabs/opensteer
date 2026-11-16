@@ -287,7 +287,7 @@ const paramsByMethod = {
       driverGeneration: positive,
     })
     .strict(),
-  "binding.release": z.object({ bindingToken: id }).strict(),
+  "binding.release": z.object({ bindingToken: id, forget: z.boolean().optional() }).strict(),
   "session.open": z
     .object({ bindingToken: id, sessionId: id, runId: id, access: z.enum(["observe", "control"]) })
     .strict(),
@@ -315,7 +315,7 @@ const paramsByMethod = {
   "request.cancel": z.object({ requestId: positive }).strict(),
   shutdown: empty,
 } as const;
-export const iphoneNativeRequestSchema = z
+const iphoneNativeBaseRequestSchema = z
   .discriminatedUnion("method", [
     z
       .object({
@@ -463,6 +463,28 @@ export const iphoneNativeRequestSchema = z
       });
     }
   });
+export const iphoneNativeRequestSchema = z.union([
+  iphoneNativeBaseRequestSchema,
+  z.strictObject({
+    ...requestBase,
+    method: z.literal("phone.identity"),
+    timeoutMs: positive.max(30000),
+    params: z.strictObject({ candidateId: id }),
+  }),
+  z.strictObject({
+    ...requestBase,
+    method: z.literal("binding.forget"),
+    timeoutMs: positive.max(30000),
+    params: z.strictObject({
+      udid: id,
+      deploymentId: id,
+      hostInstanceId: id,
+      runnerId: id,
+      deviceId: id,
+      driverGeneration: positive,
+    }),
+  }),
+]);
 export type IphoneNativeRequest = z.infer<typeof iphoneNativeRequestSchema>;
 export const iphoneNativeHelloSchema = z
   .object({
@@ -523,6 +545,7 @@ export const iphoneNativeResponseSchema = z
     id: positive,
     result: z.union([
       z.object({ error: iphoneNativeFailureSchema }).strict(),
+      z.strictObject({ udid: id }),
       iphoneNativeHelloSchema,
       iphoneNativeRosterSchema,
       iphoneNativeInspectionSchema,
@@ -560,3 +583,123 @@ export type IphoneNativeGeometry = z.infer<typeof iphoneNativeGeometrySchema>;
 export type IphoneNativeDeviceState = z.infer<typeof iphoneNativeDeviceStateSchema>;
 export type IphoneNativePerformResult = z.infer<typeof iphoneNativePerformResultSchema>;
 export type IphoneNativeInstalledApps = z.infer<typeof iphoneNativeInstalledAppsSchema>;
+
+// Main-only identity seam. Never included in a renderer or Runner schema.
+export const iphonePrivateIdentityParamsSchema = z.strictObject({ candidateId: id });
+export const iphonePrivateIdentityResultSchema = z.strictObject({ udid: id });
+export const iphonePrivateForgetBindingParamsSchema = z.strictObject({
+  udid: id,
+  deploymentId: id,
+  hostInstanceId: id,
+  runnerId: id,
+  deviceId: id,
+  driverGeneration: positive,
+});
+
+// Desktop main ↔ Mac Runner, negotiated on the existing computer-use socket.
+export const iphoneRunnerBridgeHeader = "x-opensteer-iphone-screen";
+export const iphoneRunnerMethodSchema = z.enum([
+  "iphone.targets",
+  "iphone.session.open",
+  "iphone.observe",
+  "iphone.perform",
+  "iphone.session.close",
+  "iphone.installedApps",
+  "iphone.cancel",
+  "iphone.media",
+]);
+export type IphoneRunnerMethod = z.infer<typeof iphoneRunnerMethodSchema>;
+const driverRef = { deviceId: id, driverGeneration: positive };
+const sessionRef = { ...driverRef, sessionId: id, runId: id };
+export const iphoneRunnerAssignmentSchema = z.strictObject({
+  deviceId: id,
+  generation: positive,
+  role: z.literal("screen"),
+  definitionId: z.literal("iphone-screen"),
+});
+export const iphoneRunnerOwnerSchema = z.strictObject({
+  deploymentId: id,
+  hostInstanceId: id,
+  runnerId: id,
+});
+export type IphoneRunnerOwner = z.infer<typeof iphoneRunnerOwnerSchema>;
+export const iphoneRunnerTargetSchema = z.strictObject({
+  ...driverRef,
+  nativeEpoch: integer,
+  ready: z.boolean(),
+  reason: iphoneNativeReasonSchema.nullable(),
+});
+export const iphoneScreenNativeActionSchema = iphoneNativeActionSchema;
+export const iphoneScreenNativeObservationSchema = iphoneNativeObservationSchema;
+export const iphoneScreenNativeReceiptSchema = iphoneNativePerformResultSchema;
+export const iphoneScreenNativeInstalledAppsSchema = iphoneNativeInstalledAppsSchema;
+export const iphoneRunnerParams = {
+  "iphone.targets": iphoneRunnerOwnerSchema.extend({
+    assignments: z.array(iphoneRunnerAssignmentSchema).max(256),
+  }),
+  "iphone.session.open": z.strictObject({ ...sessionRef, access: z.enum(["observe", "control"]) }),
+  "iphone.observe": z.strictObject({ ...sessionRef, includeScreenshot: z.boolean() }),
+  "iphone.perform": z.strictObject({
+    ...sessionRef,
+    nativeEpoch: positive,
+    geometryRevision: positive,
+    observationToken: id,
+    actions: z.array(iphoneScreenNativeActionSchema).min(1).max(32),
+  }),
+  "iphone.session.close": z.strictObject(sessionRef),
+  "iphone.installedApps": z.strictObject({
+    ...driverRef,
+    filter: z.string().max(200).optional(),
+    limit: positive.max(100),
+    offset: integer.max(10000),
+  }),
+  "iphone.cancel": z.strictObject(sessionRef),
+  "iphone.media": z.strictObject(driverRef),
+} as const;
+export const iphoneRunnerResults = {
+  "iphone.targets": z.strictObject({ targets: z.array(iphoneRunnerTargetSchema).max(8) }),
+  "iphone.session.open": z.strictObject({ nativeEpoch: positive }),
+  "iphone.observe": iphoneScreenNativeObservationSchema,
+  "iphone.perform": z.union([
+    iphoneScreenNativeReceiptSchema,
+    z.strictObject({ error: iphoneNativeFailureSchema }),
+  ]),
+  "iphone.session.close": empty,
+  "iphone.installedApps": iphoneScreenNativeInstalledAppsSchema,
+  "iphone.cancel": empty,
+  "iphone.media": z.strictObject({ available: z.literal(false), reason: z.literal("unsupported") }),
+} as const;
+export type IphoneRunnerParams<M extends IphoneRunnerMethod> = z.infer<
+  (typeof iphoneRunnerParams)[M]
+>;
+export type IphoneRunnerResult<M extends IphoneRunnerMethod> = z.infer<
+  (typeof iphoneRunnerResults)[M]
+>;
+export const iphoneRunnerEventSchema = z.discriminatedUnion("event", [
+  z.strictObject({
+    kind: z.literal("event"),
+    event: z.literal("iphone.targetsChanged"),
+    params: iphoneRunnerTargetSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("event"),
+    event: z.literal("iphone.sessionEnded"),
+    params: z.strictObject({
+      ...sessionRef,
+      nativeEpoch: integer,
+      reason: iphoneNativeReasonSchema,
+    }),
+  }),
+]);
+export type IphoneRunnerEvent = z.infer<typeof iphoneRunnerEventSchema>;
+export interface IphoneRunnerConnection {
+  request<M extends IphoneRunnerMethod>(
+    method: M,
+    params: IphoneRunnerParams<M>,
+    options: { deadline: number; signal?: AbortSignal },
+  ): Promise<IphoneRunnerResult<M>>;
+  close(): void;
+}
+export interface IphoneRunnerPort {
+  connect(emit: (event: IphoneRunnerEvent) => void): IphoneRunnerConnection;
+}

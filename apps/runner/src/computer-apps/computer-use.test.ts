@@ -2067,3 +2067,70 @@ async function eventually(assertion: () => void): Promise<void> {
     }
   }
 }
+
+it("uses the Mac socket for typed iPhone calls and never replays a written perform", async () => {
+  const bridge = await startFakeBridge();
+  teardown.push(() => bridge.close());
+  const handler = new ComputerUseHandler({ bridge: { url: bridge.url, token: bridgeToken } });
+  teardown.push(() => handler.close());
+  bridge.answer("iphone.targets", () => ({ result: { targets: [] } }));
+  const phoneOwner = {
+    deploymentId: "deployment",
+    hostInstanceId: "host",
+    runnerId: "runner",
+    assignments: [],
+  };
+  expect(
+    await handler.iphoneRequest("iphone.targets", phoneOwner, { deadline: Date.now() + 3000 }),
+  ).toEqual({ targets: [] });
+  await handler.permissions({ deadline: Date.now() + 3000 });
+  expect(bridge.sockets).toHaveLength(1);
+  bridge.answer("iphone.perform", (_frame, socket) => {
+    socket.terminate();
+    return "hold";
+  });
+  await expect(
+    handler.iphoneRequest(
+      "iphone.perform",
+      {
+        deviceId: "device",
+        driverGeneration: 1,
+        sessionId: "session",
+        runId: "run",
+        nativeEpoch: 1,
+        geometryRevision: 1,
+        observationToken: "observation",
+        actions: [{ kind: "tap", target: { point: { x: 10, y: 10 } } }],
+      },
+      { deadline: Date.now() + 3000 },
+    ),
+  ).rejects.toMatchObject({ code: "outcome-unknown" });
+  expect(bridge.requests.filter((request) => request.method === "iphone.perform")).toHaveLength(1);
+});
+
+it("refuses unexpected iPhone replies and preserves a known partial receipt", async () => {
+  const bridge = await startFakeBridge();
+  teardown.push(() => bridge.close());
+  const handler = new ComputerUseHandler({ bridge: { url: bridge.url, token: bridgeToken } });
+  teardown.push(() => handler.close());
+  bridge.answer("iphone.perform", () => ({
+    result: { error: { code: "native-service-failed", effect: "submitted", completedSteps: 1 } },
+  }));
+  const action = {
+    deviceId: "device",
+    driverGeneration: 1,
+    sessionId: "session",
+    runId: "run",
+    nativeEpoch: 1,
+    geometryRevision: 1,
+    observationToken: "observation",
+    actions: [{ kind: "tap" as const, target: { point: { x: 10, y: 10 } } }],
+  };
+  expect(
+    await handler.iphoneRequest("iphone.perform", action, { deadline: Date.now() + 3000 }),
+  ).toEqual({ error: { code: "native-service-failed", effect: "submitted", completedSteps: 1 } });
+  bridge.answer("iphone.perform", () => ({ result: { rawSecret: "unexpected" } }));
+  await expect(
+    handler.iphoneRequest("iphone.perform", action, { deadline: Date.now() + 3000 }),
+  ).rejects.toMatchObject({ code: "outcome-unknown" });
+});

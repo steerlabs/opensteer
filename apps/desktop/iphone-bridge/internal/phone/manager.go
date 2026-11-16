@@ -94,6 +94,10 @@ func (m *Manager) Call(ctx context.Context, r wire.Request) (interface{}, error)
 		return nil, wire.Fail(wire.NotInitialized)
 	}
 	switch r.Method {
+	case "phone.identity":
+		return m.privateIdentity(p.(*wire.IdentityParams).CandidateID)
+	case "binding.forget":
+		return wire.Empty{}, m.forgetPrivateBinding(p.(*wire.ForgetBindingParams))
 	case "roster.get", "roster.subscribe":
 		if err := m.startDiscovery(ctx); err != nil {
 			return nil, err
@@ -131,7 +135,8 @@ func (m *Manager) Call(ctx context.Context, r wire.Request) (interface{}, error)
 		params := p.(*wire.BindingParams)
 		return m.withPhone(ctx, params.PhoneRef, func(ctx context.Context, phone *localPhone) (interface{}, error) { return m.acquire(phone, params) })
 	case "binding.release":
-		return wire.Empty{}, m.release(p.(*wire.TokenParams).BindingToken, false)
+		params := p.(*wire.TokenParams)
+		return wire.Empty{}, m.release(params.BindingToken, params.Forget)
 	case "session.open":
 		return m.open(ctx, p.(*wire.SessionParams))
 	case "session.close":
@@ -801,4 +806,39 @@ func (m *Manager) loadIdentities() error {
 	}
 	m.identities = identities
 	return nil
+}
+
+// This pipe is owned by desktop main; discovery and runtime projections omit UDID.
+func (m *Manager) privateIdentity(candidateID string) (interface{}, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	phone := m.phones[candidateID]
+	if phone == nil || phone.entry.DeviceID == 0 {
+		return nil, wire.Fail(wire.CandidateGone)
+	}
+	return wire.IdentityResult{UDID: phone.identity}, nil
+}
+
+// Removing local authority must also work while the selected phone is offline.
+func (m *Manager) forgetPrivateBinding(p *wire.ForgetBindingParams) error {
+	owner := Owner{p.DeploymentID, p.HostInstanceID, p.RunnerID, p.DeviceID, p.DriverGeneration}
+	m.mu.Lock()
+	for _, phone := range m.phones {
+		if phone.identity == p.UDID && phone.binding != "" {
+			if phone.reservation == nil || phone.reservation.owner != owner {
+				m.mu.Unlock()
+				return wire.Fail(wire.OwnedElsewhere)
+			}
+			token := phone.binding
+			m.mu.Unlock()
+			return m.release(token, true)
+		}
+	}
+	defer m.mu.Unlock()
+	reservation, err := Reserve(m.root, p.UDID, owner)
+	if err != nil {
+		return err
+	}
+	defer reservation.Close()
+	return reservation.Forget()
 }
