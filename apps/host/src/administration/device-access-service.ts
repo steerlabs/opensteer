@@ -40,8 +40,9 @@ export class DeviceAccessService {
         requestedBy: input.claims.requestedBy,
       },
       () =>
-        this.#options.deviceOnline?.(machineId, input.access) ??
-        (self !== null && this.#options.runners.isRunnerConnected(self)),
+        self !== null
+          ? this.#options.runners.isRunnerConnected(self)
+          : (this.#options.deviceOnline?.(machineId, input.access) ?? false),
     );
     for (const event of created.events) this.#options.onDeploymentEvent(event);
     return {
