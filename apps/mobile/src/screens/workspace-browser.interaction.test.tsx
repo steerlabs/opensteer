@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 
 import { act, StrictMode, useEffect, type ReactNode } from "react";
@@ -16,7 +17,6 @@ import * as Clipboard from "expo-clipboard";
 import { fitOffer, pictureBox, pinched, slideFor } from "../browser/browser-page.js";
 import {
   BrowserPageContentPartSchema,
-  RunnerIdSchema,
   TabIdSchema,
   type App,
   type Tab,
@@ -692,7 +692,7 @@ afterEach(() => {
 const agentHome = { computerId: "rnr_00000000-0000-4000-8000-000000000001", path: "/Users/alex" };
 /** The computer every fixture tab is on. */
 const studio = {
-  computerId: RunnerIdSchema.parse("rnr_00000000-0000-4000-8000-00000000000a"),
+  computerId: DeviceIdSchema.parse("rnr_00000000-0000-4000-8000-00000000000a"),
   name: "Studio Mac",
 };
 const agentAt = "2026-10-13T00:00:00.000Z";

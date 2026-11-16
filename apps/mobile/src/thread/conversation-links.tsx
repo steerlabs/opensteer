@@ -65,7 +65,7 @@ export function ConversationLinksProvider(props: {
         openOutside(url);
         return;
       }
-      hostClient.openTab(pageOpenTarget(place.target, url)).then(
+      hostClient.openTab(pageOpenTarget(place.target, url, hostClient.getSnapshot().machines)).then(
         (tab) => {
           if (navigation.isFocused())
             navigation.dispatch(

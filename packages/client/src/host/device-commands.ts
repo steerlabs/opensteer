@@ -26,6 +26,8 @@ export const clientCommandSchema = z.union([
   deviceSetupCommandSchema,
   hostApi["commands.dispatch"].payload,
 ]);
+export type ClientCommandInput = z.input<typeof clientCommandSchema>;
+
 export type MachineAccessUpdateInput = {
   readonly expectedRevision: number;
   readonly policy: MachineAccessPolicy;

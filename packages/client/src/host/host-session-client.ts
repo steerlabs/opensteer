@@ -1,3 +1,4 @@
+import type { ClientCommandInput } from "./device-commands.js";
 import type { HostClient } from "./client.js";
 import {
   clientCommandSchema,
@@ -1146,7 +1147,7 @@ export class HttpHostClient {
     return () => this.#listeners.delete(listener);
   };
 
-  async dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput> {
+  async dispatch(command: ClientCommandInput): Promise<HostApiCommandOutput> {
     const parsedCommand = clientCommandSchema.parse(
       browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes),
     );

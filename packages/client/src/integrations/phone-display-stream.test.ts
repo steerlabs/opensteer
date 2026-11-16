@@ -1,8 +1,8 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { OwnerViewRecords } from "../host/owner-view-records.js";
 import { TabViewers } from "../host/tab-viewers.js";
 import { setPhoneUseAccess } from "./computer-use.js";
 import { mockIphoneScreenDevice, mockIphoneScreenSource } from "../mock/mock-screen-devices.js";
-import { RunnerIdSchema } from "@opensteer/core";
 import { hostApiVersion, minimumHostApiVersion } from "@opensteer/deployment-authority";
 import type { NativeViewerSource } from "../host/surfaces.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1411,7 +1411,7 @@ it("mock phone views cancel a hidden Open intent and withdraw write access live"
     )!;
     const tab = await client.openTab({
       kind: "phone",
-      computerId: RunnerIdSchema.parse(phone.machineId),
+      computerId: DeviceIdSchema.parse(phone.machineId),
     });
     const viewer = await client.activateTab(tab.tabId);
     if (viewer.kind !== "phone") throw new Error("Expected a phone viewer");

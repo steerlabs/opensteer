@@ -29,13 +29,22 @@ export function hasDeviceProjection(machine: ClientMachineSummary): boolean {
   return machine.capabilities !== undefined;
 }
 
+export function machineSelfRunnerId(
+  machine: Pick<MachineSummary, "id" | "selfRunnerId" | "capabilities">,
+) {
+  if (machine.capabilities !== undefined || machine.selfRunnerId !== undefined)
+    return machine.selfRunnerId ?? null;
+  const parsed = RunnerIdSchema.safeParse(machine.id);
+  return parsed.success ? parsed.data : null;
+}
+
 const projections = new WeakMap<MachineSummary, ClientMachineSummary>();
 /** Only v60 self rows need inference; current Host facts always win, including null display. */
 export function deviceMachine(machine: ClientMachineSummary): ClientMachineSummary {
   if (hasDeviceProjection(machine) || machine.status === "pending") return machine;
   const cached = projections.get(machine);
   if (cached) return cached;
-  const runner = RunnerIdSchema.safeParse(machine.id);
+  const runnerId = machineSelfRunnerId(machine);
   const home =
     machine.kind === "home" ||
     (machine.kind === undefined &&
@@ -100,10 +109,10 @@ export function deviceMachine(machine: ClientMachineSummary): ClientMachineSumma
       !home,
     ),
   };
-  const driver: DeviceDriverView | null = runner.success
+  const driver: DeviceDriverView | null = runnerId
     ? {
         role: "self",
-        runnerId: runner.data,
+        runnerId,
         runnerName: machine.name,
         generation: 1,
         attached: true,
@@ -162,7 +171,7 @@ export function deviceMachine(machine: ClientMachineSummary): ClientMachineSumma
   const projected = {
     ...machine,
     kind,
-    selfRunnerId: runner.success ? runner.data : null,
+    selfRunnerId: runnerId,
     drivers: driver ? [driver] : [],
     capabilities,
     phoneDisplay,

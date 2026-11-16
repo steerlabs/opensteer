@@ -1,3 +1,4 @@
+import { deviceMachine } from "../host/device-projection.js";
 import { mockAgentPhoneRunnerId } from "./mock-integration-fixtures.js";
 import type {
   MockBrowserSource as HostSnapshot,
@@ -481,15 +482,20 @@ export function seedMockPlaces(
     status: "online",
     runtimeVersion: null,
   });
-  const main = machines[0]!.id;
-  const studio = machines.find((machine) => machine.name === "Studio Mac")?.id ?? main;
+  const main = deviceMachine(machines[0]!).selfRunnerId!;
+  const studio =
+    machines.map(deviceMachine).find((machine) => machine.name === "Studio Mac")?.selfRunnerId ??
+    main;
   const profileHomes = machines
     .filter(
       (machine) =>
         machine.kind !== "agent-phone" &&
         (machine.allowedModules.includes("browser") || machine.device?.platform === "macos"),
     )
-    .map((machine) => machine.id);
+    .flatMap((machine) => {
+      const runnerId = deviceMachine(machine).selfRunnerId;
+      return runnerId ? [runnerId] : [];
+    });
   const profile = (id: number, name: string, homeRunnerId: string | null) =>
     BrowserProfileSchema.parse({
       homeRunnerId,
@@ -512,14 +518,21 @@ export function seedMockPlaces(
       .filter(
         (machine) => machine.device?.platform === "macos" && machine.computerUse?.state === "ready",
       )
-      .map((machine) => ({
-        kind: "runner" as const,
-        runnerId: machine.id,
-        label: machine.name,
-        available: machine.status === "online",
-        runtimeId: "mock-targeted-runtime",
-        environmentIds: [],
-      })),
+      .map(deviceMachine)
+      .flatMap((machine) =>
+        machine.selfRunnerId
+          ? [
+              {
+                kind: "runner" as const,
+                runnerId: machine.selfRunnerId,
+                label: machine.name,
+                available: machine.status === "online",
+                runtimeId: "mock-targeted-runtime",
+                environmentIds: [],
+              },
+            ]
+          : [],
+      ),
     browserSessions: sessions,
     browserUses,
     machines,

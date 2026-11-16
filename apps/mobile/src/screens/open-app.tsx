@@ -13,7 +13,7 @@ import {
 } from "@opensteer/client/host";
 import { computerNotReadyStatus, computerReasonWords } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
-import { RunnerIdSchema, type TabId, type TabTarget } from "@opensteer/core";
+import { DeviceIdSchema, type TabId, type TabTarget } from "@opensteer/core";
 import type { ApprovedComputerApp, OwnerWindowInfo } from "@opensteer/protocol";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
@@ -218,7 +218,12 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
   const openTab = useCallback(
     (profile: StartPageProfileChoice) => {
       const input = newTabTarget({ browserProfileHomes, machines }, profile.identity, hereId);
-      void openTarget(pageOpenTarget(input, "about:blank"), "new-tab", "The new tab", false);
+      void openTarget(
+        pageOpenTarget(input, "about:blank", machines),
+        "new-tab",
+        "The new tab",
+        false,
+      );
     },
     [browserProfileHomes, hereId, machines, openTarget],
   );
@@ -335,7 +340,7 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
  * has handed over its handle, or otherwise the app, for the Host to bind.
  */
 function rowTarget(app: ApprovedComputerApp, window: OwnerWindowInfo | undefined): TabTarget {
-  const computerId = RunnerIdSchema.parse(app.machineId);
+  const computerId = DeviceIdSchema.parse(app.machineId);
   if (app.target.kind === "phone") return { computerId, kind: "phone" };
   return window
     ? { computerId, kind: "window", windowId: window.windowId }

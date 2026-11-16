@@ -1,3 +1,4 @@
+import { phoneScreenUnavailableWords } from "./phone-screen.js";
 import { deviceReasonLabel } from "../host/device-projection.js";
 import type { MachineSummary } from "@opensteer/protocol";
 
@@ -115,6 +116,7 @@ export function newOwnerViewReadiness(
   phone: boolean,
 ): ComputerNotReady | null {
   const readiness = ownerViewComputerReadiness(machine, phone);
+  if (machine?.phoneDisplay) return readiness;
   const state = machine?.computerUse?.state;
   if (readiness !== null || !phone || state === undefined || state === "ready") return readiness;
   // Pausing is the one thing a phone reports itself as not ready for.
@@ -201,7 +203,9 @@ export function computerReasonWords(
       return `Connecting to ${names.machine}…`;
     case "unsupported":
     case "computer-view-unsupported":
-      return `Update Opensteer on ${names.machine} to see ${names.phone ? "it" : names.target} here.`;
+      return names.phone
+        ? phoneScreenUnavailableWords(names.machine)
+        : `Live view isn’t available for ${names.target} on ${names.machine} yet.`;
     case "window-unreadable":
     case "accessibility-error":
       return `${names.target}’s window can’t be read.`;

@@ -189,7 +189,10 @@ function PendingDeviceDetail({
 }
 
 export function deviceRemovalCopy(input: {
-  readonly machine: Pick<MachineSummary, "id" | "name" | "status">;
+  readonly machine: Pick<
+    MachineSummary,
+    "id" | "name" | "status" | "selfRunnerId" | "capabilities"
+  >;
   readonly thisDevice: boolean;
   readonly profiles: Parameters<typeof deviceRemovalProfiles>[1];
 }): { readonly title: string; readonly body: string; readonly confirm: string } {
@@ -269,7 +272,6 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
     (machine.status === "online" ? "online" : machine.status === "offline" ? "offline" : "waiting");
   const appsSwitch = switches.find((item) => item.capability === "apps");
 
-  // The tab contract names phones by Runner; a Mac-driven phone has none yet.
   const screenTab = TabTargetSchema.safeParse({ kind: "phone", computerId: machine.id });
   function openScreen() {
     if (!workspace || !screenTab.success) return;

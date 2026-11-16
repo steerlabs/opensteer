@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { mockIphoneScreenDevice } from "../mock/mock-screen-devices.js";
+import { newOwnerViewReadiness, computerReasonWords } from "./computer-reasons.js";
 import { phoneScreenStatus } from "./phone-screen.js";
 
 describe("a Mac-driven phone's status", () => {
@@ -35,4 +36,18 @@ describe("a Mac-driven phone's status", () => {
       }),
     ).toBeNull();
   });
+});
+
+it("does not prescribe an on-phone update for an unsupported iPhone view", () => {
+  expect(
+    computerReasonWords("unsupported", {
+      machine: "Work iPhone",
+      target: "Work iPhone",
+      phone: true,
+    }),
+  ).toBe("Live view isn’t available for Work iPhone yet.");
+});
+
+it("keeps owner viewing independent of the agent Apps switch", () => {
+  expect(newOwnerViewReadiness(mockIphoneScreenDevice("apps-off"), true)).toBeNull();
 });

@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { tabFixture } from "@opensteer/client/test-support";
 import assert from "node:assert/strict";
 import { once } from "node:events";
@@ -49,7 +50,7 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
       tabs: [
         tabFixture({
           tabId: surfaceId,
-          computer: { computerId: ids.runnerId, name: "Mac" },
+          computer: { computerId: DeviceIdSchema.parse(ids.runnerId), name: "Mac" },
           title: "Idle smoke",
           url: "about:blank",
         }),

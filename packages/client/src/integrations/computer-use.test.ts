@@ -1,4 +1,5 @@
-import { RunIdSchema, RunnerIdSchema } from "@opensteer/core";
+import { DeviceIdSchema } from "@opensteer/core";
+import { RunIdSchema } from "@opensteer/core";
 import { groupTranscriptEntries } from "../host/agent-activity-model.js";
 import type { ToolEntry, TranscriptEntry } from "../host/client.js";
 import type {
@@ -219,14 +220,14 @@ describe("a live Computer use line", () => {
                 app: "Notes",
                 bundleId: notes.bundleId,
                 computer: "Studio",
-                runnerId: RunnerIdSchema.parse(mac),
+                runnerId: DeviceIdSchema.parse(mac),
               }
             : null,
         effect: "write",
         integration: "Computer use",
         operation: { name: "act", title: "Act" },
         ...(kind === "phone"
-          ? { phone: { computer: "Pixel", runnerId: RunnerIdSchema.parse(pixel) } }
+          ? { phone: { computer: "Pixel", runnerId: DeviceIdSchema.parse(pixel) } }
           : {}),
       },
       isError: false,
@@ -760,7 +761,7 @@ describe("where an app access Request is answered", () => {
         definitionId: "macos-app",
         machines,
         onThatMac: false,
-        runnerId: mac,
+        deviceId: mac,
       }),
     ).toEqual({
       approveOn: "Allow on this device",
@@ -771,7 +772,7 @@ describe("where an app access Request is answered", () => {
         definitionId: "macos-app",
         machines,
         onThatMac: true,
-        runnerId: mac,
+        deviceId: mac,
       }).approveOn,
     ).toBe("Allow on this device");
     expect(
@@ -779,7 +780,7 @@ describe("where an app access Request is answered", () => {
         definitionId: "macos-app",
         machines: [],
         onThatMac: false,
-        runnerId: mac,
+        deviceId: mac,
       }).approveOn,
     ).toBe("Allow on this device");
   });
@@ -790,7 +791,7 @@ describe("where an app access Request is answered", () => {
         definitionId: "android-phone",
         machines,
         onThatMac: true,
-        runnerId: pixel,
+        deviceId: pixel,
       }),
     ).toEqual({
       approveOn: "Allow on this device",

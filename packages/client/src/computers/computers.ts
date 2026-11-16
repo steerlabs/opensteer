@@ -1,4 +1,5 @@
 import {
+  machineSelfRunnerId,
   deviceMachine,
   deviceReasonLabel,
   hasDeviceProjection,
@@ -164,10 +165,12 @@ export function orderDevices<Device extends { readonly id: string; readonly name
  * only when it next learns it was removed, so that is all it is promised.
  */
 export function deviceRemovalProfiles(
-  machine: Pick<MachineSummary, "id" | "name" | "status">,
+  machine: Pick<MachineSummary, "id" | "name" | "status" | "selfRunnerId" | "capabilities">,
   profiles: readonly { readonly homeRunnerId: string | null; readonly name: string }[],
 ): string | null {
-  const held = profiles.filter(({ homeRunnerId }) => homeRunnerId === machine.id);
+  const runnerId = machineSelfRunnerId(machine);
+  if (!runnerId) return null;
+  const held = profiles.filter(({ homeRunnerId }) => homeRunnerId === runnerId);
   if (held.length === 0) return null;
   const deleted =
     held.length === 1
@@ -180,7 +183,7 @@ export function deviceRemovalProfiles(
 
 /** The question asked before a device is removed, the same for every device. */
 export function deviceRemovalConfirmation(
-  machine: Pick<MachineSummary, "id" | "name" | "status">,
+  machine: Pick<MachineSummary, "id" | "name" | "status" | "selfRunnerId" | "capabilities">,
   profiles: Parameters<typeof deviceRemovalProfiles>[1],
 ): { readonly confirm: string; readonly message: string; readonly title: string } {
   return {
@@ -231,7 +234,10 @@ export type DeviceBrowser =
   | { readonly kind: "not-offered" };
 
 export function deviceBrowser(
-  machine: Pick<MachineSummary, "allowedModules" | "id" | "modules" | "status" | "capabilities">,
+  machine: Pick<
+    MachineSummary,
+    "allowedModules" | "id" | "modules" | "status" | "capabilities" | "selfRunnerId"
+  >,
   profiles: readonly { readonly homeRunnerId: string | null }[],
 ): DeviceBrowser | null {
   if (
@@ -247,7 +253,9 @@ export function deviceBrowser(
     return { detail: module.detail, kind: "unavailable" };
   return {
     kind: "lent",
-    profiles: profiles.filter(({ homeRunnerId }) => homeRunnerId === machine.id).length,
+    profiles: profiles.filter(
+      ({ homeRunnerId }) => homeRunnerId !== null && homeRunnerId === machineSelfRunnerId(machine),
+    ).length,
   };
 }
 

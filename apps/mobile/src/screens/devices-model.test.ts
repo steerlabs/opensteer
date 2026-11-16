@@ -119,7 +119,7 @@ describe("Devices on the phone", () => {
           "MacBook Pro (2) — Online",
           "Pixel 9 — Online",
           "Pixel 7 — Agent Phone · Connecting…",
-          "iPhone screen — Ready · through Alex’s MacBook Pro",
+          "Work iPhone — Ready · through Alex’s MacBook Pro",
         ],
       },
       {

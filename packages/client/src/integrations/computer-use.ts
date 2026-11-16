@@ -1,4 +1,3 @@
-import { dispatchDeviceCommand } from "../host/host-api-client.js";
 import type {
   ComputerAppIdentity,
   ComputerAppSetupSummary as ComputerAppSetupRequest,
@@ -736,9 +735,9 @@ export function computerAppAccessApproval(input: {
   readonly definitionId: "android-phone" | "iphone-screen" | "macos-app";
   readonly machines: readonly Pick<MachineSummary, "id" | "name">[];
   readonly onThatMac: boolean;
-  readonly runnerId: string;
+  readonly deviceId: string;
 }): { readonly approveOn: string; readonly detail: string } {
-  const name = input.machines.find(({ id }) => id === input.runnerId)?.name;
+  const name = input.machines.find(({ id }) => id === input.deviceId)?.name;
   if (isPhoneDisplayDefinitionId(input.definitionId)) {
     const where = name ?? "that phone";
     return {
@@ -1027,42 +1026,58 @@ export function phoneUseSetupLocation(setup: PhoneDisplayView["setup"]): {
 
 /** Whole-display approval belongs to the phone Device, independently of its driver. */
 export async function setPhoneUseAccess(
-  client: Pick<HostClient, "rpc" | "refresh" | "getSnapshot">,
+  client: Pick<HostClient, "dispatch" | "refresh" | "getSnapshot">,
   machine: MachineSummary,
   access: IntegrationAccess,
 ): Promise<void> {
   const display = deviceMachine(machine).phoneDisplay;
   if (!display) throw new Error("This device has no phone display.");
-  const current = client.getSnapshot().deviceDriversAvailable === true;
-  if (!current && deviceMachine(machine).selfRunnerId === null)
+  await setPhoneDisplayAccess(client, {
+    deviceId: machine.id,
+    definitionId: display.definitionId,
+    access,
+  });
+}
+
+export async function setPhoneDisplayAccess(
+  client: Pick<HostClient, "dispatch" | "refresh" | "getSnapshot">,
+  input: {
+    readonly deviceId: string;
+    readonly definitionId: "android-phone" | "iphone-screen";
+    readonly access: IntegrationAccess;
+  },
+): Promise<void> {
+  const snapshot = client.getSnapshot();
+  const current = snapshot.deviceDriversAvailable === true;
+  const machine = snapshot.machines.find(({ id }) => id === input.deviceId);
+  const selfRunnerId = machine ? deviceMachine(machine).selfRunnerId : null;
+  if (!current && !selfRunnerId)
     throw new Error("Update this Opensteer to manage phone display access.");
-  unwrapRpcResult(
-    await dispatchDeviceCommand(
-      client.rpc,
-      current
-        ? {
-            type: "integration.computer.setup.set",
-            idempotencyKey: mutationIdempotencyKey("phone-access"),
-            input: {
-              kind: "app",
-              deviceId: machine.id,
-              definitionId: display.definitionId,
-              app: null,
-              access,
-            },
-          }
-        : {
-            type: "integration.computer.setup.set",
-            idempotencyKey: mutationIdempotencyKey("phone-access"),
-            input: {
-              kind: "app",
-              runnerId: machine.id,
-              definitionId: display.definitionId,
-              app: null,
-              access,
-            },
-          },
-    ),
-  );
+  const idempotencyKey = mutationIdempotencyKey("phone-access");
+  const result = current
+    ? await client.dispatch({
+        type: "integration.computer.setup.set",
+        idempotencyKey,
+        input: {
+          kind: "app",
+          deviceId: input.deviceId,
+          definitionId: input.definitionId,
+          app: null,
+          access: input.access,
+        },
+      })
+    : await client.dispatch({
+        type: "integration.computer.setup.set",
+        idempotencyKey,
+        input: {
+          kind: "app",
+          runnerId: selfRunnerId!,
+          definitionId: input.definitionId,
+          app: null,
+          access: input.access,
+        },
+      });
+  if (result.type !== "integration.computer.setup.set")
+    throw new Error("Phone access was not set.");
   await client.refresh();
 }

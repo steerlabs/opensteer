@@ -58,7 +58,7 @@ export function mockIphoneScreenDevice(
   };
   return DeviceMachineSummarySchema.parse({
     id: mockIphoneScreenDeviceId,
-    name: "iPhone screen",
+    name: "Work iPhone",
     kind: "phone",
     selfRunnerId: null,
     device: { form: "phone", platform: "ios" },

@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 import { act, useEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -288,7 +289,7 @@ async function setup(
   root = createRoot(container);
   const runId = createId("run"),
     threadId = createId("thread");
-  const liveMachine = createId("runner");
+  const liveMachine = DeviceIdSchema.parse(createId("runner"));
   const machineId = screen === "live" ? liveMachine : "machine";
   const runPlaces = new RunPlaceStore();
   // The phone's tab, which a live Run's place names.
