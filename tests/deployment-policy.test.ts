@@ -139,7 +139,7 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
-  "apps/host/src/integrations/computer-app-approval-service.ts": {
+  "apps/host/src/devices/computer-app-approval-service.ts": {
     counts: {
       "request.kind": 3,
     },
@@ -467,7 +467,7 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
-  "packages/integration-core/src/models.ts": {
+  "packages/integration-core/src/computer-app-setup.ts": {
     counts: {
       "request.kind": 1,
     },

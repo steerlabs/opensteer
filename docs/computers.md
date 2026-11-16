@@ -157,7 +157,7 @@ integrations runs them, with or without native app providers. A malformed or sta
 MCP form elicitation belongs to one in-flight Run call and only works on engines qualified to hold
 it. The answer goes only to that call, never to engine context or durable events. Restart cancels
 pending input because its waiter no longer exists
-([integration input](../apps/host/src/integrations/integration-input.ts)).
+([integration input](../apps/host/src/local-servers/server-input.ts)).
 
 ## Devices that run no Opensteer
 

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
 import type { CallableIntegrationTool } from "@opensteer/database";
-import { InputCall } from "../local-servers/server-input.js";
+import { InputCall } from "./server-input.js";
 
 describe("computer MCP call deadline", () => {
   afterEach(() => vi.useRealTimers());

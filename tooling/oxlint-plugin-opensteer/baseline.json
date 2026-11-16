@@ -444,15 +444,15 @@
     "no-real-time-wait-in-tests:7769eaf162b0a73b4eed": 1,
     "no-unit-test-timeout:391585291af5d1b10159": 2
   },
-  "apps/host/src/integrations/api-key-reconnect.integration.test.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
-  "apps/host/src/integrations/computer-use-journey.integration.test.ts": {
+  "apps/host/src/devices/computer-use-journey.integration.test.ts": {
     "no-real-time-wait-in-tests:5f0694a5b4efdce3518e": 3,
     "no-unbounded-created-promise:71c9ce6caeaa4870e3b5": 1,
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
-  "apps/host/src/integrations/computer-use.integration.test.ts": {
+  "apps/host/src/devices/computer-use.integration.test.ts": {
+    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
+  },
+  "apps/host/src/integrations/api-key-reconnect.integration.test.ts": {
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "apps/host/src/integrations/integration-account-binding.integration.test.ts": {
@@ -467,11 +467,11 @@
   "apps/host/src/integrations/integration-schemas.integration.test.ts": {
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
-  "apps/host/src/integrations/local-mcp-servers.integration.test.ts": {
-    "no-real-time-wait-in-tests:1f45fe408b3a7474f904": 1,
+  "apps/host/src/integrations/mcp-oauth-reconnect.integration.test.ts": {
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
-  "apps/host/src/integrations/mcp-oauth-reconnect.integration.test.ts": {
+  "apps/host/src/local-servers/local-mcp-servers.integration.test.ts": {
+    "no-real-time-wait-in-tests:1f45fe408b3a7474f904": 1,
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
   "apps/host/src/managed-destruction-pristine.integration.test.ts": {
