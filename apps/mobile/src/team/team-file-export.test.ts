@@ -3,6 +3,7 @@ import type { TeamSessionClient } from "@opensteer/client/team";
 import type { TeamMessage } from "@opensteer/protocol";
 const h = vi.hoisted(() => ({ convert: vi.fn(), write: vi.fn(), remove: vi.fn(), share: vi.fn() }));
 vi.mock("./team-context.js", () => ({ dataUri: h.convert }));
+vi.mock("expo-crypto", () => ({ randomUUID: () => "export" }));
 vi.mock("expo-sharing", () => ({ shareAsync: h.share }));
 vi.mock("expo-file-system", () => ({
   Paths: { cache: "cache" },
@@ -16,7 +17,10 @@ vi.mock("expo-file-system", () => ({
       this.exists = false;
       h.remove();
     }
-    write = h.write;
+    write = async (...args: unknown[]) => {
+      this.exists = true;
+      await h.write(...args);
+    };
   },
 }));
 import { shareTeamFile } from "./team-file-export.js";

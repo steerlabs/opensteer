@@ -1,3 +1,4 @@
+import { TeamImageHold } from "./team-image-hold.js";
 import type { ReactNode } from "react";
 import { Image, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
@@ -69,12 +70,10 @@ function ImagePreview(props: {
   const fitted =
     shape === null || !props.single ? box : fit(shape.width, shape.height, box.width, box.height);
   return (
-    <Pressable
-      accessibilityHint="Opens the full image"
-      accessibilityLabel={image.name}
-      accessibilityRole="imagebutton"
+    <TeamImageHold
+      id={image.id}
       onPress={() => props.onOpen(image.id)}
-      style={({ pressed }) => [styles.image, fitted, pressed && styles.imagePressed]}
+      style={[styles.image, fitted]}
     >
       {shape === null ? (
         <View style={styles.imageMissing}>
@@ -88,7 +87,7 @@ function ImagePreview(props: {
           style={StyleSheet.absoluteFill}
         />
       )}
-    </Pressable>
+    </TeamImageHold>
   );
 }
 
