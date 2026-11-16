@@ -237,7 +237,7 @@ describe("computer use over the desktop bridge", () => {
   it("advertises implemented protocols through an initial failed probe and recovery on the same connection", async () => {
     const bridge = await startFakeBridge();
     teardown.push(() => bridge.close());
-    const prepared = prepareIntegrationsModule({
+    const prepared = await prepareIntegrationsModule({
       computerUseBridge: { token: bridgeToken, url: bridge.url },
       dataDirectory: "/tmp/opensteer-sol-c-descriptor",
       platform: "darwin",
@@ -1636,8 +1636,8 @@ describe("computer use over the desktop bridge", () => {
     ]);
   });
 
-  it("advertises app-targeted capture only with a desktop computer-use bridge", () => {
-    const prepared = prepareIntegrationsModule({
+  it("advertises app-targeted capture only with a desktop computer-use bridge", async () => {
+    const prepared = await prepareIntegrationsModule({
       computerUseBridge: { token: bridgeToken, url: new URL("http://127.0.0.1:1") },
       dataDirectory: "/tmp/opensteer-capture-descriptor",
       platform: "darwin",
@@ -1646,7 +1646,7 @@ describe("computer use over the desktop bridge", () => {
     expect(prepared?.descriptor).toMatchObject({ macWindowVideoVersion: 1, platform: "darwin" });
     expect(prepared?.descriptor).toHaveProperty("macOwnerInputVersion", 2);
     prepared?.close?.();
-    const standalone = prepareIntegrationsModule({
+    const standalone = await prepareIntegrationsModule({
       dataDirectory: "/tmp/opensteer-capture-descriptor",
       platform: "darwin",
     });
@@ -2075,9 +2075,6 @@ it("uses the Mac socket for typed iPhone calls and never replays a written perfo
   teardown.push(() => handler.close());
   bridge.answer("iphone.targets", () => ({ result: { targets: [] } }));
   const phoneOwner = {
-    deploymentId: "deployment",
-    hostInstanceId: "host",
-    runnerId: "runner",
     assignments: [],
   };
   expect(

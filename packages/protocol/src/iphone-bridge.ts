@@ -666,7 +666,7 @@ export const iphoneScreenNativeObservationSchema = iphoneNativeObservationSchema
 export const iphoneScreenNativeReceiptSchema = iphoneNativePerformResultSchema;
 export const iphoneScreenNativeInstalledAppsSchema = iphoneNativeInstalledAppsSchema;
 export const iphoneRunnerParams = {
-  "iphone.targets": iphoneRunnerOwnerSchema.extend({
+  "iphone.targets": z.strictObject({
     assignments: z.array(iphoneRunnerAssignmentSchema).max(256),
   }),
   "iphone.session.open": z.strictObject({ ...sessionRef, access: z.enum(["observe", "control"]) }),

@@ -22,7 +22,10 @@ import type { RunnerModuleStream } from "@opensteer/runner-client";
 import { createId } from "@opensteer/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakePhoneScreenDriver } from "./phone-screen-driver.test-support.js";
-import type { ComputerUseHandler } from "./computer-use-handler.js";
+import { ComputerUseHandler } from "./computer-use-handler.js";
+import { ComputerUseBridgeError } from "./computer-use-bridge-client.js";
+import { prepareIntegrationsModule } from "./prepare.js";
+import { IphoneScreenDriver } from "./iphone-screen-driver.js";
 import { ComputerAppModuleHandler } from "./module-handler.js";
 import {
   ComputerAppError,
@@ -562,6 +565,32 @@ const assignments = (drivers: readonly DeviceScreenDriverAssignment[]) => ({
 });
 
 describe("assigned phone screens", () => {
+  it.each([true, false])(
+    "supplies the production driver only after desktop negotiation: %s",
+    async (supported) => {
+      const request = vi
+        .spyOn(ComputerUseHandler.prototype, "iphoneRequest")
+        .mockImplementation(async () => {
+          if (!supported) throw new ComputerUseBridgeError("unsupported", "Unavailable.");
+          return { targets: [] };
+        });
+      let prepared: Awaited<ReturnType<typeof prepareIntegrationsModule>>;
+      try {
+        prepared = await prepareIntegrationsModule({
+          platform: "darwin",
+          dataDirectory: "/tmp/opensteer-iphone-negotiation-test",
+          computerUseBridge: { token: "synthetic", url: new URL("http://127.0.0.1:1") },
+        });
+        expect(prepared?.descriptor.screenDrivers).toBe(supported ? 1 : undefined);
+        if (supported) expect(prepared?.phoneScreens).toBeInstanceOf(IphoneScreenDriver);
+        else expect(prepared?.phoneScreens).toBeUndefined();
+      } finally {
+        await prepared?.close?.();
+        request.mockRestore();
+      }
+    },
+  );
+
   it("accepts assignments and emits per-device status only on a negotiated stream", async () => {
     const screens = new FakePhoneScreenDriver();
     const legacy = setup({ phoneScreens: screens });
