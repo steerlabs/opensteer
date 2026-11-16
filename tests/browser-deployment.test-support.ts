@@ -268,11 +268,15 @@ export async function createProfile(
   return created.data.profile.id;
 }
 
-export async function waitFor(predicate: () => Promise<boolean>, timeoutMs: number): Promise<void> {
-  await vi.waitFor(
-    async () => expect(await predicate(), "Deployment state did not become ready").toBe(true),
-    { timeout: timeoutMs, interval: 50 },
-  );
+export async function waitFor(
+  predicate: () => Promise<boolean>,
+  timeoutMs: number,
+  message = "Deployment state did not become ready",
+): Promise<void> {
+  await vi.waitFor(async () => expect(await predicate(), message).toBe(true), {
+    timeout: timeoutMs,
+    interval: 50,
+  });
 }
 
 export async function enrollBrowserComputer(stack: VerticalStack, name: string) {

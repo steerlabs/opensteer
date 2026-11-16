@@ -175,7 +175,7 @@ vi.mock("react-native-keyboard-controller", () => ({
 }));
 vi.mock("react-native-reanimated", () => {
   const View = ({ children }: { readonly children?: ReactNode }) => <div>{children}</div>;
-  const transition = { duration: () => transition };
+  const transition = { delay: () => transition, duration: () => transition };
   return {
     default: { View },
     FadeIn: transition,

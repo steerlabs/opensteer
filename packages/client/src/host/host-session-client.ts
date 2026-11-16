@@ -1,3 +1,5 @@
+import { clearRunPageViews } from "./run-page-memory.js";
+import { clearRunPlacePictures } from "./run-place-picture.js";
 import { ReferenceStore } from "../references/store.js";
 import { TranscriptFileController } from "./transcript-files.js";
 import { AssetUrlStore, type AssetRoute } from "./asset-urls.js";
@@ -884,6 +886,7 @@ export class HttpHostClient {
   #refreshTimer: Timer | null = null;
 
   #snapshot: HostSnapshot = emptySnapshot(this.#tabs);
+  #remembering: Promise<unknown> = Promise.resolve();
 
   readonly #deviceAccessRequests: boolean;
   readonly #viewerPlatform: "mac" | "pc" | null;
@@ -2594,7 +2597,8 @@ export class HttpHostClient {
       title: input.title?.trim() || "New task",
     });
     if (result.type !== "thread.create") throw new Error("Thread command mismatch.");
-    await this.#rememberQuietly({
+    // Not waited for: the new Thread is what the person is waiting to see.
+    void this.#rememberQuietly({
       accessMode: input.accessMode,
       selection: {
         environmentId: input.environmentId,
@@ -2608,18 +2612,24 @@ export class HttpHostClient {
     );
   }
 
-  async rememberExecution(choice: ExecutionChoice): Promise<ExecutionPreferences> {
-    const result = await this.dispatch({
-      ...(choice.accessMode ? { accessMode: choice.accessMode } : {}),
-      idempotencyKey: mutationIdempotencyKey("execution-preferences"),
-      ...(choice.selection ? { selection: choice.selection } : {}),
-      type: "execution.preferences.remember",
+  rememberExecution(choice: ExecutionChoice): Promise<ExecutionPreferences> {
+    // One at a time, in the order chosen: a remember nobody waits for, such
+    // as a new Thread's, must not land after a later choice and take it back.
+    const remembered = this.#remembering.then(async () => {
+      const result = await this.dispatch({
+        ...(choice.accessMode ? { accessMode: choice.accessMode } : {}),
+        idempotencyKey: mutationIdempotencyKey("execution-preferences"),
+        ...(choice.selection ? { selection: choice.selection } : {}),
+        type: "execution.preferences.remember",
+      });
+      if (result.type !== "execution.preferences.remember") {
+        throw new Error("Execution preferences command mismatch.");
+      }
+      this.#update({ ...this.#snapshot, executionPreferences: result.preferences });
+      return result.preferences;
     });
-    if (result.type !== "execution.preferences.remember") {
-      throw new Error("Execution preferences command mismatch.");
-    }
-    this.#update({ ...this.#snapshot, executionPreferences: result.preferences });
-    return result.preferences;
+    this.#remembering = remembered.catch(() => undefined);
+    return remembered;
   }
 
   async renameThread(threadId: string, title: string): Promise<ThreadSummary> {
@@ -3057,6 +3067,8 @@ export class HttpHostClient {
   }
 
   dispose(): void {
+    clearRunPageViews(this);
+    clearRunPlacePictures(this);
     this.references.dispose();
     this.transcriptFiles.dispose();
     this.assetUrls.dispose();
@@ -5343,6 +5355,8 @@ export class HttpHostClient {
     }
     const scope = viewerScopeOf(snapshot);
     if (this.#viewer.change(scope)) {
+      clearRunPageViews(this);
+      clearRunPlacePictures(this);
       this.#nodeDetails.clear();
       this.#runPlaces.clear();
       this.#targetedWatch.clear();
@@ -5388,8 +5402,9 @@ export class HttpHostClient {
             this.#browserTargetAuthorized(sessionId, tabId)
               ? (this.browserViewerSurface(sessionId, tabId)?.documentId ?? null)
               : undefined;
-          reconcileBrowserLastPictures(this.browserWatchFrames, document);
-          reconcileBrowserLastPictures(this.browserFrames, document);
+          const sessionForTab = (tabId: string) => this.#pageSessions.get(tabId);
+          reconcileBrowserLastPictures(this.browserWatchFrames, document, sessionForTab);
+          reconcileBrowserLastPictures(this.browserFrames, document, sessionForTab);
           if (this.#snapshot.connection === "connected")
             this.#placeActivity.reconcile(
               (key) => placeByKey(this.#snapshot, key)?.availability === "ready",

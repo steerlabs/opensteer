@@ -1,4 +1,8 @@
-import { hostApiVersion } from "@opensteer/deployment-authority";
+import {
+  hostApiCurrentHeader,
+  hostApiVersion,
+  minimumHostApiVersion,
+} from "@opensteer/deployment-authority";
 import { hostApiVersionHeader } from "@opensteer/protocol";
 
 import { describe, expect, it, vi } from "vitest";
@@ -25,7 +29,11 @@ describe("rpc version negotiation", () => {
     expect(fetch).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        headers: expect.objectContaining({ [hostApiVersionHeader]: String(hostApiVersion) }),
+        // The oldest version this app reads, and the one it speaks.
+        headers: expect.objectContaining({
+          [hostApiVersionHeader]: String(minimumHostApiVersion),
+          [hostApiCurrentHeader]: String(hostApiVersion),
+        }),
       }),
     );
   });

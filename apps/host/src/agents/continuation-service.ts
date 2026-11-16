@@ -321,6 +321,8 @@ export async function continuationMessage(
     }
     case "integration.input":
       throw new Error("Device input returns inside its tool call and cannot have a continuation");
+    case "person.question":
+      return personQuestionContinuation(request);
     case "machine.full-disk-access": {
       if (request.payload.kind !== "machine.full-disk-access")
         throw new Error("macOS Full Disk Access Request payload is invalid");
@@ -732,4 +734,23 @@ function passwordSignInContinuation(
     case "session-closed":
       return `The browser tab closed before the saved login for ${site} was released.`;
   }
+}
+
+/** What the person said to a question the agent asked, beside each question as they saw it. */
+export function personQuestionContinuation(request: Request): string {
+  const { presentation, response } = request;
+  const title = JSON.stringify(presentation.title);
+  if (request.status === "declined")
+    return `The person dismissed your question ${title} without answering (Request ${request.id}). Take that as no; do not ask it again unless something changed.`;
+  if (presentation.kind !== "form" || response?.kind !== "form")
+    throw new Error("A person question is answered with its form");
+  const answers = presentation.fields.map((field) => {
+    const answer = (response.answers[field.id] ?? []).map((value) => JSON.stringify(value));
+    return `- ${field.prompt}\n  Answer: ${answer.join(", ")}`;
+  });
+  return [
+    `The person answered your question ${title} (Request ${request.id}):`,
+    ...answers,
+    "Continue with what they said.",
+  ].join("\n");
 }

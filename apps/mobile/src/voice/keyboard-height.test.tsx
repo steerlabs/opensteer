@@ -21,15 +21,18 @@ vi.mock("react-native", () => ({
     metrics: () => native.metrics,
   },
 }));
-vi.mock("react-native-reanimated", () => ({
-  FadeIn: { duration: () => undefined },
-  FadeInDown: { duration: () => undefined },
-  FadeInUp: { duration: () => undefined },
-  FadeOut: { duration: () => undefined },
-  LinearTransition: { duration: () => undefined },
-  useSharedValue: (value: number) => ({ value }),
-  withTiming: (value: number) => value,
-}));
+vi.mock("react-native-reanimated", () => {
+  const transition = { delay: () => transition, duration: () => transition };
+  return {
+    FadeIn: transition,
+    FadeInDown: transition,
+    FadeInUp: transition,
+    FadeOut: transition,
+    LinearTransition: transition,
+    useSharedValue: (value: number) => ({ value }),
+    withTiming: (value: number) => value,
+  };
+});
 vi.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ bottom: 24, left: 0, right: 0, top: 0 }),
 }));

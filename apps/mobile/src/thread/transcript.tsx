@@ -13,7 +13,6 @@ import {
   hasRunOutcome,
   silentRunLabel,
   incomingMessagePreview,
-  justSent,
   messageAuthorName,
   messageFoldLines,
   turnFolds,
@@ -79,6 +78,7 @@ import { ComputerUseLine, KeptComputerStopLine, useComputerLine } from "./comput
 import { EditedMark } from "./edited-mark.js";
 import type { LinkAction } from "./link-context.js";
 import { MessageHold, MessageMore, WaitingHold } from "./message-hold.js";
+import { risesOnce } from "./owed-message-model.js";
 import { MessagePages, MessagePlaces, ReplySurfaces, TracePlace } from "./surface-chips.js";
 import { trace as traceStyle } from "./trace-styles.js";
 
@@ -1330,9 +1330,9 @@ export function Message(props: {
   const { message, open } = props;
   const preview = useMemo(() => incomingMessagePreview(message), [message]);
   const body = preview.truncated && !open ? preview.text : message.body;
-  const [arrived] = useState(
-    () => props.queued !== true && justSent(message.createdAt, Date.now()),
-  );
+  // What the reader sends rises once, as it is written down here; the Host's
+  // copy that later takes its place is already where the eye left it.
+  const [arrived] = useState(() => props.queued !== true && risesOnce(message.id));
   if (message.messageKind === "assistant") {
     return props.conversation ? (
       <ReplyBubble

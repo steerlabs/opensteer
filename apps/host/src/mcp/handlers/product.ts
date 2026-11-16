@@ -342,6 +342,53 @@ export class ProductToolHandlers {
     };
   }
 
+  async ask_person({ caller, input, operationKey }: ToolCall<"ask_person">) {
+    const claims = requireRun(caller).claims;
+    if (await this.#store.runAssignment(claims.runId))
+      throw forbidden(assignedRunRefusal, "Ask the parent task with opensteer_task_send.");
+    const created = await this.#store.requests.create({
+      callId: operationId(caller, operationKey, "ask_person"),
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: claims.runId,
+      originatingThreadId: claims.threadId,
+      payload: { kind: "person.question" },
+      presentation: {
+        ...(input.detail === undefined ? {} : { detail: input.detail }),
+        fields: input.questions.map((question, index) => ({
+          ...(question.options === undefined
+            ? {}
+            : {
+                choices: question.options.map(({ description, label }) => ({
+                  ...(description === undefined ? {} : { description }),
+                  label,
+                  value: label,
+                })),
+              }),
+          custom: true,
+          id: `question_${index + 1}`,
+          multiSelect: question.multiSelect === true,
+          prompt: question.question,
+          secret: false,
+        })),
+        kind: "form",
+        title: input.title,
+      },
+      requestedBy: claims.requestedBy,
+      requiredActor: "requester",
+    });
+    for (const event of created.events) this.#onEvent(event);
+    return requestResult(
+      {
+        kind: "person.question" as const,
+        replayed: created.replayed,
+        requestId: created.request.id,
+        status: created.request.status,
+      },
+      "Question",
+    );
+  }
+
   async opensteer_ai_account_list({ caller, input }: ToolCall<"opensteer_ai_account_list">) {
     const currentThread = caller.kind === "connection" ? undefined : callerThread(caller);
     const environmentId = await this.#execution.environmentFor(caller.userId);

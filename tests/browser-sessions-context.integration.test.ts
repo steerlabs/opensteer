@@ -22,7 +22,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { z } from "zod";
 import { ModelSelectionSchema } from "../packages/core/src/index.js";
 import {
@@ -373,6 +373,7 @@ run("Browser Sessions through a whole deployment", () => {
             .execute()
         ).length === 2,
       15_000,
+      "Both concurrent Runs must reach running",
     ).catch(async (cause: unknown) => {
       throw new Error(
         JSON.stringify(
@@ -473,9 +474,17 @@ run("Browser Sessions through a whole deployment", () => {
     };
     const usageReady = (runId: string) =>
       client.getSnapshot().browserUses?.some((use) => use.runId === runId) === true;
-    await waitFor(
-      async () => usageReady(runA) && usageReady(runB) && session()?.acting === true,
-      10_000,
+    await vi.waitFor(
+      () =>
+        expect(
+          {
+            runA: usageReady(runA),
+            runB: usageReady(runB),
+            acting: session()?.acting === true,
+          },
+          "Both concurrent Runs must publish their browser usage before page discovery",
+        ).toEqual({ runA: true, runB: true, acting: true }),
+      { timeout: 10_000, interval: 50 },
     );
     const phases: {
       phase: string;
@@ -520,7 +529,11 @@ run("Browser Sessions through a whole deployment", () => {
     clock.advanceBy(300);
     await request(runB, agentB, { method: "Target.getTargets" });
     await stack.host.browser.flushPendingTabDescriptors();
-    await waitFor(async () => session()?.acting === true, 10_000);
+    await waitFor(
+      async () => session()?.acting === true,
+      10_000,
+      "Discovery must mark the browser session active",
+    );
     expect(note("still discovery-only")).toEqual({ pagesA: [], pagesB: [] });
     const attached = z.object({ sessionId: z.string(), surfaceId: z.string() }).parse(
       await request(runA, agentA, {
@@ -540,6 +553,7 @@ run("Browser Sessions through a whole deployment", () => {
           true &&
         pagesFor([runA]).some((page) => page.key === adaId && page.acting),
       10_000,
+      "Run A must hold and act on the exact Ada tab",
     );
     expect(note("Run A attached Ada")).toMatchObject({
       pagesA: [{ title: "Ada Lovelace", acting: true }],
@@ -557,6 +571,7 @@ run("Browser Sessions through a whole deployment", () => {
         client.getSnapshot().tabs.get(BrowserSurfaceIdSchema.parse(adaId))?.title ===
           "Ada Lovelace — updated",
       15_000,
+      "Ada navigation must update the authoritative tab title",
     );
     expect(client.getSnapshot().tabs.get(BrowserSurfaceIdSchema.parse(adaId))).toMatchObject({
       title: "Ada Lovelace — updated",
@@ -591,6 +606,7 @@ run("Browser Sessions through a whole deployment", () => {
         client.getSnapshot().tabs.get(BrowserSurfaceIdSchema.parse(babbage.surfaceId))?.title ===
           "Charles Babbage",
       15_000,
+      "Babbage must appear in Run A usage and the tab catalog",
     );
     expect(note("Run A created Babbage").pagesA.map((page) => page.title)).toEqual([
       "Ada Lovelace — updated",
@@ -604,6 +620,7 @@ run("Browser Sessions through a whole deployment", () => {
         session()?.acting === true &&
         runtimeRows().every((tab) => tab.occupants.every((occupant) => !occupant.acting)) === true,
       10_000,
+      "Run B discovery must leave all page occupants idle",
     );
     expect(note("Run B discovery while Run A is idle").pagesA.every((page) => !page.acting)).toBe(
       true,
@@ -626,6 +643,7 @@ run("Browser Sessions through a whole deployment", () => {
           true &&
         pagesFor([runB]).some((page) => page.key === babbage.surfaceId && page.acting),
       10_000,
+      "Run B must hold and act on the exact Babbage tab",
     );
     const concurrent = note("only Run B acts on shared Babbage");
     expect(concurrent.pagesA.every((page) => !page.acting)).toBe(true);
@@ -640,6 +658,7 @@ run("Browser Sessions through a whole deployment", () => {
       async () =>
         !session()?.attachedRunIds.includes(runB) && pagesFor([runB]).every((page) => !page.acting),
       10_000,
+      "Ended Run B must release its active page presence",
     );
     expect(note("Run B ended").pagesB.every((page) => !page.acting)).toBe(true);
     await request(runA, agentA, {
@@ -665,10 +684,15 @@ run("Browser Sessions through a whole deployment", () => {
       async () =>
         !session()?.attachedRunIds.includes(runA) && pagesFor([runA]).every((page) => !page.acting),
       10_000,
+      "Ended Run A must release its active page presence",
     );
     note("both Runs ended");
     await stack.host.browser.stop(owner.id, sessionId);
-    await waitFor(async () => !session() || session()?.state === "closed", 10_000);
+    await waitFor(
+      async () => !session() || session()?.state === "closed",
+      10_000,
+      "The stopped browser must leave the live inventory",
+    );
     const ended = note("browser ended; exact recorded labels survive");
     expect(ended.pagesA.every((page) => !page.ended && !page.acting)).toBe(true);
     expect(ended.pagesA.find((page) => page.destination.tabId === adaId)?.title).toBe(

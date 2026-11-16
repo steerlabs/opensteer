@@ -42,11 +42,13 @@ import * as Haptics from "expo-haptics";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
+  type RefObject,
 } from "react";
 import {
   AccessibilityInfo,
@@ -90,9 +92,8 @@ import {
   useDraftAttachments,
 } from "./draft-attachments.js";
 import { AnswerBar } from "./answer-bar.js";
+import { QuestionRequestCard } from "./question-card.js";
 import { RequestCard } from "./request-card.js";
-import { requestCardAnswers, requestCardHeading } from "./request-answers.js";
-import { requestTitle } from "./docked-requests.js";
 import { beginPendingDelivery, sendPendingMessage } from "./send-pending-message.js";
 import type { ThreadMutationClaim, ThreadMutationGate } from "./thread-mutation-gate.js";
 import { UsageNotice } from "./usage-notice.js";
@@ -165,15 +166,19 @@ export function Composer(props: {
   readonly stopLabel?: string;
   /** Why the model and access settings cannot be changed right now, or null. */
   readonly settingsDisabledReason: string | null;
-  /** Each subagent this Thread's Runs started, by node id, so a Request one asked can say so. */
-  readonly subagentTitles: ReadonlyMap<string, string>;
   readonly threadId: string;
   /** The line under the bar while this Thread's account is out of plan capacity. */
   readonly usageNotice?: UsageLimitNotice | null;
   readonly user: AuthenticatedUser;
   /** Home's composer, which offers the voice button beside the microphone. */
   readonly voice?: boolean;
-  /** Where this Thread's attached files are uploaded; null until the Thread is known. */
+  /**
+   * The pane draws the message this Thread owes in its transcript, with its
+   * own way to send it again, so the bar does not repeat it.
+   */
+  readonly owedInline?: boolean;
+  /** Where the bar puts its way to send the owed message again, for the transcript to offer. */
+  readonly retryRef?: RefObject<(() => void) | null>;
 }): ReactNode {
   const aiSharing = useAiSharing();
   const surface = useMemo(
@@ -288,21 +293,13 @@ export function Composer(props: {
   const readOnly = done === "closed" || (props.readOnly ?? false);
   const disabled = props.disabledReason !== null || !props.canRespond || readOnly;
   const textHidden = surface !== null && surface.textRole === "hidden";
-  // One open question the Run is holding on is answered in this bar. A durable
-  // Request leaves the field to messages, as it always has, and answers in its sheet.
-  const typedField =
-    surface === null ||
-    readOnly ||
-    surface.denied !== null ||
-    surface.request.mode !== "live" ||
-    // The card is what says which subagent is asking.
-    (surface.request.originatingNodeId !== undefined &&
-      props.subagentTitles.has(surface.request.originatingNodeId))
-      ? null
-      : (() => {
-          const answers = requestCardAnswers(surface.request, false);
-          return answers.kind === "type" ? answers.field : null;
-        })();
+  // A question the viewer can answer turns this bar into its answer field,
+  // unless a message is already being written here: that draft keeps the bar
+  // until it is sent or emptied, or the person chooses to answer instead.
+  const question = surface !== null && surface.textRole === "answer" && !readOnly ? surface : null;
+  const holdsDraft = text.trim() !== "" || staged.items.length > 0 || quote !== null;
+  const [answerInstead, setAnswerInstead] = useState<string | null>(null);
+  const answering = question !== null && (!holdsDraft || answerInstead === question.request.id);
   // Which control the bar shows, and whether its settings row is open, is
   // arithmetic over the state above — including the rule that keeps one message
   // in flight at a time, because a second claim would be a second key for a
@@ -328,7 +325,7 @@ export function Composer(props: {
   const requestBlocked = disabled || sending || pending !== null;
   // A typed `@` offers references to put in the words, until the caret leaves it.
   const referenceQuery =
-    focused && !dictating && !disabled && !textHidden
+    focused && !dictating && !disabled && !textHidden && !answering
       ? activeReferenceQuery(displayedText, caret)
       : null;
   // Read when the picker opens and as the query narrows; nothing subscribes while it is closed.
@@ -349,6 +346,17 @@ export function Composer(props: {
         }
       },
     );
+  };
+  /** Puts other words in the field outright; a keystroke still on its way cannot undo it. */
+  const replaceText = (next: string): void => {
+    changeText(next);
+    const editor = input.current;
+    editor?.restore({
+      composing: false,
+      generation: editor.readSnapshot().generation + 1,
+      selection: { start: next.length, end: next.length },
+      text: next,
+    });
   };
 
   // Dictation shows its words in the field without making them the draft or an undo
@@ -379,8 +387,8 @@ export function Composer(props: {
     });
   }, [preview?.text]);
   useEffect(() => {
-    if (readOnly || textHidden) dictation.leave(owner);
-  }, [readOnly, textHidden, dictation, owner]);
+    if (readOnly || textHidden || answering) dictation.leave(owner);
+  }, [readOnly, textHidden, answering, dictation, owner]);
   const phase = speechView.phase;
   const notice = speechView.notice?.message ?? null;
   const previousPhase = useRef(phase);
@@ -460,7 +468,7 @@ export function Composer(props: {
   useEffect(() => {
     if (restore === null) return;
     const current = draftText.current;
-    if (restore.text) changeText(current.trim() ? `${restore.text}\n${current}` : restore.text);
+    if (restore.text) replaceText(current.trim() ? `${restore.text}\n${current}` : restore.text);
     // A restore without a quote leaves the one already standing; only an
     // explicit null takes it away.
     if (restore.quote !== undefined) changeQuote(restore.quote);
@@ -476,7 +484,7 @@ export function Composer(props: {
     setRefused(null);
     if (refused.text) {
       const current = draftText.current;
-      changeText(current.trim() ? `${refused.text}\n${current}` : refused.text);
+      replaceText(current.trim() ? `${refused.text}\n${current}` : refused.text);
     }
     // Each file returns with this phone's copy when it has one, and by
     // reference to the Host's when it does not.
@@ -523,6 +531,7 @@ export function Composer(props: {
     async (command: PendingCommand): Promise<void> => {
       const endDelivery = beginPendingDelivery(drafts, deploymentId, userId, command);
       if (endDelivery === null) return;
+      let failed = false;
       try {
         if (
           !(await sendPendingMessage(
@@ -531,8 +540,11 @@ export function Composer(props: {
             () => authorizeAiSharing(aiSharing, hostClient),
             notifications.registration,
           ))
-        )
+        ) {
+          // Not shared, so not sent: still owed, and offered again.
+          failed = true;
           return;
+        }
         // Acknowledged, and only now: until this line the command is still the
         // one this phone owes the Host.
         const cleared = await drafts.clearPending(
@@ -546,11 +558,9 @@ export function Composer(props: {
         if (cleared) {
           forgetDraftFiles({ deploymentId, threadId, userId }, command.localUris ?? []);
         }
-        // Felt, because the message leaves the composer before the transcript
-        // shows it and the hand has usually moved on by then.
-        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       } catch (error) {
         void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        failed = true;
         if (isHostRefusal(error) && mounted.current) {
           // The Host answered no, so the message is no longer owed: its words
           // and files go back to the draft to be changed, and the next send is
@@ -565,7 +575,14 @@ export function Composer(props: {
         }
         setFailure(operationDetail(error, "That message did not reach your deployment."));
       } finally {
-        endDelivery();
+        // Still owed after a failure, it says so where it is drawn until the next try.
+        endDelivery(
+          failed &&
+            drafts.readPending(deploymentId, userId, threadId)?.idempotencyKey ===
+              command.idempotencyKey
+            ? "failed"
+            : undefined,
+        );
       }
     },
     [aiSharing, deploymentId, drafts, hostClient, notifications, threadId, userId],
@@ -663,19 +680,14 @@ export function Composer(props: {
         text: sourceText.trim(),
         threadId,
       });
+      // Felt as it is written down, which is when the transcript draws it.
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       if (choice === "keepFullHistory") compactionOffer.dismiss();
-      // Do not erase words typed while the durable claim was being written. The
-      // field is reset, so a keystroke still on its way from it cannot refill it.
-      if (draftText.current === sourceText) {
-        changeText("");
-        const editor = input.current;
-        editor?.restore({
-          composing: false,
-          generation: editor.readSnapshot().generation + 1,
-          selection: { start: 0, end: 0 },
-          text: "",
-        });
-      }
+      // The claim took the draft's words; the field empties unless words were
+      // typed while it was being written. Read the store, not the render's copy,
+      // which the claim may already have emptied.
+      const left = drafts.readDraft(deploymentId, userId, threadId)?.text ?? "";
+      if (left === "" || left === sourceText) replaceText("");
       changeQuote(null);
       setDeclinedPage(null);
       const claimed = drafts.readPending(deploymentId, userId, threadId);
@@ -729,6 +741,14 @@ export function Composer(props: {
     attempted.current = pending.idempotencyKey;
     void deliverExclusively(pending);
   };
+  const { retryRef } = props;
+  useLayoutEffect(() => {
+    if (retryRef === undefined) return;
+    retryRef.current = retry;
+    return () => {
+      retryRef.current = null;
+    };
+  });
 
   const stop = async (): Promise<void> => {
     if (stoppingRef.current || props.runStopping || !props.canRespond) return;
@@ -751,6 +771,14 @@ export function Composer(props: {
     props.disabledReason === null &&
     !inFlight.current &&
     drafts.readPending(deploymentId, userId, threadId) === null;
+
+  const requestDisabledReason = readOnly
+    ? "This thread is archived."
+    : props.disabledReason !== null
+      ? props.disabledReason
+      : sending || pending !== null
+        ? "Finish sending your message before responding."
+        : null;
 
   const hold = useCallback(() => setPresenting(true), []);
   const settle = useCallback(() => setPresenting(false), []);
@@ -820,7 +848,27 @@ export function Composer(props: {
     );
   return (
     <View style={styles.dock}>
-      {surface === null || typedField !== null ? null : (
+      {surface === null ? null : question !== null ? (
+        <Animated.View entering={appear}>
+          <QuestionRequestCard
+            canRespond={props.canRespond && !requestBlocked}
+            canStartResponse={canStartRequestResponse}
+            composer={answering ? "answer" : "message"}
+            deploymentId={deploymentId}
+            disabledReason={requestDisabledReason}
+            highlighted={question.request.id === props.highlightRequestId}
+            hostClient={hostClient}
+            key={question.request.id}
+            mutationGate={props.mutationGate}
+            {...(answering
+              ? holdsDraft
+                ? { onBackToMessage: () => setAnswerInstead(null) }
+                : {}
+              : { onAnswerHere: () => setAnswerInstead(question.request.id) })}
+            surface={question}
+          />
+        </Animated.View>
+      ) : (
         <Animated.View entering={appear}>
           <RequestCard
             canRespond={props.canRespond && !requestBlocked}
@@ -829,15 +877,7 @@ export function Composer(props: {
             onPresent={hold}
             onSettle={settle}
             canStartResponse={canStartRequestResponse}
-            disabledReason={
-              readOnly
-                ? "This thread is archived."
-                : props.disabledReason !== null
-                  ? props.disabledReason
-                  : sending || pending !== null
-                    ? "Finish sending your message before responding."
-                    : null
-            }
+            disabledReason={requestDisabledReason}
             hostClient={props.hostClient}
             key={surface.request.id}
             mutationGate={props.mutationGate}
@@ -845,7 +885,7 @@ export function Composer(props: {
           />
         </Animated.View>
       )}
-      {pending === null ? null : (
+      {pending === null || props.owedInline === true ? null : (
         <Animated.View entering={enter} exiting={exit}>
           <PendingMessage
             attachments={pending.attachments ?? []}
@@ -871,7 +911,7 @@ export function Composer(props: {
           </AppText>
         </Animated.View>
       )}
-      {quote === null || view.readOnly ? null : (
+      {quote === null || view.readOnly || answering ? null : (
         <View accessibilityLabel="Quoted update" style={styles.quote}>
           <View style={styles.quoteText}>
             <AppText numberOfLines={1} role="secondaryMedium">
@@ -896,7 +936,7 @@ export function Composer(props: {
           </Pressable>
         </View>
       )}
-      {view.readOnly ? null : (
+      {view.readOnly || answering ? null : (
         <AttachmentStrip
           disabled={disabled}
           items={staged.items}
@@ -916,7 +956,7 @@ export function Composer(props: {
           Done · Sending reopens it
         </AppText>
       ) : null}
-      {compactionOffer.visible ? (
+      {compactionOffer.visible && !answering ? (
         <View style={{ padding: space[14] }}>
           <AppText role="caption" tone="muted">
             {compactionOfferText}
@@ -947,19 +987,17 @@ export function Composer(props: {
       )}
       <DictationStatus controller={dictation} snapshot={dictationState} owner={owner} />
       <VoiceDock />
-      {surface !== null && typedField !== null ? (
+      {answering ? (
         <AnswerBar
           canRespond={props.canRespond && !requestBlocked}
           canStartResponse={canStartRequestResponse}
-          fieldId={typedField.id}
           gate={props.mutationGate}
           hostClient={hostClient}
-          key={surface.request.id}
+          key={question.request.id}
           onStop={props.running ? () => void stop() : null}
-          {...requestCardHeading(surface.request, requestTitle(surface.request))}
           stopBusy={stopping || props.runStopping}
           stopLabel={props.stopLabel ?? "Stop this run"}
-          surface={surface}
+          surface={question}
         />
       ) : (
         <ComposerBar

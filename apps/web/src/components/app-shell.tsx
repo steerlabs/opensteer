@@ -69,7 +69,10 @@ import {
   type ThreadSummary,
   taskAttention,
   heldThread,
+  listedRowThreadId,
+  taskAfter,
   taskDoneConfirmation,
+  taskList,
   taskUnderWay,
 } from "@opensteer/client/host";
 import { Dialog } from "./dialog.js";
@@ -108,6 +111,7 @@ import {
   rememberedNewTab,
   rememberedTalk,
   rememberNewTab,
+  taskAt,
   workspaceSide,
   useWorkspaceNavigation,
 } from "./workspace/navigation.js";
@@ -502,17 +506,31 @@ export function AppShell({
     setActionError(actionErrorMessage(error));
   }, []);
   const doneReview = useActionReview(hostClient);
+  const { address: currentAddress, openConversation, threadPath } = nav;
+  // Done on the task in view moves on to the next one, as the list stood when
+  // it was confirmed, once the Host agrees and only if the reader is still there.
+  const performTaskDone = useCallback(
+    async (threadId: string, done: boolean) => {
+      const inView = () => {
+        const open = taskAt(currentAddress().pathname);
+        return open !== null && listedRowThreadId(hostClient.getSnapshot(), open) === threadId;
+      };
+      const next =
+        done && inView() ? taskAfter(taskList(hostClient.getSnapshot()), threadId) : undefined;
+      await hostClient.setTaskDone(threadId, done);
+      if (next !== undefined && inView()) openConversation(next === null ? "/" : threadPath(next));
+    },
+    [currentAddress, hostClient, openConversation, threadPath],
+  );
   const setTaskDone = useCallback(
     (threadId: string, done: boolean) => {
+      const action = { kind: "task-done", threadId, done } as const;
+      const perform = () => performTaskDone(threadId, done);
       const thread = heldThread(hostClient.getSnapshot(), threadId);
-      if (done && thread && taskUnderWay(thread))
-        doneReview.ask({ kind: "task-done", threadId, done });
-      else
-        void reviewHostAction(hostClient, { kind: "task-done", threadId, done })
-          ?.confirm()
-          .catch(reportActionError);
+      if (done && thread && taskUnderWay(thread)) doneReview.ask(action, perform);
+      else void reviewHostAction(hostClient, action, perform)?.confirm().catch(reportActionError);
     },
-    [hostClient, reportActionError, doneReview.ask],
+    [hostClient, performTaskDone, reportActionError, doneReview.ask],
   );
   // The Host owns what this person chose last, for every app they open
   // against this Deployment; the snapshot is the only copy.
@@ -522,7 +540,6 @@ export function AppShell({
     [hostClient, reportActionError],
   );
   const clearActionError = useCallback(() => setActionError(null), []);
-  const { openConversation } = nav;
   const closeMobileNavigation = useCallback(() => setMobileNavigationOpen(false), []);
   const openMobileNavigation = useCallback(() => setMobileNavigationOpen(true), []);
   // Who may sign in is the Host's call for each work location. Reading the

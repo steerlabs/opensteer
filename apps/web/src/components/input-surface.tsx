@@ -41,6 +41,7 @@ import { ThreadIntegrationAction } from "./thread-integration-action.js";
 import {
   browserSiteLabel,
   deriveSurface,
+  isQuestionRequest,
   mutationIdempotencyKey,
   requestAsker,
   requestsWaitingOn,
@@ -49,6 +50,8 @@ import {
   type SurfaceModel,
 } from "@opensteer/client/host";
 import { integrationInstallNextStep } from "@opensteer/client/integrations";
+import { AnswerField, QuestionBody, untitledQuestion } from "./question-answer.js";
+import { useAnswersInComposer } from "./question-session.js";
 
 export function InputSurface({
   autoContext = false,
@@ -62,6 +65,7 @@ export function InputSurface({
   onEscape,
   onStop,
   placeholder,
+  question = null,
   recipient = null,
   requests,
   restoredDraft = null,
@@ -87,6 +91,12 @@ export function InputSurface({
   onEscape?: (() => void) | undefined;
   onStop?: (() => Promise<void>) | undefined;
   placeholder: string;
+  /**
+   * The question docked above, for a surface whose requests are laid out apart
+   * from it; the composer becomes its answer. A surface docking its own
+   * requests finds its question itself.
+   */
+  question?: DockedRequest | null;
   /** See `Composer`'s `recipient`. */
   recipient?: ComposerRecipient | null;
   /**
@@ -153,6 +163,9 @@ export function InputSurface({
   const dock = useRequestDock(threadId, requests ?? noRequests);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const docked = requests !== undefined;
+  const asked = docked ? dock.question : question;
+  const answering = useAnswersInComposer(threadId, asked?.surface.request.id ?? null);
+  const messageHidden = composerHidden || (docked && dock.composerHidden) || answering;
   const done = snapshot.threads.find((thread) => thread.id === threadId)?.doneAt != null;
   // A Host that reopens a Done task for its writer keeps the composer; an older one asks first.
   if (done && !snapshot.quietTasksAvailable) {
@@ -177,6 +190,7 @@ export function InputSurface({
       {done ? <p className="input-surface__done">Done · Sending reopens it</p> : null}
       {docked ? (
         <RequestStack
+          composer
           disabled={disabled || readOnly}
           items={dock.items}
           onOpen={dock.setOpenId}
@@ -187,12 +201,28 @@ export function InputSurface({
       {composerHidden || (docked && dock.composerHidden) ? null : (
         <VoiceDock hidden={voiceHidden} />
       )}
-      <div hidden={composerHidden || (docked && dock.composerHidden)}>
+      {answering && asked ? (
+        <AnswerField
+          composer
+          disabled={disabled || readOnly}
+          key={asked.surface.request.id}
+          onEscape={
+            onEscape ??
+            (docked && dock.items.length > 0 ? () => focusOpenRequest(rootRef.current) : undefined)
+          }
+          onStop={onStop}
+          request={asked.surface.request}
+          running={running}
+          {...(stopLabel === undefined ? {} : { stopLabel })}
+          stopping={stopping}
+        />
+      ) : null}
+      <div hidden={messageHidden}>
         <Composer
           compactionOffer={compactionOffer}
           dictationScope={`${deploymentId}/${userId}/${threadId}`}
           draftKey={draftKey}
-          hidden={composerHidden || (docked && dock.composerHidden)}
+          hidden={messageHidden}
           variant={variant}
           placeContext={placeContext}
           attachments={attachmentTarget}
@@ -204,8 +234,7 @@ export function InputSurface({
             onEscape ??
             (docked && dock.items.length > 0 ? () => focusOpenRequest(rootRef.current) : undefined)
           }
-          // A docked Request is answered with its own controls; what is typed
-          // beside it is always an ordinary message.
+          // Beside anything but a question, what is typed is an ordinary message.
           onSend={sendMessage}
           onStop={onStop}
           pendingSends={"sends" in durable ? durable.sends : null}
@@ -298,6 +327,8 @@ export function useRequestDock(threadId: string, requests: readonly Request[], h
   return {
     // A form collecting its own answers takes the field's place while it is open.
     composerHidden: open?.source === null && open.surface.textRole === "hidden",
+    /** The open request when it's a question the composer answers. */
+    question: open?.surface.textRole === "answer" ? open : null,
     items,
     openId: open?.surface.request.id ?? null,
     setOpenId,
@@ -321,6 +352,7 @@ export function focusOpenRequest(scope: ParentNode | null) {
  */
 export function RequestStack({
   asker = true,
+  composer = false,
   disabled,
   folded = false,
   items,
@@ -332,6 +364,8 @@ export function RequestStack({
 }: {
   /** Names the subagent that asked; its own view already is that subagent. */
   readonly asker?: boolean;
+  /** A composer below takes a question's typed answer; without one its card brings a field. */
+  readonly composer?: boolean;
   readonly disabled: boolean;
   /** Something else above the composer is open, so the request shows only its title line. */
   readonly folded?: boolean;
@@ -402,9 +436,11 @@ export function RequestStack({
         ) : null}
         <DeviceGrantDock value={threadId}>
           <RequestPanel
+            composer={composer}
             disabled={disabled}
             surface={open.surface}
             threadId={open.source ? open.surface.request.originatingThreadId : threadId}
+            viewThreadId={threadId}
           />
         </DeviceGrantDock>
       </div>
@@ -536,6 +572,14 @@ function requestTitle(request: Request): string {
   if (request.payload.kind === "browser.password-sign-in" && request.payload.credential === "card")
     return cardUseTitle(request.payload.site);
   if (request.payload.kind === "device.access") return deviceAccessRequestTitle(request.payload);
+  // An engine's lone question is its own heading; the stock title adds nothing.
+  if (
+    request.presentation.kind === "form" &&
+    request.presentation.title === untitledQuestion &&
+    request.presentation.fields.length === 1 &&
+    request.presentation.fields[0]!.prompt.trim() !== ""
+  )
+    return request.presentation.fields[0]!.prompt.trim();
   return request.payload.kind === "browser.sign-in" ||
     request.payload.kind === "browser.password-sign-in"
     ? `Sign in to ${browserSiteLabel(request.payload.site)}`
@@ -545,13 +589,18 @@ function requestTitle(request: Request): string {
 /* ---- The focused Request ---- */
 
 function RequestPanel({
+  composer,
   disabled,
   surface,
   threadId,
+  viewThreadId,
 }: {
+  composer: boolean;
   disabled: boolean;
   surface: SurfaceModel;
   threadId: string;
+  /** The task on screen, whose composer sits below. */
+  viewThreadId: string;
 }) {
   const { snapshot } = useShell();
   const { request } = surface;
@@ -593,7 +642,17 @@ function RequestPanel({
         {detail && !ownHead ? (
           <ActionDetail mono={request.kind === "harness.approval"}>{detail}</ActionDetail>
         ) : null}
-        <ActionBody disabled={disabled} surface={surface} threadId={threadId} />
+        {isQuestionRequest(request) && !surface.denied ? (
+          <QuestionBody
+            composer={composer}
+            disabled={disabled}
+            request={request}
+            threadId={viewThreadId}
+            title={title}
+          />
+        ) : (
+          <ActionBody disabled={disabled} surface={surface} threadId={threadId} />
+        )}
       </div>
     </fieldset>
   );
@@ -717,7 +776,7 @@ export function DeniedRequestBody({
 }
 
 function requestIcon(request: Request): IconName {
-  if (request.kind === "harness.input") return "help-circle";
+  if (request.kind === "harness.input" || request.kind === "person.question") return "help-circle";
   // A phone's access Request asks for the phone itself, so it reads as one.
   if (
     request.payload.kind === "computer.app.access" &&

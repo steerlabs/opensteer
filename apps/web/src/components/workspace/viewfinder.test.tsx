@@ -4,10 +4,31 @@ import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { createId, TabIdSchema, PlaceEnteredEventViewSchema } from "@opensteer/core";
 import type { TabViewer } from "@opensteer/protocol";
-import type { HostClient, HostSnapshot } from "@opensteer/client/host";
+import {
+  rememberBrowserLastPicture,
+  type HostClient,
+  type HostSnapshot,
+} from "@opensteer/client/host";
 import { RunPlaceStore } from "@opensteer/client/host";
 import { tabFixture, tabStoreFixture } from "@opensteer/client/test-support";
 import { LivePlace } from "./viewfinder.js";
+import { useRunPlacePicture } from "@opensteer/client/react";
+import { RunPlacePictureScope } from "./run-place-picture.js";
+
+function Picture({ client }: { readonly client: HostClient }) {
+  const picture = useRunPlacePicture(client, threadId, runId, true, false);
+  return (
+    <RunPlacePictureScope
+      decoding={null}
+      enabled
+      hostClient={client}
+      picture={picture}
+      threadId={threadId}
+    >
+      <LivePlace hostClient={client} threadId={threadId} runId={runId} />
+    </RunPlacePictureScope>
+  );
+}
 
 vi.mock("./workspace-context.js", () => ({
   useWorkspace: () => ({
@@ -19,7 +40,6 @@ vi.mock("./workspace-context.js", () => ({
     nav: { showPlace() {} },
   }),
 }));
-vi.mock("../computer-watch.js", () => ({ ComputerWatchView: () => null }));
 vi.mock("./agent-cursors.js", () => ({ AgentCursors: () => null }));
 vi.mock("../browser/browser-presenter.js", () => ({
   attachBrowserCanvas: () => () => {},
@@ -58,6 +78,7 @@ it("keeps the card and its watch lease through Request waits, reconnects and rep
   let snapshot = {
     connection: "connected",
     session: "authenticated",
+    user: { id: "person" },
     machines: [],
     browserProfiles: [],
     runQueue: [{ id: runId, threadId, status: "running" }],
@@ -87,20 +108,19 @@ it("keeps the card and its watch lease through Request waits, reconnects and rep
     tabViewer: (tabId: string) => viewers.get(tabId) ?? null,
     runPlace: store.get,
     subscribeRunPlace: store.subscribe,
+    browserWatchFrames: { get: () => null, subscribe: () => () => {} },
+    browserFrames: { get: () => null, subscribe: () => () => {} },
+    browserWatchState: () => watchState,
+    subscribeBrowserWatch: () => () => {},
     retainBrowserWatch: retain,
-    browserWatchFrames: { subscribe: () => () => {} },
     // The real store answers the same list until it changes.
     placeActivity: () => noActivity,
     subscribePlaceActivity: () => () => {},
-    browserWatchState: () => watchState,
-    subscribeBrowserWatch: () => () => {},
   } as unknown as HostClient;
   const node = document.createElement("div");
   document.body.append(node);
   root = createRoot(node);
-  await act(async () =>
-    root!.render(<LivePlace hostClient={client} threadId={threadId} runId={runId} />),
-  );
+  await act(async () => root!.render(<Picture client={client} />));
   const card = node.querySelector(".viewfinder");
   const canvas = node.querySelector("canvas");
   expect(card).not.toBeNull();
@@ -118,7 +138,6 @@ it("keeps the card and its watch lease through Request waits, reconnects and rep
     });
     expect(node.querySelector(".viewfinder")).toBe(card);
     expect(node.querySelector("canvas")).toBe(canvas);
-    expect(release).not.toHaveBeenCalled();
   }
   expect(retain).toHaveBeenCalledTimes(leases);
 
@@ -132,8 +151,47 @@ it("keeps the card and its watch lease through Request waits, reconnects and rep
   expect(node.querySelector(".viewfinder--native")).toBe(card);
   expect(card!.getAttribute("aria-label")).toContain("Page 4");
   // No session to show yet: the frame names the kind of place, never an empty box.
-  expect(node.querySelector(".viewfinder__native")).toBeNull();
+  expect(node.querySelector(".place-canvas--hidden")).not.toBeNull();
   expect(node.querySelector(".viewfinder__frame > .viewfinder__glyph")).not.toBeNull();
   await act(async () => store.end(runId));
   expect(node.querySelector(".viewfinder")).toBeNull();
+});
+
+it("restores a tab's picture that only the opened page kept", async () => {
+  const store = new RunPlaceStore();
+  store.accept(entry("1", "page-1"));
+  const snapshot = {
+    connection: "connected",
+    session: "authenticated",
+    user: { id: "person" },
+    machines: [],
+    tabs: tabStoreFixture(tabs),
+    runQueue: [{ id: runId, threadId, status: "running" }],
+  } as unknown as HostSnapshot;
+  const frames = () => ({ get: () => null, subscribe: () => () => {}, invalidationKey: () => 1 });
+  const noActivity: never[] = [];
+  const client = {
+    getSnapshot: () => snapshot,
+    subscribe: () => () => {},
+    tabViewer: (tabId: string) => ({ kind: "page", sessionId, surfaceId: tabId }),
+    runPlace: store.get,
+    subscribeRunPlace: store.subscribe,
+    browserWatchFrames: frames(),
+    browserFrames: frames(),
+    browserWatchState: () => ({ status: "connecting", frame: null, error: null }),
+    subscribeBrowserWatch: () => () => {},
+    retainBrowserWatch: () => () => {},
+    placeActivity: () => noActivity,
+    subscribePlaceActivity: () => () => {},
+  } as unknown as HostClient;
+  const surfaceId = TabIdSchema.parse("page-1");
+  rememberBrowserLastPicture(client.browserFrames, sessionId, surfaceId, {
+    data: new Uint8Array([1, 2, 3]),
+    header: { surfaceId, encoding: "jpeg", rasterWidth: 1280, rasterHeight: 800 },
+  } as unknown as Parameters<typeof rememberBrowserLastPicture>[3]);
+  const node = document.createElement("div");
+  document.body.append(node);
+  root = createRoot(node);
+  await act(async () => root!.render(<Picture client={client} />));
+  expect(node.querySelector("img")?.getAttribute("src")).toMatch(/^data:image\/jpeg;base64,/u);
 });

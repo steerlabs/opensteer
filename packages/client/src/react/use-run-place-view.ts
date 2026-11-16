@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useMemo } from "react";
 import type { TabKind, PlaceEnteredEventView } from "@opensteer/core";
 import { computerAppIdentityKey } from "@opensteer/protocol";
 import type { HostClient } from "../host/client.js";
@@ -47,21 +47,14 @@ export function useRunPlaceView(
     const viewer = tabId === null ? null : hostClient.tabViewer(tabId);
     return viewer?.kind === "page" ? viewer.sessionId : null;
   });
-  // A Run's open page is watched through this device's view of it, which activating binds.
-  const tabState = tab?.state;
-  const tabKind = tab?.kind;
-  useEffect(() => {
-    if (tabId === null || tabKind !== "page" || tabState !== "open" || pageSession !== null) return;
-    void hostClient.activateTab(tabId).catch(() => undefined);
-  }, [hostClient, pageSession, tabId, tabKind, tabState]);
-  const appKey = useHostSelector(hostClient, (snapshot) => {
-    if (!sessionId || tab?.kind !== "window") return null;
-    const app = snapshot.machines
-      .find((machine) => machine.id === tab.computer.computerId)
-      ?.computerUse?.sessions.find((session) => session.sessionId === sessionId)
-      ?.apps.find((held) => held.bundleId === tab.bundleId);
-    return app ? computerAppIdentityKey(app) : null;
-  });
+  const appKey =
+    tab?.kind === "window" && tab.bundleId
+      ? computerAppIdentityKey({
+          bundleId: tab.bundleId,
+          displayName: tab.appName ?? tab.title,
+          teamId: null,
+        })
+      : null;
   const place = useMemo<RunPlaceView | null>(
     () =>
       entry === null

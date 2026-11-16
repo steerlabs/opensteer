@@ -52,6 +52,7 @@ import {
   UserIdSchema,
   RequestResponseSchema,
   hasSecretRequestFields,
+  requestFormAnswersProblem,
   requestOptionDeclines,
   createId,
   type EnvironmentId,
@@ -648,49 +649,14 @@ export function assertRequestResponse(
       message: "Request does not accept a form",
     });
   }
-  const fields = new Map(request.presentation.fields.map((field) => [field.id, field]));
-  if (Object.keys(response.answers).length !== fields.size) {
+  if (!allowSecrets && request.presentation.fields.some((field) => field.secret)) {
     throw new OpensteerError({
       code: "bad_request",
-      message: "Every requested field must be answered exactly once",
+      message: "Secret answers require the live response channel",
     });
   }
-  for (const [fieldId, answers] of Object.entries(response.answers)) {
-    const field = fields.get(fieldId);
-    if (!field) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: `Unknown form field ${fieldId}`,
-      });
-    }
-    if (field.secret && !allowSecrets) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "Secret answers require the live response channel",
-      });
-    }
-    if (answers.length === 0) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: `Form field ${fieldId} requires an answer`,
-      });
-    }
-    if (!field.multiSelect && answers.length > 1) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: `Form field ${fieldId} accepts only one answer`,
-      });
-    }
-    if (
-      field.choices &&
-      answers.some((answer) => !field.choices?.some((choice) => choice.value === answer))
-    ) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: `Form field ${fieldId} contains an unsupported choice`,
-      });
-    }
-  }
+  const problem = requestFormAnswersProblem(request.presentation.fields, response.answers);
+  if (problem !== null) throw new OpensteerError({ code: "bad_request", message: problem });
 }
 function redactSecretRequestAnswers(request: Request, response: RequestResponse): RequestResponse {
   if (request.presentation.kind !== "form" || response.kind !== "form") return response;

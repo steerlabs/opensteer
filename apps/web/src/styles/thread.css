@@ -488,6 +488,159 @@ label.action-row input {
   accent-color: var(--ember);
 }
 
+/* ---- A question an agent asked ----
+   Its options read like the other answer rows; the mark at the left holds the
+   digit that picks it, and a check once it's chosen. Several choices get a
+   square mark, one choice a round one. */
+.question {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+.question__step {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--text-md);
+  color: var(--muted);
+}
+
+.question__step-nav {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.question__prompt {
+  font-size: var(--text-xl);
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.question__mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono);
+  font-size: var(--text-3xs);
+  color: var(--muted-dim);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.question__mark--many {
+  border-radius: var(--radius-xs);
+}
+
+.question__mark svg {
+  width: 12px;
+  height: 12px;
+}
+
+.question__option[aria-checked="true"] .question__mark {
+  border-color: var(--ember-line);
+  background: var(--ember);
+  color: var(--ink-on-ember);
+}
+
+.question__link {
+  font-size: var(--text-md);
+  font-weight: var(--weight-strong);
+  color: var(--ember);
+}
+
+.question__link:hover:not(:disabled) {
+  color: var(--ember-bright);
+}
+
+.question__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.question__actions-space {
+  flex: 1;
+}
+
+.question__failure {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-6);
+  font-size: var(--text-md);
+  line-height: 1.4;
+  color: var(--red-text);
+}
+
+.question__failure svg {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  margin-top: 2px;
+  color: var(--red);
+}
+
+/* On its own, as on a call, the card brings a quiet field for a typed answer. */
+.question__field {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--fill-quiet);
+}
+
+.question__field .composer__input {
+  padding: var(--space-10) var(--space-12) var(--space-2);
+  font-size: var(--text-lg);
+}
+
+/* The composer while it answers: the same box, edged in the accent so the
+   words plainly go to the question rather than into the conversation. */
+.composer.composer--answer {
+  border-color: var(--ember-line);
+}
+
+.composer--answer .composer__input {
+  field-sizing: content;
+  min-height: calc(1.5em + var(--space-14) + var(--space-4));
+}
+
+.composer--answer .composer__input:disabled {
+  cursor: default;
+}
+
+.composer__answer-space {
+  flex: 1;
+}
+
+.composer__answer {
+  flex: none;
+  min-height: 32px;
+  padding: 0 var(--space-14);
+  border: 1px solid var(--rim-accent);
+  border-radius: var(--radius-full);
+  background: var(--sheen-accent) var(--fill-accent);
+  box-shadow: var(--edge-accent);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-strong);
+  color: var(--ink-on-ember);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    opacity var(--duration-fast) var(--ease-out);
+}
+
+.composer__answer:hover:not(:disabled) {
+  background-color: var(--fill-accent-hover);
+}
+
+.composer__answer:disabled {
+  opacity: 0.35;
+}
+
 .action-form__field {
   display: flex;
   flex-direction: column;

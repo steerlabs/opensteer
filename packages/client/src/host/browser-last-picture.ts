@@ -114,13 +114,26 @@ export function browserTabPicture(
 export function reconcileBrowserLastPictures(
   frames: BrowserFrameStore,
   document: DocumentForTab,
+  sessionForTab?: (tabId: string) => string | undefined,
 ): void {
   listedDocuments.set(frames, document);
-  for (const [key, entry] of caches.get(frames) ?? []) {
-    const documentId = document(entry.sessionId, entry.tabId);
-    if (documentId === undefined || (entry.documentId != null && entry.documentId !== documentId)) {
+  for (const [key, entry] of Array.from(caches.get(frames) ?? [])) {
+    if (!current(frames, entry.sessionId, entry.tabId)) continue;
+    const sessionId = sessionForTab?.(entry.tabId) ?? entry.sessionId;
+    const documentId = document(sessionId, entry.tabId);
+    if (
+      documentId === undefined ||
+      (documentId !== null && entry.documentId != null && entry.documentId !== documentId)
+    ) {
       entry.unsubscribe();
       caches.get(frames)?.delete(key);
+    } else if (sessionId !== entry.sessionId) {
+      entry.unsubscribe();
+      caches.get(frames)?.delete(key);
+      if (current(frames, sessionId, entry.tabId)) continue;
+      rememberBrowserLastPicture(frames, sessionId, entry.tabId, entry.picture.frame);
+      const moved = caches.get(frames)?.get(pictureKey(sessionId, entry.tabId));
+      if (moved) moved.documentId = entry.documentId ?? documentId;
     } else entry.documentId ??= documentId;
   }
 }

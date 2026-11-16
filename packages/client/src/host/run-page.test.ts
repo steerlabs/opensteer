@@ -1,62 +1,72 @@
 import { describe, expect, it } from "vitest";
 import {
   freshRunPageMemory,
-  runPageActed,
+  runPageConsidered,
   runPageFolded,
   runPageSize,
   runPageOpened,
+  runPagePaged,
   runPageShown,
 } from "./run-page.js";
 
-const idle = { cellular: false, scrolledUp: false, typing: false };
-const tall = true;
+const idle = { visible: true, picture: true, cellular: false, scrolledUp: false, typing: false };
 
 describe("the page above a conversation", () => {
-  it("opens by itself on the agent's first action in a Run, once", () => {
-    const acted = runPageActed(freshRunPageMemory, "run-1", idle);
-    expect(runPageShown(acted, "run-1", tall)).toBe("open");
-    // A later action in the same Run never reopens what the person put away.
-    const folded = runPageFolded(acted);
-    expect(runPageShown(runPageActed(folded, "run-1", idle), "run-1", tall)).toBe("folded");
+  it.each([
+    ["hidden", { ...idle, visible: false }],
+    ["without a picture", { ...idle, picture: false }],
+    ["typing", { ...idle, typing: true }],
+    ["network unknown", { ...idle, cellular: null }],
+  ])("defers while %s and opens when ready", (_, moment) => {
+    const deferred = runPageConsidered(freshRunPageMemory, "run-1", moment);
+    expect(deferred.run?.intent).toBe("undecided");
+    const ready = runPageConsidered(deferred, "run-1", idle);
+    expect(runPageShown(ready, "run-1", true)).toBe("page");
   });
 
   it.each([
     ["scrolled up", { ...idle, scrolledUp: true }],
-    ["typing", { ...idle, typing: true }],
     ["on cellular", { ...idle, cellular: true }],
-  ])("stays folded when the person is %s at the first action", (_, moment) => {
-    const acted = runPageActed(freshRunPageMemory, "run-1", moment);
-    expect(runPageShown(acted, "run-1", tall)).toBe("folded");
-    // The moment passing does not open it: only the next Run decides again.
-    expect(runPageShown(runPageActed(acted, "run-1", idle), "run-1", tall)).toBe("folded");
+  ])("consumes automatic opening when %s", (_, moment) => {
+    const closed = runPageConsidered(freshRunPageMemory, "run-1", moment);
+    expect(closed.run?.intent).toBe("closed");
+    expect(runPageShown(runPageConsidered(closed, "run-1", idle), "run-1", true)).toBe("folded");
+    expect(runPageShown(runPageConsidered(closed, "run-2", idle), "run-2", true)).toBe("page");
   });
 
-  it("stays folded in this conversation after the person folds it, until they open it", () => {
-    const folded = runPageFolded(runPageActed(freshRunPageMemory, "run-1", idle));
-    const next = runPageActed(folded, "run-2", idle);
-    expect(runPageShown(next, "run-2", tall)).toBe("folded");
-    const opened = runPageOpened("run-2");
-    expect(runPageShown(opened, "run-2", tall)).toBe("open");
-    expect(runPageShown(runPageActed(opened, "run-3", idle), "run-3", tall)).toBe("open");
+  it("keeps an explicit fold across Runs until explicitly opened, even on cellular", () => {
+    const folded = runPageFolded(runPageConsidered(freshRunPageMemory, "run-1", idle));
+    const next = runPageConsidered(folded, "run-2", idle);
+    expect(next.run?.intent).toBe("closed");
+    const opened = runPageConsidered(runPageOpened("run-2", next), "run-2", {
+      ...idle,
+      cellular: true,
+    });
+    expect(opened.folded).toBe(false);
+    expect(runPageShown(opened, "run-2", true)).toBe("page");
   });
 
-  it("opens when the person asks, even on cellular", () => {
-    const acted = runPageActed(freshRunPageMemory, "run-1", { ...idle, cellular: true });
-    expect(runPageShown(acted, "run-1", tall)).toBe("folded");
-    expect(runPageShown(runPageOpened("run-1"), "run-1", tall)).toBe("open");
+  it("folds with too little room and returns when room does, without consuming the intent", () => {
+    const opened = runPageConsidered(freshRunPageMemory, "run-1", idle);
+    expect(runPageShown(opened, "run-1", false)).toBe("folded");
+    expect(runPageShown(opened, "run-1", true)).toBe("page");
+    expect(runPageShown(opened, "run-1", false, { picture: true, headHasRoom: false })).toBe("row");
   });
 
-  it("folds by itself with too little room, and returns when the room does", () => {
-    const acted = runPageActed(freshRunPageMemory, "run-1", idle);
-    expect(runPageShown(acted, "run-1", false)).toBe("folded");
-    expect(runPageShown(acted, "run-1", tall)).toBe("open");
+  it("keeps a drawn page through picture loss and place changes until the Run ends", () => {
+    const opened = runPageOpened("run-1");
+    expect(runPageShown(opened, "run-1", true, { picture: false })).toBe("row");
+    const paged = runPagePaged(opened, "run-1");
+    expect(runPageShown(paged, "run-1", true, { picture: false })).toBe("page");
+    expect(runPageShown(paged, null, true)).toBe("none");
+    const next = runPageConsidered(paged, "run-2", { ...idle, picture: false });
+    expect(next.run).toEqual({ runId: "run-2", intent: "undecided", paged: false });
+    expect(runPageShown(next, "run-2", true)).toBe("folded");
   });
 
-  it("ends with the Run, and a new Run decides afresh", () => {
-    const acted = runPageActed(freshRunPageMemory, "run-1", idle);
-    expect(runPageShown(acted, null, tall)).toBe("none");
-    expect(runPageShown(acted, "run-2", tall)).toBe("folded");
-    expect(runPageShown(runPageActed(acted, "run-2", idle), "run-2", tall)).toBe("open");
+  it("uses a row when folded has no room in the head", () => {
+    const closed = runPageConsidered(freshRunPageMemory, "run-1", { ...idle, cellular: true });
+    expect(runPageShown(closed, "run-1", true, { picture: true, headHasRoom: false })).toBe("row");
   });
 });
 

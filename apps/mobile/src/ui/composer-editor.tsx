@@ -251,10 +251,17 @@ export function ComposerEditor(props: ComposerEditorProps): ReactNode {
 }
 
 /** Lowers the keyboard: React Native's `Keyboard.dismiss` reaches only its own `TextInput`s. */
-export function dismissKeyboard(): void {
+/** Puts the keyboard away; settles once it is down, or soon after if it never says so. */
+export function dismissKeyboard(): Promise<void> {
   Keyboard.dismiss();
-  void KeyboardController.dismiss();
+  return Promise.race([
+    KeyboardController.dismiss(),
+    new Promise<void>((resolve) => setTimeout(resolve, keyboardDismissBoundMs)),
+  ]);
 }
+
+/** Longer than either platform's keyboard animation, so only a keyboard that never reports waits it out. */
+const keyboardDismissBoundMs = 700;
 
 const nouns: Readonly<Record<string, string>> = {
   task: "Task",

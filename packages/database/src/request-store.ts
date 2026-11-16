@@ -14,11 +14,13 @@ import {
   ResolvedRequestSchema,
   RequestIdSchema,
   RequestJsonObjectSchema,
+  RequestPresentationSchema,
   RequestResponseSchema,
   RunnerIdSchema,
   ThreadIdSchema,
   browserSessionClosedReason,
   createId,
+  requestFormAnswersProblem,
   type AgentEvent,
   type BrowserProfileId,
   type BrowserSourceId,
@@ -402,6 +404,78 @@ export class RequestStore {
           ),
         })
         .where("id", "=", row.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      const request = requestFromRow(resolved);
+      await enqueueContinuation(transaction, request, now);
+      await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+      return { events: await terminalEvents(transaction, request), request };
+    });
+  }
+  /**
+   * The person answers or dismisses a question an agent asked with
+   * `ask_person`. Only the person it asked may answer, and the answer must fit
+   * the questions; the task that asked wakes with it however late it comes.
+   */
+  async answerPersonQuestion(input: {
+    readonly requestId: RequestId;
+    readonly resolvedBy: UserId;
+    readonly settlementSessionId?: string;
+    readonly response: RequestResponse;
+  }): Promise<{ events: readonly AgentEvent[]; request: Request }> {
+    const declined =
+      input.response.kind === "external" &&
+      input.response.value !== undefined &&
+      Object.keys(input.response.value).length === 1 &&
+      input.response.value.decision === "declined";
+    if (input.response.kind !== "form" && !declined)
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Answer a question with its answers, or dismiss it.",
+      });
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      const row = await transaction
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", input.requestId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!row || row.kind !== "person.question")
+        throw new OpensteerError({ code: "not_found", message: "Question not found" });
+      if (row.status !== "pending")
+        throw new OpensteerError({ code: "conflict", message: "Question is no longer pending" });
+      if (row.requestedBy !== input.resolvedBy)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Only the person it asked can answer this question.",
+        });
+      const pending = requestFromRow(row);
+      if (pending.presentation.kind !== "form")
+        throw new Error("A person question is presented as a form");
+      if (input.response.kind === "form") {
+        const problem = requestFormAnswersProblem(
+          pending.presentation.fields,
+          input.response.answers,
+        );
+        if (problem !== null) throw new OpensteerError({ code: "bad_request", message: problem });
+      }
+      await lockActiveDurableRequestAuthority(transaction, pending);
+      const now = new Date();
+      const resolved = await transaction
+        .updateTable("requests")
+        .set({
+          status: declined ? "declined" : "fulfilled",
+          resolvedAt: now,
+          resolvedBy: input.resolvedBy,
+          response: jsonValue(input.response),
+          settlementProvenance: await readRequestSettlementProvenance(
+            transaction,
+            input.resolvedBy,
+            input.settlementSessionId,
+          ),
+        })
+        .where("id", "=", row.id)
+        .where("status", "=", "pending")
         .returningAll()
         .executeTakeFirstOrThrow();
       const request = requestFromRow(resolved);
@@ -2980,6 +3054,9 @@ export class RequestStore {
                 gate.or([
                   // A call's Run spans unrelated turns, so its Requests never settle as one batch.
                   gate("originRun.voiceSessionId", "is not", null),
+                  // A question the person answered continues the task by itself: the
+                  // agent asked it to hear back, not to wait on anything else it asked.
+                  sql<boolean>`requests.kind = 'person.question'`,
                   gate.not(
                     gate.exists(
                       gate
@@ -3380,6 +3457,25 @@ async function createRequestInTransaction(
         request: requestFromRow(duplicate),
       };
     }
+  }
+  if (input.kind === "person.question") {
+    // Asking the same thing again while it waits is the same question, whatever
+    // Run asks it, so a background pass that wakes twice raises one card.
+    const duplicate = await transaction
+      .selectFrom("requests")
+      .selectAll()
+      .where("kind", "=", "person.question")
+      .where("status", "=", "pending")
+      .where("requestedBy", "=", input.requestedBy)
+      .where("originatingThreadId", "=", input.originatingThreadId)
+      .where(
+        sql<boolean>`presentation = ${JSON.stringify(RequestPresentationSchema.parse(input.presentation))}::jsonb`,
+      )
+      .orderBy("createdAt", "asc")
+      .orderBy("id", "asc")
+      .limit(1)
+      .executeTakeFirst();
+    if (duplicate) return { events: [], replayed: true, request: requestFromRow(duplicate) };
   }
   if (input.payload.kind === "computer.app.access") {
     // The same ask for the same app is the same card, whatever call identity

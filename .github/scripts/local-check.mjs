@@ -37,9 +37,11 @@ export function localPlan(files, graph, present, baseGraph = graph, platform = p
         ...changedCode,
       ],
     );
-  if (plan.affected.length)
+  // The packages CI's build-types typechecks for this plan, filtered per workspace locally.
+  const typecheck = plan.typecheck === "all" ? graph.map((p) => p.name) : plan.typecheck;
+  if (typecheck.length)
     commands.push(
-      [...plan.affected.flatMap((n) => ["--filter", n]), "--if-present", "typecheck"],
+      [...typecheck.flatMap((n) => ["--filter", n]), "--if-present", "typecheck"],
       ["typecheck:tests"],
     );
   // Root test files belong to no workspace package; only typecheck:tests covers them.

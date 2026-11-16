@@ -464,6 +464,31 @@ integration("Host and Chromium editing contract", () => {
       expect(await evaluate("filePaste")).toMatchObject({ trusted: true, type: "image/png" });
       checks.push("10 MB PNG trusted file paste through Host and Runner relay");
       await evaluate("t.onpaste=null;t.value='';t.focus()");
+      const shiftSettled = (action: "down" | "up") =>
+        vi.waitFor(
+          async () =>
+            expect(
+              z
+                .array(
+                  z.object({
+                    step: z.string(),
+                    type: z.string().optional(),
+                    action: z.string().optional(),
+                    code: z.string().optional(),
+                  }),
+                )
+                .parse(await engineTrace!())
+                .some(
+                  (event) =>
+                    event.step === "input.done" &&
+                    event.type === "input.key" &&
+                    event.action === action &&
+                    event.code === "ShiftLeft",
+                ),
+              "The native key action did not complete",
+            ).toBe(true),
+          { timeout: 5000 },
+        );
       person.send({
         type: "input.key",
         surfaceId,
@@ -472,6 +497,7 @@ integration("Host and Chromium editing contract", () => {
         code: "ShiftLeft",
         modifiers: ["shift"],
       });
+      await shiftSettled("down");
       for (let index = 0; index < 40; index++) {
         const id = randomUUID();
         other.send({
@@ -495,29 +521,7 @@ integration("Host and Chromium editing contract", () => {
         code: "ShiftLeft",
         modifiers: [],
       });
-      await vi.waitFor(
-        async () =>
-          expect(
-            z
-              .array(
-                z.object({
-                  step: z.string(),
-                  type: z.string().optional(),
-                  action: z.string().optional(),
-                  code: z.string().optional(),
-                }),
-              )
-              .parse(await engineTrace!())
-              .some(
-                (event) =>
-                  event.step === "input.done" &&
-                  event.type === "input.key" &&
-                  event.action === "up" &&
-                  event.code === "ShiftLeft",
-              ),
-          ).toBe(true),
-        { timeout: 5000 },
-      );
+      await shiftSettled("up");
       const recovered = randomUUID();
       other.send({
         type: "clipboard.paste-data",

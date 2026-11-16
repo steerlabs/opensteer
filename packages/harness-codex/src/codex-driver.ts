@@ -2607,6 +2607,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
               {
                 fields: questions.map((question) => ({
                   ...(question.choices ? { choices: question.choices } : {}),
+                  custom: question.custom,
                   id: question.id,
                   multiSelect: question.multiSelect,
                   prompt: question.prompt,
@@ -4909,6 +4910,7 @@ function parseInputQuestions(value: unknown): RequestFormField[] {
       : undefined;
     return {
       ...(choices ? { choices } : {}),
+      custom: question.isOther === true,
       id,
       multiSelect: false,
       prompt,

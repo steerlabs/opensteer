@@ -1,6 +1,7 @@
 import { threadMark, assignmentTitle } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import {
+  isQuestionRequest,
   waitingRequestPresentationSource,
   waitingRequestSource,
   type HostClient,
@@ -17,6 +18,7 @@ import { AppText } from "../ui/primitives.js";
 import { TaskMark } from "../ui/task-mark.js";
 import { Symbol } from "../ui/symbol.js";
 import { waitingQuestion } from "./docked-requests.js";
+import { QuestionRequestCard } from "./question-card.js";
 import { RequestCard } from "./request-card.js";
 import { useThreadMutation } from "./thread-mutation-registry.js";
 
@@ -104,25 +106,28 @@ export function QuestionCard(props: {
     threadId,
     userId: props.userId,
   });
+  const shared = {
+    canRespond: props.canRespond,
+    canStartResponse: () =>
+      props.canRespond &&
+      props.drafts.readPending(props.deploymentId, props.userId, threadId) === null,
+    deploymentId: props.deploymentId,
+    disabledReason: null,
+    highlighted: false,
+    hostClient: props.hostClient,
+    mutationGate: gate,
+    ...(props.showQueue === undefined ? {} : { showQueue: props.showQueue }),
+    ...(props.asker === undefined ? {} : { asker: props.asker }),
+    surface: props.surface,
+  };
   return (
     <View>
-      <RequestCard
-        canRespond={props.canRespond}
-        canStartResponse={() =>
-          props.canRespond &&
-          props.drafts.readPending(props.deploymentId, props.userId, threadId) === null
-        }
-        disabledReason={null}
-        highlighted={false}
-        deploymentId={props.deploymentId}
-        hostClient={props.hostClient}
-        mutationGate={gate}
-        onPresent={() => undefined}
-        onSettle={() => undefined}
-        {...(props.showQueue === undefined ? {} : { showQueue: props.showQueue })}
-        {...(props.asker === undefined ? {} : { asker: props.asker })}
-        surface={props.surface}
-      />
+      {/* No composer here takes its typed answer, so the card holds the field. */}
+      {isQuestionRequest(props.surface.request) && props.surface.denied === null ? (
+        <QuestionRequestCard {...shared} composer={null} key={props.surface.request.id} />
+      ) : (
+        <RequestCard {...shared} onPresent={() => undefined} onSettle={() => undefined} />
+      )}
     </View>
   );
 }

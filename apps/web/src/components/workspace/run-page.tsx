@@ -1,42 +1,29 @@
 import {
   pageSiteLabel,
-  runPageActed,
-  runPageDesktopAspect,
-  runPageFolded,
   runPageHandleHeight,
-  runPageKeptTranscript,
-  runPageOpened,
   runPageRowHeight,
-  runPageShown,
-  runPageSize,
   type HostClient,
-  type RunPageMoment,
+  type RunPageShown,
 } from "@opensteer/client/host";
-import {
-  useBrowserTabAwake,
-  useRunPageView,
-  useRunPlace,
-  useRunPlaceView,
-} from "@opensteer/client/react";
+import { useRunPageView } from "@opensteer/client/react";
 import { observeResize } from "@opensteer/shared/resizeObserver";
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type RefObject,
-} from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { useMediaQuery } from "../../ui-utils.js";
 import { Icon } from "../icon.js";
-import { hasPlacePicture, PlaceGlyph, PlacePicture, placeName } from "./viewfinder.js";
+import {
+  PlaceGlyph,
+  PlacePicture,
+  placeName,
+  usePlacePicture,
+  useRunPlaceView,
+} from "./viewfinder.js";
 import { useWorkspace } from "./workspace-context.js";
 
 /**
  * Whether the browser says this connection costs the person data: cellular,
  * or they asked to save data. A browser that cannot say is not known to.
  */
-function meteredConnection(): boolean {
+export function meteredConnection(): boolean {
   const connection = (
     navigator as { readonly connection?: { readonly type?: string; readonly saveData?: boolean } }
   ).connection;
@@ -44,74 +31,66 @@ function meteredConnection(): boolean {
 }
 
 /**
- * A conversation's Run page on a phone-width screen: whether it stands open
- * above the conversation, decided once on the agent's first action by the
- * shared rules, and the ways to fold and unfold it. `runId` is the
- * conversation's working Run, or null where no page stands above it.
+ * Whether the person is writing in this conversation on a keyboard that takes
+ * room from it, so a page opening now would push away the line they write. A
+ * hardware keyboard takes none: only an on-screen one, or a field just focused
+ * where one comes up, defers the page. A keyboard seen closing ends that
+ * focus's claim, as Android's Back does without taking focus from the field.
  */
-export function useRunPage(
-  hostClient: HostClient,
-  threadId: string,
-  runId: string | null,
-  moment: () => Omit<RunPageMoment, "cellular">,
-) {
-  const [{ memory }, update] = useRunPageView(hostClient, threadId);
-  const entry = useRunPlace(hostClient, runId);
-  const placeRunId = entry?.runId ?? null;
-  const [fits, setFits] = useState(true);
-  const momentRef = useRef(moment);
-  momentRef.current = moment;
+export function useTypingHere(threadRef: RefObject<HTMLElement | null>, keyboardInset: number) {
+  const touch = useMediaQuery("(pointer: coarse)");
+  const [writing, setWriting] = useState(false);
   useEffect(() => {
-    if (placeRunId === null) return;
-    update((view) => {
-      const memory = runPageActed(view.memory, placeRunId, {
-        ...momentRef.current(),
-        cellular: meteredConnection(),
-      });
-      return memory === view.memory ? view : { ...view, memory };
-    });
-  }, [placeRunId, update]);
-  // Pressing the folded picture hands focus to the page it opens.
-  const focusPage = useRef(false);
-  const unfold = useCallback(() => {
-    if (placeRunId === null) return;
-    focusPage.current = document.activeElement?.closest(".viewfinder") != null;
-    update((view) => ({ ...view, memory: runPageOpened(placeRunId) }));
-  }, [placeRunId, update]);
-  const fold = useCallback(
-    () => update((view) => ({ ...view, memory: runPageFolded(view.memory) })),
-    [update],
-  );
-  return {
-    fits,
-    fold,
-    focusPage,
-    placeRunId,
-    setFits,
-    shown: runPageShown(memory, placeRunId, fits),
-    /** Null where there is no room: the folded picture opens the full tab instead. */
-    unfold: placeRunId !== null && fits ? unfold : null,
-  };
+    const thread = threadRef.current;
+    if (!thread || !touch) {
+      setWriting(false);
+      return;
+    }
+    const writable = (node: EventTarget | null) =>
+      node instanceof HTMLElement &&
+      thread.contains(node) &&
+      (node.isContentEditable ||
+        node.matches(
+          "textarea, input:not([type=button], [type=checkbox], [type=radio], [type=submit])",
+        ));
+    const update = (event: FocusEvent) =>
+      setWriting(writable(event.type === "focusin" ? event.target : event.relatedTarget));
+    setWriting(writable(document.activeElement));
+    thread.addEventListener("focusin", update);
+    thread.addEventListener("focusout", update);
+    return () => {
+      thread.removeEventListener("focusin", update);
+      thread.removeEventListener("focusout", update);
+    };
+  }, [threadRef, touch]);
+  const keyboardUp = useRef(keyboardInset > 0);
+  useEffect(() => {
+    if (keyboardUp.current && keyboardInset === 0) setWriting(false);
+    keyboardUp.current = keyboardInset > 0;
+  }, [keyboardInset]);
+  return keyboardInset > 0 || writing;
 }
 
 /**
  * The page a conversation's Run is in, above the conversation, while that Run
- * works there. It only watches: pressing it shows the full tab. It measures
- * the room left even while folded, so the folded picture knows whether it can
- * open here. Where the head has no room for that picture, folded is the named
- * row here instead. The transcript keeps every line where it was throughout,
- * and focus inside it is never dropped when it folds or its Run ends.
+ * works there: the page itself at its own shape, or the named row that stands
+ * for it before its first picture, where it can have none, or where the head
+ * has no room for the folded picture. It only watches and only reads the
+ * conversation's one picture: pressing it shows the full place. The
+ * transcript keeps every line where it was throughout, and focus inside it is
+ * never dropped when it folds or its Run ends.
  */
 export const RunPage = memo(function RunPage({
   focusPage,
   foldedHere,
   hostClient,
-  onFits,
   onFold,
   onUnfold,
-  open,
+  page,
+  room,
   runId,
   scrollRef,
+  shown,
   threadId,
   threadRef,
 }: {
@@ -119,82 +98,27 @@ export const RunPage = memo(function RunPage({
   /** The head has given up the folded picture for room, so folded stands here as the row. */
   readonly foldedHere: boolean;
   readonly hostClient: HostClient;
-  readonly onFits: (fits: boolean) => void;
   readonly onFold: () => void;
-  /** Null where there is no room to open it: the row then opens the full tab. */
+  /** Null where there is no room to open it: the row then opens the full place. */
   readonly onUnfold: (() => void) | null;
-  readonly open: boolean;
+  readonly page: { readonly height: number; readonly width: number } | null;
+  readonly room: { readonly height: number; readonly width: number } | null;
   readonly runId: string;
   readonly scrollRef: RefObject<HTMLElement | null>;
+  readonly shown: RunPageShown;
   readonly threadId: string;
   readonly threadRef: RefObject<HTMLElement | null>;
 }) {
   const { nav } = useWorkspace();
   const { acting, place } = useRunPlaceView(hostClient, runId, threadId);
-  const room = useRoom(threadRef);
-  const placeKey = place?.placeKey ?? null;
-  const [shape, setShape] = useState<{ readonly key: string | null; readonly aspect: number }>({
-    key: null,
-    aspect: runPageDesktopAspect,
-  });
-  const onShape = useCallback(
-    (aspect: number) =>
-      setShape((current) =>
-        current.key === placeKey && Math.abs(current.aspect - aspect) < 0.005
-          ? current
-          : { key: placeKey, aspect },
-      ),
-    [placeKey],
-  );
-  // Only a picture arriving now stands for the page: until one has, it is the named row.
-  const [live, setLive] = useState(false);
-  const [liveKey, setLiveKey] = useState<string | null>(null);
-  const onLive = useCallback(
-    (now: boolean) => {
-      setLive(now);
-      if (now) setLiveKey(placeKey);
-    },
-    [placeKey],
-  );
-  const seen = placeKey !== null && shape.key === placeKey && liveKey === placeKey;
-  const page =
-    room === null
-      ? null
-      : runPageSize({
-          aspect: seen ? shape.aspect : runPageDesktopAspect,
-          room: room.height,
-          transcript: runPageKeptTranscript,
-          width: room.width,
-        });
-  const fits = page !== null;
-  useLayoutEffect(() => {
-    if (room !== null) onFits(fits);
-  }, [fits, onFits, room]);
-
-  // One stream for the place through every form: the folded picture and the
-  // page hand it over without the watch ever closing between them.
-  const destination = place?.destination ?? null;
-  const tab =
-    place?.kind === "page" && destination && place.pageSession
-      ? { sessionId: place.pageSession, tabId: destination.tabId }
-      : null;
-  // A sleeping tab shows its last picture: watching it would wake it.
-  const awake = useBrowserTabAwake(hostClient, tab?.tabId);
-  useEffect(
-    () =>
-      tab && awake
-        ? hostClient.retainBrowserWatch(tab.sessionId, tab.tabId, {
-            captureRegion: true,
-            frameWindow: true,
-            rasterDemand: true,
-          })
-        : undefined,
-    [awake, hostClient, tab?.sessionId, tab?.tabId],
-  );
-
-  const shown = place !== null && (open || foldedHere);
-  const asPage = open && seen && page !== null;
-  const height = shown
+  const [{ memory }] = useRunPageView(hostClient, threadId);
+  const { usable, fresh } = usePlacePicture(place);
+  const [painted, setPainted] = useState(false);
+  // Open is the person's or the rules' choice; folded here, the row only stands in for the head.
+  const open = memory.run?.runId === runId && memory.run.intent === "open";
+  const visible = place !== null && (shown === "page" || shown === "row");
+  const asPage = visible && shown === "page" && page !== null;
+  const height = visible
     ? asPage
       ? page.height + runPageHandleHeight
       : runPageRowHeight + (open ? runPageHandleHeight : 0)
@@ -204,10 +128,10 @@ export const RunPage = memo(function RunPage({
   const panelRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<HTMLButtonElement | null>(null);
   useLayoutEffect(() => {
-    if (shown && focusPage.current) viewRef.current?.focus({ preventScroll: true });
+    if (visible && focusPage.current) viewRef.current?.focus({ preventScroll: true });
     focusPage.current = false;
-  }, [focusPage, shown]);
-  useFocusKept(panelRef, threadRef, shown);
+  }, [focusPage, visible]);
+  useFocusKept(panelRef, threadRef, visible);
 
   const drag = useRef<number | null>(null);
   const dragged = useRef(false);
@@ -217,20 +141,24 @@ export const RunPage = memo(function RunPage({
     if (foldedHere && panelRef.current?.contains(document.activeElement))
       viewRef.current?.focus({ preventScroll: true });
   };
-  if (!shown) return null;
+  if (!visible) return null;
+  const destination = place.destination;
   const site = place.site ? pageSiteLabel(place.site) : null;
+  // A kept picture holds the page's place and size; it only steps back.
+  const stale = usable && painted && !fresh;
   // Folded here, pressing it does what the folded picture does: open it when it fits.
   const unfoldsHere = !open && onUnfold !== null;
   return (
-    <div className="run-page" ref={panelRef}>
+    <div className={open ? "run-page" : "run-page run-page--folded"} ref={panelRef}>
       <button
         aria-expanded={unfoldsHere ? false : undefined}
-        aria-label={`Show ${placeName(place)}${acting ? ", agent working" : ""}`}
+        aria-label={`Show ${placeName(place)}${acting ? ", agent working" : ""}${stale ? ", earlier picture" : ""}`}
         className={[
           "run-page__view",
           asPage ? "run-page__view--page" : "run-page__view--row",
           asPage && room !== null && page.width >= room.width ? "run-page__view--full" : "",
           acting ? "run-page__view--acting" : "",
+          stale ? "run-page__view--stale" : "",
         ]
           .filter(Boolean)
           .join(" ")}
@@ -248,22 +176,17 @@ export const RunPage = memo(function RunPage({
           className="run-page__frame"
           style={asPage ? { width: page.width, height: page.height } : undefined}
         >
-          {hasPlacePicture(place) ? (
-            <span
-              className={live ? "run-page__picture" : "run-page__picture run-page__picture--still"}
-            >
-              <PlacePicture
-                enabled
-                hiddenReason="not-in-view"
-                hostClient={hostClient}
-                onLive={onLive}
-                onShape={onShape}
-                place={place}
-                threadId={threadId}
-              />
-            </span>
-          ) : null}
-          {seen ? null : <PlaceGlyph kind={place.kind} />}
+          <span className="run-page__picture">
+            <PlacePicture
+              enabled
+              hostClient={hostClient}
+              onPainted={setPainted}
+              place={place}
+              threadId={threadId}
+              usable={usable}
+            />
+          </span>
+          {usable && painted ? null : <PlaceGlyph kind={place.kind} />}
         </span>
         {asPage ? null : (
           <>
@@ -309,14 +232,14 @@ export const RunPage = memo(function RunPage({
  * its dock and whatever waits on the reader there, keyboard and all, less the
  * handle. Null until measured.
  */
-function useRoom(threadRef: RefObject<HTMLElement | null>) {
+export function useRoom(threadRef: RefObject<HTMLElement | null>, enabled: boolean) {
   const [room, setRoom] = useState<{ readonly height: number; readonly width: number } | null>(
     null,
   );
   useLayoutEffect(() => {
     const thread = threadRef.current;
     const body = thread?.querySelector<HTMLElement>(":scope > .thread__body");
-    if (!thread || !body) return;
+    if (!enabled || !thread || !body) return;
     const measure = () => {
       let taken = 0;
       for (const child of thread.querySelectorAll<HTMLElement>(
@@ -351,8 +274,8 @@ function useRoom(threadRef: RefObject<HTMLElement | null>) {
       changes.disconnect();
       stop();
     };
-  }, [threadRef]);
-  return room;
+  }, [enabled, threadRef]);
+  return enabled ? room : null;
 }
 
 /**

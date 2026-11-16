@@ -135,6 +135,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     opensteer_delegation_cancel: async () => unavailable(),
     opensteer_subagent_read: async () => unavailable(),
     opensteer_subagent_stop: async () => unavailable(),
+    ask_person: async () => unavailable(),
     person_notify: async () => unavailable(),
     person_show: async () => unavailable(),
     opensteer_request_list: async () => unavailable(),

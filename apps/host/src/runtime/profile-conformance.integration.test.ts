@@ -13,6 +13,7 @@ import {
   HostDescriptorSchema,
   hostApiVersion,
   hostApiVersionHeader,
+  minimumHostApiVersion,
   minimumTeamApiVersion,
   teamApiVersion,
   teamApiVersionHeader,
@@ -63,7 +64,9 @@ integration("Personal configuration conformance", () => {
     const response = await host.runtime.app.inject({ url: "/.well-known/opensteer" });
     const descriptor = HostDescriptorSchema.parse(response.json());
     expect(verifyHostDiscoveryEnvelope(descriptor.authority)).toBeDefined();
-    expect(descriptor.apiVersion).toBe(hostApiVersion);
+    // The oldest version it serves, and the one it speaks.
+    expect(descriptor.apiVersion).toBe(minimumHostApiVersion);
+    expect(descriptor.currentApiVersion).toBe(hostApiVersion);
     expect(descriptor.authority.document.deploymentShape).toEqual({ kind: "personal" });
     expect(descriptor.authority.document.deploymentId).toBe(host.runtime.deployment.id);
   });

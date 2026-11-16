@@ -469,21 +469,24 @@ describe("stopping a task and finishing it: one Stop", () => {
     return threadId;
   }
 
-  it("confirms shared Done on running work and keeps the composer to reopen it", async () => {
+  it("confirms shared Done on running work, moves on, and keeps the composer to reopen it", async () => {
     const own = await startOwnTask("Compare two coworking passes");
     const setDone = vi.spyOn(client, "setTaskDone");
     await openMenu();
     await click(menuRow("Mark Done")!);
-    expect(element(".conversation-menu__confirm").textContent).toContain("Stop and mark Done?");
-    expect(element(".conversation-menu__confirm").textContent).toContain(
+    expect(element('[role="dialog"]').textContent).toContain("Stop and mark Done?");
+    expect(element('[role="dialog"]').textContent).toContain(
       "This stops its work and the tasks it handed out, and pauses its schedules.",
     );
     expect(setDone).not.toHaveBeenCalled();
-    await click(element(".conversation-menu__confirm .btn--danger"));
+    await click(element('[role="dialog"] .btn--danger'));
     await settle(100);
     expect(setDone).toHaveBeenCalledExactlyOnceWith(own, true);
     expect(thread(own).doneAt).not.toBeNull();
     expect(sidebarRow(own)).toBeNull();
+    expect(history.at(-1)!.path).not.toBe(`/tasks/${own}`);
+    await act(async () => goTo!(-1));
+    await settle();
     expect(element(".input-surface__done").textContent).toBe("Done · Sending reopens it");
     expect(document.querySelector("[data-composer-input]")).not.toBeNull();
     await openMenu();
@@ -795,7 +798,7 @@ describe("the v7 web review's findings", () => {
     const before = client.runPlace(runId)!;
     const destination = runPlaceDestination(before, client.getSnapshot());
     expect(client.getSnapshot().tabs.get(before.data.tabId)?.kind).toBe("phone");
-    expect(document.querySelector(".viewfinder .computer-watch")).not.toBeNull();
+    expect(document.querySelector(".viewfinder .place-canvas")).not.toBeNull();
     await openTile("Pixel 7");
     expect(element(".owner-view")).toBeTruthy();
     const phones = placeList(client.getSnapshot()).filter((item) => item.kind === "phone");

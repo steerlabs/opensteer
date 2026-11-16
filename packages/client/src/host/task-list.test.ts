@@ -17,9 +17,11 @@ import {
   listedRowThreadId,
   sameTaskRow,
   taskList,
+  taskAfter,
   taskRowLabel,
   taskTime,
   threadRequester,
+  type TaskRow,
 } from "./task-list.js";
 import { liveWork } from "./surfaces.js";
 
@@ -301,6 +303,19 @@ describe("taskList", () => {
     expect(taskList({ ...source, tasks: { ...source.tasks!, entries: [completed] } }).running).toBe(
       0,
     );
+  });
+});
+
+describe("taskAfter", () => {
+  const rows = (...ids: string[]) => ids.map((id) => ({ threadId: id }) as TaskRow);
+
+  it("goes down across Working into Ready, up from the bottom, and nowhere from the last task", () => {
+    const list = { working: rows("a", "b"), ready: rows("c") };
+    expect(taskAfter(list, "a")).toBe("b");
+    expect(taskAfter(list, "b")).toBe("c");
+    expect(taskAfter(list, "c")).toBe("b");
+    expect(taskAfter({ working: [], ready: rows("a") }, "a")).toBeNull();
+    expect(taskAfter(list, "unlisted")).toBeNull();
   });
 });
 

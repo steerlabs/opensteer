@@ -135,6 +135,9 @@ import {
   transcriptSpacing,
 } from "./transcript.js";
 import { bubble } from "./bubble.js";
+import { OwedMessageStatus } from "./owed-message.js";
+import { isOwedMessage, owedMessageEntry, reconcileOwed } from "./owed-message-model.js";
+import { usePendingDeliveryPhase } from "./send-pending-message.js";
 import type { ThreadMutationOwner } from "./thread-mutation-gate.js";
 import { useThreadMutation } from "./thread-mutation-registry.js";
 import { UsageNotice } from "./usage-notice.js";
@@ -500,16 +503,6 @@ function ThreadPaneForUser(
     canRespond && environment?.status === "disconnected" ? `${environment.name} offline` : null;
 
   const entries = useMemo(() => snapshot.entries ?? [], [snapshot.entries, threadId]);
-  // The Host names the subagent behind each Request waiting on this reader;
-  // the loaded transcript names the ones behind a Request someone else answers.
-  const subagentTitles = useMemo(() => {
-    const titles = new Map<string, string>();
-    for (const entry of entries) if (entry.kind === "node") titles.set(entry.nodeId, entry.title);
-    for (const { subagent } of snapshot.waitingRequests) {
-      if (subagent !== null) titles.set(subagent.id, subagent.title);
-    }
-    return titles;
-  }, [entries, snapshot.waitingRequests]);
   // A voice conversation reads as messages, each reply's steps in its
   // Activity; a task keeps its whole trace in view.
   const conversational = thread?.purpose === "voice";
@@ -518,16 +511,48 @@ function ThreadPaneForUser(
   const onCall = useVoiceOn();
   // On a call the bar carries what needs the person, so the pane docks it nowhere else.
   const askedRequestId = useVoiceAskedRequest();
+  // The same answer every surface gives: what this Thread is doing, and
+  // which Run, if any, a Stop would reach.
+  const activity =
+    thread === null ? "idle" : threadActivity({ entries, runQueue: snapshot.runQueue, thread });
+  // The message this phone owes the Host. Sent to a Thread at rest it starts
+  // the next turn, so it is drawn there at once and the Host's copy takes its
+  // place; sent behind a turn at work it waits, and the bar holds it as the
+  // tray will. Where it stands is decided once, so it never jumps between them.
+  useSyncExternalStore(client.drafts.subscribe, client.drafts.getVersion);
+  const owedCommand =
+    viewerUserId === null
+      ? null
+      : client.drafts.readPending(props.deploymentId, viewerUserId, threadId);
+  const owedPlace =
+    owedCommand === null || viewerUserId === null
+      ? null
+      : reconcileOwed(entries, owedCommand, viewerUserId, conversational || activity === "idle");
+  const owed = owedPlace?.drawn === true ? owedCommand : null;
+  const owedEntry = useMemo(
+    () => (owed === null || viewerUserId === null ? null : owedMessageEntry(owed, viewerUserId)),
+    [owed, viewerUserId],
+  );
+  const owedPhase = usePendingDeliveryPhase(
+    client.drafts,
+    props.deploymentId,
+    viewerUserId,
+    threadId,
+  );
+  const retryOwed = useRef<(() => void) | null>(null);
+  const retryPending = useCallback(() => retryOwed.current?.(), []);
   // In work, a message waiting behind the current turn stands in the tray
   // above the composer until a Run takes it. A conversation has no tray: what
   // the reader just sent is drawn as sent.
   const conversation = useMemo(
     () =>
       withoutOwnAssignment(
-        visibleTranscript(entries, inputQueue, { conversation: conversational }),
+        visibleTranscript(owedEntry === null ? entries : [...entries, owedEntry], inputQueue, {
+          conversation: conversational,
+        }),
         threadId,
       ),
-    [conversational, entries, inputQueue, threadId],
+    [conversational, entries, inputQueue, owedEntry, threadId],
   );
   const inputQueuePaused = thread?.inputQueuePaused ?? false;
   // What this client holds of the account is current only while it is live.
@@ -558,10 +583,6 @@ function ThreadPaneForUser(
     heldGroups.current = reuseUnchangedGroups(heldGroups.current, grouped);
     return heldGroups.current;
   }, [grouped]);
-  // The same answer every surface gives: what this Thread is doing, and
-  // which Run, if any, a Stop would reach.
-  const activity =
-    thread === null ? "idle" : threadActivity({ entries, runQueue: snapshot.runQueue, thread });
   const stopTarget =
     thread === null ? null : threadStopTarget({ runQueue: snapshot.runQueue, thread });
   const keptStop = useKeptComputerStop(hostClient, stopTarget?.id ?? null);
@@ -960,9 +981,20 @@ function ThreadPaneForUser(
           {item.outcome === null ? null : (
             <TaskOutcomeLine onOpenThread={openSource} outcome={item.outcome} />
           )}
+          {item.group.kind === "message" && isOwedMessage(item.group.entry.id) && owed !== null ? (
+            <OwedMessageStatus
+              idempotencyKey={owed.idempotencyKey}
+              onRetry={canRespond ? retryPending : null}
+              state={!canRespond ? "offline" : (owedPhase ?? "idle")}
+            />
+          ) : null}
         </>
       ),
     [
+      canRespond,
+      owed,
+      owedPhase,
+      retryPending,
       anchorMessageId,
       conversational,
       hostClient,
@@ -1500,6 +1532,12 @@ function ThreadPaneForUser(
                   }
                   modelOptions={thread.modelSelection.options}
                   mutationGate={mutationGate}
+                  // Once the Host's copy has taken its place, a send that then
+                  // fails is the bar's to offer again, as for any held message.
+                  owedInline={
+                    owedPlace?.inline === true && (owed !== null || owedPhase === "sending")
+                  }
+                  retryRef={retryOwed}
                   conversationActions={actionsBesidePage}
                   page={companion?.page ?? null}
                   onChangeModel={openSettings}
@@ -1533,7 +1571,6 @@ function ThreadPaneForUser(
                     kind: "thread",
                     thread,
                   })}
-                  subagentTitles={subagentTitles}
                   threadId={thread.id}
                   user={snapshot.user}
                 />

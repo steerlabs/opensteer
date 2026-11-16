@@ -529,6 +529,7 @@ export class BrowserWatchStore {
         return;
       }
       target.terminal = true;
+      this.#revoke(target);
       socket.close(4002, "Targeted browser protocol required");
       this.#set(target, {
         ...empty,
@@ -585,6 +586,7 @@ export class BrowserWatchStore {
             subscribed = true;
           } else if (message.type === "browser.status") {
             this.#close(target);
+            this.#revoke(target);
             this.#set(target, empty);
           } else if (message.type === "browser.stream.state") {
             if (message.surfaceId !== target.surfaceId)
@@ -594,6 +596,7 @@ export class BrowserWatchStore {
                 this.accept(target.sessionId, target.surfaceId, token);
               this.#set(target, {
                 ...this.#kept(target),
+                status: "unavailable",
                 error: "Too many browser capture targets.",
               });
             } else if (target.pictureHolds && target.state.status !== "live")
@@ -707,11 +710,10 @@ export class BrowserWatchStore {
       target.socket = null;
       target.synchronized = false;
       target.awaiting.clear();
-      target.terminal = event.code === 4002 || event.code === 4003;
-      const revoked = event.code === 4003 || event.code === 1008;
-      if (revoked) this.#revoke(target);
+      target.terminal = event.code === 4002 || event.code === 4003 || event.code === 1008;
+      if (target.terminal) this.#revoke(target);
       this.#set(target, {
-        ...(revoked ? empty : this.#kept(target)),
+        ...(target.terminal ? empty : this.#kept(target)),
         error: target.terminal ? "The browser target is no longer available." : null,
       });
       if (target.state.error === null) this.#retry(target);
@@ -773,6 +775,7 @@ export class BrowserWatchStore {
     return {
       ...empty,
       frame: target.state.frame,
+      status: "connecting",
       ...(target.state.input ? { input: target.state.input } : {}),
     };
   }

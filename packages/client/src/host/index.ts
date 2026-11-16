@@ -9,6 +9,7 @@ export * from "./browser-access.js";
 export * from "./browser-profile-settings.js";
 export * from "./browser-sign-in.js";
 export * from "./composer-surface.js";
+export * from "./question-answers.js";
 export * from "./connection-usage.js";
 export * from "./execution-menu.js";
 export * from "./execution-preferences.js";
@@ -77,6 +78,7 @@ export * from "./app-icons.js";
 export * from "./run-place.js";
 export * from "./run-page.js";
 export * from "./run-page-memory.js";
+export * from "./run-place-picture.js";
 
 export * from "./request-settlement.js";
 export * from "./personal-remote-access.js";

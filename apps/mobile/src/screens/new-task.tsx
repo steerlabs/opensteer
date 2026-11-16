@@ -1,6 +1,6 @@
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { useMobileNotifications } from "../ui/notifications-context.js";
-import { provisionalThreadTitle, type BrowserPageContentPart } from "@opensteer/core";
+import { provisionalThreadTitle, type BrowserPageContentPart, type UserId } from "@opensteer/core";
 import {
   canRespondToRequests,
   accessModeConflict,
@@ -15,6 +15,8 @@ import {
 } from "@opensteer/client/host";
 import { useHostSelector, useHostSnapshot } from "@opensteer/client/react";
 import { useNavigation } from "@react-navigation/native";
+import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
+import type { RootParamList } from "../navigation.js";
 import {
   useCallback,
   useEffect,
@@ -25,11 +27,13 @@ import {
   type ReactNode,
 } from "react";
 import type { ComposerEditorHandle } from "@opensteer/client/references";
+import * as Haptics from "expo-haptics";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
+import Animated, { useReducedMotion } from "react-native-reanimated";
 import { operationDetail } from "../client/mobile-client.js";
 import { newTaskDraftKey, type PendingCommand } from "../client/thread-drafts.js";
 import type { FirstMessageAttachmentDraftScope } from "../platform/attachment-draft-files.js";
-import { color } from "../theme.js";
+import { color, space } from "../theme.js";
 import {
   attachmentKey,
   draftAttachmentPart,
@@ -43,14 +47,17 @@ import {
   firstMessageExecution,
   FirstMessageComposer,
   FirstMessageExamples,
-  FirstMessageHeld,
   FirstMessageInvitation,
   handOverFirstMessage,
 } from "../thread/first-message.js";
+import { FirstMessageStarted, type FirstMessageSent } from "../thread/first-message-started.js";
 import { beginPendingDelivery, sendPendingMessage } from "../thread/send-pending-message.js";
+import { dismissKeyboard } from "../ui/composer-editor.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
+import { bubbleSettleMs, exit } from "../ui/motion.js";
 import { Notice } from "../ui/primitives.js";
 import { homeDraftId } from "../home/home-draft.js";
+import { delay } from "@opensteer/shared/delay";
 
 /** Ways to begin, each a sentence the reader can send or edit. */
 const examples = [
@@ -64,7 +71,7 @@ const examples = [
   },
 ] as const;
 
-const selectUserId = (snapshot: { readonly user: { readonly id: string } | null }) =>
+const selectUserId = (snapshot: { readonly user: { readonly id: UserId } | null }) =>
   snapshot.user?.id ?? null;
 
 /**
@@ -104,10 +111,10 @@ function NewTask(props: {
   readonly hostClient: HostClient;
   readonly onStarted: (threadId: string) => boolean;
   readonly underHeader: boolean;
-  readonly userId: string;
+  readonly userId: UserId;
   readonly voice?: boolean;
 }): ReactNode {
-  const navigation = useNavigation();
+  const navigation = useNavigation<NativeStackNavigationProp<RootParamList>>();
   const notifications = useMobileNotifications();
   const client = useMobileClient();
   const drafts = client.drafts;
@@ -128,6 +135,14 @@ function NewTask(props: {
   // The message and task it starts, already handed to the Host under keys it
   // may have accepted, are read from the same draft store as another view.
   const [sending, setSending] = useState(false);
+  // What was sent, from the moment Send is pressed until this screen is out
+  // of sight: before it is written down, then held, then while the task fades
+  // in over it, so nothing under the fade goes back to the invitation.
+  const [starting, setStarting] = useState<FirstMessageSent | null>(null);
+  const [handedOff, setHandedOff] = useState<FirstMessageSent | null>(null);
+  const sentAt = useRef(0);
+  const keyboardDown = useRef<Promise<void>>(Promise.resolve());
+  const reduceMotion = useReducedMotion();
   const [failure, setFailure] = useState<string | null>(null);
   const [draftFailure, setDraftFailure] = useState<string | null>(null);
   const inFlight = useRef(false);
@@ -212,12 +227,38 @@ function NewTask(props: {
               ? null
               : accessModeConflict(live.executionPreferences.accessMode, placement);
           if (accessReason !== null) throw new Error(accessReason);
+          const idempotencyKey = mutationIdempotencyKey("message");
+          const attachments = staged.items.flatMap((item) => {
+            const part = draftAttachmentPart(item);
+            return part === null ? [] : [part];
+          });
+          // Seen and felt as Send is pressed: the screen turns into the task
+          // it starts while the phone writes it down and the Host makes it.
+          setStarting({
+            ...(attachments.length > 0 ? { attachments } : {}),
+            ...(includedPage === null ? {} : { browserPage: includedPage }),
+            idempotencyKey,
+            text: words,
+          });
+          sentAt.current = Date.now();
+          void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          keyboardDown.current = dismissKeyboard();
+          // Emptied on screen only: the saved draft keeps the words until the
+          // message holding them is written down. Reset, so a keystroke still
+          // on its way from the field cannot refill it.
+          const emptied = (field?.readSnapshot().generation ?? 0) + 1;
+          field?.restore({
+            composing: false,
+            generation: emptied,
+            selection: { start: 0, end: 0 },
+            text: "",
+          });
           claimed = await claimFirstMessage({
             browserPage: includedPage,
             deploymentId,
             draftKey,
             drafts,
-            idempotencyKey: mutationIdempotencyKey("message"),
+            idempotencyKey,
             quote: null,
             staged,
             start: {
@@ -231,15 +272,20 @@ function NewTask(props: {
             },
             text: words,
             userId,
+          }).catch((error: unknown) => {
+            // Not written down, so not sent: the words are back in the field.
+            field?.restore({
+              composing: false,
+              generation: emptied + 1,
+              selection: { start: words.length, end: words.length },
+              text: words,
+            });
+            throw error;
           });
           changeText("");
-          // Reset, so a keystroke still on its way from the field cannot refill it.
-          field?.restore({
-            composing: false,
-            generation: field.readSnapshot().generation + 1,
-            selection: { start: 0, end: 0 },
-            text: "",
-          });
+        } else {
+          sentAt.current = Date.now();
+          keyboardDown.current = dismissKeyboard();
         }
         const start = claimed.start;
         if (start === undefined)
@@ -256,14 +302,21 @@ function NewTask(props: {
           draftKey,
           drafts,
           files,
-          onReady: () => {
+          onReady: async () => {
+            // The task takes over only once what was sent has settled where
+            // the task draws it and the keyboard is down, so its first frame
+            // is this one's last.
+            const rising = reduceMotion ? 0 : sentAt.current + bubbleSettleMs - Date.now();
+            await Promise.all([keyboardDown.current, rising > 0 ? delay(rising) : undefined]);
             const active = client.getSnapshot().selection;
+            const shown = drafts.readPending(deploymentId, userId, draftKey);
             opened =
               mounted.current &&
               active.deploymentId === deploymentId &&
               active.hostClient === hostClient &&
               hostClient.getSnapshot().user?.id === userId &&
               onStarted(thread.id);
+            if (opened && shown !== null) setHandedOff(shown);
           },
           threadId: thread.id,
           userId,
@@ -275,6 +328,7 @@ function NewTask(props: {
         // the task is next opened.
         const finishDelivery = beginPendingDelivery(drafts, deploymentId, userId, owed);
         if (finishDelivery === null) return;
+        let outcome: "failed" | undefined;
         try {
           if (
             !(await sendPendingMessage(
@@ -294,8 +348,12 @@ function NewTask(props: {
           if (cleared) {
             forgetDraftFiles({ deploymentId, threadId: thread.id, userId }, owed.localUris ?? []);
           }
+        } catch (error) {
+          // Still owed under its key; the task says so when it is opened.
+          outcome = "failed";
+          throw error;
         } finally {
-          finishDelivery();
+          finishDelivery(outcome);
         }
       } catch (error) {
         // Only a screen still here can take the message back as a draft; one
@@ -323,6 +381,8 @@ function NewTask(props: {
       } finally {
         inFlight.current = false;
         setSending(false);
+        // Written down by now, or refused and back in the field.
+        setStarting(null);
       }
     },
     [
@@ -336,13 +396,27 @@ function NewTask(props: {
       includedPage,
       notifications,
       onStarted,
+      reduceMotion,
       staged,
       text,
       userId,
     ],
   );
 
-  const empty = text.trim() === "" && held === null && staged.items.length === 0;
+  // Once the task has faded in over this screen, it is Home again underneath.
+  useEffect(() => {
+    if (handedOff === null) return;
+    const settle = () => setHandedOff(null);
+    const ended = navigation.addListener("transitionEnd", settle);
+    const back = navigation.addListener("focus", settle);
+    return () => {
+      ended();
+      back();
+    };
+  }, [handedOff, navigation]);
+
+  const sent = held ?? starting ?? handedOff;
+  const empty = text.trim() === "" && sent === null && staged.items.length === 0;
 
   return (
     <FirstMessageComposer
@@ -375,43 +449,56 @@ function NewTask(props: {
       }
       sending={sending}
       staged={staged}
-      text={text}
+      started={sent !== null}
+      // While what was sent is being written down, the draft still holds it.
+      text={starting === null ? text : ""}
       underHeader={props.underHeader}
     >
-      <FirstMessageInvitation
-        detail={
-          agentHome === null
-            ? "Your agent works on this computer."
-            : `Your agent works on this computer, in ${agentHome}.`
-        }
-        title="What should your agent do?"
-      />
-      {empty ? (
-        <FirstMessageExamples
-          examples={examples}
-          onPick={(example) => {
-            changeText(example);
-            input.current?.focus();
-          }}
+      {sent !== null ? (
+        <FirstMessageStarted
+          hostClient={hostClient}
+          key={sent.idempotencyKey}
+          message={sent}
+          onRetry={held === null || sending ? null : () => void send(held)}
+          state={
+            sending || held === null
+              ? "sending"
+              : canRespondToRequests(snapshot)
+                ? "failed"
+                : "offline"
+          }
+          userId={userId}
         />
-      ) : null}
-      {failure === null ? null : (
-        <Notice
-          action={{ label: "Dismiss", onPress: () => setFailure(null) }}
-          detail={failure}
-          title="The task was not started"
-        />
-      )}
-      {draftFailure === null ? null : (
-        <Notice detail={draftFailure} title="This draft is not being saved" tone="neutral" />
-      )}
-      {held === null ? null : (
-        <FirstMessageHeld
-          onRetry={() => void send(held)}
-          sending={sending}
-          status="Not confirmed yet."
-          text={held.text}
-        />
+      ) : (
+        <Animated.View exiting={exit} style={styles.invitation}>
+          <FirstMessageInvitation
+            detail={
+              agentHome === null
+                ? "Your agent works on this computer."
+                : `Your agent works on this computer, in ${agentHome}.`
+            }
+            title="What should your agent do?"
+          />
+          {empty ? (
+            <FirstMessageExamples
+              examples={examples}
+              onPick={(example) => {
+                changeText(example);
+                input.current?.focus();
+              }}
+            />
+          ) : null}
+          {failure === null ? null : (
+            <Notice
+              action={{ label: "Dismiss", onPress: () => setFailure(null) }}
+              detail={failure}
+              title="The task was not started"
+            />
+          )}
+          {draftFailure === null ? null : (
+            <Notice detail={draftFailure} title="This draft is not being saved" tone="neutral" />
+          )}
+        </Animated.View>
       )}
     </FirstMessageComposer>
   );
@@ -432,5 +519,7 @@ function sameNewTaskSnapshot(previous: HostSnapshot, next: HostSnapshot): boolea
 }
 
 const styles = StyleSheet.create({
+  // The composer's content keeps its own gap between the invitation's parts.
+  invitation: { gap: space[16] },
   waiting: { alignItems: "center", flex: 1, justifyContent: "center" },
 });

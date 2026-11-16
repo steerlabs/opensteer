@@ -6,7 +6,16 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { MockHostClient } from "@opensteer/client/mock";
 
 import { mockTeamId, mockTeamChannelId, mockTeamUserId } from "@opensteer/client/team";
-import { doneTaskList, placeList, taskList, type HostSnapshot } from "@opensteer/client/host";
+import {
+  doneTaskList,
+  heldThread,
+  placeList,
+  taskAfter,
+  taskList,
+  taskUnderWay,
+  type HostSnapshot,
+  type TaskRow,
+} from "@opensteer/client/host";
 import {
   createId,
   TeamAgentRequestIdSchema,
@@ -506,6 +515,33 @@ describe("sidebar Tasks until Done", () => {
       ),
     );
     expect(heading()).toBe("Tasks");
+  });
+
+  it("moves on to the next task when the open one is marked Done, and stays for any other", async () => {
+    const doable = (snapshot: HostSnapshot) => {
+      const list = taskList(snapshot);
+      return [...list.working, ...list.ready].filter(
+        (item) => item.canBeDone && !taskUnderWay(heldThread(snapshot, item.threadId)!),
+      );
+    };
+    let open: TaskRow | undefined;
+    await mount((source) => {
+      open = doable(source.getSnapshot())[0];
+      return `/tasks/${open?.threadId}`;
+    });
+    if (!open) throw new Error("The mock lists no task that can be marked Done");
+    const next = taskAfter(openTasks(), open.threadId);
+    expect(next).not.toBeNull();
+    await click(element(`[aria-label="Mark Done: ${open.title}"]`));
+    await settle();
+    expect(history.at(-1)).toMatchObject({ path: `/tasks/${next}`, type: "PUSH" });
+
+    const other = doable(client.getSnapshot()).find((item) => item.threadId !== next)!;
+    const entries = history.length;
+    await click(element(`[aria-label="Mark Done: ${other.title}"]`));
+    await settle();
+    expect(doneRows().some((item) => item.threadId === other.threadId)).toBe(true);
+    expect(history.slice(entries)).toEqual([]);
   });
 
   it("names tasks the Host moved quietly, moves them back, and stops telling once seen", async () => {

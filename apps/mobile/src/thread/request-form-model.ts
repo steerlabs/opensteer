@@ -1,4 +1,9 @@
-import type { RequestFormAnswers, RequestFormField, RequestResponse } from "@opensteer/core";
+import {
+  requestFieldAnswerProblem,
+  type RequestFormAnswers,
+  type RequestFormField,
+  type RequestResponse,
+} from "@opensteer/core";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 
 /**
@@ -19,7 +24,7 @@ export function requestFieldMode(field: RequestFormField): RequestFieldMode {
   // a response that the Host cannot receive, even though draft storage is safe.
   if (field.id === "__proto__") return "unavailable";
   if (field.choices === undefined) return "text";
-  if (field.choices.length === 0) return "unavailable";
+  if (field.choices.length === 0) return field.custom ? "text" : "unavailable";
   return field.multiSelect ? "many" : "one";
 }
 
@@ -67,33 +72,16 @@ export function toggleRequestChoice(
   );
 }
 
-/**
- * Whether a field's draft would be accepted as its answer. Whitespace alone is
- * not an answer: the Host would take it, and the agent would act on nothing.
- */
+/** Whether a field's draft would be accepted as its answer, by the Host's own rule. */
 export function isRequestFieldAnswered(
   field: RequestFormField,
   values: readonly string[],
 ): boolean {
-  if (values.length === 0) return false;
-  switch (requestFieldMode(field)) {
-    case "text":
-      return (
-        values.length === 1 &&
-        values[0]!.trim() !== "" &&
-        values[0]!.length <= requestAnswerMaxLength
-      );
-    case "one":
-      return values.length === 1 && hasChoice(field, values[0]!);
-    case "many":
-      return values.every((value) => hasChoice(field, value));
-    case "unavailable":
-      return false;
-  }
-}
-
-function hasChoice(field: RequestFormField, value: string): boolean {
-  return field.choices?.some((choice) => choice.value === value) ?? false;
+  return (
+    requestFieldMode(field) !== "unavailable" &&
+    values.every((value) => value.length <= requestAnswerMaxLength) &&
+    requestFieldAnswerProblem(field, values) === null
+  );
 }
 
 export interface RequestFormProgress {

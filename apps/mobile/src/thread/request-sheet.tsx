@@ -14,6 +14,7 @@ import {
   deriveSurface,
   fullAccessDeclineLabel,
   fullAccessRequestBody,
+  isQuestionRequest,
   mutationIdempotencyKey,
   passwordSignInAccountList,
   passwordSignInAllowRemembers,
@@ -100,6 +101,7 @@ import { signInAvailability, signInStatus } from "./request-sign-in-status.js";
 import { useThreadMutation } from "./thread-mutation-registry.js";
 import type { ThreadMutationGate } from "./thread-mutation-gate.js";
 import { useRequestResponse, type RequestResponder } from "./use-request-response.js";
+import { QuestionCard } from "./waiting-questions.js";
 
 /** A native answer in English: the same word for a refusal on every kind of Request. */
 const declineLabel = "Don’t Allow";
@@ -319,6 +321,21 @@ function SheetForRequest(props: {
     (snapshot) => snapshot.threads.find(({ id }) => id === threadId)?.status === "archived",
   );
   if (surface === null) return null;
+  // A question reads the same wherever it opens: its card, with the answer it
+  // was given there, and its own field because no composer stands below.
+  if (isQuestionRequest(surface.request) && surface.denied === null)
+    return (
+      <ScrollView contentContainerStyle={styles.questionSheet} keyboardShouldPersistTaps="handled">
+        <QuestionCard
+          canRespond={props.canRespond}
+          deploymentId={deploymentId}
+          drafts={drafts}
+          hostClient={hostClient}
+          surface={surface}
+          userId={userId}
+        />
+      </ScrollView>
+    );
   const pendingMessage = owner === "message" || drafts.readPending(deploymentId, userId, threadId);
   return (
     <RequestSheetContent
@@ -1598,25 +1615,27 @@ function RequestForm(props: {
                 ) : null}
               </>
             ) : (
-              <View style={styles.group}>
-                {(field.choices ?? []).map((choice, choiceIndex) => (
-                  <FormChoiceRow
-                    description={choice.description}
-                    disabled={props.disabled}
-                    hint={position === null ? hint : `${hint}, ${position}`}
-                    // Values are not required to be unique; their position is.
-                    key={`${choiceIndex}:${choice.value}`}
-                    label={choice.label}
-                    mode={mode}
-                    onPress={() => {
-                      void Haptics.selectionAsync();
-                      setValues(toggleRequestChoice(field, values, choice.value));
-                    }}
-                    selected={values.includes(choice.value)}
-                    separated={choiceIndex > 0}
-                  />
-                ))}
-              </View>
+              <>
+                <View style={styles.group}>
+                  {(field.choices ?? []).map((choice, choiceIndex) => (
+                    <FormChoiceRow
+                      description={choice.description}
+                      disabled={props.disabled}
+                      hint={position === null ? hint : `${hint}, ${position}`}
+                      // Values are not required to be unique; their position is.
+                      key={`${choiceIndex}:${choice.value}`}
+                      label={choice.label}
+                      mode={mode}
+                      onPress={() => {
+                        void Haptics.selectionAsync();
+                        setValues(toggleRequestChoice(field, values, choice.value));
+                      }}
+                      selected={values.includes(choice.value)}
+                      separated={choiceIndex > 0}
+                    />
+                  ))}
+                </View>
+              </>
             )}
           </View>
         );
@@ -1678,6 +1697,7 @@ function FormChoiceRow(props: {
 }
 
 const styles = StyleSheet.create({
+  questionSheet: { padding: space[16] },
   accounts: { gap: space[6] },
   bar: {
     alignItems: "center",

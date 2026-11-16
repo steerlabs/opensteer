@@ -583,6 +583,7 @@ describeStore("agents answering task questions", (it) => {
         installationId: "installation",
         serverId: "server",
       },
+      "person.question": { kind: "person.question" },
     };
     for (const kind of RequestKindSchema.options.filter((kind) => kind !== "harness.input")) {
       const request = PendingRequestSchema.parse({

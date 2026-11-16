@@ -1785,8 +1785,18 @@ button.side-needs:hover {
   display: block;
 }
 
-.viewfinder__native .computer-watch--compact {
+/* A Mac app or phone, drawn whole inside whatever frame shows it. */
+.place-canvas {
+  display: block;
+  width: 100%;
   height: 100%;
+  object-fit: contain;
+}
+
+/* Pixels the conversation no longer counts never stay on screen. */
+.place-canvas--hidden,
+.place-picture--gone {
+  visibility: hidden;
 }
 
 /* ---- The live place, above the conversation ----
@@ -1857,6 +1867,11 @@ button.side-needs:hover {
   opacity: 0.85;
 }
 
+/* Folded here, the row is the head's picture moved down: it ends on a rule like the handle. */
+.run-page--folded {
+  border-bottom: 1px solid var(--line);
+}
+
 .run-page__view--row {
   justify-content: flex-start;
   gap: var(--space-10);
@@ -1889,10 +1904,16 @@ button.side-needs:hover {
   position: absolute;
   inset: 0;
   display: block;
+  transition:
+    opacity var(--duration-med) var(--ease-out),
+    filter var(--duration-med) var(--ease-out);
 }
 
-.run-page__picture--still {
-  opacity: 0.45;
+/* A kept picture holds the page's place and size and only steps back, so the
+   page never jumps while the place reconnects or sleeps. */
+.run-page__view--stale .run-page__picture {
+  opacity: 0.72;
+  filter: saturate(0.6);
 }
 
 .run-page__words {
@@ -1960,6 +1981,10 @@ button.side-needs:hover {
   .run-page,
   .run-page__view--page .run-page__frame {
     animation: none;
+  }
+
+  .run-page__picture {
+    transition: none;
   }
 }
 

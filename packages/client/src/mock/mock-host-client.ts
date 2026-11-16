@@ -1,4 +1,6 @@
 import { NeedsYouPageSchema } from "@opensteer/protocol";
+import { clearRunPageViews } from "../host/run-page-memory.js";
+import { clearRunPlacePictures } from "../host/run-place-picture.js";
 import { localReference } from "../references/local.js";
 import type { IdReference } from "../references/links.js";
 import { parseReferenceHref, type ReferenceId } from "@opensteer/core";
@@ -139,6 +141,7 @@ import {
   notificationTitleMaxCharacters,
   provisionalThreadTitle,
   rememberExecutionChoice,
+  requestFormAnswersProblem,
   requestOptionDeclines,
   requestTitleText,
   sameProviderContinuationIdentity,
@@ -385,6 +388,9 @@ const mockPendingRequestId = RequestIdSchema.parse("req_0192f4a1-1111-4000-8000-
  * on a phone as well as in a browser.
  */
 const mockLongFormRequestId = RequestIdSchema.parse("req_0192f4a1-2222-4000-8000-000000000002");
+const mockPersonQuestionRequestId = RequestIdSchema.parse(
+  "req_0192f4a1-2222-4000-8000-000000000044",
+);
 // A task whose agent proposed Vapi and asks for the exact account the service
 // rejected: the reconnect card, end to end, against the seeded accounts.
 const mockVapiThreadId = mockVapi.threadId;
@@ -3944,7 +3950,11 @@ export class MockHostClient implements HostClient {
     const syncHistory = () => {
       const snapshot = this.#state.getSnapshot();
       const scope = viewerScopeOf(snapshot);
-      if (this.#viewer.change(scope)) this.#computerViews.clear();
+      if (this.#viewer.change(scope)) {
+        clearRunPageViews(this);
+        clearRunPlacePictures(this);
+        this.#computerViews.clear();
+      }
       this.#computerViews.setConnected(scope !== null && snapshot.connection !== "offline");
       this.browserHistory.setScope(scope);
       for (const profile of knownProfiles)
@@ -4812,6 +4822,8 @@ export class MockHostClient implements HostClient {
   }
 
   dispose(): void {
+    clearRunPageViews(this);
+    clearRunPlacePictures(this);
     this.references.dispose();
     this.transcriptFiles.dispose();
     this.assetUrls.dispose();
@@ -11801,6 +11813,13 @@ class MockHostState {
     if (request.kind === "browser.password-sign-in") {
       throw mockConflict("Approve this sign-in on that Mac, or choose Don’t allow.");
     }
+    if (request.presentation.kind === "form" && input.response.kind === "form") {
+      const problem = requestFormAnswersProblem(
+        request.presentation.fields,
+        input.response.answers,
+      );
+      if (problem !== null) throw mockConflict(problem);
+    }
     if (request.payload.kind === "device.access") {
       this.ownedComputer(request.payload.machineId);
       const value = input.response.kind === "external" ? input.response.value : undefined;
@@ -13332,6 +13351,7 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
                   { label: "storage over the local verifier", value: "storage-verifier" },
                   { label: "Container overlay", value: "container-overlay" },
                 ],
+                custom: true,
                 id: "backends",
                 label: "Backends",
                 multiSelect: true,
@@ -13344,6 +13364,7 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
                   { label: "One hour", value: "1h" },
                   { label: "Until it finishes", value: "unbounded" },
                 ],
+                custom: true,
                 id: "budget",
                 label: "Time budget",
                 prompt: "How long may the suite run before I stop it?",
@@ -13356,6 +13377,53 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
             ],
             kind: "form",
             title: "How should the release suite run?",
+          },
+          requestedBy: mockUserId,
+          requiredActor: "requester",
+          resolvedAt: null,
+          resolvedBy: null,
+          response: null,
+          status: "pending",
+        }),
+      ],
+      "thr_00000000-0000-4000-8000-000000000004": [
+        RequestSchema.parse({
+          callId: "mock-refund-question",
+          cancellationReason: null,
+          createdAt: "2026-08-07T19:20:00.000Z",
+          id: mockPersonQuestionRequestId,
+          kind: "person.question",
+          mode: "durable",
+          originatingOccurrenceId: null,
+          originatingRunId: "run_00000000-0000-4000-8000-000000000004",
+          originatingThreadId: "thr_00000000-0000-4000-8000-000000000004",
+          payload: { kind: "person.question" },
+          presentation: {
+            detail:
+              "Northwind billed the August design retainer twice (Aug 3 and Aug 17, $1,200 each). I drafted a refund request to billing@northwind.example citing both invoice numbers, and can book the second charge as a receivable until it comes back.",
+            fields: [
+              {
+                choices: [
+                  {
+                    description: "Email Northwind now and book the receivable",
+                    label: "Send the refund request",
+                    value: "Send the refund request",
+                  },
+                  {
+                    description: "Keep it in this month's open items",
+                    label: "Leave it for now",
+                    value: "Leave it for now",
+                  },
+                ],
+                custom: true,
+                id: "question_1",
+                multiSelect: false,
+                prompt: "What should I do about the duplicate charge?",
+                secret: false,
+              },
+            ],
+            kind: "form",
+            title: "Ask Northwind to refund the duplicate retainer?",
           },
           requestedBy: mockUserId,
           requiredActor: "requester",
@@ -13869,7 +13937,7 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
         modelLabel: "GPT-5.6-Sol",
         modelSelection: mockCodexModelSelection,
         parentThreadId: null,
-        pendingRequests: 0,
+        pendingRequests: 1,
         purpose: "task",
         runnerLabel: "Home Mac",
         doneAt: null,

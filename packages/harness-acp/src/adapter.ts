@@ -1283,6 +1283,8 @@ function elicitationFields(
         ...(choices && choices.length > 0 ? { choices } : {}),
         id,
         ...(typeof raw.title === "string" ? { label: raw.title.slice(0, 160) } : {}),
+        // An elicitation's schema says which values it takes, and nothing else.
+        custom: false,
         multiSelect: raw.type === "array",
         prompt:
           (typeof raw.description === "string" ? raw.description : id).slice(0, 20_000) +

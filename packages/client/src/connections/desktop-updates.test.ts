@@ -4,7 +4,7 @@ import type { NativeOAuthManager } from "../auth/native-oauth.js";
 import type { HostSessionExchange } from "../auth/host-session-exchange.js";
 import { describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
-import { hostApiVersion } from "@opensteer/deployment-authority";
+import { hostApiVersion, minimumHostApiVersion } from "@opensteer/deployment-authority";
 import { hostApiVersionHeader } from "@opensteer/protocol";
 import { DesktopUpdatesService, OriginDesktopUpdates } from "./desktop-updates.js";
 import {
@@ -244,7 +244,8 @@ it.each([false, true])(
   },
 );
 
-it.each([hostApiVersion - 1, hostApiVersion + 1])(
+// Either side of the window this app serves.
+it.each([minimumHostApiVersion - 1, hostApiVersion + 1])(
   "verifies the signed route below attachment and reaches maintenance across epoch %s",
   async (epoch) => {
     const { service, request, descriptor, connection, maintenance, status } = fixture(epoch);

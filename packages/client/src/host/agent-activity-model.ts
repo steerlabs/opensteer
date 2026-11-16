@@ -2335,6 +2335,7 @@ const opensteerSteps = new Map<string, OpensteerStep>([
   ["app_delete", said(["Deleting an app", "Deleted an app"], "share")],
   ["person_notify", said(["Sending a message", "Sent a message"], "share")],
   ["person_show", said(["Sending to your screen", "Sent to your screen"], "share")],
+  ["ask_person", said(["Asking you", "Asked you"], "share")],
 
   [
     "browser_access_request",

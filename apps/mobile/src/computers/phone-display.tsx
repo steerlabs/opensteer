@@ -2,6 +2,8 @@ import {
   type HostClient,
   type HostSnapshot,
   type NativeViewerSource,
+  type RunPlaceDisplay,
+  type RunPlacePictureReport,
 } from "@opensteer/client/host";
 import {
   computerUseStops,
@@ -88,7 +90,7 @@ export function ComputerDisplay({
   label,
   machineId,
   onPageSize,
-  onShown,
+  runPlace,
   interactive = false,
   onReopen,
   preserveLastFrame = false,
@@ -104,8 +106,17 @@ export function ComputerDisplay({
   readonly label: string;
   readonly machineId?: string;
   readonly onPageSize?: ((size: { width: number; height: number }) => void) | undefined;
-  /** Whether a picture of the screen is drawn now, not a word in its place. */
-  readonly onShown?: ((shown: boolean) => void) | undefined;
+  /**
+   * A Run place's picture: the stream is the owner's, attached rather than
+   * retained, and the view says when its pixels become usable or unusable.
+   * The caller draws every state; the view draws no words of its own.
+   */
+  readonly runPlace?:
+    | {
+        readonly display: RunPlaceDisplay | null;
+        readonly report: (report: RunPlacePictureReport) => void;
+      }
+    | undefined;
 }) {
   useNativeBarAway(bar !== undefined);
   // The picture and its touch layer ease into the room the status row leaves;
@@ -138,8 +149,15 @@ export function ComputerDisplay({
   const [foreground, setForeground] = useState(AppState.currentState === "active");
   const [words, setWords] = useState<string | null>("Connecting…");
   const [shown, setShown] = useState(false);
-  const pictured = shown && words === null && !unavailable;
-  useEffect(() => onShown?.(pictured), [onShown, pictured]);
+  const drawn = useRef(shown);
+  drawn.current = shown;
+  const attached = runPlace?.display;
+  const reportPicture = runPlace?.report;
+  const report = useRef(reportPicture);
+  report.current = reportPicture;
+  useEffect(() => {
+    if (unavailable) reportPicture?.({ kind: "cleared" });
+  }, [reportPicture, unavailable]);
   const [terminal, setTerminal] = useState(false);
   const viewport = useRef(1280);
   const viewportChanged = useRef<((size: number) => void) | null>(null);
@@ -244,7 +262,16 @@ export function ComputerDisplay({
     return () => listener.remove();
   }, []);
   useLayoutEffect(() => {
-    if (unavailable || !active || !foreground || !scope || authorityKey === null) {
+    // Until the Run place's owner hands over its stream, nothing drawn means nothing to fence.
+    if (attached === null && !drawn.current) return;
+    if (
+      unavailable ||
+      !active ||
+      !foreground ||
+      !scope ||
+      authorityKey === null ||
+      attached === null
+    ) {
       const keepPicture = preserve && active && foreground && authorityKey !== null;
       if (!keepPicture) {
         setShown(false);
@@ -253,8 +280,12 @@ export function ComputerDisplay({
       return;
     }
     const pool = sharedDisplayStreams(hostClient);
-    const lease = pool.retain({ scope, source, ...(interactive ? { editing: 1 as const } : {}) });
-    setInputLease(lease);
+    const owned =
+      attached === undefined
+        ? pool.retain({ scope, source, ...(interactive ? { editing: 1 as const } : {}) })
+        : null;
+    const lease: RunPlaceDisplay = attached ?? owned!;
+    setInputLease(owned);
     reopen.current = () =>
       pool.reopen({ scope, source, ...(interactive ? { editing: 1 as const } : {}) });
     requestKeyframe.current = () => lease.requestKeyframe();
@@ -272,6 +303,8 @@ export function ComputerDisplay({
       if (!keepPicture) {
         setPicture(null);
         setShown(false);
+        // Letting go is not losing the picture: only the stream can say that.
+        if (!disposed) report.current?.({ kind: "cleared" });
       }
       resetDecoder(epoch.current, keepPicture);
       generation = -1;
@@ -420,10 +453,11 @@ export function ComputerDisplay({
           next.authorityKey === authorityKey &&
           authorityKey !== null,
       );
-      lease.release();
+      owned?.release();
     };
   }, [
     active,
+    attached,
     foreground,
     hostClient,
     resetDecoder,
@@ -465,6 +499,7 @@ export function ComputerDisplay({
               controls.current?.resetInput();
               setPicture(null);
               setShown(false);
+              report.current?.({ kind: "cleared" });
             }
             requestKeyframe.current?.();
           }}
@@ -474,6 +509,11 @@ export function ComputerDisplay({
             setShown(true);
             setPicture(decodingPicture.current);
             onPageSize?.({ width: nativeEvent.width, height: nativeEvent.height });
+            report.current?.({
+              kind: "drawn",
+              width: nativeEvent.width,
+              height: nativeEvent.height,
+            });
           }}
         />
         {interactive && inputLease && !unavailable ? (
@@ -496,7 +536,8 @@ export function ComputerDisplay({
             </AppText>
           </GlassSurface>
         ) : null}
-        {unavailable || !shown || (!preserve && (words || updateName !== null)) ? (
+        {runPlace === undefined &&
+        (unavailable || !shown || (!preserve && (words || updateName !== null))) ? (
           <View style={styles.status}>
             {!unavailable && !words && updateName === null ? (
               <ActivityIndicator color={color.muted} />

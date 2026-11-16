@@ -85,6 +85,7 @@ export function agentToolHandlers(options: {
         targets: (c: ToolCall<"opensteer_delegation_cancel">) => p.assignmentTargets(c),
       },
     ),
+    ask_person: async (c) => await p.ask_person(c),
     person_notify: async (c) => await p.person_notify(c),
     person_show: Object.assign(async (c: ToolCall<"person_show">) => await p.person_show(c), {
       targets: async (c: ToolCall<"person_show">) =>

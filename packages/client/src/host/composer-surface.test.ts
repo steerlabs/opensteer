@@ -69,17 +69,25 @@ describe("deriveSurface", () => {
     expect(surface?.textRole).toBe("message");
   });
 
-  it("hides the textarea while a live form collects its own answers", () => {
-    const request = pendingRequest({
-      kind: "harness.input",
-      payload: { kind: "harness.input" },
-      presentation: {
-        fields: [{ id: "q", multiSelect: false, prompt: "Which one?", secret: false }],
-        kind: "form",
-        title: "More information needed",
-      },
-    });
-    expect(deriveSurface([request], viewer)?.textRole).toBe("hidden");
+  it("makes the textarea a question's answer, and hides it while a form takes a secret", () => {
+    const question = (secret: boolean, kind: "harness.input" | "person.question") =>
+      pendingRequest({
+        kind,
+        mode: kind === "harness.input" ? "live" : "durable",
+        payload: { kind },
+        presentation: {
+          fields: [{ custom: true, id: "q", multiSelect: false, prompt: "Which one?", secret }],
+          kind: "form",
+          title: "More information needed",
+        },
+      });
+    expect(deriveSurface([question(false, "harness.input")], viewer)?.textRole).toBe("answer");
+    expect(deriveSurface([question(false, "person.question")], viewer)?.textRole).toBe("answer");
+    expect(deriveSurface([question(true, "harness.input")], viewer)?.textRole).toBe("hidden");
+    // Someone the question wasn't asked of keeps an ordinary message box.
+    expect(
+      deriveSurface([question(false, "person.question")], { id: createId("user") })?.textRole,
+    ).toBe("message");
   });
 
   it("focuses the oldest live action ahead of durable ones and names what waits", () => {
