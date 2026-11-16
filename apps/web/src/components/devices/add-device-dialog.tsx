@@ -1,3 +1,4 @@
+import { DeploymentIdSchema } from "@opensteer/core";
 import { useId, useState } from "react";
 import { usePersonalRemoteAccess } from "@opensteer/client/react";
 import {
@@ -15,6 +16,7 @@ import { QrCode } from "../first-run/qr-code.js";
 import { Icon, type IconName } from "../icon.js";
 import { OptionRow } from "../option-row.js";
 import { SettingsError } from "../settings/primitives.js";
+import { AddIphoneDialog } from "./add-iphone-dialog.js";
 import { cancelDeviceSetup } from "./device-access.js";
 import { localEnrollmentModules } from "./this-device.js";
 
@@ -37,7 +39,7 @@ const choices: readonly {
     id: "iphone-screen",
     icon: "phone",
     title: "iPhone screen control",
-    detail: "An iPhone your agent controls through one of your Macs, by cable or Wi‑Fi.",
+    detail: "An iPhone your agent controls through your Mac, plugged in or on the same Wi‑Fi.",
   },
   {
     id: "agent-phone",
@@ -63,6 +65,19 @@ export function AddDeviceDialog({
   const { desktopBridge, hostClient, snapshot } = useShell();
   const [choice, setChoice] = useState<Choice | null>(null);
   const titleId = useId();
+  // Setup picks the physical phone, so only Opensteer on the Mac it plugs into offers it.
+  const iphoneSetup = hostClient.iphoneSetup;
+  const deploymentId = DeploymentIdSchema.safeParse(snapshot.deploymentId);
+  if (choice === "iphone-screen" && iphoneSetup && deploymentId.success)
+    return (
+      <AddIphoneDialog
+        client={hostClient}
+        deploymentId={deploymentId.data}
+        deploymentName={snapshot.identityConfig?.deployment.name ?? "Opensteer"}
+        onClose={onClose}
+        port={iphoneSetup}
+      />
+    );
   if (choice === "agent-phone")
     return (
       <AddPhoneDialog
@@ -140,11 +155,11 @@ function IphoneScreenOnMac() {
   return (
     <div className="add-device__panel">
       <p>
-        Your agent sees and controls the iPhone’s screen through one of your Macs, connected by
-        cable or the same Wi‑Fi. The iPhone doesn’t need Opensteer.
+        Your agent sees and controls the iPhone’s screen through one of your Macs, plugged in or on
+        the same Wi‑Fi. The iPhone doesn’t need Opensteer.
       </p>
       <p className="notice" role="status">
-        You set it up in Opensteer on that Mac. It isn’t in this version yet.
+        Plug the iPhone into that Mac and set it up in Opensteer there.
       </p>
     </div>
   );
