@@ -23,6 +23,7 @@ import {
   type RunnerId,
   nonTerminalRunStatuses,
   type MessageId,
+  type MessageOrigin,
   MessageIdSchema,
   type UserId,
   type ProviderContinuationIdentity,
@@ -48,6 +49,7 @@ import {
   threadExecutionIsAvailableToUser,
 } from "./store-primitives.js";
 import {
+  messageOriginFromRow,
   messagesFromRows,
   threadPendingRequestsSelection,
   threadVisitSelection,
@@ -91,6 +93,7 @@ export interface RunDispatchContext {
   } | null;
   readonly historyWindow: RunHistoryWindow;
   readonly inputs: readonly Message[];
+  readonly inputOrigins: ReadonlyMap<MessageId, MessageOrigin>;
   readonly reports: {
     readonly messages: readonly Message[];
     readonly omittedCount: number;
@@ -521,6 +524,12 @@ export async function loadRunDispatchContext(
       itemCount: historyWindow.items.length,
     },
     inputs: messagesFromRows(inputRows),
+    inputOrigins: new Map(
+      inputRows.flatMap((row) => {
+        const origin = messageOriginFromRow(row);
+        return origin ? [[row.id, origin] as const] : [];
+      }),
+    ),
     reports: !includeContext
       ? {
           messages: [],

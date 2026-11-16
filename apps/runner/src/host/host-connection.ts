@@ -2373,6 +2373,7 @@ export function runnerCapabilities(
     "network-egress",
     "native-session-continuation-v1",
     "requester-time-zone-v1",
+    "message-origin-v1",
     "agent-tools-plan-v1",
     "steer-answer-v1",
     "thread-state-v1",

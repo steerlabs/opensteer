@@ -59,6 +59,23 @@ export const TimeZoneSchema = z
   .refine(isTimeZone, "Time zone must be an IANA name such as America/New_York");
 export type TimeZone = z.infer<typeof TimeZoneSchema>;
 
+/**
+ * Where a person sent a message from, as their app observed it. Facts for the
+ * agent, never authority. The zone is checked for shape only: a message is
+ * never refused because a reader's time zone data predates the sender's.
+ */
+export const MessageOriginSchema = z.strictObject({
+  app: z.enum(["web", "desktop", "ios", "android"]),
+  device: z.enum(["phone", "tablet", "computer"]),
+  timeZone: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[A-Za-z0-9_+:/-]+$/u)
+    .optional(),
+});
+export type MessageOrigin = z.infer<typeof MessageOriginSchema>;
+
 function isTimeZone(value: string): boolean {
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: value });
@@ -153,8 +170,10 @@ export const RunnerCapabilitySchema = z.enum([
   "network-egress",
   "native-session-continuation-v1",
   "claude-compaction-v1",
-  // Carries `requesterTimeZone` in every Run's context.
+  // Older Hosts require it; the `requesterTimeZone` it names is read and unused.
   "requester-time-zone-v1",
+  // Reads a person's input `origin`; the Run's clock comes from its own computer.
+  "message-origin-v1",
   "agent-tools-plan-v1",
   // A message steered into a Run and accepted by its engine is answered in that
   // Run, as a turn of its own if the engine was already answering.

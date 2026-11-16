@@ -15,7 +15,7 @@ import {
   AppsListInputSchema,
   AppsListResultSchema,
 } from "./apps.js";
-import { TabViewSchema } from "@opensteer/core";
+import { MessageOriginSchema, TabViewSchema } from "@opensteer/core";
 import {
   TranscriptFileOpenInputSchema,
   TranscriptFileOpenSchema,
@@ -419,6 +419,8 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
       compaction: CompactionSendChoiceSchema.optional(),
       freshContext: z.boolean().optional(),
       idempotencyKey: idempotencyKeySchema,
+      /** Sent only to a Host advertising `message-origin-v1`. */
+      origin: MessageOriginSchema.optional(),
       threadId: ThreadIdSchema,
       type: z.literal("thread.sendMessage"),
       quotedMessageId: MessageIdSchema.optional(),
@@ -523,8 +525,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     keyId: NotificationPreviewKeyIdSchema,
     key: NotificationPreviewKeySchema,
   }),
-  // The reader's IANA time zone, which a client reports from its own clock so
-  // an agent asked for "5pm" means the person's 5pm.
+  // Sent by apps from before `message-origin-v1`; accepted and ignored.
   z.strictObject({
     type: z.literal("viewer.timeZone.update"),
     idempotencyKey: idempotencyKeySchema,

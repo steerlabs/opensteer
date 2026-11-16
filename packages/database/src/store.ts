@@ -1360,6 +1360,7 @@ export class OpensteerStore {
   }
   async loadSteerDispatchInput(commandId: CommandRow["id"]): Promise<{
     readonly message: Message;
+    readonly origin: import("@opensteer/core").MessageOrigin | undefined;
     readonly run: Run;
     readonly runId: RunId;
     readonly threadId: ThreadId;

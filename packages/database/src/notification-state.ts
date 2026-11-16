@@ -13,8 +13,6 @@ import {
   OpensteerError,
   QuietTaskDaysSchema,
   type QuietTaskDays,
-  TimeZoneSchema,
-  type TimeZone,
   type ThreadId,
   type ThreadVisit,
   type UserId,
@@ -105,43 +103,6 @@ export class NotificationStateStore {
     });
   }
 
-  /** Records the zone a person's client reports, for whoever acts on their behalf. */
-  async setTimeZone(input: {
-    readonly administration?: AdministrationCommandIdentity | undefined;
-    readonly timeZone: TimeZone;
-    readonly userId: UserId;
-  }): Promise<TimeZone> {
-    return withPersonalTransaction(this.#database, (transaction) =>
-      administrationCommand(transaction, input.administration, async () => {
-        await requirePersonalOwner(transaction, input.userId);
-        const timeZone = TimeZoneSchema.parse(input.timeZone);
-        const updated = await transaction
-          .updateTable("personalSettings")
-          .set({ timeZone })
-          .where("ownerId", "=", input.userId)
-          .executeTakeFirst();
-        if (updated.numUpdatedRows !== 1n) {
-          throw new OpensteerError({
-            code: "not_found",
-            message: "User not found",
-          });
-        }
-        return timeZone;
-      }),
-    );
-  }
-
-  /** The zone a person's client last reported, or null if none has. */
-  async timeZoneFor(userId: UserId): Promise<TimeZone | null> {
-    const row = await this.#database
-      .selectFrom("personalSettings")
-      .select("timeZone")
-      .where("ownerId", "=", userId)
-      .executeTakeFirst();
-    if (!row?.timeZone) return null;
-    const parsed = TimeZoneSchema.safeParse(row.timeZone);
-    return parsed.success ? parsed.data : null;
-  }
   async setIdleCompactionPolicy(input: {
     readonly policy: IdleCompactionPolicy;
     readonly userId: UserId;

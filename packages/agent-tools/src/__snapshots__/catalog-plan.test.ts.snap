@@ -271,7 +271,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "run",
       "connection",
     ],
-    "description": "Read the person's name and time zone, and what a new task starts with: its AI account, model and access mode.",
+    "description": "Read the person's name and what a new task starts with: its AI account, model and access mode.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -286,7 +286,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "run",
       "connection",
     ],
-    "description": "Change what a new task starts with, or the person's time zone, and return what changed. The access mode cannot exceed your own ceiling, and nothing here changes an existing task.",
+    "description": "Change what a new task starts with and return what changed. The access mode cannot exceed your own ceiling, and nothing here changes an existing task.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -357,12 +357,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
             "model",
           ],
           "type": "object",
-        },
-        "timeZone": {
-          "description": "IANA zone, such as America/New_York.",
-          "maxLength": 64,
-          "minLength": 1,
-          "type": "string",
         },
       },
       "type": "object",

@@ -80,6 +80,10 @@ export const teamAgentAsksMigrationName = "0012_team_agent_asks";
 export const teamPrincipalsMigrationName = "0015_team_principals";
 export const teamPartnerLinksMigrationName = "0016_team_partner_links";
 export const agentHomeSettingsMigrationName = "0023_agent_home_settings";
+const messageOriginMigrationName = "0027_message_origin";
+const MESSAGE_ORIGIN_SQL = `
+alter table messages add column origin jsonb;
+`;
 export function migrationProvider(): MigrationProvider {
   return {
     async getMigrations() {
@@ -298,6 +302,11 @@ export function migrationProvider(): MigrationProvider {
         [tabsAndAppsMigrationName]: {
           async up(database) {
             await sql.raw(TABS_AND_APPS_SQL).execute(database);
+          },
+        },
+        [messageOriginMigrationName]: {
+          async up(database) {
+            await sql.raw(MESSAGE_ORIGIN_SQL).execute(database);
           },
         },
       };

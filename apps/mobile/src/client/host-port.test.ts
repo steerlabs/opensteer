@@ -81,6 +81,7 @@ it.each([false, true])(
         onNetworkChange: () => () => {},
       },
       openWebSocket: vi.fn(),
+      origin: { app: "ios", device: "phone" },
     })({ oauth, sessions, sessionExchange: exchange });
     const updates = port.desktopUpdates({
       deploymentId,

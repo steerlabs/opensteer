@@ -754,6 +754,8 @@ export interface MessageTable {
   kind: MessageKind;
   actorPrincipalId: PrincipalId;
   content: JsonColumn<readonly unknown[]>;
+  /** Where a person sent it from; null for every other author and older apps. */
+  origin: Generated<import("@opensteer/core").MessageOrigin | null>;
   /** Edits a person made while it waited; `content` is always the latest. */
   revision: Generated<number>;
   editedAt: Generated<Date | null>;
@@ -2300,7 +2302,6 @@ export interface PersonalSettingsTable {
   agentHomeComputerId: RunnerId;
   agentHomePath: string;
   voiceThreadId: ThreadId | null;
-  timeZone: string | null;
   quietTaskDays: QuietTaskDays;
   executionPreferences: JsonColumn<ExecutionPreferences>;
   /** The owner's own name, or null for "You"; see `owner-profile-store.ts`. */

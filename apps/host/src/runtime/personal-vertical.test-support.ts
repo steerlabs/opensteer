@@ -277,6 +277,7 @@ export async function startPersonalVertical(options: VerticalStackOptions): Prom
           idempotencyKey: crypto.randomUUID(),
           delivery: "queue",
           content: [{ type: "text", text: input.text }, ...(input.attachments ?? [])],
+          ...(input.origin ? { origin: input.origin } : {}),
         });
         if (response.type !== "thread.sendMessage") throw new Error("Task input receipt mismatch");
         const replacement =
