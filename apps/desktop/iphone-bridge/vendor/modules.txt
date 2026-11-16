@@ -1,0 +1,91 @@
+# github.com/Masterminds/semver v1.5.0
+## explicit
+github.com/Masterminds/semver
+# github.com/danielpaulus/go-ios v0.0.0-20261116112947-e5833ad1c5b6 => ./third_party/go-ios
+## explicit; go 1.26.0
+github.com/danielpaulus/go-ios/ios
+github.com/danielpaulus/go-ios/ios/coredevice
+github.com/danielpaulus/go-ios/ios/display
+github.com/danielpaulus/go-ios/ios/golog
+github.com/danielpaulus/go-ios/ios/http
+github.com/danielpaulus/go-ios/ios/imagemounter
+github.com/danielpaulus/go-ios/ios/tunnel
+github.com/danielpaulus/go-ios/ios/xpc
+# github.com/google/btree v1.1.2
+## explicit; go 1.18
+github.com/google/btree
+# github.com/google/uuid v1.1.2
+## explicit
+github.com/google/uuid
+# golang.org/x/net v0.55.0
+## explicit; go 1.25.0
+golang.org/x/net/http/httpguts
+golang.org/x/net/http2
+golang.org/x/net/http2/hpack
+golang.org/x/net/idna
+golang.org/x/net/internal/httpcommon
+golang.org/x/net/internal/httpsfv
+# golang.org/x/sys v0.45.0
+## explicit; go 1.25.0
+golang.org/x/sys/cpu
+golang.org/x/sys/unix
+# golang.org/x/text v0.37.0
+## explicit; go 1.25.0
+golang.org/x/text/secure/bidirule
+golang.org/x/text/transform
+golang.org/x/text/unicode/bidi
+golang.org/x/text/unicode/norm
+# golang.org/x/time v0.5.0
+## explicit; go 1.18
+golang.org/x/time/rate
+# google.golang.org/protobuf v1.32.0
+## explicit; go 1.17
+google.golang.org/protobuf/encoding/protowire
+google.golang.org/protobuf/internal/detrand
+google.golang.org/protobuf/internal/errors
+# gvisor.dev/gvisor v0.0.0-20240405191320-0878b34101b5
+## explicit; go 1.21.1
+gvisor.dev/gvisor/pkg/atomicbitops
+gvisor.dev/gvisor/pkg/bits
+gvisor.dev/gvisor/pkg/buffer
+gvisor.dev/gvisor/pkg/context
+gvisor.dev/gvisor/pkg/cpuid
+gvisor.dev/gvisor/pkg/gohacks
+gvisor.dev/gvisor/pkg/goid
+gvisor.dev/gvisor/pkg/linewriter
+gvisor.dev/gvisor/pkg/log
+gvisor.dev/gvisor/pkg/rand
+gvisor.dev/gvisor/pkg/refs
+gvisor.dev/gvisor/pkg/sleep
+gvisor.dev/gvisor/pkg/state
+gvisor.dev/gvisor/pkg/state/wire
+gvisor.dev/gvisor/pkg/sync
+gvisor.dev/gvisor/pkg/sync/locking
+gvisor.dev/gvisor/pkg/tcpip
+gvisor.dev/gvisor/pkg/tcpip/adapters/gonet
+gvisor.dev/gvisor/pkg/tcpip/checksum
+gvisor.dev/gvisor/pkg/tcpip/hash/jenkins
+gvisor.dev/gvisor/pkg/tcpip/header
+gvisor.dev/gvisor/pkg/tcpip/header/parse
+gvisor.dev/gvisor/pkg/tcpip/internal/tcp
+gvisor.dev/gvisor/pkg/tcpip/link/channel
+gvisor.dev/gvisor/pkg/tcpip/network/internal/fragmentation
+gvisor.dev/gvisor/pkg/tcpip/network/internal/ip
+gvisor.dev/gvisor/pkg/tcpip/network/internal/multicast
+gvisor.dev/gvisor/pkg/tcpip/network/ipv6
+gvisor.dev/gvisor/pkg/tcpip/ports
+gvisor.dev/gvisor/pkg/tcpip/seqnum
+gvisor.dev/gvisor/pkg/tcpip/stack
+gvisor.dev/gvisor/pkg/tcpip/transport
+gvisor.dev/gvisor/pkg/tcpip/transport/internal/network
+gvisor.dev/gvisor/pkg/tcpip/transport/internal/noop
+gvisor.dev/gvisor/pkg/tcpip/transport/packet
+gvisor.dev/gvisor/pkg/tcpip/transport/raw
+gvisor.dev/gvisor/pkg/tcpip/transport/tcp
+gvisor.dev/gvisor/pkg/tcpip/transport/tcpconntrack
+gvisor.dev/gvisor/pkg/tcpip/transport/udp
+gvisor.dev/gvisor/pkg/waiter
+# howett.net/plist v1.0.1
+## explicit; go 1.12
+howett.net/plist
+# github.com/danielpaulus/go-ios => ./third_party/go-ios

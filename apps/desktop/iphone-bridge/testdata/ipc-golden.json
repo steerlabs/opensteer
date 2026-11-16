@@ -1,0 +1,72 @@
+[
+  {
+    "kind": "request",
+    "protocolVersion": 1,
+    "id": 1,
+    "timeoutMs": 1000,
+    "method": "hello",
+    "params": {}
+  },
+  {
+    "kind": "response",
+    "id": 1,
+    "result": {
+      "bridge": "opensteer-iphone-bridge",
+      "version": "0.1.0",
+      "protocolVersion": 1,
+      "bootId": "fixture-boot",
+      "bounds": {
+        "requestBytes": 262144,
+        "responseBytes": 2097152,
+        "eventBytes": 65536,
+        "pendingRequests": 64,
+        "roster": 64,
+        "boundPhones": 8,
+        "timeoutMs": 120000
+      }
+    }
+  },
+  {
+    "kind": "request",
+    "protocolVersion": 1,
+    "id": 2,
+    "timeoutMs": 30000,
+    "method": "setup.inspect",
+    "params": {
+      "localPhoneId": "fixture-phone",
+      "nativeEpoch": 2
+    }
+  },
+  {
+    "kind": "response",
+    "id": 2,
+    "result": {
+      "error": {
+        "code": "trust-required",
+        "effect": "not-started",
+        "completedSteps": 0
+      }
+    }
+  },
+  {
+    "kind": "event",
+    "bootId": "fixture-boot",
+    "sequence": 1,
+    "event": "roster.changed",
+    "roster": {
+      "revision": 1,
+      "candidates": [
+        {
+          "localPhoneId": "fixture-phone",
+          "nativeEpoch": 2,
+          "name": "Test iPhone 한글",
+          "transport": "usb",
+          "reason": "qualification-required",
+          "model": "iPhoneFixture",
+          "osVersion": "27.0",
+          "build": "TEST"
+        }
+      ]
+    }
+  }
+]
