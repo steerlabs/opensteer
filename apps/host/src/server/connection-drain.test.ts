@@ -109,12 +109,13 @@ describe("closing the Host's WebSockets", () => {
   it("refuses and ends an upgrade that arrives while the Host is closing", async () => {
     const app = Fastify();
     apps.push(app);
-    await app.register(websocket, { preClose: closeWebSocketsWithin(300, 5_000) });
+    // A grace far past the test: only the silent peer leaving ends the WebSocket close.
+    await app.register(websocket, { preClose: closeWebSocketsWithin(60_000, 5_000) });
     app.get("/socket", { websocket: true }, () => undefined);
     await app.listen({ host: "127.0.0.1", port: 0 });
     const address = app.server.address();
     if (!address || typeof address === "string") throw new Error("The Host did not bind");
-    // A peer that never answers the close frame keeps the Host closing for the whole grace.
+    // A peer that never answers the close frame keeps the Host closing until it leaves.
     const silent = await upgrade(address.port);
     expect(silent.answer).toMatch(/^HTTP\/1\.1 101 /);
     const told = once(silent.socket, "data");
@@ -126,6 +127,7 @@ describe("closing the Host's WebSockets", () => {
     const late = await upgrade(address.port);
 
     expect(late.answer).toMatch(/^HTTP\/1\.1 503 /);
+    silent.socket.resetAndDestroy();
     await withTimeout(closing, 2_000, {
       timeoutError: () => new Error("The Host's HTTP server never closed"),
     });
