@@ -505,25 +505,27 @@ The go-ios subset is locally patched; its provenance and full upstream revision
 are in `apps/desktop/iphone-bridge/third_party/go-ios/PROVENANCE.md`.
 No Apple developer image is bundled.
 
-| Module | Version | License |
-| --- | --- | --- |
-| `github.com/danielpaulus/go-ios` | `v0.0.0-20261116112947-e5833ad1c5b6` | MIT |
-| `github.com/dchest/siphash` | `v1.2.3` | CC0-1.0 |
-| `github.com/tadglines/go-pkgs` | `v0.0.0-20210623144937-b983b20f54f9` | Apache-2.0 |
-| `golang.org/x/crypto` | `v0.52.0` | BSD-3-Clause (notice above) |
-| `github.com/Masterminds/semver` | `v1.5.0` | MIT |
-| `github.com/google/uuid` | `v1.1.2` | BSD-3-Clause |
-| `github.com/google/btree` | `v1.1.2` | Apache-2.0 |
-| `golang.org/x/net` | `v0.55.0` | BSD-3-Clause |
-| `golang.org/x/sys` | `v0.45.0` | BSD-3-Clause |
-| `golang.org/x/text` | `v0.37.0` | BSD-3-Clause |
-| `golang.org/x/time` | `v0.5.0` | BSD-3-Clause |
-| `google.golang.org/protobuf` | `v1.32.0` | BSD-3-Clause |
-| `gvisor.dev/gvisor` | `v0.0.0-20240405191320-0878b34101b5` | Apache-2.0 |
-| `howett.net/plist` | `v1.0.1` | MIT |
+| Module                           | Version                              | License                     |
+| -------------------------------- | ------------------------------------ | --------------------------- |
+| `github.com/danielpaulus/go-ios` | `v0.0.0-20261116112947-e5833ad1c5b6` | MIT                         |
+| `github.com/dchest/siphash`      | `v1.2.3`                             | CC0-1.0                     |
+| `github.com/tadglines/go-pkgs`   | `v0.0.0-20210623144937-b983b20f54f9` | Apache-2.0                  |
+| `golang.org/x/crypto`            | `v0.52.0`                            | BSD-3-Clause (notice above) |
+| `github.com/Masterminds/semver`  | `v1.5.0`                             | MIT                         |
+| `github.com/google/uuid`         | `v1.1.2`                             | BSD-3-Clause                |
+| `github.com/google/btree`        | `v1.1.2`                             | Apache-2.0                  |
+| `golang.org/x/image`             | `v0.39.0`                            | BSD-3-Clause (notice below) |
+| `golang.org/x/net`               | `v0.55.0`                            | BSD-3-Clause                |
+| `golang.org/x/sys`               | `v0.45.0`                            | BSD-3-Clause                |
+| `golang.org/x/text`              | `v0.37.0`                            | BSD-3-Clause                |
+| `golang.org/x/time`              | `v0.5.0`                             | BSD-3-Clause                |
+| `google.golang.org/protobuf`     | `v1.32.0`                            | BSD-3-Clause                |
+| `gvisor.dev/gvisor`              | `v0.0.0-20240405191320-0878b34101b5` | Apache-2.0                  |
+| `howett.net/plist`               | `v1.0.1`                             | MIT                         |
 
 ### `github.com/danielpaulus/go-ios`
 
+```text
 MIT License
 
 Copyright (c) 2019 danielpaulus
@@ -545,9 +547,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+```
 
 ### `github.com/Masterminds/semver`
 
+```text
 Copyright (C) 2014-2019, Matt Butcher and Matt Farina
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -567,9 +571,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+```
 
 ### `github.com/google/uuid`
 
+```text
 Copyright (c) 2009,2014 Google Inc. All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -597,10 +603,11 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
 
 ### `github.com/google/btree`
 
-
+```text
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -802,9 +809,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+```
 
 ### `golang.org/x/net`, `golang.org/x/sys`, `golang.org/x/text`
 
+```text
 Copyright 2009 The Go Authors.
 
 Redistribution and use in source and binary forms, with or without
@@ -832,9 +841,11 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
 
 ### `golang.org/x/time`
 
+```text
 Copyright (c) 2009 The Go Authors. All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -862,9 +873,11 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
 
 ### `google.golang.org/protobuf`
 
+```text
 Copyright (c) 2018 The Go Authors. All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -892,10 +905,11 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
 
 ### `gvisor.dev/gvisor`
 
-
+```text
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -1119,9 +1133,11 @@ Some files carry the following license, noted at the top of each file:
    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
    THE SOFTWARE.
+```
 
 ### `howett.net/plist`
 
+```text
 Copyright (c) 2013, Dustin L. Howett. All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -1180,7 +1196,7 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
+```
 
 ## Native iPhone keyboard and accessibility protocols
 
@@ -1191,11 +1207,13 @@ from iPhone-use (revision 20e42560d9b44bf40f280bbaea9fdc812273bd29,
 https://github.com/YueChen-C/iPhone-use). Both are MIT licensed.
 
 ### idevice
+
 ### idevice RemotePairing adaptations
 
 Same-LAN identity matching and RemotePairing socket framing adapt MIT idevice
 revision `2dca9a58a9a1dd02ec7d6213fcfd8fe861e74132`.
 
+```text
 Copyright 2026 Jackson Coxson
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the “Software”), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
@@ -1203,9 +1221,11 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
 
 ### iPhone-use
 
+```text
 MIT License
 
 Copyright (c) 2026 YueChen
@@ -1227,10 +1247,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
+```
 
 ## golang.org/x/image v0.39.0 (iPhone screenshot scaling)
 
+```text
 Copyright 2009 The Go Authors.
 
 Redistribution and use in source and binary forms, with or without
@@ -1258,9 +1279,11 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
 
 ### `github.com/dchest/siphash`
 
+```text
 Creative Commons Legal Code
 
 CC0 1.0 Universal
@@ -1382,11 +1405,11 @@ express Statement of Purpose.
  d. Affirmer understands and acknowledges that Creative Commons is not a
     party to this document and has no duty or obligation with respect to
     this CC0 or use of the Work.
-
-
+```
 
 ### `github.com/tadglines/go-pkgs`
 
+```text
 Copyright 2013 Tad Glines
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -1400,3 +1423,4 @@ Copyright 2013 Tad Glines
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+```

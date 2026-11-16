@@ -22,8 +22,8 @@
     "package:win": "tsx scripts/package-windows.ts",
     "prebuild": "pnpm build:process-supervisor && pnpm --filter @opensteer/browser-extension build",
     "prepare:release-resources": "tsx scripts/prepare-release-resources.ts",
-    "preprepare:release-resources": "pnpm build:process-supervisor",
-    "pretest": "pnpm build:process-supervisor && pnpm test:process-supervisor && pnpm test:personal-runtime-launcher",
+    "preprepare:release-resources": "pnpm build:process-supervisor && pnpm build:iphone-bridge",
+    "pretest": "pnpm build:process-supervisor && pnpm test:process-supervisor && pnpm test:personal-runtime-launcher && pnpm test:iphone-bridge",
     "start": "electron dist/main.js",
     "test": "vitest run --config vitest.config.ts",
     "test:electron-host-transport": "tsup --config scripts/tsup.electron-smoke.config.ts && electron .electron-smoke/electron-host-transport-smoke.js",
@@ -63,7 +63,9 @@
     "test:electron-quit:run": "tsx scripts/test-electron-quit.ts",
     "package:mac:contributor": "tsx scripts/package-contributor-macos.ts",
     "build:dictation-helper": "tsx scripts/build-dictation-helper.ts",
-    "build:passkeys-addon": "tsx scripts/build-passkeys-addon.ts"
+    "build:passkeys-addon": "tsx scripts/build-passkeys-addon.ts",
+    "build:iphone-bridge": "tsx scripts/build-iphone-bridge.ts",
+    "test:iphone-bridge": "go -C iphone-bridge test ./..."
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "catalog:",

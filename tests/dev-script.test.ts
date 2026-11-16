@@ -73,9 +73,15 @@ describe("development service selection", () => {
   it("builds the strict filesystem helper before starting a Runner", () => {
     expect(developmentPreflightCommands(["host", "runner", "web"])).toEqual([
       ["--filter", "@opensteer/runner", "build:native-fs"],
+      ...(process.platform === "darwin"
+        ? [["--filter", "@opensteer/desktop", "build:iphone-bridge"]]
+        : []),
     ]);
     expect(developmentPreflightCommands(["host", "web"])).toEqual([
       ["--filter", "@opensteer/runner", "build:native-fs"],
+      ...(process.platform === "darwin"
+        ? [["--filter", "@opensteer/desktop", "build:iphone-bridge"]]
+        : []),
     ]);
   });
 

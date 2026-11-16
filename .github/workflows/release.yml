@@ -148,6 +148,10 @@ jobs:
             apps/runner/native-fs-helper/go.sum
             apps/desktop/process-supervisor/go.mod
             apps/desktop/process-supervisor/go.sum
+            apps/desktop/iphone-bridge/go.mod
+            apps/desktop/iphone-bridge/go.sum
+            apps/desktop/iphone-bridge/third_party/go-ios/go.mod
+            apps/desktop/iphone-bridge/third_party/go-ios/go.sum
             apps/desktop/personal-runtime-launcher/go.mod
       - uses: actions/setup-java@816722acf8fd27c9d1e9ae6ee6085da07e0d44c1
         with:

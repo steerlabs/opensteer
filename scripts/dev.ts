@@ -80,9 +80,14 @@ export function developmentPreflightCommands(
   services: readonly ServiceName[],
   kind: ReturnType<typeof developmentKind> = "personal",
 ): readonly (readonly string[])[] {
-  return services.includes("runner") || (kind === "personal" && services.includes("host"))
-    ? [["--filter", "@opensteer/runner", "build:native-fs"]]
-    : [];
+  if (!services.includes("runner") && !(kind === "personal" && services.includes("host")))
+    return [];
+  return [
+    ["--filter", "@opensteer/runner", "build:native-fs"],
+    ...(process.platform === "darwin"
+      ? [["--filter", "@opensteer/desktop", "build:iphone-bridge"]]
+      : []),
+  ];
 }
 
 export async function runDevelopmentStack(

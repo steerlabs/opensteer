@@ -39,7 +39,7 @@ A development desktop runs the unsigned bridge from `apps/desktop/generated-nati
 (`darwin-amd64` on Intel):
 
 ```sh
-go -C apps/desktop/iphone-bridge build -o ../generated-native/darwin-arm64/opensteer-iphone-bridge .
+pnpm --filter @opensteer/desktop build:iphone-bridge
 ```
 
 A packaged desktop refuses a bridge without its `release.json` digest and Developer ID signature.
