@@ -91,6 +91,68 @@ func networkFailure(err error) *wire.Failure {
 	}
 	return f
 }
+
+// Withdrawal is durable even when the phone has no current transport.
+func (m *Manager) withdrawWifi(ctx context.Context, params *wire.ForgetBindingParams) error {
+	identity := params.UDID
+	owner := Owner{params.DeploymentID, params.HostInstanceID, params.RunnerID, params.DeviceID, params.DriverGeneration}
+	m.mu.Lock()
+	var phone *localPhone
+	for _, p := range m.phones {
+		if p.identity == identity {
+			phone = p
+			break
+		}
+	}
+	if phone != nil && phone.reservation != nil && phone.reservation.owner != owner {
+		m.mu.Unlock()
+		return wire.Fail(wire.OwnedElsewhere)
+	}
+	if phone == nil || phone.reservation == nil {
+		reservation, err := Reserve(m.root, identity, owner)
+		if err != nil {
+			m.mu.Unlock()
+			return err
+		}
+		if phone != nil {
+			phone.reservation = reservation
+		}
+		defer func() {
+			m.mu.Lock()
+			if phone != nil && phone.reservation == reservation {
+				phone.reservation = nil
+			}
+			_ = reservation.Close()
+			m.mu.Unlock()
+		}()
+	}
+	state := m.wifi[identity]
+	state.Enabled = false
+	state.Pair = nil
+	m.wifi[identity] = state
+	err := m.saveWifi()
+	m.mu.Unlock()
+	if phone != nil {
+		m.invalidateNetwork(phone)
+	}
+	if err != nil {
+		return err
+	}
+	if err := m.reconcile(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	if phone == nil || phone.entry.DeviceID == 0 {
+		m.mu.Unlock()
+		return nil
+	}
+	ref := wire.PhoneRef{LocalPhoneID: phone.id, NativeEpoch: phone.epoch}
+	m.mu.Unlock()
+	_, err = m.withPhone(ctx, ref, func(ctx context.Context, p *localPhone) (interface{}, error) {
+		return m.wifiSetup(ctx, p, "setup.disableWifi")
+	})
+	return err
+}
 func (m *Manager) wifiSetup(ctx context.Context, p *localPhone, method string) (interface{}, error) {
 	unlock, err := m.setupLock(p)
 	if err != nil {
@@ -104,7 +166,7 @@ func (m *Manager) wifiSetup(ctx context.Context, p *localPhone, method string) (
 	d := m.device(p)
 	m.mu.Lock()
 	state := m.wifi[p.identity]
-	active := p.session != nil
+	active := p.sessionID != ""
 	m.mu.Unlock()
 	if active && method != "setup.disableWifi" {
 		return nil, wire.Fail(wire.PhoneInUse)
@@ -121,14 +183,9 @@ func (m *Manager) wifiSetup(ctx context.Context, p *localPhone, method string) (
 		if err != nil {
 			return nil, err
 		}
-		lifetime, cancel := context.WithCancel(ctx)
-		session, err := m.usb.Open(lifetime, ctx, d)
-		if err != nil {
-			cancel()
+		if _, err := m.ensureTransport(ctx, p); err != nil {
 			return nil, err
 		}
-		_ = session.Close()
-		cancel()
 		if !state.Changed {
 			state.Previous = previous
 			state.Changed = !previous
@@ -175,13 +232,10 @@ func (m *Manager) wifiSetup(ctx context.Context, p *localPhone, method string) (
 		if d.Properties.ConnectionType != "USB" {
 			return nil, wire.Fail(wire.WifiPairingRequired)
 		}
-		lifetime, cancel := context.WithCancel(ctx)
-		defer cancel()
-		s, err := m.usb.Open(lifetime, ctx, d)
+		s, err := m.ensureTransport(ctx, p)
 		if err != nil {
 			return nil, err
 		}
-		defer s.Close()
 		x, err := s.OpenXPC(ctx, "com.apple.internal.dt.coredevice.untrusted.tunnelservice")
 		if err != nil {
 			return nil, networkFailure(err)

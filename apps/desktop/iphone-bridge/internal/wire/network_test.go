@@ -21,7 +21,8 @@ func TestWifiGoldenMessages(t *testing.T) {
 		params, _ := json.Marshal(PhoneRef{"fixture-phone", 3})
 		expected = append(expected, Request{Kind: "request", ProtocolVersion: 1, ID: uint64(i + 3), TimeoutMs: 10000, Method: method, Params: params})
 	}
-	expected = append(expected, Response{Kind: "response", ID: 5, Result: Roster{Revision: 4, Candidates: []Candidate{{LocalPhoneID: "fixture-phone", NativeEpoch: 3, Name: "iPhone", Transport: "wifi", Reason: WifiPhoneNotFound}}}})
+	reason := WifiPhoneNotFound
+	expected = append(expected, Response{Kind: "response", ID: 5, Result: Roster{Revision: 4, Candidates: []Candidate{{LocalPhoneID: "fixture-phone", NativeEpoch: 3, Name: "iPhone", Transport: "wifi", Reason: &reason}}}})
 	for i, reason := range []Reason{WifiNotEnabled, LocalNetworkPermissionRequired, WifiPhoneNotFound, WifiPairingRequired, WifiTransportUnsupported, WifiIdentityMismatch} {
 		expected = append(expected, Response{Kind: "response", ID: uint64(i + 6), Result: ErrorResult{Error: Fail(reason)}})
 	}

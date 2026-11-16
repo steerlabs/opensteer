@@ -34,6 +34,7 @@ export function IphoneWifiRow({
   const last = useRef<WifiAction>("enable");
   // Only the newest answer counts; an older status read can land after a change.
   const latest = useRef(0);
+  const mutation = useRef(0);
   const titleId = useId();
 
   useEffect(() => {
@@ -52,6 +53,7 @@ export function IphoneWifiRow({
 
   async function configure(action: WifiAction) {
     const mine = ++latest.current;
+    const change = ++mutation.current;
     last.current = action;
     setBusy(action);
     setFailure(null);
@@ -63,7 +65,7 @@ export function IphoneWifiRow({
     } catch {
       if (latest.current === mine) setFailure("native-service-failed");
     } finally {
-      if (latest.current === mine) setBusy(null);
+      if (mutation.current === change) setBusy(null);
     }
   }
 

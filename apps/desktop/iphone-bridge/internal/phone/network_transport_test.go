@@ -116,6 +116,7 @@ type wifiUSB struct {
 	enabled  bool
 	writes   []bool
 	writeErr error
+	opened   int
 }
 
 func (f *wifiUSB) WifiSetting(context.Context, ios.DeviceEntry) (bool, error) { return f.enabled, nil }
@@ -131,7 +132,27 @@ func (f *wifiUSB) Inspect(context.Context, ios.DeviceEntry) (Inspection, error) 
 	return Inspection{DeveloperMode: "enabled"}, nil
 }
 func (f *wifiUSB) Open(context.Context, context.Context, ios.DeviceEntry) (*Session, error) {
+	f.opened++
 	return &Session{}, nil
+}
+
+func TestWifiSetupReusesVerifiedIdleTransport(t *testing.T) {
+	m := newTestManager(t)
+	usb := &wifiUSB{}
+	m.usb = usb
+	id := "idle-wifi-fixture"
+	m.inventory.Replace([]ios.DeviceEntry{{DeviceID: 1, Properties: ios.DeviceProperties{SerialNumber: id, ConnectionType: "USB"}}})
+	if err := m.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	p := m.phones[m.identities[id]]
+	p.session = &Session{identity: id, announced: true, services: ios.RsdHandshakeResponse{Udid: id}}
+	if _, err := m.wifiSetup(context.Background(), p, "setup.enableWifi"); err != nil {
+		t.Fatal(err)
+	}
+	if usb.opened != 0 {
+		t.Fatal("Wi-Fi setup created a second RSD session beside the verified idle transport")
+	}
 }
 func TestWifiSettingRestoresOnlyAppChangeAndCanRetry(t *testing.T) {
 	for _, previous := range []bool{false, true} {
@@ -199,6 +220,7 @@ func TestCableInsertionPreservesHealthySessionThenPrefersUSB(t *testing.T) {
 	}
 	p := m.phones[m.identities[id]]
 	p.session = &Session{}
+	p.sessionID = "active"
 	epoch := p.epoch
 	usb := d
 	usb.DeviceID = 3
@@ -212,6 +234,7 @@ func TestCableInsertionPreservesHealthySessionThenPrefersUSB(t *testing.T) {
 	}
 	p.session.Close()
 	p.session = nil
+	p.sessionID = ""
 	if err := m.reconcile(); err != nil {
 		t.Fatal(err)
 	}
@@ -358,6 +381,60 @@ func TestWifiPairingStateIsPrivateAndMalformedStoreFailsClosed(t *testing.T) {
 	}
 	if err := m.loadWifi(); err == nil {
 		t.Fatal("readable-by-others pairing file was admitted")
+	}
+}
+
+func TestWithdrawWifiPersistsOfflineRestoreAndRemovesAdmission(t *testing.T) {
+	m := newTestManager(t)
+	usb := &wifiUSB{enabled: true}
+	m.usb = usb
+	id := "withdraw-fixture"
+	m.wifi[id] = wirelessState{Enabled: true, Changed: true, Previous: false}
+	owner := wire.ForgetBindingParams{UDID: id, DeploymentID: "deployment", HostInstanceID: "host", RunnerID: "runner", DeviceID: "device", DriverGeneration: 1}
+	params, _ := json.Marshal(owner)
+	if _, err := m.Call(context.Background(), wire.Request{Method: "setup.withdrawWifi", Params: params}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.loadWifi(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.forgetPrivateBinding(&owner); err != nil {
+		t.Fatal(err)
+	}
+	if m.wifi[id].Enabled || !m.wifi[id].Changed || len(m.roster().Candidates) != 0 {
+		t.Fatal("offline withdrawal did not retain restoration without admission")
+	}
+	d := ios.DeviceEntry{DeviceID: 1, Properties: ios.DeviceProperties{SerialNumber: id, ConnectionType: "USB"}}
+	m.inventory.Replace([]ios.DeviceEntry{d})
+	if err := m.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { m.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("USB return did not restore the setting")
+	}
+	if usb.enabled || m.wifi[id].Changed {
+		t.Fatal("pending restoration was lost")
+	}
+}
+
+func TestWifiWithdrawalCannotChangeAnotherDeploymentsPreference(t *testing.T) {
+	m := newTestManager(t)
+	id := "owned-wifi-fixture"
+	m.wifi[id] = wirelessState{Enabled: true, Changed: true}
+	owner := Owner{"deployment", "host", "runner", "device", 1}
+	reservation, err := Reserve(m.root, id, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = reservation.Close()
+	err = m.withdrawWifi(context.Background(), &wire.ForgetBindingParams{UDID: id, DeploymentID: "other-deployment", HostInstanceID: owner.HostInstanceID, RunnerID: owner.RunnerID, DeviceID: owner.DeviceID, DriverGeneration: owner.DriverGeneration})
+	failure(t, err, wire.OwnedElsewhere, "not-started")
+	if !m.wifi[id].Enabled {
+		t.Fatal("another Deployment withdrew Wi-Fi admission")
 	}
 }
 

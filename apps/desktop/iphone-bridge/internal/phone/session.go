@@ -29,17 +29,20 @@ type RSD interface {
 	Close() error
 }
 type Session struct {
-	mu        sync.Mutex
-	closeOnce sync.Once
-	closeErr  error
-	tunnel    *tunnel.Userspace
-	identity  string
-	services  ios.RsdHandshakeResponse
-	announced bool
-	newRSD    func(context.Context) (RSD, error)
-	screen    *screenSession
-	media     *MediaSession
-	closed    bool
+	mu          sync.Mutex
+	closeOnce   sync.Once
+	closeErr    error
+	tunnel      *tunnel.Userspace
+	identity    string
+	services    ios.RsdHandshakeResponse
+	announced   bool
+	newRSD      func(context.Context) (RSD, error)
+	screen      *screenSession
+	media       *MediaSession
+	closed      bool
+	state       DeviceState
+	stateReason wire.Reason
+	inputReason wire.Reason
 }
 
 func OpenSession(lifetime, setup context.Context, device ios.DeviceEntry) (*Session, error) {
@@ -172,7 +175,12 @@ func (s *Session) Close() error {
 	})
 	return s.closeErr
 }
-func (s *Session) Done() <-chan struct{} { return s.tunnel.Done() }
+func (s *Session) Done() <-chan struct{} {
+	if s.tunnel == nil {
+		return nil
+	}
+	return s.tunnel.Done()
+}
 func (s *Session) MediaReady() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -168,7 +168,12 @@ func (s *Session) StartMedia(lifetime, request context.Context) error {
 	go func() {
 		select {
 		case <-media.Done():
-			_ = s.Close()
+			s.mu.Lock()
+			current := s.media == media
+			s.mu.Unlock()
+			if current {
+				_ = s.Close()
+			}
 		case <-s.tunnel.Done():
 			_ = media.Close()
 		}

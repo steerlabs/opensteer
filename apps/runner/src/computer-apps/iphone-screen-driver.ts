@@ -211,6 +211,7 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
   readonly #assignments: AssignmentLane;
   #alive = true;
   #assignmentRevision = 0;
+  #retainedDeviceIds: readonly string[] | undefined;
   #sync: Promise<void> = Promise.resolve();
   constructor(
     bridge: IphoneScreenBridge,
@@ -238,8 +239,12 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
       }),
     ];
   }
-  replaceAssignments(assignments: readonly DeviceScreenDriverAssignment[]) {
+  replaceAssignments(
+    assignments: readonly DeviceScreenDriverAssignment[],
+    retainedDeviceIds?: readonly string[],
+  ) {
     if (!this.#alive) return;
+    this.#retainedDeviceIds = retainedDeviceIds;
     const wanted = new Map<string, DeviceScreenDriverAssignment>(
       assignments.map((a) => [a.deviceId, a]),
     );
@@ -274,7 +279,12 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
         try {
           const result = await this.#bridge.iphoneRequest(
             "iphone.targets",
-            { assignments: [...this.#phones.values()].map((p) => p.assignment) },
+            {
+              assignments: [...this.#phones.values()].map((p) => p.assignment),
+              ...(this.#retainedDeviceIds
+                ? { retainedDeviceIds: [...this.#retainedDeviceIds] }
+                : {}),
+            },
             { deadline: this.#now() + 5000 },
           );
           if (!this.#alive || revision !== this.#assignmentRevision) return;
@@ -557,8 +567,6 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
     snapshot: Snapshot,
     actions: IphoneScreenAction[],
   ): IphoneNativeAction[][] {
-    if (!phone.target?.ready)
-      failure("unsupported", "iPhone input is unavailable until native control is ready.");
     const point = (target: { index: number } | { x: number; y: number }) => {
       if ("index" in target)
         failure(
@@ -571,6 +579,13 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
       return { x: target.x, y: target.y };
     };
     return actions.map((action): IphoneNativeAction[] => {
+      const capabilities = phone.target?.capabilities;
+      const reason = action.type === "launch" ? capabilities?.launch : capabilities?.act;
+      if (reason || (!capabilities && !phone.target?.ready))
+        failure(
+          "unsupported",
+          `iPhone ${action.type} is unavailable: ${reason ?? phone.target?.reason ?? "not-initialized"}.`,
+        );
       if (
         ["locked", "protected", "screen-off"].includes(
           snapshot.public.screenshotUnavailable ?? "",
@@ -847,8 +862,8 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
     if (!phone || phone.assignment.generation !== target.driverGeneration) return;
     if (
       (phone.target && phone.target.nativeEpoch !== target.nativeEpoch) ||
-      (phone.session && phone.session.epoch !== target.nativeEpoch) ||
-      (target.ready === false && (phone.target?.ready === true || phone.session !== undefined))
+      (phone.session && phone.session.epoch > 0 && phone.session.epoch !== target.nativeEpoch) ||
+      (target.ready === false && phone.target?.ready === true)
     )
       this.#invalidate(phone, true);
     phone.target = target;
@@ -890,11 +905,42 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
   #status(phone: Phone, reason: string | null | undefined, observation = phone.latest?.native) {
     const available = reason === null;
     const capabilityReason = available ? null : iphoneCapabilityReason(reason);
+    const capabilities = phone.target?.capabilities;
     const inventoryReady =
       available ||
       (Boolean(phone.target?.nativeEpoch) &&
         (reason === "qualification-required" ||
           ["locked", "paused", "protected"].includes(capabilityReason?.kind ?? "")));
+    const operationReasons = {
+      observe: capabilities
+        ? capabilities.observe
+        : available
+          ? null
+          : (reason ?? "not-initialized"),
+      act: capabilities ? capabilities.act : available ? null : (reason ?? "not-initialized"),
+      close: null,
+      installed_apps: capabilities
+        ? capabilities.installedApps
+        : inventoryReady
+          ? null
+          : (reason ?? "not-initialized"),
+    };
+    const inputReady = operationReasons.act === null;
+    const selfApp = observation?.foreground?.appId === "com.opensteer.opensteer";
+    const actions: Extract<
+      PhoneScreenDriverEvent,
+      { type: "runner.integrations.device-status" }
+    >["actions"] = [];
+    if (available && observation) {
+      if (inputReady)
+        actions.push(
+          ...(selfApp
+            ? ["navigate" as const]
+            : (["tap", "longPress", "swipe", "drag", "scroll", "navigate"] as const)),
+        );
+      if (!selfApp && (!capabilities || capabilities.launch === null)) actions.push("launch");
+      actions.push("wait");
+    }
     this.#emit({
       deviceId: phone.assignment.deviceId,
       driverGeneration: phone.assignment.generation,
@@ -903,25 +949,17 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
       availability: available
         ? { state: "ready", reason: null }
         : { state: "unavailable", reason: capabilityReason },
-      operations: ["observe", "act", "close", "installed_apps"].map((operation) => ({
+      operations: (["observe", "act", "close", "installed_apps"] as const).map((operation) => ({
         operation,
-        state:
-          available || operation === "close" || (operation === "installed_apps" && inventoryReady)
-            ? ("ready" as const)
-            : ("unavailable" as const),
-        detail: null,
+        state: operationReasons[operation] === null ? "ready" : "unavailable",
+        detail: capabilities ? operationReasons[operation] : null,
         remedy: null,
       })),
-      navigationButtons: (observation?.buttons ?? []).map((id) => ({
+      navigationButtons: (inputReady ? (observation?.buttons ?? []) : []).map((id) => ({
         id,
         label: { home: "Home", lock: "Lock", volumeUp: "Volume up", volumeDown: "Volume down" }[id],
       })),
-      actions:
-        available && observation
-          ? observation.foreground?.appId === "com.opensteer.opensteer"
-            ? ["navigate", "wait"]
-            : ["tap", "longPress", "swipe", "drag", "scroll", "navigate", "launch", "wait"]
-          : [],
+      actions,
       wake: false,
       lock: observation
         ? observation.state.lock === "unknown"

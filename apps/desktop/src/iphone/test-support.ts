@@ -33,6 +33,9 @@ export class FakeIphoneNative implements IphoneNativeTransport {
   readonly held = new Map<string, Promise<void>>();
   readonly failures = new Map<string, Error>();
   epoch = 1;
+  probeReady = true;
+  control = false;
+  foreground: { appId: string; label: string } | null = null;
   readonly listeners = new Set<(event: Extract<IphoneNativeMessage, { kind: "event" }>) => void>();
   readonly lost = new Set<() => void>();
   roster: z.infer<typeof iphoneNativeRosterSchema> = {
@@ -46,7 +49,7 @@ export class FakeIphoneNative implements IphoneNativeTransport {
         osVersion: "27.0",
         build: "test",
         transport: "usb" as const,
-        reason: "qualification-required" as const,
+        reason: "not-initialized" as const,
       },
     ],
   };
@@ -57,6 +60,21 @@ export class FakeIphoneNative implements IphoneNativeTransport {
     if (failure) throw failure;
     let value: unknown = {};
     switch (method) {
+      case "binding.release":
+        this.roster = {
+          revision: this.roster.revision + 1,
+          candidates: this.roster.candidates.map(
+            ({ capabilities: _capabilities, ...candidate }) => ({
+              ...candidate,
+              reason: "not-initialized",
+            }),
+          ),
+        };
+        this.publish();
+        break;
+      case "binding.probe":
+        if (this.probeReady) this.ready(false);
+        break;
       case "roster.get":
       case "roster.subscribe":
         value = this.roster;
@@ -68,7 +86,13 @@ export class FakeIphoneNative implements IphoneNativeTransport {
         value = { bindingToken: "binding" };
         break;
       case "session.open":
+        this.control = (params as { access: string }).access === "control";
+        this.ready(this.control);
         value = { localPhoneId: "candidate", nativeEpoch: this.epoch };
+        break;
+      case "session.close":
+        this.control = false;
+        this.ready(false);
         break;
       case "setup.inspect":
       case "setup.prepareDeveloperServices":
@@ -86,6 +110,7 @@ export class FakeIphoneNative implements IphoneNativeTransport {
         };
         break;
       case "phone.observe":
+        this.ready(this.control);
         value = {
           nativeEpoch: this.epoch,
           observationToken: "observation",
@@ -99,7 +124,7 @@ export class FakeIphoneNative implements IphoneNativeTransport {
             rotation: 0,
           },
           state: { lock: "unlocked", display: "on", rotation: 0, displayId: 0 },
-          foreground: null,
+          foreground: this.foreground,
           coverage: {
             coordinateSpace: "unqualified",
             status: "partial",
@@ -124,6 +149,26 @@ export class FakeIphoneNative implements IphoneNativeTransport {
         break;
     }
     return schema.parse(value);
+  }
+  ready(control: boolean): void {
+    this.roster = {
+      revision: this.roster.revision + 1,
+      candidates: this.roster.candidates.map((candidate) => ({
+        ...candidate,
+        reason: null,
+        capabilities: {
+          observe: null,
+          act: control ? null : "input-media-session-required",
+          launch: null,
+          installedApps: null,
+          text: "unsupported-text",
+          clear: "unsupported-clear",
+          indexedTargets: "geometry-unavailable",
+          liveVideo: "unsupported",
+        },
+      })),
+    };
+    this.publish();
   }
   onEvent(listener: Parameters<IphoneNativeTransport["onEvent"]>[0]): () => void {
     this.listeners.add(listener);

@@ -135,17 +135,19 @@ export class IphoneSetup {
           if (
             !t.paired &&
             error instanceof IphoneServiceError &&
-            ["trust-required", "trust-pending"].includes(error.code)
+            ["trust-required", "trust-pending", "trust-denied", "pairing-revoked"].includes(
+              error.code,
+            )
           ) {
-            t.paired = true;
             await this.#service.pair(t.record, signal);
+            t.paired = true;
             inspection = await this.#service.inspect(t.record, signal);
           } else throw error;
         }
         if (inspection.pairing !== "paired") {
           if (!t.paired) {
-            t.paired = true;
             await this.#service.pair(t.record, signal);
+            t.paired = true;
           }
           throw new IphoneServiceError("trust-pending");
         }
@@ -222,10 +224,12 @@ export class IphoneSetup {
     if (t.busy || !t.record || t.state.step !== "wifi") throw new IphoneServiceError("no-session");
     t.busy = true;
     try {
-      if (action !== "skip") {
-        t.record = await this.#service.setupWifi(t.record, action, t.controller.signal);
-        t.state.wifiEnabled = t.record.wifiEnabledByOpensteer;
-      }
+      t.record = await this.#service.setupWifi(
+        t.record,
+        action === "skip" ? "disable" : action,
+        t.controller.signal,
+      );
+      t.state.wifiEnabled = t.record.wifiEnabledByOpensteer;
       this.#active(t);
       t.state.step = "attach";
       t.state.reason = null;

@@ -55,3 +55,24 @@ describe("Device admissions", () => {
     expect(order).toEqual(["first", "second", "queued"]);
   });
 });
+
+it("retains a detached Device in assignment snapshots until that Device is removed", async () => {
+  const deviceId = createId("device");
+  const runnerId = createId("runner");
+  let removedAt: Date | null = null;
+  const resolver = new DeviceDriverResolver({
+    store: {
+      getDevice: async () => ({ id: deviceId, removedAt, platform: "ios", kind: "phone" }),
+      listDeviceDrivers: async (input) =>
+        input?.includeDetached
+          ? [{ deviceId, runnerId, role: "screen", generation: 1, detachedAt: new Date() }]
+          : [],
+    },
+  });
+  await resolver.refresh();
+  expect(resolver.bindings()).toEqual([]);
+  expect(resolver.retainedScreenDeviceIds(runnerId)).toEqual([deviceId]);
+  removedAt = new Date();
+  await resolver.refresh();
+  expect(resolver.retainedScreenDeviceIds(runnerId)).toEqual([]);
+});

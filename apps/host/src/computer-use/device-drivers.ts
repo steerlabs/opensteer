@@ -24,7 +24,10 @@ interface DeviceTarget {
 interface Options {
   readonly store: {
     getDevice(deviceId: DeviceId): Promise<DeviceTarget | null>;
-    listDeviceDrivers(input?: { deviceId?: DeviceId }): Promise<readonly DeviceDriverRecord[]>;
+    listDeviceDrivers(input?: {
+      deviceId?: DeviceId;
+      includeDetached?: boolean;
+    }): Promise<readonly DeviceDriverRecord[]>;
   };
   readonly invalidated?: (binding: DeviceDriverIdentity) => void;
 }
@@ -34,6 +37,7 @@ export class DeviceDriverResolver {
   readonly #options: Options;
   readonly #bindings = new Map<DeviceId, readonly DeviceDriverIdentity[]>();
   readonly #devices = new Map<DeviceId, DeviceTarget>();
+  #screenDrivers: readonly DeviceDriverRecord[] = [];
   readonly #turns = new KeyedMutationQueue();
   readonly #refresh = new MutationQueue();
   #closed = false;
@@ -57,10 +61,11 @@ export class DeviceDriverResolver {
 
   refresh(): Promise<void> {
     return this.#refresh.run(async () => {
-      const drivers = await this.#options.store.listDeviceDrivers();
+      const drivers = await this.#options.store.listDeviceDrivers({ includeDetached: true });
       const ids = [...new Set(drivers.map((driver) => driver.deviceId))];
       const devices = await Promise.all(ids.map((id) => this.#options.store.getDevice(id)));
       if (this.#closed) return;
+      this.#screenDrivers = drivers.filter((driver) => driver.role === "screen");
       const next = new Map<DeviceId, DeviceDriverIdentity[]>();
       this.#devices.clear();
       for (const device of devices)
@@ -154,6 +159,15 @@ export class DeviceDriverResolver {
 
   bindings(): readonly DeviceDriverIdentity[] {
     return [...this.#bindings.values()].flat();
+  }
+  retainedScreenDeviceIds(runnerId: DeviceDriverIdentity["runnerId"]): DeviceId[] {
+    return [
+      ...new Set(
+        this.#screenDrivers
+          .filter((driver) => driver.runnerId === runnerId && this.#devices.has(driver.deviceId))
+          .map((driver) => driver.deviceId),
+      ),
+    ];
   }
   close(): void {
     this.#closed = true;

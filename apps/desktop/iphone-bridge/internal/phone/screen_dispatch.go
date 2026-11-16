@@ -23,12 +23,30 @@ func (m *Manager) screenCall(ctx context.Context, ref wire.ScreenRef, control bo
 			if !valid {
 				return wire.Fail(wire.StaleEpoch)
 			}
-			if control && (access != "control" || !session.MediaReady()) {
+			if control && access != "control" {
 				return wire.Fail(wire.MediaRequired)
 			}
 			return nil
 		}
-		return call(ctx, session.screenState(), guard)
+		result, err := call(ctx, session.screenState(), guard)
+		if observation, ok := result.(*Observation); ok {
+			session.mu.Lock()
+			session.state = observation.State
+			session.stateReason = ""
+			session.mu.Unlock()
+		} else if err != nil && !control {
+			session.mu.Lock()
+			session.state = unknownState()
+			session.stateReason = Classify(err, wire.NativeServiceFailed).Code
+			session.mu.Unlock()
+		}
+		m.mu.Lock()
+		m.revision++
+		m.mu.Unlock()
+		if m.publish != nil {
+			m.publish(m.roster())
+		}
+		return result, err
 	})
 }
 func (m *Manager) installedApps(ctx context.Context, p *wire.AppsParams) (interface{}, error) {
@@ -47,7 +65,11 @@ func (m *Manager) installedApps(ctx context.Context, p *wire.AppsParams) (interf
 		if !valid {
 			return nil, wire.Fail(wire.NoSession)
 		}
-		apps, err := readInstalledApps(ctx, m.device(phone))
+		session, err := m.ensureTransport(ctx, phone)
+		if err != nil {
+			return nil, err
+		}
+		apps, err := readInstalledApps(ctx, session)
 		if err != nil {
 			return nil, err
 		}
@@ -93,16 +115,35 @@ func (m *Manager) screenOperation(ctx context.Context, params interface{}) (inte
 					apps[id] = true
 				}
 			}
-			deviceEntry := phone
+			var nativeSession *Session
+			if phone != nil {
+				nativeSession = phone.session
+			}
 			m.mu.Unlock()
+			if nativeSession == nil {
+				return nil, wire.Fail(wire.NoSession)
+			}
+			nativeGuard := guard
+			guard = func() error {
+				if err := nativeGuard(); err != nil {
+					return err
+				}
+				for _, action := range p.Actions {
+					switch action.Kind {
+					case "tap", "longPress", "swipe", "drag", "navigate", "type", "clear":
+
+						if !nativeSession.MediaReady() {
+							return wire.Fail(wire.MediaRequired)
+						}
+					}
+				}
+				return nil
+			}
 			for _, action := range p.Actions {
 				if action.Kind != "launch" {
 					continue
 				}
-				if deviceEntry == nil {
-					return nil, wire.Fail(wire.NoSession)
-				}
-				inventory, err := readInstalledApps(ctx, m.device(deviceEntry))
+				inventory, err := readInstalledApps(ctx, nativeSession)
 				if err != nil {
 					return nil, err
 				}

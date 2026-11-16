@@ -226,7 +226,7 @@ export class IphoneBridgeClient implements IphoneNativeTransport {
     }
     this.#fail();
   }
-  #fail(): void {
+  #fail(terminate = true): void {
     if (this.#closed) return;
     this.#closed = true;
     for (const pending of [...this.#pending.values()])
@@ -237,13 +237,13 @@ export class IphoneBridgeClient implements IphoneNativeTransport {
         ),
       );
     for (const listener of this.#lost) listener();
-    void this.#process.terminate(0).catch(() => undefined);
+    if (terminate) void this.#process.terminate(0).catch(() => undefined);
   }
   close(): Promise<void> {
     this.#closing ??= (async () => {
-      this.#fail();
+      this.#fail(false);
       this.#process.child.stdin.end();
-      await this.#process.terminate(0);
+      await this.#process.terminate(5000);
     })();
     return this.#closing;
   }
