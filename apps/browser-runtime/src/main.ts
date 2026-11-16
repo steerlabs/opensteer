@@ -4,7 +4,6 @@ import {
   BrowserRuntimeError,
   Ed25519AttachTicketVerifier,
   defaultAttachTicketReplayLedgerPath,
-  nativeProfileReadyClient,
   sessionFilesRoot,
   type BrowserRuntimeOptions,
 } from "@opensteer/browser-runtime-core";
@@ -58,7 +57,6 @@ async function start(config: ReturnType<typeof readBrowserRuntimeConfig>): Promi
   const runtimeOptions: BrowserRuntimeOptions = {
     memoryBudgetBytes: config.memoryBudgetBytes,
     localProfiles: { root: config.profileRoot },
-    acknowledgeProfileReady: nativeProfileReadyClient(config.profileReadyTrustedHttpOrigin),
     launcher,
     onOpenTiming: (timing) =>
       process.stdout.write(

@@ -12,6 +12,7 @@ import {
   type BrowserClientMessage,
   type BrowserRuntimeServerMessage,
   type LocalProfileBinding,
+  type ProtocolError,
 } from "@opensteer/protocol";
 import {
   validateBrowserRuntimeFrame,
@@ -42,14 +43,21 @@ export interface BrowserChannelSink {
 
 export class BrowserRelayError extends Error {
   readonly retryable: boolean;
+  /** The Browser Runtime's own refusal, relayed as it sent it. */
+  readonly runtimeError: ProtocolError | undefined;
 
   constructor(
     message: string,
-    options: { readonly cause?: unknown; readonly retryable?: boolean } = {},
+    options: {
+      readonly cause?: unknown;
+      readonly retryable?: boolean;
+      readonly runtimeError?: ProtocolError;
+    } = {},
   ) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = "BrowserRelayError";
     this.retryable = options.retryable ?? false;
+    this.runtimeError = options.runtimeError;
   }
 }
 
@@ -255,7 +263,12 @@ export class LocalBrowserRuntimeBridge {
           }
           const message = BrowserRuntimeServerMessageSchema.parse(value);
           if (message.type === "browser.error")
-            readiness.reject(new BrowserRelayError(message.error.message));
+            readiness.reject(
+              new BrowserRelayError(message.error.message, {
+                retryable: message.error.retryable,
+                runtimeError: message.error,
+              }),
+            );
           sink.onServerMessage(channelId, message);
         }
       } catch {
@@ -289,6 +302,7 @@ export class LocalBrowserRuntimeBridge {
     } catch (error) {
       this.#channels.delete(channelId);
       socket.terminate();
+      if (error instanceof BrowserRelayError && error.runtimeError) throw error;
       throw new BrowserRelayError("The local browser runtime rejected the relay.", {
         cause: error,
         retryable: true,

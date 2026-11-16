@@ -49,7 +49,6 @@ import { RunPlaceRecorder } from "../agents/run-place-recorder.js";
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   OpensteerError,
-  UserIdSchema,
   RunnerIdSchema,
   RunIdSchema,
   type AgentEvent,
@@ -932,58 +931,6 @@ export class BrowserService {
     return Boolean(this.#targetResolver) && !this.#closed;
   }
 
-  async acknowledgeNativeProfileReady(
-    profileId: BrowserProfileId,
-    ticket: string,
-    requestSignal?: AbortSignal,
-  ): Promise<void> {
-    const claims = this.#signer.readNativeReady(ticket);
-    const expiresAt = Date.parse(claims.operationExpiresAt);
-    const remaining = Math.max(1, expiresAt - Date.now());
-    const deadline = AbortSignal.timeout(remaining);
-    const signal = requestSignal ? AbortSignal.any([requestSignal, deadline]) : deadline;
-    await withDatabaseOperationSignal(signal, expiresAt, () =>
-      withTimeout(
-        (async () => {
-          if (
-            claims.identity.kind !== "profile-local" ||
-            claims.identity.binding.profileId !== profileId ||
-            !this.#localProfiles
-          )
-            throw new OpensteerError({
-              code: "forbidden",
-              message: "Native profile readiness authority does not match.",
-            });
-          const session = await this.#repository.getBrowserSessionForOwner(
-            claims.sessionId,
-            UserIdSchema.parse(claims.subject),
-          );
-          if (
-            !session ||
-            session.profileId !== profileId ||
-            session.runnerId !== claims.identity.binding.runnerId ||
-            session.runtimeId !== claims.runtimeId ||
-            isTerminal(session.state)
-          )
-            throw new OpensteerError({
-              code: "forbidden",
-              message: "Native profile readiness session has ended.",
-            });
-          await this.#localProfiles.acknowledgeReady(claims.identity.binding);
-        })(),
-        remaining,
-        {
-          signal,
-          timeoutError: () =>
-            new OpensteerError({
-              code: "conflict",
-              reason: "browser-open.timeout",
-              message: "Native profile readiness timed out. Retry opening the profile.",
-            }),
-        },
-      ),
-    );
-  }
   async initialize(): Promise<void> {
     const failed = await this.#repository.failActiveBrowserSessions();
     await this.pruneHistory();
@@ -4703,18 +4650,30 @@ export class BrowserService {
             signIn: target.main === true && target.signIn === true,
             stateImport: target.stateImport === true,
             onState: (state) => {
-              const transition = () =>
-                this.#transitionBrowserSession({
+              // Abort waits on the ready frame, so a held row lock must not outlive the attach deadline.
+              const budget =
+                readinessBudget ??
+                (state === "ready"
+                  ? {
+                      signal: new AbortController().signal,
+                      expiresAt: Date.now() + this.#connectTimeoutMs,
+                    }
+                  : undefined);
+              const transition = async () => {
+                if (
+                  state === "ready" &&
+                  localIdentity?.kind === "profile-local" &&
+                  !localIdentity.initialized
+                )
+                  await this.#localProfiles!.acknowledgeReady(localIdentity.binding);
+                return this.#transitionBrowserSession({
                   ...(state === "ready" ? { from: ["starting", "ready"] as const } : {}),
                   sessionId,
                   state,
                 });
-              return readinessBudget
-                ? withDatabaseOperationSignal(
-                    readinessBudget.signal,
-                    readinessBudget.expiresAt,
-                    transition,
-                  )
+              };
+              return budget
+                ? withDatabaseOperationSignal(budget.signal, budget.expiresAt, transition)
                 : transition();
             },
             onTerminal: async () => {

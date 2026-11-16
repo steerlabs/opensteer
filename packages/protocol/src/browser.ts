@@ -131,6 +131,7 @@ export const BrowserAttachTicketIdentitySchema = z.discriminatedUnion("kind", [
     kind: z.literal("profile-local"),
     binding: LocalProfileBindingSchema,
     initialized: z.boolean(),
+    // Unused; retained because older phones require this identity key.
     readyUrl: z.url().max(8192),
   }),
 ]);

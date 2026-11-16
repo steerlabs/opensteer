@@ -1,4 +1,3 @@
-import { OpensteerError } from "@opensteer/core";
 import type { PersonFillVersion } from "@opensteer/protocol";
 import {
   BrowserAttachTicketClaimsSchema,
@@ -6,8 +5,7 @@ import {
   type BrowserAttachTicketIdentity,
   type BrowserSessionId,
 } from "@opensteer/protocol/browser";
-import { createPublicKey, randomBytes, sign, verify, type KeyObject } from "node:crypto";
-import { z } from "zod";
+import { randomBytes, sign, type KeyObject } from "node:crypto";
 
 const ticketType = "opensteer-browser-attach+jwt";
 
@@ -72,51 +70,6 @@ export class BrowserAttachTicketSigner {
       throw new TypeError("Browser attach ticket lifetime must be from 1 through 300 seconds.");
     }
     this.#privateKey = options.privateKey;
-  }
-
-  /** Readiness can only acknowledge the exact native binding already signed for attach. */
-  readNativeReady(ticket: string): BrowserAttachTicketClaims {
-    const reject = () =>
-      new OpensteerError({
-        code: "forbidden",
-        message: "Native profile readiness authority is invalid or expired.",
-      });
-    try {
-      if (
-        ticket.length > 16_384 ||
-        !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(ticket)
-      )
-        throw reject();
-      const [header, payload, signature] = ticket.split(".") as [string, string, string];
-      z.strictObject({
-        alg: z.literal("EdDSA"),
-        kid: z.literal(this.#keyId),
-        typ: z.literal(ticketType),
-      }).parse(JSON.parse(Buffer.from(header, "base64url").toString("utf8")));
-      if (
-        !verify(
-          null,
-          Buffer.from(`${header}.${payload}`, "ascii"),
-          createPublicKey(this.#privateKey),
-          Buffer.from(signature, "base64url"),
-        )
-      )
-        throw reject();
-      const claims = BrowserAttachTicketClaimsSchema.parse(
-        JSON.parse(Buffer.from(payload, "base64url").toString("utf8")),
-      );
-      const now = this.#clock().getTime();
-      if (
-        claims.identity.kind !== "profile-local" ||
-        Date.parse(claims.issuedAt) > now ||
-        Date.parse(claims.expiresAt) <= now ||
-        Date.parse(claims.operationExpiresAt) <= now
-      )
-        throw reject();
-      return claims;
-    } catch {
-      throw reject();
-    }
   }
 
   issue(input: IssueBrowserAttachTicketInput): string {

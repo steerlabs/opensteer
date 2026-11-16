@@ -37,7 +37,6 @@ import { TabSleeper } from "./browser/tab-sleeper.js";
 import { SurfaceLedger } from "./browser/surface-ledger.js";
 import { BrowserRuntimeError, toBrowserRuntimeError } from "./errors.js";
 import { LocalProfileStore, sameLocalBinding } from "./local-profile-store.js";
-import { acknowledgeNativeProfileReady, type NativeProfileReady } from "./native-profile-ready.js";
 import { HostRelayAuthenticator } from "./passkeys/host-relay.js";
 import type { AttachTicketVerifier } from "./security/attach-ticket.js";
 export type BrowserRuntimeState = "closed" | "closing" | "idle" | "ready" | "starting";
@@ -54,7 +53,6 @@ export interface BrowserRuntimeOptions {
    * application lock or standalone OS lock). Only one live runtime may use it.
    */
   localProfiles?: { readonly root: string };
-  acknowledgeProfileReady?: NativeProfileReady;
   runtimeId: string;
   /** Emptied on first use; each live session stages page-bound files beneath it. */
   sessionFilesRoot: string;
@@ -215,7 +213,6 @@ export class BrowserRuntime implements NativePresentationSource {
   private readonly runtimeId: string;
   private readonly sessionFilesRoot: string;
   private preparation: Promise<void> | undefined;
-  private readonly acknowledgeProfileReady: NativeProfileReady;
   private readonly onHostCleanupFailure: NonNullable<BrowserRuntimeOptions["onHostCleanupFailure"]>;
   private readonly onStartFailure: NonNullable<BrowserRuntimeOptions["onStartFailure"]>;
   private readonly sessions = new Map<string, ActiveSession>();
@@ -271,7 +268,6 @@ export class BrowserRuntime implements NativePresentationSource {
           this.reportHostCleanupFailure("fresh", "retire", error),
         ),
     });
-    this.acknowledgeProfileReady = options.acknowledgeProfileReady ?? acknowledgeNativeProfileReady;
     this.onOpenTiming = options.onOpenTiming ?? (() => {});
     this.onHostCleanupFailure =
       options.onHostCleanupFailure ??
@@ -710,7 +706,7 @@ export class BrowserRuntime implements NativePresentationSource {
         const sessionGeneration = ++this.generation;
         let stage = "profile-state";
         try {
-          const acquired = await this.acquireHost(claims, hostKey, ticket, signal);
+          const acquired = await this.acquireHost(claims, hostKey, signal);
           if (!acquired.host) throw new Error("Browser acquisition returned no host.");
           host = acquired.host;
           createdHost = acquired.createdHost;
@@ -893,7 +889,6 @@ export class BrowserRuntime implements NativePresentationSource {
   private async acquireHost(
     claims: BrowserAttachTicketClaims,
     hostKey: BrowserPartitionKey,
-    ticket: string,
     signal: AbortSignal = new AbortController().signal,
   ): Promise<{
     host: BrowserHost | undefined;
@@ -957,8 +952,6 @@ export class BrowserRuntime implements NativePresentationSource {
               this.launcher.localProfiles!.createFiles(directory, identity.binding, signal),
             signal,
           );
-          if (!identity.initialized)
-            await wait(this.acknowledgeProfileReady(identity, ticket, signal));
         }
         assertCurrent();
         stage = "context-launch";

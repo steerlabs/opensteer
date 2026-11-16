@@ -131,6 +131,34 @@ describe("LocalBrowserRuntimeBridge", () => {
       await f.close();
     }
   });
+  it("relays the runtime's own refusal before attachment and keeps transport failures generic", async () => {
+    const f = await fixture();
+    const error = {
+      code: "conflict",
+      message: "Browser Session open-1 could not initialize (profile-state).",
+      reason: "session-start.profile-state",
+      retryable: false,
+    } as const;
+    f.sockets.once("connection", (socket) => {
+      socket.send(JSON.stringify({ type: "browser.error", error }));
+      f.sockets.once("connection", (next) => next.close(1011, "runtime stopped"));
+    });
+    const sink = { onClosed() {}, onFrame() {}, onServerMessage() {} };
+    try {
+      await expect(
+        f.bridge.attach(BrowserChannelIdSchema.parse(`bch_${randomUUID()}`), "abc.def.ghi", sink),
+      ).rejects.toMatchObject({ message: error.message, runtimeError: error });
+      await expect(
+        f.bridge.attach(BrowserChannelIdSchema.parse(`bch_${randomUUID()}`), "abc.def.ghi", sink),
+      ).rejects.toMatchObject({
+        message: "The local browser runtime rejected the relay.",
+        retryable: true,
+        runtimeError: undefined,
+      });
+    } finally {
+      await f.close();
+    }
+  });
   it("reads the runtime's health projection without mistaking additive facts for failure", async () => {
     const f = await fixture();
     try {

@@ -859,8 +859,7 @@ export class PhoneBrowserManager {
         this.#createTab(
           session,
           session.initialId,
-          claims.initialNavigation?.url ??
-            (identity.kind === "profile-local" ? identity.readyUrl : "about:blank"),
+          claims.initialNavigation?.url ?? "about:blank",
           claims.viewport,
           claims.initialNavigation?.navigationId,
         ),

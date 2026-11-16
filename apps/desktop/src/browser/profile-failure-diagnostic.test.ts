@@ -18,6 +18,14 @@ it("reports cause locations and filesystem codes without messages or website dat
     },
   });
   expect(JSON.stringify(diagnostic)).not.toMatch(/secret|private.test|token|cookie|key/u);
+  const network = Object.assign(new Error("connect ECONNREFUSED 10.0.0.5:4310"), {
+    code: "ECONNREFUSED",
+    address: "10.0.0.5",
+    port: 4310,
+  });
+  const fetchFailure = profileFailureDiagnostic(new TypeError("fetch failed", { cause: network }));
+  expect(fetchFailure).toMatchObject({ cause: { code: "ECONNREFUSED" } });
+  expect(JSON.stringify(fetchFailure)).not.toMatch(/10\.0\.0\.5|4310/u);
 });
 
 it("bounds cyclic causes and refuses arbitrary diagnostic names and codes", () => {
