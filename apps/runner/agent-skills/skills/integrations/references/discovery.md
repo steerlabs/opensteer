@@ -16,7 +16,7 @@
 - `guidance` — setup and recovery rules, present only when something in this response needs them:
   the catalog, readiness codes, computers and phones. Apply them to each row’s facts; a missing `inUse` means no other task holds it.
   Tool readiness omits a detail repeated by its server; read that server’s detail too.
-- `nextOffset` / `operationNextOffset` page `results` and `operations` only.
+- `nextCursor` pages `results` and `operations` only; pass it back as `cursor`.
 
 The optional `provider` argument filters `results` and `operations`, and only orders `catalog`;
 it never removes a catalog entry. An installed integration
