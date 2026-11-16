@@ -156,6 +156,7 @@ export interface IntegrationTestOptions {
  * would run before that hold.
  */
 export const integrationPrerequisites = [
+  { filter: "apps", script: "build", output: "vendor/plugin-engine/apps/dist/runtime.json" },
   {
     filter: "@opensteer/browser-runtime",
     script: "build",

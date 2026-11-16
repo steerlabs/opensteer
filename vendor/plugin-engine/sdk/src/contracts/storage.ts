@@ -1,0 +1,158 @@
+import type { WorkflowRunId } from "apps/contracts";
+import { appSlug } from "./app-slug.ts";
+/** Persisted records. Decode database results with these schemas before use. */
+import { Effect, Schema, Struct } from "effect";
+import { Account } from "./account.ts";
+import { AccountScope, AppFields, AppRequirements } from "./apps.ts";
+import { Version } from "./version.ts";
+import {
+  ApprovalRequestId,
+  WebhookId,
+  AccountId,
+  AppCodeId,
+  OwnerId,
+  JsonObject,
+  CredentialsError,
+  StorageError,
+} from "./shared.ts";
+import { AccountConnectionDestination } from "./account-connection.ts";
+import type { Redacted } from "effect";
+import type { OAuthClientId, OAuthAttemptId } from "./oauth.ts";
+
+/**
+ * Account metadata plus an opaque encrypted credential envelope. The future
+ * credential adapter owns its format and keys; plaintext fields are not a
+ * database column. Public account responses use Account, not this record.
+ */
+export const StoredAccount = Schema.Struct({
+  ...Account.fields,
+  encryptedCredentials: Schema.RedactedFromValue(Schema.Uint8Array),
+  credentialGeneration: Schema.Int,
+  /** Hosts the account was connected for, or null when it was connected without hosts. */
+  allowedHosts: Schema.NullOr(Schema.Array(Schema.String)),
+});
+/** Parsed account storage record; encrypted bytes remain redacted in memory. */
+export type StoredAccount = typeof StoredAccount.Type;
+
+/**
+ * Requirements belong to the immutable code version. These are declared
+ * account slots, not the account-dependent tool catalog.
+ */
+export const StoredVersion = Schema.Struct({
+  ...Version.mapFields(Struct.omit(["files"])).fields,
+  fileCount: Schema.Int.check(Schema.isGreaterThan(0)),
+  requirements: AppRequirements,
+});
+/** Parsed version storage record with its declared account requirements. */
+export type StoredVersion = typeof StoredVersion.Type;
+
+/**
+ * An app stores its source identity and active version; callers choose its accounts.
+ * Public App.requirements is read from that version rather than duplicated.
+ */
+export const StoredApp = Schema.Struct({
+  ...AppFields.mapFields(Struct.omit(["requirements"])).fields,
+  deploySequence: Schema.Int,
+  activatedSequence: Schema.Int,
+})
+  // Storage keeps the column's former name, `active_deployment`.
+  .pipe(Schema.encodeKeys({ activeVersion: "activeDeployment" }))
+  .check(
+    Schema.makeFilter((app) => app.slug === appSlug(app.name), {
+      message: "The app address must match its current name",
+    }),
+  );
+/** Parsed configured app storage record, without derived requirements. */
+export type StoredApp = typeof StoredApp.Type;
+
+/**
+ * The `accountConnections.state` column. `failure` holds an `AccountConnectionFailure` encoded in
+ * the error vocabulary of the release that recorded it. Readers decode it apart from the status:
+ * a failure whose reason, stage or code a later release removed is left out, never breaking the
+ * connection. See notes/oauth.md, "Failure reasons".
+ */
+export const StoredConnectionState = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("pending"), failure: Schema.optional(Schema.Json) }),
+  Schema.Struct({ status: Schema.Literal("cancelled") }),
+  Schema.Struct({ status: Schema.Literal("completed"), account: Account }),
+]);
+export type StoredConnectionState = typeof StoredConnectionState.Type;
+
+/**
+ * Frozen target intent; completion checks the app still requires the same provider there, in the
+ * same scope. Connections saved before scopes were recorded were started for profiles, which are
+ * user links.
+ */
+export const StoredConnectionTarget = Schema.Struct({
+  ...AccountConnectionDestination.fields,
+  owner: OwnerId,
+  scope: AccountScope.pipe(Schema.withDecodingDefaultKey(Effect.succeed("user" as const))),
+});
+export type StoredConnectionTarget = typeof StoredConnectionTarget.Type;
+
+/** Atomic product writes beside SDK writes are host-only, outside the public HTTP/Promise facade. */
+export const StorageHost = Symbol("pluginEngine.StorageHost");
+/**
+ * Hosts keep product tables in the same database as the pluginEngine. This is the one tracked
+ * transaction boundary: product SQL inside it shares the pluginEngine's connection, and SDK operations
+ * called inside it join the same transaction. Wrapping SDK calls in a raw SQL transaction fails.
+ */
+export interface StorageHost {
+  readonly transaction: <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E | StorageError, R>;
+  /**
+   * Product SQL names the product tables it reads, so live queries that read them run again after
+   * a tracked write commits. Names must not collide with the pluginEngine's own tables.
+   */
+  readonly read: <A, E, R>(
+    tables: ReadonlyArray<string>,
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E, R>;
+  /**
+   * Product SQL names the product tables it changes. Inside {@link StorageHost.transaction} they
+   * are published when it commits; a standalone statement publishes once it succeeds.
+   */
+  readonly write: <A, E, R>(
+    tables: ReadonlyArray<string>,
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E, R>;
+}
+/** The host owns encryption and key custody. Ciphertexts are bound to their stable resource identity. */
+export interface Credentials {
+  readonly encrypt: (
+    identity:
+      | AccountId
+      | AppCodeId
+      | OAuthClientId
+      | OAuthAttemptId
+      | ApprovalRequestId
+      | WebhookId
+      | WorkflowRunId
+      | import("./events.ts").EventSubscriptionId
+      | import("./events.ts").StoredEventId,
+    fields: Redacted.Redacted<JsonObject>,
+  ) => Effect.Effect<Uint8Array, CredentialsError>;
+  readonly decrypt: (
+    identity:
+      | AccountId
+      | AppCodeId
+      | OAuthClientId
+      | OAuthAttemptId
+      | ApprovalRequestId
+      | WebhookId
+      | WorkflowRunId
+      | import("./events.ts").EventSubscriptionId
+      | import("./events.ts").StoredEventId,
+    bytes: Redacted.Redacted<Uint8Array>,
+  ) => Effect.Effect<Redacted.Redacted<JsonObject>, CredentialsError>;
+  /**
+   * A keyed digest of a secret value under the host's key, so stored data can find it again
+   * without holding it or a digest anyone without the key could guess. Equal for equal `purpose`
+   * and `value`; never equal across purposes.
+   */
+  readonly fingerprint: (
+    purpose: string,
+    value: Redacted.Redacted<string>,
+  ) => Effect.Effect<string, CredentialsError>;
+}

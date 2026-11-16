@@ -1,0 +1,451 @@
+/** Node composition for Alchemy's workerd app runtime and native workflow engine. */
+import {
+  Runtime as LocalRuntime,
+  layerLocalRuntime,
+  type BindingHook,
+} from "@alchemy.run/cloudflare-runtime/core";
+import {
+  DurableObjectNamespace,
+  Json as JsonBinding,
+  Loopback,
+  WorkerLoader,
+  Workflows,
+} from "@alchemy.run/cloudflare-runtime/core/bindings";
+import * as AlchemyPlugin from "@alchemy.run/cloudflare-runtime/core/Plugin";
+import { Internet, InternetLive } from "@alchemy.run/cloudflare-runtime/core/globals/Internet";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { WebSocket as NodeWebSocket } from "ws";
+import { newWebSocketRpcSession, type RpcStub } from "capnweb";
+import {
+  Cause,
+  ConfigProvider,
+  Effect,
+  FileSystem,
+  Layer,
+  Option,
+  Path,
+  Queue,
+  Redacted,
+  Schema,
+  Stream,
+  type Scope,
+} from "effect";
+import { Hex } from "effect/encoding";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+
+import { WorkflowFailure, WorkflowRunId } from "apps/contracts";
+import { WorkflowBackendState, type WorkflowRuntime } from "../contracts/workflow-runtime.ts";
+import { type WorkerdAppApi } from "../contracts/workerd-host.ts";
+import { type BlobStorage } from "../contracts/blobs.ts";
+import {
+  EvaluatedCommandJson,
+  EvaluatedReplyJson,
+  type EvaluatedCommand,
+} from "@opensteer/plugin-engine-app-data/evaluated";
+
+import { RuntimeBuildFailed, RuntimeProtocolFailed } from "../contracts/runtime.ts";
+import type { PluginEngine } from "../contracts/pluginEngine.ts";
+import type { DurableDeclarations } from "../contracts/declarations.ts";
+import { runtimeAdapter } from "./runtime.ts";
+
+import { connectedWorkerdApps, TransportClosed, workerdHostHandler } from "./workerd-client.ts";
+import { workerdHostModules } from "./workerd-bundle.ts";
+import { appWorkerIdleSeconds, appWorkerLimit } from "./app-worker-residency.ts";
+import { runtimeHops, type SocketRecord } from "./runtime-hop.ts";
+import { repeatingAtConnect, repeatUnopened, type Opening } from "./runtime-connect.ts";
+
+/** Existing stores need an explicit migration; opening a new empty store would hide retained app data. */
+export class WorkerdMigrationRequired extends Schema.TaggedError<WorkerdMigrationRequired>()(
+  "WorkerdMigrationRequired",
+  { directory: Schema.String },
+) {}
+/**
+ * workerd's `internet` service backs every global fetch, and Alchemy configures it to allow
+ * private and loopback addresses because the host worker and local development need them. A
+ * second network service carries the public-only rule, so app isolates can be pointed at it
+ * through `globalOutbound` without changing the network the host itself uses. The refusal
+ * happens in workerd after DNS resolution, so a public name that resolves to 127.0.0.1 is
+ * refused too.
+ */
+const PUBLIC_EGRESS_SERVICE = "internet:public";
+/** Environment name of the public-only network service inside the workerd host worker. */
+const PUBLIC_EGRESS_BINDING = "PUBLIC_FETCH";
+class PublicEgress extends AlchemyPlugin.Service<PublicEgress>()(
+  "cloudflare-runtime/plugin/pluginEngine-public-egress",
+) {}
+const publicEgress = Layer.effect(
+  PublicEgress,
+  Effect.map(Internet, (internet) => ({
+    services: [
+      {
+        name: PUBLIC_EGRESS_SERVICE,
+        // A getter, like Alchemy's own service, so added CA certificates are read per config build.
+        get network() {
+          // Same TLS trust as the default network. Only the destination rule differs.
+          return {
+            ...("network" in internet ? internet.network : undefined),
+            allow: ["public"],
+            deny: [],
+          };
+        },
+      },
+    ],
+  })),
+).pipe(Layer.provide(InternetLive));
+const publicEgressBinding: BindingHook = Effect.succeed({
+  name: PUBLIC_EGRESS_BINDING,
+  service: { name: PUBLIC_EGRESS_SERVICE },
+});
+/**
+ * The product's own listener, reached as a workerd external service rather than through a
+ * network service. App requests for the dashboard origin use it, so they never depend on what
+ * that origin's name resolves to.
+ */
+const SELF_ORIGIN_SERVICE = "pluginEngine:self-origin";
+class SelfOriginService extends AlchemyPlugin.Service<SelfOriginService>()(
+  "cloudflare-runtime/plugin/pluginEngine-self-origin",
+) {}
+const selfOriginService = (address: string) =>
+  Layer.succeed(SelfOriginService, {
+    services: [{ name: SELF_ORIGIN_SERVICE, external: { address, http: {} } }],
+  });
+const selfOriginBinding: BindingHook = Effect.succeed({
+  name: "SELF",
+  service: { name: SELF_ORIGIN_SERVICE },
+});
+
+const engineFailure = () => new WorkflowFailure({ reason: "engine", retryable: true });
+const protocolFailure = () => new RuntimeProtocolFailed();
+
+/**
+ * The credential handle secret for an instance: HMAC-SHA256 of a fixed label under its
+ * encryption key, so it differs from every other use of that key. The packaged self-host host
+ * derives it the same way. Handles sealed by earlier versions, under a per-process secret or the
+ * packaged image's constant, do not open under it and are refused with `credential_app`; apps
+ * get new handles on their next invocation. See notes/provider-authoring.md.
+ */
+const credentialHandleSecret = (encryptionKey: Redacted.Redacted<string>) =>
+  Effect.promise(async () => {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(Redacted.value(encryptionKey)),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const signature = await crypto.subtle.sign(
+      "HMAC",
+      key,
+      new TextEncoder().encode("pluginEngine credential handles"),
+    );
+    return Hex.encode(new Uint8Array(signature));
+  });
+
+/** App-facing callbacks are scoped to the already-authorized invocation, never looked up by arbitrary IDs. */
+/** Own one workerd process for authored apps and workflows. Agent execute(code) is unrelated. */
+export const workerdApps = (options: {
+  readonly directory: string;
+  readonly blobs: BlobStorage;
+  readonly pluginEngine: Effect.Effect<PluginEngine>;
+  readonly legacyDataDirectories?: readonly string[];
+  /**
+   * Let authored app code reach loopback and private address space. Hosted Cloudflare never
+   * does. Local development needs it, because the bundled PluginEngine app calls this process on
+   * 127.0.0.1. Self-host leaves it off unless an operator opts in for an internal service.
+   */
+  readonly allowPrivateAppFetch?: boolean;
+  /**
+   * The dashboard origin and the local address that serves it. App requests for that origin
+   * go straight to the address, so the bundled PluginEngine app works when the origin's name
+   * resolves to a private address and private app fetch is off.
+   */
+  readonly selfOrigin?: { readonly origin: string; readonly address: string };
+  /** The npm registry app builds resolve packages from. Defaults to the public registry. */
+  readonly npmRegistry?: string;
+  /**
+   * The instance's encryption key. The apps Worker seals credential handles with a secret derived
+   * from it, so handles keep working across restarts with the same key and the key itself never
+   * reaches workerd. Handles sealed before an instance upgraded to this derivation are refused.
+   */
+  readonly encryptionKey: Redacted.Redacted<string>;
+}): Effect.Effect<
+  {
+    readonly runtime: ReturnType<typeof runtimeAdapter>;
+    readonly workflows: WorkflowRuntime;
+    readonly declarations: DurableDeclarations;
+  },
+  RuntimeBuildFailed | WorkerdMigrationRequired | WorkflowFailure,
+  Scope.Scope
+> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem,
+      path = yield* Path.Path,
+      http = yield* HttpClient.HttpClient;
+    for (const directory of options.legacyDataDirectories ?? []) {
+      if ((yield* fs.exists(directory)) && (yield* fs.readDirectory(directory)).length > 0)
+        return yield* new WorkerdMigrationRequired({ directory });
+    }
+    const handler = yield* workerdHostHandler(options);
+    // The runtime reads extra V8 flags for the workerd it starts from this variable. `gc` lets each
+    // app bridge collect its isolate's garbage after a call; see worker-bridge.ts. Without
+    // `--no-flush-liftoff-code`, each new isolate drops and recompiles the build's WebAssembly code
+    // and the process keeps the dropped pages; see the self-host runtime config.
+    const flags = (process.env.ALCHEMY_WORKERD_V8_FLAGS ?? "").split(/\s+/).filter(Boolean);
+    process.env.ALCHEMY_WORKERD_V8_FLAGS = [
+      ...flags,
+      ...["--expose-gc", "--no-flush-liftoff-code"].filter((flag) => !flags.includes(flag)),
+    ].join(" ");
+    const runtimeContext = yield* Layer.build(
+      layerLocalRuntime({ directory: options.directory }).pipe(
+        // Registered as runtime plugins so their services reach the generated workerd config.
+        Layer.provide(publicEgress),
+        Layer.provide(
+          options.selfOrigin === undefined
+            ? Layer.empty
+            : selfOriginService(options.selfOrigin.address),
+        ),
+        Layer.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
+        Layer.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromUnknown({
+              CLOUDFLARE_RUNTIME_HOME: path.join(options.directory, "runtime"),
+            }),
+          ),
+        ),
+      ),
+    );
+    const engine = yield* LocalRuntime.pipe(Effect.provideContext(runtimeContext));
+    // A workerd that exits on its own, such as when V8 runs out of heap, is replaced on the same
+    // ports, and every RPC session into it breaks. Record each replacement so a failed call can be
+    // matched to one. Only the exit's code and signal are kept: its stderr can quote app output.
+    const services = yield* Effect.context<never>();
+    let restarts = 0;
+    let lastRestartAt: number | undefined;
+    const restarted = (exit: {
+      readonly exitCode: number | null;
+      readonly signal: string | null;
+    }) => {
+      restarts += 1;
+      lastRestartAt = performance.now();
+      Effect.runForkWith(services)(
+        Effect.logWarning("App runtime restarted").pipe(
+          Effect.annotateLogs({
+            restarts,
+            ...(exit.exitCode === null ? {} : { exitCode: exit.exitCode }),
+            ...(exit.signal === null ? {} : { signal: exit.signal }),
+          }),
+        ),
+      );
+    };
+    const secret = crypto.randomUUID();
+    const privateAppFetch = options.allowPrivateAppFetch === true;
+    const origin = yield* engine
+      .start({
+        name: "pluginEngine-apps",
+        compatibilityDate: "2026-07-30",
+        // The trusted host worker keeps the default network. Only app isolates are restricted.
+        compatibilityFlags: ["nodejs_compat", "no_brotli_content_encoding"],
+        modules: yield* workerdHostModules,
+        durableObjectNamespaces: [
+          { className: "AppDataSupervisor", sql: true, uniqueKey: "pluginEngine-app-data" },
+        ],
+        workflows: [{ workflowName: "pluginEngine-app-workflows", className: "AppWorkflows" }],
+        bindings: [
+          WorkerLoader.local("LOADER"),
+          DurableObjectNamespace.local({ binding: "DATA", className: "AppDataSupervisor" }),
+          Workflows.local({
+            binding: "RUNS",
+            workflowName: "pluginEngine-app-workflows",
+            className: "AppWorkflows",
+          }),
+          JsonBinding.local("AUTH", secret),
+          JsonBinding.local(
+            "CREDENTIAL_SECRET",
+            yield* credentialHandleSecret(options.encryptionKey),
+          ),
+          JsonBinding.local("APPS_PRIVATE_FETCH", privateAppFetch),
+          JsonBinding.local("APP_WORKERS", Option.getOrNull(yield* appWorkerLimit)),
+          JsonBinding.local(
+            "APP_WORKER_IDLE_SECONDS",
+            Option.getOrNull(yield* appWorkerIdleSeconds),
+          ),
+          publicEgressBinding,
+          JsonBinding.local("SELF_ORIGIN", options.selfOrigin?.origin ?? ""),
+          JsonBinding.local("NPM_REGISTRY", options.npmRegistry ?? ""),
+          ...(options.selfOrigin === undefined ? [] : [selfOriginBinding]),
+          Loopback.local({ binding: "HOST", name: "pluginEngine-workflow-host", handler }),
+        ],
+        // Raw authored console output is not a host log. Apps return bounded telemetry through their protocol.
+        logging: { onOutput: () => {} },
+        onRestart: restarted,
+      })
+      .pipe(Effect.provideContext(runtimeContext));
+    const headers = { authorization: `Bearer ${secret}` };
+    // How far a failed exchange with the runtime got, with its restarts; see runtime-hop.ts. A
+    // supervisor's probe events would go in `probe`.
+    const hops = runtimeHops({
+      restarts: () => ({ count: restarts, lastAt: lastRestartAt }),
+      probe: () => ({}),
+    });
+    const websocketUrl = (pathname: string) => {
+      const url = new URL(pathname, origin);
+      url.protocol = "ws:";
+      return url.href;
+    };
+    // Loopback RPC does not need compression. With permessage-deflate negotiated between
+    // ws and workerd, frames written after a large compressed invocation are sometimes never
+    // delivered to the host Worker. The session then waits forever for its result.
+    const connect = (pathname: string) =>
+      new NodeWebSocket(websocketUrl(pathname), { headers, perMessageDeflate: false });
+    // An RPC exchange sends nothing until its socket has opened. One whose socket never opened is
+    // run once more from `session`'s start; see runtime-connect.ts.
+    const rpc = <A, E>(
+      work: (api: RpcStub<WorkerdAppApi>, signal: AbortSignal) => Effect.Effect<A, E>,
+    ) =>
+      repeatUnopened((opening) =>
+        session(opening, (api, signal) => Effect.andThen(opening.opened, () => work(api, signal))),
+      );
+    const session = <A, E>(
+      opening: Opening,
+      work: (api: RpcStub<WorkerdAppApi>, signal: AbortSignal) => Effect.Effect<A, E>,
+    ) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const lifetime = yield* Effect.acquireRelease(
+            Effect.sync(() => new AbortController()),
+            (controller) => Effect.sync(() => controller.abort()),
+          );
+          let socketRecord: SocketRecord | undefined;
+          const peer = yield* Effect.acquireRelease(
+            Effect.sync(() => {
+              const socket = connect("/rpc");
+              // Measured only, for a failed call's span: see runtime-hop.ts.
+              socketRecord = hops.track(socket);
+              opening.watch(socket);
+              // Registered before Cap'n Web's own listeners, so the session knows its socket
+              // closed by the time it breaks; see `TransportClosed`.
+              let closed = false;
+              const close = () => {
+                closed = true;
+              };
+              socket.on("close", close);
+              socket.on("error", close);
+              // SAFETY: ws implements the WebSocket methods used by Cap'n Web's transport;
+              // its Node-specific constructor only supplies the private authorization header.
+              const peer = newWebSocketRpcSession<WorkerdAppApi>(
+                socket as unknown as WebSocket,
+                undefined,
+                { onSendError: () => new Error("App host callback failed") },
+              );
+              peer.onRpcBroken(() => lifetime.abort(closed ? TransportClosed : undefined));
+              return peer;
+            }),
+            (peer) =>
+              Effect.promise(async () => {
+                lifetime.abort();
+                try {
+                  await peer.cancel();
+                } finally {
+                  peer[Symbol.dispose]();
+                }
+              }).pipe(Effect.catchCause(() => Effect.void)),
+          );
+          return yield* hops.rpc(() => socketRecord, work(peer, lifetime.signal));
+        }),
+      );
+    const changes = (app: string) =>
+      Stream.callback<number, RuntimeProtocolFailed>(
+        (queue) =>
+          Effect.gen(function* () {
+            const socket = yield* Effect.acquireRelease(
+              Effect.sync(() => connect(`/changes?app=${encodeURIComponent(app)}`)),
+              (socket) => Effect.sync(() => socket.close()),
+            );
+            const changed = (data: import("ws").RawData) => {
+              try {
+                const { revision } = Schema.decodeUnknownSync(
+                  Schema.fromJsonString(Schema.Struct({ revision: Schema.Int })),
+                )(data.toString());
+                Queue.offerUnsafe(queue, revision);
+              } catch {
+                Queue.failCauseUnsafe(queue, Cause.fail(protocolFailure()));
+              }
+            };
+            const failed = () => {
+              Queue.failCauseUnsafe(queue, Cause.fail(protocolFailure()));
+            };
+            socket.on("message", changed);
+            socket.on("close", failed);
+            // Keep the error listener for the socket's whole life. Closing a socket that is
+            // still connecting emits "error" after release; with no listener, the EventEmitter
+            // throws and terminates the host process. Failing the finished queue is a no-op.
+            socket.on("error", failed);
+            yield* Effect.addFinalizer(() =>
+              Effect.sync(() => {
+                socket.off("message", changed);
+                socket.off("close", failed);
+              }),
+            );
+          }),
+        { bufferSize: 1, strategy: "sliding" },
+      );
+    // workerd closes an idle keep-alive connection after 5 seconds, and reconciliation polls
+    // every 5 seconds. A pooled socket can then close while a request is written to it, and
+    // the fetch fails with a transport error. Each workflow request asks for its connection to be
+    // closed after the response. Bun can still send it on an idle pooled connection, which only a
+    // request without that header would leave; none to this origin does.
+    const backend = (operation: "start" | "status" | "terminate", run: WorkflowRunId) =>
+      repeatingAtConnect(
+        Effect.gen(function* () {
+          const request = yield* HttpClientRequest.post(new URL("/workflow", origin), {
+            headers: { ...headers, connection: "close" },
+          }).pipe(HttpClientRequest.bodyJson({ operation, run }));
+          return yield* hops.http("/workflow", http.execute(request), (response) =>
+            Effect.gen(function* () {
+              if (response.status !== 200) return yield* engineFailure();
+              return yield* response.json.pipe(
+                Effect.flatMap(Schema.decodeUnknownEffect(WorkflowBackendState)),
+              );
+            }),
+          );
+        }),
+      ).pipe(Effect.mapError(engineFailure));
+    // Each command asks for its connection to be closed after the response, like workflow requests
+    // above.
+    const evaluated = (app: string, command: EvaluatedCommand) =>
+      repeatingAtConnect(
+        Effect.gen(function* () {
+          const url = new URL("/evaluated", origin);
+          url.searchParams.set("app", app);
+          const request = HttpClientRequest.post(url, {
+            headers: { ...headers, connection: "close" },
+          }).pipe(
+            HttpClientRequest.bodyText(
+              yield* Schema.encodeEffect(EvaluatedCommandJson)(command),
+              "application/json",
+            ),
+          );
+          return yield* hops.http("/evaluated", http.execute(request), (response) =>
+            Effect.gen(function* () {
+              if (response.status !== 200) return yield* protocolFailure();
+              return yield* response.text.pipe(
+                Effect.flatMap(Schema.decodeUnknownEffect(EvaluatedReplyJson)),
+              );
+            }),
+          );
+        }),
+      ).pipe(Effect.mapError(protocolFailure));
+    return yield* connectedWorkerdApps(options.blobs, { rpc, changes, evaluated, backend });
+  }).pipe(
+    Effect.provide(NodeServices.layer),
+    Effect.provide(FetchHttpClient.layer),
+    Effect.catchCause((cause) => {
+      const error = Cause.squash(cause);
+      if (Cause.hasInterrupts(cause)) return Effect.interrupt;
+      return Effect.fail(
+        Schema.is(WorkerdMigrationRequired)(error) || Schema.is(RuntimeBuildFailed)(error)
+          ? error
+          : engineFailure(),
+      );
+    }),
+  );

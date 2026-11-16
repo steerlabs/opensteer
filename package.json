@@ -51,7 +51,9 @@
     "bench:mac-display": "tsx scripts/bench-mac-display.ts",
     "bench:browser-stream": "tsx scripts/bench-browser-stream.ts",
     "dev:team": "tsx scripts/dev.ts team",
-    "verify:team-deployment": "node scripts/verify-team-deployment.mjs"
+    "verify:team-deployment": "node scripts/verify-team-deployment.mjs",
+    "import:plugin-engine": "node scripts/plugin-engine/import.mjs",
+    "check:plugin-engine-names": "node scripts/plugin-engine/names.mjs"
   },
   "devDependencies": {
     "@babel/parser": "7.29.8",
@@ -73,6 +75,15 @@
     "vitest": "4.1.10",
     "ws": "catalog:",
     "yaml": "catalog:",
-    "zod": "catalog:"
+    "zod": "catalog:",
+    "@opensteer/plugin-engine-sdk": "workspace:*",
+    "@opensteer/plugin-engine-mcp": "workspace:*",
+    "@opensteer/plugin-engine-app-source": "workspace:*",
+    "@opensteer/plugin-engine-catalog": "workspace:*",
+    "apps": "workspace:*",
+    "effect": "4.1.4",
+    "@effect/platform-node": "4.1.4",
+    "@effect/sql-pg": "4.1.4",
+    "pg": "catalog:"
   }
 }

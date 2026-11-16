@@ -1,0 +1,46 @@
+{
+  "name": "@opensteer/plugin-engine-database",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Effect-native unified schema, query, and migration layer for library authors. A port of pluginDatabase to Effect v4 and Effect SQL.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./src/schema.ts",
+    "./query": "./src/query.ts",
+    "./adapter": "./src/adapter.ts",
+    "./migration": "./src/migration.ts",
+    "./sql": "./src/sql.ts",
+    "./cli": "./src/cli.ts",
+    "./package.json": "./package.json",
+    "./pglite": "./src/pglite.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node ../../../scripts/plugin-engine/build.mjs"
+  },
+  "dependencies": {
+    "@paralleldrive/cuid2": "3.3.0",
+    "effect": "4.1.4"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "4.1.4",
+    "@effect/sql-pg": "4.1.4",
+    "@effect/sql-pglite": "4.1.4",
+    "typescript": "catalog:",
+    "@types/node": "catalog:"
+  },
+  "peerDependencies": {
+    "@effect/sql-pglite": "4.1.4"
+  },
+  "peerDependenciesMeta": {
+    "@effect/sql-pglite": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

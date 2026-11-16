@@ -1,0 +1,93 @@
+/** Runtime storage and the explicit, transactional migration boundary. */
+import { Effect, Option } from "effect";
+import { SqlClient } from "effect/sql";
+import { sqlAdapter } from "@opensteer/plugin-engine-database/sql";
+import type { Provider as SqlProvider } from "@opensteer/plugin-engine-database";
+import { makeReactiveStore } from "@opensteer/plugin-engine-reactivity";
+import { StorageError } from "../contracts/shared.ts";
+import { bindOrm } from "./reactive-orm.ts";
+import {
+  currentIndexes,
+  pluginEngineDatabase,
+  storageSchemas,
+  trailingStorageIndexVersions,
+} from "./storage-migrations.ts";
+import { storageMigrationFailed } from "./storage-migration-error.ts";
+import { makeToolSearchStore } from "./tool-search-store.ts";
+
+/** The version a new database is created at, reported when creating it fails. */
+const latestVersion = storageSchemas.at(-1)?.version;
+
+/** Capture caller-owned SQL. Migrations accept only fresh or supported version 4 databases. */
+export const makePluginEngineStorage = (options: { readonly provider: SqlProvider }) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const reactivity = yield* makeReactiveStore({ namespace: "pluginEngine" });
+    const client = pluginEngineDatabase.client(sqlAdapter({ provider: options.provider }));
+    const db = bindOrm(client.orm("4.0.17"), sql, reactivity);
+    const checkMigration = Effect.gen(function* () {
+      const migrator = yield* client.createMigrator;
+      const version = yield* migrator.version;
+      if (Option.isNone(version)) return;
+      if (!storageSchemas.some((entry) => entry.version === version.value))
+        return yield* new StorageError();
+    }).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.mapError((cause) => storageMigrationFailed(cause)),
+    );
+    const upgrade = (stopAt: ReadonlySet<string>) =>
+      Effect.gen(function* () {
+        yield* checkMigration;
+        const migrator = yield* client.createMigrator;
+        const version = yield* migrator.version;
+        if (Option.isNone(version)) {
+          // A new database needs the current layout and all of its indexes, not
+          // historical data conversions. PluginDatabase's direct diff omits custom steps.
+          // Its tables are empty, so no index build waits on or blocks a writer.
+          yield* Effect.gen(function* () {
+            yield* (yield* migrator.migrateToLatest()).execute;
+            yield* Effect.forEach(currentIndexes, (statement) => sql.unsafe(statement).unprepared, {
+              discard: true,
+            });
+          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, latestVersion)));
+          return;
+        }
+        // Execute every registered upgrade in order. A direct diff to latest can skip
+        // an intermediate guard, data conversion, or custom index operation. The pending
+        // versions are known here, so nothing reads the database after the last upgrade.
+        const current = storageSchemas.findIndex((entry) => entry.version === version.value);
+        for (const entry of storageSchemas.slice(current + 1)) {
+          if (stopAt.has(entry.version)) return;
+          yield* Effect.gen(function* () {
+            yield* (yield* migrator.up()).execute;
+          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, entry.version)));
+        }
+      }).pipe(
+        sql.withTransaction,
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.mapError((cause) => storageMigrationFailed(cause)),
+      );
+    /** Every upgrade except the trailing index-only versions, which `migrate` then runs. */
+    const migrateTables = upgrade(trailingStorageIndexVersions);
+    const migrate = upgrade(new Set());
+    /** The version the database records; none before its first migration. */
+    const version = Effect.gen(function* () {
+      const migrator = yield* client.createMigrator;
+      return Option.getOrUndefined(yield* migrator.version);
+    }).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.mapError(() => new StorageError()),
+    );
+    return {
+      orm: (_version: "4.0.17") => db,
+      reactivity,
+      // Search rows are derived data no reactive reader watches, ranked by SQL the ORM cannot express.
+      toolSearch: makeToolSearchStore(sql),
+      checkMigration,
+      migrateTables,
+      migrate,
+      version,
+    };
+  });
+/** Caller-owned, Effect-native persistence with commit-driven subscriptions. */
+export type PluginEngineDatabase = Effect.Success<ReturnType<typeof makePluginEngineStorage>>;

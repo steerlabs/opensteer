@@ -1,0 +1,25 @@
+{
+  "name": "@opensteer/plugin-engine-telemetry",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./failed-span": "./src/failed-span.ts",
+    "./recorded-failure": "./src/recorded-failure.ts",
+    "./schema-issue": "./src/schema-issue.ts",
+    "./http": "./src/http.ts",
+    "./browser": "./src/browser.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node ../../../scripts/plugin-engine/build.mjs"
+  },
+  "dependencies": {
+    "effect": "4.1.4",
+    "@opensteer/plugin-engine-utils": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "@types/node": "catalog:"
+  }
+}

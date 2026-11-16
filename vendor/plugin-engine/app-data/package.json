@@ -1,0 +1,32 @@
+{
+  "name": "@opensteer/plugin-engine-app-data",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./contracts": "./src/contracts/database.ts",
+    "./worker-bundle": "./src/contracts/worker-bundle.ts",
+    "./cloudflare": "./src/cloudflare.ts",
+    "./evaluated": "./src/contracts/evaluated.ts",
+    "./host-api": "./src/contracts/host-api.ts"
+  },
+  "dependencies": {
+    "@opensteer/plugin-engine-app-cache": "workspace:*",
+    "effect": "4.1.4"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260729.1",
+    "@effect/platform-node": "4.1.4",
+    "@effect/sql-sqlite-do": "4.1.4",
+    "esbuild": "0.28.2",
+    "miniflare": "4.20260730.0",
+    "undici": "7.16.0",
+    "typescript": "catalog:",
+    "@types/node": "catalog:"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node ../../../scripts/plugin-engine/build.mjs"
+  }
+}

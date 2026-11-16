@@ -327,6 +327,15 @@ const realRepo = {
 const real = (files, event = "pull_request") =>
   decide(files, realGraph, realGraph, { event, repo: realRepo });
 test("real graph includes every workspace dependency kind", () => {
+  assert.equal(
+    realGraph.find((entry) => entry.name === "@opensteer/plugin-engine-sdk")?.dir,
+    "vendor/plugin-engine/sdk",
+  );
+  assert.ok(
+    real(["vendor/plugin-engine/sdk/src/index.ts"]).typecheck.includes(
+      "@opensteer/plugin-engine-sdk",
+    ),
+  );
   assert.ok(realGraph.length > 40);
   assert.ok(realGraph.find((p) => p.name === "@opensteer/host").deps.length);
 });

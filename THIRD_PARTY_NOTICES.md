@@ -38,6 +38,8 @@ SOFTWARE.
 Portions of `packages/integration-auth` and `packages/integration-adapters` are derived from
 [Executor](https://github.com/UsefulSoftwareCo/executor).
 
+The vendored source in `vendor/plugin-engine` is imported from snapshot `59ad4395588e3241223aca6e83d66e5369ccf4f2`.
+
 MIT License
 
 Copyright (c) 2026 Rhys Sullivan
