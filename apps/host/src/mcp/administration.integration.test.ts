@@ -3,7 +3,7 @@ import {
   enrollTestRunner,
   personalBrowserRepository,
 } from "@opensteer/database/test-support/store";
-import { createId, SpecialistManifestSchema, type UserId } from "@opensteer/core";
+import { createId, DeviceIdSchema, SpecialistManifestSchema, type UserId } from "@opensteer/core";
 import {
   IntegrationPlatformStore,
   BrowserSourceStore,
@@ -219,7 +219,7 @@ describeStore("MCP administration", (it) => {
           different = { name: "Changed" };
           person = {
             type: "machine.rename",
-            machineId: run.runnerId,
+            machineId: DeviceIdSchema.parse(run.runnerId),
             name: "B",
             idempotencyKey: randomUUID(),
           };
