@@ -44,8 +44,8 @@ import {
 const noThreadContext = {
   teamTurnContext: null,
   assignment: null,
-  requesterTimeZone: null,
   threadState: { previousAssignment: null, previousRun: null },
+  startedAt: "2026-08-22T00:00:00.000Z",
 };
 
 const fakeAgent = fileURLToPath(new URL("./test-fixtures/fake-cursor-agent.mjs", import.meta.url));

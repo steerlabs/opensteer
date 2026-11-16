@@ -4963,7 +4963,7 @@ describe("RunnerRuntime", () => {
     expect(events.at(-1)?.type).toBe("run.interrupted");
   });
 
-  it("hands the engine the requester's time zone the Host stated for the Run", async () => {
+  it("runs a Run from an older Host that still states a requester time zone", async () => {
     const session = new RecordingHarnessSession();
     const driver = new FakeHarnessDriver("recording-driver", () => session);
     const registry = new HarnessRegistry();
@@ -4983,8 +4983,8 @@ describe("RunnerRuntime", () => {
       expect(session.turns[0]?.context).toEqual({
         teamTurnContext: null,
         assignment: null,
-        requesterTimeZone: "America/New_York",
         threadState: { previousAssignment: null, previousRun: null },
+        startedAt: expect.any(String),
       });
     } finally {
       await runtime.close();
@@ -6049,7 +6049,6 @@ function executeCommand(
       providerSessionStateLayout: "thread",
       providerSessionReference: null,
       requestedBy: createId("user"),
-      requesterTimeZone: null,
       runId: createId("run"),
       threadId: createId("thread"),
       taskPurpose: "task",

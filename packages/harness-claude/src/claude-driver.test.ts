@@ -65,13 +65,18 @@ import {
 const noThreadContext = {
   assignment: null,
   teamTurnContext: null,
-  requesterTimeZone: null,
   threadState: { previousAssignment: null, previousRun: null },
+  startedAt: "2026-08-22T00:00:00.000Z",
 };
 
-/** A Run's first input, which opens with the Run's thread context. */
+/** A person's input, under when they sent it. */
+function person(text: string): string {
+  return `Sent: Saturday, August 22, 2026, 12:00 AM UTC (2026-08-22T00:00+00:00).\n\n${text}`;
+}
+
+/** A Run's first input, a person's, which opens with the Run's thread context. */
 function opening(text: string): string {
-  return `${harnessThreadContextPrompt(noThreadContext)}\n\n${text}`;
+  return `${harnessThreadContextPrompt(noThreadContext)}\n\n${person(text)}`;
 }
 
 const temporaryDirectories: string[] = [];
@@ -2177,7 +2182,7 @@ describe("Claude Agent SDK harness", () => {
 
     expect(received).toEqual([
       userInput(opening("Keep working"), { currentRunContext: noComputersNotice }),
-      userInput("Wrap up soon", { priority: "next" }),
+      userInput(person("Wrap up soon"), { priority: "next" }),
     ]);
     expect(normalizedTypes(observer.events)).toEqual(["run.interrupted"]);
     await adapter.close();

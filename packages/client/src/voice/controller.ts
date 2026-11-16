@@ -260,6 +260,7 @@ export class VoiceController {
         environmentId: opened.environmentId,
         harnessInstanceId: opened.harnessInstanceId,
         rpc: this.#input.hostClient.rpc,
+        origin: this.#input.hostClient.messageOrigin?.(),
         media,
         createId: () => session.id,
       });

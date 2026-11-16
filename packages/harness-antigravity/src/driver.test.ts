@@ -530,8 +530,8 @@ async function setupTurn(scenario: TurnScenario, deadlineMs = 500) {
         context: {
           teamTurnContext: null,
           assignment: null,
-          requesterTimeZone: null,
           threadState: { previousAssignment: null, previousRun: null },
+          startedAt: "2026-08-22T00:00:00.000Z",
         },
         environment,
         inputs: [

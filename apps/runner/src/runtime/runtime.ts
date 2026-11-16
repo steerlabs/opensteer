@@ -3011,7 +3011,7 @@ export class RunnerRuntime {
           context: {
             teamTurnContext: context.teamTurnContext,
             assignment: context.assignment,
-            requesterTimeZone: context.requesterTimeZone,
+            startedAt: new Date().toISOString(),
             threadState: context.threadState,
           },
           environment,

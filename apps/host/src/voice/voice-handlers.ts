@@ -5,6 +5,7 @@ import {
   type AgentEvent,
   type EnvironmentId,
   type HarnessInstanceId,
+  type MessageOrigin,
   type UserId,
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
@@ -172,6 +173,7 @@ export function createVoiceHandlers(dependencies: {
       sessionId: string;
       environmentId: EnvironmentId;
       harnessInstanceId: HarnessInstanceId;
+      origin?: MessageOrigin | undefined;
     },
     context: HostApiServerContext,
   ) => {
@@ -182,6 +184,7 @@ export function createVoiceHandlers(dependencies: {
         sessionId: input.sessionId,
         environmentId: input.environmentId,
         harnessInstanceId: input.harnessInstanceId,
+        ...(input.origin ? { origin: input.origin } : {}),
       });
       for (const event of call.events) dependencies.publishDeploymentEvent?.(event);
       if (!call.busy) return call;

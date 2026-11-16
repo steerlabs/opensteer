@@ -59,6 +59,7 @@ import {
   ThreadTitleSchema,
   ThreadViewSchema,
   TimeZoneSchema,
+  type MessageOrigin,
   compareSequence,
   defaultTaskSymbol,
   emptyExecutionPreferences,
@@ -407,6 +408,8 @@ export interface HttpHostClientOptions {
   readonly passkeys?: BrowserPasskeyPort;
   /** The viewer's command platform for exact baseline shortcut projection. */
   readonly viewerPlatform?: "mac" | "pc";
+  /** This app and device, stated with each message a person sends from it. */
+  readonly origin?: Omit<MessageOrigin, "timeZone">;
   /** Verified by the connection owner for this client’s attachment. Null is unknown. */
   readonly capabilities?: readonly HostCapability[] | null | HostCapabilityReader;
   readonly browserPreferencesStorage?: BrowserPreferencesStorage;
@@ -890,8 +893,10 @@ export class HttpHostClient {
 
   readonly #deviceAccessRequests: boolean;
   readonly #viewerPlatform: "mac" | "pc" | null;
+  readonly #origin: Omit<MessageOrigin, "timeZone"> | undefined;
   constructor(options: HttpHostClientOptions) {
     this.#deviceAccessRequests = options.deviceAccessRequests === "include";
+    this.#origin = options.origin;
     this.#streamCache = options.streamCache;
     this.browserPasskeys = new BrowserPasskeys(options.passkeys);
     this.#viewerPlatform = options.viewerPlatform ?? null;
@@ -1119,7 +1124,7 @@ export class HttpHostClient {
 
   async dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput> {
     const parsedCommand = hostApi["commands.dispatch"].payload.parse(
-      browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes),
+      this.#withOrigin(browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes)),
     );
     const needsDevices =
       parsedCommand.type === "machine.session.bind" ||
@@ -1136,6 +1141,19 @@ export class HttpHostClient {
       return this.#setThreadIcon(parsedCommand);
     }
     return this.#dispatchCommand(parsedCommand);
+  }
+
+  /** The zone is read at send time: a phone that crossed zones says so on its next message. */
+  messageOrigin(): MessageOrigin | undefined {
+    if (!this.#origin || !this.#capabilities?.includes("message-origin-v1")) return undefined;
+    const timeZone = TimeZoneSchema.safeParse(deviceTimeZone());
+    return { ...this.#origin, ...(timeZone.success ? { timeZone: timeZone.data } : {}) };
+  }
+
+  #withOrigin(command: HostApiCommandInput): HostApiCommandInput {
+    if (command.type !== "thread.sendMessage" || command.origin) return command;
+    const origin = this.messageOrigin();
+    return origin ? { ...command, origin } : command;
   }
 
   async #dispatchCommand(parsedCommand: HostApiCommand): Promise<HostApiCommandOutput> {
@@ -5256,6 +5274,8 @@ export class HttpHostClient {
   #reportTimeZone(): void {
     const userId = this.#snapshot.user?.id;
     if (this.#disposed || this.#snapshot.session !== "authenticated" || !userId) return;
+    // A Host with `message-origin-v1` reads each message's zone instead.
+    if (this.#capabilities?.includes("message-origin-v1")) return;
     const timeZone = TimeZoneSchema.safeParse(deviceTimeZone());
     if (!timeZone.success) return;
     const report = `${this.#snapshot.deploymentId ?? ""}:${userId}:${timeZone.data}`;

@@ -1,11 +1,13 @@
 import {
   AssignmentSchema,
+  MessageOriginSchema,
   MessageSchema,
   RunSchema,
   ThreadInputSchema,
   ThreadRunQueueEntrySchema,
   ThreadSchema,
   type CausalChainId,
+  type MessageOrigin,
   type Assignment,
   type AssignmentId,
   type EnvironmentId,
@@ -140,6 +142,13 @@ export function messageFromRow(row: Selectable<MessageTable>): Message {
 }
 export function messagesFromRows(rows: readonly Selectable<MessageTable>[]): Message[] {
   return MessageSchema.array().parse(rows.map(messageValueFromRow));
+}
+/** Where a person sent a message from; absent for other authors and older apps. */
+export function messageOriginFromRow(
+  row: Pick<Selectable<MessageTable>, "origin">,
+): MessageOrigin | undefined {
+  const parsed = MessageOriginSchema.safeParse(row.origin);
+  return parsed.success ? parsed.data : undefined;
 }
 function messageValueFromRow(row: Selectable<MessageTable>) {
   return {

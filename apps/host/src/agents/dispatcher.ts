@@ -330,12 +330,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         "failed",
       );
     }
-    if (!identity.capabilities.includes("requester-time-zone-v1")) {
-      throw new CommandDispatchError(
-        "Update this Runner so agents know the person's time zone.",
-        "failed",
-      );
-    }
     const toolsFailure = runnerAgentToolsFailure(identity.capabilities);
     if (toolsFailure) throw new CommandDispatchError(toolsFailure, "failed");
     if (!identity.capabilities.includes("execution-plane-v2")) {
@@ -580,9 +574,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       runId: context.run.id,
       viewerId: command.requestedBy,
     });
-    const requesterTimeZone = await this.#store.notificationState.timeZoneFor(
-      context.run.requestedBy,
-    );
+    const readsOrigin = identity.capabilities.includes("message-origin-v1");
     const settingsFile = context.personalContext
       ? (await this.#store.getAgentHomeSettings(context.run.requestedBy)).file
       : null;
@@ -716,7 +708,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         providerSessionStateLayout: context.providerSessionStateLayout,
         providerSessionReference: binding.providerSessionReference,
         requestedBy: context.run.requestedBy,
-        requesterTimeZone,
         runId: context.run.id,
         threadId: context.thread.id,
         machineAccess,
@@ -731,6 +722,9 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           createdAt: message.createdAt,
           kind: message.kind,
           messageId: message.id,
+          ...(readsOrigin && context.inputOrigins.has(message.id)
+            ? { origin: context.inputOrigins.get(message.id) }
+            : {}),
           ...(message.quote
             ? {
                 quote: message.quote,
@@ -1023,6 +1017,12 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             createdAt: steer.message.createdAt,
             kind: steer.message.kind,
             messageId: steer.message.id,
+            ...(steer.origin &&
+            this.#runners
+              .identityForEnvironment(steer.run.environmentId)
+              ?.capabilities.includes("message-origin-v1")
+              ? { origin: steer.origin }
+              : {}),
             ...(steer.message.quote
               ? {
                   quote: steer.message.quote,
