@@ -771,3 +771,53 @@ describe("Machines projection", () => {
     }
   });
 });
+
+it("projects a detached screen Device without borrowing its Mac's modules or readiness", async () => {
+  const { DeviceIdSchema } = await import("@opensteer/core");
+  const { machineAccessPolicyDefault, DeviceMachineSummarySchema } =
+    await import("@opensteer/protocol");
+  const mac = createId("runner");
+  const id = DeviceIdSchema.parse(createId("device"));
+  const [phone] = projectMachines({
+    access: new Map(),
+    apps: new Map(),
+    deploymentOwnsMainComputer: false,
+    pendingRunners: [],
+    runners: [runner({ id: mac })],
+    threadsByEnvironment: new Map(),
+    devices: [
+      {
+        device: {
+          id,
+          name: "iPhone",
+          kind: "phone",
+          platform: "ios",
+          form: "phone",
+          ownerKind: "user",
+          removedAt: null,
+          accessPolicy: { ...machineAccessPolicyDefault, apps: true, browser: false },
+        },
+        selfRunnerId: null,
+        drivers: [
+          { role: "screen", runnerId: mac, runnerName: "Mac", generation: 2, attached: false },
+        ],
+        screenStatus: null,
+        screenConnected: false,
+        phoneAccess: "read-write",
+      },
+    ],
+  });
+  expect(DeviceMachineSummarySchema.parse(phone)).toMatchObject({
+    id,
+    kind: "phone",
+    selfRunnerId: null,
+    allowedModules: [],
+    modules: {},
+    pinnedThreads: 0,
+    capabilities: { browser: { supported: false }, files: { supported: false } },
+    phoneDisplay: {
+      definitionId: "iphone-screen",
+      control: { state: "unavailable", reason: { kind: "not-connected" } },
+    },
+  });
+});

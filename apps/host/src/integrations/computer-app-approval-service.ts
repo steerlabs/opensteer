@@ -1,3 +1,5 @@
+import { DeviceIdSchema } from "@opensteer/core";
+import type { ComputerTargetId } from "../computer-apps/computer-app-hub.js";
 import type { RemovedComputerApp as RemovedDeviceComputerApp } from "@opensteer/database";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import {
@@ -40,6 +42,8 @@ import { integrationDefinitionDigest } from "@opensteer/integration-core/digest"
 import {
   ComputerUseInstalledAppsParamsSchema,
   AndroidPhoneInstalledAppsParamsSchema,
+  AndroidPhoneInstalledAppsResultSchema,
+  getPhoneDisplayCodec,
   type AndroidPhoneInstalledAppsParams,
   type AndroidPhoneInstalledAppsResult,
   ComputerUseInstalledAppsResultSchema,
@@ -753,12 +757,15 @@ export class ComputerAppApprovalService {
           async (machine) =>
             [
               machine.runnerId,
-              await this.#store.getComputerUsePolicy({ runnerId: machine.runnerId, ownerUserId }),
+              await this.#store.getDeviceComputerUsePolicy({
+                deviceId: DeviceIdSchema.parse(machine.deviceId ?? machine.runnerId),
+                ownerUserId,
+              }),
             ] as const,
         ),
       ),
     );
-    const byRunner = new Map<RunnerId, typeof connections>();
+    const byRunner = new Map<ComputerTargetId, typeof connections>();
     for (const connection of connections) {
       const runnerId = connection.computer?.runnerId;
       if (!runnerId || connection.status === "revoked") continue;
@@ -801,7 +808,9 @@ export class ComputerAppApprovalService {
   }
 
   /** Which Run on this Host holds each app, or the display, on that computer. */
-  computerAppHolders(runnerId: RunnerId): ReturnType<ComputerUseApprovalGateway["holders"]> {
+  computerAppHolders(
+    runnerId: ComputerTargetId,
+  ): ReturnType<ComputerUseApprovalGateway["holders"]> {
     return this.#computerUse?.holders(runnerId) ?? new Map();
   }
 
@@ -867,11 +876,16 @@ export class ComputerAppApprovalService {
       if (machine.state === "offline")
         throw new ComputerUseError("offline", `${machine.name} is offline.`);
       return definitionId === androidPhoneDefinitionId
-        ? await computerUse.installedApps(
-            runnerId,
-            actorUserId,
-            AndroidPhoneInstalledAppsParamsSchema.parse(params),
-            definitionId,
+        ? AndroidPhoneInstalledAppsResultSchema.parse(
+            getPhoneDisplayCodec(definitionId).encodeResult(
+              "installed_apps",
+              await computerUse.installedApps(
+                runnerId,
+                actorUserId,
+                AndroidPhoneInstalledAppsParamsSchema.parse(params),
+                definitionId,
+              ),
+            ),
           )
         : await computerUse.installedApps(
             runnerId,
@@ -942,7 +956,7 @@ export class ComputerAppApprovalService {
     readonly reason: string;
     readonly ownerUserId: UserId;
     readonly originatingRunId: RunId;
-    readonly runnerId: RunnerId;
+    readonly runnerId: ComputerTargetId;
     readonly threadId: ThreadId;
   }) {
     const computerUse = this.#computerUse;
@@ -992,7 +1006,7 @@ export class ComputerAppApprovalService {
       resolved = await computerUse.resolveApp({
         app: input.app,
         runId: input.originatingRunId,
-        runnerId: input.runnerId,
+        deviceId: DeviceIdSchema.parse(input.runnerId),
       });
     } catch (error) {
       if (error instanceof ComputerUseError && error.code === "offline")
@@ -1117,7 +1131,10 @@ export class ComputerAppApprovalService {
     // Read before the admission turn: nothing else waiting on this computer
     // should wait on this Thread's name.
     const threadTitle = await computerUse.threadTitle(input.threadId, input.ownerUserId);
-    const decision = await this.#computerApps.withRunnerAdmission(input.runnerId, () => {
+    const runnerId = await this.#store.requireDeviceSelfRunnerId(
+      DeviceIdSchema.parse(input.runnerId),
+    );
+    const decision = await this.#computerApps.withRunnerAdmission(runnerId, () => {
       if (!this.#computerApps.attached(input.runnerId))
         throw new ComputerUseError("offline", `${ask.computer} is offline.`);
       return this.#store.requestComputerAppAccess({
@@ -1130,7 +1147,7 @@ export class ComputerAppApprovalService {
         originatingRunId: input.originatingRunId,
         ownerUserId: input.ownerUserId,
         reason: input.reason,
-        runnerId: input.runnerId,
+        runnerId,
         threadId: input.threadId,
         threadTitle,
         tools: (connectionId) => computerAppTools(definition, input.access, connectionId),

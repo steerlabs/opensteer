@@ -122,7 +122,7 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     sessionsForRunner: vi.fn<
       import("../computer-use/computer-use-service.js").ComputerUseService["sessionsForRunner"]
     >(() => []),
-    authorizeDisplay: vi.fn(async () => f.runnerId),
+    authorizeDisplay: vi.fn(async () => ({ deviceId: DeviceIdSchema.parse(f.runnerId) })),
   };
   const threads = new ThreadService({
     store,

@@ -1165,3 +1165,255 @@ describe("ComputerAppHub", () => {
     expect(await hub.invoke(invokeInput())).toMatchObject({ code: "offline" });
   });
 });
+
+describe("screen driver assignment fencing", () => {
+  it("routes independent Devices and rejects old generation replies, Stops and dispatch", async () => {
+    const { DeviceIdSchema } = await import("@opensteer/core");
+    const { DeviceDriverResolver } = await import("../computer-use/device-drivers.js");
+    const mac = createId("runner");
+    const first = DeviceIdSchema.parse(createId("device"));
+    const second = DeviceIdSchema.parse(createId("device"));
+    let generation = 1;
+    let hub: ComputerAppHub;
+    const drivers = new DeviceDriverResolver({
+      invalidated: (binding) => hub.invalidateDevice(binding),
+      store: {
+        getDevice: async (id) => ({ id, removedAt: null, platform: "ios", kind: "phone" }),
+        listDeviceDrivers: async () =>
+          [first, second].map((deviceId) => ({
+            deviceId,
+            role: "screen" as const,
+            runnerId: mac,
+            generation: deviceId === first ? generation : 1,
+            detachedAt: null,
+          })),
+      },
+    });
+    const events = vi.fn();
+    hub = new ComputerAppHub({
+      drivers,
+      knownDefinitionIds: () => new Set(["iphone-screen"]),
+      onChanged: () => undefined,
+      onComputerUseEvent: events,
+    });
+    const peer = controlPeer();
+    const base = integrationsStream({ runnerId: mac });
+    const stream = {
+      ...base,
+      identity: {
+        ...base.identity,
+        modules: {
+          integrations: {
+            platform: "darwin",
+            protocolVersion: runnerIntegrationsProtocolVersion,
+            screenDrivers: 1,
+          },
+        },
+      },
+    } as RunnerAuxiliaryStream;
+    try {
+      hub.attach(peer, stream);
+      await hub.refreshDeviceDrivers();
+      expect(
+        peer.sent.find((frame) => frame.type === "host.integrations.device-drivers"),
+      ).toMatchObject({
+        drivers: [
+          { deviceId: first, generation: 1 },
+          { deviceId: second, generation: 1 },
+        ],
+      });
+      const old = await hub.captureRoute(first, "iphone-screen");
+      const beforeCrossDevice = peer.sent.length;
+      const wrongTarget = await hub.sendComputerUse({
+        access: "read",
+        app: null,
+        definitionId: "iphone-screen",
+        operation: "observe",
+        params: {},
+        runId: createId("run"),
+        runnerId: second,
+        sessionId: mintComputerUseSessionId(),
+        threadTitle: null,
+        route: old,
+      });
+      await expect(wrongTarget.outcome).resolves.toMatchObject({ kind: "error" });
+      expect(peer.sent).toHaveLength(beforeCrossDevice);
+
+      const send = await hub.sendComputerUse({
+        access: "read-write",
+        app: null,
+        definitionId: "iphone-screen",
+        operation: "act",
+        params: {},
+        runId: createId("run"),
+        runnerId: first,
+        sessionId: mintComputerUseSessionId(),
+        threadTitle: null,
+        route: old,
+      });
+      const frame = peer.sent.find((message) => message.type === "host.integrations.computer-use");
+      if (!frame || frame.type !== "host.integrations.computer-use")
+        throw new Error("No routed frame");
+      expect(frame).toMatchObject({ deviceId: first, driverGeneration: 1, runnerId: mac });
+      generation = 2;
+      if (!old) throw new Error("No captured screen route");
+      await hub.refreshDeviceDrivers();
+      expect(hub.attached(second)).toBe(true);
+      // A retired captured route cannot dispatch, even while that Runner remains attached.
+      const count = peer.sent.length;
+      await expect(
+        hub
+          .sendComputerUse({
+            access: "read",
+            app: null,
+            definitionId: "iphone-screen",
+            operation: "observe",
+            params: {},
+            runId: frame.runId,
+            runnerId: first,
+            sessionId: frame.sessionId,
+            threadTitle: null,
+            route: old,
+          })
+          .then((result) => result.outcome),
+      ).resolves.toMatchObject({ kind: "error" });
+      expect(peer.sent).toHaveLength(count);
+      await hub.handleMessage(peer, stream, {
+        ...stream.fence,
+        module: "integrations",
+        type: "runner.integrations.computer-use-event",
+        deviceId: first,
+        driverGeneration: 1,
+        event: {
+          event: "session.stopped",
+          params: { sessionId: frame.sessionId, runId: frame.runId, reason: "user" },
+        },
+      });
+      expect(events).not.toHaveBeenCalled();
+      const fresh = await hub.captureRoute(first, "iphone-screen");
+      const current = await hub.sendComputerUse({
+        access: "read",
+        app: null,
+        definitionId: "iphone-screen",
+        operation: "observe",
+        params: {},
+        runId: frame.runId,
+        runnerId: first,
+        sessionId: mintComputerUseSessionId(),
+        threadTitle: null,
+        route: fresh,
+      });
+      const currentFrame = peer.sent.findLast(
+        (item) => item.type === "host.integrations.computer-use",
+      );
+      if (!currentFrame || currentFrame.type !== "host.integrations.computer-use")
+        throw new Error("No current frame");
+      let answered = false;
+      void current.outcome.then(() => {
+        answered = true;
+      });
+      const result = {
+        ...stream.fence,
+        module: "integrations" as const,
+        type: "runner.integrations.computer-use-result" as const,
+        requestId: currentFrame.requestId,
+        result: { kind: "ok" as const, value: {} },
+      };
+      await hub.handleMessage(peer, stream, { ...result, deviceId: first, driverGeneration: 1 });
+      await hub.handleMessage(peer, stream, result);
+      await Promise.resolve();
+      expect(answered).toBe(false);
+      const { RunnerIntegrationsDeviceStatusSchema } = await import("@opensteer/protocol");
+      const status = RunnerIntegrationsDeviceStatusSchema.parse({
+        ...stream.fence,
+        type: "runner.integrations.device-status",
+        deviceId: first,
+        driverGeneration: 2,
+        definitionId: "iphone-screen",
+        operations: [],
+        availability: { state: "ready", reason: null },
+        navigationButtons: [],
+        actions: [],
+        wake: false,
+        lock: null,
+        displayVersion: 1,
+        ownerViewVersion: 1,
+        inputVersion: null,
+        powerVersion: null,
+      });
+      await hub.handleMessage(peer, stream, { ...status, driverGeneration: 1 });
+      expect(hub.deviceStatus(first)).toBeNull();
+      await hub.handleMessage(peer, stream, status);
+      hub.invalidateDevice(old);
+      expect(hub.deviceStatus(first)?.driverGeneration).toBe(2);
+      await hub.handleMessage(peer, stream, { ...result, deviceId: first, driverGeneration: 2 });
+      await expect(current.outcome).resolves.toMatchObject({ kind: "ok" });
+      hub.close();
+      await expect(send.outcome).resolves.toMatchObject({ kind: "error", code: "outcome-unknown" });
+    } finally {
+      hub.close();
+      drivers.close();
+    }
+  });
+});
+
+it("retains the self Device route for Android media without changing its control frames", async () => {
+  const { DeviceIdSchema } = await import("@opensteer/core");
+  const { DeviceDriverResolver } = await import("../computer-use/device-drivers.js");
+  const runnerId = createId("runner");
+  const deviceId = DeviceIdSchema.parse(runnerId);
+  const drivers = new DeviceDriverResolver({
+    store: {
+      getDevice: async () => ({
+        id: deviceId,
+        removedAt: null,
+        platform: "android",
+        kind: "agent-phone",
+      }),
+      listDeviceDrivers: async () => [
+        { deviceId, role: "self", runnerId, generation: 1, detachedAt: null },
+      ],
+    },
+  });
+  const hub = new ComputerAppHub({
+    drivers,
+    knownDefinitionIds: () => new Set(["android-phone"]),
+    onChanged: () => undefined,
+  });
+  const peer = controlPeer();
+  const base = integrationsStream({ runnerId });
+  const stream = {
+    ...base,
+    identity: {
+      ...base.identity,
+      modules: { integrations: { platform: "android", protocolVersion: 4 } },
+    },
+  } as RunnerAuxiliaryStream;
+  try {
+    hub.attach(peer, stream);
+    await hub.refreshDeviceDrivers();
+    await hub.handleMessage(peer, stream, { ...statusFrame(stream, []), displayAvailable: true });
+    const route = await hub.captureRoute(deviceId, "android-phone");
+    expect(hub.displayStream(deviceId)).toMatchObject({ route });
+    const sent = await hub.sendComputerUse({
+      runnerId: deviceId,
+      route,
+      definitionId: "android-phone",
+      access: "read",
+      app: null,
+      params: { includeScreenshot: false },
+      operation: "observe",
+      runId: createId("run"),
+      sessionId: mintComputerUseSessionId(),
+      threadTitle: null,
+    });
+    const frame = peer.sent.find((frame) => frame.type === "host.integrations.computer-use");
+    expect(frame).not.toHaveProperty("deviceId");
+    expect(frame).not.toHaveProperty("driverGeneration");
+    hub.close();
+    await sent.outcome;
+  } finally {
+    hub.close();
+    drivers.close();
+  }
+});

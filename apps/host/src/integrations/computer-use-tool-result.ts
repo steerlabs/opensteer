@@ -1,13 +1,13 @@
 import {
   formatComputerUseResultHead,
-  type AndroidPhoneObservation,
+  type PhoneDisplayObservation,
   type ComputerUseObservation,
 } from "@opensteer/protocol";
 import type { ReplContent } from "../computer-use/computer-repl/messages.js";
 
 /** The REPL owns emission order; observations have one text header, then a picture. */
 export function computerObservationContent(
-  observation: ComputerUseObservation | AndroidPhoneObservation,
+  observation: ComputerUseObservation | PhoneDisplayObservation,
   renderImages: boolean,
   computer: string,
 ): ReplContent[] {
@@ -44,9 +44,9 @@ export function computerObservationContent(
         ...("screen" in observation
           ? [
               `Screen: ${observation.screen}`,
-              `Locked: ${observation.locked ? "yes" : "no"}`,
-              `Secure lock: ${observation.secureLock ? "yes" : "no"}`,
-              `Foreground app: ${observation.foreground ? `${observation.foreground.label ?? observation.foreground.packageName} (${observation.foreground.packageName})` : "none"}`,
+              `Locked: ${observation.locked === null ? "unknown" : observation.locked ? "yes" : "no"}`,
+              `Secure lock: ${observation.secureLock === null ? "unknown" : observation.secureLock ? "yes" : "no"}`,
+              `Foreground app: ${observation.foreground ? `${observation.foreground.label ?? observation.foreground.appId} (${observation.foreground.appId})` : "none"}`,
             ]
           : []),
         ...("screenshotUnavailable" in observation &&

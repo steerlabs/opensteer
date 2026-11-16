@@ -1,3 +1,4 @@
+import type { ComputerTargetId } from "../computer-apps/computer-app-hub.js";
 import { agentToolFailureResult } from "@opensteer/agent-tools";
 import { randomUUID } from "node:crypto";
 import type { NativeTabTargets, NativeReplTabTarget } from "../computer-use/native-tab-targets.js";
@@ -393,7 +394,7 @@ export class IntegrationPlatformService {
   readonly #computerToolEnabled: (
     context: RunCapabilityClaims<string>,
   ) => boolean | Promise<boolean>;
-  readonly #computerUseVersion: (runnerId: RunnerId) => number | undefined;
+  readonly #computerUseVersion: (runnerId: ComputerTargetId) => number | undefined;
   readonly #runFiles: RunFilePort | undefined;
   readonly #mcpImageContent: (context: EngineCapabilityQuery) => Promise<boolean>;
   /** Who may use which app on which Mac; this service only dispatches the calls. */
@@ -440,7 +441,7 @@ export class IntegrationPlatformService {
     readonly computerToolEnabled?: (
       context: RunCapabilityClaims<string>,
     ) => boolean | Promise<boolean>;
-    readonly computerUseVersion?: (runnerId: RunnerId) => number | undefined;
+    readonly computerUseVersion?: (runnerId: ComputerTargetId) => number | undefined;
     readonly runFiles?: RunFilePort;
     readonly computerReplTime?: Pick<
       ConstructorParameters<typeof ComputerReplService>[0],
@@ -2571,7 +2572,7 @@ export class IntegrationPlatformService {
     return this.#computerToolEnabled(context);
   }
 
-  computerUseVersion(runnerId: RunnerId): number | undefined {
+  computerUseVersion(runnerId: ComputerTargetId): number | undefined {
     return this.#computerUseVersion(runnerId);
   }
 

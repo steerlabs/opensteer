@@ -1,5 +1,7 @@
+import { computerConnectionDeviceId } from "./device-drivers.js";
 import {
   OpensteerError,
+  isPhoneDisplayDefinitionId,
   type ContentPart,
   type PlaceContentPart,
   type Thread,
@@ -17,7 +19,7 @@ type ComputerUseInventory = Awaited<ReturnType<ComputerUseService["eligibleInven
 interface PlaceContextDependencies {
   readonly browser: Pick<BrowserService, "assertPagesUsable">;
   readonly computerUse: Pick<ComputerUseService, "eligibleInventory" | "sessionsForRunner">;
-  readonly connections: Pick<IntegrationStore, "listConnections">;
+  readonly connections: Pick<IntegrationStore, "listDeviceConnections">;
   readonly integrations: Pick<IntegrationPlatformService, "listCallableTools">;
   readonly store: Pick<OpensteerStore, "hasHumanIncludedPlace" | "getDeviceSelfRunnerId">;
 }
@@ -67,7 +69,7 @@ export class PlaceContextService {
     );
     if (!native.length) return;
     const inventory = await this.#dependencies.computerUse.eligibleInventory(input.ownerId);
-    const connections = await this.#dependencies.connections.listConnections(input.ownerId);
+    const connections = await this.#dependencies.connections.listDeviceConnections(input.ownerId);
     // Re-read the owner's grants for the target task and current Run.
     const tools = await this.#dependencies.integrations.listCallableTools({
       ownerUserId: input.ownerId,
@@ -96,13 +98,17 @@ export class PlaceContextService {
       const connection = connections.find(
         (candidate) =>
           candidate.status === "connected" &&
-          candidate.computer?.runnerId === machine.runnerId &&
+          candidate.computer !== null &&
+          computerConnectionDeviceId(candidate) === (machine.deviceId ?? machine.runnerId) &&
           !candidate.computer.blockedAt &&
           (part.type === "computer-app"
             ? candidate.definitionId === "macos-app" &&
               candidate.computer.app !== null &&
               computerAppIdentitiesEqual(candidate.computer.app, part.app)
-            : candidate.definitionId === "android-phone" && candidate.computer.app === null),
+            : isPhoneDisplayDefinitionId(candidate.definitionId) &&
+              (machine.definitionId === undefined ||
+                candidate.definitionId === machine.definitionId) &&
+              candidate.computer.app === null),
       );
       if (
         !connection ||
@@ -123,9 +129,8 @@ export class PlaceContextService {
     inventory: ComputerUseInventory,
     part: Extract<ContentPart, { readonly type: "computer-app" | "phone" }>,
   ): Promise<ComputerUseInventory["machines"][number]> {
-    const runnerId = await this.#dependencies.store.getDeviceSelfRunnerId(part.machineId);
     const machine = (part.type === "phone" ? inventory.phones : inventory.machines).find(
-      (candidate) => candidate.runnerId === runnerId,
+      (candidate) => (candidate.deviceId ?? candidate.runnerId) === part.machineId,
     );
     if (!machine)
       throw new OpensteerError({
