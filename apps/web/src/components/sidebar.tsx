@@ -111,7 +111,7 @@ import { useTabCloser } from "./workspace/tab-closer.js";
 import { TabGroupHeader, tabGroupStyle } from "./workspace/tab-group.js";
 import { NativeTabMenu, TabMenu, nativeTabMenuOffered } from "./workspace/tab-menu.js";
 import { RowMotion } from "./workspace/row-motion.js";
-import { fullHeightOf, SideSplit, useTabsHeight } from "./workspace/side-split.js";
+import { SideSplit, useTabsHeight } from "./workspace/side-split.js";
 import { DoneLine, useQuietSeen } from "./workspace/done-line.js";
 import { SidebarSearch, type SidebarSearchSources } from "./sidebar-search.js";
 import { TabFilterControl } from "./workspace/tab-filter.js";
@@ -190,21 +190,18 @@ export function Sidebar({
   const filter = deviceChoice.filter;
   const filterDeviceName =
     deviceChoice.devices.find(({ id }) => id === filter.device)?.name ?? null;
-  const [heldTabs, setHeldTabs] = useState<{
-    readonly height: number;
-    readonly rows: number;
-  } | null>(null);
+  const [heldTabs, setHeldTabs] = useState<number | null>(null);
   useEffect(() => {
     setFilter(allTabs);
     setHeldTabs(null);
   }, [hostClient]);
   const tabsSection = useRef<HTMLElement | null>(null);
-  // A filter draws fewer rows in the box all of them took, its floor included, so Tabs
-  // keeps its height until the filter clears.
+  // A filter draws fewer rows in the box all of them took, so Tabs not yet sized
+  // keeps the height it fitted until the filter clears.
   const filterTabs = (next: TabFilter) => {
     if (!tabFilterActive(next)) setHeldTabs(null);
     else if (!tabFilterActive(filter) && tabsSection.current)
-      setHeldTabs({ height: fullHeightOf(tabsSection.current), rows: slots.length });
+      setHeldTabs(tabsSection.current.getBoundingClientRect().height);
     setFilter(next);
   };
   const shownPlaceKey =
@@ -268,6 +265,7 @@ export function Sidebar({
   const searchOpener = useRef<HTMLElement | null>(null);
   const searchOnOpen = useRef(false);
   const [tabsHeight, commitTabsHeight] = useTabsHeight();
+  const shownTabsHeight = tabsHeight ?? heldTabs;
   const { openDrawer } = workspace;
   const openThreadId = taskAt(pathname);
   const openRowThreadId = openThreadId === null ? null : listedRowThreadId(snapshot, openThreadId);
@@ -747,9 +745,9 @@ export function Sidebar({
         inputRef={searchRef}
         listsRef={listsRef}
         listsStyle={
-          tabsHeight === null
+          shownTabsHeight === null
             ? undefined
-            : ({ "--side-tabs-height": `${tabsHeight}px` } as CSSProperties)
+            : ({ "--side-tabs-height": `${shownTabsHeight}px` } as CSSProperties)
         }
         deviceLabels={searchDeviceLabels}
         onClose={closeSearch}
@@ -885,7 +883,7 @@ export function Sidebar({
           aria-labelledby="sidebar-tabs"
           className="side-section side-section--tabs"
           ref={tabsSection}
-          style={{ ...sectionFloor(heldTabs?.rows ?? slots.length), maxHeight: heldTabs?.height }}
+          style={sectionFloor(slots.length)}
         >
           <div className="side-head">
             <h2 className="side-head__title" id="sidebar-tabs" tabIndex={-1}>

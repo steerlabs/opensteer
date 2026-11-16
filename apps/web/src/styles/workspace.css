@@ -548,11 +548,12 @@
 }
 
 /* Tasks and Tabs each scroll on their own, so both headings (and their + and
-   count) stay in reach at any height. Tabs owns its height
-   (`--side-tabs-height`, the person's or this default): it shows fewer rows
-   only when it has fewer, and gives way only to the floor of the pane
-   above. The pane above (Tasks, Done or a team) takes the rest, so
-   switching it never moves Tabs. Neither drops below its first three rows. */
+   count) stay in reach at any height. Tabs owns its height: until the
+   person sizes it, it fits its rows up to this default; once they do
+   (`--side-tabs-height`), it keeps that height whatever it holds. It gives
+   way only to the floor of the pane above. The pane above (Tasks, Done or a
+   team) takes the rest, so switching it never moves Tabs. Neither drops
+   below its first three rows. */
 .side-section {
   --side-floor-rows: 0;
   display: flex;
@@ -577,7 +578,7 @@
    along its top and open at its foot. It has no fill of its own. */
 .side-section--tabs {
   flex: 0 1 var(--side-tabs-height, calc(var(--side-head) + 6 * var(--side-pitch)));
-  max-height: max-content;
+  max-height: var(--side-tabs-height, max-content);
   margin: var(--space-4) var(--space-6) 0;
   padding: 0 var(--space-2);
   border: 1px solid var(--rim-sheet);

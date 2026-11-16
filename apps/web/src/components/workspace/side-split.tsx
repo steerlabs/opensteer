@@ -4,9 +4,9 @@ const tabsHeightKey = "opensteer.sidebar-tabs-height";
 
 /**
  * Tabs' height in pixels, as this device keeps it, and the commit that keeps a
- * new one. Null until the person moves the line: the stylesheet's default then
- * holds. Tabs owns its height, so what shows above it (Tasks, Done, a team)
- * never moves it.
+ * new one. Null until the person moves the line: Tabs then fits its rows, up to
+ * the stylesheet's default. Tabs owns its height, so neither its rows nor what
+ * shows above it (Tasks, Done, a team) move it.
  */
 export function useTabsHeight() {
   const [height, setHeight] = useState(readTabsHeight);
@@ -37,7 +37,7 @@ interface Reach {
   readonly lists: HTMLElement;
   /** Where the line stands: Tabs' height. */
   readonly start: number;
-  /** Tabs' least height, its floor, and its most: all its rows, or what the pane above's floor leaves. */
+  /** Tabs' least height, its floor, and its most: what the pane above's floor leaves. */
   readonly least: number;
   readonly most: number;
   /** One tab row and the gap after it: a key's step. */
@@ -45,10 +45,10 @@ interface Reach {
 }
 
 /**
- * The line along Tabs' top. It follows the pointer, as far as Tabs' floor
- * and its rows go; a row in part at Tabs' foot says there is more. While it
- * moves it writes Tabs' height straight to the sections' container, so the
- * sidebar renders only at the release.
+ * The line along Tabs' top. It follows the pointer between Tabs' floor and
+ * the pane above's, however many rows Tabs has; a row in part at Tabs' foot
+ * says there is more. While it moves it writes Tabs' height straight to the
+ * sections' container, so the sidebar renders only at the release.
  */
 export function SideSplit({ onCommit }: { readonly onCommit: (height: number | null) => void }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -101,12 +101,7 @@ export function SideSplit({ onCommit }: { readonly onCommit: (height: number | n
       aria-valuemax={100}
       aria-valuemin={0}
       className="side-split"
-      onDoubleClick={(event) => {
-        const lists = event.currentTarget.parentElement;
-        if (!lists) return;
-        lists.style.removeProperty("--side-tabs-height");
-        onCommit(null);
-      }}
+      onDoubleClick={() => onCommit(null)}
       onFocus={(event) => probe(event.currentTarget)}
       onKeyDown={(event) => {
         const reach = reachOf(event.currentTarget);
@@ -206,7 +201,7 @@ function keyedHeight(reach: Reach, key: string): number | null {
   }
 }
 
-/** Null when Tabs can neither grow nor shrink: it is at its floor and shows every row. */
+/** Null when Tabs can neither grow nor shrink: the two floors take all the room. */
 function reachOf(divider: HTMLElement): Reach | null {
   const lists = divider.parentElement;
   const above = divider.previousElementSibling;
@@ -217,7 +212,7 @@ function reachOf(divider: HTMLElement): Reach | null {
   const start = tabs.getBoundingClientRect().height;
   const room = above.getBoundingClientRect().height + start;
   const least = floorOf(tabs);
-  const most = Math.max(least, Math.min(fullHeightOf(tabs), room - floorOf(above)));
+  const most = Math.max(least, room - floorOf(above));
   if (most - least < 1) return null;
   return { lists, start, least, most, row: rowOf(list) };
 }
@@ -236,13 +231,4 @@ function rowOf(list: HTMLElement): number {
 
 function floorOf(section: HTMLElement): number {
   return parseFloat(getComputedStyle(section).minHeight) || 0;
-}
-
-/** The section's height with every row in view, or what a tab filter holds Tabs to. */
-export function fullHeightOf(section: HTMLElement): number {
-  const held = parseFloat(section.style.maxHeight);
-  if (!Number.isNaN(held)) return held;
-  const list = section.querySelector<HTMLElement>(".side-list");
-  if (!list) return section.getBoundingClientRect().height;
-  return section.getBoundingClientRect().height - list.clientHeight + list.scrollHeight;
 }
