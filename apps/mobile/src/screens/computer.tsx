@@ -18,13 +18,18 @@ import {
   computerUsesChosenElsewhere,
   computerUsesPhrase,
 } from "@opensteer/client/computers";
-import { computerUseView, isIphone, phoneUseView } from "@opensteer/client/integrations";
+import {
+  computerUseView,
+  isIphone,
+  phoneScreenMac,
+  phoneUseView,
+} from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useLayoutEffect, useMemo, useState, useRef, useEffect, type ReactNode } from "react";
 import { StyleSheet } from "react-native";
 import { tabRoute } from "../browser/surface-route.js";
-import { RunnerIdSchema } from "@opensteer/core";
+import { TabTargetSchema } from "@opensteer/core";
 import { operationDetail } from "../client/mobile-client.js";
 import { useLeaveSheets } from "./leave-sheets.js";
 
@@ -123,15 +128,15 @@ function ComputerDetail(props: {
       mounted.current = false;
     };
   }, []);
+  // The tab contract names phones by Runner; a Mac-driven phone has none yet.
+  const phoneTab = TabTargetSchema.safeParse({ kind: "phone", computerId: props.machineId });
   const openPhone = async () => {
     setOpeningPhone(true);
     setOpenFailure(null);
     try {
       // The phone's one tab; showing it is the person's Open, which may wake it.
-      const tab = await props.hostClient.openTab({
-        computerId: RunnerIdSchema.parse(props.machineId),
-        kind: "phone",
-      });
+      if (!phoneTab.success) return;
+      const tab = await props.hostClient.openTab(phoneTab.data);
       if (mounted.current && navigation.isFocused())
         navigation.dispatch(
           StackActions.push("WorkspaceBrowser", tabRoute(props.deploymentId, tab.tabId)),
@@ -196,7 +201,7 @@ function ComputerDetail(props: {
             />
           </>
         )}
-        {machine && !thisIphone ? (
+        {machine && !thisIphone && phoneScreenMac(machine) === null ? (
           <SettingsDeviceCapabilities
             host={props.hostClient}
             machine={machine}
@@ -235,7 +240,7 @@ function ComputerDetail(props: {
           />
         ) : phone !== null ? (
           <View style={styles.summary}>
-            {canRespond && phone.access !== null && phone.state.kind === "ready" ? (
+            {canRespond && phone.access !== null && phone.canView && phoneTab.success ? (
               <SecondaryButton
                 busy={openingPhone}
                 label="Open phone"

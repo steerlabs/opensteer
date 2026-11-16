@@ -324,7 +324,8 @@ async function setup(
       {
         id: machineId,
         status: "online",
-        kind: "personal",
+        // The viewer offers only the navigation and power the Host advertises for a phone.
+        kind: phone ? "agent-phone" : "personal",
         computerUse: {
           displayStreamSupported: true,
           ownerViews: owner

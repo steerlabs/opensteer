@@ -1,9 +1,5 @@
 import { StreamedContextMenu } from "./browser/streamed-context-menu.js";
-import type {
-  DisplayClientDiagnostic,
-  DisplayInputEvent,
-  PhoneDisplayView,
-} from "@opensteer/protocol";
+import type { DisplayClientDiagnostic, PhoneDisplayView } from "@opensteer/protocol";
 import { reportDisplayDiagnostic, displayDiagnosticSource } from "../display-diagnostics.js";
 import {
   useCallback,
@@ -25,9 +21,12 @@ import {
   computerDisplayScope,
   computerDisplayAuthorityKey,
   computerDisplayStatus,
+  phoneViewerNavigation,
+  phoneViewerPower,
   sharedDisplayStreams,
   type DisplayLease,
   type DisplaySnapshot,
+  type PhoneNavigationTo,
 } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
 import {
@@ -810,21 +809,17 @@ function drawnPicture(canvas: HTMLCanvasElement) {
   });
 }
 
-type NavTo = Extract<DisplayInputEvent, { kind: "nav" }>["to"];
-const navIcons: Readonly<Record<NavTo, IconName>> = {
+const navLabels: Partial<Record<PhoneNavigationTo, string>> = {
+  back: "Back",
+  home: "Home",
+  recents: "Recent apps",
+};
+const navIcons: Readonly<Record<PhoneNavigationTo, IconName>> = {
   back: "chevron-left",
   home: "home",
   recents: "recents",
   notifications: "bell",
 };
-
-/** Only the buttons the Host advertises for this phone that the display wire can carry. */
-function phoneNavigation(phone: PhoneDisplayView | null) {
-  if (!phone?.actions.includes("navigate")) return [];
-  return phone.navigationButtons.flatMap(({ id, label }) =>
-    id in navIcons ? [{ to: id as NavTo, label, icon: navIcons[id as NavTo] }] : [],
-  );
-}
 
 /** The phone’s navigation and power, as far as the Host says this phone has them. */
 export function PhoneControlBar({
@@ -836,13 +831,13 @@ export function PhoneControlBar({
 }) {
   const input =
     display.snapshot.input === "available" && display.geometry !== null ? display.input : null;
-  const navigation = phoneNavigation(phone);
+  const navigation = phoneViewerNavigation(phone);
   const screenOff = display.snapshot.display?.state === "screen-off";
   const powerAvailable =
     !display.viewportEnabled &&
     display.snapshot.power === "available" &&
     (display.snapshot.display?.state === "live" || screenOff) &&
-    (screenOff ? phone?.wake !== false : phone?.lock !== false && phone?.lock !== null);
+    phoneViewerPower(phone, screenOff ? "wake" : "lock");
   if ((!input || display.viewportEnabled) && !display.receipt && !powerAvailable) return null;
   return (
     <div className="phone-display__control surface-row">
@@ -864,19 +859,22 @@ export function PhoneControlBar({
       ) : null}
       {input && !display.viewportEnabled && navigation.length > 0 ? (
         <span className="phone-display__nav">
-          {navigation.map(({ icon, label, to }) => (
-            <button
-              aria-label={label}
-              className="icon-btn"
-              disabled={display.snapshot.display?.state !== "live"}
-              key={to}
-              onClick={() => input.nav(display.generation, to)}
-              title={label}
-              type="button"
-            >
-              <Icon name={icon} />
-            </button>
-          ))}
+          {navigation.map(({ label: advertised, to }) => {
+            const label = navLabels[to] ?? advertised;
+            return (
+              <button
+                aria-label={label}
+                className="icon-btn"
+                disabled={display.snapshot.display?.state !== "live"}
+                key={to}
+                onClick={() => input.nav(display.generation, to)}
+                title={label}
+                type="button"
+              >
+                <Icon name={navIcons[to]} />
+              </button>
+            );
+          })}
         </span>
       ) : null}
     </div>

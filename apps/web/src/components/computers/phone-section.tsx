@@ -1,9 +1,9 @@
 import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
 import {
   computerUseAccessLabel,
+  phoneScreenSetupLine,
   phoneScreenStatus,
   phoneUseCardTitle,
-  phoneUseSetupLocation,
   phoneUseStatusLine,
   phoneUseView,
   setPhoneUseAccess,
@@ -87,21 +87,17 @@ export function PhoneSection({
     });
   }
 
-  const setup = phoneUseSetupLocation(view.setup);
   const titleId = `phone-use-title-${machine.id}`;
   const showAccess = appsOn && (screen === null || view.driver?.attached !== false);
   const statusDetail = !appsOn
     ? appsOffLine
     : (screen?.fix ?? (screen?.tone === "online" ? phoneUseStatusLine(view, machine.name) : null));
-  const setupRow =
-    view.driver?.attached === false
-      ? { label: "Set up on a Mac", detail: "Open Opensteer on the Mac connected to this iPhone." }
-      : setupHere
-        ? {
-            label: "Set up on this Mac",
-            detail: "iPhone setup isn’t in this version of Opensteer yet.",
-          }
-        : setup;
+  const setupRow = setupHere
+    ? {
+        label: "Set up on this Mac",
+        detail: "iPhone setup isn’t in this version of Opensteer yet.",
+      }
+    : phoneScreenSetupLine(machine);
 
   return (
     <section
@@ -245,7 +241,7 @@ export function PhoneSection({
               </button>
             </span>
           </div>
-        ) : screen?.needsSetup ? (
+        ) : screen?.needsSetup && setupRow ? (
           <div className="card__row">
             <span className="card__row-glyph">
               <Icon name="laptop" />

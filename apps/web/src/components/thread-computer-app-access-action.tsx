@@ -3,11 +3,7 @@ import { ActionNote } from "./action-rows.js";
 import { useComputerAppApproval } from "./computer-apps/computer-app-approval.js";
 import type { Request } from "@opensteer/core";
 import { fullAccessOnThisMac, mutationIdempotencyKey } from "@opensteer/client/host";
-import {
-  computerAppAccessApproval,
-  computerUseAccessLabel,
-  setPhoneUseAccess,
-} from "@opensteer/client/integrations";
+import { computerAppAccessApproval, computerUseAccessLabel } from "@opensteer/client/integrations";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { useState } from "react";
 import { hostsDeployment } from "@opensteer/client/computers";
@@ -87,8 +83,14 @@ export function ThreadComputerAppAccessAction({
         await approval.ask(request.payload.setupRequestId);
         return;
       }
-      if (!machine) throw new Error("That phone isn’t one of your devices any more.");
-      await setPhoneUseAccess(hostClient, machine, access);
+      const result = await hostClient.dispatch({
+        idempotencyKey: mutationIdempotencyKey(`phone-request:${request.id}`),
+        input: { access, app: null, definitionId, kind: "app", runnerId },
+        type: "integration.computer.setup.set",
+      });
+      if (result.type !== "integration.computer.setup.set") {
+        throw new Error("Phone access was not set.");
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The request could not be allowed.");
     } finally {

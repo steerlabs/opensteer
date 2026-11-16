@@ -1,4 +1,4 @@
-import type { MachineSummary } from "@opensteer/protocol";
+import type { DisplayInputEvent, MachineSummary, PhoneDisplayView } from "@opensteer/protocol";
 import { deviceMachine, deviceReasonLabel } from "../host/device-projection.js";
 
 /**
@@ -96,6 +96,20 @@ export function phoneScreenStatus(machine: MachineSummary): PhoneScreenStatus | 
   }
 }
 
+/** Where setup happens: the Mac that drove it, or any Mac once disconnected. */
+export function phoneScreenSetupLine(
+  machine: MachineSummary,
+): { readonly label: string; readonly detail: string } | null {
+  const mac = phoneScreenMac(machine);
+  if (!mac) return null;
+  return mac.attached
+    ? {
+        label: `Set up on ${mac.name}`,
+        detail: `Open Opensteer on ${mac.name}, the Mac connected to this iPhone.`,
+      }
+    : { label: "Set up on a Mac", detail: "Open Opensteer on the Mac connected to this iPhone." };
+}
+
 /** The two ways out, with what each keeps. */
 export function phoneScreenDisconnectCopy(phone: string, mac: string) {
   return {
@@ -113,4 +127,25 @@ export function phoneScreenRemovalCopy(phone: string, mac: string) {
     body: `Your agent can no longer use it, and its approvals and tab are removed. ${mac} and any other phones it controls stay as they are.`,
     confirm: "Remove",
   } as const;
+}
+
+export type PhoneNavigationTo = Extract<DisplayInputEvent, { kind: "nav" }>["to"];
+const viewerNavigation: readonly PhoneNavigationTo[] = ["back", "home", "recents", "notifications"];
+
+/** The buttons the Host advertises for this phone that the display wire can carry, in its order. */
+export function phoneViewerNavigation(
+  phone: PhoneDisplayView | null,
+): readonly { readonly to: PhoneNavigationTo; readonly label: string }[] {
+  if (!phone?.actions.includes("navigate")) return [];
+  return phone.navigationButtons.flatMap(({ id, label }) =>
+    viewerNavigation.includes(id as PhoneNavigationTo)
+      ? [{ to: id as PhoneNavigationTo, label }]
+      : [],
+  );
+}
+
+/** Whether the viewer may offer Wake or Lock: the stream must allow it and the Host advertise it. */
+export function phoneViewerPower(phone: PhoneDisplayView | null, action: "wake" | "lock"): boolean {
+  if (phone === null) return true;
+  return action === "wake" ? phone.wake : phone.lock === true;
 }
