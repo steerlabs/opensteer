@@ -82,7 +82,7 @@ export function configureDesktopWindowContextMenu(
         replaceMisspelling: (word) => {
           if (live()) contents.replaceMisspelling(word);
         },
-        copyLink: () => clipboard.writeText(params.linkURL),
+        copyLink: () => void clipboard.writeText(params.linkURL).catch(() => undefined),
         copyImage: () => {
           if (live()) contents.copyImageAt(params.x, params.y);
         },
