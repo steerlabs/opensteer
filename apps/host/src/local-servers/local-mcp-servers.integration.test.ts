@@ -33,6 +33,7 @@ import {
 } from "../runtime/private-machine-host.test-support.js";
 
 const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
+// These need a PostgreSQL test database, which `pnpm test:integration` provides.
 const integration = baseDatabaseUrl ? describe : describe.skip;
 let database: Awaited<ReturnType<typeof createMachineAccessDatabase>> | undefined;
 let databaseUrl = "postgres://unconfigured";

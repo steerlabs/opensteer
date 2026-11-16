@@ -1248,7 +1248,7 @@
     "apps/host/src/channels/imessage-channel.integration.test.ts": 44205,
     "apps/host/src/channels/messaging-end-to-end.integration.test.ts": 26375,
     "apps/host/src/integrations/api-key-reconnect.integration.test.ts": 23102,
-    "apps/host/src/devices/computer-use-journey.integration.test.ts": 149515,
+    "apps/host/src/integrations/computer-use-journey.integration.test.ts": 149515,
     "apps/host/src/devices/computer-use.integration.test.ts": 12395,
     "apps/host/src/integrations/integration-account-binding.integration.test.ts": 3710,
     "apps/host/src/local-servers/server-input.integration.test.ts": 58769,

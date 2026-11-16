@@ -3,7 +3,7 @@ import {
   createIntegrationPlatform,
   type IntegrationPlatformTestHarness,
   type IntegrationPlatformTestOptions,
-} from "../integrations/integration-platform.test-support.js";
+} from "./integration-platform.test-support.js";
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";

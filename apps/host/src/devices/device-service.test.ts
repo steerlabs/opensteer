@@ -10,8 +10,8 @@ import {
   computerCallable,
   integrationRequest,
   listedTool,
-  callable,
 } from "../integrations/integration-platform-service.test-support.js";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { type IntegrationPlatformTestHarness } from "../integrations/integration-platform.test-support.js";
 import { createIntegrationMcpFixture } from "../mcp/integration-fixture.test-support.js";
 import { createServer } from "node:http";
@@ -580,7 +580,9 @@ describe("IntegrationPlatformService computer invocation", () => {
         },
         caller,
       );
-      await lookupStarted;
+      await withTimeout(lookupStarted, 5_000, {
+        timeoutError: () => new Error("The computer app call never looked up its connection"),
+      });
       if (mutation === "revoke") {
         await service.devices.revokeGrant({
           grantId: callable.grant.id,

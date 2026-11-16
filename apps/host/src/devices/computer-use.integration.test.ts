@@ -27,6 +27,7 @@ import { operationAddress } from "../integrations/integration-operation.js";
 import { type ComputerUseGateway } from "./device-service.js";
 
 const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
+// These need a PostgreSQL test database, which `pnpm test:integration` provides.
 const integration = baseDatabaseUrl ? describe : describe.skip;
 const notes = { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null };
 const definition = computerAppIntegrations.find(({ id }) => id === "macos-app")!;
