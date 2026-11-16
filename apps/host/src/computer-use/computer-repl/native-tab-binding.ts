@@ -1,9 +1,7 @@
 import { refused, type TabId, type UserId } from "@opensteer/core";
 import { ComputerUseTabBindingSchema } from "@opensteer/protocol";
-import {
-  computerAppIdentitiesEqual,
-  type IntegrationConnectionSummary,
-} from "@opensteer/integration-core";
+import { computerAppIdentitiesEqual } from "@opensteer/integration-core/computer-app";
+import { type IntegrationConnectionSummary } from "@opensteer/integration-core/models";
 import type { TabServicePort } from "../../tabs/ports.js";
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
 import type { NativeReplTabTarget } from "../native-tab-targets.js";

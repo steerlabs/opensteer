@@ -1,5 +1,5 @@
 import { Link } from "react-router";
-import type { CreateIntegrationGrant } from "@opensteer/integration-core";
+import type { CreateIntegrationGrant } from "@opensteer/integration-core/models";
 
 import { ConnectFlow, RepositoryAccessSetup } from "./connect-flow.js";
 import { integrationAccountTitle } from "@opensteer/client/integrations";

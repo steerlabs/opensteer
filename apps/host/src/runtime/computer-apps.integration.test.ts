@@ -19,10 +19,10 @@ import {
   type ComputerAppValue,
   type HelperDataPort,
 } from "@opensteer/runner";
-import { computerAppIntegrations } from "@opensteer/integration-catalog";
-import { isComputerAppDefinition } from "@opensteer/integration-core";
+import { computerAppIntegrations } from "@opensteer/integration-catalog/devices";
+import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
 import { computerAppOperationContract } from "@opensteer/integration-core/computer-app-tools";
-import type { IntegrationAccess } from "@opensteer/integration-core";
+import type { IntegrationAccess } from "@opensteer/integration-core/access";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
   connectComputerAppMachine,

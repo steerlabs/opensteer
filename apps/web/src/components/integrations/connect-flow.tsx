@@ -4,15 +4,17 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import {
   sameIntegrationOAuthApplicationSource,
+  type IntegrationConnectionSummary,
+  type IntegrationOAuthApplicationSource,
+} from "@opensteer/integration-core/models";
+import {
   type IntegrationAuthorizationStart,
   type IntegrationAuthorizationStatus,
-  type IntegrationConnectionSummary,
   type IntegrationDashboard,
-  type IntegrationOAuthApplicationSource,
   type IntegrationProviderApplication,
   type IntegrationProviderManifest,
   type SaveIntegrationProviderApplication,
-} from "@opensteer/integration-core/models";
+} from "@opensteer/integration-core/service-models";
 import type { IntegrationRepositoryAccess } from "@opensteer/integration-core";
 import type { IntegrationDefinitionSummaryView } from "@opensteer/integration-core/adapter";
 import { Dialog } from "../dialog.js";

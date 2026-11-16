@@ -21,7 +21,7 @@ import {
   hostedOAuthDeploymentAuthorityDigest,
 } from "@opensteer/control-plane-protocol/broker-sealing";
 import { integrationDefinitions } from "@opensteer/integration-catalog";
-import { authorizationDigest } from "@opensteer/integration-core/digest";
+import { authorizationDigest } from "@opensteer/integration-core/authorization-digest";
 import { createHash } from "node:crypto";
 import { sql } from "kysely";
 import { describe, expect, it as baseIt, vi } from "vitest";

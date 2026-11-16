@@ -1,8 +1,6 @@
-import type {
-  ComputerAppPresentationView,
-  IntegrationAccess,
-  IntegrationGrant,
-} from "@opensteer/integration-core";
+import type { ComputerAppPresentationView } from "@opensteer/integration-core/computer-app";
+import type { IntegrationAccess } from "@opensteer/integration-core/access";
+import type { IntegrationGrant } from "@opensteer/integration-core/models";
 import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { actionErrorMessage } from "../../ui-utils.js";

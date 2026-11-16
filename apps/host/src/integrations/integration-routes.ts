@@ -1,8 +1,6 @@
 import { disconnectIntegration } from "./integration-administration.js";
-import {
-  IntegrationOAuthAttemptIdSchema,
-  IntegrationProviderSchema,
-} from "@opensteer/integration-core";
+import { IntegrationOAuthAttemptIdSchema } from "@opensteer/integration-core/ids";
+import { IntegrationProviderSchema } from "@opensteer/integration-core/identifiers";
 import type { FastifyInstance } from "fastify";
 import {
   hostApi,

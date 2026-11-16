@@ -5,12 +5,12 @@ import { agentTools } from "@opensteer/agent-tools";
 import { createId, OpensteerError, requestReasonMaxLength } from "@opensteer/core";
 import {
   IntegrationDefinitionSchema,
-  createIntegrationId,
   integrationDefinitionSummary,
-  isComputerAppDefinition,
-  type IntegrationAccess,
   type IntegrationDefinition,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/adapter";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
+import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
+import { type IntegrationAccess } from "@opensteer/integration-core/access";
 import { computerAppTools } from "@opensteer/integration-core/computer-app-tools";
 import {
   integrationDefinitionDigest,

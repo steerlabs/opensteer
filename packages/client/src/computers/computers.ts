@@ -1,7 +1,5 @@
-import type {
-  IntegrationConnectionSummary,
-  IntegrationDefinitionSummaryView,
-} from "@opensteer/integration-core";
+import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
+import type { IntegrationDefinitionSummaryView } from "@opensteer/integration-core/adapter";
 import type { MachineSummary, RunnerDevicePlatform } from "@opensteer/protocol";
 import { formatRelativeTime } from "../host/thread-list-model.js";
 import { computerAppRows } from "../integrations/computer-apps.js";

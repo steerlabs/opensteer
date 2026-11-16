@@ -7,11 +7,11 @@ import {
   RequestViewSchema,
   ThreadAccessModeSchema,
 } from "@opensteer/core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import {
-  createIntegrationId,
   IntegrationDefinitionSchema,
   integrationDefinitionSummary,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/adapter";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
 import { createBrowserSessionId, HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { sql } from "kysely";

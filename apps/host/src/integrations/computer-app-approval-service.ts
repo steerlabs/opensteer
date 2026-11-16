@@ -22,17 +22,23 @@ import {
   computerAppIdentityKey,
   computerAppNamesApp,
   computerAppUsesSessions,
-  integrationAccessCovers,
   isComputerAppDefinition,
   type ComputerAppIdentity,
+} from "@opensteer/integration-core/computer-app";
+import {
+  integrationAccessCovers,
   type IntegrationAccess,
+} from "@opensteer/integration-core/access";
+import {
   type IntegrationConnectionId,
-  type IntegrationConnectionSummary,
-  type IntegrationDefinition,
   type IntegrationServerId,
+} from "@opensteer/integration-core/ids";
+import { type IntegrationConnectionSummary } from "@opensteer/integration-core/models";
+import { type IntegrationDefinition } from "@opensteer/integration-core/adapter";
+import {
   type RequestComputerAppSetupSchema,
   type SetComputerAppConnection,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/computer-app-setup";
 import type { ComputerAppDefinition } from "@opensteer/integration-core/computer-app";
 import { computerAppTools } from "@opensteer/integration-core/computer-app-tools";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";

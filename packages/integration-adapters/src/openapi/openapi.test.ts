@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { integrationSchemaDigest } from "@opensteer/integration-core/digest";
 import { definitionClosure, standaloneToolSchema } from "@opensteer/integration-core/tool-schemas";
-import type { IntegrationAdapter } from "@opensteer/integration-core";
+import type { IntegrationAdapter } from "@opensteer/integration-core/adapter";
 import { createOpenApiAdapter, openApiAdapter } from "./adapter.js";
 import { OpenApiAdapterConfigSchema } from "./config.js";
 import { applySpecOverrides } from "./spec-overrides.js";

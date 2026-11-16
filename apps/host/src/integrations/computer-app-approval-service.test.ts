@@ -3,7 +3,8 @@ import type { IntegrationPlatformStore } from "@opensteer/database";
 import type { RunnerId, UserId } from "@opensteer/core";
 import { integrationDefinitions } from "@opensteer/integration-catalog";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
-import { createIntegrationId, type ComputerAppSetupRequest } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
+import { type ComputerAppSetupRequest } from "@opensteer/integration-core/computer-app-setup";
 import {
   ComputerAppApprovalService,
   type ComputerUseApprovalGateway,

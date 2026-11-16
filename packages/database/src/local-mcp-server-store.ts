@@ -4,12 +4,13 @@ import { requestSettlementActor } from "./request-settlement.js";
 import { OpensteerError, type RunnerId, type UserId } from "@opensteer/core";
 import {
   IntegrationServerTransportSchema,
-  localMcpLaunchSecrets,
+  type IntegrationToolMaterial,
+} from "@opensteer/integration-core/models";
+import { localMcpLaunchSecrets, type LocalMcpLaunch } from "@opensteer/integration-core/local-mcp";
+import {
   type IntegrationInstallationId,
   type IntegrationServerId,
-  type IntegrationToolMaterial,
-  type LocalMcpLaunch,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/ids";
 import { localMcpLaunchDigest } from "@opensteer/integration-core/digest";
 import type { Kysely, Transaction } from "kysely";
 import {

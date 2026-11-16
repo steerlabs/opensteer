@@ -16,7 +16,7 @@ import { RunnerIdSchema, type RunnerId } from "@opensteer/core";
 import {
   IntegrationDefinitionSchema,
   integrationDefinitionSummary,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/adapter";
 import { createHash, generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
 import { createId } from "@opensteer/core";
 import {

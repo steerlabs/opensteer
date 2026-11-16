@@ -1,7 +1,10 @@
 import { z } from "zod";
 import { integrationDefinitionSummary } from "./adapter.js";
 import type { IntegrationDefinition } from "./adapter.js";
-import { IntegrationProviderManifestSchema, type IntegrationProviderManifest } from "./models.js";
+import {
+  IntegrationProviderManifestSchema,
+  type IntegrationProviderManifest,
+} from "./service-models.js";
 
 /**
  * Dashboard provider metadata is a projection of the authoritative definition.

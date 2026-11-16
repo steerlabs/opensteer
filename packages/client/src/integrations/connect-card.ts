@@ -1,4 +1,4 @@
-import type { IntegrationOAuthApplicationSource } from "@opensteer/integration-core";
+import type { IntegrationOAuthApplicationSource } from "@opensteer/integration-core/models";
 import {
   accessPlan,
   accessServerChoices,

@@ -1,4 +1,4 @@
-import type { ComputerAppSetupSummary } from "@opensteer/integration-core";
+import type { ComputerAppSetupSummary } from "@opensteer/integration-core/computer-app-setup";
 import type { HostClient } from "../host/client.js";
 import { unwrapRpcResult } from "../host/host-session-client.js";
 

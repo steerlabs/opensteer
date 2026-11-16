@@ -1,4 +1,4 @@
-import { getIntegrationDefinition } from "@opensteer/integration-catalog";
+import { getDeviceDefinition } from "@opensteer/integration-catalog/devices";
 import {
   isComputerAppDefinition,
   type ComputerAppOperation,
@@ -25,7 +25,7 @@ import {
   type ComputerAppValue,
 } from "./provider.js";
 
-const definition = getIntegrationDefinition("apple-messages");
+const definition = getDeviceDefinition("apple-messages");
 if (!definition || !isComputerAppDefinition(definition)) {
   throw new Error("The Messages computer app definition is missing");
 }

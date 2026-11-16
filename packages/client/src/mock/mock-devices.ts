@@ -2,8 +2,8 @@ import { RequestSchema, type Request } from "@opensteer/core";
 import {
   ComputerAppSetupRequestSchema,
   type ComputerAppSetupRequest,
-  type PluginDeviceKind,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/computer-app-setup";
+import { type PluginDeviceKind } from "@opensteer/integration-core/models";
 import { mockMessagesRunnerId } from "./mock-integration-fixtures.js";
 
 /**

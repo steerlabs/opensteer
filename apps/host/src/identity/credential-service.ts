@@ -12,7 +12,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
-import type { IntegrationConnectionId } from "@opensteer/integration-core";
+import type { IntegrationConnectionId } from "@opensteer/integration-core/ids";
 import { isNodeError } from "@opensteer/shared/nodeError";
 import {
   noFollowFlag,

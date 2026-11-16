@@ -9,8 +9,8 @@ import {
   type HostApiCommand,
   type OwnerWindowInfo,
 } from "@opensteer/protocol";
-import { computerAppIdentitiesEqual } from "@opensteer/integration-core";
-import type { IntegrationConnectionSummary } from "@opensteer/integration-core";
+import { computerAppIdentitiesEqual } from "@opensteer/integration-core/computer-app";
+import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
 import { HostClientRequestError, type HostSnapshot } from "../host/client.js";
 import { WindowIdSchema, type WindowId } from "@opensteer/core";
 

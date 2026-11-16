@@ -8,7 +8,7 @@ import { MacWindowVideoRelay, type MacVideoEvent } from "./mac-window-video-rela
 import type { RunnerTransportPolicy } from "@opensteer/runner-client";
 import type { RunnerIntegrationsComputerViewResult } from "@opensteer/protocol";
 import { validateJsonSchema } from "@opensteer/shared/jsonSchemaValidation";
-import { getIntegrationDefinition } from "@opensteer/integration-catalog";
+import { getDeviceDefinition } from "@opensteer/integration-catalog/devices";
 import {
   isComputerAppDefinition,
   type ComputerAppOperation,
@@ -438,7 +438,7 @@ export class ComputerAppModuleHandler {
       return;
     }
     const provider = this.#providersByDefinitionId.get(message.definitionId);
-    const definition = getIntegrationDefinition(message.definitionId);
+    const definition = getDeviceDefinition(message.definitionId);
     if (!provider || !definition || !isComputerAppDefinition(definition)) {
       await this.#sendResult(
         stream,
@@ -779,7 +779,7 @@ export class ComputerAppModuleHandler {
             definitionId: provider.definitionId,
             reason: error instanceof Error ? error.message : String(error),
           });
-          const definition = getIntegrationDefinition(provider.definitionId);
+          const definition = getDeviceDefinition(provider.definitionId);
           operations =
             definition && isComputerAppDefinition(definition)
               ? definition.config.operations.map((operation) => ({

@@ -1,11 +1,9 @@
 import { RunIdSchema, RunnerIdSchema } from "@opensteer/core";
 import { groupTranscriptEntries } from "../host/agent-activity-model.js";
 import type { ToolEntry, TranscriptEntry } from "../host/client.js";
-import type {
-  ComputerAppSetupRequest,
-  IntegrationConnectionSummary,
-  IntegrationDefinitionSummary,
-} from "@opensteer/integration-core";
+import type { ComputerAppSetupRequest } from "@opensteer/integration-core/computer-app-setup";
+import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
+import type { IntegrationDefinitionSummary } from "@opensteer/integration-core/adapter";
 import type { ComputerUseSessionSummary, MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { computerAppRows } from "./computer-apps.js";

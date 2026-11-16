@@ -5,8 +5,8 @@ import { useComputerAppApproval } from "./computer-app-approval.js";
 import type {
   ComputerAppIdentity,
   ComputerUseAppApproval,
-  IntegrationAccess,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/computer-app";
+import type { IntegrationAccess } from "@opensteer/integration-core/access";
 import type { DesktopOpenComputerUsePermissionsPanelResult } from "@opensteer/protocol/desktop";
 import type {
   ComputerUseInstalledApp,

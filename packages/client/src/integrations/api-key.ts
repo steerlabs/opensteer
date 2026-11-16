@@ -1,4 +1,4 @@
-import type { AuthMethod } from "@opensteer/integration-core";
+import type { AuthMethod } from "@opensteer/integration-core/auth-method";
 import type {
   ApiKeyDisclosure,
   IntegrationDefinitionSummaryView,

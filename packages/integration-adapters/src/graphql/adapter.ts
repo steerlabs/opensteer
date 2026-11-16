@@ -1,10 +1,10 @@
 // Derived from github.com/UsefulSoftwareCo/executor packages/plugins/graphql/src/sdk/invoke.ts and plugin.ts (MIT).
+import { renderAuthPlacements } from "@opensteer/integration-core/auth-method";
 import {
-  renderAuthPlacements,
   type AdapterHealthResult,
   type AdapterToolResult,
   type IntegrationAdapter,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/adapter";
 import {
   decodeResponseBody,
   errorResult,

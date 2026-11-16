@@ -2,12 +2,14 @@ import { agentProposedText } from "@opensteer/core";
 import type { IntegrationDefinitionSummaryView } from "@opensteer/integration-core/adapter";
 import {
   type IntegrationConnectionSummary,
-  type IntegrationDashboard,
-  type IntegrationPlatformDashboardView,
-  type IntegrationProvider,
   type IntegrationServerSummary,
   type IntegrationTool,
 } from "@opensteer/integration-core/models";
+import {
+  type IntegrationDashboard,
+  type IntegrationPlatformDashboardView,
+} from "@opensteer/integration-core/service-models";
+import { type IntegrationProvider } from "@opensteer/integration-core/identifiers";
 import {
   canSetUpOwnApp,
   connectionNeedsReconnect,

@@ -1,5 +1,8 @@
 // Derived from github.com/UsefulSoftwareCo/executor packages/plugins/openapi/src/sdk/extract.ts (MIT).
-import type { AdapterToolCatalog, AdapterToolDefinition } from "@opensteer/integration-core";
+import type {
+  AdapterToolCatalog,
+  AdapterToolDefinition,
+} from "@opensteer/integration-core/adapter";
 import { asRecord } from "../shared.js";
 import type { OpenApiAdapterConfig, OpenApiToolTarget, OperationSelector } from "./config.js";
 import { planLegacyOpenApiToolNames, planOpenApiToolNames } from "./definitions.js";

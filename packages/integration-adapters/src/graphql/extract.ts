@@ -1,5 +1,8 @@
 // Derived from github.com/UsefulSoftwareCo/executor packages/plugins/graphql/src/sdk/extract.ts (MIT).
-import type { AdapterToolCatalog, AdapterToolDefinition } from "@opensteer/integration-core";
+import type {
+  AdapterToolCatalog,
+  AdapterToolDefinition,
+} from "@opensteer/integration-core/adapter";
 import type { GraphqlAdapterConfig } from "./config.js";
 import type {
   IntrospectionField,

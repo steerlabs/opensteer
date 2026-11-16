@@ -3,7 +3,7 @@ import { isLoopbackHostname } from "@opensteer/core";
 import type {
   OAuthIdTokenValidation,
   OAuthTokenResponseProfile,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/auth-method";
 import * as oauth from "oauth4webapi";
 
 const OAUTH2_REFRESH_SKEW_MS = 60_000;

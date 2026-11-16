@@ -1,6 +1,6 @@
 import Fastify from "fastify";
 import { createId } from "@opensteer/core";
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HostAuthenticator } from "../identity/auth.js";
 import {

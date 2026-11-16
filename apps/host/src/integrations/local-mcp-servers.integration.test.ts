@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { IntegrationPlatformStore } from "@opensteer/database";
-import type { ComputerAppSetupRequest, LocalMcpLaunch } from "@opensteer/integration-core";
+import type { ComputerAppSetupRequest } from "@opensteer/integration-core/computer-app-setup";
+import type { LocalMcpLaunch } from "@opensteer/integration-core/local-mcp";
 import { localMcpLaunchDigest } from "@opensteer/integration-core/digest";
 
 import { LocalMcpServers, prepareIntegrationsModule, type LocalMcpFrame } from "@opensteer/runner";

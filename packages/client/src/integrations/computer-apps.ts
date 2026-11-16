@@ -1,12 +1,12 @@
 import type {
   ComputerAppPlatformView,
   ComputerAppPresentationView,
-  ComputerAppSetupSummary as ComputerAppSetupRequest,
-  IntegrationAccess,
-  IntegrationConnectionSummary,
-  IntegrationDefinitionSummaryView,
-} from "@opensteer/integration-core";
-import { computerAppUsesSessions } from "@opensteer/integration-core";
+} from "@opensteer/integration-core/computer-app";
+import type { ComputerAppSetupSummary as ComputerAppSetupRequest } from "@opensteer/integration-core/computer-app-setup";
+import type { IntegrationAccess } from "@opensteer/integration-core/access";
+import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
+import type { IntegrationDefinitionSummaryView } from "@opensteer/integration-core/adapter";
+import { computerAppUsesSessions } from "@opensteer/integration-core/computer-app";
 import type {
   ComputerAppRemedy,
   MachineAppStatus,

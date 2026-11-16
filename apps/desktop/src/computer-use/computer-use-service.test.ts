@@ -6,7 +6,7 @@ import { RunnerIdSchema, createId, type HostInstanceId } from "@opensteer/core";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { DeploymentConnectionSchema } from "@opensteer/client/connections";
 import { testDiscoveryEnvelope } from "@opensteer/client/test-support";
-import { integrationDefinitions } from "@opensteer/integration-catalog";
+import { deviceDefinitions } from "@opensteer/integration-catalog/devices";
 import { parseComputerAppConfig } from "@opensteer/integration-core/computer-app";
 import { computerAppOperationContract } from "@opensteer/integration-core/computer-app-tools";
 import {
@@ -1239,7 +1239,7 @@ async function invokeApp(module: ComputerAppModuleHandler, requestId: string, ca
 }
 
 function contractOf(definitionId: string, name: string): string {
-  const definition = integrationDefinitions.find(({ id }) => id === definitionId);
+  const definition = deviceDefinitions.find(({ id }) => id === definitionId);
   const operation =
     definition && parseComputerAppConfig(definition).operations.find((op) => op.name === name);
   if (!operation) throw new Error(`The catalog must define ${definitionId}.${name}`);

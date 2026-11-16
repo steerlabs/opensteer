@@ -2,11 +2,9 @@
 
 import type { HostClient } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
-import type {
-  ComputerAppPresentation,
-  IntegrationAccess,
-  IntegrationGrant,
-} from "@opensteer/integration-core";
+import type { ComputerAppPresentation } from "@opensteer/integration-core/computer-app";
+import type { IntegrationAccess } from "@opensteer/integration-core/access";
+import type { IntegrationGrant } from "@opensteer/integration-core/models";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";

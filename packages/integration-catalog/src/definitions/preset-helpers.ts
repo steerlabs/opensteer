@@ -1,9 +1,8 @@
 import {
   IntegrationDefinitionSchema,
-  type AuthMethodInput,
-  type AuthPlacement,
   type IntegrationDefinition,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/adapter";
+import { type AuthMethodInput, type AuthPlacement } from "@opensteer/integration-core/auth-method";
 
 interface ApiKeyPreset {
   readonly baseUrl?: string;

@@ -7,7 +7,7 @@ import {
   type AgentHomeSkillInventory,
 } from "./agent-home-skill-inventory-store.js";
 import { createId, OpensteerError, type UserId, RunnerIdSchema } from "@opensteer/core";
-import { pluginDeviceFromManifest } from "@opensteer/integration-core";
+import { pluginDeviceFromManifest } from "@opensteer/integration-core/models";
 import {
   PluginTargetSchema,
   PluginsOverviewViewSchema,

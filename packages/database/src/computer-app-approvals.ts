@@ -12,14 +12,18 @@ import {
 } from "@opensteer/core";
 import {
   computerAppIdentitiesEqual,
+  type ComputerAppIdentity,
+} from "@opensteer/integration-core/computer-app";
+import {
   integrationAccessCovers,
   widerIntegrationAccess,
-  type ComputerAppIdentity,
   type IntegrationAccess,
+} from "@opensteer/integration-core/access";
+import {
   type IntegrationConnectionId,
-  type IntegrationGrant,
   type IntegrationInstallationId,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/ids";
+import { type IntegrationGrant } from "@opensteer/integration-core/models";
 import { sql, type Kysely, type Transaction } from "kysely";
 import { assignmentActivityEventsForRun } from "./assignment-store.js";
 import {

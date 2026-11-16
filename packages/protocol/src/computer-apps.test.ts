@@ -1,8 +1,6 @@
 import { createId } from "@opensteer/core";
-import {
-  ComputerAppSetupRequestViewSchema,
-  createIntegrationId,
-} from "@opensteer/integration-core";
+import { ComputerAppSetupRequestViewSchema } from "@opensteer/integration-core/computer-app-setup";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { describe, expect, it } from "vitest";
 import {
   ComputerAppRemedySchema,

@@ -4,8 +4,8 @@ import { createHash } from "node:crypto";
 import { OpensteerError, PendingRequestSchema, RequestSchema, createId } from "@opensteer/core";
 import type { Request } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
-import { createIntegrationId } from "@opensteer/integration-core";
-import type { IntegrationReadiness } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
+import type { IntegrationReadiness } from "@opensteer/integration-core/models";
 import type { CommandService } from "@opensteer/orchestration";
 import { describe, expect, it, vi } from "vitest";
 import {

@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import type {
   IntegrationAuthAttemptFailureReason,
   IntegrationAuthAttemptStore,

@@ -119,11 +119,9 @@ import {
 import { hostedOAuthDeploymentAuthorityDigest } from "@opensteer/control-plane-protocol/broker-sealing";
 import { computerAppIntegrations, integrationDefinitions } from "@opensteer/integration-catalog";
 import { listedDefinitionName } from "../integrations/catalog-presentation.js";
-import {
-  resolveIntegrationDeploymentPosture,
-  type ComputerAppPlatform,
-  type IntegrationConnectionId,
-} from "@opensteer/integration-core";
+import { resolveIntegrationDeploymentPosture } from "@opensteer/integration-core/models";
+import { type ComputerAppPlatform } from "@opensteer/integration-core/computer-app";
+import { type IntegrationConnectionId } from "@opensteer/integration-core/ids";
 import {
   CommandService,
   ExecutionCoordinator,

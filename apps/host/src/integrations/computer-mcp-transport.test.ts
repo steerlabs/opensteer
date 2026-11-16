@@ -1,5 +1,5 @@
 import { createId } from "@opensteer/core";
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { expect, it, vi } from "vitest";
 import {
   ComputerMcpSessionError,

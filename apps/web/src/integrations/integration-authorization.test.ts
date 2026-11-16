@@ -1,6 +1,6 @@
 import type { DesktopIntegrationAuthorizationReturn } from "@opensteer/protocol/desktop";
 import { createId } from "@opensteer/core";
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { HostClientRequestError, type HostClient } from "@opensteer/client/host";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createConnectOperations } from "../components/integrations/connect-operations.js";

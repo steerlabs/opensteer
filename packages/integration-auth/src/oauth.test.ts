@@ -1,4 +1,4 @@
-import { OAuthMethodConfigSchema } from "@opensteer/integration-core";
+import { OAuthMethodConfigSchema } from "@opensteer/integration-core/auth-method";
 import { describe, expect, it, vi } from "vitest";
 import {
   assertSupportedOAuthEndpointUrl,

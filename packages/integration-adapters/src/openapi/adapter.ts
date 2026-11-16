@@ -4,7 +4,7 @@ import type {
   ApiKeyDisclosure,
   AdapterToolResult,
   IntegrationAdapter,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/adapter";
 import { stringAtPath } from "../shared.js";
 import {
   OpenApiAdapterConfigSchema,

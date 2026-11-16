@@ -15,7 +15,7 @@ import {
   type IntegrationRepository,
 } from "@opensteer/integration-core/ports";
 import { installedIntegrationDefinition } from "@opensteer/database";
-import { authorizationDigest } from "@opensteer/integration-core/digest";
+import { authorizationDigest } from "@opensteer/integration-core/authorization-digest";
 import {
   generateOAuthBrokerEphemeralKeyPair,
   openOAuthBrokerPayload,

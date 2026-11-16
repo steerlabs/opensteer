@@ -1,5 +1,6 @@
 import type { CallableIntegrationTool } from "@opensteer/database";
-import type { IntegrationAccess, IntegrationConnectionId } from "@opensteer/integration-core";
+import type { IntegrationAccess } from "@opensteer/integration-core/access";
+import type { IntegrationConnectionId } from "@opensteer/integration-core/ids";
 import { computerUseBusyNextStep } from "../computer-use/computer-use-service.js";
 
 export function toolReference(callable: CallableIntegrationTool): string {

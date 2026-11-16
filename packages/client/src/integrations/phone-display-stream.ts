@@ -1,4 +1,4 @@
-import { computerAppIdentityKey } from "@opensteer/integration-core";
+import { computerAppIdentityKey } from "@opensteer/integration-core/computer-app";
 import type { NativeViewerSource } from "../host/surfaces.js";
 import {
   DisplayInputEventSchema,

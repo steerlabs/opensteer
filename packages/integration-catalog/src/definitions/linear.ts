@@ -1,4 +1,4 @@
-import { IntegrationDefinitionSchema } from "@opensteer/integration-core";
+import { IntegrationDefinitionSchema } from "@opensteer/integration-core/adapter";
 
 const servicePolicy = {
   "issues.read": { operations: ["query.issue", "query.issues", "query.viewer"] },

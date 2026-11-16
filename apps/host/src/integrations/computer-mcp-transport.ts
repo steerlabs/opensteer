@@ -5,7 +5,8 @@ import {
 } from "@opensteer/access/host";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import type { RunnerId } from "@opensteer/core";
-import type { IntegrationServerId, LocalMcpLaunch } from "@opensteer/integration-core";
+import type { IntegrationServerId } from "@opensteer/integration-core/ids";
+import type { LocalMcpLaunch } from "@opensteer/integration-core/local-mcp";
 import { computerMcpLastOutputLabel, type HostIntegrationsMcpMessage } from "@opensteer/protocol";
 import {
   ComputerMcpSessionError,

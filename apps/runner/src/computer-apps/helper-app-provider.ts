@@ -1,4 +1,4 @@
-import { getIntegrationDefinition } from "@opensteer/integration-catalog";
+import { getDeviceDefinition } from "@opensteer/integration-catalog/devices";
 import { parseComputerAppConfig } from "@opensteer/integration-core/computer-app";
 import {
   computerUseDataApps,
@@ -49,7 +49,7 @@ export function createHelperAppProvider(
   definitionId: ComputerUseDataAppId,
   helper: HelperDataPort | null,
 ): ComputerAppProvider {
-  const definition = getIntegrationDefinition(definitionId);
+  const definition = getDeviceDefinition(definitionId);
   if (!definition) throw new Error(`The catalog has no ${definitionId}`);
   const operations = parseComputerAppConfig(definition).operations;
   const grants = computerUseDataApps[definitionId];

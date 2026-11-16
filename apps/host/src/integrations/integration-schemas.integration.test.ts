@@ -40,7 +40,7 @@ import {
   IntegrationToolIdSchema,
   type IntegrationInstallationId,
   type IntegrationServerId,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/ids";
 import { standaloneToolSchema } from "@opensteer/integration-core/tool-schemas";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import { integrationGateway, toolText } from "../computer-apps/computer-apps.test-support.js";

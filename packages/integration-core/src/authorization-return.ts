@@ -8,7 +8,7 @@ import { z } from "zod";
 import {
   IntegrationAuthorizationAttemptIdSchema,
   IntegrationAuthorizationReturnPortSchema,
-} from "./models.js";
+} from "./service-models.js";
 
 export type IntegrationAuthorizationReturnSurface = "desktop" | "native" | "web";
 /** The surfaces whose consent finishes in the app that started it. */

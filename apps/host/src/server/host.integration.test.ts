@@ -36,7 +36,7 @@ import {
 } from "@opensteer/core";
 import { IntegrationConnectionAuthStore, type OpensteerStore } from "@opensteer/database";
 import { hostApiVersion, minimumHostApiVersion } from "@opensteer/deployment-authority";
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import {
   agentToolPayloadMaxSerializedBytes,
   HarnessInstanceCatalogSchema,

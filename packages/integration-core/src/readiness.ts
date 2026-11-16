@@ -1,10 +1,10 @@
+import type { IntegrationAccess } from "./access.js";
 import type {
   IntegrationConnectionRequirement,
-  IntegrationAccess,
   IntegrationProviderAuthorization,
-  IntegrationProvider,
   IntegrationReadiness,
 } from "./models.js";
+import type { IntegrationProvider } from "./identifiers.js";
 import {
   IntegrationConnectionIdSchema,
   type IntegrationConnectionId,

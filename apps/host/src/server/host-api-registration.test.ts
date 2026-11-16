@@ -1,6 +1,6 @@
 import Fastify from "fastify";
 import { createId, type AuthenticatedSession } from "@opensteer/core";
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { rpcSuccess, type HostApiHandlers } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { HostAuthenticator } from "../identity/auth.js";

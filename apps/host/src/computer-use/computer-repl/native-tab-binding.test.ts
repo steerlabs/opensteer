@@ -1,5 +1,5 @@
 import { createId, TabIdSchema, WindowIdSchema, type Tab } from "@opensteer/core";
-import type { IntegrationConnectionSummary } from "@opensteer/integration-core";
+import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
 import { describe, expect, it, vi } from "vitest";
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
 import type { TabServicePort, NativeTargetAcquiredHandler } from "../../tabs/ports.js";

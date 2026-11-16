@@ -9,15 +9,15 @@ import {
   type WindowId,
   type DeploymentId,
 } from "@opensteer/core";
-import { getIntegrationDefinition } from "@opensteer/integration-catalog";
+import { getDeviceDefinition } from "@opensteer/integration-catalog/devices";
 import {
   computerAppIdentityKey,
   computerAppUsesSessions,
   isComputerAppDefinition,
   type ComputerAppIdentity,
   type ComputerAppPlatform,
-  type IntegrationAccess,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/computer-app";
+import { type IntegrationAccess } from "@opensteer/integration-core/access";
 import {
   AndroidPhoneActParamsSchema,
   AndroidPhoneDispatchActParamsSchema,
@@ -2102,7 +2102,7 @@ function holdsAnything(session: Session): boolean {
  * this Host ships declares them: there is no second list to drift from it.
  */
 function sessionDefinitionPlatforms(definitionId: string): ReadonlySet<ComputerAppPlatform> {
-  const definition = getIntegrationDefinition(definitionId);
+  const definition = getDeviceDefinition(definitionId);
   if (
     !definition ||
     !isComputerAppDefinition(definition) ||

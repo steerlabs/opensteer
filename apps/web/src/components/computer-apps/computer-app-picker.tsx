@@ -1,8 +1,6 @@
-import type {
-  IntegrationAccess,
-  IntegrationConnectionSummary,
-  IntegrationDefinitionSummaryView,
-} from "@opensteer/integration-core";
+import type { IntegrationAccess } from "@opensteer/integration-core/access";
+import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
+import type { IntegrationDefinitionSummaryView } from "@opensteer/integration-core/adapter";
 import type { MachineSummary } from "@opensteer/protocol";
 import { computerGlyph } from "@opensteer/client/computers";
 import {

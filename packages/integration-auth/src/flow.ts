@@ -2,7 +2,7 @@ import {
   OAuthTokenResponseIdentitySchema,
   type OAuthMethodConfig,
   type OAuthTokenResponseIdentity,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/auth-method";
 import {
   buildAuthorizationUrl,
   createPkcePair,

@@ -1,4 +1,4 @@
-import { IntegrationDefinitionSchema } from "@opensteer/integration-core";
+import { IntegrationDefinitionSchema } from "@opensteer/integration-core/adapter";
 
 const notionSpec = {
   openapi: "3.1.0",

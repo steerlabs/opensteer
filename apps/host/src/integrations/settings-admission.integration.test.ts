@@ -1,6 +1,6 @@
 import { describeStore } from "@opensteer/database/test-support/store";
 import { IntegrationPlatformStore } from "@opensteer/database";
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { expect, vi } from "vitest";
 import { IntegrationToolHandlers } from "../mcp/handlers/integrations.js";
 import type { AgentCaller } from "../mcp/agent-caller.js";

@@ -2,11 +2,9 @@ import {
   executeIntegrationAdministration,
   isIntegrationAdministrationCommand,
 } from "./integration-administration.js";
-import {
-  ComputerAppSetupRequestViewSchema,
-  McpOAuthAttemptIdSchema,
-  localMcpLaunchSecrets,
-} from "@opensteer/integration-core";
+import { ComputerAppSetupRequestViewSchema } from "@opensteer/integration-core/computer-app-setup";
+import { McpOAuthAttemptIdSchema } from "@opensteer/integration-core/ids";
+import { localMcpLaunchSecrets } from "@opensteer/integration-core/local-mcp";
 import { OpensteerError, type DeploymentId, type UserId } from "@opensteer/core";
 import {
   hostApi,

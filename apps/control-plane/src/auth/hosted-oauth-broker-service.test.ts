@@ -19,7 +19,7 @@ import {
   hostedOAuthDeploymentAuthorityDigest,
 } from "@opensteer/control-plane-protocol/broker-sealing";
 import { integrationDefinitions } from "@opensteer/integration-catalog";
-import { authorizationDigest } from "@opensteer/integration-core/digest";
+import { authorizationDigest } from "@opensteer/integration-core/authorization-digest";
 import { describe, expect, it, vi } from "vitest";
 import type { HostedOAuthAttemptDurableInput } from "./hosted-oauth-broker-store.js";
 import {

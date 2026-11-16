@@ -2,11 +2,9 @@ import "@fontsource-variable/inter/wght.css";
 import "@fontsource-variable/fraunces/wght.css";
 import "./styles/index.css";
 import type { HostClient } from "@opensteer/client/host";
-import type {
-  ComputerAppSetupRequest,
-  IntegrationConnectionSummary,
-  IntegrationDefinitionSummary,
-} from "@opensteer/integration-core";
+import type { ComputerAppSetupRequest } from "@opensteer/integration-core/computer-app-setup";
+import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
+import type { IntegrationDefinitionSummary } from "@opensteer/integration-core/adapter";
 import type { ComputerAppRemedy, MachineSummary } from "@opensteer/protocol";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router";

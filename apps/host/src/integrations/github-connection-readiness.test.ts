@@ -1,11 +1,9 @@
 import { createId } from "@opensteer/core";
 import { githubIntegration } from "@opensteer/integration-catalog";
-import {
-  createIntegrationId,
-  IntegrationConnectionSummarySchema,
-} from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
+import { IntegrationConnectionSummarySchema } from "@opensteer/integration-core/models";
 import type { IntegrationConnectionSecretRecord } from "@opensteer/integration-core/ports";
-import { authorizationDigest } from "@opensteer/integration-core/digest";
+import { authorizationDigest } from "@opensteer/integration-core/authorization-digest";
 import { describe, expect, it, vi } from "vitest";
 import { IntegrationService } from "./integration-service.js";
 

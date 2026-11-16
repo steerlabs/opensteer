@@ -1,4 +1,4 @@
-import type { IntegrationDefinition } from "@opensteer/integration-core";
+import type { IntegrationDefinition } from "@opensteer/integration-core/adapter";
 
 /**
  * How the catalog is shown to a person: which product each definition belongs

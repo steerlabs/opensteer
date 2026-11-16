@@ -5,7 +5,7 @@ import {
   recordTestDatabaseSetup,
 } from "./test-database.test-support.js";
 
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 
 import { describe, expect, it as baseIt } from "vitest";
 import {

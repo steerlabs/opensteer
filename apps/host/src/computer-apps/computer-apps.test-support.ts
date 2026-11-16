@@ -5,7 +5,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { createId, type EnvironmentId } from "@opensteer/core";
-import type { ComputerAppSetupSummary, IntegrationAccess } from "@opensteer/integration-core";
+import type { ComputerAppSetupSummary } from "@opensteer/integration-core/computer-app-setup";
+import type { IntegrationAccess } from "@opensteer/integration-core/access";
 import type { MessagingModule } from "@opensteer/messaging-module";
 import {
   ComputerUseBridgeRequestSchema,

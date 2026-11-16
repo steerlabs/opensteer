@@ -8,7 +8,7 @@ import {
 import {
   IntegrationConnectionIdSchema,
   IntegrationInstallationIdSchema,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/ids";
 import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { listEligibleBrowserRunners } from "./browser-home-store.js";
@@ -19,7 +19,7 @@ import type {
   PrivateIntegrationGrant,
 } from "./private-resources-port.js";
 import { writeIntegrationGrantInTransaction } from "./integration-grant-write.js";
-import type { IntegrationProviderAuthorization } from "@opensteer/integration-core";
+import type { IntegrationProviderAuthorization } from "@opensteer/integration-core/models";
 
 export interface PrivatePasswordsGrants {
   get(

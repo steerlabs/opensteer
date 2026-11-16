@@ -1,4 +1,4 @@
-import { IntegrationDefinitionSchema } from "@opensteer/integration-core";
+import { IntegrationDefinitionSchema } from "@opensteer/integration-core/adapter";
 
 const servicePolicy = {
   "email.send": { operations: ["emails/send", "emails/send-batch"] },

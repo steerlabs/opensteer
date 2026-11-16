@@ -16,11 +16,11 @@ import { IsoDateTimeSchema, RunIdSchema, ThreadIdSchema } from "@opensteer/core"
 import {
   ComputerAppIdentitySchema,
   ComputerAppIdentityViewSchema,
-  IntegrationAccessSchema,
   ComputerUseAppApprovalSchema,
   computerAppIdentityKey,
   type ComputerAppIdentity,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/computer-app";
+import { IntegrationAccessSchema } from "@opensteer/integration-core/access";
 import { z } from "zod";
 import {
   LoginActContextSchema,

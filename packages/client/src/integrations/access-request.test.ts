@@ -1,4 +1,4 @@
-import type { IntegrationDefinitionSummary } from "@opensteer/integration-core";
+import type { IntegrationDefinitionSummary } from "@opensteer/integration-core/adapter";
 import { describe, expect, it, vi } from "vitest";
 import {
   accessPlan,

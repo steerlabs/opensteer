@@ -5,7 +5,7 @@ import type { StoreFixture } from "./store.integration.test-support.js";
 
 import { createHash, randomUUID } from "node:crypto";
 
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { createId, type RunId, type RunnerId } from "@opensteer/core";
 import { ShellSessionIdSchema } from "@opensteer/protocol";
 import { sql } from "kysely";

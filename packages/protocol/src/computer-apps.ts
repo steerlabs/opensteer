@@ -18,13 +18,11 @@ import {
   ComputerViewNativeResultSchema,
 } from "./computer-view.js";
 import { RunIdSchema } from "@opensteer/core";
-import {
-  IntegrationAccessSchema,
-  IntegrationDefinitionIdSchema,
-  IntegrationServerIdSchema,
-  LocalMcpLaunchSchema,
-  McpIdentifierSchema,
-} from "@opensteer/integration-core";
+import { IntegrationAccessSchema } from "@opensteer/integration-core/access";
+import { IntegrationDefinitionIdSchema } from "@opensteer/integration-core/adapter-kind";
+import { IntegrationServerIdSchema } from "@opensteer/integration-core/ids";
+import { LocalMcpLaunchSchema } from "@opensteer/integration-core/local-mcp";
+import { McpIdentifierSchema } from "@opensteer/integration-core/schema-primitives";
 import { z } from "zod";
 import {
   LoginReceiverKeySchema,

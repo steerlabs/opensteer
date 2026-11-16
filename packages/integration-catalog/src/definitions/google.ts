@@ -1,5 +1,5 @@
 import { googleDiscoveryOpenApiConfig, type GoogleService } from "@opensteer/integration-adapters";
-import { IntegrationDefinitionSchema } from "@opensteer/integration-core";
+import { IntegrationDefinitionSchema } from "@opensteer/integration-core/adapter";
 import { bearerAccessToken } from "./helpers.js";
 
 const auth = (scope: string): string => `https://www.googleapis.com/auth/${scope}`;

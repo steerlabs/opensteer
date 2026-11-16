@@ -1,7 +1,5 @@
-import type {
-  IntegrationConnectionSummary,
-  IntegrationDefinitionSummary,
-} from "@opensteer/integration-core";
+import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
+import type { IntegrationDefinitionSummary } from "@opensteer/integration-core/adapter";
 import type { MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
 import {

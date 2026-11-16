@@ -31,7 +31,7 @@ import {
   type ThreadInputQueue,
 } from "@opensteer/core";
 import { apiVersionQueryParameter, hostApiVersion } from "@opensteer/deployment-authority";
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import {
   BrowserSurfaceIdSchema,
   ComputerViewSchema,

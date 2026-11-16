@@ -10,7 +10,7 @@ import {
   IntegrationStore,
 } from "@opensteer/database";
 import { describeStore } from "@opensteer/database/test-support/store";
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { RealtimeHub } from "@opensteer/orchestration";
 import type { HostToClientMessage } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";

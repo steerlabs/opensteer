@@ -14,17 +14,17 @@ import { pauseAfterLock } from "./lock-race.test-support.js";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import {
   IntegrationDefinitionSchema,
-  createIntegrationId,
   integrationDefinitionSummary,
+} from "@opensteer/integration-core/adapter";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
+import {
   isComputerAppDefinition,
   type ComputerAppIdentity,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/computer-app";
 import type { ComputerAppDefinition } from "@opensteer/integration-core/computer-app";
 import { computerAppTools } from "@opensteer/integration-core/computer-app-tools";
-import {
-  authorizationDigest,
-  integrationDefinitionDigest,
-} from "@opensteer/integration-core/digest";
+import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
+import { authorizationDigest } from "@opensteer/integration-core/authorization-digest";
 import {
   type RunId,
   type ThreadId,
@@ -1727,7 +1727,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       readonly runnerId: ReturnType<typeof createId<"runner">>;
       readonly tools: (
         connectionId: Parameters<typeof computerAppTools>[2],
-      ) => readonly import("@opensteer/integration-core").IntegrationToolMaterial[];
+      ) => readonly import("@opensteer/integration-core/models").IntegrationToolMaterial[];
     }) {
       return {
         access: input.access,
@@ -5422,7 +5422,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         threadId: run.threadId,
       });
       const consume = (
-        request: import("@opensteer/integration-core").ComputerAppSetupRequest,
+        request: import("@opensteer/integration-core/computer-app-setup").ComputerAppSetupRequest,
         access: "read" | "read-write",
         app: ComputerAppIdentity = notes,
       ) =>
@@ -5911,7 +5911,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       storeFixture: StoreFixture,
       setup: Awaited<ReturnType<typeof phoneFixture>>,
       access: "read" | "read-write",
-      approved: import("@opensteer/integration-core").ComputerAppSetupRequest,
+      approved: import("@opensteer/integration-core/computer-app-setup").ComputerAppSetupRequest,
     ) {
       const { platform } = storeFixture;
       return platform.setComputerConnection({

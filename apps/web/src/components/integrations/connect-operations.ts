@@ -3,10 +3,10 @@ import type {
   IntegrationAuthorizationStart,
   IntegrationAuthorizationStatus,
   IntegrationDashboard,
-  IntegrationOAuthApplicationSource,
   IntegrationProviderApplication,
   SaveIntegrationProviderApplication,
-} from "@opensteer/integration-core/models";
+} from "@opensteer/integration-core/service-models";
+import type { IntegrationOAuthApplicationSource } from "@opensteer/integration-core/models";
 import type { IntegrationRepositoryAccess } from "@opensteer/integration-core";
 import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import { desktopBridge } from "../../desktop/desktop-bridge.js";

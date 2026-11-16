@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { RunnerIdSchema, UserIdSchema, WindowIdSchema } from "@opensteer/core";
-import type { IntegrationConnectionSummary } from "@opensteer/integration-core";
+import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
 import type {
   ComputerViewNativeResult,
   ComputerViewTarget,

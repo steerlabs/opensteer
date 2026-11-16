@@ -50,7 +50,7 @@ import {
   type IntegrationSecretContext,
   type IntegrationSecretVault,
 } from "@opensteer/integration-core/ports";
-import { authorizationDigest } from "@opensteer/integration-core/digest";
+import { authorizationDigest } from "@opensteer/integration-core/authorization-digest";
 import {
   OAuth2Error,
   buildDeclarativeAuthorizationUrl,

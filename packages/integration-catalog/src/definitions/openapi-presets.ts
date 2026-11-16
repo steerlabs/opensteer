@@ -1,7 +1,7 @@
 import {
   IntegrationDefinitionSchema,
   type IntegrationDefinition,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/adapter";
 import { apiKeyOpenApiPreset, bearerApiKey, secretInput } from "./preset-helpers.js";
 
 const presets: readonly IntegrationDefinition[] = [

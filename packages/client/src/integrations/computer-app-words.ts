@@ -1,4 +1,4 @@
-import type { ComputerAppPresentationView } from "@opensteer/integration-core";
+import type { ComputerAppPresentationView } from "@opensteer/integration-core/computer-app";
 import { computerAppPlatformTargetLabel } from "./computer-apps.js";
 import { addPhoneSteps } from "./computer-use.js";
 

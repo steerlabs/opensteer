@@ -1,12 +1,12 @@
 // Derived from github.com/UsefulSoftwareCo/executor packages/plugins/mcp/src/sdk/discover.ts and invoke.ts (MIT).
 import { createHash } from "node:crypto";
+import { renderAuthPlacements } from "@opensteer/integration-core/auth-method";
 import {
-  renderAuthPlacements,
   type AdapterHealthResult,
   type AdapterToolDefinition,
   type AdapterToolResult,
   type IntegrationAdapter,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/adapter";
 import { errorResult, isAbortError, timeoutResult } from "../shared.js";
 import { connectMcp, listAllMcpTools, type McpSession } from "./connection.js";
 import { McpConnectionPool, mcpErrorStatus } from "./connection-pool.js";

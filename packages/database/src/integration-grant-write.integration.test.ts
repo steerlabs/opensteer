@@ -1,5 +1,5 @@
 import { createId } from "@opensteer/core";
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { sql } from "kysely";
 import { expect } from "vitest";
 import { IntegrationPlatformStore } from "./integration-platform-store.js";

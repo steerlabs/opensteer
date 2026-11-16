@@ -8,7 +8,7 @@ import {
   IntegrationStore,
   OpensteerStore,
 } from "@opensteer/database";
-import { computerAppIntegrations } from "@opensteer/integration-catalog";
+import { computerAppIntegrations } from "@opensteer/integration-catalog/devices";
 
 import type { PendingAgentEvent } from "@opensteer/protocol";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";

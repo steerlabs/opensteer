@@ -6,10 +6,8 @@ import {
   type RunnerId,
   type UserId,
 } from "@opensteer/core";
-import {
-  computerAppIdentitiesEqual,
-  type IntegrationConnectionSummary,
-} from "@opensteer/integration-core";
+import { computerAppIdentitiesEqual } from "@opensteer/integration-core/computer-app";
+import { type IntegrationConnectionSummary } from "@opensteer/integration-core/models";
 import {
   ComputerViewIdSchema,
   ComputerViewSchema,

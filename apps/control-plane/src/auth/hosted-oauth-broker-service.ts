@@ -64,7 +64,7 @@ import {
   type IntegrationDefinition,
   type IntegrationAuthorizationBrowserReturn,
 } from "@opensteer/integration-core";
-import { authorizationDigest as computeAuthorizationDigest } from "@opensteer/integration-core/digest";
+import { authorizationDigest as computeAuthorizationDigest } from "@opensteer/integration-core/authorization-digest";
 import { sameStringSet, type DeploymentId } from "@opensteer/core";
 import { z } from "zod";
 import { ControlPlaneError } from "../server/errors.js";

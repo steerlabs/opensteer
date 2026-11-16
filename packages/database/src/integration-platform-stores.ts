@@ -25,9 +25,9 @@ import { jsonValue } from "./store-primitives.js";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import {
   localMcpLaunchDigest,
-  authorizationDigest,
   integrationDefinitionDigest,
 } from "@opensteer/integration-core/digest";
+import { authorizationDigest } from "@opensteer/integration-core/authorization-digest";
 import {
   IntegrationAdapterSnapshotSchema,
   type IntegrationAdapterSnapshot,
@@ -72,7 +72,8 @@ import {
   computerAppIdentitiesEqual,
   type McpOAuthAttemptId,
 } from "@opensteer/integration-core";
-import { integrationAccessCovers, integrationToolEffect } from "@opensteer/integration-core/effect";
+import { integrationAccessCovers } from "@opensteer/integration-core/access";
+import { integrationToolEffect } from "@opensteer/integration-core/effect";
 import {
   materializeToolCatalog,
   storedToolSchemaDigest,

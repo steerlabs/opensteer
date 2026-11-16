@@ -1,4 +1,4 @@
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { createId } from "@opensteer/core";
 import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";

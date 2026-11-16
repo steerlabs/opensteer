@@ -5,12 +5,10 @@ import type {
 import { channelProviderCatalog } from "@opensteer/channel-core";
 import { createId } from "@opensteer/core";
 
-import { computerAppIntegrations } from "@opensteer/integration-catalog";
-import {
-  isComputerAppDefinition,
-  type ComputerAppSetupSummary,
-  type IntegrationAccess,
-} from "@opensteer/integration-core";
+import { computerAppIntegrations } from "@opensteer/integration-catalog/devices";
+import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
+import { type ComputerAppSetupSummary } from "@opensteer/integration-core/computer-app-setup";
+import { type IntegrationAccess } from "@opensteer/integration-core/access";
 import {
   HostIntegrationsInvokeSchema,
   RunnerChallengeSchema,

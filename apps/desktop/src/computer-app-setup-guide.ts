@@ -1,4 +1,4 @@
-import type { IntegrationAccess } from "@opensteer/integration-core";
+import type { IntegrationAccess } from "@opensteer/integration-core/access";
 import {
   computerUseDataApps,
   type ComputerUseDataAppId,

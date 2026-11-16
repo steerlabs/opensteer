@@ -1,6 +1,6 @@
 import { createId } from "@opensteer/core";
 import { createChannelId } from "@opensteer/channel-core";
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { sql } from "kysely";
 import { expect, it } from "vitest";
 import { ChannelStore } from "./channel-store.js";

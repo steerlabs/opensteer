@@ -12,7 +12,7 @@ import {
   mutationIdempotencyKey,
 } from "@opensteer/client/host";
 import { isAgentPhone, ownsComputerApps } from "@opensteer/client/integrations";
-import type { ComputerAppSetupSummary as ComputerAppSetupRequest } from "@opensteer/integration-core";
+import type { ComputerAppSetupSummary as ComputerAppSetupRequest } from "@opensteer/integration-core/computer-app-setup";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { useShell } from "../app-shell.js";
 import {

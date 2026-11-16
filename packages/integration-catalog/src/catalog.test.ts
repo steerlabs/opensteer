@@ -10,8 +10,8 @@ import { validateJsonSchema } from "@opensteer/shared/jsonSchemaValidation";
 import {
   IntegrationDefinitionSchema,
   integrationDefinitionSummary,
-} from "@opensteer/integration-core";
-import { authorizationDigest } from "@opensteer/integration-core/digest";
+} from "@opensteer/integration-core/adapter";
+import { authorizationDigest } from "@opensteer/integration-core/authorization-digest";
 import { parseComputerAppConfig } from "@opensteer/integration-core/computer-app";
 import { describe, expect, it } from "vitest";
 import { getIntegrationDefinition, integrationDefinitions } from "./index.js";

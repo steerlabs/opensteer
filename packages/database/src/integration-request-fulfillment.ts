@@ -6,12 +6,12 @@ import {
   type RequestSettlementProvenance,
   type UserId,
 } from "@opensteer/core";
+import type { IntegrationAccess } from "@opensteer/integration-core/access";
 import type {
-  IntegrationAccess,
   IntegrationConnectionId,
   IntegrationInstallationId,
   IntegrationServerId,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/ids";
 import type { Transaction } from "kysely";
 import { assignmentActivityEventsForRun } from "./assignment-store.js";
 import { requestFromRow, requestOriginEnvironment } from "./request-persistence.js";

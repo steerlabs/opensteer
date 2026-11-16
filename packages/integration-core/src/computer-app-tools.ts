@@ -1,8 +1,9 @@
 import { integrationSchemaDigest } from "./digest.js";
-import { accessCoversEffect } from "./effect.js";
+import { accessCoversEffect } from "./access.js";
 import { createIntegrationId, type IntegrationConnectionId } from "./ids.js";
 import type { ComputerAppDefinition, ComputerAppOperation } from "./computer-app.js";
-import type { IntegrationAccess, IntegrationToolMaterial } from "./models.js";
+import type { IntegrationAccess } from "./access.js";
+import type { IntegrationToolMaterial } from "./models.js";
 
 /**
  * The digest the Host and the Runner compare before an operation runs.

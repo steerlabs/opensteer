@@ -25,7 +25,7 @@ import {
 } from "@opensteer/harness";
 import { z } from "zod";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { getIntegrationDefinition } from "@opensteer/integration-catalog";
+import { getDeviceDefinition } from "@opensteer/integration-catalog/devices";
 import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
 import { computerAppOperationContract } from "@opensteer/integration-core/computer-app-tools";
 import {
@@ -1307,7 +1307,7 @@ describe("runnerWebSocketUrl", () => {
   });
 
   it("keeps computer-app provider concurrency across a primary reconnect", async () => {
-    const definition = getIntegrationDefinition("apple-messages");
+    const definition = getDeviceDefinition("apple-messages");
     if (!definition || !isComputerAppDefinition(definition)) throw new Error("Messages is missing");
     const operation = definition.config.operations.find(({ name }) => name === "query_messages");
     if (!operation) throw new Error("Messages query_messages is missing");

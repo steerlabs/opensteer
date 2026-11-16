@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createIntegrationId, type IntegrationConnectionId } from "@opensteer/integration-core";
+import { createIntegrationId, type IntegrationConnectionId } from "@opensteer/integration-core/ids";
 
 const mocked = vi.hoisted(() => {
   const callTool = vi.fn(

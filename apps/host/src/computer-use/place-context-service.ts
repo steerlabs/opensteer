@@ -7,7 +7,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import type { IntegrationStore, OpensteerStore } from "@opensteer/database";
-import { computerAppIdentitiesEqual } from "@opensteer/integration-core";
+import { computerAppIdentitiesEqual } from "@opensteer/integration-core/computer-app";
 import type { BrowserService } from "../browser/browser-service.js";
 import type { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
 import type { ComputerUseService } from "./computer-use-service.js";

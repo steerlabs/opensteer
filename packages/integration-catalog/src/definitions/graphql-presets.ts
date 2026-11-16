@@ -1,4 +1,4 @@
-import type { IntegrationDefinition } from "@opensteer/integration-core";
+import type { IntegrationDefinition } from "@opensteer/integration-core/adapter";
 import {
   apiKeyGraphqlPreset,
   bearerApiKey,

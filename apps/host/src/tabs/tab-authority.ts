@@ -14,7 +14,7 @@ import {
   type TabRecord,
   type TabWrite,
 } from "@opensteer/database";
-import { computerAppIdentitiesEqual } from "@opensteer/integration-core";
+import { computerAppIdentitiesEqual } from "@opensteer/integration-core/computer-app";
 import { requireDeviceAccess } from "../administration/device-access.js";
 import type { TabActor } from "./ports.js";
 

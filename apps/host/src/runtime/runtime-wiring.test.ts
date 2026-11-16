@@ -1,7 +1,7 @@
 import { IdleCompactionService } from "../agents/idle-compaction-service.js";
 import { describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import {
   authorizeRunnerRegistration,
   ensureDefaultHarnesses,

@@ -1,4 +1,4 @@
-import { IntegrationDefinitionSchema } from "@opensteer/integration-core";
+import { IntegrationDefinitionSchema } from "@opensteer/integration-core/adapter";
 
 const identityScopes = ["offline_access", "openid", "profile", "email"] as const;
 const specUrl =

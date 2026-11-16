@@ -9,10 +9,10 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isLoopbackHostname } from "@opensteer/core";
 import {
   LocalMcpSecretSchema,
-  PluginDeviceSchema,
   localMcpMaxSecrets,
   type LocalMcpSecret,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/local-mcp";
+import { PluginDeviceSchema } from "@opensteer/integration-core/models";
 import { z } from "zod";
 import { parse as parseYaml } from "yaml";
 

@@ -1,4 +1,4 @@
-import { IntegrationDefinitionSchema } from "@opensteer/integration-core";
+import { IntegrationDefinitionSchema } from "@opensteer/integration-core/adapter";
 import { iphoneAppIntegrations } from "./iphone-apps.js";
 
 /**

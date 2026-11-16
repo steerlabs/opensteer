@@ -1,7 +1,7 @@
 import { sealOAuthBrokerPayload } from "@opensteer/control-plane-protocol/broker-sealing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { createId, OpensteerError } from "@opensteer/core";
 import { auth, UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { canonicalAuthorizationRepair } from "../identity/auth.js";

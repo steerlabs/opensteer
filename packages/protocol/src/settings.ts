@@ -6,11 +6,11 @@ import {
 } from "@opensteer/integration-core/ids";
 import {
   IntegrationGrantViewSchema,
-  IntegrationAccessSchema,
   IntegrationConnectionSummarySchema,
   IntegrationConnectionStatusReasonSchema,
   PluginDeviceViewSchema,
 } from "@opensteer/integration-core/models";
+import { IntegrationAccessSchema } from "@opensteer/integration-core/access";
 import { MachineSummarySchema } from "./machines.js";
 
 const name = z.string().min(1).max(120);

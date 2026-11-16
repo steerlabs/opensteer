@@ -1,6 +1,6 @@
 import { createId, emptyExecutionPreferences, type Thread } from "@opensteer/core";
 import { IntegrationConnectionAuthStore } from "@opensteer/database";
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   AdministrationService,

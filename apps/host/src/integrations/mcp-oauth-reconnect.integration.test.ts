@@ -4,7 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { sql } from "kysely";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
-import { createIntegrationId, McpOAuthAttemptIdSchema } from "@opensteer/integration-core";
+import { createIntegrationId, McpOAuthAttemptIdSchema } from "@opensteer/integration-core/ids";
 import { IntegrationPlatformStore, IntegrationAuthAttemptStore } from "@opensteer/database";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { IntegrationAuthAttemptLifecycle } from "./integration-auth-attempt-service.js";

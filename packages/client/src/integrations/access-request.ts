@@ -12,7 +12,7 @@ import {
   IntegrationInstallManifestSummaryViewSchema,
   integrationProposalName,
   type IntegrationInstallManifestSummaryView,
-} from "@opensteer/integration-core/models";
+} from "@opensteer/integration-core/service-models";
 import { integrationToolEffect } from "@opensteer/integration-core/effect";
 import { apiKeyFacts, connectableApiKeyMethod } from "./api-key.js";
 import { requestAgentProposedDetail, type Request } from "@opensteer/core";

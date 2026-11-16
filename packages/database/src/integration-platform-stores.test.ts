@@ -1,7 +1,7 @@
 import {
   IntegrationDefinitionSchema,
   integrationDefinitionSummary,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/adapter";
 import { describe, expect, it } from "vitest";
 import { installedIntegrationDefinition } from "./integration-platform-stores.js";
 

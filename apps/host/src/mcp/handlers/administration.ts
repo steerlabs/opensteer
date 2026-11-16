@@ -9,7 +9,7 @@ import {
   type HarnessInstanceId,
   type UserId,
 } from "@opensteer/core";
-import type { IntegrationConnectionSummary } from "@opensteer/integration-core";
+import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
 import { hostApi } from "@opensteer/protocol";
 import {
   AdministrationService,

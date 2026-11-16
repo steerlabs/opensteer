@@ -4,14 +4,16 @@ import {
   IntegrationApplicationSourceSchema,
   IntegrationConnectionRequirementSchema,
   IntegrationGrantSchema,
-  createIntegrationId,
   providerAuthorizationIncludesSource,
-  type IntegrationAccess,
-  type IntegrationConnectionId,
   type IntegrationGrant,
-  type IntegrationInstallationId,
   type IntegrationProviderAuthorization,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/models";
+import {
+  createIntegrationId,
+  type IntegrationConnectionId,
+  type IntegrationInstallationId,
+} from "@opensteer/integration-core/ids";
+import { type IntegrationAccess } from "@opensteer/integration-core/access";
 import { sql, type Selectable, type Transaction } from "kysely";
 import type { DatabaseSchema, IntegrationGrantTable } from "./schema.js";
 

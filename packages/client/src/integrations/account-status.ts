@@ -1,7 +1,5 @@
-import type {
-  IntegrationConnectionSummary,
-  IntegrationDefinitionSummaryView,
-} from "@opensteer/integration-core";
+import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
+import type { IntegrationDefinitionSummaryView } from "@opensteer/integration-core/adapter";
 
 export type IntegrationAccountRepair = "choose-repositories" | "replace-key" | "sign-in";
 

@@ -24,7 +24,7 @@ import {
   mockVapi,
 } from "@opensteer/client/mock";
 import { RequestJsonObjectSchema, requestAgentProposedDetail } from "@opensteer/core";
-import { createIntegrationId } from "@opensteer/integration-core";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import {
   integrationAccountCanChange,
   ThreadIntegrationAction,

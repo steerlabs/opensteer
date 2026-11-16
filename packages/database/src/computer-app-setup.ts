@@ -2,13 +2,15 @@ import { randomUUID } from "node:crypto";
 import type { RequestPresentation, RunnerId, UserId, ThreadId } from "@opensteer/core";
 import {
   ComputerAppSetupRequestSchema,
+  type ComputerAppSetupRequest,
+  type LocalMcpServerSetup,
+} from "@opensteer/integration-core/computer-app-setup";
+import {
   computerAppIdentityKey,
   computerAppIdentitiesEqual,
   type ComputerAppIdentity,
-  type ComputerAppSetupRequest,
-  type IntegrationAccess,
-  type LocalMcpServerSetup,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/computer-app";
+import { type IntegrationAccess } from "@opensteer/integration-core/access";
 import { sql, type Selectable, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";

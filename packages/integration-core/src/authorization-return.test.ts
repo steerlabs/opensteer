@@ -3,7 +3,10 @@ import {
   integrationAuthorizationAppReturnBase,
   integrationAuthorizationBrowserReturn,
 } from "./authorization-return.js";
-import { BeginIntegrationAuthorizationSchema, BeginMcpAuthorizationSchema } from "./models.js";
+import {
+  BeginIntegrationAuthorizationSchema,
+  BeginMcpAuthorizationSchema,
+} from "./service-models.js";
 
 const attemptId = "ioa_00000000-0000-4000-8000-000000000001";
 const deploymentId = "dep_00000000-0000-4000-8000-000000000001";

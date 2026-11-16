@@ -7,12 +7,11 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type UserId } from "@opensteer/core";
+import { createIntegrationId, type IntegrationConnectionId } from "@opensteer/integration-core/ids";
 import {
-  createIntegrationId,
-  type IntegrationConnectionId,
   type IntegrationToolCatalog,
   type IntegrationToolMaterial,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/models";
 import { integrationSchemaDigest } from "@opensteer/integration-core/digest";
 import {
   definitionClosure,

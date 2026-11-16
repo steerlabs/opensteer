@@ -9,11 +9,9 @@ import "./styles/index.css";
 import type { HostClient, TranscriptEntry } from "@opensteer/client/host";
 import { mockComputerUseSlack, mockComputerUseTurn } from "@opensteer/client/mock";
 import { RunIdSchema, ThreadIdSchema, UserIdSchema } from "@opensteer/core";
-import type {
-  ComputerAppSetupRequest,
-  IntegrationConnectionSummary,
-  IntegrationDefinitionSummary,
-} from "@opensteer/integration-core";
+import type { ComputerAppSetupRequest } from "@opensteer/integration-core/computer-app-setup";
+import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
+import type { IntegrationDefinitionSummary } from "@opensteer/integration-core/adapter";
 import type { MachineSummary } from "@opensteer/protocol";
 import type {
   DesktopComputerAppSetup,

@@ -8,16 +8,18 @@ import type {
 import type {
   IntegrationAuthorizationSurface,
   IntegrationConnectionSummary,
-  IntegrationDashboard,
   IntegrationInstallation,
   IntegrationOAuthApplicationSource,
-  IntegrationPlatformDashboard,
-  IntegrationProvider,
   IntegrationProviderAuthorization,
-  IntegrationProviderApplication,
   IntegrationServer,
   IntegrationTool,
 } from "./models.js";
+import type {
+  IntegrationDashboard,
+  IntegrationPlatformDashboard,
+  IntegrationProviderApplication,
+} from "./service-models.js";
+import type { IntegrationProvider } from "./identifiers.js";
 
 export interface SealedIntegrationSecret {
   readonly envelope: Buffer;

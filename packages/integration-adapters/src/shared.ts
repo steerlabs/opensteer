@@ -1,5 +1,5 @@
 // Derived from github.com/UsefulSoftwareCo/executor packages/plugins/openapi/src/sdk/invoke.ts (MIT).
-import type { AdapterToolResult } from "@opensteer/integration-core";
+import type { AdapterToolResult } from "@opensteer/integration-core/adapter";
 import { isRecord } from "@opensteer/shared/isRecord";
 
 export const DEFAULT_TIMEOUT_MS = 30_000;

@@ -44,7 +44,7 @@ import {
   type IntegrationConnectionId,
   type NormalizedChannelEvent,
 } from "@opensteer/channel-core";
-import type { IntegrationConnectionMethod } from "@opensteer/integration-core";
+import type { IntegrationConnectionMethod } from "@opensteer/integration-core/models";
 import {
   deriveThreadStatus,
   DEFAULT_THREAD_ACCESS_MODE,

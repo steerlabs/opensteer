@@ -3,9 +3,9 @@ import { OpensteerError } from "@opensteer/core";
 import {
   LocalMcpSecretValueSchema,
   localMcpLaunchSecrets,
-  type IntegrationServerId,
   type LocalMcpLaunch,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/local-mcp";
+import { type IntegrationServerId } from "@opensteer/integration-core/ids";
 import type { LocalMcpSecretsUpdate } from "@opensteer/database";
 
 /**

@@ -187,10 +187,10 @@ import type {
 import { createIntegrationId, type IntegrationConnectionId } from "@opensteer/integration-core/ids";
 import {
   IntegrationInstallManifestSummarySchema,
-  SetComputerAppConnectionSchema,
   integrationCredentialRejectedDetail,
-  type CreateIntegrationGrant,
-} from "@opensteer/integration-core/models";
+} from "@opensteer/integration-core/service-models";
+import { SetComputerAppConnectionSchema } from "@opensteer/integration-core/computer-app-setup";
+import { type CreateIntegrationGrant } from "@opensteer/integration-core/models";
 import type { PasswordSignInRequestResponse } from "@opensteer/protocol";
 import {
   AgentPhoneHostTargetSchema,

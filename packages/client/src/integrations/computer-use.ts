@@ -1,12 +1,12 @@
 import type {
   ComputerAppIdentity,
-  ComputerAppSetupSummary as ComputerAppSetupRequest,
   ComputerUseAppApproval,
-  IntegrationAccess,
-  IntegrationConnectionSummary,
-  IntegrationDefinitionSummaryView,
-} from "@opensteer/integration-core";
-import { computerAppIdentityKey } from "@opensteer/integration-core";
+} from "@opensteer/integration-core/computer-app";
+import type { ComputerAppSetupSummary as ComputerAppSetupRequest } from "@opensteer/integration-core/computer-app-setup";
+import type { IntegrationAccess } from "@opensteer/integration-core/access";
+import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
+import type { IntegrationDefinitionSummaryView } from "@opensteer/integration-core/adapter";
+import { computerAppIdentityKey } from "@opensteer/integration-core/computer-app";
 import {
   androidPhoneDefinitionId,
   type ComputerUsePermissions,

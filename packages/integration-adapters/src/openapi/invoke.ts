@@ -1,9 +1,6 @@
 // Derived from github.com/UsefulSoftwareCo/executor packages/plugins/openapi/src/sdk/invoke.ts (MIT).
-import {
-  renderAuthPlacements,
-  type AdapterToolResult,
-  type AuthPlacement,
-} from "@opensteer/integration-core";
+import { renderAuthPlacements, type AuthPlacement } from "@opensteer/integration-core/auth-method";
+import { type AdapterToolResult } from "@opensteer/integration-core/adapter";
 import { decodeResponseBody, errorResult, isAbortError, MAX_RESPONSE_BYTES } from "../shared.js";
 import type { OpenApiAdapterConfig } from "./config.js";
 import { openApiArgumentNames, selectsBodyMediaType } from "./extract.js";

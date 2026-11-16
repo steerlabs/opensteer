@@ -3,7 +3,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { format } from "prettier";
 import { fileURLToPath } from "node:url";
-import { getIntegrationDefinition } from "../packages/integration-catalog/src/index.js";
+import { getDeviceDefinition } from "../packages/integration-catalog/src/devices.js";
 import { isComputerAppDefinition } from "../packages/integration-core/src/computer-app.js";
 import { computerAppOperationContract } from "../packages/integration-core/src/computer-app-tools.js";
 import { computerUseDataApps, iphoneDataAppIds } from "../packages/protocol/src/computer-use.js";
@@ -19,7 +19,7 @@ const output = path.resolve(
 
 export async function generateAppleDataContracts(): Promise<void> {
   const apps = Object.entries(computerUseDataApps).map(([definitionId, grant]) => {
-    const definition = getIntegrationDefinition(definitionId);
+    const definition = getDeviceDefinition(definitionId);
     if (!definition || !isComputerAppDefinition(definition)) {
       throw new Error(
         `The Apple data package serves ${definitionId}, which the catalog has no computer app for`,
@@ -66,7 +66,7 @@ export async function generateAppleDataContracts(): Promise<void> {
   );
   const iphoneOperations = iphoneDataAppIds
     .map((id) => {
-      const definition = getIntegrationDefinition(id);
+      const definition = getDeviceDefinition(id);
       if (!definition || !isComputerAppDefinition(definition))
         throw new Error(`Missing iPhone definition: ${id}`);
       return (

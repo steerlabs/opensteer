@@ -1,6 +1,6 @@
 import { apiKeyDisclosure } from "@opensteer/client/integrations";
 import { useState, type ReactNode } from "react";
-import type { AuthMethod } from "@opensteer/integration-core";
+import type { AuthMethod } from "@opensteer/integration-core/auth-method";
 import type { IntegrationDefinitionSummaryView } from "@opensteer/integration-core/adapter";
 
 type ApiKeyMethod = Extract<AuthMethod, { kind: "api-key" }>;

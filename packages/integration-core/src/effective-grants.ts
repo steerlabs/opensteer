@@ -4,14 +4,15 @@ import {
   type IntegrationInstallationId,
   type IntegrationServerId,
 } from "./ids.js";
+import type { IntegrationAccess } from "./access.js";
 import type {
-  IntegrationAccess,
   IntegrationConnectionRequirement,
   IntegrationGrant,
   IntegrationInstallation,
   IntegrationTool,
 } from "./models.js";
-import { accessCoversEffect, integrationToolEffect } from "./effect.js";
+import { accessCoversEffect } from "./access.js";
+import { integrationToolEffect } from "./effect.js";
 import {
   isIntegrationConnectionEligible,
   type IntegrationConnectionAuthority,

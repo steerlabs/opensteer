@@ -8,10 +8,8 @@ import {
 } from "@opensteer/core";
 import { WindowIdSchema } from "@opensteer/core";
 import type { ComputerView } from "@opensteer/protocol";
-import {
-  computerAppIdentitiesEqual,
-  type IntegrationConnectionSummary,
-} from "@opensteer/integration-core";
+import { computerAppIdentitiesEqual } from "@opensteer/integration-core/computer-app";
+import { type IntegrationConnectionSummary } from "@opensteer/integration-core/models";
 import type { ComputerViewService } from "./computer-view-service.js";
 import type {
   NativeTabTargetsPort,

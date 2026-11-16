@@ -1,3 +1,4 @@
+export * from "./access.js";
 export * from "./adapter.js";
 export * from "./account-label.js";
 export * from "./adapter-kind.js";
@@ -5,6 +6,7 @@ export * from "./authorization-return.js";
 export * from "./auth-method.js";
 export * from "./catalog.js";
 export * from "./computer-app.js";
+export * from "./computer-app-setup.js";
 export * from "./effect.js";
 // computer-app-tools.js, digest.js, effective-grants.js and ports.js name
 // Node's surface — node:crypto in the first three, Buffer in the last — and
@@ -15,7 +17,9 @@ export * from "./effect.js";
 // them so `IntegrationDefinitionSummary.computerApp` is readable everywhere.
 export * from "./ids.js";
 export * from "./identifiers.js";
+export * from "./local-mcp.js";
 export * from "./models.js";
+export * from "./service-models.js";
 export * from "./readiness.js";
 export * from "./schema-primitives.js";
 export * from "./search.js";

@@ -12,7 +12,7 @@ import type {
 } from "../computer-apps/computer-apps.test-support.js";
 type ComputerAppApprovalList = {
   readonly approvals: readonly {
-    readonly request: import("@opensteer/integration-core").ComputerAppSetupRequest;
+    readonly request: import("@opensteer/integration-core/computer-app-setup").ComputerAppSetupRequest;
   }[];
 };
 import { WindowIdSchema } from "@opensteer/core";
@@ -40,8 +40,9 @@ import {
   TabStore,
 } from "@opensteer/database";
 import { resolvedInputParts } from "@opensteer/harness";
-import { computerAppIntegrations } from "@opensteer/integration-catalog";
-import { type ComputerAppIdentity, type IntegrationDefinition } from "@opensteer/integration-core";
+import { computerAppIntegrations } from "@opensteer/integration-catalog/devices";
+import { type ComputerAppIdentity } from "@opensteer/integration-core/computer-app";
+import { type IntegrationDefinition } from "@opensteer/integration-core/adapter";
 import {
   CommandService,
   KeyedAdmissionQueue,
@@ -4188,7 +4189,7 @@ class FakeMac {
 
   /** The approvals the Host last said wait on this Mac. */
   replaceApprovals(
-    requests: readonly import("@opensteer/integration-core").ComputerAppSetupRequest[],
+    requests: readonly import("@opensteer/integration-core/computer-app-setup").ComputerAppSetupRequest[],
   ): void {
     this.lists.push({ approvals: requests.map((request) => ({ request })) });
     for (const request of requests)
@@ -5204,7 +5205,7 @@ async function createWorld(
   await fakePhone?.attach();
   /** The person on the Mac allows one approval; throws with the Host's refusal. */
   const allowOnMac = async (
-    setup: import("@opensteer/integration-core").ComputerAppSetupRequest,
+    setup: import("@opensteer/integration-core/computer-app-setup").ComputerAppSetupRequest,
   ) => {
     const outcome = await fakeMac.answer(setup.id, {
       setupRequestId: setup.id,
@@ -5245,7 +5246,7 @@ async function createWorld(
     addMac: insertMac,
     /** The owner answers from an Opensteer client. */
     async allowPhoneFromClient(
-      setup: import("@opensteer/integration-core").ComputerAppSetupRequest,
+      setup: import("@opensteer/integration-core/computer-app-setup").ComputerAppSetupRequest,
     ) {
       if (!fakePhone || setup.kind !== "app") throw new Error("Expected phone access Request.");
       await platform.computerAppApprovals.setComputerConnection({
@@ -5289,7 +5290,9 @@ async function createWorld(
       return request;
     },
     approveOnMac: allowOnMac,
-    denyOnMac: async (setup: import("@opensteer/integration-core").ComputerAppSetupRequest) =>
+    denyOnMac: async (
+      setup: import("@opensteer/integration-core/computer-app-setup").ComputerAppSetupRequest,
+    ) =>
       fakeMac.answer(setup.id, {
         setupRequestId: setup.id,
         kind: "deny",

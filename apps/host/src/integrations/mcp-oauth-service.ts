@@ -30,12 +30,14 @@ import {
   IntegrationServerIdSchema,
   McpOAuthAttemptIdSchema,
   type IntegrationConnectionId,
-  type IntegrationDeploymentPosture,
   type McpOAuthAttemptId,
-  type IntegrationServer,
   type IntegrationToolId,
+} from "@opensteer/integration-core/ids";
+import {
+  type IntegrationDeploymentPosture,
+  type IntegrationServer,
   type IntegrationToolMaterial,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/models";
 import { type IntegrationAuthAttemptSurface } from "@opensteer/integration-core/ports";
 import { boundedToolDescription, boundedToolTitle } from "@opensteer/integration-core/tool-schemas";
 import {

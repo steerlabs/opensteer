@@ -6,14 +6,14 @@ import {
 import { type DisplaySource, type MacWindowTarget } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
 import { OpensteerError, type RunId, type RunnerId } from "@opensteer/core";
-import { getIntegrationDefinition } from "@opensteer/integration-catalog";
+import { getDeviceDefinition } from "@opensteer/integration-catalog/devices";
 import {
   localMcpLaunchWithSecrets,
-  type ComputerAppIdentity,
-  type IntegrationServerId,
-  type IntegrationToolEffect,
   type LocalMcpLaunch,
-} from "@opensteer/integration-core";
+} from "@opensteer/integration-core/local-mcp";
+import { type ComputerAppIdentity } from "@opensteer/integration-core/computer-app";
+import { type IntegrationServerId } from "@opensteer/integration-core/ids";
+import { type IntegrationToolEffect } from "@opensteer/integration-core/effect";
 import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
 import type { RunnerAuxiliaryStream, RunnerStreamLossReason } from "@opensteer/orchestration";
 import {
@@ -1573,7 +1573,7 @@ export class ComputerAppHub {
     const known = this.#options.knownDefinitionIds();
     const next = apps.flatMap((app): readonly MachineAppStatus[] => {
       if (!known.has(app.definitionId)) return [];
-      const definition = getIntegrationDefinition(app.definitionId);
+      const definition = getDeviceDefinition(app.definitionId);
       if (!definition || !isComputerAppDefinition(definition)) return [app];
       const platform = entry.stream.identity.modules?.integrations?.platform;
       if (platform && !definition.config.platforms.includes(platform)) return [];

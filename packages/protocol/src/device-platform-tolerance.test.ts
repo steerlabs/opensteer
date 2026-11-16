@@ -13,7 +13,7 @@ import {
 import {
   IntegrationInstallManifestSummarySchema,
   IntegrationInstallManifestSummaryViewSchema,
-} from "@opensteer/integration-core/models";
+} from "@opensteer/integration-core/service-models";
 import { describe, expect, it } from "vitest";
 import { HostBootstrapSchema } from "./bootstrap.js";
 import { hostApi } from "./host-api.js";
