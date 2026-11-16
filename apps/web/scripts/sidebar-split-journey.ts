@@ -361,7 +361,7 @@ function followed(before: Layout, after: Layout, dy: number): boolean {
 
 async function openWorld(
   options: {
-    readonly world?: "busy" | "stress";
+    readonly world?: "busy" | "stress" | "first-run";
     readonly team?: boolean;
     readonly height?: number;
     readonly width?: number;
@@ -473,7 +473,8 @@ async function openWorld(
   if (options.world) query.set("mock-world", options.world);
   if (options.team) query.set("mock-team", "");
   await page.goto(`${web.origin}/?${query}`);
-  await ready(page);
+  // A first run has no tasks to wait for.
+  await ready(page, options.world !== "first-run");
   return { context, page, errors };
 }
 
@@ -490,9 +491,9 @@ async function quiet(page: Page) {
 }
 
 /** Loaded, the world's own motion stopped, and the lists fitted. */
-async function ready(page: Page) {
+async function ready(page: Page, tasks = true) {
   await page.locator(".side-section--tabs .side-list > li").first().waitFor();
-  await page.locator(".side-section--tasks .side-list > li").first().waitFor();
+  if (tasks) await page.locator(".side-section--tasks .side-list > li").first().waitFor();
   // The world stops moving on its own, so every change is one a check makes.
   await page.evaluate(() =>
     (Reflect.get(window, "opensteerMock") as { scriptPlaces(): unknown }).scriptPlaces(),
@@ -684,12 +685,12 @@ try {
     const done = await layout(page);
     await page.getByRole("button", { name: "Back to Tasks" }).click();
     await page.locator("#sidebar-tasks", { hasText: "Tasks" }).waitFor();
-    await page.locator(".side-switch__option").nth(1).click();
+    await page.locator(`.side-switch [role="radio"]:not([data-value="tasks"])`).click();
     await page.locator(".side-section--tasks[aria-label='Team']").waitFor();
     await settle(page);
     const team = await layout(page);
     await shot(page, "02-team.png");
-    await page.locator(".side-switch__option").first().click();
+    await page.locator(`.side-switch [role="radio"][data-value="tasks"]`).click();
     await page.locator("#sidebar-tasks").waitFor();
     await settle(page);
     const back = await layout(page);
@@ -1148,40 +1149,38 @@ try {
   expectThat({ errors }, errors.length === 0, `page errors: ${errors.join("; ")}`);
   await context.close();
 
-  await check("with every tab in view, the line can shrink Tabs but not grow it", async () => {
-    const tall = await openWorld({ height: 2000 });
+  await check("with every tab in view, as on a first run, the line still grows Tabs", async () => {
+    const fitted = await openWorld({ world: "first-run" });
     try {
-      // Asked for more height than its rows take, Tabs shows them all.
-      await tall.page.evaluate((key) => localStorage.setItem(key, "5000"), heightKey);
-      await tall.page.reload();
-      await ready(tall.page);
-      const state = await layout(tall.page);
-      await dragLine(tall.page, -120);
-      const after = await layout(tall.page);
-      await shot(tall.page, "09-all-in-view.png");
+      const state = await layout(fitted.page);
       expectThat(
-        { tabs: state.tabs.overflows },
-        !state.tabs.overflows,
-        "this check needs every tab in view",
+        { whole: state.tabs.whole, overflows: state.tabs.overflows, stored: state.stored },
+        state.tabs.whole <= 2 && !state.tabs.overflows && state.stored === null,
+        "this check needs Tabs fitted to a row or two, every one in view",
       );
+      expectThat({ line: state.line }, state.line?.fixed === false, "the line is fixed");
+      await dragLine(fitted.page, -200);
+      const grown = await layout(fitted.page);
+      await shot(fitted.page, "09-first-run-grown.png");
       expectThat(
-        { stored: after.stored, height: [state.tabsHeight, after.tabsHeight] },
-        after.stored === 5000 && Math.abs(after.tabsHeight - state.tabsHeight) < 0.5,
-        "Tabs grew past its rows",
+        { height: [state.tabsHeight, grown.tabsHeight] },
+        Math.abs(grown.tabsHeight - state.tabsHeight - 200) < 1,
+        "Tabs did not grow with the line",
       );
-      await dragLine(tall.page, 80);
-      const shrunk = await layout(tall.page);
+      keptAsShown(grown, "grown");
+      describedAsShown(grown, "grown");
+      await dragLine(fitted.page, 80);
+      const shrunk = await layout(fitted.page);
       expectThat(
-        { height: [state.tabsHeight, shrunk.tabsHeight] },
-        shrunk.tabsHeight < state.tabsHeight - 0.5,
-        "Tabs did not shrink",
+        { height: [grown.tabsHeight, shrunk.tabsHeight] },
+        Math.abs(grown.tabsHeight - 80 - shrunk.tabsHeight) < 1,
+        "Tabs did not shrink with the line",
       );
       keptAsShown(shrunk, "shrunk");
-      describedAsShown(state, "with every tab in view");
-      expectThat({ errors: tall.errors }, tall.errors.length === 0, "page errors");
-      return { before: state.tabsHeight, shrunk: shrunk.tabsHeight };
+      expectThat({ errors: fitted.errors }, fitted.errors.length === 0, "page errors");
+      return { from: state.tabsHeight, grown: grown.tabsHeight, shrunk: shrunk.tabsHeight };
     } finally {
-      await tall.context.close();
+      await fitted.context.close();
     }
   });
 
