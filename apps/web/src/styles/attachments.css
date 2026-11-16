@@ -413,19 +413,6 @@ button.message-attachment:hover:not(:disabled) {
   margin: var(--space-4) 0 0;
 }
 
-.attachment-preview {
-  display: grid;
-  place-items: center;
-  min-height: 160px;
-}
-
-.attachment-preview img {
-  display: block;
-  max-width: 100%;
-  max-height: 70vh;
-  border-radius: var(--radius-sm);
-}
-
 @media (max-width: 680px) {
   .staged-attachment {
     width: 200px;

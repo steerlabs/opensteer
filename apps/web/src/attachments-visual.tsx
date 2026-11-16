@@ -24,6 +24,7 @@ import { AgentTranscript } from "./components/agent-activity.js";
 import { ShellContext } from "./components/app-shell.js";
 import { artifactPart, type SentContentPart } from "./components/attachments/attachment-parts.js";
 import { InputSurface } from "./components/input-surface.js";
+import { PersonalReferences } from "./components/references/reference-scope.js";
 import { usePendingSends } from "./components/pending-sends.js";
 import { WaitingInputs } from "./components/waiting-inputs.js";
 import { ToastProvider } from "./components/toast.js";
@@ -353,26 +354,28 @@ function Fixture() {
       </p>
       {transcript.length > 0 || queue ? (
         <div className="transcript">
-          <AgentTranscript
-            attachmentReader={client}
-            entries={transcript}
-            queued={
-              queue ? (
-                <WaitingInputs
-                  client={client}
-                  disabled={false}
-                  inputs={waitingInputs(queue, { ownsLease: () => false })}
-                  onError={noOp}
-                  paused={queue.paused}
-                  pendingSends={pendingSends}
-                  resumable
-                  threadId={queue.threadId}
-                  viewerUserId={author.userId}
-                />
-              ) : null
-            }
-            viewerUserId={author.userId}
-          />
+          <PersonalReferences client={client} threadId={thread.id}>
+            <AgentTranscript
+              attachmentReader={client}
+              entries={transcript}
+              queued={
+                queue ? (
+                  <WaitingInputs
+                    client={client}
+                    disabled={false}
+                    inputs={waitingInputs(queue, { ownsLease: () => false })}
+                    onError={noOp}
+                    paused={queue.paused}
+                    pendingSends={pendingSends}
+                    resumable
+                    threadId={queue.threadId}
+                    viewerUserId={author.userId}
+                  />
+                ) : null
+              }
+              viewerUserId={author.userId}
+            />
+          </PersonalReferences>
         </div>
       ) : null}
       <div className="composer-dock">
