@@ -242,6 +242,100 @@ const observeParams = { includeScreenshot: true };
 const tap = { type: "tap" as const, count: 1 as const, target: { x: 20, y: 30 } };
 
 describe("iPhone screen driver", () => {
+  it.each(["up", "down", "left", "right"] as const)(
+    "scrolls toward %s with bounded interior swipes in delivered geometry",
+    async (direction) => {
+      const f = fixture();
+      const context = f.context();
+      const { observation } = await f.connection.observe(context, observeParams);
+      const result = await f.connection.act(context, {
+        observationId: observation.observationId,
+        actions: [{ type: "scroll", target: { x: 1, y: 198 }, direction, amount: 3 }],
+        includeScreenshot: false,
+      });
+      expect(result.error).toBeNull();
+      expect(result.performed).toEqual(["Sent 3 scroll steps."]);
+      const expected = {
+        down: [
+          { x: 25, y: 150 },
+          { x: 25, y: 50 },
+        ],
+        up: [
+          { x: 25, y: 50 },
+          { x: 25, y: 150 },
+        ],
+        right: [
+          { x: 75, y: 150 },
+          { x: 25, y: 150 },
+        ],
+        left: [
+          { x: 25, y: 150 },
+          { x: 75, y: 150 },
+        ],
+      }[direction];
+      expect(f.bridge.effects[0]?.actions).toEqual(
+        Array.from({ length: 3 }, () => ({
+          kind: "swipe",
+          target: { point: expected[0] },
+          to: expected[1],
+          durationMs: 350,
+        })),
+      );
+      expect(f.events.at(-1)).toMatchObject({
+        actions: ["tap", "longPress", "swipe", "drag", "scroll", "navigate", "launch", "wait"],
+        wake: false,
+        displayVersion: null,
+        inputVersion: null,
+      });
+    },
+  );
+
+  it("maps partial native scroll receipts back to phone actions and never replays them", async () => {
+    const f = fixture();
+    const context = f.context();
+    const { observation } = await f.connection.observe(context, observeParams);
+    f.bridge.replies.set("iphone.perform", async () => ({
+      error: { code: "cancelled", effect: "unknown", completedSteps: 3 },
+    }));
+    const input = {
+      observationId: observation.observationId,
+      actions: [
+        tap,
+        {
+          type: "scroll" as const,
+          target: { x: 20, y: 30 },
+          direction: "down" as const,
+          amount: 4,
+        },
+        tap,
+      ],
+      includeScreenshot: false,
+    };
+    const result = await f.connection.act(context, input);
+    expect(result.performed).toEqual(["Sent tap input.", "Sent 2 of 4 scroll steps."]);
+    expect(result.error?.code).toBe("outcome-unknown");
+    expect((await f.connection.act(context, input)).error?.code).toBe("stale-observation");
+    expect(f.bridge.effects).toHaveLength(1);
+  });
+
+  it("rejects scroll expansion beyond the native batch bound before any effect", async () => {
+    const f = fixture();
+    const context = f.context();
+    const { observation } = await f.connection.observe(context, observeParams);
+    const scroll = {
+      type: "scroll" as const,
+      target: { x: 20, y: 30 },
+      direction: "down" as const,
+      amount: 20,
+    };
+    const result = await f.connection.act(context, {
+      observationId: observation.observationId,
+      actions: [tap, scroll, scroll],
+      includeScreenshot: false,
+    });
+    expect(result.error?.code).toBe("unsupported");
+    expect(f.bridge.effects).toHaveLength(0);
+  });
   it("isolates phones, sessions and consumed observations", async () => {
     const f = fixture();
     const a = f.context();

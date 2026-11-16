@@ -12,7 +12,7 @@ import type {
 } from "@opensteer/protocol/desktop";
 export interface IphoneSetupPort extends DesktopIphoneSetupBridge {
   remove(input: Parameters<DesktopIphoneSetupBridge["detach"]>[0]): Promise<{ pending: boolean }>;
-  attach(input: { setupId: string }): Promise<DesktopIphoneSetupStatus>;
+  attach(input: { setupId: string; name?: string }): Promise<DesktopIphoneSetupStatus>;
 }
 export function createIphoneSetupPort(
   platform: DesktopIphoneSetupBridge,
@@ -37,12 +37,16 @@ export function createIphoneSetupPort(
       });
       return { pending: false };
     },
-    attach: ({ setupId }) => {
+    attach: ({ setupId, name }) => {
       const previous = inFlight.get(setupId);
       if (previous) return previous;
       const work = (async () => {
-        const status = await platform.advance({ setupId, step: "attach" });
-        if (!status.attachCommand) return status;
+        const status = await platform.advance({
+          setupId,
+          step: "attach",
+          ...(name === undefined ? {} : { name }),
+        });
+        if (status.reason || !status.attachCommand) return status;
         let result;
         try {
           result = IphoneScreenAttachResultSchema.parse(await dispatch(status.attachCommand));

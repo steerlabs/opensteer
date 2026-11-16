@@ -30,6 +30,7 @@ const status = (patch: Partial<DesktopIphoneSetupStatus>): DesktopIphoneSetupSta
   attachCommand: null,
   deviceId: null,
   driverGeneration: null,
+  wifiEnabled: false,
   ...patch,
 });
 

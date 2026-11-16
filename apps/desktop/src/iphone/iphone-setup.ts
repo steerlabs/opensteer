@@ -69,6 +69,7 @@ export class IphoneSetup {
         attachCommand: null,
         deviceId: pending?.deviceId ?? null,
         driverGeneration: pending?.driverGeneration ?? null,
+        wifiEnabled: pending?.wifiEnabledByOpensteer ?? false,
       },
       candidates: new Map(),
       controller: new AbortController(),
@@ -110,6 +111,7 @@ export class IphoneSetup {
   async advance(
     setupId: string,
     step: "trust" | "developer-mode" | "prepare" | "observe" | "attach",
+    name?: string,
   ): Promise<DesktopIphoneSetupStatus> {
     const t = this.#get(setupId);
     if (t.busy || !t.record || t.state.step !== step) throw new IphoneServiceError("no-session");
@@ -158,18 +160,66 @@ export class IphoneSetup {
         t.state.step = "observe";
       } else if (step === "observe") {
         await this.#service.firstObserve(t.record, signal);
-        t.state.step = "attach";
+        t.state.step = "wifi";
       } else {
-        t.record = {
-          ...t.record,
-          phase: "pending-attach",
-          attachTarget: t.target ?? { kind: "new", name: t.record.userLabel },
-        };
-        await this.#service.save(t.record);
-        this.#active(t);
-        this.#command(t);
+        if (t.record.phase === "pending-attach") {
+          if (
+            name !== undefined &&
+            t.record.attachTarget?.kind === "new" &&
+            t.record.attachTarget.name !== name.trim()
+          )
+            throw new IphoneServiceError("attach-conflict");
+          this.#command(t);
+        } else {
+          const target =
+            t.target?.kind === "existing"
+              ? t.target
+              : {
+                  kind: "new" as const,
+                  name: name ?? (t.target?.kind === "new" ? t.target.name : t.record.userLabel),
+                };
+          const command = IphoneScreenAttachCommandSchema.parse({
+            type: "iphone.screen.attach",
+            idempotencyKey: t.record.setupId,
+            driverRunnerId: t.record.runnerId,
+            target,
+          });
+          const record: IphoneMapping = {
+            ...t.record,
+            phase: "pending-attach",
+            attachTarget: command.target,
+            userLabel: command.target.kind === "new" ? command.target.name : t.record.userLabel,
+          };
+          await this.#service.save(record);
+          t.record = record;
+          this.#active(t);
+          this.#command(t);
+        }
       }
       this.#active(t);
+      t.state.reason = null;
+      t.state.personAction = t.state.step === "wifi" ? "choose-wifi" : "continue";
+    } catch (error) {
+      this.#failure(t, error);
+    } finally {
+      t.busy = false;
+    }
+    return this.#publish(t);
+  }
+  async wifi(
+    setupId: string,
+    action: "enable" | "disable" | "pair" | "skip",
+  ): Promise<DesktopIphoneSetupStatus> {
+    const t = this.#get(setupId);
+    if (t.busy || !t.record || t.state.step !== "wifi") throw new IphoneServiceError("no-session");
+    t.busy = true;
+    try {
+      if (action !== "skip") {
+        t.record = await this.#service.setupWifi(t.record, action, t.controller.signal);
+        t.state.wifiEnabled = t.record.wifiEnabledByOpensteer;
+      }
+      this.#active(t);
+      t.state.step = "attach";
       t.state.reason = null;
       t.state.personAction = "continue";
     } catch (error) {

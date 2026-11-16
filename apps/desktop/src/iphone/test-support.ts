@@ -5,6 +5,7 @@ import { z } from "zod";
 import { createId } from "@opensteer/core";
 import {
   type IphoneNativeMessage,
+  type iphoneNativeRosterSchema,
   type IphoneRunnerOwner,
 } from "@opensteer/protocol/iphone-bridge";
 import { openDesktopPrivateFilesystem } from "../secrets/desktop-private-files.js";
@@ -30,10 +31,11 @@ export class FakeIphoneNative implements IphoneNativeTransport {
   calls: { method: string; params: unknown }[] = [];
   closed = 0;
   readonly held = new Map<string, Promise<void>>();
+  readonly failures = new Map<string, Error>();
   epoch = 1;
   readonly listeners = new Set<(event: Extract<IphoneNativeMessage, { kind: "event" }>) => void>();
   readonly lost = new Set<() => void>();
-  roster = {
+  roster: z.infer<typeof iphoneNativeRosterSchema> = {
     revision: 1,
     candidates: [
       {
@@ -51,6 +53,8 @@ export class FakeIphoneNative implements IphoneNativeTransport {
   async request<T>(method: string, params: unknown, schema: z.ZodType<T>): Promise<T> {
     this.calls.push({ method, params });
     await this.held.get(method);
+    const failure = this.failures.get(method);
+    if (failure) throw failure;
     let value: unknown = {};
     switch (method) {
       case "roster.get":
@@ -115,6 +119,9 @@ export class FakeIphoneNative implements IphoneNativeTransport {
           screenshot: { mimeType: "image/jpeg", base64: "test", width: 100, height: 200 },
         };
         break;
+      case "phone.perform":
+        value = { effect: "submitted", completedSteps: 1, observationRequired: true };
+        break;
     }
     return schema.parse(value);
   }
@@ -132,6 +139,16 @@ export class FakeIphoneNative implements IphoneNativeTransport {
   }
   lose(): void {
     for (const listener of this.lost) listener();
+  }
+  publish(): void {
+    for (const listener of this.listeners)
+      listener({
+        kind: "event",
+        event: "roster.changed",
+        bootId: "test-boot",
+        sequence: this.roster.revision,
+        roster: this.roster,
+      });
   }
   async close(): Promise<void> {
     this.closed++;

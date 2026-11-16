@@ -10,6 +10,11 @@ import {
   DesktopIphoneSetupFailureSchema,
   DesktopIphoneSetupIdSchema,
   DesktopIphoneSetupStatusSchema,
+  DesktopIphoneSetupWifiSchema,
+  DesktopIphoneWifiInputSchema,
+  DesktopIphoneConfigureWifiSchema,
+  DesktopIphoneWifiStatusSchema,
+  type DesktopIphoneSetupStatus,
 } from "@opensteer/protocol/desktop";
 import {
   assertAuthorizedRenderer,
@@ -24,6 +29,7 @@ type Owner = {
   frame: WebFrameMain;
   sender: WebContents;
   deploymentId: string;
+  targetKey: string;
   cancel(): void;
   unsubscribe?: () => void;
 };
@@ -32,7 +38,16 @@ export function iphoneHandlers(context: DesktopBridgeContext): {
   dispose(): void;
 } {
   const owners = new Map<string, Owner>();
-  const pending = new Map<WebContents, object>();
+  const pending = new Map<
+    WebContents,
+    {
+      frame: WebFrameMain;
+      deploymentId: string;
+      targetKey: string;
+      work: Promise<DesktopIphoneSetupStatus>;
+    }
+  >();
+  let beginTail: Promise<unknown> = Promise.resolve();
   const port = context.options.iphone;
   const cancel = (id: string) => {
     const owner = owners.get(id);
@@ -85,6 +100,51 @@ export function iphoneHandlers(context: DesktopBridgeContext): {
   return {
     handlers: [
       [
+        desktopBridgeChannels.iphoneWifiStatus,
+        handler(async (_event, envelope) => {
+          const input = DesktopIphoneWifiInputSchema.parse(envelope.input);
+          return DesktopIphoneWifiStatusSchema.parse(
+            await port!.service.wifiStatus(slotOwner(input.deploymentId), input.deviceId),
+          );
+        }),
+      ],
+      [
+        desktopBridgeChannels.iphoneConfigureWifi,
+        handler(async (event, envelope) => {
+          const input = DesktopIphoneConfigureWifiSchema.parse(envelope.input);
+          const owner = slotOwner(input.deploymentId);
+          const controller = new AbortController();
+          const abort = () => controller.abort();
+          event.sender.once("destroyed", abort);
+          event.sender.once("did-start-navigation", abort);
+          const unsubscribe = context.options.access.subscribe((snapshot) => {
+            if (snapshot.selectedDeploymentId !== input.deploymentId) abort();
+          });
+          try {
+            return DesktopIphoneWifiStatusSchema.parse(
+              await port!.service.configureWifi(
+                owner,
+                input.deviceId,
+                input.action,
+                controller.signal,
+              ),
+            );
+          } finally {
+            unsubscribe();
+            event.sender.removeListener("destroyed", abort);
+            event.sender.removeListener("did-start-navigation", abort);
+          }
+        }),
+      ],
+      [
+        desktopBridgeChannels.iphoneSetupWifi,
+        handler(async (event, envelope) => {
+          const input = DesktopIphoneSetupWifiSchema.parse(envelope.input);
+          owned(input.setupId, event.senderFrame);
+          return port!.setup.wifi(input.setupId, input.action);
+        }),
+      ],
+      [
         desktopBridgeChannels.iphoneDetach,
         handler(async (_event, envelope) => {
           const input = DesktopIphoneDetachInputSchema.parse(envelope.input);
@@ -117,39 +177,68 @@ export function iphoneHandlers(context: DesktopBridgeContext): {
           const { deploymentId, target } = DesktopIphoneSetupBeginSchema.parse(envelope.input);
           if (context.options.access.snapshot().selectedDeploymentId !== deploymentId)
             throw new IphoneServiceError("cancelled");
+          const targetKey = JSON.stringify(target ?? null);
+          const previous = pending.get(event.sender);
+          if (
+            previous &&
+            previous.frame === event.senderFrame &&
+            previous.deploymentId === deploymentId &&
+            previous.targetKey === targetKey
+          )
+            return previous.work;
+          for (const [id, owner] of owners)
+            if (
+              owner.sender === event.sender &&
+              owner.frame === event.senderFrame &&
+              owner.deploymentId === deploymentId &&
+              owner.targetKey === targetKey
+            )
+              return port!.setup.status(id);
           for (const [id, owner] of owners) if (owner.sender === event.sender) cancel(id);
-          const marker = {};
-          pending.set(event.sender, marker);
+          const frame = event.senderFrame!;
           const onNavigate = () => {
             pending.delete(event.sender);
           };
           event.sender.once("destroyed", onNavigate);
           event.sender.once("did-start-navigation", onNavigate);
-          try {
-            const state = await port!.setup.begin(port!.service.ownerForSlot(deploymentId), target);
-            if (
-              pending.get(event.sender) !== marker ||
-              event.sender.isDestroyed() ||
-              context.options.access.snapshot().selectedDeploymentId !== deploymentId
-            ) {
-              await port!.setup.cancel(state.setupId);
-              throw new IphoneServiceError("cancelled");
-            }
-            const cancelOwner = () => cancel(state.setupId);
-            owners.set(state.setupId, {
-              frame: event.senderFrame!,
-              sender: event.sender,
-              deploymentId,
-              cancel: cancelOwner,
+          const work = beginTail
+            .catch(() => undefined)
+            .then(async () => {
+              try {
+                if (pending.get(event.sender) !== marker) throw new IphoneServiceError("cancelled");
+                const state = await port!.setup.begin(
+                  port!.service.ownerForSlot(deploymentId),
+                  target,
+                );
+                if (
+                  pending.get(event.sender) !== marker ||
+                  event.sender.isDestroyed() ||
+                  context.options.access.snapshot().selectedDeploymentId !== deploymentId
+                ) {
+                  await port!.setup.cancel(state.setupId);
+                  throw new IphoneServiceError("cancelled");
+                }
+                const cancelOwner = () => cancel(state.setupId);
+                owners.set(state.setupId, {
+                  frame: event.senderFrame!,
+                  sender: event.sender,
+                  deploymentId,
+                  targetKey,
+                  cancel: cancelOwner,
+                });
+                event.sender.once("destroyed", cancelOwner);
+                event.sender.once("did-start-navigation", cancelOwner);
+                return DesktopIphoneSetupStatusSchema.parse(state);
+              } finally {
+                if (pending.get(event.sender) === marker) pending.delete(event.sender);
+                event.sender.removeListener("destroyed", onNavigate);
+                event.sender.removeListener("did-start-navigation", onNavigate);
+              }
             });
-            event.sender.once("destroyed", cancelOwner);
-            event.sender.once("did-start-navigation", cancelOwner);
-            return DesktopIphoneSetupStatusSchema.parse(state);
-          } finally {
-            if (pending.get(event.sender) === marker) pending.delete(event.sender);
-            event.sender.removeListener("destroyed", onNavigate);
-            event.sender.removeListener("did-start-navigation", onNavigate);
-          }
+          const marker = { frame, deploymentId, targetKey, work };
+          pending.set(event.sender, marker);
+          beginTail = work;
+          return work;
         }),
       ],
       [
@@ -165,7 +254,7 @@ export function iphoneHandlers(context: DesktopBridgeContext): {
         handler(async (event, envelope) => {
           const input = DesktopIphoneSetupAdvanceSchema.parse(envelope.input);
           owned(input.setupId, event.senderFrame);
-          return port!.setup.advance(input.setupId, input.step);
+          return port!.setup.advance(input.setupId, input.step, input.name);
         }),
       ],
       [

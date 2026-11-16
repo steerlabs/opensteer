@@ -393,4 +393,5 @@ const stepWords: Readonly<Record<DesktopIphoneSetupStatus["step"], string>> = {
   observe: "looking at the screen",
   prepare: "preparing developer services",
   trust: "pairing with the iPhone",
+  wifi: "setting up Wi-Fi access",
 };

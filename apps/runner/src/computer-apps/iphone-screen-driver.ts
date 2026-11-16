@@ -483,7 +483,13 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
           snapshot.session !== phone.session
         )
           failure("stale-observation", "Observe this iPhone again before acting.");
-        const actions = this.#actions(phone, snapshot, params.actions);
+        const groups = this.#actions(phone, snapshot, params.actions);
+        const actions = groups.flat();
+        if (actions.length > 32)
+          failure(
+            "unsupported",
+            "This iPhone input batch needs more than 32 gestures; use a smaller scroll amount.",
+          );
         const duration = params.actions.reduce((sum, a) => sum + phoneDisplayTimedActionMs(a), 0);
         if (this.#now() + duration + 1000 >= context.deadline)
           failure("failed", "There is not enough time for input and a resulting observation.");
@@ -504,15 +510,26 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
             { deadline: context.deadline - 1000, signal: work.abort.signal },
           );
           const receipt = "error" in result ? result.error : result;
-          performed = params.actions
-            .slice(0, receipt.completedSteps)
-            .map((a) => (a.type === "wait" ? "Waited." : `Sent ${a.type} input.`));
+          let completed = receipt.completedSteps;
+          for (const [index, action] of params.actions.entries()) {
+            const count = groups[index]!.length;
+            if (action.type === "scroll" && completed > 0)
+              performed.push(
+                completed >= count
+                  ? `Sent ${action.amount} scroll steps.`
+                  : `Sent ${completed} of ${action.amount} scroll steps.`,
+              );
+            else if (completed >= count)
+              performed.push(action.type === "wait" ? "Waited." : `Sent ${action.type} input.`);
+            completed -= count;
+            if (completed < 0) break;
+          }
           if ("error" in result)
             error = nativeError(
               result.error.code,
               result.error.completedSteps > 0 ? "submitted" : result.error.effect,
             );
-          else if (receipt.completedSteps !== params.actions.length)
+          else if (receipt.completedSteps !== actions.length)
             error = {
               code: "outcome-unknown",
               message: "The iPhone did not confirm the whole input batch; observe again.",
@@ -535,7 +552,11 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
       return { performed: [], error: errorBody(error), observation: null };
     }
   }
-  #actions(phone: Phone, snapshot: Snapshot, actions: IphoneScreenAction[]): IphoneNativeAction[] {
+  #actions(
+    phone: Phone,
+    snapshot: Snapshot,
+    actions: IphoneScreenAction[],
+  ): IphoneNativeAction[][] {
     if (!phone.target?.ready)
       failure("unsupported", "iPhone input is unavailable until native control is ready.");
     const point = (target: { index: number } | { x: number; y: number }) => {
@@ -549,7 +570,7 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
         failure("stale-observation", "The target is outside this iPhone observation.");
       return { x: target.x, y: target.y };
     };
-    return actions.map((action) => {
+    return actions.map((action): IphoneNativeAction[] => {
       if (
         ["locked", "protected", "screen-off"].includes(
           snapshot.public.screenshotUnavailable ?? "",
@@ -571,49 +592,91 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
         case "tap":
           if (action.count !== 1)
             failure("unsupported", "Double tap is not qualified on this iPhone.");
-          return { kind: "tap", target: { point: point(action.target) } };
+          return [{ kind: "tap", target: { point: point(action.target) } }];
         case "longPress":
-          return {
-            kind: "longPress",
-            target: { point: point(action.target) },
-            durationMs: action.durationMs,
-          };
+          return [
+            {
+              kind: "longPress",
+              target: { point: point(action.target) },
+              durationMs: action.durationMs,
+            },
+          ];
         case "swipe":
-          return {
-            kind: "swipe",
-            target: { point: point(action.from) },
-            to: point(action.to),
-            durationMs: action.durationMs,
-          };
+          return [
+            {
+              kind: "swipe",
+              target: { point: point(action.from) },
+              to: point(action.to),
+              durationMs: action.durationMs,
+            },
+          ];
         case "drag":
           if (action.holdMs > 2000)
             failure("unsupported", "This iPhone supports drag holds up to 2000 ms.");
-          return {
-            kind: "drag",
-            target: { point: point(action.from) },
-            to: point(action.to),
-            durationMs: action.durationMs,
-            holdMs: action.holdMs,
-          };
+          return [
+            {
+              kind: "drag",
+              target: { point: point(action.from) },
+              to: point(action.to),
+              durationMs: action.durationMs,
+              holdMs: action.holdMs,
+            },
+          ];
+        case "scroll": {
+          const at = point(action.target);
+          const { width, height } = snapshot.native.geometry;
+          if (width < 4 || height < 4)
+            failure("unsupported", "The iPhone viewport is too small to scroll safely.");
+          // AX frames and safe-area insets are unqualified; keep gestures in the image's central half.
+          const left = Math.floor(width / 4),
+            right = Math.floor((width * 3) / 4);
+          const top = Math.floor(height / 4),
+            bottom = Math.floor((height * 3) / 4);
+          const x = Math.max(left, Math.min(right, at.x));
+          const y = Math.max(top, Math.min(bottom, at.y));
+          const [from, to] = {
+            down: [
+              { x, y: bottom },
+              { x, y: top },
+            ],
+            up: [
+              { x, y: top },
+              { x, y: bottom },
+            ],
+            right: [
+              { x: right, y },
+              { x: left, y },
+            ],
+            left: [
+              { x: left, y },
+              { x: right, y },
+            ],
+          }[action.direction];
+          return Array.from({ length: action.amount }, () => ({
+            kind: "swipe",
+            target: { point: from! },
+            to: to!,
+            durationMs: phoneDisplayTimedActionMs(action) / action.amount,
+          }));
+        }
         case "navigate": {
           const button = snapshot.native.buttons.find((b) => b === action.to);
           if (!button)
             failure("unsupported", "This iPhone does not advertise that navigation button.");
-          return { kind: "navigate", button };
+          return [{ kind: "navigate", button }];
         }
         case "launch":
           if (!phone.apps.has(action.appId))
             failure("app-not-found", "Choose an appId returned by this iPhone's installed_apps.");
-          return { kind: "launch", appId: action.appId };
+          return [{ kind: "launch", appId: action.appId }];
         case "wake":
           if (snapshot.native.state.display !== "on")
             failure("permission-required", "Wake this iPhone on the phone.");
-          return { kind: "wake" };
+          return [{ kind: "wake" }];
         case "wait":
-          return { kind: "wait", durationMs: action.ms };
+          return [{ kind: "wait", durationMs: action.ms }];
         case "type":
         case "clear":
-        case "scroll":
           return failure("unsupported", `This iPhone does not support ${action.type}.`);
       }
     });
@@ -857,7 +920,7 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
         available && observation
           ? observation.foreground?.appId === "com.opensteer.opensteer"
             ? ["navigate", "wait"]
-            : ["tap", "longPress", "swipe", "drag", "navigate", "launch", "wait"]
+            : ["tap", "longPress", "swipe", "drag", "scroll", "navigate", "launch", "wait"]
           : [],
       wake: false,
       lock: observation

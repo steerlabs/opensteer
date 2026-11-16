@@ -15,6 +15,10 @@ import {
   type IphoneRunnerEvent,
 } from "@opensteer/protocol/iphone-bridge";
 import type { IphoneNativeTransport } from "./bridge-client.js";
+import {
+  DesktopIphoneSetupReasonSchema,
+  type DesktopIphoneWifiStatusSchema,
+} from "@opensteer/protocol/desktop";
 import { IphoneStore, IphoneServiceError, type IphoneMapping } from "./iphone-store.js";
 
 const empty = z.strictObject({});
@@ -55,6 +59,7 @@ export class IphoneService {
   readonly #invalidatedSlots = new Set<(deploymentId: string) => void>();
   readonly #listeners = new Set<(deploymentId: string, event: IphoneRunnerEvent) => void>();
   readonly #cleanups = new Set<Promise<unknown>>();
+  readonly #wifiWork = new Set<string>();
   #records: IphoneMapping[] = [];
   #roster: Candidate[] = [];
   #revision = -1;
@@ -145,6 +150,84 @@ export class IphoneService {
   }
   async pair(record: IphoneMapping, signal: AbortSignal): Promise<void> {
     await (await this.#connect()).request("setup.pair", this.#ref(record), empty, { signal });
+  }
+  #wifiRecord(owner: IphoneRunnerOwner, deviceId: string): IphoneMapping {
+    const record = this.#records.find(
+      (r) => sameOwner(r, owner) && r.deviceId === deviceId && r.phase === "bound",
+    );
+    if (!record) throw new IphoneServiceError("candidate-gone");
+    return record;
+  }
+  async wifiStatus(
+    owner: IphoneRunnerOwner,
+    deviceId: string,
+  ): Promise<z.infer<typeof DesktopIphoneWifiStatusSchema>> {
+    const record = this.#wifiRecord(owner, deviceId);
+    const candidate = this.#roster.find((c) => c.localPhoneId === record.localPhoneId);
+    return {
+      enabled: record.wifiEnabledByOpensteer,
+      transport: candidate?.transport ?? null,
+      reason: candidate ? null : "phone-disconnected",
+    };
+  }
+  async configureWifi(
+    owner: IphoneRunnerOwner,
+    deviceId: string,
+    action: "enable" | "disable" | "pair",
+    signal?: AbortSignal,
+  ): Promise<z.infer<typeof DesktopIphoneWifiStatusSchema>> {
+    const record = this.#wifiRecord(owner, deviceId);
+    try {
+      await this.setupWifi(record, action, signal);
+      return { ...(await this.wifiStatus(owner, deviceId)), reason: null };
+    } catch (error) {
+      const reason = DesktopIphoneSetupReasonSchema.safeParse(
+        error instanceof IphoneServiceError ? error.code : "native-service-failed",
+      );
+      return {
+        ...(await this.wifiStatus(owner, deviceId)),
+        reason: reason.success ? reason.data : "native-service-failed",
+      };
+    }
+  }
+  async setupWifi(
+    record: IphoneMapping,
+    action: "enable" | "disable" | "pair",
+    signal?: AbortSignal,
+  ): Promise<IphoneMapping> {
+    if (this.#wifiWork.has(record.udid)) throw new IphoneServiceError("phone-in-use");
+    this.#wifiWork.add(record.udid);
+    try {
+      await this.#binding(record, signal);
+      const native = await this.#connect();
+      await native.request(
+        { enable: "setup.enableWifi", disable: "setup.disableWifi", pair: "setup.pairWifi" }[
+          action
+        ],
+        this.#ref(record),
+        empty,
+        signal ? { signal } : {},
+      );
+      if (action === "enable" && !record.wifiEnabledByOpensteer)
+        await native.request("setup.pairWifi", this.#ref(record), empty, signal ? { signal } : {});
+      const current = this.#records.find(
+        (r) =>
+          r.udid === record.udid &&
+          r.setupId === record.setupId &&
+          sameOwner(r, record) &&
+          r.phase !== "pending-detach",
+      );
+      if (!current || signal?.aborted) throw new IphoneServiceError("cancelled");
+      const updated = { ...current, wifiEnabledByOpensteer: action !== "disable" };
+      try {
+        await this.save(updated);
+      } catch {
+        throw new IphoneServiceError("local-mapping-save-failed");
+      }
+      return updated;
+    } finally {
+      this.#wifiWork.delete(record.udid);
+    }
   }
   async prepare(record: IphoneMapping, signal: AbortSignal): Promise<void> {
     const image = this.#images[0];
@@ -517,7 +600,8 @@ export class IphoneService {
         iphoneRunnerResults[method],
         { timeoutMs: remaining, signal },
       );
-      if (!authorized()) throw new IphoneServiceError("no-session", "unknown");
+      if (!authorized() || this.#sessions.get(record.udid) !== session || signal.aborted)
+        throw new IphoneServiceError("no-session", "unknown");
       return receipt;
     }
     throw new IphoneServiceError("unsupported");
@@ -670,7 +754,10 @@ export class IphoneService {
     for (const record of this.#records) {
       const before = this.#roster.find((c) => c.localPhoneId === record.localPhoneId);
       const after = roster.candidates.find((c) => c.localPhoneId === record.localPhoneId);
-      if (before && (!after || before.nativeEpoch !== after.nativeEpoch))
+      if (
+        before &&
+        (!after || before.nativeEpoch !== after.nativeEpoch || before.transport !== after.transport)
+      )
         this.#invalidate(record, "phone-disconnected");
     }
     this.#roster = roster.candidates;

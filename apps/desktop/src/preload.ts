@@ -9,6 +9,10 @@ import {
   DesktopIphoneSetupFailureSchema,
   DesktopIphoneSetupIdSchema,
   DesktopIphoneSetupStatusSchema,
+  DesktopIphoneSetupWifiSchema,
+  DesktopIphoneWifiInputSchema,
+  DesktopIphoneConfigureWifiSchema,
+  DesktopIphoneWifiStatusSchema,
   type DesktopIphoneSetupBridge,
 } from "@opensteer/protocol/desktop";
 import {
@@ -435,6 +439,27 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     };
   },
   iphoneSetup: {
+    wifiStatus: async (input) =>
+      DesktopIphoneWifiStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneWifiStatus,
+          DesktopIphoneWifiInputSchema.parse(input),
+        ),
+      ),
+    configureWifi: async (input) =>
+      DesktopIphoneWifiStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneConfigureWifi,
+          DesktopIphoneConfigureWifiSchema.parse(input),
+        ),
+      ),
+    wifi: async (input) =>
+      DesktopIphoneSetupStatusSchema.parse(
+        await invoke(
+          desktopBridgeChannels.iphoneSetupWifi,
+          DesktopIphoneSetupWifiSchema.parse(input),
+        ),
+      ),
     detach: async (input) =>
       DesktopIphoneDetachStatusSchema.parse(
         await invoke(

@@ -1,9 +1,120 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { fixture, ownerA, ownerB } from "./test-support.js";
+import { IphoneServiceError } from "./iphone-store.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
+});
+
+it("configures Wi-Fi only for this Mac's bound phone and preserves preferences on native refusal", async () => {
+  const f = await fixture();
+  cleanups.push(f.cleanup);
+  await f.bind();
+  await expect(f.service.configureWifi(ownerB, f.deviceId, "enable")).rejects.toMatchObject({
+    code: "candidate-gone",
+  });
+  expect(await f.service.wifiStatus(ownerA, f.deviceId)).toMatchObject({
+    enabled: false,
+    transport: "usb",
+  });
+  f.native.failures.set("setup.enableWifi", new IphoneServiceError("wifi-pairing-required"));
+  expect(await f.service.configureWifi(ownerA, f.deviceId, "enable")).toMatchObject({
+    enabled: false,
+    reason: "wifi-pairing-required",
+  });
+  expect((await f.store.records())[0]?.wifiEnabledByOpensteer).toBe(false);
+  f.native.failures.clear();
+  expect(await f.service.configureWifi(ownerA, f.deviceId, "enable")).toMatchObject({
+    enabled: true,
+    reason: null,
+  });
+  expect(await f.service.configureWifi(ownerA, f.deviceId, "pair")).toMatchObject({
+    enabled: true,
+    reason: null,
+  });
+  expect(await f.service.configureWifi(ownerA, f.deviceId, "disable")).toMatchObject({
+    enabled: false,
+    reason: null,
+  });
+  expect((await f.store.records())[0]?.wifiEnabledByOpensteer).toBe(false);
+});
+
+it("ends USB input on a Wi-Fi transport event and never accepts or replays its late receipt", async () => {
+  const f = await fixture();
+  cleanups.push(f.cleanup);
+  await f.bind();
+  const events: unknown[] = [];
+  const connection = f.service.forSlot(ownerA).connect((event) => events.push(event));
+  const assignment = {
+    deviceId: f.deviceId,
+    generation: 1,
+    role: "screen" as const,
+    definitionId: "iphone-screen" as const,
+  };
+  await connection.request("iphone.targets", { assignments: [assignment] }, f.options());
+  const session = { deviceId: f.deviceId, driverGeneration: 1, sessionId: "session", runId: "run" };
+  await connection.request("iphone.session.open", { ...session, access: "control" }, f.options());
+  const observation = await connection.request(
+    "iphone.observe",
+    { ...session, includeScreenshot: true },
+    f.options(),
+  );
+  const held = Promise.withResolvers<void>();
+  f.native.held.set("phone.perform", held.promise);
+  const input = connection.request(
+    "iphone.perform",
+    {
+      ...session,
+      nativeEpoch: observation.nativeEpoch,
+      geometryRevision: observation.geometryRevision,
+      observationToken: observation.observationToken,
+      actions: [{ kind: "tap", target: { point: { x: 20, y: 30 } } }],
+    },
+    f.options(),
+  );
+  const refusal = expect(input).rejects.toMatchObject({ code: "no-session", effect: "unknown" });
+  try {
+    await vi.waitFor(
+      () => expect(f.native.calls.some(({ method }) => method === "phone.perform")).toBe(true),
+      { timeout: 1000 },
+    );
+    f.native.epoch = 2;
+    f.native.roster = {
+      revision: 2,
+      candidates: [{ ...f.native.roster.candidates[0]!, nativeEpoch: 2, transport: "wifi" }],
+    };
+    f.native.publish();
+    expect(events).toContainEqual(expect.objectContaining({ event: "iphone.sessionEnded" }));
+  } finally {
+    held.resolve();
+  }
+  await refusal;
+  await expect(
+    connection.request("iphone.observe", { ...session, includeScreenshot: true }, f.options()),
+  ).rejects.toMatchObject({ code: "no-session" });
+  await connection.request("iphone.session.open", { ...session, access: "control" }, f.options());
+  expect(
+    (
+      await connection.request(
+        "iphone.observe",
+        { ...session, includeScreenshot: true },
+        f.options(),
+      )
+    ).nativeEpoch,
+  ).toBe(2);
+  f.native.epoch = 3;
+  f.native.roster = {
+    revision: 3,
+    candidates: [{ ...f.native.roster.candidates[0]!, nativeEpoch: 3, transport: "usb" }],
+  };
+  f.native.publish();
+  await expect(
+    connection.request("iphone.observe", { ...session, includeScreenshot: true }, f.options()),
+  ).rejects.toMatchObject({ code: "no-session" });
+  expect(f.native.calls.filter(({ method }) => method === "phone.perform")).toHaveLength(1);
+  expect((await f.store.records())[0]).toMatchObject({ deviceId: f.deviceId, driverGeneration: 1 });
+  connection.close();
 });
 
 it("reserves one physical phone across Deployments and restarts, without exposing its identity", async () => {

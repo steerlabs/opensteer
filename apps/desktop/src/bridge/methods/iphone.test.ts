@@ -52,6 +52,29 @@ it("authorizes every setup method, binds candidates to one renderer, and cancels
     ).rejects.toThrow("capability");
   const call = (channel: string, input: unknown, source = event) =>
     handlers.get(channel)!(source, { bridgeToken: "private-capability", input });
+  const saved = await f.service.reserve(ownerA, "candidate", crypto.randomUUID());
+  await f.service.save({
+    ...saved,
+    phase: "pending-attach",
+    attachTarget: { kind: "new", name: "Saved" },
+  });
+  const discovering = Promise.withResolvers<void>();
+  f.native.held.set("roster.get", discovering.promise);
+  const first = call(desktopBridgeChannels.iphoneSetupBegin, { deploymentId: ownerA.deploymentId });
+  const second = call(desktopBridgeChannels.iphoneSetupBegin, {
+    deploymentId: ownerA.deploymentId,
+  });
+  const begins = Promise.all([first, second]);
+  discovering.resolve();
+  const [resumed, duplicate] = await begins;
+  expect(resumed).toEqual(duplicate);
+  expect(await setup.status(saved.setupId)).toMatchObject({ step: "attach" });
+  expect(
+    await call(desktopBridgeChannels.iphoneSetupBegin, { deploymentId: ownerA.deploymentId }),
+  ).toEqual(resumed);
+  sender.emit("did-start-navigation");
+  await expect(setup.status(saved.setupId)).rejects.toMatchObject({ code: "cancelled" });
+  await f.store.remove(saved);
   const state = (await call(desktopBridgeChannels.iphoneSetupBegin, {
     deploymentId: ownerA.deploymentId,
   })) as { setupId: string; candidates: { candidateId: string }[] };

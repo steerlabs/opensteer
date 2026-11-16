@@ -47,6 +47,7 @@ export const DesktopIphoneSetupStepSchema = z.enum([
   "developer-mode",
   "prepare",
   "observe",
+  "wifi",
   "attach",
   "confirm",
   "done",
@@ -61,6 +62,23 @@ export const DesktopIphoneSetupChooseSchema = DesktopIphoneSetupIdSchema.extend(
 });
 export const DesktopIphoneSetupAdvanceSchema = DesktopIphoneSetupIdSchema.extend({
   step: z.enum(["trust", "developer-mode", "prepare", "observe", "attach"]),
+  name: z.string().trim().min(1).max(120).optional(),
+});
+export const DesktopIphoneWifiActionSchema = z.enum(["enable", "disable", "pair"]);
+export const DesktopIphoneSetupWifiSchema = DesktopIphoneSetupIdSchema.extend({
+  action: z.enum([...DesktopIphoneWifiActionSchema.options, "skip"]),
+});
+export const DesktopIphoneWifiInputSchema = z.strictObject({
+  deploymentId: DeploymentIdSchema,
+  deviceId: z.string().min(1).max(128),
+});
+export const DesktopIphoneConfigureWifiSchema = DesktopIphoneWifiInputSchema.extend({
+  action: DesktopIphoneWifiActionSchema,
+});
+export const DesktopIphoneWifiStatusSchema = z.strictObject({
+  enabled: z.boolean(),
+  transport: z.enum(["usb", "wifi"]).nullable(),
+  reason: DesktopIphoneSetupReasonSchema.nullable(),
 });
 export const DesktopIphoneSetupCompleteSchema = DesktopIphoneSetupIdSchema.extend({
   result: IphoneScreenAttachResultSchema,
@@ -79,6 +97,7 @@ export const DesktopIphoneSetupStatusSchema = z.strictObject({
     "unlock-and-trust",
     "enable-developer-mode",
     "install-developer-image",
+    "choose-wifi",
     "continue",
     "retry",
     "none",
@@ -97,9 +116,17 @@ export const DesktopIphoneSetupStatusSchema = z.strictObject({
   attachCommand: IphoneScreenAttachCommandSchema.nullable(),
   deviceId: z.string().max(128).nullable(),
   driverGeneration: z.number().int().positive().nullable(),
+  wifiEnabled: z.boolean().default(false),
 });
 export type DesktopIphoneSetupStatus = z.infer<typeof DesktopIphoneSetupStatusSchema>;
 export interface DesktopIphoneSetupBridge {
+  wifiStatus(
+    input: z.infer<typeof DesktopIphoneWifiInputSchema>,
+  ): Promise<z.infer<typeof DesktopIphoneWifiStatusSchema>>;
+  configureWifi(
+    input: z.infer<typeof DesktopIphoneConfigureWifiSchema>,
+  ): Promise<z.infer<typeof DesktopIphoneWifiStatusSchema>>;
+  wifi(input: z.infer<typeof DesktopIphoneSetupWifiSchema>): Promise<DesktopIphoneSetupStatus>;
   detach(
     input: z.infer<typeof DesktopIphoneDetachInputSchema>,
   ): Promise<z.infer<typeof DesktopIphoneDetachStatusSchema>>;

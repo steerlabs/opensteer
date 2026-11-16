@@ -1,10 +1,5 @@
-import { DeviceIdSchema, type DeploymentId } from "@opensteer/core";
-import {
-  mutationIdempotencyKey,
-  type HostClient,
-  type HostSnapshot,
-  type IphoneSetupPort,
-} from "@opensteer/client/host";
+import { type DeploymentId } from "@opensteer/core";
+import { type HostClient, type HostSnapshot, type IphoneSetupPort } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import {
   DesktopIphoneSetupReasonSchema,
@@ -31,6 +26,7 @@ const rail: readonly (readonly Status["step"][])[] = [
   ["trust"],
   ["developer-mode"],
   ["prepare", "observe"],
+  ["wifi"],
   ["attach", "confirm"],
 ];
 /** How long this Mac may take to report it took the iPhone on before the person is asked. */
@@ -38,7 +34,7 @@ const confirmDeadlineMs = 30_000;
 const selectMachines = (snapshot: HostSnapshot) => snapshot.machines;
 
 /**
- * Adding an iPhone whose screen this Mac controls, over USB. Setup runs in
+ * Adding an iPhone whose screen this Mac controls, over USB or the same Wi-Fi. Setup runs in
  * Opensteer on this Mac (the port); the dialog shows its current step in the
  * person's words, carries on by itself while nothing is in the way, and stops
  * with one clear action when the iPhone, this Mac or the Host needs something.
@@ -62,7 +58,6 @@ export function AddIphoneDialog({
   const [thrown, setThrown] = useState<DesktopIphoneSetupReason | null>(null);
   const [chosen, setChosen] = useState<Candidate | null>(null);
   const [name, setName] = useState<string | null>(null);
-  const [renameFailed, setRenameFailed] = useState(false);
   const [slow, setSlow] = useState(false);
   const machines = useHostSelector(client, selectMachines);
   const setupId = useRef<string | null>(null);
@@ -147,19 +142,9 @@ export function AddIphoneDialog({
 
   async function attach(current: Status) {
     const wanted = name?.trim();
-    const next = await run("attach", () => port.attach({ setupId: current.setupId }));
-    const deviceId = DeviceIdSchema.safeParse(next?.deviceId);
-    if (!wanted || !deviceId.success) return;
-    try {
-      await client.dispatch({
-        idempotencyKey: mutationIdempotencyKey("iphone-name"),
-        machineId: deviceId.data,
-        name: wanted,
-        type: "machine.rename",
-      });
-    } catch {
-      setRenameFailed(true);
-    }
+    await run("attach", () =>
+      port.attach({ setupId: current.setupId, ...(wanted ? { name: wanted } : {}) }),
+    );
   }
 
   function check(current: Status) {
@@ -167,6 +152,13 @@ export function AddIphoneDialog({
     if (current.step === "choose" || current.step === "confirm" || current.step === "done")
       void run("check", () => port.status({ setupId: current.setupId }));
     else if (current.step === "attach") void attach(current);
+    else if (current.step === "wifi")
+      void run("wifi", () =>
+        port.wifi({
+          setupId: current.setupId,
+          action: current.reason === "wifi-pairing-required" ? "pair" : "enable",
+        }),
+      );
     else {
       const step = current.step;
       void run(step, () => port.advance({ setupId: current.setupId, step }));
@@ -192,6 +184,33 @@ export function AddIphoneDialog({
           step: status?.step ?? "choose",
         })
       : null;
+    if (status?.step === "wifi")
+      return {
+        title: "Also use it over Wi-Fi?",
+        detail:
+          words?.detail ??
+          "Keep this Mac and the iPhone on the same Wi-Fi. You can keep using the cable, too.",
+        tone: "you",
+        step: stageIndex("wifi"),
+        actions: (
+          <>
+            <button className="btn btn--primary" onClick={() => check(status)} type="button">
+              {status.reason === "wifi-pairing-required"
+                ? "Pair for Wi-Fi"
+                : "Also use it over Wi-Fi"}
+            </button>
+            <button
+              className="btn"
+              onClick={() =>
+                void run("wifi", () => port.wifi({ setupId: status.setupId, action: "skip" }))
+              }
+              type="button"
+            >
+              Continue with USB
+            </button>
+          </>
+        ),
+      };
     // Without a setup on the Mac, the way forward is a new one.
     if (!status || (words && words.recovery !== "check"))
       return reasonStage(
@@ -231,7 +250,11 @@ export function AddIphoneDialog({
                   value={name ?? chosen?.name ?? ""}
                 />
               </label>
-              <p>It works while it’s plugged into this Mac.</p>
+              <p>
+                {status.wifiEnabled
+                  ? "Use a cable or the same Wi-Fi as this Mac."
+                  : "It works while it’s plugged into this Mac."}
+              </p>
             </div>
           ),
           detail: `It answered, and its screen came through. Name it and add it to ${deploymentName}.`,
@@ -261,17 +284,14 @@ export function AddIphoneDialog({
           body: (
             <div className="phone-setup__more">
               <p>
-                Agents can’t use it until you allow them on its page. Opensteer reaches it only
-                while it’s plugged into this Mac.
+                Agents can’t use it until you allow them on its page.{" "}
+                {status.wifiEnabled
+                  ? "Keep it on the same Wi-Fi as this Mac, or plug it in."
+                  : "Keep it plugged into this Mac."}
               </p>
-              {renameFailed ? (
-                <p className="notice" role="status">
-                  Its name didn’t save. Rename it on its page.
-                </p>
-              ) : null}
             </div>
           ),
-          title: `${renameFailed ? (chosen?.name ?? "The iPhone") : displayName} is added`,
+          title: `${displayName} is added`,
           tone: "done",
         };
       default:
@@ -347,6 +367,8 @@ function workingStage(
       };
     case "observe":
       return { step, title: "Taking a first look at the screen", tone: "working" };
+    case "wifi":
+      return { step, title: "Setting up same Wi-Fi access", tone: "working" };
     case "attach":
     case "confirm":
       return { step, title: `Adding it to ${deploymentName}`, tone: "working" };
@@ -472,7 +494,7 @@ function chooseStage(
     cue: "Your turn",
     detail: notice
       ? `${notice.title}. ${notice.detail}`
-      : "Plugged into this Mac with a cable. It must stay plugged in while agents use it.",
+      : "Plugged into this Mac with a cable for setup. You can choose Wi-Fi access after the first screen check.",
     ...(notice ? { icon: "alert-circle" as const } : {}),
     step: 0,
     title: "Which iPhone?",
