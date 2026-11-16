@@ -1,9 +1,13 @@
-import { requestSettlementLabel } from "@opensteer/client/host";
+import { requestSettlementLabel, deviceMachine } from "@opensteer/client/host";
 import { ActionNote } from "./action-rows.js";
 import { useComputerAppApproval } from "./computer-apps/computer-app-approval.js";
 import type { Request } from "@opensteer/core";
 import { fullAccessOnThisMac, mutationIdempotencyKey } from "@opensteer/client/host";
-import { computerAppAccessApproval, computerUseAccessLabel } from "@opensteer/client/integrations";
+import {
+  computerAppAccessApproval,
+  computerUseAccessLabel,
+  setPhoneDisplayAccess,
+} from "@opensteer/client/integrations";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { useState } from "react";
 import { hostsDeployment } from "@opensteer/client/computers";
@@ -39,8 +43,8 @@ export function ThreadComputerAppAccessAction({
       </ActionNote>
     );
   }
-  const { access, definitionId, runnerId } = request.payload;
-  const machine = snapshot.machines.find((candidate) => candidate.id === runnerId);
+  const { access, definitionId, deviceId } = request.payload;
+  const machine = snapshot.machines.find((candidate) => candidate.id === deviceId);
   const { approveOn } = computerAppAccessApproval({
     definitionId,
     machines: snapshot.machines,
@@ -50,9 +54,11 @@ export function ThreadComputerAppAccessAction({
         hostsDeployment: hostsDeployment(machine),
         hostsDeploymentOnThisComputer: desktopDeployment?.onThisComputer === true,
         inDesktopApp: desktopBridge !== null,
-        lentByThisDesktop: localExecutionStatus?.runner.runnerId === runnerId,
+        lentByThisDesktop:
+          machine !== undefined &&
+          localExecutionStatus?.runner.runnerId === deviceMachine(machine).selfRunnerId,
       }),
-    runnerId,
+    deviceId,
   });
 
   async function decline() {
@@ -83,14 +89,7 @@ export function ThreadComputerAppAccessAction({
         await approval.ask(request.payload.setupRequestId);
         return;
       }
-      const result = await hostClient.dispatch({
-        idempotencyKey: mutationIdempotencyKey(`phone-request:${request.id}`),
-        input: { access, app: null, definitionId, kind: "app", runnerId },
-        type: "integration.computer.setup.set",
-      });
-      if (result.type !== "integration.computer.setup.set") {
-        throw new Error("Phone access was not set.");
-      }
+      await setPhoneDisplayAccess(hostClient, { access, definitionId, deviceId });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The request could not be allowed.");
     } finally {

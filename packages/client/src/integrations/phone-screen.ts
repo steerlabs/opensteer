@@ -149,3 +149,7 @@ export function phoneViewerPower(phone: PhoneDisplayView | null, action: "wake" 
   if (phone === null) return true;
   return action === "wake" ? phone.wake : phone.lock === true;
 }
+
+export function phoneScreenUnavailableWords(phone: string): string {
+  return `Live view isn’t available for ${phone} yet.`;
+}

@@ -1,7 +1,7 @@
 import { tabFixture, tabStoreFixture } from "../test-support/tab-fixtures.js";
 import {
   createId,
-  RunnerIdSchema,
+  DeviceIdSchema,
   TabIdSchema,
   PlaceEnteredEventViewSchema,
   SequenceSchema,
@@ -32,7 +32,7 @@ function entered(sequence: string, id = runId) {
 }
 
 it("names a listed tab and reads the Run's own session at a phone, never a closed tab", () => {
-  const machineId = RunnerIdSchema.parse(createId("runner"));
+  const machineId = DeviceIdSchema.parse(createId("runner"));
   const tabId = TabIdSchema.parse("phone-tab");
   const entry = { runId, data: { tabId } };
   const source = (sessions: readonly unknown[], listed = true) => ({
@@ -97,7 +97,7 @@ it("a resync removes ended Runs without discarding places newer than its cut", (
 // Failure mode: a Run in Notes window B shows as acting in, and pictures under, window A's tab,
 // because both windows belong to the app the Run's session holds.
 it("knows a Run acts in, and pictures, one window of an app by its exact tab", () => {
-  const machineId = RunnerIdSchema.parse(createId("runner"));
+  const machineId = DeviceIdSchema.parse(createId("runner"));
   const tab = (id: string) =>
     tabFixture({
       tabId: TabIdSchema.parse(id),

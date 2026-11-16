@@ -128,7 +128,6 @@ function ComputerDetail(props: {
       mounted.current = false;
     };
   }, []);
-  // The tab contract names phones by Runner; a Mac-driven phone has none yet.
   const phoneTab = TabTargetSchema.safeParse({ kind: "phone", computerId: props.machineId });
   const openPhone = async () => {
     setOpeningPhone(true);
@@ -240,7 +239,7 @@ function ComputerDetail(props: {
           />
         ) : phone !== null ? (
           <View style={styles.summary}>
-            {canRespond && phone.access !== null && phone.canView && phoneTab.success ? (
+            {canRespond && phone.canView && phoneTab.success ? (
               <SecondaryButton
                 busy={openingPhone}
                 label="Open phone"

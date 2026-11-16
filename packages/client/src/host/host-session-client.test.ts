@@ -1,3 +1,5 @@
+import { deviceMachine } from "./device-projection.js";
+import { DeviceIdSchema } from "@opensteer/core";
 import { MockPersonalHost } from "../mock/mock-personal-host.js";
 interface PersonalFixture {
   readonly id: import("@opensteer/core").DeploymentId;
@@ -93,7 +95,7 @@ describe("HttpHostClient tabs", () => {
       tabFixture({
         tabId: BrowserSurfaceIdSchema.parse(`tab-${index}`),
         title: `Page ${index}`,
-        computer: { computerId: runnerId, name: "Mac" },
+        computer: { computerId: DeviceIdSchema.parse(runnerId), name: "Mac" },
       }),
     );
   const layoutOf = (tabs: readonly Tab[], revision = 1): TabLayout => ({
@@ -8769,7 +8771,7 @@ describe("HttpHostClient owner views", () => {
     if (app.target.kind !== "app") throw new Error("Expected a Mac app");
     const tab = await mock.openTab({
       kind: "window",
-      computerId: RunnerIdSchema.parse(app.machineId),
+      computerId: DeviceIdSchema.parse(app.machineId),
       bundleId: app.target.app.bundleId,
     });
     const viewer = await mock.activateTab(tab.tabId);
@@ -8989,7 +8991,7 @@ describe("HttpHostClient owner views", () => {
     const tab = tabFixture({
       tabId: BrowserSurfaceIdSchema.parse(`${kind}-tab`),
       kind,
-      computer: { computerId: RunnerIdSchema.parse(view.machineId), name: "Mac" },
+      computer: { computerId: DeviceIdSchema.parse(view.machineId), name: "Mac" },
     });
     host.host.tabs = {
       tabs: [tab],
@@ -9058,7 +9060,7 @@ describe("HttpHostClient owner views", () => {
         type: "host.computer-view.removed",
         viewId: view.viewId,
         generation: view.generation,
-        machineId: view.machineId,
+        machineId: RunnerIdSchema.parse(deviceMachine(machine).selfRunnerId),
         reason: "closed",
       } as HostToClientMessage);
       answering.resolve();
@@ -9119,7 +9121,7 @@ describe("HttpHostClient owner views", () => {
         type: "host.computer-view.removed",
         viewId: newer.viewId,
         generation: newer.generation,
-        machineId: newer.machineId,
+        machineId: RunnerIdSchema.parse(deviceMachine(machine).selfRunnerId),
         reason: "expired",
       } as HostToClientMessage);
       expect(host.client.tabViewer(tab.tabId)).toBeNull();
@@ -10388,7 +10390,10 @@ class FakeSocket implements WebSocketClient {
 function pageTabHost(workspace: PersonalFixture, browser?: BrowserWireBootstrap) {
   const sessionId = createBrowserSessionId();
   const tabId = BrowserSurfaceIdSchema.parse("tab");
-  const tab = tabFixture({ tabId, computer: { computerId: runnerId, name: "Example computer" } });
+  const tab = tabFixture({
+    tabId,
+    computer: { computerId: DeviceIdSchema.parse(runnerId), name: "Example computer" },
+  });
   let tabs: TabBootstrap = {
     tabs: [tab],
     layout: { revision: 1, items: [{ kind: "tab", tabId }] },

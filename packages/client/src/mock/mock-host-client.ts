@@ -1,4 +1,9 @@
 import {
+  DeviceComputerAppSetupRequestReaderSchema,
+  type DeviceComputerAppSetupRequest,
+} from "@opensteer/integration-core";
+import type { ClientCommandInput } from "../host/device-commands.js";
+import {
   DeviceIntegrationConnectionSummarySchema,
   type DeviceIntegrationConnectionSummary,
 } from "@opensteer/integration-core";
@@ -455,7 +460,7 @@ const mockSlackOnMacMini = {
   app: "Slack",
   bundleId: "com.tinyspeck.slackmacgap",
   computer: "Mac mini",
-  runnerId: mockMessagesRunnerId,
+  runnerId: DeviceIdSchema.parse(mockMessagesRunnerId),
 } as const;
 const mockSlackLiveSession = ComputerUseSessionSummarySchema.parse({
   actionCount: 7,
@@ -1703,7 +1708,19 @@ const mockMachines: readonly MachineSummary[] = [
         })),
       },
     ],
-    access: null,
+    access: {
+      activeSessions: [],
+      ownerReachAvailable: true,
+      revision: 1,
+      policy: {
+        apps: true,
+        browser: true,
+        commands: false,
+        forwarding: false,
+        reach: "nobody",
+        shares: [],
+      },
+    },
     allowedModules: ["browser", "integrations"],
     detail: null,
     device: { form: "phone", platform: "android" },
@@ -4862,10 +4879,15 @@ export class MockHostClient implements HostClient {
       idempotencyKey: `idle-compaction:${Date.now()}`,
     });
   }
-  async dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput> {
-    const result = await this.rpc["commands.dispatch"](
+  async dispatch(command: ClientCommandInput): Promise<HostApiCommandOutput> {
+    const parsed = clientCommandSchema.parse(
       browserProfileHomeCommand(command, this.#state.getSnapshot().browserProfileHomes),
     );
+    const result =
+      (parsed.type === "machine.access.update" && "deviceId" in parsed) ||
+      (parsed.type === "integration.computer.setup.set" && "deviceId" in parsed.input)
+        ? await dispatchDeviceCommand(this.rpc, parsed)
+        : await this.rpc["commands.dispatch"](hostApi["commands.dispatch"].payload.parse(parsed));
     if (result.ok) return result.data;
     // The same typed refusal the real client raises, so a surface branches on
     // the code here exactly as it would against a Host.
@@ -5224,6 +5246,13 @@ class MockHostState {
     const catalog = this.tabCatalog;
     if (target.kind === "page") {
       if (!this.places) throw new Error("The browser is unavailable.");
+      const targetDevice =
+        "guest" in target && target.computerId
+          ? this.snapshot.machines.find(({ id }) => id === target.computerId)
+          : null;
+      const runnerId = targetDevice ? deviceMachine(targetDevice).selfRunnerId : null;
+      if ("guest" in target && target.computerId && !runnerId)
+        throw new Error("This device cannot host browser pages.");
       const opened = await this.places.openTarget({
         type: "browser.tab.open",
         identity:
@@ -5231,9 +5260,7 @@ class MockHostState {
             ? { kind: "profile", profileId: target.profileId }
             : { kind: "guest" },
         // As on the Host, Guest without a computer is placed only when one computer can browse.
-        ...("guest" in target && target.computerId
-          ? { placement: { kind: "runner", runnerId: target.computerId } }
-          : {}),
+        ...(runnerId ? { placement: { kind: "runner", runnerId } } : {}),
         url: target.url,
         ...(typed ? { typed: true } : {}),
         idempotencyKey,
@@ -5638,7 +5665,7 @@ class MockHostState {
   readonly searchSuggestionRequests: { readonly query: string; readonly at: number }[] = [];
   computerViews: MockComputerViews | undefined;
   computerConnections() {
-    return this.integrations.connections;
+    return [...this.integrations.connections, ...this.#screenConnections.values()];
   }
   places: MockPlaceWorld | null = null;
   readonly #threadState = new ThreadStateProjection();
@@ -6146,7 +6173,7 @@ class MockHostState {
         });
     }
   }
-  private readonly computerAppSetupRequests = new Map<string, ComputerAppSetupRequest>();
+  private readonly computerAppSetupRequests = new Map<string, DeviceComputerAppSetupRequest>();
   private readonly referenceRequests = new Map<string, Request>();
   referenceRequest(requestId: string): Request | undefined {
     return (
@@ -6466,7 +6493,7 @@ class MockHostState {
         ownerUserId: mockUserId,
         policyAppApproval: null,
         reason: mockComputerUseReason,
-        runnerId: mockMessagesRunnerId,
+        deviceId: DeviceIdSchema.parse(mockMessagesRunnerId),
         server: null,
         threadId: ThreadIdSchema.parse(mockComputerUseThreadId),
         threadTitle: "Build the new architecture",
@@ -6494,7 +6521,7 @@ class MockHostState {
         ownerUserId: mockUserId,
         policyAppApproval: null,
         reason: payload.reason,
-        runnerId: payload.runnerId,
+        deviceId: payload.deviceId,
         server: null,
         threadId: ThreadIdSchema.parse(request.originatingThreadId),
         threadTitle: null,
@@ -8672,6 +8699,17 @@ class MockHostState {
               },
         ),
       });
+    for (const request of this.computerAppSetupRequests.values()) {
+      if (
+        request.kind === "app" &&
+        request.deviceId === deviceId &&
+        request.definitionId === "iphone-screen" &&
+        (access === "read-write" || request.access === "read")
+      ) {
+        this.computerAppSetupRequests.delete(request.id);
+        this.fulfilComputerAppAccessRequest(request.id);
+      }
+    }
     return connection;
   }
   readonly #screenReplays = new Map<
@@ -8882,6 +8920,8 @@ class MockHostState {
   async revokeMachine(machineId: string): Promise<void> {
     if (this.snapshot.machines.find((machine) => machine.id === machineId)?.kind === "home")
       throw new Error("Home cannot be removed");
+    const machine = this.snapshot.machines.find((machine) => machine.id === machineId);
+    const selfRunnerId = machine ? deviceMachine(machine).selfRunnerId : null;
     this.#screenConnections.delete(machineId);
     this.sessions = this.sessions.filter((session) => session.deviceId !== machineId);
     let snapshot = this.snapshot;
@@ -8907,15 +8947,15 @@ class MockHostState {
     // The profiles that live on it go with it, as the Host deletes them.
     this.update({
       ...snapshot,
-      browserProfileHomes: snapshot.browserProfileHomes?.filter((id) => id !== machineId),
+      browserProfileHomes: snapshot.browserProfileHomes?.filter((id) => id !== selfRunnerId),
       browserProfiles: snapshot.browserProfiles.filter(
-        (profile) => profile.homeRunnerId !== machineId,
+        (profile) => selfRunnerId === null || profile.homeRunnerId !== selfRunnerId,
       ),
       machines: snapshot.machines
         .filter((machine) => machine.id !== machineId)
         .map((machine) =>
           machine.phoneDisplay?.driver?.role === "screen" &&
-          machine.phoneDisplay.driver.runnerId === machineId &&
+          machine.phoneDisplay.driver.runnerId === selfRunnerId &&
           machine.phoneDisplay.driver.attached
             ? this.detachedScreen(machine, machine.phoneDisplay.driver.generation + 1)
             : machine,
@@ -9045,9 +9085,9 @@ class MockHostState {
   reviewComputerAppSetup(setupRequestId: string) {
     const request = this.computerAppSetupRequests.get(setupRequestId);
     if (!request) throw new Error("This approval is no longer waiting.");
-    this.ownedComputer(request.runnerId);
+    this.ownedComputer(request.deviceId);
     return {
-      request,
+      request: this.legacyComputerSetupRequest(request),
       app: request.app
         ? {
             identity: request.app,
@@ -9196,14 +9236,38 @@ class MockHostState {
       };
     }
     const setup = mockLightsServerSetup(mockUserId, this.now());
-    this.computerAppSetupRequests.set(setup.id, setup);
+    this.computerAppSetupRequests.set(
+      setup.id,
+      DeviceComputerAppSetupRequestReaderSchema.parse(setup),
+    );
     return [mockTvPairingRequest(mockUserId), mockDeviceAccessRequest(mockUserId)];
   }
 
-  listComputerAppSetupRequests(): ComputerAppSetupRequest[] {
-    return [...this.computerAppSetupRequests.values()].filter(
-      (request) => Date.parse(request.expiresAt) > this.now().getTime(),
+  private selfDeviceId(runnerId: string) {
+    const machine = this.snapshot.machines.find(
+      (machine) => deviceMachine(machine).selfRunnerId === runnerId,
     );
+    if (!machine) throw new Error("This Runner has no Device.");
+    return DeviceIdSchema.parse(machine.id);
+  }
+  private legacyComputerSetupRequest(
+    request: DeviceComputerAppSetupRequest,
+  ): ComputerAppSetupRequest {
+    const machine = this.snapshot.machines.find(({ id }) => id === request.deviceId);
+    const runnerId = machine ? deviceMachine(machine).selfRunnerId : null;
+    if (!runnerId) throw new Error("This Device has no local app approval to review.");
+    const { deviceId: _deviceId, ...rest } = request;
+    return { ...rest, runnerId };
+  }
+  listComputerAppSetupRequests(): ComputerAppSetupRequest[] {
+    return [...this.computerAppSetupRequests.values()].flatMap((request) => {
+      const machine = this.snapshot.machines.find(({ id }) => id === request.deviceId);
+      return Date.parse(request.expiresAt) > this.now().getTime() &&
+        machine &&
+        deviceMachine(machine).selfRunnerId
+        ? [this.legacyComputerSetupRequest(request)]
+        : [];
+    });
   }
 
   /**
@@ -9249,7 +9313,7 @@ class MockHostState {
     );
     if (current?.access === scope.access) return current;
     if (current) this.computerAppSetupRequests.delete(current.id);
-    const request: ComputerAppSetupRequest = {
+    const request: DeviceComputerAppSetupRequest = {
       ...scope,
       createdAt: this.now().toISOString(),
       definitionDigest: "mock-definition",
@@ -9258,14 +9322,14 @@ class MockHostState {
       id: crypto.randomUUID(),
       ownerUserId: mockUserId,
       reason: null,
-      runnerId: input.runnerId,
+      deviceId: DeviceIdSchema.parse(machine.id),
       server: null,
       threadId: null,
       threadTitle: null,
     };
     this.computerAppSetupRequests.set(request.id, request);
     this.update({ ...this.snapshot, machines: [...this.snapshot.machines] });
-    return request;
+    return this.legacyComputerSetupRequest(request);
   }
 
   /** Cancelling a task's request declines it, as the Host settles it. */
@@ -9290,7 +9354,7 @@ class MockHostState {
       if (
         !pending ||
         pending.kind !== "policy" ||
-        pending.runnerId !== input.runnerId ||
+        pending.deviceId !== this.selfDeviceId(input.runnerId) ||
         Date.parse(pending.expiresAt) <= this.now().getTime()
       ) {
         throw new Error("Review automatic approval in Opensteer.");
@@ -9350,7 +9414,7 @@ class MockHostState {
       if (
         !pending ||
         pending.kind !== "app" ||
-        pending.runnerId !== input.runnerId ||
+        pending.deviceId !== this.selfDeviceId(input.runnerId) ||
         pending.definitionId !== input.definitionId ||
         !sameMockApp(pending.app, input.app) ||
         pending.access !== input.access ||
@@ -9362,7 +9426,7 @@ class MockHostState {
     for (const request of this.computerAppSetupRequests.values()) {
       if (
         request.kind === "app" &&
-        request.runnerId === input.runnerId &&
+        request.deviceId === this.selfDeviceId(input.runnerId) &&
         request.definitionId === input.definitionId &&
         sameMockApp(request.app, input.app) &&
         // Only what the new access covers is answered; a wider ask keeps waiting.
@@ -9436,7 +9500,7 @@ class MockHostState {
   async setComputerUsePolicy(runnerId: string): Promise<void> {
     this.ownedComputer(runnerId);
     for (const request of this.computerAppSetupRequests.values()) {
-      if (request.kind === "policy" && request.runnerId === runnerId) {
+      if (request.kind === "policy" && request.deviceId === this.selfDeviceId(runnerId)) {
         this.computerAppSetupRequests.delete(request.id);
       }
     }

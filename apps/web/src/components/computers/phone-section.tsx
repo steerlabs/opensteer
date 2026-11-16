@@ -200,7 +200,7 @@ export function PhoneSection({
             </span>
           </div>
         ) : null}
-        {onOpenScreen && view.canView && view.access !== null ? (
+        {onOpenScreen && view.canView ? (
           <div className="card__row">
             <span className="card__row-glyph">
               <Icon name="phone" />

@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { phoneUseView } from "../integrations/computer-use.js";
 import { mockIphoneScreenStates } from "./mock-screen-devices.js";
 import { DeviceMachineSummarySchema } from "@opensteer/protocol";
@@ -234,11 +235,16 @@ describe("MockHostClient", () => {
             : kind === "computer-app"
               ? {
                   type: kind,
-                  machineId: createId("runner"),
+                  machineId: DeviceIdSchema.parse(createId("runner")),
                   name: "Notes",
                   app: { bundleId: "com.apple.Notes", teamId: null, displayName: "Notes" },
                 }
-              : { type: kind, machineId: createId("runner"), display: "main", name: "My phone" };
+              : {
+                  type: kind,
+                  machineId: DeviceIdSchema.parse(createId("runner")),
+                  display: "main",
+                  name: "My phone",
+                };
         const thread = await client.createThread({
           ...threadInput(client),
           title: "Keep this seed",

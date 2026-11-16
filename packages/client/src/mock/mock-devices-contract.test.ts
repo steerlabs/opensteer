@@ -1,4 +1,4 @@
-import { setPhoneUseAccess } from "../integrations/computer-use.js";
+import { setPhoneDisplayAccess, setPhoneUseAccess } from "../integrations/computer-use.js";
 import {
   answerDeviceAccessRequest,
   applyDeviceAccess,
@@ -7,7 +7,7 @@ import { devicesView } from "../computers/devices.js";
 import { expect, it } from "vitest";
 import { computerTargetId } from "../host/device-projection.js";
 import { DeviceIdSchema, createId } from "@opensteer/core";
-import { MockHostClient } from "./mock-host-client.js";
+import { mockAgentPhoneAccessRequest, MockHostClient } from "./mock-host-client.js";
 
 it("preserves disabled switches when a legacy editor saves folders", async () => {
   const client = new MockHostClient({ latencyMs: 0 });
@@ -427,6 +427,73 @@ it("keeps canonical phone approvals working for the Android self Device", async 
     expect(
       dashboard.data.connections.find(({ computer }) => computerTargetId(computer) === phone.id),
     ).toMatchObject({ definitionId: "android-phone", computer: { access: "read" } });
+  } finally {
+    client.dispose();
+  }
+});
+
+it("opens a screen-only iPhone as its own tab, while refusing it as a browser location", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    const phone = client
+      .getSnapshot()
+      .machines.find(({ phoneDisplay }) => phoneDisplay?.definitionId === "iphone-screen")!;
+    const target = { kind: "phone" as const, computerId: DeviceIdSchema.parse(phone.id) };
+    const tab = await client.openTab(target);
+    const activated = await client.activateTab(tab.tabId);
+    expect(activated).toMatchObject({
+      kind: "phone",
+      view: { machineId: phone.id, state: "ready" },
+    });
+    expect(client.tabViewer(tab.tabId)).toMatchObject({
+      kind: "phone",
+      view: { machineId: phone.id },
+    });
+    await expect(
+      client.openTab({
+        kind: "page",
+        guest: true,
+        computerId: target.computerId,
+        url: "https://example.com",
+      }),
+    ).rejects.toThrow("cannot host browser pages");
+  } finally {
+    client.dispose();
+  }
+});
+
+it("settles an iPhone screen Request against that Device without changing its Mac", async () => {
+  const deviceId = DeviceIdSchema.parse("dev_eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee");
+  if (mockAgentPhoneAccessRequest.payload.kind !== "computer.app.access")
+    throw new Error("Expected phone Request");
+  const request = {
+    ...mockAgentPhoneAccessRequest,
+    payload: {
+      ...mockAgentPhoneAccessRequest.payload,
+      definitionId: "iphone-screen" as const,
+      deviceId,
+    },
+  };
+  const client = new MockHostClient({ latencyMs: 0, pendingRequests: [request] });
+  try {
+    const phone = client.getSnapshot().machines.find(({ id }) => id === deviceId)!;
+    const mac = client
+      .getSnapshot()
+      .machines.find(({ id }) => id === phone.phoneDisplay?.driver?.runnerId)!;
+    await setPhoneDisplayAccess(client, {
+      access: "read-write",
+      definitionId: "iphone-screen",
+      deviceId,
+    });
+    expect(client.getSnapshot().requests[request.originatingThreadId]).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: request.id })]),
+    );
+    expect(client.getSnapshot().transcripts[request.originatingThreadId]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ requestId: request.id, outcome: "Allowed" }),
+      ]),
+    );
+    expect(client.getSnapshot().machines.find(({ id }) => id === mac.id)).toEqual(mac);
   } finally {
     client.dispose();
   }

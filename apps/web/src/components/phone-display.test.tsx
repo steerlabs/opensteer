@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 
 import { act } from "react";
@@ -5,7 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MockHostClient, mockIphoneScreenDevice } from "@opensteer/client/mock";
 import { sharedDisplayStreams } from "@opensteer/client/integrations";
-import { RunnerIdSchema, type TabTarget } from "@opensteer/core";
+import { type TabTarget } from "@opensteer/core";
 import { runPlacePicture, type HostSnapshot } from "@opensteer/client/host";
 import { useRunPlacePicture } from "@opensteer/client/react";
 import { LivePlace } from "./workspace/viewfinder.js";
@@ -924,7 +925,7 @@ async function macOwner() {
   if (approved?.target.kind !== "app") throw new Error("No Mac fixture");
   const view = await ownView({
     kind: "window",
-    computerId: RunnerIdSchema.parse(approved.machineId),
+    computerId: DeviceIdSchema.parse(approved.machineId),
     bundleId: approved.target.app.bundleId,
   });
   await settle();
@@ -1254,7 +1255,7 @@ describe("phone owner controls", () => {
       (app) => app.machineId === machine.id && app.target.kind === "phone",
     )?.target;
     if (!target) throw new Error("Missing approved phone");
-    const view = await ownView({ kind: "phone", computerId: RunnerIdSchema.parse(machine.id) });
+    const view = await ownView({ kind: "phone", computerId: DeviceIdSchema.parse(machine.id) });
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -1359,7 +1360,7 @@ it.each([
   const runId = session.runId,
     threadId = session.threadId;
   client.enterPlace(runId, threadId, {
-    place: { kind: "phone", machineId: RunnerIdSchema.parse(machine.id), display: "main" },
+    place: { kind: "phone", machineId: DeviceIdSchema.parse(machine.id), display: "main" },
     title: "Phone",
     site: null,
   });

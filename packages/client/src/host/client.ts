@@ -1,3 +1,4 @@
+import type { ClientCommandInput } from "./device-commands.js";
 import type { MachineAccessUpdateInput, IphoneScreenAttachInput } from "./device-commands.js";
 import type { TabsClient } from "./tabs-contract.js";
 import type { TeamRunDelivery, TeamSource } from "@opensteer/core";
@@ -67,7 +68,6 @@ import type {
   HarnessModelSettingsMap,
   HarnessSourceDescriptor,
   HostApiClient,
-  HostApiCommandInput,
   HostApiCommandOutput,
   HostEnvironmentStatus,
   MachineSummary,
@@ -1191,7 +1191,7 @@ export interface HostClient extends TabsClient {
     expectedVersion: string | null,
   ): Promise<{ readonly applied: boolean }>;
 
-  dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput>;
+  dispatch(command: ClientCommandInput): Promise<HostApiCommandOutput>;
   dispose(): void;
   getSnapshot(): HostSnapshot;
   load(): Promise<void>;

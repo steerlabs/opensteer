@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import {
   BrowserSessionIdSchema,
   BrowserSurfaceIdSchema,
@@ -32,7 +33,7 @@ const otherTabId = BrowserSurfaceIdSchema.parse("srf_00000000-0000-4000-8000-000
 const displaySessionId = "cus_00000000-0000-4000-8000-000000000001";
 const threadId = createId("thread");
 const runId = createId("run");
-const machineId = createId("runner");
+const machineId = DeviceIdSchema.parse(createId("runner"));
 const browserPlace: PlaceRef = tabId;
 const nativeTabId = BrowserSurfaceIdSchema.parse("tab_native");
 
