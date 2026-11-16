@@ -1227,7 +1227,7 @@ integration.sequential("PostgreSQL integration uninstall", () => {
         statusDetail: "Reconnect",
       }),
     ).toBe(true);
-    const opened = await platform.requests.createIntegrationAccessRequest({
+    const opened = await platform.integrationRequests.createIntegrationAccessRequest({
       access: "read",
       callId: "mcp-reconnect-pinned",
       installationId,
@@ -1296,7 +1296,7 @@ integration.sequential("PostgreSQL integration uninstall", () => {
         requestedServerId: serverId,
       }),
     ).toBe(true);
-    await platform.requests.resolveIntegrationAccessRequest({
+    await platform.integrationRequests.resolveIntegrationAccessRequest({
       providerAuthorizations: {},
       requestId: opened.request.id,
       resolvedBy: userId,
@@ -1338,7 +1338,7 @@ integration.sequential("PostgreSQL integration uninstall", () => {
         },
       ],
     });
-    const opened = await platform.requests.createIntegrationAccessRequest({
+    const opened = await platform.integrationRequests.createIntegrationAccessRequest({
       access: "read",
       callId: "uninstall-pending-access",
       installationId,
@@ -1397,7 +1397,7 @@ integration.sequential("PostgreSQL integration uninstall", () => {
         },
       ],
     });
-    const opened = await platform.requests.createIntegrationAccessRequest({
+    const opened = await platform.integrationRequests.createIntegrationAccessRequest({
       access: "read",
       callId: "uninstall-pending-access",
       installationId,
@@ -2492,7 +2492,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     const run = await runningRunFixture(store, "computer-request-fulfillment");
     const setup = await fixture("request-fulfillment", run.userId);
     const request = (access: "read" | "read-write", callId: string) =>
-      platform.requests.createIntegrationAccessRequest({
+      platform.integrationRequests.createIntegrationAccessRequest({
         access,
         callId,
         installationId: setup.installationId,
@@ -2600,7 +2600,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         tools: setup.tools(access),
       });
     const own = await connect(setup.runnerId, "read");
-    const opened = await platform.requests.createIntegrationAccessRequest({
+    const opened = await platform.integrationRequests.createIntegrationAccessRequest({
       access: "read-write",
       callId: "pinned-computer-access",
       installationId: setup.installationId,
@@ -2617,7 +2617,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     const other = await connect(otherRunnerId, "read-write");
     expect(other.requestEvents).toEqual([]);
     await expect(
-      platform.requests.resolveIntegrationAccessRequest({
+      platform.integrationRequests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: opened.request.id,
         resolvedBy: run.userId,
@@ -2679,7 +2679,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     await insertComputerRunner(secondRunnerId, run.userId, "Second request target");
     const second = await connect(secondRunnerId, "connect-second-request-target");
     const request = (callId: string, requestedConnectionId?: typeof first.connection.id) =>
-      platform.requests.createIntegrationAccessRequest({
+      platform.integrationRequests.createIntegrationAccessRequest({
         access: "read-write",
         callId,
         installationId: setup.installationId,
@@ -2760,7 +2760,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         ownerUserId: run.userId,
         providerAuthorizations: {},
       });
-      const opened = await platform.requests.createIntegrationAccessRequest({
+      const opened = await platform.integrationRequests.createIntegrationAccessRequest({
         access: "read",
         callId: "fulfillment-order-request",
         installationId: setup.installationId,
@@ -2787,7 +2787,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       let fulfillment: Promise<unknown> | undefined;
       try {
         await barrier.reached;
-        fulfillment = platform.requests.resolveIntegrationAccessRequest({
+        fulfillment = platform.integrationRequests.resolveIntegrationAccessRequest({
           providerAuthorizations: {},
           requestId: opened.request.id,
           resolvedBy: run.userId,
@@ -3264,7 +3264,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       runnerId: setup.runnerId,
       tools: setup.tools("read-write"),
     });
-    const pending = await platform.requests.createIntegrationAccessRequest({
+    const pending = await platform.integrationRequests.createIntegrationAccessRequest({
       access: "read-write",
       callId: "rename-ingress-order",
       installationId: setup.installationId,
@@ -6228,7 +6228,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       const run = await runningRunFixture(store, "phone-main");
       const setup = await phoneFixture(storeFixture, "phone-main", run.userId);
       const mainAsk = (access: "read" | "read-write") =>
-        platform.requests.createIntegrationAccessRequest({
+        platform.integrationRequests.createIntegrationAccessRequest({
           access,
           callId: `phone-main-${access}`,
           installationId: setup.phone.installationId,

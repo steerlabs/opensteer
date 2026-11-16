@@ -361,7 +361,7 @@ integration("MCP OAuth reconnect", () => {
             .where("id", "=", connectionId)
             .executeTakeFirstOrThrow(),
         ).toEqual({ status: "needs-attention" });
-        const request = await store.requests.createIntegrationAccessRequest({
+        const request = await store.integrationRequests.createIntegrationAccessRequest({
           access: "read",
           callId: "mcp-reconnect-request",
           installationId,

@@ -127,7 +127,9 @@ integration("files between a Run and an app on another computer", () => {
         reason: "Work with a photo",
       }),
     );
-    const [request] = await host.store.requests.listPendingIntegrationAccessRequests(host.ownerId);
+    const [request] = await host.store.integrationRequests.listPendingIntegrationAccessRequests(
+      host.ownerId,
+    );
     if (!request) throw new Error("The access Request was not created");
     await testRpcData(
       host.origin,

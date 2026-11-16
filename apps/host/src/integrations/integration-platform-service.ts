@@ -353,7 +353,7 @@ export class IntegrationPlatformService {
     const providerAuthorizations = await this.#authorizationSource.providerAuthorizations(
       input.ownerUserId,
     );
-    const pending = await this.#store.requests.listPendingIntegrationAccessRequests(
+    const pending = await this.#store.integrationRequests.listPendingIntegrationAccessRequests(
       input.ownerUserId,
     );
     const fulfilled: RequestId[] = [];
@@ -391,7 +391,7 @@ export class IntegrationPlatformService {
         ({ id }) => id === input.connectionId,
       );
       try {
-        const resolved = await this.#store.requests.resolveIntegrationAccessRequest({
+        const resolved = await this.#store.integrationRequests.resolveIntegrationAccessRequest({
           providerAuthorizations,
           requestId: detail.request.id,
           resolvedBy: input.ownerUserId,
@@ -438,7 +438,7 @@ export class IntegrationPlatformService {
     const response = RequestResponseSchema.parse(input.response);
     if (pending.kind === "integration.access") {
       if (response.kind === "choice" && response.optionId.startsWith("server:")) {
-        const selected = await this.#store.requests.selectIntegrationAccessServer({
+        const selected = await this.#store.integrationRequests.selectIntegrationAccessServer({
           requestId: input.requestId,
           resolvedBy: input.resolvedBy,
           ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
@@ -451,11 +451,12 @@ export class IntegrationPlatformService {
       }
       if (response.kind === "choice" && response.optionId === "installed") {
         let installed =
-          await this.#store.requests.tryBindExistingIntegrationAccessInstallation(input);
+          await this.#store.integrationRequests.tryBindExistingIntegrationAccessInstallation(input);
         if (!installed) {
-          const manifest = await this.#store.requests.loadIntegrationAccessInstallManifest(input);
+          const manifest =
+            await this.#store.integrationRequests.loadIntegrationAccessInstallManifest(input);
           const preparedFulfillment = await this.#prepareInstallationFromManifest(manifest);
-          installed = await this.#store.requests.installForIntegrationAccessRequest({
+          installed = await this.#store.integrationRequests.installForIntegrationAccessRequest({
             requestId: input.requestId,
             resolvedBy: input.resolvedBy,
             ...(input.settlementSessionId
@@ -496,7 +497,7 @@ export class IntegrationPlatformService {
                 : IntegrationServerIdSchema.parse(request.requestedServerId),
           });
         }
-        return this.#store.requests.resolveIntegrationAccessRequest({
+        return this.#store.integrationRequests.resolveIntegrationAccessRequest({
           providerAuthorizations: await this.#authorizationSource.providerAuthorizations(
             input.resolvedBy,
           ),
@@ -522,7 +523,7 @@ export class IntegrationPlatformService {
     const preparedFulfillment =
       response.optionId === "installed"
         ? await this.#prepareInstallationFromManifest(
-            await this.#store.requests.loadIntegrationInstallManifest({
+            await this.#store.integrationRequests.loadIntegrationInstallManifest({
               requestId: input.requestId,
               resolvedBy: input.resolvedBy,
               ...(input.settlementSessionId
@@ -531,7 +532,7 @@ export class IntegrationPlatformService {
             }),
           )
         : undefined;
-    const resolved = await this.#store.requests.resolveIntegrationInstallRequest({
+    const resolved = await this.#store.integrationRequests.resolveIntegrationInstallRequest({
       ...(preparedFulfillment ? { preparedFulfillment } : {}),
       requestId: input.requestId,
       resolvedBy: input.resolvedBy,

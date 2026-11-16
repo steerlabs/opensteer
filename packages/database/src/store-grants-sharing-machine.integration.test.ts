@@ -1238,7 +1238,7 @@ describeStore("PostgreSQL store", (it) => {
       ],
     });
     const request = (access: "read" | "read-write", callId: string) =>
-      platform.requests.createIntegrationAccessRequest({
+      platform.integrationRequests.createIntegrationAccessRequest({
         access,
         callId,
         installationId,
@@ -1252,7 +1252,7 @@ describeStore("PostgreSQL store", (it) => {
       requestId: ReturnType<typeof createId<"request">>,
       access: "read" | "read-write",
     ) =>
-      platform.requests.resolveIntegrationAccessRequest({
+      platform.integrationRequests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId,
         resolvedBy: fixture.userId,

@@ -363,7 +363,7 @@ suite.sequential("production Swift core against real Host and PostgreSQL", () =>
           integration: app.definitionId,
           reason: `Exercise the native ${app.name} dispatcher`,
         });
-        const pending = await host.store.requests.listPendingIntegrationAccessRequests(
+        const pending = await host.store.integrationRequests.listPendingIntegrationAccessRequests(
           host.ownerId,
         );
         const accessRequest = pending.at(-1);

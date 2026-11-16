@@ -70,7 +70,7 @@ integration.sequential("unified integration access Requests", () => {
 
     const contract = integrationContract("preinstall-calendar");
     const prepared = preparedFulfillment(contract);
-    const opened = await platform.requests.createIntegrationAccessRequest({
+    const opened = await platform.integrationRequests.createIntegrationAccessRequest({
       ...requestOrigin(fixture),
       access: "read-write",
       callId: "preinstall-calendar-access",
@@ -88,12 +88,12 @@ integration.sequential("unified integration access Requests", () => {
       status: "pending",
     });
     await expect(
-      platform.requests.loadIntegrationAccessInstallManifest({
+      platform.integrationRequests.loadIntegrationAccessInstallManifest({
         requestId: opened.request.id,
         resolvedBy: fixture.userId,
       }),
     ).resolves.toEqual(prepared.approvalManifest);
-    const installed = await platform.requests.installForIntegrationAccessRequest({
+    const installed = await platform.integrationRequests.installForIntegrationAccessRequest({
       preparedFulfillment: prepared,
       requestId: opened.request.id,
       resolvedBy: fixture.userId,
@@ -117,7 +117,7 @@ integration.sequential("unified integration access Requests", () => {
       ]),
     });
     await expect(platform.requests.listPendingContinuations()).resolves.toEqual([]);
-    const resolved = await platform.requests.resolveIntegrationAccessRequest({
+    const resolved = await platform.integrationRequests.resolveIntegrationAccessRequest({
       providerAuthorizations: {},
       requestId: opened.request.id,
       resolvedBy: fixture.userId,
@@ -149,7 +149,7 @@ integration.sequential("unified integration access Requests", () => {
     const fixture = await runningRunFixture(store, "digest-conflict", storeFixture.databaseUrl);
     const reviewed = preparedFulfillment(integrationContract("reviewed-calendar"));
     const changed = preparedFulfillment(integrationContract("changed-calendar"));
-    const opened = await platform.requests.createIntegrationAccessRequest({
+    const opened = await platform.integrationRequests.createIntegrationAccessRequest({
       ...requestOrigin(fixture),
       access: "read",
       callId: "digest-conflict-access",
@@ -159,7 +159,7 @@ integration.sequential("unified integration access Requests", () => {
       requestedServerId: null,
     });
     await expect(
-      platform.requests.installForIntegrationAccessRequest({
+      platform.integrationRequests.installForIntegrationAccessRequest({
         preparedFulfillment: changed,
         requestId: opened.request.id,
         resolvedBy: fixture.userId,
@@ -180,7 +180,7 @@ integration.sequential("unified integration access Requests", () => {
     const { store, platform, database } = storeFixture;
     const fixture = await runningRunFixture(store, "preinstall-decline", storeFixture.databaseUrl);
     const prepared = preparedFulfillment(integrationContract("declined-calendar"));
-    const opened = await platform.requests.createIntegrationAccessRequest({
+    const opened = await platform.integrationRequests.createIntegrationAccessRequest({
       ...requestOrigin(fixture),
       access: "read",
       callId: "preinstall-decline-access",
@@ -190,7 +190,7 @@ integration.sequential("unified integration access Requests", () => {
       requestedServerId: null,
     });
     await expect(
-      platform.requests.resolveIntegrationAccessRequest({
+      platform.integrationRequests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: opened.request.id,
         resolvedBy: fixture.userId,
@@ -225,7 +225,7 @@ integration.sequential("unified integration access Requests", () => {
     const administratorId = fixture.userId;
 
     const prepared = proposedFulfillment("shared-calendar");
-    const opened = await platform.requests.createIntegrationAccessRequest({
+    const opened = await platform.integrationRequests.createIntegrationAccessRequest({
       ...requestOrigin(fixture),
       access: "read",
       callId: "existing-exact-access",
@@ -240,13 +240,13 @@ integration.sequential("unified integration access Requests", () => {
       requestId: "administrator-installed-shared-calendar",
     });
     await expect(
-      platform.requests.loadIntegrationAccessInstallManifest({
+      platform.integrationRequests.loadIntegrationAccessInstallManifest({
         requestId: opened.request.id,
         resolvedBy: fixture.userId,
       }),
     ).resolves.toEqual(prepared.approvalManifest);
     await expect(
-      platform.requests.tryBindExistingIntegrationAccessInstallation({
+      platform.integrationRequests.tryBindExistingIntegrationAccessInstallation({
         requestId: opened.request.id,
         resolvedBy: fixture.userId,
       }),
@@ -259,7 +259,7 @@ integration.sequential("unified integration access Requests", () => {
       },
     });
     await expect(
-      platform.requests.loadIntegrationAccessInstallManifest({
+      platform.integrationRequests.loadIntegrationAccessInstallManifest({
         requestId: opened.request.id,
         resolvedBy: fixture.userId,
       }),
@@ -304,7 +304,7 @@ integration.sequential("unified integration access Requests", () => {
       "account-calendar",
       "Other account",
     );
-    const opened = await platform.requests.createIntegrationAccessRequest({
+    const opened = await platform.integrationRequests.createIntegrationAccessRequest({
       ...requestOrigin(fixture),
       access: "read-write",
       callId: "exact-account-access",
@@ -314,7 +314,7 @@ integration.sequential("unified integration access Requests", () => {
       requestedServerId: material.servers[0]!.id,
     });
     await expect(
-      platform.requests.resolveIntegrationAccessRequest({
+      platform.integrationRequests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: opened.request.id,
         resolvedBy: fixture.userId,
@@ -362,7 +362,7 @@ integration.sequential("unified integration access Requests", () => {
       "unavailable-calendar",
       "Unavailable account",
     );
-    const opened = await platform.requests.createIntegrationAccessRequest({
+    const opened = await platform.integrationRequests.createIntegrationAccessRequest({
       ...requestOrigin(fixture),
       access: "read",
       callId: "unavailable-decline-access",
@@ -388,7 +388,7 @@ integration.sequential("unified integration access Requests", () => {
       .where("id", "=", server.id)
       .executeTakeFirstOrThrow();
     await expect(
-      platform.requests.resolveIntegrationAccessRequest({
+      platform.integrationRequests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: opened.request.id,
         resolvedBy: fixture.userId,
@@ -418,7 +418,7 @@ integration.sequential("unified integration access Requests", () => {
       actorUserId: fixture.userId,
       requestId: "install-concurrent-calendar",
     });
-    const opened = await platform.requests.createIntegrationAccessRequest({
+    const opened = await platform.integrationRequests.createIntegrationAccessRequest({
       ...requestOrigin(fixture),
       access: "read",
       callId: "concurrent-calendar-access",
@@ -427,7 +427,7 @@ integration.sequential("unified integration access Requests", () => {
       requestedServerId: prepared.material.servers[0]!.id,
     });
     const resolve = () =>
-      platform.requests.resolveIntegrationAccessRequest({
+      platform.integrationRequests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: opened.request.id,
         resolvedBy: fixture.userId,
@@ -487,27 +487,27 @@ integration.sequential("unified integration access Requests", () => {
       installationId: material.installation.id,
       reason: "Read calendar records",
     };
-    const serverSpecific = await platform.requests.createIntegrationAccessRequest({
+    const serverSpecific = await platform.integrationRequests.createIntegrationAccessRequest({
       ...base,
       access: "read",
       callId: "selector-server-read",
       requestedServerId: otherServer.id,
     });
-    const accountSpecific = await platform.requests.createIntegrationAccessRequest({
+    const accountSpecific = await platform.integrationRequests.createIntegrationAccessRequest({
       ...base,
       access: "read",
       callId: "selector-account-read",
       requestedConnectionId: connectionId,
       requestedServerId: otherServer.id,
     });
-    const broad = await platform.requests.createIntegrationAccessRequest({
+    const broad = await platform.integrationRequests.createIntegrationAccessRequest({
       ...base,
       access: "read-write",
       callId: "selector-broad-write",
       requestedServerId: null,
     });
     await expect(
-      platform.requests.resolveIntegrationAccessRequest({
+      platform.integrationRequests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: broad.request.id,
         resolvedBy: fixture.userId,
@@ -528,7 +528,7 @@ integration.sequential("unified integration access Requests", () => {
     });
     const otherUserId = await store.createUser("Other selector");
     await expect(
-      platform.requests.selectIntegrationAccessServer({
+      platform.integrationRequests.selectIntegrationAccessServer({
         requestId: broad.request.id,
         requestedServerId: material.servers[0]!.id,
         resolvedBy: otherUserId,
@@ -536,7 +536,7 @@ integration.sequential("unified integration access Requests", () => {
     ).rejects.toMatchObject({
       code: "conflict",
     });
-    const selected = await platform.requests.selectIntegrationAccessServer({
+    const selected = await platform.integrationRequests.selectIntegrationAccessServer({
       requestId: broad.request.id,
       requestedServerId: material.servers[0]!.id,
       resolvedBy: fixture.userId,
@@ -556,7 +556,7 @@ integration.sequential("unified integration access Requests", () => {
     });
     await expect(platform.requests.listPendingContinuations()).resolves.toEqual([]);
     await expect(
-      platform.requests.selectIntegrationAccessServer({
+      platform.integrationRequests.selectIntegrationAccessServer({
         requestId: broad.request.id,
         requestedServerId: otherServer.id,
         resolvedBy: fixture.userId,
@@ -564,7 +564,7 @@ integration.sequential("unified integration access Requests", () => {
     ).rejects.toMatchObject({
       code: "conflict",
     });
-    await platform.requests.resolveIntegrationAccessRequest({
+    await platform.integrationRequests.resolveIntegrationAccessRequest({
       providerAuthorizations: {},
       requestId: broad.request.id,
       resolvedBy: fixture.userId,

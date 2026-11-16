@@ -225,7 +225,7 @@ integration("computer apps", () => {
         reason: "Read recent conversations",
       }),
     );
-    const [readRequest] = await host.store.requests.listPendingIntegrationAccessRequests(
+    const [readRequest] = await host.store.integrationRequests.listPendingIntegrationAccessRequests(
       host.ownerId,
     );
     if (!readRequest) throw new Error("The read access Request was not created");
@@ -279,7 +279,7 @@ integration("computer apps", () => {
         reason: "Send a message",
       }),
     );
-    const writeRequests = await host.store.requests.listPendingIntegrationAccessRequests(
+    const writeRequests = await host.store.integrationRequests.listPendingIntegrationAccessRequests(
       host.ownerId,
     );
     const writeRequest = writeRequests.find(({ access }) => access === "read-write");
@@ -453,7 +453,9 @@ integration("computer apps", () => {
         reason: "Send a follow-up",
       }),
     );
-    const pending = await host.store.requests.listPendingIntegrationAccessRequests(host.ownerId);
+    const pending = await host.store.integrationRequests.listPendingIntegrationAccessRequests(
+      host.ownerId,
+    );
     expect(pending).toHaveLength(1);
     await revokeMachine(host, { key: "revoke-computer-app", runnerId: computer.runnerId });
     await expect(host.store.requests.get(pending[0]!.request.id)).resolves.toMatchObject({
@@ -595,7 +597,7 @@ integration("computer apps", () => {
         reason: "Read recent conversations",
       }),
     );
-    const [readRequest] = await host.store.requests.listPendingIntegrationAccessRequests(
+    const [readRequest] = await host.store.integrationRequests.listPendingIntegrationAccessRequests(
       host.ownerId,
     );
     if (!readRequest) throw new Error("The Personal read access Request was not created");
@@ -964,7 +966,9 @@ async function grantAccess(
   });
   const request = await vi.waitFor(
     async () => {
-      const pending = await host.store.requests.listPendingIntegrationAccessRequests(host.ownerId);
+      const pending = await host.store.integrationRequests.listPendingIntegrationAccessRequests(
+        host.ownerId,
+      );
       const row = pending.at(-1);
       expect(row, "The access Request was not created").toBeDefined();
       return row!;

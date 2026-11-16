@@ -133,6 +133,7 @@ import {
   type PersonMessageResult,
 } from "./person-message-store.js";
 import { RequestStore } from "./request-store.js";
+import { IntegrationRequestStore } from "./integration-request-store.js";
 import { listRunAttempts } from "./run-attempts.js";
 import { type RevokedRunGrant } from "./run-grants.js";
 import * as runnerEventStore from "./runner-event-store.js";
@@ -197,6 +198,8 @@ export class OpensteerStore {
   readonly #executionNow: () => number;
   readonly #readPersonalResources: snapshotStore.PersonalSnapshotResourcesReader | undefined;
   readonly requests: RequestStore;
+  /** Service integration install and access Requests, which `requests` creates and settles. */
+  readonly integrationRequests: IntegrationRequestStore;
   readonly notificationState: NotificationStateStore;
   readonly ownerProfile: OwnerProfileStore;
   readonly browserHistory: BrowserHistoryStore;
@@ -214,6 +217,7 @@ export class OpensteerStore {
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
     setExecutionClock(database, this.#executionNow);
     this.requests = new RequestStore(database, this.#links, this.#executionNow);
+    this.integrationRequests = new IntegrationRequestStore(database, this.requests);
     this.notificationState = new NotificationStateStore(database);
     this.ownerProfile = new OwnerProfileStore(database);
     this.browserHistory = new BrowserHistoryStore(database);

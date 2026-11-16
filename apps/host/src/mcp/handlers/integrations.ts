@@ -404,7 +404,9 @@ export class IntegrationToolHandlers {
   async #pendingComputerApprovals(scope: IntegrationReadScope) {
     const [setupRequests, accessRequests] = await Promise.all([
       this.#platform.store.listComputerAppSetupRequests(scope.requestedBy),
-      this.#platform.store.requests.listPendingIntegrationAccessRequests(scope.requestedBy),
+      this.#platform.store.integrationRequests.listPendingIntegrationAccessRequests(
+        scope.requestedBy,
+      ),
     ]);
     const onMacRequests = setupRequests.flatMap(({ kind, definitionId, runnerId, app, access }) =>
       kind === "app" && definitionId === computerUseDefinitionId && app
@@ -894,14 +896,16 @@ export class IntegrationToolHandlers {
       requestedBy: scope.requestedBy,
     };
     const created = access
-      ? await this.#platform.store.requests.createIntegrationAccessRequest({
+      ? await this.#platform.store.integrationRequests.createIntegrationAccessRequest({
           ...requestInput,
           access,
           installationId: null,
           requestedConnectionId: null,
           requestedServerId: null,
         })
-      : await this.#platform.store.requests.createIntegrationInstallRequest(requestInput);
+      : await this.#platform.store.integrationRequests.createIntegrationInstallRequest(
+          requestInput,
+        );
     for (const event of created.events) this.#onEvent(event);
     return integrationRequestResult(created.request, created.replayed, scope, {
       ...(outcome.authNote === undefined ? {} : { authNote: outcome.authNote }),
@@ -979,7 +983,7 @@ export class IntegrationToolHandlers {
           installation.provenance.definitionDigest === requestInput.manifest.digest,
       );
       const created = input.access
-        ? await this.#platform.store.requests.createIntegrationAccessRequest({
+        ? await this.#platform.store.integrationRequests.createIntegrationAccessRequest({
             ...requestInput,
             access: input.access,
             manifest: installed ? null : requestInput.manifest,
@@ -987,7 +991,9 @@ export class IntegrationToolHandlers {
             requestedConnectionId: null,
             requestedServerId: installed?.servers.length === 1 ? installed.servers[0]!.id : null,
           })
-        : await this.#platform.store.requests.createIntegrationInstallRequest(requestInput);
+        : await this.#platform.store.integrationRequests.createIntegrationInstallRequest(
+            requestInput,
+          );
       for (const event of created.events) this.#onEvent(event);
       return integrationRequestResult(created.request, created.replayed, scope);
     }
@@ -1085,7 +1091,7 @@ export class IntegrationToolHandlers {
           ?.account ?? existing.alias,
       );
     }
-    const created = await this.#platform.store.requests.createIntegrationAccessRequest({
+    const created = await this.#platform.store.integrationRequests.createIntegrationAccessRequest({
       ...origin,
       access,
       callId,

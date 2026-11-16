@@ -18,6 +18,7 @@ export * from "./notification-state.js";
 export * from "./owner-profile-store.js";
 export * from "./notification-store.js";
 export * from "./request-store.js";
+export * from "./integration-request-store.js";
 export * from "./reference-store.js";
 export * from "./schema.js";
 export * from "./store.js";

@@ -855,7 +855,7 @@ describeStore("PostgreSQL store", (it) => {
       digest: integrationDefinitionDigest(contract.definition),
       kind: "catalog" as const,
     };
-    const opened = await platform.requests.createIntegrationInstallRequest({
+    const opened = await platform.integrationRequests.createIntegrationInstallRequest({
       callId: "request-integration-install-call",
       manifest: approvalManifest,
       originatingRunId: fixture.run.id,
@@ -917,7 +917,7 @@ describeStore("PostgreSQL store", (it) => {
       kind: "catalog" as const,
     };
     await expect(
-      platform.requests.resolveIntegrationInstallRequest({
+      platform.integrationRequests.resolveIntegrationInstallRequest({
         preparedFulfillment: {
           approvalManifest: differentApprovalManifest,
           material,
@@ -948,7 +948,7 @@ describeStore("PostgreSQL store", (it) => {
       code: "unauthorized",
     });
     expect(await platform.listInstallations()).toEqual([]);
-    const access = await platform.requests.createIntegrationAccessRequest({
+    const access = await platform.integrationRequests.createIntegrationAccessRequest({
       access: "read",
       callId: "revoked-install-access",
       installationId: null,
@@ -960,7 +960,7 @@ describeStore("PostgreSQL store", (it) => {
       requestedServerId: null,
     });
     await expect(
-      platform.requests.installForIntegrationAccessRequest({
+      platform.integrationRequests.installForIntegrationAccessRequest({
         preparedFulfillment: {
           approvalManifest,
           material,
@@ -976,7 +976,7 @@ describeStore("PostgreSQL store", (it) => {
     expect((await platform.requests.get(access.request.id))?.payload).toMatchObject({
       installationId: null,
     });
-    const resolved = await platform.requests.resolveIntegrationInstallRequest({
+    const resolved = await platform.integrationRequests.resolveIntegrationInstallRequest({
       preparedFulfillment: {
         approvalManifest,
         material,
@@ -989,7 +989,7 @@ describeStore("PostgreSQL store", (it) => {
       },
     });
     await expect(
-      platform.requests.tryBindExistingIntegrationAccessInstallation({
+      platform.integrationRequests.tryBindExistingIntegrationAccessInstallation({
         requestId: access.request.id,
         resolvedBy: fixture.userId,
         settlementSessionId: createId("authSession"),
@@ -1207,12 +1207,12 @@ describeStore("PostgreSQL store", (it) => {
       requestedBy: fixture.userId,
       requestedServerId: serverId,
     };
-    const mainRequest = await platform.requests.createIntegrationAccessRequest({
+    const mainRequest = await platform.integrationRequests.createIntegrationAccessRequest({
       ...requestInput,
       callId: "integration-access-main-target",
     });
     expect(mainRequest.request.presentation.title).toBe(`${installed.installation.title} access`);
-    const mainResolution = await platform.requests.resolveIntegrationAccessRequest({
+    const mainResolution = await platform.integrationRequests.resolveIntegrationAccessRequest({
       providerAuthorizations: {},
       requestId: mainRequest.request.id,
       resolvedBy: fixture.userId,
@@ -1277,13 +1277,13 @@ describeStore("PostgreSQL store", (it) => {
         ownerUserId: fixture.userId,
       }),
     ).resolves.toEqual([mainResolution.grant]);
-    const selectedRequest = await platform.requests.createIntegrationAccessRequest({
+    const selectedRequest = await platform.integrationRequests.createIntegrationAccessRequest({
       ...requestInput,
       callId: "integration-access-selected-server",
       requestedServerId: null,
     });
     await expect(
-      platform.requests.selectIntegrationAccessServer({
+      platform.integrationRequests.selectIntegrationAccessServer({
         requestId: selectedRequest.request.id,
         requestedServerId: serverId,
         resolvedBy: fixture.userId,
@@ -1295,12 +1295,12 @@ describeStore("PostgreSQL store", (it) => {
     expect((await platform.requests.get(selectedRequest.request.id))?.payload).toMatchObject({
       requestedServerId: null,
     });
-    await platform.requests.selectIntegrationAccessServer({
+    await platform.integrationRequests.selectIntegrationAccessServer({
       requestId: selectedRequest.request.id,
       requestedServerId: serverId,
       resolvedBy: fixture.userId,
     });
-    const selectedResolution = await platform.requests.resolveIntegrationAccessRequest({
+    const selectedResolution = await platform.integrationRequests.resolveIntegrationAccessRequest({
       providerAuthorizations: {},
       requestId: selectedRequest.request.id,
       resolvedBy: fixture.userId,
@@ -1345,13 +1345,13 @@ describeStore("PostgreSQL store", (it) => {
         isDefault: false,
       },
     });
-    const requiredWrite = await platform.requests.createIntegrationAccessRequest({
+    const requiredWrite = await platform.integrationRequests.createIntegrationAccessRequest({
       ...requestInput,
       access: "read-write",
       callId: "integration-access-required-write",
     });
     await expect(
-      platform.requests.resolveIntegrationAccessRequest({
+      platform.integrationRequests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: requiredWrite.request.id,
         resolvedBy: fixture.userId,
@@ -1375,12 +1375,13 @@ describeStore("PostgreSQL store", (it) => {
       status: "pending",
     });
     const missingConnectionId = createIntegrationId("connection");
-    const missingConnectionRequest = await platform.requests.createIntegrationAccessRequest({
-      ...requestInput,
-      callId: "integration-access-missing-account-row",
-    });
+    const missingConnectionRequest =
+      await platform.integrationRequests.createIntegrationAccessRequest({
+        ...requestInput,
+        callId: "integration-access-missing-account-row",
+      });
     await expect(
-      platform.requests.resolveIntegrationAccessRequest({
+      platform.integrationRequests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: missingConnectionRequest.request.id,
         resolvedBy: fixture.userId,
@@ -1409,7 +1410,7 @@ describeStore("PostgreSQL store", (it) => {
       },
     );
     await expect(
-      platform.requests.resolveIntegrationAccessRequest({
+      platform.integrationRequests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: missingConnectionRequest.request.id,
         resolvedBy: fixture.userId,
@@ -1427,11 +1428,11 @@ describeStore("PostgreSQL store", (it) => {
     ).rejects.toMatchObject({
       code: "forbidden",
     });
-    const declinedRequest = await platform.requests.createIntegrationAccessRequest({
+    const declinedRequest = await platform.integrationRequests.createIntegrationAccessRequest({
       ...requestInput,
       callId: "integration-access-declined",
     });
-    const declinedResolution = await platform.requests.resolveIntegrationAccessRequest({
+    const declinedResolution = await platform.integrationRequests.resolveIntegrationAccessRequest({
       providerAuthorizations: {},
       requestId: declinedRequest.request.id,
       resolvedBy: fixture.userId,
@@ -1463,13 +1464,13 @@ describeStore("PostgreSQL store", (it) => {
         decision: "declined",
       },
     });
-    const mcpRequest = await platform.requests.createIntegrationAccessRequest({
+    const mcpRequest = await platform.integrationRequests.createIntegrationAccessRequest({
       ...requestInput,
       callId: "integration-access-mcp-account",
       requestedServerId: mcpServerId,
     });
     await expect(
-      platform.requests.resolveIntegrationAccessRequest({
+      platform.integrationRequests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: mcpRequest.request.id,
         resolvedBy: fixture.userId,
@@ -1562,7 +1563,7 @@ describeStore("PostgreSQL store", (it) => {
       requestId: "install-catalog-currentness-decoy",
       servers: [],
     });
-    const original = await platform.requests.createIntegrationInstallRequest({
+    const original = await platform.integrationRequests.createIntegrationInstallRequest({
       ...requestInput,
       callId: "catalog-currentness-original",
     });
@@ -1632,13 +1633,14 @@ describeStore("PostgreSQL store", (it) => {
       await releaseSignal;
       return mutation;
     });
-    let raced: ReturnType<typeof platform.requests.createIntegrationInstallRequest> | undefined;
+    let raced:
+      ReturnType<typeof platform.integrationRequests.createIntegrationInstallRequest> | undefined;
     void installing.catch(() => undefined);
     try {
       await withTimeout(Promise.race([installationWritten, installing]), 5_000, {
         timeoutError: () => new Error("Installation never reached its commit barrier"),
       });
-      raced = platform.requests.createIntegrationInstallRequest({
+      raced = platform.integrationRequests.createIntegrationInstallRequest({
         ...requestInput,
         callId: "catalog-currentness-raced",
       });
@@ -1673,7 +1675,7 @@ describeStore("PostgreSQL store", (it) => {
         "Catalog integration is already installed; search current integration inventory before requesting setup",
     });
     await expect(
-      platform.requests.createIntegrationInstallRequest({
+      platform.integrationRequests.createIntegrationInstallRequest({
         ...requestInput,
         callId: "catalog-currentness-original",
       }),
@@ -1758,7 +1760,7 @@ describeStore("PostgreSQL store", (it) => {
       ...installedMaterial("needs-attention"),
       requestId: "install-needs-attention-builtin",
     });
-    const reinstall = await platform.requests.createIntegrationInstallRequest({
+    const reinstall = await platform.integrationRequests.createIntegrationInstallRequest({
       ...requestInput,
       callId: "catalog-needs-attention-reinstall-call",
     });
@@ -1774,7 +1776,7 @@ describeStore("PostgreSQL store", (it) => {
       requestId: "install-active-builtin",
     });
     await expect(
-      platform.requests.createIntegrationInstallRequest({
+      platform.integrationRequests.createIntegrationInstallRequest({
         ...requestInput,
         callId: "catalog-active-reinstall-call",
       }),
@@ -1828,12 +1830,12 @@ describeStore("PostgreSQL store", (it) => {
         },
       },
     };
-    const first = await platform.requests.createIntegrationInstallRequest({
+    const first = await platform.integrationRequests.createIntegrationInstallRequest({
       ...base,
       callId: "occurrence-install-call-1",
       originatingOccurrenceId: occurrence.id,
     });
-    const repeated = await platform.requests.createIntegrationInstallRequest({
+    const repeated = await platform.integrationRequests.createIntegrationInstallRequest({
       ...base,
       callId: "occurrence-install-call-2",
       originatingOccurrenceId: occurrence.id,
@@ -1851,13 +1853,13 @@ describeStore("PostgreSQL store", (it) => {
         id: first.request.id,
       },
     });
-    const proposed = await platform.requests.createIntegrationInstallRequest({
+    const proposed = await platform.integrationRequests.createIntegrationInstallRequest({
       ...base,
       callId: "occurrence-install-call-3",
       manifest: proposal,
       originatingOccurrenceId: occurrence.id,
     });
-    const proposedAgain = await platform.requests.createIntegrationInstallRequest({
+    const proposedAgain = await platform.integrationRequests.createIntegrationInstallRequest({
       ...base,
       callId: "occurrence-install-call-4",
       manifest: proposal,
@@ -1877,7 +1879,7 @@ describeStore("PostgreSQL store", (it) => {
         id: proposed.request.id,
       },
     });
-    const runOriginated = await platform.requests.createIntegrationInstallRequest({
+    const runOriginated = await platform.integrationRequests.createIntegrationInstallRequest({
       ...base,
       callId: "run-install-call-1",
       originatingRunId: fixture.run.id,
@@ -1966,17 +1968,17 @@ describeStore("PostgreSQL store", (it) => {
       reason: "The schedule needs the records",
       requestedBy: fixture.userId,
     };
-    const first = await platform.requests.createIntegrationAccessRequest({
+    const first = await platform.integrationRequests.createIntegrationAccessRequest({
       ...base,
       callId: "occurrence-access-call-1",
       requestedServerId: primaryServer.id,
     });
-    const repeated = await platform.requests.createIntegrationAccessRequest({
+    const repeated = await platform.integrationRequests.createIntegrationAccessRequest({
       ...base,
       callId: "occurrence-access-call-2",
       requestedServerId: primaryServer.id,
     });
-    const other = await platform.requests.createIntegrationAccessRequest({
+    const other = await platform.integrationRequests.createIntegrationAccessRequest({
       ...base,
       callId: "occurrence-access-call-3",
       requestedServerId: secondaryServer.id,

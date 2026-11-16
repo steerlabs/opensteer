@@ -767,7 +767,11 @@ describeStore("MCP administration", (it) => {
     const agent = mcp(
       {
         store: f.store,
-        integrations: { platform },
+        integrations: {
+          devices: platform.devices,
+          localServers: platform.localServers,
+          platform,
+        },
         realtime: { broadcast: vi.fn() },
       } as unknown as AdministrationDependencies,
       run.userId,
@@ -991,7 +995,11 @@ describeStore("MCP administration", (it) => {
     const agent = mcp(
       {
         store: f.store,
-        integrations: { platform },
+        integrations: {
+          devices: platform.devices,
+          localServers: platform.localServers,
+          platform,
+        },
         realtime: { broadcast: vi.fn() },
       } as unknown as AdministrationDependencies,
       run.userId,

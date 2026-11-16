@@ -1171,7 +1171,8 @@ async function grant(
     integration: "apple-calendar",
     reason: "Use phone Calendar",
   });
-  const pending = () => host.store.requests.listPendingIntegrationAccessRequests(host.ownerId);
+  const pending = () =>
+    host.store.integrationRequests.listPendingIntegrationAccessRequests(host.ownerId);
   await waitForCondition(async () => (await pending()).length > 0);
   const request = (await pending()).at(-1)!;
   await testRpcData(
