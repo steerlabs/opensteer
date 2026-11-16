@@ -1,3 +1,4 @@
+import type { IntegrationConnectionSummary } from "@opensteer/client/integrations";
 import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
 import {
   computerUseAccessLabel,
@@ -12,7 +13,6 @@ import {
 } from "@opensteer/client/integrations";
 import type {
   IntegrationAccess,
-  IntegrationConnectionSummary,
   IntegrationDefinitionSummaryView,
 } from "@opensteer/integration-core";
 import type { MachineSummary } from "@opensteer/protocol";

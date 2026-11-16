@@ -1,4 +1,3 @@
-import { deviceMachine } from "./device-projection.js";
 import { DeviceIdSchema } from "@opensteer/core";
 import { MockPersonalHost } from "../mock/mock-personal-host.js";
 interface PersonalFixture {
@@ -20,7 +19,6 @@ import {
   SequenceSchema,
   ThreadAccessModeSchema,
   ThreadIdSchema,
-  RunnerIdSchema,
   createId,
   emptyExecutionPreferences,
   type AgentEventView as AgentEvent,
@@ -9060,7 +9058,7 @@ describe("HttpHostClient owner views", () => {
         type: "host.computer-view.removed",
         viewId: view.viewId,
         generation: view.generation,
-        machineId: RunnerIdSchema.parse(deviceMachine(machine).selfRunnerId),
+        machineId: DeviceIdSchema.parse(machine.id),
         reason: "closed",
       } as HostToClientMessage);
       answering.resolve();
@@ -9121,7 +9119,7 @@ describe("HttpHostClient owner views", () => {
         type: "host.computer-view.removed",
         viewId: newer.viewId,
         generation: newer.generation,
-        machineId: RunnerIdSchema.parse(deviceMachine(machine).selfRunnerId),
+        machineId: DeviceIdSchema.parse(machine.id),
         reason: "expired",
       } as HostToClientMessage);
       expect(host.client.tabViewer(tab.tabId)).toBeNull();

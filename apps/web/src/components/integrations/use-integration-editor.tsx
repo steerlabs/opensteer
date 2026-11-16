@@ -1,3 +1,7 @@
+import type {
+  IntegrationDashboard,
+  IntegrationConnectionSummary,
+} from "@opensteer/client/integrations";
 import { pluginPath } from "@opensteer/client/settings";
 import { useIntegrationAuthorizationTracking } from "../../integrations/use-integration-authorization-tracking.js";
 import { RunnerIdSchema } from "@opensteer/core";
@@ -6,8 +10,6 @@ import { useSearchParams, useNavigate } from "react-router";
 import type {
   IntegrationAccess,
   IntegrationAuthorizationStart,
-  IntegrationConnectionSummary,
-  IntegrationDashboard,
   IntegrationGrant,
   IntegrationPlatformDashboardView,
   IntegrationAuthorizationStatus,

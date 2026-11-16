@@ -1,9 +1,11 @@
+import type {
+  IntegrationConnectionSummary,
+  ComputerAppSetupSummary,
+} from "@opensteer/client/integrations";
 // @vitest-environment happy-dom
 
 import type { HostClient } from "@opensteer/client/host";
 import type {
-  ComputerAppSetupSummary,
-  IntegrationConnectionSummary,
   IntegrationDefinitionSummary,
   IntegrationPlatformDashboard,
 } from "@opensteer/integration-core";

@@ -1,6 +1,6 @@
+import type { ClientComputerConnection as IntegrationConnectionSummary } from "../host/device-projection.js";
+import type { ClientIntegrationDashboard as IntegrationDashboard } from "../host/device-projection.js";
 import type {
-  IntegrationConnectionSummary,
-  IntegrationDashboard,
   IntegrationDefinitionSummaryView,
   IntegrationOAuthApplicationSource,
   IntegrationProvider,

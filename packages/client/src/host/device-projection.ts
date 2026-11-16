@@ -10,6 +10,7 @@ import { deviceAccess } from "@opensteer/protocol";
 import type {
   DeviceIntegrationConnectionSummary,
   IntegrationConnectionSummary,
+  IntegrationDashboard,
   DeviceComputerAppSetupRequestViewSchema,
   ComputerAppSetupSummary,
 } from "@opensteer/integration-core";
@@ -19,6 +20,10 @@ export type ClientComputerConnection =
   IntegrationConnectionSummary | DeviceIntegrationConnectionSummary;
 export type ClientComputerSetupRequest =
   ComputerAppSetupSummary | import("zod").output<typeof DeviceComputerAppSetupRequestViewSchema>;
+
+export type ClientIntegrationDashboard = Omit<IntegrationDashboard, "connections"> & {
+  connections: ClientComputerConnection[];
+};
 
 export function computerTargetId(
   target: { readonly deviceId: string } | { readonly runnerId: string } | null | undefined,

@@ -4,10 +4,7 @@ import {
   deviceReasonLabel,
   hasDeviceProjection,
 } from "../host/device-projection.js";
-import type {
-  IntegrationConnectionSummary,
-  IntegrationDefinitionSummaryView,
-} from "@opensteer/integration-core";
+import type { IntegrationDefinitionSummaryView } from "@opensteer/integration-core";
 import type { MachineSummary, RunnerDevicePlatform } from "@opensteer/protocol";
 import { formatRelativeTime } from "../host/thread-list-model.js";
 import { computerAppRows } from "../integrations/computer-apps.js";
@@ -299,7 +296,7 @@ export type ComputerUse =
 
 /** The apps a person connected on a computer, which only its owner is told. */
 export interface ComputerAppsData {
-  readonly connections: readonly IntegrationConnectionSummary[];
+  readonly connections: readonly import("../host/device-projection.js").ClientComputerConnection[];
   readonly definitions: readonly IntegrationDefinitionSummaryView[];
 }
 

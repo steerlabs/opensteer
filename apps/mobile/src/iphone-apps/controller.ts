@@ -902,6 +902,7 @@ export class IphoneAppsController {
     const request = record.requests.find(
       (candidate) =>
         candidate.kind === "app" &&
+        "runnerId" in candidate &&
         candidate.runnerId === input.runnerId &&
         candidate.definitionId === input.app &&
         (input.requestId === null || candidate.id === input.requestId),
@@ -1569,22 +1570,8 @@ interface Step {
 }
 
 interface HostRecord {
-  readonly connections: readonly {
-    readonly computer?: { readonly access: IntegrationAccess; readonly runnerId: string } | null;
-    readonly definitionId: string;
-    readonly status: string;
-  }[];
-  readonly requests: readonly {
-    readonly access: IntegrationAccess;
-    readonly definitionId?: string;
-    readonly id: string;
-    readonly kind: string;
-    readonly runnerId: string;
-    readonly reason?: string | null;
-    readonly threadTitle?: string | null;
-    readonly createdAt?: string;
-    readonly expiresAt?: string;
-  }[];
+  readonly connections: readonly import("@opensteer/client/integrations").IntegrationConnectionSummary[];
+  readonly requests: readonly import("@opensteer/client/integrations").ComputerAppSetupSummary[];
 }
 
 /** The Host's own requests and connections: what was actually committed. */
@@ -1594,7 +1581,10 @@ async function readHostRecord(hostClient: HostClient): Promise<HostRecord> {
     hostClient.rpc["integrations.get"]({}),
   ]);
   if (!requests.ok || !connections.ok) throw new Error("Opensteer could not be read.");
-  return { connections: connections.data.connections, requests: requests.data.requests };
+  return {
+    connections: connections.data.connections,
+    requests: requests.data.requests,
+  };
 }
 
 /** Whether the Host's catalog lists an app for iPhones; it is read again for every tap. */
@@ -1617,7 +1607,9 @@ function covers(
     ({ computer, definitionId, status }) =>
       status !== "revoked" &&
       definitionId === app &&
-      computer?.runnerId === runnerId &&
+      computer !== null &&
+      "runnerId" in computer &&
+      computer.runnerId === runnerId &&
       (computer.access === "read-write" || access === "read"),
   );
 }
