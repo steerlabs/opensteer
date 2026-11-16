@@ -30,7 +30,12 @@ import {
   type Thread,
   type ThreadInputQueue,
 } from "@opensteer/core";
-import { apiVersionQueryParameter, hostApiVersion } from "@opensteer/deployment-authority";
+import {
+  apiVersionQueryParameter,
+  apiCurrentQueryParameter,
+  hostApiVersion,
+  minimumHostApiVersion,
+} from "@opensteer/deployment-authority";
 import { createIntegrationId } from "@opensteer/integration-core";
 import {
   BrowserSurfaceIdSchema,
@@ -11615,6 +11620,9 @@ it.each([false, true])(
       expect(new URL(connection.url).searchParams.get("autofill")).toBe("2");
       expect(new URL(connection.url).searchParams.get("basicInput")).toBe("1");
       expect(new URL(connection.url).searchParams.get(apiVersionQueryParameter)).toBe(
+        String(minimumHostApiVersion),
+      );
+      expect(new URL(connection.url).searchParams.get(apiCurrentQueryParameter)).toBe(
         String(hostApiVersion),
       );
       const popups: string[] = [];
@@ -12735,3 +12743,21 @@ function eventsFrame(input: {
 }) {
   return { ...input, throughSequence: eventsThrough(input.events) };
 }
+
+it.each([60, 61])(
+  "offers Device driver management only inside its served API window (%s)",
+  async (apiVersion) => {
+    const payload = { ...bootstrap([]), apiVersion };
+    const client = createHttpHostClient({
+      capabilities: ["device-drivers-v1"],
+      refreshIntervalMs: 0,
+      fetch: async () => json(payload),
+    });
+    try {
+      await client.load();
+      expect(client.getSnapshot().deviceDriversAvailable).toBe(apiVersion >= 61);
+    } finally {
+      client.dispose();
+    }
+  },
+);

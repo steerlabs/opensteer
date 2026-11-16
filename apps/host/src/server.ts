@@ -1,3 +1,20 @@
+import { RequestIdSchema, TabIdSchema, RunnerIdSchema } from "@opensteer/core";
+import {
+  IntegrationConnectionIdSchema,
+  IntegrationGrantIdSchema,
+  IntegrationInstallationIdSchema,
+} from "@opensteer/integration-core";
+import {
+  assertDeviceWireInput,
+  deviceWireApiVersion,
+  deviceWireRpcNames,
+  deviceWireReferences,
+  deviceWireUpdateRequired,
+  hiddenDeviceTabIds,
+  projectDeviceTabs,
+  preserveDeviceTabGroupOrder,
+  projectDeviceWire,
+} from "@opensteer/protocol";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import type { TabService } from "./tabs/tab-service.js";
 import type { AgentToolActivityStore, DatabaseSchema } from "@opensteer/database";
@@ -418,7 +435,8 @@ export interface HostServerDependencies {
   readonly computerViews?: ComputerViewService;
   readonly displayStreams?: DisplayStreamHub;
   /** The Host's computer-use sessions, for the rows that show one. */
-  readonly computerUse?: Pick<ComputerUseService, "sessionsForRunner">;
+  readonly computerUse?: Pick<ComputerUseService, "sessionsForRunner"> &
+    Partial<Pick<ComputerUseService, "deviceForSession">>;
   readonly placeContext: Pick<PlaceContextService, "assertIncludable">;
   readonly credentials: CredentialService;
   readonly discovery: HostDiscoveryEnvelope;
@@ -1141,7 +1159,15 @@ export async function createHostServer(
     return readiness;
   };
 
-  const machineSummaries = async (session: NonNullable<HostApiServerContext["session"]>) => {
+  const machineSummaries = async (
+    session: NonNullable<HostApiServerContext["session"]>,
+    apiVersion = hostApiVersion,
+  ) => {
+    if (apiVersion < deviceWireApiVersion)
+      return projectMachines({
+        ...(await machineRegistryRows(session)),
+        deploymentOwnsMainComputer: true,
+      });
     const [registry, devices, drivers] = await Promise.all([
       machineRegistryRows(session),
       dependencies.store.listDevices({
@@ -1295,7 +1321,7 @@ export async function createHostServer(
         dependencies.store.getExecutionPreferences(ownerId),
         dependencies.store.getAgentHomeSettings(ownerId),
         dependencies.store.notificationState.quietTaskDaysFor(ownerId),
-        machineSummaries(session),
+        machineSummaries(session, servedHostApiVersion(context.headers)),
         dependencies.store.listHarnessCatalogs(environments.map(({ id }) => id)),
         dependencies.ownerProfile?.view(),
       ]);
@@ -1441,7 +1467,7 @@ export async function createHostServer(
       const session = requireRpcSession(context);
       return rpcSuccess(
         hostApi["machines.list"].success.parse({
-          machines: await machineSummaries(session),
+          machines: await machineSummaries(session, servedHostApiVersion(context.headers)),
         }),
       );
     },
@@ -2556,26 +2582,35 @@ export async function createHostServer(
           type: command.type,
           ...(await dependencies.tabs.activate(userId, command.tabId, command.idempotencyKey)),
         };
-      case "tab.organize":
+      case "tab.organize": {
+        const { type, idempotencyKey, ...input } = command;
         return {
-          type: command.type,
+          type,
           ...(await dependencies.tabs.organize(
             { kind: "person", ownerId: userId },
-            command,
-            command.idempotencyKey,
+            preserveDeviceTabGroupOrder(
+              input,
+              await dependencies.tabs.project({ kind: "person", ownerId: userId }),
+              servedHostApiVersion(context.headers),
+            ),
+            idempotencyKey,
+            input,
           )),
           layout: (await dependencies.tabs.project({ kind: "person", ownerId: userId })).layout,
         };
-      case "tab.group.update":
+      }
+      case "tab.group.update": {
+        const { type, idempotencyKey, ...input } = command;
         return {
-          type: command.type,
+          type,
           ...(await dependencies.tabs.updateGroup(
             { kind: "person", ownerId: userId },
-            command,
-            command.idempotencyKey,
+            input,
+            idempotencyKey,
           )),
           layout: (await dependencies.tabs.project({ kind: "person", ownerId: userId })).layout,
         };
+      }
       case "tab.group.delete":
         return {
           type: command.type,
@@ -2610,51 +2645,199 @@ export async function createHostServer(
       ),
   );
 
-  registerHostApi(app, dependencies.authenticator, {
-    ...createHostApiHandlers(
-      identityRpcHandlers,
-      createTriggerRpcHandlers(dependencies.triggers.service),
-      dependencies.triggers.service,
-      createIntegrationRpcHandlers(integrationRpcOptions),
-      integrationRpcOptions,
-      createIntegrationAuthorizationRpcHandlers(integrationAuthorizationRpcOptions),
-      integrationAuthorizationRpcOptions,
-      createIntegrationPlatformRpcHandlers(integrationPlatformRpcOptions),
-      integrationPlatformRpcOptions,
-      createChannelRpcHandlers(dependencies.channels.service),
-      dependencies.channels.service,
-      createBrowserSourceRpcHandlers(browserSourceRpcOptions),
-      browserSourceRpcOptions,
-      coreRpcHandlers,
-      handleCoreCommand,
-      dependencies.computerViews,
-    ),
-    ...(dependencies.connections
-      ? createConnectionRpcHandlers(dependencies.connections)
-      : {
-          "connections.list": async () => {
-            throw new OpensteerError({
-              code: "not_found",
-              message: "Agent connections are unavailable.",
-            });
-          },
-          "connections.authorization.get": async () => {
-            throw new OpensteerError({
-              code: "not_found",
-              message: "Agent connections are unavailable.",
-            });
-          },
-        }),
-    "personal.remoteAccess.get": async (_input, context) => {
-      const service = dependencies.personalRemoteAccess?.service;
-      if (!service)
-        throw new OpensteerError({
-          code: "not_found",
-          message: "Personal remote access is unavailable",
-        });
-      return rpcSuccess(await service.administration.status(context.session!));
+  registerHostApi(
+    app,
+    dependencies.authenticator,
+    {
+      ...createHostApiHandlers(
+        identityRpcHandlers,
+        createTriggerRpcHandlers(dependencies.triggers.service),
+        dependencies.triggers.service,
+        createIntegrationRpcHandlers(integrationRpcOptions),
+        integrationRpcOptions,
+        createIntegrationAuthorizationRpcHandlers(integrationAuthorizationRpcOptions),
+        integrationAuthorizationRpcOptions,
+        createIntegrationPlatformRpcHandlers(integrationPlatformRpcOptions),
+        integrationPlatformRpcOptions,
+        createChannelRpcHandlers(dependencies.channels.service),
+        dependencies.channels.service,
+        createBrowserSourceRpcHandlers(browserSourceRpcOptions),
+        browserSourceRpcOptions,
+        coreRpcHandlers,
+        handleCoreCommand,
+        dependencies.computerViews,
+      ),
+      ...(dependencies.connections
+        ? createConnectionRpcHandlers(dependencies.connections)
+        : {
+            "connections.list": async () => {
+              throw new OpensteerError({
+                code: "not_found",
+                message: "Agent connections are unavailable.",
+              });
+            },
+            "connections.authorization.get": async () => {
+              throw new OpensteerError({
+                code: "not_found",
+                message: "Agent connections are unavailable.",
+              });
+            },
+          }),
+      "personal.remoteAccess.get": async (_input, context) => {
+        const service = dependencies.personalRemoteAccess?.service;
+        if (!service)
+          throw new OpensteerError({
+            code: "not_found",
+            message: "Personal remote access is unavailable",
+          });
+        return rpcSuccess(await service.administration.status(context.session!));
+      },
     },
-  });
+    {
+      kind: "personal",
+      admit: async (name, input, context) => {
+        const version = servedHostApiVersion(context.headers);
+        if (version >= deviceWireApiVersion) return;
+        assertDeviceWireInput(input, version);
+        if (!context.session || typeof input !== "object" || input === null) return;
+        const owner = context.session.user.id;
+        const record = input as Record<string, unknown>;
+        const hidden = (value: unknown) => projectDeviceWire(value, version) === undefined;
+        if (name === "commands.dispatch" && typeof record.requestId === "string") {
+          const request = await dependencies.store.requests.get(
+            RequestIdSchema.parse(record.requestId),
+          );
+          if (request && request.requestedBy === owner && hidden(request))
+            deviceWireUpdateRequired();
+        }
+        if (typeof record.setupRequestId === "string") {
+          const request =
+            await dependencies.integrations.platform.store.connections.getDeviceComputerAppSetupRequest(
+              { setupRequestId: record.setupRequestId },
+            );
+          if (request?.ownerUserId === owner && hidden(request)) deviceWireUpdateRequired();
+        }
+        for (const connectionId of deviceWireReferences(input, "connectionId")) {
+          const connection = await dependencies.store.database
+            .selectFrom("integrationConnections")
+            .select(["deviceId", "integrationDefinitionId as definitionId"])
+            .where("id", "=", IntegrationConnectionIdSchema.parse(connectionId))
+            .where("ownerUserId", "=", owner)
+            .executeTakeFirst();
+          if (connection && hidden(connection)) deviceWireUpdateRequired();
+        }
+        if (typeof record.grantId === "string") {
+          const grant = await dependencies.store.database
+            .selectFrom("integrationGrants")
+            .innerJoin(
+              "integrationInstallations",
+              "integrationInstallations.id",
+              "integrationGrants.installationId",
+            )
+            .leftJoin(
+              "integrationConnections",
+              "integrationConnections.id",
+              "integrationGrants.connectionId",
+            )
+            .select([
+              "integrationConnections.deviceId",
+              "integrationConnections.integrationDefinitionId as definitionId",
+              "integrationInstallations.manifest",
+            ])
+            .where("integrationGrants.id", "=", IntegrationGrantIdSchema.parse(record.grantId))
+            .where("integrationGrants.ownerUserId", "=", owner)
+            .executeTakeFirst();
+          if (grant && hidden(grant)) deviceWireUpdateRequired();
+        }
+        if (typeof record.installationId === "string") {
+          const installation = await dependencies.store.database
+            .selectFrom("integrationInstallations")
+            .select(["manifest", "provenance"])
+            .where("id", "=", IntegrationInstallationIdSchema.parse(record.installationId))
+            .executeTakeFirst();
+          if (installation && hidden(installation)) deviceWireUpdateRequired();
+        }
+        if (
+          (name === "commands.dispatch" &&
+            typeof record.type === "string" &&
+            record.type.startsWith("tab.")) ||
+          name === "tabs.get"
+        ) {
+          const projection = await dependencies.tabs.project({ kind: "person", ownerId: owner });
+          const hiddenIds = hiddenDeviceTabIds(projection.tabs);
+          if (
+            record.type === "tab.group.delete" &&
+            projection.layout.items.some(
+              (item) =>
+                item.kind === "group" &&
+                item.group.groupId === record.groupId &&
+                item.group.tabIds.some((id) => hiddenIds.has(id)),
+            )
+          )
+            deviceWireUpdateRequired();
+          const ids = [
+            record.tabId,
+            record.beforeTabId,
+            ...(Array.isArray(record.tabIds) ? record.tabIds : []),
+          ];
+          if (ids.some((id) => typeof id === "string" && hiddenIds.has(id)))
+            deviceWireUpdateRequired();
+          if (record.type === "tab.reopen") {
+            let query = dependencies.store.database
+              .selectFrom("personalTabs")
+              .select(["computerId"])
+              .where("ownerId", "=", owner)
+              .where("closedAt", "is not", null);
+            if (typeof record.tabId === "string")
+              query = query.where("id", "=", TabIdSchema.parse(record.tabId));
+            const tab = await query
+              .orderBy("closedAt", "desc")
+              .orderBy("id")
+              .limit(1)
+              .executeTakeFirst();
+            if (tab && hidden(tab)) deviceWireUpdateRequired();
+          }
+        }
+        if (
+          name === "integration.computer.session.stop" ||
+          (name === "commands.dispatch" &&
+            (record.type === "computer.view.close" || record.type === "computer.view.renew"))
+        ) {
+          const machines = await machineSummaries(context.session);
+          if (
+            machines.some(
+              (machine) =>
+                machine.selfRunnerId === null &&
+                (machine.computerUse?.ownerViews?.some((view) => view.viewId === record.viewId) ||
+                  machine.computerUse?.sessions?.some(
+                    (session) => session.sessionId === record.sessionId,
+                  )),
+            )
+          )
+            deviceWireUpdateRequired();
+        }
+      },
+      projectResponse: async (name, data, context) => {
+        const version = servedHostApiVersion(context.headers);
+        if (version >= deviceWireApiVersion || !deviceWireRpcNames.has(name)) return data;
+        const hiddenIds =
+          context.session &&
+          (name === "bootstrap.get" || name.startsWith("tabs.") || name === "commands.dispatch")
+            ? hiddenDeviceTabIds(
+                (
+                  await dependencies.tabs.project({
+                    kind: "person",
+                    ownerId: context.session.user.id,
+                  })
+                ).tabs,
+              )
+            : new Set<string>();
+        const projected = projectDeviceWire(data, version, hiddenIds);
+        if (projected === undefined) deviceWireUpdateRequired();
+        return projected;
+      },
+    },
+  );
 
   app.post(
     "/v1/runner/leave",
@@ -2905,6 +3088,7 @@ export async function createHostServer(
         dependencies.tabs,
         session,
         request.log,
+        (id) => dependencies.computerUse?.deviceForSession?.(id) ?? null,
       );
     },
   );
@@ -3867,10 +4051,11 @@ function attachRealtimeSocket(
   tabs: TabService,
   session: AuthenticatedSession,
   log: FastifyInstance["log"],
+  sessionDevice: (id: import("@opensteer/protocol").ComputerUseSessionId) => string | null,
 ): void {
   const openedAt = Date.now();
   installWebSocketLiveness(socket);
-  const peer = jsonPeer<HostToClientMessage>(socket, `client-peer:${randomUUID()}`);
+  const peer = jsonPeer<unknown>(socket, `client-peer:${randomUUID()}`);
   const sink = {
     ...peer,
     send: async (message: HostToClientMessage) => {
@@ -3937,7 +4122,28 @@ function attachRealtimeSocket(
         peer.close(4002, "Invalid realtime publication");
         throw new Error("Invalid realtime publication");
       }
-      await peer.send(projected.data);
+      if (apiVersion >= deviceWireApiVersion) return peer.send(projected.data);
+      const hiddenIds =
+        apiVersion < deviceWireApiVersion &&
+        (message.type === "host.snapshot" ||
+          (message.type !== "host.tabs" && deviceWireReferences(message, "tabId").length > 0))
+          ? hiddenDeviceTabIds(
+              (await tabs.project({ kind: "person", ownerId: session.user.id })).tabs,
+            )
+          : new Set<string>();
+      const hiddenSessions =
+        apiVersion < deviceWireApiVersion && message.type === "host.computer-presence"
+          ? new Set(
+              message.sessions
+                .filter((session) => {
+                  const deviceId = sessionDevice(session.sessionId);
+                  return deviceId !== null && !RunnerIdSchema.safeParse(deviceId).success;
+                })
+                .map((session) => session.sessionId),
+            )
+          : new Set<string>();
+      const wire = projectDeviceWire(projected.data, apiVersion, hiddenIds, hiddenSessions);
+      if (wire !== undefined) await peer.send(wire);
     },
   } satisfies RealtimeSink;
   type ClientToHostMessage = z.infer<typeof ClientToHostMessageSchema>;
@@ -4056,7 +4262,14 @@ function attachRealtimeSocket(
       queuedItems--;
       if (realtimeClosed) break;
       browserStream?.close();
-      browserStream = tabs.streams.subscribe(session.user.id, (message) => sink.send(message));
+      browserStream = tabs.streams.subscribe(
+        session.user.id,
+        (message) => sink.send(message),
+        [],
+        apiVersion < deviceWireApiVersion
+          ? (value) => projectDeviceTabs(value, apiVersion)
+          : undefined,
+      );
       await browserStream.ready;
       if (realtimeClosed) browserStream.close();
     }
@@ -4079,7 +4292,14 @@ function attachRealtimeSocket(
       if (subscribed) throw badMessage("Client is already subscribed");
       try {
         if (!browserStream) {
-          browserStream = tabs.streams.subscribe(session.user.id, (message) => sink.send(message));
+          browserStream = tabs.streams.subscribe(
+            session.user.id,
+            (message) => sink.send(message),
+            [],
+            apiVersion < deviceWireApiVersion
+              ? (value) => projectDeviceTabs(value, apiVersion)
+              : undefined,
+          );
           void browserStream.ready.catch(failed);
         }
         const subscription = await realtime.subscribe({

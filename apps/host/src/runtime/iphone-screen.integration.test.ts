@@ -1,3 +1,9 @@
+import {
+  apiVersionQueryParameter,
+  apiCurrentQueryParameter,
+  hostApiVersion,
+  minimumHostApiVersion,
+} from "@opensteer/deployment-authority";
 import { testRpcData } from "../server/test-host-api-request.js";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
@@ -455,7 +461,7 @@ integration("iPhone screen routing on an authenticated Mac", () => {
       );
       views.push(view);
       const viewer = new WebSocket(
-        `${host.origin.toString().replace("http", "ws").replace(/\/$/, "")}/v1/computer-use/views/${view.viewId}/${view.generation}/display?sharedInput=1&phoneOwnerControl=1`,
+        `${host.origin.toString().replace("http", "ws").replace(/\/$/, "")}/v1/computer-use/views/${view.viewId}/${view.generation}/display?sharedInput=1&phoneOwnerControl=1&${apiVersionQueryParameter}=${minimumHostApiVersion}&${apiCurrentQueryParameter}=${hostApiVersion}`,
         { headers: host.ownerHeaders },
       );
       viewer.on("error", () => undefined);

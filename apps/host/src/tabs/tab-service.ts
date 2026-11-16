@@ -817,6 +817,7 @@ export class TabService implements TabServicePort {
     actor: TabActor,
     input: TabOrganizeInput,
     key: string,
+    fingerprintInput: TabOrganizeInput = input,
   ): Promise<TabOrganizeResult> {
     TabOrganizeInputSchema.parse(input);
     await this.options.store.organize(
@@ -828,6 +829,7 @@ export class TabService implements TabServicePort {
         [...input.tabIds, ...(input.beforeTabId ? [input.beforeTabId] : [])],
         input.group && "groupId" in input.group ? [input.group.groupId] : [],
       ),
+      fingerprintInput,
     );
     this.changed(owner(actor));
     const { tabs, layout } = await this.project(actor);

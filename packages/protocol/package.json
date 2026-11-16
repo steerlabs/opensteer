@@ -30,7 +30,8 @@
     "./tabs": "./src/tabs.ts",
     "./apps": "./src/apps.ts",
     "./agent-tool-relay": "./src/agent-tool-relay.ts",
-    "./iphone-bridge": "./src/iphone-bridge.ts"
+    "./iphone-bridge": "./src/iphone-bridge.ts",
+    "./test-support/personal-wire": "./src/personal-wire.test-support.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

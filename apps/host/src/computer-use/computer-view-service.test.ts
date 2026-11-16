@@ -433,6 +433,8 @@ it("keeps owner views on separate Devices and refuses a replaced driver generati
   try {
     const a = await open(first);
     const b = await open(second);
+    expect(a.driverGeneration).toBe(1);
+    expect(b.driverGeneration).toBe(1);
     const source = { kind: "owner-view" as const, viewId: a.viewId, generation: a.generation };
     await expect(service.authorizeDisplay(source, owner)).resolves.toMatchObject({
       deviceId: first,
@@ -444,6 +446,7 @@ it("keeps owner views on separate Devices and refuses a replaced driver generati
     expect((await service.list(owner, second))[0]?.viewId).toBe(b.viewId);
     const fresh = await open(first);
     expect(fresh.generation).toBeGreaterThan(a.generation);
+    expect(fresh.driverGeneration).toBe(2);
     service.forgetDriver({ deviceId: first, role: "screen", runnerId: machine, generation: 1 });
     await expect(
       service.authorizeDisplay(
