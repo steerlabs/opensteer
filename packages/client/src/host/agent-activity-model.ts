@@ -2335,6 +2335,9 @@ const opensteerSteps = new Map<string, OpensteerStep>([
   ["app_delete", said(["Deleting an app", "Deleted an app"], "share")],
   ["send_to_person", said(["Sending a message", "Sent a message"], "share")],
   ["show_to_person", said(["Sending to your screen", "Sent to your screen"], "share")],
+  // Saved task history still holds calls made under these earlier names.
+  ["person_notify", said(["Sending a message", "Sent a message"], "share")],
+  ["person_show", said(["Sending to your screen", "Sent to your screen"], "share")],
   ["ask_person", said(["Asking you", "Asked you"], "share")],
 
   [

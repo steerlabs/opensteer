@@ -52,7 +52,7 @@ describe("Runner Agent Skills", () => {
     const references = files.flatMap((text) =>
       [
         ...text.matchAll(
-          /`((?:browser|opensteer|tab|app|computer|integration|saved|chrome|card)_[a-z_]+|(?:send|show)_to_person|ask_person)`/gu,
+          /`((?:browser|opensteer|tab|app|person|computer|integration|saved|chrome|card)_[a-z_]+|(?:send|show)_to_person|ask_person)`/gu,
         ),
       ].map((match) => match[1]!),
     );
