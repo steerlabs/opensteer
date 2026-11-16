@@ -9,9 +9,11 @@ reprogram them; Opensteer refuses.
 
 Use `opensteer_automation_control` with each `automationId` and action `pause`, or `resume`.
 To keep memory but turn the passes off, pause both; they stay paused until the person asks.
-A pass already running finishes its turn. Opensteer picks each pass's model from the person's
-background models below; an active pass with a `waitingReason` has no model it can use yet
-and resumes by itself, so tell the person the reason rather than pausing or resuming it.
+A pass already running finishes its turn. The tasks the light pass opened for open items stay;
+they are ordinary tasks the person can finish or mark Done.
+
+Opensteer picks each pass's model from the person's background models below; an active pass
+with a `waitingReason` has no model it can use yet and resumes by itself, so tell the person the reason rather than pausing or resuming it.
 
 ## Background models
 
@@ -47,8 +49,8 @@ then.
 2. Pause both automations, then call `opensteer_task_update` with `done: true` and each worker's
    `taskId`. Done cancels queued wakes and asks a running pass to stop.
 3. Call `opensteer_task_read` with `limit: 1` on each worker. Once neither `task.status` is
-   `running` or `waiting`, delete
-   `memory/` and `skills/light-pass/`, then shorten the line to
+   `running` or `waiting`, delete `memory/` (and `skills/light-pass/` if an older version left
+   it), then shorten the line to
    `Memory: off at the person's request.`
 
 If a worker is still stopping, make at most three further pairs of `opensteer_task_read` checks in
