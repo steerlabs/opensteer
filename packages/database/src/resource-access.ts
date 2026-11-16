@@ -76,7 +76,7 @@ export async function resolveResourceAccess(
   const thread = threadId
     ? await database
         .selectFrom("threads")
-        .select(["createdBy", "specialistId", "accessMode"])
+        .select(["createdBy", "accessMode"])
         .where("id", "=", threadId)
         .executeTakeFirst()
     : undefined;
@@ -115,28 +115,6 @@ export async function resolveResourceAccess(
     connection?.accessMode ?? run?.accessMode ?? thread?.accessMode ?? "full-access",
   );
   const agentRequester = Boolean(threadId || input.agentBindingId || input.connectionId);
-  let specialistAllowed = true;
-  if (thread?.specialistId) {
-    const registration = await database
-      .selectFrom("specialists")
-      .select("pluginId")
-      .where("id", "=", thread.specialistId)
-      .where("ownerUserId", "=", input.ownerUserId)
-      .where("removedAt", "is", null)
-      .executeTakeFirst();
-    specialistAllowed =
-      Boolean(registration) &&
-      (!agentRequester ||
-        ((await pluginPolicyAllows(database, input.ownerUserId, {
-          kind: "specialist",
-          pluginId: registration!.pluginId,
-          ownerUserId: input.ownerUserId,
-        })) &&
-          (await pluginPolicyAllows(database, input.ownerUserId, {
-            kind: "plugin",
-            pluginId: registration!.pluginId,
-          }))));
-  }
   let policyAllowed = true;
   if (agentRequester && input.resource && input.resource.type !== "browser-profile") {
     const resource = await database
@@ -153,14 +131,12 @@ export async function resolveResourceAccess(
   }
   return {
     runAccess,
-    access:
-      policyAllowed && specialistAllowed
-        ? intersectResourceAccess(
-            intersectResourceAccess(input.explicitAccess ?? null, input.connectionCeiling),
-            runAccess,
-          )
-        : null,
-    specialistAllowed,
+    access: policyAllowed
+      ? intersectResourceAccess(
+          intersectResourceAccess(input.explicitAccess ?? null, input.connectionCeiling),
+          runAccess,
+        )
+      : null,
   };
 }
 
@@ -171,7 +147,7 @@ export async function assertLineageCompatibleReuse(
 ): Promise<void> {
   const rows = await database
     .selectFrom("threads")
-    .select(["id", "createdBy", "specialistId", "accessMode"])
+    .select(["id", "createdBy", "accessMode"])
     .where("id", "in", [callerId, targetId])
     .execute();
   const caller = rows.find((row) => row.id === callerId);
@@ -180,8 +156,7 @@ export async function assertLineageCompatibleReuse(
     !caller ||
     !target ||
     caller.createdBy !== target.createdBy ||
-    !threadAccessModeAtMost(target.accessMode, caller.accessMode) ||
-    (caller.specialistId && caller.specialistId !== target.specialistId)
+    !threadAccessModeAtMost(target.accessMode, caller.accessMode)
   )
     throw new OpensteerError({ code: "forbidden", message: "Start a new task for this work" });
   await assertPersonalOwner(database, caller.createdBy);

@@ -76,8 +76,6 @@ export function pluginTargetKey(target: PluginTarget): string {
       return JSON.stringify({ pluginId: target.pluginId });
     case "skill":
       return JSON.stringify({ fullName: target.fullName });
-    case "specialist":
-      return JSON.stringify({ pluginId: target.pluginId, ownerUserId: target.ownerUserId });
   }
 }
 export function pluginPath(target: PluginTarget): string {

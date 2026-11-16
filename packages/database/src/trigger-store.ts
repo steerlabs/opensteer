@@ -360,8 +360,8 @@ export async function createTriggerInTransaction(
 
 /**
  * The task an automation runs in when it gets its own: a child of the anchor
- * by parent link, with the anchor's computer, engine, model, access and
- * specialist. Nothing is handed out, so nothing returns to the anchor.
+ * by parent link, with the anchor's computer, engine, model and access.
+ * Nothing is handed out, so nothing returns to the anchor.
  * Locks follow ./lock-order.ts: the creation identity and environment before
  * the new Thread's placement rows, and the anchor and caller after them.
  */
@@ -372,7 +372,7 @@ async function createOwnTask(
 ) {
   const parent = await transaction
     .selectFrom("threads")
-    .select(["accessMode", "environmentId", "harnessInstanceId", "modelSelection", "specialistId"])
+    .select(["accessMode", "environmentId", "harnessInstanceId", "modelSelection"])
     .where("id", "=", input.anchorThreadId)
     .executeTakeFirst();
   if (!parent) throw notFound("Task not found");
@@ -390,7 +390,6 @@ async function createOwnTask(
     idempotencyKey,
     modelSelection: ModelSelectionSchema.parse(parent.modelSelection),
     parentThreadId: input.anchorThreadId,
-    ...(parent.specialistId ? { specialistId: parent.specialistId } : {}),
     title: input.name,
   });
   await assertOwnTaskParent(transaction, input, true);

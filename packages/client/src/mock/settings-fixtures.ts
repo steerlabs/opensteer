@@ -86,7 +86,7 @@ export class MockSettingsFixtures {
     const entries: {
       target: PluginTarget;
       title: string;
-      tag: "accounts" | "devices" | "skills" | "specialists";
+      tag: "accounts" | "devices" | "skills";
       enabled?: boolean;
       issues?: PluginDetailView["row"]["issues"];
       accounts?: number;
@@ -133,17 +133,11 @@ export class MockSettingsFixtures {
         title: "Writing style",
         tag: "skills",
       },
-      {
-        target: { kind: "specialist", pluginId: "review-kit", ownerUserId: createId("user") },
-        title: "Code reviewer",
-        tag: "specialists",
-      },
     ];
     this.details = entries.map((entry) =>
       PluginDetailViewSchema.parse({
         installationIds: [],
         grants: [],
-        registrations: [],
         row: {
           target: entry.target,
           title: entry.title,
@@ -152,7 +146,7 @@ export class MockSettingsFixtures {
             kind:
               entry.target.kind === "skill"
                 ? "folder"
-                : entry.target.kind === "plugin" || entry.target.kind === "specialist"
+                : entry.target.kind === "plugin"
                   ? "plugin"
                   : "built-in",
             version: null,
@@ -168,7 +162,6 @@ export class MockSettingsFixtures {
           contents: {
             skills: entry.tag === "skills" ? 1 : 0,
             tools: entry.tag === "accounts" ? 4 : 0,
-            specialists: entry.tag === "specialists" ? 1 : 0,
           },
           permissions: {
             canEnable: true,
@@ -269,7 +262,6 @@ export class MockSettingsFixtures {
             contents: {
               skills: plugin.skills,
               tools: plugin.servers,
-              specialists: plugin.specialist ? 1 : 0,
             },
             permissions: {
               canEnable: true,
@@ -282,7 +274,6 @@ export class MockSettingsFixtures {
           accounts: [],
           installationIds: [],
           grants: [],
-          registrations: [],
 
           devices: [],
           permissions: [],
@@ -352,7 +343,7 @@ export class MockSettingsFixtures {
         kind: "tool",
         name: tool.title,
       }));
-      detail.row.contents = { skills: 0, specialists: 0, tools: detail.contents.length };
+      detail.row.contents = { skills: 0, tools: detail.contents.length };
       current.push(PluginDetailViewSchema.parse(detail));
     }
   }

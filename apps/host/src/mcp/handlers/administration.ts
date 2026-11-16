@@ -243,12 +243,10 @@ export class AdministrationToolHandlers {
         pluginId: i.pluginId,
         active: i.enabled,
       });
-    return i.target === "plugin"
-      ? this.#write(c, "opensteer_plugin_remove", { type: "plugin.remove", pluginId: i.pluginId })
-      : this.#write(c, "opensteer_plugin_remove", {
-          type: "specialist.remove",
-          specialistId: i.specialistId,
-        });
+    return this.#write(c, "opensteer_plugin_remove", {
+      type: "plugin.remove",
+      pluginId: i.pluginId,
+    });
   }
   async execute(caller: AgentCaller, command: AdministrationCommand) {
     return { ...(await this.service.execute(caller, command)), ok: true as const };
@@ -378,7 +376,6 @@ export class AdministrationToolHandlers {
     const { integrations } = this.service.dependencies;
     return {
       plugins: await integrations.platform.store.plugins.listForUser(caller.userId),
-      specialists: await integrations.platform.store.specialists.summaries(caller.userId),
     };
   }
 }

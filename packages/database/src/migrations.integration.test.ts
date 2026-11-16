@@ -15,6 +15,7 @@ import { createDatabase } from "./connection.js";
 import {
   tabsAndAppsMigrationName,
   agentHomeSettingsMigrationName,
+  dropSpecialistsMigrationName,
   MigrationLineageError,
   migrateToLatest,
   migrationProvider,
@@ -765,6 +766,29 @@ describe("fresh personal/team lineage", () => {
     ).toEqual([]);
     expect(await database.selectFrom("agentHomeSettings").selectAll().execute()).toEqual([]);
   });
+  it("drops specialist storage and settings from databases made before specialists were removed", async () => {
+    await migrateToLatest(database, migrationsBefore(dropSpecialistsMigrationName));
+    const { userId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
+    await sql`create table specialists (id text primary key);
+      alter table threads add column specialist_id text;
+      alter table plugin_versions add column specialist_manifest jsonb`.execute(database);
+    const skill = { kind: "skill", fullName: "notes" };
+    const specialist = { kind: "specialist", pluginId: "p", ownerUserId: userId };
+    await sql`insert into plugin_owner_settings (owner_user_id, target_key, target, enabled, revision)
+      values (${userId}, 'specialist', ${JSON.stringify(specialist)}::jsonb, false, 1),
+        (${userId}, 'skill', ${JSON.stringify(skill)}::jsonb, false, 1)`.execute(database);
+    await migrateToLatest(database);
+    expect(
+      (
+        await sql`select table_name, column_name from information_schema.columns where table_schema='public' and (table_name='specialists' or column_name in ('specialist_id','specialist_manifest'))`.execute(
+          database,
+        )
+      ).rows,
+    ).toEqual([]);
+    expect(await database.selectFrom("pluginOwnerSettings").select("target").execute()).toEqual([
+      { target: skill },
+    ]);
+  });
   it("upgrades existing queued inputs with fresh context disabled in the table and work view", async () => {
     await migrateToLatest(database, migrationsBefore("0005_thread_input_fresh_context"));
     const { userId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
@@ -866,7 +890,7 @@ describe("fresh personal/team lineage", () => {
       await sql<{
         name: string;
         definition: string;
-      }>`select conname as name,pg_get_constraintdef(oid) as definition from pg_constraint where conrelid in ('specialists'::regclass,'browser_session_uses'::regclass) and contype='u' order by conname`.execute(
+      }>`select conname as name,pg_get_constraintdef(oid) as definition from pg_constraint where conrelid = 'browser_session_uses'::regclass and contype='u' order by conname`.execute(
         database,
       )
     ).rows;
@@ -875,7 +899,6 @@ describe("fresh personal/team lineage", () => {
         name: "browser_session_uses_identity",
         definition: "UNIQUE NULLS NOT DISTINCT (session_id, thread_id, run_id, tab_id)",
       },
-      { name: "specialists_plugin_owner", definition: "UNIQUE (plugin_id, owner_user_id)" },
     ]);
     const indexes = await catalog();
     expect(indexes.find(({ name }) => name === "delegations_result_message")?.definition).toMatch(

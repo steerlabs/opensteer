@@ -16,8 +16,7 @@ and resumes by itself, so tell the person the reason rather than pausing or resu
 ## Background models
 
 `settings.json` in Agent home says which models do background work: `naming` names new tasks,
-`light` runs the light pass and specialists asking for `{"role": "light"}`, and `deep` runs the
-nightly pass and specialists asking for `{"role": "deep"}`. Change it only when the person asks,
+`light` runs the light pass, and `deep` runs the nightly pass. Change it only when the person asks,
 with ordinary file edits:
 
 ```json

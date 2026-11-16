@@ -163,7 +163,6 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     },
     isEnvironmentConnected: () => true,
     canRunHarness: () => true,
-    harnessAccessModes: () => ThreadAccessModeSchema.options,
     onEvent: () => {},
     browserSources: {} as never,
     savedLogins: {} as never,

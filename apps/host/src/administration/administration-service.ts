@@ -289,7 +289,7 @@ export class AdministrationService {
         command.idempotencyKey,
         administration,
       );
-      if (command.type.startsWith("plugin.") || command.type === "specialist.remove")
+      if (command.type.startsWith("plugin."))
         notifyMachinesChanged(dependencies.realtime, "integration.connections");
       return result;
     }

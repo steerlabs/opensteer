@@ -3910,11 +3910,7 @@ describe("RunnerRuntime", () => {
     }
   });
 
-  it.each([
-    [false, false],
-    [true, false],
-    [false, true],
-  ])("resolves skill layers with specialist=%s disabled=%s", async (specialist, disabled) => {
+  it.each([false, true])("resolves skill layers with disabled=%s", async (disabled) => {
     const temporaryRoot = await realpath(
       await mkdtemp(join(tmpdir(), "opensteer-skill-layer-test-")),
     );
@@ -3923,16 +3919,7 @@ describe("RunnerRuntime", () => {
     await writeWorkspaceSkill(workspacePath, "release-notes");
     await writeWorkspaceSkill(workspacePath, "research");
     await writeWorkspaceSkill(workspacePath, "opensteer:tasks");
-    const pluginRoot = join(stateRoot, "plugins", "a".repeat(64));
-    await mkdir(pluginRoot, { recursive: true });
-    await writeFile(
-      join(pluginRoot, "INSTRUCTIONS.md"),
-      "Plugin instructions ${PLUGIN_ROOT} ${PLUGIN_DATA}",
-    );
-    let hold = false;
-    const driver = new FakeHarnessDriver("test-driver", () =>
-      hold ? new HeldHarnessSession() : new FakeHarnessSession(),
-    );
+    const driver = new FakeHarnessDriver("test-driver", () => new FakeHarnessSession());
     const registry = new HarnessRegistry();
     registry.registerDriver(driver);
     const environmentId = createId("environment");
@@ -3997,61 +3984,12 @@ describe("RunnerRuntime", () => {
           revision: 1,
           disabledFullNames: ["research"],
         };
-      if (specialist) {
-        command.context.specialistId = "registration-1";
-        command.context.plugins.versions = [
-          { pluginId: "example", name: "example", digest: "a".repeat(64) },
-        ];
-      }
       await reconcile(registry, command);
       await expect(runtime.handleCommand(command, sink)).resolves.toEqual({
         status: "accepted",
       });
       await waitUntil(() => runtime.activeRunIds().length === 0);
 
-      if (specialist) {
-        const pluginData = join(workspacePath, ".specialists", "registration-1");
-        expect(driver.context?.workspacePath).toBe(workspacePath);
-        expect(driver.context?.writableRoots).toEqual([workspacePath]);
-        expect(driver.context?.instructions).toContain(
-          `Workspace instructions\n\nPlugin instructions ${pluginRoot} ${pluginData}`,
-        );
-        expect(driver.context?.environment).toMatchObject({
-          PLUGIN_ROOT: pluginRoot,
-          PLUGIN_DATA: pluginData,
-        });
-        expect(
-          driver.context?.skills?.skills
-            .filter((skill) => skill.plugin === null)
-            .map((skill) => skill.fullName),
-        ).toEqual(["release-notes", "research"]);
-        expect(
-          driver.context?.skills?.skills
-            .filter((skill) => skill.plugin === "example")
-            .map((skill) => skill.fullName),
-        ).toEqual(["example:research", "example:helper"]);
-        hold = true;
-        const running = executeCommand(environmentId);
-        running.agentHome.path = workspacePath;
-        running.context.specialistId = "registration-1";
-        running.context.plugins.versions = command.context.plugins.versions;
-        await reconcile(registry, running);
-        await runtime.handleCommand(running, sink);
-        await vi.waitFor(() => expect(driver.contexts).toHaveLength(2), { timeout: 5_000 });
-        let removed = false;
-        await runtime.removeSpecialist("registration-1", async () => {
-          expect(runtime.activeRunIds()).toEqual([]);
-          removed = true;
-        });
-        expect(removed).toBe(true);
-        const stale = executeCommand(environmentId);
-        stale.context.specialistId = "registration-1";
-        await expect(runtime.handleCommand(stale, sink)).resolves.toMatchObject({
-          status: "rejected",
-          error: { code: "forbidden" },
-        });
-        return;
-      }
       // The Host's guide, completed with how this computer runs an app's start.
       expect(driver.context?.platformGuide).toBe(
         `${command.context.agentTools.instructions}\n\n${appHostingGuide({

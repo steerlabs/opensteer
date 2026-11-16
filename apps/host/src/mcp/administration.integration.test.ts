@@ -3,7 +3,7 @@ import {
   enrollTestRunner,
   personalBrowserRepository,
 } from "@opensteer/database/test-support/store";
-import { createId, SpecialistManifestSchema, type UserId } from "@opensteer/core";
+import { createId, type UserId } from "@opensteer/core";
 import {
   IntegrationPlatformStore,
   BrowserSourceStore,
@@ -696,9 +696,7 @@ describeStore("MCP administration", (it) => {
       await channels.close();
     }
   });
-  it("lists ready specialist summaries and reverses the personal plugin switch", async ({
-    storeFixture: f,
-  }) => {
+  it("reverses the personal plugin switch", async ({ storeFixture: f }) => {
     const run = await f.createRunFixture("admin-plugin");
     const platform = new IntegrationPlatformStore(f.database);
     const pluginId = randomUUID();
@@ -709,21 +707,6 @@ describeStore("MCP administration", (it) => {
       source: {},
       digest: "a".repeat(64),
       manifest: { name: "admin-research" },
-      specialistManifest: SpecialistManifestSchema.parse({
-        version: 1,
-        models: [{ engine: "codex", model: "test" }],
-        access: [{ type: "browser-profile", level: "read", reason: "Research" }],
-      }),
-    });
-    const specialist = await platform.specialists.add({
-      pluginId,
-      actorUserId: run.userId,
-    });
-    await f.enrollBrowserRunner(run.userId, "Browser");
-    await f.store.createBrowserProfile({
-      ownerId: run.userId,
-      name: "Research",
-      idempotencyKey: "admin-research",
     });
     const agent = mcp(
       {
@@ -734,16 +717,6 @@ describeStore("MCP administration", (it) => {
       run.userId,
     );
     try {
-      await agent.call("opensteer_plugin_list", {});
-      expect(
-        (
-          await f.database
-            .selectFrom("specialists")
-            .select("status")
-            .where("id", "=", specialist.id)
-            .executeTakeFirstOrThrow()
-        ).status,
-      ).toBe("ready");
       await retryAfterPersonChange(
         agent,
         "opensteer_plugin_update",
@@ -764,7 +737,7 @@ describeStore("MCP administration", (it) => {
       await agent.service.close();
     }
   });
-  it("replays plugin update/removal and specialist removal after a person replaces their state", async ({
+  it("replays plugin update and removal after a person replaces their state", async ({
     storeFixture: f,
   }) => {
     const run = await f.createRunFixture("plugin-retries");
@@ -832,38 +805,10 @@ describeStore("MCP administration", (it) => {
         observe,
         { directory: join(directory, "different") },
       );
-      const specialistManifest = SpecialistManifestSchema.parse({
-        version: 1,
-        models: [{ engine: "codex", model: "test" }],
-        access: [],
-      });
-      await store.plugins.update({
-        pluginId,
-        digest: "b".repeat(64),
-        manifest: { name: "admin-retry" },
-        specialistManifest,
-      });
-      const specialist = await store.specialists.add({
-        pluginId,
-        actorUserId: run.userId,
-      });
-      store.specialists.setRemovalHandler(async () => {});
       await retryAfterPersonChange(
         agent,
         "opensteer_plugin_remove",
-        { target: "specialist", specialistId: specialist.id },
-        () =>
-          store.specialists.add({
-            pluginId,
-            actorUserId: run.userId,
-          }),
-        () => store.specialists.summaries(run.userId),
-        { specialistId: randomUUID() },
-      );
-      await retryAfterPersonChange(
-        agent,
-        "opensteer_plugin_remove",
-        { target: "plugin", pluginId },
+        { pluginId },
         () =>
           store.plugins.install({
             id: pluginId,

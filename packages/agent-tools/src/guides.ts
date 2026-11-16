@@ -25,7 +25,7 @@ const routingGuide = `Routing:
 
 const helpersGuide = `Helpers:
 - Your engine's native subagents work inside this Run, under its authority, and end with it.
-- \`opensteer_task_delegate\` starts independent work in its own task that outlives your turn. Give its goal, context, constraints and completion criteria. Use a ready matching specialist when appropriate.
+- \`opensteer_task_delegate\` starts independent work in its own task that outlives your turn. Give its goal, context, constraints and completion criteria, and name any skill it should use. Set \`model\` and \`aiAccountId\` when the work needs a particular model.
 - Continuing a finished task with \`taskId\` keeps its AI account and model; change active work with \`opensteer_task_send\`.
 - A delegated result returns automatically, waking you if your turn ended, unless you read it first with a wait or \`opensteer_delegation_status\`. Empty final replies wake nobody.
 - An ordinary question from a delegated task reaches you. Answer with \`opensteer_request_answer\` when the answer follows from the task or the person's instructions; otherwise leave it for the person. Approvals are the person's alone.

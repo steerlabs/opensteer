@@ -27,8 +27,8 @@ reaches the agent's next Run. The recommended order always follows each role's l
 mistyped choice never strands naming or memory.
 
 Selection happens before admission and freezes the endpoint for accepted work. Account changes
-must not silently redirect it. Naming can advance after a contained generation failure; memory and
-specialists never replay accepted or uncertain work on another account.
+must not silently redirect it. Naming can advance after a contained generation failure; memory never
+replays accepted or uncertain work on another account.
 
 Claude context measurements describe the latest main-thread request, separately from billed
 Run usage, which includes native child work. Cache expiry starts at the reported request send

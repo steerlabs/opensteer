@@ -1046,7 +1046,6 @@ create table threads (
   "input_queue_paused" boolean not null default false,
   "input_queue_paused_by" text,
   "access_mode" text not null default 'full-access',
-  "specialist_id" text,
   "purpose" text not null,
   "team_id" text,
   "channel_id" text,
@@ -1991,27 +1990,11 @@ create table runner_plugin_data_removals (
   primary key ("runner_id", "plugin_id")
 );
 
-create table specialists (
-  "removed_at" timestamptz,
-  "id" text not null,
-  "plugin_id" text not null,
-  "plugin_version_id" text not null,
-  "owner_user_id" text not null,
-  "created_by" text not null,
-  "status" text not null check (status in ('pending', 'ready', 'removing', 'removal-failed')),
-  "created_at" timestamptz not null default now(),
-  "updated_at" timestamptz not null default now(),
-  primary key ("id")
-);
-
-alter table specialists add constraint specialists_plugin_owner unique (plugin_id, owner_user_id);
-
 create table plugin_versions (
   "id" text not null,
   "plugin_id" text not null,
   "digest" text not null,
   "manifest" jsonb not null,
-  "specialist_manifest" jsonb,
   "created_at" timestamptz not null default now(),
   primary key ("id")
 );

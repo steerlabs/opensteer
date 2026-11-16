@@ -1,13 +1,10 @@
-import { SpecialistRegistrationViewSchema } from "./specialists.js";
 import { describe, expect, it } from "vitest";
 import {
   AgentHomeSettingsSchema,
+  AutomaticModelRankSchema,
   BackgroundModelChoiceSchema,
-  ExactModelWantSchema,
   automaticModelDefaults,
   backgroundModelWants,
-  expandModelWants,
-  ModelPolicyEntrySchema,
 } from "./background-models.js";
 import { createId } from "./ids.js";
 import { HarnessIdSchema, ModelSelectionSchema } from "./models.js";
@@ -17,8 +14,6 @@ import {
   type OriginalModelSelection,
   type ResolveModelCandidatesInput,
 } from "./model-candidates.js";
-import { SpecialistManifestSchema } from "./specialists.js";
-import { ModelPolicyEntryViewSchema } from "./background-models.js";
 import { catalogDefaultCandidate, catalogDefaultModelSelection } from "./model-candidates.js";
 import { selectionForModelEffort } from "./voice-models.js";
 const selection = (modelId = "gpt-6-luna", options = {}) =>
@@ -65,8 +60,16 @@ function account(
     ...overrides,
   };
 }
-const want = (engine = "codex", model = "gpt-6-luna", options?: Record<string, string>) =>
-  ExactModelWantSchema.parse({ engine, model, ...(options ? { options } : {}) });
+const want = (engine = "codex", model = "gpt-6-luna") =>
+  BackgroundModelChoiceSchema.parse({ engine, model });
+const ranked = (options: Record<string, string>) =>
+  AutomaticModelRankSchema.parse({
+    kind: "model",
+    driverKind: "codex",
+    providerId: "openai",
+    modelId: "gpt-6-luna",
+    options,
+  });
 function resolve(
   accounts: readonly AuthorizedModelAccountSnapshot[],
   extra: Partial<ResolveModelCandidatesInput> = {},
@@ -123,9 +126,7 @@ describe("automatic model resolver", () => {
     expect(resolve([retired]).skipped).toMatchObject([
       { reason: "model-unavailable", detail: "Not on your plan" },
     ]);
-    expect(
-      resolve([base], { wants: [want("codex", "gpt-6-luna", { effort: "max" })] }).skipped,
-    ).toMatchObject([
+    expect(resolve([base], { wants: [ranked({ effort: "max" })] }).skipped).toMatchObject([
       { reason: "options-unavailable", detail: expect.stringContaining("it takes low, high") },
     ]);
   });
@@ -147,7 +148,7 @@ describe("automatic model resolver", () => {
     const a = account(),
       b = account();
     const result = resolve([a, b], {
-      wants: [want("codex", "gpt-6-luna", { effort: "low" }), want()],
+      wants: [ranked({ effort: "low" }), want()],
       original: own(a),
     });
     expect(result.candidates.map((c) => c.harnessInstanceId)).toEqual([
@@ -277,14 +278,7 @@ describe("automatic model resolver", () => {
     const settings = AgentHomeSettingsSchema.parse({
       backgroundModels: { light: [{ engine: "codex", model: "gpt-6-luna" }] },
     });
-    const exact = want("claude", "claude-haiku-5-5");
     const light = [want(), ...automaticModelDefaults.light];
-    expect(expandModelWants([exact, { role: "light" }, exact], settings)).toEqual([
-      exact,
-      ...light,
-      exact,
-    ]);
-    expect(expandModelWants([exact], settings)).toEqual([exact]);
     expect(backgroundModelWants(settings, "light")).toEqual(light);
     expect(backgroundModelWants(settings, "deep")).toEqual(automaticModelDefaults.deep);
     expect(backgroundModelWants({}, "naming")).toEqual(automaticModelDefaults.light);
@@ -358,7 +352,7 @@ describe("automatic model resolver", () => {
     expect(pick([{ ...endpoint, isDefault: true }, fallback])).toBe(fallback.harnessInstanceId);
   });
 });
-it("accepts settings.json as written and rejects anything else; manifests stay strict", () => {
+it("accepts settings.json as written and rejects anything else", () => {
   const account = createId("harnessInstance");
   for (const valid of [
     {},
@@ -385,40 +379,4 @@ it("accepts settings.json as written and rejects anything else; manifests stay s
     { backgroundModels: { light: Array.from({ length: 17 }, () => ({ engine: "codex" })) } },
   ])
     expect(AgentHomeSettingsSchema.safeParse(invalid).success).toBe(false);
-  expect(ModelPolicyEntrySchema.safeParse({ ...want(), role: "light" }).success).toBe(false);
-  expect(ModelPolicyEntrySchema.safeParse({ ...want(), account }).success).toBe(false);
-  expect(ModelPolicyEntrySchema.safeParse({ role: "naming" }).success).toBe(false);
-  expect(
-    SpecialistManifestSchema.parse({ version: 1, models: [{ role: "light" }] }).models,
-  ).toEqual([{ role: "light" }]);
-  const unknown = { role: "future" };
-  expect(ModelPolicyEntryViewSchema.array().parse([want(), unknown, { role: "deep" }])).toEqual([
-    want(),
-    { unknown },
-    { role: "deep" },
-  ]);
-  expect(ModelPolicyEntryViewSchema.parse({ ...want(), futureField: true })).toEqual(want());
-});
-
-it("keeps role-only and unknown entries in the registration presentation", () => {
-  const view = {
-    id: "s",
-    pluginId: "p",
-    pluginVersionId: "v",
-    ownerUserId: "u",
-    plugin: "p",
-    version: "1",
-    status: "ready",
-    models: [{ role: "light" }, { future: true }, want()],
-    fallback: "none",
-    access: [],
-  };
-  expect(SpecialistRegistrationViewSchema.parse(view).models).toEqual([
-    { role: "light" },
-    { unknown: { future: true } },
-    want(),
-  ]);
-  expect(
-    SpecialistRegistrationViewSchema.parse({ ...view, models: [{ role: "deep" }] }).models,
-  ).toEqual([{ role: "deep" }]);
 });

@@ -2295,10 +2295,7 @@ const opensteerSteps = new Map<string, OpensteerStep>([
     said(["Removing a messaging bridge", "Removed a messaging bridge"], "share"),
   ],
 
-  [
-    "opensteer_plugin_list",
-    said(["Looking up plugins and specialists", "Looked up plugins and specialists"], "puzzle"),
-  ],
+  ["opensteer_plugin_list", said(["Looking up plugins", "Looked up plugins"], "puzzle")],
   [
     "opensteer_plugin_install",
     (_tool, args) =>
@@ -2320,13 +2317,7 @@ const opensteerSteps = new Map<string, OpensteerStep>([
       "puzzle",
     ),
   ],
-  [
-    "opensteer_plugin_remove",
-    (tool, args) =>
-      (stringField(args, "target") === "specialist"
-        ? said(["Removing a specialist", "Removed a specialist"], "puzzle")
-        : said(["Removing a plugin", "Removed a plugin"], "puzzle"))(tool, args),
-  ],
+  ["opensteer_plugin_remove", said(["Removing a plugin", "Removed a plugin"], "puzzle")],
 
   ["app_list", said(["Listing apps", "Listed apps"], "share")],
   ["app_publish", said(["Publishing an app", "Published an app"], "share")],

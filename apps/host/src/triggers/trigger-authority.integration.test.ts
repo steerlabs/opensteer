@@ -266,7 +266,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
   it("filters anchored automations and refuses another owner", async () => {
     const f = await fixture();
     const root = await personCreate(f, f.root);
-    await personCreate(f, f.specialist);
+    await personCreate(f, f.otherRoot);
     const rpc = createTriggerRpcHandlers(triggers);
     const context: HostApiServerContext = {
       session: {
@@ -537,7 +537,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
           if (response.type !== "thread.delegate.result")
             throw new Error("Expected local delegation");
           expect((await readToolRecords(store, response.result)).thread).toMatchObject({
-            lineageRootThreadId: f.specialist.id,
+            lineageRootThreadId: f.otherRoot.id,
             accessMode: "auto",
           });
           expect((await readToolRecords(store, response.result)).message!.content).toEqual([
@@ -733,7 +733,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     for (const request of [
       {
         type: "thread.read",
-        taskId: f.specialist.id,
+        taskId: f.otherRoot.id,
       },
       {
         type: "thread.delegate",
@@ -764,13 +764,13 @@ integration.sequential("Trigger authority through real Host services and Postgre
       "A6 Root task defines in another task",
       f.root.id,
       "create",
-      "specialist anchor",
+      "other root anchor",
       async () => {
         const created = createdSchema.parse(
-          await programTrigger(token, createInput(f.specialist.id)),
+          await programTrigger(token, createInput(f.otherRoot.id)),
         );
         expect(created.trigger).toMatchObject({
-          anchorThreadId: f.specialist.id,
+          anchorThreadId: f.otherRoot.id,
           createdByThreadId: f.root.id,
         });
         return created;
@@ -788,7 +788,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       async () => {
         const response = await watches.handle(watchToken, {
           type: "thread.message",
-          threadId: f.specialist.id,
+          threadId: f.otherRoot.id,
           delivery: "queue",
           content: [
             {
@@ -2358,14 +2358,14 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const delegated = await child("Delegated worker", "auto");
     const sibling = await child("Sibling sibling", "auto");
     const crossChild = await child("Independent sibling", "auto");
-    const { thread: specialist } = await store.createThread({
+    const { thread: otherRoot } = await store.createThread({
       accessMode: "full-access",
       createdBy: ownerId,
       environmentId,
       harnessInstanceId: harness.id,
       idempotencyKey: randomUUID(),
       modelSelection,
-      title: "Specialist root",
+      title: "Other root",
     });
     const { thread: unrelated } = await store.createThread({
       accessMode: "approval-required",
@@ -2378,12 +2378,12 @@ integration.sequential("Trigger authority through real Host services and Postgre
     });
     const childExecution = await activate(base, delegated);
     const siblingExecution = await activate(base, sibling);
-    const specialistExecution = await activate(base, specialist);
+    const otherRootExecution = await activate(base, otherRoot);
     const fullChild = await child(
       "Full-access author",
       "full-access",
-      specialist,
-      specialistExecution.run.id,
+      otherRoot,
+      otherRootExecution.run.id,
     );
     const fullExecution = await activate(base, fullChild);
     const { thread: isolatedChild } = await store.delegateThread({
@@ -2395,8 +2395,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
       modelSelection,
       origin: {
         kind: "run",
-        parentThreadId: specialist.id,
-        parentRunId: specialistExecution.run.id,
+        parentThreadId: otherRoot.id,
+        parentRunId: otherRootExecution.run.id,
       },
       task: [
         {
@@ -2404,11 +2404,11 @@ integration.sequential("Trigger authority through real Host services and Postgre
           text: "Work outside Root task's delegation lineage",
         },
       ],
-      title: "Specialist's delegated worker",
+      title: "Other root's delegated worker",
       titleSource: "chosen",
     });
     expect(crossChild.lineageRootThreadId).toBe(root.id);
-    expect(isolatedChild.lineageRootThreadId).toBe(specialist.id);
+    expect(isolatedChild.lineageRootThreadId).toBe(otherRoot.id);
     expect(unrelated.lineageRootThreadId).not.toBe(root.id);
     return {
       ...base,
@@ -2418,13 +2418,13 @@ integration.sequential("Trigger authority through real Host services and Postgre
       sibling,
       crossChild,
       isolatedChild,
-      specialist,
+      otherRoot,
       unrelated,
       rootToken: rootExecution.token,
       childToken: childExecution.token,
       fullChildToken: fullExecution.token,
       siblingToken: siblingExecution.token,
-      specialistToken: specialistExecution.token,
+      otherRootToken: otherRootExecution.token,
     };
   }
   type Fixture = Awaited<ReturnType<typeof fixture>>;

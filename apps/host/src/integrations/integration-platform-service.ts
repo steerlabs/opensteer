@@ -1073,7 +1073,6 @@ export class IntegrationPlatformService {
   }): Promise<{
     readonly installation: IntegrationInstallation;
     readonly issues: readonly unknown[];
-    readonly specialist: boolean;
   }> {
     let pluginId = input.pluginId;
     let currentPlugin:
@@ -1126,11 +1125,7 @@ export class IntegrationPlatformService {
         await this.requestLocalServerApprovals();
         await this.#onSettingsChanged({ installationId: previous.id });
       }
-      return {
-        installation: previous,
-        issues: plugin.issues,
-        specialist: plugin.specialistManifest !== null,
-      };
+      return { installation: previous, issues: plugin.issues };
     }
     const installationId = createIntegrationId("installation");
     const servers = await Promise.all(
@@ -1142,7 +1137,6 @@ export class IntegrationPlatformService {
     );
     const version = {
       ...(setupThreadId !== undefined ? { setupThreadId } : {}),
-      specialistManifest: plugin.specialistManifest,
       digest: basename(plugin.root),
       manifest: {
         ...plugin.manifest,
@@ -1223,7 +1217,7 @@ export class IntegrationPlatformService {
       // is listed again now rather than when that computer next reconnects.
       this.#startApprovedServers((server) => server.installationId === installation.id);
     }
-    return { installation, issues: plugin.issues, specialist: plugin.specialistManifest !== null };
+    return { installation, issues: plugin.issues };
   }
 
   /**

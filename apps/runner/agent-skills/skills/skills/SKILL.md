@@ -66,23 +66,16 @@ A program server that needs a password, key or token declares it in `plugin.json
 owner enters each value when approving the server, and the program reads it from that environment
 variable. The owner changes values in Settings, Plugins.
 
-## Turn repeated work into a specialist
+## Hand repeated work to a delegated task
 
-For repeated, well-understood work, add `specialist.json` and `INSTRUCTIONS.md` to the plugin.
-List models in preference order: an exact `{"engine", "model", "options"?}`, or
-`{"role": "light"}` (fast, cheap) or `{"role": "deep"}` (strongest), which stand for the person's
-background models in Agent home's `settings.json` (opensteer:memory controls). Prefer a role unless the work needs a particular
-model. A list never names an account; it runs on the person's eligible accounts. Use
-`fallback: "caller"` only when that cost is intended (the default is `"none"`). A specialist works
-within its caller's access, so it declares no access. Test representative inputs and
-check the outputs before `opensteer_plugin_install`. Then call `opensteer_task_delegate` with
-`specialist` set to its registration id or plugin name. Continue it with `taskId` to retain
-context. Instructions should name per-task outputs in `PLUGIN_DATA`, shared by this registration.
+For repeated, well-understood work, write a skill and test it on representative inputs. Then
+call `opensteer_task_delegate` with a message naming the skill. When the work needs a particular
+model, such as a fast one for simple steps, choose `model` and `aiAccountId` from
+`opensteer_ai_account_list`. Continue the task with `taskId` to keep its context.
 
-`opensteer_plugin_list` lists plugins and specialists. With full access, `opensteer_plugin_update`
-enables or disables a plugin, `opensteer_plugin_install` updates one from its folder, and
-`opensteer_plugin_remove` removes a plugin or a specialist registration. Enabling grants no
-resource access.
+`opensteer_plugin_list` lists plugins. With full access, `opensteer_plugin_update` enables or
+disables a plugin, `opensteer_plugin_install` updates one from its folder, and
+`opensteer_plugin_remove` removes one. Enabling grants no resource access.
 
 - Read [durable context](references/durable-context.md) when choosing where a correction, fact or task state belongs.
 - Read [skills](references/skills.md) when authoring procedures.

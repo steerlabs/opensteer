@@ -464,13 +464,12 @@ async function assertOperationTargets(
       .where("id", "=", id)
       .executeTakeFirstOrThrow();
     if (
-      (source.specialistId !== null && target.specialistId !== source.specialistId) ||
       !threadAccessModeAtMost(target.accessMode, input.accessMode) ||
       !threadAccessModeAtMost(target.accessMode, source.accessMode)
     )
       throw new OpensteerError({
         code: "forbidden",
-        message: "Target task exceeds the caller's specialist or access limits",
+        message: "Target task exceeds the caller's access limits",
       });
   }
 }

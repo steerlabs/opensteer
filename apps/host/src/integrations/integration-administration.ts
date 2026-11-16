@@ -11,7 +11,6 @@ export const integrationAdministrationCommandTypes = [
   "plugin.activation.set",
   "plugin.remove",
   "plugin.update",
-  "specialist.remove",
 ] as const;
 export type IntegrationAdministrationCommand = Extract<
   HostApiCommand,
@@ -50,13 +49,6 @@ export async function executeIntegrationAdministration(
         requestId,
       });
       return { type: command.type };
-    case "specialist.remove":
-      await options.platform.store.specialists.remove({
-        ...command,
-        administration,
-        actorUserId: actor.userId,
-      });
-      return { type: command.type };
     case "plugin.activation.set": {
       const target = { kind: "plugin" as const, pluginId: command.pluginId };
       const detail = await options.platform.store.settings.detail(actor.userId, target);
@@ -75,7 +67,6 @@ export async function executeIntegrationAdministration(
     }
     case "plugin.remove": {
       await options.platform.store.plugins.assertCanRemove(command.pluginId, actor);
-      await options.platform.store.specialists.retirePlugin(command.pluginId);
       for (const installation of await options.platform.store.listInstallations()) {
         if (installation.pluginId === command.pluginId)
           await options.platform.uninstallIntegration({

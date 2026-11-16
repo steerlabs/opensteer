@@ -1,6 +1,5 @@
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { ModelSelectionSchema, OpensteerError, createId, type Message } from "@opensteer/core";
-import { SpecialistStore } from "@opensteer/database";
 import type { CommandRow, OpensteerStore } from "@opensteer/database";
 import { CommandDispatchError } from "@opensteer/orchestration";
 import {
@@ -244,61 +243,6 @@ describe("HostCommandDispatcher steering", () => {
       disposition: "uncertain",
     });
     expect(refuseSteer).not.toHaveBeenCalled();
-  });
-});
-describe("HostCommandDispatcher specialist admission", () => {
-  it.each([
-    "Specialist is pending: browser-profile: rebind (Research)",
-    "invoices uses Alice's accounts; add it for yourself to use your own",
-    "Specialist registration was removed",
-  ])("fails the Run before Runner dispatch: %s", async (message) => {
-    const admit = vi
-      .spyOn(SpecialistStore.prototype, "assertRunnable")
-      .mockRejectedValue(new Error(message));
-    const send = vi.fn();
-    const requestedBy = createId("user");
-    const dispatcher = new HostCommandDispatcher({
-      teamRequestContext: async () => {
-        throw new Error("Unexpected team request");
-      },
-      executionLeaseMs: 90000,
-      publicUrl: new URL("https://host.example"),
-      runners: {
-        dispatch: send,
-      },
-      store: {
-        loadRunDispatchContext: async () => ({
-          providerSessionStateLayout: "session",
-          run: {
-            requestedBy,
-          },
-          thread: {
-            specialistId: "registration",
-          },
-        }),
-      },
-    } as unknown as ConstructorParameters<typeof HostCommandDispatcher>[0]);
-    try {
-      await expect(
-        dispatcher.dispatch(
-          {
-            ...steerCommand(),
-            type: "run.execute",
-            payload: {
-              type: "run.execute",
-            },
-          },
-          new AbortController().signal,
-        ),
-      ).rejects.toMatchObject({
-        message,
-        disposition: "failed",
-      });
-      expect(admit).toHaveBeenCalledWith("registration", requestedBy);
-      expect(send).not.toHaveBeenCalled();
-    } finally {
-      admit.mockRestore();
-    }
   });
 });
 describe("HostCommandDispatcher model selection", () => {
@@ -782,28 +726,15 @@ describe("HostCommandDispatcher model selection", () => {
       expect.any(Object),
     );
   });
-  it("dispatches a specialist through the Runner wire schema", async () => {
-    const admit = vi
-      .spyOn(SpecialistStore.prototype, "assertRunnable")
-      .mockResolvedValue(undefined as never);
-    try {
-      const { dispatch, run } = dispatchRun({
-        specialistId: "registration",
-        models: [gpt5],
-        modelSelection: {
-          modelId: "gpt-5",
-          options: {},
-          providerId: "openai",
-        },
-      });
-      await run();
-      const command = dispatch.mock.calls[0]![0];
-      if (command.type !== "run.execute") throw new Error("Expected run.execute");
-      expect(command.context.specialistId).toBe("registration");
-      expect(RunExecutionContextSchema.parse(command.context)).toEqual(command.context);
-    } finally {
-      admit.mockRestore();
-    }
+  it("dispatches through the Runner wire schema", async () => {
+    const { dispatch, run } = dispatchRun({
+      models: [gpt5],
+      modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
+    });
+    await run();
+    const command = dispatch.mock.calls[0]![0];
+    if (command.type !== "run.execute") throw new Error("Expected run.execute");
+    expect(RunExecutionContextSchema.parse(command.context)).toEqual(command.context);
   });
   const readerCapabilities = [
     "native-session-continuation-v1",
@@ -813,7 +744,6 @@ describe("HostCommandDispatcher model selection", () => {
     "agent-tools-plan-v1",
   ];
   function dispatchRun(input: {
-    readonly specialistId?: string;
     readonly capabilities?: readonly string[];
     readonly skillPolicy?: import("@opensteer/protocol").RunPluginsPlan["skillPolicy"];
     readonly purpose?: "task" | "voice";
@@ -833,17 +763,6 @@ describe("HostCommandDispatcher model selection", () => {
     const runId = createId("run");
     const threadId = createId("thread");
     const dispatch = vi.fn(async (_command: RunnerCommand, _signal: AbortSignal) => undefined);
-    const specialistQuery = {
-      selectFrom: () => specialistQuery,
-      innerJoin: () => specialistQuery,
-      select: () => specialistQuery,
-      where: () => specialistQuery,
-      executeTakeFirst: async () => ({
-        pluginId: "plugin",
-        name: "proof",
-        digest: "a".repeat(64),
-      }),
-    };
     const dispatcher = new HostCommandDispatcher({
       teamRequestContext: async () => {
         throw new Error("Unexpected team request");
@@ -897,7 +816,6 @@ describe("HostCommandDispatcher model selection", () => {
         ],
       } as never,
       store: {
-        database: specialistQuery,
         acquireExecutionBinding: async () => ({
           bindingGeneration: 1,
           continuationEvent: null,
@@ -949,11 +867,6 @@ describe("HostCommandDispatcher model selection", () => {
             requestedBy,
           },
           thread: {
-            ...(input.specialistId
-              ? {
-                  specialistId: input.specialistId,
-                }
-              : {}),
             id: threadId,
             purpose: input.purpose ?? "task",
             teamOrigin: null,

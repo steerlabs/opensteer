@@ -90,7 +90,7 @@ export const settingsItems: Readonly<Record<SettingsSectionId, SettingsRailItem>
   plugins: {
     id: "plugins",
     label: "Plugins",
-    description: "Skills, tools and specialists installed for your agents",
+    description: "Skills and tools installed for your agents",
   },
   computers: {
     id: "computers",

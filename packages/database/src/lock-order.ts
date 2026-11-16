@@ -190,8 +190,6 @@ export const databaseLockOrder = [
   "requests",
   "advisory:browser-profile",
   "advisory:browser-grants",
-  // Specialist binding guards follow parent/Request fences before creating Assignments.
-  "specialists",
   // Assignment projections precede Commands, Inputs, Messages and their derived state.
   "delegations",
   "commands",

@@ -1,11 +1,5 @@
 import { z } from "zod";
-import {
-  RequestIdSchema,
-  RunnerIdSchema,
-  ThreadIdSchema,
-  UserIdSchema,
-  utf8ByteLength,
-} from "@opensteer/core";
+import { RequestIdSchema, RunnerIdSchema, ThreadIdSchema, utf8ByteLength } from "@opensteer/core";
 import {
   IntegrationConnectionIdSchema,
   IntegrationInstallationIdSchema,
@@ -28,14 +22,12 @@ export const PluginTargetSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("device-app"), definitionId: z.string().min(1).max(64) }),
   z.strictObject({ kind: z.literal("plugin"), pluginId: name }),
   z.strictObject({ kind: z.literal("skill"), fullName: name }),
-  z.strictObject({ kind: z.literal("specialist"), pluginId: name, ownerUserId: UserIdSchema }),
 ]);
 export const PluginTargetViewSchema = z.discriminatedUnion("kind", [
   PluginTargetSchema.options[0].strip(),
   PluginTargetSchema.options[1].strip(),
   PluginTargetSchema.options[2].strip(),
   PluginTargetSchema.options[3].strip(),
-  PluginTargetSchema.options[4].strip(),
 ]);
 export type PluginTarget = z.infer<typeof PluginTargetSchema>;
 export const PluginIssueCodeSchema = z.enum([
@@ -63,14 +55,13 @@ export const PluginRowSchema = z.object({
     kind: z.enum(["built-in", "plugin", "proposed", "remote-mcp", "folder"]),
     version: name.nullable(),
   }),
-  tags: z.array(z.enum(["accounts", "devices", "skills", "specialists"])).max(4),
+  tags: z.array(z.enum(["accounts", "devices", "skills"])).max(4),
   placement: PluginPlacementSummarySchema,
   accountCount: z.number().int().nonnegative(),
   issues: z.array(PluginIssueCodeSchema).max(16),
   contents: z.object({
     skills: z.number().int().nonnegative(),
     tools: z.number().int().nonnegative(),
-    specialists: z.number().int().nonnegative(),
   }),
   permissions: z.object({
     canEnable: z.boolean(),
@@ -104,7 +95,6 @@ export const PluginDetailViewSchema = z.object({
   row: PluginRowSchema,
   installationIds: z.array(IntegrationInstallationIdSchema).max(100),
   grants: z.array(IntegrationGrantViewSchema).max(1000),
-  registrations: z.array(z.object({ id: name, ownerUserId: UserIdSchema })).max(1000),
   accounts: z.array(PluginAccountViewSchema).max(100),
   devices: z
     .array(z.object({ runnerId: RunnerIdSchema, name, status: MachineSummarySchema.shape.status }))
@@ -118,7 +108,7 @@ export const PluginDetailViewSchema = z.object({
       }),
     )
     .max(100),
-  contents: z.array(z.object({ name, kind: z.enum(["skill", "tool", "specialist"]) })).max(500),
+  contents: z.array(z.object({ name, kind: z.enum(["skill", "tool"]) })).max(500),
   sourceFolder: z.string().max(4096).nullable(),
   /** The task whose agent last installed this plugin, when the viewer can open it. */
   setupThreadId: ThreadIdSchema.nullable().optional(),

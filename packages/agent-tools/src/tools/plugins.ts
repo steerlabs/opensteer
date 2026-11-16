@@ -7,7 +7,7 @@ const pluginId = z.string().min(1).max(256);
 export const opensteer_plugin_list = defineAgentTool({
   name: "opensteer_plugin_list",
   title: "List plugins",
-  description: "List the person's installed plugins and the specialists they provide.",
+  description: "List the person's installed plugins.",
   input: z.strictObject({}),
   output: z.object({
     plugins: z.array(
@@ -16,9 +16,6 @@ export const opensteer_plugin_list = defineAgentTool({
         name: z.string(),
         currentVersionId: z.string().nullable().optional(),
       }),
-    ),
-    specialists: z.array(
-      z.object({ id: z.string(), pluginId: z.string(), plugin: z.string(), status: z.string() }),
     ),
   }),
   access: "read",
@@ -64,25 +61,9 @@ export const opensteer_plugin_update = defineAgentTool({
 
 export const opensteer_plugin_remove = defineAgentTool({
   name: "opensteer_plugin_remove",
-  title: "Remove a plugin or specialist",
-  description: "Remove an installed plugin, or one specialist registration from a plugin.",
-  input: z
-    .strictObject({
-      target: z.enum(["plugin", "specialist"]),
-      pluginId: pluginId.optional().describe("plugin: the plugin to remove."),
-      specialistId: z
-        .string()
-        .min(1)
-        .max(256)
-        .optional()
-        .describe("specialist: the registration to remove."),
-    })
-    .superRefine((input, context) => {
-      if ((input.target === "plugin") !== (input.pluginId !== undefined))
-        context.addIssue({ code: "custom", message: "pluginId is for target plugin" });
-      if ((input.target === "specialist") !== (input.specialistId !== undefined))
-        context.addIssue({ code: "custom", message: "specialistId is for target specialist" });
-    }),
+  title: "Remove a plugin",
+  description: "Remove an installed plugin.",
+  input: z.strictObject({ pluginId }),
   output: z.object({ ok: z.literal(true) }),
   access: "settings",
   callers: ["run", "connection"] as const,

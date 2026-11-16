@@ -97,9 +97,6 @@ import { emptySavedViewReadiness } from "../host/saved-host-view.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { channelProviderCatalog } from "@opensteer/channel-core";
 import {
-  SpecialistManifestSchema,
-  type SpecialistRegistration,
-  type SpecialistManifest,
   PlaceEnteredEventViewSchema,
   AssignmentIdSchema,
   AssignmentSummarySchema,
@@ -1756,7 +1753,6 @@ export interface MockHostClientOptions {
   /** `seeded`, or one task holding a single scene of the subagent design. */
   subagents?: "seeded" | "absent" | MockSubagentScene;
   desktopUpdates?: MockDesktopUpdateScenario;
-  specialistPlugins?: { id: string; name: string; manifest: SpecialistManifest }[];
 
   agentPlugins?: { id: string; name: string }[];
   memoryPasses?: "active" | "off" | "waiting-for-model";
@@ -2397,8 +2393,6 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
           requests: client.listComputerAppSetupRequests(),
         }),
       ),
-    "specialist.list": async () =>
-      rpcSuccess({ specialists: client.listSpecialists(client.getSnapshot().deploymentId!) }),
     "plugin.list": async () =>
       rpcSuccess({ plugins: await client.listPlugins(client.getSnapshot().deploymentId!) }),
     "integration.platform.get": async () =>
@@ -3309,22 +3303,6 @@ async function executeMockCommand(
       return rpcSuccess(await client.beginMcpAuthorization(command.input));
     case "integration.mcp.disconnect":
       await client.disconnectMcpConnection(command.connectionId);
-      return rpcSuccess({ type: command.type });
-    case "specialist.list":
-      return rpcSuccess({
-        type: command.type,
-        specialists: client.listSpecialists(client.getSnapshot().deploymentId!),
-      });
-    case "specialist.add":
-      return rpcSuccess({
-        type: command.type,
-        specialist: await client.addSpecialist(
-          client.getSnapshot().deploymentId!,
-          command.pluginId,
-        ),
-      });
-    case "specialist.remove":
-      client.removeSpecialist(client.getSnapshot().deploymentId!, command.specialistId);
       return rpcSuccess({ type: command.type });
     case "plugin.list":
       return rpcSuccess({
@@ -5078,7 +5056,6 @@ interface MockPlugin {
     id: string;
     digest: string;
     manifest: { name: string; version?: string; description?: string; skills: unknown[] };
-    specialistManifest?: SpecialistManifest | undefined;
   }[];
   enabled: boolean;
   createdAt: string;
@@ -5424,77 +5401,6 @@ class MockHostState {
         };
       });
   }
-  private readonly specialists: {
-    id: string;
-    deploymentId: string;
-    pluginId: string;
-    pluginVersionId: string;
-    ownerUserId: string;
-    manifest: SpecialistManifest;
-  }[] = [];
-  listSpecialists(deploymentId: string) {
-    return this.specialists
-      .filter((s) => s.deploymentId === deploymentId)
-      .map((s) => this.refreshSpecialist(s));
-  }
-  private refreshSpecialist(s: (typeof this.specialists)[number]): SpecialistRegistration {
-    const plugin = this.plugins.find((p) => p.id === s.pluginId)!;
-    return {
-      id: s.id,
-
-      pluginId: s.pluginId,
-      pluginVersionId: s.pluginVersionId,
-      ownerUserId: s.ownerUserId,
-      ownerName:
-        s.ownerUserId === this.snapshot.user?.id ? this.snapshot.user.displayName : s.ownerUserId,
-      canUse: s.ownerUserId === this.snapshot.user?.id,
-      plugin: plugin.name,
-      version: plugin.versions.find((v) => v.id === s.pluginVersionId)!.digest,
-      models: s.manifest.models,
-      fallback: s.manifest.fallback,
-      status: "ready",
-      access: [],
-    };
-  }
-  async addSpecialist(deploymentId: string, pluginId: string) {
-    const plugin = this.plugins.find((p) => p.id === pluginId);
-    const version = plugin?.versions.find((v) => v.id === plugin.currentVersionId);
-    if (!plugin || !version?.specialistManifest)
-      throw new Error("Install a specialist package first");
-    const ownerUserId = this.snapshot.user!.id;
-    const previous = this.specialists.find(
-      (s) =>
-        s.deploymentId === deploymentId && s.pluginId === pluginId && s.ownerUserId === ownerUserId,
-    );
-    if (previous && previous.ownerUserId !== ownerUserId)
-      throw new Error("Only the consent owner may re-add this specialist");
-    await this.mutatePlugin({
-      type: "plugin.activation.set",
-      idempotencyKey: crypto.randomUUID(),
-      pluginId,
-
-      active: true,
-    });
-    const registration = {
-      id: previous?.id ?? crypto.randomUUID(),
-      deploymentId,
-      pluginId,
-      pluginVersionId: version.id,
-      ownerUserId,
-      manifest: version.specialistManifest,
-    };
-    if (previous) this.specialists.splice(this.specialists.indexOf(previous), 1);
-    this.specialists.push(registration);
-    return this.refreshSpecialist(registration);
-  }
-  removeSpecialist(deploymentId: string, id: string) {
-    const index = this.specialists.findIndex(
-      (s) =>
-        s.id === id && s.deploymentId === deploymentId && s.ownerUserId === this.snapshot.user?.id,
-    );
-    if (index >= 0) this.specialists.splice(index, 1);
-  }
-
   async listPlugins(_deploymentId?: string): Promise<Record<string, unknown>[]> {
     return this.plugins.map((plugin) => ({ ...plugin, servers: [] }));
   }
@@ -5509,8 +5415,6 @@ class MockHostState {
     if (!plugin) throw new Error("Plugin not found");
     if (command.type === "plugin.remove") {
       this.plugins.splice(index, 1);
-      for (let i = this.specialists.length - 1; i >= 0; i--)
-        if (this.specialists[i]?.pluginId === command.pluginId) this.specialists.splice(i, 1);
     } else if (command.type === "plugin.update") {
       if (plugin.scope === "folder")
         throw new HostClientRequestError({
@@ -5524,7 +5428,6 @@ class MockHostState {
         id,
         digest: id,
         manifest: current?.manifest ?? { name: plugin.name, skills: [] },
-        specialistManifest: current?.specialistManifest,
       });
       plugin.currentVersionId = id;
       plugin.source = { directory: command.input.directory };
@@ -6220,28 +6123,6 @@ class MockHostState {
       };
     this.connections = [...(options.connections ?? [])];
     this.pendingConnectionConsent = options.connectionConsent ?? null;
-    for (const p of options.specialistPlugins ?? []) {
-      const id = crypto.randomUUID();
-      const at = new Date(0).toISOString();
-      this.plugins.push({
-        id: p.id,
-        name: p.name,
-        scope: "deployment",
-        source: { directory: `/opt/opensteer/plugins/${p.name}` },
-        currentVersionId: id,
-        versions: [
-          {
-            id,
-            digest: id,
-            manifest: { name: p.name, version: "1.0.0", skills: [] },
-            specialistManifest: SpecialistManifestSchema.parse(p.manifest),
-          },
-        ],
-        enabled: false,
-        createdAt: at,
-        updatedAt: at,
-      });
-    }
     for (const p of options.agentPlugins ?? []) {
       const id = crypto.randomUUID();
       const at = new Date(0).toISOString();

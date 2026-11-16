@@ -2000,7 +2000,6 @@ export async function createHostRuntime(
                   await store.discardHarnessCatalog(environmentId, harness.id);
                 }
               }
-              await integrationPlatformStore.specialists.resumeRemovals();
               // Managed AI-engine sign-in attempts survive reconnects, so a
               // managed Runner replays them when it registers again.
               if (identity.runnerKind === "managed") {
@@ -2253,22 +2252,6 @@ export async function createHostRuntime(
       onDeploymentEvent: publishDeploymentEvent,
       store,
     });
-    integrationPlatformStore.specialists.setRemovalHandler(async (input) => {
-      const active = await database
-        .selectFrom("runs")
-        .innerJoin("threads", "threads.id", "runs.threadId")
-        .select(["runs.assignmentId", "runs.requestedBy"])
-        .where("threads.specialistId", "=", input.specialistId)
-        .where("runs.status", "in", ["queued", "starting", "running", "waiting"])
-        .execute();
-      for (const run of active)
-        if (run.assignmentId)
-          await commands.cancelAssignment({
-            assignmentId: run.assignmentId,
-            requestedBy: run.requestedBy,
-            idempotencyKey: `specialist-remove:${input.specialistId}:${run.assignmentId}`,
-          });
-    });
     let reportContinuationError: (error: unknown) => void = () => undefined;
     const continuations = new ContinuationService({
       passwordSignIn: (operationId) => passwordSignIns.continuationState(operationId),
@@ -2428,8 +2411,6 @@ export async function createHostRuntime(
       browser,
       canRunHarness: (environmentId, driverKind) =>
         runners.canRunHarness(environmentId, driverKind),
-      harnessAccessModes: (environmentId, driverKind) =>
-        runners.harnessAccessModes(environmentId, driverKind),
       commands,
       isEnvironmentConnected: (environmentId) => runners.isAvailable(environmentId),
       onEvent: publishDeploymentEvent,
@@ -2612,20 +2593,7 @@ export async function createHostRuntime(
                 runnerId: scope.runnerId,
                 requestId: randomUUID(),
               });
-              const pluginId = result.installation.pluginId;
-              const registration =
-                result.specialist && pluginId
-                  ? await integrationPlatform.store.specialists.add({
-                      pluginId,
-                      actorUserId: scope.requestedBy,
-                    })
-                  : null;
-              return {
-                pluginId,
-                issues: result.issues,
-                specialist: result.specialist,
-                registration,
-              };
+              return { pluginId: result.installation.pluginId, issues: result.issues };
             },
           });
         },

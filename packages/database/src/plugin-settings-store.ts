@@ -38,8 +38,6 @@ export function pluginTargetKey(input: PluginTarget): string {
       return JSON.stringify([target.kind, target.definitionId]);
     case "plugin":
       return JSON.stringify([target.kind, target.pluginId]);
-    case "specialist":
-      return JSON.stringify([target.kind, target.pluginId, target.ownerUserId]);
     case "skill":
       return JSON.stringify([target.kind, target.fullName]);
   }
@@ -109,7 +107,7 @@ export class PluginSettingsStore {
     opening?: PluginTarget,
   ) {
     await requirePersonalOwner(this.database, owner);
-    const [settings, connections, installations, grants, packages, specialists, tools, inventory] =
+    const [settings, connections, installations, grants, packages, tools, inventory] =
       await Promise.all([
         this.database
           .selectFrom("pluginOwnerSettings")
@@ -133,13 +131,7 @@ export class PluginSettingsStore {
           .selectFrom("plugins")
           .innerJoin("pluginVersions", "pluginVersions.id", "plugins.currentVersionId")
           .selectAll("plugins")
-          .select(["pluginVersions.manifest", "pluginVersions.specialistManifest"])
-          .execute(),
-        this.database
-          .selectFrom("specialists")
-          .selectAll()
-          .where("ownerUserId", "=", owner)
-          .where("removedAt", "is", null)
+          .select("pluginVersions.manifest")
           .execute(),
         this.database
           .selectFrom("integrationTools")
@@ -198,7 +190,6 @@ export class PluginSettingsStore {
         contents: {
           skills: 0,
           tools: tools.filter((row) => row.installationId === installation.id).length,
-          specialists: 0,
         },
         permissions: { canEnable: true, canPlace: false, canRemove: false, canUpdate: false },
       });
@@ -229,7 +220,6 @@ export class PluginSettingsStore {
                 installation.pluginId === plugin.id && tool.installationId === installation.id,
             ),
           ).length,
-          specialists: plugin.specialistManifest ? 1 : 0,
         },
         permissions: {
           canEnable: true,
@@ -240,23 +230,9 @@ export class PluginSettingsStore {
         device: pluginDeviceFromManifest(plugin.manifest),
       };
       rows.push(row);
-      if (specialists.some((registration) => registration.pluginId === plugin.id)) {
-        const recipe: PluginTarget = {
-          kind: "specialist",
-          pluginId: plugin.id,
-          ownerUserId: owner,
-        };
-        rows.push({
-          ...row,
-          target: recipe,
-          tags: ["specialists"],
-          placement: placement(recipe),
-          permissions: { canEnable: true, canPlace: false, canRemove: true, canUpdate: false },
-        });
-      }
     }
     rows.push(...projectLooseSkillRows(inventory, settings));
-    return { rows, settings, connections, installations, grants, packages, specialists, tools };
+    return { rows, settings, connections, installations, grants, packages, tools };
   }
 
   async setEnabled(
@@ -359,7 +335,7 @@ export class PluginSettingsStore {
     if (!row) throw new OpensteerError({ code: "not_found", message: "Plugin is unavailable" });
     const service = target.kind === "service" || target.kind === "device-app";
     const plugin =
-      target.kind === "plugin" || target.kind === "specialist"
+      target.kind === "plugin"
         ? snapshot.packages.find((row) => row.id === target.pluginId)
         : undefined;
     const installations = snapshot.installations.filter((installation) =>
@@ -377,7 +353,7 @@ export class PluginSettingsStore {
       ? snapshot.connections.filter((row) => row.integrationDefinitionId === target.definitionId)
       : [];
     const grants = snapshot.grants.filter((row) => ids.has(row.installationId));
-    const contents: { name: string; kind: "skill" | "tool" | "specialist" }[] = snapshot.tools
+    const contents: { name: string; kind: "skill" | "tool" }[] = snapshot.tools
       .filter((row) => ids.has(row.installationId))
       .map((row) => ({ name: row.name.slice(0, 120), kind: "tool" }));
     for (const skill of Array.isArray(plugin?.manifest.skills) ? plugin.manifest.skills : []) {
@@ -392,7 +368,6 @@ export class PluginSettingsStore {
             : null;
       if (name) contents.push({ name: name.slice(0, 120), kind: "skill" });
     }
-    if (plugin?.specialistManifest) contents.push({ name: plugin.name, kind: "specialist" });
     if (target.kind === "skill") contents.push({ name: target.fullName, kind: "skill" });
     return PluginDetailViewSchema.parse({
       row,
@@ -403,9 +378,6 @@ export class PluginSettingsStore {
         updatedAt: row.updatedAt.toISOString(),
         revokedAt: row.revokedAt?.toISOString() ?? null,
       })),
-      registrations: snapshot.specialists
-        .filter((row) => target.kind === "specialist" && row.pluginId === target.pluginId)
-        .map((row) => ({ id: row.id, ownerUserId: row.ownerUserId })),
       accounts: accounts.map((row) => ({
         connectionId: row.id,
         displayName: row.displayName,
@@ -509,7 +481,7 @@ export function projectLooseSkillRows(
           : inventory.stale
             ? ["waiting-device"]
             : [],
-      contents: { skills: 1, tools: 0, specialists: 0 },
+      contents: { skills: 1, tools: 0 },
       permissions: { canEnable: true, canPlace: false, canRemove: false, canUpdate: false },
     };
   });

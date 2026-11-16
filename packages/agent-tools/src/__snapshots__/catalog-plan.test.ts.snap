@@ -30,7 +30,7 @@ Routing:
 
 Helpers:
 - Your engine's native subagents work inside this Run, under its authority, and end with it.
-- \`opensteer_task_delegate\` starts independent work in its own task that outlives your turn. Give its goal, context, constraints and completion criteria. Use a ready matching specialist when appropriate.
+- \`opensteer_task_delegate\` starts independent work in its own task that outlives your turn. Give its goal, context, constraints and completion criteria, and name any skill it should use. Set \`model\` and \`aiAccountId\` when the work needs a particular model.
 - Continuing a finished task with \`taskId\` keeps its AI account and model; change active work with \`opensteer_task_send\`.
 - A delegated result returns automatically, waking you if your turn ended, unless you read it first with a wait or \`opensteer_delegation_status\`. Empty final replies wake nobody.
 - An ordinary question from a delegated task reaches you. Answer with \`opensteer_request_answer\` when the answer follows from the task or the person's instructions; otherwise leave it for the person. Approvals are the person's alone.
@@ -94,7 +94,7 @@ Routing:
 
 Helpers:
 - Your engine's native subagents work inside this Run, under its authority, and end with it.
-- \`opensteer_task_delegate\` starts independent work in its own task that outlives your turn. Give its goal, context, constraints and completion criteria. Use a ready matching specialist when appropriate.
+- \`opensteer_task_delegate\` starts independent work in its own task that outlives your turn. Give its goal, context, constraints and completion criteria, and name any skill it should use. Set \`model\` and \`aiAccountId\` when the work needs a particular model.
 - Continuing a finished task with \`taskId\` keeps its AI account and model; change active work with \`opensteer_task_send\`.
 - A delegated result returns automatically, waking you if your turn ended, unless you read it first with a wait or \`opensteer_delegation_status\`. Empty final replies wake nobody.
 - An ordinary question from a delegated task reaches you. Answer with \`opensteer_request_answer\` when the answer follows from the task or the person's instructions; otherwise leave it for the person. Approvals are the person's alone.
@@ -1365,7 +1365,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "run",
       "connection",
     ],
-    "description": "List the person's installed plugins and the specialists they provide.",
+    "description": "List the person's installed plugins.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -1444,33 +1444,19 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "run",
       "connection",
     ],
-    "description": "Remove an installed plugin, or one specialist registration from a plugin.",
+    "description": "Remove an installed plugin.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "pluginId": {
-          "description": "plugin: the plugin to remove.",
           "maxLength": 256,
           "minLength": 1,
-          "type": "string",
-        },
-        "specialistId": {
-          "description": "specialist: the registration to remove.",
-          "maxLength": 256,
-          "minLength": 1,
-          "type": "string",
-        },
-        "target": {
-          "enum": [
-            "plugin",
-            "specialist",
-          ],
           "type": "string",
         },
       },
       "required": [
-        "target",
+        "pluginId",
       ],
       "type": "object",
     },
@@ -1840,12 +1826,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
         "operationKey": {
           "description": "Retry key for identical input; usually omit.",
           "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "specialist": {
-          "description": "Ready specialist registration ID or plugin name.",
-          "maxLength": 256,
           "minLength": 1,
           "type": "string",
         },
@@ -2356,12 +2336,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           },
           "maxItems": 63,
           "type": "array",
-        },
-        "specialist": {
-          "description": "Ready specialist registration ID or plugin name.",
-          "maxLength": 256,
-          "minLength": 1,
-          "type": "string",
         },
         "taskId": {
           "description": "Finished task to continue; omit new-task selectors.",

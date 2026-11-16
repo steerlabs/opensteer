@@ -336,7 +336,6 @@ export const DEFAULT_THREAD_ACCESS_MODE: ThreadAccessMode = "full-access";
 
 export const ThreadSchema = z.object({
   returnHint: CompactionReturnHintSchema.nullable().optional(),
-  specialistId: z.string().nullable().optional(),
   accessMode: ThreadAccessModeSchema,
   askedAt: IsoDateTimeSchema.optional(),
 

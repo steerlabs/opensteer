@@ -39,7 +39,6 @@ export function createIntegrationPlatformRpcHandlers(
 ): Pick<
   HostApiHandlers,
   | "integration.grants.list"
-  | "specialist.list"
   | "plugin.list"
   | "integration.platform.get"
   | "integration.computer.apps.installed"
@@ -50,12 +49,6 @@ export function createIntegrationPlatformRpcHandlers(
   | "integration.server.secrets.list"
 > {
   return {
-    "specialist.list": async (_input, context) =>
-      rpcSuccess({
-        specialists: await options.platform.store.specialists.list(
-          (await requirePersonalSession(context, options.platform.store.connections)).user.id,
-        ),
-      }),
     "plugin.list": async (_input, context) => {
       return rpcSuccess({
         plugins: await options.platform.store.plugins.listForUser(
@@ -149,9 +142,6 @@ export type IntegrationPlatformCommand = Extract<
       | "plugin.update"
       | "plugin.remove"
       | "plugin.activation.set"
-      | "specialist.add"
-      | "specialist.remove"
-      | "specialist.list"
       | "plugin.list"
       | "integration.catalog.install"
       | "integration.computer.setup.set"
@@ -176,7 +166,7 @@ export async function handleIntegrationPlatformCommand(
   context: HostApiServerContext,
 ): Promise<HostApiCommandOutput> {
   const owner = (await requirePersonalSession(context, options.platform.store.connections)).user.id;
-  if (command.type === "plugin.list" || command.type === "specialist.list")
+  if (command.type === "plugin.list")
     return executeIntegrationPlatformCommand(options, command, context);
   const viewers = options.pluginsChanged
     ? await options.platform.store.settings.affectedViewers({
@@ -289,19 +279,6 @@ async function executeIntegrationPlatformCommand(
         type: command.type,
       };
     }
-    case "specialist.add":
-      return {
-        type: command.type,
-        specialist: await options.platform.store.specialists.add({
-          ...command,
-          actorUserId: session.user.id,
-        }),
-      };
-    case "specialist.list":
-      return {
-        type: command.type,
-        specialists: await options.platform.store.specialists.list(session.user.id),
-      };
     case "plugin.list":
       return {
         type: command.type,

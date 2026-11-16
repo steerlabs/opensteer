@@ -70,11 +70,6 @@ function fixture() {
         listForUser: vi.fn(async () => [{ id: "p", name: "Plugin", config: { token: "secret" } }]),
         setActivation: vi.fn(),
       },
-      specialists: {
-        list: vi.fn(async () => []),
-        summaries: vi.fn(async () => []),
-        remove: vi.fn(),
-      },
     },
     revokeGrant: vi.fn(),
     uninstallIntegration: vi.fn(),
@@ -261,12 +256,6 @@ describe("administration through the MCP service", () => {
         JSON.stringify(await f.mcp.callTool("token", name, input, { operationKey: name })),
       ).not.toMatch(/secret|apiKey|config|token/);
     }
-  });
-  it("lists specialists without refreshing or binding resources", async () => {
-    const f = fixture();
-    await f.mcp.callTool("token", "opensteer_plugin_list", {}, { operationKey: "list" });
-    expect(f.deps.integrations.platform.store.specialists.list).not.toHaveBeenCalled();
-    expect(f.deps.integrations.platform.store.specialists.summaries).toHaveBeenCalledOnce();
   });
   it("applies the same administration to a Run without requiring a fake person session", async () => {
     const f = fixture();

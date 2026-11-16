@@ -9,7 +9,6 @@ import {
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import { replaceSecrets, type LocalMcpSecretsUpdate } from "./local-mcp-server-store.js";
-import { PluginStore } from "./plugin-store.js";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { resolveResourceAccess } from "./resource-access.js";
 import { readRequestSettlementActor, requestSettlementActor } from "./request-settlement.js";
@@ -428,10 +427,6 @@ abstract class IntegrationPlatformStoreBase {
       throw new OpensteerError({ code: "forbidden", message: "Connection is unavailable" });
     await assertPersonalOwner(this.database, userId);
     return { connectionId, requestedBy: userId };
-  }
-
-  protected async specialistTurnedOff(input: IntegrationRequester): Promise<boolean> {
-    return !(await resolveResourceAccess(this.database, input)).specialistAllowed;
   }
 
   protected async installationInventory(): Promise<readonly IntegrationInstallation[]> {
@@ -1168,9 +1163,6 @@ export async function installIntegrationInTransaction(
       );
     }
   }
-  // After servers and their secrets, as the lock order takes them.
-  if (input.installation.pluginId)
-    await new PluginStore(transaction).repinSpecialists(transaction, input.installation.pluginId);
   if (existingServers.length > 0) {
     const serverIds = existingServers.map(({ id }) => id);
     await transaction
@@ -1753,8 +1745,6 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       (c) => !c.definitionId || !deniedDefinitions.has(c.definitionId),
     );
     const requesterAccess = await resolveResourceAccess(this.database, input);
-    const specialistOff = !requesterAccess.specialistAllowed;
-    if (specialistOff) connections = [];
     return Promise.all(
       installations
         .filter(
@@ -1797,11 +1787,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
             connectionId: IntegrationConnectionId | null,
             requiredAccess: IntegrationAccess,
           ) => {
-            if (
-              specialistOff ||
-              !integrationAccessCovers(requesterAccess.runAccess, requiredAccess)
-            )
-              return false;
+            if (!integrationAccessCovers(requesterAccess.runAccess, requiredAccess)) return false;
             const connection =
               connectionId === null
                 ? null
@@ -3204,12 +3190,12 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     for (;;) {
       const generation = await this.authorityGeneration(input.ownerUserId);
       const cached = this.#callableToolsCache.get({ ...scope, generation });
-      if (cached) return (await this.specialistTurnedOff(input)) ? [] : permitted(cached);
+      if (cached) return permitted(cached);
       const resolved = await this.resolveCallableTools(input);
       const verifiedGeneration = await this.authorityGeneration(input.ownerUserId);
       if (verifiedGeneration !== generation) continue;
       this.#callableToolsCache.set({ ...scope, generation }, resolved);
-      return (await this.specialistTurnedOff(input)) ? [] : permitted(resolved);
+      return permitted(resolved);
     }
   }
 

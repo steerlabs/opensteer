@@ -35,7 +35,6 @@ import {
   ThreadIdSchema,
   ThreadInputPolicySchema,
   readableRequestList,
-  ThreadAccessModeSchema,
 } from "@opensteer/core";
 import { TriggerControlInputSchema } from "@opensteer/triggers";
 import { z } from "zod";
@@ -297,7 +296,6 @@ export class ProductToolsTestClient {
       deviceAccess: unavailableDefaults as never,
       machineFullDiskAccess: unavailableDefaults as never,
       canRunHarness: () => true,
-      harnessAccessModes: () => ThreadAccessModeSchema.options,
       isEnvironmentConnected: () => true,
       onEvent: () => {},
       execution: unavailableDefaults as never,

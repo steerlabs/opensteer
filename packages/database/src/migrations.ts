@@ -84,6 +84,14 @@ const messageOriginMigrationName = "0027_message_origin";
 const MESSAGE_ORIGIN_SQL = `
 alter table messages add column origin jsonb;
 `;
+/** Databases created from the current baseline never had this storage. */
+export const dropSpecialistsMigrationName = "0028_drop_specialists_contract";
+const DROP_SPECIALISTS_SQL = `
+drop table if exists specialists;
+alter table threads drop column if exists specialist_id;
+alter table plugin_versions drop column if exists specialist_manifest;
+delete from plugin_owner_settings where target->>'kind' = 'specialist';
+`;
 export function migrationProvider(): MigrationProvider {
   return {
     async getMigrations() {
@@ -307,6 +315,11 @@ export function migrationProvider(): MigrationProvider {
         [messageOriginMigrationName]: {
           async up(database) {
             await sql.raw(MESSAGE_ORIGIN_SQL).execute(database);
+          },
+        },
+        [dropSpecialistsMigrationName]: {
+          async up(database) {
+            await sql.raw(DROP_SPECIALISTS_SQL).execute(database);
           },
         },
       };

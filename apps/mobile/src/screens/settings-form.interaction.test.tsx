@@ -73,7 +73,7 @@ describe("Settings on a phone", () => {
       rows.slice(rows.indexOf("ConnectionsGmail, GitHub and the other accounts agents use")),
     ).toEqual([
       "ConnectionsGmail, GitHub and the other accounts agents use",
-      "PluginsSkills, tools and specialists for your agents",
+      "PluginsSkills and tools for your agents",
       "ChromeYour Chrome and the sites agents can sign in to",
       "Browser profilesSeparate browsers with their own sign-ins",
       "PasswordsKept on Mac mini",

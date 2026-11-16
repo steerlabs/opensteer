@@ -34,12 +34,6 @@ export const mcpPresentationScenarios = [
     "Paused a messaging bridge",
   ],
   [
-    "opensteer_plugin_remove",
-    { target: "specialist" },
-    "Removing a specialist",
-    "Removed a specialist",
-  ],
-  [
     "browser_profile_remove",
     { target: "profile" },
     "Deleting a browser profile",

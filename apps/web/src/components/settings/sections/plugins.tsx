@@ -1027,7 +1027,7 @@ function PackageActions({ detail, reload }: { detail: PluginDetailView; reload: 
               such as a pairing, is deleted.
             </p>
           ) : (
-            <p>Its skills, tools and specialist leave your agents. The folder stays on disk.</p>
+            <p>Its skills and tools leave your agents. The folder stays on disk.</p>
           )}
           <button
             className="btn"
@@ -1063,15 +1063,7 @@ function PluginIcon({ row }: { row: PluginRow }) {
     );
   return (
     <span className="card__row-glyph">
-      <Icon
-        name={
-          row.target.kind === "specialist"
-            ? "user"
-            : row.target.kind === "skill"
-              ? "code"
-              : "puzzle"
-        }
-      />
+      <Icon name={row.target.kind === "skill" ? "code" : "puzzle"} />
     </span>
   );
 }

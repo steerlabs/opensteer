@@ -21,7 +21,6 @@ import {
   ThreadIdSchema,
   MessageIdSchema,
   type ThreadAccessMode,
-  ThreadAccessModeSchema,
   type UserId,
 } from "@opensteer/core";
 import { AgentConnectionStore, type OpensteerStore } from "@opensteer/database";
@@ -152,7 +151,6 @@ async function serveMcp(
     },
     isEnvironmentConnected: options.connected ?? (() => true),
     canRunHarness: () => true,
-    harnessAccessModes: () => ThreadAccessModeSchema.options,
   } as unknown as ConstructorParameters<typeof ProductToolHandlers>[0]);
   let service!: OpensteerMcpService;
   const server = createServer((request, response) => {

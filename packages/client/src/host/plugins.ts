@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { harnessDriverLabel, type SpecialistRegistration } from "@opensteer/core";
 
 const timestamp = z
   .union([z.string(), z.date()])
@@ -26,7 +25,6 @@ const PluginRowSchema = z.object({
           .nullable()
           .optional()
           .catch(null),
-        specialistManifest: z.unknown().optional(),
       }),
     )
     .catch([]),
@@ -47,8 +45,6 @@ export interface PluginSummary {
   /** The installed snapshot, for a package that names no version. */
   readonly digest: string | null;
   readonly description: string | null;
-  /** Whether its current version carries a specialist. */
-  readonly specialist: boolean;
   readonly skills: number;
   readonly servers: number;
 
@@ -72,7 +68,6 @@ export function pluginSummaries(rows: readonly unknown[]): PluginSummary[] {
         version: current?.manifest?.version ?? null,
         digest: current?.digest ?? null,
         description: current?.manifest?.description?.trim() || null,
-        specialist: current?.specialistManifest != null,
         skills: current?.manifest?.skills?.length ?? 0,
         servers: plugin.servers?.length ?? 0,
         updatedAt: plugin.updatedAt ?? null,
@@ -93,17 +88,4 @@ export function pluginContents(plugin: Pick<PluginSummary, "servers" | "skills">
     plugin.servers > 0 ? `${plugin.servers} ${plugin.servers === 1 ? "server" : "servers"}` : null,
   ].filter((part): part is string => part !== null);
   return parts.length > 0 ? parts.join(" · ") : null;
-}
-
-/* ---- Specialists ---- */
-
-/** The models a specialist runs on, in its order of preference: "Claude Code · opus". */
-export function specialistModels(registration: Pick<SpecialistRegistration, "models">): string[] {
-  return registration.models.map((entry) =>
-    "unknown" in entry
-      ? "Unknown model entry"
-      : "role" in entry
-        ? `${entry.role === "light" ? "Quick model" : "Strong model"} · per your settings`
-        : `${harnessDriverLabel(entry.engine)} · ${entry.model}`,
-  );
 }

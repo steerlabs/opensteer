@@ -5,7 +5,6 @@ import { mcpToolCallId } from "../integrations/mcp-call-id.js";
 import { fingerprint } from "../mcp/operations.js";
 import { ProductToolRequestSchema } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
-import { SpecialistStore } from "@opensteer/database";
 import {
   AssignmentSummarySchema,
   createId,
@@ -51,63 +50,9 @@ const testModelSelection = ModelSelectionSchema.parse({
   providerId: "openai",
 });
 describe("Product tool handlers", () => {
-  it("refuses a specialist that is being removed", async () => {
+  it("continues an existing task on its own account and model", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Owner task");
-    const delegateThread = vi.fn();
-    const { service } = makeService({
-      threads: [current],
-      messages: [],
-      commands: {
-        delegateThread,
-        enqueueThreadInput: vi.fn(),
-      },
-    });
-    const listing = vi.spyOn(SpecialistStore.prototype, "list").mockResolvedValue([
-      {
-        id: "removing-specialist",
-        pluginId: "plugin",
-        pluginVersionId: "version",
-        ownerUserId: ownerId,
-        ownerName: "Alice",
-        canUse: false,
-        plugin: "invoices",
-        version: "a".repeat(64),
-        status: "removing",
-        models: [
-          {
-            role: "light",
-          },
-        ],
-        fallback: "none",
-        access: [],
-      },
-    ]);
-    const runnable = vi.spyOn(SpecialistStore.prototype, "assertRunnable").mockRejectedValue(
-      new OpensteerError({
-        code: "conflict",
-        message: "Specialist is removing",
-      }),
-    );
-    try {
-      await expect(
-        service.handle("run-token", {
-          type: "thread.delegate",
-          requestId: crypto.randomUUID(),
-          specialist: "invoices",
-          message: "Read invoices",
-        }),
-      ).rejects.toThrow("Specialist is removing");
-      expect(delegateThread).not.toHaveBeenCalled();
-    } finally {
-      listing.mockRestore();
-      runnable.mockRestore();
-    }
-  });
-  it("continues an existing specialist Thread on its own model, never re-resolving its manifest", async () => {
-    const current = thread(currentThreadId, nativeHarnessId, "Owner task");
-    const existing = thread(targetThreadId, codexHarnessId, "Invoices", null, {
-      specialistId: "ready-specialist",
-    });
+    const existing = thread(targetThreadId, codexHarnessId, "Invoices");
     const existingRun = run(existing);
     const existingMessage = message(existing.id, existingRun.id, "Next batch");
     const delegateThread = vi.fn(async () => ({
@@ -128,48 +73,19 @@ describe("Product tool handlers", () => {
         enqueueThreadInput: vi.fn(),
       },
     });
-    const listing = vi.spyOn(SpecialistStore.prototype, "list").mockResolvedValue([
-      {
-        id: "ready-specialist",
-        pluginId: "plugin",
-        pluginVersionId: "version",
-        ownerUserId: ownerId,
-        ownerName: "Alice",
-        canUse: true,
-        plugin: "invoices",
-        version: "a".repeat(64),
-        status: "ready",
-        models: [
-          {
-            role: "light",
-          },
-        ],
-        fallback: "none",
-        access: [],
-      },
-    ]);
-    const runnable = vi
-      .spyOn(SpecialistStore.prototype, "assertRunnable")
-      .mockResolvedValue(undefined as never);
-    try {
-      await service.handle("run-token", {
-        type: "thread.delegate",
-        requestId: crypto.randomUUID(),
-        taskId: existing.id,
-        message: "Next batch",
-      });
-      expect(delegateThread).toHaveBeenCalledWith(
-        expect.objectContaining({
-          threadId: existing.id,
-          specialistId: "ready-specialist",
-          harnessInstanceId: existing.harnessInstanceId,
-          modelSelection: existing.modelSelection,
-        }),
-      );
-    } finally {
-      listing.mockRestore();
-      runnable.mockRestore();
-    }
+    await service.handle("run-token", {
+      type: "thread.delegate",
+      requestId: crypto.randomUUID(),
+      taskId: existing.id,
+      message: "Next batch",
+    });
+    expect(delegateThread).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: existing.id,
+        harnessInstanceId: existing.harnessInstanceId,
+        modelSelection: existing.modelSelection,
+      }),
+    );
   });
   it("lists the Requests visible to the current task", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Owner task", null, {});
@@ -896,16 +812,8 @@ describe("Product tool handlers", () => {
       }),
     );
   });
-  it.each([
-    ["task", {}],
-    [
-      "specialist",
-      {
-        specialistId: "invoices",
-      },
-    ],
-  ] as const)("allows Trigger tools for a %s task", async (_place, consent) => {
-    const current = thread(currentThreadId, nativeHarnessId, "Owner task", null, consent);
+  it("allows Trigger tools for a task", async () => {
+    const current = thread(currentThreadId, nativeHarnessId, "Owner task");
     const manage = vi.fn(async () => ({}));
     const { service } = makeService({
       commands: {
@@ -1482,9 +1390,7 @@ function thread(
   harnessInstanceId: HarnessInstanceId,
   title: string,
   parentThreadId: Thread["parentThreadId"] = null,
-  overrides: Partial<
-    Pick<Thread, "accessMode" | "createdBy" | "environmentId" | "specialistId">
-  > = {},
+  overrides: Partial<Pick<Thread, "accessMode" | "createdBy" | "environmentId">> = {},
 ): Thread {
   return {
     lastVisitedAt: null,

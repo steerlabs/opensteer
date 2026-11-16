@@ -1831,7 +1831,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const elsewhere = await send(
         other.threadId,
         [...content, unapproved],
-        "native-place-specialist-busy-unapproved",
+        "native-place-other-task-busy-unapproved",
       );
       expect(elsewhere.statusCode, elsewhere.body).toBe(200);
       expect(elsewhere.json().data).toMatchObject({
@@ -2000,14 +2000,14 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
               stored: sent.message.content,
               projected,
               personMessage: {
-                admitted: ["specialist-scope", "busy-phone", "unapproved-app", "offline-mac"],
+                admitted: ["other-task-scope", "busy-phone", "unapproved-app", "offline-mac"],
                 refused: ["not-owned", "wrong-display", "older-runner"],
               },
               forwarding: {
                 refused: [
                   "invisible",
                   "wrong-display",
-                  "specialist-scope",
+                  "other-task-scope",
                   "busy-phone",
                   "unrelated-app",
                   "included-but-unusable-app",

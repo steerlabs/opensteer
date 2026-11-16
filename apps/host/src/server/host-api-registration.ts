@@ -131,7 +131,6 @@ export const hostApiScopes = {
   "computer.app.windows": "mutation",
   "integration.computer.apps.approved": "session",
   "integration.computer.apps.installed": "mutation",
-  "specialist.list": "session",
   "plugin.list": "session",
   "integration.platform.get": "session",
   "integration.repositoryAccess.check": "mutation",

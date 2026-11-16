@@ -1,6 +1,4 @@
 import Fastify from "fastify";
-import { IntegrationPlatformStore, type DatabaseSchema } from "@opensteer/database";
-import type { Kysely } from "kysely";
 import { createId } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -20,69 +18,6 @@ afterEach(async () => {
 });
 
 describe("integration platform OAuth routes", () => {
-  it("keeps plugin uninstall retryable until specialist retirement completes", async () => {
-    const order: string[] = [];
-    const retirePlugin = vi.fn(async (): Promise<void> => {
-      throw new Error("Owner computer offline");
-    });
-    const remove = vi.fn(async () => {
-      order.push("remove");
-    });
-    const uninstallIntegration = vi.fn(async () => {
-      order.push("uninstall");
-    });
-    const pluginQuery = {
-      select: () => pluginQuery,
-      where: () => pluginQuery,
-      executeTakeFirst: async () => ({
-        scope: "deployment",
-        installedBy: null,
-        isActiveWorkspaceMember: false,
-      }),
-    };
-    const store = new IntegrationPlatformStore({
-      selectFrom: () => pluginQuery,
-    } as unknown as Kysely<DatabaseSchema>);
-    vi.spyOn(store.plugins, "assertCanRemove").mockResolvedValue(undefined);
-    vi.spyOn(store.plugins, "remove").mockImplementation(remove);
-    const options = {
-      authenticator: {} as HostAuthenticator,
-      dashboard: {} as never,
-      mcpOauth: {} as McpOAuthService,
-      platform: {
-        store: {
-          connections: { assertOwner: vi.fn(async () => undefined) },
-          specialists: { retirePlugin },
-          plugins: store.plugins,
-          listInstallations: async () => [{ id: "installation", pluginId: "plugin" }],
-        },
-        removePluginData: vi.fn(async () => {
-          order.push("data");
-        }),
-        uninstallIntegration,
-      } as never,
-    };
-    const context = testHostApiContext(createId("user"), {});
-    const command = {
-      type: "plugin.remove",
-      pluginId: "plugin",
-      idempotencyKey: "remove",
-    } as const;
-    await expect(handleIntegrationPlatformCommand(options, command, context)).rejects.toThrow(
-      "offline",
-    );
-    expect(remove).not.toHaveBeenCalled();
-    expect(uninstallIntegration).not.toHaveBeenCalled();
-    retirePlugin.mockImplementation(async () => {
-      order.push("retire");
-    });
-    await expect(handleIntegrationPlatformCommand(options, command, context)).resolves.toEqual({
-      type: "plugin.remove",
-    });
-    expect(retirePlugin).toHaveBeenCalledWith("plugin");
-    expect(order).toEqual(["retire", "uninstall", "remove", "data"]);
-  });
-
   it("invalidates the owner’s settings only after a committed mutation", async () => {
     const owner = createId("user");
     const changed = vi.fn();

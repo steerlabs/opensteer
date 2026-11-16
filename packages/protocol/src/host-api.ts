@@ -73,7 +73,6 @@ import {
 } from "./personal-remote-access.js";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import {
-  SpecialistRegistrationViewSchema,
   AssignmentIdSchema,
   AssignmentSummarySchema,
   AssignmentViewSchema,
@@ -374,8 +373,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("attachment.upload.discard"),
   }),
-
-  /** A specialist's colour, chosen. Sent only to a Host that advertises `task-marks-v1`. */
 
   z.strictObject({
     accessMode: ThreadAccessModeSchema.optional(),
@@ -882,22 +879,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
-    type: z.literal("specialist.add"),
-
-    pluginId: z.string().min(1),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("specialist.remove"),
-
-    specialistId: z.string().min(1),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("specialist.list"),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
     input: InstallAgentPluginSchema,
     type: z.literal("plugin.install"),
   }),
@@ -1355,12 +1336,6 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("integration.mcp.disconnect") }),
   z.object({ type: z.literal("plugin.update") }),
   z.object({ type: z.literal("plugin.remove") }),
-  z.object({ type: z.literal("specialist.add"), specialist: SpecialistRegistrationViewSchema }),
-  z.object({ type: z.literal("specialist.remove") }),
-  z.object({
-    type: z.literal("specialist.list"),
-    specialists: z.array(SpecialistRegistrationViewSchema),
-  }),
   z.object({ type: z.literal("plugin.activation.set") }),
   z.object({ type: z.literal("plugin.list"), plugins: z.array(z.record(z.string(), z.unknown())) }),
   z.object({
@@ -2010,11 +1985,6 @@ const hostApiGroup4 = defineRpc({
       total: z.number().int().nonnegative(),
       unavailableReason: z.enum(["offline", "not-ready"]).optional(),
     }),
-  ),
-  "specialist.list": declaration(
-    "GET",
-    z.strictObject({}),
-    z.object({ specialists: z.array(SpecialistRegistrationViewSchema) }),
   ),
   "plugin.list": declaration(
     "GET",

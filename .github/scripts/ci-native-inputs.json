@@ -255,7 +255,6 @@
     "apps/host/src/agents/run-tool-tokens.ts",
     "apps/host/src/agents/runner-authenticator.ts",
     "apps/host/src/agents/runner-enrollment-grant.ts",
-    "apps/host/src/agents/specialist-placement.ts",
     "apps/host/src/agents/thread-naming.ts",
     "apps/host/src/agents/voice-tools.ts",
     "apps/host/src/apps/app-gateway.ts",

@@ -713,7 +713,6 @@ export interface ThreadTable {
   inputQueuePaused: Generated<boolean>;
   inputQueuePausedBy: Generated<UserId | null>;
   accessMode: Generated<ThreadAccessMode>;
-  specialistId: Generated<string | null>;
 
   purpose: TaskPurpose;
   teamId: DeploymentId | null;
@@ -2250,24 +2249,11 @@ export interface DatabaseSchema {
     pluginId: string;
     createdAt: Timestamp;
   };
-  specialists: {
-    removedAt: Generated<Date | null>;
-    id: string;
-
-    pluginId: string;
-    pluginVersionId: string;
-    ownerUserId: UserId;
-    createdBy: UserId;
-    status: "pending" | "ready" | "removing" | "removal-failed";
-    createdAt: Timestamp;
-    updatedAt: Timestamp;
-  };
   pluginVersions: {
     id: string;
     pluginId: string;
     digest: string;
     manifest: JsonColumn<Readonly<Record<string, unknown>>>;
-    specialistManifest: JsonColumn<Readonly<Record<string, unknown>>> | null;
     createdAt: Timestamp;
   };
 

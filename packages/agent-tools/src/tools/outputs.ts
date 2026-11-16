@@ -226,11 +226,6 @@ export const PluginInstallOutputSchema = z.object({
       }),
     )
     .optional(),
-  specialist: z.boolean().optional(),
-  registration: z
-    .object({ id: z.string(), status: z.string(), plugin: z.string() })
-    .nullable()
-    .optional(),
 });
 export const PersonMessageOutputSchema = z.object({
   messageId: MessageIdSchema,

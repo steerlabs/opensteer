@@ -30,9 +30,8 @@ describe("settings tools", () => {
             versions: [{ env: { SECRET: "secret" } }],
           },
         ],
-        specialists: [],
         token: "secret",
       }),
-    ).toEqual({ plugins: [{ id: "p", name: "Plugin" }], specialists: [] });
+    ).toEqual({ plugins: [{ id: "p", name: "Plugin" }] });
   });
 });
