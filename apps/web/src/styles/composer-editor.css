@@ -1,14 +1,18 @@
-/* The field grows with its words up to the frame's max-height, then scrolls. */
+/* Tiptap's mount point. The editable element inside is the whole box, as a
+   textarea is: every press on it places the caret. */
 .composer-editor {
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  cursor: text;
+  display: contents;
 }
 
+/* The field grows with its words up to its own max-height, then scrolls. */
 .composer-editor__field {
   position: relative;
+  box-sizing: border-box;
   min-height: 1lh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   outline: none;
+  cursor: text;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -17,9 +21,12 @@
   margin: 0;
 }
 
+/* Sits where the first line does, inside whatever padding the field has. */
 .composer-editor__field[data-empty]::before {
   position: absolute;
   inset-inline: 0;
+  box-sizing: border-box;
+  padding-inline: inherit;
   overflow: hidden;
   color: var(--muted-dim);
   content: attr(data-placeholder);

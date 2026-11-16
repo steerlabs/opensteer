@@ -181,15 +181,15 @@ interface MentionQuery {
  */
 export function useReferencePicker({
   editor,
-  frame,
+  field,
   hostClient,
   links,
   places,
   onPick,
 }: {
   readonly editor: RefObject<ComposerEditorControl | null>;
-  /** The editor's frame; the list opens inside the box it sits in. */
-  readonly frame: RefObject<HTMLElement | null>;
+  /** The editable element; the list opens inside the box it sits in. */
+  readonly field: RefObject<HTMLElement | null>;
   readonly hostClient: HostClient | null;
   readonly links: ((query: string) => readonly ComposerLinkCandidate[]) | null;
   readonly places: ((query: string) => readonly PlaceItem[]) | null;
@@ -224,7 +224,7 @@ export function useReferencePicker({
     }
     const start = run.start + at;
     // The list opens at the "@", kept inside the box it opens from.
-    const parent = frame.current?.offsetParent;
+    const parent = field.current?.offsetParent;
     const box = parent instanceof HTMLElement ? parent : null;
     const room = box?.clientWidth ?? 300;
     const caret = control.coordsAt(start);

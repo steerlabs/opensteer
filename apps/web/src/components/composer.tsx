@@ -47,7 +47,7 @@ import { composerDrafts, type ReturnedToDraft } from "./composer-drafts.js";
 import { forgetPending, unanswered } from "./pending-sends.js";
 import { composerFold, FoldRow, FoldToFit } from "./fold-to-fit.js";
 import { Icon } from "./icon.js";
-import { textWidth } from "./text-width.js";
+import { canvasFont, textWidth } from "./text-width.js";
 
 /**
  * A message this one answers, named by its exact source id. The excerpt and
@@ -299,7 +299,6 @@ export function Composer({
   const editorRef = useRef<ComposerEditorControl | null>(null);
   /** The editable element: where focus goes back to. */
   const fieldRef = useRef<HTMLElement | null>(null);
-  const frameRef = useRef<HTMLElement | null>(null);
   const microphoneRef = useRef<HTMLButtonElement | null>(null);
   useLayoutEffect(() => {
     const mic = microphoneRef.current;
@@ -700,7 +699,7 @@ export function Composer({
   const allPlaces = context?.places ?? noPlaces;
   const picker = useReferencePicker({
     editor: editorRef,
-    frame: frameRef,
+    field: fieldRef,
     hostClient: placeContext?.hostClient ?? null,
     links: references,
     places: placeContext ? (query) => pickablePlaces(allPlaces, query) : null,
@@ -791,7 +790,7 @@ export function Composer({
   };
 
   const fittedPlaceholder = useFittedPlaceholder(
-    frameRef,
+    fieldRef,
     recipient,
     contextThing(chips),
     placeholder,
@@ -902,12 +901,6 @@ export function Composer({
         "aria-controls": picker.expanded ? "composer-mention-list" : undefined,
         "aria-expanded": picks ? String(picker.expanded) : undefined,
         "data-composer-input": "",
-      }}
-      fieldRef={(element) => {
-        fieldRef.current = element;
-        if (inputRef) inputRef.current = element;
-      }}
-      frameAttributes={{
         "data-fold": variant === "conversation" ? String(composerFold.field) : undefined,
         // Beside its controls, the field needs room for what it shows on one
         // line: its plain placeholder, or the words being written. Without that
@@ -918,7 +911,10 @@ export function Composer({
             ? shown || placeholderFloor(recipient, placeholder)
             : undefined,
       }}
-      frameRef={frameRef}
+      fieldRef={(element) => {
+        fieldRef.current = element;
+        if (inputRef) inputRef.current = element;
+      }}
       onBlur={picker.close}
       onChange={handleChange}
       onCompositionStart={() =>
@@ -1232,22 +1228,21 @@ function useFittedPlaceholder(
   const lead = recipient?.lead ?? null;
   const name = recipient?.name ?? null;
   useLayoutEffect(() => {
-    const textarea = fieldRef.current;
-    if (!textarea) return;
+    const field = fieldRef.current;
+    if (!field) return;
     const measure = (fresh: boolean) => {
       // A field that is not laid out (hidden, or a test DOM) has no room to
       // measure, which is not the same as having none.
-      if (textarea.getClientRects().length === 0) {
+      if (field.getClientRects().length === 0) {
         setRoom(null);
         return;
       }
-      const style = getComputedStyle(textarea);
+      const style = getComputedStyle(field);
+      const font = canvasFont(style);
       const width =
-        textarea.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+        field.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
       setRoom((current) =>
-        !fresh && current?.font === style.font && current.width === width
-          ? current
-          : { font: style.font, width },
+        !fresh && current?.font === font && current.width === width ? current : { font, width },
       );
     };
     measure(false);
@@ -1257,9 +1252,7 @@ function useFittedPlaceholder(
     const fonts = "fonts" in document ? document.fonts : null;
     fonts?.addEventListener("loadingdone", remeasure);
     const stopResize =
-      typeof ResizeObserver === "undefined"
-        ? null
-        : observeResize([textarea], () => measure(false));
+      typeof ResizeObserver === "undefined" ? null : observeResize([field], () => measure(false));
     return () => {
       fonts?.removeEventListener("loadingdone", remeasure);
       stopResize?.();

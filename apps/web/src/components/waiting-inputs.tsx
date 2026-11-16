@@ -736,11 +736,11 @@ function InPlaceEditor({
   readonly onText: (text: string) => void;
 }) {
   const hint = useId();
-  const frame = useRef<HTMLElement | null>(null);
+  const fieldElement = useRef<HTMLElement | null>(null);
   // A link is words: `@` offers references, never places or files, which an edit cannot add.
   const picker = useReferencePicker({
     editor: field,
-    frame,
+    field: fieldElement,
     hostClient: null,
     links: (query) => personalReferenceCandidates(client, query),
     places: null,
@@ -794,7 +794,9 @@ function InPlaceEditor({
             "aria-label": asker ? `Edit ${asker}’s ask` : "Edit message",
             "aria-expanded": String(picker.expanded),
           }}
-          frameRef={frame}
+          fieldRef={(element) => {
+            fieldElement.current = element;
+          }}
           onBlur={picker.close}
           onChange={onText}
           onKeyDown={onKeyDown}

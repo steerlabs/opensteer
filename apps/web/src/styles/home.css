@@ -449,25 +449,31 @@ a.update-line__source:hover {
 /* Otherwise — the line too narrow, words of more than a line, dictation's
    live bar in the controls — the field takes the whole width above a toolbar
    that stays put as the words grow. */
-.composer--conversation .composer__entry:has(> .composer__input[data-folded]),
+.composer--conversation .composer__entry:has(> .composer-editor > .composer__input[data-folded]),
 .composer--conversation .composer__entry:has(.dictation-live) {
   flex-wrap: wrap;
   row-gap: 0;
 }
 
 .composer--conversation .composer__input[data-folded],
-.composer--conversation .composer__entry:has(.dictation-live) > .composer__input {
+.composer--conversation
+  .composer__entry:has(.dictation-live)
+  > .composer-editor
+  > .composer__input {
   order: -1;
   flex: 1 0 100%;
   padding-inline: var(--space-10);
 }
 
-.composer--conversation .composer__input[data-folded] ~ .composer__footer,
+.composer--conversation .composer-editor:has(> .composer__input[data-folded]) ~ .composer__footer,
 .composer--conversation .composer__entry:has(.dictation-live) > .composer__footer {
   flex: 1 1 0;
 }
 
-.composer--conversation .composer__input[data-folded] ~ .composer__footer .composer__settings {
+.composer--conversation
+  .composer-editor:has(> .composer__input[data-folded])
+  ~ .composer__footer
+  .composer__settings {
   flex: 1 1 auto;
 }
 

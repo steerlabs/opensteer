@@ -23,15 +23,7 @@ import {
   type ComposerSelection,
   type ComposerSnapshot,
 } from "@opensteer/client/references";
-import {
-  useCallback,
-  useEffect,
-  useImperativeHandle,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type Ref,
-} from "react";
+import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from "react";
 import {
   ComposerReference,
   atomTokens,
@@ -71,11 +63,8 @@ interface ComposerEditorProps {
   /** A team draft shows only team pages as atoms; everything else stays source. */
   readonly scope: ComposerScope;
   readonly autoFocus?: boolean;
+  /** On the editable element, which is the whole box: it pads, sizes and scrolls itself. */
   readonly className?: string;
-  /** On the element that grows with the words, which is what layout measures. */
-  readonly frameAttributes?: Readonly<Record<string, string | undefined>>;
-  readonly frameRef?: { current: HTMLElement | null };
-  /** On the editable element itself, which is what holds focus. */
   readonly fieldAttributes: Readonly<Record<string, string | undefined>>;
   readonly fieldRef?: (element: HTMLElement | null) => void;
   readonly placeholder?: string;
@@ -104,8 +93,6 @@ export function ComposerEditor({
   scope,
   autoFocus = false,
   className,
-  frameAttributes,
-  frameRef,
   fieldAttributes,
   fieldRef,
   placeholder = "",
@@ -125,6 +112,8 @@ export function ComposerEditor({
     onSelectionChange,
   });
   latest.current = { onBlur, onChange, onCompositionStart, onKeyDown, onPaste, onSelectionChange };
+  const fieldClass = useRef(className);
+  fieldClass.current = className;
   /** The source the editor last reported or was given. */
   const known = useRef(value);
   const generation = useRef(0);
@@ -151,7 +140,7 @@ export function ComposerEditor({
       shouldRerenderOnTransaction: false,
       editorProps: {
         attributes: (state: EditorState): Record<string, string> => ({
-          class: "composer-editor__field",
+          class: ["composer-editor__field", fieldClass.current].filter(Boolean).join(" "),
           ...(state.doc.firstChild?.childCount === 0 ? { "data-empty": "" } : {}),
         }),
         handleKeyDown: (view, event) => {
@@ -220,9 +209,10 @@ export function ComposerEditor({
       ...fieldAttributes,
       "aria-placeholder": placeholder || undefined,
     };
+    // Only real changes: layout observes some of these attributes.
     for (const [name, next] of Object.entries(attributes))
       if (next === undefined) dom.removeAttribute(name);
-      else dom.setAttribute(name, next);
+      else if (dom.getAttribute(name) !== next) dom.setAttribute(name, next);
     dom.dataset.placeholder = placeholder;
   });
 
@@ -314,20 +304,9 @@ export function ComposerEditor({
     };
   }, [editor, scope]);
 
-  const publishFrame = useCallback(
-    (element: HTMLDivElement | null) => {
-      if (frameRef) frameRef.current = element;
-    },
-    [frameRef],
-  );
-  return (
-    <EditorContent
-      className={["composer-editor", className].filter(Boolean).join(" ")}
-      editor={editor}
-      {...frameAttributes}
-      ref={publishFrame}
-    />
-  );
+  // The editable element is the box a press lands in, as a textarea was; the
+  // wrapper Tiptap mounts it in takes no part in layout.
+  return <EditorContent className="composer-editor" editor={editor} />;
 }
 
 /** Keys, history and the two small plugins the atoms need. */

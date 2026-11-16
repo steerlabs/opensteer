@@ -1752,7 +1752,7 @@ a.team-row__main:hover {
   cursor: pointer;
 }
 
-.team-composer__chip + .team-composer__input {
+.team-composer__chip + .composer-editor > .team-composer__input {
   padding-left: var(--space-8);
 }
 

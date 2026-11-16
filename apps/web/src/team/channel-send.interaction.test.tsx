@@ -16,14 +16,12 @@ import {
 } from "../components/workspace/workspace.interaction.test-support.js";
 import { seedMockTeamAsk } from "./mock-team-ask.js";
 import {
-  composerField,
   composerText,
   textareaView,
   typeInto,
 } from "../components/composer-editor.test-support.js";
 
-const field = () =>
-  textareaView(element<HTMLElement>(".team-composer__input .composer-editor__field"));
+const field = () => textareaView(element<HTMLElement>(".team-composer__input"));
 const rowsSaying = (text: string) =>
   [...document.querySelectorAll<HTMLElement>(".channel .tmsg")].filter((row) =>
     row.textContent?.includes(text),
@@ -160,9 +158,7 @@ describe("sending in a channel", () => {
     await act(async () => {
       await vi.waitFor(
         () =>
-          expect(composerText(composerField(element(".thread-pane .team-composer__input")))).toBe(
-            "Thread draft",
-          ),
+          expect(composerText(element(".thread-pane .team-composer__input"))).toBe("Thread draft"),
         { timeout: 1000 },
       );
     });
