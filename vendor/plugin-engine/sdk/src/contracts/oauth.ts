@@ -4,7 +4,7 @@ import { ApiError } from "@opensteer/plugin-engine-utils/api-error";
 import type { UrlPolicy } from "@opensteer/plugin-engine-utils/url-policy";
 import { AuthMethodName } from "./provider.ts";
 import { AccountConnectionId } from "./shared.ts";
-import { Match, Schema } from "effect";
+import { Match, Schema, type Effect, type Redacted } from "effect";
 import {
   CredentialHost,
   OAuthAuthorizationParams,
@@ -41,6 +41,7 @@ export const OAuthStartResult = Schema.Union([
     ...OAuthSignIn.fields,
     /** The stored client this sign-in uses, such as the automatic client it found or created. */
     oauthClient: Schema.optional(OAuthClientId),
+    brokerAttemptId: Schema.optional(Schema.NonEmptyString),
   }),
   Schema.Struct({ status: Schema.Literal("completed"), account: Account }),
 ]);
@@ -435,14 +436,11 @@ export type FirstPartyOAuthClientId = typeof FirstPartyOAuthClientId.Type;
  * reporting a scope outside `allowedScopes` is refused. Its secret never leaves the host: grants
  * keep only its ID, so rotating or removing it applies to every account.
  */
-export const FirstPartyOAuthClient = Schema.Struct({
+const firstPartyClientFields = {
   id: FirstPartyOAuthClientId,
   /** Shown when signing in, such as "PluginEngine for Google". */
   label: Schema.NonEmptyString,
   server: FirstPartyOAuthServer,
-  clientId: Schema.NonEmptyString,
-  clientSecret: Schema.optionalKey(Schema.RedactedFromValue(Schema.NonEmptyString)),
-  tokenEndpointAuthMethod: OAuthClientAuth,
   /** Requested for a provider method that asks for no scopes. */
   defaultScopes: Schema.Array(ScopeToken),
   /** Every scope a sign-in may ask for and a grant may hold. Defaults to `defaultScopes`. */
@@ -453,13 +451,40 @@ export const FirstPartyOAuthClient = Schema.Struct({
    * grants keep renewing, so an operator can stop offering a client without stranding them.
    */
   unlisted: Schema.optionalKey(Schema.Boolean),
-}).check(
-  Schema.makeFilter(
-    (client) => (client.tokenEndpointAuthMethod === "none") === (client.clientSecret === undefined),
-    {
-      message: "A client that authenticates at the token endpoint needs its secret, and only then.",
-    },
+};
+
+/** Broker identity is operator configuration, never supplied by provider or plugin code. */
+export const BrokeredOAuthProvider = Schema.Struct({
+  provider: Schema.NonEmptyString,
+  revision: Schema.Int.check(Schema.isGreaterThan(0)),
+  redirectUri: HttpUrl,
+});
+
+export const FirstPartyOAuthClient = Schema.Union([
+  Schema.Struct({
+    ...firstPartyClientFields,
+    broker: Schema.optionalKey(Schema.Never),
+    clientId: Schema.NonEmptyString,
+    clientSecret: Schema.optionalKey(Schema.RedactedFromValue(Schema.NonEmptyString)),
+    tokenEndpointAuthMethod: OAuthClientAuth,
+  }).check(
+    Schema.makeFilter(
+      (client) =>
+        (client.tokenEndpointAuthMethod === "none") === (client.clientSecret === undefined),
+      {
+        message:
+          "A client that authenticates at the token endpoint needs its secret, and only then.",
+      },
+    ),
   ),
+  Schema.Struct({
+    ...firstPartyClientFields,
+    broker: BrokeredOAuthProvider,
+    clientId: Schema.optionalKey(Schema.Never),
+    clientSecret: Schema.optionalKey(Schema.Never),
+    tokenEndpointAuthMethod: Schema.optionalKey(Schema.Never),
+  }),
+]).check(
   Schema.makeFilter(
     (client) =>
       [...client.defaultScopes, ...(client.allowedScopes ?? [])].every(
@@ -474,11 +499,96 @@ export const FirstPartyOAuthClient = Schema.Struct({
     { message: "Every default scope must be allowed." },
   ),
 );
+
 export type FirstPartyOAuthClient = typeof FirstPartyOAuthClient.Type;
 
 /** The scopes a client allows: `allowedScopes`, or its defaults when it lists none. */
 export const allowedScopes = (client: FirstPartyOAuthClient) =>
   client.allowedScopes ?? client.defaultScopes;
+
+/** Frozen through the durable account write and every renewal. */
+export const BrokeredOAuthBinding = Schema.Struct({
+  ...BrokeredOAuthProvider.fields,
+  scopes: Schema.Array(ScopeToken),
+  accountLinkGeneration: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{43}$/u)),
+  requirementDigest: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{43}$/u)),
+  clientDigest: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{43}$/u)),
+});
+export type BrokeredOAuthBinding = typeof BrokeredOAuthBinding.Type;
+export const BrokeredOAuthAttempt = Schema.Struct({
+  attemptId: Schema.NonEmptyString,
+  binding: BrokeredOAuthBinding,
+});
+export type BrokeredOAuthAttempt = typeof BrokeredOAuthAttempt.Type;
+export const BrokeredOAuthTokens = Schema.Struct({
+  accessToken: Schema.NonEmptyString,
+  tokenType: Schema.NonEmptyString,
+  refreshToken: Schema.optional(Schema.NonEmptyString),
+  grantedScopes: Schema.Array(ScopeToken),
+  expiresAt: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+});
+export type BrokeredOAuthTokens = typeof BrokeredOAuthTokens.Type;
+export const BrokeredOAuthResult = Schema.Struct({
+  ...BrokeredOAuthAttempt.fields,
+  tokens: BrokeredOAuthTokens,
+});
+export type BrokeredOAuthResult = typeof BrokeredOAuthResult.Type;
+export const OAuthBrokerFailed = ApiError.define({
+  tag: "OAuthBrokerFailed",
+  status: 502,
+  fields: {
+    reason: Schema.Literals([
+      "unavailable",
+      "grant_rejected",
+      "client_rejected",
+      "binding_changed",
+      "invalid_response",
+    ]),
+  },
+  message: () => "The account broker could not complete this operation.",
+  recorded: ({ reason }) => `Account broker failure (${reason})`,
+});
+export type OAuthBrokerFailed = typeof OAuthBrokerFailed.Type;
+
+/** Host-only: provider codes and confidential client secrets never cross this port. */
+export interface OAuthBrokerPort {
+  readonly start: (input: {
+    readonly connection: AccountConnectionId;
+    readonly owner: OwnerId;
+    readonly binding: Omit<BrokeredOAuthBinding, "accountLinkGeneration">;
+  }) => Effect.Effect<
+    {
+      readonly attemptId: string;
+      readonly authorizationUrl: string;
+      readonly expiresAt: number;
+      readonly accountLinkGeneration: string;
+    },
+    OAuthBrokerFailed
+  >;
+  readonly pull: (
+    input: BrokeredOAuthAttempt,
+  ) => Effect.Effect<Redacted.Redacted<BrokeredOAuthResult>, OAuthBrokerFailed>;
+  readonly acknowledge: (
+    input: BrokeredOAuthAttempt & {
+      readonly kind: "authorization" | "refresh";
+      readonly resultId: string;
+    },
+  ) => Effect.Effect<void, OAuthBrokerFailed>;
+  readonly refresh: (
+    input: BrokeredOAuthAttempt & {
+      readonly resultId: string;
+      readonly refreshToken: Redacted.Redacted<string>;
+      readonly grantedScopes: readonly string[];
+    },
+  ) => Effect.Effect<Redacted.Redacted<BrokeredOAuthResult>, OAuthBrokerFailed>;
+  readonly revoke: (
+    input: BrokeredOAuthAttempt & {
+      readonly tokens: Redacted.Redacted<BrokeredOAuthTokens>;
+    },
+  ) => Effect.Effect<void, OAuthBrokerFailed>;
+  /** Local authority check in the engine SQL transaction; no external I/O. Lock the Account link through commit. */
+  readonly validate: (input: BrokeredOAuthBinding) => Effect.Effect<void, OAuthBrokerFailed>;
+}
 
 /** Network transport and client identity belong to the product hosting this SDK. */
 export interface OAuthOptions {
@@ -516,6 +626,7 @@ export interface OAuthOptions {
   readonly statePrefix?: string;
   /** The operator's own OAuth clients, offered after supplied and saved clients. */
   readonly firstPartyClients?: readonly FirstPartyOAuthClient[];
+  readonly broker?: OAuthBrokerPort;
 }
 
 /**
@@ -1478,6 +1589,7 @@ export const OAuthAttempt = Schema.Struct({
 export const OAuthFirstPartyAttempt = Schema.Struct({
   ...attemptFields,
   firstParty: FirstPartyOAuthClientId,
+  broker: Schema.optionalKey(BrokeredOAuthAttempt),
 });
 export type OAuthFirstPartyAttempt = typeof OAuthFirstPartyAttempt.Type;
 /** A stored sign-in attempt. */
@@ -1551,6 +1663,7 @@ export const OAuthGrant = Schema.Union([
   Schema.Struct({
     grant: Schema.Literal("authorization_code"),
     firstParty: FirstPartyOAuthClientId,
+    broker: Schema.optionalKey(Schema.Struct({ ...BrokeredOAuthAttempt.fields, renewalGeneration: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)), grantedScopes: Schema.Array(ScopeToken) })),
     response: JsonObject,
     expiresAt: Schema.optional(Schema.Number),
     fields: JsonObject,

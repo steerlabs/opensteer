@@ -44,6 +44,12 @@ every grant has a refresh token ([oauth.ts](../packages/integration-auth/src/oau
 Provider apps register the Account's broker callback, `/v1/oauth-broker/callback/{provider}` on
 `https://accounts.opensteer.com`; the portal is never an integration callback authority.
 
+Managed provider registrations and their allowed scopes belong to the Account broker's own
+configuration, independently of the desktop catalog. Plugin attempts pin that registry revision,
+the requested scopes, the reviewed plugin requirement, the Host key and redirect, and the local
+Account-link generation. A broker result remains available until the engine commits the account
+and acknowledges it; receiving sealed tokens alone is never a completed connection.
+
 ## Provider constraints
 
 - Slack bot consent needs confidential Web OAuth over HTTPS; desktop PKCE cannot request bot scopes.

@@ -5,6 +5,17 @@ import {
   type SealedSecret,
 } from "@opensteer/access/host";
 import {
+  CreatePluginOAuthAttemptRequestSchema,
+  CreatePluginOAuthCallbackRelayRequestSchema,
+  CreatePluginOAuthRefreshRequestSchema,
+  CreatePluginOAuthRevocationRequestSchema,
+  OAuthBrokerPluginAuthorizationContextSchema,
+  OAuthBrokerPluginRelayContextSchema,
+  OAuthBrokerPluginProviderSchema,
+  OAuthBrokerPluginRelaySchema,
+  OAuthBrokerPluginRefreshContextSchema,
+  OAuthBrokerPluginRevocationContextSchema,
+  type CreatePluginOAuthAttemptRequest,
   CreateHostedOAuthAttemptRequestSchema,
   CreateHostedOAuthAttemptResponseSchema,
   CreateOAuthCallbackRelayRequestSchema,
@@ -45,7 +56,6 @@ import {
   oauthUserDeniedAuthorization,
   generateOAuthBrokerEphemeralKeyPair,
   OAuth2Error,
-  oauthAuthorizationResponseState,
   oauthFailureKind,
   openOAuthBrokerPayload,
   refreshDeclarativeCredential,
@@ -54,7 +64,18 @@ import {
   validateOAuthAuthorizationResponse,
   hostedOAuthDeploymentAuthorityDigest,
 } from "@opensteer/integration-auth";
-import { integrationDefinitions } from "@opensteer/integration-catalog";
+import {
+  legacyOAuthDefinition,
+  qualifiedLegacyOAuthDefinition,
+  assertLegacyAuthorizationDigest,
+} from "./hosted-oauth-broker-legacy.js";
+import {
+  HostedOAuthProviderRegistrySchema,
+  registryOAuthConfig,
+  type HostedOAuthProviderApplication,
+  type HostedOAuthProvider,
+} from "./hosted-oauth-provider-registry.js";
+export type { HostedOAuthProviderApplication } from "./hosted-oauth-provider-registry.js";
 import {
   integrationAuthorizationBrowserReturn,
   IntegrationAuthorizationReturnPortSchema,
@@ -62,7 +83,6 @@ import {
   type IntegrationDefinition,
   type IntegrationAuthorizationBrowserReturn,
 } from "@opensteer/integration-core";
-import { authorizationDigest as computeAuthorizationDigest } from "@opensteer/integration-core/digest";
 import { sameStringSet, type DeploymentId } from "@opensteer/core";
 import { z } from "zod";
 import { ControlPlaneError } from "../server/errors.js";
@@ -71,14 +91,6 @@ import type { HostAuthority } from "../database/store.js";
 
 const authorizationLifetimeMilliseconds = 10 * 60 * 1_000;
 const refreshLifetimeMilliseconds = 2 * 60 * 1_000;
-
-export interface HostedOAuthProviderApplication {
-  readonly clientId: string;
-  readonly clientSecret: string;
-  readonly installationUrl?: string;
-  readonly provider: string;
-  readonly revision: number;
-}
 
 interface BrokerAuthorizationContext {
   readonly accountSubject: z.infer<typeof OAuthBrokerAccountSubjectSchema>;
@@ -97,6 +109,8 @@ interface BrokerAuthorizationContext {
   readonly providerApplicationId?: string | undefined;
   readonly returnPath?: string | undefined;
   readonly requestedScopes: readonly string[];
+  readonly plugin?: z.infer<typeof OAuthBrokerPluginProviderSchema> | undefined;
+  readonly pluginRelay?: z.infer<typeof OAuthBrokerPluginRelaySchema> | undefined;
 }
 
 const BrokerAuthorizationContextSchema = z
@@ -119,12 +133,14 @@ const BrokerAuthorizationContextSchema = z
       .regex(/^ipa_[0-9a-f-]{36}$/iu)
       .optional(),
     requestedScopes: z.array(z.string().min(1).max(256)).max(512),
+    plugin: OAuthBrokerPluginProviderSchema.optional(),
+    pluginRelay: OAuthBrokerPluginRelaySchema.optional(),
     returnPath: z.string().min(1).max(2_048).optional(),
   })
   .superRefine((value, context) => {
     if (
       value.mode === "callback-relay" &&
-      (!value.clientId || (!value.providerApplicationId && !value.mcp))
+      (!value.clientId || (!value.providerApplicationId && !value.mcp && !value.pluginRelay))
     ) {
       context.addIssue({
         code: "custom",
@@ -141,7 +157,7 @@ const ReturnReceiptSchema = z.strictObject({
 const RefreshCredentialSchema = z.strictObject({ refreshToken: z.string().min(1).max(131_072) });
 
 export class HostedOAuthBrokerService {
-  readonly #applications: ReadonlyMap<string, HostedOAuthProviderApplication>;
+  readonly #applications: ReadonlyMap<string, HostedOAuthProvider>;
   readonly #attemptVault: AesGcmSecretVault;
   readonly #brokerKeyPair: ReturnType<typeof generateOAuthBrokerEphemeralKeyPair>;
   readonly #fetch: typeof globalThis.fetch;
@@ -150,7 +166,7 @@ export class HostedOAuthBrokerService {
   readonly #store: HostedOAuthBrokerStore;
 
   constructor(options: {
-    readonly applications: readonly HostedOAuthProviderApplication[];
+    readonly applications: readonly HostedOAuthProvider[];
     readonly encryptionPrivateKey?: string;
     readonly fetch?: typeof globalThis.fetch;
     readonly issuer: URL;
@@ -159,28 +175,11 @@ export class HostedOAuthBrokerService {
     readonly store: HostedOAuthBrokerStore;
   }) {
     this.#applications = new Map(
-      options.applications.map((application) => [application.provider, application]),
+      HostedOAuthProviderRegistrySchema.parse(options.applications).map((application) => [
+        application.provider,
+        application,
+      ]),
     );
-    if (this.#applications.size !== options.applications.length) {
-      throw new TypeError("Hosted OAuth provider applications must be unique by provider");
-    }
-    for (const application of options.applications) {
-      if (application.provider === "github" && !application.installationUrl) {
-        throw new TypeError("Hosted OAuth GitHub requires its exact installation URL");
-      }
-      const qualified = integrationDefinitions.some(
-        (definition) =>
-          definition.provider === application.provider &&
-          definition.hostedOAuth?.providerApplicationRevision === application.revision &&
-          definition.hostedOAuth.qualification.authorizationCodeExchange &&
-          definition.hostedOAuth.qualification.refresh,
-      );
-      if (!qualified) {
-        throw new TypeError(
-          `Hosted OAuth ${application.provider} revision ${application.revision} is not catalog-qualified`,
-        );
-      }
-    }
     const generated = generateOAuthBrokerEphemeralKeyPair();
     this.#brokerKeyPair = options.encryptionPrivateKey
       ? privateKeyPair(options.encryptionPrivateKey)
@@ -196,23 +195,38 @@ export class HostedOAuthBrokerService {
     const metadata = OAuthBrokerPublicMetadataSchema.parse({
       encryptionPublicKey: this.#brokerKeyPair.publicKey,
       installationUrls: Object.fromEntries(
-        [...this.#applications.values()].flatMap(({ installationUrl, provider }) =>
-          installationUrl ? [[provider, installationUrl]] : [],
-        ),
+        [...this.#applications.values()]
+          .filter((application) => "clientId" in application)
+          .flatMap(({ installationUrl, provider }) =>
+            installationUrl ? [[provider, installationUrl]] : [],
+          ),
       ),
       issuer: this.#issuer,
-      callbackRelayProviders: [
-        ...new Set(
-          integrationDefinitions
-            .filter((definition) =>
-              definition.authMethods.some((method) => method.kind === "oauth"),
-            )
-            .map((definition) => definition.provider),
-        ),
-      ],
+      callbackRelayProviders: [...this.#applications.keys()],
+      pluginProviders: Object.fromEntries(
+        [...this.#applications.values()]
+          .filter((application) => "clientId" in application)
+          .map((application) => [
+            application.provider,
+            {
+              revision: application.revision,
+              authorizationUrl: application.oauth.authorizationUrl,
+              tokenUrl: application.oauth.tokenUrl,
+              ...(application.oauth.revocation
+                ? { revocationUrl: application.oauth.revocation.url }
+                : {}),
+              allowedScopes: application.allowedScopes,
+              scopeSeparator: application.oauth.scopeSeparator,
+            },
+          ]),
+      ),
+      pluginOAuth: 1,
+      pluginCallbackRelay: 1,
       ...(includeInstallationUrls ? { mcpCallbackRelay: 1, appFinish: 1, appReturnPort: 1 } : {}),
       providerRevisions: Object.fromEntries(
-        [...this.#applications.values()].map(({ provider, revision }) => [provider, revision]),
+        [...this.#applications.values()]
+          .filter((application) => "clientId" in application)
+          .map(({ provider, revision }) => [provider, revision]),
       ),
     });
     if (includeInstallationUrls) return metadata;
@@ -220,8 +234,15 @@ export class HostedOAuthBrokerService {
     return legacyMetadata as typeof metadata;
   }
 
-  async createAuthorizationAttempt(authority: HostAuthority, raw: CreateHostedOAuthAttemptRequest) {
-    const input = CreateHostedOAuthAttemptRequestSchema.parse(raw);
+  async createAuthorizationAttempt(
+    authority: HostAuthority,
+    raw: CreateHostedOAuthAttemptRequest | CreatePluginOAuthAttemptRequest,
+  ) {
+    const pluginInput = CreatePluginOAuthAttemptRequestSchema.safeParse(raw);
+    const plugin = pluginInput.success ? pluginProvider(pluginInput.data) : undefined;
+    const input = pluginInput.success
+      ? legacyPluginAttempt(pluginInput.data)
+      : CreateHostedOAuthAttemptRequestSchema.parse(raw);
     assertAppFinishSurface(input);
     const binding = await this.#requireDeploymentBinding(authority.deploymentId);
     await this.#assertAccountAccess(binding, input.accountSubject);
@@ -230,8 +251,9 @@ export class HostedOAuthBrokerService {
       input.provider,
       input.providerApplicationRevision,
       input.definitionId,
+      plugin,
     );
-    assertAuthorizationDigest(input.authorizationDigest, definition);
+    if (!plugin) assertLegacyAuthorizationDigest(input.authorizationDigest, definition);
     const method = oauthMethod(definition);
     const now = this.#now();
     const expiresAt = new Date(input.expiresAt);
@@ -263,6 +285,7 @@ export class HostedOAuthBrokerService {
       launchTicket,
       mode: "managed",
       requestedScopes: scopes,
+      ...(plugin ? { plugin } : {}),
       ...(input.returnPath ? { returnPath: input.returnPath } : {}),
     } satisfies BrokerAuthorizationContext;
     const sealed = await this.#sealAttemptContext(context, {
@@ -297,7 +320,9 @@ export class HostedOAuthBrokerService {
       durableContext.definitionId !== definition.id ||
       durableContext.authorizationDigest !== input.authorizationDigest ||
       durableContext.deploymentAuthorityDigest !== input.deploymentAuthorityDigest ||
-      !sameStringSet(durableContext.requestedScopes, scopes)
+      !sameStringSet(durableContext.requestedScopes, scopes) ||
+      JSON.stringify(durableContext.plugin) !== JSON.stringify(plugin) ||
+      durableContext.returnPath !== input.returnPath
     ) {
       throw new ControlPlaneError("conflict", "Hosted OAuth attempt ID was already used");
     }
@@ -311,19 +336,19 @@ export class HostedOAuthBrokerService {
   }
 
   async createCallbackRelay(authority: HostAuthority, raw: unknown) {
+    const pluginInput = CreatePluginOAuthCallbackRelayRequestSchema.safeParse(raw);
+    if (pluginInput.success) return this.#createPluginRelay(authority, pluginInput.data);
     const input = CreateOAuthCallbackRelayRequestSchema.parse(raw);
     assertAppFinishSurface(input);
     const binding = await this.#requireDeploymentBinding(authority.deploymentId);
     await this.#assertAccountAccess(binding, input.accountSubject);
     assertAuthorityDigest(input.deploymentAuthorityDigest, binding);
-    const definition = integrationDefinitions.find(
-      (candidate) => candidate.id === input.definitionId && candidate.provider === input.provider,
-    );
+    const definition = legacyOAuthDefinition(input.provider, input.definitionId);
     if (!("mcp" in input) && !definition) {
       throw new ControlPlaneError("conflict", "OAuth callback relay is unavailable");
     }
     const mcp = "mcp" in input ? input.mcp : undefined;
-    if (!mcp && definition) assertAuthorizationDigest(input.authorizationDigest, definition);
+    if (!mcp && definition) assertLegacyAuthorizationDigest(input.authorizationDigest, definition);
     const method = !mcp && definition ? oauthMethod(definition) : null;
     const scopes = method
       ? fixedOAuthScopes(method)
@@ -417,6 +442,74 @@ export class HostedOAuthBrokerService {
     });
   }
 
+  async #createPluginRelay(
+    authority: HostAuthority,
+    input: z.infer<typeof CreatePluginOAuthCallbackRelayRequestSchema>,
+  ) {
+    assertAppFinishSurface(input);
+    const binding = await this.#requireDeploymentBinding(authority.deploymentId);
+    await this.#assertAccountAccess(binding, input.binding.accountSubject);
+    assertAuthorityDigest(input.binding.deploymentAuthorityDigest, binding);
+    if (input.binding.redirectUrl !== this.callbackUrl(input.provider)) throw invalidAttempt();
+    const authorizationUrl = validatePluginRelay(input);
+    const now = this.#now();
+    const expiresAt = new Date(input.expiresAt);
+    if (expiresAt <= now || expiresAt.getTime() > now.getTime() + authorizationLifetimeMilliseconds)
+      throw invalidAttempt();
+    const launchTicket = createOAuthState();
+    const context: BrokerAuthorizationContext = {
+      ...legacyPluginAttempt(input),
+      authorizationUrl: authorizationUrl.toString(),
+      clientId: input.relay.clientId,
+      codeVerifier: null,
+      launchTicket,
+      mode: "callback-relay",
+      requestedScopes: input.requestedScopes,
+      plugin: pluginProvider(input),
+      pluginRelay: input.relay,
+    };
+    const sealed = await this.#sealAttemptContext(context, {
+      attemptId: input.attemptId,
+      deploymentId: authority.deploymentId,
+      provider: input.provider,
+    });
+    const row = await this.#store.createAttempt(
+      {
+        accountSubject: input.binding.accountSubject.subject,
+        attemptId: input.attemptId,
+        deploymentId: authority.deploymentId,
+        provider: input.provider,
+        contextKeyVersion: sealed.keyVersion,
+        encryptedContext: sealed.envelope,
+        expiresAt,
+        hostPublicKey: input.binding.hostPublicKey,
+        launchTicketHash: secretDigest(launchTicket),
+        stateHash: secretDigest(authorizationUrl.searchParams.get("state")!),
+        providerApplicationRevision: input.registryRevision,
+        requestedScopeDigest: scopeDigest(input.requestedScopes),
+      },
+      now,
+    );
+    const durable = await this.#openAttemptContext(row, input.attemptId);
+    if (
+      JSON.stringify(durable.plugin) !== JSON.stringify(context.plugin) ||
+      JSON.stringify(durable.pluginRelay) !== JSON.stringify(input.relay) ||
+      durable.authorizationUrl !== context.authorizationUrl ||
+      durable.finish !== context.finish ||
+      durable.appReturnPort !== context.appReturnPort ||
+      durable.clientSurface !== context.clientSurface ||
+      durable.returnPath !== context.returnPath
+    )
+      throw new ControlPlaneError("conflict", "OAuth callback relay attempt ID was already used");
+    const launchUrl = new URL(`/v1/oauth-broker/launch/${input.attemptId}`, this.#issuer);
+    launchUrl.searchParams.set("ticket", durable.launchTicket);
+    return CreateHostedOAuthAttemptResponseSchema.parse({
+      attemptId: input.attemptId,
+      expiresAt: input.expiresAt,
+      launchUrl: launchUrl.toString(),
+    });
+  }
+
   async inspectLaunch(attemptId: HostedOAuthAttemptId, ticket: string) {
     const row = await this.#store.inspectLaunchAttempt(attemptId, secretDigest(ticket));
     if (!row) return { status: "invalid" as const };
@@ -462,6 +555,13 @@ export class HostedOAuthBrokerService {
       await this.#assertAccountAccess(binding, context.accountSubject);
       assertAuthorityDigest(context.deploymentAuthorityDigest, binding);
       refusalReason = "launch-authorization-invalid";
+      if (context.plugin && context.pluginRelay) {
+        return validatePluginRelay({
+          ...context.plugin,
+          authorizationUrl: context.authorizationUrl,
+          relay: context.pluginRelay,
+        }).toString();
+      }
       if (context.mcp && context.clientId) {
         return validateMcpRelayAuthorizationUrl(
           context.authorizationUrl,
@@ -470,13 +570,10 @@ export class HostedOAuthBrokerService {
           context.mcp,
         ).toString();
       }
-      if (context.mode === "callback-relay") {
-        const definition = integrationDefinitions.find(
-          (candidate) =>
-            candidate.id === context.definitionId && candidate.provider === launched.provider,
-        );
+      if (context.mode === "callback-relay" && !context.plugin) {
+        const definition = legacyOAuthDefinition(launched.provider, context.definitionId);
         if (!definition || !context.clientId) throw invalidAttempt();
-        assertAuthorizationDigest(context.authorizationDigest, definition);
+        assertLegacyAuthorizationDigest(context.authorizationDigest, definition);
         const method = oauthMethod(definition);
         const scopes = fixedOAuthScopes(method);
         const authorizationUrl = validateCallbackRelayAuthorizationUrl({
@@ -499,8 +596,9 @@ export class HostedOAuthBrokerService {
         launched.provider,
         launched.providerApplicationRevision,
         context.definitionId,
+        context.plugin,
       );
-      assertAuthorizationDigest(context.authorizationDigest, definition);
+      if (!context.plugin) assertLegacyAuthorizationDigest(context.authorizationDigest, definition);
       if (
         application.provider !== definition.provider ||
         scopeDigest(scopes) !== launched.requestedScopeDigest ||
@@ -555,7 +653,14 @@ export class HostedOAuthBrokerService {
     const now = this.#now();
     let state: string;
     try {
-      state = oauthAuthorizationResponseState(input.parameters);
+      const states = input.parameters.getAll("state");
+      if (states.length !== 1) throw invalidAttempt();
+      state = z
+        .string()
+        .min(32)
+        .max(1024)
+        .regex(/^[^\p{Cc}\p{Cf}]+$/u)
+        .parse(states[0]);
     } catch {
       throw new HostedOAuthBrokerRefusal(null, "invalid-callback-state");
     }
@@ -596,6 +701,56 @@ export class HostedOAuthBrokerService {
             finish: "app",
           })
         : null;
+    if (context.plugin && context.pluginRelay) {
+      let returnUrl: IntegrationAuthorizationBrowserReturn | null = appFailureReturn;
+      try {
+        const binding = await this.#requireDeploymentBinding(row.deploymentId);
+        await this.#assertAccountAccess(binding, context.plugin.binding.accountSubject);
+        assertAuthorityDigest(context.plugin.binding.deploymentAuthorityDigest, binding);
+        validatePluginRelay({
+          ...context.plugin,
+          authorizationUrl: context.authorizationUrl,
+          relay: context.pluginRelay,
+        });
+        returnUrl = callbackReturnUrl({
+          attemptId,
+          canonicalOrigin: binding.canonicalOrigin,
+          clientSurface: context.clientSurface,
+          finish: context.finish,
+          deploymentId: binding.id,
+          returnPath: context.returnPath,
+        });
+        const response = validateOAuthAuthorizationResponse({
+          clientId: context.pluginRelay.clientId,
+          issuer: context.pluginRelay.issuer,
+          authorizationResponseIssuerParameterSupported:
+            context.pluginRelay.authorizationResponseIssuerParameterSupported,
+          parameters: input.parameters,
+          expectedState: new URL(context.authorizationUrl).searchParams.get("state")!,
+        });
+        if (response.kind === "error") {
+          const status = oauthUserDeniedAuthorization(response.error) ? "denied" : "failed";
+          await this.#store.failAttempt(attemptId, status, "authorization-denied", now);
+          return authorizationCompletion(attemptId, status, returnUrl, "authorization-denied");
+        }
+        const sealingContext = OAuthBrokerPluginRelayContextSchema.parse({
+          ...context.plugin,
+          attemptId,
+          expiresAt: row.expiresAt.toISOString(),
+          relay: context.pluginRelay,
+          schemaVersion: 2,
+        });
+        const sealed = sealOAuthBrokerPayload(
+          OAuthBrokerMcpAuthorizationResponseSchema.parse({ parameters: [...input.parameters] }),
+          row.hostPublicKey,
+          sealingContext,
+        );
+        return await this.#sealAuthorizationResult(row, context, sealed, returnUrl);
+      } catch {
+        await this.#store.failAttempt(attemptId, "failed", "invalid-provider-response", now);
+        return authorizationCompletion(attemptId, "failed", returnUrl, "invalid-provider-response");
+      }
+    }
     if (context.mcp) {
       let returnUrl: IntegrationAuthorizationBrowserReturn | null = appFailureReturn;
       try {
@@ -660,10 +815,7 @@ export class HostedOAuthBrokerService {
     let method: ReturnType<typeof oauthMethod>;
     try {
       if (context.mode === "callback-relay") {
-        const found = integrationDefinitions.find(
-          (candidate) =>
-            candidate.id === context.definitionId && candidate.provider === row.provider,
-        );
+        const found = legacyOAuthDefinition(row.provider, context.definitionId);
         if (!found || !context.clientId || !context.providerApplicationId) throw invalidAttempt();
         definition = found;
         method = oauthMethod(found);
@@ -672,9 +824,10 @@ export class HostedOAuthBrokerService {
           row.provider,
           row.providerApplicationRevision,
           context.definitionId,
+          context.plugin,
         ));
       }
-      assertAuthorizationDigest(context.authorizationDigest, definition);
+      if (!context.plugin) assertLegacyAuthorizationDigest(context.authorizationDigest, definition);
       const scopes = fixedOAuthScopes(method);
       if (
         scopeDigest(scopes) !== row.requestedScopeDigest ||
@@ -797,11 +950,19 @@ export class HostedOAuthBrokerService {
       method.oauth.scopeSeparator,
       context.requestedScopes,
       method,
+      Boolean(context.plugin),
     );
     if (
+      (context.plugin &&
+        grantedScopes.some(
+          (scope) =>
+            !context.requestedScopes.includes(scope) || !application!.allowedScopes.includes(scope),
+        )) ||
       missingRequiredScopes({
         config: method.oauth,
-        requiredScopes: context.requestedScopes,
+        requiredScopes: context.plugin
+          ? context.requestedScopes.filter((scope) => scope !== "offline_access")
+          : context.requestedScopes,
         grantedScopes: grantedScopes,
       }).length > 0
     ) {
@@ -809,16 +970,23 @@ export class HostedOAuthBrokerService {
       return authorizationCompletion(attemptId, "failed", returnUrl, "scope-escalation");
     }
     try {
-      const sealingContext = OAuthBrokerAuthorizationContextSchema.parse({
-        accountSubject: context.accountSubject,
-        attemptId,
-        deploymentAuthorityDigest: context.deploymentAuthorityDigest,
-        expiresAt: row.expiresAt.toISOString(),
-        providerApplicationRevision: row.providerApplicationRevision,
-        authorizationDigest: context.authorizationDigest,
-        definitionId: context.definitionId,
-        schemaVersion: 1,
-      });
+      const sealingContext = context.plugin
+        ? OAuthBrokerPluginAuthorizationContextSchema.parse({
+            ...context.plugin,
+            attemptId,
+            expiresAt: row.expiresAt.toISOString(),
+            schemaVersion: 2,
+          })
+        : OAuthBrokerAuthorizationContextSchema.parse({
+            accountSubject: context.accountSubject,
+            attemptId,
+            deploymentAuthorityDigest: context.deploymentAuthorityDigest,
+            expiresAt: row.expiresAt.toISOString(),
+            providerApplicationRevision: row.providerApplicationRevision,
+            authorizationDigest: context.authorizationDigest,
+            definitionId: context.definitionId,
+            schemaVersion: 1,
+          });
       const bundle = OAuthBrokerTokenBundleSchema.parse({
         accessToken: response.access_token,
         ...(exchanged.tokenResponseIdentity
@@ -830,7 +998,10 @@ export class HostedOAuthBrokerService {
         grantedScopes,
         ...(typeof response.id_token === "string" ? { idToken: response.id_token } : {}),
         ...(response.refresh_token ? { refreshToken: response.refresh_token } : {}),
-        tokenType: response.token_type ?? "Bearer",
+        tokenType:
+          context.plugin && method.oauth.tokenResponseProfile === "slack-bot"
+            ? "Bearer"
+            : (response.token_type ?? "Bearer"),
       });
       const sealed = OAuthBrokerSealedEnvelopeSchema.parse(
         sealOAuthBrokerPayload(bundle, row.hostPublicKey, sealingContext),
@@ -997,7 +1168,11 @@ export class HostedOAuthBrokerService {
   }
 
   async refresh(authority: HostAuthority, raw: unknown) {
-    const input = CreateHostedOAuthRefreshRequestSchema.parse(raw);
+    const pluginInput = CreatePluginOAuthRefreshRequestSchema.safeParse(raw);
+    const plugin = pluginInput.success ? pluginProvider(pluginInput.data) : undefined;
+    const input = pluginInput.success
+      ? { ...pluginInput.data, ...legacyPluginFields(pluginInput.data) }
+      : CreateHostedOAuthRefreshRequestSchema.parse(raw);
     const binding = await this.#requireDeploymentBinding(authority.deploymentId);
     await this.#assertAccountAccess(binding, input.accountSubject);
     assertAuthorityDigest(input.deploymentAuthorityDigest, binding);
@@ -1010,14 +1185,25 @@ export class HostedOAuthBrokerService {
       input.provider,
       input.providerApplicationRevision,
       input.definitionId,
+      plugin,
     );
-    assertAuthorizationDigest(input.authorizationDigest, definition);
+    if (!plugin) assertLegacyAuthorizationDigest(input.authorizationDigest, definition);
     const reviewedScopes = fixedOAuthScopes(method);
-    const priorGrantedScopes = normalizeScopes(method, input.grantedScopes);
+    const priorGrantedScopes = normalizeScopes(method, input.grantedScopes, Boolean(plugin));
+    if (
+      plugin &&
+      priorGrantedScopes.some(
+        (scope) =>
+          !plugin.requestedScopes.includes(scope) || !application.allowedScopes.includes(scope),
+      )
+    )
+      throw new ControlPlaneError("forbidden", "Hosted OAuth refresh scope exceeds consent");
     if (
       missingRequiredScopes({
         config: method.oauth,
-        requiredScopes: reviewedScopes,
+        requiredScopes: plugin
+          ? reviewedScopes.filter((scope) => scope !== "offline_access")
+          : reviewedScopes,
         grantedScopes: priorGrantedScopes,
       }).length > 0
     ) {
@@ -1026,17 +1212,31 @@ export class HostedOAuthBrokerService {
         "Hosted OAuth refresh is missing required functional scopes",
       );
     }
-    const context = OAuthBrokerRefreshContextSchema.parse({
-      authorizationDigest: input.authorizationDigest,
-      definitionId: input.definitionId,
-      deploymentAuthorityDigest: input.deploymentAuthorityDigest,
-      expiresAt: input.expiresAt,
-      providerApplicationRevision: input.providerApplicationRevision,
-      schemaVersion: 1,
-      transactionId: input.transactionId,
-    });
+    const context = plugin
+      ? OAuthBrokerPluginRefreshContextSchema.parse({
+          ...plugin,
+          expiresAt: input.expiresAt,
+          transactionId: input.transactionId,
+          schemaVersion: 2,
+        })
+      : OAuthBrokerRefreshContextSchema.parse({
+          authorizationDigest: input.authorizationDigest,
+          definitionId: input.definitionId,
+          deploymentAuthorityDigest: input.deploymentAuthorityDigest,
+          expiresAt: input.expiresAt,
+          providerApplicationRevision: input.providerApplicationRevision,
+          schemaVersion: 1,
+          transactionId: input.transactionId,
+        });
     const claim = await this.#store.claimRefresh(
       {
+        ...(plugin
+          ? {
+              requestBindingDigest: secretDigest(
+                JSON.stringify({ context, grantedScopes: [...priorGrantedScopes].sort() }),
+              ),
+            }
+          : {}),
         accountSubject: input.accountSubject.subject,
         deploymentId: authority.deploymentId,
         expiresAt,
@@ -1092,12 +1292,19 @@ export class HostedOAuthBrokerService {
         transactionId: input.transactionId,
       };
     }
-    const refreshedScopes = normalizeScopes(method, refreshed.grantedScopes);
+    const refreshedScopes = normalizeScopes(method, refreshed.grantedScopes, Boolean(plugin));
     const grantedScopes = refreshedScopes;
     if (
+      (plugin &&
+        grantedScopes.some(
+          (scope) =>
+            !plugin.requestedScopes.includes(scope) || !application.allowedScopes.includes(scope),
+        )) ||
       missingRequiredScopes({
         config: method.oauth,
-        requiredScopes: reviewedScopes,
+        requiredScopes: plugin
+          ? reviewedScopes.filter((scope) => scope !== "offline_access")
+          : reviewedScopes,
         grantedScopes: grantedScopes,
       }).length > 0
     ) {
@@ -1125,7 +1332,11 @@ export class HostedOAuthBrokerService {
   }
 
   async revoke(authority: HostAuthority, raw: unknown) {
-    const input = CreateHostedOAuthRevocationRequestSchema.parse(raw);
+    const pluginInput = CreatePluginOAuthRevocationRequestSchema.safeParse(raw);
+    const plugin = pluginInput.success ? pluginProvider(pluginInput.data) : undefined;
+    const input = pluginInput.success
+      ? { ...pluginInput.data, ...legacyPluginFields(pluginInput.data) }
+      : CreateHostedOAuthRevocationRequestSchema.parse(raw);
     const binding = await this.#requireDeploymentBinding(authority.deploymentId);
     await this.#assertAccountAccess(binding, input.accountSubject);
     assertAuthorityDigest(input.deploymentAuthorityDigest, binding);
@@ -1138,25 +1349,33 @@ export class HostedOAuthBrokerService {
       input.provider,
       input.providerApplicationRevision,
       input.definitionId,
+      plugin,
     );
-    assertAuthorizationDigest(input.authorizationDigest, definition);
+    if (!plugin) assertLegacyAuthorizationDigest(input.authorizationDigest, definition);
     if (!method.oauth.revocation) {
       throw new ControlPlaneError(
         "bad_request",
         "Hosted OAuth provider does not declare token revocation",
       );
     }
-    const context = OAuthBrokerRevocationContextSchema.parse({
-      accountSubject: input.accountSubject,
-      authorizationDigest: input.authorizationDigest,
-      definitionId: input.definitionId,
-      deploymentAuthorityDigest: input.deploymentAuthorityDigest,
-      expiresAt: input.expiresAt,
-      provider: input.provider,
-      providerApplicationRevision: input.providerApplicationRevision,
-      schemaVersion: 1,
-      transactionId: input.transactionId,
-    });
+    const context = plugin
+      ? OAuthBrokerPluginRevocationContextSchema.parse({
+          ...plugin,
+          expiresAt: input.expiresAt,
+          transactionId: input.transactionId,
+          schemaVersion: 2,
+        })
+      : OAuthBrokerRevocationContextSchema.parse({
+          accountSubject: input.accountSubject,
+          authorizationDigest: input.authorizationDigest,
+          definitionId: input.definitionId,
+          deploymentAuthorityDigest: input.deploymentAuthorityDigest,
+          expiresAt: input.expiresAt,
+          provider: input.provider,
+          providerApplicationRevision: input.providerApplicationRevision,
+          schemaVersion: 1,
+          transactionId: input.transactionId,
+        });
     const credential = OAuthBrokerRevocationCredentialSchema.parse(
       openOAuthBrokerPayload(input.brokerSealedCredential, this.#brokerKeyPair.privateKey, context),
     );
@@ -1239,6 +1458,8 @@ export class HostedOAuthBrokerService {
         deploymentAuthorityDigest: context.deploymentAuthorityDigest,
         launchTicket: context.launchTicket,
         mode: context.mode,
+        plugin: context.plugin ? JSON.stringify(context.plugin) : "",
+        pluginRelay: context.pluginRelay ? JSON.stringify(context.pluginRelay) : "",
         mcp: context.mcp ? JSON.stringify(context.mcp) : "",
         providerApplicationId: context.providerApplicationId ?? "",
         requestedScopes: JSON.stringify(context.requestedScopes),
@@ -1287,6 +1508,8 @@ export class HostedOAuthBrokerService {
       deploymentAuthorityDigest: opened.deploymentAuthorityDigest,
       launchTicket: opened.launchTicket,
       mode: opened.mode || undefined,
+      plugin: opened.plugin ? JSON.parse(opened.plugin) : undefined,
+      pluginRelay: opened.pluginRelay ? JSON.parse(opened.pluginRelay) : undefined,
       mcp: opened.mcp ? JSON.parse(opened.mcp) : undefined,
       providerApplicationId: opened.providerApplicationId || undefined,
       requestedScopes,
@@ -1313,15 +1536,60 @@ export class HostedOAuthBrokerService {
     };
   }
 
-  #qualifiedProvider(provider: string, revision: number, definitionId: string) {
+  #qualifiedProvider(
+    provider: string,
+    revision: number,
+    definitionId: string,
+    plugin?: z.infer<typeof OAuthBrokerPluginProviderSchema>,
+  ) {
+    if (plugin) {
+      const application = this.#applications.get(provider);
+      if (
+        !application ||
+        !("clientId" in application) ||
+        application.revision !== revision ||
+        plugin.registryRevision !== revision ||
+        plugin.provider !== provider
+      )
+        throw new ControlPlaneError("conflict", "Hosted OAuth provider registry revision is stale");
+      if (plugin.binding.redirectUrl !== this.callbackUrl(provider)) throw invalidAttempt();
+      let oauth;
+      try {
+        oauth = registryOAuthConfig(application, plugin.requestedScopes);
+      } catch {
+        throw new ControlPlaneError(
+          "forbidden",
+          "Requested OAuth scopes exceed the provider registry",
+        );
+      }
+      const method = {
+        id: "oauth",
+        kind: "oauth" as const,
+        label: "Sign in",
+        placements: [
+          { carrier: "header" as const, name: "Authorization", variable: "accessToken" },
+        ],
+        oauth,
+      };
+      const definition: IntegrationDefinition = {
+        id: "plugin",
+        name: "Plugin account",
+        provider,
+        description: "Plugin account",
+        adapter: "openapi",
+        config: {},
+        authMethods: [method],
+      };
+      return { application, definition, method, scopes: [...new Set(plugin.requestedScopes)] };
+    }
     const application = this.#applications.get(provider);
-    const candidates = integrationDefinitions.filter(
-      (definition) =>
-        definition.provider === provider &&
-        definition.hostedOAuth?.providerApplicationRevision === revision,
-    );
-    const definition = candidates.find((candidate) => candidate.id === definitionId);
-    if (!application || application.revision !== revision || !definition?.hostedOAuth) {
+    const definition = qualifiedLegacyOAuthDefinition(provider, definitionId, revision);
+    if (
+      !application ||
+      !("clientId" in application) ||
+      application.revision !== revision ||
+      !definition?.hostedOAuth
+    ) {
       throw new ControlPlaneError("conflict", "Hosted OAuth provider application is stale");
     }
     const method = oauthMethod(definition);
@@ -1452,15 +1720,6 @@ function authorizationCompletion(
   };
 }
 
-function assertAuthorizationDigest(expected: string, definition: IntegrationDefinition): void {
-  if (computeAuthorizationDigest(definition) !== expected) {
-    throw new ControlPlaneError(
-      "conflict",
-      "Hosted OAuth catalog authorization definition is stale",
-    );
-  }
-}
-
 /** The provider's raw error code travels onward only when it fits the bounded diagnostic shape. */
 function boundedProviderError(errorCode: string | undefined): string | null {
   const parsed = HostedOAuthProviderErrorSchema.safeParse(errorCode);
@@ -1513,13 +1772,15 @@ function tokenScopes(
   separator: string,
   requested: readonly string[],
   method: ReturnType<typeof oauthMethod>,
+  strict = false,
 ): readonly string[] {
-  return normalizeScopes(method, value === undefined ? requested : value.split(separator));
+  return normalizeScopes(method, value === undefined ? requested : value.split(separator), strict);
 }
 
 function normalizeScopes(
   method: ReturnType<typeof oauthMethod>,
   scopes: readonly string[],
+  strict = false,
 ): readonly string[] {
   const aliases = new Map<string, string>();
   for (const [canonical, values] of Object.entries(method.oauth.scopeAliases ?? {})) {
@@ -1531,7 +1792,7 @@ function normalizeScopes(
     ...new Set(
       scopes
         .map((scope) => aliases.get(scope.trim()) ?? scope.trim())
-        .filter((scope) => scope.length > 0 && canonical.has(scope)),
+        .filter((scope) => scope.length > 0 && (strict || canonical.has(scope))),
     ),
   ];
 }
@@ -1666,4 +1927,75 @@ export class HostedOAuthBrokerRefusal extends ControlPlaneError {
     this.attemptId = attemptId;
     this.refusalReason = refusalReason;
   }
+}
+
+function pluginProvider(input: z.infer<typeof OAuthBrokerPluginProviderSchema>) {
+  return OAuthBrokerPluginProviderSchema.parse({
+    provider: input.provider,
+    registryRevision: input.registryRevision,
+    requestedScopes: input.requestedScopes,
+    binding: input.binding,
+  });
+}
+function legacyPluginFields(input: z.infer<typeof OAuthBrokerPluginProviderSchema>) {
+  return {
+    accountSubject: input.binding.accountSubject,
+    authorizationDigest: input.binding.requirementDigest,
+    deploymentAuthorityDigest: input.binding.deploymentAuthorityDigest,
+    hostPublicKey: input.binding.hostPublicKey,
+    definitionId: "plugin",
+    providerApplicationRevision: input.registryRevision,
+    provider: input.provider,
+  };
+}
+function legacyPluginAttempt(input: Omit<CreatePluginOAuthAttemptRequest, "kind">) {
+  return { ...input, ...legacyPluginFields(input) };
+}
+function validatePluginRelay(
+  input: z.infer<typeof OAuthBrokerPluginProviderSchema> & {
+    readonly authorizationUrl: string;
+    readonly relay: z.infer<typeof OAuthBrokerPluginRelaySchema>;
+  },
+) {
+  const relay = input.relay;
+  if (input.provider === "mcp" && (!relay.usesPkce || relay.issuer === null))
+    throw invalidAttempt();
+  for (const value of [relay.issuer, relay.authorizationEndpoint, input.binding.redirectUrl]) {
+    if (value === null) continue;
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.username || url.password || url.hash)
+      throw invalidAttempt();
+  }
+  const url = new URL(input.authorizationUrl);
+  const endpoint = new URL(relay.authorizationEndpoint);
+  const state = url.searchParams.get("state");
+  if (
+    url.origin !== endpoint.origin ||
+    url.pathname !== endpoint.pathname ||
+    url.username ||
+    url.password ||
+    url.hash ||
+    url.searchParams.getAll("client_id").length !== 1 ||
+    url.searchParams.get("client_id") !== relay.clientId ||
+    url.searchParams.getAll("redirect_uri").length !== 1 ||
+    url.searchParams.get("redirect_uri") !== input.binding.redirectUrl ||
+    url.searchParams.getAll("response_type").length !== 1 ||
+    url.searchParams.get("response_type") !== "code" ||
+    url.searchParams.getAll("state").length !== 1 ||
+    !state ||
+    state.length < 32 ||
+    state.length > 1024 ||
+    /[\p{Cc}\p{Cf}]/u.test(state) ||
+    url.searchParams.getAll("scope").length > 1 ||
+    (relay.authorizationResponseIssuerParameterSupported && relay.issuer === null) ||
+    (relay.usesPkce &&
+      (url.searchParams.getAll("code_challenge_method").length !== 1 ||
+        url.searchParams.get("code_challenge_method") !== "S256" ||
+        url.searchParams.getAll("code_challenge").length !== 1 ||
+        !/^[A-Za-z0-9_-]{43}$/u.test(url.searchParams.get("code_challenge") ?? "")))
+  )
+    throw invalidAttempt();
+  const scopes = url.searchParams.get("scope")?.split(relay.scopeSeparator).filter(Boolean) ?? [];
+  if (!sameStringSet(scopes, input.requestedScopes)) throw invalidAttempt();
+  return url;
 }

@@ -91,6 +91,7 @@ export const createPluginEngine = (
       options.oauth,
       options.hooks,
       options.background,
+      options.database.reactivity.inTransaction,
     );
     const declarations = makeDeclarations({
       cache,
@@ -253,7 +254,7 @@ export const createPluginEngine = (
             Effect.withSpan("sdk.accounts.revocation"),
           ),
       },
-      managedAccounts: { add, replaceCredentials },
+      managedAccounts: { add, replaceCredentials, completeBrokeredOAuth: oauth.completeBrokeredOAuth },
       accountConnections: {
         ...connections,
         ...oauth.connections,

@@ -15,6 +15,7 @@ import {
   CredentialsError,
   StorageError,
 } from "./shared.ts";
+import { ProviderDefinition } from "./provider.ts";
 import { AccountConnectionDestination } from "./account-connection.ts";
 import type { Redacted } from "effect";
 import type { OAuthClientId, OAuthAttemptId } from "./oauth.ts";
@@ -85,6 +86,7 @@ export type StoredConnectionState = typeof StoredConnectionState.Type;
  */
 export const StoredConnectionTarget = Schema.Struct({
   ...AccountConnectionDestination.fields,
+  reviewedProvider: ProviderDefinition,
   owner: OwnerId,
   scope: AccountScope.pipe(Schema.withDecodingDefaultKey(Effect.succeed("user" as const))),
 });

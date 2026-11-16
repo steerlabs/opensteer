@@ -1,19 +1,22 @@
 # Integration OAuth
 
-Read the provider definition in `packages/integration-catalog` and
+Read the Account broker’s [provider registry schema](../../../../apps/control-plane/src/auth/hosted-oauth-provider-registry.ts) and
 [.env.example](../../../../apps/control-plane/.env.example). Register the exact callback the running
-service supplies and the catalog's scopes; never invent a redirect from a development port. Provider
+service supplies and the plugin’s declared scopes; never invent a redirect from a development port. Provider
 distribution or organization approval is separate. Managed registrations use
 `https://accounts.opensteer.com/v1/oauth-broker/callback/{provider}`; Google Account sign-in
 separately uses `https://accounts.opensteer.com/api/auth/callback/google`.
 
 **Managed apps**, for an Account service you run (production secrets stay in Secret Manager): set
 independent `OPENSTEER_HOSTED_OAUTH_STATE_KEY` and `OPENSTEER_HOSTED_OAUTH_ENCRYPTION_KEY`, and the
-complete `OPENSTEER_HOSTED_OAUTH_<PROVIDER>_CLIENT_ID`, `_CLIENT_SECRET` and `_REVISION` group for
-`GOOGLE`, `MICROSOFT`, `SLACK`, `DISCORD` or `GITHUB`, matching the catalog's qualification
-revision. Omit a whole group to disable it; a partial group fails configuration. GitHub also needs
-`_INSTALLATION_URL` (`https://github.com/apps/<app-slug>/installations/new`). Callback relay needs
-no managed credentials.
+`OPENSTEER_HOSTED_OAUTH_PROVIDERS` JSON registry (or its `_FILE` secret). Each managed entry
+includes its provider endpoints, allowed scopes, revision, client ID and secret. Bump the revision
+when changing the registration or authorization behavior. The broker validates provider behavior
+at startup; its public metadata supplies the available clients without their secrets. GitHub needs
+its exact installation URL (`https://github.com/apps/<app-slug>/installations/new`). Add a
+`relayOnly: true` entry without client credentials to advertise a provider only for custom-app
+callback relay. This registry deploys with the Account service, independently of desktop releases;
+the older Host request shapes remain available while its integration flow is being replaced.
 
 **Custom apps**: the owner saves credentials in app setup and selects that source. With an Account
 link, register the exact Account relay callback the Host shows (also on independent HTTPS Hosts);

@@ -108,6 +108,34 @@ describe("OAuth primitives", () => {
     ).toThrow();
   });
 
+  it("accepts an opaque relay state only when it matches the exact pinned state", () => {
+    const state = "plugin:" + "S".repeat(43);
+    const input = {
+      clientId: "client",
+      issuer: "https://identity.example",
+      expectedState: state,
+      parameters: new URLSearchParams({ code: "code", state }),
+    };
+    expect(validateOAuthAuthorizationResponse(input)).toEqual({
+      code: "code",
+      kind: "success",
+      state,
+    });
+    expect(() =>
+      validateOAuthAuthorizationResponse({ ...input, expectedState: "plugin:" + "T".repeat(43) }),
+    ).toThrow();
+    const repeated = new URLSearchParams(input.parameters);
+    repeated.append("state", state);
+    expect(() => validateOAuthAuthorizationResponse({ ...input, parameters: repeated })).toThrow();
+    expect(() =>
+      validateOAuthAuthorizationResponse({
+        ...input,
+        expectedState: "",
+        parameters: new URLSearchParams({ code: "code", state: "" }),
+      }),
+    ).toThrow();
+  });
+
   it("skips issuer equality when no issuer is configured but still rejects a duplicate iss", () => {
     expect(
       validateOAuthAuthorizationResponse({

@@ -309,6 +309,7 @@ interface HostedOAuthBrokerAttemptTable {
 }
 
 interface HostedOAuthBrokerRefreshTable {
+  requestBindingDigest: string | null;
   transactionId: HostedOAuthRefreshTransactionId;
   accountSubject: ControlPlaneAccountId;
   deploymentId: DeploymentId;

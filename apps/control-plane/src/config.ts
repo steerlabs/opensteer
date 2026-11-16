@@ -1,3 +1,7 @@
+import {
+  HostedOAuthProviderRegistrySchema,
+  type HostedOAuthProvider,
+} from "./auth/hosted-oauth-provider-registry.js";
 import type { AppleSignInConfig } from "./auth/apple-sign-in.js";
 import type { AppReviewSignInConfig } from "./auth/app-review-sign-in.js";
 import {
@@ -42,15 +46,6 @@ const DeploymentDomainSchema = z
   });
 
 const CloudflareIdentifierSchema = z.string().regex(/^[a-f0-9]{32}$/u);
-const GitHubInstallationUrlSchema = z
-  .url()
-  .refine(
-    (value) =>
-      /^https:\/\/github\.com\/apps\/[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\/installations\/new$/u.test(
-        value,
-      ),
-    "Expected https://github.com/apps/<app-slug>/installations/new",
-  );
 const Base64UrlKeySchema = z
   .string()
   .regex(/^[A-Za-z0-9_-]{43}$/u)
@@ -197,22 +192,7 @@ const AccountEnvironmentSchema = z
       .optional(),
     OPENSTEER_HOSTED_OAUTH_STATE_KEY: Base64UrlKeySchema.optional(),
     OPENSTEER_HOSTED_OAUTH_ENCRYPTION_KEY: z.string().min(80).max(512).optional(),
-    OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_ID: z.string().min(1).optional(),
-    OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_SECRET: z.string().min(1).optional(),
-    OPENSTEER_HOSTED_OAUTH_DISCORD_REVISION: z.coerce.number().int().positive().optional(),
-    OPENSTEER_HOSTED_OAUTH_GITHUB_CLIENT_ID: z.string().min(1).optional(),
-    OPENSTEER_HOSTED_OAUTH_GITHUB_CLIENT_SECRET: z.string().min(1).optional(),
-    OPENSTEER_HOSTED_OAUTH_GITHUB_INSTALLATION_URL: GitHubInstallationUrlSchema.optional(),
-    OPENSTEER_HOSTED_OAUTH_GITHUB_REVISION: z.coerce.number().int().positive().optional(),
-    OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_ID: z.string().min(1).optional(),
-    OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
-    OPENSTEER_HOSTED_OAUTH_GOOGLE_REVISION: z.coerce.number().int().positive().optional(),
-    OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_ID: z.string().min(1).optional(),
-    OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_SECRET: z.string().min(1).optional(),
-    OPENSTEER_HOSTED_OAUTH_MICROSOFT_REVISION: z.coerce.number().int().positive().optional(),
-    OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_ID: z.string().min(1).optional(),
-    OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_SECRET: z.string().min(1).optional(),
-    OPENSTEER_HOSTED_OAUTH_SLACK_REVISION: z.coerce.number().int().positive().optional(),
+    OPENSTEER_HOSTED_OAUTH_PROVIDERS: z.string().max(262_144).optional(),
     OPENSTEER_DESKTOP_DOWNLOAD_URL: z.url().optional(),
     OPENSTEER_IOS_APP_URL: z.url().optional(),
     OPENSTEER_ANDROID_APP_URL: z.url().optional(),
@@ -261,13 +241,7 @@ export interface ControlPlaneConfig {
   readonly hostedOAuth?: {
     readonly encryptionPrivateKey: string;
     readonly attemptContextEncryptionKey: string;
-    readonly applications: readonly {
-      readonly clientId: string;
-      readonly clientSecret: string;
-      readonly installationUrl?: string;
-      readonly provider: "discord" | "github" | "google" | "microsoft" | "slack";
-      readonly revision: number;
-    }[];
+    readonly applications: readonly HostedOAuthProvider[];
   };
   readonly portalOrigin: URL;
   readonly connectDomain: string;
@@ -450,43 +424,18 @@ function pushConfig(parsed: z.infer<typeof AccountEnvironmentSchema>) {
 }
 
 function hostedOAuthConfig(parsed: z.infer<typeof AccountEnvironmentSchema>) {
-  const discord = providerApplicationConfig("Discord", {
-    clientId: parsed.OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_ID,
-    clientSecret: parsed.OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_SECRET,
-    revision: parsed.OPENSTEER_HOSTED_OAUTH_DISCORD_REVISION,
-  });
-  const github = providerApplicationConfig(
-    "GitHub",
-    {
-      clientId: parsed.OPENSTEER_HOSTED_OAUTH_GITHUB_CLIENT_ID,
-      clientSecret: parsed.OPENSTEER_HOSTED_OAUTH_GITHUB_CLIENT_SECRET,
-      installationUrl: parsed.OPENSTEER_HOSTED_OAUTH_GITHUB_INSTALLATION_URL,
-      revision: parsed.OPENSTEER_HOSTED_OAUTH_GITHUB_REVISION,
-    },
-    true,
-  );
-  const google = providerApplicationConfig("Google", {
-    clientId: parsed.OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_ID,
-    clientSecret: parsed.OPENSTEER_HOSTED_OAUTH_GOOGLE_CLIENT_SECRET,
-    revision: parsed.OPENSTEER_HOSTED_OAUTH_GOOGLE_REVISION,
-  });
-  const slack = providerApplicationConfig("Slack", {
-    clientId: parsed.OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_ID,
-    clientSecret: parsed.OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_SECRET,
-    revision: parsed.OPENSTEER_HOSTED_OAUTH_SLACK_REVISION,
-  });
-  const microsoft = providerApplicationConfig("Microsoft", {
-    clientId: parsed.OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_ID,
-    clientSecret: parsed.OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_SECRET,
-    revision: parsed.OPENSTEER_HOSTED_OAUTH_MICROSOFT_REVISION,
-  });
-  const applications = [
-    ...(discord ? [{ ...discord, provider: "discord" as const }] : []),
-    ...(github ? [{ ...github, provider: "github" as const }] : []),
-    ...(google ? [{ ...google, provider: "google" as const }] : []),
-    ...(microsoft ? [{ ...microsoft, provider: "microsoft" as const }] : []),
-    ...(slack ? [{ ...slack, provider: "slack" as const }] : []),
-  ];
+  let applications: HostedOAuthProvider[] = [];
+  if (parsed.OPENSTEER_HOSTED_OAUTH_PROVIDERS !== undefined) {
+    let registry: unknown;
+    try {
+      registry = JSON.parse(parsed.OPENSTEER_HOSTED_OAUTH_PROVIDERS);
+    } catch {
+      throw new Error("Hosted OAuth provider registry must be JSON");
+    }
+    const validated = HostedOAuthProviderRegistrySchema.safeParse(registry);
+    if (!validated.success) throw new Error("Hosted OAuth provider registry is invalid");
+    applications = validated.data;
+  }
   const brokerKeys = [
     parsed.OPENSTEER_HOSTED_OAUTH_STATE_KEY,
     parsed.OPENSTEER_HOSTED_OAUTH_ENCRYPTION_KEY,
@@ -500,40 +449,6 @@ function hostedOAuthConfig(parsed: z.infer<typeof AccountEnvironmentSchema>) {
     applications,
     encryptionPrivateKey: parsed.OPENSTEER_HOSTED_OAUTH_ENCRYPTION_KEY!,
     attemptContextEncryptionKey: parsed.OPENSTEER_HOSTED_OAUTH_STATE_KEY!,
-  };
-}
-
-function providerApplicationConfig(
-  label: string,
-  values: {
-    readonly clientId: string | undefined;
-    readonly clientSecret: string | undefined;
-    readonly installationUrl?: string | undefined;
-    readonly revision: number | undefined;
-  },
-  installationUrlRequired = false,
-) {
-  const entries = [
-    values.clientId,
-    values.clientSecret,
-    values.revision,
-    ...(installationUrlRequired ? [values.installationUrl] : []),
-  ];
-  if (entries.every((value) => value === undefined)) return undefined;
-  if (entries.some((value) => value === undefined)) {
-    throw new Error(
-      `Hosted ${label} OAuth requires ${
-        installationUrlRequired
-          ? "client, secret, revision, and installation URL"
-          : "client, secret, and revision"
-      } configuration`,
-    );
-  }
-  return {
-    clientId: values.clientId!,
-    clientSecret: values.clientSecret!,
-    ...(values.installationUrl ? { installationUrl: values.installationUrl } : {}),
-    revision: values.revision!,
   };
 }
 

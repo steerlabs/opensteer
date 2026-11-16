@@ -1,3 +1,4 @@
+import { brokerProviderFixture } from "./auth/hosted-oauth-broker.test-support.js";
 import { generateKeyPairSync, type KeyObject } from "node:crypto";
 import { opensteerAccountNativeOAuthClients } from "@opensteer/core";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -177,7 +178,7 @@ describe("control-plane configuration", () => {
     ).toThrow(/signed first-party Account registry/u);
   });
 
-  it("registers only completely configured hosted OAuth providers", () => {
+  it("loads and validates the broker's provider registry without exposing configuration in errors", () => {
     const broker = {
       OPENSTEER_HOSTED_OAUTH_STATE_KEY: Buffer.alloc(32, 11).toString("base64url"),
       OPENSTEER_HOSTED_OAUTH_ENCRYPTION_KEY: "E".repeat(80),
@@ -185,95 +186,34 @@ describe("control-plane configuration", () => {
     expect(loadControlPlaneConfig({ ...validEnvironment, ...broker }).hostedOAuth).toMatchObject({
       applications: [],
     });
+    const provider = {
+      ...brokerProviderFixture("google"),
+      provider: "google",
+      clientId: "client",
+      clientSecret: "secret",
+      revision: 7,
+    };
+    const configured = {
+      ...validEnvironment,
+      ...broker,
+      OPENSTEER_HOSTED_OAUTH_PROVIDERS: JSON.stringify([provider]),
+    };
+    expect(loadControlPlaneConfig(configured).hostedOAuth?.applications).toEqual([provider]);
+    expect(() =>
+      loadControlPlaneConfig({ ...configured, OPENSTEER_HOSTED_OAUTH_PROVIDERS: "{" }),
+    ).toThrow("must be JSON");
+    expect(() =>
+      loadControlPlaneConfig({
+        ...configured,
+        OPENSTEER_HOSTED_OAUTH_PROVIDERS: JSON.stringify([{ ...provider, clientSecret: "" }]),
+      }),
+    ).toThrow("registry is invalid");
     expect(() =>
       loadControlPlaneConfig({
         ...validEnvironment,
-        ...broker,
-        OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_ID: "discord-client",
+        OPENSTEER_HOSTED_OAUTH_PROVIDERS: JSON.stringify([provider]),
       }),
-    ).toThrow(/Hosted Discord OAuth requires client, secret, and revision/u);
-    expect(() =>
-      loadControlPlaneConfig({
-        ...validEnvironment,
-        ...broker,
-        OPENSTEER_HOSTED_OAUTH_GITHUB_CLIENT_ID: "github-client",
-      }),
-    ).toThrow(/Hosted GitHub OAuth requires client, secret, revision/u);
-    expect(() =>
-      loadControlPlaneConfig({
-        ...validEnvironment,
-        ...broker,
-        OPENSTEER_HOSTED_OAUTH_GITHUB_CLIENT_ID: "Iv23lip88ORd2qUNRuId",
-        OPENSTEER_HOSTED_OAUTH_GITHUB_CLIENT_SECRET: "github-secret",
-        OPENSTEER_HOSTED_OAUTH_GITHUB_REVISION: "1",
-      }),
-    ).toThrow(/installation URL/u);
-    expect(() =>
-      loadControlPlaneConfig({
-        ...validEnvironment,
-        ...broker,
-        OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_ID: "slack-client",
-      }),
-    ).toThrow(/Hosted Slack OAuth requires client, secret, and revision/u);
-    expect(() =>
-      loadControlPlaneConfig({
-        ...validEnvironment,
-        ...broker,
-        OPENSTEER_HOSTED_OAUTH_GITHUB_CLIENT_ID: "Iv23lip88ORd2qUNRuId",
-        OPENSTEER_HOSTED_OAUTH_GITHUB_CLIENT_SECRET: "github-secret",
-        OPENSTEER_HOSTED_OAUTH_GITHUB_INSTALLATION_URL:
-          "https://github.com/apps/opensteer/installations/new",
-        OPENSTEER_HOSTED_OAUTH_GITHUB_REVISION: "1",
-        OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_ID: "microsoft-client",
-        OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_SECRET: "microsoft-secret",
-      }),
-    ).toThrow(/Hosted Microsoft OAuth requires client, secret, and revision/u);
-    expect(
-      loadControlPlaneConfig({
-        ...validEnvironment,
-        ...broker,
-        OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_ID: "discord-client",
-        OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_SECRET: "discord-secret",
-        OPENSTEER_HOSTED_OAUTH_DISCORD_REVISION: "1",
-        OPENSTEER_HOSTED_OAUTH_GITHUB_CLIENT_ID: "Iv23lip88ORd2qUNRuId",
-        OPENSTEER_HOSTED_OAUTH_GITHUB_CLIENT_SECRET: "github-secret",
-        OPENSTEER_HOSTED_OAUTH_GITHUB_INSTALLATION_URL:
-          "https://github.com/apps/opensteer/installations/new",
-        OPENSTEER_HOSTED_OAUTH_GITHUB_REVISION: "1",
-        OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_ID: "microsoft-client",
-        OPENSTEER_HOSTED_OAUTH_MICROSOFT_CLIENT_SECRET: "microsoft-secret",
-        OPENSTEER_HOSTED_OAUTH_MICROSOFT_REVISION: "1",
-        OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_ID: "slack-client",
-        OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_SECRET: "slack-secret",
-        OPENSTEER_HOSTED_OAUTH_SLACK_REVISION: "1",
-      }).hostedOAuth?.applications,
-    ).toEqual([
-      {
-        clientId: "discord-client",
-        clientSecret: "discord-secret",
-        provider: "discord",
-        revision: 1,
-      },
-      {
-        clientId: "Iv23lip88ORd2qUNRuId",
-        clientSecret: "github-secret",
-        installationUrl: "https://github.com/apps/opensteer/installations/new",
-        provider: "github",
-        revision: 1,
-      },
-      {
-        clientId: "microsoft-client",
-        clientSecret: "microsoft-secret",
-        provider: "microsoft",
-        revision: 1,
-      },
-      {
-        clientId: "slack-client",
-        clientSecret: "slack-secret",
-        provider: "slack",
-        revision: 1,
-      },
-    ]);
+    ).toThrow("require attempt-context");
   });
 
   it("enables Sign in with Apple only when completely configured with a usable key", () => {
