@@ -19,7 +19,7 @@ const send = (value: unknown) => {
 };
 const callbacks = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
 const requests = new Map<string, AbortController>();
-const streams = new Map<string, ReadableStreamDefaultReader<Uint8Array>>();
+const streams = new Map<string, AsyncIterator<Uint8Array>>();
 let engine: Awaited<ReturnType<typeof startEngine>> | undefined;
 let initializing: Promise<void> | undefined;
 let closing = false;
@@ -78,7 +78,7 @@ const stop = async () => {
   if (closing) return;
   closing = true;
   for (const request of requests.values()) request.abort();
-  for (const stream of streams.values()) await stream.cancel().catch(() => {});
+  for (const stream of streams.values()) await stream.return?.().catch(() => {});
   streams.clear();
   await initializing;
   await engine?.close();
@@ -131,7 +131,7 @@ process.on("message", (raw: unknown) => {
     }
     if (message.type === "cancel") {
       requests.get(message.id)?.abort();
-      await streams.get(message.id)?.cancel();
+      await streams.get(message.id)?.return?.();
       streams.delete(message.id);
       return;
     }
@@ -152,14 +152,12 @@ process.on("message", (raw: unknown) => {
         return;
       }
       try {
-        const chunk = await reader.read();
+        const chunk = await reader.next();
         send({
           type: "streamChunk",
           id: message.id,
-          done: chunk.done,
-          ...(chunk.value === undefined
-            ? {}
-            : { chunk: Buffer.from(chunk.value).toString("base64") }),
+          done: chunk.done === true,
+          ...(chunk.done ? {} : { chunk: Buffer.from(chunk.value).toString("base64") }),
         });
         if (chunk.done) streams.delete(message.id);
       } catch {
@@ -192,7 +190,7 @@ process.on("message", (raw: unknown) => {
         controller.signal,
       );
       if (result instanceof Response) {
-        if (result.body) streams.set(message.id, result.body.getReader());
+        if (result.body) streams.set(message.id, result.body.values());
         send({
           type: "result",
           id: message.id,
