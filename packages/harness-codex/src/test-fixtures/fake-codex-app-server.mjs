@@ -2855,6 +2855,22 @@ function finishTurnWith(text) {
 }
 
 async function browserJourneyHarness(tabId, program) {
+  // Codex reports each command it runs, so a turn of several programs shows progress.
+  const thread = current();
+  const item = {
+    command: "browser-harness",
+    commandActions: [{ type: "unknown", command: "browser-harness" }],
+    id: `browser-harness-${randomUUID()}`,
+    type: "commandExecution",
+  };
+  send({
+    method: "item/started",
+    params: {
+      item: { ...item, aggregatedOutput: null, exitCode: null, status: "inProgress" },
+      threadId: thread.id,
+      turnId: thread.turnId,
+    },
+  });
   const child = spawn(
     process.execPath,
     [process.env.OPENSTEER_BROWSER_HARNESS, ...(tabId ? ["--tab", tabId] : [])],
@@ -2866,13 +2882,27 @@ async function browserJourneyHarness(tabId, program) {
   child.stderr.on("data", (chunk) => stderr.push(chunk));
   const completed = new Promise((resolve, reject) => {
     child.once("error", reject);
-    child.once("close", (code) =>
+    child.once("close", (code) => {
+      const output = Buffer.concat(stdout).toString("utf8").trim();
+      send({
+        method: "item/completed",
+        params: {
+          item: {
+            ...item,
+            aggregatedOutput: output,
+            exitCode: code,
+            status: code === 0 ? "completed" : "failed",
+          },
+          threadId: thread.id,
+          turnId: thread.turnId,
+        },
+      });
       resolve({
         code,
         stderr: Buffer.concat(stderr).toString("utf8").trim(),
-        stdout: Buffer.concat(stdout).toString("utf8").trim(),
-      }),
-    );
+        stdout: output,
+      });
+    });
   });
   const helpers = [
     "currentTab",
