@@ -257,7 +257,7 @@ export function snapshot(
  * were read: the app, actor and accounts it ran for, and its outcome.
  */
 export interface RecheckAhead {
-  readonly app: { readonly id: AppId; readonly owner: OwnerId };
+  readonly app: { readonly id: AppId; readonly owner: OwnerId; readonly version?: VersionId };
   readonly actor: string | undefined;
   readonly accounts: readonly Pick<Account, "id" | "owner">[];
   /**
@@ -382,6 +382,7 @@ const recheckedFor = (
   return (
     ahead.app.id === state.app.id &&
     ahead.app.owner === state.app.owner &&
+    ahead.app.version === state.version.id &&
     ahead.actor === state.actor &&
     same(byId(ahead.accounts), byId(accounts)) &&
     same(byUse(ahead.appUses), byUse(appUses))
@@ -482,7 +483,7 @@ function resolveFor(
     // falls inside the refresh-ahead window, so one invocation never renews the same grant twice.
     const selected = distinctSelection(state);
     const { user, app: appUses } = accountAuthority(state.selections);
-    const app = { id: state.app.id, owner: state.app.owner };
+    const app = { id: state.app.id, owner: state.app.owner, version: state.version.id };
     // The actor's app access and its accounts are rechecked together, before any credential.
     const resolvedFields = yield* (
       use === "run" &&
@@ -578,7 +579,7 @@ const renewRefused = (
     const usedFields = used.fields;
     const renewed = yield* oauth
       .renewRejected(
-        { kind: "run", app: state.app },
+        { kind: "run", app: { ...state.app, version: state.version.id } },
         selected.account,
         selected.provider,
         usedFields,

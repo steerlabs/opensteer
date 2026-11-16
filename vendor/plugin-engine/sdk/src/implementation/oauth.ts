@@ -93,6 +93,7 @@ import {
   type AppId,
   type OwnerId,
   type ProviderId,
+  type VersionId,
 } from "../contracts/shared.ts";
 import { StoredAccount, type Credentials } from "../contracts/storage.ts";
 import { type AccountCredential, invocationAccount } from "./provider.ts";
@@ -331,7 +332,7 @@ interface Resolution {
  * or checking an account outside the app's code.
  */
 type CredentialUse =
-  | { readonly kind: "run"; readonly app: { readonly id: AppId; readonly owner: OwnerId } }
+  | { readonly kind: "run"; readonly app: { readonly id: AppId; readonly owner: OwnerId; readonly version?: VersionId } }
   | { readonly kind: "removal"; readonly app: { readonly id: AppId; readonly owner: OwnerId } }
   | { readonly kind: "check" };
 /**

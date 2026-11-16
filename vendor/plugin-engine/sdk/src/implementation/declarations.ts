@@ -186,7 +186,7 @@ export const makeDeclarations = (options: {
           lifecycle === undefined
             ? Effect.void
             : lifecycle
-                .appResolving(state.app, checks.linked, checks.appUses)
+                .appResolving({ ...state.app, version: state.version.id }, checks.linked, checks.appUses)
                 .pipe(
                   Effect.flatMap((allowed) =>
                     checks.permitted(allowed) ? Effect.void : Effect.fail(new StorageError()),
@@ -215,6 +215,7 @@ export const makeDeclarations = (options: {
                 owner,
                 states.map((state, index) => ({
                   id: state.app.id,
+                  version: state.version.id,
                   accounts: checks[index]?.linked ?? [],
                   appUses: checks[index]?.appUses ?? [],
                 })),

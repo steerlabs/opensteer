@@ -1,3 +1,4 @@
+import { PluginService } from "../plugins/plugin-service.js";
 import { TabStore, AgentToolActivityStore, appendHostDeploymentEvent } from "@opensteer/database";
 import { TabService } from "../tabs/tab-service.js";
 import { NativeTabTargets } from "../computer-use/native-tab-targets.js";
@@ -406,6 +407,7 @@ export function runnerRegistrationHook<T>(
 
 export interface PersonalHostRuntime {
   readonly kind: "personal";
+  readonly plugins: PluginService;
   readonly app: FastifyInstance;
   readonly browser: BrowserService;
   readonly tabs: TabService;
@@ -520,6 +522,7 @@ export async function createHostRuntime(
   let threadStateDrain: Promise<void> | undefined;
   let threadStateStopped = false;
   let taskQuestions: TaskQuestionNotices | undefined;
+  let pluginService: PluginService | undefined;
   let pluginChangeNotices: PluginChangeNotices | undefined;
   try {
     // A team database is served by several Host processes at once; a personal one by exactly one.
@@ -1050,6 +1053,15 @@ export async function createHostRuntime(
       new StaticEncryptionKeyProvider(new Map([[1, credentialKey]]), 1),
     );
     const credentials = new CredentialService({ key: credentialKey, store });
+    pluginService = new PluginService({
+      deployment: "personal",
+      databaseUrl: config.databaseUrl,
+      dataDirectory,
+      owner: "personal",
+      credentialKey,
+      origin: config.canonicalOrigin.origin,
+    });
+    void pluginService.start().catch(() => undefined);
     credentialKey.fill(0);
     await credentials.initialize();
     const integrationAuthAttempts = new DefaultIntegrationAuthAttemptLifecycle({
@@ -3051,6 +3063,7 @@ export async function createHostRuntime(
       notifications: notificationDispatcher,
       deployment,
       store,
+      plugins: pluginService,
       authorityLost: authorityLease.lost,
       settleExecutionLeases: () => executionLeaseLoop.settled(),
       async close() {
@@ -3117,6 +3130,7 @@ export async function createHostRuntime(
         await step("thread state drain", () => drainThreadStates());
         threadStateStopped = true;
         await step("plugin change notices", () => notices.close());
+        await step("plugin engine", () => pluginService?.close());
         await step("authority lease", () => authorityLease?.close());
         await step("database", () => database.destroy());
         closingStep = undefined;
@@ -3130,6 +3144,7 @@ export async function createHostRuntime(
       listen: () => app.listen({ host: config.bindAddress, port: config.port }),
     };
   } catch (error) {
+    await pluginService?.close();
     await taskQuestions?.close();
     await administrationCatalogs?.close();
     await notificationDispatcher?.close();

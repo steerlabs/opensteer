@@ -19,7 +19,16 @@ const upstream = resolve(
     })(),
 );
 const target = join(root, "vendor/plugin-engine");
-const seeds = ["sdk", "apps", "mcp", "catalog", "app-templates", "app-source", "authorization"];
+const seeds = [
+  "sdk",
+  "apps",
+  "mcp",
+  "catalog",
+  "app-templates",
+  "app-source",
+  "authorization",
+  "mcp-auth",
+];
 const manifests = new Map();
 for (const dir of await readdir(join(upstream, "packages"))) {
   const manifest = JSON.parse(
@@ -31,7 +40,7 @@ const closure = new Set();
 function visit(dir) {
   if (closure.has(dir)) return;
   closure.add(dir);
-  if (dir === "telemetry") return;
+  if (dir === "telemetry" || dir === "mcp-auth") return;
   const entry = [...manifests.values()].find((entry) => entry.dir === dir);
   if (!entry) throw new Error(`Missing package: ${dir}`);
   for (const name of Object.keys(entry.manifest.dependencies ?? {})) {
@@ -43,14 +52,7 @@ function visit(dir) {
   }
 }
 seeds.forEach(visit);
-const excluded = new Set([
-  "ui",
-  "dashboard-start",
-  "devtools",
-  "app-registry",
-  "mcp-auth",
-  "app-management",
-]);
+const excluded = new Set(["ui", "dashboard-start", "devtools", "app-registry", "app-management"]);
 for (const dir of closure)
   if (excluded.has(dir)) throw new Error(`Unexpected product dependency: ${dir}`);
 const rename = (value) => renames.reduce((value, [from, to]) => value.replaceAll(from, to), value);
@@ -97,6 +99,16 @@ for (const dir of closure) {
         /^(README|CHANGELOG|LICENSE)/.test(entry.name)
       )
         continue;
+      if (
+        dir === "mcp-auth" &&
+        !entry.isDirectory() &&
+        ![
+          "src/contracts/grant.ts",
+          "src/contracts/grant-enforcement.ts",
+          "src/implementation/backend.ts",
+        ].includes(local)
+      )
+        continue;
       if (dir !== "apps" && local.startsWith("scripts")) continue;
       if (
         dir === "apps" &&
@@ -110,6 +122,10 @@ for (const dir of closure) {
       }
       const out = join(dest, rename(local));
       let source = await readFile(file, "utf8");
+      if (dir === "mcp-auth" && local === "src/contracts/grant.ts") {
+        const end = "export type Grant = typeof Grant.Type;";
+        source = source.slice(0, source.indexOf(end) + end.length) + "\n";
+      }
       if (local === "package.json" || local === "tsconfig.json") continue;
       if (local === "src/implementation/browser-scripts.gen.ts") {
         const keys = [
@@ -204,6 +220,25 @@ for (const dir of closure) {
   await copy(from);
   const original = JSON.parse(await readFile(join(from, "package.json"), "utf8"));
   const manifest = JSON.parse(rename(JSON.stringify(original)));
+  if (dir === "mcp-auth") {
+    manifest.exports = { ".": "./src/index.ts" };
+    manifest.dependencies = Object.fromEntries(
+      Object.entries(manifest.dependencies).filter(([name]) =>
+        [
+          "effect",
+          "@opensteer/plugin-engine-sdk",
+          "@opensteer/plugin-engine-mcp",
+          "@opensteer/plugin-engine-utils",
+          "@opensteer/plugin-engine-authorization",
+        ].includes(name),
+      ),
+    );
+    manifest.devDependencies = {};
+    await writeFile(
+      join(dest, "src/index.ts"),
+      'export * from "./contracts/grant.ts";\nexport * from "./contracts/grant-enforcement.ts";\nexport { restrictMcpBackend } from "./implementation/backend.ts";\n',
+    );
+  }
   delete manifest.author;
   delete manifest.repository;
   delete manifest.homepage;
