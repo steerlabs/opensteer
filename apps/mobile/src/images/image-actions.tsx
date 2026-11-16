@@ -1,15 +1,8 @@
 import type { HostClient } from "@opensteer/client/host";
-import type { FileSource } from "@opensteer/protocol";
-import { encodeBase64 } from "@opensteer/shared/base64url";
-import * as Clipboard from "expo-clipboard";
-import { File } from "expo-file-system";
-import * as Haptics from "expo-haptics";
-import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
+import type { FileResource, FileSource } from "@opensteer/protocol";
 import { useEffect, useRef, type ReactNode } from "react";
-import { Alert, Platform, type StyleProp, type ViewStyle } from "react-native";
-import { shareFileBytes } from "../platform/share-file-bytes.js";
+import { Alert, type StyleProp, type ViewStyle } from "react-native";
 import { HoldMenu } from "../thread/hold-menu.js";
-import { clipboardNeedsPng } from "./clipboard-format.js";
 
 export interface ImageActionsSource {
   readonly signal?: AbortSignal | undefined;
@@ -33,6 +26,22 @@ export function personalImageSource(
   };
 }
 
+/** An image already open, read at the revision on screen rather than whatever the path now holds. */
+export function openImageSource(
+  client: HostClient,
+  threadId: string | null,
+  file: { readonly resource: FileResource; readonly name: string; readonly mediaType: string },
+): ImageActionsSource {
+  return {
+    name: file.name,
+    read: async (signal) => {
+      const result = await client.transcriptFiles.download(threadId, file.resource, signal);
+      if (result.status !== "ok") throw new Error("This image could not be read.");
+      return { bytes: result.bytes, mediaType: file.mediaType };
+    },
+  };
+}
+
 const actions = [
   { group: 0, id: "copy", image: "doc.on.doc", title: "Copy" },
   { group: 0, id: "share", image: "square.and.arrow.up", title: "Share" },
@@ -51,37 +60,10 @@ export function useImageActions(source: ImageActionsSource) {
     void (async () => {
       const { bytes, mediaType } = await source.read(signal);
       signal.throwIfAborted();
-      if (id === "share") {
-        await shareFileBytes(bytes, source.name, mediaType, signal);
-        return;
-      }
-      let base64 = encodeBase64(bytes);
-      if (!clipboardNeedsPng(mediaType, Platform.OS)) {
-        try {
-          await Clipboard.setImageAsync(base64);
-          void Haptics.selectionAsync();
-          return;
-        } catch {
-          signal.throwIfAborted();
-        }
-      }
-      const context = ImageManipulator.manipulate(`data:${mediaType};base64,${base64}`);
-      let rendered: Awaited<ReturnType<typeof context.renderAsync>> | undefined;
-      let output: File | undefined;
-      try {
-        rendered = await context.renderAsync();
-        const result = await rendered.saveAsync({ format: SaveFormat.PNG, base64: true });
-        output = new File(result.uri);
-        if (!result.base64) throw new Error("Image conversion failed.");
-        base64 = result.base64;
-      } finally {
-        if (output?.exists) output.delete();
-        rendered?.release();
-        context.release();
-      }
-      signal.throwIfAborted();
-      await Clipboard.setImageAsync(base64);
-      void Haptics.selectionAsync();
+      // The clipboard and share modules load on the first action, never with a transcript.
+      const { copyImageBytes, shareFileBytes } = await import("./image-export.js");
+      if (id === "share") await shareFileBytes(bytes, source.name, mediaType, signal);
+      else await copyImageBytes(bytes, mediaType, signal);
     })()
       .catch(() => {
         if (!signal.aborted)

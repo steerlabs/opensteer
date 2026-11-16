@@ -429,9 +429,12 @@ function ViewerImage({
   return (
     <>
       <div
+        aria-label={name}
         className={
           original ? "file-viewer__image file-viewer__image--original" : "file-viewer__image"
         }
+        // Focusable so the keyboard can scroll an original and open its menu.
+        tabIndex={0}
         {...target}
       >
         {image.failed ? (

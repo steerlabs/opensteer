@@ -16,6 +16,7 @@ import {
 } from "react-native";
 import {
   ImageHold,
+  openImageSource,
   personalImageSource,
   useImageActions,
   type ImageActionsSource,
@@ -83,7 +84,10 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
   const file = shown.status === "ok" ? shown : shown.status === "offline" ? shown.cached : null;
   const path = source.kind === "path" ? source.path : null;
   const name = file?.name ?? baseName(path) ?? "Attachment";
-  const imageSource = personalImageSource(client, params.threadId, source, name);
+  const imageSource =
+    file === null
+      ? personalImageSource(client, params.threadId, source, name)
+      : openImageSource(client, params.threadId, { ...file, name });
   const imageActions = useImageActions(imageSource);
   const folder = path === null ? null : path.slice(0, Math.max(0, path.length - name.length - 1));
   const retry = () => setAttempt((count) => count + 1);
