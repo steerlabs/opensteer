@@ -81,6 +81,10 @@ it("shows how a server runs and names its computer, never its secrets' declarati
     "Studio",
   );
   expect(view).toMatchObject({ title: "Allow Tapo?", context: "On Studio" });
+  expect(
+    computerAppApprovalView({ request, app: resolved }, "Studio").context,
+    "the computer stays named beside the task",
+  ).toBe("On Studio · For “Plan the week”");
   expect(view.abilities[0]?.text).toBe("Runs on Studio as you");
   expect(view.details?.text).toBe("node server.js\nin /plugin\nREGION=eu");
   expect(view.details?.text).not.toContain("CAMERA_PASSWORD");

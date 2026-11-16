@@ -121,13 +121,14 @@ export interface ComputerAppApprovalAbility {
  * surfaces may render it.
  */
 export interface ComputerAppApprovalView {
-  readonly kind: "app" | "policy" | "server";
+  /** What stands for it: the app's own icon, a plugin, or every app. */
+  readonly mark: "app" | "apps" | "plugin";
   /** The question, naming what is approved. */
   readonly title: string;
   readonly name: string;
-  /** Why it was asked: the agent's reason or the task it came from. */
+  /** Which computer, where there are several, and why it was asked. */
   readonly context: string | null;
-  /** A Mac app, whose own icon marks it; other approvals draw a generic mark. */
+  /** A Mac app, whose own icon marks it. */
   readonly app: ComputerAppIdentity | null;
   readonly runnerId: string;
   readonly abilities: readonly ComputerAppApprovalAbility[];
@@ -142,20 +143,15 @@ export function computerAppApprovalView(
 ): ComputerAppApprovalView {
   const { request, app } = review;
   const on = computerName ? `on ${computerName}` : "on this computer";
+  const why = request.reason ?? (request.threadTitle ? `For “${request.threadTitle}”` : null);
   const base = {
-    kind: request.kind,
-    context:
-      request.reason ??
-      (request.threadTitle
-        ? `For “${request.threadTitle}”`
-        : computerName
-          ? `On ${computerName}`
-          : null),
+    context: [computerName ? `On ${computerName}` : null, why].filter(Boolean).join(" · ") || null,
     runnerId: request.runnerId,
   };
   if (request.kind === "policy")
     return {
       ...base,
+      mark: "apps",
       title: "Allow apps automatically?",
       name: "Any app",
       app: null,
@@ -173,6 +169,7 @@ export function computerAppApprovalView(
     // The fields below the review ask for its secrets; their values never appear here.
     return {
       ...base,
+      mark: "plugin",
       title: `Allow ${name}?`,
       name,
       app: null,
@@ -206,6 +203,7 @@ export function computerAppApprovalView(
   const mac = identity !== null;
   return {
     ...base,
+    mark: identity ? "app" : "apps",
     title: `Allow ${name}?`,
     name,
     app: identity,

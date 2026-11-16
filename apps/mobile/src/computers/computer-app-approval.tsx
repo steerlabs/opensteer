@@ -178,7 +178,7 @@ function ApprovalMark(props: {
   return (
     <View style={styles.glyph}>
       <Symbol
-        name={props.view.kind === "server" ? "puzzlepiece.extension" : "square.grid.2x2"}
+        name={props.view.mark === "plugin" ? "puzzlepiece.extension" : "square.grid.2x2"}
         size={20}
         tint={color.textSoft}
       />

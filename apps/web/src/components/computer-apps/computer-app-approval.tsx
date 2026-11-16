@@ -135,7 +135,7 @@ function ApprovalMark({ view }: { readonly view: ComputerAppApprovalView }) {
         <AppMark identity={view.app} machineId={view.runnerId} />
       ) : (
         <span className="intg-icon">
-          <Icon name={view.kind === "server" ? "puzzle" : "app"} />
+          <Icon name={view.mark === "plugin" ? "puzzle" : "app"} />
         </span>
       )}
     </span>
