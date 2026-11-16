@@ -66,9 +66,27 @@ export const iphoneNativeReasonSchema = z.enum([
   "wifi-identity-mismatch",
 ]);
 export type IphoneNativeReason = z.infer<typeof iphoneNativeReasonSchema>;
+export const iphoneNativeCapabilitiesSchema = z.strictObject({
+  observe: iphoneNativeReasonSchema.nullable(),
+  act: iphoneNativeReasonSchema.nullable(),
+  launch: iphoneNativeReasonSchema.nullable(),
+  installedApps: iphoneNativeReasonSchema.nullable(),
+  text: z.literal("unsupported-text"),
+  clear: z.literal("unsupported-clear"),
+  indexedTargets: z.literal("geometry-unavailable"),
+  liveVideo: z.literal("unsupported"),
+});
 const id = z.string().min(1).max(128);
 const integer = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const positive = integer.min(1);
+export const iphonePrivateForgetBindingParamsSchema = z.strictObject({
+  udid: id,
+  deploymentId: id,
+  hostInstanceId: id,
+  runnerId: id,
+  deviceId: id,
+  driverGeneration: positive,
+});
 const empty = z.object({}).strict();
 export const iphoneNativePhoneRefSchema = z
   .object({ localPhoneId: id, nativeEpoch: positive })
@@ -505,16 +523,21 @@ export const iphoneNativeRequestSchema = z.union([
   }),
   z.strictObject({
     ...requestBase,
+    method: z.literal("binding.probe"),
+    timeoutMs: positive.max(30000),
+    params: z.strictObject({ bindingToken: id }),
+  }),
+  z.strictObject({
+    ...requestBase,
+    method: z.literal("setup.withdrawWifi"),
+    timeoutMs: positive.max(30000),
+    params: iphonePrivateForgetBindingParamsSchema,
+  }),
+  z.strictObject({
+    ...requestBase,
     method: z.literal("binding.forget"),
     timeoutMs: positive.max(30000),
-    params: z.strictObject({
-      udid: id,
-      deploymentId: id,
-      hostInstanceId: id,
-      runnerId: id,
-      deviceId: id,
-      driverGeneration: positive,
-    }),
+    params: iphonePrivateForgetBindingParamsSchema,
   }),
 ]);
 export type IphoneNativeRequest = z.infer<typeof iphoneNativeRequestSchema>;
@@ -550,7 +573,8 @@ export const iphoneNativeRosterSchema = z
             osVersion: z.string().max(160),
             build: z.string().max(160),
             transport: z.enum(["usb", "wifi"]),
-            reason: iphoneNativeReasonSchema,
+            reason: iphoneNativeReasonSchema.nullable(),
+            capabilities: iphoneNativeCapabilitiesSchema.optional(),
           })
           .strict(),
       )
@@ -619,14 +643,6 @@ export type IphoneNativeInstalledApps = z.infer<typeof iphoneNativeInstalledApps
 // Main-only identity seam. Never included in a renderer or Runner schema.
 export const iphonePrivateIdentityParamsSchema = z.strictObject({ candidateId: id });
 export const iphonePrivateIdentityResultSchema = z.strictObject({ udid: id });
-export const iphonePrivateForgetBindingParamsSchema = z.strictObject({
-  udid: id,
-  deploymentId: id,
-  hostInstanceId: id,
-  runnerId: id,
-  deviceId: id,
-  driverGeneration: positive,
-});
 
 // Desktop main ↔ Mac Runner, negotiated on the existing computer-use socket.
 export const iphoneRunnerBridgeHeader = "x-opensteer-iphone-screen";
@@ -660,6 +676,7 @@ export const iphoneRunnerTargetSchema = z.strictObject({
   nativeEpoch: integer,
   ready: z.boolean(),
   reason: iphoneNativeReasonSchema.nullable(),
+  capabilities: iphoneNativeCapabilitiesSchema.optional(),
 });
 export const iphoneScreenNativeActionSchema = iphoneNativeActionSchema;
 export const iphoneScreenNativeObservationSchema = iphoneNativeObservationSchema;
@@ -668,6 +685,7 @@ export const iphoneScreenNativeInstalledAppsSchema = iphoneNativeInstalledAppsSc
 export const iphoneRunnerParams = {
   "iphone.targets": z.strictObject({
     assignments: z.array(iphoneRunnerAssignmentSchema).max(256),
+    retainedDeviceIds: z.array(id).max(256).optional(),
   }),
   "iphone.session.open": z.strictObject({ ...sessionRef, access: z.enum(["observe", "control"]) }),
   "iphone.observe": z.strictObject({ ...sessionRef, includeScreenshot: z.boolean() }),

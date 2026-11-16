@@ -81,7 +81,7 @@ it("ends USB input on a Wi-Fi transport event and never accepts or replays its l
     );
     f.native.epoch = 2;
     f.native.roster = {
-      revision: 2,
+      revision: f.native.roster.revision + 1,
       candidates: [{ ...f.native.roster.candidates[0]!, nativeEpoch: 2, transport: "wifi" }],
     };
     f.native.publish();
@@ -105,7 +105,7 @@ it("ends USB input on a Wi-Fi transport event and never accepts or replays its l
   ).toBe(2);
   f.native.epoch = 3;
   f.native.roster = {
-    revision: 3,
+    revision: f.native.roster.revision + 1,
     candidates: [{ ...f.native.roster.candidates[0]!, nativeEpoch: 3, transport: "usb" }],
   };
   f.native.publish();
@@ -257,7 +257,7 @@ it("drops a collected observation after assignment revocation and reconciles unp
     held.resolve();
   }
   await refusal;
-  f.native.roster = { revision: 2, candidates: [] };
+  f.native.roster = { revision: f.native.roster.revision + 1, candidates: [] };
   await f.service.discover();
   await connection.request("iphone.targets", { assignments: [assignment] }, f.options());
   expect(await f.service.targets(ownerA.deploymentId)).toMatchObject([
@@ -285,3 +285,37 @@ it("does not erase a new reservation when retrying a failed local removal save",
   });
   expect(await f.store.records()).toEqual([]);
 });
+
+it.each([false, true])(
+  "reconciles Host removal after reconnect (detached=%s)",
+  async (detached) => {
+    const f = await fixture();
+    cleanups.push(f.cleanup);
+    await f.bind();
+    await f.service.stop();
+    const service = f.restart();
+    await service.start();
+    const connection = service.forSlot(ownerA).connect(() => undefined);
+    try {
+      await connection.request(
+        "iphone.targets",
+        { assignments: [], retainedDeviceIds: detached ? [f.deviceId] : [] },
+        f.options(),
+      );
+      if (detached) {
+        expect(await f.store.records()).toMatchObject([{ deviceId: f.deviceId, phase: "bound" }]);
+        await expect(service.reserve(ownerA, "candidate", "new-setup")).rejects.toMatchObject({
+          code: "phone-already-added",
+        });
+      } else {
+        expect(await f.store.records()).toEqual([]);
+        expect(f.native.calls.some(({ method }) => method === "setup.withdrawWifi")).toBe(true);
+        await expect(service.reserve(ownerA, "candidate", "new-setup")).resolves.toMatchObject({
+          phase: "reserved",
+        });
+      }
+    } finally {
+      connection.close();
+    }
+  },
+);

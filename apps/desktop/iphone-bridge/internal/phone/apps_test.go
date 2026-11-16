@@ -3,12 +3,119 @@ package phone
 import (
 	"context"
 	"github.com/danielpaulus/go-ios/ios"
+	"github.com/danielpaulus/go-ios/ios/tunnel"
 	"github.com/steerlabs/opensteer/iphone-bridge/internal/wire"
+	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
+	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"io"
 	"net"
 	"testing"
 	"time"
 )
+
+func TestDirectWifiInventoryAndLaunchValidationUseVerifiedTunnel(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	a, b := net.Pipe()
+	left, err := tunnel.OpenPacketStream(ctx, a, "fd00::1", "fd00::2", 1280)
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := tunnel.OpenPacketStream(ctx, b, "fd00::2", "fd00::1", 1280)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = left.Close(); _ = right.Close(); left.Wait(); right.Wait() }()
+	listener, err := gonet.ListenTCP(right.Stack, tcpip.FullAddress{NIC: 1, Addr: tcpip.AddrFromSlice(net.ParseIP("fd00::2").To16()), Port: 10001}, ipv6.ProtocolNumber)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	served := make(chan error, 1)
+	go func() {
+		for range 2 {
+			conn, err := listener.Accept()
+			if err != nil {
+				served <- err
+				return
+			}
+			_ = conn.SetDeadline(time.Now().Add(time.Second))
+			codec := ios.NewPlistCodec()
+			checkin, err := codec.Decode(conn)
+			if err == nil {
+				var values map[string]interface{}
+				values, err = ios.ParsePlist(checkin)
+				if err == nil && values["Request"] != "RSDCheckin" {
+					err = io.ErrUnexpectedEOF
+				}
+			}
+			for range 2 {
+				if err == nil {
+					var data []byte
+					data, err = codec.Encode(map[string]interface{}{})
+					if err == nil {
+						_, err = conn.Write(data)
+					}
+				}
+			}
+			if err == nil {
+				_, err = codec.Decode(conn)
+			}
+			if err == nil {
+				var data []byte
+				data, err = codec.Encode(map[string]interface{}{"CurrentIndex": uint64(0), "CurrentAmount": uint64(1), "Status": "Complete", "CurrentList": []interface{}{map[string]interface{}{"CFBundleIdentifier": "fixture.app", "CFBundleDisplayName": "Fixture", "ApplicationType": "User"}}})
+				if err == nil {
+					_, err = conn.Write(data)
+				}
+			}
+			_ = conn.Close()
+			if err != nil {
+				served <- err
+				return
+			}
+		}
+		served <- nil
+	}()
+	m := newTestManager(t)
+	id := "direct-inventory-fixture"
+	m.wifi[id] = wirelessState{Enabled: true}
+	if err := m.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	p := m.phones[m.identities[id]]
+	if p.entry.DeviceID != -1 {
+		t.Fatal("test acquired a usbmux device")
+	}
+	screen, backend, action := screenFixture(t)
+	s := &Session{tunnel: left, identity: id, announced: true, services: ios.RsdHandshakeResponse{Udid: id, Services: map[string]ios.RsdServiceEntry{"com.apple.mobile.installation_proxy.shim.remote": {Port: 10001}}}, screen: screen}
+	p.session, p.binding, p.sessionID, p.access = s, "b", "s", "control"
+	screen.observation.NativeEpoch = p.epoch
+	result, err := m.installedApps(ctx, &wire.AppsParams{BindingToken: "b", NativeEpoch: p.epoch, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	apps := result.(InstalledApps)
+	if len(apps.Apps) != 1 || apps.Apps[0].AppID != "fixture.app" {
+		t.Fatal("tunnel inventory was not returned")
+	}
+	action.NativeEpoch = p.epoch
+	action.Actions = []wire.Action{{Kind: "launch", AppID: apps.Apps[0].AppID}}
+	if _, err := m.screenOperation(ctx, action); err != nil {
+		t.Fatal(err)
+	}
+	if backend.launches != 1 {
+		t.Fatal("tunnel inventory did not validate the launch")
+	}
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("tunnel inventory service did not finish")
+	}
+}
 
 func TestInventoryFilteringPaginationAndMinimalMetadata(t *testing.T) {
 	a, b := net.Pipe()

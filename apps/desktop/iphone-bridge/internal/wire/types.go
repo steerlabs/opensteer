@@ -159,14 +159,25 @@ func HelloResult(boot string) Hello {
 }
 
 type Candidate struct {
-	LocalPhoneID string `json:"localPhoneId"`
-	NativeEpoch  uint64 `json:"nativeEpoch"`
-	Name         string `json:"name"`
-	Model        string `json:"model"`
-	OSVersion    string `json:"osVersion"`
-	Build        string `json:"build"`
-	Transport    string `json:"transport"`
-	Reason       Reason `json:"reason"`
+	LocalPhoneID string        `json:"localPhoneId"`
+	NativeEpoch  uint64        `json:"nativeEpoch"`
+	Name         string        `json:"name"`
+	Model        string        `json:"model"`
+	OSVersion    string        `json:"osVersion"`
+	Build        string        `json:"build"`
+	Transport    string        `json:"transport"`
+	Reason       *Reason       `json:"reason"`
+	Capabilities *Capabilities `json:"capabilities,omitempty"`
+}
+type Capabilities struct {
+	Observe        *Reason `json:"observe"`
+	Act            *Reason `json:"act"`
+	Launch         *Reason `json:"launch"`
+	InstalledApps  *Reason `json:"installedApps"`
+	Text           Reason  `json:"text"`
+	Clear          Reason  `json:"clear"`
+	IndexedTargets Reason  `json:"indexedTargets"`
+	LiveVideo      Reason  `json:"liveVideo"`
 }
 type Roster struct {
 	Revision   uint64      `json:"revision"`
@@ -192,7 +203,7 @@ func Params(r Request) (interface{}, error) {
 		v = &PhoneRef{}
 	case "phone.identity":
 		v = &IdentityParams{}
-	case "binding.forget":
+	case "binding.forget", "setup.withdrawWifi":
 		v = &ForgetBindingParams{}
 	case "setup.inspect", "setup.pair":
 		v = &PhoneRef{}
@@ -204,7 +215,7 @@ func Params(r Request) (interface{}, error) {
 		v = &CancelParams{}
 	case "binding.acquire":
 		v = &BindingParams{}
-	case "binding.release":
+	case "binding.release", "binding.probe":
 		v = &TokenParams{}
 	case "session.open":
 		v = &SessionParams{}

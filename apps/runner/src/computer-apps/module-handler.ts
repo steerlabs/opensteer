@@ -365,7 +365,7 @@ export class ComputerAppModuleHandler {
       )
         this.#screenStatus.delete(key);
     }
-    this.#screenConnection.replaceAssignments(message.drivers);
+    this.#screenConnection.replaceAssignments(message.drivers, message.retainedDeviceIds);
   }
 
   #assigned(target: DeviceDriverTarget): boolean {

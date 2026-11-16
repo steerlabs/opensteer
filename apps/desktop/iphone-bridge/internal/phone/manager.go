@@ -19,22 +19,23 @@ import (
 )
 
 type localPhone struct {
-	entry       ios.DeviceEntry
-	identity    string
-	id          string
-	epoch       uint64
-	lane        chan struct{}
-	session     *Session
-	cancel      context.CancelFunc
-	binding     string
-	reservation *Reservation
-	sessionID   string
-	inspection  Inspection
-	routeCtx    context.Context
-	routeCancel context.CancelFunc
-	apps        map[string]bool
-	appsEpoch   uint64
-	access      string
+	entry           ios.DeviceEntry
+	identity        string
+	id              string
+	epoch           uint64
+	lane            chan struct{}
+	session         *Session
+	cancel          context.CancelFunc
+	binding         string
+	reservation     *Reservation
+	sessionID       string
+	inspection      Inspection
+	readinessReason wire.Reason
+	routeCtx        context.Context
+	routeCancel     context.CancelFunc
+	apps            map[string]bool
+	appsEpoch       uint64
+	access          string
 }
 type imageOption struct {
 	Handle string `json:"handle"`
@@ -100,6 +101,8 @@ func (m *Manager) Call(ctx context.Context, r wire.Request) (interface{}, error)
 		return nil, wire.Fail(wire.NotInitialized)
 	}
 	switch r.Method {
+	case "setup.withdrawWifi":
+		return wire.Empty{}, m.withdrawWifi(ctx, p.(*wire.ForgetBindingParams))
 	case "phone.identity":
 		return m.privateIdentity(p.(*wire.IdentityParams).CandidateID)
 	case "binding.forget":
@@ -153,6 +156,8 @@ func (m *Manager) Call(ctx context.Context, r wire.Request) (interface{}, error)
 	case "binding.acquire":
 		params := p.(*wire.BindingParams)
 		return m.withPhone(ctx, params.PhoneRef, func(ctx context.Context, phone *localPhone) (interface{}, error) { return m.acquire(phone, params) })
+	case "binding.probe":
+		return wire.Empty{}, m.probe(ctx, p.(*wire.TokenParams).BindingToken)
 	case "binding.release":
 		params := p.(*wire.TokenParams)
 		return wire.Empty{}, m.release(params.BindingToken, params.Forget)
@@ -381,12 +386,13 @@ func (m *Manager) reconcile() error {
 			m.phones[id] = phone
 		}
 		// Keep a healthy in-flight route until its session ends; new sessions prefer USB.
-		if phone.session != nil && (phone.entry.DeviceID == -1 || m.inventory.Has(phone.entry)) {
+		if phone.sessionID != "" && (phone.entry.DeviceID == -1 || m.inventory.Has(phone.entry)) {
 			d = phone.entry
 		}
 		changedRoute := phone.entry.DeviceID != d.DeviceID || phone.entry.Properties.ConnectionType != d.Properties.ConnectionType
 		if changedRoute {
 			phone.epoch++
+			phone.readinessReason = ""
 			if phone.routeCancel != nil {
 				phone.routeCancel()
 			}
@@ -411,6 +417,7 @@ func (m *Manager) reconcile() error {
 	for id, p := range m.phones {
 		if !present[id] && p.entry.DeviceID != 0 {
 			p.epoch++
+			p.readinessReason = ""
 			p.entry = ios.DeviceEntry{}
 			if p.routeCancel != nil {
 				p.routeCancel()
@@ -488,14 +495,20 @@ func (m *Manager) roster() wire.Roster {
 			name = "iPhone"
 		}
 		transport := "usb"
-		reason := wire.QualificationRequired
+		reason := wire.NotInitialized
 		if p.entry.Properties.ConnectionType == "Network" {
 			transport = "wifi"
 			if p.entry.DeviceID == -1 && p.session == nil {
 				reason = wire.WifiPhoneNotFound
 			}
 		}
-		r.Candidates = append(r.Candidates, wire.Candidate{LocalPhoneID: p.id, NativeEpoch: p.epoch, Name: name, Model: p.inspection.Model, OSVersion: p.inspection.OSVersion, Build: p.inspection.Build, Transport: transport, Reason: reason})
+		caps := unavailableCapabilities(reason)
+		if p.session != nil {
+			caps = p.session.capabilities()
+		} else if p.readinessReason != "" {
+			caps = unavailableCapabilities(p.readinessReason)
+		}
+		r.Candidates = append(r.Candidates, wire.Candidate{LocalPhoneID: p.id, NativeEpoch: p.epoch, Name: name, Model: p.inspection.Model, OSVersion: p.inspection.OSVersion, Build: p.inspection.Build, Transport: transport, Reason: caps.Observe, Capabilities: &caps})
 	}
 	sort.Slice(r.Candidates, func(i, j int) bool { return r.Candidates[i].LocalPhoneID < r.Candidates[j].LocalPhoneID })
 	return r
@@ -602,6 +615,11 @@ func (m *Manager) acquire(p *localPhone, params *wire.BindingParams) (interface{
 	}
 	p.reservation = reservation
 	p.binding = uuid.New().String()
+	if state := m.wifi[p.identity]; !state.Enabled && state.Changed && p.entry.Properties.ConnectionType == "USB" && !m.restoring[p.id] {
+		m.restoring[p.id] = true
+		m.wg.Add(1)
+		go m.restoreWifi(wire.PhoneRef{LocalPhoneID: p.id, NativeEpoch: p.epoch})
+	}
 	return struct {
 		BindingToken string `json:"bindingToken"`
 	}{p.binding}, nil
@@ -629,6 +647,7 @@ func (m *Manager) release(token string, forget bool) error {
 	p.reservation = nil
 	p.sessionID = ""
 	p.epoch++
+	p.readinessReason = ""
 	m.revision++
 	m.mu.Unlock()
 	if m.publish != nil {
@@ -663,56 +682,51 @@ func (m *Manager) open(ctx context.Context, params *wire.SessionParams) (interfa
 	m.mu.Unlock()
 	return m.withPhone(ctx, ref, func(ctx context.Context, p *localPhone) (interface{}, error) {
 		m.mu.Lock()
-		if p.session != nil || p.binding != params.BindingToken {
+		if p.sessionID != "" || p.binding != params.BindingToken {
 			m.mu.Unlock()
 			return nil, wire.Fail(wire.PhoneInUse)
 		}
-		lifetime, cancel := context.WithCancel(m.ctx)
-		p.cancel = cancel
 		p.sessionID = params.SessionID
-		m.mu.Unlock()
-		session, err := m.openTransport(lifetime, ctx, p)
-		if err != nil {
-			cancel()
-			return nil, err
-		}
-		if params.Access == "control" {
-			err = session.StartMedia(lifetime, ctx)
-		}
-		if err != nil {
-			cancel()
-			session.Close()
-			return nil, err
-		}
-		m.mu.Lock()
-		if p.binding != params.BindingToken || p.epoch != ref.NativeEpoch || lifetime.Err() != nil {
-			m.mu.Unlock()
-			cancel()
-			session.Close()
-			return nil, wire.Fail(wire.StaleEpoch)
-		}
-		p.session = session
 		p.access = params.Access
-		p.sessionID = params.SessionID
 		m.mu.Unlock()
-		go func() {
-			<-session.Done()
-			m.mu.Lock()
-			if p.session == session {
-				p.session = nil
-				p.sessionID = ""
-				p.epoch++
-				if p.routeCancel != nil {
-					p.routeCancel()
-				}
-				p.routeCtx, p.routeCancel = context.WithCancel(m.ctx)
-				m.revision++
-			}
-			m.mu.Unlock()
-			if m.publish != nil {
-				m.publish(m.roster())
+		opened := false
+		defer func() {
+			if !opened {
+				_ = m.closeSession(params.BindingToken, params.SessionID)
 			}
 		}()
+		session, err := m.ensureTransport(ctx, p)
+		if err != nil {
+			return nil, err
+		}
+		_ = session.Probe(ctx)
+		if params.Access == "control" {
+			caps := session.capabilities()
+			if caps.Act == nil || *caps.Act == wire.MediaRequired {
+				err = session.StartMedia(m.ctx, ctx)
+				session.mu.Lock()
+				session.inputReason = ""
+				if err != nil {
+					session.inputReason = Classify(err, wire.MediaRequired).Code
+				}
+				session.mu.Unlock()
+			}
+		}
+		m.mu.Lock()
+		if p.binding != params.BindingToken || p.epoch != ref.NativeEpoch || p.session != session || p.sessionID != params.SessionID || ctx.Err() != nil {
+			m.mu.Unlock()
+			_ = session.stopControl()
+			return nil, wire.Fail(wire.StaleEpoch)
+		}
+		p.access = params.Access
+		p.sessionID = params.SessionID
+		opened = true
+		m.revision++
+		m.mu.Unlock()
+		if m.publish != nil {
+			m.publish(m.roster())
+		}
+
 		return ref, nil
 	})
 }
@@ -723,22 +737,17 @@ func (m *Manager) closeSession(token, sessionID string) error {
 		m.mu.Unlock()
 		return nil
 	}
-	abort := p.cancel
 	session := p.session
-	p.session = nil
 	p.sessionID = ""
-	p.epoch++
+	p.access = ""
 	m.revision++
 	m.mu.Unlock()
-	if m.publish != nil {
-		m.publish(m.roster())
-	}
 	var err error
 	if session != nil {
-		err = session.Close()
+		err = session.stopControl()
 	}
-	if abort != nil {
-		abort()
+	if m.publish != nil {
+		m.publish(m.roster())
 	}
 	return err
 }
@@ -757,9 +766,11 @@ func (m *Manager) Close() error {
 		}
 	}
 	m.mu.Unlock()
+	var cleanup sync.WaitGroup
 	for _, token := range tokens {
-		_ = m.release(token, false)
+		cleanup.Go(func() { _ = m.release(token, false) })
 	}
+	cleanup.Wait()
 	m.cancel()
 	m.wg.Wait()
 	m.operations.Wait()
@@ -842,7 +853,7 @@ func (m *Manager) WithSession(ctx context.Context, token, sessionID string, epoc
 		if !valid {
 			return nil, wire.Fail(wire.NoSession)
 		}
-		if control && (access != "control" || !session.MediaReady()) {
+		if control && access != "control" {
 			return nil, wire.Fail(wire.MediaRequired)
 		}
 		return call(ctx, session)

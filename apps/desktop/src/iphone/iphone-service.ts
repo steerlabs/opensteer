@@ -59,7 +59,7 @@ export class IphoneService {
   readonly #invalidatedSlots = new Set<(deploymentId: string) => void>();
   readonly #listeners = new Set<(deploymentId: string, event: IphoneRunnerEvent) => void>();
   readonly #cleanups = new Set<Promise<unknown>>();
-  readonly #wifiWork = new Set<string>();
+  readonly #wifiWork = new Map<string, Promise<void>>();
   #records: IphoneMapping[] = [];
   #roster: Candidate[] = [];
   #revision = -1;
@@ -216,20 +216,28 @@ export class IphoneService {
     signal?: AbortSignal,
   ): Promise<IphoneMapping> {
     if (this.#wifiWork.has(record.udid)) throw new IphoneServiceError("phone-in-use");
-    this.#wifiWork.add(record.udid);
+    const work = Promise.withResolvers<void>();
+    this.#wifiWork.set(record.udid, work.promise);
     try {
-      await this.#binding(record, signal);
       const native = await this.#connect();
-      await native.request(
-        { enable: "setup.enableWifi", disable: "setup.disableWifi", pair: "setup.pairWifi" }[
-          action
-        ],
-        this.#ref(record),
-        empty,
-        signal ? { signal } : {},
-      );
-      if (action === "enable" && !record.wifiEnabledByOpensteer)
-        await native.request("setup.pairWifi", this.#ref(record), empty, signal ? { signal } : {});
+      if (action === "disable") {
+        await native.request("setup.withdrawWifi", this.#privateBindingRef(record), empty);
+      } else {
+        await this.#binding(record, signal);
+        await native.request(
+          action === "enable" ? "setup.enableWifi" : "setup.pairWifi",
+          this.#ref(record),
+          empty,
+          signal ? { signal } : {},
+        );
+        if (action === "enable" && !record.wifiEnabledByOpensteer)
+          await native.request(
+            "setup.pairWifi",
+            this.#ref(record),
+            empty,
+            signal ? { signal } : {},
+          );
+      }
       const current = this.#records.find(
         (r) =>
           r.udid === record.udid &&
@@ -245,8 +253,15 @@ export class IphoneService {
         throw new IphoneServiceError("local-mapping-save-failed");
       }
       return updated;
+    } catch (error) {
+      if (action === "enable" && !record.wifiEnabledByOpensteer)
+        await (
+          await this.#connect()
+        ).request("setup.withdrawWifi", this.#privateBindingRef(record), empty);
+      throw error;
     } finally {
       this.#wifiWork.delete(record.udid);
+      work.resolve();
     }
   }
   async prepare(record: IphoneMapping, signal: AbortSignal): Promise<void> {
@@ -299,16 +314,33 @@ export class IphoneService {
     }
   }
   async save(record: IphoneMapping): Promise<void> {
+    const previous = this.#records.find((r) => r.udid === record.udid);
     await this.store.save(record);
     this.#records = await this.store.records();
+    const slot = this.#slots.get(record.deploymentId);
+    if (
+      record.phase === "bound" &&
+      previous?.phase !== "bound" &&
+      slot &&
+      sameOwner(record, slot.owner) &&
+      slot.assignments.some(
+        (a) => a.deviceId === record.deviceId && a.generation === record.driverGeneration,
+      )
+    )
+      await this.#probe(record);
   }
   async finishSetup(record: IphoneMapping): Promise<void> {
     await this.#release(record, true);
   }
   async cancelSetup(record: IphoneMapping): Promise<void> {
-    if (record.phase !== "reserved") return;
+    if (record.phase !== "reserved" && record.phase !== "pending-attach") return;
+    await this.#wifiWork.get(record.udid);
+    await (
+      await this.#connect()
+    ).request("setup.withdrawWifi", this.#privateBindingRef(record), empty);
     await this.#release(record, true);
-    await this.store.remove(record);
+    if (record.phase === "reserved") await this.store.remove(record);
+    else await this.store.save({ ...record, wifiEnabledByOpensteer: false });
     this.#records = await this.store.records();
   }
   async pending(owner: IphoneRunnerOwner): Promise<IphoneMapping | undefined> {
@@ -372,8 +404,9 @@ export class IphoneService {
           deviceId: r.deviceId!,
           driverGeneration: r.driverGeneration!,
           nativeEpoch: candidate?.nativeEpoch ?? 0,
-          ready: false,
-          reason: candidate?.reason ?? "phone-disconnected",
+          ready: candidate?.capabilities?.observe === null,
+          reason: candidate ? candidate.reason : "phone-disconnected",
+          ...(candidate?.capabilities ? { capabilities: candidate.capabilities } : {}),
         };
       });
   }
@@ -419,11 +452,32 @@ export class IphoneService {
                   )
                 ) {
                   this.#invalidate(record, "no-session");
-                  this.#cleanup(this.#release(record, false));
+                  if (
+                    update.retainedDeviceIds &&
+                    record.deviceId &&
+                    !update.retainedDeviceIds.includes(record.deviceId)
+                  ) {
+                    await this.#wifiWork.get(record.udid);
+                    await (
+                      await this.#connect()
+                    ).request("setup.withdrawWifi", this.#privateBindingRef(record), empty);
+                    await this.#release(record, true);
+                    await this.store.remove(record);
+                    this.#records = await this.store.records();
+                  } else this.#cleanup(this.#release(record, false));
                 }
               }
               if (old && old.key !== key) this.#closeOwner(old.key);
               if (this.#records.some((r) => r.phase === "bound")) await this.discover();
+              for (const record of this.#records.filter(
+                (r) =>
+                  sameOwner(r, owner) &&
+                  r.phase === "bound" &&
+                  update.assignments.some(
+                    (a) => a.deviceId === r.deviceId && a.generation === r.driverGeneration,
+                  ),
+              ))
+                await this.#probe(record);
               return iphoneRunnerResults[method].parse({
                 targets: await this.targets(deploymentId),
               }) as IphoneRunnerResult<M>;
@@ -631,6 +685,27 @@ export class IphoneService {
     if (!candidate) throw new IphoneServiceError("phone-disconnected");
     return { localPhoneId: candidate.localPhoneId, nativeEpoch: candidate.nativeEpoch };
   }
+  #privateBindingRef(record: IphoneMapping) {
+    return {
+      udid: record.udid,
+      deploymentId: record.deploymentId,
+      hostInstanceId: record.hostInstanceId,
+      runnerId: record.runnerId,
+      deviceId: record.deviceId ?? record.setupId,
+      driverGeneration: record.driverGeneration ?? 1,
+    };
+  }
+  async #probe(record: IphoneMapping): Promise<void> {
+    try {
+      const binding = await this.#binding(record);
+      await (
+        await this.#connect()
+      ).request("binding.probe", { bindingToken: binding.token }, empty, { timeoutMs: 5000 });
+      await this.discover();
+    } catch {
+      // Native roster carries the failed probe's typed reason.
+    }
+  }
   #binding(record: IphoneMapping, signal?: AbortSignal): Promise<Binding> {
     const existing = this.#bindings.get(record.udid);
     if (existing) {
@@ -687,19 +762,7 @@ export class IphoneService {
       if (forget && !this.#stopped)
         await (
           await this.#connect()
-        ).request(
-          "binding.forget",
-          {
-            udid: record.udid,
-            deploymentId: record.deploymentId,
-            hostInstanceId: record.hostInstanceId,
-            runnerId: record.runnerId,
-            deviceId: record.deviceId ?? record.setupId,
-            driverGeneration: record.driverGeneration ?? 1,
-          },
-          empty,
-          { timeoutMs: 2000 },
-        );
+        ).request("binding.forget", this.#privateBindingRef(record), empty, { timeoutMs: 2000 });
       return;
     }
     this.#bindings.delete(record.udid);
@@ -771,6 +834,7 @@ export class IphoneService {
   }
   #reconcile(roster: z.infer<typeof iphoneNativeRosterSchema>): void {
     if (roster.revision < this.#revision) return;
+    const probe: IphoneMapping[] = [];
     for (const record of this.#records) {
       const before = this.#roster.find((c) => c.localPhoneId === record.localPhoneId);
       const after = roster.candidates.find((c) => c.localPhoneId === record.localPhoneId);
@@ -779,9 +843,20 @@ export class IphoneService {
         (!after || before.nativeEpoch !== after.nativeEpoch || before.transport !== after.transport)
       )
         this.#invalidate(record, "phone-disconnected");
+      const slot = this.#slots.get(record.deploymentId);
+      if (
+        after &&
+        (!before || before.nativeEpoch !== after.nativeEpoch) &&
+        record.phase === "bound" &&
+        slot?.assignments.some(
+          (a) => a.deviceId === record.deviceId && a.generation === record.driverGeneration,
+        )
+      )
+        probe.push(record);
     }
     this.#roster = roster.candidates;
     this.#revision = roster.revision;
+    for (const record of probe) this.#cleanup(this.#probe(record));
     for (const slot of this.#slots.keys())
       void this.targets(slot).then((targets) => {
         for (const params of targets)

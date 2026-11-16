@@ -65,7 +65,7 @@
     "build:dictation-helper": "tsx scripts/build-dictation-helper.ts",
     "build:passkeys-addon": "tsx scripts/build-passkeys-addon.ts",
     "build:iphone-bridge": "tsx scripts/build-iphone-bridge.ts",
-    "test:iphone-bridge": "go -C iphone-bridge test ./..."
+    "test:iphone-bridge": "go -C iphone-bridge test ./... && go -C iphone-bridge/third_party/go-ios test ./..."
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "catalog:",

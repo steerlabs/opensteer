@@ -46,16 +46,18 @@ func launchApp(ctx context.Context, open channelOpener, id string, guard func() 
 	}
 	return nil
 }
-func readInstalledApps(ctx context.Context, device ios.DeviceEntry) ([]InstalledApp, error) {
-	device.Context = ctx
-	conn, err := ios.ConnectToService(device, "com.apple.mobile.installation_proxy")
+func readInstalledApps(ctx context.Context, transport ServiceDialer) ([]InstalledApp, error) {
+	conn, err := transport.DialService(ctx, inventoryService)
 	if err != nil {
 		return nil, Classify(err, wire.NativeServiceFailed)
 	}
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
-	return browseInstalledApps(conn)
+	if err := ios.RsdCheckin(conn); err != nil {
+		return nil, Classify(err, wire.NativeServiceFailed)
+	}
+	return browseInstalledApps(ios.NewDeviceConnectionWithConn(conn))
 }
 func browseInstalledApps(conn ios.DeviceConnectionInterface) ([]InstalledApp, error) {
 	codec := ios.NewPlistCodec()

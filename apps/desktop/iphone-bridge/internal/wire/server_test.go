@@ -139,12 +139,13 @@ func TestGoldenRequests(t *testing.T) {
 	if err := json.Unmarshal(data, &fixtures); err != nil {
 		t.Fatal(err)
 	}
+	reason := QualificationRequired
 	expected := []interface{}{
 		fixtureRequest(1, "hello", "{}"),
 		Response{"response", 1, HelloResult("fixture-boot")},
 		Request{"request", 1, 2, 30000, "setup.inspect", json.RawMessage(`{"localPhoneId":"fixture-phone","nativeEpoch":2}`)},
 		Response{"response", 2, ErrorResult{Fail(TrustRequired)}},
-		Event{"event", "fixture-boot", 1, "roster.changed", Roster{1, []Candidate{{LocalPhoneID: "fixture-phone", NativeEpoch: 2, Name: "Test iPhone 한글", Model: "iPhoneFixture", OSVersion: "27.0", Build: "TEST", Transport: "usb", Reason: QualificationRequired}}}},
+		Event{"event", "fixture-boot", 1, "roster.changed", Roster{1, []Candidate{{LocalPhoneID: "fixture-phone", NativeEpoch: 2, Name: "Test iPhone 한글", Model: "iPhoneFixture", OSVersion: "27.0", Build: "TEST", Transport: "usb", Reason: &reason}}}},
 	}
 	if len(fixtures) != len(expected) {
 		t.Fatal("golden count changed")

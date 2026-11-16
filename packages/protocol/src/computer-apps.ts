@@ -159,6 +159,7 @@ export type DeviceScreenDriverAssignment = z.infer<typeof DeviceScreenDriverAssi
 export const HostIntegrationsDeviceDriversSchema = z.strictObject({
   ...integrationsFrameBase,
   type: z.literal("host.integrations.device-drivers"),
+  retainedDeviceIds: z.array(DeviceIdSchema).max(deviceDriverMaxAssignments).optional(),
   drivers: z
     .array(DeviceScreenDriverAssignmentSchema)
     .max(deviceDriverMaxAssignments)

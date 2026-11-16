@@ -579,6 +579,7 @@ export class ComputerAppHub {
         ...entry.stream.fence,
         module: "integrations",
         type: "host.integrations.device-drivers",
+        retainedDeviceIds: drivers.retainedScreenDeviceIds(entry.stream.identity.runnerId),
         drivers: assignments.map((binding) => ({
           deviceId: binding.deviceId,
           role: "screen",

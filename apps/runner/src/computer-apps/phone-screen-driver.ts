@@ -79,7 +79,10 @@ export interface PhoneScreenDriver {
 /** One integrations stream; old connections must never publish through a new connection's sink. */
 export interface PhoneScreenDriverConnection {
   /** Invalidate omitted/replaced generations synchronously, including native work and data streams. */
-  replaceAssignments(assignments: readonly DeviceScreenDriverAssignment[]): void;
+  replaceAssignments(
+    assignments: readonly DeviceScreenDriverAssignment[],
+    retainedDeviceIds?: readonly string[],
+  ): void;
   observe(
     context: PhoneScreenContext,
     params: PhoneDisplayDispatchObserveParams,

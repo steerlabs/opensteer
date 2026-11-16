@@ -54,7 +54,7 @@ it("bounds the pending map and tears down only its captured supervisor", async (
   await f.client.close();
   await Promise.all(requests);
   expect(f.requests).toHaveLength(63);
-  expect(f.terminate).toHaveBeenCalledWith(0);
+  expect(f.terminate).toHaveBeenCalledExactlyOnceWith(5000);
 });
 it("rejects malformed UTF-8 without logging content and classifies sent effects unknown", async () => {
   const f = fake();

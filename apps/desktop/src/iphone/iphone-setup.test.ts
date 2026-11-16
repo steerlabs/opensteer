@@ -97,7 +97,10 @@ it("keeps failed Wi-Fi optional and carries the chosen name in the stable attach
     reason: "wifi-pairing-required",
     wifiEnabled: false,
   });
+  expect(f.native.calls.some(({ method }) => method === "setup.withdrawWifi")).toBe(true);
+  f.native.calls = [];
   await setup.wifi(state.setupId, "skip");
+  expect(f.native.calls.some(({ method }) => method === "setup.withdrawWifi")).toBe(true);
   const attached = await setup.advance(state.setupId, "attach", "Chosen name");
   expect(attached.attachCommand).toMatchObject({
     idempotencyKey: state.setupId,
@@ -113,6 +116,27 @@ it("keeps failed Wi-Fi optional and carries the chosen name in the stable attach
   );
 });
 
+it("withdraws Wi-Fi on cancel even after partial enablement and disconnection", async () => {
+  const f = await fixture();
+  cleanups.push(f.cleanup);
+  const setup = new IphoneSetup(f.service);
+  const state = await setup.begin(ownerA);
+  await setup.choose(state.setupId, state.candidates[0]!.candidateId);
+  for (const step of ["trust", "developer-mode", "prepare", "observe"] as const)
+    await setup.advance(state.setupId, step);
+  f.native.failures.set("setup.pairWifi", new IphoneServiceError("wifi-pairing-required"));
+  await setup.wifi(state.setupId, "enable");
+  f.native.roster = { revision: f.native.roster.revision + 1, candidates: [] };
+  f.native.publish();
+  f.native.calls = [];
+  await setup.cancel(state.setupId);
+  expect(f.native.calls).toContainEqual({
+    method: "setup.withdrawWifi",
+    params: expect.objectContaining({ udid: "synthetic-private-phone", deviceId: state.setupId }),
+  });
+  expect(await f.store.records()).toEqual([]);
+});
+
 it("cancels temporary setup on navigation without discarding a dispatched attach", async () => {
   const f = await fixture();
   cleanups.push(f.cleanup);
@@ -122,6 +146,81 @@ it("cancels temporary setup on navigation without discarding a dispatched attach
   await setup.cancel(state.setupId);
   expect(await f.store.records()).toEqual([]);
   await expect(setup.status(state.setupId)).rejects.toMatchObject({ code: "cancelled" });
+});
+
+it.each(["trust-pending", "trust-denied"] as const)(
+  "retries pairing after %s when the person checks again",
+  async (reason) => {
+    const f = await fixture();
+    cleanups.push(f.cleanup);
+    const setup = new IphoneSetup(f.service);
+    const state = await setup.begin(ownerA);
+    await setup.choose(state.setupId, state.candidates[0]!.candidateId);
+    f.native.failures.set("setup.inspect", new IphoneServiceError("trust-required"));
+    f.native.failures.set("setup.pair", new IphoneServiceError(reason));
+    expect(await setup.advance(state.setupId, "trust")).toMatchObject({ step: "trust", reason });
+    f.native.failures.delete("setup.pair");
+    const pair = vi.spyOn(f.service, "pair").mockImplementationOnce(async () => {
+      f.native.failures.delete("setup.inspect");
+    });
+    expect(await setup.advance(state.setupId, "trust")).toMatchObject({
+      step: "developer-mode",
+      reason: null,
+    });
+    expect(pair).toHaveBeenCalledOnce();
+  },
+);
+
+it("probes the completed mapping when the Host assignment arrives before the attach reply", async () => {
+  const f = await fixture();
+  cleanups.push(f.cleanup);
+  const setup = new IphoneSetup(f.service);
+  const state = await setup.begin(ownerA);
+  await setup.choose(state.setupId, state.candidates[0]!.candidateId);
+  for (const step of ["trust", "developer-mode", "prepare", "observe"] as const)
+    await setup.advance(state.setupId, step);
+  await setup.wifi(state.setupId, "skip");
+  await setup.advance(state.setupId, "attach");
+  const connection = f.service.forSlot(ownerA).connect(() => undefined);
+  try {
+    await connection.request(
+      "iphone.targets",
+      {
+        assignments: [
+          { deviceId: f.deviceId, generation: 1, role: "screen", definitionId: "iphone-screen" },
+        ],
+      },
+      f.options(),
+    );
+    await setup.complete(state.setupId, {
+      type: "iphone.screen.attach",
+      deviceId: f.deviceId,
+      generation: 1,
+    });
+    expect(await f.service.targets(ownerA.deploymentId)).toMatchObject([
+      { ready: true, reason: null },
+    ]);
+  } finally {
+    connection.close();
+  }
+});
+
+it("withdraws Wi-Fi on cancel while retaining an already dispatched attach", async () => {
+  const f = await fixture();
+  cleanups.push(f.cleanup);
+  const setup = new IphoneSetup(f.service);
+  const state = await setup.begin(ownerA);
+  await setup.choose(state.setupId, state.candidates[0]!.candidateId);
+  for (const step of ["trust", "developer-mode", "prepare", "observe"] as const)
+    await setup.advance(state.setupId, step);
+  await setup.wifi(state.setupId, "enable");
+  await setup.advance(state.setupId, "attach");
+  f.native.calls = [];
+  await setup.cancel(state.setupId);
+  expect(await f.store.records()).toMatchObject([
+    { phase: "pending-attach", wifiEnabledByOpensteer: false },
+  ]);
+  expect(f.native.calls.some(({ method }) => method === "setup.withdrawWifi")).toBe(true);
 });
 
 it("sets an existing Device up again on its stale phone, keeping its name and forgetting the old binding", async () => {
