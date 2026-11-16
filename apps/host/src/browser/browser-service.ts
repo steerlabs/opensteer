@@ -4649,32 +4649,31 @@ export class BrowserService {
             cardFill: target.main === true && target.cardFill === true,
             signIn: target.main === true && target.signIn === true,
             stateImport: target.stateImport === true,
-            onState: async (state) => {
-              if (
-                state === "ready" &&
-                localIdentity?.kind === "profile-local" &&
-                !localIdentity.initialized
-              ) {
-                const binding = localIdentity.binding;
-                // Abort waits on this frame, so a held profile lock must not outlive the attach deadline.
-                await withDatabaseOperationSignal(
-                  readinessBudget?.signal ?? new AbortController().signal,
-                  readinessBudget?.expiresAt ?? Date.now() + this.#connectTimeoutMs,
-                  () => this.#localProfiles!.acknowledgeReady(binding),
-                );
-              }
-              const transition = () =>
-                this.#transitionBrowserSession({
+            onState: (state) => {
+              // Abort waits on the ready frame, so a held row lock must not outlive the attach deadline.
+              const budget =
+                readinessBudget ??
+                (state === "ready"
+                  ? {
+                      signal: new AbortController().signal,
+                      expiresAt: Date.now() + this.#connectTimeoutMs,
+                    }
+                  : undefined);
+              const transition = async () => {
+                if (
+                  state === "ready" &&
+                  localIdentity?.kind === "profile-local" &&
+                  !localIdentity.initialized
+                )
+                  await this.#localProfiles!.acknowledgeReady(localIdentity.binding);
+                return this.#transitionBrowserSession({
                   ...(state === "ready" ? { from: ["starting", "ready"] as const } : {}),
                   sessionId,
                   state,
                 });
-              return readinessBudget
-                ? withDatabaseOperationSignal(
-                    readinessBudget.signal,
-                    readinessBudget.expiresAt,
-                    transition,
-                  )
+              };
+              return budget
+                ? withDatabaseOperationSignal(budget.signal, budget.expiresAt, transition)
                 : transition();
             },
             onTerminal: async () => {
