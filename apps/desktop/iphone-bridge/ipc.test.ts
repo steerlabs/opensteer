@@ -6,17 +6,19 @@ import {
 } from "../../../packages/protocol/src/iphone-bridge.js";
 
 describe("iPhone native IPC golden fixtures", () => {
-  const fixtures: unknown = JSON.parse(
-    readFileSync(new URL("./testdata/ipc-golden.json", import.meta.url), "utf8"),
+  const fixtureSets = ["ipc-golden.json", "ipc-wifi-golden.json"].map((filename): unknown =>
+    JSON.parse(readFileSync(new URL(`./testdata/${filename}`, import.meta.url), "utf8")),
   );
   it("accepts the locally authored Go/TS messages", () => {
-    expect(Array.isArray(fixtures)).toBe(true);
-    if (!Array.isArray(fixtures)) throw new Error("Expected fixture array");
-    for (const fixture of fixtures) {
-      expect(
-        iphoneNativeRequestSchema.safeParse(fixture).success ||
-          iphoneNativeMessageSchema.safeParse(fixture).success,
-      ).toBe(true);
+    for (const fixtures of fixtureSets) {
+      expect(Array.isArray(fixtures)).toBe(true);
+      if (!Array.isArray(fixtures)) throw new Error("Expected fixture array");
+      for (const fixture of fixtures) {
+        expect(
+          iphoneNativeRequestSchema.safeParse(fixture).success ||
+            iphoneNativeMessageSchema.safeParse(fixture).success,
+        ).toBe(true);
+      }
     }
   });
   it("rejects extra fields and stale cancellation targets", () => {

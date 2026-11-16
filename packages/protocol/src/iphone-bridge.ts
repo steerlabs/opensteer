@@ -45,6 +45,13 @@ export const iphoneNativeReasonSchema = z.enum([
   "no-session",
   "not-initialized",
   "unsupported",
+  // Same-LAN transport availability.
+  "wifi-not-enabled",
+  "local-network-permission-required",
+  "wifi-phone-not-found",
+  "wifi-pairing-required",
+  "wifi-transport-unsupported",
+  "wifi-identity-mismatch",
 ]);
 export type IphoneNativeReason = z.infer<typeof iphoneNativeReasonSchema>;
 const id = z.string().min(1).max(128);
@@ -157,6 +164,31 @@ export const iphoneNativeRequestSchema = z
         params: paramsByMethod["setup.prepareDeveloperServices"],
       })
       .strict(),
+    // Explicit same-LAN setup; no endpoints or pairing material cross this pipe.
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("setup.enableWifi"),
+        timeoutMs: positive.max(30000),
+        params: iphoneNativePhoneRefSchema,
+      })
+      .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("setup.disableWifi"),
+        timeoutMs: positive.max(30000),
+        params: iphoneNativePhoneRefSchema,
+      })
+      .strict(),
+    z
+      .object({
+        ...requestBase,
+        method: z.literal("setup.pairWifi"),
+        timeoutMs: positive.max(30000),
+        params: iphoneNativePhoneRefSchema,
+      })
+      .strict(),
     z
       .object({
         ...requestBase,
@@ -255,7 +287,7 @@ export const iphoneNativeRosterSchema = z
             model: z.string().max(160),
             osVersion: z.string().max(160),
             build: z.string().max(160),
-            transport: z.literal("usb"),
+            transport: z.enum(["usb", "wifi"]),
             reason: iphoneNativeReasonSchema,
           })
           .strict(),

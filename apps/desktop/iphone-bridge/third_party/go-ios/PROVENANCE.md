@@ -6,7 +6,7 @@ Resolved version: v0.0.0-20261116112947-e5833ad1c5b6
 License: MIT; the upstream LICENSE is retained beside this file.
 
 Only the linked ios, golog, http, xpc, coredevice, display, imagemounter and
-userspace-tunnel packages are carried. Upstream tests, CLI, kernel/QUIC tunnels,
+userspace-tunnel, RemotePairing, OPACK, SRP and TLS-PSK packages are carried. Upstream tests, CLI, kernel/QUIC tunnels,
 HTTP tunnel agent, network discovery, image downloads, supervised pairing and
 supervision-certificate helpers are excluded. Tests here are newly authored
 synthetic fixtures and never discover devices.
@@ -36,6 +36,14 @@ Opensteer patches:
 - Go 1.26.0 module directive, using the installed go1.26.2 toolchain rather than
   automatically downloading the upstream go1.26.5 toolchain.
 
+- Supplied-connection RemotePairing setup/verify, TCP listener and TLS-PSK feed
+  the same userspace stack. Peer Ed25519 proofs, physical identity, pairing states,
+  listener ports, TLS version and handshake sizes are validated. No automatic
+  re-pairing, kernel tunnel or exported network listener is retained.
+- RemotePairing JSON framing and IRK auth-tag matching follow the MIT idevice
+  implementation at revision 2dca9a58a9a1dd02ec7d6213fcfd8fe861e74132.
+  Its notice is retained in LICENSE.idevice and THIRD_PARTY_NOTICES.md.
+
 No pymobiledevice3 or other GPL source/tests were copied. Apple developer images
-are not distributed by this module. Dependency licenses also remain in vendor;
-THIRD_PARTY_NOTICES.md lists every module linked into the bridge.
+are not distributed by this module. Dependencies resolve from go.sum without vendoring. THIRD_PARTY_NOTICES.md lists
+every module linked into the bridge.

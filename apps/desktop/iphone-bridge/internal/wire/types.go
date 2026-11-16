@@ -40,7 +40,17 @@ const (
 	Unsupported             Reason = "unsupported"
 )
 
-var Reasons = []Reason{NativeServiceFailed, Cancelled, DeadlineExceeded, CandidateGone, IdentityMismatch, USBMuxUnavailable, TrustRequired, TrustPending, TrustDenied, PhoneLocked, PairingRevoked, PairingFailed, DeveloperModeRequired, DeveloperModeUnknown, ImageMissing, ImageIncompatible, ImageMountFailed, PersonalizationNetwork, PersonalizationRejected, TunnelFailed, ServiceMissing, ProtocolUnsupported, UnsupportedIOS, QualificationRequired, PhoneInUse, MediaRequired, MediaConflict, PhoneDisconnected, OwnedElsewhere, StaleEpoch, NoSession, NotInitialized, Unsupported}
+// Same-LAN transport reasons are separate from USB trust and service readiness.
+const (
+	WifiNotEnabled                 Reason = "wifi-not-enabled"
+	LocalNetworkPermissionRequired Reason = "local-network-permission-required"
+	WifiPhoneNotFound              Reason = "wifi-phone-not-found"
+	WifiPairingRequired            Reason = "wifi-pairing-required"
+	WifiTransportUnsupported       Reason = "wifi-transport-unsupported"
+	WifiIdentityMismatch           Reason = "wifi-identity-mismatch"
+)
+
+var Reasons = []Reason{NativeServiceFailed, Cancelled, DeadlineExceeded, CandidateGone, IdentityMismatch, USBMuxUnavailable, TrustRequired, TrustPending, TrustDenied, PhoneLocked, PairingRevoked, PairingFailed, DeveloperModeRequired, DeveloperModeUnknown, ImageMissing, ImageIncompatible, ImageMountFailed, PersonalizationNetwork, PersonalizationRejected, TunnelFailed, ServiceMissing, ProtocolUnsupported, UnsupportedIOS, QualificationRequired, PhoneInUse, MediaRequired, MediaConflict, PhoneDisconnected, OwnedElsewhere, StaleEpoch, NoSession, NotInitialized, Unsupported, WifiNotEnabled, LocalNetworkPermissionRequired, WifiPhoneNotFound, WifiPairingRequired, WifiTransportUnsupported, WifiIdentityMismatch}
 
 type Failure struct {
 	Code           Reason `json:"code"`
@@ -160,6 +170,9 @@ func Params(r Request) (interface{}, error) {
 		v = &Empty{}
 	case "init":
 		v = &InitParams{}
+	// Wi-Fi setup is main-process-only and always names an epoch-fenced phone.
+	case "setup.enableWifi", "setup.disableWifi", "setup.pairWifi":
+		v = &PhoneRef{}
 	case "setup.inspect", "setup.pair":
 		v = &PhoneRef{}
 	case "phone.forget":

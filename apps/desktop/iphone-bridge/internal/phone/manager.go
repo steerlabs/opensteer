@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -44,6 +45,11 @@ type Manager struct {
 	workCtx        context.Context
 	stopWork       context.CancelFunc
 	usb            USB
+	wifi           map[string]wirelessState
+	restoring      map[string]bool
+	browse         func(context.Context) ([]NetworkCandidate, error)
+	interfaces     func() ([]LANInterface, error)
+	dial           func(context.Context, NetworkCandidate, uint16) (net.Conn, error)
 	root           *os.Root
 	rootPath       string
 	identities     map[string]string
@@ -63,7 +69,7 @@ type Manager struct {
 func NewManager(parent context.Context, usb USB, publish func(wire.Roster)) *Manager {
 	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
 	workCtx, stopWork := context.WithCancel(ctx)
-	return &Manager{ctx: ctx, cancel: cancel, workCtx: workCtx, stopWork: stopWork, usb: usb, publish: publish, phones: make(map[string]*localPhone), images: make(map[string]string), identities: make(map[string]string)}
+	return &Manager{ctx: ctx, cancel: cancel, workCtx: workCtx, stopWork: stopWork, usb: usb, wifi: make(map[string]wirelessState), restoring: make(map[string]bool), browse: browseRemote, interfaces: lanInterfaces, dial: dialLAN, publish: publish, phones: make(map[string]*localPhone), images: make(map[string]string), identities: make(map[string]string)}
 }
 func (m *Manager) Call(ctx context.Context, r wire.Request) (interface{}, error) {
 	m.mu.Lock()
@@ -97,6 +103,19 @@ func (m *Manager) Call(ctx context.Context, r wire.Request) (interface{}, error)
 			return nil, err
 		}
 		return m.roster(), nil
+	// Same-LAN setup operations never run from runtime calls.
+	case "setup.enableWifi", "setup.disableWifi", "setup.pairWifi":
+		ref := *p.(*wire.PhoneRef)
+		if r.Method == "setup.disableWifi" {
+			var err error
+			ref, err = m.preemptWifi(ref)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return m.withPhone(ctx, ref, func(ctx context.Context, phone *localPhone) (interface{}, error) {
+			return m.wifiSetup(ctx, phone, r.Method)
+		})
 	case "setup.inspect":
 		return m.withPhone(ctx, *p.(*wire.PhoneRef), func(ctx context.Context, phone *localPhone) (interface{}, error) {
 			inspection, err := m.usb.Inspect(ctx, m.device(phone))
@@ -191,6 +210,11 @@ func (m *Manager) init(p *wire.InitParams) (interface{}, error) {
 	}
 	m.root = root
 	m.rootPath = canonical
+	if err := m.loadWifi(); err != nil {
+		root.Close()
+		m.root = nil
+		return nil, err
+	}
 	return struct {
 		Images []imageOption `json:"images"`
 	}{options}, nil
@@ -297,11 +321,25 @@ func (m *Manager) startDiscovery(ctx context.Context) error {
 	}
 }
 func (m *Manager) reconcile() error {
-	devices := m.inventory.USBDevices()
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
 		return context.Canceled
+	}
+	enabled := map[string]bool{}
+	for id, state := range m.wifi {
+		enabled[id] = state.Enabled
+	}
+	devices := m.inventory.PreferredDevices(enabled)
+	presentIdentity := map[string]bool{}
+	for _, d := range devices {
+		presentIdentity[d.Properties.SerialNumber] = true
+	}
+	// An opted-in phone remains addressable for an on-demand direct probe, without subnet scanning.
+	for id, on := range enabled {
+		if on && !presentIdentity[id] {
+			devices = append(devices, ios.DeviceEntry{DeviceID: -1, Properties: ios.DeviceProperties{SerialNumber: id, ConnectionType: "Network"}})
+		}
 	}
 	identityLock, err := LockIdentityStore(m.root)
 	if err != nil {
@@ -315,6 +353,7 @@ func (m *Manager) reconcile() error {
 	}
 	present := make(map[string]bool)
 	stale := []*Session{}
+	restore := []wire.PhoneRef{}
 	for _, d := range devices {
 		identity := d.Properties.SerialNumber
 		id := m.identities[identity]
@@ -331,7 +370,12 @@ func (m *Manager) reconcile() error {
 			phone = &localPhone{identity: identity, id: id, epoch: 1, lane: make(chan struct{}, 1)}
 			m.phones[id] = phone
 		}
-		if phone.entry.DeviceID != d.DeviceID {
+		// Keep a healthy in-flight route until its session ends; new sessions prefer USB.
+		if phone.session != nil && (phone.entry.DeviceID == -1 || m.inventory.Has(phone.entry)) {
+			d = phone.entry
+		}
+		changedRoute := phone.entry.DeviceID != d.DeviceID || phone.entry.Properties.ConnectionType != d.Properties.ConnectionType
+		if changedRoute {
 			phone.epoch++
 			if phone.routeCancel != nil {
 				phone.routeCancel()
@@ -347,6 +391,12 @@ func (m *Manager) reconcile() error {
 			phone.sessionID = ""
 		}
 		phone.entry = d
+		state := m.wifi[identity]
+		if changedRoute && d.Properties.ConnectionType == "USB" && !state.Enabled && state.Changed && !m.restoring[id] {
+			m.restoring[id] = true
+			restore = append(restore, wire.PhoneRef{LocalPhoneID: id, NativeEpoch: phone.epoch})
+			m.wg.Add(1)
+		}
 	}
 	for id, p := range m.phones {
 		if !present[id] && p.entry.DeviceID != 0 {
@@ -370,6 +420,9 @@ func (m *Manager) reconcile() error {
 	m.mu.Unlock()
 	for _, session := range stale {
 		_ = session.Close()
+	}
+	for _, ref := range restore {
+		go m.restoreWifi(ref)
 	}
 	if m.publish != nil {
 		m.publish(m.roster())
@@ -424,7 +477,15 @@ func (m *Manager) roster() wire.Roster {
 		if name == "" {
 			name = "iPhone"
 		}
-		r.Candidates = append(r.Candidates, wire.Candidate{LocalPhoneID: p.id, NativeEpoch: p.epoch, Name: name, Model: p.inspection.Model, OSVersion: p.inspection.OSVersion, Build: p.inspection.Build, Transport: "usb", Reason: wire.QualificationRequired})
+		transport := "usb"
+		reason := wire.QualificationRequired
+		if p.entry.Properties.ConnectionType == "Network" {
+			transport = "wifi"
+			if p.entry.DeviceID == -1 && p.session == nil {
+				reason = wire.WifiPhoneNotFound
+			}
+		}
+		r.Candidates = append(r.Candidates, wire.Candidate{LocalPhoneID: p.id, NativeEpoch: p.epoch, Name: name, Model: p.inspection.Model, OSVersion: p.inspection.OSVersion, Build: p.inspection.Build, Transport: transport, Reason: reason})
 	}
 	sort.Slice(r.Candidates, func(i, j int) bool { return r.Candidates[i].LocalPhoneID < r.Candidates[j].LocalPhoneID })
 	return r
@@ -492,7 +553,7 @@ func (m *Manager) prepare(ctx context.Context, p *localPhone, handle string) (in
 	}
 	defer cleanup()
 	lifetime, cancel := context.WithCancel(m.ctx)
-	session, err := m.usb.Open(lifetime, ctx, m.device(p))
+	session, err := m.openTransport(lifetime, ctx, p)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -579,6 +640,9 @@ func (m *Manager) release(token string, forget bool) error {
 	return err
 }
 func (m *Manager) open(ctx context.Context, params *wire.SessionParams) (interface{}, error) {
+	if err := m.reconcile(); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	p := m.findBinding(params.BindingToken)
 	if p == nil {
@@ -597,7 +661,7 @@ func (m *Manager) open(ctx context.Context, params *wire.SessionParams) (interfa
 		p.cancel = cancel
 		p.sessionID = params.SessionID
 		m.mu.Unlock()
-		session, err := m.usb.Open(lifetime, ctx, m.device(p))
+		session, err := m.openTransport(lifetime, ctx, p)
 		if err != nil {
 			cancel()
 			return nil, err
@@ -628,6 +692,10 @@ func (m *Manager) open(ctx context.Context, params *wire.SessionParams) (interfa
 				p.session = nil
 				p.sessionID = ""
 				p.epoch++
+				if p.routeCancel != nil {
+					p.routeCancel()
+				}
+				p.routeCtx, p.routeCancel = context.WithCancel(m.ctx)
 				m.revision++
 			}
 			m.mu.Unlock()
@@ -730,6 +798,11 @@ func (m *Manager) forget(params *wire.ForgetParams) error {
 	}
 	defer identityLock.Close()
 	if err := m.loadIdentities(); err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	delete(m.wifi, identity)
+	if err := m.saveWifi(); err != nil {
 		m.mu.Unlock()
 		return err
 	}

@@ -60,7 +60,11 @@ func OpenSession(lifetime, setup context.Context, device ios.DeviceEntry) (*Sess
 	if err != nil {
 		return nil, Classify(err, wire.TunnelFailed)
 	}
-	s := &Session{tunnel: t, identity: device.Properties.SerialNumber}
+	return sessionFromTunnel(setup, t, device.Properties.SerialNumber)
+}
+
+func sessionFromTunnel(setup context.Context, t *tunnel.Userspace, identity string) (*Session, error) {
+	s := &Session{tunnel: t, identity: identity}
 	s.newRSD = func(ctx context.Context) (RSD, error) {
 		c, err := t.DialTCP(ctx, t.RSDPort)
 		if err != nil {
