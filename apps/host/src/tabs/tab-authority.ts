@@ -32,8 +32,14 @@ export async function tabComputers(ownerId: UserId, ids: DeviceId[], database: T
     ids.length
       ? database
           .selectFrom("devices")
-          .select(["id", "name", "removedAt"])
-          .where("id", "in", ids)
+          .leftJoin("deviceDrivers as self", (join) =>
+            join
+              .onRef("self.deviceId", "=", "devices.id")
+              .on("self.role", "=", "self")
+              .on("self.detachedAt", "is", null),
+          )
+          .select(["devices.id", "name", "removedAt", "self.runnerId as selfRunnerId"])
+          .where("devices.id", "in", ids)
           .execute()
       : [],
     new OpensteerStore(database).effectiveDeviceOwners(ids),
@@ -45,6 +51,7 @@ export async function tabComputers(ownerId: UserId, ids: DeviceId[], database: T
         id,
         {
           name: row?.name ?? "Computer",
+          selfRunnerId: row?.selfRunnerId ?? null,
           removed: !row || row.removedAt !== null || owners.get(id)?.effectiveOwner !== ownerId,
         },
       ];

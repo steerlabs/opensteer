@@ -333,6 +333,7 @@ export class OpensteerStore {
   }
 
   async listRunners(input: {
+    readonly ids?: readonly RunnerId[];
     readonly after?: RunnerId;
     readonly includeDeployment: boolean;
     readonly includeOtherOwners?: boolean;

@@ -185,6 +185,26 @@ describe("phone display contracts", () => {
     ).toBe(false);
   });
 
+  it.each([
+    { tree: "private", elementCount: 1 },
+    {
+      screenshot: { base64: "YWJj", mime: "image/jpeg", width: 390, height: 844 },
+      screenshotUnavailable: null,
+    },
+  ])("hides iPhone content until its lock state is explicitly unlocked: %j", (content) => {
+    const unlocked = { ...observation, ...content, locked: false };
+    expect(IphoneScreenObservationSchema.safeParse(unlocked).success).toBe(true);
+    expect(IphoneScreenObservationSchema.safeParse({ ...unlocked, locked: null }).success).toBe(
+      false,
+    );
+    expect(
+      IphoneScreenObservationSchema.safeParse({
+        ...observation,
+        screenshotUnavailable: "protected",
+      }).success,
+    ).toBe(true);
+  });
+
   it("requires paired target fields and an external route for iPhone screen operations", () => {
     const frame = {
       ...fence,

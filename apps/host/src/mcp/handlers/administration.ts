@@ -300,22 +300,29 @@ export class AdministrationToolHandlers {
         code: "bad_request",
         message: "cursor is not from computer_list. Start again without it.",
       });
-    const [page, runnerPage, drivers, computers] = await Promise.all([
+    const [page, drivers, computers] = await Promise.all([
       store.listDevices({
         ...(after?.data ? { after: after.data } : {}),
         ownerId: caller.userId,
         includeDeployment: true,
         limit: 100,
       }),
-      store.listRunners({
-        ownerId: caller.userId,
-        includeDeployment: true,
-        includeOtherOwners: false,
-        limit: 100,
-      }),
       store.listDeviceDrivers({ includeDetached: true }),
       computerIds(store, caller.userId),
     ]);
+    const pageDeviceIds = new Set(page.devices.map((device) => device.id));
+    const runnerPage = await store.listRunners({
+      ids: drivers
+        .filter(
+          (driver) =>
+            pageDeviceIds.has(driver.deviceId) && driver.role === "self" && !driver.detachedAt,
+        )
+        .map((driver) => driver.runnerId),
+      ownerId: caller.userId,
+      includeDeployment: true,
+      includeOtherOwners: false,
+      limit: 100,
+    });
     const byRunner = new Map(runnerPage.runners.map((runner) => [runner.id, runner]));
     const connections = await this.service.dependencies.integrations.platform.deviceConnections(
       caller.userId,

@@ -734,6 +734,7 @@ export async function deploymentMainRunnerState(
 export async function listRunners(
   database: Kysely<DatabaseSchema>,
   input: {
+    readonly ids?: readonly RunnerId[];
     readonly after?: RunnerId;
     readonly includeDeployment: boolean;
     readonly includeOtherOwners?: boolean;
@@ -750,6 +751,7 @@ export async function listRunners(
       message: "Runner page limit is invalid",
     });
   }
+  if (input.ids?.length === 0) return { nextCursor: null, runners: [] };
   let query = database
     .selectFrom("runners")
     .select([
@@ -780,6 +782,7 @@ export async function listRunners(
         ...(input.includeOtherOwners ? [expression("ownerKind", "=", "user")] : []),
       ]),
     );
+  if (input.ids) query = query.where("id", "in", input.ids);
   if (input.after) query = query.where("id", ">", input.after);
   const rows = await query
     .orderBy("id", "asc")

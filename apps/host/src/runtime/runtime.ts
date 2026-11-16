@@ -1240,10 +1240,15 @@ export async function createHostRuntime(
       nativeTargets: nativeTabs,
       deviceNativeTargets: nativeTabs,
       apps: { get: (owner, id) => requiredService(apps, "Apps").get(owner, id) },
-      computer: async (owner, computer, db) => ({
-        ...(await tabComputer(owner, computer, db)),
-        connected: computerApps.attached(computer),
-      }),
+      computer: async (owner, id, db) => {
+        const computer = await tabComputer(owner, id, db);
+        return {
+          ...computer,
+          connected: computer.selfRunnerId
+            ? runners.isRunnerConnected(computer.selfRunnerId)
+            : computerApps.attached(id),
+        };
+      },
       canRead: canReadTab,
       canReadTask: async (actor, id, db) =>
         !!(await db
@@ -1279,17 +1284,17 @@ export async function createHostRuntime(
       },
       computers: async (owner, ids, db) =>
         new Map(
-          await Promise.all(
-            [...(await tabComputers(owner, ids, db))].map(async ([id, computer]) => {
-              return [
-                id,
-                {
-                  ...computer,
-                  connected: computerApps.attached(id),
-                },
-              ] as const;
-            }),
-          ),
+          [...(await tabComputers(owner, ids, db))].map(([id, computer]) => {
+            return [
+              id,
+              {
+                ...computer,
+                connected: computer.selfRunnerId
+                  ? runners.isRunnerConnected(computer.selfRunnerId)
+                  : computerApps.attached(id),
+              },
+            ] as const;
+          }),
         ),
       authorize: authorizeTabTarget,
       authorizeMembership: authorizeTabActor,

@@ -1,6 +1,7 @@
 import { createId, DeviceIdSchema } from "@opensteer/core";
 import {
   MachineSummarySchema,
+  DeviceMachineSummarySchema,
   machineAccessPolicyDefault,
   mintComputerUseSessionId,
   type ComputerUseSessionSummary,
@@ -857,3 +858,81 @@ it("preserves the self Device descriptor when adding stored Device identity", ()
   })[0];
   expect(summary?.device).toEqual(ownDevice.device);
 });
+
+it.each([
+  ["ready", null, true, "ready", null, "ready", null],
+  [
+    "permission-required",
+    "Enable Accessibility",
+    false,
+    "unavailable",
+    "permission-required",
+    "unavailable",
+    "permission-required",
+  ],
+  ["unavailable", "Paused on the phone", false, "unavailable", "paused", "unavailable", "paused"],
+  ["ready", null, false, "ready", null, "unsupported", "unsupported"],
+] as const)(
+  "projects Android operation %s (%s), display support %s truthfully",
+  (state, detail, displaySupported, controlState, controlReason, viewState, viewReason) => {
+    const id = createId("runner");
+    const phone = runner({
+      id,
+      device: { form: "phone", platform: "android" },
+      allowedModules: ["browser", "integrations"],
+      modules: { integrations: { platform: "android", protocolVersion: 4 } },
+    });
+    const [machine] = projectMachines({
+      access: new Map(),
+      apps: new Map([
+        [
+          id,
+          [
+            {
+              definitionId: "android-phone",
+              operations: ["observe", "act", "close"].map((operation) => ({
+                operation,
+                state,
+                detail,
+                remedy: state === "permission-required" ? "accessibility" : null,
+              })),
+            },
+          ],
+        ],
+      ]),
+      computerUseDisplayStreamSupported: new Map([[id, displaySupported]]),
+      deploymentOwnsMainComputer: false,
+      pendingRunners: [],
+      runners: [phone],
+      threadsByEnvironment: new Map(),
+      devices: [
+        {
+          device: {
+            id: DeviceIdSchema.parse(id),
+            kind: "agent-phone",
+            platform: "android",
+            form: "phone",
+            name: phone.name,
+            ownerKind: "user",
+            removedAt: null,
+            accessPolicy: { ...machineAccessPolicyDefault, apps: true },
+          },
+          selfRunnerId: id,
+          drivers: [
+            { role: "self", runnerId: id, runnerName: phone.name, generation: 1, attached: true },
+          ],
+          screenStatus: null,
+          screenConnected: false,
+          phoneAccess: "read-write",
+        },
+      ],
+    });
+    const control = { state: controlState, reason: controlReason ? { kind: controlReason } : null };
+    const view = { state: viewState, reason: viewReason ? { kind: viewReason } : null };
+    expect(DeviceMachineSummarySchema.parse(machine)).toMatchObject({
+      computerUse: { state },
+      capabilities: { apps: control },
+      phoneDisplay: { control, view, input: view },
+    });
+  },
+);

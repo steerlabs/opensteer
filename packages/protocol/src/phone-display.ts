@@ -298,13 +298,13 @@ function toAndroidObservation(value: unknown) {
 }
 export const IphoneScreenObservationSchema = PhoneDisplayObservationSchema.refine(
   (observation) =>
-    observation.locked !== true ||
+    observation.locked === false ||
     (observation.tree === "" &&
       observation.elementCount === 0 &&
       !observation.truncated &&
       observation.screenshot === null &&
       ["locked", "screen-off", "protected"].includes(observation.screenshotUnavailable ?? "")),
-  "Locked iPhones expose no screen content",
+  "iPhones expose screen content only when explicitly unlocked",
 );
 export const IphoneScreenObservationResultSchema = z.strictObject({
   observation: IphoneScreenObservationSchema,

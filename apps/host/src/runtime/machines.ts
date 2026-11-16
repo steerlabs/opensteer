@@ -454,18 +454,44 @@ function projectDeviceMachines(input: MachineProjectionInput): readonly MachineS
         device.platform === "android");
     const phone = screen !== null || android;
     const selected = screen ? "iphone-screen" : "android-phone";
+    const displayStreamSupported = input.computerUseDisplayStreamSupported?.get(device.id) ?? false;
+    const phoneComputerUse = projectPhoneComputerUse(
+      screen
+        ? screenStatus
+          ? [{ definitionId: selected, operations: screenStatus.operations }]
+          : undefined
+        : (self?.apps ?? undefined),
+      input.computerUseSessions?.get(device.id) ?? [],
+      displayStreamSupported,
+    );
     const available = (
       ready: boolean,
       reason: import("@opensteer/protocol").DeviceCapabilityReason["kind"],
     ): import("@opensteer/protocol").DeviceAvailability =>
       ready ? { state: "ready", reason: null } : { state: "unavailable", reason: { kind: reason } };
+    // Android v4 reports pause only in the operation detail.
     const physical = screen
       ? !screen.attached
         ? available(false, "not-connected")
         : !screenConnected
           ? available(false, "driver-offline")
           : (screenStatus?.availability ?? available(false, "unreported"))
-      : available(self?.status === "online", "driver-offline");
+      : self?.status !== "online"
+        ? available(false, "driver-offline")
+        : !android || phoneComputerUse.state === "ready"
+          ? available(true, "driver-offline")
+          : available(
+              false,
+              phoneComputerUse.state === "permission-required"
+                ? "permission-required"
+                : phoneComputerUse.detail?.startsWith("Paused on the phone")
+                  ? "paused"
+                  : "helper-unavailable",
+            );
+    const display =
+      !screen && physical.state === "ready" && !displayStreamSupported
+        ? { state: "unsupported" as const, reason: { kind: "unsupported" as const } }
+        : physical;
     const access = deviceAccess(device.accessPolicy);
     const capability = (
       supported: boolean,
@@ -496,13 +522,13 @@ function projectDeviceMachines(input: MachineProjectionInput): readonly MachineS
             ? available(false, "approval-required")
             : screen && screenStatus?.ownerViewVersion !== 1 && physical.state === "ready"
               ? available(false, "helper-unavailable")
-              : physical,
+              : display,
           input:
             phoneAccess !== "read-write"
               ? available(false, "approval-required")
               : screen && screenStatus?.inputVersion !== 1 && physical.state === "ready"
                 ? available(false, "helper-unavailable")
-                : physical,
+                : display,
           navigationButtons: screen
             ? (screenStatus?.navigationButtons ?? [])
             : AndroidPhoneNavigationSchema.options.map((id) => ({ id, label: id })),
@@ -587,15 +613,7 @@ function projectDeviceMachines(input: MachineProjectionInput): readonly MachineS
                 : null
               : (self?.apps ?? null),
             computerUse: {
-              ...projectPhoneComputerUse(
-                screen
-                  ? screenStatus
-                    ? [{ definitionId: selected, operations: screenStatus.operations }]
-                    : undefined
-                  : (self?.apps ?? undefined),
-                input.computerUseSessions?.get(device.id) ?? [],
-                input.computerUseDisplayStreamSupported?.get(device.id) ?? false,
-              ),
+              ...phoneComputerUse,
               ownerViews: [...(input.computerViews?.get(device.id)?.ownerViews ?? [])],
             },
           }
