@@ -172,11 +172,10 @@ export async function fixture() {
     const record = await service.reserve(ownerA, "candidate", crypto.randomUUID());
     await service.finishSetup(record);
     await service.save({ ...record, phase: "bound", deviceId, driverGeneration: 1 });
-    const conn = service.forSlot(ownerA.deploymentId).connect(() => undefined);
+    const conn = service.forSlot(ownerA).connect(() => undefined);
     await conn.request(
       "iphone.targets",
       {
-        ...ownerA,
         assignments: [{ deviceId, generation: 1, role: "screen", definitionId: "iphone-screen" }],
       },
       options(),

@@ -2625,7 +2625,11 @@ describe("LocalRunnerService", () => {
     expect(Object.keys(child.environment).filter((name) => /TOKEN|SECRET/u.test(name))).toEqual([]);
     expect(Object.values(child.environment)).not.toContain("c".repeat(43));
     expect(Object.values(child.environment)).not.toContain("e".repeat(64));
-    expect(computerUse.startForSlot).toHaveBeenCalledWith(personal.deploymentId);
+    expect(computerUse.startForSlot).toHaveBeenCalledWith(personal.deploymentId, {
+      deploymentId: personal.deploymentId,
+      hostInstanceId: personal.authority.document.hostInstanceId,
+      runnerId: readTestIdentity(child.dataDirectory)?.runnerId,
+    });
 
     // Removing this Mac gives the listener back: nothing keeps a loopback
     // listener for a slot that no longer exists.

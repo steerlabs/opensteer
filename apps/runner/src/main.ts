@@ -237,7 +237,7 @@ async function startAgentsRunner(input: {
       })
     : undefined;
   const integrationsModule = config.modules.includes("integrations")
-    ? prepareIntegrationsModule({
+    ? await prepareIntegrationsModule({
         helperBinary: applicationConfig.nativeFsHelperBinary,
         ...(config.computerUseBridge ? { computerUseBridge: config.computerUseBridge } : {}),
         dataDirectory: config.dataDirectory,
@@ -404,7 +404,7 @@ async function startReachOnlyRunner(input: {
       })
     : undefined;
   const integrationsModule = input.config.modules.includes("integrations")
-    ? prepareIntegrationsModule({
+    ? await prepareIntegrationsModule({
         helperBinary: input.applicationConfig.nativeFsHelperBinary,
         ...(input.config.computerUseBridge
           ? { computerUseBridge: input.config.computerUseBridge }

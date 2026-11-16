@@ -14,8 +14,8 @@ afterEach(async () => {
 it("authorizes every setup method, binds candidates to one renderer, and cancels navigation and slot changes", async () => {
   const f = await fixture();
   cleanups.push(f.cleanup);
-  const connection = f.service.forSlot(ownerA.deploymentId).connect(() => undefined);
-  await connection.request("iphone.targets", { ...ownerA, assignments: [] }, f.options());
+  const connection = f.service.forSlot(ownerA).connect(() => undefined);
+  await connection.request("iphone.targets", { assignments: [] }, f.options());
   const setup = new IphoneSetup(f.service);
   const sender = Object.assign(new EventEmitter(), {
     mainFrame: { url: "app://opensteer/index.html" },

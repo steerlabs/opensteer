@@ -28,11 +28,10 @@ it("invalidates old sessions on helper loss and generation replacement, never re
   const f = await fixture();
   cleanups.push(f.cleanup);
   await f.bind();
-  const connection = f.service.forSlot(ownerA.deploymentId).connect(() => undefined);
+  const connection = f.service.forSlot(ownerA).connect(() => undefined);
   await connection.request(
     "iphone.targets",
     {
-      ...ownerA,
       assignments: [
         { deviceId: f.deviceId, generation: 1, role: "screen", definitionId: "iphone-screen" },
       ],
@@ -104,14 +103,14 @@ it("drops a collected observation after assignment revocation and reconciles unp
   const f = await fixture();
   cleanups.push(f.cleanup);
   await f.bind();
-  const connection = f.service.forSlot(ownerA.deploymentId).connect(() => undefined);
+  const connection = f.service.forSlot(ownerA).connect(() => undefined);
   const assignment = {
     deviceId: f.deviceId,
     generation: 1,
     role: "screen" as const,
     definitionId: "iphone-screen" as const,
   };
-  await connection.request("iphone.targets", { ...ownerA, assignments: [assignment] }, f.options());
+  await connection.request("iphone.targets", { assignments: [assignment] }, f.options());
   await connection.request(
     "iphone.session.open",
     {
@@ -142,14 +141,14 @@ it("drops a collected observation after assignment revocation and reconciles unp
       () => expect(f.native.calls.some((call) => call.method === "phone.observe")).toBe(true),
       { timeout: 1000 },
     );
-    await connection.request("iphone.targets", { ...ownerA, assignments: [] }, f.options());
+    await connection.request("iphone.targets", { assignments: [] }, f.options());
   } finally {
     held.resolve();
   }
   await refusal;
   f.native.roster = { revision: 2, candidates: [] };
   await f.service.discover();
-  await connection.request("iphone.targets", { ...ownerA, assignments: [assignment] }, f.options());
+  await connection.request("iphone.targets", { assignments: [assignment] }, f.options());
   expect(await f.service.targets(ownerA.deploymentId)).toMatchObject([
     { reason: "phone-disconnected", nativeEpoch: 0 },
   ]);

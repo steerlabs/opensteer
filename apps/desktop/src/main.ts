@@ -575,8 +575,10 @@ async function runDesktop(
   };
   const processSupervisorExecutable = readPersonalProcessSupervisorRelease(resourcesDirectory);
   const computerUseForSlots = {
-    startForSlot: (id: string) =>
-      computerUse.startForSlot(id, passwordsLoginAuthority, iphone.forSlot(id)),
+    startForSlot: (
+      id: string,
+      owner: { deploymentId: string; hostInstanceId: string; runnerId: string },
+    ) => computerUse.startForSlot(id, passwordsLoginAuthority, iphone.forSlot(owner)),
     stopForSlot: async (id: string) => {
       try {
         await iphoneSetup.stopForSlot(id);

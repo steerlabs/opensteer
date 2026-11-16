@@ -124,6 +124,7 @@ interface PersonalDeploymentSupervisorOptions {
   readonly computerUse?: {
     startForSlot(
       deploymentId: string,
+      owner: { deploymentId: string; hostInstanceId: string; runnerId: string },
     ): Promise<{ readonly token: string; readonly url: URL } | null>;
     stopForSlot(deploymentId: string): Promise<void>;
   };
@@ -730,7 +731,13 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     // and a Personal Deployment is the shape where that Mac and this app are
     // the same computer.
     const computerUse =
-      (await this.#computerUse?.startForSlot(manifest.deploymentId).catch(() => null)) ?? null;
+      (await this.#computerUse
+        ?.startForSlot(manifest.deploymentId, {
+          deploymentId: manifest.deploymentId,
+          hostInstanceId: manifest.hostInstanceId,
+          runnerId: manifest.runnerId,
+        })
+        .catch(() => null)) ?? null;
     this.#computerUseSlotId = computerUse ? manifest.deploymentId : null;
     const runner = this.#spawn(
       runnerSpec(

@@ -1176,6 +1176,7 @@ async function bridgeHarness(
       closedSockets += 1;
     });
     return {
+      send: (frame: unknown) => socket.send(JSON.stringify(frame)),
       call: async (id: number, method: string, params: unknown, timeoutMs?: number) =>
         new Promise<unknown>((resolvePromise) => {
           pending.set(id, resolvePromise);
@@ -1250,7 +1251,7 @@ it("requires iPhone opt-in and fences slot and generation on the shared bridge",
   const phone = await iphoneFixture();
   cleanups.push(phone.cleanup);
   await phone.bind();
-  const h = await bridgeHarness({ iphone: phone.service.forSlot(ownerA.deploymentId) });
+  const h = await bridgeHarness({ iphone: phone.service.forSlot(ownerA) });
   const legacy = await h.connect(h.token);
   const assignment = {
     deviceId: phone.deviceId,
@@ -1258,18 +1259,15 @@ it("requires iPhone opt-in and fences slot and generation on the shared bridge",
     role: "screen",
     definitionId: "iphone-screen",
   };
-  expect(
-    await legacy.call(1, "iphone.targets", { ...ownerA, assignments: [assignment] }),
-  ).toMatchObject({ error: { code: "unsupported" } });
+  expect(await legacy.call(1, "iphone.targets", { assignments: [assignment] })).toMatchObject({
+    error: { code: "unsupported" },
+  });
   legacy.close();
   await vi.waitFor(() => expect(h.closedSockets()).toBe(1), { timeout: 2000 });
   const connected = await h.connect(h.token, undefined, undefined, true);
-  expect(
-    await connected.call(2, "iphone.targets", { ...ownerA, assignments: [assignment] }),
-  ).toMatchObject({ result: { targets: [{ deviceId: phone.deviceId, driverGeneration: 1 }] } });
-  expect(
-    await connected.call(3, "iphone.targets", { ...ownerB, assignments: [assignment] }),
-  ).toMatchObject({ error: { code: "failed" } });
+  expect(await connected.call(2, "iphone.targets", { assignments: [assignment] })).toMatchObject({
+    result: { targets: [{ deviceId: phone.deviceId, driverGeneration: 1 }] },
+  });
   expect(
     await connected.call(4, "iphone.observe", {
       deviceId: phone.deviceId,
@@ -1280,4 +1278,11 @@ it("requires iPhone opt-in and fences slot and generation on the shared bridge",
     }),
   ).toMatchObject({ error: { code: "no-session" } });
   expect(h.calls).toEqual([]);
+  connected.send({
+    kind: "request",
+    id: 5,
+    method: "iphone.targets",
+    params: { ...ownerB, assignments: [assignment] },
+  });
+  await vi.waitFor(() => expect(h.closedSockets()).toBe(2), { timeout: 1000 });
 });

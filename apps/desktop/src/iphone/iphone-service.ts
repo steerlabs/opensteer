@@ -274,7 +274,8 @@ export class IphoneService {
         };
       });
   }
-  forSlot(deploymentId: string): IphoneRunnerPort {
+  forSlot(owner: IphoneRunnerOwner): IphoneRunnerPort {
+    const { deploymentId } = owner;
     return {
       connect: (emit) => {
         const key = {};
@@ -293,18 +294,16 @@ export class IphoneService {
             const params = iphoneRunnerParams[method].parse(input);
             if (method === "iphone.targets") {
               const update = iphoneRunnerParams["iphone.targets"].parse(params);
-              if (update.deploymentId !== deploymentId)
-                throw new IphoneServiceError("identity-mismatch");
               const old = this.#slots.get(deploymentId);
-              if (old && !sameOwner(old.owner, update))
+              if (old && !sameOwner(old.owner, owner))
                 for (const listener of this.#invalidatedSlots) listener(deploymentId);
               this.#slots.set(deploymentId, {
-                owner: update,
+                owner,
                 assignments: update.assignments,
                 key,
               });
               for (const record of this.#records.filter((r) => r.deploymentId === deploymentId)) {
-                if (!sameOwner(record, update)) {
+                if (!sameOwner(record, owner)) {
                   this.#invalidate(record, "no-session");
                   await this.#release(record, true);
                   await this.store.remove(record);

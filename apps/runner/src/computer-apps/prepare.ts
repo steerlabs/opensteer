@@ -5,6 +5,7 @@ import {
   macOwnerViewVersion,
   type RunnerIntegrationsModule,
 } from "@opensteer/protocol";
+import { IphoneScreenDriver } from "./iphone-screen-driver.js";
 import { ComputerUseHandler } from "./computer-use-handler.js";
 import { LocalMcpServers } from "./local-mcp-servers.js";
 import type { ComputerAppProvider } from "./provider.js";
@@ -33,7 +34,7 @@ export interface PreparedIntegrationsModule {
  * The integrations module this computer offers: local MCP servers wherever it
  * runs, and the native app providers its platform has, which may be none.
  */
-export function prepareIntegrationsModule(options: {
+export async function prepareIntegrationsModule(options: {
   /** The bridge the desktop minted for this slot, on a Mac it supervises. */
   readonly computerUseBridge?: { readonly token: string; readonly url: URL };
   /** Runner state root; obsolete local consent caches are removed at startup. */
@@ -41,7 +42,7 @@ export function prepareIntegrationsModule(options: {
   readonly phoneScreens?: PhoneScreenDriver;
   readonly helperBinary?: string;
   readonly platform: NodeJS.Platform;
-}): PreparedIntegrationsModule | undefined {
+}): Promise<PreparedIntegrationsModule | undefined> {
   // The descriptor names one of three platforms, so a Runner on any other —
   // aix, freebsd, a future one — is narrowed out before the registry is asked:
   // it could only answer with providers none of them declares anyway.
@@ -64,7 +65,21 @@ export function prepareIntegrationsModule(options: {
     platform === "darwin" && options.computerUseBridge
       ? new ComputerUseHandler({ bridge: options.computerUseBridge })
       : undefined;
-  const phoneScreens = platform === "darwin" ? options.phoneScreens : undefined;
+  let phoneScreens = platform === "darwin" ? options.phoneScreens : undefined;
+  if (computerUse && !phoneScreens) {
+    try {
+      await computerUse.iphoneRequest(
+        "iphone.targets",
+        { assignments: [] },
+        {
+          deadline: Date.now() + 5000,
+        },
+      );
+      phoneScreens = new IphoneScreenDriver({ bridge: computerUse });
+    } catch {
+      // Older desktops do not offer iPhone control on this bridge.
+    }
+  }
   const providers = computerAppProviders(
     platform,
     computerUse
@@ -79,8 +94,8 @@ export function prepareIntegrationsModule(options: {
       ? { files: { dataDirectory: options.dataDirectory, helperBinary: options.helperBinary } }
       : {}),
     close: async () => {
-      computerUse?.close();
       await phoneScreens?.shutdown();
+      computerUse?.close();
     },
     ...(phoneScreens ? { phoneScreens } : {}),
     ...(computerUse ? { computerUse } : {}),
