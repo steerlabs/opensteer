@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, test } from "vitest";
@@ -20,6 +20,7 @@ import {
   SourceFiles,
   StorageHost,
   AuthMethodName,
+  RepositoryHost,
   HttpUrl,
   FirstPartyOAuthClient,
   OAuthBrokerFailed,
@@ -29,7 +30,7 @@ import {
   type PluginEngine,
 } from "@opensteer/plugin-engine-sdk/core";
 import { markdownRefusals } from "@opensteer/plugin-engine-sdk/markdown";
-import { nativeRepositories, systemGit } from "@opensteer/plugin-engine-app-source/node";
+import { filesystemRepositories } from "@opensteer/plugin-source";
 import { memoryRegistry } from "@opensteer/plugin-engine-sdk/testing";
 import { makeExecutions, type McpBackend } from "@opensteer/plugin-engine-mcp";
 import { executeProgram } from "../vendor/plugin-engine/mcp/src/implementation/execute.ts";
@@ -347,7 +348,7 @@ test.for(["versions, codemode and sealed credentials", "brokered OAuth"] as cons
           database,
           secret: Redacted.make("a1".repeat(32)),
           origin: "https://fixture.invalid",
-          git: nativeRepositories(join(directory, "repositories"), systemGit),
+          git: filesystemRepositories(join(directory, "repositories")),
           markdown: markdownRefusals,
           blobs: workerd.blobs,
           runtime: workerd.runtime,
@@ -448,14 +449,41 @@ test.for(["versions, codemode and sealed credentials", "brokered OAuth"] as cons
         status: "completed",
         execution: { ok: true, value: 17 },
       });
-      const v2 = await run(
-        engine.apps.deploy({ owner, app, files: files(fixtureSource(2), true) }),
+      // The second version is saved to the app's Git source first and deployed from that commit.
+      const workspace = await run(engine.apps.workspace({ app }));
+      const saved = await run(
+        engine.apps.commit({
+          app,
+          expected: workspace.revision.commit,
+          files: files(fixtureSource(2), true),
+          message: "Revision 2",
+        }),
       );
+      const v2 = await run(engine.apps.deploy({ owner, app, commit: saved.revision.commit }));
       expect(await call("read")).toMatchObject({ value: { value: 17, revision: 2 } });
+      expect((await run(engine.apps.history({ app }))).map((entry) => entry.message)).toEqual([
+        "Revision 2",
+        "Create app",
+      ]);
+      expect(
+        await run(engine.apps.revision({ app, commit: workspace.revision.commit })),
+      ).toContainEqual({ path: "index.ts", content: fixtureSource(1) });
       await run(
         engine.apps.activate({ app, version: v1.version.id, expectedVersion: v2.version.id }),
       );
       expect(await call("read")).toMatchObject({ value: { value: 17, revision: 1 } });
+      // An app whose repository creation was interrupted, leaving a partial folder, is recovered.
+      const interrupted = await run(
+        engine.apps.create({ owner, name: "Pending", files: files(fixtureSource(3)) }),
+      );
+      await mkdir(join(directory, "repositories", `${interrupted.code}.git`, "objects"), {
+        recursive: true,
+      });
+      await run(engine[RepositoryHost].recover);
+      expect((await run(engine.apps.workspace({ app: interrupted.id }))).files).toContainEqual({
+        path: "index.ts",
+        content: fixtureSource(3),
+      });
       const secured = await run(
         engine.apps.deploy({ owner, name: "Secured", files: files(credentialSource) }),
       );

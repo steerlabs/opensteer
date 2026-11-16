@@ -46,7 +46,7 @@ import {
   type PluginEngine,
 } from "@opensteer/plugin-engine-sdk/core";
 import { filesystemBlobStore, workerdApps } from "@opensteer/plugin-engine-sdk/node";
-import { nativeRepositories, systemGit } from "@opensteer/plugin-engine-app-source/node";
+import { filesystemRepositories } from "@opensteer/plugin-source";
 import { markdownRefusals } from "@opensteer/plugin-engine-sdk/markdown";
 import { memoryRegistry } from "@opensteer/plugin-engine-sdk/testing";
 import { startScheduleWorker, deliverEvents } from "@opensteer/plugin-engine-sdk/scheduling";
@@ -196,7 +196,7 @@ export async function startEngine(
           secret: Redacted.make(config.secret),
           origin: config.origin,
           // Source backend construction point: replace this adapter to remove the system git dependency.
-          git: nativeRepositories(join(config.directory, "repositories"), systemGit),
+          git: filesystemRepositories(join(config.directory, "repositories")),
           markdown: markdownRefusals,
           hooks: accountAdapter.hooks,
           blobs,
