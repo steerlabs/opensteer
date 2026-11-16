@@ -36,13 +36,20 @@ fixture label and selects no tools or authority.
 
 - Every turn runs a new Run in the same native session; only the last turn is graded.
 - In call expectations, `*` matches every Opensteer tool and `a|b` accepts either name across
-  a rename.
+  a rename. `withoutKeys` on a required call rules out arguments such as `taskId` when a worker
+  must read its own history. `callsArgMatch` matches a string or the JSON of an argument object.
 - Mocks are keyed by bare tool name. `{"$responses": [...]}` answers successive calls,
   `{"$byArgs": [{"args": partial, "result": response}]}` answers the first partial match, and
   `{"$error": "message"}` returns an MCP tool error (`$code` and `$next` fill its `{code, message,
 next}`), recorded as that call's result. An exhausted or unmatched mock returns an explicit
   unavailable result. Calls reach a mock only after the production MCP service's input and access
   checks, so semantic errors stay errors even when the flat schema accepts the arguments.
+- `timeAnchor` shifts a case's ISO instants onto the actual Run clock, preserving their intervals,
+  for scenarios such as a meeting happening now. Date-only facts are unchanged.
+- `tasks` supplies timestamped published messages as `{task, items, self?}` using the production
+  task-detail and item shapes. `self: true` identifies this Run's task, including prior handoffs.
+  Unmocked task list/read calls filter `changedSince`, report `newMessages`/`firstNewAt`, page newest
+  first and preserve `teamSource`; explicit mocks still win.
 - `accessMode` and `capabilities` shape the Run as the Host plans it: a missing capability
   removes its tools, guide section and skill, and `pages: false` makes Browser Harness refuse
   with the limited-access error.

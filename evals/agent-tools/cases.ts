@@ -1,11 +1,16 @@
 import { z } from "zod";
 import {
   createId,
+  IsoDateTimeSchema,
   ThreadAccessModeSchema,
   TimeZoneSchema,
   TeamTurnContextSchema,
 } from "@opensteer/core";
 import { HarnessInputSchema } from "@opensteer/protocol";
+import {
+  ThreadDetailSchema,
+  ThreadItemSchema,
+} from "../../packages/agent-tools/src/tools/outputs.js";
 
 const regex = z.string().superRefine((value, ctx) => {
   try {
@@ -204,12 +209,24 @@ export const CaseSchema = z
     /** The operating system of the computer hosting the Run, as its Runner reports it. */
     hostingPlatform: z.enum(["darwin", "linux", "win32"]).default("darwin"),
     requesterTimeZone: TimeZoneSchema.optional(),
+    /** Rebase this fixture's ISO instants onto the actual Run clock. */
+    timeAnchor: IsoDateTimeSchema.optional(),
     engines: z
       .array(z.enum(["claude", "codex", "cursor", "opencode", "pi"]))
       .min(1)
       .optional(),
     browser: BrowserFixtureSchema.optional(),
     fixtures: z.record(fixturePath, z.string()).default({}),
+    /** Published task messages, including this worker's prior handoffs. Explicit mocks win. */
+    tasks: z
+      .array(
+        z.strictObject({
+          task: ThreadDetailSchema,
+          items: z.array(ThreadItemSchema),
+          self: z.boolean().default(false),
+        }),
+      )
+      .default([]),
     gitRepository: z.boolean().default(false),
     turns: z.array(z.union([z.string().min(1), structuredTurn])).min(1),
     mocks: z.record(z.string(), z.json()).default({}),
@@ -230,7 +247,7 @@ export const CaseSchema = z
         )
         .default([]),
       callsOnlyKeys: z.array(call.extend({ keys: z.array(z.string()) })).default([]),
-      calls: z.array(call).default([]),
+      calls: z.array(call.extend({ withoutKeys: z.array(z.string()).optional() })).default([]),
       notCalls: z.array(z.string()).default([]),
       notCallsWithArgs: z.array(call).default([]),
       callsArgMatch: z
@@ -271,6 +288,10 @@ export const CaseSchema = z
     }),
   })
   .superRefine((c, ctx) => {
+    if (c.tasks.filter((task) => task.self).length > 1)
+      ctx.addIssue({ code: "custom", path: ["tasks"], message: "Only one task can be self" });
+    if (new Set(c.tasks.map(({ task }) => task.id)).size !== c.tasks.length)
+      ctx.addIssue({ code: "custom", path: ["tasks"], message: "Task IDs must be unique" });
     for (const [, app] of JSON.stringify(c.mocks).matchAll(/\{\{appServer:([a-z0-9-]+)\}\}/gu))
       if (!Object.hasOwn(c.appServers, app!))
         ctx.addIssue({
@@ -280,6 +301,19 @@ export const CaseSchema = z
         });
   });
 export type EvalCase = z.infer<typeof CaseSchema>;
+export function caseAtTime(testCase: EvalCase, now: number): EvalCase {
+  if (!testCase.timeAnchor) return testCase;
+  const delta = now - Date.parse(testCase.timeAnchor);
+  return CaseSchema.parse(
+    JSON.parse(
+      JSON.stringify(testCase).replace(
+        /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})/gu,
+        (instant) => new Date(Date.parse(instant) + delta).toISOString(),
+      ),
+    ),
+  );
+}
+
 export function parseCases(text: string): EvalCase[] {
   const ids = new Set<string>();
   const cases = text.split(/\r?\n/u).flatMap((line, i) => {
