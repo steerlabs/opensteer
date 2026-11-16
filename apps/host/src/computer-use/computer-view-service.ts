@@ -726,7 +726,10 @@ export class ComputerViewService {
     }
   }
   #public(view: HeldView): ComputerView {
-    return ComputerViewSchema.parse(view.record);
+    return ComputerViewSchema.parse({
+      ...view.record,
+      ...(view.route?.role === "screen" ? { driverGeneration: view.route.generation } : {}),
+    });
   }
   #log(view: HeldView, transition: string, reason?: string): void {
     this.#options.log?.("computer.view.lifecycle", {

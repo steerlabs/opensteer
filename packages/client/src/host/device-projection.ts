@@ -57,19 +57,11 @@ export function deviceMachine(machine: ClientMachineSummary): ClientMachineSumma
       machine.ownership === "deployment" &&
       machine.allowedModules?.includes("agents"));
   const phone =
-    machine.kind === "agent-phone" ||
-    (machine.kind === undefined &&
-      machine.apps?.some(({ definitionId }) => definitionId === "android-phone"));
-  const kind =
-    machine.kind ??
-    (home
-      ? "home"
-      : phone
-        ? "agent-phone"
-        : machine.device?.platform === "ios" ||
-            (machine.device?.app === "opensteer" && machine.device.form === "phone")
-          ? "phone"
-          : "unknown");
+    (machine.kind === "agent-phone" ||
+      (machine.kind === undefined &&
+        machine.apps?.some(({ definitionId }) => definitionId === "android-phone"))) &&
+    Boolean(machine.allowedModules?.includes("integrations") || machine.modules?.integrations);
+  const kind = machine.kind ?? (home ? "home" : phone ? "agent-phone" : "unknown");
   const access = machine.access
     ? deviceAccess(machine.access.policy)
     : { browser: true, apps: true, files: true };

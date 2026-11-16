@@ -412,13 +412,13 @@ export const IphoneScreenDetachResultSchema = z.object({
 export type IphoneScreenDetachResult = z.infer<typeof IphoneScreenDetachResultSchema>;
 export const DeviceMachineRevokeCommandSchema = z.strictObject({
   idempotencyKey: idempotencyKeySchema,
-  machineId: DeviceIdSchema,
+  machineId: z.string().min(1).max(512).pipe(DeviceIdSchema),
   type: z.literal("machine.revoke"),
 });
 export type DeviceMachineRevokeCommand = z.infer<typeof DeviceMachineRevokeCommandSchema>;
 export const DeviceMachineRenameCommandSchema = z.strictObject({
   idempotencyKey: idempotencyKeySchema,
-  machineId: DeviceIdSchema,
+  machineId: z.string().min(1).max(512).pipe(DeviceIdSchema),
   name: z.string().trim().min(1).max(120),
   type: z.literal("machine.rename"),
 });

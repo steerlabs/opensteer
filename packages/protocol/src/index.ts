@@ -96,3 +96,5 @@ export {
 } from "@opensteer/core";
 
 export * from "./phone-display.js";
+
+export * from "./device-wire-compatibility.js";

@@ -15,6 +15,8 @@ interface Subscription {
   layout: TabLayout;
   publisher: KeyedStreamPublisher<Tab, { layout: TabLayout }, "tabId">;
   send(message: TabStreamMessage): Promise<void>;
+  project?:
+    ((value: { tabs: Tab[]; layout: TabLayout }) => { tabs: Tab[]; layout: TabLayout }) | undefined;
   dirty: Set<TabId> | null | undefined;
   closed: boolean;
   tail: Promise<void>;
@@ -33,6 +35,7 @@ export class TabStreams {
     ownerId: UserId,
     send: Subscription["send"],
     prefix: readonly Tab[] = [],
+    project?: Subscription["project"],
   ): { ready: Promise<void>; close(): void; flush(): Promise<void> } {
     const subscription: Subscription = {
       ownerId,
@@ -42,6 +45,7 @@ export class TabStreams {
       closed: false,
       tail: Promise.resolve(),
       send,
+      project,
       publisher: new KeyedStreamPublisher({
         key: "tabId",
         ids: () => subscription.rows.keys(),
@@ -51,7 +55,10 @@ export class TabStreams {
         envelopeBytes: 128,
       }),
     };
-    if (prefix.length) subscription.publisher.seed(prefix);
+    if (prefix.length)
+      subscription.publisher.seed(
+        project ? project({ tabs: [...prefix], layout: subscription.layout }).tabs : prefix,
+      );
     this.#subscriptions.add(subscription);
     const ready = this.#refresh(subscription);
     return {
@@ -92,7 +99,15 @@ export class TabStreams {
               this.#projections.delete(subscription.ownerId);
           });
         }
-        const { rows, layout } = await projection;
+        const original = await projection;
+        const filtered = subscription.project?.({
+          tabs: [...original.rows.values()],
+          layout: original.layout,
+        });
+        const rows = filtered
+          ? new Map(filtered.tabs.map((tab) => [tab.tabId, tab]))
+          : original.rows;
+        const layout = filtered?.layout ?? original.layout;
         if (subscription.closed) return;
         const ids = changed ?? new Set([...subscription.rows.keys(), ...rows.keys()]);
         for (const id of ids) {

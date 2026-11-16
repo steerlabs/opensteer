@@ -574,8 +574,9 @@ export class TabStore {
     input: TabOrganizeInput,
     key: string,
     authorize?: TabAuthorization,
+    wire: TabOrganizeInput = input,
   ): Promise<TabMutation> {
-    return this.#mutate(ownerId, key, "tab.organize", input, authorize, async (_tx, { layout }) => {
+    return this.#mutate(ownerId, key, "tab.organize", wire, authorize, async (_tx, { layout }) => {
       const ids = new Set(input.tabIds);
       if (!ids.size || ids.size !== input.tabIds.length || ids.size > tabsMaxPerMutation)
         failure("bad_request", "Supply unique tab IDs within the mutation limit.");

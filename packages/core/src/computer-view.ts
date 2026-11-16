@@ -58,6 +58,7 @@ export const ComputerViewRecordSchema = z
     window: ComputerViewWindowSchema.nullable().default(null),
     viewId: ComputerViewIdSchema,
     generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    driverGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
     captureTargetId: z.string().min(1).max(255).nullable(),
     state: z.enum(["opening", "ready", "unavailable", "closed", "expired"]),
     openedAt: IsoDateTimeSchema,

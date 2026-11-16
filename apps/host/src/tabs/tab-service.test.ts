@@ -1,3 +1,4 @@
+import { projectDeviceTabs } from "@opensteer/protocol";
 import { RunnerIdSchema } from "@opensteer/core";
 import { DeviceIdSchema } from "@opensteer/core";
 import { KeyedStreamReceiver } from "@opensteer/protocol/keyed-stream";
@@ -337,4 +338,42 @@ it("shares one owner read and refreshes only the changed binding for two devices
   }).toEqual({ databaseSnapshots: 0, nativeRPCs: 1, computerReads: 1, taskReads: 2 });
   for (const device of devices) device.close();
   f.service.dispose();
+});
+
+it("projects hidden Device rows before computing tab stream prefixes, counts, and changes", async () => {
+  const a = row("window"),
+    b = row("phone"),
+    f = fixture([a, b]);
+  b.computerId = DeviceIdSchema.parse(createId("device"));
+  f.options.deviceNativeTargets = {
+    phoneState: async () => ({ state: "asleep", usedBy: [] }),
+    openOwnerView: async () => {
+      throw new Error("Unexpected owner view");
+    },
+  };
+  const receiver = new KeyedStreamReceiver<Tab, { layout: TabLayout }, "tabId">({ key: "tabId" });
+  const prefix = projectDeviceTabs(await f.service.bootstrap(ownerId, 65536), 60);
+  receiver.seed(prefix.tabs, { layout: prefix.layout });
+  const stream = f.service.streams.subscribe(
+    ownerId,
+    async (message) => {
+      expect(receiver.apply(message.stream)).not.toBe("resync");
+    },
+    (await f.service.bootstrap(ownerId, 65536)).tabs,
+    (value) => projectDeviceTabs(value, 60),
+  );
+  try {
+    await stream.ready;
+    expect(receiver.state).toBe("committed");
+    expect([...receiver.rows.keys()]).toEqual([a.id]);
+    b.title = "Hidden change";
+    a.title = "Visible change";
+    f.service.changed(ownerId);
+    await stream.flush();
+    expect(receiver.rows.get(a.id)?.title).toBe("Visible change");
+    expect([...receiver.rows.keys()]).toEqual([a.id]);
+  } finally {
+    stream.close();
+    f.service.dispose();
+  }
 });

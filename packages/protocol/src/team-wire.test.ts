@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
   json,
+  wireUnionMembers,
   same,
   surfaceBreaks,
   wireBreaks,
@@ -94,7 +95,7 @@ function teamWire(): TeamWire {
   ]);
   const commandOptions = (union: z.ZodType) =>
     Object.fromEntries(
-      (union as z.ZodDiscriminatedUnion).options.flatMap((option) => {
+      wireUnionMembers(union).flatMap((option) => {
         const [type] = option._zod.propValues?.type ?? [];
         return typeof type === "string" && commands.has(type)
           ? [[`command ${type}`, json(option)]]

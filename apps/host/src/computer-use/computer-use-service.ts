@@ -2034,6 +2034,13 @@ export class ComputerUseService {
 
   // ---- projection ------------------------------------------------------
 
+  deviceForSession(sessionId: ComputerUseSessionId): ComputerTargetId | null {
+    return (
+      [...this.#sessions.values()].find((session) => session.sessionId === sessionId)?.deviceId ??
+      null
+    );
+  }
+
   /** Every live session on one computer. */
   sessionsForRunner(deviceId: ComputerTargetId): ComputerUseSessionSummary[] {
     return [...this.#sessions.values()]
