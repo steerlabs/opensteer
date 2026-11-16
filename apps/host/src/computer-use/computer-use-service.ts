@@ -328,7 +328,10 @@ export interface ComputerUseServiceOptions {
     threadId: ThreadId;
     runId: RunId;
     generation: number;
-    place: PlaceIdentity;
+    place: (
+      | Omit<Extract<PlaceIdentity, { kind: "phone" }>, "machineId">
+      | Omit<Extract<PlaceIdentity, { kind: "app" }>, "machineId">
+    ) & { machineId: RunnerId };
     windowId?: WindowId;
     title: string;
     at: number;
@@ -1965,7 +1968,7 @@ export class ComputerUseService {
   #publishPlaceActivity(session: Session, key: string, ended: boolean): void {
     if (!session.actor) return;
     const app = session.apps.find((app) => computerAppIdentityKey(app) === key);
-    const place: PlaceIdentity =
+    const place: Parameters<NonNullable<ComputerUseServiceOptions["onPlaceActivity"]>>[0]["place"] =
       session.display !== null
         ? { kind: "phone", machineId: session.runnerId, display: "main" }
         : { kind: "app", machineId: session.runnerId, appKey: key };

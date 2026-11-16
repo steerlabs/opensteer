@@ -1,5 +1,6 @@
+import { DeviceIdSchema } from "./devices.js";
 import { z } from "zod";
-import { BrowserSessionIdSchema, BrowserSurfaceIdSchema, RunnerIdSchema } from "./ids.js";
+import { BrowserSessionIdSchema, BrowserSurfaceIdSchema } from "./ids.js";
 
 export const PlaceIdentitySchema = z.discriminatedUnion("kind", [
   z.strictObject({
@@ -9,12 +10,12 @@ export const PlaceIdentitySchema = z.discriminatedUnion("kind", [
   }),
   z.strictObject({
     kind: z.literal("app"),
-    machineId: RunnerIdSchema,
+    machineId: DeviceIdSchema,
     appKey: z.string().min(1).max(255),
   }),
   z.strictObject({
     kind: z.literal("phone"),
-    machineId: RunnerIdSchema,
+    machineId: DeviceIdSchema,
     display: z.string().min(1).max(255),
   }),
 ]);

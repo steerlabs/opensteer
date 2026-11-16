@@ -224,6 +224,16 @@ integration("iMessage channel", () => {
         .select(["credentialId", "runnerId", "sourceConnectionId", "transportKind"])
         .where("id", "=", connectionId)
         .executeTakeFirstOrThrow();
+
+      const sourceTarget = await host.store.database
+        .selectFrom("integrationConnections")
+        .select(["deviceId", "runnerId"])
+        .where("id", "=", source.connection.id)
+        .executeTakeFirstOrThrow();
+      expect(sourceTarget).toEqual({
+        deviceId: await host.store.requireSelfDeviceId(computer.runnerId),
+        runnerId: null,
+      });
       expect(row).toEqual({
         credentialId: null,
         runnerId: computer.runnerId,

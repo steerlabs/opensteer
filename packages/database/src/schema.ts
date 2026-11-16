@@ -1,4 +1,11 @@
 import type {
+  DeviceId,
+  DeviceKind,
+  DevicePlatform,
+  DeviceForm,
+  DeviceDriverRole,
+} from "@opensteer/core";
+import type {
   Sequence,
   KnowledgeNoteId,
   KnowledgeTopicId,
@@ -195,7 +202,7 @@ export interface NotificationPreviewKeyTable {
 }
 
 export interface AuthSessionTable {
-  deviceId: Generated<RunnerId | null>;
+  deviceId: Generated<DeviceId | null>;
   memberGeneration: ColumnType<string | null, string | null | undefined, string | null>;
   id: AuthSessionId;
   userId: UserId;
@@ -557,10 +564,6 @@ interface RunnerTable {
   allowedModules: JsonColumn<readonly RunnerModuleName[]>;
   /** The last advertisement, module by module, exactly as it was signed. */
   moduleDescriptors: JsonColumn<RunnerModules>;
-  /** What this computer permits callers reaching it from other computers. */
-  accessPolicy: JsonColumn<MachineAccessPolicy>;
-  /** Bumped by every successful policy write, including one of equal value. */
-  accessPolicyRevision: number;
   /** What the computer says it is, from its last signed hello; null until it says. */
   device: JsonColumn<RunnerDevice | null>;
   connectionGeneration: ColumnType<string, number | string, number | string>;
@@ -1562,12 +1565,9 @@ export interface IntegrationConnectionTable {
   capabilities: JsonColumn<readonly string[]>;
   grantedScopes: JsonColumn<readonly string[]>;
   integrationDefinitionId: string | null;
-  /**
-   * For a channel connection, the messaging service currently assigned to it
-   * and therefore allowed to move. For a computer connection, its permanent
-   * placement, which never changes.
-   */
+  /** The messaging Runner assigned to a channel; computer targets use deviceId. */
   runnerId: RunnerId | null;
+  deviceId: Generated<DeviceId | null>;
   /**
    * For a channel whose transport runs on a computer, the app connection it is
    * a use of — iMessage of that Mac's `apple-messages` — which it never
@@ -1873,17 +1873,17 @@ interface ChannelLinkCodeTable {
 
 interface ComputerUsePolicyTable {
   deploymentId: DeploymentId;
-  runnerId: RunnerId;
+  deviceId: DeviceId;
   ownerUserId: UserId;
   appApproval: "ask" | "automatic";
   revision: number;
   updatedAt: Timestamp;
 }
 
-/** A person's Stop for one Run on one Mac; it lasts as long as the Run. */
+/** A person's Stop for one Run on one Device; it lasts as long as the Run. */
 interface ComputerUseStopTable {
   runId: RunId;
-  runnerId: RunnerId;
+  deviceId: DeviceId;
   stoppedAt: Timestamp;
 }
 
@@ -1897,7 +1897,7 @@ interface ComputerAppSetupRequestTable {
   id: string;
   deploymentId: DeploymentId;
   ownerUserId: UserId;
-  runnerId: RunnerId;
+  deviceId: DeviceId;
   definitionId: string;
   definitionDigest: string;
   access: "read" | "read-write";
@@ -1937,6 +1937,8 @@ export interface AgentConnectionTable {
 }
 
 export interface DatabaseSchema {
+  devices: DeviceTable;
+  deviceDrivers: DeviceDriverTable;
   deviceSetupRetirements: { runnerId: RunnerId; publicKeyPem: string };
   agentHomeSkillInventory: {
     computerId: RunnerId;
@@ -2783,7 +2785,7 @@ export interface PersonalTabTable {
   id: import("@opensteer/core").TabId;
   ownerId: UserId;
   kind: import("@opensteer/core").TabKind;
-  computerId: RunnerId;
+  computerId: DeviceId;
   title: string;
   url: string | null;
   profileId: BrowserProfileId | null;
@@ -2827,4 +2829,29 @@ export interface AppServerTable {
   desiredState: "running" | "stopped";
   generation: Generated<number>;
   lastError: string | null;
+}
+
+export interface DeviceTable {
+  id: DeviceId;
+  deploymentId: DeploymentId;
+  ownerKind: "deployment" | "user";
+  ownerUserId: UserId | null;
+  name: string;
+  kind: DeviceKind;
+  platform: DevicePlatform | null;
+  form: DeviceForm | null;
+  accessPolicy: JsonColumn<MachineAccessPolicy>;
+  accessPolicyRevision: Generated<number>;
+  removedAt: NullableTimestamp;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+export interface DeviceDriverTable {
+  deviceId: DeviceId;
+  role: DeviceDriverRole;
+  runnerId: RunnerId;
+  generation: ColumnType<string, number | string, number | string>;
+  detachedAt: NullableTimestamp;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
 }

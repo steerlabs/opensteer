@@ -1,3 +1,5 @@
+import { RunnerIdSchema } from "@opensteer/core";
+import { DeviceIdSchema } from "@opensteer/core";
 import { KeyedStreamReceiver } from "@opensteer/protocol/keyed-stream";
 import {
   createId,
@@ -26,7 +28,7 @@ function row(kind: "phone" | "window" = "phone"): TabRecord {
     id: tabId(),
     kind,
     ownerId,
-    computerId,
+    computerId: DeviceIdSchema.parse(computerId),
     title: kind,
     openedBy: { taskId },
     generation: 1,
@@ -87,6 +89,10 @@ function fixture(rows: TabRecord[]) {
   } as unknown as TabStore;
   const options: TabServiceOptions = {
     store,
+    devices: {
+      requireSelfDeviceId: async (id) => DeviceIdSchema.parse(id),
+      requireDeviceSelfRunnerId: async (id) => RunnerIdSchema.parse(id),
+    },
     nativeTargets: native,
     apps: { get: unavailable },
     pages: {
@@ -182,7 +188,7 @@ describe("tab projection and viewer admission", () => {
     const a = row(),
       b = row("window"),
       f = fixture([a, b]);
-    b.computerId = createId("runner");
+    b.computerId = DeviceIdSchema.parse(createId("runner"));
     const full = await f.service.bootstrap(ownerId, 65536);
     const prefix = await f.service.bootstrap(
       ownerId,

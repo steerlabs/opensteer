@@ -36,7 +36,7 @@ export const RunnerLeaveResponseSchema = z.object({ outcome: z.literal("removed"
 export type RunnerLeaveResponse = z.infer<typeof RunnerLeaveResponseSchema>;
 
 export const DeviceRefusalContextSchema = z.object({
-  machineId: RunnerIdSchema,
+  machineId: DeviceIdSchema,
   capability: z.enum(["browser", "apps", "files"]),
 });
 export type DeviceRefusalContext = z.infer<typeof DeviceRefusalContextSchema>;

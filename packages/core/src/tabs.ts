@@ -1,10 +1,11 @@
+import type { RunnerId } from "./ids.js";
+import { DeviceIdSchema } from "./devices.js";
 import { z } from "zod";
 import { AppIdSchema } from "./apps.js";
 import {
   BrowserProfileIdSchema,
   BrowserSessionIdSchema,
   BrowserSurfaceIdSchema,
-  RunnerIdSchema,
   TabIdSchema,
   TabGroupIdSchema,
   ThreadIdSchema,
@@ -58,7 +59,7 @@ export const PageOpenUrlSchema = z
       return false;
     }
   }, "Use about:blank or an HTTP(S) URL without credentials.");
-export const TabTargetSchema = z.union([
+export const DeviceTabTargetSchema = z.union([
   z.strictObject({
     kind: z.literal("page"),
     url: PageOpenUrlSchema,
@@ -82,20 +83,20 @@ export const TabTargetSchema = z.union([
       })
       .optional(),
     guest: z.literal(true),
-    computerId: RunnerIdSchema.optional().describe(
+    computerId: DeviceIdSchema.optional().describe(
       "Computer ID from computer_list; for Guest, omitted means the hosting computer.",
     ),
   }),
   z.strictObject({
     kind: z.literal("window"),
-    computerId: RunnerIdSchema.describe("Computer ID from computer_list."),
+    computerId: DeviceIdSchema.describe("Computer ID from computer_list."),
     windowId: WindowIdSchema.describe(
       "Opaque exact-window handle from computer_use app.windows() or the Host window picker; valid on this computer only.",
     ),
   }),
   z.strictObject({
     kind: z.literal("window"),
-    computerId: RunnerIdSchema.describe("Computer ID from computer_list."),
+    computerId: DeviceIdSchema.describe("Computer ID from computer_list."),
     bundleId: z
       .string()
       .min(1)
@@ -106,14 +107,19 @@ export const TabTargetSchema = z.union([
   }),
   z.strictObject({
     kind: z.literal("phone"),
-    computerId: RunnerIdSchema.describe("Computer ID from computer_list."),
+    computerId: DeviceIdSchema.describe("Computer ID from computer_list."),
   }),
   z.strictObject({
     kind: z.literal("app"),
     appId: AppIdSchema.describe("App ID from app_list or app_publish."),
   }),
 ]);
-export type TabTarget = z.infer<typeof TabTargetSchema>;
+export type DeviceTabTarget = z.infer<typeof DeviceTabTargetSchema>;
+export type TabTarget =
+  | DeviceTabTarget
+  | { readonly kind: "phone"; readonly computerId: RunnerId }
+  | { readonly kind: "window"; readonly computerId: RunnerId; readonly bundleId: string };
+export const TabTargetSchema: z.ZodType<TabTarget> = DeviceTabTargetSchema;
 export const TabUnavailableCodeSchema = z.enum([
   "computer-offline",
   "computer-removed",
@@ -136,7 +142,7 @@ export const TabSchema = z
     tabId: TabIdSchema,
     kind: TabKindSchema,
     title: z.string().max(1024),
-    computer: z.strictObject({ computerId: RunnerIdSchema, name: z.string().max(200) }),
+    computer: z.strictObject({ computerId: DeviceIdSchema, name: z.string().max(200) }),
     groupId: TabGroupIdSchema.nullable(),
     state: TabStateSchema,
     unavailableCode: TabUnavailableCodeSchema.optional(),

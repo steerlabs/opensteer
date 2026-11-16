@@ -6,7 +6,7 @@ import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import type { ContinuationService } from "../agents/continuation-service.js";
 
 interface DeviceAccessServiceOptions {
-  readonly store: Pick<OpensteerStore, "requests">;
+  readonly store: Pick<OpensteerStore, "requests" | "requireSelfDeviceId">;
   readonly runners: Pick<RunnerRegistry, "isRunnerConnected">;
   readonly onDeploymentEvent: (event: AgentEvent) => void;
   readonly continuations: Pick<ContinuationService, "notify">;
@@ -23,7 +23,8 @@ export class DeviceAccessService {
     readonly reason: string;
     readonly claims: RunToolScope;
   }) {
-    const machineId = RunnerIdSchema.parse(input.machineId);
+    const runnerId = RunnerIdSchema.parse(input.machineId);
+    const machineId = await this.#options.store.requireSelfDeviceId(runnerId);
     const created = await this.#options.store.requests.createDeviceAccessRequest(
       {
         callId: input.callId,
@@ -34,7 +35,7 @@ export class DeviceAccessService {
         originatingRunId: input.claims.runId,
         requestedBy: input.claims.requestedBy,
       },
-      () => this.#options.runners.isRunnerConnected(machineId),
+      () => this.#options.runners.isRunnerConnected(runnerId),
     );
     for (const event of created.events) this.#options.onDeploymentEvent(event);
     return {

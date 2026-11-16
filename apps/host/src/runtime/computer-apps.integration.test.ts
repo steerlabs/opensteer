@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { startHeldRequest } from "../integrations/held-request.test-support.js";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
@@ -203,7 +204,7 @@ integration("computer apps", () => {
       connection: await host.store.database
         .selectFrom("integrationConnections")
         .select("id")
-        .where("runnerId", "=", computer.runnerId)
+        .where("deviceId", "=", await host.store.requireSelfDeviceId(computer.runnerId))
         .where("integrationDefinitionId", "=", "apple-messages")
         .where("status", "=", "connected")
         .executeTakeFirstOrThrow(),
@@ -366,9 +367,9 @@ integration("computer apps", () => {
       timeoutError: () => new Error("Apps-off write was not admitted"),
     });
     const beforeSwitch = await host.store.database
-      .selectFrom("runners")
+      .selectFrom("devices")
       .select(["accessPolicy", "accessPolicyRevision"])
-      .where("id", "=", computer.runnerId)
+      .where("id", "=", DeviceIdSchema.parse(computer.runnerId))
       .executeTakeFirstOrThrow();
     const updateSwitch = (apps: boolean, revision: number, key: string) =>
       testRpcData(

@@ -1,3 +1,6 @@
+import { removeDevice } from "./device-removal-store.js";
+import * as deviceInventoryStore from "./device-inventory-store.js";
+import * as deviceDriverStore from "./device-driver-store.js";
 import * as waitingInputs from "./waiting-inputs.js";
 import { setExecutionClock } from "./personal-transaction.js";
 import { bindDeviceSession, revokeDeviceSession, leaveDevice } from "./device-store.js";
@@ -350,6 +353,8 @@ export class OpensteerStore {
       readonly allowOtherOwners?: boolean;
     } = {},
   ): Promise<{
+    readonly removedDeviceIds: readonly import("@opensteer/core").DeviceId[];
+    readonly detachedDeviceBindings: readonly import("@opensteer/core").DeviceDriverIdentity[];
     readonly endedSessionIds: readonly import("@opensteer/core").AuthSessionId[];
     readonly deletedBrowserProfiles: readonly {
       readonly id: BrowserProfileId;
@@ -362,6 +367,54 @@ export class OpensteerStore {
     readonly revokedComputerConnectionIds: readonly IntegrationConnectionId[];
   }> {
     return runnerStore.revokeRunner(this.#database, this.#links, runnerId, ownerId, options);
+  }
+  async removeDevice(
+    deviceId: import("@opensteer/core").DeviceId,
+    ownerId: UserId,
+    options: Parameters<typeof removeDevice>[4] = {},
+  ) {
+    return removeDevice(this.#database, this.#links, deviceId, ownerId, options);
+  }
+  async requireDeviceSelfRunnerId(
+    input: Parameters<typeof deviceInventoryStore.requireDeviceSelfRunnerId>[1],
+  ) {
+    return deviceInventoryStore.requireDeviceSelfRunnerId(this.#database, input);
+  }
+  async renameDevice(
+    deviceId: import("@opensteer/core").DeviceId,
+    ownerId: UserId,
+    name: string,
+    options: Parameters<typeof deviceInventoryStore.renameDevice>[4] = {},
+  ) {
+    return deviceInventoryStore.renameDevice(this.#database, deviceId, ownerId, name, options);
+  }
+  async getDevice(input: Parameters<typeof deviceInventoryStore.getDevice>[1]) {
+    return deviceInventoryStore.getDevice(this.#database, input);
+  }
+  async listDevices(input: Parameters<typeof deviceInventoryStore.listDevices>[1]) {
+    return deviceInventoryStore.listDevices(this.#database, input);
+  }
+  async getSelfDeviceId(input: Parameters<typeof deviceInventoryStore.getSelfDeviceId>[1]) {
+    return deviceInventoryStore.getSelfDeviceId(this.#database, input);
+  }
+  async requireSelfDeviceId(input: Parameters<typeof deviceInventoryStore.requireSelfDeviceId>[1]) {
+    return deviceInventoryStore.requireSelfDeviceId(this.#database, input);
+  }
+  async getDeviceSelfRunnerId(
+    input: Parameters<typeof deviceInventoryStore.getDeviceSelfRunnerId>[1],
+  ) {
+    return deviceInventoryStore.getDeviceSelfRunnerId(this.#database, input);
+  }
+  async listDeviceDrivers(
+    input: Parameters<typeof deviceInventoryStore.listDeviceDrivers>[1] = {},
+  ) {
+    return deviceInventoryStore.listDeviceDrivers(this.#database, input);
+  }
+  async attachIphoneScreen(input: Parameters<typeof deviceDriverStore.attachIphoneScreen>[1]) {
+    return deviceDriverStore.attachIphoneScreen(this.#database, input);
+  }
+  async detachIphoneScreen(input: Parameters<typeof deviceDriverStore.detachIphoneScreen>[1]) {
+    return deviceDriverStore.detachIphoneScreen(this.#database, input);
   }
   async bindDeviceSession(input: Parameters<typeof bindDeviceSession>[1]) {
     return bindDeviceSession(this.#database, input);
@@ -382,6 +435,11 @@ export class OpensteerStore {
     } = {},
   ): Promise<void> {
     return runnerStore.renameRunner(this.#database, runnerId, ownerId, name, options);
+  }
+  async updateDeviceAccessPolicy(
+    input: Parameters<typeof machineStore.updateDeviceAccessPolicy>[1],
+  ) {
+    return machineStore.updateDeviceAccessPolicy(this.#database, input);
   }
   async updateMachineAccessPolicy(input: {
     readonly allowDeployment: boolean;
@@ -411,6 +469,9 @@ export class OpensteerStore {
       }
   > {
     return machineStore.updateMachineAccessPolicy(this.#database, input);
+  }
+  async effectiveDeviceOwners(ids: Parameters<typeof machineStore.effectiveDeviceOwners>[1]) {
+    return machineStore.effectiveDeviceOwners(this.#database, ids);
   }
   async effectiveMachineOwner(runnerId: RunnerId): Promise<MachineOwnershipRecord | null> {
     return machineStore.effectiveMachineOwner(this.#database, runnerId);
@@ -1520,14 +1581,14 @@ export class OpensteerStore {
   }
   async recordComputerUseStop(input: {
     readonly runId: RunId;
-    readonly runnerId: RunnerId;
+    readonly deviceId: import("@opensteer/core").DeviceId;
   }): Promise<void> {
     return computerUseStore.recordComputerUseStop(this.#database, input);
   }
   async activeComputerUseStops(): Promise<
     readonly {
       readonly runId: RunId;
-      readonly runnerId: RunnerId;
+      readonly deviceId: import("@opensteer/core").DeviceId;
     }[]
   > {
     return computerUseStore.activeComputerUseStops(this.#database);

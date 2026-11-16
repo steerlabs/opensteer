@@ -1,3 +1,5 @@
+import { legacySelfConnection } from "./device-legacy-store.js";
+import { getDeviceSelfRunnerId } from "./device-inventory-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import {
   administrationCommand,
@@ -11,11 +13,12 @@ import type { IntegrationOAuthAccountBinding } from "@opensteer/integration-core
 
 import { jsonValue } from "./store-primitives.js";
 import {
-  IntegrationConnectionSummarySchema,
+  DeviceIntegrationConnectionSummarySchema,
   IntegrationProviderSchema,
   integrationProviderIdentityAlreadyConnectedDetail,
   type IntegrationConnectionId,
   type IntegrationConnectionSummary,
+  type DeviceIntegrationConnectionSummary,
   type IntegrationOAuthApplicationSource,
   type IntegrationOAuthAttemptId,
   type IntegrationProvider,
@@ -391,7 +394,7 @@ export class IntegrationStore {
       return null;
     }
     return {
-      connection: integrationConnectionFromRow(row),
+      connection: await legacySelfConnection(this.#database, integrationConnectionFromRow(row)),
       credentialGeneration: row.credentialGeneration,
       encryptedCredential: row.encryptedCredential,
       encryptionKeyVersion: row.encryptionKeyVersion,
@@ -824,11 +827,25 @@ export class IntegrationStore {
           input.ownerUserId,
           input.accountBinding,
         );
-      return integrationConnectionFromRow(connectionRow);
+      return legacySelfConnection(transaction, integrationConnectionFromRow(connectionRow));
     });
   }
 
   async listConnections(ownerUserId: UserId): Promise<readonly IntegrationConnectionSummary[]> {
+    const result = [];
+    for (const connection of await this.listDeviceConnections(ownerUserId)) {
+      if (
+        connection.computer &&
+        !(await getDeviceSelfRunnerId(this.#database, connection.computer.deviceId))
+      )
+        continue;
+      result.push(await legacySelfConnection(this.#database, connection));
+    }
+    return result;
+  }
+  async listDeviceConnections(
+    ownerUserId: UserId,
+  ): Promise<readonly DeviceIntegrationConnectionSummary[]> {
     const rows = await this.#database
       .selectFrom("integrationConnections")
       .selectAll()
@@ -1023,7 +1040,7 @@ export class IntegrationStore {
           targetType: "integration-connection",
         })
         .executeTakeFirstOrThrow();
-      return integrationConnectionFromRow(row);
+      return legacySelfConnection(transaction, integrationConnectionFromRow(row));
     });
   }
 }
@@ -1049,18 +1066,18 @@ function providerApplicationFromRow(
 
 export function integrationConnectionFromRow(
   row: Selectable<IntegrationConnectionTable>,
-): IntegrationConnectionSummary {
-  return IntegrationConnectionSummarySchema.parse({
+): DeviceIntegrationConnectionSummary {
+  return DeviceIntegrationConnectionSummarySchema.parse({
     accountIdentifier: row.accountIdentifier,
     applicationSource: row.applicationSource,
     authMethodId: row.authMethodId,
     authorizationDigest: row.authorizationDigest,
     computer:
-      row.connectionKind === "computer" && row.computerAccess && row.runnerId
+      row.connectionKind === "computer" && row.computerAccess && row.deviceId
         ? {
             access: row.computerAccess,
             app: row.computerApp,
-            runnerId: row.runnerId,
+            deviceId: row.deviceId,
             blockedAt: row.computerBlockedAt?.toISOString() ?? null,
             policyRevision: row.computerPolicyRevision,
           }

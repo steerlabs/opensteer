@@ -1,3 +1,4 @@
+import type { DeviceId, RunnerId } from "@opensteer/core";
 import { refused, type TabId, type UserId } from "@opensteer/core";
 import { ComputerUseTabBindingSchema } from "@opensteer/protocol";
 import {
@@ -11,6 +12,7 @@ import { ComputerUseError } from "../computer-use-service.js";
 import type { ReplReply } from "./messages.js";
 
 export interface NativeTabBindingOptions {
+  selfDeviceId(runnerId: RunnerId): Promise<DeviceId>;
   tabs: Pick<TabServicePort, "get" | "authorizeShow">;
   lookup(ownerId: UserId, tabId: TabId): Promise<NativeReplTabTarget>;
   connections(): Promise<readonly IntegrationConnectionSummary[]>;
@@ -51,7 +53,10 @@ export async function bindNativeTab(
     );
   const target = await options.lookup(claims.requestedBy, tabId);
   expected = target;
-  if (target.kind !== tab.kind || target.computerId !== tab.computer.computerId)
+  if (
+    target.kind !== tab.kind ||
+    (await options.selfDeviceId(target.computerId)) !== tab.computer.computerId
+  )
     throw refused("not_found", "This tab is unavailable.");
   const connection = (await options.connections()).find(
     (entry) =>

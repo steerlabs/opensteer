@@ -24,7 +24,7 @@ const AddressingArgumentsSchema = z.object({
 export interface IntegrationCallSubjectSources {
   /** The gateway's own listing, cached per owner, so a call is named as it resolves. */
   readonly listCallableTools: IntegrationPlatformService["listCallableTools"];
-  readonly getComputerConnectionForCall: IntegrationPlatformStore["getComputerConnectionForCall"];
+  readonly getComputerConnectionForCall: IntegrationPlatformStore["getDeviceComputerConnectionForCall"];
   /** A lookup that failed; the event is still recorded, without a subject. */
   readonly onError: (error: unknown, event: PendingAgentEvent) => void;
   readonly runRequester: (input: {
@@ -129,7 +129,7 @@ async function computerSubject(
     return app === null
       ? {
           computerApp: null,
-          phone: { computer: placement.runnerName, runnerId: placement.runnerId },
+          phone: { computer: placement.runnerName, runnerId: placement.deviceId },
         }
       : undefined;
   }
@@ -139,7 +139,7 @@ async function computerSubject(
       app: app.displayName,
       bundleId: app.bundleId,
       computer: placement.runnerName,
-      runnerId: placement.runnerId,
+      runnerId: placement.deviceId,
     },
     phone: undefined,
   };

@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { OpensteerError, TabIdSchema } from "@opensteer/core";
 import { TabStore, type DatabaseSchema } from "@opensteer/database";
 import { createStoreFixture } from "@opensteer/database/test-support/store";
@@ -20,7 +21,7 @@ integration("explicit person_show", () => {
       {
         id: tabId,
         kind: "phone",
-        computerId: f.runnerId,
+        computerId: DeviceIdSchema.parse(f.runnerId),
         ownerId: f.userId,
         title: "Phone",
         openedBy: { taskId: f.threadId },

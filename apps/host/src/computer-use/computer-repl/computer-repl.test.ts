@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { createId } from "@opensteer/core";
 import { DeviceAccessRefusal } from "../../administration/device-access.js";
 import { Worker } from "node:worker_threads";
@@ -57,7 +58,7 @@ describe("computer REPL worker boundary", () => {
   it("preserves a device refusal through the worker and its strict result envelope", async () => {
     const machineId = createId("runner");
     const { run } = setup(async () => {
-      throw new DeviceAccessRefusal("device-access-off", machineId, "apps");
+      throw new DeviceAccessRefusal("device-access-off", DeviceIdSchema.parse(machineId), "apps");
     });
     const result = await run("await apps()");
     expect(result).toMatchObject({

@@ -915,7 +915,9 @@ export class IntegrationToolHandlers {
       throw new Error("MCP call identity belongs to another Request kind");
     }
     if (replay.payload?.kind === "computer.app.access" && replay.status === "pending") {
-      const runnerId = replay.payload.runnerId;
+      const runnerId = await this.#platform.store.requireDeviceSelfRunnerId(
+        replay.payload.deviceId,
+      );
       const { machines: macs, phones } =
         await this.#platform.computerAppApprovals.computerUseInventory(scope.requestedBy);
       const computer = [...macs, ...phones].find((machine) => machine.runnerId === runnerId);

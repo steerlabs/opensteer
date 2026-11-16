@@ -127,6 +127,15 @@ integration("MCP servers on a computer", () => {
       const asked = await waitingRequest(host, server.id);
       expect(asked.server?.launch).toEqual(launch);
       expect(asked.definitionDigest).toBe(localMcpLaunchDigest(launch));
+      const persistedTarget = await host.store.database
+        .selectFrom("computerAppSetupRequests")
+        .select("deviceId")
+        .where("id", "=", asked.id)
+        .executeTakeFirstOrThrow();
+      expect(persistedTarget.deviceId).toBe(
+        await host.store.requireSelfDeviceId(computer.runnerId),
+      );
+
       const summaries = await testRpcData(
         host.origin,
         "integration.computer.setup.list",

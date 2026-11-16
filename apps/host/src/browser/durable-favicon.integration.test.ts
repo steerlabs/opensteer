@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { TabStore } from "@opensteer/database";
 import { TabIdSchema } from "@opensteer/core";
 import { randomUUID } from "node:crypto";
@@ -244,7 +245,7 @@ integration("Durable tab icons", () => {
     const initialWrite = {
       id: opened.tabId,
       ownerId: host.ownerId,
-      computerId: runtime.runnerId,
+      computerId: DeviceIdSchema.parse(runtime.runnerId),
       kind: "page" as const,
       title: "Amazon",
       url: "https://amazon.com/",
@@ -776,7 +777,7 @@ integration("Durable tab icons", () => {
         {
           id: tabId,
           ownerId: host.ownerId,
-          computerId: runtime.runnerId,
+          computerId: DeviceIdSchema.parse(runtime.runnerId),
           kind: "page",
           title: id,
           url: "about:blank",

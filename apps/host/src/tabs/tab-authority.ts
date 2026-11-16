@@ -1,7 +1,8 @@
 import {
   OpensteerError,
   type ResourceAccessLevel,
-  type RunnerId,
+  type DeviceId,
+  DeviceTabTargetSchema,
   type TabTarget,
   type UserId,
 } from "@opensteer/core";
@@ -25,16 +26,16 @@ export function tabOwner(actor: TabActor): UserId {
       ? actor.claims.requestedBy
       : actor.caller.userId;
 }
-export async function tabComputers(ownerId: UserId, ids: RunnerId[], database: TabDatabase) {
+export async function tabComputers(ownerId: UserId, ids: DeviceId[], database: TabDatabase) {
   const [rows, owners] = await Promise.all([
     ids.length
       ? database
-          .selectFrom("runners")
-          .select(["id", "name", "revokedAt"])
+          .selectFrom("devices")
+          .select(["id", "name", "removedAt"])
           .where("id", "in", ids)
           .execute()
       : [],
-    new OpensteerStore(database).effectiveMachineOwners(ids),
+    new OpensteerStore(database).effectiveDeviceOwners(ids),
   ]);
   return new Map(
     ids.map((id) => {
@@ -43,13 +44,13 @@ export async function tabComputers(ownerId: UserId, ids: RunnerId[], database: T
         id,
         {
           name: row?.name ?? "Computer",
-          removed: !row || row.revokedAt !== null || owners.get(id)?.effectiveOwner !== ownerId,
+          removed: !row || row.removedAt !== null || owners.get(id)?.effectiveOwner !== ownerId,
         },
       ];
     }),
   );
 }
-export async function tabComputer(ownerId: UserId, computerId: RunnerId, database: TabDatabase) {
+export async function tabComputer(ownerId: UserId, computerId: DeviceId, database: TabDatabase) {
   return (await tabComputers(ownerId, [computerId], database)).get(computerId)!;
 }
 function scope(actor: TabActor) {
@@ -95,12 +96,12 @@ export async function authorizeTabActor(
 export async function tabReadAuthority(actor: TabActor, database: TabDatabase) {
   await authorizeTabActor(actor, database, "read");
   const ownerId = tabOwner(actor);
-  const computers = new Map<RunnerId, Promise<boolean>>();
+  const computers = new Map<DeviceId, Promise<boolean>>();
   const resources = new Map<string, Promise<boolean>>();
   const devices = new Map<string, Promise<void>>();
   const connectionRows = database
     .selectFrom("integrationConnections")
-    .select(["id", "runnerId", "computerAccess", "computerApp", "integrationDefinitionId"])
+    .select(["id", "deviceId", "computerAccess", "computerApp", "integrationDefinitionId"])
     .where("ownerUserId", "=", ownerId)
     .where("connectionKind", "=", "computer")
     .where("status", "!=", "revoked")
@@ -117,9 +118,11 @@ export async function tabReadAuthority(actor: TabActor, database: TabDatabase) {
     .where("ownerId", "=", ownerId);
   let apps: ReturnType<typeof appRows.execute> | undefined;
   const check = async (
-    target: TabTarget | TabWrite,
+    targetInput: TabTarget | TabWrite,
     required: ResourceAccessLevel = "read",
   ): Promise<boolean> => {
+    const target =
+      "ownerId" in targetInput ? targetInput : DeviceTabTargetSchema.parse(targetInput);
     if ("ownerId" in target && target.ownerId !== ownerId) return false;
     if (actor.kind === "person" && "id" in target && required === "read") return true;
     let computerId = "computerId" in target ? target.computerId : undefined;
@@ -127,13 +130,21 @@ export async function tabReadAuthority(actor: TabActor, database: TabDatabase) {
     if (target.kind === "app") {
       const app = (await (apps ??= appRows.execute())).find((app) => app.id === target.appId);
       if (!app || app.deleting) return false;
-      computerId = app.computerId;
+      computerId = await new OpensteerStore(database).requireSelfDeviceId(app.computerId);
     } else if (profileId) {
       const profile = (await (profiles ??= profileRows.execute())).find(
         (profile) => profile.id === profileId,
       );
-      if (!profile || (computerId && profile.homeRunnerId !== computerId)) return false;
-      computerId = profile.homeRunnerId ?? undefined;
+      if (
+        !profile ||
+        (computerId &&
+          profile.homeRunnerId !==
+            (await new OpensteerStore(database).requireDeviceSelfRunnerId(computerId)))
+      )
+        return false;
+      computerId = profile.homeRunnerId
+        ? await new OpensteerStore(database).requireSelfDeviceId(profile.homeRunnerId)
+        : undefined;
     }
     if (computerId) {
       let allowed = computers.get(computerId);
@@ -158,7 +169,7 @@ export async function tabReadAuthority(actor: TabActor, database: TabDatabase) {
     }
     if (target.kind === "window" || target.kind === "phone") {
       const connections = (await (native ??= connectionRows.execute())).filter(
-        (connection) => connection.runnerId === computerId,
+        (connection) => connection.deviceId === computerId,
       );
       for (const connection of connections) {
         if (

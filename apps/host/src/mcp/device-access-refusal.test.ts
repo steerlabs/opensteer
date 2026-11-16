@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { createId, OpensteerError } from "@opensteer/core";
 import { agentToolFailureResult } from "@opensteer/agent-tools";
 import { BrowserActionErrorSchema, ComputerUseErrorSchema } from "@opensteer/protocol";
@@ -9,7 +10,7 @@ it.each(["device-access-off", "device-offline"] as const)(
   "carries %s through strict envelopes and both engine result halves",
   (reason) => {
     const machineId = createId("runner");
-    const error = new DeviceAccessRefusal(reason, machineId, "apps");
+    const error = new DeviceAccessRefusal(reason, DeviceIdSchema.parse(machineId), "apps");
     const failure = agentToolFailure(error, "write");
     expect(failure).toMatchObject({ reason, computerId: machineId, capability: "apps" });
     const wire = { code: reason, machineId, capability: "apps", message: error.message };

@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { createId, PendingRequestSchema } from "@opensteer/core";
 import type { ReachableMachineRecord } from "@opensteer/database";
 import { describe, expect, it, vi } from "vitest";
@@ -58,6 +59,7 @@ function fixture(machines: ReachableMachineRecord[]) {
   const listReachableMachines = vi.fn(async () => machines);
   const service = new MachineFullDiskAccessService({
     store: {
+      requireSelfDeviceId: async (id) => DeviceIdSchema.parse(id),
       listReachableMachines,
       requests: {
         create,

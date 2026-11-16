@@ -1,3 +1,5 @@
+import { RunnerIdSchema, type DeviceId } from "@opensteer/core";
+import { DeviceIdSchema } from "@opensteer/core";
 import { DeviceAccessRefusal } from "../administration/device-access.js";
 import { BrowserRuntime } from "@opensteer/browser-runtime-core";
 import {
@@ -5525,7 +5527,12 @@ it("serializes an agent attachment with Browser-off and fences it before the off
           timeoutError: () => new Error("agent admission was not released"),
         });
       }
-      if (off) throw new DeviceAccessRefusal("device-access-off", runnerId, "browser");
+      if (off)
+        throw new DeviceAccessRefusal(
+          "device-access-off",
+          DeviceIdSchema.parse(runnerId),
+          "browser",
+        );
     },
   });
   const person = await service.start({ fresh: true, ownerId });
@@ -5788,6 +5795,13 @@ async function attachedSessionIds(
 }
 
 class MemoryBrowserRepository implements BrowserSessionRepository {
+  async requireSelfDeviceId(runnerId: RunnerId) {
+    return DeviceIdSchema.parse(runnerId);
+  }
+  async requireDeviceSelfRunnerId(deviceId: DeviceId) {
+    return RunnerIdSchema.parse(deviceId);
+  }
+
   async resolveResourceAccess() {
     return {
       specialistAllowed: true,

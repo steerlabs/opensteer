@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { sql } from "kysely";
 import {
   createId,
@@ -964,7 +965,7 @@ describeStore("managed memory passes", (it) => {
               }
             : {
                 kind: "machine.full-disk-access",
-                machineId: base.runnerId,
+                machineId: DeviceIdSchema.parse(base.runnerId),
                 machineName: "Memory computer",
                 reason: "Read files",
               },

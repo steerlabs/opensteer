@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { AiAccountListOutputSchema } from "@opensteer/agent-tools/outputs";
 import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
@@ -226,7 +227,7 @@ integration("personal task delegation lifecycle", () => {
       places: [
         {
           type: "phone",
-          machineId: fixture.lentRunnerId,
+          machineId: DeviceIdSchema.parse(fixture.lentRunnerId),
           display: "main",
           name: "Fixture phone",
         },
@@ -269,7 +270,7 @@ integration("personal task delegation lifecycle", () => {
     const fixture = await createFixture();
     const native = {
       type: "computer-app",
-      machineId: fixture.lentRunnerId,
+      machineId: DeviceIdSchema.parse(fixture.lentRunnerId),
       app: {
         bundleId: "com.apple.Notes",
         displayName: "Notes",
@@ -342,7 +343,7 @@ integration("personal task delegation lifecycle", () => {
     const native = [
       {
         type: "computer-app",
-        machineId: fixture.lentRunnerId,
+        machineId: DeviceIdSchema.parse(fixture.lentRunnerId),
         app: {
           bundleId: "com.apple.Notes",
           displayName: "Notes",
@@ -352,7 +353,7 @@ integration("personal task delegation lifecycle", () => {
       },
       {
         type: "phone",
-        machineId: fixture.lentRunnerId,
+        machineId: DeviceIdSchema.parse(fixture.lentRunnerId),
         display: "main",
         name: "Fixture phone",
       },
@@ -2890,7 +2891,7 @@ integration("personal task delegation lifecycle", () => {
       originatingThreadId: worker.threadId,
       payload: {
         kind: "machine.full-disk-access",
-        machineId: fixture.lentRunnerId,
+        machineId: DeviceIdSchema.parse(fixture.lentRunnerId),
         machineName: "Lent Mac",
         reason: "Check the retailer policy",
       },
@@ -2930,6 +2931,7 @@ integration("personal task delegation lifecycle", () => {
     const continuations = new ContinuationService({
       commands,
       integrations: {
+        selfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
         computerUseMachines: unexpected,
         computerUsePhones: unexpected,
         listCallableTools: unexpected,

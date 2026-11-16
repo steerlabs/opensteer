@@ -1,3 +1,4 @@
+import { RunnerIdSchema, DeviceIdSchema } from "@opensteer/core";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -635,7 +636,12 @@ describe("IntegrationPlatformService uninstall", () => {
         }),
       },
       store: {
-        listComputerRunnerIdsForInstallation: vi.fn(async () => [second, first, second]),
+        getDeviceSelfRunnerId: vi.fn(async (id: import("@opensteer/core").DeviceId) =>
+          RunnerIdSchema.parse(id),
+        ),
+        listComputerDeviceIdsForInstallation: vi.fn(async () =>
+          [second, first, second].map((id) => DeviceIdSchema.parse(id)),
+        ),
         uninstall,
       },
     });
@@ -1100,7 +1106,10 @@ describe("IntegrationPlatformService computer invocation", () => {
         }),
         getComputerConnectionForCall,
         listCallableTools: vi.fn(async () => authority),
-        listComputerRunnerIdsForInstallation: vi.fn(async () => [runnerId]),
+        getDeviceSelfRunnerId: vi.fn(async (id: import("@opensteer/core").DeviceId) =>
+          RunnerIdSchema.parse(id),
+        ),
+        listComputerDeviceIdsForInstallation: vi.fn(async () => [DeviceIdSchema.parse(runnerId)]),
         listGrants: vi.fn(async () => [callable.grant as IntegrationGrant]),
         listInstallations: vi.fn(async () => [callable.installation]),
         revokeComputerConnection: vi.fn(async () => {
@@ -3584,7 +3593,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
         app: notes,
         definitionId: "macos-app",
         kind: "computer.app.access",
-        runnerId,
+        deviceId: DeviceIdSchema.parse(runnerId),
         setupRequestId: "setup-request",
       },
       presentation: {
@@ -4721,6 +4730,7 @@ function platform(input: {
       ? {
           connections: { assertOwner: vi.fn(async () => undefined) },
           computerAppRunner: vi.fn(async () => null),
+          requireSelfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
           listGrants: vi.fn(async () => []),
           ...input.store,
         }
@@ -4728,6 +4738,7 @@ function platform(input: {
           connections: { assertOwner: vi.fn(async () => undefined) },
           getToolInvocation: vi.fn(async () => mailInvocation),
           computerAppRunner: vi.fn(async () => null),
+          requireSelfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
           install: vi.fn(),
           listInstallations: vi.fn(async () => []),
         }) as IntegrationPlatformStore,
@@ -5155,6 +5166,7 @@ describe("computer app request matrix", () => {
         stop: vi.fn(),
       },
       store: {
+        requireSelfDeviceId: async (id) => DeviceIdSchema.parse(id),
         listCallableTools: async () => refs(available),
         requestComputerAppAccess,
       },

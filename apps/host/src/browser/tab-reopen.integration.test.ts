@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { OpensteerError, TabIdSchema } from "@opensteer/core";
 import { createBrowserSessionId } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
@@ -23,7 +24,7 @@ integration("reopen tab admission", () => {
       {
         id: tabId,
         ownerId: f.ownerId,
-        computerId: f.runnerId,
+        computerId: DeviceIdSchema.parse(f.runnerId),
         kind: "page",
         title: "Saved",
         url: "https://saved.test/path#hash",
