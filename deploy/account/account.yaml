@@ -6,10 +6,12 @@ metadata:
   annotations:
     iam.gke.io/gcp-service-account: opensteer-account@opensteer-staging.iam.gserviceaccount.com
 ---
+# Rename this class whenever its secret list changes: new pods keep receiving the
+# old file set under a reused name, and the rollout fails on the missing file.
 apiVersion: secrets-store.csi.x-k8s.io/v1
 kind: SecretProviderClass
 metadata:
-  name: account-runtime-v10
+  name: account-runtime-v11
   namespace: opensteer-system
 spec:
   provider: gke
@@ -309,7 +311,7 @@ spec:
           csi:
             driver: secrets-store-gke.csi.k8s.io
             readOnly: true
-            volumeAttributes: { secretProviderClass: account-runtime-v10 }
+            volumeAttributes: { secretProviderClass: account-runtime-v11 }
         - { name: runtime-secrets, emptyDir: {} }
         - { name: tmp, emptyDir: {} }
 ---
