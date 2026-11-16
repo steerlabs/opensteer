@@ -1,5 +1,6 @@
 import {
   OpensteerError,
+  isPhoneDisplayDefinitionId,
   type ResourceAccessLevel,
   type DeviceId,
   DeviceTabTargetSchema,
@@ -174,7 +175,7 @@ export async function tabReadAuthority(actor: TabActor, database: TabDatabase) {
       for (const connection of connections) {
         if (
           target.kind === "phone"
-            ? connection.integrationDefinitionId !== "android-phone"
+            ? !isPhoneDisplayDefinitionId(connection.integrationDefinitionId)
             : connection.integrationDefinitionId !== "macos-app" ||
               !connection.computerApp ||
               ("windowApp" in target

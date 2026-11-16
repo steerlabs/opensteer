@@ -4,6 +4,7 @@ import type {
   ComputerAppIdentity,
   ComputerViewTarget,
   RunnerId,
+  DeviceId,
   Tab,
   TabGroup,
   TabGroupId,
@@ -83,6 +84,26 @@ export type NativeTargetAcquired = {
   membershipRevision: number;
 } & ({ kind: "window"; windowId: WindowId } | { kind: "phone" });
 export type NativeTargetAcquiredHandler = (target: NativeTargetAcquired) => Promise<TabId>;
+export type DeviceNativeTargetAcquired = {
+  ownerId: UserId;
+  runClaims: RunToolScope;
+  computerId: DeviceId;
+  key: string;
+  membershipRevision: number;
+} & ({ kind: "window"; windowId: WindowId } | { kind: "phone" });
+export interface DeviceNativeTabTargetsPort {
+  phoneState(ownerId: UserId, deviceId: DeviceId): Promise<NativeTabTargetState>;
+  openOwnerView(
+    ownerId: UserId,
+    input: {
+      tabId: TabId;
+      tabGeneration: number;
+      computerId: DeviceId;
+      target: ComputerViewTarget;
+    },
+    key: string,
+  ): Promise<ComputerView>;
+}
 export interface NativeTabTargetsPort {
   resolveWindow(
     ownerId: UserId,

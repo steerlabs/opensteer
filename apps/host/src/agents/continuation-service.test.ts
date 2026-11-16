@@ -860,7 +860,8 @@ function withMacs(named: boolean): IntegrationInventorySource {
                   connectionId: macConnectionId,
                 },
               ],
-              runnerId: macRunnerId,
+              deviceId: DeviceIdSchema.parse(macRunnerId),
+              definitionId: "macos-app",
             },
           ]
         : [],

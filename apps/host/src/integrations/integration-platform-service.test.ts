@@ -34,7 +34,7 @@ import { createOpenApiAdapter, openApiAdapter } from "@opensteer/integration-ada
 import {
   ComputerAppNotOfferedError,
   type CallableIntegrationTool,
-  type ComputerAppAccessDecision,
+  type DeviceComputerAppAccessDecision as ComputerAppAccessDecision,
   type IntegrationPlatformStore,
   type PreparedIntegrationInstallFulfillment,
 } from "@opensteer/database";
@@ -684,12 +684,12 @@ describe("IntegrationPlatformService computer connections", () => {
     };
     let existing = false;
     const setComputerConnection = vi.fn(
-      async (input: Parameters<IntegrationPlatformStore["setComputerConnection"]>[0]) => {
+      async (input: Parameters<IntegrationPlatformStore["setDeviceComputerConnection"]>[0]) => {
         if (!existing && !input.createIfMissing) {
           throw new ComputerAppNotOfferedError("Studio Mac");
         }
         return {
-          connection,
+          connection: deviceConnection(connection),
           created: false,
           fulfilledRequestIds: [],
           grants: [],
@@ -710,7 +710,7 @@ describe("IntegrationPlatformService computer connections", () => {
       definitions: [computerDefinition],
       store: {
         listInstallations: vi.fn(async () => [installed]),
-        setComputerConnection,
+        setDeviceComputerConnection: setComputerConnection,
       },
     });
     const input = {
@@ -730,7 +730,7 @@ describe("IntegrationPlatformService computer connections", () => {
     });
     existing = true;
     await expect(service.computerAppApprovals.setComputerConnection(input)).resolves.toEqual(
-      connection,
+      deviceConnection(connection),
     );
     expect(setComputerConnection).toHaveBeenCalledTimes(2);
   });
@@ -1127,11 +1127,11 @@ describe("IntegrationPlatformService computer invocation", () => {
         revokeGrant: vi.fn(async () => {
           authority = [];
         }),
-        setComputerConnection: vi.fn(async () => {
+        setDeviceComputerConnection: vi.fn(async () => {
           connectionAccess = "read";
           authority = [];
           return {
-            connection,
+            connection: deviceConnection(connection),
             created: false,
             fulfilledRequestIds: [],
             grants: [],
@@ -3660,8 +3660,8 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       onRequestsChanged,
       onDeploymentEvent,
       store: {
-        requestComputerAppAccess,
-        getComputerUsePolicy: async () => ({
+        requestDeviceComputerAppAccess: requestComputerAppAccess,
+        getDeviceComputerUsePolicy: async () => ({
           appApproval: "ask",
           approvalKeyId: null,
           revision: 0,
@@ -3739,7 +3739,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
             deviceProfile: "iphone",
             publicKeyFingerprint: "phone-key",
           }),
-          requestComputerAppSetup,
+          requestDeviceComputerAppSetup: requestComputerAppSetup,
         },
       });
       const asking = service.computerAppApprovals.requestComputerAppSetup({
@@ -3785,7 +3785,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       grants: [],
       requestEvents: [cancellationEvent],
       requestIds: [createId("request")],
-      runnerId: null,
+      deviceId: null,
     }));
     const onDeploymentEvent = vi.fn();
     const onRequestsChanged = vi.fn();
@@ -3794,7 +3794,10 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       definitions: [computerDefinition],
       onRequestsChanged,
       onDeploymentEvent,
-      store: { cancelComputerAppSetup, requestComputerAppSetup },
+      store: {
+        cancelDeviceComputerAppSetup: cancelComputerAppSetup,
+        requestDeviceComputerAppSetup: requestComputerAppSetup,
+      },
     });
 
     await service.computerAppApprovals.requestComputerAppSetup({
@@ -3826,7 +3829,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       grants: [],
       requestEvents: [requestEvent],
       requestIds: [createId("request")],
-      runnerIds: [],
+      deviceIds: [],
     }));
     const onDeploymentEvent = vi.fn();
     const onRequestsChanged = vi.fn();
@@ -3836,7 +3839,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       onConnectionsChanged,
       onRequestsChanged,
       onDeploymentEvent,
-      store: { expireComputerAppSetupRequests },
+      store: { expireDeviceComputerAppSetupRequests: expireComputerAppSetupRequests },
     });
 
     await service.computerAppApprovals.expireComputerAppSetupRequests();
@@ -3854,11 +3857,11 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       adapters: [],
       onRequestsChanged,
       store: {
-        expireComputerAppSetupRequests: vi.fn(async () => ({
+        expireDeviceComputerAppSetupRequests: vi.fn(async () => ({
           grants: [],
           requestEvents: [],
           requestIds: [],
-          runnerIds: [],
+          deviceIds: [],
         })),
       },
     });
@@ -4711,7 +4714,18 @@ function platform(input: {
       materializeForAdapter:
         input.materializeForAdapter ?? vi.fn(async () => Promise.reject(new Error("unused"))),
     },
-    ...(input.computerUse ? { computerUse: input.computerUse } : {}),
+    ...(input.computerUse
+      ? {
+          computerUse: Object.assign(input.computerUse, {
+            eligibleInventory:
+              input.computerUse.eligibleInventory ??
+              (async (owner) => ({
+                machines: await input.computerUse!.eligibleMachines(owner, "macos-app"),
+                phones: await input.computerUse!.eligibleMachines(owner, "android-phone"),
+              })),
+          }),
+        }
+      : {}),
     ...(input.nativeTabs ? { nativeTabs: input.nativeTabs } : {}),
     computerToolEnabled: () => true,
     computerUseVersion: () => 2,
@@ -4731,6 +4745,29 @@ function platform(input: {
           connections: { assertOwner: vi.fn(async () => undefined) },
           computerAppRunner: vi.fn(async () => null),
           requireSelfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
+          requireDeviceSelfRunnerId: async (id: unknown) => RunnerIdSchema.parse(id),
+          getDeviceSelfRunnerId: async (id: unknown) => RunnerIdSchema.parse(id),
+          getDeviceComputerConnectionForCall: async (
+            params: Parameters<IntegrationPlatformStore["getComputerConnectionForCall"]>[0],
+          ) => {
+            const found = await input.store?.getComputerConnectionForCall?.(params);
+            return found
+              ? {
+                  ...found,
+                  deviceId: DeviceIdSchema.parse(found.runnerId),
+                  deviceName: found.runnerName,
+                  connection: {
+                    ...found.connection,
+                    computer: found.connection.computer
+                      ? {
+                          ...found.connection.computer,
+                          deviceId: DeviceIdSchema.parse(found.connection.computer.runnerId),
+                        }
+                      : null,
+                  },
+                }
+              : null;
+          },
           listGrants: vi.fn(async () => []),
           ...input.store,
         }
@@ -4739,12 +4776,44 @@ function platform(input: {
           getToolInvocation: vi.fn(async () => mailInvocation),
           computerAppRunner: vi.fn(async () => null),
           requireSelfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
+          requireDeviceSelfRunnerId: async (id: unknown) => RunnerIdSchema.parse(id),
+          getDeviceSelfRunnerId: async (id: unknown) => RunnerIdSchema.parse(id),
+          getDeviceComputerConnectionForCall: async (
+            params: Parameters<IntegrationPlatformStore["getComputerConnectionForCall"]>[0],
+          ) => {
+            const found = await input.store?.getComputerConnectionForCall?.(params);
+            return found
+              ? {
+                  ...found,
+                  deviceId: DeviceIdSchema.parse(found.runnerId),
+                  deviceName: found.runnerName,
+                  connection: {
+                    ...found.connection,
+                    computer: found.connection.computer
+                      ? {
+                          ...found.connection.computer,
+                          deviceId: DeviceIdSchema.parse(found.connection.computer.runnerId),
+                        }
+                      : null,
+                  },
+                }
+              : null;
+          },
           install: vi.fn(),
           listInstallations: vi.fn(async () => []),
         }) as IntegrationPlatformStore,
   });
   services.push(service);
   return service;
+}
+
+function deviceConnection(connection: IntegrationConnectionSummary) {
+  return {
+    ...connection,
+    computer: connection.computer
+      ? { ...connection.computer, deviceId: DeviceIdSchema.parse(connection.computer.runnerId) }
+      : null,
+  };
 }
 
 function computerConnectionSummary(
@@ -5079,12 +5148,16 @@ describe("computer app request matrix", () => {
     const threadReadInsideAdmission: boolean[] = [];
     const requestComputerAppAccess = vi.fn(
       async (
-        input: Parameters<IntegrationPlatformStore["requestComputerAppAccess"]>[0],
+        input: Parameters<IntegrationPlatformStore["requestDeviceComputerAppAccess"]>[0],
       ): Promise<ComputerAppAccessDecision> => {
         switch (options.decision ?? "computer") {
           case "approved":
             available = input.access;
-            return { connection, kind: "approved", requestEvents: [] };
+            return {
+              connection: deviceConnection(connection),
+              kind: "approved",
+              requestEvents: [],
+            };
           case "personal-grant":
             return { kind: "personal-grant", replayed: false, request, requestEvents: [] };
           case "computer":
@@ -5168,7 +5241,7 @@ describe("computer app request matrix", () => {
       store: {
         requireSelfDeviceId: async (id) => DeviceIdSchema.parse(id),
         listCallableTools: async () => refs(available),
-        requestComputerAppAccess,
+        requestDeviceComputerAppAccess: requestComputerAppAccess,
       },
     });
     const input = {

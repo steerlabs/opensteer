@@ -1,6 +1,7 @@
 import {
   IntegrationCallSubjectSchema,
   isIntegrationGatewayTool,
+  isPhoneDisplayDefinitionId,
   type IntegrationCallSubject,
   type RunId,
   type ThreadId,
@@ -8,7 +9,7 @@ import {
 } from "@opensteer/core";
 import type { CallableIntegrationTool, IntegrationPlatformStore } from "@opensteer/database";
 import { integrationToolEffect } from "@opensteer/integration-core/effect";
-import { androidPhoneDefinitionId, type PendingAgentEvent } from "@opensteer/protocol";
+import { type PendingAgentEvent } from "@opensteer/protocol";
 import { z } from "zod";
 import { computerUseDefinitionId } from "../computer-use/computer-use-service.js";
 import type { IntegrationPlatformService } from "./integration-platform-service.js";
@@ -116,7 +117,7 @@ async function computerSubject(
   if (
     transport.type !== "computer" ||
     (transport.definitionId !== computerUseDefinitionId &&
-      transport.definitionId !== androidPhoneDefinitionId)
+      !isPhoneDisplayDefinitionId(transport.definitionId))
   ) {
     return { computerApp: null, phone: undefined };
   }
@@ -125,7 +126,7 @@ async function computerSubject(
   const placement = await sources.getComputerConnectionForCall({ connectionId, ownerUserId });
   if (!placement) return undefined;
   const app = placement.connection.computer?.app ?? null;
-  if (transport.definitionId === androidPhoneDefinitionId) {
+  if (isPhoneDisplayDefinitionId(transport.definitionId)) {
     return app === null
       ? {
           computerApp: null,

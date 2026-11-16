@@ -174,6 +174,10 @@ import {
   RequestComputerAppSetupSchema,
   SaveIntegrationProviderApplicationSchema,
   SetComputerAppConnectionSchema,
+  DeviceSetComputerAppConnectionSchema,
+  DeviceRequestComputerAppSetupSchema,
+  DeviceComputerAppSetupRequestViewSchema,
+  DeviceIntegrationConnectionSummaryViewSchema,
   SetIntegrationApplicationSourceDefaultSchema,
   SetIntegrationProviderApplicationStatusSchema,
 } from "@opensteer/integration-core";
@@ -358,6 +362,19 @@ const harnessRecordSchema = z.object({
 const harnessAuthenticationEnvelopeSchema = z.object({
   authentication: HarnessAuthenticationStateViewSchema,
   environmentStatus: z.enum(["connected", "disconnected"]),
+});
+
+const deviceConnectionViewSchema = DeviceIntegrationConnectionSummaryViewSchema.extend({
+  computer: DeviceIntegrationConnectionSummaryViewSchema.shape.computer
+    .unwrap()
+    .unwrap()
+    .extend({ runnerId: RunnerIdSchema.optional() })
+    .nullable()
+    .default(null),
+});
+
+const deviceSetupRequestViewSchema = DeviceComputerAppSetupRequestViewSchema.extend({
+  runnerId: RunnerIdSchema.optional(),
 });
 
 export const IphoneScreenAttachCommandSchema = z.strictObject({
@@ -856,12 +873,12 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
-    input: SetComputerAppConnectionSchema,
+    input: z.union([SetComputerAppConnectionSchema, DeviceSetComputerAppConnectionSchema]),
     type: z.literal("integration.computer.setup.set"),
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
-    input: RequestComputerAppSetupSchema,
+    input: z.union([RequestComputerAppSetupSchema, DeviceRequestComputerAppSetupSchema]),
     type: z.literal("integration.computer.setup.request"),
   }),
   z.strictObject({
@@ -1202,12 +1219,15 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-const commandInputSchema = z.discriminatedUnion("type", [
-  ...TabCommandSchema.options,
-  ...AppCommandSchema.options,
-  ...TeamCommandSchema.options,
-  SettingsPluginEnableCommandSchema,
-  ...otherCommandInputSchema.options,
+const commandInputSchema = z.union([
+  DeviceMachineAccessUpdateCommandSchema,
+  z.discriminatedUnion("type", [
+    ...TabCommandSchema.options,
+    ...AppCommandSchema.options,
+    ...TeamCommandSchema.options,
+    SettingsPluginEnableCommandSchema,
+    ...otherCommandInputSchema.options,
+  ]),
 ]);
 
 const commandOutputSchema = z.discriminatedUnion("type", [
@@ -1391,7 +1411,9 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     type: z.literal("integration.mcp.authorization.begin"),
   }),
   z.object({
-    connection: IntegrationConnectionSummaryViewSchema.nullable(),
+    connection: z
+      .union([IntegrationConnectionSummaryViewSchema, deviceConnectionViewSchema])
+      .nullable(),
     type: z.literal("integration.computer.setup.set"),
   }),
   z.object({
@@ -2014,7 +2036,11 @@ const hostApiGroup3 = defineRpc({
   "integration.computer.setup.list": declaration(
     "GET",
     emptyInputSchema,
-    z.object({ requests: z.array(ComputerAppSetupRequestViewSchema).max(1_000) }),
+    z.object({
+      requests: z
+        .array(z.union([ComputerAppSetupRequestViewSchema, deviceSetupRequestViewSchema]))
+        .max(1_000),
+    }),
   ),
   /** Plugin servers on the caller's computers whose secrets the caller may change; never values. */
   "integration.server.secrets.list": declaration(
@@ -2088,7 +2114,15 @@ const hostApiGroup4 = defineRpc({
     z.strictObject({ connectionId: IntegrationConnectionIdSchema }),
     IntegrationRepositoryAccessViewSchema,
   ),
-  "integrations.get": declaration("GET", emptyInputSchema, IntegrationDashboardViewSchema),
+  "integrations.get": declaration(
+    "GET",
+    emptyInputSchema,
+    IntegrationDashboardViewSchema.extend({
+      connections: z
+        .array(z.union([IntegrationConnectionSummaryViewSchema, deviceConnectionViewSchema]))
+        .max(500),
+    }),
+  ),
   "machine.access.history": declaration(
     "GET",
     z.strictObject({

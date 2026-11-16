@@ -1,4 +1,4 @@
-import { DeviceIdSchema } from "@opensteer/core";
+import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { createHash } from "node:crypto";
 import { BrowserRequestOutcomeSchema, OpensteerError, type Request } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
@@ -9,7 +9,6 @@ import {
 } from "@opensteer/integration-core";
 import type { CommandService } from "@opensteer/orchestration";
 import {
-  androidPhoneDefinitionId,
   PasswordSignInRequestResponseSchema,
   type PasswordSignInRequestResponse,
 } from "@opensteer/protocol";
@@ -446,8 +445,9 @@ export async function continuationMessage(
       }
       if (
         entry.installation.sourceKind === "built-in" &&
-        CatalogProvenanceSchema.safeParse(entry.installation.provenance).data?.definitionId ===
-          androidPhoneDefinitionId
+        isPhoneDisplayDefinitionId(
+          CatalogProvenanceSchema.safeParse(entry.installation.provenance).data?.definitionId,
+        )
       ) {
         const connectionId =
           request.response.kind === "external" ? request.response.value?.connectionId : undefined;
@@ -509,13 +509,7 @@ export async function continuationMessage(
       if (payload.app === null) {
         // A phone is asked for whole, so its continuation names the phone.
         const phones = await integrations.computerUsePhones(request.requestedBy);
-        const matching = await Promise.all(
-          phones.map(async (phone) => ({
-            phone,
-            deviceId: DeviceIdSchema.parse(phone.deviceId ?? phone.runnerId),
-          })),
-        );
-        const phone = matching.find((row) => row.deviceId === payload.deviceId)?.phone;
+        const phone = phones.find((phone) => phone.deviceId === payload.deviceId);
         if (request.status === "declined")
           return `Request ${request.id} was declined by the user. Continue the task without ${phone?.name ?? "that phone"} and do not request it again unless the user asks.`;
         return phone
@@ -525,13 +519,7 @@ export async function continuationMessage(
       const asked = payload.app;
       const { displayName } = asked;
       const machines = await integrations.computerUseMachines(request.requestedBy);
-      const matching = await Promise.all(
-        machines.map(async (machine) => ({
-          machine,
-          deviceId: DeviceIdSchema.parse(machine.deviceId ?? machine.runnerId),
-        })),
-      );
-      const machine = matching.find((row) => row.deviceId === payload.deviceId)?.machine;
+      const machine = machines.find((machine) => machine.deviceId === payload.deviceId);
       const mac = machine?.name ?? "that Mac";
       if (request.status === "declined")
         return `Request ${request.id} was declined by the user. Continue the task without ${displayName} on ${mac} and do not request it again unless the user asks.`;

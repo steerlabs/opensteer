@@ -1,4 +1,4 @@
-import { createId, type RunId, type RunnerId, type UserId } from "@opensteer/core";
+import { DeviceIdSchema, createId, type RunId, type RunnerId, type UserId } from "@opensteer/core";
 import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
 import {
   machineAccessPolicyDefault,
@@ -233,6 +233,7 @@ export function fakeShellStore(
       });
       return { ended: true };
     },
+    requireSelfDeviceId: async (id: RunnerId) => DeviceIdSchema.parse(id),
     getMachineAccessTarget: async () => {
       await state.gateTarget?.();
       return state.present
