@@ -1,3 +1,4 @@
+import { DeploymentIdSchema } from "@opensteer/core";
 import { useId, useState } from "react";
 import { usePersonalRemoteAccess } from "@opensteer/client/react";
 import {
@@ -15,10 +16,11 @@ import { QrCode } from "../first-run/qr-code.js";
 import { Icon, type IconName } from "../icon.js";
 import { OptionRow } from "../option-row.js";
 import { SettingsError } from "../settings/primitives.js";
+import { AddIphoneDialog } from "./add-iphone-dialog.js";
 import { cancelDeviceSetup } from "./device-access.js";
 import { localEnrollmentModules } from "./this-device.js";
 
-type Choice = "sign-in" | "agent-phone" | "server";
+type Choice = "sign-in" | "iphone-screen" | "agent-phone" | "server";
 
 const choices: readonly {
   readonly id: Choice;
@@ -32,6 +34,12 @@ const choices: readonly {
     title: "Sign in on it",
     detail:
       "A Mac or phone with the Opensteer app. Scan a code, open a link or use a pairing code.",
+  },
+  {
+    id: "iphone-screen",
+    icon: "phone",
+    title: "iPhone screen control",
+    detail: "An iPhone your agent controls through this Mac, plugged in with a cable.",
   },
   {
     id: "agent-phone",
@@ -57,6 +65,19 @@ export function AddDeviceDialog({
   const { desktopBridge, hostClient, snapshot } = useShell();
   const [choice, setChoice] = useState<Choice | null>(null);
   const titleId = useId();
+  // Setup picks the physical phone, so only Opensteer on the Mac it plugs into offers it.
+  const iphoneSetup = hostClient.iphoneSetup;
+  const deploymentId = DeploymentIdSchema.safeParse(snapshot.deploymentId);
+  if (choice === "iphone-screen" && iphoneSetup && deploymentId.success)
+    return (
+      <AddIphoneDialog
+        client={hostClient}
+        deploymentId={deploymentId.data}
+        deploymentName={snapshot.identityConfig?.deployment.name ?? "Opensteer"}
+        onClose={onClose}
+        port={iphoneSetup}
+      />
+    );
   if (choice === "agent-phone")
     return (
       <AddPhoneDialog
@@ -103,22 +124,26 @@ export function AddDeviceDialog({
         <AddServer />
       ) : (
         <div className="add-device__choices">
-          {choices.map((option) => (
-            <OptionRow
-              as="button"
-              detail={option.detail}
-              framed
-              key={option.id}
-              leading={
-                <span className="option-row__glyph option-row__glyph--outline">
-                  <Icon name={option.icon} />
-                </span>
-              }
-              onClick={() => setChoice(option.id)}
-              title={option.title}
-              trailing={<Icon name="chevron-right" />}
-            />
-          ))}
+          {choices
+            .filter(
+              (option) => option.id !== "iphone-screen" || (iphoneSetup && deploymentId.success),
+            )
+            .map((option) => (
+              <OptionRow
+                as="button"
+                detail={option.detail}
+                framed
+                key={option.id}
+                leading={
+                  <span className="option-row__glyph option-row__glyph--outline">
+                    <Icon name={option.icon} />
+                  </span>
+                }
+                onClick={() => setChoice(option.id)}
+                title={option.title}
+                trailing={<Icon name="chevron-right" />}
+              />
+            ))}
         </div>
       )}
     </Dialog>
