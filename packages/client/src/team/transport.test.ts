@@ -1,8 +1,10 @@
 import { TeamEntryRefusalReasonSchema, type TeamEntryRefusalReason } from "@opensteer/protocol";
 import { expect, it, vi } from "vitest";
 import {
+  hostApiCurrentHeader,
   hostApiVersion,
   hostApiVersionHeader,
+  minimumHostApiVersion,
   teamApiVersion,
   teamApiVersionHeader,
 } from "@opensteer/deployment-authority";
@@ -44,7 +46,8 @@ it("sends only the per-kind version for auth, bootstrap and commands during para
       expect(call.headers.get(teamApiVersionHeader)).toBe(String(teamApiVersion));
       expect(call.headers.has(hostApiVersionHeader)).toBe(false);
     } else {
-      expect(call.headers.get(hostApiVersionHeader)).toBe(String(hostApiVersion));
+      expect(call.headers.get(hostApiVersionHeader)).toBe(String(minimumHostApiVersion));
+      expect(call.headers.get(hostApiCurrentHeader)).toBe(String(hostApiVersion));
       expect(call.headers.has(teamApiVersionHeader)).toBe(false);
     }
   }

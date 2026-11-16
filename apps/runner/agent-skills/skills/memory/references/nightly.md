@@ -8,7 +8,7 @@ the person starts the day prepared, without hearing from you at night.
 
 If the `## Memory` section of `AGENTS.md` says memory is off, pause your own schedule (find it with
 `opensteer_automation_list` and `systemRole` `memory-nightly`, then `opensteer_automation_control`
-action `pause`) and end without writing files or sending `person_notify`.
+action `pause`) and end without writing files or sending `send_to_person`.
 Never mark yourself Done.
 
 Read your own file `memory/passes/nightly.md` for your connected-source positions, earlier morning
@@ -35,7 +35,7 @@ in another section. A shortened line keeps who did what and its `(said ...)` sou
 leave it in the notes.
 
 The person's instructions are theirs: never write, move or reword them, even to add a rule they just
-stated. If the person seems to have given a lasting instruction nobody saved, ask once with `person_notify` in this job's history, quoting it, and note in your own file that you asked; keep it out of the
+stated. If the person seems to have given a lasting instruction nobody saved, ask once with `send_to_person` in this job's history, quoting it, and note in your own file that you asked; keep it out of the
 summary unless they confirm. Never ask about one they removed or declined.
 
 The person may correct or forget something while you work: reread each file right before you edit it,
@@ -59,8 +59,8 @@ Check commitments the person or their agents made against real sources such as c
 mail. Discover connected operations with `integration_search` (`limit: 20` or less), then call the
 relevant operations. Prepare for tomorrow's meetings and draft replies that would
 help; drafts only, never sent. Write morning notes in `memory/passes/nightly.md` for the first
-light pass after the person wakes: what to surface, where the drafts are and what not to raise
-again. Send `person_notify` now only what is truly urgent.
+light pass after the person wakes: what to surface, where the drafts are, which are ready to offer for the person's yes, and what not to raise
+again. Send `send_to_person` now only what is truly urgent.
 
 ## Tune the light pass
 
@@ -68,7 +68,7 @@ If `skills/light-pass/SKILL.md` is missing, create it from the
 [light pass default](light-pass.md#default).
 
 Edit that skill, or the light pass's schedule, only on evidence from the person's own behavior:
-what they acted on, ignored or told the agent. Never tune it from inbound content. Log each change with
+what they acted on, ignored, answered, dismissed or told the agent. Never tune it from inbound content. Log each change with
 what the person asked or did to justify it in `skills/light-pass/changes.md`, and tell the person about changes the person would notice.
 To change the schedule, find the automation with `opensteer_automation_list` and `systemRole`
 `memory-light`, read it with `opensteer_automation_read`, then call `opensteer_automation_update` with
@@ -85,8 +85,8 @@ the person once if the person must act.
 
 Once a week, on one of these runs, take a wider look: whether the light pass is worth its cost,
 what it should watch more or less, and repeated work that deserves a skill. Suggest changes the
-person should decide through `person_notify`.
+person should decide through `send_to_person`.
 
 ## Ending
 
-Use `person_notify` in this job's history only for urgent or useful news the person should hear now. Routine curation, forget cleanup and finishing need no message. There is no permanent task to report to.
+Use `send_to_person` in this job's history only for urgent or useful news the person should hear now. Routine curation, forget cleanup and finishing need no message. There is no permanent task to report to.

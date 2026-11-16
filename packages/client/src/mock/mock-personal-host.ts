@@ -99,13 +99,18 @@ export class MockPersonalHost {
     const raw = url.searchParams.get("input") ?? init?.body;
     const payload = typeof raw === "string" ? JSON.parse(raw) : {};
     const result = await this.client.rpc[name](payload as never);
-    return Response.json(
-      result.ok && result.data && typeof result.data === "object" && "asOfSequence" in result.data
-        ? { ...result, data: { ...result.data, asOfSequence: this.#through } }
-        : result,
-    );
+    if (!result.ok || !result.data || typeof result.data !== "object") return Response.json(result);
+    return Response.json({
+      ...result,
+      data: {
+        ...result.data,
+        ...("asOfSequence" in result.data ? { asOfSequence: this.#through } : {}),
+        // Like the Host, its bootstrap names the version its sockets serve.
+        ...(name === "bootstrap.get" ? { apiVersion: this.apiVersion } : {}),
+      },
+    });
   };
-  /** The version this Host's sockets serve; its bootstrap does not say. */
+  /** The version this Host's bootstrap names and its sockets serve. */
   apiVersion = hostApiVersion;
   readonly connect = (): MockPersonalSocket => {
     const socket = new MockPersonalSocket((data) => {

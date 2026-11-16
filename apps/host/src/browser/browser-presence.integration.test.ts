@@ -789,7 +789,7 @@ integration("Browser presence and conversation usage", () => {
     });
     await host.runtime.browser.flushPendingTabDescriptors();
     for (const target of [{ current: true }, { tabId: "voice-page" }, { current: true }]) {
-      const result = await callMcpTool(host.origin, run.toolsToken, "person_show", { target });
+      const result = await callMcpTool(host.origin, run.toolsToken, "show_to_person", { target });
       expect(result.isError, JSON.stringify(result)).not.toBe(true);
     }
     await vi.waitFor(() => expect(ofType(owner, "host.show")).toHaveLength(3));

@@ -4863,6 +4863,7 @@ describe("RunnerRuntime", () => {
         presentation: {
           fields: [
             {
+              custom: false,
               choices: [{ description: choiceText, label: choiceText, value: "yes" }],
               id: "confirmation",
               label,
@@ -5508,6 +5509,7 @@ class InteractiveHarnessSession implements HarnessSession {
           presentation: {
             fields: [
               {
+                custom: false,
                 id: "confirmation",
                 multiSelect: false,
                 prompt: "Continue?",

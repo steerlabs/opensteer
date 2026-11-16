@@ -2342,8 +2342,9 @@ const opensteerSteps = new Map<string, OpensteerStep>([
   ["opensteer_app_list", said(["Listing apps", "Listed apps"], "share")],
   ["opensteer_app_call", said(["Calling an app", "Called an app"], "share")],
   ["opensteer_app_publish", said(["Publishing an app", "Published an app"], "share")],
-  ["person_notify", said(["Sending a message", "Sent a message"], "share")],
-  ["person_show", said(["Sending to your screen", "Sent to your screen"], "share")],
+  ["ask_person", said(["Asking you", "Asked you"], "share")],
+  ["send_to_person", said(["Sending a message", "Sent a message"], "share")],
+  ["show_to_person", said(["Sending to your screen", "Sent to your screen"], "share")],
 
   [
     "browser_access_request",

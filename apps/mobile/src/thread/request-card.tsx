@@ -48,7 +48,7 @@ import { useRequestResponse } from "./use-request-response.js";
  * above the composer, under a thumb on its way to something else, and an answer
  * sent by accident cannot be taken back.
  */
-const arrivalGuardMs = 450;
+export const arrivalGuardMs = 450;
 
 /** A title and three lines of command at the default size: more isn't read at a glance. */
 const inlineBodyHeight = type.title.lineHeight * 2 + type.caption.lineHeight * 3;
@@ -208,15 +208,7 @@ function AnswerCard(props: RequestCardProps): ReactNode {
 
   const send = (choice: CardChoice): void => {
     if (!settled()) return;
-    void responder.submit(
-      presentation.kind === "form"
-        ? {
-            answers: { [presentation.fields[0]!.id]: [choice.id] },
-            kind: "form",
-          }
-        : { kind: "choice", optionId: choice.id },
-      choice.id,
-    );
+    void responder.submit({ kind: "choice", optionId: choice.id }, choice.id);
   };
 
   return (
@@ -466,7 +458,6 @@ function CardAnswers(props: {
       </View>
     );
   }
-  // A question typed here only when no composer is there to take it.
   return (
     <View style={styles.answers}>
       <AnswerRow>
@@ -485,7 +476,7 @@ function CardAnswers(props: {
  * Thread that asked with the Request named, which is what a notification does;
  * the composer there puts that Request on its card.
  */
-function WaitingMenu(props: {
+export function WaitingMenu(props: {
   readonly deploymentId: string;
   readonly hostClient: HostClient;
   readonly requestId: string;

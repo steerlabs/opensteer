@@ -1,12 +1,14 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createId, WaitingRequestSchema, type Request, type WaitingRequest } from "@opensteer/core";
 import { MemoryRouter } from "react-router";
 import { mockTmdbProposal } from "@opensteer/client/mock";
-import { BrowserTabStore } from "@opensteer/client/host";
-import { InputSurface } from "./input-surface.js";
+import { BrowserTabStore, deriveSurface } from "@opensteer/client/host";
+import { InputSurface, RequestStack } from "./input-surface.js";
+import { resetQuestionSessionsForTests } from "./question-session.js";
+import { composerDraftKeyFor, composerDrafts } from "./composer-drafts.js";
 import { composerField, rewrite, textareaView } from "./composer-editor.test-support.js";
 
 const noPlaces = vi.hoisted(() => ({ browserSessions: [], connection: "connected", machines: [] }));
@@ -244,13 +246,13 @@ describe("request surface connectivity", () => {
     expect(shell.hostClient.dispatch).toHaveBeenCalledOnce();
   });
 
-  it("retains a draft when a form request docks and then resolves", () => {
+  it("keeps a draft when a secret form docks and takes the field's place", () => {
     const node = document.createElement("div");
     root = createRoot(node);
     const form = request({
       kind: "form",
-      title: "Choose a name",
-      fields: [{ id: "name", multiSelect: false, prompt: "Name", secret: false }],
+      title: "Enter the token",
+      fields: [{ custom: false, id: "token", multiSelect: false, prompt: "Token", secret: true }],
     });
     const render = (requests: Request[]) =>
       act(() =>
@@ -278,6 +280,211 @@ describe("request surface connectivity", () => {
     expect(composerField(node)).toBe(field.element);
     expect(field.closest("[hidden]")).toBeNull();
     expect(field.value).toBe("Still my draft");
+  });
+});
+
+describe("answering a question", () => {
+  beforeEach(() => {
+    resetQuestionSessionsForTests();
+    localStorage.clear();
+  });
+
+  const choices = (...labels: string[]) => labels.map((label) => ({ label, value: label }));
+  function question(
+    fields: Extract<Request["presentation"], { kind: "form" }>["fields"],
+    kind: "harness.input" | "person.question" = "harness.input",
+  ): Request {
+    const asked = request({ kind: "form", title: "How should I backfill?", fields });
+    return kind === "harness.input"
+      ? asked
+      : { ...asked, kind, mode: "durable", payload: { kind: "person.question" } };
+  }
+  const field = (id: string, overrides: Partial<Parameters<typeof question>[0][number]> = {}) => ({
+    choices: choices("Batches", "All at once"),
+    custom: true,
+    id,
+    multiSelect: false,
+    prompt: `Question ${id}?`,
+    secret: false,
+    ...overrides,
+  });
+  function mount(requests: Request[]) {
+    const node = document.createElement("div");
+    document.body.append(node);
+    root = createRoot(node);
+    act(() =>
+      root.render(
+        <MemoryRouter>
+          <InputSurface
+            disabled={false}
+            placeholder="Reply…"
+            requests={requests}
+            running={false}
+            threadId="thread"
+          />
+        </MemoryRouter>,
+      ),
+    );
+    return node;
+  }
+  const answerField = (node: HTMLElement) =>
+    node.querySelector<HTMLTextAreaElement>(".composer--answer textarea")!;
+  const option = (node: HTMLElement, label: string) =>
+    [...node.querySelectorAll<HTMLButtonElement>(".question__option")].find((row) =>
+      row.textContent?.includes(label),
+    )!;
+  const answerButton = (node: HTMLElement) =>
+    node.querySelector<HTMLButtonElement>(".composer__answer")!;
+  const sent = () =>
+    (shell.hostClient.dispatch.mock.calls as unknown as [{ response: unknown }][]).map(
+      ([command]) => command.response,
+    );
+  const type = (element: HTMLTextAreaElement, text: string) =>
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(element, text);
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+  it("answers one question with one tap, and the message box becomes the answer", async () => {
+    const node = mount([question([field("q")])]);
+    expect(answerField(node).placeholder).toBe("Type your own answer…");
+    expect(composerField(node).closest("[hidden]")).not.toBeNull();
+    await act(async () => option(node, "Batches").click());
+    expect(sent()).toEqual([{ kind: "form", answers: { q: ["Batches"] } }]);
+  });
+
+  it("sends what the person typed instead of an option, and unchooses it", async () => {
+    const node = mount([question([field("q", { multiSelect: true })])]);
+    await act(async () => option(node, "Batches").click());
+    expect(option(node, "Batches").getAttribute("aria-checked")).toBe("true");
+    type(answerField(node), "Run 2023 first");
+    expect(option(node, "Batches").getAttribute("aria-checked")).toBe("false");
+    await act(async () => answerButton(node).click());
+    expect(sent()).toEqual([{ kind: "form", answers: { q: ["Run 2023 first"] } }]);
+  });
+
+  it("steps through several questions and sends them once, together", async () => {
+    const node = mount([
+      question([field("a", { multiSelect: true }), field("b", { choices: undefined })]),
+    ]);
+    expect(answerButton(node).disabled).toBe(true);
+    await act(async () => option(node, "Batches").click());
+    await act(async () => option(node, "All at once").click());
+    expect(sent()).toEqual([]);
+    expect(answerButton(node).textContent).toBe("Next");
+    await act(async () => answerButton(node).click());
+    expect(node.textContent).toContain("Question 2 of 2");
+    expect(answerField(node).placeholder).toBe("Type your answer…");
+    type(answerField(node), "Tuesday");
+    expect(answerButton(node).textContent).toBe("Answer");
+    await act(async () => answerButton(node).click());
+    expect(sent()).toEqual([
+      { kind: "form", answers: { a: ["Batches", "All at once"], b: ["Tuesday"] } },
+    ]);
+  });
+
+  it("leaves a waiting draft in the message box until the person chooses to type an answer", async () => {
+    const node = mount([]);
+    const draft = textareaView(composerField(node));
+    act(() => rewrite(draft.element, "Also check Kyoto"));
+    act(() =>
+      root.render(
+        <MemoryRouter>
+          <InputSurface
+            disabled={false}
+            placeholder="Reply…"
+            requests={[question([field("q")])]}
+            running={false}
+            threadId="thread"
+          />
+        </MemoryRouter>,
+      ),
+    );
+    expect(draft.closest("[hidden]")).toBeNull();
+    expect(node.querySelector(".composer--answer")).toBeNull();
+    const switchToAnswer = [...node.querySelectorAll("button")].find(
+      (button) => button.textContent === "Type an answer",
+    )!;
+    await act(async () => switchToAnswer.click());
+    expect(answerField(node)).not.toBeNull();
+    expect(draft.closest("[hidden]")).not.toBeNull();
+    expect(draft.value).toBe("Also check Kyoto");
+  });
+
+  it("leaves a draft holding only a quote in the message box too", () => {
+    composerDrafts.update(
+      composerDraftKeyFor("deployment", "viewer", { kind: "thread", threadId: "thread" })!,
+      {
+        quote: { attribution: "Sam", excerpt: "the August numbers", messageId: "msg_quoted" },
+        text: "",
+      },
+    );
+    const node = mount([question([field("q")])]);
+    expect(node.querySelector(".composer--answer")).toBeNull();
+    expect(
+      [...node.querySelectorAll("button")].some(
+        (button) => button.textContent === "Type an answer",
+      ),
+    ).toBe(true);
+  });
+
+  it("finishes a several-choice question from its card while a draft keeps the message box", async () => {
+    const node = mount([]);
+    act(() => rewrite(textareaView(composerField(node)).element, "Unrelated draft"));
+    act(() =>
+      root.render(
+        <MemoryRouter>
+          <InputSurface
+            disabled={false}
+            placeholder="Reply…"
+            requests={[question([field("q", { custom: false, multiSelect: true })])]}
+            running={false}
+            threadId="thread"
+          />
+        </MemoryRouter>,
+      ),
+    );
+    expect(node.querySelector(".composer--answer")).toBeNull();
+    await act(async () => option(node, "Batches").click());
+    await act(async () => option(node, "All at once").click());
+    await act(async () => answerButton(node).click());
+    expect(sent()).toEqual([{ kind: "form", answers: { q: ["Batches", "All at once"] } }]);
+  });
+
+  it("brings its own answer field where no composer sits below, as on a call", async () => {
+    const node = document.createElement("div");
+    document.body.append(node);
+    root = createRoot(node);
+    const asked = question([field("q")]);
+    act(() =>
+      root.render(
+        <MemoryRouter>
+          <RequestStack
+            disabled={false}
+            items={[{ source: null, surface: deriveSurface([asked], null)! }]}
+            onOpen={() => undefined}
+            openId={asked.id}
+            threadId="thread"
+          />
+        </MemoryRouter>,
+      ),
+    );
+    const own = node.querySelector<HTMLTextAreaElement>(".question__field textarea")!;
+    type(own, "Overnight, but start with 2023");
+    await act(async () => node.querySelector<HTMLButtonElement>(".composer__answer")!.click());
+    expect(sent()).toEqual([{ kind: "form", answers: { q: ["Overnight, but start with 2023"] } }]);
+  });
+
+  it("dismisses an agent's ask as a no, and offers no Dismiss on an engine's own question", async () => {
+    const dismiss = (node: HTMLElement) =>
+      [...node.querySelectorAll("button")].find((button) => button.textContent === "Dismiss");
+    const engine = mount([question([field("q")])]);
+    expect(dismiss(engine)).toBeUndefined();
+    act(() => root.unmount());
+    const asked = mount([question([field("q")], "person.question")]);
+    await act(async () => dismiss(asked)!.click());
+    expect(sent()).toEqual([{ kind: "external", value: { decision: "declined" } }]);
   });
 });
 

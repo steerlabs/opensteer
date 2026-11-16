@@ -36,6 +36,7 @@ export const RequestKindSchema = z.enum([
   "device.access",
   "computer.app.access",
   "integration.input",
+  "person.question",
 ]);
 type RequestKind = z.infer<typeof RequestKindSchema>;
 
@@ -116,6 +117,11 @@ const RequestFormChoiceViewSchema = z.object(requestFormChoiceShape);
 
 const requestFormFieldShape = {
   choices: z.array(RequestFormChoiceSchema).max(100).optional(),
+  /**
+   * The person may type their own answer instead of choosing. A field without
+   * choices is always typed, so this only changes one that offers them.
+   */
+  custom: z.boolean().default(false),
   id: RequestIdentifierSchema,
   label: z.string().trim().min(1).max(requestLabelMaxLength).optional(),
   multiSelect: z.boolean().default(false),
@@ -134,6 +140,43 @@ export const RequestFormAnswersSchema = z.record(
   z.array(z.string().max(100_000)).max(100),
 );
 export type RequestFormAnswers = z.infer<typeof RequestFormAnswersSchema>;
+
+/**
+ * Why one field's answer would be refused, or null when it fits. A typed
+ * answer stands alone: it replaces the choices rather than joining them.
+ */
+export function requestFieldAnswerProblem(
+  field: Pick<RequestFormField, "choices" | "custom" | "multiSelect">,
+  values: readonly string[],
+): string | null {
+  if (values.length === 0) return "is not answered";
+  const offered = field.choices?.map((choice) => choice.value);
+  const typed = offered === undefined || values.some((value) => !offered.includes(value));
+  if (typed) {
+    if (offered !== undefined && !field.custom) return "is not one of the offered choices";
+    return values.length === 1 && values[0]!.trim() !== "" ? null : "needs one typed answer";
+  }
+  if (!field.multiSelect && values.length !== 1) return "takes exactly one choice";
+  return new Set(values).size === values.length ? null : "repeats a choice";
+}
+
+/** Why answers don't fit a form's fields, or null when every field has exactly its answer. */
+export function requestFormAnswersProblem(
+  fields: readonly RequestFormField[],
+  answers: RequestFormAnswers,
+): string | null {
+  const ids = new Set(fields.map(({ id }) => id));
+  const extra = Object.keys(answers).find((id) => !ids.has(id));
+  if (extra !== undefined) return `${extra} is not one of its questions`;
+  for (const field of fields) {
+    const problem = requestFieldAnswerProblem(
+      field,
+      Object.hasOwn(answers, field.id) ? answers[field.id]! : [],
+    );
+    if (problem !== null) return `${field.label ?? field.prompt} ${problem}`;
+  }
+  return null;
+}
 
 /**
  * Set when the title names something an agent proposed, such as an integration
@@ -402,6 +445,11 @@ const requestPayloadVariants = [
     access: z.enum(["browser", "apps", "files"]),
     reason: RequestReasonSchema,
   }),
+  /**
+   * An agent asked the person something with `ask_person`. Its questions are
+   * the form's fields; the answer wakes the task that asked, however late.
+   */
+  z.strictObject({ kind: z.literal("person.question") }),
 ] as const;
 export const RequestPayloadSchema = z.discriminatedUnion("kind", requestPayloadVariants);
 const RequestPayloadViewSchema = z.discriminatedUnion("kind", [
@@ -422,6 +470,7 @@ const RequestPayloadViewSchema = z.discriminatedUnion("kind", [
   }),
   z.object(requestPayloadVariants[9].shape),
   z.object(requestPayloadVariants[10].shape),
+  z.object(requestPayloadVariants[11].shape),
 ]);
 export type RequestPayload = z.infer<typeof RequestPayloadSchema>;
 
@@ -746,6 +795,8 @@ export function requestIsAgentAnswerable(
     "device.access": false,
     "computer.app.access": false,
     "integration.input": false,
+    // It asks the person by name; another agent answering would be a guess.
+    "person.question": false,
   };
   return ordinary[request.kind] && !request.originatingNodeId && !hasSecretRequestFields(request);
 }

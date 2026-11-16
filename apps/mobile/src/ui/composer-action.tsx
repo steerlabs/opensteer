@@ -35,7 +35,7 @@ export function ComposerAction(props: ComposerActionProps): ReactNode {
           ) : props.kind === "stop" ? (
             <View style={styles.square} />
           ) : (
-            <View style={styles.arrow}>
+            <View style={[styles.arrow, props.kind === "next" && styles.arrowNext]}>
               <View style={styles.arrowHead} />
               <View style={styles.arrowStem} />
             </View>
@@ -82,5 +82,6 @@ const styles = StyleSheet.create({
     transform: [{ rotate: "45deg" }],
     width: 9,
   },
+  arrowNext: { transform: [{ rotate: "90deg" }] },
   arrowStem: { backgroundColor: color.inkOnEmber, height: 14, width: 2 },
 });

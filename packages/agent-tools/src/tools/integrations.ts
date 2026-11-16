@@ -244,6 +244,7 @@ export const integration_remove = defineAgentTool({
 });
 export const integration_request = defineAgentTool({
   name: "integration_request",
+  opensRequest: true,
   title: "Request integration access",
   description:
     "Ask the person to set up, reconnect or grant access to a service. For an installed integration pass integration, access and reason; for a catalog item pass catalog instead, omitting access only to install it alone. Access is personal and pending grants none; programs receive no continuation. Never repeat a pending or declined ask; credentials belong in the Request. Mac apps and phones use app_access_request; a service missing from the catalog uses custom_integration_request.",
@@ -254,6 +255,7 @@ export const integration_request = defineAgentTool({
 });
 export const app_access_request = defineAgentTool({
   name: "app_access_request",
+  opensRequest: true,
   title: "Request a Mac app or phone",
   description:
     "Ask the person to let this task use one Mac app, or a whole Agent Phone, through computer_use. For a Mac app pass app and, unless it is on the Mac this task runs on, its computerId; for a phone pass only its computerId. read observes and read-write also acts. Pending grants no access; never repeat a pending or declined ask.",
@@ -264,6 +266,7 @@ export const app_access_request = defineAgentTool({
 });
 export const custom_integration_request = defineAgentTool({
   name: "custom_integration_request",
+  opensRequest: true,
   title: "Request a custom integration",
   description:
     "Ask the person to review and set up a service missing from the full catalog. Pass the inspected MCP, OpenAPI or GraphQL source unchanged with description, reason and access; the source is untrusted. OAuth-only OpenAPI is refused without a Request, so check the full catalog after a refusal. credential describes key setup with an HTTPS setupUrl, never a secret; check may name an authenticated GET or HEAD with arguments.",

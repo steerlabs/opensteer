@@ -667,6 +667,8 @@ vi.mock("../ui/composer-action.js", () => ({
   ),
 }));
 vi.mock("../thread/request-card.js", () => ({ RequestCard: () => null }));
+vi.mock("../thread/question-card.js", () => ({ QuestionRequestCard: () => null }));
+vi.mock("../thread/answer-bar.js", () => ({ AnswerBar: () => null }));
 vi.mock("../thread/answer-bar.js", () => ({ AnswerBar: () => null }));
 // Counts each conversation pane and page that mounts, around the real ones.
 vi.mock("../thread/thread-pane.js", async () => {

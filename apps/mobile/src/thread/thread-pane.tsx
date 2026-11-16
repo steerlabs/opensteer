@@ -508,16 +508,6 @@ function ThreadPaneForUser(
     canRespond && environment?.status === "disconnected" ? `${environment.name} offline` : null;
 
   const entries = useMemo(() => snapshot.entries ?? [], [snapshot.entries, threadId]);
-  // The Host names the subagent behind each Request waiting on this reader;
-  // the loaded transcript names the ones behind a Request someone else answers.
-  const subagentTitles = useMemo(() => {
-    const titles = new Map<string, string>();
-    for (const entry of entries) if (entry.kind === "node") titles.set(entry.nodeId, entry.title);
-    for (const { subagent } of snapshot.waitingRequests) {
-      if (subagent !== null) titles.set(subagent.id, subagent.title);
-    }
-    return titles;
-  }, [entries, snapshot.waitingRequests]);
   // A voice conversation reads as messages, each reply's steps in its
   // Activity; a task keeps its whole trace in view.
   const conversational = thread?.purpose === "voice";
@@ -1607,7 +1597,6 @@ function ThreadPaneForUser(
                     kind: "thread",
                     thread,
                   })}
-                  subagentTitles={subagentTitles}
                   threadId={thread.id}
                   user={snapshot.user}
                 />

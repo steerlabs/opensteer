@@ -43,6 +43,7 @@ export type SFSymbolName =
   | "checkmark"
   | "checkmark.circle"
   | "checkmark.circle.fill"
+  | "checkmark.square.fill"
   | "chevron.down"
   | "chevron.left"
   | "chevron.right"
@@ -264,6 +265,7 @@ const glyph: Record<SFSymbolName, string> = {
   checkmark: "✓",
   "checkmark.circle": "✓",
   "checkmark.circle.fill": "✔",
+  "checkmark.square.fill": "☑",
   "chevron.down": "▾",
   "chevron.left": "◂",
   "chevron.right": "▸",

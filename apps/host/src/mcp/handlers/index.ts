@@ -81,14 +81,18 @@ export function agentToolHandlers(options: {
         targets: (c: ToolCall<"opensteer_delegation_cancel">) => p.assignmentTargets(c),
       },
     ),
-    person_notify: async (c) => await p.person_notify(c),
-    person_show: Object.assign(async (c: ToolCall<"person_show">) => await p.person_show(c), {
-      targets: async (c: ToolCall<"person_show">) =>
-        "taskId" in c.input.target ? [c.input.target.taskId] : [],
-      authorize: async (c: ToolCall<"person_show">) => {
-        await p.preparePersonShow(c);
+    ask_person: async (c) => await p.ask_person(c),
+    send_to_person: async (c) => await p.send_to_person(c),
+    show_to_person: Object.assign(
+      async (c: ToolCall<"show_to_person">) => await p.show_to_person(c),
+      {
+        targets: async (c: ToolCall<"show_to_person">) =>
+          "taskId" in c.input.target ? [c.input.target.taskId] : [],
+        authorize: async (c: ToolCall<"show_to_person">) => {
+          await p.preparePersonShow(c);
+        },
       },
-    }),
+    ),
     opensteer_request_list: async (c) =>
       p.opensteer_request_answer({ ...c, input: { ...c.input, action: "list" } }),
     opensteer_request_read: async (c) =>

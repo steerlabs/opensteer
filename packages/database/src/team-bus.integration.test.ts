@@ -63,11 +63,14 @@ it("tells every copy about a committed change and nothing about a rolled-back on
     { kind: "member", userId: fixture.userId },
     expect.objectContaining({ kind: "typing", typing: true }),
   ];
-  await vi.waitFor(() => expect(seenB).toEqual(expected), {
-    timeout: 5_000,
-    interval: 20,
-  });
-  expect(seenA).toEqual(expected);
+  // Each copy hears on its own connection, so neither arrives before the other.
+  await vi.waitFor(
+    () => {
+      expect(seenA).toEqual(expected);
+      expect(seenB).toEqual(expected);
+    },
+    { timeout: 5_000, interval: 20 },
+  );
 });
 
 it("reconnects after losing its session and resyncs before trusting notifications again", async () => {

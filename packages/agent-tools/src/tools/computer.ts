@@ -92,6 +92,7 @@ export const computer_use = defineAgentTool({
 
 export const computer_access_request = defineAgentTool({
   name: "computer_access_request",
+  opensRequest: true,
   title: "Request computer access",
   description:
     "Ask the person to turn on access to one of their computers: browser, apps or files when a refusal or computer_list shows that switch off, or macOS Full Disk Access when authorized SSH work needs protected files and the other-computers note says it is off. Never ask for an offline computer, and never ask again after Not now in this task. Access granted later resumes in a new Run; app, profile and system permissions still apply.",

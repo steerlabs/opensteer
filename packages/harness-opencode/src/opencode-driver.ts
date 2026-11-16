@@ -2059,6 +2059,8 @@ class OpencodeHarnessSession implements HarnessSession {
                     })),
                   }
                 : {}),
+              // OpenCode offers its own "Type your own answer" unless the question turns it off.
+              custom: question.custom !== false,
               id: questionIds[index] ?? `question-${index}`,
               multiSelect: question.multiple === true,
               prompt: question.question,

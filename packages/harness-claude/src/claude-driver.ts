@@ -2560,6 +2560,7 @@ class ClaudeHarnessSession implements HarnessSession {
             {
               fields: questions.map(({ question }) => ({
                 ...(question.choices ? { choices: question.choices } : {}),
+                custom: question.custom,
                 id: question.id,
                 multiSelect: question.multiSelect,
                 prompt: question.prompt,
@@ -3902,6 +3903,8 @@ function parseQuestions(input: Readonly<Record<string, unknown>>): readonly Pars
       providerPrompt,
       question: {
         ...(choices ? { choices: [...choices] } : {}),
+        // AskUserQuestion promises the model the person can always answer "Other".
+        custom: true,
         id,
         multiSelect: candidate.multiSelect === true,
         prompt: providerPrompt,

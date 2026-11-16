@@ -3,6 +3,7 @@ import type { BrowserAccessSelection } from "@opensteer/client/host";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import type { BrowserSignInOutcome } from "@opensteer/protocol/browser-sources";
 import { useState, useSyncExternalStore } from "react";
+import type { QuestionDrafts } from "@opensteer/client/host";
 import type { RequestFormDraft, RequestSubmission } from "./request-form-model.js";
 
 /**
@@ -27,6 +28,9 @@ export interface RequestSession {
   heldSignIn: { readonly key: string; readonly signature: string } | null;
   passwordCard: PasswordSignInCard | null;
   pendingId: string | null;
+  /** A question's answers as the card and composer give them, and the one being answered. */
+  questions: QuestionDrafts;
+  questionIndex: number;
   /** "Say why", typed and not yet sent. */
   reason: string;
   /** The answer in flight, from whichever surface sent it. */
@@ -52,6 +56,8 @@ function createSession(): RequestSession {
     listeners: new Set(),
     passwordCard: null,
     pendingId: null,
+    questionIndex: 0,
+    questions: {},
     reason: "",
     responding: false,
     sheetOpen: false,

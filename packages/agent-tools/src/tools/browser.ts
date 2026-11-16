@@ -77,6 +77,7 @@ export const browser_profile_remove = defineAgentTool({
 
 export const card_request = defineAgentTool({
   name: "card_request",
+  opensRequest: true,
   title: "Request a saved card",
   description:
     "Ask the person to approve a saved card for this checkout site, in the hosting computer's browser only. On ready, focus each field and call fillCard(cardRef, field); values never appear in results. Never read back, print, log, copy or save card values. Approval covers filling, not permission to buy: the person's request must cover the purchase.",
@@ -106,6 +107,7 @@ const ReasonInputSchema = z
 
 export const chrome_cookies_request = defineAgentTool({
   name: "chrome_cookies_request",
+  opensRequest: true,
   title: "Request Chrome cookies",
   description:
     "Sign in by copying the person's Chrome cookies for a site into a browser tab, with their approval. No typing or codes, but some sites (often banks) tie a login to the original browser and refuse copied cookies; saved_login_request signs in fresh instead. copied means only that cookies arrived: reload and check the account. You never see cookie values.",
@@ -123,6 +125,7 @@ export const chrome_cookies_request = defineAgentTool({
 
 export const saved_login_request = defineAgentTool({
   name: "saved_login_request",
+  opensRequest: true,
   title: "Request a saved login",
   description:
     'Sign in with a login and password saved in Opensteer Passwords, with the person\'s approval. ready gives a loginRef you fill without seeing the values: in a browser, focus each field and call fillLogin(loginRef, "username" | "password" | "code"); in a genuine Mac or phone app, type {loginRef, field}. Then submit and check the account. The reference lasts about an hour, so call again to sign back in after a site logs you out. When Passwords lacks the login, is not set up or is off, Opensteer shows the person how to fix it under your reply and tells you once a login is saved; that status is true only when returned, so if the person says it is fixed or asks again, call again first.',
@@ -142,6 +145,7 @@ export const saved_login_request = defineAgentTool({
 
 export const browser_profile_request = defineAgentTool({
   name: "browser_profile_request",
+  opensRequest: true,
   title: "Request a browser profile",
   description:
     "Ask the person for a browser profile when none in browser_profile_list fits: they want a new one, or the work needs a separate identity. Never for an already available profile (open it), and not merely because work is signed-out: a profile still browses signed-out sites with a normal, aged identity, while a Guest tab is a brand-new browser that sites challenge more. Only the person creates or grants profiles. Suggest an existing profileId, or a new name of one or two plain words such as Brex, Work or Finance; the person may choose differently. When the Request is fulfilled, open the profile it names; pending gives no profile.",

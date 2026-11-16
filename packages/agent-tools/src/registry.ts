@@ -38,6 +38,11 @@ export interface AgentToolSpec<
   readonly destructive?: true;
   readonly input: Input;
   readonly name: Name;
+  /**
+   * Opens a durable or live Request for the person. Its call is held for their
+   * answer in a foreground Run and returns pending everywhere else.
+   */
+  readonly opensRequest?: true;
   /** Reaches outside Opensteer, such as a third-party service or a page. */
   readonly openWorld?: true;
   readonly output: Output;

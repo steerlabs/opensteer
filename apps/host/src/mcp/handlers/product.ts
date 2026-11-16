@@ -273,7 +273,7 @@ export class ProductToolHandlers {
       }),
     }));
   }
-  async preparePersonShow({ caller, input }: ToolCall<"person_show">) {
+  async preparePersonShow({ caller, input }: ToolCall<"show_to_person">) {
     const claims = requireRun(caller).claims;
     if (await this.#store.runAssignment(claims.runId))
       throw forbidden(assignedRunRefusal, assignedRunNext);
@@ -349,14 +349,14 @@ export class ProductToolHandlers {
     return target;
   }
 
-  async person_show(call: ToolCall<"person_show">) {
+  async show_to_person(call: ToolCall<"show_to_person">) {
     const { caller, input, operationKey } = call;
     const claims = requireRun(caller).claims;
-    const requestId = operationId(caller, operationKey, "person_show");
+    const requestId = operationId(caller, operationKey, "show_to_person");
     const target = await this.preparePersonShow(call);
     if (!this.#personShow) throw badRequest("Showing places is unavailable on this Host.");
     const admission = await this.#store.admitRunToolCall(
-      runAdmission(caller, "person_show", input, requestId),
+      runAdmission(caller, "show_to_person", input, requestId),
     );
     const connectedDevices = admission.wasDuplicate
       ? 0
@@ -376,20 +376,67 @@ export class ProductToolHandlers {
     };
   }
 
-  async person_notify({ caller, input, operationKey }: ToolCall<"person_notify">) {
+  async send_to_person({ caller, input, operationKey }: ToolCall<"send_to_person">) {
     const claims = requireRun(caller).claims;
-    const requestId = operationId(caller, operationKey, "person_notify");
+    const requestId = operationId(caller, operationKey, "send_to_person");
     if (await this.#store.runAssignment(claims.runId))
       throw forbidden(assignedRunRefusal, assignedRunNext);
 
     const result = await this.#commands.publishPersonMessage({
-      admission: runAdmission(caller, "person_notify", input, requestId),
+      admission: runAdmission(caller, "send_to_person", input, requestId),
       message: input.message,
     });
     return {
       messageId: result.message.id,
       link: formatReferenceLink(result.message.id, "Message"),
     };
+  }
+
+  async ask_person({ caller, input, operationKey }: ToolCall<"ask_person">) {
+    const claims = requireRun(caller).claims;
+    if (await this.#store.runAssignment(claims.runId))
+      throw forbidden(assignedRunRefusal, "Ask the parent task with opensteer_task_send.");
+    const created = await this.#store.requests.create({
+      callId: operationId(caller, operationKey, "ask_person"),
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: claims.runId,
+      originatingThreadId: claims.threadId,
+      payload: { kind: "person.question" },
+      presentation: {
+        ...(input.detail === undefined ? {} : { detail: input.detail }),
+        fields: input.questions.map((question, index) => ({
+          ...(question.options === undefined
+            ? {}
+            : {
+                choices: question.options.map(({ description, label }) => ({
+                  ...(description === undefined ? {} : { description }),
+                  label,
+                  value: label,
+                })),
+              }),
+          custom: true,
+          id: `question_${index + 1}`,
+          multiSelect: question.multiSelect === true,
+          prompt: question.question,
+          secret: false,
+        })),
+        kind: "form",
+        title: input.title,
+      },
+      requestedBy: claims.requestedBy,
+      requiredActor: "requester",
+    });
+    for (const event of created.events) this.#onEvent(event);
+    return requestResult(
+      {
+        kind: "person.question" as const,
+        replayed: created.replayed,
+        requestId: created.request.id,
+        status: created.request.status,
+      },
+      "Question",
+    );
   }
 
   async opensteer_ai_account_list({ caller, input }: ToolCall<"opensteer_ai_account_list">) {

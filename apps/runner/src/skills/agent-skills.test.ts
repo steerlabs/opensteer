@@ -103,7 +103,7 @@ describe("Runner Agent Skills", () => {
     expect(api).toContain(
       "including a resumed task, reopen `app()`, `window()` or `phone()` handles and observe before acting.",
     );
-    expect(api).toContain("Outside a delegation, if `person_show` is listed");
+    expect(api).toContain("Outside a delegation, if `show_to_person` is listed");
     const signIn = await readFile(
       join(bundle.paths["opensteer:computer-use"], "references", "sign-in.md"),
       "utf8",

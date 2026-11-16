@@ -126,7 +126,10 @@ export const OpencodeQuestionOptionSchema = z.looseObject({
 });
 
 export const OpencodeQuestionInfoSchema = z.looseObject({
+  /** Whether the person may type their own answer; OpenCode's default is yes. */
+  custom: z.boolean().optional(),
   header: z.string().max(255).optional(),
+  multiple: z.boolean().optional(),
   options: z.array(OpencodeQuestionOptionSchema).max(32).default([]),
   question: z.string().min(1).max(20_000),
 });

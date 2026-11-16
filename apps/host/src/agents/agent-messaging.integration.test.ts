@@ -172,7 +172,7 @@ integration("agent-to-agent messaging round trip", () => {
     await tabBrowser.close();
     await database.destroy();
   });
-  it("authorizes person_show against saved-tab ownership and Thread visibility", async () => {
+  it("authorizes show_to_person against saved-tab ownership and Thread visibility", async () => {
     const f = await createMessagingFixture();
     const strangerId = await store.createUser("Other person");
     const otherThreadId = createId("thread");
