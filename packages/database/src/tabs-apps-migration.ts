@@ -1,5 +1,15 @@
 export const tabsAndAppsMigrationName = "0026_tabs_and_apps";
 export const TABS_AND_APPS_SQL = `
+-- History survives the workspace reset; synthetic native IDs resolve as unavailable tabs.
+update deployment_events
+set data = jsonb_build_object(
+  'tabId', case when data->'place'->>'kind' = 'browser' then data->'place'->>'surfaceId'
+    else 'tab_' || md5((data->'place')::text)::uuid::text end,
+  'title', data->'title',
+  'site', data->'site'
+)
+where type = 'place.entered' and data ? 'place';
+
 drop table browser_tab_group_members;
 drop table browser_tab_groups;
 drop table browser_tab_layouts;
