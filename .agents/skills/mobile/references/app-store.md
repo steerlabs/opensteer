@@ -57,12 +57,13 @@ Send a build to external TestFlight before submitting for review.
 
 The phone reaches a personal Opensteer asynchronously only by Opensteer Account sign-in to a
 computer with Connect on; pairing codes expire in ten minutes and there is no password door. So the
-reviewer needs a dedicated, always-on personal Opensteer owned by a dedicated free Google account
-(never a person's own, never a paid seat), with no real data, messaging, shell or private
-integrations. A team server runs no agents and cannot stand in; show team chat separately with the
+reviewer needs a dedicated, always-on personal Opensteer owned by a dedicated Google test account
+(an existing test account or a free consumer account works), with no real data, messaging, shell or
+private integrations. A team server runs no agents and cannot stand in; show team chat separately with the
 [team-server skill](../../team-server/SKILL.md) if at all.
 
-The demo computer can be a Linux VM running a release package of an official immutable release:
+Use an API-compatible desktop release. The demo computer can be a Linux VM running a release
+package of an official immutable release:
 build at that release's exact source and version with `OPENSTEER_DESKTOP_RELEASE=1`, taking the
 Agent Phone APK, manifest and producer receipt unmodified from that release's Mac ZIP
 (`Contents/Resources/personal-runtime/web/agent-phone/`), so every release check runs. A
@@ -73,9 +74,15 @@ unlocked Secret Service keyring (Electron refuses `basic_text`), enabled at boot
    turn every other AI service Off so the sharing prompt names only OpenAI.
 2. Settings → Account → Sign in with the reviewer Google account, then turn on Use from anywhere.
 3. From a fresh simulator or phone: Sign in → Continue with Google, open the computer, accept AI
-   sharing, get a reply and a follow-up, and answer a question. A prompt must name `ask_person`
-   ("…First use the ask_person tool to ask me…"); "ask me" alone gets prose, not a Request.
+   sharing, get a reply and a follow-up, and answer a question. To exercise the durable Request
+   path, explicitly ask the agent to use `ask_person`. Verify that a Request appears, answering
+   it resumes the task and the reply uses the answer; a question written only in prose is no proof.
 
-Snapshot the VM disk before every change and after qualification; restore the whole disk, since
-database, keyring and agent home travel together. Google may still challenge an unfamiliar
-device; one successful sign-in does not prevent later challenges.
+Snapshot the VM disk before replacing its deployment and after the clean review state is qualified;
+restore the whole disk, since database, keyring and agent home travel together. Google may still
+challenge an unfamiliar device; one successful sign-in does not prevent later challenges.
+
+For listing screenshots, another trusted licensed runtime may be supplied through `--inputs` and
+imported in a disposable guest if the pinned runtime lacks the required device types. Keep the
+golden unchanged. Verify a cold boot and native screenshot dimensions, then capture the current app
+on each required device; runtime qualification alone proves no app journey.
