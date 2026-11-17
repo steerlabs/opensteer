@@ -104,6 +104,7 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
     statement: Statement,
     authority: Authority,
   ) => Promise<Exclude<Disposition, "terminal-noop">>,
+  options?: { readonly now: number; readonly allowExpiredLease: boolean },
 ): Promise<
   { readonly throughOrdinal: number; readonly replayed: boolean } | { readonly finishing: true }
 > {
@@ -184,7 +185,8 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
     (!terminal &&
       (!session.active ||
         !session.leaseExpiresAt ||
-        session.leaseExpiresAt <= mutation.state.now ||
+        (!options?.allowExpiredLease &&
+          session.leaseExpiresAt.getTime() <= (options?.now ?? mutation.state.now.getTime())) ||
         (attempt.status === "current" && attempt.endedAt !== null)))
   )
     throw new OpensteerError({
@@ -230,7 +232,8 @@ export async function recordFinishedRunnerStatement(
     .where("id", "=", runId)
     .executeTakeFirstOrThrow();
   if (
-    run.status !== intent.outcome ||
+    run.status !==
+      (intent.mode === "recovery" || intent.mode === "steer" ? "queued" : intent.outcome) ||
     run.finishIntent?.statement?.digest !== intent.statement.digest ||
     intent.bindingGeneration === null
   )

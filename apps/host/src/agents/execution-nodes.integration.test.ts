@@ -73,7 +73,7 @@ const codexSelection = ModelSelectionSchema.parse({
 });
 interface Journey {
   readonly engine: string;
-  readonly events: readonly string[];
+  readonly activity: Awaited<ReturnType<typeof nodeActivity>>;
   readonly name: string;
   readonly nodes: readonly unknown[];
   readonly requests: readonly unknown[];
@@ -151,7 +151,7 @@ integration("Execution nodes", () => {
     const database = active.host.store.database;
     const journey: Journey = {
       engine,
-      events: await eventTypes(active, runId),
+      activity: await nodeActivity(active, runId),
       name,
       nodes: listed.data.nodes,
       requests: await database
@@ -249,12 +249,12 @@ integration("Execution nodes", () => {
       ]);
       // The child's command is its step, not the Run's own.
       const childTool = await active.host.store.database
-        .selectFrom("deploymentEvents")
-        .select("data")
+        .selectFrom("toolCalls")
+        .select(["callId", "nodeId", "tool"])
         .where("runId", "=", runId)
-        .where("type", "=", "tool.started")
+        .where("startedAt", "is not", null)
         .executeTakeFirstOrThrow();
-      expect(childTool.data).toMatchObject({
+      expect(childTool).toMatchObject({
         callId: "child-command-1",
         nodeId: nodes[0]!.id,
       });
@@ -294,10 +294,13 @@ integration("Execution nodes", () => {
         id: request.originatingNodeId,
         title: "researcher",
       });
-      expect(journey.events.indexOf("node.started")).toBeLessThan(
-        journey.events.indexOf("request.opened"),
+      expect(journey.activity.map((item) => item.kind)).toEqual(
+        expect.arrayContaining(["node", "request"]),
       );
-      expect(journey.events).toContain("node.updated");
+      const nodeCard = journey.activity.find((item) => item.kind === "node")!;
+      const requestCard = journey.activity.find((item) => item.kind === "request")!;
+      expect(BigInt(nodeCard.position!)).toBeLessThan(BigInt(requestCard.position!));
+      expect(requestCard.nodeId).toBe(nodeCard.executionNodeId);
     },
   );
   async function startClaude(script: ClaudeScript, control?: ClaudeStopControl) {
@@ -367,12 +370,12 @@ integration("Execution nodes", () => {
         originCallId: "agent-call-1",
       });
       const childTool = await active.host.store.database
-        .selectFrom("deploymentEvents")
-        .select("data")
+        .selectFrom("toolCalls")
+        .select(["callId", "nodeId", "tool"])
         .where("runId", "=", runId)
-        .where("type", "=", "tool.started")
+        .where("startedAt", "is not", null)
         .execute();
-      expect(childTool.map((row) => row.data)).toEqual(
+      expect(childTool).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             callId: "agent-call-1",
@@ -1039,7 +1042,7 @@ async function settled(active: VerticalStack, runId: RunId) {
     "the Run to end",
   ).catch(async (error: unknown) => {
     const state = {
-      events: await eventTypes(active, runId),
+      activity: await nodeActivity(active, runId),
       requests: await active.host.store.database
         .selectFrom("requests")
         .select(["status", "originatingNodeId"])
@@ -1073,12 +1076,12 @@ function nodeRows(active: VerticalStack, runId: RunId) {
     .orderBy("startedAt", "asc")
     .execute();
 }
-async function eventTypes(active: VerticalStack, runId: RunId): Promise<string[]> {
-  const rows = await active.host.store.database
-    .selectFrom("deploymentEvents")
-    .select("type")
+function nodeActivity(active: VerticalStack, runId: RunId) {
+  return active.host.store.database
+    .selectFrom("transcriptItems")
+    .select(["kind", "position", "nodeId", "executionNodeId"])
     .where("runId", "=", runId)
-    .orderBy("sequence", "asc")
+    .where("visible", "=", true)
+    .orderBy("position")
     .execute();
-  return rows.map((row) => row.type);
 }

@@ -1,9 +1,8 @@
-import { lockDeploymentEvents } from "./deployment-events.js";
+import { readTranscriptPage } from "./personal-sync-store.js";
 
 import { pauseAfterLock } from "./lock-race.test-support.js";
 import { lockCommandIdempotency } from "./store-primitives.js";
 import { HarnessIdSchema, ModelSelectionSchema, createId } from "@opensteer/core";
-import { nodeDetailEventNodeId } from "@opensteer/core";
 import { type PendingAgentEvent, HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { sql } from "kysely";
 import { expect } from "vitest";
@@ -24,7 +23,11 @@ describeStore("PostgreSQL store", (it) => {
     const key = "delegation-idempotency-order";
     const barrier = pauseAfterLock(database, (node) => node.includes("pg_advisory_xact_lock"));
     const peer = barrier.database.transaction().execute(async (transaction) => {
-      await lockDeploymentEvents(transaction);
+      await transaction
+        .selectFrom("clientSyncState")
+        .select("deploymentId")
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
       await lockCommandIdempotency(transaction, fixture.userId, `${key}:task`);
     });
     void peer.catch(() => undefined);
@@ -61,7 +64,7 @@ describeStore("PostgreSQL store", (it) => {
         select query from pg_stat_activity where datname=current_database()
         and application_name='opensteer-integration-test' and wait_event_type='Lock'
       `.execute(database)
-          ).rows.some(({ query }) => query.includes("deployment_event_state")),
+          ).rows.some(({ query }) => query.includes("client_sync_state")),
         )
         .toBe(true);
       barrier.release();
@@ -531,7 +534,7 @@ describeStore("PostgreSQL store", (it) => {
       await Promise.allSettled([peer, claiming]);
     }
   });
-  it.for(["nested-delegation", "cancel-request", "drain-pending"] as const)(
+  it.for(["nested-delegation", "cancel-request"] as const)(
     "orders Assignment projection fences (%s)",
     async (scenario, { storeFixture }) => {
       const { startRunFixture, store, database, bindAgentControlRun, createTaskForOwner } =
@@ -614,12 +617,7 @@ describeStore("PostgreSQL store", (it) => {
               requiredActor: "requester",
             })
           : null;
-      const resource =
-        scenario === "nested-delegation"
-          ? "causal_chains"
-          : scenario === "cancel-request"
-            ? "requests"
-            : "delegations";
+      const resource = scenario === "nested-delegation" ? "causal_chains" : "requests";
       const run = await database
         .selectFrom("runs")
         .select("causalChainId")
@@ -627,25 +625,20 @@ describeStore("PostgreSQL store", (it) => {
         .executeTakeFirstOrThrow();
       const barrier = pauseAfterLock(database, (node) => node.includes(resource));
       const peer = barrier.database.transaction().execute(async (transaction) => {
-        await lockDeploymentEvents(transaction);
-        await sql`select id from ${sql.table(resource)} where id=${scenario === "nested-delegation" ? run.causalChainId : scenario === "cancel-request" ? opened!.request.id : delegated.assignment.id} for no key update`.execute(
+        await transaction
+          .selectFrom("clientSyncState")
+          .select("deploymentId")
+          .forNoKeyUpdate()
+          .executeTakeFirstOrThrow();
+        await sql`select id from ${sql.table(resource)} where id=${scenario === "nested-delegation" ? run.causalChainId : opened!.request.id} for no key update`.execute(
           transaction,
         );
-        if (scenario === "drain-pending") {
-          await transaction
-            .selectFrom("threadStatePending")
-            .select("threadId")
-            .where("threadId", "=", delegated.thread.id)
-            .forUpdate()
-            .execute();
-        } else {
-          await transaction
-            .selectFrom("delegations")
-            .select("id")
-            .where("id", "=", delegated.assignment.id)
-            .forNoKeyUpdate()
-            .execute();
-        }
+        await transaction
+          .selectFrom("delegations")
+          .select("id")
+          .where("id", "=", delegated.assignment.id)
+          .forNoKeyUpdate()
+          .execute();
       });
       void peer.catch(() => undefined);
       let mutation: Promise<unknown> | undefined;
@@ -673,14 +666,12 @@ describeStore("PostgreSQL store", (it) => {
                 ],
                 title: "Grandchild",
               })
-            : scenario === "cancel-request"
-              ? store.cancelAssignment({
-                  assignmentId: delegated.assignment.id,
-                  actorRunId: fixture.run.id,
-                  requestedBy: fixture.userId,
-                  idempotencyKey: "projection-cancel",
-                })
-              : store.drainPendingThreadStates();
+            : store.cancelAssignment({
+                assignmentId: delegated.assignment.id,
+                actorRunId: fixture.run.id,
+                requestedBy: fixture.userId,
+                idempotencyKey: "projection-cancel",
+              });
         void mutation.catch(() => undefined);
         await expect
           .poll(async () =>
@@ -691,7 +682,7 @@ describeStore("PostgreSQL store", (it) => {
           select query from pg_stat_activity where datname=current_database()
           and application_name='opensteer-integration-test' and wait_event_type='Lock'
         `.execute(database)
-            ).rows.some(({ query }) => query.includes("deployment_event_state")),
+            ).rows.some(({ query }) => query.includes("client_sync_state")),
           )
           .toBe(true);
         barrier.release();
@@ -1530,90 +1521,40 @@ describeStore("PostgreSQL store", (it) => {
         usage: null,
       },
     });
-    const stored = await database
-      .selectFrom("deploymentEvents")
-      .selectAll()
+    const rootScope = { kind: "thread" as const, threadId: fixture.thread.id };
+    const scope = { kind: "node" as const, threadId: fixture.thread.id, nodeId };
+    const viewerId = fixture.userId;
+    const root = await readTranscriptPage(database, { viewerId, scope: rootScope });
+    expect(root.kind).toBe("page");
+    if (root.kind !== "page") throw new Error("The task transcript was unavailable");
+    expect(root.items.every((item) => item.nodeId === null)).toBe(true);
+    expect(root.items.find((item) => item.kind === "node")).toMatchObject({
+      executionNodeId: workflowId,
+    });
+    const page = await readTranscriptPage(database, { viewerId, scope, limit: 2 });
+    if (page.kind !== "page" || !page.nextBefore)
+      throw new Error("The node transcript did not page");
+    expect(page.items.map((item) => item.kind)).toEqual(["reasoning", "tool"]);
+    const older = await readTranscriptPage(database, { viewerId, scope, cursor: page.nextBefore });
+    expect(older).toMatchObject({
+      kind: "page",
+      items: [expect.objectContaining({ kind: "node-message" })],
+      nextBefore: null,
+    });
+    const calls = await database
+      .selectFrom("toolCalls")
+      .select(["callId", "status", "output"])
       .where("runId", "=", fixture.run.id)
-      .where("nodeDetailId", "=", nodeId)
-      .orderBy("sequence", "asc")
+      .where("nodeId", "=", nodeId)
       .execute();
-    expect(stored.map((row) => row.type)).toEqual(detail.map((event) => event.type));
-    const read = {
-      ownerId: fixture.userId,
-      threadId: fixture.thread.id,
-    };
-    for (const mode of [
-      {},
-      {
-        maxTurns: 1,
-      },
-      {
-        aroundMessageId: fixture.run.seedInputId,
-      },
-    ] as const) {
-      const page = await store.threadEventPageForOwner({
-        ...read,
-        ...mode,
-      });
-      expect(page!.events.some((event) => nodeDetailEventNodeId(event) !== undefined)).toBe(false);
-      expect(page!.events.map((event) => event.type)).toEqual(
-        expect.arrayContaining(["node.started", "node.completed"]),
-      );
-      expect(page!.window.itemCount).toBe(page!.events.length);
-      expect(page!.window.byteCount).toBe(Buffer.byteLength(JSON.stringify(page!.events)));
-    }
-    const page = await store.nodeEventPageForOwner({
-      ...read,
-      nodeId,
-    });
-    expect(
-      page!.events.map((event) => ({
-        type: event.type,
-        data: event.data,
-      })),
-    ).toEqual(detail);
-    // The subagent itself comes with its page, whatever its conversation's history holds.
-    expect(page!.node.id).toBe(nodeId);
-    expect(page!.window).toMatchObject({
-      itemCount: 4,
-      totalItems: 4,
-      hasMore: false,
-      byteCount: Buffer.byteLength(JSON.stringify(page!.events)),
-    });
-    const through = page!.events[2]!.sequence;
-    const newest = await store.nodeEventPageForOwner({
-      ...read,
-      nodeId,
-      through,
-      maxItems: 2,
-    });
-    expect(newest!.events).toEqual(page!.events.slice(1, 3));
-    expect(newest!.window).toMatchObject({
-      hasMore: true,
-      totalItems: 3,
-    });
-    const older = await store.nodeEventPageForOwner({
-      ...read,
-      nodeId,
-      through,
-      before: newest!.window.nextBefore!,
-      maxItems: 2,
-    });
-    expect(older!.events).toEqual(page!.events.slice(0, 1));
-    expect(older!.window.hasMore).toBe(false);
+    expect(calls).toEqual([
+      { callId: "child-call", status: "completed", output: { text: "Source" } },
+    ]);
     await expect(
-      store.nodeEventPageForOwner({
-        ...read,
-        threadId: sibling.thread.id,
-        nodeId,
-      }),
-    ).resolves.toBeNull();
+      readTranscriptPage(database, { viewerId, scope: { ...scope, threadId: sibling.thread.id } }),
+    ).resolves.toEqual({ kind: "unavailable" });
     await expect(
-      store.nodeEventPageForOwner({
-        ...read,
-        ownerId: await store.createUser("Outsider"),
-        nodeId,
-      }),
+      readTranscriptPage(database, { viewerId: await store.createUser("Outsider"), scope }),
     ).rejects.toMatchObject({ code: "forbidden" });
     const nodes = (await store.listRunAttemptsForOwner({
       ownerId: fixture.userId,
@@ -1632,57 +1573,34 @@ describeStore("PostgreSQL store", (it) => {
       parentNodeId: null,
     });
   });
-  it("anchors an event page on a delivered message and retains nearby Run events", async ({
+  it("anchors a scoped page on the delivered seed and retains the nearby Run card", async ({
     storeFixture,
   }) => {
-    const { startRunFixture, store } = storeFixture;
-    const fixture = await startRunFixture("event-message-anchor");
-    const page = await store.threadEventPageForOwner({
-      aroundMessageId: fixture.run.seedInputId,
-      maxItems: 20,
-      ownerId: fixture.userId,
-      threadId: fixture.thread.id,
-    });
-    expect(page?.events).toEqual(
+    const { startRunFixture, database } = storeFixture;
+    const fixture = await startRunFixture("message-anchor");
+    const read = {
+      viewerId: fixture.userId,
+      scope: { kind: "thread" as const, threadId: fixture.thread.id },
+      anchorItemId: fixture.run.seedInputId,
+    };
+    const page = await readTranscriptPage(database, { ...read, limit: 20 });
+    if (page.kind !== "page") throw new Error("The anchored page was unavailable");
+    expect(page.items).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          type: "message.placed",
+          kind: "message",
+          messageId: fixture.run.seedInputId,
           runId: fixture.run.id,
         }),
-        expect.objectContaining({
-          type: "run.started",
-          runId: fixture.run.id,
-        }),
+        expect.objectContaining({ kind: "run", runId: fixture.run.id }),
       ]),
     );
-    expect(page?.events.map((event) => event.sequence)).toEqual(
-      [...(page?.events ?? [])]
-        .map((event) => event.sequence)
-        .sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : BigInt(a) > BigInt(b) ? 1 : 0)),
-    );
-    expect(page?.thread.id).toBe(fixture.thread.id);
-    expect(page?.thread.providerSessionId).toBe(fixture.thread.providerSessionId);
-    const anchor = page?.events.find((event) => event.type === "message.placed");
-    expect(anchor).toBeDefined();
-    const anchorBytes = Buffer.byteLength(JSON.stringify([anchor]), "utf8");
-    const bounded = await store.threadEventPageForOwner({
-      aroundMessageId: fixture.run.seedInputId,
-      maxBytes: anchorBytes,
-      maxItems: 20,
-      ownerId: fixture.userId,
-      threadId: fixture.thread.id,
-    });
-    expect(bounded?.events).toContainEqual(anchor);
-    await expect(
-      store.threadEventPageForOwner({
-        aroundMessageId: fixture.run.seedInputId,
-        maxBytes: anchorBytes - 1,
-        maxItems: 20,
-        ownerId: fixture.userId,
-        threadId: fixture.thread.id,
-      }),
-    ).rejects.toMatchObject({
-      code: "internal",
+    const positions = page.items.map((item) => BigInt(item.position!));
+    expect(positions).toEqual([...positions].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
+    const bounded = await readTranscriptPage(database, { ...read, limit: 1, maxBytes: 8192 });
+    expect(bounded).toMatchObject({
+      kind: "page",
+      items: [expect.objectContaining({ kind: "message", messageId: fixture.run.seedInputId })],
     });
   });
   it("anchors steer history on a rendered Message rather than its later delivery receipt", async ({
@@ -1723,18 +1641,15 @@ describeStore("PostgreSQL store", (it) => {
       runnerBootId: fixture.runnerBootId,
       runnerId: fixture.runnerId,
     });
-    const page = await store.threadEventPageForOwner({
-      aroundMessageId: steered.message.id,
-      maxItems: 1,
-      ownerId: fixture.userId,
-      threadId: fixture.thread.id,
+    const page = await readTranscriptPage(store.database, {
+      viewerId: fixture.userId,
+      scope: { kind: "thread", threadId: fixture.thread.id },
+      anchorItemId: steered.message.id,
+      limit: 1,
     });
-    expect(page?.events).toHaveLength(1);
-    expect(["message.created", "message.placed"]).toContain(page?.events[0]?.type);
-    expect(page?.events[0]?.data).toMatchObject({
-      message: {
-        id: steered.message.id,
-      },
+    expect(page).toMatchObject({
+      kind: "page",
+      items: [expect.objectContaining({ kind: "message", messageId: steered.message.id })],
     });
   });
   it("keeps a frozen handoff after native reference creation but before first acceptance", async ({

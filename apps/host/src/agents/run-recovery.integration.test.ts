@@ -1,6 +1,5 @@
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
-import { NotificationStore } from "@opensteer/database";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import {
   advanceExecutionClock,
@@ -17,7 +16,6 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
-  AgentEventSchema,
   createId,
   ModelSelectionSchema,
   type RunId,
@@ -453,12 +451,9 @@ integration.sequential("Run recovery acceptance", () => {
         referenceId: listed[ordinal - 2]!.id,
       },
     });
-    const events = await eventsOf(current.active, runId);
-    expect(events.filter((event) => event.type === "run.restarted")).toHaveLength(ordinal - 1);
-    expect(events.filter((event) => event.type === "run.restarted").at(-1)?.data).toMatchObject({
-      reason: "recovery",
-      attempt: ordinal,
-    });
+    const replacements = listed.filter((attempt) => attempt.reason === "recovery");
+    expect(replacements).toHaveLength(ordinal - 1);
+    expect(replacements.at(-1)).toMatchObject({ ordinal });
     expect(await failedNotifications(current.active, runId)).toEqual([]);
     return messages.at(-1)!;
   }
@@ -473,9 +468,7 @@ integration.sequential("Run recovery acceptance", () => {
       status: "completed",
       failure: null,
     });
-    expect(
-      (await eventsOf(current.active, runId)).filter((entry) => entry.type === "run.completed"),
-    ).toHaveLength(1);
+    expect((await row(current.active, runId)).completedAt).toBeInstanceOf(Date);
     expect(await failedNotifications(current.active, runId)).toEqual([]);
   }
   it("1. resumes the same native conversation after a mid-turn Runner restart", async () => {
@@ -663,10 +656,10 @@ integration.sequential("Run recovery acceptance", () => {
       },
     });
     const activity = await current.active.host.store.database
-      .selectFrom("deploymentEvents")
-      .select(["type", "data"])
+      .selectFrom("transcriptItems")
+      .select(["kind", "view"])
       .where("threadId", "=", thread.id)
-      .orderBy("sequence", "asc")
+      .orderBy("position")
       .execute();
     expect(JSON.stringify(activity)).not.toContain('"status":"failed"');
     expect(await failedNotifications(current.active, parent.runId)).toEqual([]);
@@ -756,12 +749,13 @@ integration.sequential("Run recovery acceptance", () => {
         state: "delivered",
         cancelReason: null,
       });
-      const receipts = (await eventsOf(current.active, queued.runId)).filter((event) => {
-        if (event.type !== "thread-input.updated") return false;
-        const input = recordSchema.parse(recordSchema.parse(event.data).input);
-        return input.messageId === queued.messageId && input.state === "delivered";
-      });
-      expect(receipts).toHaveLength(1);
+      expect(
+        await current.active.host.store.database
+          .selectFrom("transcriptItems")
+          .select(["id", "visible"])
+          .where("messageId", "=", queued.messageId)
+          .execute(),
+      ).toEqual([{ id: queued.messageId, visible: true }]);
       if (effect)
         expect(await readFile(join(current.active.agentHome.path, "recovery-effect"), "utf8")).toBe(
           "effect\n",
@@ -1373,7 +1367,7 @@ integration.sequential("Run recovery acceptance", () => {
       "successor start committed",
     );
     const nextOrdinal = (await row(current.active, runId)).nextRunnerOrdinal;
-    const storedBefore = await eventsOf(current.active, runId);
+    const storedBefore = await receiptsOf(current.active, runId);
     const staleEvent = {
       ...eventSchema.parse(original.event),
       type: "run.interrupted",
@@ -1386,7 +1380,7 @@ integration.sequential("Run recovery acceptance", () => {
     const wireStart = current.active.wire!.frames.length;
     sendStale(current.active, original, staleEvent);
     await confirmHealthyBindingAfterReplay(current.active, runId, wireStart);
-    expect(await eventsOf(current.active, runId)).toEqual(storedBefore);
+    expect(await receiptsOf(current.active, runId)).toEqual(storedBefore);
     expect((await row(current.active, runId)).nextRunnerOrdinal).toBe(nextOrdinal);
     expect(await attempts(current.active, runId)).toHaveLength(2);
     expect(await recoveryMessages(current.active, current.threadId)).toHaveLength(1);
@@ -1447,7 +1441,7 @@ integration.sequential("Run recovery acceptance", () => {
       "successor start committed",
     );
     const before = await row(current.active, runId);
-    const storedBefore = await eventsOf(current.active, runId);
+    const storedBefore = await receiptsOf(current.active, runId);
     const stale = {
       ...eventSchema.parse(original.event),
       type: "assistant.message",
@@ -1467,7 +1461,7 @@ integration.sequential("Run recovery acceptance", () => {
     sendStale(current.active, original, stale);
     await confirmHealthyBindingAfterReplay(current.active, runId, wireStart);
     expect((await row(current.active, runId)).nextRunnerOrdinal).toBe(before.nextRunnerOrdinal);
-    expect(await eventsOf(current.active, runId)).toEqual(storedBefore);
+    expect(await receiptsOf(current.active, runId)).toEqual(storedBefore);
     expect(await attempts(current.active, runId)).toHaveLength(2);
     expect((await row(current.active, runId)).status).toBe("running");
     expect(JSON.stringify(await messagesOf(current.active, current.threadId))).not.toContain(
@@ -1878,12 +1872,13 @@ integration.sequential("Run recovery acceptance", () => {
         state: "delivered",
         cancelReason: null,
       });
-      const delivered = (await eventsOf(current.active, original.runId)).filter((event) => {
-        if (event.type !== "thread-input.updated") return false;
-        const input = recordSchema.parse(recordSchema.parse(event.data).input);
-        return input.messageId === messageId && input.state === "delivered";
-      });
-      expect(delivered).toHaveLength(1);
+      expect(
+        await current.active.host.store.database
+          .selectFrom("transcriptItems")
+          .select(["id", "visible"])
+          .where("messageId", "=", messageId)
+          .execute(),
+      ).toEqual([{ id: messageId, visible: true }]);
     }
     await finish(current, original.runId);
     expect(await attempts(current.active, original.runId)).toHaveLength(3);
@@ -2116,50 +2111,37 @@ integration.sequential("Run recovery acceptance", () => {
       "run.completed",
     ]);
     const stored = await store.database
-      .selectFrom("deploymentEvents")
-      .select(["runnerOrdinal", "type", "data"])
+      .selectFrom("runnerEventReceipts")
+      .select(["ordinal", "disposition"])
       .where("runId", "=", runId)
-      .where("runnerBindingGeneration", "=", successorGeneration)
-      .orderBy("runnerOrdinal", "asc")
+      .where("bindingGeneration", "=", successorGeneration)
+      .orderBy("ordinal")
       .execute();
-    const seed = await store.database
-      .selectFrom("runs")
-      .innerJoin("messages", "messages.id", "runs.seedInputId")
-      .select(["messages.author", "runs.createdAt"])
-      .where("runs.id", "=", runId)
-      .executeTakeFirstOrThrow();
-    const assistant = stored.find((event) => event.type === "assistant.message")!;
-    expect(recordSchema.parse(assistant.data).content).toEqual([
-      {
-        type: "text",
-        text: "Recovery task completed.",
-      },
-    ]);
-    expect(
-      stored.map((event) => {
-        if (event.type !== "run.completed") return event;
-        const { replyMessageId, ...data } = recordSchema.parse(event.data);
-        expect(replyMessageId).toBe(recordSchema.parse(assistant.data).messageId);
-        return {
-          ...event,
-          data,
-        };
-      }),
-    ).toEqual(
-      emitted.map((event) =>
-        event.type === "run.started" || event.type === "run.completed"
-          ? {
-              ...event,
-              data: {
-                ...recordSchema.parse(event.data),
-                startedBy: seed.author,
-                startedAt: seed.createdAt.toISOString(),
-                personWaiting: seed.author.kind === "human",
-              },
-            }
-          : event,
-      ),
+    expect(stored).toEqual(
+      emitted.map((event) => ({ ordinal: event.runnerOrdinal, disposition: "applied" })),
     );
+    const statement = emitted.find((event) => event.type === "assistant.message")!;
+    const { messageId } = recordSchema.parse(statement.data);
+    const reply = await store.database
+      .selectFrom("messages")
+      .select(["id", "content", "published"])
+      .where("runId", "=", runId)
+      .where("kind", "=", "assistant")
+      .orderBy("sequence", "desc")
+      .limit(1)
+      .executeTakeFirstOrThrow();
+    expect(reply).toEqual({
+      id: messageId,
+      content: [{ type: "text", text: "Recovery task completed." }],
+      published: true,
+    });
+    await expect(
+      store.database
+        .selectFrom("runs")
+        .select("terminalReplyMessageId")
+        .where("id", "=", runId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ terminalReplyMessageId: messageId });
     checkpoints.push({
       stage: "same connection successor completed",
       fence,
@@ -2214,12 +2196,12 @@ async function recoveryMessages(active: VerticalStack, threadId: ThreadId) {
       .execute()
   ).filter((message) => recordSchema.parse(message.author).cause === "run-recovery");
 }
-function eventsOf(active: VerticalStack, runId: RunId) {
+function receiptsOf(active: VerticalStack, runId: RunId) {
   return active.host.store.database
-    .selectFrom("deploymentEvents")
-    .select(["eventId", "type", "data", "runnerOrdinal", "runnerBootId", "sequence"])
+    .selectFrom("runnerEventReceipts")
+    .selectAll()
     .where("runId", "=", runId)
-    .orderBy("sequence", "asc")
+    .orderBy("ordinal")
     .execute();
 }
 function inputState(active: VerticalStack, messageId: MessageId) {
@@ -2229,32 +2211,10 @@ function inputState(active: VerticalStack, messageId: MessageId) {
     .where("messageId", "=", messageId)
     .executeTakeFirstOrThrow();
 }
-async function failedNotifications(active: VerticalStack, runId: RunId) {
-  const rows = await active.host.store.database
-    .selectFrom("deploymentEvents")
-    .selectAll()
-    .where("runId", "=", runId)
-    .where("type", "in", ["run.failed", "run.interrupted"])
-    .execute();
-  const notifications = new NotificationStore(active.host.store.database);
-  const decided = (
-    await Promise.all(
-      rows.map((row) =>
-        notifications.decide(
-          AgentEventSchema.parse({
-            ...row,
-            createdAt: row.createdAt.toISOString(),
-          }),
-        ),
-      ),
-    )
-  )
-    .flat()
-    .map(({ view }) => view);
-  return [
-    ...decided,
-    ...active.notifications.filter((entry) => entry.runId === runId && entry.kind === "run-failed"),
-  ];
+function failedNotifications(active: VerticalStack, runId: RunId) {
+  return active.notifications.filter(
+    (entry) => entry.runId === runId && entry.kind === "run-failed",
+  );
 }
 function requestRow(active: VerticalStack, id: string) {
   return active.host.store.database
@@ -2363,7 +2323,7 @@ async function snapshot(active: VerticalStack, runId: RunId) {
           .where("id", "=", run.providerSessionId)
           .executeTakeFirst()
       : null,
-    events: await eventsOf(active, runId),
+    events: await receiptsOf(active, runId),
     inputs: await active.host.store.database
       .selectFrom("threadInputs")
       .selectAll()
@@ -2458,8 +2418,10 @@ async function expectDeadlineSettled(active: VerticalStack, runId: RunId, thread
     .where("id", "=", threadId)
     .executeTakeFirstOrThrow();
   expect(thread.inputQueuePaused).toBe(false);
-  const ended = (await eventsOf(active, runId)).filter((event) => event.type === "run.interrupted");
-  expect(ended).toHaveLength(1);
+  expect(await row(active, runId)).toMatchObject({
+    status: "interrupted",
+    completedAt: expect.any(Date),
+  });
   expect(await failedNotifications(active, runId)).toEqual([]);
   expect(
     (await messagesOf(active, threadId)).filter(

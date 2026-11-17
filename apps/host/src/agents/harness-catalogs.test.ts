@@ -1,9 +1,7 @@
 import {
-  AgentEventSchema,
   HarnessIdSchema,
   createId,
   harnessUsageLimitFailureCode,
-  type AgentEvent,
   type EnvironmentId,
   type HarnessInstanceId,
 } from "@opensteer/core";
@@ -504,45 +502,6 @@ describe("catalog commit notifications", () => {
     expect(broadcast).toHaveBeenCalledTimes(1);
   });
 });
-function runEvent(
-  environmentId: EnvironmentId,
-  outcome: {
-    readonly data: object;
-    readonly type: "run.completed" | "run.failed";
-  },
-): AgentEvent {
-  return AgentEventSchema.parse({
-    createdAt: "2026-09-05T00:00:00.000Z",
-    data: {
-      ...outcome.data,
-      startedAt: "2026-08-09T09:00:00.000Z",
-      personWaiting: true,
-      startedBy: {
-        displayName: "Alex",
-        kind: "human",
-        userId: createId("user"),
-        principalId: "test-principal",
-      },
-    },
-    environmentId,
-    eventId: createId("event"),
-    runId: createId("run"),
-    sequence: "1",
-    threadId: createId("thread"),
-    type: outcome.type,
-  });
-}
-function runFailure(environmentId: EnvironmentId, code: string): AgentEvent {
-  return runEvent(environmentId, {
-    data: {
-      code,
-      message: "You've hit your usage limit.",
-      retryable: false,
-      status: "failed",
-    },
-    type: "run.failed",
-  });
-}
 describe("harness catalog re-inspection after a usage limit", () => {
   it("re-reads the failing work location, because the Run just proved the stored answer wrong", async () => {
     const { catalogs, inspectHarnesses, recorded } = convergence({
@@ -550,7 +509,8 @@ describe("harness catalog re-inspection after a usage limit", () => {
     });
     await inspectHarnessCatalogsAfterUsageLimit({
       catalogs,
-      event: runFailure(harnessEnvironmentId, harnessUsageLimitFailureCode),
+      environmentId: harnessEnvironmentId,
+      failureCode: harnessUsageLimitFailureCode,
       runners: {
         inspectHarnesses,
       },
@@ -565,19 +525,11 @@ describe("harness catalog re-inspection after a usage limit", () => {
     const { catalogs, inspectHarnesses } = convergence({
       stored: readyCatalog(),
     });
-    for (const event of [
-      runFailure(harnessEnvironmentId, "codex_harness_error"),
-      runEvent(harnessEnvironmentId, {
-        data: {
-          replyMessageId: null,
-          status: "completed",
-        },
-        type: "run.completed",
-      }),
-    ]) {
+    for (const failureCode of ["codex_harness_error", undefined]) {
       await inspectHarnessCatalogsAfterUsageLimit({
         catalogs,
-        event,
+        environmentId: harnessEnvironmentId,
+        failureCode,
         runners: {
           inspectHarnesses,
         },

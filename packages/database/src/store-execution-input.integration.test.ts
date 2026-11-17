@@ -1,7 +1,8 @@
+import { commitRunnerEvent } from "./runner-event-store.js";
+import { threadPathLinks } from "./store-primitives.js";
 import { DeviceIdSchema } from "@opensteer/core";
 import type { StoreFixture } from "./store.integration.test-support.js";
 import {
-  AgentEventSchema,
   TabIdSchema,
   MessageContentSchema,
   messageContentMaxSerializedBytes,
@@ -10,9 +11,8 @@ import {
   createToolArguments,
   createToolOutput,
   toolArgumentsMaxSerializedBytes,
-  type AgentEvent,
 } from "@opensteer/core";
-import { type PendingAgentEvent } from "@opensteer/protocol";
+import { type PendingAgentEvent, type PendingAgentEventV2 } from "@opensteer/protocol";
 import { sql } from "kysely";
 import { z } from "zod";
 import { describe, expect } from "vitest";
@@ -453,7 +453,7 @@ describeStore("PostgreSQL store", (it) => {
       runId: triggered.run.id,
       threadId: fixture.thread.id,
     });
-    await store.commitRunnerEvent({
+    await commitRunnerEvent(store.database, threadPathLinks, {
       environmentId: fixture.environmentId,
       event: pendingEvent({
         bindingGeneration: binding.bindingGeneration,
@@ -479,7 +479,7 @@ describeStore("PostgreSQL store", (it) => {
       ],
       idempotencyKey: "thread-input-policy-late-report",
     });
-    await store.commitRunnerEvent({
+    await commitRunnerEvent(store.database, threadPathLinks, {
       environmentId: fixture.environmentId,
       event: pendingEvent({
         bindingGeneration: binding.bindingGeneration,
@@ -764,7 +764,14 @@ describeStore("PostgreSQL store", (it) => {
       first.command.id,
       "thread-input-terminal-trigger-drain-dispatcher",
     );
-    expect(claimed?.events.map(({ type }) => type)).toEqual(["thread-input.updated", "run.status"]);
+    expect(claimed?.command.status).toBe("dispatched");
+    await expect(
+      database
+        .selectFrom("threadInputs")
+        .select("state")
+        .where("messageId", "=", first.run.seedInputId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ state: "claimed" });
     const runnerBootId = "boot-thread-input-terminal-trigger-drain";
     const binding = await store.acquireExecutionBinding({
       bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
@@ -776,7 +783,7 @@ describeStore("PostgreSQL store", (it) => {
       runId: first.run.id,
       threadId: fixture.thread.id,
     });
-    const started = await store.commitRunnerEvent({
+    const started = await commitRunnerEvent(store.database, threadPathLinks, {
       environmentId: fixture.environmentId,
       event: pendingEvent({
         bindingGeneration: binding.bindingGeneration,
@@ -792,8 +799,8 @@ describeStore("PostgreSQL store", (it) => {
       runnerBootId,
       runnerId: fixture.runnerId,
     });
-    expect(started.compensatingEvents.map(({ type }) => type)).toEqual(["thread-input.updated"]);
-    const completed = await store.commitRunnerEvent({
+    expect(started).toMatchObject({ throughOrdinal: 0, replayed: false });
+    const completed = await commitRunnerEvent(store.database, threadPathLinks, {
       environmentId: fixture.environmentId,
       event: pendingEvent({
         bindingGeneration: binding.bindingGeneration,
@@ -809,7 +816,7 @@ describeStore("PostgreSQL store", (it) => {
       runnerBootId,
       runnerId: fixture.runnerId,
     });
-    expect(completed.compensatingEvents.map(({ type }) => type)).toContain("run.queued");
+    expect(completed).toMatchObject({ throughOrdinal: 1, replayed: false });
     await expect(
       database
         .selectFrom("runs")
@@ -886,7 +893,7 @@ describeStore("PostgreSQL store", (it) => {
         },
       ],
     ] as const) {
-      await store.commitRunnerEvent({
+      await commitRunnerEvent(store.database, threadPathLinks, {
         environmentId: fixture.environmentId,
         event: pendingEvent({
           ...base,
@@ -1119,59 +1126,25 @@ describeStore("PostgreSQL store", (it) => {
         runId: turn.run.id,
         threadId: fixture.thread.id,
       });
-      const outcome = await store.attachRunnerExecutions({
+      await store.attachRunnerExecutions({
         dispatchingRunIds: [],
         executions: [],
         leaseExpiresAt: new Date(Date.now() + 60_000),
         runnerBootId: "omitted-binding-boot",
         runnerId: fixture.runnerId,
       });
-      if (lease === "live") {
-        expect(outcome.events).toContainEqual(
-          expect.objectContaining({
-            data: {
-              status: "queued",
-              startedAt: (
-                await database
-                  .selectFrom("runs")
-                  .select("createdAt")
-                  .where("id", "=", turn.run.id)
-                  .executeTakeFirstOrThrow()
-              ).createdAt.toISOString(),
-              personWaiting: true,
-              startedBy: {
-                displayName: "Alex",
-                kind: "human",
-                userId: fixture.userId,
-                principalId: await storeFixture.principalIdFor(fixture.userId),
-              },
-            },
-            runId: turn.run.id,
-            type: "run.status",
-          }),
-        );
-        await expect(
-          database
-            .selectFrom("runs")
-            .select(["status", "bindingGeneration"])
-            .where("id", "=", turn.run.id)
-            .executeTakeFirstOrThrow(),
-        ).resolves.toEqual({
-          bindingGeneration: null,
-          status: "queued",
+      const settled = await database
+        .selectFrom("runs")
+        .select(["status", "bindingGeneration", "failure"])
+        .where("id", "=", turn.run.id)
+        .executeTakeFirstOrThrow();
+      if (lease === "live")
+        expect(settled).toEqual({ bindingGeneration: null, status: "queued", failure: null });
+      else
+        expect(settled).toMatchObject({
+          status: "failed",
+          failure: { code: "execution_binding_expired", status: "failed" },
         });
-      } else {
-        expect(outcome.events).toContainEqual(
-          expect.objectContaining({
-            data: expect.objectContaining({
-              code: "execution_binding_expired",
-              status: "failed",
-            }),
-            runId: turn.run.id,
-            type: "run.failed",
-          }),
-        );
-      }
       await expect(
         database
           .selectFrom("commands")
@@ -1188,7 +1161,7 @@ describeStore("PostgreSQL store", (it) => {
     async (bindingGeneration, { storeFixture }) => {
       const { startRunFixture, store, enqueueHumanTrigger, database } = storeFixture;
       const fixture = await startRunFixture("pre-acquire-attach");
-      await store.commitRunnerEvent({
+      await commitRunnerEvent(store.database, threadPathLinks, {
         environmentId: fixture.environmentId,
         event: pendingEvent({
           bindingGeneration: fixture.bindingGeneration,
@@ -1232,7 +1205,7 @@ describeStore("PostgreSQL store", (it) => {
         runnerBootId: fixture.runnerBootId,
         runnerId: fixture.runnerId,
       });
-      expect(outcome.events).toEqual([]);
+      expect(outcome.resumed).toEqual([]);
       await expect(
         database
           .selectFrom("runs")
@@ -1242,29 +1215,14 @@ describeStore("PostgreSQL store", (it) => {
       ).resolves.toEqual({
         status: "starting",
       });
-      expect(await store.recoverCommandsAfterHostRestart()).toContainEqual(
-        expect.objectContaining({
-          data: {
-            status: "queued",
-            startedAt: (
-              await database
-                .selectFrom("runs")
-                .select("createdAt")
-                .where("id", "=", next.run.id)
-                .executeTakeFirstOrThrow()
-            ).createdAt.toISOString(),
-            personWaiting: true,
-            startedBy: {
-              displayName: "Alex",
-              kind: "human",
-              userId: fixture.userId,
-              principalId: await storeFixture.principalIdFor(fixture.userId),
-            },
-          },
-          runId: next.run.id,
-          type: "run.status",
-        }),
-      );
+      await store.recoverCommandsAfterHostRestart();
+      await expect(
+        database
+          .selectFrom("runs")
+          .select("status")
+          .where("id", "=", next.run.id)
+          .executeTakeFirstOrThrow(),
+      ).resolves.toEqual({ status: "queued" });
     },
   );
 
@@ -1314,7 +1272,7 @@ describeStore("PostgreSQL store", (it) => {
       threadId: fixture.thread.id,
     };
     const commit = (event: ReturnType<typeof pendingEvent>) =>
-      store.commitRunnerEvent({
+      commitRunnerEvent(store.database, threadPathLinks, {
         environmentId: fixture.environmentId,
         event,
         runnerBootId,
@@ -1347,8 +1305,8 @@ describeStore("PostgreSQL store", (it) => {
     });
     const committed = await commit(answer);
     const replayed = await commit(answer);
-    expect(committed.wasDuplicate).toBe(false);
-    expect(replayed.wasDuplicate).toBe(true);
+    expect(committed.replayed).toBe(false);
+    expect(replayed.replayed).toBe(true);
     const message = await database
       .selectFrom("messages")
       .select("content")
@@ -1404,10 +1362,10 @@ describeStore("PostgreSQL store", (it) => {
         threadId: fixture.thread.id,
       };
       const commit = (
-        event: PendingAgentEvent,
+        event: PendingAgentEventV2,
         integration?: Parameters<OpensteerStore["commitRunnerEvent"]>[0]["integration"],
       ) =>
-        store.commitRunnerEvent({
+        commitRunnerEvent(store.database, threadPathLinks, {
           environmentId: fixture.environmentId,
           event,
           ...(integration
@@ -1433,21 +1391,17 @@ describeStore("PostgreSQL store", (it) => {
         commit,
       };
     }
-    async function storedEvent(storeFixture: StoreFixture, event: AgentEvent) {
-      const { database } = storeFixture;
-      const row = await database
-        .selectFrom("deploymentEvents")
-        .selectAll()
-        .select(sql<number>`octet_length(data::text)`.as("dataBytes"))
-        .where("eventId", "=", event.eventId)
+    async function storedCall(
+      storeFixture: StoreFixture,
+      runId: import("@opensteer/core").RunId,
+      callId: string,
+    ) {
+      return storeFixture.database
+        .selectFrom("toolCalls")
+        .select(["callId", "tool", "arguments", "integration"])
+        .where("runId", "=", runId)
+        .where("callId", "=", callId)
         .executeTakeFirstOrThrow();
-      expect(row.dataBytes).toBeLessThanOrEqual(507_904);
-      const parsed = AgentEventSchema.parse({
-        ...row,
-        createdAt: row.createdAt.toISOString(),
-      });
-      expect(parsed).toEqual(event);
-      return row;
     }
     it("commits and exactly replays a fitted 600 KiB Codex inline shell command", async ({
       storeFixture,
@@ -1501,17 +1455,20 @@ describeStore("PostgreSQL store", (it) => {
         type: "tool.started",
       });
       const committed = await commit(event);
-      expect(committed.wasDuplicate).toBe(false);
-      expect((await storedEvent(storeFixture, committed.event)).data).toEqual(event.data);
+      expect(committed.replayed).toBe(false);
+      expect(await storedCall(storeFixture, base.runId, "call-inline-python")).toEqual({
+        ...event.data,
+        integration: null,
+      });
       const replayed = await commit(event);
-      expect(replayed.wasDuplicate).toBe(true);
-      expect(replayed.event).toEqual(committed.event);
+      expect(replayed.replayed).toBe(true);
+      expect(replayed.throughOrdinal).toBe(committed.throughOrdinal);
       expect(
         await database
-          .selectFrom("deploymentEvents")
+          .selectFrom("runnerEventReceipts")
           .select(sql<number>`count(*)::int`.as("count"))
           .where("runId", "=", base.runId)
-          .where("runnerOrdinal", "=", 1)
+          .where("ordinal", "=", 1)
           .executeTakeFirstOrThrow(),
       ).toEqual({
         count: 1,
@@ -1568,14 +1525,59 @@ describeStore("PostgreSQL store", (it) => {
         type: "tool.started",
       });
       const committed = await commit(event, subject);
-      expect(committed.wasDuplicate).toBe(false);
-      expect((await storedEvent(storeFixture, committed.event)).data).toEqual({
+      expect(committed.replayed).toBe(false);
+      expect(await storedCall(storeFixture, base.runId, "call-bulk-rows")).toEqual({
         ...event.data,
         integration: subject,
       });
       const replayed = await commit(event);
-      expect(replayed.wasDuplicate).toBe(true);
-      expect(replayed.event).toEqual(committed.event);
+      expect(replayed.replayed).toBe(true);
+      expect(replayed.throughOrdinal).toBe(committed.throughOrdinal);
+    });
+    it("keeps one Claude tool card across provisional and final receipts", async ({
+      storeFixture,
+    }) => {
+      const { database } = storeFixture;
+      const { base, commit } = await runningFixture(storeFixture, "provisional-tool");
+      const start = {
+        ...base,
+        type: "tool.started",
+        ordinal: 1,
+        emittedAt: new Date().toISOString(),
+        data: {
+          callId: "claude-provisional",
+          arguments: {},
+          tool: { name: "Read", namespace: "claude" },
+          provisional: true,
+        },
+      } satisfies PendingAgentEventV2;
+      const find = () =>
+        database
+          .selectFrom("toolCalls")
+          .select(["id", "startedAt", "arguments", "provisional"])
+          .where("runId", "=", base.runId)
+          .where("callId", "=", start.data.callId)
+          .executeTakeFirstOrThrow();
+      const args = { file_path: "notes.txt" };
+      await expect(commit(start)).resolves.toMatchObject({ throughOrdinal: 1, replayed: false });
+      const provisional = await find();
+      const final = {
+        ...start,
+        ordinal: 2,
+        data: { callId: start.data.callId, tool: start.data.tool, arguments: args },
+      };
+      await expect(commit(final)).resolves.toMatchObject({ throughOrdinal: 2, replayed: false });
+      expect(await find()).toEqual({ ...provisional, arguments: args, provisional: false });
+      const cards = await database
+        .selectFrom("transcriptItems")
+        .select("id")
+        .where("toolCallId", "=", provisional.id)
+        .execute();
+      expect(cards).toEqual([{ id: `tool:${provisional.id}` }]);
+      await expect(commit(start)).resolves.toMatchObject({ throughOrdinal: 2, replayed: true });
+      await expect(
+        commit({ ...final, data: { ...final.data, arguments: { file_path: "changed.txt" } } }),
+      ).rejects.toMatchObject({ code: "conflict" });
     });
     it.for(["tool.started", "assistant.message"] as const)(
       "commits and replays %s containing NUL as U+FFFD",
@@ -1618,26 +1620,14 @@ describeStore("PostgreSQL store", (it) => {
                 type,
               });
         const committed = await commit(event);
+        expect(committed).toMatchObject({ throughOrdinal: 1, replayed: false });
         const replacement = createToolOutput("a\u0000b").text;
         expect(replacement).toBe("a\uFFFDb");
-        expect((await storedEvent(storeFixture, committed.event)).data).toEqual(
-          type === "tool.started"
-            ? {
-                ...event.data,
-                arguments: {
-                  command: replacement,
-                },
-              }
-            : {
-                ...event.data,
-                content: [
-                  {
-                    text: replacement,
-                    type: "text",
-                  },
-                ],
-              },
-        );
+        if (event.type === "tool.started") {
+          expect(await storedCall(storeFixture, base.runId, event.data.callId)).toMatchObject({
+            arguments: { command: replacement },
+          });
+        }
         if (type === "assistant.message") {
           expect(
             await database
@@ -1655,8 +1645,8 @@ describeStore("PostgreSQL store", (it) => {
           });
         }
         const replayed = await commit(event);
-        expect(replayed.wasDuplicate).toBe(true);
-        expect(replayed.event).toEqual(committed.event);
+        expect(replayed.replayed).toBe(true);
+        expect(replayed.throughOrdinal).toBe(committed.throughOrdinal);
       },
     );
   });
@@ -1699,7 +1689,7 @@ describeStore("PostgreSQL store", (it) => {
       runId: work.run.id,
       threadId: fixture.thread.id,
     };
-    await store.commitRunnerEvent({
+    await commitRunnerEvent(store.database, threadPathLinks, {
       environmentId: fixture.environmentId,
       event: pendingEvent({
         ...base,
@@ -1757,7 +1747,7 @@ describeStore("PostgreSQL store", (it) => {
       type: "tool.started",
     });
     const commit = (integration?: typeof subject) =>
-      store.commitRunnerEvent({
+      commitRunnerEvent(store.database, threadPathLinks, {
         environmentId: fixture.environmentId,
         event: started,
         ...(integration
@@ -1769,24 +1759,15 @@ describeStore("PostgreSQL store", (it) => {
         runnerId: fixture.runnerId,
       });
     const committed = await commit(subject);
-    expect(committed.wasDuplicate).toBe(false);
-    expect(committed.event.data).toEqual({
-      ...reported,
-      integration: subject,
-    });
-    await expect(
+    expect(committed.replayed).toBe(false);
+    const tool = () =>
       database
-        .selectFrom("deploymentEvents")
-        .select("data")
-        .where("eventId", "=", committed.event.eventId)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({
-      data: {
-        ...reported,
-        integration: subject,
-      },
-    });
-
+        .selectFrom("toolCalls")
+        .select(["callId", "arguments", "tool", "integration"])
+        .where("runId", "=", base.runId)
+        .where("callId", "=", reported.callId)
+        .executeTakeFirstOrThrow();
+    await expect(tool()).resolves.toEqual({ ...reported, integration: subject });
     // The same Runner payload again is a replay whatever the Host resolves
     // this time — a subject that is gone, or one that has changed — and it
     // answers with the event as it was first recorded.
@@ -1797,11 +1778,11 @@ describeStore("PostgreSQL store", (it) => {
         account: "Renamed",
       }),
     ]) {
-      expect(replayed.wasDuplicate).toBe(true);
-      expect(replayed.event).toEqual(committed.event);
+      expect(replayed.replayed).toBe(true);
+      expect(replayed.throughOrdinal).toBe(committed.throughOrdinal);
     }
     await expect(
-      store.commitRunnerEvent({
+      commitRunnerEvent(store.database, threadPathLinks, {
         environmentId: fixture.environmentId,
         // The same ordinal and moment, with different content.
         event: {
@@ -1820,7 +1801,7 @@ describeStore("PostgreSQL store", (it) => {
     });
 
     // Without a subject the Runner's copy is still not stored.
-    const unnamed = await store.commitRunnerEvent({
+    const unnamed = await commitRunnerEvent(store.database, threadPathLinks, {
       environmentId: fixture.environmentId,
       event: pendingEvent({
         ...base,
@@ -1835,12 +1816,17 @@ describeStore("PostgreSQL store", (it) => {
       runnerBootId,
       runnerId: fixture.runnerId,
     });
-    expect(unnamed.event.data).toEqual({
-      ...reported,
-      callId: "call-unnamed",
-    });
+    expect(unnamed).toMatchObject({ throughOrdinal: 2, replayed: false });
     await expect(
-      store.commitRunnerEvent({
+      database
+        .selectFrom("toolCalls")
+        .select("integration")
+        .where("runId", "=", base.runId)
+        .where("callId", "=", "call-unnamed")
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ integration: null });
+    await expect(
+      commitRunnerEvent(store.database, threadPathLinks, {
         environmentId: fixture.environmentId,
         event: pendingEvent({
           ...base,
@@ -1858,11 +1844,11 @@ describeStore("PostgreSQL store", (it) => {
         runnerBootId,
         runnerId: fixture.runnerId,
       }),
-    ).rejects.toThrow("Only a tool.started event names an integration call's subject");
+    ).rejects.toThrow("Only tool.started reports can have an integration subject");
 
     // An integration subject alone neither invents a durable tab nor a recent place;
     // only an explicit tab entry recovers one.
-    await store.commitRunnerEvent({
+    await commitRunnerEvent(store.database, threadPathLinks, {
       environmentId: fixture.environmentId,
       event: pendingEvent({
         ...base,
@@ -1879,7 +1865,13 @@ describeStore("PostgreSQL store", (it) => {
       runnerBootId,
       runnerId: fixture.runnerId,
     });
-    await expect(store.latestNativePlaces(fixture.userId)).resolves.toEqual([]);
+    await expect(
+      database
+        .selectFrom("runs")
+        .select("latestPlace")
+        .where("id", "=", work.run.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ latestPlace: null });
     expect(await database.selectFrom("personalTabs").select("id").execute()).toEqual([]);
     const place = { tabId: TabIdSchema.parse("slack-window-tab"), title: "Slack", site: null };
     await store.recordRunTabPlace({
@@ -1887,9 +1879,13 @@ describeStore("PostgreSQL store", (it) => {
       bindingGeneration: binding.bindingGeneration,
       data: place,
     });
-    await expect(new OpensteerStore(database).latestNativePlaces(fixture.userId)).resolves.toEqual([
-      expect.objectContaining({ ...place, runId: work.run.id, taskId: fixture.thread.id }),
-    ]);
+    await expect(
+      database
+        .selectFrom("runs")
+        .select("latestPlace")
+        .where("id", "=", work.run.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ latestPlace: place });
   });
   it("names a Run's requester only for its own Thread", async ({ storeFixture }) => {
     const { createRunFixture, store } = storeFixture;
@@ -2241,7 +2237,7 @@ describeStore("PostgreSQL store", (it) => {
     });
     if (!steered.command) throw new Error("Expected steer Command");
     await store.claimCommand(steered.command.id, "thread-steer-delivered-dispatcher");
-    const delivered = await store.commitRunnerEvent({
+    const delivered = await commitRunnerEvent(store.database, threadPathLinks, {
       environmentId: started.environmentId,
       event: pendingEvent({
         bindingGeneration: started.bindingGeneration,
@@ -2257,7 +2253,7 @@ describeStore("PostgreSQL store", (it) => {
       runnerBootId: started.runnerBootId,
       runnerId: started.runnerId,
     });
-    expect(delivered.compensatingEvents.map(({ type }) => type)).toEqual(["thread-input.updated"]);
+    expect(delivered).toMatchObject({ throughOrdinal: 1, replayed: false });
     await expect(
       store.markSteerUnknown(steered.command.id, "Late ambiguous transport result"),
     ).resolves.toEqual([]);
@@ -2335,7 +2331,7 @@ describeStore("PostgreSQL store", (it) => {
         status: "running",
       },
     ]);
-    await store.commitRunnerEvent({
+    await commitRunnerEvent(store.database, threadPathLinks, {
       environmentId: refusedRun.environmentId,
       event: pendingEvent({
         bindingGeneration: refusedRun.bindingGeneration,
@@ -2431,7 +2427,7 @@ describeStore("PostgreSQL store", (it) => {
       state: "pending",
       runId: null,
     });
-    await store.commitRunnerEvent({
+    await commitRunnerEvent(store.database, threadPathLinks, {
       environmentId: started.environmentId,
       runnerBootId: started.runnerBootId,
       runnerId: started.runnerId,
@@ -2494,7 +2490,7 @@ describeStore("PostgreSQL store", (it) => {
       state: "unknown",
       steerCommandId: unknown.command.id,
     });
-    const lateProof = await store.commitRunnerEvent({
+    const lateProof = await commitRunnerEvent(store.database, threadPathLinks, {
       environmentId: unknownRun.environmentId,
       event: pendingEvent({
         bindingGeneration: unknownRun.bindingGeneration,
@@ -2510,7 +2506,7 @@ describeStore("PostgreSQL store", (it) => {
       runnerBootId: unknownRun.runnerBootId,
       runnerId: unknownRun.runnerId,
     });
-    expect(lateProof.compensatingEvents.map(({ type }) => type)).toEqual(["thread-input.updated"]);
+    expect(lateProof).toMatchObject({ throughOrdinal: 1, replayed: false });
     await expect(
       database
         .selectFrom("threadInputs")

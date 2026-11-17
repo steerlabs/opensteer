@@ -1,10 +1,9 @@
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
 import {
   createId,
   ModelSelectionSchema,
   OpensteerError,
-  type AgentEvent,
   type HarnessInstanceId,
   type ModelSelection,
   TriggerOccurrenceIdSchema,
@@ -25,8 +24,7 @@ import "./connection.js";
 import type { DatabaseSchema, ThreadRow } from "./schema.js";
 import { jsonValue, lockCommandIdempotency } from "./store-primitives.js";
 import { publishedMessagePredicate } from "./message-visibility.js";
-import { threadFromRow } from "./thread-row-mappers.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
+import { invalidateExecution } from "./execution-changes.js";
 
 import { createThreadInTransaction } from "./thread-store.js";
 import { createTriggerInTransaction } from "./trigger-store.js";
@@ -44,7 +42,7 @@ export async function createMemoryPass(
     readonly pauseReason: string | null;
   },
 ) {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction) => {
     await requirePersonalOwner(transaction, input.ownerId);
     const key = `memory:${input.systemRole}`;
     await sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify(["trigger-create", input.ownerId, key])}, 0))`.execute(
@@ -107,7 +105,6 @@ export async function startMemoryPassInTransaction(
   execution: MemoryPassExecution,
 ): Promise<{
   readonly worker: ThreadRow;
-  readonly event: AgentEvent;
 }> {
   // The input's preconditions already hold this row: harness_instances precede threads.
   const harness = await transaction
@@ -180,24 +177,15 @@ export async function startMemoryPassInTransaction(
     .where("id", "=", worker.id)
     .returningAll()
     .executeTakeFirstOrThrow();
-  const event = await appendHostDeploymentEvent(transaction, {
-    data: {
-      thread: threadFromRow({
-        ...updated,
-        continuationIdentity: null,
-        pendingRequests: updated.pendingRequestCount,
-        providerSessionId,
-      }),
-    },
-    environmentId: updated.environmentId,
-    runId: null,
-    threadId: updated.id,
-    type: "thread.execution-updated",
+  await commitPersonalMutation(transaction, async (tx, mutation) => {
+    await tx
+      .updateTable("threads")
+      .set({ revision: mutation.sequence })
+      .where("id", "=", updated.id)
+      .execute();
+    invalidateExecution(mutation, updated.id, "thread");
   });
-  return {
-    worker: updated,
-    event,
-  };
+  return { worker: updated };
 }
 const lightSourceCheck = 2 * 60 * 60 * 1000;
 const firstPassWindow = {
@@ -367,7 +355,7 @@ export async function recordMemoryPassWake(
   readonly accepted: boolean;
   readonly changed: boolean;
 }> {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction) => {
     await transaction
       .selectFrom("triggerOccurrences")
       .select("id")

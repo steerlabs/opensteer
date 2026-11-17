@@ -1092,6 +1092,7 @@ describe("Claude Agent SDK harness", () => {
       {
         arguments: {},
         callId: "tool-gateway",
+        provisional: true,
         tool: { name: "integration_call", namespace: "opensteer.integrations" },
       },
       {

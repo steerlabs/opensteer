@@ -4,7 +4,6 @@ import {
   ModelSelectionSchema,
   OpensteerError,
   TimeZoneSchema,
-  type AgentEvent,
   type Thread,
   type TriggerOccurrenceId,
   type UserId,
@@ -31,7 +30,6 @@ interface MemoryPassServiceOptions {
   readonly store: OpensteerStore;
   readonly runners: Pick<RunnerRegistry, "isAvailable" | "canRunHarness" | "harnessAccessModes">;
   readonly readAgentInstructions: (signal: AbortSignal) => Promise<string | null>;
-  readonly onEvent: (event: AgentEvent) => void;
   readonly onChanged: () => void;
   readonly onError: (error: unknown) => void;
 }
@@ -150,7 +148,6 @@ export class MemoryPassService {
         pauseReason: off ? "Memory is off at your request." : null,
       });
       if (created) {
-        if (created.event) this.options.onEvent(created.event);
         this.options.onChanged();
       }
     }

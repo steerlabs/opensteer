@@ -211,54 +211,45 @@ describe("engine qualification", () => {
             },
           );
         }
-        const toolEvent = (data: unknown) =>
-          data as {
-            callId?: string;
-            isError?: boolean;
-            tool?: {
-              name?: string;
-            };
-          };
-        const held = await database
-          .selectFrom("deploymentEvents")
-          .select(["type", "data"])
-          .where("runId", "=", firstRunId)
-          .orderBy("sequence", "asc")
-          .execute();
-        const heldCall = held.find(
-          ({ type, data }) =>
-            type === "tool.started" && toolEvent(data).tool?.name === "browser_profile_request",
-        );
-        const sinceOpened = held.slice(held.findIndex(({ type }) => type === "request.opened"));
-        const returned = sinceOpened.findIndex(
-          ({ type, data }) =>
-            type === "tool.completed" &&
-            toolEvent(data).callId === toolEvent(heldCall?.data).callId,
-        );
-        const during = returned < 0 ? sinceOpened : sinceOpened.slice(0, returned);
-        // A call issued in the same step as the Request may still run; a tool starting after
-        // one has finished can only come from a new step, which the hold must prevent.
+        const [calls, requestOpened] = await Promise.all([
+          database
+            .selectFrom("toolCalls")
+            .select(["tool", "startedAt", "completedAt", "isError", "status"])
+            .where("runId", "=", firstRunId)
+            .orderBy("startedAt")
+            .execute(),
+          database
+            .selectFrom("requests")
+            .select("createdAt")
+            .where("originatingRunId", "=", firstRunId)
+            .orderBy("createdAt")
+            .limit(1)
+            .executeTakeFirstOrThrow(),
+        ]);
+        const heldCall = calls.find((call) => call.tool?.name === "browser_profile_request");
+        const returned = heldCall?.completedAt?.getTime() ?? Number.POSITIVE_INFINITY;
+        const during = calls
+          .flatMap((call) => [
+            ...(call.startedAt ? [{ type: "tool.started", time: call.startedAt.getTime() }] : []),
+            ...(call.completedAt
+              ? [{ type: "tool.completed", time: call.completedAt.getTime() }]
+              : []),
+          ])
+          .filter(({ time }) => time >= requestOpened.createdAt.getTime() && time < returned)
+          .sort((one, two) => one.time - two.time);
         const finished = during.findIndex(({ type }) => type === "tool.completed");
         expect(
           finished < 0 ? [] : during.slice(finished).filter(({ type }) => type === "tool.started"),
           "The engine took another step while the Request was held",
         ).toEqual([]);
         // Access ends before the interrupt lands, so an engine may try one more step. It gets nothing.
-        const windDown = returned < 0 ? [] : sinceOpened.slice(returned + 1);
-        const attempted = new Set(
-          windDown
-            .filter(
-              ({ type, data }) =>
-                type === "tool.started" && toolEvent(data).tool?.name === "opensteer_task_list",
-            )
-            .map(({ data }) => toolEvent(data).callId),
-        );
         expect(
-          windDown.filter(
-            ({ type, data }) =>
-              type === "tool.completed" &&
-              attempted.has(toolEvent(data).callId) &&
-              toolEvent(data).isError !== true,
+          calls.filter(
+            (call) =>
+              (call.startedAt?.getTime() ?? 0) > returned &&
+              call.tool?.name === "opensteer_task_list" &&
+              call.status === "completed" &&
+              call.isError !== true,
           ),
           "A tool reached the Host after the Run's access ended",
         ).toEqual([]);
@@ -295,10 +286,10 @@ describe("engine qualification", () => {
               join(evidence, `${engine.label.replaceAll(" ", "-")}-${hold}-stalled.json`),
               JSON.stringify(
                 await database
-                  .selectFrom("deploymentEvents")
-                  .select(["sequence", "type", "createdAt", "data"])
+                  .selectFrom("transcriptItems")
+                  .select(["position", "kind", "createdAt", "view"])
                   .where("threadId", "=", threadId)
-                  .orderBy("sequence", "asc")
+                  .orderBy("position", "asc")
                   .execute(),
               ),
             );
@@ -997,21 +988,14 @@ describe("engine qualification", () => {
           })),
         );
         const childSteps = await stack.host.store.database
-          .selectFrom("deploymentEvents")
-          .select("data")
+          .selectFrom("toolCalls")
+          .select("id")
           .where("runId", "=", delegated.runId)
-          .where("type", "=", "tool.started")
+          .where("nodeId", "is not", null)
+          .where("startedAt", "is not", null)
+          .limit(1)
           .execute();
-        expect(
-          childSteps.some(
-            (step) =>
-              typeof (
-                step.data as {
-                  nodeId?: unknown;
-                }
-              ).nodeId === "string",
-          ),
-        ).toBe(true);
+        expect(childSteps).toHaveLength(1);
         // A Codex subagent's responses are its node's usage and the Run's too.
         if (engine.driverKind === "codex") {
           const usage = listed.data.attempts.at(-1)?.usage;

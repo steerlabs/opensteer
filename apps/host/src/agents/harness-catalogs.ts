@@ -1,7 +1,6 @@
 import {
   OpensteerError,
   harnessUsageLimitFailureCode,
-  type AgentEvent,
   type EnvironmentId,
   type HarnessInstanceId,
 } from "@opensteer/core";
@@ -309,19 +308,20 @@ function sameHarnessDefinitions(
  */
 export async function inspectHarnessCatalogsAfterUsageLimit(options: {
   readonly catalogs: HarnessCatalogInventoryStore;
-  readonly event: AgentEvent;
+  readonly environmentId: EnvironmentId;
+  readonly failureCode: string | undefined;
   readonly runners: HarnessCatalogInspector;
   readonly signal: AbortSignal;
 }): Promise<void> {
-  const { event } = options;
-  if (event.type !== "run.failed" || event.data.code !== harnessUsageLimitFailureCode) return;
+  const { environmentId, failureCode } = options;
+  if (failureCode !== harnessUsageLimitFailureCode) return;
   const harnesses = (
-    await options.catalogs.listHarnessInstances({ environmentIds: [event.environmentId] })
+    await options.catalogs.listHarnessInstances({ environmentIds: [environmentId] })
   ).filter((harness) => harness.enabled);
   if (harnesses.length === 0) return;
   await inspectAndRecordHarnessCatalogs({
     catalogs: options.catalogs,
-    environmentId: event.environmentId,
+    environmentId,
     harnesses: harnesses.map(harnessInspectionDefinition),
     runners: options.runners,
     signal: options.signal,

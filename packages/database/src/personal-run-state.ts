@@ -83,7 +83,11 @@ export async function refreshExecuteClaimProof(tx: Tx, runId: RunId) {
     .execute();
 }
 
-export async function readFinishChildren(tx: Tx, runId: RunId) {
+export async function readFinishChildren(
+  tx: Tx,
+  runId: RunId,
+  steer?: Pick<FinishIntent, "attemptId" | "bindingGeneration">,
+) {
   let remaining = 128;
   let hasMore = false;
   async function pick<Id>(seek: (limit: number) => Promise<readonly { id: Id }[]>) {
@@ -94,63 +98,75 @@ export async function readFinishChildren(tx: Tx, runId: RunId) {
     remaining -= ids.length;
     return ids;
   }
-  const requests: RequestId[] = await pick((limit) =>
-    tx
-      .selectFrom("requests")
-      .select("id")
-      .where("originatingRunId", "=", runId)
-      .where("status", "=", "pending")
-      .where((eb) => eb.or([eb("mode", "=", "live"), eb("kind", "=", "integration.input")]))
-      .orderBy("id")
-      .limit(limit)
-      .execute(),
-  );
-  const commands: CommandId[] = await pick((limit) =>
-    tx
-      .selectFrom("commands")
-      .select("id")
-      .where("runId", "=", runId)
-      .where(sql<boolean>`status in ('pending','dispatched','unknown')`)
-      .orderBy("id")
-      .limit(limit)
-      .execute(),
-  );
-  const steers: MessageId[] = await pick((limit) =>
-    tx
-      .selectFrom("threadInputs")
-      .select("messageId as id")
-      .where("runId", "=", runId)
-      .where(sql<boolean>`state='pending' and steer_command_id is not null`)
-      .orderBy("messageId")
-      .limit(limit)
-      .execute(),
-  );
+  const requests: RequestId[] = steer
+    ? []
+    : await pick((limit) =>
+        tx
+          .selectFrom("requests")
+          .select("id")
+          .where("originatingRunId", "=", runId)
+          .where("status", "=", "pending")
+          .where((eb) => eb.or([eb("mode", "=", "live"), eb("kind", "=", "integration.input")]))
+          .orderBy("id")
+          .limit(limit)
+          .execute(),
+      );
+  const steers: MessageId[] = steer
+    ? []
+    : await pick((limit) =>
+        tx
+          .selectFrom("threadInputs")
+          .select("messageId as id")
+          .where("runId", "=", runId)
+          .where(sql<boolean>`state='claimed' and steer_command_id is not null`)
+          .orderBy("messageId")
+          .limit(limit)
+          .execute(),
+      );
+  const commands: CommandId[] = steer
+    ? []
+    : await pick((limit) =>
+        tx
+          .selectFrom("commands")
+          .select("id")
+          .where("runId", "=", runId)
+          .where(sql<boolean>`status in ('pending','dispatched','unknown')`)
+          .orderBy("id")
+          .limit(limit)
+          .execute(),
+      );
   const nodes: ExecutionNodeId[] = await pick((limit) =>
     tx
       .selectFrom("executionNodes")
       .select("id")
       .where("runId", "=", runId)
       .where(sql<boolean>`status='running'`)
+      .$if(steer !== undefined, (query) => query.where("attemptId", "=", steer!.attemptId))
       .orderBy("id")
       .limit(limit)
       .execute(),
   );
-  const grants: GrantId[] = await pick((limit) =>
-    tx
-      .selectFrom("grants")
-      .select("id")
-      .where("runId", "=", runId)
-      .where(sql<boolean>`status='active'`)
-      .orderBy("id")
-      .limit(limit)
-      .execute(),
-  );
+  const grants: GrantId[] = steer
+    ? []
+    : await pick((limit) =>
+        tx
+          .selectFrom("grants")
+          .select("id")
+          .where("runId", "=", runId)
+          .where(sql<boolean>`status='active'`)
+          .orderBy("id")
+          .limit(limit)
+          .execute(),
+      );
   const tools = await pick((limit) =>
     tx
       .selectFrom("toolCalls")
       .select("id")
       .where("runId", "=", runId)
       .where(sql<boolean>`status='open'`)
+      .$if(steer !== undefined, (query) =>
+        query.where("bindingGeneration", "=", steer!.bindingGeneration),
+      )
       .orderBy("id")
       .limit(limit)
       .execute(),
@@ -265,10 +281,11 @@ export async function advancePersonalRunFinish(
     .where("id", "=", run.threadId)
     .forNoKeyUpdate()
     .executeTakeFirstOrThrow();
-  const children = await readFinishChildren(tx, runId);
+  const steer = run.finishIntent.mode === "steer" ? run.finishIntent : undefined;
+  const children = await readFinishChildren(tx, runId, steer);
   await actions.settle(children, run.finishIntent);
   if (children.hasMore) return "more" as const;
-  const remaining = await readFinishChildren(tx, runId);
+  const remaining = await readFinishChildren(tx, runId, steer);
   if (
     remaining.requests.length ||
     remaining.commands.length ||
@@ -282,6 +299,9 @@ export async function advancePersonalRunFinish(
   await recordFinishedRunnerStatement(tx, mutation, runId, run.finishIntent);
   mutation.react({
     type: "runFinished",
+    ...(run.finishIntent.mode === "recovery" || run.finishIntent.mode === "steer"
+      ? { attemptOnly: true }
+      : {}),
     runId,
     threadId: run.threadId,
     attemptId: run.finishIntent.attemptId,

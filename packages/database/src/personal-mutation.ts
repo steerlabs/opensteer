@@ -2,6 +2,7 @@ import type { DatabaseSchema } from "./schema.js";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type {
   DeploymentId,
+  EnvironmentId,
   ExecutionNodeId,
   RequestId,
   RunAttemptId,
@@ -88,6 +89,20 @@ export type PersonalCommitReaction =
       readonly runId: RunId | null;
     }
   | {
+      readonly type: "runChanged";
+      readonly environmentId: EnvironmentId;
+      readonly runId: RunId;
+      readonly threadId: ThreadId;
+      readonly transition:
+        | "started"
+        | "status"
+        | "background"
+        | "foreground"
+        | "restarted"
+        | "finishing"
+        | "usage-limit";
+    }
+  | {
       readonly type: "teamStep";
       readonly runId: RunId;
       readonly toolName: string;
@@ -95,6 +110,7 @@ export type PersonalCommitReaction =
     }
   | {
       readonly type: "runFinished";
+      readonly attemptOnly?: true;
       readonly runId: RunId;
       readonly threadId: ThreadId;
       readonly attemptId: RunAttemptId | null;
@@ -428,7 +444,11 @@ class Mutation {
     for (const dispatch of this.#reactions) notify(listener, "reaction", dispatch);
     if (listener?.react)
       for (const reaction of this.#ownerReactions)
-        notify(listener, "reaction", () => listener.react?.(reaction));
+        notify(listener, "reaction", () =>
+          listener.react?.(
+            reaction.type === "liveClosed" ? { ...reaction, afterSequence: notice.head } : reaction,
+          ),
+        );
   }
 }
 
@@ -451,6 +471,7 @@ export async function commitPersonalMutation<Result>(
   database: TargetDb,
   action: (tx: PersonalMutationTransaction, mutation: PersonalMutation) => Promise<Result>,
   retryDiscovery?: (error: unknown) => boolean,
+  mode?: "non-retrying",
 ): Promise<Result> {
   if (database.isTransaction) {
     const tx = database as PersonalMutationTransaction;
@@ -460,48 +481,53 @@ export async function commitPersonalMutation<Result>(
   }
   const listener = hooks.get(database);
   let suspended: ReturnType<NonNullable<PersonalMutationHooks["suspend"]>> | undefined;
-  const committed = await withDatabaseTransaction(
-    database,
-    async (tx) => {
-      inheritExecutionClock(database, tx);
-      const state = await tx
-        .selectFrom("clientSyncState")
-        .selectAll()
-        .forNoKeyUpdate()
-        .limit(1)
-        .executeTakeFirstOrThrow();
-      if (!state.ready) throw new Error("Personal current state is unready");
-      await tx
-        .selectFrom("personalSettings")
-        .select("singletonKey")
-        .forNoKeyUpdate()
-        .limit(1)
-        .execute();
-      const clock = await tx
-        .selectNoFrom(sql<Date>`clock_timestamp()`.as("now"))
-        .executeTakeFirstOrThrow();
-      const mutation = new Mutation({ ...state, now: clock.now });
-      active.set(tx, mutation);
-      const result = await action(tx, mutation);
-      const notice = await mutation.write(tx);
-      if (mutation.authorityScopes.size) {
-        if (!listener?.suspend)
-          throw new Error("Personal authority mutation has no dispatch fence");
-        suspended = listener.suspend(mutation.authorityScopes);
-      }
-      return { result, notice, mutation };
-    },
-    undefined,
-    (error) => {
-      if (suspended)
-        notify(listener, "authority", () => {
-          if (isTransactionConflict(error) || isConstraintViolation(error)) suspended?.rolledBack();
-          else suspended?.committed();
-        });
-      suspended = undefined;
-      return retryDiscovery?.(error) ?? false;
-    },
-  );
+  const actionUnderFence = async (tx: PersonalMutationTransaction) => {
+    inheritExecutionClock(database, tx);
+    const state = await tx
+      .selectFrom("clientSyncState")
+      .selectAll()
+      .forNoKeyUpdate()
+      .limit(1)
+      .executeTakeFirstOrThrow();
+    if (!state.ready) throw new Error("Personal current state is unready");
+    await tx
+      .selectFrom("personalSettings")
+      .select("singletonKey")
+      .forNoKeyUpdate()
+      .limit(1)
+      .execute();
+    const clock = await tx
+      .selectNoFrom(sql<Date>`clock_timestamp()`.as("now"))
+      .executeTakeFirstOrThrow();
+    const mutation = new Mutation({ ...state, now: clock.now });
+    active.set(tx, mutation);
+    const result = await action(tx, mutation);
+    const notice = await mutation.write(tx);
+    if (mutation.authorityScopes.size) {
+      if (!listener?.suspend) throw new Error("Personal authority mutation has no dispatch fence");
+      suspended = listener.suspend(mutation.authorityScopes);
+    }
+    return { result, notice, mutation };
+  };
+  const rollback = (error: unknown) => {
+    if (suspended)
+      notify(listener, "authority", () => {
+        if (isTransactionConflict(error) || isConstraintViolation(error)) suspended?.rolledBack();
+        else suspended?.committed();
+      });
+    suspended = undefined;
+    return retryDiscovery?.(error) ?? false;
+  };
+  const committed =
+    mode === "non-retrying"
+      ? await database
+          .transaction()
+          .execute(actionUnderFence)
+          .catch((error: unknown) => {
+            rollback(error);
+            throw error;
+          })
+      : await withDatabaseTransaction(database, actionUnderFence, undefined, rollback);
   if (suspended) notify(listener, "authority", () => suspended?.committed());
   committed.mutation.publish(listener, committed.notice);
   return committed.result;

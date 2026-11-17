@@ -64,7 +64,6 @@ describe("HostCommandDispatcher Request responses", () => {
       egress: {} as never,
       pluginVersions: async () => [],
       pluginsTokens: {} as never,
-      onDeploymentEvent: vi.fn(),
       publicUrl: new URL("https://host.example"),
       runners: {
         dispatch: runnersDispatch,
@@ -125,7 +124,6 @@ describe("HostCommandDispatcher Request responses", () => {
       egress: {} as never,
       pluginVersions: async () => [],
       pluginsTokens: {} as never,
-      onDeploymentEvent: vi.fn(),
       publicUrl: new URL("https://host.example"),
       runners: {
         dispatch: runnersDispatch,
@@ -874,7 +872,6 @@ describe("HostCommandDispatcher model selection", () => {
       pluginsTokens: {
         issue: () => "skills-token",
       } as never,
-      onDeploymentEvent: vi.fn(),
       publicUrl: new URL("https://host.example"),
       runners: {
         supportsMessageAttachments: () => input.supportsAttachments ?? false,
@@ -1050,7 +1047,6 @@ describe("HostCommandDispatcher run planning", () => {
         pluginsTokens: {
           issue: () => "skills-token",
         } as never,
-        onDeploymentEvent: vi.fn(),
         publicUrl: new URL("https://host.example"),
         runners: {
           supportsMessageAttachments: () => false,
@@ -1227,7 +1223,6 @@ function steerDispatcher(input: {
     egress: {} as never,
     pluginVersions: async () => [],
     pluginsTokens: {} as never,
-    onDeploymentEvent: input.onDeploymentEvent ?? vi.fn(),
     publicUrl: new URL("https://host.example"),
     runners: {
       dispatch: input.runnersDispatch,

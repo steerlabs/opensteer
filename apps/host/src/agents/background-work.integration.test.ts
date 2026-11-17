@@ -5,17 +5,9 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { readTranscriptPage } from "@opensteer/database/personal-sync-store";
+import { PendingAgentEventV2Schema } from "@opensteer/protocol";
 import {
-  conversationTurn,
-  foldTranscriptEvent,
-  groupTranscriptEntries,
-  observedSequence,
-  threadActivity,
-  threadActivityIndicator,
-  type TranscriptEntry,
-} from "@opensteer/client/host";
-import {
-  AgentEventSchema,
   harnessMinimumVersion,
   ModelSelectionSchema,
   type RunId,
@@ -71,7 +63,6 @@ const codexSelection = ModelSelectionSchema.parse({
   providerId: "openai",
 });
 interface Journey {
-  readonly events: readonly string[];
   readonly messages: readonly string[];
   readonly name: string;
   readonly nodes: readonly unknown[];
@@ -125,6 +116,7 @@ integration("Background work", () => {
       },
       harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       runTimeoutMs: 60_000,
+      runnerWire: {},
     });
     const threadId = await stack.createThread({
       modelSelection: codexSelection,
@@ -163,7 +155,6 @@ integration("Background work", () => {
       .orderBy("sequence", "asc")
       .execute();
     const journey: Journey = {
-      events: await eventTypes(active, runId),
       messages: messages.map((message) => textOf(message.content)),
       name,
       nodes: listed.data.nodes,
@@ -191,11 +182,8 @@ integration("Background work", () => {
       expect(during.replies).toEqual(["The researcher is working in the background."]);
       expect(during.composing).toBe(false);
       expect(during.activity).toBe("background");
-      expect(during.indicator).toEqual({
-        kind: "status",
-        label: "Working in the background",
-      });
-      expect(during.readThrough).toBe(during.replySequences.at(-1));
+      expect(during.replyPositions).toHaveLength(1);
+      expect(during.replyPositions[0]).not.toBeNull();
       // A history page that begins after the Run started shows the reply too.
       const page = await clientView(active, threadId, runId, {
         pageAfter: "run.started",
@@ -224,7 +212,6 @@ integration("Background work", () => {
         throw new Error(
           `${String(error)}\n${JSON.stringify({
             commands,
-            events: await eventTypes(active, runId),
           })}`,
         );
       });
@@ -284,7 +271,11 @@ integration("Background work", () => {
         "The researcher is working in the background.",
         expect.stringMatching(/^Noted:[\s\S]*Also check the changelog$/u),
       ]);
-      expect(journey.events.filter((type) => type === "run.phase")).toHaveLength(3);
+      expect(phaseReports(active, runId)).toEqual(["background", "turn", "background"]);
+      expect(await runRow(active, runId)).toMatchObject({
+        status: "completed",
+        backgroundDeadlineAt: expect.any(Date),
+      });
       // Each turn answered in its own reply.
       const after = await clientView(active, threadId, runId);
       expect(after.replies).toEqual([
@@ -329,10 +320,11 @@ integration("Background work", () => {
           status: "completed",
         },
       ]);
-      const phases = journey.events.filter((type) => type === "run.phase");
-      expect(phases).toHaveLength(2);
-      expect(journey.events.filter((type) => type === "run.completed")).toHaveLength(1);
-      expect(journey.events.at(-1)).toBe("run.completed");
+      expect(phaseReports(active, runId)).toEqual(["background", "turn"]);
+      expect(await runRow(active, runId)).toMatchObject({
+        status: "completed",
+        backgroundDeadlineAt: expect.any(Date),
+      });
     },
   );
   it.each([
@@ -830,91 +822,59 @@ function backgroundClaudeSdk(finished: Promise<void>): ClaudeAgentSdk {
   };
 }
 
-/**
- * The Thread as a client shows it in a conversation, folded from the Host's
- * events with the client's own model, as web, desktop and mobile do. With
- * `pageAfter`, only what follows the first event of that type is folded, as
- * a history page that begins after it would be.
- */
+function phaseReports(active: VerticalStack, runId: RunId) {
+  const phases = new Map<number, string>();
+  for (const { frame, direction } of active.wire!.frames) {
+    if (direction !== "runner" || frame.type !== "runner.event") continue;
+    const decoded = PendingAgentEventV2Schema.safeParse(frame.event);
+    if (decoded.success && decoded.data.runId === runId && decoded.data.type === "run.phase")
+      phases.set(decoded.data.ordinal, decoded.data.data.phase);
+  }
+  return [...phases.values()];
+}
 async function clientView(
   active: VerticalStack,
   threadId: ThreadId,
   runId: RunId,
-  options: {
-    readonly pageAfter?: string;
-  } = {},
+  options: { pageAfter?: string } = {},
 ) {
-  const all = await active.host.store.database
-    .selectFrom("deploymentEvents")
-    .selectAll()
-    .where("threadId", "=", threadId)
-    .orderBy("sequence", "asc")
-    .execute();
-  const rows = options.pageAfter
-    ? all.slice(all.findIndex((row) => row.type === options.pageAfter) + 1)
-    : all;
-  let entries: TranscriptEntry[] = [];
-  for (const row of rows) {
-    entries = foldTranscriptEvent(
-      entries,
-      AgentEventSchema.parse({
-        createdAt: row.createdAt.toISOString(),
-        data: row.data,
-        environmentId: row.environmentId,
-        eventId: row.eventId,
-        runId: row.runId,
-        sequence: String(row.sequence),
-        threadId: row.threadId,
-        type: row.type,
-      }),
-    );
-  }
-  const groups = groupTranscriptEntries(entries);
-  const turns = groups.flatMap((group) =>
-    group.kind === "turn" ? [conversationTurn(group.turn)] : [],
-  );
-  // Each subagent's own steps, which belong to its transcript and not the conversation's.
-  const stepsByNode = new Map<string, number>();
-  for (const row of rows) {
-    if (row.type === "tool.started" && row.nodeDetailId)
-      stepsByNode.set(row.nodeDetailId, (stepsByNode.get(row.nodeDetailId) ?? 0) + 1);
-  }
-  const subagentSteps = [...stepsByNode.values()];
-  const run = await runRow(active, runId);
-  const thread = await active.host.store.database
+  const database = active.host.store.database;
+  const { createdBy: viewerId } = await database
     .selectFrom("threads")
-    .select("status")
+    .select("createdBy")
     .where("id", "=", threadId)
     .executeTakeFirstOrThrow();
-  const activity = threadActivity({
-    entries,
-    runQueue: ["completed", "failed", "interrupted"].includes(run.status)
-      ? []
-      : [
-          {
-            createdAt: new Date().toISOString(),
-            id: runId,
-            runOrdinal: 0,
-            status: "running",
-            threadId,
-          },
-        ],
-    thread: {
-      id: threadId,
-      status: thread.status,
-    },
+  const page = await readTranscriptPage(database, {
+    viewerId,
+    scope: { kind: "thread", threadId },
+    ...(options.pageAfter ? { maxTurns: 1 } : {}),
   });
+  if (page.kind !== "page") throw new Error("The conversation transcript is unavailable");
+  const replies = page.items.filter(
+    (item) => item.kind === "message" && item.view.author === "agent",
+  );
+  const activeTools = await database
+    .selectFrom("toolCalls")
+    .select("nodeId")
+    .where("runId", "=", runId)
+    .where("nodeId", "is not", null)
+    .where("startedAt", "is not", null)
+    .execute();
+  const stepsByNode = new Map<string, number>();
+  for (const { nodeId } of activeTools) {
+    if (nodeId) stepsByNode.set(nodeId, (stepsByNode.get(nodeId) ?? 0) + 1);
+  }
+  const run = await runRow(active, runId);
+  const live = await active.api["thread.live.get"]({ threadId });
+  if (!live.ok) throw new Error(live.error.message);
   return {
-    activity,
-    composing: turns.some((turn) => turn.composing),
-    indicator: threadActivityIndicator(activity, {
-      conversation: true,
-      groups,
-    }),
-    readThrough: observedSequence(entries, true),
-    replies: turns.flatMap((turn) => (turn.reply ? [turn.reply.body] : [])),
-    subagentSteps,
-    replySequences: turns.flatMap((turn) => (turn.reply?.sequence ? [turn.reply.sequence] : [])),
+    activity: run.phase,
+    composing: live.data.runs
+      .flatMap((entry) => entry.progress.items)
+      .some((item) => item.stream === "assistant"),
+    replies: replies.map((item) => item.view.preview),
+    subagentSteps: [...stepsByNode.values()],
+    replyPositions: replies.map((item) => item.position),
   };
 }
 async function settled(active: VerticalStack, runId: RunId) {
@@ -940,15 +900,6 @@ async function assistantTexts(active: VerticalStack, runId: RunId): Promise<stri
     .where("kind", "=", "assistant")
     .execute();
   return rows.map((row) => textOf(row.content));
-}
-async function eventTypes(active: VerticalStack, runId: RunId): Promise<string[]> {
-  const rows = await active.host.store.database
-    .selectFrom("deploymentEvents")
-    .select("type")
-    .where("runId", "=", runId)
-    .orderBy("sequence", "asc")
-    .execute();
-  return rows.map((row) => row.type);
 }
 function textOf(content: unknown): string {
   return (

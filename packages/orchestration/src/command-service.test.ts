@@ -71,7 +71,6 @@ describe("command ordering across an Assignment", () => {
     const commands = new CommandService({
       admission,
       onExecutionQueued: vi.fn(),
-      onDeploymentEvent: vi.fn(),
       store,
     });
     const delegation = commands.delegateThread({
@@ -176,7 +175,6 @@ describe("command ordering across an Assignment", () => {
         maxQueuedCommands: 10,
       }),
       onExecutionQueued: vi.fn(),
-      onDeploymentEvent: vi.fn(),
       store,
     });
     const message = commands.enqueueThreadInput({

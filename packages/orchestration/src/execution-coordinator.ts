@@ -1,5 +1,5 @@
 import { isResendableControlCommand } from "@opensteer/database/command-delivery";
-import type { AgentEvent, CommandId, EnvironmentId, RunId, ThreadId } from "@opensteer/core";
+import type { CommandId, EnvironmentId, RunId, ThreadId } from "@opensteer/core";
 import { OpensteerError } from "@opensteer/core";
 import type { CommandRow, OpensteerStore, PendingCommandRow } from "@opensteer/database";
 import { CoalescedWake } from "@opensteer/shared/coalescedWake";
@@ -41,7 +41,6 @@ interface ExecutionCoordinatorOptions {
   readonly maxQueuedBytes: number;
   readonly maxQueuedCommands: number;
   readonly now?: () => number;
-  readonly onDeploymentEvent?: (event: AgentEvent) => void;
   readonly onDispatchError?: (error: unknown, command: CommandRow) => void;
   readonly pollIntervalMs?: number;
   readonly store: ExecutionCoordinatorStore;
@@ -67,7 +66,6 @@ export class ExecutionCoordinator {
   readonly #maxQueuedBytes: number;
   readonly #maxQueuedCommands: number;
   readonly #now: () => number;
-  readonly #onDeploymentEvent: ((event: AgentEvent) => void) | undefined;
   readonly #onDispatchError: ExecutionCoordinatorOptions["onDispatchError"];
   readonly #pollIntervalMs: number;
   readonly #store: ExecutionCoordinatorStore;
@@ -105,7 +103,6 @@ export class ExecutionCoordinator {
     this.#maxQueuedBytes = positiveInteger(options.maxQueuedBytes, "maxQueuedBytes");
     this.#maxQueuedCommands = positiveInteger(options.maxQueuedCommands, "maxQueuedCommands");
     this.#now = options.now ?? Date.now;
-    this.#onDeploymentEvent = options.onDeploymentEvent;
     this.#onDispatchError = options.onDispatchError;
     this.#pollIntervalMs = positiveInteger(options.pollIntervalMs ?? 500, "pollIntervalMs");
     this.#store = options.store;
@@ -280,15 +277,13 @@ export class ExecutionCoordinator {
       return false;
     }
     if (!claimed) return true;
-    for (const event of claimed.events) this.#onDeploymentEvent?.(event);
+
     if (claimed.terminalFailure) {
-      for (const event of await this.#store.failCommand(
+      await this.#store.failCommand(
         command.id,
         claimed.terminalFailure,
         claimed.terminalFailureInput ?? "authority-cohort",
-      )) {
-        this.#onDeploymentEvent?.(event);
-      }
+      );
       return true;
     }
     try {
@@ -302,19 +297,14 @@ export class ExecutionCoordinator {
       const resendable =
         dispatchError.disposition === "uncertain" && isResendableControlCommand(command.type);
       if (dispatchError.disposition === "retry" || resendable) {
-        const events = await this.#store.retryCommand(command.id, dispatchError);
+        await this.#store.retryCommand(command.id, dispatchError);
         // Recorded once the retry has committed: a listing read before then
         // misses the command, and must not take it for one that left.
         this.#backOff(command.id);
-        for (const event of events) this.#onDeploymentEvent?.(event);
       } else if (dispatchError.disposition === "failed") {
-        for (const event of await this.#store.failCommand(command.id, dispatchError.message)) {
-          this.#onDeploymentEvent?.(event);
-        }
+        await this.#store.failCommand(command.id, dispatchError.message);
       } else if (command.type === "run.steer") {
-        for (const event of await this.#store.markSteerUnknown(command.id, dispatchError.message)) {
-          this.#onDeploymentEvent?.(event);
-        }
+        await this.#store.markSteerUnknown(command.id, dispatchError.message);
       }
     }
     return true;

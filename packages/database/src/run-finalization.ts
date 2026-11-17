@@ -1,33 +1,51 @@
+import { ChannelConversationIdSchema } from "@opensteer/channel-core";
+import { commitPersonalMutation, type PersonalMutation } from "./personal-mutation.js";
+import {
+  advancePersonalRunFinish,
+  beginPersonalRunFinish,
+  readFinishChildren,
+} from "./personal-run-state.js";
+import { interruptPersonalToolCalls } from "./personal-tool-calls.js";
+import type { FinishIntent } from "./personal-state-schema.js";
+import {
+  publishExecutionInput,
+  publishExecutionRequest,
+  publishExecutionThread,
+  recordExecutionRunChange,
+  updateExecutionThread,
+  writeExecutionItem,
+} from "./execution-changes.js";
+import { refreshLatestRunCompletion, unreadTaskContribution } from "./personal-attention-store.js";
 import { threadExecutionIsAvailableToUser } from "./store-primitives.js";
 import { sql } from "kysely";
 import { recordPersonWaited } from "./run-visibility.js";
 import { appendDoneState } from "./task-done.js";
 import { pauseTriggerInTransaction } from "./trigger-store.js";
-import { lockRunProjectionRows } from "./run-projection-locks.js";
-import { resendableControlCommandTypes } from "./command-delivery.js";
-import { projectThreadState } from "./thread-status.js";
 import {
   OpensteerError,
+  MessageContentSchema,
+  harnessUsageLimitFailureCode,
   ReplyTargetSchema,
   type AgentEvent,
   type RequestCancellationReason,
   type RunId,
+  type RunAttemptId,
+  utf8Prefix,
   type RunFailure,
 } from "@opensteer/core";
-import type { Transaction } from "kysely";
-import { ensureQueuedRun, settleOutstandingSteersForRun } from "./thread-inbox.js";
-import { threadInputFromRow } from "./thread-row-mappers.js";
+import type { Kysely, Transaction } from "kysely";
+import { ensureQueuedRun } from "./thread-inbox.js";
 import { jsonValue, lockThreadRow, type ChannelLinks } from "./store-primitives.js";
 import { enqueueChannelConversationStatus, enqueueChannelReply } from "./channel-deliveries.js";
 import { runReply } from "./run-reply.js";
 import type { CommandRow, DatabaseSchema, RunRow } from "./schema.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
-import { cancelPending } from "./request-store.js";
 import { settleAssignmentAfterRun, threadOrAssignmentHasPendingWork } from "./assignment-store.js";
 import { endLiveExecutionNodes } from "./execution-nodes.js";
 import { endOpenAttempts } from "./run-attempts.js";
-import { revokeRunGrants, type RevokedRunGrant, runWasStopped } from "./run-grants.js";
+import { runWasStopped } from "./run-grants.js";
 import { isOfflineSettlement } from "./personal-transaction.js";
+import { completeRunReplacement } from "./run-recovery.js";
+import { pendingReplacementAttempt } from "./run-attempts.js";
 interface FinalizeRunRequest {
   readonly requestCancellationReason?: RequestCancellationReason;
   readonly completedAt: Date;
@@ -40,6 +58,8 @@ interface FinalizeRunRequest {
   readonly queuedInputCancellation: "activation-input" | "authority-cohort" | "seed-input";
   readonly runId: RunId;
   readonly status: "completed" | "failed" | "interrupted";
+  readonly statement?: FinishIntent["statement"];
+  readonly attemptId?: RunAttemptId;
 }
 
 /** The sole durable transition from a nonterminal Run to a terminal Run. */
@@ -57,6 +77,7 @@ export async function finalizeRunTransaction(
     .selectFrom("runs")
     .innerJoin("threads", "threads.id", "runs.threadId")
     .select([
+      "runs.finishIntent",
       "runs.assignmentId",
       "runs.doneWhenFinished",
       "runs.bindingGeneration",
@@ -77,6 +98,12 @@ export async function finalizeRunTransaction(
     .executeTakeFirst();
   if (!run || !["queued", "starting", "running", "waiting"].includes(run.runStatus)) return [];
   const offline = isOfflineSettlement(transaction);
+  if (!offline && run.finishIntent) return [];
+  if (requested.source === "host" && requested.status === "completed")
+    throw new OpensteerError({
+      code: "internal",
+      message: "A Host cannot prove a successful Run completion",
+    });
   // A Run someone stopped ended because they stopped it, whatever the Host
   // found first: a lost Runner, an expired lease, a refused dispatch. What a
   // Runner reports is its own record and stands.
@@ -92,11 +119,6 @@ export async function finalizeRunTransaction(
     .selectAll()
     .where("id", "=", run.threadId)
     .executeTakeFirstOrThrow();
-  await lockRunProjectionRows(transaction, {
-    runIds: [run.id],
-    ...(input.expectedCommandId ? { commandIds: [input.expectedCommandId] } : {}),
-    threadIds: [run.threadId],
-  });
   if (input.expectedCommandId) {
     const command = await transaction
       .selectFrom("commands")
@@ -113,54 +135,316 @@ export async function finalizeRunTransaction(
       return [];
     }
   }
-  const events: AgentEvent[] = [];
-  if (input.source === "host") {
-    if (input.status === "completed") {
-      throw new OpensteerError({
-        code: "internal",
-        message: "A Host cannot prove a successful Run completion",
+  const reply = input.status === "completed" ? await runReply(transaction, run) : null;
+  if (offline) return finalizeRunOutcome(transaction, input, run, thread, null, null);
+  return commitPersonalMutation(transaction, async (tx, mutation) => {
+    const children = await readFinishChildren(tx, run.id);
+    if (!children.hasMore) {
+      await settleFinishChildren(tx, mutation, run.id, input, children);
+      const events = await finalizeRunOutcome(tx, input, run, thread, reply?.id ?? null, mutation);
+      mutation.react({
+        type: "runFinished",
+        runId: run.id,
+        threadId: run.threadId,
+        attemptId: input.attemptId ?? (await finishAttemptId(tx, run.id, run.bindingGeneration)),
+        bindingGeneration: run.bindingGeneration,
+        outcome: input.status,
       });
+      return events;
     }
-    events.push(
-      input.status === "failed"
-        ? await appendHostDeploymentEvent(transaction, {
-            data: input.failure as {
-              readonly code: string;
-              readonly message: string;
-              readonly retryable: boolean;
-              readonly status: "failed";
-            },
-            environmentId: run.environmentId,
-            runId: run.id,
-            threadId: run.threadId,
-            type: "run.failed",
-          })
-        : await appendHostDeploymentEvent(transaction, {
-            data: {
-              status: "interrupted",
-            },
-            environmentId: run.environmentId,
-            runId: run.id,
-            threadId: run.threadId,
-            type: "run.interrupted",
-          }),
-    );
-  }
+    await beginPersonalRunFinish(tx, mutation, {
+      runId: run.id,
+      intent: {
+        attemptId: input.attemptId ?? (await finishAttemptId(tx, run.id, run.bindingGeneration)),
+        bindingGeneration: run.bindingGeneration,
+        outcome: input.status,
+        mode: input.source,
+        completedAt: input.completedAt.toISOString(),
+        replyMessageId: reply?.id ?? null,
+        ...(input.failure ? { failure: input.failure } : {}),
+        ...(input.statement ? { statement: input.statement } : {}),
+        ...(input.requestCancellationReason
+          ? { requestCancellationReason: input.requestCancellationReason }
+          : {}),
+        queuedInputCancellation: input.queuedInputCancellation,
+      },
+    });
+    await recordExecutionRunChange(tx, mutation, {
+      runId: run.id,
+      threadId: run.threadId,
+      transition: "finishing",
+    });
+    return [];
+  });
+}
 
+async function finishAttemptId(
+  tx: Transaction<DatabaseSchema>,
+  runId: RunId,
+  bindingGeneration: number | null,
+) {
+  if (bindingGeneration === null) return null;
+  const attempt = await tx
+    .selectFrom("runAttempts")
+    .select("id")
+    .where("runId", "=", runId)
+    .where("bindingGeneration", "=", bindingGeneration)
+    .limit(1)
+    .executeTakeFirst();
+  return attempt?.id ?? null;
+}
+
+export async function settleFinishChildren(
+  tx: Transaction<DatabaseSchema>,
+  mutation: PersonalMutation,
+  runId: RunId,
+  input: Pick<
+    FinalizeRunRequest,
+    "completedAt" | "source" | "requestCancellationReason" | "failure"
+  >,
+  children: Awaited<ReturnType<typeof readFinishChildren>>,
+  recovering = false,
+) {
+  for (const id of children.requests) {
+    const request = await tx
+      .updateTable("requests")
+      .set({
+        status: "cancelled",
+        cancellationReason: input.requestCancellationReason ?? "run-ended",
+        resolvedAt: input.completedAt,
+        resolvedBy: null,
+        responseCommandId: null,
+      })
+      .where("id", "=", id)
+      .where("status", "=", "pending")
+      .returning("responseCommandId")
+      .executeTakeFirst();
+    if (request) await publishExecutionRequest(tx, { id });
+  }
+  const replacement = children.steers.length ? await pendingReplacementAttempt(tx, runId) : null;
+  const stoppedConversation =
+    children.steers.length > 0 && (await stoppedConversationReply(tx, runId));
+  for (const id of children.steers) {
+    const current = await tx
+      .selectFrom("threadInputs")
+      .innerJoin("commands", "commands.id", "threadInputs.steerCommandId")
+      .select([
+        "commands.status",
+        "commands.type",
+        "threadInputs.authoritySource",
+        "threadInputs.policy",
+        "threadInputs.state",
+      ])
+      .where("threadInputs.messageId", "=", id)
+      .executeTakeFirst();
+    if (!current) continue;
+    const delivered = current.type === "run.steer" && current.status === "succeeded";
+    const unclaimed =
+      current.type === "run.restart"
+        ? replacement?.dispatchedAt == null
+        : current.status === "pending" || current.status === "failed";
+    const unknown = current.state === "unknown" || (recovering && !unclaimed);
+    const requeue = current.policy === "queue" && unclaimed && !delivered && !unknown;
+    const stopped =
+      requeue &&
+      stoppedConversation &&
+      (current.authoritySource.kind === "user-session" ||
+        current.authoritySource.kind === "channel-ingress");
+    if (requeue && !stopped)
+      await tx.updateTable("messages").set({ runId: null }).where("id", "=", id).execute();
+    const row = await tx
+      .updateTable("threadInputs")
+      .set({
+        ...(delivered
+          ? { state: "delivered", deliveredAt: input.completedAt }
+          : stopped
+            ? { state: "cancelled", cancelReason: "stopped" }
+            : requeue
+              ? { state: "pending", runId: null, steerCommandId: null }
+              : current.policy === "queue" || unknown
+                ? { state: "unknown" }
+                : {
+                    state: "cancelled",
+                    cancelReason: unclaimed ? "steer-not-delivered" : "run-ended-delivery-unknown",
+                  }),
+        updatedAt: input.completedAt,
+      })
+      .where("messageId", "=", id)
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    await publishExecutionInput(tx, row);
+  }
+  if (children.commands.length) {
+    await tx
+      .updateTable("commands")
+      .set((eb) => ({
+        status:
+          input.source === "runner"
+            ? eb
+                .case()
+                .when("type", "=", "run.execute")
+                .then("succeeded" as const)
+                .else("failed" as const)
+                .end()
+            : "failed",
+        lastError:
+          input.failure && input.source === "host"
+            ? jsonValue(input.failure)
+            : sql`case when type = 'run.execute' and ${input.source} = 'runner' then null else
+            '{"message":"The Run ended before control delivery was confirmed"}'::jsonb end`,
+        updatedAt: input.completedAt,
+      }))
+      .where("id", "in", children.commands)
+      .execute();
+  }
+  await endLiveExecutionNodes(tx, { runId, endedAt: input.completedAt, ids: children.nodes });
+  await interruptPersonalToolCalls(tx, mutation, runId, children.tools);
+  if (children.grants.length)
+    await tx
+      .updateTable("grants")
+      .set({ revokedAt: input.completedAt, revokedReason: "superseded", status: "revoked" })
+      .where("id", "in", children.grants)
+      .execute();
+}
+
+async function stoppedConversationReply(tx: Transaction<DatabaseSchema>, runId: RunId) {
+  const stopped = await tx
+    .selectFrom("commands")
+    .select("id")
+    .where("runId", "=", runId)
+    .where("type", "=", "run.interrupt")
+    .where(sql<string>`authority_source->>'kind'`, "=", "user-session")
+    .limit(1)
+    .executeTakeFirst();
+  if (!stopped) return false;
+  const run = await tx
+    .selectFrom("runs")
+    .innerJoin("threads", "threads.id", "runs.threadId")
+    .select(["threads.purpose", "runs.replyTarget"])
+    .where("runs.id", "=", runId)
+    .executeTakeFirstOrThrow();
+  if (run.purpose === "voice") return true;
+  if (run.replyTarget?.kind !== "channel") return false;
+  const conversation = await tx
+    .selectFrom("channelConversations")
+    .select("personalContext")
+    .where("id", "=", ChannelConversationIdSchema.parse(run.replyTarget.conversationId))
+    .executeTakeFirst();
+  return conversation?.personalContext === true;
+}
+
+export async function drainRunFinish(
+  database: Kysely<DatabaseSchema>,
+  links: ChannelLinks,
+  runId: RunId,
+) {
+  let result: "more" | "settled";
+  do {
+    result = await commitPersonalMutation(database, async (tx, mutation) => {
+      const run = await tx
+        .selectFrom("runs")
+        .selectAll()
+        .where("id", "=", runId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!run?.finishIntent) return "settled";
+      await lockThreadRow(tx, run.threadId);
+      const thread = await tx
+        .selectFrom("threads")
+        .selectAll()
+        .where("id", "=", run.threadId)
+        .executeTakeFirstOrThrow();
+      const request = (intent: FinishIntent): FinalizeRunRequest => ({
+        status: intent.outcome,
+        completedAt: new Date(intent.completedAt),
+        runId,
+        links,
+        queuedInputCancellation: intent.queuedInputCancellation ?? "seed-input",
+        source:
+          (intent.mode ?? (intent.statement ? "runner" : "host")) === "runner" ? "runner" : "host",
+        ...(intent.failure ? { failure: intent.failure } : {}),
+        ...(intent.requestCancellationReason
+          ? { requestCancellationReason: intent.requestCancellationReason }
+          : {}),
+      });
+      return advancePersonalRunFinish(tx, mutation, runId, {
+        settle: (children, intent) =>
+          settleFinishChildren(
+            tx,
+            mutation,
+            runId,
+            request(intent),
+            children,
+            intent.mode === "recovery",
+          ),
+        finalize: async (intent) => {
+          if (intent.mode === "steer" || intent.mode === "recovery") {
+            if (!intent.attemptId) throw new Error("A replacement must name the old attempt");
+            await completeRunReplacement(
+              tx,
+              mutation,
+              run,
+              intent.attemptId,
+              intent.mode,
+              new Date(intent.completedAt),
+            );
+          } else {
+            await finalizeRunOutcome(
+              tx,
+              request(intent),
+              { ...run, runStatus: run.status },
+              thread,
+              intent.replyMessageId,
+              mutation,
+            );
+          }
+        },
+      });
+    });
+  } while (result === "more");
+}
+
+async function finalizeRunOutcome(
+  transaction: Transaction<DatabaseSchema>,
+  input: FinalizeRunRequest,
+  run: Pick<
+    RunRow,
+    | "assignmentId"
+    | "doneWhenFinished"
+    | "bindingGeneration"
+    | "activationInputId"
+    | "id"
+    | "providerSessionId"
+    | "replyTarget"
+    | "requestedBy"
+    | "threadId"
+    | "seedInputId"
+    | "turnReplyMessageId"
+  > & { runStatus: RunRow["status"] },
+  thread: import("./schema.js").ThreadRow,
+  replyId: import("@opensteer/core").MessageId | null,
+  mutation: PersonalMutation | null,
+): Promise<readonly AgentEvent[]> {
+  const offline = mutation === null;
+  const unreadBefore = offline ? 0 : await unreadTaskContribution(transaction, run.threadId);
+  const events: AgentEvent[] = [];
   // A person who started this from a channel never sees the Thread, so how it
   // ended has to reach them where they wrote: the Run's reply when it
   // completed, which is all they are sent of what the agent wrote, and a
   // notice when it did not.
   const replyTarget = run.replyTarget ? ReplyTargetSchema.parse(run.replyTarget) : null;
   if (replyTarget?.kind === "channel" && input.status === "completed") {
-    const reply = await runReply(transaction, {
-      id: run.id,
-      threadId: run.threadId,
-    });
+    const reply = replyId
+      ? await transaction
+          .selectFrom("messages")
+          .select(["id", "content"])
+          .where("id", "=", replyId)
+          .executeTakeFirst()
+      : null;
     // A reply its channel already heard when a turn ended in the background.
     if (reply && reply.id !== run.turnReplyMessageId) {
       await enqueueChannelReply(transaction, {
-        content: reply.content,
+        content: MessageContentSchema.parse(reply.content),
         conversationId: replyTarget.conversationId,
         links: input.links,
         messageId: reply.id,
@@ -188,19 +472,24 @@ export async function finalizeRunTransaction(
     });
   }
   await recordPersonWaited(transaction, run.id);
-  const cleanup = await cleanupRunAttemptTransaction(transaction, {
-    completedAt: input.completedAt,
-    failure: input.failure,
-    requestCancellationReason: input.requestCancellationReason ?? "run-ended",
-    retireBinding: offline && run.bindingGeneration !== null,
-    run: {
-      ...run,
-      status: run.runStatus,
-    },
-    source: input.source,
-    status: input.status,
-  });
-  events.push(...cleanup.events);
+  if (run.runStatus !== "queued")
+    await transaction
+      .updateTable("providerSessions")
+      .set({
+        status: input.status === "failed" ? "broken" : "ready",
+        updatedAt: input.completedAt,
+        ...(offline && run.bindingGeneration !== null
+          ? {
+              bindingGeneration: sql<number>`binding_generation + 1`,
+              leaseExpiresAt: null,
+              leaseTokenHash: null,
+              runnerId: null,
+              runnerBootId: null,
+            }
+          : {}),
+      })
+      .where("id", "=", run.providerSessionId)
+      .execute();
   const cancelled =
     run.runStatus === "queued"
       ? await transaction
@@ -302,23 +591,15 @@ export async function finalizeRunTransaction(
     .where("state", "=", "claimed")
     .returningAll()
     .execute();
-  for (const row of [...cancelled, ...unconfirmedReports]) {
-    events.push(
-      await appendHostDeploymentEvent(transaction, {
-        data: {
-          input: threadInputFromRow(row),
-        },
-        environmentId: run.environmentId,
-        runId: run.id,
-        threadId: run.threadId,
-        type: "thread-input.updated",
-      }),
-    );
-  }
+  for (const row of [...cancelled, ...unconfirmedReports])
+    await publishExecutionInput(transaction, row);
   await transaction
     .updateTable("runs")
     .set({
       completedAt: input.completedAt,
+      terminalReplyMessageId: replyId,
+      runnerSafetyTerminal: input.source === "runner" && input.status !== "completed",
+      ...(mutation ? { revision: mutation.sequence } : {}),
       failure: input.status === "failed" ? jsonValue(input.failure!) : null,
       status: input.status,
     })
@@ -372,7 +653,7 @@ export async function finalizeRunTransaction(
       thread.doneAt = doneAt;
       thread.doneReason = null;
       thread.inputQueuePaused = false;
-      events.push(await appendDoneState(transaction, run.threadId));
+      if (!offline) await appendDoneState(transaction, run.threadId);
     }
   }
 
@@ -383,10 +664,43 @@ export async function finalizeRunTransaction(
       onInvalidSelection: "defer",
     });
     events.push(...followOn.events);
-    events.push(...(await projectThreadState(transaction, run.threadId, input.completedAt, true)));
+    await updateExecutionThread(transaction, run.threadId, input.completedAt);
+    if (input.status === "failed" && input.failure?.code === harnessUsageLimitFailureCode)
+      await recordExecutionRunChange(transaction, mutation, {
+        runId: run.id,
+        threadId: run.threadId,
+        transition: "usage-limit",
+      });
+    await refreshLatestRunCompletion(transaction, mutation, run.threadId, unreadBefore);
+    await transaction
+      .updateTable("threads")
+      .set({
+        failurePreview: input.status === "failed" ? utf8Prefix(input.failure!.message, 1120) : null,
+      })
+      .where("id", "=", run.threadId)
+      .execute();
+    await publishExecutionThread(transaction, mutation, run.threadId);
+    const cardId = `run:${run.id}`;
+    const existing = await transaction
+      .selectFrom("transcriptItems")
+      .select("createdAt")
+      .where("id", "=", cardId)
+      .executeTakeFirst();
+    await writeExecutionItem(transaction, mutation, {
+      id: cardId,
+      kind: "run",
+      runId: run.id,
+      threadId: run.threadId,
+      nodeId: null,
+      attemptId: null,
+      visible: true,
+      isTurnStart: false,
+      createdAt: existing?.createdAt ?? input.completedAt,
+      view: { status: input.status },
+    });
   }
   // Nodes and attempts rank last; the Run's lock already orders these writes.
-  await cleanup.finish(() => endOpenAttempts(transaction, run.id, input.status));
+  await endOpenAttempts(transaction, run.id, input.status);
   return events;
 }
 
@@ -430,122 +744,4 @@ export async function endStoppedUnconfirmedRun(
     .where("id", "=", input.runId)
     .execute();
   return events;
-}
-
-/**
- * Terminal cleanup of one execution, without deciding the Run's outcome.
- * The caller holds lockRunProjectionRows. Finish only after all projections:
- * nodes, attempts and grants acquire the final ranks in lock-order.ts.
- */
-export async function cleanupRunAttemptTransaction(
-  transaction: Transaction<DatabaseSchema>,
-  input: {
-    readonly completedAt: Date;
-    readonly failure?: RunFailure | undefined;
-    readonly requestCancellationReason: RequestCancellationReason;
-    readonly retireBinding?: boolean;
-    readonly run: Pick<RunRow, "id" | "providerSessionId" | "bindingGeneration" | "status">;
-    readonly source: "host" | "runner";
-    readonly status: "completed" | "failed" | "interrupted";
-  },
-): Promise<{
-  readonly events: readonly AgentEvent[];
-  readonly finish: (endAttempts: () => Promise<void>) => Promise<readonly RevokedRunGrant[]>;
-}> {
-  const { run } = input;
-  const events = [
-    ...(await settleOutstandingSteersForRun(transaction, run.id, input.retireBinding)),
-  ];
-  events.push(
-    ...(await cancelPending(transaction, {
-      reason: input.requestCancellationReason,
-      resolvedAt: input.completedAt,
-      runId: run.id,
-    })),
-  );
-  // A terminal Run proves that its execute command ran, but it does not prove
-  // delivery of unrelated controls.  Steers were settled above; unresolved
-  // Request responses and interrupts fail closed instead of receiving a
-  // fabricated success receipt.
-  await transaction
-    .updateTable("commands")
-    .set({
-      ...(input.source === "host" && input.failure
-        ? {
-            lastError: jsonValue(input.failure),
-          }
-        : {}),
-      status: input.source === "host" ? "failed" : "succeeded",
-      updatedAt: input.completedAt,
-    })
-    .where("runId", "=", run.id)
-    .where("type", "=", "run.execute")
-    .where("status", "in", ["pending", "dispatched", "unknown"])
-    .execute();
-  await transaction
-    .updateTable("commands")
-    .set({
-      lastError: jsonValue({
-        message: "The Run ended before control delivery was confirmed",
-      }),
-      status: "failed",
-      updatedAt: input.completedAt,
-    })
-    .where("runId", "=", run.id)
-    .where("type", "in", resendableControlCommandTypes)
-    .where("status", "in", ["pending", "dispatched", "unknown"])
-    .execute();
-  // A Run stopped before it was bound never reached its session.
-  if (
-    run.status !== "queued" &&
-    !(input.status === "interrupted" && run.bindingGeneration === null)
-  ) {
-    await transaction
-      .updateTable("providerSessions")
-      .set({
-        status: input.status === "failed" ? "broken" : "ready",
-        updatedAt: input.completedAt,
-      })
-      .where("id", "=", run.providerSessionId)
-      .execute();
-  }
-  if (input.retireBinding) {
-    await transaction
-      .updateTable("providerSessions")
-      .set((expression) => ({
-        bindingGeneration: expression("bindingGeneration", "+", 1),
-        leaseExpiresAt: null,
-        leaseTokenHash: null,
-        runnerId: null,
-        runnerBootId: null,
-        status: "ready",
-        updatedAt: input.completedAt,
-      }))
-      .where("id", "=", run.providerSessionId)
-      .execute();
-    // Unknown describes the input's receipt, not a command that may still act.
-    await transaction
-      .updateTable("commands")
-      .set({
-        lastError: jsonValue({
-          message: "The execution was lost before control delivery completed",
-        }),
-        status: "failed",
-        updatedAt: input.completedAt,
-      })
-      .where("runId", "=", run.id)
-      .where("status", "in", ["pending", "dispatched", "unknown"])
-      .execute();
-  }
-  return {
-    events,
-    finish: async (endAttempts) => {
-      await endLiveExecutionNodes(transaction, {
-        endedAt: input.completedAt,
-        runId: run.id,
-      });
-      await endAttempts();
-      return input.retireBinding ? revokeRunGrants(transaction, [run.id], "superseded") : [];
-    },
-  };
 }

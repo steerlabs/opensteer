@@ -42,10 +42,13 @@ export interface PlaceView {
 
 export interface FinishIntent {
   readonly attemptId: RunAttemptId | null;
+  readonly mode?: "host" | "runner" | "recovery" | "steer";
   readonly bindingGeneration: number | null;
   readonly outcome: "completed" | "failed" | "interrupted";
   readonly completedAt: string;
   readonly replyMessageId: MessageId | null;
+  readonly requestCancellationReason?: import("@opensteer/core").RequestCancellationReason;
+  readonly queuedInputCancellation?: "activation-input" | "authority-cohort" | "seed-input";
   readonly failure?: RunFailure;
   readonly statement?: {
     readonly ordinal: number;
@@ -472,13 +475,15 @@ const currentStateIndexes = `
   create index requests_current_thread on requests(originating_thread_id,id) where status = 'pending' and originating_node_id is null;
   create index requests_current_node on requests(originating_node_id,id) where status = 'pending' and originating_node_id is not null;
   create index run_attempts_binding on run_attempts(run_id,binding_generation,id);
+  create index run_attempts_open on run_attempts(run_id,id) where ended_at is null;
+  create index run_attempts_recent_recovery on run_attempts(run_id,started_at desc) where reason = 'recovery';
   create index execution_nodes_current_run on execution_nodes(run_id,id) where status = 'running';
   create index execution_nodes_current_root on execution_nodes(run_id,id)
     where status = 'running' and parent_node_id is null;
   create index execution_nodes_current_parent on execution_nodes(parent_node_id,id) where status = 'running';
   create index grants_current_run on grants(run_id,id) where status = 'active';
   create index thread_inputs_current_steer on thread_inputs(run_id,message_id)
-    where steer_command_id is not null and state = 'pending';
+    where steer_command_id is not null and state = 'claimed';
   create index thread_inputs_current_queue on thread_inputs(thread_id,approval_sort,queue_rank,message_id)
     where policy = 'queue' and state in ('pending','awaiting-approval');
   create index runs_current_seed on runs(seed_input_id) where status in ('queued','starting','running','waiting');

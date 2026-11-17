@@ -1,5 +1,5 @@
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { lockDeploymentEvents, withPersonalTransaction } from "./personal-transaction.js";
 import { z } from "zod";
 import {
   EnvironmentIdSchema,
@@ -13,7 +13,7 @@ import {
 } from "@opensteer/core";
 import { createId } from "@opensteer/core";
 import "./connection.js";
-import { appendHostDeploymentEvent } from "./deployment-events.js";
+import { publishExecutionNode } from "./execution-nodes.js";
 import {
   lockCommandIdempotency,
   findCommandByIdempotency,
@@ -106,6 +106,7 @@ export async function assertNodeStop(
     .executeTakeFirstOrThrow();
   if (
     !["running", "waiting"].includes(run.status) ||
+    run.finishIntent !== null ||
     node.status !== "running" ||
     attempt.status !== "current" ||
     attempt.endedAt !== null ||
@@ -129,7 +130,7 @@ export async function assertNodeStop(
   };
 }
 export async function enqueueNodeStop(database: Kysely<DatabaseSchema>, input: NodeStopInput) {
-  return withPersonalTransaction(database, async (tx) => {
+  return commitPersonalMutation(database, async (tx) => {
     await lockCommandIdempotency(tx, input.requestedBy, input.idempotencyKey);
     await lockThreadCaller(tx, input.authority, [input.runId]);
     // A replay answers as it first did, even once the subagent has ended.
@@ -212,19 +213,10 @@ export async function enqueueNodeStop(database: Kysely<DatabaseSchema>, input: N
       })
       .where("id", "=", node.id)
       .execute();
-    const event = await appendHostDeploymentEvent(tx, {
-      type: "node.updated",
-      data: {
-        nodeId: node.id,
-        stopping: true,
-      },
-      runId: run.id,
-      threadId: run.threadId,
-      environmentId: run.environmentId,
-    });
+    await publishExecutionNode(tx, node.id);
     return {
       command,
-      events: [event],
+      events: [],
       wasDuplicate: false,
     };
   });
@@ -234,7 +226,7 @@ export async function failNodeStop(
   commandId: import("@opensteer/core").CommandId,
   message: string,
 ) {
-  return withPersonalTransaction(database, async (tx) => {
+  return commitPersonalMutation(database, async (tx) => {
     const command = await tx
       .selectFrom("commands")
       .selectAll()
@@ -268,16 +260,7 @@ export async function failNodeStop(
       })
       .where("id", "=", node.id)
       .execute();
-    const event = await appendHostDeploymentEvent(tx, {
-      type: "node.updated",
-      data: {
-        nodeId: node.id,
-        stopping: false,
-      },
-      runId: command.runId,
-      environmentId: node.environmentId,
-      threadId: node.threadId,
-    });
+    await publishExecutionNode(tx, node.id);
     await tx
       .updateTable("commands")
       .set({
@@ -291,7 +274,7 @@ export async function failNodeStop(
       })
       .where("id", "=", commandId)
       .execute();
-    return [event];
+    return [];
   });
 }
 export async function dispatchNodeStop(
@@ -307,26 +290,30 @@ export async function dispatchNodeStop(
   let sending: Promise<unknown> | undefined;
   try {
     // A remote effect cannot be retried with a database transaction.
-    await database.transaction().execute(async (tx) => {
-      await lockDeploymentEvents(tx);
-      await assertNodeStop(tx, input, bindingGeneration);
-      sending = send(async () => {
-        accepted.resolve();
-        await committed.promise;
-      });
-      void sending.catch(accepted.reject);
-      await accepted.promise;
-      await tx
-        .updateTable("commands")
-        .set({
-          status: "succeeded",
-          lastError: null,
-          updatedAt: new Date(),
-        })
-        .where("id", "=", commandId)
-        .where("status", "=", "dispatched")
-        .execute();
-    });
+    await commitPersonalMutation(
+      database,
+      async (tx) => {
+        await assertNodeStop(tx, input, bindingGeneration);
+        sending = send(async () => {
+          accepted.resolve();
+          await committed.promise;
+        });
+        void sending.catch(accepted.reject);
+        await accepted.promise;
+        await tx
+          .updateTable("commands")
+          .set({
+            status: "succeeded",
+            lastError: null,
+            updatedAt: new Date(),
+          })
+          .where("id", "=", commandId)
+          .where("status", "=", "dispatched")
+          .execute();
+      },
+      undefined,
+      "non-retrying",
+    );
     committed.resolve();
     await sending?.catch(() => undefined);
   } catch (error) {
