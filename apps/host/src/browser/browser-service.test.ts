@@ -5746,7 +5746,7 @@ function testRunner(input: {
 
 function placementService(options: {
   readonly personal?: boolean;
-  /** Admission waits that never succeed, so choosing an absent computer fails fast. */
+  /** Admission waits that never settle: an open that waits on an absent computer hangs. */
   readonly awaitsBrowsers?: boolean;
   readonly keys: { readonly privateKey: KeyObject };
   readonly ownerId: UserId;
@@ -5758,9 +5758,7 @@ function placementService(options: {
   // tests are about, not what happens after the browser answers.
   const relay = runnerTarget({ url: options.runtime.url });
   const targetResolver: BrowserRuntimeTargetResolver = {
-    ...(options.awaitsBrowsers
-      ? { waitForTarget: () => Promise.reject(new Error("That browser never arrived.")) }
-      : {}),
+    ...(options.awaitsBrowsers ? { waitForTarget: () => new Promise<void>(() => undefined) } : {}),
     placements: () =>
       options.runners.map((runner) => ({
         agents: runner.agents === true,

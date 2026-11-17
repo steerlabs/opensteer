@@ -1366,17 +1366,17 @@ export class BrowserService {
         ? await this.#repository.rememberedBrowserPlacement(ownerId, identityKey)
         : null;
     const homes = await this.#repository.listEligibleBrowserRunners(ownerId);
-    if (
-      await this.#waitForBrowser(
-        homes,
-        boundRunnerId ??
-          command.placement?.runnerId ??
-          holder?.runnerId ??
-          remembered ??
-          (this.#personal ? homes.find((home) => home.kind === "main")?.id : undefined),
-        signal,
-      )
-    )
+    const main = this.#personal ? homes.find((home) => home.kind === "main") : undefined;
+    const intended: BrowserPlacementSelector | null =
+      (boundRunnerId ? { kind: "runner" as const, runnerId: boundRunnerId } : command.placement) ??
+      (main && !profile
+        ? { kind: "runner" as const, runnerId: main.id }
+        : holder
+          ? placementOf(holder)
+          : remembered
+            ? { kind: "runner" as const, runnerId: remembered }
+            : null);
+    if (await this.#waitForBrowser(homes, intended?.runnerId, signal))
       return this.#resolveIdentityOpen(ownerId, command, signal);
     if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
     const eligible = this.#eligiblePlacements(homes).filter((candidate) => candidate.available);
@@ -1389,21 +1389,12 @@ export class BrowserService {
         "The selected browser computer is unavailable.",
         this.#eligiblePlacements(homes),
       );
-    const main = this.#personal ? homes.find((home) => home.kind === "main") : undefined;
     if (this.#personal && !profile && !command.placement && !main)
       throw this.#tabOpenRefusal(
         "browser-placement-unavailable",
         "The main computer's browser is unavailable.",
       );
-    let placement =
-      (boundRunnerId ? { kind: "runner" as const, runnerId: boundRunnerId } : command.placement) ??
-      (main && !profile && !command.placement
-        ? { kind: "runner" as const, runnerId: main.id }
-        : holder
-          ? placementOf(holder)
-          : remembered
-            ? { kind: "runner" as const, runnerId: remembered }
-            : null);
+    let placement = intended;
     if (!placement) {
       if (eligible.length > 1)
         throw this.#tabOpenRefusal(
@@ -4450,17 +4441,6 @@ export class BrowserService {
     const boundRunnerId =
       profile?.homeRunnerId ?? (storage?.kind === "local" ? storage.binding.runnerId : undefined);
     const homes = await this.#repository.listEligibleBrowserRunners(input.ownerId);
-    if (
-      await this.#waitForBrowser(
-        homes,
-        boundRunnerId ??
-          input.placement?.runnerId ??
-          (this.#personal ? homes.find((home) => home.kind === "main")?.id : undefined),
-        input.operationBudget?.signal,
-      )
-    )
-      return this.#admitStart(input, onInitialPage, personNavigation);
-    if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
     const placementHolder =
       boundRunnerId || input.placement || !profile
         ? null
@@ -4471,6 +4451,10 @@ export class BrowserService {
       (placementHolder
         ? placementOf(placementHolder)
         : this.#defaultPlacement(input, placements, homes));
+    // Only the computer this open will use is worth waiting for.
+    if (await this.#waitForBrowser(homes, placement.runnerId, input.operationBudget?.signal))
+      return this.#admitStart(input, onInitialPage, personNavigation);
+    if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
     if (origin !== "person") await this.#requireAgentAccess(placement.runnerId);
     if (!placements.some((candidate) => candidate.runnerId === placement.runnerId))
       throw unavailable("The selected browser computer is unavailable for this open.");
