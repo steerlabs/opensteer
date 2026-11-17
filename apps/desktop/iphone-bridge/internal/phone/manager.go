@@ -25,6 +25,8 @@ type localPhone struct {
 	id              string
 	epoch           uint64
 	lane            chan struct{}
+	operations      int
+	inspectionDone  chan struct{}
 	session         *Session
 	cancel          context.CancelFunc
 	binding         string
@@ -67,6 +69,8 @@ type Manager struct {
 	discovery      bool
 	discoveryReady chan struct{}
 	discoveryErr   error
+	inspecting     bool
+	inspectionWake chan struct{}
 	publish        func(wire.Roster)
 	wg             sync.WaitGroup
 	operations     sync.WaitGroup
@@ -76,7 +80,7 @@ type Manager struct {
 func NewManager(parent context.Context, usb USB, publish func(wire.Roster)) *Manager {
 	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
 	workCtx, stopWork := context.WithCancel(ctx)
-	return &Manager{ctx: ctx, cancel: cancel, workCtx: workCtx, stopWork: stopWork, usb: usb, wifi: make(map[string]wirelessState), restoring: make(map[string]bool), browse: browseRemote, interfaces: lanInterfaces, dial: dialLAN, publish: publish, phones: make(map[string]*localPhone), images: make(map[string]string), selectedImages: make(map[string]string), mountImage: MountDeveloperImage, identities: make(map[string]string)}
+	return &Manager{ctx: ctx, cancel: cancel, workCtx: workCtx, stopWork: stopWork, usb: usb, wifi: make(map[string]wirelessState), restoring: make(map[string]bool), browse: browseRemote, interfaces: lanInterfaces, dial: dialLAN, publish: publish, phones: make(map[string]*localPhone), images: make(map[string]string), selectedImages: make(map[string]string), mountImage: MountDeveloperImage, identities: make(map[string]string), inspectionWake: make(chan struct{}, 1)}
 }
 func (m *Manager) Call(ctx context.Context, r wire.Request) (interface{}, error) {
 	m.mu.Lock()
@@ -392,15 +396,15 @@ func (m *Manager) reconcile() error {
 		m.mu.Unlock()
 		return err
 	}
-	defer identityLock.Close()
 	if err := m.loadIdentities(); err != nil {
+		identityLock.Close()
 		m.mu.Unlock()
 		return err
 	}
 	present := make(map[string]bool)
 	stale := []*Session{}
+	inspections := []<-chan struct{}{}
 	restore := []wire.PhoneRef{}
-	inspect := []wire.PhoneRef{}
 	for _, d := range devices {
 		identity := d.Properties.SerialNumber
 		diagnostic.Remember(identity)
@@ -430,6 +434,9 @@ func (m *Manager) reconcile() error {
 			if phone.routeCancel != nil {
 				phone.routeCancel()
 			}
+			if phone.inspectionDone != nil {
+				inspections = append(inspections, phone.inspectionDone)
+			}
 			phone.routeCtx, phone.routeCancel = context.WithCancel(m.ctx)
 			if phone.cancel != nil {
 				phone.cancel()
@@ -439,9 +446,6 @@ func (m *Manager) reconcile() error {
 			}
 			phone.session = nil
 			phone.sessionID = ""
-		}
-		if changedRoute && d.Properties.ConnectionType == "USB" {
-			inspect = append(inspect, wire.PhoneRef{LocalPhoneID: id, NativeEpoch: phone.epoch})
 		}
 		phone.entry = d
 		state := m.wifi[identity]
@@ -459,6 +463,9 @@ func (m *Manager) reconcile() error {
 			if p.routeCancel != nil {
 				p.routeCancel()
 			}
+			if p.inspectionDone != nil {
+				inspections = append(inspections, p.inspectionDone)
+			}
 			if p.cancel != nil {
 				p.cancel()
 			}
@@ -470,12 +477,16 @@ func (m *Manager) reconcile() error {
 		}
 	}
 	err = m.saveIdentities()
+	identityLock.Close()
 	m.revision++
+	m.startInspectionsLocked()
 	m.mu.Unlock()
+	for _, done := range inspections {
+		<-done
+	}
 	for _, session := range stale {
 		_ = session.Close()
 	}
-	m.inspectCandidates(inspect)
 	for _, ref := range restore {
 		go m.restoreWifi(ref)
 	}
@@ -554,10 +565,14 @@ func (m *Manager) roster() wire.Roster {
 func (m *Manager) withPhone(ctx context.Context, ref wire.PhoneRef, call func(context.Context, *localPhone) (interface{}, error)) (interface{}, error) {
 	m.mu.Lock()
 	p := m.phones[ref.LocalPhoneID]
+	if p != nil {
+		p.operations++
+	}
 	m.mu.Unlock()
 	if p == nil {
 		return nil, wire.Fail(wire.CandidateGone)
 	}
+	defer m.finishPhoneOperation(p)
 	select {
 	case p.lane <- struct{}{}:
 		defer func() { <-p.lane }()
@@ -579,6 +594,12 @@ func (m *Manager) withPhone(ctx context.Context, ref wire.PhoneRef, call func(co
 		return nil, ctx.Err()
 	}
 	return call(ctx, p)
+}
+func (m *Manager) finishPhoneOperation(p *localPhone) {
+	m.mu.Lock()
+	p.operations--
+	m.mu.Unlock()
+	m.wakeInspections()
 }
 func (m *Manager) prepare(ctx context.Context, p *localPhone, handle string) (interface{}, error) {
 	unlock, err := m.setupLock(p)
@@ -682,6 +703,8 @@ func (m *Manager) release(token string, forget bool) error {
 		m.mu.Unlock()
 		return nil
 	}
+	p.operations++
+	defer m.finishPhoneOperation(p)
 	abort := p.cancel
 	session := p.session
 	reservation := p.reservation
@@ -713,11 +736,20 @@ func (m *Manager) release(token string, forget bool) error {
 	return err
 }
 func (m *Manager) open(ctx context.Context, params *wire.SessionParams) (interface{}, error) {
+	m.mu.Lock()
+	p := m.findBinding(params.BindingToken)
+	if p == nil {
+		m.mu.Unlock()
+		return nil, wire.Fail(wire.NoSession)
+	}
+	p.operations++
+	m.mu.Unlock()
+	defer m.finishPhoneOperation(p)
 	if err := m.reconcile(); err != nil {
 		return nil, err
 	}
 	m.mu.Lock()
-	p := m.findBinding(params.BindingToken)
+	p = m.findBinding(params.BindingToken)
 	if p == nil {
 		m.mu.Unlock()
 		return nil, wire.Fail(wire.NoSession)
@@ -772,6 +804,8 @@ func (m *Manager) closeSession(token, sessionID string) error {
 		m.mu.Unlock()
 		return nil
 	}
+	p.operations++
+	defer m.finishPhoneOperation(p)
 	session := p.session
 	p.sessionID = ""
 	p.access = ""
@@ -852,29 +886,41 @@ func (m *Manager) forget(params *wire.ForgetParams) error {
 		m.mu.Unlock()
 		return err
 	}
-	defer identityLock.Close()
 	if err := m.loadIdentities(); err != nil {
+		identityLock.Close()
 		m.mu.Unlock()
 		return err
 	}
 	delete(m.wifi, identity)
 	if err := m.saveWifi(); err != nil {
+		identityLock.Close()
 		m.mu.Unlock()
 		return err
 	}
 	if err := m.loadSelectedImages(); err != nil {
+		identityLock.Close()
 		m.mu.Unlock()
 		return err
 	}
 	delete(m.selectedImages, identity)
 	if err := m.saveSelectedImages(); err != nil {
+		identityLock.Close()
 		m.mu.Unlock()
 		return err
 	}
 	delete(m.identities, identity)
 	delete(m.phones, p.id)
+	if p.routeCancel != nil {
+		p.routeCancel()
+	}
+	inspectionDone := p.inspectionDone
 	err = m.saveIdentities()
+	identityLock.Close()
 	m.mu.Unlock()
+	if inspectionDone != nil {
+		<-inspectionDone
+	}
+	m.wakeInspections()
 	return err
 }
 

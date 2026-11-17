@@ -171,13 +171,13 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 	if foreground != nil && current != nil && foreground.AppID != current.AppID {
 		return nil, wire.Fail(wire.StaleObservation)
 	}
-	if foreground == nil || current == nil {
-		foreground = nil
+	for _, reading := range []*Foreground{foreground, current} {
+		if reading != nil && ax.Foreground != nil && ax.Foreground.AppID != reading.AppID {
+			return nil, wire.Fail(wire.StaleObservation)
+		}
 	}
-	if foreground == nil {
+	if foreground == nil || current == nil {
 		foreground = ax.Foreground
-	} else if ax.Foreground != nil && ax.Foreground.AppID != foreground.AppID {
-		return nil, wire.Fail(wire.StaleObservation)
 	}
 	after, err := s.backend.State(ctx)
 	if err != nil {

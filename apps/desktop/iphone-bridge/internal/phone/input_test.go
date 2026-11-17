@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/png"
 	"io"
@@ -67,6 +68,9 @@ func (f *fixtureScreen) Foreground(context.Context) (*Foreground, error) {
 	if len(f.foregroundReads) > 0 {
 		value := f.foregroundReads[0]
 		f.foregroundReads = f.foregroundReads[1:]
+		if value == nil {
+			return nil, wire.Fail(wire.NativeServiceFailed)
+		}
 		return value, nil
 	}
 	return f.foreground, nil
@@ -434,4 +438,36 @@ func TestObserveRejectsConflictingSelfScreenIdentity(t *testing.T) {
 	include := true
 	_, err := s.observe(context.Background(), &wire.ObserveParams{ScreenRef: wire.ScreenRef{NativeEpoch: 1}, IncludeScreenshot: &include}, okay)
 	failure(t, err, wire.StaleObservation, "not-started")
+}
+
+func TestObserveFallbackChecksEveryAvailableForegroundReading(t *testing.T) {
+	for _, appID := range []string{"com.opensteer.opensteer", "other.app"} {
+		for _, missing := range []int{0, 1} {
+			t.Run(fmt.Sprintf("%s/missing-%d", appID, missing), func(t *testing.T) {
+				s, backend, _ := screenFixture(t)
+				backend.foregroundReads = []*Foreground{{AppID: appID}, {AppID: appID}}
+				backend.foregroundReads[missing] = nil
+				backend.ax.Foreground = &Foreground{AppID: "example.app"}
+				include := true
+				result, err := s.observe(context.Background(), &wire.ObserveParams{ScreenRef: wire.ScreenRef{NativeEpoch: 1}, IncludeScreenshot: &include}, okay)
+				failure(t, err, wire.StaleObservation, "not-started")
+				if result != nil || s.observation != nil {
+					t.Fatal("conflicting foreground left a usable capture")
+				}
+			})
+		}
+	}
+	for _, missing := range []int{0, 1} {
+		t.Run(fmt.Sprintf("matching-self/missing-%d", missing), func(t *testing.T) {
+			s, backend, _ := screenFixture(t)
+			backend.foregroundReads = []*Foreground{{AppID: "com.opensteer.opensteer"}, {AppID: "com.opensteer.opensteer"}}
+			backend.foregroundReads[missing] = nil
+			backend.ax.Foreground = &Foreground{AppID: "com.opensteer.opensteer"}
+			include := true
+			result, err := s.observe(context.Background(), &wire.ObserveParams{ScreenRef: wire.ScreenRef{NativeEpoch: 1}, IncludeScreenshot: &include}, okay)
+			if err != nil || result.(*Observation).Foreground.AppID != "com.opensteer.opensteer" {
+				t.Fatal("fallback lost the self-screen identity", err)
+			}
+		})
+	}
 }

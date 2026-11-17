@@ -119,6 +119,10 @@ func (f *passiveUSB) PassiveInspect(ctx context.Context, d ios.DeviceEntry) (Ins
 }
 func TestColdRosterPassivelyIdentifiesTrustedPhones(t *testing.T) {
 	m := newTestManager(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	updates := make(chan wire.Roster, 16)
+	m.publish = func(r wire.Roster) { updates <- r }
 	m.usb = &passiveUSB{}
 	devices := []ios.DeviceEntry{}
 	for id := 1; id <= 3; id++ {
@@ -128,7 +132,22 @@ func TestColdRosterPassivelyIdentifiesTrustedPhones(t *testing.T) {
 	if err := m.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	r := m.roster()
+	waitForIdentified := func(minRevision uint64) wire.Roster {
+		t.Helper()
+		for {
+			r := awaitInspection(t, ctx, updates, "trusted phones were not identified")
+			trusted := 0
+			for _, c := range r.Candidates {
+				if c.Trusted {
+					trusted++
+				}
+			}
+			if trusted == 2 && r.Revision >= minRevision {
+				return r
+			}
+		}
+	}
+	r := waitForIdentified(0)
 	trusted := 0
 	for _, c := range r.Candidates {
 		if c.Trusted {
@@ -149,7 +168,7 @@ func TestColdRosterPassivelyIdentifiesTrustedPhones(t *testing.T) {
 		t.Fatal(err)
 	}
 	trusted = 0
-	for _, c := range m.roster().Candidates {
+	for _, c := range waitForIdentified(m.roster().Revision).Candidates {
 		if c.Trusted {
 			trusted++
 		}

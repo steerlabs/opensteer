@@ -40,7 +40,7 @@ func (SystemUSB) Inspect(ctx context.Context, d ios.DeviceEntry) (Inspection, er
 	result := Inspection{Pairing: "unknown", DeveloperMode: "unknown", Name: "iPhone", Image: "unknown", Tunnel: "unknown", Lock: "unknown", Reason: wire.QualificationRequired}
 	lockdown, err := ios.ConnectLockdownWithSession(d)
 	if err != nil {
-		return result, Classify(err, wire.TrustRequired)
+		return result, Classify(err, wire.NativeServiceFailed)
 	}
 	defer lockdown.Close()
 	result.Pairing = "paired"

@@ -149,6 +149,7 @@ func (m *Manager) ensureTransport(ctx context.Context, p *localPhone) (*Session,
 				m.revision++
 			}
 			m.mu.Unlock()
+			m.wakeInspections()
 			if m.publish != nil {
 				m.publish(m.roster())
 			}
