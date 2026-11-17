@@ -3580,6 +3580,7 @@ export class HttpHostClient {
         status: 404,
       });
     }
+    const generation = this.#viewerGeneration;
     const result = await this.dispatch({
       done,
       idempotencyKey: mutationIdempotencyKey(`done:${threadId}`),
@@ -3587,6 +3588,7 @@ export class HttpHostClient {
       type: "thread.done.set",
     });
     if (result.type !== "thread.done.set") throw new Error("Done command mismatch.");
+    if (generation !== this.#viewerGeneration) return;
     this.#mergeVisits([result.thread]);
     const thread = this.#threadState.reconcile(
       toThreadSummary(result.thread, this.#snapshot.environments, this.#snapshot.harnesses),
@@ -4488,8 +4490,12 @@ export class HttpHostClient {
     }
     if (message.type === "host.resync-required") {
       this.references.reconnect();
-      // The snapshot that follows may be numbered below what the old stream reached.
-      this.#threadState.clear();
+      // A Host behind this cursor restarted its history: state read from the old one,
+      // including answers still in flight, would outrank the snapshot that follows.
+      if (message.reason === "cursor-ahead") {
+        this.#viewerGeneration += 1;
+        this.#threadState.clear();
+      }
       channel.cursor = zeroSequence;
       channel.reconnectAttempt = 0;
       this.#closeChannel(channel, true, 4009, "Fresh snapshot required");

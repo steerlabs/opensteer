@@ -546,12 +546,23 @@ it("pages keep their reader's Request count when the stream's thread state is ne
   expect(f.client.getSnapshot().tasks!.entries[0]!.thread.pendingRequests).toBe(0);
 });
 
-it("drops thread state from before a stream that restarted below it", async () => {
-  const f = await fixture(1);
+it("drops thread state, and answers in flight, from before a stream that restarted below it", async () => {
+  const gate = Promise.withResolvers<void>();
+  const reads = { count: 0 };
+  let hold = false,
+    oldPage: unknown = null;
+  const f = await fixture(1, (host) => async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.pathname.endsWith("/tasks.list")) {
+      reads.count++;
+      if (hold) return gate.promise.then(() => Response.json(oldPage));
+    }
+    return host.fetch(input, init);
+  });
   await f.client.load();
   await vi.waitFor(() => expect(f.client.getSnapshot().tasks?.entries).toHaveLength(1));
   const thread = f.mock.getSnapshot().threads[0]!;
-  const tone = () =>
+  const working = () =>
     taskList(f.client.getSnapshot()).working.some(({ threadId }) => threadId === thread.id);
   const [first] = [...f.host.sockets];
   // A stream numbered far past what this Host now holds, as after a restored database.
@@ -560,7 +571,17 @@ it("drops thread state from before a stream that restarted below it", async () =
     events: [threadState(thread, "900000", { status: "running" })],
     throughSequence: SequenceSchema.parse("900000"),
   });
-  await vi.waitFor(() => expect(tone()).toBe(true));
+  await vi.waitFor(() => expect(working()).toBe(true));
+  // A recent-list read from the old history is still in flight across the reset.
+  const old = await f.mock.rpc["tasks.list"]({});
+  if (!old.ok) throw new Error("Task fixture is missing");
+  old.data.asOfSequence = SequenceSchema.parse("900000");
+  old.data.tasks[0]!.thread.status = "running";
+  old.data.tasks[0]!.lastReply = "From the old history";
+  oldPage = old;
+  hold = true;
+  first!.deliver({ type: "host.tasks-changed" });
+  await vi.waitFor(() => expect(reads.count, "the old read never started").toBe(3));
   first!.deliver({ type: "host.resync-required", reason: "cursor-ahead" });
   await vi.waitFor(() =>
     expect(
@@ -568,5 +589,15 @@ it("drops thread state from before a stream that restarted below it", async () =
       "never resubscribed",
     ).toBe(true),
   );
-  await vi.waitFor(() => expect(tone(), "the restarted stream's idle state lost").toBe(false));
+  await vi.waitFor(() => expect(working(), "the restarted stream's idle state lost").toBe(false));
+  hold = false;
+  // A notice under the new stream makes each held read go again once its old answer is handled.
+  [...f.host.sockets].find((socket) => socket !== first)!.deliver({ type: "host.tasks-changed" });
+  gate.resolve();
+  await vi.waitFor(() =>
+    expect(reads.count, "the old answers were never handled").toBeGreaterThanOrEqual(6),
+  );
+  await f.client.refresh();
+  expect(working(), "an answer from the old history restored its state").toBe(false);
+  expect(f.client.getSnapshot().tasks!.entries[0]!.lastReply).not.toBe("From the old history");
 });
