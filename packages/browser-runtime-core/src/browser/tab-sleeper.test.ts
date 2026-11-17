@@ -74,7 +74,7 @@ describe("TabSleeper", () => {
       await f.close();
     }
   });
-  it("resamples renderer memory while tabs are idle and sleeps agent leftovers first", async () => {
+  it("resamples idle renderer memory and sleeps agent leftovers that clear protection first", async () => {
     const budget = 100 * 1024 ** 2;
     let usage = { processes: 1, bytes: budget / 2 };
     const onPass = vi.fn();
@@ -84,6 +84,8 @@ describe("TabSleeper", () => {
       onPass,
     });
     try {
+      f.page.keepAwake = () => "media";
+      const leftover = await f.ledger.openSurface({ origin: "agent", activate: false });
       const person = await f.ledger.openSurface();
       const pinned = await f.ledger.openSurface();
       f.sleeper.setSessionState("session", {
@@ -103,15 +105,18 @@ describe("TabSleeper", () => {
       });
       usage = { processes: 6, bytes: budget * 2 };
       await vi.advanceTimersByTimeAsync(20_000);
-      expect(f.record.live).toBeNull();
+      expect(f.record.live).not.toBeNull();
+      expect(f.ledger.stateOf(leftover.id)).toBe("suspended");
       expect(f.ledger.stateOf(person.id)).toBe("live");
       expect(f.ledger.stateOf(pinned.id)).toBe("live");
-      expect(f.ledger.sleep).toHaveBeenCalledExactlyOnceWith(f.record.id, expect.any(Function));
+      expect(f.ledger.sleep).toHaveBeenCalledTimes(2);
+      expect(f.ledger.sleep).toHaveBeenNthCalledWith(1, f.record.id, expect.any(Function));
+      expect(f.ledger.sleep).toHaveBeenNthCalledWith(2, leftover.id, expect.any(Function));
       expect(onPass).toHaveBeenLastCalledWith({
-        livePages: 3,
+        livePages: 4,
         rendererProcesses: 6,
         rendererBytes: budget * 2,
-        attempted: 1,
+        attempted: 2,
         slept: 1,
       });
       await vi.advanceTimersByTimeAsync(1_000);

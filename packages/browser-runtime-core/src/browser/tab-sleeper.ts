@@ -329,6 +329,13 @@ export class TabSleeper {
       for (const { id, session, record } of candidates) {
         if (pending.size >= concurrentSleeps) await Promise.race(pending);
         if (attempted >= sleepsPerPass || this.closed) break;
+        const deadline = this.deadline(session, record);
+        if (this.rendererUsage && deadline > Date.now()) {
+          if (!this.releasing) continue;
+          // Only a successful sleep can change the measured pressure.
+          if (pending.size) await Promise.all(pending);
+          if (this.closed) break;
+        }
         if (
           this.sessions.get(id) !== session ||
           (this.nextProbe.get(record) ?? 0) > Date.now() ||
@@ -336,10 +343,10 @@ export class TabSleeper {
         )
           continue;
         if (
-          this.deadline(session, record) > Date.now() &&
+          deadline > Date.now() &&
           // A page can share its process, so measure again before asking another
           // page to sleep under pressure.
-          ((this.rendererUsage && attempted > 0) || !this.overBudget(pending.size))
+          ((this.rendererUsage && slept > 0) || !this.overBudget(pending.size))
         )
           continue;
         const sleeping = session.ledger
