@@ -122,9 +122,12 @@ export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation 
     case "refresh-failed":
       return result(`Couldn't refresh ${issue.resource ?? "this"}.`, "retry");
     case "not-sent":
-      return result(
-        `Not ${issue.done ?? "changed"}. ${issue.reason === "offline" ? "You're offline." : `Can't reach ${name}.`}`,
-      );
+      // No reason: a check after a lost answer found it was not done, so it can be tried again.
+      return issue.reason === undefined
+        ? result(`Not ${issue.done ?? "changed"}.`, "retry")
+        : result(
+            `Not ${issue.done ?? "changed"}. ${issue.reason === "offline" ? "You're offline." : `Can't reach ${name}.`}`,
+          );
     case "unconfirmed":
       return result(
         issue.thing && issue.done

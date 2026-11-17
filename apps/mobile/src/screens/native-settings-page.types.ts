@@ -70,8 +70,16 @@ export type NativeSettingsRow =
       readonly label: string;
       readonly detail?: string;
       readonly disabled?: boolean;
-      readonly value: boolean;
+      /** Null while the value was never loaded: a track with no knob, never "off". */
+      readonly value: boolean | null;
       readonly onChange: (value: boolean) => void;
+    }
+  | {
+      /** A row whose content never arrived, drawn still in its real shape. */
+      readonly key: string;
+      readonly kind: "placeholder";
+      /** Read aloud for the still bars. */
+      readonly label: string;
     }
   | {
       readonly key: string;
@@ -83,13 +91,19 @@ export type NativeSettingsRow =
       /** Return on the keyboard, where the platform reports it. */
       readonly onSubmit?: () => void;
     };
+/** A section's last line: a note, or the answer to an action in it, with one link such as Check. */
+export interface NativeSettingsFooter {
+  readonly text: string;
+  readonly tone?: "danger" | undefined;
+  readonly link?: { readonly label: string; readonly onPress: () => void } | null | undefined;
+}
 export interface NativeSettingsSection {
   readonly key: string;
   readonly title: string;
   readonly rows: readonly NativeSettingsRow[];
   readonly collapsed?: boolean;
   /** One sentence under the group; `danger` when it says what went wrong. */
-  readonly footer?: { readonly text: string; readonly tone?: "danger" };
+  readonly footer?: NativeSettingsFooter;
 }
 export interface NativeSettingsPageProps {
   readonly sheet?: { readonly title: string; readonly onClose: () => void };

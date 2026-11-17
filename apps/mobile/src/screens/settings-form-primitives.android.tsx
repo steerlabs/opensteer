@@ -15,9 +15,11 @@ import {
   SingleChoiceSegmentedButtonRow,
   Switch,
   Text,
+  TextButton,
   useNativeState,
 } from "@expo/ui/jetpack-compose";
 import {
+  alpha,
   background,
   clickable,
   clip,
@@ -142,15 +144,73 @@ export function SectionHeader(props: {
 export function Footer(props: {
   readonly text: string;
   readonly tone?: "danger" | undefined;
+  readonly link?: { readonly label: string; readonly onPress: () => void } | null;
 }): ReactNode {
-  return (
+  const text = (
     <Text
       color={props.tone === "danger" ? color.red : color.muted}
-      modifiers={[padding(gutter, 4, gutter, 8)]}
+      modifiers={props.link ? [] : [padding(gutter, 4, gutter, 8)]}
       style={{ typography: "bodySmall" }}
     >
       {props.text}
     </Text>
+  );
+  if (!props.link) return text;
+  const link = props.link;
+  return (
+    <Row verticalAlignment="center" modifiers={[padding(gutter, 4, gutter, 8)]}>
+      {text}
+      <TextButton onClick={link.onPress}>
+        <Text color={color.ember} style={{ typography: "labelMedium" }}>
+          {link.label}
+        </Text>
+      </TextButton>
+    </Row>
+  );
+}
+
+/** A row whose content never arrived: two still bars, never a shimmer. */
+export function PlaceholderRow(props: { readonly label: string }): ReactNode {
+  return (
+    <ListItem colors={rowColors}>
+      <ListItem.HeadlineContent>
+        <Column modifiers={[semantics({ contentDescription: props.label })]}>
+          <Box modifiers={[size(160, 10), clip(Shapes.Circle), background(color.surfaceRaised)]} />
+          <Box modifiers={[size(1, 8)]} />
+          <Box modifiers={[size(96, 10), clip(Shapes.Circle), background(color.surfaceRaised)]} />
+        </Column>
+      </ListItem.HeadlineContent>
+    </ListItem>
+  );
+}
+
+/** A switch whose state never arrived: its track with no knob, never drawn as off. */
+export function UnknownToggleRow(props: {
+  readonly detail?: string | null | undefined;
+  readonly title: string;
+}): ReactNode {
+  return (
+    <ListItem colors={rowColors}>
+      <ListItem.HeadlineContent>
+        <Text color={color.text}>{props.title}</Text>
+      </ListItem.HeadlineContent>
+      {props.detail ? (
+        <ListItem.SupportingContent>
+          <Text color={color.muted}>{props.detail}</Text>
+        </ListItem.SupportingContent>
+      ) : null}
+      <ListItem.TrailingContent>
+        <Box
+          modifiers={[
+            semantics({ contentDescription: "Not loaded yet" }),
+            size(52, 32),
+            clip(Shapes.Circle),
+            alpha(0.4),
+            background(color.surfaceRaised),
+          ]}
+        />
+      </ListItem.TrailingContent>
+    </ListItem>
   );
 }
 

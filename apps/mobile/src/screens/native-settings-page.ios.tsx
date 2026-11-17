@@ -1,6 +1,7 @@
 import {
   BottomSheet,
   Button,
+  Capsule,
   Circle,
   ContextMenu,
   SwipeActions,
@@ -39,6 +40,7 @@ import {
   onSubmit,
   searchable,
   navigationTitle,
+  opacity,
   shapes,
   tag,
   textSelection,
@@ -241,27 +243,95 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
       </SwipeActions>
     );
   }
-  if (row.kind === "toggle")
+  if (row.kind === "placeholder") return <PlaceholderRow label={row.label} />;
+  if (row.kind === "toggle") {
+    const value = row.value;
+    if (value === null) return <UnknownToggleRow row={row} />;
     return row.detail === undefined ? (
       <Toggle
         label={row.label}
-        isOn={row.value}
+        isOn={value}
         modifiers={[disabled(row.disabled ?? false)]}
         onIsOnChange={row.onChange}
       />
     ) : (
       <Toggle
-        isOn={row.value}
+        isOn={value}
         modifiers={[disabled(row.disabled ?? false)]}
         onIsOnChange={row.onChange}
       >
         <Lines detail={row.detail} title={row.label} />
       </Toggle>
     );
+  }
   return <Input row={row} />;
 }
 
+/** Two still bars in a row's shape: never a shimmer, which reads as loading forever. */
+function PlaceholderRow({ label }: { readonly label: string }) {
+  return (
+    <VStack
+      alignment="leading"
+      spacing={8}
+      modifiers={[accessibilityLabel(label), frame({ maxWidth: Infinity, alignment: "leading" })]}
+    >
+      <Capsule
+        modifiers={[foregroundStyle(color.surfaceRaised), frame({ width: 160, height: 10 })]}
+      />
+      <Capsule
+        modifiers={[foregroundStyle(color.surfaceRaised), frame({ width: 96, height: 10 })]}
+      />
+    </VStack>
+  );
+}
+
+/** A switch whose state never arrived: its track with no knob, never drawn as off. */
+function UnknownToggleRow({
+  row,
+}: {
+  readonly row: Extract<NativeSettingsRow, { kind: "toggle" }>;
+}) {
+  return (
+    <HStack
+      alignment="center"
+      spacing={12}
+      modifiers={[accessibilityLabel(`${row.label}, not loaded yet`)]}
+    >
+      <Lines detail={row.detail ?? null} title={row.label} />
+      <Spacer />
+      <Capsule
+        modifiers={[
+          foregroundStyle(color.surfaceRaised),
+          frame({ width: 51, height: 31 }),
+          opacity(0.4),
+        ]}
+      />
+    </HStack>
+  );
+}
+
 function Footer({ footer }: { readonly footer: NonNullable<NativeSettingsSection["footer"]> }) {
+  const link = footer.link ?? null;
+  if (link !== null)
+    return (
+      <HStack alignment="firstTextBaseline" spacing={6}>
+        <FooterText footer={footer} />
+        <Button onPress={link.onPress} modifiers={[buttonStyle("plain")]}>
+          <Text
+            modifiers={[
+              font({ textStyle: "footnote", weight: "semibold" }),
+              foregroundStyle(color.ember),
+            ]}
+          >
+            {link.label}
+          </Text>
+        </Button>
+      </HStack>
+    );
+  return <FooterText footer={footer} />;
+}
+
+function FooterText({ footer }: { readonly footer: NonNullable<NativeSettingsSection["footer"]> }) {
   return (
     <Text
       modifiers={[
