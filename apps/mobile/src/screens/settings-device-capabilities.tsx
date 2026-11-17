@@ -8,8 +8,9 @@ import {
   type MachineAccessPolicy,
   type MachineSummary,
 } from "@opensteer/protocol";
+import { readInstalledPlugins } from "@opensteer/client/plugins";
 import { AppText, SecondaryButton, SwitchRow } from "../ui/primitives.js";
-import { useSettingsLease } from "./use-settings-read.js";
+import { useSettingsLease, useSettingsRead } from "./use-settings-read.js";
 
 export function SettingsDeviceCapabilities({
   host,
@@ -27,6 +28,16 @@ export function SettingsDeviceCapabilities({
   const [error, setError] = useState<string | null>(null);
   const [folder, setFolder] = useState("");
   const [folderWritable, setFolderWritable] = useState(false);
+  // The data apps agents reach on this computer, as the Plugins area lists them.
+  const installed = useSettingsRead(
+    host,
+    async () => ((machine.apps ?? []).length ? readInstalledPlugins(host) : null),
+    `${machine.id}:${(machine.apps ?? []).length}`,
+  );
+  const apps =
+    installed.data?.local.filter(
+      (tool) => tool.kind === "device-app" && tool.computer?.id === machine.id,
+    ) ?? [];
   async function run(operation: () => Promise<unknown>) {
     if (busy.current || !current()) return;
     busy.current = true;
@@ -61,16 +72,11 @@ export function SettingsDeviceCapabilities({
   }
   return (
     <View style={{ gap: 12 }}>
-      {(machine.apps ?? []).map((app) => (
+      {apps.map((tool) => (
         <SecondaryButton
-          key={app.definitionId}
-          label={`${app.definitionId === "apple-messages" ? "iMessage" : app.definitionId} · Plugin`}
-          onPress={() =>
-            navigation.navigate("SettingsPluginDetail", {
-              deploymentId,
-              target: { kind: "device-app", definitionId: app.definitionId },
-            })
-          }
+          key={tool.id}
+          label={tool.title}
+          onPress={() => navigation.navigate("PluginLocalTool", { deploymentId, id: tool.id })}
         />
       ))}
       {machine.access ? (

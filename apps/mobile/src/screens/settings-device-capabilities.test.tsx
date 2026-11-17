@@ -23,7 +23,10 @@ vi.mock("../ui/primitives.js", () => ({
   ),
 }));
 vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({ navigate: vi.fn() }) }));
-vi.mock("./use-settings-read.js", () => ({ useSettingsLease: () => () => true }));
+vi.mock("./use-settings-read.js", () => ({
+  useSettingsLease: () => () => true,
+  useSettingsRead: () => ({ data: null, error: null, reload: async () => undefined }),
+}));
 const { SettingsDeviceCapabilities } = await import("./settings-device-capabilities.js");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 it("keeps Main nonremovable and fences Terminal changes with the read policy revision", async () => {

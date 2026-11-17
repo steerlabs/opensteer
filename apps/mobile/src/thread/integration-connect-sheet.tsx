@@ -1,10 +1,5 @@
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
-import {
-  requestAgentProposedDetail,
-  requestAgentProposedLabel,
-  RunnerIdSchema,
-  type Request,
-} from "@opensteer/core";
+import { RunnerIdSchema, type Request } from "@opensteer/core";
 import {
   mutationIdempotencyKey,
   unwrapRpcResult,
@@ -14,54 +9,33 @@ import {
 import { useHostSelector } from "@opensteer/client/react";
 import {
   accessPlan,
-  apiKeyDisclosure,
-  authorizationConnection,
   computerAccessUpgrade,
   computerAppPermissionNotice,
   computerAppSetupElsewhere,
   collapsedAccountRows,
   computerConnectionState,
   connectCard,
-  integrationAccountDetail,
-  integrationAuthorizationError,
   integrationRequestStillPending,
   isAgentPhone,
-  repositoryAccountStep,
   resolveIntegrationAccess,
   type AccessPlan,
   type AccessRequestAccount,
   type ConnectCard,
   type IntegrationAccess,
-  type IntegrationConnectionSummary,
-  type IntegrationRepositoryAccess,
   type LoadedAccessRequest,
-  integrationAuthorizationSettled,
-  integrationAuthorizationCancelUnconfirmedDetail,
 } from "@opensteer/client/integrations";
-import { useNavigation } from "@react-navigation/native";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ActivityIndicator, Linking, Pressable, StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 import * as Haptics from "expo-haptics";
 import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
 import { Symbol } from "../ui/symbol.js";
-import {
-  AppText,
-  ChoiceRow,
-  Field,
-  Notice,
-  PrimaryButton,
-  RowGroup,
-  SecondaryButton,
-  SwitchRow,
-} from "../ui/primitives.js";
+import { AppText, Notice, PrimaryButton, SecondaryButton, SwitchRow } from "../ui/primitives.js";
 import { Sheet } from "../ui/sheet.js";
 import { IntegrationIcon } from "../ui/integration-icon.js";
 import { ComputerAppPicker, computerAppChoices } from "./computer-app-picker.js";
-import { InstallReview } from "./integration-install-review.js";
-import { useMobileClient } from "../ui/mobile-client-context.js";
 import type { ThreadMutationGate } from "./thread-mutation-gate.js";
 
-type Step = "review" | "accounts" | "api-key" | "computer" | "repository-access" | "server";
+type Step = "review" | "accounts" | "computer" | "server";
 type CardHostState = Pick<HostSnapshot, "deploymentId" | "machines"> & {
   readonly deploymentName: string;
 };
@@ -70,7 +44,10 @@ const sameCardHostState = (a: CardHostState, b: CardHostState) =>
   a.machines === b.machines &&
   a.deploymentName === b.deploymentName;
 
-/** The Request stays inline. Only credential entry and device setup need a sheet. */
+/**
+ * An agent's ask for a device data app or a local server. The Request stays
+ * inline; only choosing a computer or a server needs a sheet.
+ */
 export function IntegrationConnectCard(props: {
   readonly hostClient: HostClient;
   readonly request: Request;
@@ -83,40 +60,24 @@ export function IntegrationConnectCard(props: {
   readonly onClose?: () => void;
 }): ReactNode {
   const aiSharing = useAiSharing();
-  const mobile = useMobileClient();
-  const navigation = useNavigation();
   const payload =
     props.request.payload.kind === "integration.access" ? props.request.payload : null;
   const [loaded, setLoaded] = useState<LoadedAccessRequest | null>(null);
   const [step, setStep] = useState<Step>("review");
   const [busy, setBusy] = useState(false);
-  const [connecting, setConnecting] = useState(false);
-  const signingIn = useRef<AbortController | null>(null);
-  const [cancelUnconfirmed, setCancelUnconfirmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const [accountId, setAccountId] = useState<string | null>(null);
   const [allowChanges, setAllowChanges] = useState(false);
   const [connected, setConnected] = useState<AccessRequestAccount | null>(null);
-  const [connectedId, setConnectedId] = useState<IntegrationConnectionSummary["id"] | null>(null);
-  const [repositoryAccess, setRepositoryAccess] = useState<IntegrationRepositoryAccess | null>(
-    null,
-  );
-  const [apiKeyValues, setApiKeyValues] = useState<Record<string, string>>({});
-  const [apiKeyName, setApiKeyName] = useState("");
-  const [accountName, setAccountName] = useState("");
   const [computerId, setComputerId] = useState<string | null>(null);
   const [computerAccess, setComputerAccess] = useState<IntegrationAccess>("read");
   const [disclosed, setDisclosed] = useState(false);
   const operationGeneration = useRef(0);
   const responding = useRef(false);
   const presented = useRef(false);
-  /**
-   * The last thing the person asked the card to do. Try again repeats exactly
-   * that: a failed sign-in for another account must never become approval of
-   * the account already selected.
-   */
+  /** What Try again repeats: a failed install must never become approval. */
   const lastAction = useRef<"allow" | "connect" | null>(null);
   const selectCardHostState = useMemo(
     () =>
@@ -128,7 +89,6 @@ export function IntegrationConnectCard(props: {
     [],
   );
   const snapshot = useHostSelector(props.hostClient, selectCardHostState, sameCardHostState);
-  const { deploymentName } = snapshot;
   const plan = useMemo(
     () => (loaded === null ? null : accessPlan(loaded, accountId)),
     [loaded, accountId],
@@ -138,29 +98,14 @@ export function IntegrationConnectCard(props: {
       loaded
         ? connectCard({
             loaded,
-            deploymentName,
             selectedAccountId: accountId,
             allowChanges,
-            agentProposed: props.request.presentation.agentProposed === true,
-            connecting,
             error,
             connectedAccount: connected,
             answered: props.request.status !== "pending",
-            repositories: step === "repository-access",
           })
         : null,
-    [
-      loaded,
-      deploymentName,
-      accountId,
-      allowChanges,
-      props.request.presentation.agentProposed,
-      props.request.status,
-      connecting,
-      error,
-      connected,
-      step,
-    ],
+    [loaded, accountId, allowChanges, props.request.status, error, connected],
   );
   const computerChoices =
     plan?.requirement.kind === "computer" && plan.definition
@@ -174,7 +119,6 @@ export function IntegrationConnectCard(props: {
     computerId === null
       ? (computerChoices?.available[0] ?? null)
       : (computerChoices?.available.find(({ machine }) => machine.id === computerId) ?? null);
-  const reconnect = card?.reconnect ?? null;
   const effectiveAccess = card?.effectiveAccess ?? "read";
   const computerUpgrade = card?.upgrade ?? null;
 
@@ -182,17 +126,11 @@ export function IntegrationConnectCard(props: {
     setLoaded(null);
     setStep("review");
     setBusy(false);
-    setConnecting(false);
-    setCancelUnconfirmed(false);
     setError(null);
     setNotice(null);
     setAccountId(null);
     setAllowChanges(false);
     setConnected(null);
-    setConnectedId(null);
-    setRepositoryAccess(null);
-    setApiKeyValues({});
-    setApiKeyName("");
     setComputerId(null);
     setComputerAccess("read");
     return () => {
@@ -239,7 +177,6 @@ export function IntegrationConnectCard(props: {
     operationGeneration.current += 1;
     setBusy(false);
     setStep("review");
-    setApiKeyValues({});
     if (presented.current) {
       presented.current = false;
       props.onClose?.();
@@ -266,11 +203,7 @@ export function IntegrationConnectCard(props: {
     } finally {
       responding.current = false;
       if (claim) props.mutationGate?.release(claim);
-      if (generation === operationGeneration.current) {
-        setBusy(false);
-        setConnecting(false);
-        setCancelUnconfirmed(false);
-      }
+      if (generation === operationGeneration.current) setBusy(false);
     }
   };
   const finish = async (
@@ -287,9 +220,7 @@ export function IntegrationConnectCard(props: {
     const next = { ...current, dashboard, platform };
     const nextPlan = accessPlan(next, connectionId);
     if (!nextPlan?.selectedAccount || nextPlan.selectedAccount.id !== connectionId)
-      throw new Error(
-        "Authorization finished without recording the requested account. Start the connection again.",
-      );
+      throw new Error("That computer is no longer available. Choose it again.");
     if (computerAccessUpgrade(nextPlan, effectiveAccess))
       throw new Error("Allow changes on this computer before allowing this request.");
     if (
@@ -316,7 +247,7 @@ export function IntegrationConnectCard(props: {
         props.request.id,
       )
     )
-      throw new Error("The account is connected, but this request is still waiting. Try again.");
+      throw new Error("This request is still waiting. Try again.");
     if (generation !== operationGeneration.current) return;
     setLoaded(next);
     setAccountId(connectionId);
@@ -328,98 +259,6 @@ export function IntegrationConnectCard(props: {
     }
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     props.onResponded();
-  };
-  const checkRepositories = async (
-    connectionId: IntegrationConnectionSummary["id"],
-    generation: number,
-  ): Promise<IntegrationRepositoryAccess | null> => {
-    try {
-      return unwrapRpcResult(
-        await props.hostClient.rpc["integration.repositoryAccess.check"]({ connectionId }),
-      );
-    } catch (reason) {
-      if (generation !== operationGeneration.current) return null;
-      const dashboard = await props.hostClient.rpc["integrations.get"]({})
-        .then(unwrapRpcResult)
-        .catch(() => null);
-      if (generation !== operationGeneration.current) return null;
-      if (dashboard) setLoaded((current) => (current ? { ...current, dashboard } : current));
-      const next = dashboard ? repositoryAccountStep(dashboard, connectionId) : null;
-      if (next?.kind === "connected") await finish(connectionId, generation);
-      else if (next?.kind === "sign-in") {
-        setError(next.detail ?? describe(reason));
-        setStep("review");
-        if (presented.current) {
-          presented.current = false;
-          props.onClose?.();
-        }
-      } else {
-        setError(describe(reason));
-        showForm("repository-access");
-      }
-      return null;
-    }
-  };
-  const authorize = async (current: LoadedAccessRequest, generation: number): Promise<void> => {
-    const next = connectCard({
-      loaded: current,
-      deploymentName,
-      allowChanges,
-      selectedAccountId: accountId,
-    });
-    const nextPlan = next.plan;
-    if (!nextPlan) return;
-    setConnecting(true);
-    const signIn = new AbortController();
-    signingIn.current = signIn;
-    const started =
-      nextPlan.requirement.kind === "mcp-oauth" && nextPlan.serverId
-        ? mobile.beginMcpIntegrationAuthorization({
-            displayName: accountName.trim() || `${nextPlan.installationTitle} account`,
-            requestId: props.request.id,
-            serverId: nextPlan.serverId,
-            signal: signIn.signal,
-          })
-        : nextPlan.definition && next.source
-          ? mobile.beginIntegrationAuthorization({
-              applicationSource: next.source,
-              definitionId: nextPlan.definition.id,
-              signal: signIn.signal,
-            })
-          : null;
-    const status =
-      started && (await integrationAuthorizationSettled(started, () => setCancelUnconfirmed(true)));
-    if (generation !== operationGeneration.current) return;
-    if (!status) throw new Error("Open integration settings to finish this connection.");
-    const outcome = integrationAuthorizationError(status.status, status.failureCode);
-    if (outcome) throw new Error(outcome);
-    if (!status.connectionId)
-      throw new Error(
-        "Authorization finished without recording an account. Start the connection again.",
-      );
-    const dashboard = unwrapRpcResult(await props.hostClient.rpc["integrations.get"]({}));
-    if (generation !== operationGeneration.current) return;
-    const connection = authorizationConnection(dashboard, status.connectionId);
-    if (nextPlan.requirement.kind === "provider" && !connection)
-      throw new Error(
-        `${nextPlan.integrationName} reported success, but no connected account is recorded here. Start the connection again.`,
-      );
-    if (connection?.provider === "github") {
-      setConnectedId(connection.id);
-      setRepositoryAccess(null);
-      const access = await checkRepositories(connection.id, generation);
-      if (!access || generation !== operationGeneration.current) return;
-      if (!access.ready) {
-        setRepositoryAccess(access);
-        setStep("repository-access");
-        if (!presented.current) {
-          presented.current = true;
-          props.onPresent?.();
-        }
-        return;
-      }
-    }
-    await finish(status.connectionId, generation, current);
   };
   const install = () =>
     run(async (generation) => {
@@ -447,7 +286,7 @@ export function IntegrationConnectCard(props: {
         before = page.window.nextBefore;
       } while (before);
       if (updated?.payload.kind !== "integration.access")
-        throw new Error("This connection request is no longer available.");
+        throw new Error("This request is no longer available.");
       const [dashboard, platform] = await Promise.all([
         props.hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
         props.hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
@@ -455,57 +294,10 @@ export function IntegrationConnectCard(props: {
       if (generation !== operationGeneration.current) return;
       const next = { dashboard, platform, request: updated.payload };
       setLoaded(next);
-      if (card.autoInstall) {
-        const nextCard = connectCard({ loaded: next, deploymentName, allowChanges });
-        if (nextCard.form === "api-key") showForm("api-key");
-        else if (nextCard.form === "computer") showForm("computer");
-        else if (nextCard.form === "server") showForm("server");
-        else if (nextCard.primary?.kind === "connect") await authorize(next, generation);
-        else if (nextCard.plan?.requirement.kind === "none") {
-          await resolveIntegrationAccess(props.hostClient, {
-            access: nextCard.effectiveAccess,
-            accountsCount: 0,
-            installationTitle: nextCard.plan.installationTitle,
-            requestId: props.request.id,
-            selectedAccount: null,
-          });
-          if (generation === operationGeneration.current) props.onResponded();
-        }
-      }
-    });
-  const connectApiKey = () =>
-    run(async (generation) => {
-      if (!plan?.apiKeyMethod || !plan.definition || !loaded) return;
-      const result = await props.hostClient.dispatch({
-        idempotencyKey: mutationIdempotencyKey(`integration-key:${plan.definition.id}`),
-        input: {
-          authMethodId: plan.apiKeyMethod.id,
-          ...(reconnect?.method === "api-key" ? { connectionId: reconnect.account.id } : {}),
-          definitionId: plan.definition.id,
-          ...(apiKeyName.trim() ? { displayName: apiKeyName.trim() } : {}),
-          values: apiKeyValues,
-        },
-        type: "integration.apiKey.connect",
-      });
-      if (generation !== operationGeneration.current) return;
-      setApiKeyValues({});
-      // An older Host does not say which account the key made; the person
-      // then chooses it with Use rather than the card guessing.
-      if (result.type === "integration.apiKey.connect" && result.connectionId) {
-        await finish(result.connectionId, generation);
-      } else {
-        // Back to the card, where the saved account waits for Use.
-        close();
-        setReload((value) => value + 1);
-      }
-    });
-  const recheckRepositories = () =>
-    run(async (generation) => {
-      if (!connectedId) return;
-      const access = await checkRepositories(connectedId, generation);
-      if (!access || generation !== operationGeneration.current) return;
-      setRepositoryAccess(access);
-      if (access.ready) await finish(connectedId, generation);
+      // A catalog app goes on to its computer, or to its server, on the same card.
+      const nextCard = connectCard({ loaded: next, allowChanges });
+      if (nextCard.form === "computer") showForm("computer");
+      else if (nextCard.form === "server") showForm("server");
     });
   const setComputerApp = (input: {
     readonly access: IntegrationAccess;
@@ -536,13 +328,13 @@ export function IntegrationConnectCard(props: {
         result.type !== "integration.computer.setup.set" &&
         result.type !== "integration.computer.setup.request"
       )
-        throw new Error("Integration computer command mismatch.");
+        throw new Error("The computer did not take the request.");
       if (generation !== operationGeneration.current) return;
       const computer = snapshot.machines.find((machine) => machine.id === input.runnerId);
       setNotice(
         phone && computer && isAgentPhone(computer)
           ? `Agents can now use ${computer.name} at the access you chose.`
-          : `Setup requested. On ${computer?.name ?? "that computer"}, open Opensteer → Settings → Computers to approve ${plan.definition.name}.`,
+          : `Setup requested. On ${computer?.name ?? "that computer"}, open Opensteer → Settings → Devices to approve ${plan.definition.name}.`,
       );
       setReload((value) => value + 1);
     });
@@ -586,21 +378,16 @@ export function IntegrationConnectCard(props: {
     });
   };
   const openConnect = (): void => {
-    if (!plan || !loaded) return;
+    if (plan?.requirement.kind !== "computer") return;
     lastAction.current = "connect";
-    if (plan.apiKeyMethod) {
-      if (reconnect) setApiKeyName(reconnect.account.displayName);
-      showForm("api-key");
-    } else if (plan.requirement.kind === "computer") showForm("computer");
-    else void run((generation) => authorize(loaded, generation));
+    showForm("computer");
   };
   const primary = (): void => {
     if (!card) return;
     switch (card.primary?.kind) {
       case "retry":
         setError(null);
-        if (step === "repository-access") void recheckRepositories();
-        else if (lastAction.current === "allow" && plan?.selectedAccount) void allow();
+        if (lastAction.current === "allow") void allow();
         else if (loaded?.request.installationId === null) void install();
         else if (plan) openConnect();
         else setReload((value) => value + 1);
@@ -611,14 +398,8 @@ export function IntegrationConnectCard(props: {
       case "use":
         void allow();
         break;
-      case "settings":
-        navigation.navigate("SettingsPlugins", { deploymentId: snapshot.deploymentId! });
-        break;
       case "server":
         showForm("server");
-        break;
-      case "repositories":
-        void recheckRepositories();
         break;
       case "upgrade":
         if (computerUpgrade)
@@ -633,7 +414,7 @@ export function IntegrationConnectCard(props: {
   if (!card)
     return (
       <View style={styles.body}>
-        <AppText role="secondary">{error ?? "Checking account access…"}</AppText>
+        <AppText role="secondary">{error ?? "Checking access…"}</AppText>
         {error ? (
           <SecondaryButton
             label="Not now"
@@ -666,18 +447,15 @@ export function IntegrationConnectCard(props: {
   if (card.phase === "answered") return <AppText role="secondary">Request answered</AppText>;
   const title =
     step === "accounts"
-      ? `${card.name} accounts`
+      ? `${card.name} on your computers`
       : step === "computer"
         ? "Choose a computer"
-        : step === "repository-access"
-          ? "Choose GitHub repositories"
-          : step === "server"
-            ? "Choose server"
-            : (card.primary?.label ?? `Connect ${card.name}`);
+        : step === "server"
+          ? "Choose server"
+          : (card.primary?.label ?? `Connect ${card.name}`);
   const controlsDisabled = busy || (props.disabled ?? false);
   const collapsed = collapsedAccountRows(card.accounts, collapsedAccountLimit);
-  const addLabel =
-    plan?.requirement.kind === "computer" ? "Use another computer" : "Add another account";
+  const addLabel = "Use another computer";
   const canAdd = card.canConnectAnother && card.accounts.length > 0;
   const chooseAccount = (id: string) => {
     setAccountId(id);
@@ -689,7 +467,6 @@ export function IntegrationConnectCard(props: {
         <IntegrationIcon definitionId={card.iconId} name={card.name} />
         <View style={styles.integrationHeadingText}>
           <AppText role="title">{card.title}</AppText>
-          {card.proposed ? <AgentProposedCaption proposed /> : null}
           {card.reason ? (
             <AppText role="secondary" tone="soft">
               {card.reason}
@@ -697,9 +474,7 @@ export function IntegrationConnectCard(props: {
           ) : null}
         </View>
       </View>
-      {card.error ? (
-        <Notice detail={card.error} title="This connection did not finish" tone="danger" />
-      ) : null}
+      {card.error ? <Notice detail={card.error} title="This didn't finish" tone="danger" /> : null}
       {props.disabledReason ? (
         <AppText role="secondary" tone="muted">
           {props.disabledReason}
@@ -717,20 +492,12 @@ export function IntegrationConnectCard(props: {
           ) : null}
         </>
       ) : null}
-      {card.installReview ? (
-        <InstallReview
-          canInstall={loaded?.dashboard.isAdministrator ?? false}
-          continuesToAccess
-          installedTitle={null}
-          manifest={loaded?.request.manifest}
-        />
-      ) : null}
-      {collapsed.rows.length > 0 || connecting ? (
+      {collapsed.rows.length > 0 ? (
         <View style={styles.list}>
           {collapsed.rows.map((account, index) => (
             <AccountRow
               account={account}
-              disabled={controlsDisabled || connecting}
+              disabled={controlsDisabled}
               first={index === 0}
               key={account.id}
               onPress={() => chooseAccount(account.id)}
@@ -739,39 +506,25 @@ export function IntegrationConnectCard(props: {
           {collapsed.hidden > 0 ? (
             <Pressable
               accessibilityRole="button"
-              accessibilityState={{ disabled: busy || connecting }}
+              accessibilityState={{ disabled: busy }}
               // Dismissing a sheet abandons what it belongs to, so the list
               // cannot open over an answer the card is still waiting on.
-              disabled={busy || connecting}
+              disabled={busy}
               onPress={() => showForm("accounts")}
               style={({ pressed }) => [
                 styles.row,
                 styles.rowSeparated,
                 pressed && styles.rowPressed,
-                (busy || connecting) && styles.rowDisabled,
+                busy && styles.rowDisabled,
               ]}
             >
               <AppText role="secondaryMedium" style={styles.rowText} tone="soft">
-                {`See all ${card.accounts.length} accounts`}
+                {`See all ${card.accounts.length} computers`}
               </AppText>
               <Symbol name="chevron.right" size={13} tint={color.muted} />
             </Pressable>
           ) : null}
-          {connecting ? (
-            <View
-              accessibilityLiveRegion="polite"
-              style={[styles.row, collapsed.rows.length > 0 && styles.rowSeparated]}
-            >
-              <View style={styles.avatar}>
-                <ActivityIndicator color={color.ember} size="small" />
-              </View>
-              <AppText role="secondary" style={styles.rowText} tone="soft">
-                {cancelUnconfirmed
-                  ? integrationAuthorizationCancelUnconfirmedDetail
-                  : "Finish signing in"}
-              </AppText>
-            </View>
-          ) : canAdd ? (
+          {canAdd ? (
             <AddAccountRow disabled={controlsDisabled} label={addLabel} onPress={openConnect} />
           ) : null}
         </View>
@@ -788,35 +541,12 @@ export function IntegrationConnectCard(props: {
           value={allowChanges}
         />
       ) : null}
-      {plan?.requirement.kind === "mcp-oauth" && !plan.accounts.length ? (
-        <Field
-          label="Account name"
-          input={{
-            value: accountName || `${plan.installationTitle} account`,
-            onChangeText: setAccountName,
-          }}
-        />
-      ) : null}
-      {reconnect ? (
-        <AppText role="secondary">
-          {integrationAccountDetail(reconnect.account, [
-            reconnect.account,
-            ...(plan?.accounts ?? []),
-          ])}{" "}
-          · Needs attention
-        </AppText>
-      ) : null}
       {computerUpgrade ? (
         <Notice
           title="Allow changes on this computer"
           detail={`${plan?.integrationName} on ${computerUpgrade.displayName} is ${plan?.definition?.computerApp?.accessLabels.read ?? "read only"}. Choose ${plan?.definition?.computerApp?.accessLabels.readWrite ?? "read and write"} before allowing changes; the request itself does not change.`}
           tone="neutral"
         />
-      ) : null}
-      {reconnect?.statusDetail ? (
-        <AppText role="secondary" tone="muted">
-          {reconnect.statusDetail}
-        </AppText>
       ) : null}
       {plan?.requirement.kind === "computer" ? (
         <ReviewStep
@@ -825,32 +555,26 @@ export function IntegrationConnectCard(props: {
           machines={snapshot.machines}
         />
       ) : null}
-      {connecting ? (
-        cancelUnconfirmed ? null : (
-          <SecondaryButton label="Cancel" onPress={() => signingIn.current?.abort()} />
-        )
-      ) : (
-        <View style={styles.actions}>
-          <View style={styles.actionSecondary}>
-            <SecondaryButton
-              busy={busy && !card.primary}
+      <View style={styles.actions}>
+        <View style={styles.actionSecondary}>
+          <SecondaryButton
+            busy={busy && !card.primary}
+            disabled={props.disabled ?? false}
+            label={card.secondary}
+            onPress={() => void decline()}
+          />
+        </View>
+        {card.primary ? (
+          <View style={styles.actionPrimary}>
+            <PrimaryButton
+              busy={busy}
               disabled={props.disabled ?? false}
-              label={card.secondary}
-              onPress={() => void decline()}
+              label={card.primary.label}
+              onPress={primary}
             />
           </View>
-          {card.primary ? (
-            <View style={styles.actionPrimary}>
-              <PrimaryButton
-                busy={busy}
-                disabled={props.disabled ?? false}
-                label={card.primary.label}
-                onPress={primary}
-              />
-            </View>
-          ) : null}
-        </View>
-      )}
+        ) : null}
+      </View>
       {card.details.length > 0 ? (
         <Pressable
           accessibilityRole="button"
@@ -860,15 +584,15 @@ export function IntegrationConnectCard(props: {
           style={styles.scope}
         >
           <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="caption" tone="muted">
-            {card.scope ?? "Details"}
+            {card.scope}
           </AppText>
           <Symbol name={disclosed ? "chevron.up" : "chevron.down"} size={11} tint={color.muted} />
         </Pressable>
-      ) : card.scope ? (
+      ) : (
         <AppText role="caption" style={styles.scopeText} tone="muted">
           {card.scope}
         </AppText>
-      ) : null}
+      )}
       {disclosed && card.details.length > 0 ? (
         <View style={styles.details}>
           {card.details.map((line) => (
@@ -887,23 +611,6 @@ export function IntegrationConnectCard(props: {
         footer={
           step === "accounts" ? undefined : (
             <View style={styles.footer}>
-              {step === "api-key" && plan?.apiKeyMethod ? (
-                <PrimaryButton
-                  busy={busy}
-                  disabled={
-                    props.disabled ||
-                    plan.apiKeyMethod.inputs.some(
-                      ({ variable }) => !(apiKeyValues[variable] ?? "").trim(),
-                    )
-                  }
-                  label={
-                    reconnect
-                      ? `Reconnect ${reconnect.account.accountIdentifier ?? reconnect.account.displayName}`
-                      : `Connect ${card.name}`
-                  }
-                  onPress={() => void connectApiKey()}
-                />
-              ) : null}
               {step === "computer" && computerChosen ? (
                 <PrimaryButton
                   busy={busy}
@@ -917,23 +624,13 @@ export function IntegrationConnectCard(props: {
                   }
                 />
               ) : null}
-              {step === "repository-access" ? (
-                <PrimaryButton
-                  busy={busy}
-                  disabled={props.disabled ?? false}
-                  label="Recheck repository access"
-                  onPress={() => void recheckRepositories()}
-                />
-              ) : null}
               <SecondaryButton label="Finish later" onPress={close} />
             </View>
           )
         }
       >
         <View style={styles.body}>
-          {error ? (
-            <Notice detail={error} title="This connection did not finish" tone="danger" />
-          ) : null}
+          {error ? <Notice detail={error} title="This didn't finish" tone="danger" /> : null}
           {notice ? (
             <>
               <Notice detail={notice} title="Saved" tone="neutral" />
@@ -972,22 +669,6 @@ export function IntegrationConnectCard(props: {
               ) : null}
             </View>
           ) : null}
-          {step === "api-key" && plan?.apiKeyMethod && plan.definition ? (
-            <>
-              <AgentProposedCaption proposed={card.proposed} />
-              <ApiKeyStep
-                definition={plan.definition}
-                proposed={card.proposed}
-                displayName={apiKeyName}
-                method={plan.apiKeyMethod}
-                onDisplayName={setApiKeyName}
-                onValue={(variable, value) =>
-                  setApiKeyValues((current) => ({ ...current, [variable]: value }))
-                }
-                values={apiKeyValues}
-              />
-            </>
-          ) : null}
           {step === "computer" && plan?.definition && computerChoices ? (
             <ComputerAppPicker
               access={computerAccess}
@@ -999,7 +680,6 @@ export function IntegrationConnectCard(props: {
               targets={computerChoices}
             />
           ) : null}
-          {step === "repository-access" ? <RepositoryAccessStep access={repositoryAccess} /> : null}
           {step === "server"
             ? card.serverChoices.map((server) => (
                 <SecondaryButton
@@ -1030,7 +710,7 @@ function AccountRow(props: {
   const { account } = props;
   return (
     <Pressable
-      accessibilityLabel={account.detail ? `${account.label}, ${account.detail}` : account.label}
+      accessibilityLabel={account.label}
       accessibilityRole="radio"
       accessibilityState={{ checked: account.selected, disabled: props.disabled }}
       disabled={props.disabled}
@@ -1052,11 +732,6 @@ function AccountRow(props: {
         <AppText numberOfLines={1} role="bodyMedium">
           {account.label}
         </AppText>
-        {account.detail ? (
-          <AppText numberOfLines={1} role="caption" tone="muted">
-            {account.detail}
-          </AppText>
-        ) : null}
       </View>
       <View style={[styles.radio, account.selected && styles.radioChecked]}>
         {account.selected ? <View style={styles.radioDot} /> : null}
@@ -1089,77 +764,6 @@ function AddAccountRow(props: {
         {props.label}
       </AppText>
     </Pressable>
-  );
-}
-
-function ApiKeyStep(props: {
-  readonly definition: NonNullable<AccessPlan["definition"]>;
-  readonly proposed: boolean;
-  readonly displayName: string;
-  readonly method: NonNullable<AccessPlan["apiKeyMethod"]>;
-  readonly onDisplayName: (value: string) => void;
-  readonly onValue: (variable: string, value: string) => void;
-  readonly values: Readonly<Record<string, string>>;
-}): ReactNode {
-  const disclosure = apiKeyDisclosure(props.definition);
-  if (disclosure === null) return null;
-  return (
-    <>
-      {disclosure.setupUrl ? (
-        <Pressable
-          accessibilityRole="link"
-          onPress={() => void Linking.openURL(disclosure.setupUrl!)}
-        >
-          <AppText role="secondary">
-            {disclosure.setupInstruction.prefix}
-            {new URL(disclosure.setupUrl).host}
-            {disclosure.setupInstruction.suffix}
-          </AppText>
-        </Pressable>
-      ) : (
-        <AppText role="secondary">
-          {disclosure.setupInstruction.prefix}
-          {disclosure.setupInstruction.suffix}
-        </AppText>
-      )}
-      {props.method.inputs.map((input) => (
-        <Field
-          key={input.variable}
-          label={input.label}
-          {...(input.description
-            ? { hint: `${props.proposed ? "From the agent’s proposal: " : ""}${input.description}` }
-            : {})}
-          hintPosition="before"
-          input={{
-            autoCapitalize: "none",
-            autoCorrect: false,
-            onChangeText: (value: string) => props.onValue(input.variable, value),
-            secureTextEntry: input.secret,
-            value: props.values[input.variable] ?? "",
-          }}
-        />
-      ))}
-      <Field
-        input={{ onChangeText: props.onDisplayName, value: props.displayName }}
-        label="Account label (optional)"
-      />
-      <AppText role="secondary" tone="muted">
-        {disclosure.custody}
-      </AppText>
-      <AppText role="secondary" tone="muted">
-        {disclosure.check}
-      </AppText>
-    </>
-  );
-}
-
-/** Said under the integration a Request asks about whenever an agent proposed it. */
-function AgentProposedCaption({ proposed }: { readonly proposed: boolean }): ReactNode {
-  if (!proposed) return null;
-  return (
-    <AppText accessibilityHint={requestAgentProposedDetail} role="caption" tone="muted">
-      {requestAgentProposedLabel}
-    </AppText>
   );
 }
 
@@ -1211,58 +815,6 @@ function ReviewStep(props: {
   );
 }
 
-function RepositoryAccessStep({
-  access,
-}: {
-  readonly access: IntegrationRepositoryAccess | null;
-}): ReactNode {
-  if (access === null) {
-    return (
-      <Notice
-        detail="Your GitHub sign-in is saved. Recheck instead of signing in again."
-        title="Repository access could not be checked"
-        tone="neutral"
-      />
-    );
-  }
-  return (
-    <>
-      <Notice
-        detail="Install the GitHub App or choose at least one repository, then recheck."
-        title="Repository access is still required"
-        tone="neutral"
-      />
-      {access.installationUrl ? (
-        <PrimaryButton
-          label="Install GitHub App"
-          onPress={() => void Linking.openURL(access.installationUrl!)}
-        />
-      ) : access.installations.length === 0 ? (
-        <AppText role="secondary" tone="muted">
-          No installation link is configured for this sign-in app. Edit your own app registration,
-          or ask an administrator to configure its installation URL.
-        </AppText>
-      ) : null}
-      <RowGroup>
-        {access.installations.map((installation) => (
-          <ChoiceRow
-            description={
-              installation.suspended
-                ? "Installation suspended"
-                : installation.repositorySelection === "all"
-                  ? `${installation.repositoryCount} repositories · all repositories`
-                  : `${installation.repositoryCount} selected repositories`
-            }
-            key={installation.id}
-            onPress={() => void Linking.openURL(installation.configureUrl)}
-            title={`${installation.accountLogin} · Choose/change repositories`}
-          />
-        ))}
-      </RowGroup>
-    </>
-  );
-}
-
 function describe(reason: unknown): string {
   return reason instanceof Error ? reason.message : "This deployment could not be reached.";
 }
@@ -1294,7 +846,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[12],
     paddingVertical: space[10],
   },
-  fact: { gap: space[2], paddingHorizontal: space[14], paddingVertical: space[12] },
   footer: { backgroundColor: color.surface, gap: space[8] },
   integrationHeading: { alignItems: "flex-start", flexDirection: "row", gap: space[12] },
   integrationHeadingText: { flex: 1, gap: space[2] },

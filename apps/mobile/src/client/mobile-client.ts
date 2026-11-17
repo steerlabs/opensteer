@@ -49,6 +49,7 @@ import {
 import {
   authorizationLaunchUrl,
   authorizationStatusReturned,
+  authorizationTerminalStatuses,
   createUsageNoticeDismissals,
   HostClientRequestError,
   mutationIdempotencyKey,
@@ -62,23 +63,9 @@ import {
   parseNativeIntegrationAuthorizationCallback,
   IntegrationAuthorizationAttempts,
   IntegrationAuthorizationCancelledError,
-  IntegrationAuthorizationCancelUnconfirmedError,
-  integrationAuthorizationTerminalStatuses,
   type NativeIntegrationAuthorizationCallback,
-  IntegrationAuthorizationAttemptIdSchema,
-  IntegrationServerIdSchema,
-  type IntegrationAuthorizationStart,
-  waitForIntegrationAuthorization,
-  type IntegrationAuthorizationStatus,
-  type IntegrationOAuthApplicationSource,
 } from "@opensteer/client/integrations";
-import {
-  DeploymentIdSchema,
-  RequestIdSchema,
-  type DeploymentId,
-  type TeamInviteSecret,
-  type UserId,
-} from "@opensteer/core";
+import { DeploymentIdSchema, type DeploymentId, type TeamInviteSecret } from "@opensteer/core";
 import type { DesktopAccountAuthState } from "@opensteer/protocol/desktop";
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { createHostAuthorization, type HostFetch } from "../platform/host-network.js";
@@ -150,11 +137,6 @@ export interface MobileDirectoryState {
   readonly detail: string | null;
   readonly unavailable: readonly AccountDeploymentDirectoryUnavailable[];
 }
-
-/** Bounds each Cancel request; the Host may be out of reach on a weak link. */
-const integrationCancelTimeoutMilliseconds = 10_000;
-/** How long past an attempt's expiry an unanswered Cancel keeps asking. */
-const integrationCancelReconcileGraceMilliseconds = 5 * 60_000;
 
 /** A person's own Cancel, which an app-link delivery ends on without reporting a failure. */
 class IntegrationAuthorizationCancelledByPerson extends IntegrationAuthorizationCancelledError {}
@@ -912,226 +894,6 @@ export class MobileClient {
   }
 
   /**
-   * Starts provider authorization on the selected Host and registers local
-   * authority before opening the browser. Only the Host's durable result can
-   * establish completion.
-   */
-  async beginIntegrationAuthorization(input: {
-    readonly applicationSource?: IntegrationOAuthApplicationSource;
-    readonly definitionId: string;
-    readonly returnPath?: string;
-    readonly signal?: AbortSignal;
-  }): Promise<IntegrationAuthorizationStatus> {
-    const deploymentId = this.#attachedDeploymentId;
-    const client = this.#hostClient;
-    const origin = this.#hostOrigin;
-    if (deploymentId === null || client === null || origin === null) {
-      throw new Error("Reconnect to this deployment before connecting an integration.");
-    }
-    const authorizationEpoch = this.#authorizationEpoch;
-    const userId = client.getSnapshot().user?.id;
-    const result = await client.dispatch({
-      idempotencyKey: mutationIdempotencyKey(`integration-auth:${input.definitionId}`),
-      input: {
-        ...(input.applicationSource ? { exactApplicationSource: input.applicationSource } : {}),
-        definitionId: input.definitionId,
-        returnPath: input.returnPath ?? "/",
-        surface: "native",
-        ...(client.getSnapshot().integrationAppFinishAvailable ? { finish: "app" as const } : {}),
-      },
-      type: "integration.authorization.begin",
-    });
-    if (result.type !== "integration.authorization.begin") {
-      throw new Error("Integration authorization command mismatch.");
-    }
-    return this.#finishIntegrationAuthorization({
-      result,
-      client,
-      deploymentId,
-      origin,
-      signal: input.signal,
-      authorizationEpoch,
-      ...(userId ? { userId } : {}),
-    });
-  }
-
-  async beginMcpIntegrationAuthorization(input: {
-    readonly serverId: string;
-    readonly requestId: string;
-    readonly displayName: string;
-    readonly signal?: AbortSignal;
-  }): Promise<IntegrationAuthorizationStatus> {
-    const deploymentId = this.#attachedDeploymentId;
-    const client = this.#hostClient;
-    const origin = this.#hostOrigin;
-    if (deploymentId === null || client === null || origin === null) {
-      throw new Error("Reconnect to this deployment before connecting an integration.");
-    }
-    const authorizationEpoch = this.#authorizationEpoch;
-    const userId = client.getSnapshot().user?.id;
-    const result = await client.dispatch({
-      idempotencyKey: mutationIdempotencyKey(`integration-mcp:${input.serverId}`),
-      input: {
-        serverId: IntegrationServerIdSchema.parse(input.serverId),
-        requestId: RequestIdSchema.parse(input.requestId),
-        displayName: input.displayName,
-        returnPath: "/",
-        surface: "native",
-        ...(client.getSnapshot().integrationAppFinishAvailable ? { finish: "app" as const } : {}),
-      },
-      type: "integration.mcp.authorization.begin",
-    });
-    if (result.type !== "integration.mcp.authorization.begin") {
-      throw new Error("MCP authorization command mismatch.");
-    }
-    return this.#finishIntegrationAuthorization({
-      result,
-      client,
-      deploymentId,
-      origin,
-      signal: input.signal,
-      authorizationEpoch,
-      ...(userId ? { userId } : {}),
-    });
-  }
-
-  async #finishIntegrationAuthorization(input: {
-    readonly result: IntegrationAuthorizationStart;
-    readonly client: HostClient;
-    readonly deploymentId: DeploymentId;
-    readonly origin: string;
-    readonly signal: AbortSignal | undefined;
-    readonly authorizationEpoch: number;
-    readonly userId?: UserId;
-  }): Promise<IntegrationAuthorizationStatus> {
-    const { result, client, deploymentId, origin } = input;
-    const attemptId = IntegrationAuthorizationAttemptIdSchema.parse(result.attemptId);
-    if (
-      this.#authorizationEpoch !== input.authorizationEpoch ||
-      this.#hostClient !== client ||
-      this.#attachedDeploymentId !== deploymentId
-    ) {
-      throw new Error("The selected deployment changed during integration authorization.");
-    }
-    const attempt = {
-      kind: "integration" as const,
-      deploymentId,
-      attemptId,
-      expiresAt: result.expiresAt,
-      ...(input.userId ? { userId: input.userId } : {}),
-    };
-    await this.#integrationAttempts.register(attempt);
-    if (this.#authorizationEpoch !== input.authorizationEpoch) {
-      await this.#integrationAttempts.forget(attempt);
-      throw new IntegrationAuthorizationCancelledError();
-    }
-    if (input.signal?.aborted) return this.#cancelIntegrationAuthorization(client, attempt);
-    const launch = new URL(
-      `/v1/integration-authorizations/${encodeURIComponent(attemptId)}/launch`,
-      origin,
-    );
-    launch.searchParams.set("ticket", result.launchTicket);
-    let cancelling: Promise<IntegrationAuthorizationStatus> | null = null;
-    const cancel = () => (cancelling ??= this.#cancelIntegrationAuthorization(client, attempt));
-    const abort = () => void cancel().catch(noop);
-    input.signal?.addEventListener("abort", abort, { once: true });
-    try {
-      const callback = await this.#openIntegrationAuthorization(launch.toString(), input.signal);
-      const returned = parseNativeIntegrationAuthorizationCallback(callback);
-      if (
-        returned === null ||
-        returned.deploymentId !== deploymentId ||
-        returned.attemptId !== attemptId
-      ) {
-        throw new Error("The authorization browser returned a different integration attempt.");
-      }
-      const status = await this.#deliverIntegrationAuthorizationReturn(returned, input.signal);
-      // This attempt was registered as an integration's, so its answer is one.
-      if (status === null || "account" in status)
-        throw new Error("That sign-in wasn't started here.");
-      return status;
-    } catch (error) {
-      if (cancelling !== null) return await cancelling;
-      if (error instanceof IntegrationAuthorizationCancelledError) {
-        if (this.#authorizationEpoch === input.authorizationEpoch) return await cancel();
-        await this.#integrationAttempts.forget(attempt);
-      }
-      throw error;
-    } finally {
-      input.signal?.removeEventListener("abort", abort);
-    }
-  }
-
-  /**
-   * Ends a started attempt. Its return stops first, including one the app link
-   * started without this caller, so a proof still on this phone never leaves.
-   * Only the Host knows whether a proof already sent finished the attempt, so
-   * without its answer this is unconfirmed, never cancelled.
-   */
-  async #cancelIntegrationAuthorization(
-    client: HostClient,
-    attempt: Parameters<IntegrationAuthorizationAttempts["register"]>[0],
-  ): Promise<IntegrationAuthorizationStatus> {
-    for (const [controller, running] of this.#integrationReturnControllers)
-      if (running.attemptId === attempt.attemptId)
-        controller.abort(new IntegrationAuthorizationCancelledByPerson());
-    await this.#integrationAttempts.forget(attempt);
-    const answer = await this.#requestIntegrationCancel(client, attempt.attemptId).catch(
-      () => null,
-    );
-    if (answer === null)
-      throw new IntegrationAuthorizationCancelUnconfirmedError(
-        attempt.attemptId,
-        this.#reconcileIntegrationCancel(attempt),
-      );
-    if (answer.status === "completed") return answer;
-    throw new IntegrationAuthorizationCancelledError();
-  }
-
-  async #requestIntegrationCancel(
-    client: HostClient,
-    attemptId: IntegrationAuthorizationStart["attemptId"],
-  ): Promise<IntegrationAuthorizationStatus> {
-    const answer = await dispatchWithin(
-      client,
-      {
-        attemptId,
-        idempotencyKey: mutationIdempotencyKey(`integration-auth:${attemptId}`),
-        type: "integration.authorization.cancel",
-      },
-      integrationCancelTimeoutMilliseconds,
-    );
-    if (answer.type !== "integration.authorization.cancel")
-      throw new Error("Integration authorization command mismatch.");
-    return {
-      connectionId: answer.connectionId,
-      expiresAt: answer.expiresAt,
-      failureCode: answer.failureCode,
-      status: answer.status,
-    };
-  }
-
-  /** Asks again until the Host answers; its reply is the attempt's durable status. */
-  async #reconcileIntegrationCancel(
-    attempt: Parameters<IntegrationAuthorizationAttempts["register"]>[0],
-  ): Promise<IntegrationAuthorizationStatus | null> {
-    const epoch = this.#authorizationEpoch;
-    const deadline = Date.parse(attempt.expiresAt) + integrationCancelReconcileGraceMilliseconds;
-    for (let backoff = 1_000; Date.now() < deadline; backoff = Math.min(backoff * 2, 30_000)) {
-      await delay(backoff);
-      if (epoch !== this.#authorizationEpoch) return null;
-      const client = this.#attachedDeploymentId === attempt.deploymentId ? this.#hostClient : null;
-      if (client === null) continue;
-      try {
-        return await this.#requestIntegrationCancel(client, attempt.attemptId);
-      } catch (error) {
-        if (isHostRefusal(error)) return null;
-      }
-    }
-    return null;
-  }
-
-  /**
    * A plugin sign-in from this phone: the system's authorization sheet opens the
    * Host's launch address and hands the fixed app return straight back, whose
    * proof goes to the Host before the sign-in reads how it ended. Closing that
@@ -1163,7 +925,6 @@ export class MobileClient {
             )
               throw new Error("The selected computer changed during sign-in.");
             const attempt = {
-              kind: "plugin" as const,
               deploymentId,
               attemptId: started.attemptId,
               expiresAt: started.expiresAt,
@@ -1198,9 +959,7 @@ export class MobileClient {
   }
 
   /** Check local authority before a callback can select a Deployment or contact a Host. */
-  async handleIntegrationAuthorizationCallback(
-    rawUrl: string,
-  ): Promise<IntegrationAuthorizationStatus | PluginOAuthStatus | null> {
+  async handleIntegrationAuthorizationCallback(rawUrl: string): Promise<PluginOAuthStatus | null> {
     const callback = parseNativeIntegrationAuthorizationCallback(rawUrl);
     if (callback === null) return null;
     return this.#deliverIntegrationAuthorizationReturn(callback).catch((error: unknown) => {
@@ -1212,205 +971,178 @@ export class MobileClient {
   #deliverIntegrationAuthorizationReturn(
     callback: NativeIntegrationAuthorizationCallback,
     signal?: AbortSignal,
-  ): Promise<IntegrationAuthorizationStatus | PluginOAuthStatus | null> {
+  ): Promise<PluginOAuthStatus | null> {
     const epoch = this.#authorizationEpoch;
     const attemptId = callback.attemptId;
-    return this.#integrationAttempts.deliver<IntegrationAuthorizationStatus | PluginOAuthStatus>(
-      callback,
-      async (entry) => {
-        let client: HostClient | null = null;
-        let selecting = true;
-        const controller = new AbortController();
-        const abort = () => controller.abort(new IntegrationAuthorizationCancelledError());
-        signal?.addEventListener("abort", abort, { once: true });
-        if (signal?.aborted) abort();
-        this.#integrationReturnControllers.set(controller, { attemptId, client: null });
-        const assertAttached = () => {
-          if (controller.signal.reason instanceof IntegrationAuthorizationCancelledByPerson)
-            throw controller.signal.reason;
-          if (controller.signal.aborted || epoch !== this.#authorizationEpoch)
-            throw new IntegrationAuthorizationCancelledError();
-          if (
-            !selecting &&
-            ((client !== null && client !== this.#hostClient) ||
-              this.#attachedDeploymentId !== callback.deploymentId)
+    return this.#integrationAttempts.deliver<PluginOAuthStatus>(callback, async (entry) => {
+      let client: HostClient | null = null;
+      let selecting = true;
+      const controller = new AbortController();
+      const abort = () => controller.abort(new IntegrationAuthorizationCancelledError());
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
+      this.#integrationReturnControllers.set(controller, { attemptId, client: null });
+      const assertAttached = () => {
+        if (controller.signal.reason instanceof IntegrationAuthorizationCancelledByPerson)
+          throw controller.signal.reason;
+        if (controller.signal.aborted || epoch !== this.#authorizationEpoch)
+          throw new IntegrationAuthorizationCancelledError();
+        if (
+          !selecting &&
+          ((client !== null && client !== this.#hostClient) ||
+            this.#attachedDeploymentId !== callback.deploymentId)
+        )
+          throw new Error("Reconnect to that deployment to finish integration authorization.");
+      };
+      const remaining = () => Math.max(0, Date.parse(entry.expiresAt) - Date.now());
+      try {
+        // A cancel can land between admission and this line, before anything could abort.
+        if (this.#integrationAttempts.find(entry) === null)
+          throw new IntegrationAuthorizationCancelledByPerson();
+        const catalog = await this.catalog.load();
+        if (
+          !catalog.deployments.some(
+            ({ authority }) => authority.document.deploymentId === callback.deploymentId,
           )
-            throw new Error("Reconnect to that deployment to finish integration authorization.");
-        };
-        const remaining = () => Math.max(0, Date.parse(entry.expiresAt) - Date.now());
-        try {
-          // A cancel can land between admission and this line, before anything could abort.
-          if (this.#integrationAttempts.find(entry) === null)
-            throw new IntegrationAuthorizationCancelledByPerson();
-          const catalog = await this.catalog.load();
-          if (
-            !catalog.deployments.some(
-              ({ authority }) => authority.document.deploymentId === callback.deploymentId,
-            )
-          ) {
-            throw new Error("That integration attempt belongs to an unknown deployment.");
-          }
+        ) {
+          throw new Error("That integration attempt belongs to an unknown deployment.");
+        }
+        assertAttached();
+        const assertOwner = () => {
           assertAttached();
-          const assertOwner = () => {
-            assertAttached();
-            const user = client?.getSnapshot().user;
-            if (user && entry.userId !== undefined && entry.userId !== user.id)
-              throw new Error("That sign-in belongs to a different user.");
-          };
-          // The attempt this phone started decides which Host command its proof goes to.
-          const plugin = entry.kind === "plugin";
-          const command =
-            callback.returnProof === null
-              ? null
-              : plugin
-                ? {
-                    type: "plugin.authorization.return" as const,
-                    attemptId: callback.attemptId,
-                    returnProof: callback.returnProof,
-                    idempotencyKey: `plugin-auth-return:${callback.attemptId}`,
-                  }
-                : {
-                    type: "integration.authorization.return" as const,
-                    attemptId: callback.attemptId,
-                    returnProof: callback.returnProof,
-                    idempotencyKey: `integration-auth-return:${callback.attemptId}`,
-                  };
-          let backoff = 1_000;
-          while (true) {
-            assertOwner();
-            if (remaining() === 0)
-              return plugin
-                ? {
-                    attemptId: callback.attemptId,
-                    connection: "",
-                    account: null,
-                    status: "expired",
-                    failureCode: null,
-                    expiresAt: entry.expiresAt,
-                  }
-                : {
-                    status: "expired",
-                    connectionId: null,
-                    failureCode: null,
-                    expiresAt: entry.expiresAt,
-                  };
-            let status;
-            try {
-              if (client === null) {
-                if (
-                  this.#hostClient === null ||
-                  this.#attachedDeploymentId !== callback.deploymentId
-                ) {
-                  this.cancelOpenComputer();
-                  try {
-                    const outcome = await withTimeout(
-                      this.#startSelection(callback.deploymentId, true),
-                      Math.min(20_000, remaining()),
-                      {
-                        signal: controller.signal,
-                        timeoutError: () => new HostTransportError("timed-out"),
-                      },
-                    );
-                    if (outcome.kind === "session-failed") throw outcome.error;
-                    if (outcome.kind === "verification-failed")
-                      throw new ClientOperationError(
-                        verificationFailureDetail(outcome.verification),
-                        "blocked",
-                      );
-                  } finally {
-                    selecting = false;
-                  }
-                } else selecting = false;
-                assertAttached();
-                client = this.#hostClient;
-                if (client === null) throw new HostTransportError("unreachable");
-                this.#integrationReturnControllers.set(controller, { attemptId, client });
-              }
-              if (client.getSnapshot().user === null) {
-                await withTimeout(client.load(), Math.min(20_000, remaining()), {
-                  signal: controller.signal,
-                  timeoutError: () => new HostTransportError("timed-out"),
-                });
-              }
-              assertOwner();
-              if (client.getSnapshot().user === null) throw new HostTransportError("timed-out");
-              if (command === null) break;
-              status = await dispatchWithin(
-                client,
-                command,
-                Math.min(20_000, remaining()),
-                controller.signal,
-              );
-            } catch (error) {
-              assertOwner();
+          const user = client?.getSnapshot().user;
+          if (user && entry.userId !== undefined && entry.userId !== user.id)
+            throw new Error("That sign-in belongs to a different user.");
+        };
+        const command =
+          callback.returnProof === null
+            ? null
+            : {
+                type: "plugin.authorization.return" as const,
+                attemptId: callback.attemptId,
+                returnProof: callback.returnProof,
+                idempotencyKey: `plugin-auth-return:${callback.attemptId}`,
+              };
+        let backoff = 1_000;
+        while (true) {
+          assertOwner();
+          if (remaining() === 0)
+            return {
+              attemptId: callback.attemptId,
+              connection: "",
+              account: null,
+              status: "expired",
+              failureCode: null,
+              expiresAt: entry.expiresAt,
+            };
+          let status;
+          try {
+            if (client === null) {
               if (
-                (error instanceof ClientOperationError && error.classification === "blocked") ||
-                isHostRefusal(error)
+                this.#hostClient === null ||
+                this.#attachedDeploymentId !== callback.deploymentId
               ) {
-                await this.#integrationAttempts.forget(entry);
-                throw error;
-              }
-              // Retain the proof across selection, bootstrap and transport failures.
-              const wait = Math.min(backoff, remaining());
-              if (client === null || client.getSnapshot().user === null) {
-                const deadline = new Error("Retry integration authentication.");
-                let detach = () => {};
+                this.cancelOpenComputer();
                 try {
-                  await withTimeout(
-                    new Promise<void>((resolve) => {
-                      const ready = () => {
-                        if (
-                          epoch !== this.#authorizationEpoch ||
-                          this.#attachedDeploymentId !== callback.deploymentId ||
-                          (client === null
-                            ? this.#hostClient !== null
-                            : client.getSnapshot().user !== null)
-                        )
-                          resolve();
-                      };
-                      detach = client === null ? this.subscribe(ready) : client.subscribe(ready);
-                      ready();
-                    }),
-                    wait,
-                    { signal: controller.signal, timeoutError: () => deadline },
-                  ).catch((reason: unknown) => {
-                    if (reason !== deadline) throw reason;
-                  });
+                  const outcome = await withTimeout(
+                    this.#startSelection(callback.deploymentId, true),
+                    Math.min(20_000, remaining()),
+                    {
+                      signal: controller.signal,
+                      timeoutError: () => new HostTransportError("timed-out"),
+                    },
+                  );
+                  if (outcome.kind === "session-failed") throw outcome.error;
+                  if (outcome.kind === "verification-failed")
+                    throw new ClientOperationError(
+                      verificationFailureDetail(outcome.verification),
+                      "blocked",
+                    );
                 } finally {
-                  detach();
+                  selecting = false;
                 }
-              } else await delay(wait, controller.signal);
-              backoff = Math.min(backoff * 2, 30_000);
-              continue;
+              } else selecting = false;
+              assertAttached();
+              client = this.#hostClient;
+              if (client === null) throw new HostTransportError("unreachable");
+              this.#integrationReturnControllers.set(controller, { attemptId, client });
+            }
+            if (client.getSnapshot().user === null) {
+              await withTimeout(client.load(), Math.min(20_000, remaining()), {
+                signal: controller.signal,
+                timeoutError: () => new HostTransportError("timed-out"),
+              });
             }
             assertOwner();
-            if (status.type !== command.type)
-              throw new Error("Integration authorization command mismatch.");
-            const { type: _type, ...returned } = status;
-            // Wakes a plugin sign-in waiting on this attempt with the Host's answer.
-            authorizationStatusReturned(client, callback.attemptId, returned);
-            if (integrationAuthorizationTerminalStatuses.has(status.status)) return returned;
-            break;
+            if (client.getSnapshot().user === null) throw new HostTransportError("timed-out");
+            if (command === null) break;
+            status = await dispatchWithin(
+              client,
+              command,
+              Math.min(20_000, remaining()),
+              controller.signal,
+            );
+          } catch (error) {
+            assertOwner();
+            if (
+              (error instanceof ClientOperationError && error.classification === "blocked") ||
+              isHostRefusal(error)
+            ) {
+              await this.#integrationAttempts.forget(entry);
+              throw error;
+            }
+            // Retain the proof across selection, bootstrap and transport failures.
+            const wait = Math.min(backoff, remaining());
+            if (client === null || client.getSnapshot().user === null) {
+              const deadline = new Error("Retry integration authentication.");
+              let detach = () => {};
+              try {
+                await withTimeout(
+                  new Promise<void>((resolve) => {
+                    const ready = () => {
+                      if (
+                        epoch !== this.#authorizationEpoch ||
+                        this.#attachedDeploymentId !== callback.deploymentId ||
+                        (client === null
+                          ? this.#hostClient !== null
+                          : client.getSnapshot().user !== null)
+                      )
+                        resolve();
+                    };
+                    detach = client === null ? this.subscribe(ready) : client.subscribe(ready);
+                    ready();
+                  }),
+                  wait,
+                  { signal: controller.signal, timeoutError: () => deadline },
+                ).catch((reason: unknown) => {
+                  if (reason !== deadline) throw reason;
+                });
+              } finally {
+                detach();
+              }
+            } else await delay(wait, controller.signal);
+            backoff = Math.min(backoff * 2, 30_000);
+            continue;
           }
-          return plugin
-            ? await waitForPluginAuthorization({
-                attemptId: callback.attemptId,
-                client,
-                expiresAt: entry.expiresAt,
-                signal: controller.signal,
-              })
-            : await waitForIntegrationAuthorization({
-                attemptId: callback.attemptId,
-                client,
-                expiresAt: entry.expiresAt,
-                signal: controller.signal,
-              });
-        } finally {
-          signal?.removeEventListener("abort", abort);
-          this.#integrationReturnControllers.delete(controller);
+          assertOwner();
+          if (status.type !== command.type) throw new Error("Sign-in command mismatch.");
+          const { type: _type, ...returned } = status;
+          // Wakes a plugin sign-in waiting on this attempt with the Host's answer.
+          authorizationStatusReturned(client, callback.attemptId, returned);
+          if (authorizationTerminalStatuses.has(status.status)) return returned;
+          break;
         }
-      },
-    );
+        return await waitForPluginAuthorization({
+          attemptId: callback.attemptId,
+          client,
+          expiresAt: entry.expiresAt,
+          signal: controller.signal,
+        });
+      } finally {
+        signal?.removeEventListener("abort", abort);
+        this.#integrationReturnControllers.delete(controller);
+      }
+    });
   }
 
   /**

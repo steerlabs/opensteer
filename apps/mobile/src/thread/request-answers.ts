@@ -45,7 +45,7 @@ export interface CardChoice {
 }
 
 export function requestCardAnswers(request: Request, denied: boolean): RequestCardAnswers {
-  const { presentation, payload } = request;
+  const { presentation } = request;
   if (denied || request.status !== "pending") return { kind: "none" };
   // A plugin's exact arguments, form or account consent need the whole sheet to read.
   if (isPluginRequest(request))
@@ -54,8 +54,6 @@ export function requestCardAnswers(request: Request, denied: boolean): RequestCa
     return externalAnswerable(request) ? { kind: "sheet", label: "Review" } : { kind: "none" };
   }
   if (presentation.kind === "form") return { kind: "sheet", label: "Answer" };
-  // Installing is a decision about a manifest the card has no room to show.
-  if (payload.kind === "integration.install") return { kind: "sheet", label: "Review" };
   const allow = presentation.options.find(
     ({ hint }) => hint === "allow-once" || hint === "confirm",
   );
@@ -102,7 +100,7 @@ function externalAnswerable(request: Request): boolean {
 /**
  * An engine's own words for its two everyday answers, said the way the system
  * says them. Only a harness approval: anything else offering "allow" or
- * "reject" chose those words on purpose, such as an integration's Install.
+ * "reject" chose those words on purpose.
  */
 export function requestOptionLabel(request: Request, option: RequestOption): string {
   if (request.kind !== "harness.approval") return option.label;

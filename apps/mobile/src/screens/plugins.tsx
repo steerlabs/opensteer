@@ -5,9 +5,10 @@ import {
   pluginCatalogReader,
   pluginEngineNotice,
   pluginInstalledGroups,
+  agentHomeSkills,
   pluginLocalToolAddress,
-  pluginLocalToolManage,
-  pluginLocalToolStatus,
+  pluginLocalToolDetail,
+  pluginLocalToolSource,
   pluginLocalToolSummary,
   pluginStatusView,
   readInstalledPlugins,
@@ -17,7 +18,8 @@ import {
   type PluginTone,
 } from "@opensteer/client/plugins";
 import { usePagedList, usePluginEngine } from "@opensteer/client/react";
-import type { HostClient } from "@opensteer/client/host";
+import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
+import { settingsMutationRejected } from "@opensteer/client/settings";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useDeferredValue, useRef, useState, type ReactNode } from "react";
 import { Alert } from "react-native";
@@ -29,6 +31,7 @@ import type {
   NativeSettingsSection,
   NativeSettingsTone,
 } from "./native-settings-page.types.js";
+import { useLocalServerSections } from "./local-server-sections.js";
 import { useSettingsLease, useSettingsRead } from "./use-settings-read.js";
 
 type Params = StaticScreenProps<{ readonly deploymentId: string }>;
@@ -157,7 +160,7 @@ function Plugins({ deploymentId, host }: { deploymentId: string; host: HostClien
         key: tool.id,
         kind: "button",
         label: tool.title,
-        detail: `${pluginLocalToolStatus(tool).label} · ${pluginLocalToolAddress(tool)}`,
+        detail: pluginLocalToolDetail(tool),
         opens: true,
         symbol: tool.kind === "device-app" ? "laptopcomputer" : "server.rack",
         onPress: () => navigation.navigate("PluginLocalTool", { deploymentId, id: tool.id }),
@@ -185,14 +188,20 @@ function Plugins({ deploymentId, host }: { deploymentId: string; host: HostClien
         symbol: "link",
         onPress: () => setAdding(true),
       },
+    ],
+  });
+  sections.push({
+    key: "agent",
+    title: "Your agent",
+    rows: [
       {
-        key: "local",
+        key: "skills",
         kind: "button",
-        label: "Device apps, local servers and skills",
-        detail: "Approvals, launch review and secrets",
+        label: "Skills in Agent home",
+        detail: "Turn the skills in your agent's folder on or off",
         opens: true,
-        symbol: "puzzlepiece.extension",
-        onPress: () => navigation.navigate("SettingsLocalPlugins", { deploymentId }),
+        symbol: "doc.text",
+        onPress: () => navigation.navigate("PluginSkills", { deploymentId }),
       },
     ],
   });
@@ -414,7 +423,6 @@ function LocalTool({
   host: HostClient;
   id: string;
 }) {
-  const navigation = useNavigation();
   const installed = useSettingsRead(host, () => readInstalledPlugins(host));
   const action = usePluginAction(host);
   const [chosen, setChosen] = useState<PluginLocalToolView["access"] | null>(null);
@@ -439,86 +447,248 @@ function LocalTool({
         ]}
       />
     );
+  return (
+    <LocalToolPage
+      action={action}
+      chosen={chosen}
+      deploymentId={deploymentId}
+      host={host}
+      onChoose={setChosen}
+      tool={tool}
+    />
+  );
+}
+
+function LocalToolPage({
+  action,
+  chosen,
+  deploymentId,
+  host,
+  onChoose,
+  tool,
+}: {
+  action: ReturnType<typeof usePluginAction>;
+  chosen: PluginLocalToolView["access"] | null;
+  deploymentId: string;
+  host: HostClient;
+  onChoose: (access: PluginLocalToolView["access"]) => void;
+  tool: PluginLocalToolView;
+}) {
+  const navigation = useNavigation();
   const access = action.pending ? (chosen ?? tool.access) : tool.access;
-  const manage = pluginLocalToolManage(tool);
+  const source = pluginLocalToolSource(tool);
+  const server = useLocalServerSections({
+    host,
+    deploymentId,
+    by: source?.kind === "local-server" ? { serverId: source.serverId } : null,
+    name: tool.title,
+    onRemoved: () => navigation.goBack(),
+  });
+  const computer = tool.computer;
+  return (
+    <>
+      <NativeSettingsPage
+        sections={[
+          {
+            key: "about",
+            title: tool.kind === "device-app" ? "Device data app" : "Local server",
+            rows: [
+              {
+                key: "title",
+                kind: "text",
+                label: tool.title,
+                detail: computer ? `On ${computer.name}` : "No computer chosen",
+              },
+              ...(tool.unavailable
+                ? [
+                    {
+                      key: "unavailable",
+                      kind: "status" as const,
+                      tone: "attention" as const,
+                      label: tool.unavailable,
+                    },
+                  ]
+                : []),
+            ],
+          },
+          {
+            key: "access",
+            title: "Agent access",
+            rows: [
+              {
+                key: "access",
+                kind: "chips",
+                label: "Agents may use",
+                value: access,
+                choices: pluginAccessChoices,
+                onChange: (value) => {
+                  const next = value as PluginLocalToolView["access"];
+                  onChoose(next);
+                  action.run("access", () => setPluginAccess(host, tool.id, next));
+                },
+              },
+            ],
+            footer: action.error
+              ? { text: action.error, tone: "danger" }
+              : {
+                  text: `${pluginAccessChoices.find(({ value }) => value === access)!.detail} Agents call it as ${pluginLocalToolAddress(tool)}.`,
+                },
+          },
+          {
+            key: "tools",
+            title: "Tools",
+            rows: tool.tools.length
+              ? tool.tools.map((entry) => ({
+                  key: entry.name,
+                  kind: "text" as const,
+                  label: entry.name,
+                  detail: entry.readOnly ? "Reads" : "Writes",
+                }))
+              : [{ key: "none", kind: "text", label: pluginLocalToolSummary(tool) }],
+          },
+          ...server.sections,
+          {
+            key: "device",
+            title: "",
+            rows: [
+              ...(computer
+                ? [
+                    {
+                      key: "computer",
+                      kind: "button" as const,
+                      label: computer.name,
+                      detail:
+                        tool.kind === "device-app"
+                          ? "What this device lets agents read and change"
+                          : "Where it runs, and its launch approvals",
+                      opens: true,
+                      onPress: () =>
+                        navigation.navigate("SettingsDeviceDetail", {
+                          deploymentId,
+                          machineId: computer.id,
+                        }),
+                    },
+                  ]
+                : []),
+              ...(source?.kind === "device-app"
+                ? [
+                    {
+                      key: "turn-off",
+                      kind: "button" as const,
+                      label: computer ? `Turn off on ${computer.name}` : "Turn off",
+                      destructive: true,
+                      disabled: action.pending !== null,
+                      onPress: () =>
+                        Alert.alert(
+                          `Turn off ${tool.title}?`,
+                          "Agents stop using it. You can turn it on again on that device.",
+                          [
+                            { text: "Cancel", style: "cancel" },
+                            {
+                              text: "Turn off",
+                              style: "destructive",
+                              onPress: () =>
+                                action.run("turn-off", async () => {
+                                  await host.dispatch({
+                                    type: "integration.disconnect",
+                                    connectionId: source.connectionId as never,
+                                    idempotencyKey: mutationIdempotencyKey(
+                                      `integration-disconnect:${source.connectionId}`,
+                                    ),
+                                  });
+                                  navigation.goBack();
+                                }),
+                            },
+                          ],
+                        ),
+                    },
+                  ]
+                : []),
+            ],
+          },
+        ]}
+      />
+      {server.sheet}
+    </>
+  );
+}
+
+/** The skills in the agent home folder on a phone, each with its switch. */
+export function PluginSkillsScreen({ route }: Params): ReactNode {
+  const host = useAttachedHost(route.params.deploymentId);
+  return host ? (
+    <Skills host={host} key={route.params.deploymentId} />
+  ) : (
+    <DeploymentGate deploymentId={route.params.deploymentId} />
+  );
+}
+
+function Skills({ host }: { host: HostClient }) {
+  const overview = useSettingsRead(host, async () =>
+    unwrapRpcResult(await host.rpc["plugins.overview.get"]({})),
+  );
+  const action = usePluginAction(host);
+  // A lost response may have committed, so a retry repeats the same operation.
+  const attempts = useRef(new Map<string, string>());
+  const skills = overview.data ? agentHomeSkills(overview.data.rows) : null;
   return (
     <NativeSettingsPage
       sections={[
         {
-          key: "about",
-          title: tool.kind === "device-app" ? "Device data app" : "Local server",
-          rows: [
-            {
-              key: "title",
-              kind: "text",
-              label: tool.title,
-              detail: tool.computer ? `On ${tool.computer.name}` : "No computer chosen",
-            },
-            ...(tool.unavailable
+          key: "skills",
+          title: "Skills in Agent home",
+          rows: !skills
+            ? [
+                {
+                  key: "loading",
+                  kind: "text",
+                  label: overview.error ?? "Loading skills…",
+                },
+              ]
+            : skills.length === 0
               ? [
                   {
-                    key: "unavailable",
-                    kind: "status" as const,
-                    tone: "attention" as const,
-                    label: tool.unavailable,
+                    key: "none",
+                    kind: "text",
+                    label: "No skills yet",
+                    detail:
+                      "Your agent adds them to its folder when you ask it to remember how to do something.",
                   },
                 ]
-              : []),
-          ],
-        },
-        {
-          key: "access",
-          title: "Agent access",
-          rows: [
-            {
-              key: "access",
-              kind: "chips",
-              label: "Agents may use",
-              value: access,
-              choices: pluginAccessChoices,
-              onChange: (value) => {
-                const next = value as PluginLocalToolView["access"];
-                setChosen(next);
-                action.run("access", () => setPluginAccess(host, tool.id, next));
-              },
-            },
-          ],
+              : skills.map((skill) => ({
+                  key: skill.target.fullName,
+                  kind: "toggle" as const,
+                  label: skill.title,
+                  ...(skill.description ? { detail: skill.description } : {}),
+                  value: skill.placement.enabled,
+                  disabled: action.pending !== null || !skill.permissions.canEnable,
+                  onChange: (enabled: boolean) =>
+                    action.run(skill.target.fullName, async () => {
+                      const intent = `${skill.target.fullName}:${enabled}`;
+                      const key = attempts.current.get(intent) ?? mutationIdempotencyKey("skill");
+                      attempts.current.set(intent, key);
+                      try {
+                        await host.dispatch({
+                          type: "settings.plugin.enabled.set",
+                          idempotencyKey: key,
+                          target: skill.target,
+                          expectedRevision: skill.placement.revision,
+                          enabled,
+                        });
+                        attempts.current.delete(intent);
+                      } catch (reason) {
+                        if (settingsMutationRejected(reason)) attempts.current.delete(intent);
+                        throw reason;
+                      } finally {
+                        await overview.reload();
+                      }
+                    }),
+                })),
           footer: action.error
             ? { text: action.error, tone: "danger" }
             : {
-                text: `${pluginAccessChoices.find(({ value }) => value === access)!.detail} Agents call it as ${pluginLocalToolAddress(tool)}.`,
+                text: "Instructions your agent reads from its folder. Off keeps one from your agent.",
               },
-        },
-        {
-          key: "tools",
-          title: "Tools",
-          rows: tool.tools.length
-            ? tool.tools.map((entry) => ({
-                key: entry.name,
-                kind: "text" as const,
-                label: entry.name,
-                detail: entry.readOnly ? "Reads" : "Writes",
-              }))
-            : [{ key: "none", kind: "text", label: pluginLocalToolSummary(tool) }],
-        },
-        {
-          key: "manage",
-          title: "",
-          rows: [
-            {
-              key: "manage",
-              kind: "button",
-              label: manage.label,
-              opens: true,
-              onPress: () =>
-                manage.kind === "device"
-                  ? navigation.navigate("SettingsDeviceDetail", {
-                      deploymentId,
-                      machineId: manage.runnerId,
-                    })
-                  : navigation.navigate("SettingsLocalPlugins", { deploymentId }),
-            },
-          ],
         },
       ]}
     />
