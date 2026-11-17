@@ -1,3 +1,4 @@
+import { ChannelConversationIdSchema } from "@opensteer/channel-core";
 import { commitPersonalMutation, type PersonalMutation } from "./personal-mutation.js";
 import {
   advancePersonalRunFinish,
@@ -221,6 +222,8 @@ export async function settleFinishChildren(
     if (request) await publishExecutionRequest(tx, { id });
   }
   const replacement = children.steers.length ? await pendingReplacementAttempt(tx, runId) : null;
+  const stoppedConversation =
+    children.steers.length > 0 && (await stoppedConversationReply(tx, runId));
   for (const id of children.steers) {
     const current = await tx
       .selectFrom("threadInputs")
@@ -228,7 +231,7 @@ export async function settleFinishChildren(
       .select([
         "commands.status",
         "commands.type",
-        "commands.attempts",
+        "threadInputs.authoritySource",
         "threadInputs.policy",
         "threadInputs.state",
       ])
@@ -242,21 +245,28 @@ export async function settleFinishChildren(
         : current.status === "pending" || current.status === "failed";
     const unknown = current.state === "unknown" || (recovering && !unclaimed);
     const requeue = current.policy === "queue" && unclaimed && !delivered && !unknown;
-    if (requeue)
+    const stopped =
+      requeue &&
+      stoppedConversation &&
+      (current.authoritySource.kind === "user-session" ||
+        current.authoritySource.kind === "channel-ingress");
+    if (requeue && !stopped)
       await tx.updateTable("messages").set({ runId: null }).where("id", "=", id).execute();
     const row = await tx
       .updateTable("threadInputs")
       .set({
         ...(delivered
           ? { state: "delivered", deliveredAt: input.completedAt }
-          : requeue
-            ? { state: "pending", runId: null, steerCommandId: null }
-            : current.policy === "queue" || unknown
-              ? { state: "unknown" }
-              : {
-                  state: "cancelled",
-                  cancelReason: unclaimed ? "steer-not-delivered" : "run-ended-delivery-unknown",
-                }),
+          : stopped
+            ? { state: "cancelled", cancelReason: "stopped" }
+            : requeue
+              ? { state: "pending", runId: null, steerCommandId: null }
+              : current.policy === "queue" || unknown
+                ? { state: "unknown" }
+                : {
+                    state: "cancelled",
+                    cancelReason: unclaimed ? "steer-not-delivered" : "run-ended-delivery-unknown",
+                  }),
         updatedAt: input.completedAt,
       })
       .where("messageId", "=", id)
@@ -295,6 +305,32 @@ export async function settleFinishChildren(
       .set({ revokedAt: input.completedAt, revokedReason: "superseded", status: "revoked" })
       .where("id", "in", children.grants)
       .execute();
+}
+
+async function stoppedConversationReply(tx: Transaction<DatabaseSchema>, runId: RunId) {
+  const stopped = await tx
+    .selectFrom("commands")
+    .select("id")
+    .where("runId", "=", runId)
+    .where("type", "=", "run.interrupt")
+    .where(sql<string>`authority_source->>'kind'`, "=", "user-session")
+    .limit(1)
+    .executeTakeFirst();
+  if (!stopped) return false;
+  const run = await tx
+    .selectFrom("runs")
+    .innerJoin("threads", "threads.id", "runs.threadId")
+    .select(["threads.purpose", "runs.replyTarget"])
+    .where("runs.id", "=", runId)
+    .executeTakeFirstOrThrow();
+  if (run.purpose === "voice") return true;
+  if (run.replyTarget?.kind !== "channel") return false;
+  const conversation = await tx
+    .selectFrom("channelConversations")
+    .select("personalContext")
+    .where("id", "=", ChannelConversationIdSchema.parse(run.replyTarget.conversationId))
+    .executeTakeFirst();
+  return conversation?.personalContext === true;
 }
 
 export async function drainRunFinish(

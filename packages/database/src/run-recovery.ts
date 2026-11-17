@@ -157,7 +157,8 @@ export async function recoverLostRunTransaction(
     .execute();
   const openTools = await transaction
     .selectFrom("toolCalls")
-    .select(["tool", "arguments"])
+    .select("tool")
+    .select(sql<string | null>`left(arguments::text, 200)`.as("argumentPreview"))
     .where("runId", "=", run.id)
     .where("bindingGeneration", "=", lost.bindingGeneration)
     .where(sql<boolean>`status='open'`)
@@ -195,7 +196,7 @@ export async function recoverLostRunTransaction(
         .slice(0, 10)
         .map(
           (call) =>
-            `- Started, completion unknown: ${utf8Prefix(call.tool?.name ?? "Tool", 80)} ${utf8Prefix(JSON.stringify(call.arguments) ?? "", 200)}`,
+            `- Started, completion unknown: ${utf8Prefix(call.tool?.name ?? "Tool", 80)} ${utf8Prefix(call.argumentPreview ?? "", 200)}`,
         ),
       ...(openTools.length > 10
         ? ["- More tool calls were open; read them with opensteer_task_read view activity."]
