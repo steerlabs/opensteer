@@ -7667,6 +7667,56 @@ describe("HttpHostClient lifecycle", () => {
     client.dispose();
   });
 
+  it("replaces a silent lease and backs off an unsynchronized replacement before resuming", async () => {
+    vi.useFakeTimers();
+    const workspace = makeDeployment(),
+      sockets: FakeSocket[] = [];
+    const client = createHttpHostClient({
+      fetch: async () => json(bootstrap([workspace])),
+      realtimeLiveness: { idleMs: 1000, deadlineMs: 1000 },
+      reconnectBaseDelayMs: 1000,
+      reconnectMaxDelayMs: 4000,
+      random: () => 1,
+      webSocketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    try {
+      await client.load();
+      const first = sockets[0]!;
+      first.open();
+      first.receive({ snapshot: deploymentSnapshot(workspace, "7"), type: "host.snapshot" });
+      first.receive({ sequence: sequence("7"), type: "host.synchronized" });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(first.closeEvents).toEqual([{ code: 1000, reason: "Client closed" }]);
+      expect(sockets).toHaveLength(2);
+      sockets[1]!.open();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(sockets[1]!.closeEvents).toEqual([{ code: 1000, reason: "Realtime channel silent" }]);
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(sockets).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(sockets).toHaveLength(3);
+      const healthy = sockets[2]!;
+      healthy.open();
+      expect(parseSent(healthy, 0)).toMatchObject({
+        type: "client.subscribe",
+        cursor: { afterSequence: "7" },
+      });
+      healthy.receive({ sequence: sequence("7"), type: "host.synchronized" });
+      expect(client.connection.getSnapshot()).toMatchObject({ phase: "ready", readyRevision: 2 });
+      await vi.advanceTimersByTimeAsync(1500);
+      healthy.receive({ nonce: sentPingNonce(healthy)!, type: "host.pong" });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(sockets).toHaveLength(3);
+      expect(healthy.closeEvents).toEqual([]);
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("keeps a probed channel whose subscription delivers before the answer does", async () => {
     vi.useFakeTimers();
     const workspace = makeDeployment();
