@@ -644,7 +644,7 @@ const seedLocalTools: Omit<PluginLocalToolView, "access" | "toolCount" | "readOn
   {
     id: "app_device_con_calendar",
     kind: "device-app",
-    name: "local-calendar-alex-s-macbook-8c41d7e2f09a4b3c95d1e6a7b2f40c18",
+    name: "local-calendar-alex-s-macbook-pro-8c41d7e2",
     title: "Apple Calendar on Alex's MacBook Pro",
     computer: studio,
     unavailable: null,
@@ -658,7 +658,7 @@ const seedLocalTools: Omit<PluginLocalToolView, "access" | "toolCount" | "readOn
   {
     id: "app_device_con_reminders",
     kind: "device-app",
-    name: "local-reminders-alex-s-macboo-1f6e93a0c2d84b57a9e0d3c6b8f21e4a",
+    name: "local-reminders-alex-s-macbook-pro-1f6e93a0",
     title: "Apple Reminders on Alex's MacBook Pro",
     computer: studio,
     unavailable: null,
@@ -671,7 +671,7 @@ const seedLocalTools: Omit<PluginLocalToolView, "access" | "toolCount" | "readOn
   {
     id: "app_device_con_photos",
     kind: "device-app",
-    name: "local-photos-alex-s-iphone-5a2c8e1f7b9d40e6a3c5f8b2d1e09c7a",
+    name: "local-photos-alex-s-iphone-5a2c8e1f",
     title: "Photos on Alex's iPhone",
     computer: { id: "rnr_44444444-4444-4444-8444-444444444444", name: "Alex's iPhone" },
     unavailable: "Alex's iPhone is offline. Open Opensteer on it to share its apps again.",
@@ -680,7 +680,7 @@ const seedLocalTools: Omit<PluginLocalToolView, "access" | "toolCount" | "readOn
   {
     id: `app_server_${mockNotesServer.serverId}`,
     kind: "local-server",
-    name: "local-notes-search-d93b0f6a1e2c4875b4a9c0e3f7d16b52",
+    name: "local-notes-search-d93b0f6a",
     title: "Notes search",
     computer: { id: "rnr_11111111-1111-4111-8111-111111111111", name: "Home Mac" },
     unavailable: null,
