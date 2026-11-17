@@ -208,7 +208,6 @@ describe("desktop bridge", () => {
     const envelope = { bridgeToken: "b".repeat(43) };
 
     const started = {
-      kind: "plugin" as const,
       deploymentId: createId("deployment"),
       userId: createId("user"),
       attemptId: createIntegrationId("oauthAttempt"),
