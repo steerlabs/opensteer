@@ -282,6 +282,20 @@ it("reveals Developer Mode and follows the same private identity through restart
   expect((await f.store.records())[0]?.localPhoneId).toBe("reconnected");
 });
 
+it("rechecks a phone-side wait on its interval, not on the roster echo of its own inspection", async () => {
+  const f = await harness();
+  f.native.echoInspections = true;
+  f.native.inspection.developerMode = "disabled";
+  const initial = await f.setup.begin(ownerA);
+  await stage(f, initial.setupId, "developer-mode");
+  const inspections = () => f.native.calls.filter((c) => c.method === "setup.inspect").length;
+  const before = inspections();
+  for (let tick = 0; tick < 20; tick++) await new Promise((resolve) => setImmediate(resolve));
+  expect(inspections()).toBe(before);
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(inspections()).toBe(before + 1);
+});
+
 it("maps locked preparation to a phone wait and personalization failure to a retriable block", async () => {
   const f = await harness();
   f.native.failures.set("setup.prepareDeveloperServices", new IphoneServiceError("phone-locked"));

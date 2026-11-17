@@ -30,6 +30,8 @@ export const ownerB: IphoneRunnerOwner = {
 };
 export class FakeIphoneNative implements IphoneNativeTransport {
   calls: { method: string; params: unknown }[] = [];
+  /** Like the real bridge, announce a new roster revision after every inspection. */
+  echoInspections = false;
   closed = 0;
   readonly held = new Map<string, Promise<void>>();
   readonly failures = new Map<string, Error>();
@@ -122,6 +124,11 @@ export class FakeIphoneNative implements IphoneNativeTransport {
       case "setup.inspect":
       case "setup.prepareDeveloperServices":
         value = this.inspection;
+        if (this.echoInspections)
+          setImmediate(() => {
+            this.roster = { ...this.roster, revision: this.roster.revision + 1 };
+            this.publish();
+          });
         break;
       case "phone.observe":
         this.ready(this.control);

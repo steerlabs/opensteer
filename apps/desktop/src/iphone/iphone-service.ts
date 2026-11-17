@@ -945,9 +945,11 @@ export class IphoneService {
       )
         probe.push(record);
     }
+    // Setup's own inspections bump the revision; only a content change is news.
+    const changed = JSON.stringify(roster.candidates) !== JSON.stringify(this.#roster);
     this.#roster = roster.candidates;
     this.#revision = roster.revision;
-    for (const listener of this.#changed) listener();
+    if (changed) for (const listener of this.#changed) listener();
     for (const record of probe) this.#cleanup(this.#probe(record));
     const generation = this.#nativeGeneration;
     for (const slot of this.#slots.keys())
