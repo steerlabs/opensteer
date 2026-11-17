@@ -96,14 +96,21 @@ export class RealtimeHub {
       if (read.scopes.includes(`session:${sessionId}`)) read.invalid = true;
     }
     for (const connection of this.#connections) {
-      if (connection.sessionId === sessionId) connection.sink.close(4003, "Session ended");
+      if (connection.sessionId === sessionId) this.#closeConnection(connection, "Session ended");
     }
   }
 
   closeUser(userId: UserId): void {
     for (const connection of this.#connections) {
-      if (connection.userId === userId) connection.sink.close(4003, "Deployment access revoked");
+      if (connection.userId === userId)
+        this.#closeConnection(connection, "Deployment access revoked");
     }
+  }
+
+  #closeConnection(connection: Connection, reason: string) {
+    this.#connections.delete(connection);
+    connection.sink.close(4003, reason);
+    connection.sync.close(reason);
   }
 
   closeAll(reason = "Personal Host closed"): void {

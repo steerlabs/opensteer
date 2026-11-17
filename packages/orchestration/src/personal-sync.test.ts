@@ -423,3 +423,100 @@ test("a synchronized socket does no state or resource work during five idle minu
     vi.useRealTimers();
   }
 });
+
+test("coalesces live text for its synchronized detail after the durable barrier", async () => {
+  vi.useFakeTimers();
+  const threadId = createId("thread");
+  const detail = { kind: "thread", threadId } as const;
+  const other = { kind: "thread", threadId: createId("thread") } as const;
+  const frames: ScopedHostMessage[] = [];
+  const socket = new PersonalSyncSocket({
+    async read(scope, resume) {
+      if (scope.kind !== "thread") throw new Error("Unexpected scope");
+      const throughSequence = resume ? "2" : "1";
+      return {
+        throughSequence,
+        cursor: {
+          ...cursor,
+          scopeKey: `thread:${scope.threadId}`,
+          afterSequence: throughSequence,
+        },
+        frames: resume
+          ? [
+              {
+                type: "host.changes",
+                scope,
+                throughSequence,
+                fromSequence: resume.afterSequence,
+                changes: [],
+              },
+            ]
+          : [],
+      };
+    },
+    async send(encoded, current) {
+      if (!current()) return false;
+      frames.push(ScopedHostMessageSchema.parse(JSON.parse(encoded)));
+      return true;
+    },
+    close() {},
+  });
+  const update = {
+    runId: createId("run"),
+    attemptId: createId("runAttempt"),
+    bindingGeneration: 1,
+    liveBootId: crypto.randomUUID(),
+    streamId: "assistant",
+    itemId: "message:assistant",
+    afterSequence: "2",
+  };
+  try {
+    socket.subscribe({
+      type: "client.subscribe",
+      subscriptionId: "detail:0",
+      scope: detail,
+      generation: 3,
+    });
+    socket.subscribe({
+      type: "client.subscribe",
+      subscriptionId: "detail:1",
+      scope: other,
+      generation: 1,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(frames.filter((frame) => frame.type === "host.synchronized")).toHaveLength(2);
+    for (const text of ["a", "answer"]) {
+      socket.offerLive(detail, {
+        ...update,
+        update: {
+          operation: "replace",
+          offset: 0,
+          totalLength: text.length,
+          text,
+          incomplete: false,
+        },
+      });
+    }
+    await vi.advanceTimersByTimeAsync(49);
+    expect(frames.filter((frame) => frame.type === "host.live")).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(frames.filter((frame) => frame.type === "host.live")).toEqual([]);
+    socket.wake("2");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(frames.filter((frame) => frame.subscriptionId === "detail:0")).toMatchObject([
+      { type: "host.synchronized", generation: 3, throughSequence: "1" },
+      { type: "host.changes", generation: 3, throughSequence: "2" },
+      {
+        type: "host.live",
+        generation: 3,
+        scope: detail,
+        afterSequence: "2",
+        update: { text: "answer" },
+      },
+    ]);
+    expect(frames.filter((frame) => frame.type === "host.live")).toHaveLength(1);
+  } finally {
+    socket.close("test finished");
+    vi.useRealTimers();
+  }
+});
