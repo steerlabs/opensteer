@@ -1,3 +1,10 @@
+import { DeviceIdSchema, isPhoneDisplayDefinitionId, type DeviceId } from "@opensteer/core";
+import {
+  deviceMachine,
+  deviceDriverKey,
+  computerTargetId,
+  type ClientComputerConnection,
+} from "../host/device-projection.js";
 import {
   computerAppIdentityKey,
   ComputerViewSchema,
@@ -10,20 +17,20 @@ import {
   type OwnerWindowInfo,
 } from "@opensteer/protocol";
 import { computerAppIdentitiesEqual } from "@opensteer/integration-core";
-import type { IntegrationConnectionSummary } from "@opensteer/integration-core";
 import { HostClientRequestError, type HostSnapshot } from "../host/client.js";
 import { WindowIdSchema, type WindowId } from "@opensteer/core";
 
 export class MockComputerViews {
   readonly #snapshot: () => HostSnapshot;
   readonly #update: (snapshot: HostSnapshot) => void;
-  readonly #connections: () => readonly IntegrationConnectionSummary[];
+  readonly #connections: () => readonly ClientComputerConnection[];
   readonly #now: () => Date;
+  readonly #drivers = new Map<string, string | null>();
   readonly #results = new Map<string, { fingerprint: string; view: ComputerView }>();
   constructor(
     snapshot: () => HostSnapshot,
     update: (snapshot: HostSnapshot) => void,
-    connections: () => readonly IntegrationConnectionSummary[],
+    connections: () => readonly ClientComputerConnection[],
     now: () => Date,
   ) {
     this.#snapshot = snapshot;
@@ -64,10 +71,15 @@ export class MockComputerViews {
     }));
   }
   approved(): ApprovedComputerApp[] {
+    return this.#approvedDevices();
+  }
+  #approvedDevices(): (Omit<ApprovedComputerApp, "machineId"> & { machineId: DeviceId })[] {
     const snapshot = this.#authenticated();
     return this.#connections().flatMap((connection) => {
       const computer = connection.computer;
-      const machine = snapshot.machines.find((machine) => machine.id === computer?.runnerId);
+      const machine = snapshot.machines.find(
+        (machine) => machine.id === computerTargetId(computer),
+      );
       if (
         !computer ||
         connection.status !== "connected" ||
@@ -77,7 +89,10 @@ export class MockComputerViews {
           !(machine.ownership === "deployment" && machine.access?.ownerReachAvailable === true))
       )
         return [];
-      if (connection.definitionId !== "macos-app" && connection.definitionId !== "android-phone")
+      if (
+        connection.definitionId !== "macos-app" &&
+        !isPhoneDisplayDefinitionId(connection.definitionId)
+      )
         return [];
       if ((connection.definitionId === "macos-app") !== (computer.app !== null)) return [];
       const target: ApprovedComputerApp["target"] = computer.app
@@ -86,7 +101,7 @@ export class MockComputerViews {
       return [
         {
           connectionId: connection.id,
-          machineId: computer.runnerId,
+          machineId: DeviceIdSchema.parse(machine.id),
           target,
           name: computer.app?.displayName ?? machine.name,
           iconPng: null,
@@ -115,7 +130,7 @@ export class MockComputerViews {
     target:
       | { readonly kind: "app"; readonly app: Extract<ComputerViewTarget, { kind: "app" }>["app"] }
       | { readonly kind: "phone"; readonly display: string },
-  ): ApprovedComputerApp {
+  ): Omit<ApprovedComputerApp, "machineId"> & { machineId: DeviceId } {
     const snapshot = this.#authenticated();
     const machine = snapshot.machines.find((machine) => machine.id === machineId);
     if (
@@ -128,7 +143,7 @@ export class MockComputerViews {
         status: 403,
         message: "Only this computer's owner can view it.",
       });
-    const approved = this.approved().find(
+    const approved = this.#approvedDevices().find(
       (app) =>
         app.machineId === machineId &&
         (app.target.kind === "phone"
@@ -141,15 +156,15 @@ export class MockComputerViews {
     if (!approved)
       this.#refuse("computer-view-not-approved", "This app or phone needs an existing approval.");
     if (
-      machine?.device?.form === "phone"
-        ? machine.computerUse?.displayStreamSupported !== true
+      deviceMachine(machine).phoneDisplay
+        ? deviceMachine(machine).phoneDisplay?.view.state !== "ready"
         : machine?.computerUse?.ownerViewVersion !== 3
     )
       this.#refuse("computer-view-unsupported", "Update this computer to view apps and devices.");
     if (
       snapshot.connection === "offline" ||
       machine.status !== "online" ||
-      machine.computerUse?.state !== "ready"
+      (!deviceMachine(machine).phoneDisplay && machine.computerUse?.state !== "ready")
     )
       this.#refuse("computer-view-unavailable", "This computer is unavailable.");
     return approved;
@@ -180,7 +195,7 @@ export class MockComputerViews {
     const snapshot = this.#snapshot();
     if (snapshot.session !== "authenticated") return;
     const now = this.#now().getTime();
-    const approved = this.approved();
+    const approved = this.#approvedDevices();
     for (const machine of snapshot.machines)
       for (const view of machine.computerUse?.ownerViews ?? []) {
         if (view.state === "closed" || view.state === "expired") continue;
@@ -189,7 +204,13 @@ export class MockComputerViews {
         );
         if (Date.parse(view.expiresAt) <= now)
           this.#put({ ...view, state: "expired", unavailableReason: "expired" });
-        else if (!valid || machine.status !== "online" || snapshot.connection === "offline")
+        else if (
+          !valid ||
+          machine.status !== "online" ||
+          snapshot.connection === "offline" ||
+          (this.#drivers.has(view.viewId) &&
+            this.#drivers.get(view.viewId) !== deviceDriverKey(machine))
+        )
           this.#put({
             ...view,
             state: "unavailable",
@@ -241,7 +262,7 @@ export class MockComputerViews {
     )
       this.#refuse("computer-view-limit", "Close a view before opening another.");
     const at = this.#now().getTime();
-    const view = ComputerViewSchema.parse({
+    const record = ComputerViewSchema.parse({
       connectionId: approved.connectionId,
       machineId,
       target: viewTarget,
@@ -253,6 +274,15 @@ export class MockComputerViews {
       expiresAt: new Date(at + computerViewIdleMs[target.kind]).toISOString(),
       unavailableReason: null,
     });
+    const driver = deviceMachine(
+      this.#snapshot().machines.find((machine) => machine.id === machineId)!,
+    ).phoneDisplay?.driver;
+    const view =
+      driver?.role === "screen" ? { ...record, driverGeneration: driver.generation } : record;
+    this.#drivers.set(
+      view.viewId,
+      deviceDriverKey(this.#snapshot().machines.find((machine) => machine.id === machineId)!),
+    );
     this.#put(view);
     return view;
   }

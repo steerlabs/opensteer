@@ -171,6 +171,7 @@ function computerAppModuleHandler(
         }
       : {}),
     ...(integrations.computerUse ? { computerUse: integrations.computerUse } : {}),
+    ...(integrations.phoneScreens ? { phoneScreens: integrations.phoneScreens } : {}),
     localMcp: integrations.localMcp,
     logger,
     providers: integrations.providers,

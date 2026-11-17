@@ -1,4 +1,4 @@
-/* Devices: the one list, each device's page, setting up this Mac, and the
+/* Devices: the one list, each device's page, connecting this Mac, and the
    notices a device or a browser window shows about itself. Everything here
    is built from the cards, rows, switches and setup frame used elsewhere;
    these rules only lay them out. */
@@ -289,7 +289,7 @@ a.devices-row:focus-visible {
   align-items: center;
 }
 
-/* ---- Setting up this Mac ---- */
+/* ---- Connecting this Mac ---- */
 
 .device-setup__group {
   display: flex;
@@ -420,11 +420,11 @@ a.devices-row:focus-visible {
   gap: var(--space-10);
 }
 
-/* Setting up this Mac: the recommended way in, so it carries the ember rim,
-   with the name it will be created under attached below. */
+/* Starting Opensteer on this Mac, with the name it will be created under
+   attached below. It weighs the same as connecting: neither is the default. */
 .desktop-entry__setup {
   overflow: hidden;
-  border: 1px solid var(--ember-line);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
   background: var(--sheen) var(--fill-plate);
   box-shadow: var(--edge-plate);
@@ -432,7 +432,7 @@ a.devices-row:focus-visible {
 }
 
 .desktop-entry__setup:has(.desktop-entry__setup-go:hover:not(:disabled)) {
-  border-color: color-mix(in srgb, var(--ember) 40%, transparent);
+  border-color: var(--rim-selected);
 }
 
 .desktop-entry__setup-go {
@@ -535,4 +535,205 @@ a.devices-row:focus-visible {
 .devices-row--signed-in .card__row-actions {
   flex: none;
   width: auto;
+}
+
+/* ---- Add an iPhone: the Agent Phone setup stage, plus a name and how-to steps ---- */
+
+.iphone-setup__name {
+  gap: var(--space-14);
+  width: 100%;
+  text-align: left;
+}
+
+.iphone-setup__steps {
+  display: grid;
+  gap: var(--space-6);
+  margin: 0;
+  padding-left: 1.25rem;
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+  text-align: left;
+}
+
+.iphone-setup__decision,
+.iphone-setup__done {
+  width: 100%;
+}
+
+.iphone-setup__choices {
+  display: grid;
+  gap: var(--space-8);
+  width: 100%;
+  text-align: left;
+}
+
+.iphone-setup__notice {
+  text-align: left;
+}
+
+/* The first approval, where setup ends: three answers, one of them chosen by the Host. */
+.iphone-setup__access {
+  display: grid;
+  gap: var(--space-8);
+  min-width: 0;
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  border: 0;
+  text-align: left;
+}
+
+.iphone-setup__access legend {
+  margin-bottom: var(--space-8);
+  padding: 0;
+  color: var(--text);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-strong);
+}
+
+.iphone-setup__tip {
+  display: flex;
+  gap: var(--space-8);
+  align-items: flex-start;
+  text-align: left;
+}
+
+.iphone-setup__tip .icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  margin-top: 2px;
+  color: var(--ember-dim);
+}
+
+/* ---- What iPhone setup takes: checked live on the Mac, the same list everywhere else ---- */
+
+.iphone-needs {
+  display: grid;
+  gap: var(--space-8);
+  width: 100%;
+  text-align: left;
+}
+
+.iphone-needs__title {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-strong);
+}
+
+.iphone-needs__list {
+  display: grid;
+  margin: 0;
+  padding: var(--space-4) var(--space-14);
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-md);
+  background: var(--sheen) var(--fill-quiet);
+  list-style: none;
+}
+
+.iphone-needs__item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: var(--space-12);
+  align-items: start;
+  padding: var(--space-10) 0;
+}
+
+.iphone-needs__item + .iphone-needs__item {
+  border-top: 1px solid var(--line);
+}
+
+.iphone-needs__mark {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  border: 1.5px solid var(--line-hover);
+  border-radius: var(--radius-full);
+  color: var(--muted);
+}
+
+.iphone-needs__mark .icon {
+  width: 11px;
+  height: 11px;
+}
+
+.iphone-needs__item--info .iphone-needs__mark {
+  border-style: dotted;
+}
+
+.iphone-needs__item--checking .iphone-needs__mark {
+  border-color: transparent;
+}
+
+.iphone-needs__item--done .iphone-needs__mark {
+  border-color: var(--green-line);
+  color: var(--green);
+  background: var(--green-wash);
+}
+
+/* The person's move: the same ember as the stage asking for it. */
+.iphone-needs__item--you .iphone-needs__mark {
+  border-color: var(--rim-attention);
+  color: var(--ember-bright);
+}
+
+.iphone-needs__item--you .iphone-needs__mark .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.iphone-needs__body {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.iphone-needs__name {
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+}
+
+.iphone-needs__item--done .iphone-needs__name {
+  color: var(--text-soft);
+}
+
+.iphone-needs__detail {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.iphone-on-mac {
+  display: grid;
+  gap: var(--space-16);
+}
+
+.iphone-on-mac__lede {
+  margin: 0;
+  color: var(--text-soft);
+  line-height: 1.5;
+}
+
+/* ---- An iPhone's Same Wi‑Fi row: what stopped a change and the one way forward ---- */
+
+.iphone-wifi__fix {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-8);
+  padding: 0 var(--space-16) var(--space-14);
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.iphone-wifi__fix p {
+  margin: 0;
+}
+
+.iphone-wifi__fix + .card__row {
+  border-top: 1px solid var(--line);
 }

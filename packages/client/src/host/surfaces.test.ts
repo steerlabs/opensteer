@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
   BrowserSessionIdSchema,
@@ -252,7 +253,7 @@ describe("a Run's pages", () => {
 
 it("keeps one reply chip per tab, of its kind, from place entries and page usage together", () => {
   const runId = "run-example";
-  const machineId = createId("runner");
+  const machineId = DeviceIdSchema.parse(createId("runner"));
   const source = snapshot(
     [],
     [

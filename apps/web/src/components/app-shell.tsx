@@ -905,7 +905,7 @@ export function AppShell({
           bridge={localBridge}
           deploymentId={thisDevice.deploymentId}
           name={thisDevice.opensteerName}
-          onSetUpAgain={thisDevice.openSetup}
+          onConnectAgain={thisDevice.openSetup}
           unconfirmed={viewedLocalExecutionStatus?.membership?.leaveUnconfirmed === true}
         />
       </ShellContext>

@@ -173,3 +173,38 @@ describe.each(["android-phone", "macos-app"] as const)("%s saved login contract"
     expect(validateJsonSchema(textSchema, "a".repeat(max + 1))).not.toEqual([]);
   });
 });
+
+describe("iPhone screen action schema", () => {
+  it("derives its schema from the neutral contract and advertises no login authority", async () => {
+    const { IphoneScreenActionSchema, iphoneScreenActParamsJsonSchema } =
+      await import("../packages/protocol/src/phone-display.js");
+    const definition = getIntegrationDefinition("iphone-screen");
+    if (!definition) throw new Error("The catalog must define iphone-screen");
+    const config = parseComputerAppConfig(definition);
+    expect(config.kind).toBe("display");
+    expect(config.platforms).toEqual(["ios"]);
+    const act = config.operations.find(({ name }) => name === "act");
+    expect(act?.inputSchema).toEqual(iphoneScreenActParamsJsonSchema);
+    for (const action of [
+      { type: "launch", appId: "opaque-app-from-inventory" },
+      { type: "navigate", to: "driverButton" },
+      { type: "tap", target: { x: 1, y: 2 } },
+      { type: "type", text: "literal" },
+    ]) {
+      expect(IphoneScreenActionSchema.safeParse(action).success).toBe(true);
+      expect(
+        validateJsonSchema(act?.inputSchema, { observationId: "obs-1", actions: [action] }),
+      ).toEqual([]);
+    }
+    for (const action of [
+      { type: "launch", packageName: "com.example.notes" },
+      { type: "type", text: { loginRef: `lgn_${"a".repeat(32)}`, field: "password" } },
+      { type: "wake", extra: true },
+    ]) {
+      expect(IphoneScreenActionSchema.safeParse(action).success).toBe(false);
+      expect(
+        validateJsonSchema(act?.inputSchema, { observationId: "obs-1", actions: [action] }),
+      ).not.toEqual([]);
+    }
+  });
+});

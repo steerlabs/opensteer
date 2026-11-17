@@ -1,8 +1,8 @@
+import type { IntegrationDashboard } from "@opensteer/client/integrations";
 import { useMemo, useState } from "react";
 import type {
   CreateIntegrationGrant,
   IntegrationAccess,
-  IntegrationDashboard,
   IntegrationGrant,
   IntegrationPlatformDashboardView,
 } from "@opensteer/integration-core";

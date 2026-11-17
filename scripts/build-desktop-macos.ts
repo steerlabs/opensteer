@@ -145,13 +145,18 @@ await run("tar", ["-xzf", path.join(out, "cloudflared.tgz"), "-C", out]);
 const releaseMode = env.OPENSTEER_DESKTOP_RELEASE;
 env.OPENSTEER_DESKTOP_RELEASE = "0";
 await desktop("build:process-supervisor");
+await desktop("build:iphone-bridge");
 env.OPENSTEER_DESKTOP_RELEASE = releaseMode;
 const supervisor = path.join(
   root,
   "apps/desktop/generated-native/darwin-arm64/opensteer-process-supervisor",
 );
+const iphoneBridge = path.join(
+  root,
+  "apps/desktop/generated-native/darwin-arm64/opensteer-iphone-bridge",
+);
 const cloudflared = path.join(out, "cloudflared");
-for (const file of [supervisor, cloudflared]) {
+for (const file of [supervisor, cloudflared, iphoneBridge]) {
   await run("chmod", ["u+w", file]);
   await run("codesign", [
     "--force",
@@ -159,6 +164,7 @@ for (const file of [supervisor, cloudflared]) {
     "--sign",
     mode.mode === "signed" ? mode.signing.identity : "-",
     ...personalRuntimeSigningOptions(mode.mode === "signed" ? mode.signing.identity : "-"),
+    ...(file === iphoneBridge ? ["--identifier", "com.opensteer.iphone-bridge"] : []),
     file,
   ]);
 }
@@ -167,6 +173,8 @@ Object.assign(env, {
   OPENSTEER_PERSONAL_RUNTIME_NODE_SOURCE: path.join(out, "node-v24.22.2-darwin-arm64"),
   OPENSTEER_PERSONAL_RUNTIME_SOURCE: path.join(out, "runtime"),
   OPENSTEER_PERSONAL_RUNTIME_OUTPUT: path.join(out, "runtime"),
+  OPENSTEER_IPHONE_BRIDGE_BINARY_SOURCE: iphoneBridge,
+  OPENSTEER_IPHONE_BRIDGE_BINARY_SHA256: await sha256File(iphoneBridge),
   OPENSTEER_PROCESS_SUPERVISOR_BINARY_SOURCE: supervisor,
   OPENSTEER_PROCESS_SUPERVISOR_BINARY_SHA256: await sha256File(supervisor),
   OPENSTEER_CLOUDFLARED_BINARY_SOURCE: cloudflared,
@@ -199,6 +207,7 @@ await writeFile(
       sourceRevision: sha,
       version,
       unsigned,
+      iphoneBridgeSha256: await sha256File(iphoneBridge),
       supervisorSha256: await sha256File(supervisor),
       cloudflaredSha256: await sha256File(cloudflared),
     },

@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import { RunnerIdSchema, UserIdSchema, WindowIdSchema } from "@opensteer/core";
 import type { IntegrationConnectionSummary } from "@opensteer/integration-core";
@@ -32,6 +33,7 @@ function harness(phone = false) {
   let windowRequests = 0;
   const logs: { event: string; details: Readonly<Record<string, unknown>> }[] = [];
   const service = new ComputerViewService({
+    selfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
     log: (event, details) => logs.push({ event, details }),
     connections: async () =>
       approved
@@ -240,7 +242,10 @@ describe("independent Mac control authorization", () => {
       };
       await expect(h.service.authorizeInput(source, owner)).rejects.toThrow();
       h.setAccess("read-write");
-      await expect(h.service.authorizeInput(source, owner)).resolves.toBe(machine);
+      await expect(h.service.authorizeInput(source, owner)).resolves.toEqual({
+        deviceId: machine,
+        route: undefined,
+      });
       h.setAccess("read");
       await expect(h.service.authorizeInput(source, owner)).rejects.toThrow();
       h.revoke();
@@ -297,13 +302,22 @@ it("keeps phone viewing live while read-write approval alone controls input", as
       viewId: view.viewId,
       generation: view.generation,
     };
-    await expect(h.service.authorizeDisplay(source, owner)).resolves.toBe(machine);
+    await expect(h.service.authorizeDisplay(source, owner)).resolves.toEqual({
+      deviceId: machine,
+      route: undefined,
+    });
     await expect(h.service.authorizeInput(source, owner)).rejects.toThrow(/read-write/);
     h.setAccess("read-write");
-    await expect(h.service.authorizeInput(source, owner)).resolves.toBe(machine);
+    await expect(h.service.authorizeInput(source, owner)).resolves.toEqual({
+      deviceId: machine,
+      route: undefined,
+    });
     h.setAccess("read");
     await expect(h.service.authorizeInput(source, owner)).rejects.toThrow(/read-write/);
-    await expect(h.service.authorizeDisplay(source, owner)).resolves.toBe(machine);
+    await expect(h.service.authorizeDisplay(source, owner)).resolves.toEqual({
+      deviceId: machine,
+      route: undefined,
+    });
     h.revoke();
     await expect(h.service.authorizeInput(source, owner)).rejects.toThrow();
   } finally {
@@ -351,5 +365,101 @@ it("discards a window view response after its tab generation closed", async () =
     answer.resolve();
     await opening.catch(() => undefined);
     h.service.shutdown();
+  }
+});
+
+it("keeps owner views on separate Devices and refuses a replaced driver generation", async () => {
+  const { createId } = await import("@opensteer/core");
+  const { RunnerAuxiliaryFrameFenceSchema } = await import("@opensteer/protocol");
+  const first = DeviceIdSchema.parse(createId("device"));
+  const second = DeviceIdSchema.parse(createId("device"));
+  const fence = RunnerAuxiliaryFrameFenceSchema.parse({
+    runnerId: machine,
+    module: "integrations",
+    bootId: `rbt_${globalThis.crypto.randomUUID()}`,
+    auxiliaryStreamId: `rax_${globalThis.crypto.randomUUID()}`,
+    connectionGeneration: 1,
+    connectionId: `rcn_${globalThis.crypto.randomUUID()}`,
+    connectionLeaseId: `rls_${globalThis.crypto.randomUUID()}`,
+  });
+  let generation = 1;
+  const service = new ComputerViewService({
+    owners: async (ids) => new Map(ids.map((id) => [id, { effectiveOwner: owner }])),
+    connections: async () =>
+      [first, second].map((deviceId) => ({
+        id: `connection:${deviceId}`,
+        definitionId: "iphone-screen",
+        status: "connected",
+        displayName: "iPhone",
+        computer: { deviceId, app: null, blockedAt: null, access: "read" },
+      })) as unknown as import("@opensteer/integration-core").DeviceIntegrationConnectionSummary[],
+    changed: () => undefined,
+    hub: {
+      attached: () => true,
+      ownerViewSupported: () => true,
+      withRunnerAdmission: async (_id, action) => action(),
+      withDeviceAdmission: async (_id, action) => action(),
+      captureRoute: async (id) => ({
+        deviceId: DeviceIdSchema.parse(id),
+        runnerId: machine,
+        generation: id === first ? generation : 1,
+        role: "screen",
+        auxiliaryFence: fence,
+      }),
+      routeCurrent: (route) => route.generation === (route.deviceId === first ? generation : 1),
+      ownerWindows: async () => [],
+      sendComputerView: async ({ request }) => ({
+        kind: "ok",
+        value: {
+          viewId: request.viewId,
+          generation: request.generation,
+          state: request.operation === "close" ? "closed" : "ready",
+          captureTargetId: null,
+        },
+      }),
+    },
+  });
+  const open = (computerId: typeof first) =>
+    service.openForTab(
+      owner,
+      {
+        computerId,
+        target: { kind: "phone", display: "main" },
+        tabId: `tab:${computerId}`,
+        tabGeneration: 1,
+      },
+      globalThis.crypto.randomUUID(),
+    );
+  try {
+    const a = await open(first);
+    const b = await open(second);
+    expect(a.driverGeneration).toBe(1);
+    expect(b.driverGeneration).toBe(1);
+    const source = { kind: "owner-view" as const, viewId: a.viewId, generation: a.generation };
+    await expect(service.authorizeDisplay(source, owner)).resolves.toMatchObject({
+      deviceId: first,
+      route: { runnerId: machine, generation: 1 },
+    });
+    await expect(service.authorizeInput(source, owner)).rejects.toThrow(/read-write/);
+    generation = 2;
+    await expect(service.authorizeDisplay(source, owner)).rejects.toThrow(/ended/);
+    expect((await service.list(owner, second))[0]?.viewId).toBe(b.viewId);
+    const fresh = await open(first);
+    expect(fresh.generation).toBeGreaterThan(a.generation);
+    expect(fresh.driverGeneration).toBe(2);
+    service.forgetDriver({ deviceId: first, role: "screen", runnerId: machine, generation: 1 });
+    await expect(
+      service.authorizeDisplay(
+        { kind: "owner-view", viewId: fresh.viewId, generation: fresh.generation },
+        owner,
+      ),
+    ).resolves.toMatchObject({ deviceId: first, route: { generation: 2 } });
+
+    service.forgetDevice(first);
+    expect((await service.list(owner, second))[0]?.viewId).toBe(b.viewId);
+    service.forgetRunner(machine);
+    expect(await service.list(owner, second)).toEqual([]);
+  } finally {
+    service.shutdown();
   }
 });

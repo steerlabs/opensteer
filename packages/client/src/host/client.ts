@@ -1,3 +1,5 @@
+import type { ClientCommandInput } from "./device-commands.js";
+import type { MachineAccessUpdateInput, IphoneScreenAttachInput } from "./device-commands.js";
 import type { TabsClient } from "./tabs-contract.js";
 import type { TeamRunDelivery, TeamSource } from "@opensteer/core";
 import type { PersonShowMessage } from "@opensteer/protocol";
@@ -66,10 +68,8 @@ import type {
   HarnessModelSettingsMap,
   HarnessSourceDescriptor,
   HostApiClient,
-  HostApiCommandInput,
   HostApiCommandOutput,
   HostEnvironmentStatus,
-  MachineAccessPolicy,
   MachineSummary,
   OwnerWindowInfo,
   ShellSessionHistoryEntry,
@@ -907,6 +907,7 @@ export interface HostSnapshot {
   iphoneAppsAvailable: boolean;
   /** The Host serves `devices-v1`: device setup choices, session binding and the Browser and Apps switches. */
   devicesAvailable?: boolean;
+  deviceDriversAvailable?: boolean;
   ownerViewWindowsAvailable?: boolean;
   /** The Host advertises voice-run-v1: a call's agent runs as a Run with Opensteer's tools. */
   voiceAvailable?: boolean;
@@ -1072,6 +1073,7 @@ export interface HostClient extends TabsClient {
   ): import("@opensteer/protocol/browser-tabs").BrowserViewerSurface | undefined;
   /** A Host without a network supplies its own; every other client reaches updates by route. */
   readonly desktopUpdates?: DesktopUpdates;
+  readonly iphoneSetup?: import("./iphone-setup.js").IphoneSetupPort | undefined;
   readonly browserPasskeys?: BrowserPasskeys;
   /** Popups this client's own input opens from one tab, as each one opens. */
   readonly subscribeBrowserPopups?: (
@@ -1189,7 +1191,7 @@ export interface HostClient extends TabsClient {
     expectedVersion: string | null,
   ): Promise<{ readonly applied: boolean }>;
 
-  dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput>;
+  dispatch(command: ClientCommandInput): Promise<HostApiCommandOutput>;
   /** Where a message sent now comes from; `dispatch` adds it to `thread.sendMessage`. */
   messageOrigin?(): import("@opensteer/core").MessageOrigin | undefined;
   dispose(): void;
@@ -1358,11 +1360,15 @@ export interface HostClient extends TabsClient {
     readonly machineId: string;
     readonly proof: import("@opensteer/protocol").DeviceSessionBindingProof;
   }): Promise<void>;
-  updateMachineAccess(input: {
-    readonly expectedRevision: number;
-    readonly policy: MachineAccessPolicy;
-    readonly runnerId: string;
-  }): Promise<MachineAccessUpdateOutcome>;
+  attachIphoneScreen(
+    input: IphoneScreenAttachInput,
+  ): Promise<import("@opensteer/protocol").IphoneScreenAttachResult>;
+  detachIphoneScreen(input: {
+    readonly deviceId: string;
+    readonly expectedGeneration: number;
+    readonly idempotencyKey?: string;
+  }): Promise<import("@opensteer/protocol").IphoneScreenDetachResult>;
+  updateMachineAccess(input: MachineAccessUpdateInput): Promise<MachineAccessUpdateOutcome>;
 }
 
 export class HostClientRequestError extends Error {

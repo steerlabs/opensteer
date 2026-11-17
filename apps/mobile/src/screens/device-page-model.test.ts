@@ -1,3 +1,4 @@
+import { RunnerIdSchema } from "@opensteer/core";
 import { withDeviceSwitch as withSwitch } from "@opensteer/client/computers";
 import type { MachineAccessPolicy, MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
@@ -99,13 +100,20 @@ describe("removing a device", () => {
     });
     // The profiles it holds are named, and an away device erases them when it next connects.
     expect(
-      deviceRemoval(machine({ id: "rnr_mbp", status: "offline" }), {
-        ...none,
-        profiles: [
-          { homeRunnerId: "rnr_mbp", name: "Work" },
-          { homeRunnerId: "rnr_other", name: "Personal" },
-        ],
-      })?.message,
+      deviceRemoval(
+        machine({
+          id: "dev_11111111-1111-4111-8111-111111111111",
+          selfRunnerId: RunnerIdSchema.parse("rnr_11111111-1111-4111-8111-111111111111"),
+          status: "offline",
+        }),
+        {
+          ...none,
+          profiles: [
+            { homeRunnerId: "rnr_11111111-1111-4111-8111-111111111111", name: "Work" },
+            { homeRunnerId: "rnr_other", name: "Personal" },
+          ],
+        },
+      )?.message,
     ).toBe(
       "It is signed out and your agent can't use it. It finishes the next time it connects. Its browser profile Work and its sign-ins are deleted. MacBook Pro (2) erases it the next time it connects.",
     );

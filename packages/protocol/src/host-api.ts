@@ -1,4 +1,5 @@
 import { ChannelConnectionInspectionViewSchema } from "@opensteer/channel-core";
+import { DeviceIdSchema, DeviceDriverGenerationSchema } from "@opensteer/core";
 import { MachineSummarySchema } from "./machines.js";
 import { OwnerWindowInfoSchema } from "./computer-use.js";
 import { HostBootstrapSchema, type HostBootstrap } from "./bootstrap.js";
@@ -173,6 +174,10 @@ import {
   RequestComputerAppSetupSchema,
   SaveIntegrationProviderApplicationSchema,
   SetComputerAppConnectionSchema,
+  DeviceSetComputerAppConnectionSchema,
+  DeviceRequestComputerAppSetupSchema,
+  DeviceComputerAppSetupRequestViewSchema,
+  DeviceIntegrationConnectionSummaryViewSchema,
   SetIntegrationApplicationSourceDefaultSchema,
   SetIntegrationProviderApplicationStatusSchema,
 } from "@opensteer/integration-core";
@@ -253,7 +258,7 @@ import {
   DeviceSessionBindingProofSchema,
 } from "./devices.js";
 
-import { defineRpc, type RpcClient, type RpcHandlers } from "./rpc.js";
+import { defineRpc, type RpcClient, type RpcDeclaration, type RpcHandlers } from "./rpc.js";
 import { RunnerModuleNameSchema } from "./runner-identity.js";
 import {
   HarnessAuthenticationStateViewSchema,
@@ -359,7 +364,97 @@ const harnessAuthenticationEnvelopeSchema = z.object({
   environmentStatus: z.enum(["connected", "disconnected"]),
 });
 
+const deviceConnectionViewSchema = DeviceIntegrationConnectionSummaryViewSchema.extend({
+  computer: DeviceIntegrationConnectionSummaryViewSchema.shape.computer
+    .unwrap()
+    .unwrap()
+    .extend({ runnerId: RunnerIdSchema.optional() })
+    .nullable()
+    .default(null),
+});
+
+const deviceSetupRequestViewSchema = DeviceComputerAppSetupRequestViewSchema.extend({
+  runnerId: RunnerIdSchema.optional(),
+});
+
+export const IntegrationDashboardResponseSchema = IntegrationDashboardViewSchema.extend({
+  connections: z
+    .array(z.union([IntegrationConnectionSummaryViewSchema, deviceConnectionViewSchema]))
+    .max(500),
+});
+export const ComputerAppSetupListResponseSchema = z.object({
+  requests: z
+    .array(z.union([ComputerAppSetupRequestViewSchema, deviceSetupRequestViewSchema]))
+    .max(1_000),
+});
+
+export const IphoneScreenAttachCommandSchema = z.strictObject({
+  type: z.literal("iphone.screen.attach"),
+  idempotencyKey: idempotencyKeySchema,
+  driverRunnerId: RunnerIdSchema,
+  target: z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("new"), name: z.string().trim().min(1).max(120) }),
+    z.strictObject({
+      kind: z.literal("existing"),
+      deviceId: DeviceIdSchema,
+      expectedGeneration: DeviceDriverGenerationSchema,
+    }),
+  ]),
+});
+export type IphoneScreenAttachCommand = z.infer<typeof IphoneScreenAttachCommandSchema>;
+export const IphoneScreenDetachCommandSchema = z.strictObject({
+  type: z.literal("iphone.screen.detach"),
+  idempotencyKey: idempotencyKeySchema,
+  deviceId: DeviceIdSchema,
+  expectedGeneration: DeviceDriverGenerationSchema,
+});
+export type IphoneScreenDetachCommand = z.infer<typeof IphoneScreenDetachCommandSchema>;
+export const IphoneScreenAttachResultSchema = z.object({
+  type: z.literal("iphone.screen.attach"),
+  deviceId: DeviceIdSchema,
+  generation: DeviceDriverGenerationSchema,
+});
+export type IphoneScreenAttachResult = z.infer<typeof IphoneScreenAttachResultSchema>;
+export const IphoneScreenDetachResultSchema = z.object({
+  type: z.literal("iphone.screen.detach"),
+  deviceId: DeviceIdSchema,
+  generation: DeviceDriverGenerationSchema,
+});
+export type IphoneScreenDetachResult = z.infer<typeof IphoneScreenDetachResultSchema>;
+export const DeviceMachineRevokeCommandSchema = z.strictObject({
+  idempotencyKey: idempotencyKeySchema,
+  machineId: z.string().min(1).max(512).pipe(DeviceIdSchema),
+  type: z.literal("machine.revoke"),
+});
+export type DeviceMachineRevokeCommand = z.infer<typeof DeviceMachineRevokeCommandSchema>;
+export const DeviceMachineRenameCommandSchema = z.strictObject({
+  idempotencyKey: idempotencyKeySchema,
+  machineId: z.string().min(1).max(512).pipe(DeviceIdSchema),
+  name: z.string().trim().min(1).max(120),
+  type: z.literal("machine.rename"),
+});
+export type DeviceMachineRenameCommand = z.infer<typeof DeviceMachineRenameCommandSchema>;
+export const DeviceMachineAccessUpdateCommandSchema = z.strictObject({
+  type: z.literal("machine.access.update"),
+  idempotencyKey: idempotencyKeySchema,
+  deviceId: DeviceIdSchema,
+  expectedRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  policy: MachineAccessPolicySchema,
+});
+export type DeviceMachineAccessUpdateCommand = z.infer<
+  typeof DeviceMachineAccessUpdateCommandSchema
+>;
+export const DeviceMachineSessionBindCommandSchema = z.strictObject({
+  type: z.literal("machine.session.bind"),
+  idempotencyKey: idempotencyKeySchema,
+  machineId: DeviceIdSchema,
+  proof: DeviceSessionBindingProofSchema,
+});
+export type DeviceMachineSessionBindCommand = z.infer<typeof DeviceMachineSessionBindCommandSchema>;
+
 const otherCommandInputSchema = z.discriminatedUnion("type", [
+  IphoneScreenAttachCommandSchema,
+  IphoneScreenDetachCommandSchema,
   ComputerViewCloseCommandSchema,
   ComputerViewRenewCommandSchema,
   z.strictObject({
@@ -682,17 +777,8 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("harness.authentication.cancel"),
   }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    machineId: z.string().min(1).max(512),
-    type: z.literal("machine.revoke"),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    machineId: z.string().min(1).max(512),
-    name: z.string().trim().min(1).max(120),
-    type: z.literal("machine.rename"),
-  }),
+  DeviceMachineRevokeCommandSchema,
+  DeviceMachineRenameCommandSchema,
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     machineId: RunnerIdSchema,
@@ -799,12 +885,12 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
-    input: SetComputerAppConnectionSchema,
+    input: z.union([SetComputerAppConnectionSchema, DeviceSetComputerAppConnectionSchema]),
     type: z.literal("integration.computer.setup.set"),
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
-    input: RequestComputerAppSetupSchema,
+    input: z.union([RequestComputerAppSetupSchema, DeviceRequestComputerAppSetupSchema]),
     type: z.literal("integration.computer.setup.request"),
   }),
   z.strictObject({
@@ -1145,7 +1231,8 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-const commandInputSchema = z.discriminatedUnion("type", [
+const commandInputSchema = z.union([
+  DeviceMachineAccessUpdateCommandSchema,
   ...TabCommandSchema.options,
   ...AppCommandSchema.options,
   ...TeamCommandSchema.options,
@@ -1154,6 +1241,8 @@ const commandInputSchema = z.discriminatedUnion("type", [
 ]);
 
 const commandOutputSchema = z.discriminatedUnion("type", [
+  IphoneScreenAttachResultSchema,
+  IphoneScreenDetachResultSchema,
   ...TabCommandResultSchema.options,
   ...AppCommandResultSchema.options,
   ...TeamCommandResultViewSchema.options,
@@ -1332,7 +1421,9 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     type: z.literal("integration.mcp.authorization.begin"),
   }),
   z.object({
-    connection: IntegrationConnectionSummaryViewSchema.nullable(),
+    connection: z
+      .union([IntegrationConnectionSummaryViewSchema, deviceConnectionViewSchema])
+      .nullable(),
     type: z.literal("integration.computer.setup.set"),
   }),
   z.object({
@@ -1496,12 +1587,17 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
+// Keep schema implementation types out of the shared RPC registry.
 const declaration = <Payload extends z.ZodType, Success extends z.ZodType>(
   method: "GET" | "POST",
   payload: Payload,
   success: Success,
   stream?: true,
-) => ({ error: HostApiErrorSchema, method, payload, success, ...(stream ? { stream } : {}) });
+): RpcDeclaration<
+  z.ZodType<Payload["_zod"]["output"], Payload["_zod"]["input"]>,
+  z.ZodType<Success["_zod"]["output"], Success["_zod"]["input"]>,
+  typeof HostApiErrorSchema
+> => ({ error: HostApiErrorSchema, method, payload, success, ...(stream ? { stream } : {}) });
 
 const workspaceBootstrapOutput: z.ZodType<HostBootstrap> = HostBootstrapSchema;
 // Named groups keep TypeScript declaration serialization below its size limit.
@@ -1957,7 +2053,7 @@ const hostApiGroup3 = defineRpc({
   "integration.computer.setup.list": declaration(
     "GET",
     emptyInputSchema,
-    z.object({ requests: z.array(ComputerAppSetupRequestViewSchema).max(1_000) }),
+    ComputerAppSetupListResponseSchema,
   ),
   /** Plugin servers on the caller's computers whose secrets the caller may change; never values. */
   "integration.server.secrets.list": declaration(
@@ -2031,7 +2127,7 @@ const hostApiGroup4 = defineRpc({
     z.strictObject({ connectionId: IntegrationConnectionIdSchema }),
     IntegrationRepositoryAccessViewSchema,
   ),
-  "integrations.get": declaration("GET", emptyInputSchema, IntegrationDashboardViewSchema),
+  "integrations.get": declaration("GET", emptyInputSchema, IntegrationDashboardResponseSchema),
   "machine.access.history": declaration(
     "GET",
     z.strictObject({

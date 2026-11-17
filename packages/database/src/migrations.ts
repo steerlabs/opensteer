@@ -1,3 +1,5 @@
+import { DEVICE_DRIVERS_SQL, deviceDriversMigrationName } from "./device-model-migration.js";
+export { deviceDriversMigrationName } from "./device-model-migration.js";
 import { TABS_AND_APPS_SQL, tabsAndAppsMigrationName } from "./tabs-apps-migration.js";
 export { tabsAndAppsMigrationName } from "./tabs-apps-migration.js";
 import { localMachineOwnerEmail } from "@opensteer/core";
@@ -309,8 +311,13 @@ export function migrationProvider(): MigrationProvider {
             await sql.raw(MESSAGE_ORIGIN_SQL).execute(database);
           },
         },
+        [deviceDriversMigrationName]: {
+          async up(database) {
+            await sql.raw(DEVICE_DRIVERS_SQL).execute(database);
+          },
+        },
         // opensteer_task_list's changedSince reads only messages written or delivered after it.
-        "0028_changed_since_indexes": {
+        "0029_changed_since_indexes": {
           async up(database) {
             await sql`create index messages_created_at on messages(created_at);
               create index thread_inputs_updated_at on thread_inputs(updated_at)`.execute(database);

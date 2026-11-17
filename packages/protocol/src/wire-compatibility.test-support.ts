@@ -45,11 +45,18 @@ export function breakingChanges(
   if (same(before, after)) return [];
   const old = record(before),
     next = record(after);
+  if (
+    direction === "input" &&
+    Array.isArray(next.anyOf) &&
+    Object.keys(next).every((key) => ["anyOf", "description", "title", "default"].includes(key)) &&
+    next.anyOf.some((member) => breakingChanges(old, member, direction).length === 0)
+  )
+    return [];
   const breaks: string[] = [];
   const keys = new Set([...Object.keys(old), ...Object.keys(next)]);
   for (const key of keys) {
     const at = `${path}/${key}`;
-    if (same(old[key], next[key])) continue;
+    if (["description", "title", "default"].includes(key) || same(old[key], next[key])) continue;
     if (key === "properties") {
       const oldProperties = record(old.properties),
         nextProperties = record(next.properties);
@@ -127,6 +134,8 @@ export function surfaceBreaks(
   surface: Surface,
   path = "",
 ): string[] {
+  before = inlineReferences(before);
+  after = inlineReferences(after);
   const breaks = breakingChanges(before, after, "input", path);
   if (surface !== "input")
     breaks.push(...breakingChanges(before, after, "output", path, surface === "frames"));
@@ -141,4 +150,30 @@ export function wireBreaks(before: Wire, after: Wire): string[] {
         : [`${surface} ${name} was removed`],
     ),
   );
+}
+
+function inlineReferences(value: unknown): unknown {
+  const root = record(value);
+  const walk = (node: unknown, active: ReadonlySet<string> = new Set()): unknown => {
+    if (Array.isArray(node)) return node.map((entry) => walk(entry, active));
+    if (!node || typeof node !== "object") return node;
+    const schema = record(node);
+    if (typeof schema.$ref === "string" && schema.$ref.startsWith("#/$defs/")) {
+      const definition = record(root.$defs)[schema.$ref.slice("#/$defs/".length)];
+      if (active.has(schema.$ref)) return { $ref: "#recursive" };
+      if (definition) return walk(definition, new Set([...active, schema.$ref]));
+    }
+    return Object.fromEntries(
+      Object.entries(schema)
+        .filter(([key]) => key !== "$defs")
+        .map(([key, entry]) => [key, walk(entry, active)]),
+    );
+  };
+  return walk(value);
+}
+
+export function wireUnionMembers(schema: z.ZodType): z.ZodType[] {
+  return schema instanceof z.ZodUnion
+    ? schema.options.flatMap((option) => wireUnionMembers(option as z.ZodType))
+    : [schema];
 }

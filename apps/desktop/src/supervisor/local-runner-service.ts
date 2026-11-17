@@ -109,7 +109,7 @@ const maxLogTailDetailChars = 240;
 const maxRestartAttempts = 5;
 
 const notEnrolledDetail = "This Mac is not in this Deployment.";
-const neverEnrolledDetail = "Finish setting up this Mac to join this Opensteer.";
+const neverEnrolledDetail = "This Mac isn’t connected to this Opensteer yet.";
 const revokedDetail = "This Mac was removed from this Deployment.";
 const stoppedDetail = "The Runner is stopped on this Mac.";
 const removedBeforeConnectedMessage = "This Mac left the Deployment before its Runner connected.";
@@ -186,6 +186,7 @@ export interface LocalRunnerServiceDependencies {
   readonly computerUse?: {
     startForSlot(
       deploymentId: string,
+      owner: { deploymentId: string; hostInstanceId: string; runnerId: string },
     ): Promise<{ readonly token: string; readonly url: URL } | null>;
     stopForSlot(deploymentId: string): Promise<void>;
   };
@@ -636,11 +637,21 @@ export class LocalRunnerService {
       .map(([deploymentId, row]) => ({ deploymentId, name: row.deploymentName ?? "an Opensteer" }));
   }
 
+  /** The Opensteers this Mac has joined and not left, as read from its membership file. */
+  async joinedDeploymentIds(): Promise<ReadonlySet<string>> {
+    const preference = await readMemberships(this.#preferencePath);
+    return new Set(
+      Object.entries(preference.runners)
+        .filter(([, row]) => row.state === "active" && row.runnerId !== null)
+        .map(([deploymentId]) => deploymentId),
+    );
+  }
+
   async #startNow(parsed: DesktopStartLocalRunnerInput): Promise<DesktopLocalExecutionStatus> {
     await this.#finishLegacyLeaves(parsed.deploymentId);
     const membership = (await readMemberships(this.#preferencePath)).runners[parsed.deploymentId];
     if (this.#fenced.has(parsed.deploymentId) || (membership && membership.state !== "active"))
-      throw new Error("This Mac was removed. Choose Set up again before joining this Deployment.");
+      throw new Error("This Mac was removed. Choose Connect again before joining this Deployment.");
     this.#cancelRestart(parsed.deploymentId);
     const slot = this.#slot(parsed.deploymentId);
     const intentGeneration = this.#enableIntent(slot);
@@ -657,7 +668,7 @@ export class LocalRunnerService {
       )
         throw new Error("This enrollment does not belong to the prepared setup attempt.");
       if (membership?.hostAuthority && !isSameHost(membership.hostAuthority, target.authority))
-        throw new Error("This Deployment's Host identity changed. Set up this Mac again.");
+        throw new Error("This Deployment's Host identity changed. Connect this Mac again.");
       slot.waiting = false;
       this.#assertCurrentIntent(slot, intentGeneration);
       if (parsed.runAgents && !target.mayRunAgents) {
@@ -859,7 +870,7 @@ export class LocalRunnerService {
     await this.assertSessionAllowed(deploymentId);
     const target = await this.#targets.resolve(deploymentId);
     if (membership.hostAuthority && !isSameHost(membership.hostAuthority, target.authority))
-      throw new Error("This Deployment's Host identity changed. Set up this Mac again.");
+      throw new Error("This Deployment's Host identity changed. Connect this Mac again.");
     const host = this.#hostApi(deploymentId, target.hostUrl);
     const session = hostApiData(await host["sessions.list"]({})).sessions.find(
       (candidate) => candidate.current,
@@ -1224,7 +1235,7 @@ export class LocalRunnerService {
     const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
     const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
     if (this.#fenced.has(deploymentId) || (row && row.state !== "active"))
-      throw new Error("This Mac was removed. Choose Set up again to reconnect.");
+      throw new Error("This Mac was removed. Choose Connect again to reconnect.");
     assertDeviceSessionAllowed(
       row
         ? {
@@ -1349,7 +1360,7 @@ export class LocalRunnerService {
           this.#disableIntent(slot);
           await this.#stop(slot);
           slot.state = "failed";
-          slot.detail = "This Deployment's Host identity changed. Set up this Mac again.";
+          slot.detail = "This Deployment's Host identity changed. Connect this Mac again.";
           this.#emit();
           return;
         }
@@ -1527,6 +1538,12 @@ export class LocalRunnerService {
     }
     await mkdir(runnerDataDirectory, { mode: 0o700, recursive: true });
     await setPrivateDirectoryMode(runnerDataDirectory);
+    const runnerIdentity =
+      descriptor ??
+      (await new FileRunnerIdentityStore({
+        dataDirectory: runnerDataDirectory,
+        environmentless: !runAgents,
+      }).loadOrCreate());
     slot.state = "starting";
     slot.detail = "Connecting this Mac to Opensteer…";
     slot.environmentId = null;
@@ -1555,7 +1572,11 @@ export class LocalRunnerService {
     // carries the computer-use frame.
     const computerUse = membership?.confirmingSession
       ? undefined
-      : ((await this.#computerUse?.startForSlot(target.deploymentId)) ?? undefined);
+      : ((await this.#computerUse?.startForSlot(target.deploymentId, {
+          deploymentId: target.deploymentId,
+          hostInstanceId: target.authority.document.hostInstanceId,
+          runnerId: runnerIdentity.runnerId,
+        })) ?? undefined);
     slot.computerUseSlotId = computerUse ? target.deploymentId : undefined;
     if (!this.#intentIsCurrent(slot, intentGeneration)) {
       await stopSlotBrowser(slot, this.#log);

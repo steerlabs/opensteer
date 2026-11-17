@@ -19,6 +19,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 type SupervisedProcessOptions = {
   readonly executable: string;
+  readonly supervisorExecutable?: string;
   readonly args: readonly string[];
   readonly cwd: string;
   readonly environment: Readonly<Record<string, string>>;
@@ -82,7 +83,8 @@ export function runningSupervisedProcesses(): readonly RunningSupervisedProcess[
 export function spawnSupervised(options: SupervisedProcessOptions): SupervisedProcess {
   options.signal?.throwIfAborted();
   if (!options.executable) throw new TypeError("executable is required");
-  const supervisor = process.env[processSupervisorExecutableVariable];
+  const supervisor =
+    options.supervisorExecutable ?? process.env[processSupervisorExecutableVariable];
   if (!supervisor)
     throw new Error(
       `${processSupervisorExecutableVariable} must name the process supervisor; every engine and program runs under it.`,

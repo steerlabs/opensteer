@@ -184,6 +184,7 @@ describe("start page projection", () => {
         ["Mac mini", null],
         ["Studio Mac", null],
         ["Pixel 7", null],
+        ["Work iPhone", null],
       ]);
 
       // The view's own answer, before any view is asked for; the rows that open come first.
@@ -191,6 +192,7 @@ describe("start page projection", () => {
       expect(groups()).toEqual([
         ["Mac mini", null],
         ["Pixel 7", null],
+        ["Work iPhone", null],
         ["Studio Mac", "offline"],
       ]);
       expect(
@@ -235,6 +237,7 @@ describe("start page projection", () => {
       client.setMachineStatus(pixel.id, "update-pending");
       expect(groups()).toEqual([
         ["Mac mini", null],
+        ["Work iPhone", null],
         ["Studio Mac", "screen-recording-required"],
         ["Pixel 7", "update-pending"],
       ]);
@@ -259,6 +262,7 @@ describe("start page projection", () => {
         ["Mac mini", null],
         ["Studio Mac", null],
         ["Pixel 7", null],
+        ["Work iPhone", null],
       ]);
 
       // Back but not yet saying what it can show — the Host's word for a computer the moment it
@@ -319,6 +323,7 @@ describe("start page projection", () => {
         ["Mac mini", null],
         ["Studio Mac", null],
         ["Pixel 7", null],
+        ["Work iPhone", null],
       ]);
       expect(index(reconnecting).apps.some((entry) => entry.available)).toBe(false);
     } finally {

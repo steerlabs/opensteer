@@ -182,11 +182,16 @@ describe("access switches", () => {
 });
 
 it("warns about browser profile deletion when removing an offline device", () => {
-  const machine = { id: "offline-mac", name: "Travel Mac", status: "offline" as const };
+  const machine = {
+    id: "dev_11111111-1111-4111-8111-111111111111",
+    selfRunnerId: RunnerIdSchema.parse("rnr_11111111-1111-4111-8111-111111111111"),
+    name: "Travel Mac",
+    status: "offline" as const,
+  };
   const copy = deviceRemovalCopy({
     machine,
     thisDevice: false,
-    profiles: [{ homeRunnerId: machine.id, name: "Work" }],
+    profiles: [{ homeRunnerId: machine.selfRunnerId, name: "Work" }],
   });
   expect(copy.body).toContain("browser profile Work and its sign-ins are deleted");
   expect(copy.body).toContain("Travel Mac erases it the next time it connects");

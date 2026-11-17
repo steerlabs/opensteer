@@ -1,3 +1,7 @@
+import type {
+  IntegrationDashboard,
+  IntegrationConnectionSummary,
+} from "@opensteer/client/integrations";
 import { useToast } from "../toast.js";
 import { copyText } from "@opensteer/shared/clipboard";
 import { useEffect, useRef, useState } from "react";
@@ -6,8 +10,6 @@ import {
   sameIntegrationOAuthApplicationSource,
   type IntegrationAuthorizationStart,
   type IntegrationAuthorizationStatus,
-  type IntegrationConnectionSummary,
-  type IntegrationDashboard,
   type IntegrationOAuthApplicationSource,
   type IntegrationProviderApplication,
   type IntegrationProviderManifest,

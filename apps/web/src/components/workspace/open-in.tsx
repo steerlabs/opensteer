@@ -55,6 +55,7 @@ export function useOpenPageIn(hostClient: HostClient) {
           pageOpenTarget(
             newTabTarget(hostClient.getSnapshot(), profile.identity, hereId),
             parsed.url,
+            hostClient.getSnapshot().machines,
           ),
         )
         .then((tab) => {

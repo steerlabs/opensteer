@@ -24,7 +24,7 @@ export function finishSetupLine(cause: FinishSetupCause): {
     case "bind":
       return { text: "This Mac couldn’t confirm your sign-in", action: "Try again" };
     case "failed":
-      return { text: "Finish setting up this Mac", action: "Finish setup" };
+      return { text: "This Mac isn’t connected yet", action: "Connect" };
   }
 }
 

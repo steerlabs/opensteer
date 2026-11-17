@@ -9,8 +9,9 @@ import { addPhoneSteps } from "./computer-use.js";
  * no platform this client knows is not known to be a phone's.
  */
 export function computerAppRunsOnPhone(
-  presentation: Pick<ComputerAppPresentationView, "platforms"> | undefined,
+  presentation: Pick<ComputerAppPresentationView, "platforms" | "kind"> | undefined,
 ): boolean {
+  if (presentation?.kind === "display") return true;
   const platforms = presentation?.platforms ?? [];
   return platforms.length > 0 && platforms.every((platform) => platform === "android");
 }
@@ -22,10 +23,13 @@ export function computerAppRunsOnPhone(
  * never the device the person happens to be reading it on.
  */
 export function computerAppElsewhereDetail(input: {
+  readonly setup?: import("@opensteer/protocol").PhoneDisplayView["setup"];
   readonly integrationName: string;
-  readonly presentation: Pick<ComputerAppPresentationView, "platforms"> | undefined;
+  readonly presentation: Pick<ComputerAppPresentationView, "platforms" | "kind"> | undefined;
 }): string {
+  if (input.setup?.location === "driver-mac")
+    return `Open Opensteer on ${input.setup.driverRunnerName}, the Mac connected to this iPhone, to finish setup.`;
   return computerAppRunsOnPhone(input.presentation)
-    ? `${addPhoneSteps("an Android phone")} Then return here to allow access.`
+    ? `${addPhoneSteps("a phone")} Then return here to allow access.`
     : `Open Opensteer on ${computerAppPlatformTargetLabel(input.presentation?.platforms ?? [])} and turn ${input.integrationName} on for it, then return here to allow access.`;
 }

@@ -1267,3 +1267,71 @@ it.each(["timeout", "cancel"] as const)(
     }
   },
 );
+
+it("waits for stream admission and complete inventory, independently cancels waiters and closes them", async () => {
+  const { RunnerBrowserHub } = await import("./runner-browser-hub.js");
+  const hub = new RunnerBrowserHub();
+  const runnerId = createId("runner");
+  const stream = {
+    fence: { runnerId, connectionId: "startup", connectionGeneration: 1 },
+    identity: {
+      runnerId,
+      modules: {
+        browser: {
+          runtimeId: "startup-browser",
+          wireVersion: 2,
+          localProfileStorage: { storageInstanceId: "startup-storage", engine: "chromium" },
+        },
+      },
+    },
+  } as unknown as RunnerAuxiliaryStream;
+  const router = new RunnerBrowserRuntimeRouter({
+    registry: hub,
+    localProfiles: {
+      reconcileInventory: async () => {},
+      jobs: async () => [],
+      acknowledgeDeletion: async () => {},
+    },
+  });
+  const peer = { id: "startup", close: () => {}, send: async () => {} };
+  const abort = new AbortController();
+  const cancelled = router.waitForTarget(runnerId, abort.signal);
+  const cancellation = expect(cancelled).rejects.toThrow("cancelled");
+  const first = router.waitForTarget(runnerId, new AbortController().signal);
+  const second = router.waitForTarget(runnerId, new AbortController().signal);
+  abort.abort(new Error("cancelled"));
+  await cancellation;
+  hub.attach(peer, stream);
+  expect(router.pendingAdmission(runnerId)).toBe(true);
+  let ready = false;
+  void first.then(() => {
+    ready = true;
+  });
+  await hub.handleMessage(peer, {
+    ...stream.fence,
+    type: "browser.profile.inventory",
+    module: "browser",
+    storageInstanceId: "startup-storage",
+    engine: "chromium",
+    profiles: [],
+    complete: false,
+  });
+  expect(ready).toBe(false);
+  await hub.handleMessage(peer, {
+    ...stream.fence,
+    type: "browser.profile.inventory",
+    module: "browser",
+    storageInstanceId: "startup-storage",
+    engine: "chromium",
+    profiles: [],
+    complete: true,
+  });
+  await Promise.all([first, second]);
+  expect(router.pendingAdmission(runnerId)).toBe(false);
+  const closing = expect(
+    router.waitForTarget(createId("runner"), new AbortController().signal),
+  ).rejects.toThrow("closed");
+  router.close();
+  await closing;
+  hub.close();
+});

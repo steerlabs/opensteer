@@ -89,14 +89,20 @@ export function createIntegrationPlatformRpcHandlers(
       });
       return rpcSuccess({});
     },
-    "integration.computer.setup.review": async (input, context) =>
-      rpcSuccess(
-        await options.platform.computerAppApprovals.reviewComputerAppSetup({
-          ...input,
-          ownerUserId: (await requirePersonalSession(context, options.platform.store.connections))
-            .user.id,
-        }),
-      ),
+    "integration.computer.setup.review": async (input, context) => {
+      const result = await options.platform.computerAppApprovals.reviewComputerAppSetup({
+        ...input,
+        ownerUserId: (await requirePersonalSession(context, options.platform.store.connections))
+          .user.id,
+      });
+      return rpcSuccess({
+        ...result,
+        request: {
+          ...result.request,
+          runnerId: await options.platform.store.requireDeviceSelfRunnerId(result.request.deviceId),
+        },
+      });
+    },
     "integration.server.secrets.list": async (_input, context) =>
       rpcSuccess({
         servers: (
@@ -112,14 +118,23 @@ export function createIntegrationPlatformRpcHandlers(
           secrets: [...localMcpLaunchSecrets(server.launch)],
         })),
       }),
-    "integration.computer.setup.list": async (_input, context) =>
-      rpcSuccess({
-        requests: (
-          await options.platform.store.listComputerAppSetupRequests(
-            (await requirePersonalSession(context, options.platform.store.connections)).user.id,
-          )
-        ).map((request) => ComputerAppSetupRequestViewSchema.parse(request)),
-      }),
+    "integration.computer.setup.list": async (_input, context) => {
+      const owner = (await requirePersonalSession(context, options.platform.store.connections)).user
+        .id;
+      const [selfRequests, deviceRequests] = await Promise.all([
+        options.platform.store.listComputerAppSetupRequests(owner),
+        options.platform.store.listDeviceComputerAppSetupRequests(owner),
+      ]);
+      const known = new Set(selfRequests.map((request) => request.id));
+      return rpcSuccess(
+        hostApi["integration.computer.setup.list"].success.parse({
+          requests: [
+            ...selfRequests,
+            ...deviceRequests.filter((request) => !known.has(request.id)),
+          ],
+        }),
+      );
+    },
     "integration.grants.list": async (_input, context) =>
       rpcSuccess(
         hostApi["integration.grants.list"].success.parse({
@@ -222,16 +237,19 @@ async function executeIntegrationPlatformCommand(
         requestId: context.requestId,
       });
       return { type: command.type };
-    case "integration.computer.setup.request":
+    case "integration.computer.setup.request": {
+      const request = await options.platform.computerAppApprovals.requestComputerAppSetup({
+        ...command.input,
+        actorUserId: session.user.id,
+      });
       return {
         type: command.type,
-        request: ComputerAppSetupRequestViewSchema.parse(
-          await options.platform.computerAppApprovals.requestComputerAppSetup({
-            ...command.input,
-            actorUserId: session.user.id,
-          }),
-        ),
+        request: ComputerAppSetupRequestViewSchema.parse({
+          ...request,
+          runnerId: await options.platform.store.requireDeviceSelfRunnerId(request.deviceId),
+        }),
       };
+    }
     case "integration.computer.setup.cancel":
       await options.platform.computerAppApprovals.cancelComputerAppSetup({
         settlementSessionId: session.id,
@@ -274,7 +292,16 @@ async function executeIntegrationPlatformCommand(
         actorUserId: session.user.id,
         requestId: context.requestId,
       });
-      return { connection, type: command.type };
+      const self = connection?.computer
+        ? await options.platform.store.getDeviceSelfRunnerId(connection.computer.deviceId)
+        : null;
+      return hostApi["commands.dispatch"].success.parse({
+        connection:
+          connection && self && connection.computer
+            ? { ...connection, computer: { ...connection.computer, runnerId: self } }
+            : connection,
+        type: command.type,
+      });
     }
     case "integration.mcp.authorization.begin": {
       const started = await options.mcpOauth.beginAuthorization({

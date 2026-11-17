@@ -299,7 +299,15 @@ describe("DeploymentAccessService", () => {
       statusInfo: { reason: null, status: "starting" },
     });
 
-    fixture.emitPersonal({ ...readyPersonalStatus, deploymentId: local.id });
+    fixture.emitPersonal({
+      ...readyPersonalStatus,
+      deploymentId: local.id,
+      components: {
+        ...readyPersonalStatus.components,
+        runner: { state: "starting", version: null },
+        browser: { state: "starting", version: null },
+      },
+    });
     await settle();
 
     expect(fixture.establish).toHaveBeenCalledOnce();
@@ -1039,6 +1047,62 @@ describe("DeploymentAccessService", () => {
       service.dispose();
     });
 
+    it("keeps an Account place this Mac joined listed and openable after the sign-in ends, until the Mac leaves it", async () => {
+      const mac = otherMac({ livenessExpiresAt: liveLease });
+      const other = deployment({ name: "Team server", source: "account" });
+      const fixture = fakePorts({ deployments: [mac, other], joined: [mac.id] });
+      fixture.currentState.mockResolvedValueOnce(expiredAccount());
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      await service.initialize();
+
+      expect(service.snapshot().deployments.map(({ name }) => name)).toEqual(["Studio Mac"]);
+      expect(service.snapshot().deployments[0]?.statusInfo.label).toBe("Sign in again");
+      await service.select(mac.id);
+      expect(fixture.select).toHaveBeenCalledWith(mac.id);
+      expect(fixture.establish).not.toHaveBeenCalled();
+
+      fixture.emitCatalog({ deployments: [mac, other], selectedDeploymentId: null });
+      fixture.emitJoined([]);
+      await settle();
+      expect(service.snapshot().deployments).toEqual([]);
+      service.dispose();
+    });
+
+    it("never lets startup's read of what this Mac joined undo a newer one", async () => {
+      const mac = otherMac({ livenessExpiresAt: liveLease });
+      const fixture = fakePorts({ deployments: [mac] });
+      const catalog = deferred<CatalogProjection>();
+      vi.mocked(fixture.ports.catalog.read).mockReturnValueOnce(catalog.promise);
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      const initialized = service.initialize();
+      await settle();
+      fixture.emitJoined([mac.id]);
+      await settle();
+      catalog.resolve({ deployments: [mac], revision: 1, selectedDeploymentId: null });
+      await initialized;
+
+      expect(service.snapshot().deployments.map(({ name }) => name)).toEqual(["Studio Mac"]);
+      service.dispose();
+    });
+
+    it("won't offer to start an Opensteer until it can read what this Mac joined", async () => {
+      const fixture = fakePorts();
+      vi.spyOn(fixture.ports.devices, "joinedDeploymentIds").mockRejectedValueOnce(
+        new Error("This Mac's device membership file is incompatible or corrupt."),
+      );
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      await service.initialize();
+      expect(service.snapshot().personalSetup).toMatchObject({
+        canStart: false,
+        state: "repair-required",
+      });
+
+      fixture.emitJoined([]);
+      await settle();
+      expect(service.snapshot().personalSetup).toMatchObject({ canStart: true, state: "stopped" });
+      service.dispose();
+    });
+
     it("refuses to open an Account place it is not showing", async () => {
       const server = deployment({ name: "Team server", source: "account" });
       const fixture = fakePorts({ deployments: [server] });
@@ -1504,9 +1568,12 @@ function fakePorts(
     readonly deployments?: CatalogProjection["deployments"];
     readonly directoryUnavailable?: readonly DeploymentAccessUnavailable[];
     readonly personal?: DeploymentAccessPorts["personal"]["status"];
+    readonly joined?: readonly string[];
     readonly selectedDeploymentId?: string;
   } = {},
 ) {
+  let joined: ReadonlySet<string> = new Set(options.joined ?? []);
+  const devicesListeners = new Set<() => void>();
   const clock = { now: Date.parse("2026-10-20T20:00:00.000Z") };
   const network = { online: true };
   const probe = vi.fn(
@@ -1581,6 +1648,13 @@ function fakePorts(
         return () => catalogListeners.delete(listener);
       },
     },
+    devices: {
+      joinedDeploymentIds: async () => joined,
+      subscribe: (listener) => {
+        devicesListeners.add(listener);
+        return () => devicesListeners.delete(listener);
+      },
+    },
     direct: {
       addRoute: vi.fn(async () => catalog),
       connect: vi.fn(async () => catalog),
@@ -1635,6 +1709,10 @@ function fakePorts(
     emitCatalog(next: Omit<CatalogProjection, "revision">) {
       projection = { ...next, revision: projection.revision + 1 };
       for (const listener of catalogListeners) listener();
+    },
+    emitJoined(ids: readonly string[]) {
+      joined = new Set(ids);
+      for (const listener of devicesListeners) listener();
     },
     emitHostSession(observation: HostSessionObservation) {
       for (const listener of hostSessionListeners) listener(observation);

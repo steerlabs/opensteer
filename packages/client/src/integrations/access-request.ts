@@ -1,3 +1,5 @@
+import { computerTargetId } from "../host/device-projection.js";
+import type { ClientIntegrationDashboard as IntegrationDashboard } from "../host/device-projection.js";
 import {
   IntegrationDefinitionSummaryViewSchema,
   type IntegrationDefinitionSummaryView,
@@ -5,7 +7,6 @@ import {
 import type {
   IntegrationAccess,
   IntegrationConnectionRequirement,
-  IntegrationDashboard,
   IntegrationPlatformDashboardView,
 } from "@opensteer/integration-core";
 import {
@@ -249,7 +250,7 @@ export function computerAccessUpgrade(
   return {
     definitionId: plan.definition.id,
     displayName: plan.selectedAccount?.displayName ?? plan.definition.name,
-    runnerId: computer.runnerId,
+    runnerId: computerTargetId(computer)!,
   };
 }
 
@@ -259,10 +260,11 @@ export function computerAccessUpgrade(
  */
 export interface AccessRequestAccount {
   readonly accountIdentifier: string | null;
-  readonly computer: {
-    readonly access: IntegrationAccess;
-    readonly runnerId: string;
-  } | null;
+  readonly computer:
+    | ({ readonly access: IntegrationAccess } & (
+        { readonly deviceId: string } | { readonly runnerId: string }
+      ))
+    | null;
   readonly createdAt: string;
   readonly displayName: string;
   readonly id: string;

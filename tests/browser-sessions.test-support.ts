@@ -1,4 +1,4 @@
-import { BrowserSurfaceIdSchema } from "../packages/core/src/index.js";
+import { BrowserSurfaceIdSchema, DeviceIdSchema } from "../packages/core/src/index.js";
 import { browserRows } from "../apps/host/src/browser/browser-rows.test-support.js";
 import {
   hostApiVersion,
@@ -1038,7 +1038,7 @@ export async function runtimeBrowserCommand(
         const write = {
           id: data.tabId,
           ownerId: owner.id,
-          computerId: record.runnerId,
+          computerId: DeviceIdSchema.parse(record.runnerId),
           kind: "page" as const,
           title: row.title,
           url: row.url,

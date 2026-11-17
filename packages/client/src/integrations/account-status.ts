@@ -1,7 +1,5 @@
-import type {
-  IntegrationConnectionSummary,
-  IntegrationDefinitionSummaryView,
-} from "@opensteer/integration-core";
+import type { ClientComputerConnection as IntegrationConnectionSummary } from "../host/device-projection.js";
+import type { IntegrationDefinitionSummaryView } from "@opensteer/integration-core";
 
 export type IntegrationAccountRepair = "choose-repositories" | "replace-key" | "sign-in";
 

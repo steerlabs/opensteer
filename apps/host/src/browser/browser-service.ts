@@ -1,3 +1,4 @@
+import type { DeviceId } from "@opensteer/core";
 import { authorizeTabTarget } from "../tabs/tab-authority.js";
 import type { PageTabsPort } from "../tabs/tab-service.js";
 import type { TabActor } from "../tabs/ports.js";
@@ -148,6 +149,8 @@ const maxBrowserFrameBytes = 8 * 1_024 * 1_024;
 const maxBrowserTextBytes = 1 * 1_024 * 1_024;
 const maxPendingAgentRequests = 32;
 const agentRequestTimeoutMs = 15_000;
+/** An open's work budget; it also bounds waiting for this computer's browser to arrive. */
+const browserOpenWorkMs = 18_000;
 const maxBrowserProfiles = 128;
 /** A live state export walks every context, so it gets more room than a CDP call. */
 
@@ -268,9 +271,9 @@ export interface BrowserSessionRepository {
     ownerId: UserId,
     threadIds: readonly ThreadId[],
   ): Promise<readonly ThreadId[]>;
-  effectiveMachineOwners?(
-    runnerIds: readonly RunnerId[],
-  ): Promise<ReadonlyMap<RunnerId, { readonly effectiveOwner: UserId | null }>>;
+  effectiveDeviceOwners?: OpensteerStore["effectiveDeviceOwners"];
+  requireSelfDeviceId?: OpensteerStore["requireSelfDeviceId"];
+  requireDeviceSelfRunnerId?: OpensteerStore["requireDeviceSelfRunnerId"];
   listBrowserSessionViewers(
     sessionId: BrowserSessionId,
   ): Promise<{ readonly userIds: readonly UserId[] } | null>;
@@ -499,6 +502,8 @@ export interface BrowserRuntimeTarget {
 export type BrowserRuntimePlacement = BrowserPlacement & { readonly agents?: boolean };
 
 export interface BrowserRuntimeTargetResolver {
+  pendingAdmission?(runnerId: RunnerId): boolean;
+  waitForTarget?(runnerId: RunnerId, signal: AbortSignal): Promise<void>;
   placements(): readonly BrowserRuntimePlacement[];
   resolve(placement: BrowserPlacementSelector): BrowserRuntimeTarget | undefined;
 }
@@ -834,6 +839,7 @@ export class BrowserService {
   readonly #sessionProfiles = new Map<BrowserSessionId, BrowserProfileId>();
   readonly #signer: BrowserAttachTicketSigner;
   readonly #targetResolver: BrowserRuntimeTargetResolver | undefined;
+  readonly #closing = new AbortController();
   #closed = false;
   #closePromise: Promise<void> | null = null;
   #operationTail = Promise.resolve();
@@ -1139,7 +1145,7 @@ export class BrowserService {
           {
             id: descriptor.id,
             ownerId: input.ownerId,
-            computerId: record.runnerId,
+            computerId: await this.#selfDeviceId(record.runnerId),
             kind: "page",
             title: descriptor.title,
             url: descriptor.url,
@@ -1320,7 +1326,15 @@ export class BrowserService {
       identity: NonNullable<BrowserTabOpenCommand["identity"]>;
       placement?: BrowserTabOpenCommand["placement"];
     },
-  ) {
+    signal: AbortSignal,
+  ): Promise<{
+    profileId: BrowserProfileId | null;
+    placement: BrowserPlacementSelector;
+    identityKey: string;
+    holder: BrowserSessionRecord | null;
+    storage: Awaited<ReturnType<BrowserLocalProfiles["storage"]>>;
+    target: BrowserRuntimeTarget;
+  }> {
     const profileId = command.identity.kind === "profile" ? command.identity.profileId : null;
     const identityKey = profileId ?? "guest";
     const profile = profileId ? await this.#repository.getBrowserProfile(profileId, ownerId) : null;
@@ -1353,6 +1367,18 @@ export class BrowserService {
         ? await this.#repository.rememberedBrowserPlacement(ownerId, identityKey)
         : null;
     const homes = await this.#repository.listEligibleBrowserRunners(ownerId);
+    const main = this.#personal ? homes.find((home) => home.kind === "main") : undefined;
+    const intended: BrowserPlacementSelector | null =
+      (boundRunnerId ? { kind: "runner" as const, runnerId: boundRunnerId } : command.placement) ??
+      (main && !profile
+        ? { kind: "runner" as const, runnerId: main.id }
+        : holder
+          ? placementOf(holder)
+          : remembered
+            ? { kind: "runner" as const, runnerId: remembered }
+            : null);
+    if (await this.#waitForBrowser(homes, intended?.runnerId, signal))
+      return this.#resolveIdentityOpen(ownerId, command, signal);
     if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
     const eligible = this.#eligiblePlacements(homes).filter((candidate) => candidate.available);
     if (
@@ -1364,21 +1390,12 @@ export class BrowserService {
         "The selected browser computer is unavailable.",
         this.#eligiblePlacements(homes),
       );
-    const main = this.#personal ? homes.find((home) => home.kind === "main") : undefined;
     if (this.#personal && !profile && !command.placement && !main)
       throw this.#tabOpenRefusal(
         "browser-placement-unavailable",
         "The main computer's browser is unavailable.",
       );
-    let placement =
-      (boundRunnerId ? { kind: "runner" as const, runnerId: boundRunnerId } : command.placement) ??
-      (main && !profile && !command.placement
-        ? { kind: "runner" as const, runnerId: main.id }
-        : holder
-          ? placementOf(holder)
-          : remembered
-            ? { kind: "runner" as const, runnerId: remembered }
-            : null);
+    let placement = intended;
     if (!placement) {
       if (eligible.length > 1)
         throw this.#tabOpenRefusal(
@@ -1485,11 +1502,11 @@ export class BrowserService {
         message: "Opening this browser timed out. Retry to open a new page.",
         reason: "browser-open.timeout",
       });
-    const timer = setTimeout(() => cancellation.abort(timeout()), 18_000);
+    const timer = setTimeout(() => cancellation.abort(timeout()), browserOpenWorkMs);
     timer.unref?.();
     try {
       return await withDatabaseOperationSignal(budget.signal, budget.expiresAt, () =>
-        withTimeout(this.#openTab(ownerId, input, budget, agent), 18_000, {
+        withTimeout(this.#openTab(ownerId, input, budget, agent), browserOpenWorkMs, {
           signal: budget.signal,
           timeoutError: timeout,
         }),
@@ -1596,10 +1613,14 @@ export class BrowserService {
             this.#requireOpenableSession(record);
             runnerId = record.runnerId;
           } else {
-            const resolved = await this.#resolveIdentityOpen(ownerId, {
-              identity: command.identity!,
-              ...(command.placement ? { placement: command.placement } : {}),
-            });
+            const resolved = await this.#resolveIdentityOpen(
+              ownerId,
+              {
+                identity: command.identity!,
+                ...(command.placement ? { placement: command.placement } : {}),
+              },
+              budget.signal,
+            );
             const { profileId, placement } = resolved;
             identityKey = resolved.identityKey;
             runnerId = placement.runnerId;
@@ -2104,6 +2125,16 @@ export class BrowserService {
       },
     });
   }
+  async #selfDeviceId(runnerId: RunnerId): Promise<DeviceId> {
+    if (!this.#repository.requireSelfDeviceId)
+      throw new OpensteerError({ code: "not_found", message: "Device identity unavailable" });
+    return this.#repository.requireSelfDeviceId(runnerId);
+  }
+  async #selfRunnerId(deviceId: DeviceId): Promise<RunnerId> {
+    if (!this.#repository.requireDeviceSelfRunnerId)
+      throw new OpensteerError({ code: "not_found", message: "Self runtime unavailable" });
+    return this.#repository.requireDeviceSelfRunnerId(deviceId);
+  }
   async readablePlaces<
     T extends {
       readonly threadId: ThreadId;
@@ -2117,9 +2148,9 @@ export class BrowserService {
         references.map(({ threadId }) => threadId),
       ) ?? [],
       this.#repository.listBrowserSessions(ownerId),
-      this.#repository.effectiveMachineOwners?.(
+      this.#repository.effectiveDeviceOwners?.(
         references.flatMap(({ place }) => (place.kind === "browser" ? [] : [place.machineId])),
-      ) ?? new Map<RunnerId, { readonly effectiveOwner: UserId | null }>(),
+      ) ?? new Map<DeviceId, { readonly effectiveOwner: UserId | null }>(),
     ]);
     const visibleThreads = new Set(threads);
     const visibleSessions = new Set(sessions.map(({ id }) => id));
@@ -2841,7 +2872,7 @@ export class BrowserService {
               origin: "agent",
               environmentId: actor.claims.environmentId,
               ...("computerId" in target && target.computerId
-                ? { chosenRunnerId: target.computerId }
+                ? { chosenRunnerId: await this.#selfRunnerId(target.computerId) }
                 : {}),
             },
             this.#eligiblePlacements(await this.#repository.listEligibleBrowserRunners(ownerId)),
@@ -2857,7 +2888,12 @@ export class BrowserService {
         ...(placement
           ? { placement }
           : "computerId" in target && target.computerId
-            ? { placement: { kind: "runner" as const, runnerId: target.computerId } }
+            ? {
+                placement: {
+                  kind: "runner" as const,
+                  runnerId: await this.#selfRunnerId(target.computerId),
+                },
+              }
             : {}),
         ...(target.url === "about:blank" ? {} : { url: target.url }),
         ...(typed && actor.kind === "person" ? { typed: true } : {}),
@@ -2886,7 +2922,7 @@ export class BrowserService {
       id: opened.tabId,
       ownerId,
       kind: "page",
-      computerId: record.runnerId,
+      computerId: await this.#selfDeviceId(record.runnerId),
       title: descriptor?.title ?? target.url,
       url:
         descriptor?.url === "about:blank" && target.url !== "about:blank"
@@ -2938,7 +2974,8 @@ export class BrowserService {
         }
         // A restore remains on its saved computer and profile, including Guest.
         const homes = await this.#repository.listEligibleBrowserRunners(ownerId);
-        if (!homes.some((home) => home.id === row.computerId))
+        const rowRunnerId = await this.#selfRunnerId(row.computerId);
+        if (!homes.some((home) => home.id === rowRunnerId))
           throw new OpensteerError({
             code: "forbidden",
             message: "This browser computer is unavailable.",
@@ -2963,7 +3000,7 @@ export class BrowserService {
           previousPageBinding: binding,
           dormantSurfaceIds: dormant,
           initialUrl: row.url!,
-          placement: { kind: "runner", runnerId: row.computerId },
+          placement: { kind: "runner", runnerId: rowRunnerId },
           ...(row.profileId ? { profileId: row.profileId } : { fresh: true }),
           origin: claims ? "agent" : "person",
           ...(agent ? { agentBindingId: agent.agentBindingId } : {}),
@@ -3031,7 +3068,7 @@ export class BrowserService {
           id: descriptor.id,
           ownerId,
           kind: "page",
-          computerId: record.runnerId,
+          computerId: await this.#selfDeviceId(record.runnerId),
           title: descriptor.title,
           url: descriptor.url,
           profileId: record.profileId,
@@ -3055,7 +3092,7 @@ export class BrowserService {
             id: descriptor.id,
             ownerId,
             kind: "page",
-            computerId: record.runnerId,
+            computerId: await this.#selfDeviceId(record.runnerId),
             title: descriptor.title,
             url: descriptor.url,
             profileId: opener.profileId,
@@ -3733,7 +3770,7 @@ export class BrowserService {
                 const write: TabWrite = {
                   id,
                   ownerId: input.ownerId,
-                  computerId: record.runnerId,
+                  computerId: await this.#selfDeviceId(record.runnerId),
                   kind: "page",
                   title: descriptor?.title ?? "New tab",
                   url: descriptor?.url ?? "about:blank",
@@ -4307,6 +4344,7 @@ export class BrowserService {
   close(): Promise<void> {
     if (this.#closePromise) return this.#closePromise;
     this.#closed = true;
+    this.#closing.abort(unavailable("The Host browser service is shutting down."));
     this.#onTabsChanged();
     this.#authorityGeneration++;
     for (const actor of this.#actors.values()) this.#clearActor(actor);
@@ -4420,7 +4458,6 @@ export class BrowserService {
     const boundRunnerId =
       profile?.homeRunnerId ?? (storage?.kind === "local" ? storage.binding.runnerId : undefined);
     const homes = await this.#repository.listEligibleBrowserRunners(input.ownerId);
-    if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
     const placementHolder =
       boundRunnerId || input.placement || !profile
         ? null
@@ -4431,6 +4468,10 @@ export class BrowserService {
       (placementHolder
         ? placementOf(placementHolder)
         : this.#defaultPlacement(input, placements, homes));
+    // Only the computer this open will use is worth waiting for.
+    if (await this.#waitForBrowser(homes, placement.runnerId, input.operationBudget?.signal))
+      return this.#admitStart(input, onInitialPage, personNavigation);
+    if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
     if (origin !== "person") await this.#requireAgentAccess(placement.runnerId);
     if (!placements.some((candidate) => candidate.runnerId === placement.runnerId))
       throw unavailable("The selected browser computer is unavailable for this open.");
@@ -5104,6 +5145,41 @@ export class BrowserService {
     return transitioned.session;
   }
 
+  async #waitForBrowser(
+    homes: Awaited<ReturnType<OpensteerStore["listEligibleBrowserRunners"]>>,
+    runnerId: RunnerId | undefined,
+    operationSignal: AbortSignal | undefined,
+  ): Promise<boolean> {
+    if (this.#closed) throw unavailable("The Host browser service is shutting down.");
+    const resolver = this.#targetResolver;
+    if (!runnerId || !resolver?.waitForTarget || !homes.some((home) => home.id === runnerId))
+      return false;
+    if (
+      resolver
+        .placements()
+        .some((placement) => placement.runnerId === runnerId && placement.available)
+    )
+      return false;
+    if (
+      !homes.some((home) => home.id === runnerId && home.kind === "main") &&
+      !resolver.pendingAdmission?.(runnerId)
+    )
+      return false;
+    // A restore has no open budget of its own, so it waits no longer than an open would.
+    const signal = AbortSignal.any([
+      this.#closing.signal,
+      operationSignal ?? AbortSignal.timeout(browserOpenWorkMs),
+    ]);
+    try {
+      await resolver.waitForTarget(runnerId, signal);
+    } catch (error) {
+      if (this.#closing.signal.aborted || operationSignal?.aborted) throw error;
+      // It never arrived or can't be admitted: the ordinary refusal explains why.
+      return false;
+    }
+    return true;
+  }
+
   #defaultPlacement(
     input: {
       readonly chosenRunnerId?: RunnerId;
@@ -5122,6 +5198,12 @@ export class BrowserService {
     const { chosenRunnerId, environmentId } = input;
     if (chosenRunnerId) {
       const chosen = connected.filter((placement) => placement.runnerId === chosenRunnerId);
+      if (
+        chosen.length === 0 &&
+        (homes.some((home) => home.id === chosenRunnerId && home.kind === "main") ||
+          this.#targetResolver?.pendingAdmission?.(chosenRunnerId))
+      )
+        return { kind: "runner", runnerId: chosenRunnerId };
       if (chosen.length === 1 && chosen[0]) return placementSelector(chosen[0]);
       if (chosen.length > 1) throw runnerPlacementConflict(chosen);
       const incompatible = placements.find(
@@ -5154,6 +5236,9 @@ export class BrowserService {
     if (connected.length > 1) throw runnerPlacementConflict(connected);
     const incompatible = placements.find((placement) => placement.unavailableReason);
     if (incompatible?.unavailableReason) throw unavailable(incompatible.unavailableReason);
+    // Nothing is connected yet: the hosting computer's browser is the one on its way.
+    const main = this.#personal ? homes.find((home) => home.kind === "main") : undefined;
+    if (main && this.#targetResolver?.waitForTarget) return { kind: "runner", runnerId: main.id };
     throw unavailable("No Browser Runtime is connected.");
   }
 

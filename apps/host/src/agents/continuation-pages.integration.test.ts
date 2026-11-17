@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { expect } from "vitest";
 import { ContinuationService } from "./continuation-service.js";
 import { describeStore, pendingEvent } from "@opensteer/database/test-support/store";
@@ -89,6 +90,7 @@ describeStore("Continuation paging", (it) => {
         enqueueThreadInput: (input) => store.enqueueThreadInput(input),
       },
       integrations: {
+        selfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
         listDiscoveryInventory: async () => [],
         listCallableTools: async () => [],
         computerUseMachines: async () => [],

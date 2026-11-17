@@ -1,16 +1,14 @@
-import type {
-  IntegrationConnectionSummary,
-  IntegrationDefinitionSummaryView,
-} from "@opensteer/integration-core";
+import {
+  machineSelfRunnerId,
+  deviceMachine,
+  deviceReasonLabel,
+  hasDeviceProjection,
+} from "../host/device-projection.js";
+import type { IntegrationDefinitionSummaryView } from "@opensteer/integration-core";
 import type { MachineSummary, RunnerDevicePlatform } from "@opensteer/protocol";
 import { formatRelativeTime } from "../host/thread-list-model.js";
 import { computerAppRows } from "../integrations/computer-apps.js";
-import {
-  computerUseView,
-  isAgentPhone,
-  isIphone,
-  phoneUseView,
-} from "../integrations/computer-use.js";
+import { computerUseView, phoneUseView } from "../integrations/computer-use.js";
 
 /**
  * The Computers page, as every client reads it.
@@ -76,7 +74,11 @@ export function computersOverview(input: {
  * `messaging` too, for the conversations its own apps can carry.
  */
 export function isServiceMachine(machine: MachineSummary): boolean {
-  return machine.ownership === "deployment" && !machine.allowedModules.includes("agents");
+  return (
+    !hasDeviceProjection(machine) &&
+    machine.ownership === "deployment" &&
+    !machine.allowedModules.includes("agents")
+  );
 }
 
 /**
@@ -85,7 +87,9 @@ export function isServiceMachine(machine: MachineSummary): boolean {
  * service.
  */
 export function hostsDeployment(machine: MachineSummary): boolean {
-  return machine.ownership === "deployment" && !isServiceMachine(machine);
+  return hasDeviceProjection(machine) || machine.kind !== undefined
+    ? machine.kind === "home"
+    : machine.ownership === "deployment" && !isServiceMachine(machine);
 }
 
 /** The computer you are at, then the ones that are there, away, and expected. */
@@ -158,10 +162,12 @@ export function orderDevices<Device extends { readonly id: string; readonly name
  * only when it next learns it was removed, so that is all it is promised.
  */
 export function deviceRemovalProfiles(
-  machine: Pick<MachineSummary, "id" | "name" | "status">,
+  machine: Pick<MachineSummary, "id" | "name" | "status" | "selfRunnerId" | "capabilities">,
   profiles: readonly { readonly homeRunnerId: string | null; readonly name: string }[],
 ): string | null {
-  const held = profiles.filter(({ homeRunnerId }) => homeRunnerId === machine.id);
+  const runnerId = machineSelfRunnerId(machine);
+  if (!runnerId) return null;
+  const held = profiles.filter(({ homeRunnerId }) => homeRunnerId === runnerId);
   if (held.length === 0) return null;
   const deleted =
     held.length === 1
@@ -174,7 +180,7 @@ export function deviceRemovalProfiles(
 
 /** The question asked before a device is removed, the same for every device. */
 export function deviceRemovalConfirmation(
-  machine: Pick<MachineSummary, "id" | "name" | "status">,
+  machine: Pick<MachineSummary, "id" | "name" | "status" | "selfRunnerId" | "capabilities">,
   profiles: Parameters<typeof deviceRemovalProfiles>[1],
 ): { readonly confirm: string; readonly message: string; readonly title: string } {
   return {
@@ -206,8 +212,12 @@ export function phoneNoun(platform: RunnerDevicePlatform | null): "iPhone" | "ph
 }
 
 /** Whether a device lends its apps, as the Host last heard it advertise them. */
-export function deviceLendsApps(machine: Pick<MachineSummary, "modules">): boolean {
-  return machine.modules.integrations !== undefined;
+export function deviceLendsApps(
+  machine: Pick<MachineSummary, "modules" | "capabilities">,
+): boolean {
+  return machine.capabilities
+    ? machine.capabilities.apps.supported
+    : machine.modules.integrations !== undefined;
 }
 
 /**
@@ -221,10 +231,18 @@ export type DeviceBrowser =
   | { readonly kind: "not-offered" };
 
 export function deviceBrowser(
-  machine: Pick<MachineSummary, "allowedModules" | "id" | "modules" | "status">,
+  machine: Pick<
+    MachineSummary,
+    "allowedModules" | "id" | "modules" | "status" | "capabilities" | "selfRunnerId"
+  >,
   profiles: readonly { readonly homeRunnerId: string | null }[],
 ): DeviceBrowser | null {
-  if (!machine.allowedModules.includes("browser")) return null;
+  if (
+    !(machine.capabilities
+      ? machine.capabilities.browser.supported
+      : machine.allowedModules.includes("browser"))
+  )
+    return null;
   const module = machine.modules.browser;
   if (module === undefined) return { kind: "not-offered" };
   // An away device says nothing fresh about its browser; its profiles still live there.
@@ -232,7 +250,9 @@ export function deviceBrowser(
     return { detail: module.detail, kind: "unavailable" };
   return {
     kind: "lent",
-    profiles: profiles.filter(({ homeRunnerId }) => homeRunnerId === machine.id).length,
+    profiles: profiles.filter(
+      ({ homeRunnerId }) => homeRunnerId !== null && homeRunnerId === machineSelfRunnerId(machine),
+    ).length,
   };
 }
 
@@ -276,7 +296,7 @@ export type ComputerUse =
 
 /** The apps a person connected on a computer, which only its owner is told. */
 export interface ComputerAppsData {
-  readonly connections: readonly IntegrationConnectionSummary[];
+  readonly connections: readonly import("../host/device-projection.js").ClientComputerConnection[];
   readonly definitions: readonly IntegrationDefinitionSummaryView[];
 }
 
@@ -290,7 +310,7 @@ export function computerUses(
   apps: ComputerAppsData | null,
 ): readonly ComputerUse[] {
   const uses: ComputerUse[] = [];
-  if (apps) {
+  if (apps && machine.capabilities?.apps.enabled !== false) {
     for (const row of computerAppRows({ ...apps, machine })) {
       if (row.access === null) continue;
       uses.push({ definitionId: row.definition.id, kind: "app", name: row.definition.name });
@@ -303,7 +323,7 @@ export function computerUses(
     if (phone?.access) uses.push({ kind: "screen" });
   }
   const policy = machine.access?.policy;
-  if (policy && policy.reach !== "nobody") {
+  if (policy && policy.reach !== "nobody" && deviceMachine(machine).capabilities?.files.supported) {
     const folders = policy.shares.filter((share) => share.path.trim() !== "").length;
     if (folders > 0) uses.push({ count: folders, kind: "folders" });
     if (policy.commands) uses.push({ kind: "commands" });
@@ -352,9 +372,10 @@ export function computerRole(
   appsLoaded: boolean,
 ): ComputerRole | null {
   if (machine.status === "pending") return "waiting";
-  if (machine.modules.agents) return "works";
+  if (deviceMachine(machine).selfRunnerId && machine.modules.agents) return "works";
   // A device that lends its browser has shared something even with no app on.
-  if (uses.length > 0 || machine.modules.browser !== undefined) return "uses";
+  if (uses.length > 0 || deviceMachine(machine).capabilities?.browser.enabled === true)
+    return "uses";
   if (!appsLoaded) return null;
   return "idle";
 }
@@ -367,6 +388,24 @@ export interface ComputerStatus {
 }
 
 export function computerStatus(machine: MachineSummary, now = new Date()): ComputerStatus {
+  if (machine.phoneDisplay) {
+    const availability = machine.phoneDisplay.control;
+    return {
+      label:
+        availability.state === "ready"
+          ? "Ready"
+          : availability.reason
+            ? deviceReasonLabel(availability.reason)
+            : "Unavailable",
+      tone:
+        availability.state === "ready"
+          ? "online"
+          : availability.reason?.kind === "not-connected" ||
+              availability.reason?.kind === "driver-offline"
+            ? "offline"
+            : "waiting",
+    };
+  }
   if (
     machine.status === "needs-update" ||
     machine.status === "updating" ||
@@ -375,7 +414,7 @@ export function computerStatus(machine: MachineSummary, now = new Date()): Compu
     return {
       label:
         machine.detail ??
-        `Update ${isAgentPhone(machine) ? "Agent Phone" : "Opensteer"} on ${machine.name}.`,
+        `Update ${deviceMachine(machine).phoneDisplay?.setup.location === "android-usb" ? "Agent Phone" : "Opensteer"} on ${machine.name}.`,
       tone: "waiting",
     };
   if (machine.status === "online") return { label: "Online", tone: "online" };
@@ -389,7 +428,7 @@ export function computerStatus(machine: MachineSummary, now = new Date()): Compu
     };
   }
   // An iPhone is away whenever Opensteer is closed on it, which is not news.
-  if (isIphone(machine)) {
+  if (isDataPhone(machine)) {
     return {
       label: `Offline · Available while Opensteer is open on ${machine.name}`,
       tone: "offline",
@@ -408,7 +447,12 @@ export function computerStatus(machine: MachineSummary, now = new Date()): Compu
  * manage from here: a computer's own Opensteer, or the iPhone itself.
  */
 export function computerUsesChosenElsewhere(machine: MachineSummary): string {
-  return isIphone(machine)
+  return isDataPhone(machine)
     ? `Choose which apps agents can use on ${machine.name} in Opensteer on that iPhone.`
     : `Choose which apps, folders and commands agents can use on ${machine.name} in Opensteer on a computer.`;
+}
+
+function isDataPhone(machine: MachineSummary): boolean {
+  const projected = deviceMachine(machine);
+  return projected.kind === "phone" && !projected.phoneDisplay;
 }

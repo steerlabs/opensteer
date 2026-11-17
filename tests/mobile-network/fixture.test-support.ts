@@ -1,4 +1,4 @@
-import { TabIdSchema } from "../../packages/core/src/index.js";
+import { DeviceIdSchema, TabIdSchema } from "../../packages/core/src/index.js";
 import {
   connectCallerMachine,
   createMachineAccessDatabase,
@@ -123,7 +123,7 @@ export async function startMobileNetworkHost(databaseUrl: string): Promise<Mobil
               .values({
                 id: TabIdSchema.parse(`benchmark-${index}`),
                 ownerId: active.ownerId,
-                computerId: caller.runnerId,
+                computerId: DeviceIdSchema.parse(caller.runnerId),
                 kind: "page",
                 openedBy: jsonValue("person"),
                 pageBinding: jsonValue({

@@ -128,7 +128,7 @@ integration("iMessage channel", () => {
       const desktop = await startFakeDesktop((request) => messages.answer(request));
       closers.unshift(() => desktop.close());
       const dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-imessage-runner-"));
-      const integrations = prepareIntegrationsModule({
+      const integrations = await prepareIntegrationsModule({
         computerUseBridge: { token: desktop.token, url: desktop.url },
         dataDirectory,
         platform: "darwin",
@@ -224,6 +224,16 @@ integration("iMessage channel", () => {
         .select(["credentialId", "runnerId", "sourceConnectionId", "transportKind"])
         .where("id", "=", connectionId)
         .executeTakeFirstOrThrow();
+
+      const sourceTarget = await host.store.database
+        .selectFrom("integrationConnections")
+        .select(["deviceId", "runnerId"])
+        .where("id", "=", source.connection.id)
+        .executeTakeFirstOrThrow();
+      expect(sourceTarget).toEqual({
+        deviceId: await host.store.requireSelfDeviceId(computer.runnerId),
+        runnerId: computer.runnerId,
+      });
       expect(row).toEqual({
         credentialId: null,
         runnerId: computer.runnerId,

@@ -72,6 +72,7 @@ export function hostServerTestDependencies(
       dashboard: inert(),
       mcpOauth: inert(),
       platform: {
+        deviceConnections: async () => [],
         computerAppApprovals: {
           computerUsePolicy: async () => ({ appApproval: "ask", approvalKeyId: null }),
         },

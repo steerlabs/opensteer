@@ -1,9 +1,7 @@
+import type { IntegrationConnectionSummary } from "@opensteer/client/integrations";
 // @vitest-environment happy-dom
 
-import type {
-  IntegrationConnectionSummary,
-  IntegrationDefinitionSummary,
-} from "@opensteer/integration-core";
+import type { IntegrationDefinitionSummary } from "@opensteer/integration-core";
 import type { MachineSummary } from "@opensteer/protocol";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";

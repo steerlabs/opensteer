@@ -1,4 +1,5 @@
 import { removeDevice } from "./device-removal.js";
+import { DeviceDriverService } from "./device-driver-service.js";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { createHash } from "node:crypto";
 import { type AdministrationCommandIdentity, requirePersonalOwner } from "@opensteer/database";
@@ -6,7 +7,8 @@ import { z } from "zod";
 import {
   EnvironmentIdSchema,
   OpensteerError,
-  RunnerIdSchema,
+  DeviceIdSchema,
+  type AuthSessionId,
   type EnvironmentId,
 } from "@opensteer/core";
 import {
@@ -30,6 +32,7 @@ export type AdministrationCaller =
   | AgentCaller
   | ({
       readonly kind: "person";
+      readonly sessionId?: AuthSessionId;
     } & AdministrationActor);
 export type AdministrationDependencies = Pick<
   HostServerDependencies,
@@ -45,6 +48,7 @@ export type AdministrationDependencies = Pick<
   | "channels"
   | "realtime"
   | "ownerProfile"
+  | "deviceDrivers"
 > & {
   readonly reconcileIdleCompaction?: () => Promise<void>;
   readonly publishDeploymentEvent: (event: import("@opensteer/core").AgentEvent) => void;
@@ -65,6 +69,8 @@ const coreTypes = [
   "harness.default.set",
   "machine.revoke",
   "machine.rename",
+  "iphone.screen.attach",
+  "iphone.screen.detach",
   "machine.access.session.stop",
   "browser.profile.rename",
   "browser.profile.delete",
@@ -112,6 +118,11 @@ export class AdministrationService {
   async authorize(caller: AdministrationCaller, command: AdministrationCommand) {
     await requirePersonalOwner(this.dependencies.store.database, caller.userId);
     if (caller.kind === "person") return;
+    if (command.type === "iphone.screen.attach" || command.type === "iphone.screen.detach")
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Screen driver setup requires the owner's signed-in session.",
+      });
     if (command.type === "settings.idleCompaction.set")
       throw new OpensteerError({
         code: "forbidden",
@@ -530,9 +541,10 @@ export class AdministrationService {
         };
       }
       case "machine.revoke": {
+        const deviceId = DeviceIdSchema.parse(command.machineId);
         await removeDevice(
           dependencies,
-          RunnerIdSchema.parse(command.machineId),
+          deviceId,
           userId,
           { administration, allowDeployment: true },
           afterResponse,
@@ -542,20 +554,35 @@ export class AdministrationService {
         };
       }
       case "machine.rename": {
-        const allowDeployment = true;
-        await dependencies.store.renameRunner(
-          RunnerIdSchema.parse(command.machineId),
+        await dependencies.store.renameDevice(
+          DeviceIdSchema.parse(command.machineId),
           userId,
           command.name,
-          {
-            allowDeployment,
-            administration,
-          },
+          administration ? { administration } : {},
         );
         notifyMachinesChanged(dependencies.realtime, "machine.command");
         return {
           type: command.type,
         };
+      }
+      case "iphone.screen.attach":
+      case "iphone.screen.detach": {
+        if (caller.kind !== "person" || !caller.sessionId)
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "Screen driver setup requires the owner's signed-in session.",
+          });
+        if (!dependencies.deviceDrivers)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Device driver management is unavailable.",
+          });
+        const result = await new DeviceDriverService(
+          dependencies.store,
+          dependencies.deviceDrivers,
+        ).execute({ userId, sessionId: caller.sessionId }, command);
+        notifyMachinesChanged(dependencies.realtime, "machine.command");
+        return hostApi["commands.dispatch"].success.parse(result);
       }
       case "machine.access.session.stop": {
         // The full row resolves and authorizes the Stop even for an ended

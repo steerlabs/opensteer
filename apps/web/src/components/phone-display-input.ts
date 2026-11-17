@@ -228,7 +228,7 @@ export class PhoneDisplayInput {
       this.#add(geometry, { kind: "text", insert }, false);
   }
 
-  nav(geometry: number, to: "back" | "home" | "recents"): void {
+  nav(geometry: number, to: Extract<DisplayInputEvent, { kind: "nav" }>["to"]): void {
     if (this.#disposed) return;
     this.#add(geometry, { kind: "nav", to }, true);
   }

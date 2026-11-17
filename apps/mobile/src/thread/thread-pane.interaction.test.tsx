@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 
 import { aiSharingTestPermission } from "../../test-support/ai-sharing.js";
@@ -33,7 +34,6 @@ import {
   BrowserPageContentPartSchema,
   createId,
   RunIdSchema,
-  RunnerIdSchema,
   TabIdSchema,
   PlaceEnteredEventViewSchema,
   ThreadIdSchema,
@@ -2668,7 +2668,7 @@ describe("surfaces belonging to one reply", () => {
           app: "Calendar",
           bundleId: "com.apple.iCal",
           computer: "Mac mini",
-          runnerId: createId("runner"),
+          runnerId: DeviceIdSchema.parse(createId("runner")),
         },
         effect: "write",
         integration: "Computer use",
@@ -2682,7 +2682,7 @@ describe("surfaces belonging to one reply", () => {
       integration: {
         account: "This computer",
         computerApp: null,
-        phone: { computer, runnerId: createId("runner") },
+        phone: { computer, runnerId: DeviceIdSchema.parse(createId("runner")) },
         effect: "write",
         integration: "Computer use",
         operation: { name: "act", title: "Act" },
@@ -5534,7 +5534,7 @@ describe("the Run's page above the conversation", () => {
           tabFixture({
             tabId: nativeTab,
             kind,
-            computer: { computerId: RunnerIdSchema.parse(macMini!.id), name: "Mac mini" },
+            computer: { computerId: DeviceIdSchema.parse(macMini!.id), name: "Mac mini" },
           }),
         ]),
       };

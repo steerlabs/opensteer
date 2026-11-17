@@ -1,7 +1,11 @@
+import { sameDeviceDriver } from "./device-drivers.js";
+import type { DeviceDriverIdentity } from "@opensteer/core";
+import { routeTarget, type ComputerTargetId } from "../computer-apps/computer-app-hub.js";
+import { type DeviceDisplayAuthorization, type DeviceDriverRoute } from "./device-drivers.js";
 import { DisplayLinkRate, macLinkRate } from "./display-link-rate.js";
 import { DisplayViewerBitrate } from "./display-viewer-bitrate.js";
 import { randomUUID } from "node:crypto";
-import { OpensteerError, type RunnerId, type UserId } from "@opensteer/core";
+import { OpensteerError, type RunnerId, DeviceIdSchema, type UserId } from "@opensteer/core";
 import {
   displayFirstFrameTimeoutMs,
   macDisplayMaxWindows,
@@ -164,6 +168,7 @@ interface PendingInput {
   readonly cut: boolean;
 }
 interface Stream {
+  readonly phonePower?: 1;
   readonly displayProfile?: 1;
   maxBitrate: number | null;
   bitrateAt: number;
@@ -187,7 +192,8 @@ interface Stream {
   firstKey: boolean;
   revision: number;
   demandKey: string;
-  readonly runnerId: RunnerId;
+  readonly deviceId: ComputerTargetId;
+  readonly route?: DeviceDriverRoute | undefined;
   readonly streamId: DisplayStreamId;
   readonly fence: RunnerAuxiliaryFrameFence & { readonly module: "integrations" };
   readonly nonce: string;
@@ -218,17 +224,25 @@ export interface DisplayStreamHubOptions {
     "issueDisplayDataTicket" | "verifyDisplayDataTicket"
   >;
   readonly computerApps: Pick<ComputerAppHub, "displayStream" | "sendDisplay" | "resolveDisplay">;
-  readonly computerUse: Pick<
-    ComputerUseService,
-    "authorizeDisplay" | "noteOwnerActivity" | "isDisplaySessionLive"
-  >;
-  readonly computerViews: Pick<
-    ComputerViewService,
-    "authorizeDisplay" | "isDisplayLive" | "endDisplaySource"
-  > &
-    Partial<Pick<ComputerViewService, "authorizeInput">>;
+  readonly computerUse: Pick<ComputerUseService, "noteOwnerActivity" | "isDisplaySessionLive"> & {
+    authorizeDisplay(
+      sessionId: ComputerUseSessionId,
+      actor: UserId,
+      appKey?: string,
+    ): Promise<DeviceDisplayAuthorization | RunnerId>;
+  };
+  readonly computerViews: Pick<ComputerViewService, "isDisplayLive" | "endDisplaySource"> & {
+    authorizeDisplay(
+      source: Extract<DisplaySource, { kind: "owner-view" }>,
+      actor: UserId,
+    ): Promise<DeviceDisplayAuthorization | RunnerId>;
+    authorizeInput?(
+      source: Extract<DisplaySource, { kind: "owner-view" }>,
+      actor: UserId,
+    ): Promise<DeviceDisplayAuthorization | RunnerId>;
+  };
   readonly onState?: (
-    runnerId: RunnerId,
+    runnerId: ComputerTargetId,
     streamId: DisplayStreamId,
     state: DisplayViewerState,
   ) => void;
@@ -252,7 +266,7 @@ export class DisplayStreamHub {
   readonly #now: () => number;
   readonly #timer: NodeJS.Timeout;
   #closed = false;
-  readonly #inputRevisions = new Map<RunnerId, number>();
+  readonly #inputRevisions = new Map<ComputerTargetId, number>();
   constructor(options: DisplayStreamHubOptions) {
     this.#options = options;
     this.#now = options.now ?? Date.now;
@@ -260,7 +274,7 @@ export class DisplayStreamHub {
     this.#timer.unref();
   }
 
-  async authorize(source: DisplaySource, actor: UserId): Promise<RunnerId> {
+  async authorize(source: DisplaySource, actor: UserId): Promise<DeviceDisplayAuthorization> {
     if (this.#closed) throw new OpensteerError({ code: "forbidden", message: "Host stopping" });
     const runnerId =
       source.kind === "task-session"
@@ -268,7 +282,7 @@ export class DisplayStreamHub {
         : await this.#options.computerViews.authorizeDisplay(source, actor);
     // Authorization can outlive shutdown; it must not recreate demand afterward.
     if (this.#closed) throw new OpensteerError({ code: "forbidden", message: "Host stopping" });
-    return runnerId;
+    return typeof runnerId === "string" ? { deviceId: DeviceIdSchema.parse(runnerId) } : runnerId;
   }
 
   async attachViewer(
@@ -287,7 +301,8 @@ export class DisplayStreamHub {
     close: (trigger?: string, code?: number) => void;
   }> {
     const deadline = this.#now() + displayFirstFrameTimeoutMs;
-    const runnerId = await this.authorize(source, actor);
+    const authorization = await this.authorize(source, actor);
+    const runnerId = authorization.deviceId;
     if (socket.readyState !== socket.OPEN)
       return { handle: () => undefined, close: () => undefined };
     const live = this.#options.computerApps.displayStream(runnerId);
@@ -295,7 +310,7 @@ export class DisplayStreamHub {
       socket.close(displayViewerCloseCodes.tryAgain, "Display stream unavailable");
       return { handle: () => undefined, close: () => undefined };
     }
-    if (live === "unsupported") {
+    if (live === "unsupported" || !sameDisplayRoute(live.route, authorization.route)) {
       this.#json(socket, {
         type: "display.state",
         state: "unsupported",
@@ -351,8 +366,11 @@ export class DisplayStreamHub {
       (target?.editingVersion === 1 || live.phoneOwnerControl === 1)
     ) {
       try {
-        authorized =
-          (await this.#options.computerViews.authorizeInput?.(source, actor)) === runnerId;
+        authorized = authorizationMatches(
+          await this.#options.computerViews.authorizeInput?.(source, actor),
+          runnerId,
+          authorization.route,
+        );
       } catch {
         authorized = false;
       }
@@ -363,12 +381,13 @@ export class DisplayStreamHub {
     if (
       !current ||
       current === "unsupported" ||
-      !sameRunnerAuxiliaryFence(current.fence, live.fence)
+      !sameRunnerAuxiliaryFence(current.fence, live.fence) ||
+      !sameDisplayRoute(current.route, live.route)
     ) {
       socket.close(displayViewerCloseCodes.ended, "Window fence ended");
       return { handle: () => undefined, close: () => undefined };
     }
-    const key = `${JSON.stringify(live.fence)}:${target?.bindingId ?? "main"}`;
+    const key = `${runnerId}:${live.route?.generation ?? "self"}:${JSON.stringify(live.fence)}:${target?.bindingId ?? "main"}`;
     let stream = this.#byTarget.get(key);
     if (stream && !this.#current(stream)) {
       this.#endUnavailable(stream, "Display stream ended");
@@ -378,7 +397,7 @@ export class DisplayStreamHub {
       socket.close(displayViewerCloseCodes.ended, "Display authority ended");
       return { handle: () => undefined, close: () => undefined };
     }
-    let machineStreams = [...this.#streams.values()].filter((entry) => entry.runnerId === runnerId);
+    let machineStreams = [...this.#streams.values()].filter((entry) => entry.deviceId === runnerId);
     if (
       !stream &&
       target &&
@@ -439,6 +458,7 @@ export class DisplayStreamHub {
         ...(live.sharedInput === 1 && !target ? { sharedInput: 1 as const } : {}),
         ...(live.editingVersion === 1 ? { editingVersion: 1 as const } : {}),
         ...(live.displayCut === 1 && !target ? { displayCut: 1 as const } : {}),
+        ...(live.phonePower === 1 ? { phonePower: 1 as const } : {}),
         ...(live.phoneOwnerControl === 1 && !target ? { phoneOwnerControl: 1 as const } : {}),
         pendingPower: new Map(),
         authorities: new Map(),
@@ -450,7 +470,8 @@ export class DisplayStreamHub {
         firstKey: false,
         revision: 0,
         demandKey: "",
-        runnerId,
+        deviceId: runnerId,
+        route: live.route,
         streamId,
         fence: live.fence,
         nonce: issued.claims.nonce,
@@ -479,6 +500,7 @@ export class DisplayStreamHub {
       this.#options.onState?.(runnerId, streamId, stream.state);
       start = {
         ...stream.fence,
+        ...routeTarget(stream.route),
         type: "host.integrations.display.start",
         // An unmeasured Mac viewer starts moderate so a cellular link is not flooded first.
         ...(live.displayProfile === 1
@@ -771,9 +793,18 @@ export class DisplayStreamHub {
     socket.once("close", lost);
   }
 
-  handlePhoneEvent(runnerId: RunnerId, event: PhoneEvent): void {
+  handlePhoneEvent(runnerId: ComputerTargetId, event: PhoneEvent): void {
     const stream = this.#streams.get(event.streamId);
-    if (!stream || stream.runnerId !== runnerId) return;
+    if (
+      !stream ||
+      stream.deviceId !== runnerId ||
+      !this.#current(stream) ||
+      (stream.route?.role === "screen" &&
+        (!("deviceId" in event) ||
+          event.deviceId !== stream.route.deviceId ||
+          event.driverGeneration !== stream.route.generation))
+    )
+      return;
     if (!sameRunnerAuxiliaryFence(stream.fence, event) || !this.#current(stream)) {
       this.#endUnavailable(stream, "Display fence ended");
       return;
@@ -951,7 +982,7 @@ export class DisplayStreamHub {
       stream.pending.clear();
     }
     stream.state = next;
-    this.#options.onState?.(stream.runnerId, stream.streamId, next);
+    this.#options.onState?.(stream.deviceId, stream.streamId, next);
     this.#log(
       stream,
       next.state === "live" && !stream.firstKey
@@ -1242,6 +1273,7 @@ export class DisplayStreamHub {
   #powerAvailable(stream: Stream, viewer: Viewer): boolean {
     return (
       stream.phoneOwnerControl === 1 &&
+      (stream.route?.role !== "screen" || stream.phonePower === 1) &&
       viewer.phoneOwnerControl &&
       this.#inputAvailable(stream, viewer) &&
       !["stopped", "failed", "unsupported"].includes(stream.state.state) &&
@@ -1260,10 +1292,10 @@ export class DisplayStreamHub {
   }
 
   /** Called inside the approval mutation's Runner admission turn, before later work can leave. */
-  withdrawOwnerInput(runnerId: RunnerId): void {
+  withdrawOwnerInput(runnerId: ComputerTargetId): void {
     this.#inputRevisions.set(runnerId, (this.#inputRevisions.get(runnerId) ?? 0) + 1);
     for (const stream of this.#streams.values()) {
-      if (stream.runnerId !== runnerId) continue;
+      if (stream.deviceId !== runnerId) continue;
       for (const viewer of stream.viewers)
         if (viewer.source.kind === "owner-view") this.#inputAuthorization(stream, viewer, false);
     }
@@ -1493,18 +1525,19 @@ export class DisplayStreamHub {
     });
   }
   #current(stream: Stream): boolean {
-    const live = this.#options.computerApps.displayStream(stream.runnerId);
+    const live = this.#options.computerApps.displayStream(stream.deviceId);
     return (
       !this.#closed &&
       this.#streams.get(stream.streamId) === stream &&
       live !== null &&
       live !== "unsupported" &&
-      sameRunnerAuxiliaryFence(live.fence, stream.fence)
+      sameRunnerAuxiliaryFence(live.fence, stream.fence) &&
+      sameDisplayRoute(live.route, stream.route)
     );
   }
   #send(stream: Stream, message: HostIntegrationsOperation): void {
     void this.#options.computerApps
-      .sendDisplay(stream.fence, message)
+      .sendDisplay(stream.fence, { ...message, ...routeTarget(stream.route) })
       .then((sent) => {
         if (!sent) {
           if (stream.target) this.#failCapture(stream, "capture-failed");
@@ -1576,12 +1609,16 @@ export class DisplayStreamHub {
         )
           continue;
         viewer.checking = true;
-        const inputRevision = this.#inputRevisions.get(stream.runnerId);
+        const inputRevision = this.#inputRevisions.get(stream.deviceId);
         void this.#options.computerViews
           .authorizeInput?.(viewer.source, viewer.actor)
           .then((runner) => {
-            if (inputRevision === this.#inputRevisions.get(stream.runnerId))
-              this.#inputAuthorization(stream, viewer, runner === stream.runnerId);
+            if (inputRevision === this.#inputRevisions.get(stream.deviceId))
+              this.#inputAuthorization(
+                stream,
+                viewer,
+                authorizationMatches(runner, stream.deviceId, stream.route),
+              );
           })
           .catch(() => this.#inputAuthorization(stream, viewer, false))
           .finally(() => {
@@ -1590,7 +1627,7 @@ export class DisplayStreamHub {
           });
       }
       for (const { source, actor } of stream.authorities.values())
-        if (!this.#sourceLive(source, actor, stream.runnerId))
+        if (!this.#sourceLive(source, actor, stream.deviceId))
           this.#endSource(
             stream,
             source,
@@ -1647,14 +1684,14 @@ export class DisplayStreamHub {
         stream.refreshPendingAt = null;
     }
   }
-  #sourceLive(source: DisplaySource, actor: UserId, runnerId: RunnerId): boolean {
+  #sourceLive(source: DisplaySource, actor: UserId, runnerId: ComputerTargetId): boolean {
     return source.kind === "task-session"
       ? this.#options.computerUse.isDisplaySessionLive(source.sessionId, runnerId, source.appKey)
       : this.#options.computerViews.isDisplayLive(source, actor, runnerId);
   }
   #viewerLive(stream: Stream, viewer: Viewer): boolean {
     if (!stream.viewers.has(viewer)) return false;
-    if (this.#sourceLive(viewer.source, viewer.actor, stream.runnerId)) return true;
+    if (this.#sourceLive(viewer.source, viewer.actor, stream.deviceId)) return true;
     this.#endSource(
       stream,
       viewer.source,
@@ -1705,7 +1742,7 @@ export class DisplayStreamHub {
     const warmSources =
       stream.target && !sources.length
         ? [...stream.authorities.values()]
-            .filter(({ source, actor }) => this.#sourceLive(source, actor, stream.runnerId))
+            .filter(({ source, actor }) => this.#sourceLive(source, actor, stream.deviceId))
             .map(({ source }) => source)
         : [];
     if (sources.length) {
@@ -1737,7 +1774,7 @@ export class DisplayStreamHub {
         this.#publishState(stream, { ...stream.state, state: "warming" });
         const warming = [...this.#streams.values()]
           .filter(
-            (entry) => entry.runnerId === stream.runnerId && entry.target && entry.stopAt !== null,
+            (entry) => entry.deviceId === stream.deviceId && entry.target && entry.stopAt !== null,
           )
           .sort((a, b) => a.stopAt! - b.stopAt!);
         for (const old of warming.slice(0, Math.max(0, warming.length - macDisplayMaxWarmWindows)))
@@ -1764,7 +1801,7 @@ export class DisplayStreamHub {
     const details = {
       transition,
       reason: reason ?? transition,
-      machineId: stream.runnerId,
+      machineId: stream.deviceId,
       streamId: stream.streamId,
       mediaGeneration: stream.generation,
     };
@@ -1845,8 +1882,21 @@ export class DisplayStreamHub {
             : "owner-ended",
       );
   }
+  forgetDriver(binding: DeviceDriverIdentity): void {
+    for (const stream of this.#streams.values())
+      if (sameDeviceDriver(stream.route, binding))
+        this.#end(stream, displayViewerCloseCodes.ended, "Device driver changed", 4003);
+  }
+
+  forgetDevice(deviceId: ComputerTargetId): void {
+    this.withdrawOwnerInput(deviceId);
+    for (const stream of this.#streams.values())
+      if (stream.deviceId === deviceId)
+        this.#end(stream, displayViewerCloseCodes.ended, "Device driver changed", 4003);
+  }
+
   forgetRunner(
-    runnerId: RunnerId,
+    runnerId: ComputerTargetId,
     reason: RunnerStreamLossReason = "transport-disconnected",
   ): void {
     const code =
@@ -1856,12 +1906,13 @@ export class DisplayStreamHub {
           ? displayViewerCloseCodes.hostShutdown
           : displayViewerCloseCodes.ended;
     for (const stream of this.#streams.values())
-      if (stream.runnerId === runnerId) this.#end(stream, code, "Phone disconnected", 4003);
+      if (stream.route?.runnerId === runnerId || (!stream.route && stream.deviceId === runnerId))
+        this.#end(stream, code, "Phone disconnected", 4003);
   }
   #failOwnerSources(stream: Stream, reason: DisplayStreamReason): void {
     for (const viewer of stream.viewers)
       if (viewer.source.kind === "owner-view")
-        this.#options.computerViews.endDisplaySource(viewer.source, stream.runnerId, reason);
+        this.#options.computerViews.endDisplaySource(viewer.source, stream.deviceId, reason);
   }
   #failCapture(stream: Stream, reason: DisplayStreamReason): void {
     if (this.#streams.get(stream.streamId) !== stream) return;
@@ -1881,7 +1932,7 @@ export class DisplayStreamHub {
 
   #endUnavailable(stream: Stream, reason: string): void {
     const code =
-      stream.target || this.#options.computerApps.displayStream(stream.runnerId) === "unsupported"
+      stream.target || this.#options.computerApps.displayStream(stream.deviceId) === "unsupported"
         ? displayViewerCloseCodes.ended
         : displayViewerCloseCodes.tryAgain;
     this.#end(stream, code, reason, 4003);
@@ -1945,4 +1996,21 @@ export class DisplayStreamHub {
     this.#closed = true;
     clearInterval(this.#timer);
   }
+}
+
+function sameDisplayRoute(left?: DeviceDriverRoute, right?: DeviceDriverRoute): boolean {
+  return (
+    left?.deviceId === right?.deviceId &&
+    left?.generation === right?.generation &&
+    left?.runnerId === right?.runnerId
+  );
+}
+function authorizationMatches(
+  authorization: DeviceDisplayAuthorization | RunnerId | undefined,
+  deviceId: ComputerTargetId,
+  route?: DeviceDriverRoute,
+): boolean {
+  return typeof authorization === "string"
+    ? !route && authorization === deviceId
+    : authorization?.deviceId === deviceId && sameDisplayRoute(authorization?.route, route);
 }

@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type { RequestPresentation, RunnerId, UserId, ThreadId } from "@opensteer/core";
+import type { RequestPresentation, DeviceId, UserId, ThreadId } from "@opensteer/core";
 import {
-  ComputerAppSetupRequestSchema,
+  DeviceComputerAppSetupRequestSchema,
   computerAppIdentityKey,
   computerAppIdentitiesEqual,
   type ComputerAppIdentity,
-  type ComputerAppSetupRequest,
+  type DeviceComputerAppSetupRequest,
   type IntegrationAccess,
   type LocalMcpServerSetup,
 } from "@opensteer/integration-core";
@@ -22,7 +22,7 @@ export const computerAppSetupRequestLifetimeMs = 7 * 24 * 60 * 60 * 1_000;
 /**
  * The scope every setup-request write is keyed by.
  *
- * Before computer use it was `(runnerId, definitionId)`, because a computer
+ * Before computer use it was `(deviceId, definitionId)`, because a computer
  * connection was the definition on the Runner and nothing finer. `macos-app`
  * scopes app approvals by bundle id, and policy approvals by kind: consuming
  * Notes must leave Calendar and the automatic policy approval pending.
@@ -31,7 +31,7 @@ export interface ComputerAppScope {
   readonly appKey: string | null;
   readonly kind: "app" | "policy";
   readonly definitionId: string;
-  readonly runnerId: RunnerId;
+  readonly deviceId: DeviceId;
 }
 
 /**
@@ -48,24 +48,25 @@ export function computerAppScopeOf(input: {
   readonly kind?: "app" | "policy";
   readonly app: ComputerAppIdentity | null;
   readonly definitionId: string;
-  readonly runnerId: RunnerId;
+  readonly deviceId: DeviceId;
 }): ComputerAppScope {
   return {
     kind: input.kind ?? "app",
     appKey: computerAppKeyOf(input.app),
     definitionId: input.definitionId,
-    runnerId: input.runnerId,
+    deviceId: input.deviceId,
   };
 }
 
 export function computerAppSetupRequestFromRow(
   row: ComputerAppSetupRequestRow,
-): ComputerAppSetupRequest {
+): DeviceComputerAppSetupRequest {
   // `appKey` is the index's copy of the identity, not part of the approval a
   // desktop signs, so it never reaches the signed transcript.
-  const { appKey: _appKey, ...rest } = row;
-  return ComputerAppSetupRequestSchema.parse({
+  const { appKey: _appKey, runnerId: deviceId, ...rest } = row;
+  return DeviceComputerAppSetupRequestSchema.parse({
     ...rest,
+    deviceId,
     createdAt: row.createdAt.toISOString(),
     expiresAt: row.expiresAt.toISOString(),
   });
@@ -81,7 +82,7 @@ export async function lockComputerAppSetupRequestInTransaction(
       .selectFrom("computerAppSetupRequests")
       .selectAll()
       .where("kind", "=", scope.kind)
-      .where("runnerId", "=", scope.runnerId)
+      .where("runnerId", "=", scope.deviceId)
       .where("definitionId", "=", scope.definitionId)
       .where("appKey", scope.appKey === null ? "is" : "=", scope.appKey)
       // FOR UPDATE: Callers delete or replace this computer app setup request.
@@ -104,12 +105,12 @@ export async function deleteComputerAppSetupRequestsInTransaction(
     readonly kind?: "app" | "policy";
     readonly appKey?: string | null;
     readonly definitionId?: string;
-    readonly runnerId?: RunnerId;
+    readonly deviceId?: DeviceId;
   },
 ): Promise<readonly string[]> {
   let query = transaction.deleteFrom("computerAppSetupRequests");
   if (scope.kind !== undefined) query = query.where("kind", "=", scope.kind);
-  if (scope.runnerId !== undefined) query = query.where("runnerId", "=", scope.runnerId);
+  if (scope.deviceId !== undefined) query = query.where("runnerId", "=", scope.deviceId);
   if (scope.definitionId !== undefined) {
     query = query.where("definitionId", "=", scope.definitionId);
   }
@@ -140,11 +141,11 @@ export async function relinkComputerAppAccessRequestsInTransaction(
   if (waiting.length === 0) return;
   const replacement = await transaction
     .selectFrom("computerAppSetupRequests")
-    .innerJoin("runners", "runners.id", "computerAppSetupRequests.runnerId")
+    .innerJoin("devices", "devices.id", "computerAppSetupRequests.runnerId")
     .select([
       "computerAppSetupRequests.app as app",
       "computerAppSetupRequests.kind as kind",
-      "runners.name as runnerName",
+      "devices.name as runnerName",
     ])
     .where("computerAppSetupRequests.id", "=", input.to)
     .executeTakeFirstOrThrow();
@@ -219,7 +220,7 @@ export async function insertComputerAppSetupRequestInTransaction(
     readonly definitionId: string;
     readonly now: Date;
     readonly ownerUserId: UserId;
-    readonly runnerId: RunnerId;
+    readonly deviceId: DeviceId;
   },
 ): Promise<ComputerAppSetupRequestRow> {
   const deployment = await transaction
@@ -246,7 +247,7 @@ export async function insertComputerAppSetupRequestInTransaction(
       expiresAt: new Date(input.now.getTime() + computerAppSetupRequestLifetimeMs),
       id: randomUUID(),
       ownerUserId: input.ownerUserId,
-      runnerId: input.runnerId,
+      runnerId: input.deviceId,
     })
     .returningAll()
     .executeTakeFirstOrThrow();

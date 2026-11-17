@@ -1,0 +1,234 @@
+[
+  {
+    "kind": "request",
+    "protocolVersion": 1,
+    "id": 10,
+    "timeoutMs": 30000,
+    "method": "phone.observe",
+    "params": {
+      "bindingToken": "fixture-binding",
+      "sessionId": "fixture-session",
+      "nativeEpoch": 2,
+      "includeScreenshot": false
+    }
+  },
+  {
+    "kind": "response",
+    "id": 10,
+    "result": {
+      "observationToken": "fixture-observation",
+      "nativeEpoch": 2,
+      "geometryRevision": 1,
+      "geometry": {
+        "width": 100,
+        "height": 200,
+        "captureWidth": 100,
+        "captureHeight": 200,
+        "displayId": 0,
+        "rotation": 0
+      },
+      "state": {
+        "lock": "unlocked",
+        "display": "on",
+        "rotation": 0,
+        "displayId": 0
+      },
+      "nodes": [
+        {
+          "nodeId": "n1",
+          "parent": null,
+          "depth": 0,
+          "role": "application",
+          "label": "Fixture 한글",
+          "frame": null,
+          "enabled": null,
+          "focused": null,
+          "selected": null,
+          "editable": "unknown",
+          "secure": "unknown"
+        }
+      ],
+      "coverage": {
+        "status": "partial",
+        "reason": "quiet-window",
+        "received": 2,
+        "returned": 1,
+        "missingFrames": 1,
+        "missingChildren": 0,
+        "unreturned": 1,
+        "cycles": 0,
+        "truncated": false,
+        "coordinateSpace": "unqualified"
+      },
+      "foreground": null,
+      "buttons": ["home", "lock", "volumeUp", "volumeDown"],
+      "textReason": "unsupported-text",
+      "clearReason": "unsupported-clear",
+      "screenshot": null
+    }
+  },
+  {
+    "kind": "request",
+    "protocolVersion": 1,
+    "id": 11,
+    "timeoutMs": 30000,
+    "method": "phone.perform",
+    "params": {
+      "bindingToken": "fixture-binding",
+      "sessionId": "fixture-session",
+      "nativeEpoch": 2,
+      "observationToken": "fixture-observation",
+      "geometryRevision": 1,
+      "actions": [
+        {
+          "kind": "tap",
+          "target": {
+            "point": {
+              "x": 25,
+              "y": 30
+            }
+          }
+        },
+        {
+          "kind": "longPress",
+          "target": {
+            "point": {
+              "x": 25,
+              "y": 30
+            }
+          },
+          "durationMs": 500
+        },
+        {
+          "kind": "swipe",
+          "target": {
+            "point": {
+              "x": 25,
+              "y": 30
+            }
+          },
+          "to": {
+            "x": 75,
+            "y": 100
+          },
+          "durationMs": 200
+        },
+        {
+          "kind": "drag",
+          "target": {
+            "point": {
+              "x": 25,
+              "y": 30
+            }
+          },
+          "to": {
+            "x": 75,
+            "y": 100
+          },
+          "durationMs": 200,
+          "holdMs": 400
+        },
+        {
+          "kind": "navigate",
+          "button": "home"
+        },
+        {
+          "kind": "launch",
+          "appId": "fixture.app"
+        },
+        {
+          "kind": "wait",
+          "durationMs": 1
+        },
+        {
+          "kind": "wake"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "response",
+    "id": 11,
+    "result": {
+      "effect": "submitted",
+      "completedSteps": 8,
+      "observationRequired": true
+    }
+  },
+  {
+    "kind": "request",
+    "protocolVersion": 1,
+    "id": 12,
+    "timeoutMs": 30000,
+    "method": "phone.installedApps",
+    "params": {
+      "bindingToken": "fixture-binding",
+      "nativeEpoch": 2,
+      "limit": 100,
+      "offset": 0
+    }
+  },
+  {
+    "kind": "response",
+    "id": 12,
+    "result": {
+      "apps": [
+        {
+          "appId": "fixture.app",
+          "label": "Fixture"
+        }
+      ],
+      "total": 1,
+      "offset": 0
+    }
+  },
+  {
+    "kind": "request",
+    "protocolVersion": 1,
+    "id": 13,
+    "timeoutMs": 30000,
+    "method": "phone.perform",
+    "params": {
+      "bindingToken": "fixture-binding",
+      "sessionId": "fixture-session",
+      "nativeEpoch": 2,
+      "observationToken": "next-fixture-observation",
+      "geometryRevision": 2,
+      "actions": [
+        {
+          "kind": "type",
+          "text": "한글 🔐",
+          "submit": false
+        },
+        {
+          "kind": "clear",
+          "target": {
+            "nodeId": "n2"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "response",
+    "id": 13,
+    "result": {
+      "error": {
+        "code": "unsupported-text",
+        "effect": "not-started",
+        "completedSteps": 0
+      }
+    }
+  },
+  {
+    "kind": "response",
+    "id": 14,
+    "result": {
+      "error": {
+        "code": "outcome-unknown",
+        "effect": "unknown",
+        "completedSteps": 1
+      }
+    }
+  }
+]

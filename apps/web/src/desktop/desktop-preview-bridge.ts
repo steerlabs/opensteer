@@ -831,7 +831,7 @@ export function desktopPreviewBridge(
             enrolled: removed ? false : current.runner.enrolled,
             sessionState: "ready",
           },
-          ...(removed ? { runner: inertRunner("Finish setting up this Mac.") } : {}),
+          ...(removed ? { runner: inertRunner("This Mac isn’t connected yet.") } : {}),
         });
         updateLocalExecution(resumed);
         return resumed;
@@ -900,10 +900,17 @@ export function desktopPreviewBridge(
         });
         emitPersonal();
       });
-      // The same order the supervisor runs them: the owner and browser come
-      // up before the local agents, and Main is created last.
       schedule(3, () => {
         if (generation !== personalGeneration) return;
+        const created = deployment({
+          id: personalDeploymentId,
+          kind: "personal",
+          name,
+          onThisComputer: true,
+          origin: previewPersonalOrigin,
+        });
+        signedInDeployments.add(created.id);
+        upsertAndSelect(created);
         personal = DesktopPersonalDeploymentStatusSchema.parse({
           ...personal,
           components: {
@@ -911,9 +918,12 @@ export function desktopPreviewBridge(
             browser: { state: "starting", version: null },
             host: { state: "ready", version: "preview" },
           },
+          state: "ready",
+          environmentId: previewEnvironmentId,
           step: "connecting-computer",
         });
         emitPersonal();
+        selectHost(created, "signed-in");
       });
       schedule(4, () => {
         if (generation !== personalGeneration) return;
@@ -942,15 +952,6 @@ export function desktopPreviewBridge(
       });
       schedule(6, () => {
         if (generation !== personalGeneration) return;
-        const created = deployment({
-          id: personalDeploymentId,
-          kind: "personal",
-          name,
-          onThisComputer: true,
-          origin: previewPersonalOrigin,
-        });
-        signedInDeployments.add(created.id);
-        upsertAndSelect(created);
         personal = DesktopPersonalDeploymentStatusSchema.parse({
           ...personal,
           components: {
@@ -960,20 +961,19 @@ export function desktopPreviewBridge(
             postgresql: { state: "ready", version: "18" },
             runner: { state: "ready", version: "preview" },
           },
-          deploymentId: created.id,
+          deploymentId: personalDeploymentId,
           environmentId: previewEnvironmentId,
           state: "ready",
           step: "ready",
         });
         personalAccountLink = {
           account: null,
-          deploymentId: created.id,
+          deploymentId: personalDeploymentId,
           displayName: name,
           status: "unlinked",
           unlinkStep: null,
         };
         emitPersonal();
-        selectHost(created, "signed-in");
       });
     },
 

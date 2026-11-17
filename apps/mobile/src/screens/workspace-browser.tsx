@@ -87,6 +87,7 @@ import { CompanionCapsule } from "../browser/pair-chrome.js";
 import { usePlaceStatusRow } from "../browser/place-status.js";
 import type { PageDevice } from "../browser/address-bar.js";
 import { PlaceBarProvider, ToolbarLeave } from "../browser/place-bar.js";
+import { openMobileTab, type OpeningTabRoute } from "../browser/open-tab.js";
 import { tabRoute, type TabRoute } from "../browser/surface-route.js";
 import { newTaskDraftKey } from "../client/thread-drafts.js";
 import { homeDraftId } from "../home/home-draft.js";
@@ -121,6 +122,14 @@ import { Screen } from "../ui/screen.js";
 import { useScreenPresence, type PagePresence } from "../ui/page-presence.js";
 import { NewTaskPane } from "./new-task.js";
 import { ThreadTitlePill } from "./thread-header.js";
+
+export function OpeningTabScreen({ route }: StaticScreenProps<OpeningTabRoute>): ReactNode {
+  return (
+    <Screen>
+      <TabStatus title="Opening…" detail={route.params.address} waiting />
+    </Screen>
+  );
+}
 
 /**
  * Exactly one tab, Mac app, phone or Opensteer App, as the route names it: the
@@ -558,17 +567,19 @@ function Focused(
         ? { kind: "page", profileId: tab.profile.profileId, url }
         : { computerId: tab.computer.computerId, guest: true, kind: "page", url };
       void opening.run(
-        () => hostClient.openTab(target),
+        () =>
+          openMobileTab({
+            navigation,
+            hostClient,
+            deploymentId,
+            target,
+            address: url,
+            ...(route.threadId === undefined ? {} : { threadId: route.threadId }),
+            failed: (error) => {
+              throw error;
+            },
+          }),
         "A new tab could not be opened.",
-        (opened) => {
-          if (navigation.isFocused())
-            navigation.dispatch(
-              StackActions.push(
-                "WorkspaceBrowser",
-                tabRoute(deploymentId, opened.tabId, route.threadId),
-              ),
-            );
-        },
       );
     },
     [deploymentId, hostClient, navigation, opening, route.threadId, tab],

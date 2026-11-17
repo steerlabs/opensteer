@@ -29,7 +29,10 @@ export interface IntegrationRpcOptions {
   readonly dashboard: Pick<IntegrationDashboardService, "providerDashboard">;
   readonly integrations: IntegrationService;
   readonly pluginsChanged?: (viewers: readonly UserId[]) => void;
-  readonly platform: Pick<IntegrationPlatformService, "computerAppApprovals" | "store">;
+  readonly platform: Pick<
+    IntegrationPlatformService,
+    "computerAppApprovals" | "store" | "deviceConnections"
+  >;
 }
 
 export function createIntegrationRpcHandlers(
@@ -47,10 +50,19 @@ export function createIntegrationRpcHandlers(
     },
     "integrations.get": async (_input, context) => {
       const session = await requirePersonalSession(context, options.platform.store.connections);
+      const [dashboard, deviceConnections] = await Promise.all([
+        options.dashboard.providerDashboard(session.user.id, true, requireSurface(context)),
+        options.platform.deviceConnections(session.user.id),
+      ]);
+      const known = new Set(dashboard.connections.map((connection) => connection.id));
       return rpcSuccess(
-        hostApi["integrations.get"].success.parse(
-          await options.dashboard.providerDashboard(session.user.id, true, requireSurface(context)),
-        ),
+        hostApi["integrations.get"].success.parse({
+          ...dashboard,
+          connections: [
+            ...dashboard.connections,
+            ...deviceConnections.filter((connection) => !known.has(connection.id)),
+          ],
+        }),
       );
     },
   };

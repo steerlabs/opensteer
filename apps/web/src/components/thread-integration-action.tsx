@@ -50,12 +50,12 @@ import {
   integrationAuthorizationWaitingDetail,
   repositoryAccountStep,
   resolveIntegrationAccess,
+  setPhoneUseAccess,
   type AccessPlan,
   type ConnectCard,
   type LoadedAccessRequest,
 } from "@opensteer/client/integrations";
-import { RunnerIdSchema } from "@opensteer/core";
-import { androidPhoneDefinitionId } from "@opensteer/protocol";
+import { isPhoneDisplayDefinitionId, RunnerIdSchema } from "@opensteer/core";
 import { ComputerAppPicker } from "./computer-apps/computer-app-picker.js";
 import { createConnectOperations } from "./integrations/connect-operations.js";
 
@@ -768,8 +768,17 @@ export function ThreadIntegrationAction({
   }) =>
     void run(async () => {
       if (!plan.definition) throw new Error("Computer app definition is unavailable.");
-      const computerName =
-        snapshot.machines.find((machine) => machine.id === input.runnerId)?.name ?? "that computer";
+      const computer = snapshot.machines.find((machine) => machine.id === input.runnerId);
+      const computerName = computer?.name ?? "that computer";
+      // The owner sets a phone's access here; a Mac app is approved on that Mac.
+      if (isPhoneDisplayDefinitionId(plan.definition.id)) {
+        if (!computer) throw new Error("That phone isn’t one of your devices any more.");
+        await setPhoneUseAccess(hostClient, computer, input.access);
+        setComputerSetupNotice(`Agents can now use ${computerName} at the access you chose.`);
+        setReload((value) => value + 1);
+        setConnectOpen(false);
+        return;
+      }
       const command = {
         idempotencyKey: mutationIdempotencyKey(`integration-computer:${plan.definition.id}`),
         input: {
@@ -780,29 +789,16 @@ export function ThreadIntegrationAction({
           runnerId: RunnerIdSchema.parse(input.runnerId),
         },
       };
-      // The owner sets a phone's access here; a Mac app is approved on that Mac.
-      if (plan.definition.id === androidPhoneDefinitionId) {
-        const result = await hostClient.dispatch({
-          ...command,
-          type: "integration.computer.setup.set",
-        });
-        if (result.type !== "integration.computer.setup.set") {
-          throw new Error("Phone access did not change.");
-        }
-        setComputerSetupNotice(`Agents can now use ${computerName} at the access you chose.`);
-        setReload((value) => value + 1);
-      } else {
-        const result = await hostClient.dispatch({
-          ...command,
-          type: "integration.computer.setup.request",
-        });
-        if (result.type !== "integration.computer.setup.request") {
-          throw new Error("Integration computer command mismatch.");
-        }
-        setComputerSetupNotice(
-          `Setup requested. On ${computerName}, open Opensteer → Settings → Computers to approve ${plan.definition.name}.`,
-        );
+      const result = await hostClient.dispatch({
+        ...command,
+        type: "integration.computer.setup.request",
+      });
+      if (result.type !== "integration.computer.setup.request") {
+        throw new Error("Integration computer command mismatch.");
       }
+      setComputerSetupNotice(
+        `Setup requested. On ${computerName}, open Opensteer → Settings → Computers to approve ${plan.definition.name}.`,
+      );
       setConnectOpen(false);
     });
 

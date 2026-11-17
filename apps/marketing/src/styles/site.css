@@ -1090,11 +1090,17 @@
   padding: 0 22px;
   font-size: 15px;
 }
+.closing__links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px 24px;
+  margin-top: 18px;
+}
 .closing__link {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  margin-top: 18px;
   color: var(--text-soft);
   font-size: 14px;
   text-decoration: none;

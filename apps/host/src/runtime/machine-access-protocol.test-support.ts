@@ -1505,13 +1505,14 @@ export async function waitForValue<Value>(
 export async function openRealtime(
   host: MachineAccessHost,
   headers: Record<string, string>,
+  apiVersion = hostApiVersion,
 ): Promise<{
   readonly messages: Record<string, unknown>[];
   readonly socket: WebSocket;
   close(): Promise<void>;
 }> {
   const socket = new WebSocket(
-    `ws://127.0.0.1:${host.hostPort}/v1/realtime?${apiVersionQueryParameter}=${hostApiVersion}`,
+    `ws://127.0.0.1:${host.hostPort}/v1/realtime?${apiVersionQueryParameter}=${apiVersion}`,
     { headers },
   );
   await new Promise<void>((resolve, reject) => {

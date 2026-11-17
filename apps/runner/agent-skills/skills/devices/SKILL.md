@@ -19,7 +19,7 @@ building another.
    rather than guessing.
 2. **Choose the simplest route that works:** the device's local protocol, the maker's documented API,
    or a maintained community library. A device only its maker's app can control is used through that
-   app on an Agent Phone (opensteer:computer-use). Never reverse engineer an app or extract keys from
+   app on a phone screen (opensteer:computer-use). Never reverse engineer an app or extract keys from
    one unless the person asks for it and accepts that the maker may block their account.
 3. **Prove it from the shell:** a harmless read, then one reversible action the person would notice.
    Tell the person before installing tools on their computer, such as Python.

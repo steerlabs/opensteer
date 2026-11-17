@@ -1,3 +1,11 @@
+import { mockIphoneScreenDevice } from "../mock/mock-screen-devices.js";
+import { mockIphoneScreenDefinition } from "../mock/mock-integration-fixtures.js";
+import {
+  phoneUseView,
+  phoneUseCardTitle,
+  phoneUseSetupLocation,
+  phoneUseStatusLine,
+} from "./computer-use.js";
 import { hostApi } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
 import {
@@ -63,6 +71,7 @@ const responses = {
         device: { form: "phone", platform: "ios" },
         id: "rnr_22222222-2222-4222-8222-222222222222",
         name: iphoneName,
+        kind: "phone",
       }),
     ],
   }).machines,
@@ -249,12 +258,14 @@ describe("an app whose platforms this client does not know", () => {
 });
 
 function machine(input: {
+  readonly kind?: "personal" | "phone";
   readonly apps?: readonly object[];
   readonly device: object;
   readonly id: string;
   readonly name: string;
 }) {
   return {
+    kind: input.kind ?? "personal",
     access: null,
     allowedModules: ["integrations"],
     apps: input.apps ?? null,
@@ -307,3 +318,21 @@ function definition(
 function catalogEntry(summary: ReturnType<typeof definition>) {
   return { definition: summary, digest: "a".repeat(43), installationId: null };
 }
+
+it("uses the Host's iPhone screen setup location without an Android remedy", () => {
+  const phone = mockIphoneScreenDevice("setup-needed");
+  const view = phoneUseView({
+    machine: phone,
+    definitions: [mockIphoneScreenDefinition],
+    connections: [],
+    hostConnected: true,
+  })!;
+  expect(view.reason).toEqual({ kind: "setup-required" });
+  expect(phoneUseCardTitle(view)).toBe(
+    `Screen control through ${phone.phoneDisplay!.driver!.runnerName}`,
+  );
+  expect(phoneUseSetupLocation(view.setup)).toMatchObject({
+    driverRunnerId: phone.phoneDisplay!.driver!.runnerId,
+  });
+  expect(phoneUseStatusLine(view, phone.name)).not.toMatch(/Android|Accessibility|Agent Phone/);
+});

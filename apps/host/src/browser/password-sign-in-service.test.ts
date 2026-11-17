@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { gate } from "@opensteer/shared/test-support/observation";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createBrowserSessionId } from "@opensteer/protocol/browser";
@@ -539,6 +540,7 @@ describe("human Passwords settlement", () => {
           typeof ContinuationService
         >[0]["commands"],
         integrations: {
+          selfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
           listDiscoveryInventory: async () => [],
           listCallableTools: async () => [],
           computerUseMachines: async () => [],
@@ -616,6 +618,7 @@ describe("human Passwords settlement", () => {
       const continuations = new ContinuationService({
         commands: { enqueueThreadInput: vi.fn() },
         integrations: {
+          selfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
           listDiscoveryInventory: async () => [],
           listCallableTools: async () => [],
           computerUseMachines: async () => [],

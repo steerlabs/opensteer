@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 
 import { act, StrictMode, useEffect, type ReactNode } from "react";
@@ -16,7 +17,6 @@ import * as Clipboard from "expo-clipboard";
 import { fitOffer, pictureBox, pinched, slideFor } from "../browser/browser-page.js";
 import {
   BrowserPageContentPartSchema,
-  RunnerIdSchema,
   TabIdSchema,
   type App,
   type Tab,
@@ -72,7 +72,7 @@ const state = vi.hoisted(() => ({
   safeArea: { bottom: 0, left: 0, right: 0, top: 0 },
   setOptions: vi.fn(),
   setParams: vi.fn(),
-  routes: [] as { name: string; params?: object }[],
+  routes: [] as { key?: string; name: string; params?: object }[],
   /** The pair's own measured surface, as its reserved-regions provider reports it. */
   pair: { height: 760, width: 390 },
   /** What every laid-out view measures, once a test lays the screen out. */
@@ -141,7 +141,7 @@ vi.mock("@react-navigation/native", async () => {
     useNavigation: () => ({
       canGoBack: () => true,
       dispatch: state.dispatch,
-      getState: () => ({ index: state.routes.length - 1, routes: state.routes }),
+      getState: () => ({ key: "stack", index: state.routes.length - 1, routes: state.routes }),
       goBack: state.goBack,
       isFocused: () => state.navigationFocused,
       setOptions: state.setOptions,
@@ -692,7 +692,7 @@ afterEach(() => {
 const agentHome = { computerId: "rnr_00000000-0000-4000-8000-000000000001", path: "/Users/alex" };
 /** The computer every fixture tab is on. */
 const studio = {
-  computerId: RunnerIdSchema.parse("rnr_00000000-0000-4000-8000-00000000000a"),
+  computerId: DeviceIdSchema.parse("rnr_00000000-0000-4000-8000-00000000000a"),
   name: "Studio Mac",
 };
 const agentAt = "2026-10-13T00:00:00.000Z";
@@ -1394,6 +1394,10 @@ describe("mobile pages", () => {
     const openTab = vi.fn(async () => ({ tabId: "new-page" }));
     state.hostClient = { openTab };
     await setup({ sessionId: "chosen" }, { snapshot: twoPages() });
+    state.dispatch.mockImplementation((action: { type: string; name: string; params: object }) => {
+      if (action.type === "PUSH")
+        state.routes.push({ key: "opening", name: action.name, params: action.params });
+    });
     await pressAsync(menu(), "New tab");
     expect(openTab).toHaveBeenCalledExactlyOnceWith({
       computerId: "rnr_00000000-0000-4000-8000-00000000000a",
@@ -1402,7 +1406,9 @@ describe("mobile pages", () => {
       url: "about:blank",
     });
     expect(state.dispatch).toHaveBeenLastCalledWith({
-      type: "PUSH",
+      type: "REPLACE",
+      source: "opening",
+      target: "stack",
       name: "WorkspaceBrowser",
       params: { deploymentId: "deployment-a", tabId: "new-page", threadId: "thread-parent" },
     });
@@ -2298,7 +2304,9 @@ describe("a page beside its agent's thread", () => {
       // The agent moves on; the page keeps up in place.
       state.snapshot = agentOn("page-2");
       await render();
-      act(() => vi.advanceTimersByTime(1000));
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
       expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
         editAddress: false,
         popup: false,
@@ -2311,7 +2319,9 @@ describe("a page beside its agent's thread", () => {
       state.setParams.mockClear();
       await showTab("page-1");
       expect(element(container, "Address, example.com")).not.toBeNull();
-      act(() => vi.advanceTimersByTime(5000));
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
       expect(state.setParams).not.toHaveBeenCalled();
 
       // The conversation's live card shows the agent's tab in place, and following picks up there.
@@ -2331,7 +2341,9 @@ describe("a page beside its agent's thread", () => {
       state.focused = false;
       state.snapshot = agentOn("page-1");
       await render();
-      act(() => vi.advanceTimersByTime(5000));
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
       expect(state.setParams).not.toHaveBeenCalled();
       state.focused = true;
       await render();

@@ -1,3 +1,4 @@
+import { deviceDriverKey } from "../host/device-projection.js";
 import { computerAppIdentityKey } from "@opensteer/integration-core";
 import type { NativeViewerSource } from "../host/surfaces.js";
 import {
@@ -222,6 +223,10 @@ export class DisplayStreams {
   readonly #retryDelay: (attempt: number) => number;
   readonly #entries = new Map<string, Entry>();
   readonly #autoWake = new Set<string>();
+  #hostSnapshot: HostSnapshot | null = null;
+  readonly #driverScopes = new Map<string, string>();
+  readonly #targetDevices = new Map<string, string>();
+  readonly #wakeDevices = new Map<string, string>();
   readonly #terminal = new Map<string, DisplaySnapshot>();
   #connections = 0;
   #suspended = false;
@@ -238,6 +243,72 @@ export class DisplayStreams {
     this.#connect = options.connect;
     this.#diagnostic = options.diagnostic;
     this.#retryDelay = options.retryDelay ?? defaultRetryDelay;
+  }
+
+  syncDevices(snapshot: HostSnapshot): void {
+    const previous = this.#hostSnapshot;
+    this.#hostSnapshot = snapshot;
+    if (
+      previous &&
+      (snapshot.session !== "authenticated" ||
+        snapshot.user?.id !== previous.user?.id ||
+        snapshot.deploymentId !== previous.deploymentId)
+    ) {
+      this.invalidate(() => false);
+      this.#autoWake.clear();
+      this.#wakeDevices.clear();
+    }
+    if (previous?.machines === snapshot.machines) return;
+    const next = new Map<string, string>();
+    const changed = new Set<string>();
+    for (const machine of snapshot.machines) {
+      const key = deviceDriverKey(machine);
+      if (!key || !machine.capabilities) continue;
+      next.set(machine.id, key);
+      if (captureRefused(machine)) changed.add(machine.id);
+      if (this.#driverScopes.has(machine.id) && this.#driverScopes.get(machine.id) !== key)
+        changed.add(machine.id);
+    }
+    for (const id of this.#driverScopes.keys()) if (!next.has(id)) changed.add(id);
+    if (changed.size) {
+      for (const [source, id] of this.#wakeDevices)
+        if (changed.has(id)) {
+          this.#autoWake.delete(source);
+          this.#wakeDevices.delete(source);
+        }
+      for (const entry of this.#entries.values()) {
+        const machine = this.#targetMachine(entry.target);
+        if (machine && changed.has(machine.id)) this.cancelAutoWake(entry.target.source);
+      }
+      this.invalidate((target) => {
+        const machine = this.#targetMachine(target);
+        return !changed.has(
+          this.#targetDevices.get(computerDisplayTargetKey(target)) ?? machine?.id ?? "",
+        );
+      });
+    }
+    for (const entry of this.#entries.values()) {
+      const machine = this.#targetMachine(entry.target);
+      if (
+        machine &&
+        machine.phoneDisplay !==
+          previous?.machines.find(({ id }) => id === machine.id)?.phoneDisplay
+      )
+        this.#set(entry, {});
+    }
+    this.#driverScopes.clear();
+    for (const [id, key] of next) this.#driverScopes.set(id, key);
+  }
+
+  #targetMachine(target: ComputerDisplayTarget): MachineSummary | undefined {
+    return this.#hostSnapshot?.machines.find((machine) => {
+      const source = target.source;
+      return source.kind === "task-session"
+        ? machine.computerUse?.sessions.some((session) => session.sessionId === source.sessionId)
+        : machine.computerUse?.ownerViews?.some(
+            (view) => view.viewId === source.viewId && view.generation === source.generation,
+          );
+    });
   }
 
   setDiagnostic(diagnostic: (record: DisplayClientDiagnostic) => void): void {
@@ -264,6 +335,11 @@ export class DisplayStreams {
   armAutoWake(source: NativeViewerSource): void {
     if (source.kind !== "owner-view") return;
     const key = displaySourceKey(source);
+    const machine = this.#targetMachine({ scope: "", source });
+    if (machine?.phoneDisplay) {
+      if (!machine.phoneDisplay.wake || machine.phoneDisplay.view.state !== "ready") return;
+      this.#wakeDevices.set(key, machine.id);
+    }
     this.#autoWake.add(key);
     if (this.#autoWake.size > 256) this.#autoWake.delete(this.#autoWake.values().next().value!);
     for (const entry of this.#entries.values()) {
@@ -290,6 +366,7 @@ export class DisplayStreams {
   cancelAutoWake(source: NativeViewerSource): void {
     if (source.kind !== "owner-view") return;
     this.#autoWake.delete(displaySourceKey(source));
+    this.#wakeDevices.delete(displaySourceKey(source));
     for (const entry of this.#entries.values())
       if (
         (entry.target.source.kind === "owner-view" ? displaySourceKey(entry.target.source) : "") ===
@@ -329,6 +406,8 @@ export class DisplayStreams {
       };
       this.#entries.set(key, entry);
     }
+    const machine = this.#targetMachine(target);
+    if (machine) this.#targetDevices.set(key, machine.id);
     const current = entry;
     const lease: LeaseState = {
       editingMessages: new Set(),
@@ -396,7 +475,10 @@ export class DisplayStreams {
         }
         if (current.leases.size > 0 || current.disposed) return;
         this.#close(current);
-        if (this.#entries.get(key) === current) this.#entries.delete(key);
+        if (this.#entries.get(key) === current) {
+          this.#entries.delete(key);
+          this.#targetDevices.delete(key);
+        }
       },
     };
   }
@@ -432,9 +514,10 @@ export class DisplayStreams {
    * Its views read it as access ended, so their pictures leave the screen.
    */
   invalidate(allowed: (target: ComputerDisplayTarget) => boolean): void {
-    this.#autoWake.clear();
     for (const [key, entry] of this.#entries) {
       if (allowed(entry.target)) continue;
+      this.cancelAutoWake(entry.target.source);
+      this.#targetDevices.delete(key);
       this.#entries.delete(key);
       entry.disposed = true;
       this.#close(entry, "source-invalidated");
@@ -454,7 +537,10 @@ export class DisplayStreams {
   suspend(suspended: boolean): void {
     if (this.#suspended === suspended) return;
     this.#suspended = suspended;
-    if (suspended) this.#autoWake.clear();
+    if (suspended) {
+      this.#autoWake.clear();
+      this.#wakeDevices.clear();
+    }
     for (const entry of this.#live()) {
       if (suspended) this.#pause(entry, "page-hidden");
       else {
@@ -492,6 +578,11 @@ export class DisplayStreams {
 
   dispose(): void {
     this.invalidate(() => false);
+    this.#autoWake.clear();
+    this.#wakeDevices.clear();
+    this.#targetDevices.clear();
+    this.#driverScopes.clear();
+    this.#hostSnapshot = null;
   }
 
   #open(entry: Entry): void {
@@ -723,6 +814,8 @@ export class DisplayStreams {
 
   #power(entry: Entry, action: "wake" | "lock"): boolean {
     entry.autoWake = false;
+    const display = this.#targetMachine(entry.target)?.phoneDisplay;
+    if (display && !(action === "wake" ? display.wake : display.lock === true)) return false;
     const connection = entry.connection;
     if (entry.snapshot.power !== "available" || connection?.socket.readyState !== 1) return false;
     if (action === "lock") this.#forgetHeld(entry);
@@ -744,6 +837,24 @@ export class DisplayStreams {
     )
       return false;
     const parsed = events.map((event) => DisplayInputEventSchema.parse(event));
+    const display = this.#targetMachine(entry.target)?.phoneDisplay;
+    if (
+      display &&
+      (display.input.state !== "ready" ||
+        parsed.some((event) =>
+          event.kind === "nav"
+            ? !display.actions.includes("navigate") ||
+              !display.navigationButtons.some(({ id }) => id === event.to)
+            : event.kind === "text"
+              ? !display.actions.includes("type")
+              : event.kind === "scroll"
+                ? !display.actions.includes("scroll")
+                : event.kind === "pointer"
+                  ? !display.actions.includes("tap")
+                  : true,
+        ))
+    )
+      return false;
     if (
       parsed.some((event) => !["text", "pointer", "scroll", "nav"].includes(event.kind)) &&
       (entry.target.editing !== 1 || entry.snapshot.display?.editingVersion !== 1)
@@ -785,12 +896,14 @@ export class DisplayStreams {
 
   #set(entry: Entry, patch: Partial<DisplaySnapshot>): void {
     const next = { ...entry.snapshot, ...patch };
+    const phone = this.#targetMachine(entry.target)?.phoneDisplay;
     entry.snapshot = {
       ...next,
       power:
         next.connection === "open" &&
         entry.connection?.confirmed === true &&
         next.display?.phoneOwnerControl === 1 &&
+        (!phone || (phone.input.state === "ready" && (phone.wake || phone.lock === true))) &&
         next.display.reason !== "paused" &&
         !["stopped", "failed", "unsupported"].includes(next.display.state)
           ? "available"
@@ -799,6 +912,7 @@ export class DisplayStreams {
         next.connection === "open" &&
         entry.connection?.confirmed === true &&
         next.display?.sharedInput === 1 &&
+        (!phone || phone.input.state === "ready") &&
         next.display.state === "live"
           ? "available"
           : "unavailable",
@@ -875,7 +989,8 @@ function defaultRetryDelay(attempt: number): number {
 
 const pools = new WeakMap<object, DisplayStreams>();
 export function sharedDisplayStreams(
-  hostClient: Pick<HostClient, "connectComputerDisplay" | "subscribeLifecycle">,
+  hostClient: Pick<HostClient, "connectComputerDisplay" | "subscribeLifecycle"> &
+    Partial<Pick<HostClient, "getSnapshot" | "subscribe">>,
   diagnostic?: (record: DisplayClientDiagnostic) => void,
 ): DisplayStreams {
   let pool = pools.get(hostClient);
@@ -888,6 +1003,10 @@ export function sharedDisplayStreams(
       if (event === "network") created.reconnect();
       else created.suspend(event === "background");
     });
+    if (hostClient.getSnapshot) {
+      created.syncDevices(hostClient.getSnapshot());
+      hostClient.subscribe?.(() => created.syncDevices(hostClient.getSnapshot!()));
+    }
     pools.set(hostClient, created);
     pool = created;
   }
@@ -935,11 +1054,13 @@ export function computerDisplayScope(
         source.kind,
         source.kind === "task-session" ? source.sessionId : source.viewId,
         source.kind === "owner-view" ? source.generation : null,
+        ...(machine.capabilities ? [deviceDriverKey(machine)] : []),
       ])
     : null;
 }
 
 function captureRefused(machine: MachineSummary): boolean {
+  if (machine.phoneDisplay) return machine.phoneDisplay.view.state !== "ready";
   return (
     machine.computerUse?.permissions?.screenRecording === "denied" ||
     machine.computerUse?.state === "permission-required"
@@ -959,6 +1080,15 @@ export function computerDisplayAuthorityKey(
       ? machine.id === machineId
       : machine.computerUse?.sessions.some((session) => session.sessionId === source.sessionId),
   );
+  if (machine?.capabilities) {
+    if (captureRefused(machine)) return null;
+    return JSON.stringify([
+      snapshot.deploymentId,
+      snapshot.user.id,
+      machine.id,
+      deviceDriverKey(machine),
+    ]);
+  }
   if (
     machine &&
     (captureRefused(machine) ||
