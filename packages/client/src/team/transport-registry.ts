@@ -215,12 +215,7 @@ export class TeamTransportRegistry {
     if (pending) return pending;
     const client = this.#clients.get(key);
     this.#clients.delete(key);
-    const operation =
-      client && client.getSnapshot().ended !== "sign-in"
-        ? client.remove()
-        : Promise.resolve(client?.remove("sign-in")).then(() =>
-            this.#create(scope).persistence.remove(scope),
-          );
+    const operation = client ? client.remove() : this.#create(scope).persistence.remove(scope);
     client?.dispose();
     this.#removing.set(key, operation);
     try {

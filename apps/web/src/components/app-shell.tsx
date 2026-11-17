@@ -134,9 +134,7 @@ export interface ShellContext {
   actionError: string | null;
   clearActionError: () => void;
   /**
-   * Starts a task and keeps its first message, words and files,
-   * for that task's composer to send when it opens. A refusal throws the
-   * Host's reason, for the composer that asked to show.
+   * Starts a task and entrusts its first message to the outbox.
    */
   createThreadAndSend: (
     message: PendingSubmission,
@@ -679,26 +677,20 @@ export function AppShell({
       const { deploymentId, user } = hostClient.getSnapshot();
       if (!deploymentId || !user) throw new Error(pendingScopeUnavailable);
       if (!pendingStorageAvailable()) throw new Error(pendingStorageUnavailable);
-      try {
-        const thread = await hostClient.createThread({
-          accessMode,
-          environmentId: selection.environmentId,
-          harnessInstanceId: selection.harnessInstanceId,
-          modelSelection: selection.modelSelection,
-          generateTitle: true,
-          title: provisionalThreadTitle(message.body || message.attachments[0]?.name || ""),
-        });
-        // The new Thread's own composer sends it, exactly as kept, when it
-        // opens: one path for the first try, a lost answer and a refusal.
-        await claimFirstMessage(
-          hostClient,
-          { deploymentId, threadId: thread.id, userId: user.id },
-          message,
-        );
-        return thread;
-      } catch (error) {
-        throw new Error(actionErrorMessage(error));
-      }
+      const thread = await hostClient.createThread({
+        accessMode,
+        environmentId: selection.environmentId,
+        harnessInstanceId: selection.harnessInstanceId,
+        modelSelection: selection.modelSelection,
+        generateTitle: true,
+        title: provisionalThreadTitle(message.body || message.attachments[0]?.name || ""),
+      });
+      await claimFirstMessage(
+        hostClient,
+        { deploymentId, threadId: thread.id, userId: user.id },
+        message,
+      );
+      return thread;
     },
     [hostClient],
   );

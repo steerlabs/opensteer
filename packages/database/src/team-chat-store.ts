@@ -15,6 +15,7 @@ import {
 import { createHash } from "node:crypto";
 import {
   createId,
+  OpensteerError,
   SequenceSchema,
   type DeploymentId,
   type Sequence,
@@ -1821,7 +1822,8 @@ export class TeamChatStore {
         .selectAll()
         .where("channelId", "=", channelId)
         .where("id", "=", messageId)
-        .executeTakeFirstOrThrow();
+        .executeTakeFirst();
+      if (!row) throw new OpensteerError({ code: "not_found", message: "Unknown message." });
       const message = (await teamMessageViews(t, [row]))[0]!;
       const people = await teamContentPeople(t, [message]);
       return { ...message, ...(Object.keys(people).length ? { people } : {}) };

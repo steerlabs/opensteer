@@ -34,6 +34,7 @@ import {
 import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { actionErrorMessage } from "../../ui-utils.js";
+import { presentReadFailure } from "@opensteer/client/feedback";
 
 import { type ComputerUseLocalActions } from "./computer-use-section.js";
 
@@ -75,7 +76,7 @@ export function useComputerAppData(hostClient: HostClient, revision: number) {
         setResult((previous) => ({
           client: hostClient,
           data: previous?.client === hostClient ? previous.data : null,
-          error: actionErrorMessage(reason),
+          error: presentReadFailure(reason, "computer apps"),
         }));
       }
       throw reason;

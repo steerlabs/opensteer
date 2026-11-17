@@ -190,6 +190,7 @@ function NewTaskComposer({
         inputRef={inputRef}
         key={suggestion?.key ?? 0}
         onSend={startThread}
+        sendAction={{ label: "start this task", done: "started" }}
         placeContext={placeContext}
         placeholder={placeholderFor(selection !== null, blockedPlacement, canCreate)}
         references={(query) => personalReferenceCandidates(hostClient, query)}

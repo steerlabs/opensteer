@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { expect, it } from "vitest";
 import { KnowledgeNoteIdSchema, KnowledgeTopicIdSchema, UserIdSchema } from "@opensteer/core";
 import { useKnowledgeNote, useKnowledgeNotes } from "@opensteer/client/react";
+import { controlledClientSession } from "@opensteer/client/test-support";
 import type { TeamSessionClient } from "@opensteer/client/team";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -30,6 +31,7 @@ const note = (text: string) => ({
 /** A team session whose knowledge reads answer with one note titled by `title()`. */
 function account(title: () => Promise<string>): TeamSessionClient {
   return {
+    connection: controlledClientSession().connection,
     rpc: {
       "team.knowledge.notes.page": () =>
         title().then((text) => ok({ notes: [{ ...note(text), preview: text }], nextCursor: null })),

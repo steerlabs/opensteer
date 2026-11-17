@@ -86,7 +86,7 @@ describe("setting up this Mac", () => {
       setUpThisDevice(value, { name: "MBP", access, devicesAvailable: true, homeName: "Mac mini" }),
     ).resolves.toEqual({
       ok: false,
-      cause: { kind: "bind", detail: "Session is already bound to another device" },
+      cause: { kind: "bind", detail: "Couldn't confirm this change." },
       runnerId: "rnr_1",
     });
   });

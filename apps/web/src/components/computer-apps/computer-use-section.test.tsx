@@ -97,7 +97,7 @@ describe("ComputerUseBlock", () => {
     });
     await click(button(container, "Set up on this Mac"));
     expect(container.querySelector("[role=alert]")?.textContent).toBe(
-      "The Computer use permissions panel could not load the bundled application.",
+      "Couldn't confirm this change.",
     );
   });
 
@@ -364,7 +364,7 @@ describe("ComputerUseBlock", () => {
     await click(button(candidate, "Can see"));
     expect(candidate.getAttribute("aria-busy")).toBe("true");
     await act(async () => review.reject(new Error("Can't verify this app right now.")));
-    expect(candidate.textContent).toContain("Can't verify this app right now.");
+    expect(candidate.textContent).toContain("Couldn't confirm this change.");
     expect(button(candidate, "Can see")?.disabled).toBe(false);
   });
 
@@ -437,7 +437,9 @@ describe("ComputerUseBlock", () => {
     );
     expect(button(container, "Decline Preview")?.textContent).toBe("Declining…");
     await act(async () => answer.reject(new Error("Studio did not answer.")));
-    expect(pendingRow?.querySelector('[role="alert"]')?.textContent).toBe("Studio did not answer.");
+    expect(pendingRow?.querySelector('[role="alert"]')?.textContent).toBe(
+      "Couldn't confirm this change.",
+    );
     expect(container.querySelector(".notice--error")).toBeNull();
   });
 
@@ -479,7 +481,9 @@ describe("ComputerUseBlock", () => {
     expect(stop).toHaveBeenCalledTimes(1);
 
     await act(async () => answer.reject(new Error("Studio is offline.")));
-    expect(sessionRow?.querySelector('[role="alert"]')?.textContent).toBe("Studio is offline.");
+    expect(sessionRow?.querySelector('[role="alert"]')?.textContent).toBe(
+      "Couldn't confirm this change.",
+    );
     expect(sessionRow?.querySelector("button")?.textContent).toBe("Stop");
     expect(container.querySelector(".notice--error")).toBeNull();
   });

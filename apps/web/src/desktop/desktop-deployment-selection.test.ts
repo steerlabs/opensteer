@@ -96,7 +96,7 @@ describe("Desktop deployment snapshot presentation", () => {
 
     await expect(chooseDeployment({ select }, createId("deployment"))).resolves.toEqual({
       ok: false,
-      reason: "Deployment access intent is not valid now: select-deployment",
+      reason: "Couldn't confirm this change.",
     });
   });
 });

@@ -210,7 +210,7 @@ it("says why an open failed and leaves the running card usable", async () => {
   const running = container.querySelector("iframe");
   const button = container.querySelector<HTMLButtonElement>(".app-card__header button")!;
   await act(async () => button.click());
-  expect(document.querySelector(".toast")?.textContent).toContain("does not know app tabs");
+  expect(document.querySelector(".toast")?.textContent).toContain("Couldn't confirm this change.");
   expect(container.querySelector("iframe")).toBe(running);
   expect(button.disabled).toBe(false);
   await act(async () => button.click());

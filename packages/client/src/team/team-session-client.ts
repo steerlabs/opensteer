@@ -1,5 +1,9 @@
 import { observeRpcAuthentication } from "../host/host-api-client.js";
-import { presentActionFailure } from "../feedback/client-issue.js";
+import {
+  presentActionFailure,
+  presentMessageRejection,
+  presentReadFailure,
+} from "../feedback/client-issue.js";
 import {
   createConnectionController,
   type ConnectionAttempt,
@@ -660,10 +664,11 @@ export class TeamSessionClient {
           if (
             lifetime === this.#lifetime &&
             this.#snapshot.thread?.generation === thread.generation
-          )
+          ) {
             this.#update({
-              error: presentActionFailure(error),
+              error: presentReadFailure(error, "this thread") || null,
             });
+          }
         });
     } else
       this.#send({
@@ -1219,11 +1224,16 @@ export class TeamSessionClient {
   }
   async #fail(sends: readonly PendingTeamSend[], error: OpensteerError): Promise<void> {
     const ids = new Set(sends.map((row) => row.command.clientMessageId));
+    const { name, target } = this.connection.getSnapshot();
+    const failure = presentMessageRejection({
+      code: "rejected",
+      reason: error.reason ?? error.code,
+      ...(name ? { name } : {}),
+      target,
+    });
     this.#update({
       pending: this.#snapshot.pending.map((row) =>
-        ids.has(row.command.clientMessageId)
-          ? { ...row, failure: presentActionFailure(error) }
-          : row,
+        ids.has(row.command.clientMessageId) ? { ...row, failure } : row,
       ),
     });
     await this.#save();
@@ -1475,6 +1485,7 @@ export class TeamSessionClient {
     this.#update({ connection: "offline", typing: {}, presence: {} });
   }
   remove(ended: TeamSessionSnapshot["ended"] = "removed"): Promise<void> {
+    if (this.#disposed) return this.#removal ?? Promise.resolve();
     if (this.#removal) {
       if (ended !== "sign-in" && this.#snapshot.ended === "sign-in") {
         this.#update({ ended });

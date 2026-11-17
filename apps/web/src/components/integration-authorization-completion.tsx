@@ -5,7 +5,7 @@ import {
   integrationAuthorizationError,
   waitForIntegrationAuthorization,
 } from "@opensteer/client/integrations";
-import { actionErrorMessage } from "../ui-utils.js";
+import { presentReadFailure } from "@opensteer/client/feedback";
 import { ErrorNotice, OnboardingCard } from "./onboarding-card.js";
 
 type CompletionState =
@@ -62,7 +62,10 @@ export function IntegrationAuthorizationCompletion({
       })
       .catch((reason: unknown) => {
         if (!controller.signal.aborted) {
-          setState({ kind: "read-error", message: actionErrorMessage(reason) });
+          setState({
+            kind: "read-error",
+            message: presentReadFailure(reason, "authorization status"),
+          });
         }
       });
     return () => controller.abort();

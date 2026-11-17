@@ -6,6 +6,7 @@ import type {
 import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { actionErrorMessage } from "../../ui-utils.js";
+import { presentReadFailure } from "@opensteer/client/feedback";
 import { Icon } from "../icon.js";
 
 type AgentAccessLevel = "off" | IntegrationAccess;
@@ -79,7 +80,7 @@ export function ComputerAppAgentAccess({
         if (generation === loadGeneration.current) {
           setView((previous) => ({
             ...scope,
-            error: options.retainedError ?? actionErrorMessage(reason),
+            error: options.retainedError ?? presentReadFailure(reason, "app access"),
             grants: !options.clearOnFailure && sameScope(previous, scope) ? previous.grants : null,
             loading: false,
           }));

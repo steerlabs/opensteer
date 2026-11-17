@@ -553,7 +553,8 @@ export class MockTeamHost {
     if (name === "team.message.get") {
       const { channelId, messageId } = hostApi[name].payload.parse(input),
         message = this.messages.get(messageId);
-      if (message?.channelId !== channelId) throw new Error("Unknown message.");
+      if (message?.channelId !== channelId)
+        throw new OpensteerError({ code: "not_found", message: "Unknown message." });
       return { ...message, people: this.#contentPeople([message]) };
     }
     if (name === "team.members.list") return { members: this.members, hasMore: false };

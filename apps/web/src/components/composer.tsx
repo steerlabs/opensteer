@@ -155,6 +155,7 @@ interface ComposerProps {
   /** Invoked when the reader presses Escape in the textarea (e.g. to return focus to docked action options). */
   onEscape?: (() => void) | undefined;
   onSend: (body: string, submission: ComposerSubmission) => Promise<void>;
+  sendAction?: { readonly label: string; readonly done: string } | undefined;
   onStop?: (() => Promise<void>) | undefined;
   placeholder: string;
   /**
@@ -213,6 +214,7 @@ export function Composer({
   onHoldingChange,
   onEscape,
   onSend,
+  sendAction,
   compactionOffer,
   onStop,
   placeholder,
@@ -494,8 +496,24 @@ export function Composer({
           composerDrafts.update(draftKey, { text: "", places: [], quote: null });
         if (choice === "keepFullHistory") compactionOffer?.dismiss();
       } catch (error) {
-        const issue = clientIssue(error, { operation: "action", label: "save this message" });
-        setError(issue ? presentClientIssue(issue).title : null);
+        const issue = clientIssue(error, {
+          operation: "action",
+          label: sendAction?.label ?? "save this message",
+        });
+        const reason = issue
+          ? presentClientIssue({ ...issue, ...(sendAction && { done: sendAction.done }) }).title
+          : null;
+        if (mounted.current) setError(reason);
+        else if (draftKey)
+          composerDrafts.handBack(draftKey, {
+            edit: (current) => {
+              if (!body || current.trim() === body) return current;
+              return current.trim() ? `${body}\n${current}` : body;
+            },
+            places,
+            quote: carriedQuote,
+            ...(reason ? { reason } : {}),
+          });
       } finally {
         submittingRef.current = false;
         setSubmitting(false);
