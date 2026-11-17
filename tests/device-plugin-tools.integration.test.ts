@@ -119,26 +119,28 @@ integration("device data apps as plugin tools", () => {
     return { host, helper, computer, gateway, calendar, reminders, run };
   }
 
-  it("refuses device plugin access revoked while waiting for Runner admission", async () => {
+  it("refuses device plugin access revoked while waiting for Device admission", async () => {
     const { host, helper, gateway, calendar } = await start();
     const path = await pluginPath(gateway, "list_events", "list_events");
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
-    const original = ComputerAppHub.prototype.withRunnerAdmission;
+    const original = ComputerAppHub.prototype.withDeviceAdmission;
     const admission = vi
-      .spyOn(ComputerAppHub.prototype, "withRunnerAdmission")
-      .mockImplementationOnce(async function (this: ComputerAppHub, runner, work) {
+      .spyOn(ComputerAppHub.prototype, "withDeviceAdmission")
+      .mockImplementationOnce(async function (this: ComputerAppHub, device, work) {
         entered.resolve();
         await withTimeout(release.promise, 10000, {
           timeoutError: () => new Error("Device admission was not released"),
         });
-        return original.call(this, runner, work);
+        return original.call(this, device, work);
       });
     const before = helper.invocations.length;
+    let pending: ReturnType<typeof gateway.call> | undefined;
     try {
-      const pending = gateway.call("plugin_call", {
+      pending = gateway.call("plugin_call", {
         calls: { path, input: { start: "2026-10-01", end: "2026-10-02" } },
       });
+      void pending.catch(() => undefined);
       await withTimeout(entered.promise, 10000, {
         timeoutError: () => new Error("Device call did not enter admission"),
       });
@@ -165,6 +167,14 @@ integration("device data apps as plugin tools", () => {
     } finally {
       release.resolve();
       admission.mockRestore();
+      if (pending)
+        await withTimeout(
+          pending.catch(() => undefined),
+          10_000,
+          {
+            timeoutError: () => new Error("Device call did not drain after admission was released"),
+          },
+        );
     }
   });
 
