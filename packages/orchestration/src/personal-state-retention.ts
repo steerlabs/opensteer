@@ -40,7 +40,8 @@ export class PersonalRetentionDeadline {
       this.#timer = undefined;
       void this.#prune().catch((error: unknown) => {
         if (this.#closed) return;
-        if (this.#cut === cut && !this.#timer) this.#schedule(cut, failedPruneDelayMs);
+        if (this.#cut && this.#cut.nextExpiryAt === cut.nextExpiryAt && !this.#timer)
+          this.#schedule(this.#cut, failedPruneDelayMs);
         this.#onFailure(error);
       });
     }, delayMs);

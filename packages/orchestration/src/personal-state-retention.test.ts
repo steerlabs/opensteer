@@ -11,7 +11,9 @@ test("rearms due pruning after a failed deadline and stops on an empty tail", as
     deadline.update({ head: "2", floor: "2", nextExpiryAt: null });
   }, onFailure);
   try {
-    deadline.update({ head: "2", floor: "1", nextExpiryAt: Date.now() });
+    const due = Date.now();
+    deadline.update({ head: "1", floor: "0", nextExpiryAt: due });
+    deadline.update({ head: "2", floor: "1", nextExpiryAt: due });
     await vi.advanceTimersToNextTimerAsync();
     expect(onFailure).toHaveBeenCalledWith(failure);
     await vi.advanceTimersToNextTimerAsync();
