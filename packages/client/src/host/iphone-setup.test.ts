@@ -9,6 +9,7 @@ import { createIphoneSetupPort } from "./iphone-setup.js";
 function fixture() {
   const status: DesktopIphoneSetupStatus = {
     setupId: crypto.randomUUID(),
+    revision: 1,
     deploymentId: createId("deployment"),
     stage: "add",
     state: "working",

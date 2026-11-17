@@ -76,7 +76,11 @@ it("drives every stage, publishes progress, and completes on assignment without 
   const initial = await f.setup.begin(ownerA);
   expect(initial).toMatchObject({ stage: "mac", state: "working" });
   const stages: string[] = [];
-  f.setup.subscribe(initial.setupId, (s) => stages.push(s.stage));
+  const revisions: number[] = [];
+  f.setup.subscribe(initial.setupId, (s) => {
+    stages.push(s.stage);
+    revisions.push(s.revision);
+  });
   const wifi = await stage(f, initial.setupId, "wifi");
   expect(wifi).toMatchObject({
     state: "decide",
@@ -103,6 +107,11 @@ it("drives every stage, publishes progress, and completes on assignment without 
   const done = stage(f, initial.setupId, "done");
   await assign(f);
   expect(await done).toMatchObject({ state: "done", action: "none", reason: null });
+  expect(initial.revision).toBeGreaterThan(0);
+  expect(
+    revisions.every((revision, index) => index === 0 || revision > revisions[index - 1]!),
+  ).toBe(true);
+  expect((await f.setup.status(initial.setupId)).revision).toBe(revisions.at(-1));
   expect([...new Set(stages)]).toEqual([
     "mac",
     "connect",
@@ -130,8 +139,18 @@ it("detects missing Xcode before any phone, opens the offered helper, and resume
     candidates: [],
   });
   expect(f.native.calls.some((c) => c.method === "phone.identity")).toBe(false);
-  await f.setup.help(initial.setupId, "get-xcode");
-  await stage(f, initial.setupId, "mac");
+  expect(await f.setup.help(initial.setupId, "get-xcode")).toMatchObject({
+    reason: "xcode-installing",
+    action: "none",
+  });
+  expect(await stage(f, initial.setupId, "mac")).toMatchObject({
+    reason: "xcode-installing",
+    action: "none",
+  });
+  expect(await f.setup.retry(initial.setupId)).toMatchObject({
+    reason: "xcode-installing",
+    action: "none",
+  });
   f.mac.xcodeApps = ["/Applications/Xcode-Beta.app"];
   const required = until(f.setup, initial.setupId, (s) => s.reason === "xcode-setup-required");
   f.mac.changed();
@@ -172,12 +191,14 @@ it("offers several usable phones, preserves candidate IDs, and reserves only the
     ...f.native.roster.candidates[0]!,
     localPhoneId: "other",
     name: "Other phone",
+    trusted: false,
   });
   f.native.roster.revision++;
   f.native.publish();
   const initial = await f.setup.begin(ownerA);
   const choice = await stage(f, initial.setupId, "connect");
   expect(choice).toMatchObject({ state: "decide", action: "choose-phone", reason: null });
+  expect(choice.candidates.map((c) => c.trusted)).toEqual([true, false]);
   const next = until(
     f.setup,
     initial.setupId,
@@ -499,4 +520,36 @@ it("does not persist Wi-Fi enabled before both native enablement and pairing fin
     paired.resolve();
   }
   expect(await enabling).toMatchObject({ stage: "add", wifiEnabled: true });
+});
+
+it("waits on Local Network permission, opens its settings, and resumes after access", async () => {
+  const f = await harness();
+  const ready = await wifiReady(f);
+  f.native.failures.set(
+    "setup.pairWifi",
+    new IphoneServiceError("local-network-permission-required"),
+  );
+  expect(await f.setup.wifi(ready.setupId, "wifi")).toMatchObject({
+    state: "waiting",
+    reason: "local-network-permission-required",
+    action: "open-local-network",
+  });
+  await expect(f.setup.help(ready.setupId, "get-xcode")).rejects.toMatchObject({
+    code: "no-session",
+  });
+  await f.setup.help(ready.setupId, "open-local-network");
+  expect(f.mac.helps).toEqual(["open-local-network"]);
+  f.native.failures.delete("setup.pairWifi");
+  expect(await f.setup.retry(ready.setupId)).toMatchObject({ stage: "add", reason: null });
+});
+
+it("recognizes an incomplete Xcode installation before Get Xcode is pressed", async () => {
+  const f = await harness();
+  f.mac.xcodeApps = [];
+  f.mac.xcodeInstalling = true;
+  const initial = await f.setup.begin(ownerA);
+  expect(await stage(f, initial.setupId, "mac")).toMatchObject({
+    reason: "xcode-installing",
+    action: "none",
+  });
 });

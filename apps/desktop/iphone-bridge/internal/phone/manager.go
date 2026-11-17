@@ -526,7 +526,7 @@ func (m *Manager) roster() wire.Roster {
 		} else if p.readinessReason != "" {
 			caps = unavailableCapabilities(p.readinessReason)
 		}
-		r.Candidates = append(r.Candidates, wire.Candidate{LocalPhoneID: p.id, NativeEpoch: p.epoch, Name: name, Model: p.inspection.Model, OSVersion: p.inspection.OSVersion, Build: p.inspection.Build, Transport: transport, Reason: candidateReason(p, reason), Capabilities: &caps})
+		r.Candidates = append(r.Candidates, wire.Candidate{Trusted: p.inspection.Pairing == "paired", LocalPhoneID: p.id, NativeEpoch: p.epoch, Name: name, Model: p.inspection.Model, OSVersion: p.inspection.OSVersion, Build: p.inspection.Build, Transport: transport, Reason: candidateReason(p, reason), Capabilities: &caps})
 	}
 	sort.Slice(r.Candidates, func(i, j int) bool { return r.Candidates[i].LocalPhoneID < r.Candidates[j].LocalPhoneID })
 	return r

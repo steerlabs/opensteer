@@ -31,11 +31,8 @@ it("finds selected, indexed and Applications Xcodes and only existing bundled im
       throw new Error("missing");
   });
   expect(await iphoneMacSupport.inspect()).toEqual({
-    xcodeApps: [
-      "/Volumes/Tools/Xcode.app",
-      "/Applications/Xcode-Beta.app",
-      "/Applications/Xcode.app",
-    ],
+    xcodeApps: ["/Volumes/Tools/Xcode.app", "/Applications/Xcode.app"],
+    xcodeInstalling: true,
     imageRoots: [
       "/Library/Developer/DeveloperDiskImages/iOS_DDI/Restore",
       "/Volumes/Tools/Xcode.app/Contents/Resources/CoreDeviceDDIs/iOS_DDI/Restore",
@@ -72,9 +69,16 @@ it("watches developer image installation, falls back when directories are absent
   expect(vi.getTimerCount()).toBe(0);
 });
 it("opens the App Store or the discovered Xcode only for a help action", async () => {
+  await iphoneMacSupport.help("open-local-network");
   await iphoneMacSupport.help("get-xcode");
   await iphoneMacSupport.help("open-xcode", "/Applications/Xcode-Beta.app");
   expect(f.execute.mock.calls).toEqual([
+    [
+      "/usr/bin/open",
+      [
+        "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?privacy-localnetwork",
+      ],
+    ],
     ["/usr/bin/open", ["macappstore://apps.apple.com/app/id497799835"]],
     ["/usr/bin/open", ["-a", "/Applications/Xcode-Beta.app"]],
   ]);

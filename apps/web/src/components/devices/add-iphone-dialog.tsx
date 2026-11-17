@@ -99,7 +99,7 @@ export function AddIphoneDialog({
   }, [decisionKey]);
 
   const busy = sending !== null;
-  const help = (action: "get-xcode" | "open-xcode") => {
+  const help = (action: "get-xcode" | "open-xcode" | "open-local-network") => {
     if (status) setup.send("help", () => port.help({ setupId: status.setupId, action }));
   };
   const words = (reason: DesktopIphoneSetupReason) =>
@@ -381,23 +381,25 @@ function useIphoneSetup(
   // Bumped on close, so a reply that lands afterwards changes nothing.
   const epoch = useRef(0);
   const closed = useRef(false);
-  // A pushed status is at least as new as a reply to a call made before it.
-  const pushes = useRef(0);
+  function accept(next: Status) {
+    setStatus((current) =>
+      current?.setupId === next.setupId && current.revision >= next.revision ? current : next,
+    );
+  }
 
   function follow(next: Status) {
     if (live.current?.setupId === next.setupId) return;
     live.current?.stop();
+    live.current = { setupId: next.setupId, stop: () => {} };
     const stop = port.subscribe({ setupId: next.setupId }, (pushed) => {
       if (live.current?.setupId !== pushed.setupId) return;
-      pushes.current += 1;
-      setStatus(pushed);
+      accept(pushed);
     });
     live.current = { setupId: next.setupId, stop };
   }
 
   function send(what: Sending, call: () => Promise<Status>) {
     const mine = epoch.current;
-    const seen = pushes.current;
     setSending(what);
     setFailure(null);
     void call()
@@ -408,7 +410,7 @@ function useIphoneSetup(
           return;
         }
         follow(next);
-        if (pushes.current === seen) setStatus(next);
+        accept(next);
       })
       .catch((error: unknown) => {
         if (epoch.current === mine) setFailure(thrownReason(error));
@@ -454,6 +456,7 @@ function needMarks(status: Status): NeedMarks {
   const onMac = status.stage === "mac";
   const xcodeWaits =
     status.reason === "xcode-missing" ||
+    status.reason === "xcode-installing" ||
     status.reason === "xcode-setup-required" ||
     status.reason?.startsWith("developer-image-") === true;
   const phones = status.phone ? [status.phone] : status.candidates;
@@ -546,11 +549,12 @@ function problem(
 
 function helpButton(
   status: Status,
-  onHelp: (action: "get-xcode" | "open-xcode") => void,
+  onHelp: (action: "get-xcode" | "open-xcode" | "open-local-network") => void,
   busy: boolean,
 ): ReactNode {
   const action = status.action;
-  if (action !== "get-xcode" && action !== "open-xcode") return null;
+  if (action !== "get-xcode" && action !== "open-xcode" && action !== "open-local-network")
+    return null;
   return (
     <button
       className="btn btn--primary"
@@ -558,7 +562,11 @@ function helpButton(
       onClick={() => onHelp(action)}
       type="button"
     >
-      {action === "get-xcode" ? "Get Xcode" : "Open Xcode"}
+      {action === "get-xcode"
+        ? "Get Xcode"
+        : action === "open-xcode"
+          ? "Open Xcode"
+          : "Open Local Network settings"}
     </button>
   );
 }
@@ -610,8 +618,7 @@ function CandidateList({
   return (
     <div className="iphone-setup__choices">
       {candidates.map((candidate) => {
-        // An iPhone that hasn't trusted this Mac yet tells it nothing but that it's an iPhone.
-        const unknown = !candidate.model && !candidate.osVersion;
+        const unknown = !candidate.trusted;
         const title = unknown
           ? "An iPhone that hasn’t trusted this Mac yet"
           : candidate.name || "iPhone";

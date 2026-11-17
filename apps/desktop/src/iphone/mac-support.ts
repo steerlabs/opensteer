@@ -7,9 +7,9 @@ import { promisify } from "node:util";
 const execute = promisify(execFile);
 const developerImages = "/Library/Developer/DeveloperDiskImages";
 export interface IphoneMacSupport {
-  inspect(): Promise<{ xcodeApps: string[]; imageRoots: string[] }>;
+  inspect(): Promise<{ xcodeApps: string[]; imageRoots: string[]; xcodeInstalling: boolean }>;
   watch(changed: () => void): () => void;
-  help(action: "get-xcode" | "open-xcode", xcodeApp?: string): Promise<void>;
+  help(action: "get-xcode" | "open-xcode" | "open-local-network", xcodeApp?: string): Promise<void>;
 }
 async function exists(file: string): Promise<boolean> {
   return access(file).then(
@@ -42,9 +42,13 @@ export const iphoneMacSupport: IphoneMacSupport = {
           .map((name) => path.join("/Applications", name)),
       ]),
     ];
-    const xcodeApps = (
+    const present = (
       await Promise.all(possible.map(async (app) => ((await exists(app)) ? app : null)))
     ).filter((app): app is string => app !== null);
+    const complete = await Promise.all(
+      present.map((app) => exists(path.join(app, "Contents/Developer"))),
+    );
+    const xcodeApps = present.filter((_, index) => complete[index]);
     const bundled = await Promise.all(
       xcodeApps.map(async (app) => {
         const root = path.join(app, "Contents/Resources/CoreDeviceDDIs/iOS_DDI/Restore");
@@ -53,6 +57,7 @@ export const iphoneMacSupport: IphoneMacSupport = {
     );
     return {
       xcodeApps,
+      xcodeInstalling: present.length > xcodeApps.length,
       imageRoots: [
         path.join(developerImages, "iOS_DDI/Restore"),
         ...bundled.filter((root): root is string => root !== null),
@@ -79,6 +84,11 @@ export const iphoneMacSupport: IphoneMacSupport = {
   async help(action, xcodeApp) {
     if (action === "get-xcode")
       await execute("/usr/bin/open", ["macappstore://apps.apple.com/app/id497799835"]);
+    // Apple’s Settings extension names this anchor differently from its Privacy_* anchors.
+    else if (action === "open-local-network")
+      await execute("/usr/bin/open", [
+        "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?privacy-localnetwork",
+      ]);
     else if (xcodeApp) await execute("/usr/bin/open", ["-a", xcodeApp]);
   },
 };

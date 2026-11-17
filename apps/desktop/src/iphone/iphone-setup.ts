@@ -26,6 +26,7 @@ type Transaction = {
   cleanups: (() => void)[];
   macWatch?: () => void;
   xcodeApp?: string;
+  xcodeRequested?: boolean;
   revealed?: string;
   wifiChoice?: "wifi" | "usb-only";
   result?: IphoneScreenAttachResult;
@@ -50,6 +51,7 @@ const phoneWaits = new Set<DesktopIphoneSetupReason>([
 export class IphoneSetup {
   readonly #service: IphoneService;
   readonly #mac: IphoneMacSupport;
+  #revision = 0;
   readonly #transactions = new Map<string, Transaction>();
   readonly #cancellations = new Map<string, { deploymentId: string; work: Promise<void> }>();
   constructor(service: IphoneService, mac: IphoneMacSupport = iphoneMacSupport) {
@@ -69,6 +71,7 @@ export class IphoneSetup {
     const t: Transaction = {
       owner,
       state: {
+        revision: ++this.#revision,
         setupId: pending?.setupId ?? randomUUID(),
         deploymentId: owner.deploymentId as DesktopIphoneSetupStatus["deploymentId"],
         stage: "mac",
@@ -176,13 +179,20 @@ export class IphoneSetup {
   }
   async help(
     setupId: string,
-    action: "get-xcode" | "open-xcode",
+    action: "get-xcode" | "open-xcode" | "open-local-network",
   ): Promise<DesktopIphoneSetupStatus> {
     const t = this.#get(setupId);
-    if (t.state.stage !== "mac" || t.state.action !== action)
+    if (
+      t.state.action !== action &&
+      !(action === "get-xcode" && t.state.reason === "xcode-installing")
+    )
       throw new IphoneServiceError("no-session");
     await this.#mac.help(action, t.xcodeApp);
     this.#active(t);
+    if (action === "get-xcode") {
+      t.xcodeRequested = true;
+      this.#set(t, { state: "waiting", reason: "xcode-installing", action: "none" });
+    }
     this.#wake(t);
     return this.#snapshot(t);
   }
@@ -340,8 +350,16 @@ export class IphoneSetup {
         if (!support.xcodeApps.length || !images) {
           this.#set(t, {
             state: "waiting",
-            reason: support.xcodeApps.length ? "xcode-setup-required" : "xcode-missing",
-            action: support.xcodeApps.length ? "open-xcode" : "get-xcode",
+            reason: support.xcodeApps.length
+              ? "xcode-setup-required"
+              : support.xcodeInstalling || t.xcodeRequested
+                ? "xcode-installing"
+                : "xcode-missing",
+            action: support.xcodeApps.length
+              ? "open-xcode"
+              : support.xcodeInstalling || t.xcodeRequested
+                ? "none"
+                : "get-xcode",
           });
           return;
         }
@@ -545,6 +563,7 @@ export class IphoneSetup {
           t.candidates.set(candidateId, c.localPhoneId);
           return {
             candidateId,
+            trusted: c.trusted,
             name: clean(c.name),
             model: clean(c.model),
             osVersion: clean(c.osVersion),
@@ -571,9 +590,17 @@ export class IphoneSetup {
     );
     const reason = parsed.success ? parsed.data : "native-service-failed";
     this.#set(t, {
-      state: phoneWaits.has(reason) ? "waiting" : "blocked",
+      state:
+        phoneWaits.has(reason) || reason === "local-network-permission-required"
+          ? "waiting"
+          : "blocked",
       reason,
-      action: phoneWaits.has(reason) ? "none" : "retry",
+      action:
+        reason === "local-network-permission-required"
+          ? "open-local-network"
+          : phoneWaits.has(reason)
+            ? "none"
+            : "retry",
     });
   }
   #snapshot(t: Transaction): DesktopIphoneSetupStatus {
@@ -582,7 +609,11 @@ export class IphoneSetup {
   }
   #set(t: Transaction, update: Partial<DesktopIphoneSetupStatus>): DesktopIphoneSetupStatus {
     this.#active(t);
-    t.state = DesktopIphoneSetupStatusSchema.parse({ ...t.state, ...update });
+    t.state = DesktopIphoneSetupStatusSchema.parse({
+      ...t.state,
+      ...update,
+      revision: ++this.#revision,
+    });
     const result = this.#snapshot(t);
     for (const listener of t.listeners) listener(result);
     return result;
