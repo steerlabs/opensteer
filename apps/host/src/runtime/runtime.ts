@@ -659,7 +659,8 @@ export async function createHostRuntime(
       void bumpResources(...kinds).catch(reportMutationFailure);
     await recoverAssignmentResultWaits(database);
     const harnessCatalogs = {
-      recordHarnessCatalogs: store.recordHarnessCatalogs.bind(store),
+      recordHarnessCatalogs: (...args: Parameters<typeof store.recordHarnessCatalogs>) =>
+        store.recordHarnessCatalogs(...args),
       listHarnessInstances: store.listHarnessInstances.bind(store),
       listHarnessCatalogs: store.listHarnessCatalogs.bind(store),
     };

@@ -288,16 +288,17 @@ integration("Runs that outlive their connection", () => {
     if (!viewer) {
       viewer = engineInspectionViewer(active);
       liveViewers.set(threadId, viewer);
-      viewer.activateThread(threadId);
       await viewer.load();
+      viewer.activateThread(threadId);
     }
-    return viewer
+    const item = viewer
       .getThreadTranscript(threadId)
       ?.getSnapshot()
       .entries.find(
         (entry): entry is MessageEntry =>
           entry.kind === "message" && entry.messageKind === "assistant" && entry.streaming === true,
-      )?.body;
+      );
+    return item?.itemId ? viewer.getThreadItemText(threadId)?.get(item.itemId)?.text : undefined;
   }
   function assistantRows(active: VerticalStack, runId: RunId) {
     return active.host.store.database

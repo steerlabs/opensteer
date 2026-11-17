@@ -404,7 +404,7 @@ integration("Host vertical slice", () => {
       .where("runId", "=", turn.run.id)
       .orderBy("ordinal")
       .execute();
-    expect(receipts.map(({ ordinal }) => ordinal)).toEqual([0, 1, 2]);
+    expect(receipts.map(({ ordinal }) => Number(ordinal))).toEqual([0, 1, 2]);
     const inventory = await testRpcData(
       origin,
       "machines.list",
@@ -2060,7 +2060,7 @@ integration("Host vertical slice", () => {
         name: "Hosting computer",
         runnerKind: "main",
         runtimeVersion: "integration",
-        capabilities: [],
+        capabilities: ["execution-plane-v2", "run-events-v2"],
         modules: {
           agents: {
             environmentIds: [ownerEnvironmentId],
@@ -3415,6 +3415,14 @@ function waitForRunnerExecution(socket: WebSocket): Promise<
 }
 
 async function attachThreadSocket(socket: WebSocket, threadId: ThreadId) {
+  socket.on("message", (data) => {
+    const frame = ScopedHostMessageSchema.safeParse(JSON.parse(data.toString()));
+    if (!frame.success || !("throughSequence" in frame.data)) return;
+    const { subscriptionId, generation, throughSequence } = frame.data;
+    socket.send(
+      JSON.stringify({ type: "client.ack", subscriptionId, generation, throughSequence }),
+    );
+  });
   const ready = waitForMessage(socket, (raw) => {
     const frame = ScopedHostMessageSchema.safeParse(raw);
     return (
