@@ -1433,7 +1433,7 @@ describeStore("PostgreSQL store", (it) => {
     ).rejects.toMatchObject({ code: "forbidden" });
   });
 
-  it("lists only tasks with messages a reader sees after changedSince, dated by delivery, most recent first", async ({
+  it("lists only tasks with messages a reader sees after changedSince, dated by delivery, most recent first, from where history shows them", async ({
     storeFixture: f,
   }) => {
     const root = await f.createRunFixture("changed-since");
@@ -1544,7 +1544,8 @@ describeStore("PostgreSQL store", (it) => {
     ).toEqual([
       { id: reported.id, newMessages: 1, firstNewAt: at(4).toISOString() },
       { id: child.id, newMessages: 1, firstNewAt: at(3).toISOString() },
-      { id: chat.id, newMessages: 2, firstNewAt: at(1).toISOString() },
+      // Listed by its delivery, but firstNewAt is where task history shows it, so a pass reads back to it.
+      { id: chat.id, newMessages: 2, firstNewAt: at(-10).toISOString() },
     ]);
     expect(all.window.totalItems).toBe(3);
     const paged: ThreadId[] = [];
