@@ -510,7 +510,6 @@ export class PluginOwnerApi {
       ),
       page: detail.hasPage
         ? {
-            url: null,
             reference: { kind: "plugin", pluginId },
             unavailable:
               row?.access === "off"
@@ -841,7 +840,6 @@ export class PluginOwnerApi {
                 schedule: run.name.slice(0, 240) || run.id,
                 status: run.status,
                 scheduledAt: iso(run.scheduledAt),
-                finishedAt: iso(run.finishedAt),
                 expiresAt: iso(run.expiresAt),
                 failure: run.failure?.slice(0, 1_000) ?? null,
                 approval,
@@ -1140,7 +1138,6 @@ function catalogEntry(entry: {
     id: entry.id.slice(0, 240),
     name: entry.name.slice(0, 240),
     description: clip(entry.description, 1_000),
-    category: entry.category?.slice(0, 80) || null,
     icon: pickIcon(entry.icons),
     auth: each(
       entry.auth,

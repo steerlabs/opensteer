@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { RequestSchema } from "@opensteer/core";
 import { MockPlugins, mockPluginRequests } from "../mock/mock-plugins.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
+import { unwrapRpcResult } from "../host/host-session-client.js";
 import {
-  readPluginPageView,
   readPluginWebhookSetup,
   removePluginWebhook,
   confirmPluginWebhookRemoval,
@@ -275,12 +275,13 @@ describe("plugin page and webhook clients", () => {
       rpc: mock.reads() as PluginsHost["rpc"],
       dispatch: (input) => mock.command(input as Parameters<MockPlugins["command"]>[0]),
     };
-    const page = await readPluginPageView(host, "plg_linear", "dark");
-    expect(page.entryUrl).toMatch(/^data:text\/html,/);
+    const view = () =>
+      host.rpc["plugins.page.view"]({ pluginId: "plg_linear", theme: "dark" }).then(
+        unwrapRpcResult,
+      );
+    expect((await view()).entryUrl).toMatch(/^data:text\/html,/);
     await setPluginAccess(host, "plg_linear", "off");
-    await expect(readPluginPageView(host, "plg_linear", "dark")).rejects.toThrow(
-      "Turn on this plugin",
-    );
+    await expect(view()).rejects.toThrow("Plugin page is unavailable");
     await setPluginAccess(host, "plg_linear", "all");
     await expect(
       confirmPluginWebhookRemoval(host, "plg_linear", "whk_linear_issues"),

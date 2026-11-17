@@ -202,6 +202,7 @@ export const PluginScheduleViewSchema = z.object({
       approvalMode: z.enum(["automatic", "browser"]),
       nextAt: IsoDateTimeSchema.nullable(),
       running: z.boolean(),
+      /** The requirement it needs an account for; runs are skipped until one is linked. */
       accountRequired: text(240).nullable(),
     })
     .nullable(),
@@ -244,13 +245,14 @@ export const InstalledPluginViewSchema = z.object({
   schedules: z.array(PluginScheduleViewSchema).max(50),
   workflows: z.array(PluginWorkflowViewSchema).max(50).nullable(),
   webhooks: z.array(PluginWebhookViewSchema).max(50),
-  webhookUnavailable: text(500).nullable().optional(),
-  backgroundUnavailable: text(500).nullable().optional(),
-  /** The plugin's own page; null when it has none. */
+  /** Why its webhooks can't receive events here, such as no public address. */
+  webhookUnavailable: text(500).nullable(),
+  /** Why its schedules, webhooks and workflows can't run now. */
+  backgroundUnavailable: text(500).nullable(),
+  /** The plugin's own page, opened through `plugins.page.view`; null when it has none. */
   page: z
     .object({
-      url: z.string().max(2048).nullable(),
-      reference: z.object({ kind: z.literal("plugin"), pluginId: PluginIdSchema }).optional(),
+      reference: z.object({ kind: z.literal("plugin"), pluginId: PluginIdSchema }),
       /** Why the page cannot be opened from here yet. */
       unavailable: text(500).nullable(),
     })
@@ -262,7 +264,6 @@ export const PluginCatalogEntryViewSchema = z.object({
   id: name,
   name,
   description: text(1_000),
-  category: text(80).nullable(),
   icon: PluginIconSchema.nullable(),
   /** How an account is connected: an API key or a sign-in. */
   auth: z
@@ -342,7 +343,6 @@ export const PluginScheduledRunViewSchema = z.object({
     "interrupted",
   ]),
   scheduledAt: IsoDateTimeSchema.nullable(),
-  finishedAt: IsoDateTimeSchema.nullable(),
   expiresAt: IsoDateTimeSchema.nullable(),
   failure: text(1_000).nullable(),
   /** The exact call waiting for approval. */
@@ -369,7 +369,8 @@ export const PluginWorkflowRunViewSchema = z.object({
 export type PluginWorkflowRunView = z.infer<typeof PluginWorkflowRunViewSchema>;
 
 export const PluginWebhookSetupViewSchema = z.object({
-  unavailable: text(500).nullable().optional(),
+  /** Why it can't receive events here, such as no public address. */
+  unavailable: text(500).nullable(),
   step: z.enum(["configure", "remove", "done"]),
   webhook: PluginWebhookViewSchema,
   callbackUrl: z.string().max(2_048),

@@ -4,9 +4,11 @@ import {
   configurePluginSchedule,
   pluginAccessChoices,
   pluginAuthorText,
+  pluginBackgroundNotice,
   pluginInputContent,
   pluginInputForm,
   pluginRequirementIssue,
+  pluginScheduleSkipped,
   pluginScheduleText,
   pluginScheduledRunLabel,
   pluginStatusView,
@@ -162,6 +164,16 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
             .filter(Boolean)
             .join(" · "),
         },
+        ...(pluginBackgroundNotice(data)
+          ? [
+              {
+                key: "background",
+                kind: "status" as const,
+                tone: "attention" as const,
+                label: pluginBackgroundNotice(data)!,
+              },
+            ]
+          : []),
         ...(data.page
           ? [
               {
@@ -169,7 +181,7 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
                 kind: "button" as const,
                 label: "Open page",
                 ...(data.page.unavailable ? { detail: data.page.unavailable } : {}),
-                disabled: Boolean(data.page.unavailable) || !data.page.reference,
+                disabled: Boolean(data.page.unavailable),
                 opens: true,
                 onPress: () => setPageOpen(true),
               },
@@ -310,6 +322,7 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
                 pluginScheduleText(schedule.timing),
                 enabled && settings?.nextAt ? `next ${when(settings.nextAt)}` : null,
                 settings?.running ? "running now" : null,
+                pluginScheduleSkipped(schedule, data.requirements),
               ]
                 .filter(Boolean)
                 .join(" · "),
@@ -554,7 +567,7 @@ function PluginDetail(props: { deploymentId: string; host: HostClient; pluginId:
           workflow={starting}
         />
       ) : null}
-      {pageOpen && data.page?.reference && !data.page.unavailable ? (
+      {pageOpen && data.page && !data.page.unavailable ? (
         <Sheet open title={plugin.name} onClose={() => setPageOpen(false)}>
           <AppFrame client={host} appId={data.page.reference.pluginId} kind="plugin" />
         </Sheet>

@@ -336,12 +336,7 @@ function PluginCatalog() {
         </div>
       )}
       {list.nextCursor ? (
-        <button
-          className="btn"
-          disabled={list.loadingMore}
-          onClick={list.more}
-          type="button"
-        >
+        <button className="btn" disabled={list.loadingMore} onClick={list.more} type="button">
           {list.loadingMore ? "Loading…" : "Show more"}
         </button>
       ) : null}

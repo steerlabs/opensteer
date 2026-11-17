@@ -6,10 +6,12 @@ import {
   configurePluginSchedule,
   pluginAccessChoices,
   pluginAuthorText,
+  pluginBackgroundNotice,
   pluginEngineRefusal,
   pluginInputContent,
   pluginInputForm,
   pluginRequirementIssue,
+  pluginScheduleSkipped,
   pluginScheduleText,
   pluginScheduledRunLabel,
   pluginStatusView,
@@ -145,11 +147,16 @@ function PluginContent({
           Connect an account below before agents can use {plugin.name}.
         </p>
       ) : null}
+      {pluginBackgroundNotice(data) ? (
+        <p className="notice notice--warn" role="status">
+          {pluginBackgroundNotice(data)}
+        </p>
+      ) : null}
       {data.page ? (
         <div className="plugin-page__open">
           <button
             className="btn"
-            disabled={Boolean(data.page.unavailable) || !data.page.reference}
+            disabled={Boolean(data.page.unavailable)}
             onClick={() => setPageOpen(true)}
             type="button"
           >
@@ -161,7 +168,7 @@ function PluginContent({
           ) : null}
         </div>
       ) : null}
-      {pageOpen && data.page?.reference && !data.page.unavailable ? (
+      {pageOpen && data.page && !data.page.unavailable ? (
         <PluginPageView
           pluginId={data.page.reference.pluginId}
           title={plugin.name}
@@ -483,6 +490,7 @@ function SchedulesSection({ data }: { readonly data: InstalledPluginView }) {
                   pluginScheduleText(schedule.timing),
                   enabled && settings?.nextAt ? `next ${formatWhen(settings.nextAt)}` : null,
                   settings?.running ? "running now" : null,
+                  pluginScheduleSkipped(schedule, data.requirements),
                 ]
                   .filter(Boolean)
                   .join(" · ")}

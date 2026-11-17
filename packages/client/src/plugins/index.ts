@@ -98,9 +98,6 @@ export function pluginVersionsReader(client: PluginsHost, pluginId: string) {
     return { items: page.versions, nextCursor: page.cursor };
   };
 }
-export function readPluginPageView(client: PluginsHost, pluginId: string, theme: "light" | "dark") {
-  return client.rpc["plugins.page.view"]({ pluginId, theme }).then(unwrapRpcResult);
-}
 export function readPluginAccountReview(client: PluginsHost, target: PluginRequirementTarget) {
   return client.rpc["plugins.account.review"](target).then(unwrapRpcResult);
 }
@@ -514,6 +511,24 @@ export function pluginScheduleText(timing: PluginScheduleView["timing"]) {
   const hours = minutes / 60;
   if (Number.isInteger(hours)) return hours === 1 ? "Every hour" : `Every ${hours} hours`;
   return `Every ${minutes} minutes`;
+}
+
+/** Why an enabled schedule's runs are being skipped, from what the Host reports; null when not. */
+export function pluginScheduleSkipped(
+  schedule: PluginScheduleView,
+  requirements: InstalledPluginView["requirements"],
+): string | null {
+  const needed = schedule.settings?.enabled ? schedule.settings.accountRequired : null;
+  if (!needed) return null;
+  const provider = requirements.find(({ name }) => name === needed)?.providerName ?? needed;
+  return `Skipped until you connect a ${provider} account`;
+}
+
+/** Whether to say why background work can't run: only for a plugin that has some. */
+export function pluginBackgroundNotice(data: InstalledPluginView): string | null {
+  const background =
+    data.schedules.length > 0 || data.webhooks.length > 0 || (data.workflows?.length ?? 0) > 0;
+  return background ? data.backgroundUnavailable : null;
 }
 
 export function pluginScheduledRunLabel(run: PluginScheduledRunView) {

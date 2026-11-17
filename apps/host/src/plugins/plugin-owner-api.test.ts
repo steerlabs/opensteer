@@ -490,7 +490,6 @@ describe("the person's plugin API", () => {
       links: [{ account: { id: "acc1", label: "Work" }, current: false }],
     });
     expect(view.page).toEqual({
-      url: null,
       reference: { kind: "plugin", pluginId: "p0" },
       unavailable: expect.any(String),
     });
@@ -528,7 +527,6 @@ describe("the person's plugin API", () => {
           id: "linear",
           name: "Linear",
           description: "d",
-          category: null,
           icon: null,
           auth: [{ method: "key", kind: "secrets", label: "API key" }],
         },

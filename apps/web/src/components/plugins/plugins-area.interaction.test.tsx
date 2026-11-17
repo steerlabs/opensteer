@@ -139,14 +139,8 @@ it("finishes a manual webhook setup that asks for nothing with Done", async () =
 
 it("removes a saved account after every plugin is gone, from the Plugins area", async () => {
   const client = await host();
-  const installed = await client.rpc["plugins.installed.list"]({});
-  if (!installed.ok) throw new Error("installed read failed");
-  for (const plugin of installed.data.plugins ?? [])
-    await client.dispatch({
-      type: "plugins.remove",
-      idempotencyKey: `remove:${plugin.id}`,
-      pluginId: plugin.id,
-    });
+  // As on the Host, live runs and webhooks are cleaned up before a plugin can go.
+  await client.enginePlugins.removeEverything();
   await mount("/settings/plugins", client);
   await until(() => text().includes("No plugins yet"), "the empty Plugins list loaded");
   await press("Connected accounts");

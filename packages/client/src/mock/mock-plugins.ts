@@ -246,13 +246,12 @@ const verbs = ["Read", "Search", "Create", "Update", "Sync"] as const;
 
 function buildCatalog(): PluginCatalogEntryView[] {
   const entries: PluginCatalogEntryView[] = [];
-  for (const [category, names] of catalogCategories)
+  for (const [, names] of catalogCategories)
     for (const name of names)
       entries.push({
         id: name.toLowerCase().replace(/[^a-z0-9]+/gu, "-"),
         name,
         description: `${name} for your agents: read and change what's in your ${name} account.`,
-        category,
         icon: null,
         auth: [
           { method: "apiKey", kind: "secrets", label: "API key" },
@@ -269,7 +268,6 @@ function buildCatalog(): PluginCatalogEntryView[] {
       id: `${base.toLowerCase().replace(/[^a-z0-9]+/gu, "-")}-${verb.toLowerCase()}-${index}`,
       name: `${base} ${verb} ${Math.floor(index / 35) + 1}`,
       description: `A focused ${verb.toLowerCase()} toolkit for ${base}.`,
-      category: catalogCategories[index % catalogCategories.length]![0],
       icon: null,
       auth: [{ method: "apiKey", kind: "secrets", label: "API key" }],
     });
@@ -761,7 +759,6 @@ export class MockPlugins {
       schedule: "Close stale issues",
       status: "awaiting-approval",
       scheduledAt: "2026-11-16T09:00:00.000Z",
-      finishedAt: null,
       expiresAt: "2026-11-17T09:00:00.000Z",
       failure: null,
       approval: {
@@ -778,7 +775,6 @@ export class MockPlugins {
       schedule: "Sync assigned issues",
       status: "succeeded",
       scheduledAt: "2026-11-16T20:45:00.000Z",
-      finishedAt: "2026-11-16T20:45:03.000Z",
       expiresAt: null,
       failure: null,
       approval: null,
@@ -788,7 +784,6 @@ export class MockPlugins {
       schedule: "Sync assigned issues",
       status: "failed",
       scheduledAt: "2026-11-16T20:30:00.000Z",
-      finishedAt: "2026-11-16T20:30:09.000Z",
       expiresAt: null,
       failure: "Linear answered 503",
       approval: null,
@@ -959,18 +954,20 @@ export class MockPlugins {
       schedules: plugin.schedules,
       workflows: ready ? plugin.workflows : null,
       webhooks: plugin.webhooks,
+      // The Host's own sentences for background work that can't run.
+      backgroundUnavailable:
+        plugin.access === "off"
+          ? "This plugin is off. Its schedules, webhooks and workflows cannot run."
+          : plugin.links.some((link) => link.stale)
+            ? "Review and link the changed account declaration before this plugin can run."
+            : null,
       webhookUnavailable:
         this.scenario === "local-only" && plugin.webhooks.length ? noPublicAddress : null,
       page: plugin.hasPage
         ? {
-            url: null,
             reference: { kind: "plugin", pluginId: plugin.id },
-            unavailable:
-              plugin.access === "off"
-                ? "Turn on this plugin before opening its page."
-                : !ready
-                  ? "Connect an account before opening this page."
-                  : null,
+            // As on the Host: only turning the plugin off closes its page.
+            unavailable: plugin.access === "off" ? "Turn this plugin on to open its page." : null,
           }
         : null,
     };
@@ -1307,9 +1304,8 @@ export class MockPlugins {
       "plugins.page.view": async ({ pluginId, theme }) => {
         await this.#ready();
         const plugin = this.#plugin(pluginId);
-        const page = this.detail(plugin).page;
-        if (!page || page.unavailable)
-          throw refusal("conflict", page?.unavailable ?? "This plugin has no page.");
+        if (!plugin.hasPage || plugin.access === "off")
+          throw refusal("not_found", "Plugin page is unavailable");
         const document = `<!doctype html><html style="color-scheme:${theme};font:16px system-ui;padding:24px"><title>Plugin page</title><h1>${plugin.name}</h1><p>Your plugin's page opens here.</p><label>Find an issue <input placeholder="Search issues"></label><p>Connected to your work account</p><script>parent.postMessage({type:"opensteer-app:ready"},"*");</script></html>`;
         return rpcSuccess({
           path: "/mock-plugin-page",
@@ -1442,9 +1438,13 @@ export class MockPlugins {
         await this.#ready();
         return rpcSuccess(this.review(target));
       },
-      "plugins.schedule.runs": async ({ pluginId }) => {
+      "plugins.schedule.runs": async ({ pluginId, pending }) => {
+        await this.#ready();
         this.#plugin(pluginId);
-        return rpcSuccess({ runs: pluginId === "plg_linear" ? this.#runs : [] });
+        const runs = pluginId === "plg_linear" ? this.#runs : [];
+        return rpcSuccess({
+          runs: pending ? runs.filter(({ status }) => status === "awaiting-approval") : runs,
+        });
       },
       "plugins.workflow.runs": async ({ pluginId, workflow, cursor }) => {
         await this.#ready();
@@ -1569,11 +1569,29 @@ export class MockPlugins {
         this.#changed();
         return { type: command.type };
       }
-      case "plugins.remove":
-        this.#plugin(command.pluginId);
-        this.plugins = this.plugins.filter((plugin) => plugin.id !== command.pluginId);
+      case "plugins.remove": {
+        const plugin = this.#plugin(command.pluginId);
+        // The engine's own refusals: background work must be cleaned up first.
+        if (plugin.webhooks.some((webhook) => webhook.status !== "stopped"))
+          throw refusal(
+            "conflict",
+            "Remove this plugin's webhook subscriptions before removing the plugin.",
+            "plugin-conflict",
+          );
+        if (
+          (this.#workflowRuns[plugin.id] ?? []).some((run) =>
+            ["queued", "running"].includes(run.status),
+          )
+        )
+          throw refusal(
+            "conflict",
+            "Stop this plugin's workflow runs before removing the plugin.",
+            "plugin-conflict",
+          );
+        this.plugins = this.plugins.filter((entry) => entry.id !== command.pluginId);
         this.#changed();
         return { type: command.type };
+      }
       case "plugins.access.set":
         this.#plugin(command.pluginId).access = command.access;
         this.#changed();
@@ -1634,7 +1652,6 @@ export class MockPlugins {
             ? {
                 ...entry,
                 status: command.action === "accept" ? "succeeded" : "denied",
-                finishedAt: new Date().toISOString(),
                 approval: null,
               }
             : entry,
@@ -1705,6 +1722,39 @@ export class MockPlugins {
         this.#changed();
         return { type: command.type };
       }
+    }
+  }
+
+  /**
+   * Removes every plugin the way a person must on the Host: stop live
+   * workflow runs and clean up webhooks first, through the same commands.
+   */
+  async removeEverything() {
+    const idempotencyKey = () => this.#id("key");
+    for (const plugin of [...this.plugins]) {
+      for (const live of (this.#workflowRuns[plugin.id] ?? []).filter((entry) =>
+        ["queued", "running"].includes(entry.status),
+      ))
+        await this.command({
+          type: "plugins.workflow.stop",
+          idempotencyKey: idempotencyKey(),
+          pluginId: plugin.id,
+          runId: live.id,
+        });
+      for (const webhook of plugin.webhooks.filter((entry) => entry.status !== "stopped")) {
+        for (const type of ["plugins.webhook.remove", "plugins.webhook.removal.confirm"] as const)
+          await this.command({
+            type,
+            idempotencyKey: idempotencyKey(),
+            pluginId: plugin.id,
+            webhookId: webhook.id,
+          });
+      }
+      await this.command({
+        type: "plugins.remove",
+        idempotencyKey: idempotencyKey(),
+        pluginId: plugin.id,
+      });
     }
   }
 
