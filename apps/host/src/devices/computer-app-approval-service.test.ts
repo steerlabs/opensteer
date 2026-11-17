@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { IntegrationPlatformStore } from "@opensteer/database";
 import type { RunnerId, UserId } from "@opensteer/core";
-import { integrationDefinitions } from "@opensteer/integration-catalog";
+import { deviceDefinitions as integrationDefinitions } from "@opensteer/integration-catalog/devices";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
 import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { type ComputerAppSetupRequest } from "@opensteer/integration-core/computer-app-setup";

@@ -6,8 +6,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./devices": "./src/devices.ts",
-    "./services": "./src/services.ts"
+    "./devices": "./src/devices.ts"
   },
   "scripts": {
     "clean": "node ../../scripts/clean.mjs dist *.tsbuildinfo",
@@ -15,7 +14,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@opensteer/integration-adapters": "workspace:*",
     "@opensteer/integration-core": "workspace:*",
     "zod": "catalog:"
   },

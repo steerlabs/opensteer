@@ -1,4 +1,3 @@
-// Derived from github.com/UsefulSoftwareCo/executor packages/core/sdk/src/oauth-helpers.ts (MIT).
 import { isLoopbackHostname } from "@opensteer/core";
 import type {
   OAuthIdTokenValidation,

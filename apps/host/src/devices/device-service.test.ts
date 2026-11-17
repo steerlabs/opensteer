@@ -28,7 +28,7 @@ import {
   type IntegrationServer,
 } from "@opensteer/integration-core";
 import { computerAppTools } from "@opensteer/integration-core/computer-app-tools";
-import { computerAppIntegrations } from "@opensteer/integration-catalog";
+import { computerAppIntegrations } from "@opensteer/integration-catalog/devices";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
 import {
   ComputerAppNotOfferedError,

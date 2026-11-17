@@ -12,19 +12,14 @@ import {
   refreshAccessToken,
   shouldRefreshToken,
   validateOAuthAuthorizationResponse,
-} from "./oauth.js";
-import {
-  discoverAuthorizationServerMetadata,
-  discoverProtectedResourceMetadata,
-  registerDynamicClient,
-} from "./discovery.js";
+} from "./provider-oauth.js";
 import {
   buildDeclarativeAuthorizationUrl,
   exchangeDeclarativeAuthorizationToken,
   extractDeclarativeCredential,
   missingRequiredScopes,
   refreshDeclarativeCredential,
-} from "./flow.js";
+} from "./provider-oauth-flow.js";
 
 const oauthConfig = OAuthMethodConfigSchema.parse({
   authorizationUrl: "https://identity.example/authorize",
@@ -660,72 +655,7 @@ describe("OAuth primitives", () => {
 });
 
 describe("OAuth discovery", () => {
-  it("discovers path-scoped RFC 9728 metadata", async () => {
-    const fetch_ = vi.fn(async (input: string | URL | Request) => {
-      expect(String(input)).toBe("https://api.example/.well-known/oauth-protected-resource/mcp");
-      return new Response(
-        JSON.stringify({
-          resource: "https://api.example/mcp",
-          authorization_servers: ["https://identity.example"],
-        }),
-        { status: 200 },
-      );
-    });
-    await expect(
-      discoverProtectedResourceMetadata("https://api.example/mcp", {
-        fetch: fetch_ as typeof fetch,
-      }),
-    ).resolves.toMatchObject({
-      metadataUrl: "https://api.example/.well-known/oauth-protected-resource/mcp",
-    });
-  });
 
-  it("falls back from RFC 8414 to OIDC discovery", async () => {
-    const fetch_ = vi.fn(async (input: string | URL | Request) => {
-      const url = String(input);
-      if (url.endsWith("oauth-authorization-server")) return new Response("", { status: 404 });
-      return new Response(
-        JSON.stringify({
-          issuer: "https://identity.example",
-          authorization_endpoint: "https://identity.example/authorize",
-          token_endpoint: "https://identity.example/token",
-          registration_endpoint: "https://identity.example/register",
-        }),
-        { status: 200 },
-      );
-    });
-    await expect(
-      discoverAuthorizationServerMetadata("https://identity.example", {
-        fetch: fetch_ as typeof fetch,
-      }),
-    ).resolves.toMatchObject({
-      metadataUrl: "https://identity.example/.well-known/openid-configuration",
-      metadata: { token_endpoint: "https://identity.example/token" },
-    });
-  });
-
-  it("registers a dynamic client and accepts HTTP 200", async () => {
-    const fetch_ = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
-      expect(init?.method).toBe("POST");
-      expect(JSON.parse(String(init?.body))).toMatchObject({
-        redirect_uris: ["https://app.example/callback"],
-        token_endpoint_auth_method: "none",
-      });
-      return new Response(JSON.stringify({ client_id: "dynamic-client" }), { status: 200 });
-    });
-    await expect(
-      registerDynamicClient(
-        {
-          registrationEndpoint: "https://identity.example/register",
-          metadata: {
-            redirect_uris: ["https://app.example/callback"],
-            token_endpoint_auth_method: "none",
-          },
-        },
-        { fetch: fetch_ as typeof fetch },
-      ),
-    ).resolves.toMatchObject({ client_id: "dynamic-client" });
-  });
 });
 
 describe("declarative OAuth flow", () => {

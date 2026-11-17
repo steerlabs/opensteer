@@ -11,7 +11,7 @@ import {
   refreshAccessToken,
   type OAuth2TokenResponse,
   type OAuthEndpointUrlPolicy,
-} from "./oauth.js";
+} from "./provider-oauth.js";
 
 export function normalizeGrantedScopes(
   config: OAuthMethodConfig,
