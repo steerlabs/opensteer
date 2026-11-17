@@ -31,19 +31,20 @@ type RSD interface {
 	Close() error
 }
 type Session struct {
-	mu          sync.Mutex
-	closeOnce   sync.Once
-	closeErr    error
-	tunnel      *tunnel.Userspace
-	dialTCP     func(context.Context, uint16) (net.Conn, error)
-	identity    string
-	services    ios.RsdHandshakeResponse
-	announced   bool
-	newRSD      func(context.Context) (RSD, error)
-	screen      *screenSession
-	closed      bool
-	state       DeviceState
-	stateReason wire.Reason
+	mu           sync.Mutex
+	closeOnce    sync.Once
+	closeErr     error
+	tunnel       *tunnel.Userspace
+	dialTCP      func(context.Context, uint16) (net.Conn, error)
+	identity     string
+	services     ios.RsdHandshakeResponse
+	announced    bool
+	newRSD       func(context.Context) (RSD, error)
+	openLockdown func(context.Context) (*ios.LockDownConnection, error)
+	screen       *screenSession
+	closed       bool
+	state        DeviceState
+	stateReason  wire.Reason
 }
 
 func OpenSession(lifetime, setup context.Context, device ios.DeviceEntry) (*Session, error) {
@@ -65,11 +66,25 @@ func OpenSession(lifetime, setup context.Context, device ios.DeviceEntry) (*Sess
 	if err != nil {
 		return nil, Classify(err, wire.TunnelFailed)
 	}
-	return sessionFromTunnel(setup, t, device.Properties.SerialNumber)
+	s, err := sessionFromTunnel(setup, t, device.Properties.SerialNumber)
+	if err != nil {
+		return nil, err
+	}
+	if device.Properties.ConnectionType == "USB" {
+		s.openLockdown = func(ctx context.Context) (*ios.LockDownConnection, error) {
+			d := device
+			d.Context = ctx
+			return ios.ConnectLockdownWithSession(d)
+		}
+	}
+	return s, nil
 }
 
 func sessionFromTunnel(setup context.Context, t *tunnel.Userspace, identity string) (*Session, error) {
 	s := &Session{tunnel: t, identity: identity, dialTCP: t.DialTCP}
+	s.openLockdown = func(ctx context.Context) (*ios.LockDownConnection, error) {
+		return remoteLockdown(s.Device(ctx, ios.DeviceEntry{}))
+	}
 	s.newRSD = func(ctx context.Context) (RSD, error) {
 		c, err := t.DialTCP(ctx, t.RSDPort)
 		if err != nil {

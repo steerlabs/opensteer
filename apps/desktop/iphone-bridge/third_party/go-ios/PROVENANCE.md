@@ -86,8 +86,29 @@ Hardware-path corrections:
   `ios/screencapture`'s `displayUniqueID`; `ios/hid/digitizer.go`'s numeric
   `displayId` target and native normalized axes; and `ios/accessibility`'s
   `com.apple.accessibility.axAuditDaemon.remoteserver` service name.
+- Lock state uses lockdown `GetValue("PasswordProtected")`: paired usbmux
+  lockdown over USB, and `ConnectToShimService` with RSD check-in on
+  `com.apple.mobile.lockdown.remote.trusted` over Wi-Fi. The MIT upstream
+  `ios/mcinstall/mcinstall.go` documents this as current passcode demand.
+  The Mac-side CoreDevice lock-state action is never sent to deviceinfo.
+  `unlockedSinceBoot` is dropped: it has no established device-side source and
+  is unnecessary for the current-lock gate; unreadable values remain unknown.
+- Vendored `GetValue` and `GetValueForDomain` propagate send, read, plist and
+  device errors, so an error response cannot masquerade as a readable value.
+  Shim connections are bound to their request context before RSD check-in and
+  closed if check-in fails; this also bounds cancellation during negotiation.
+- Display selection accepts nonzero integrated, non-external displays, preferring
+  active over primary. A primary display may omit `uniqueId`: screenshot capture
+  then defaults to the main display, while Indigo uses that primary's numeric
+  `displayId`. Non-primary capture still requires `uniqueId`. Integral XPC
+  float64 dimensions/IDs share the checked integer decoder; `activeOn` means on,
+  and `inactiveOn` means off. Frame changes also invalidate screenshot geometry.
 
-Synthetic qualification covers the real redacted two-display shape, all rotations,
+Synthetic qualification covers the raw redacted iPhone18,2 seven-display XPC
+response (iOS 27.0.1, build 24A446), with float64 sizes/bounds/scales and uint64
+display IDs. The iPhone19,4 two-display fixture was transformed by devicectl;
+its raw shape remains unverified. Tests also cover lockdown values/errors,
+shim check-in cancellation/cleanup, primary capture/HID addressing, all rotations,
 selection and state changes, release grace, refresh, automatic remount, AMFI reveal,
 media-stop transport failures, logging scrubbing and shutdown with open stdin.
 Hardware qualification remains necessary for iOS 27.2+ Indigo touch/button delivery

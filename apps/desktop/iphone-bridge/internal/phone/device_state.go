@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"math"
 	"reflect"
 	"time"
 
@@ -95,27 +96,14 @@ func exchangeOn(ctx context.Context, conn xpcChannel, request map[string]interfa
 	}
 	return output, nil
 }
-func readDeviceState(ctx context.Context, open channelOpener) (DeviceState, error) {
+func readDeviceState(ctx context.Context, open channelOpener, lock func(context.Context) string) (DeviceState, error) {
 	state := unknownState()
+	state.Lock = lock(ctx)
 	conn, err := open(ctx, deviceInfoService)
 	if err != nil {
 		return state, Classify(err, wire.NativeServiceFailed)
 	}
 	defer conn.Close()
-	lock, err := exchangeOn(ctx, conn, coredevice.BuildRequest(uuid.New().String(), "com.apple.coredevice.feature.getlockstate", map[string]interface{}{}), nil, false)
-	if err != nil {
-		return state, err
-	}
-	// CoreDevice reports present passcode demand and whether first unlock occurred;
-	// neither field describes whether a passcode is configured.
-	required, hasRequired := lock["passcodeRequired"].(bool)
-	unlocked, hasUnlocked := lock["unlockedSinceBoot"].(bool)
-	if hasRequired && required {
-		state.Lock = "locked"
-	}
-	if hasRequired && !required && hasUnlocked && unlocked {
-		state.Lock = "unlocked"
-	}
 	display, err := exchangeOn(ctx, conn, coredevice.BuildRequest(uuid.New().String(), "com.apple.coredevice.feature.getdisplayinfo", map[string]interface{}{}), nil, false)
 	if err != nil {
 		return state, err
@@ -124,7 +112,7 @@ func readDeviceState(ctx context.Context, open channelOpener) (DeviceState, erro
 	if err != nil {
 		return state, err
 	}
-	shape, err := json.Marshal([3]interface{}{d["bounds"], d["nativeSize"], d["pointScale"]})
+	shape, err := json.Marshal([4]interface{}{d["bounds"], d["frame"], d["nativeSize"], d["pointScale"]})
 	if err != nil {
 		return state, wire.Fail(wire.GeometryUnavailable)
 	}
@@ -135,8 +123,11 @@ func readDeviceState(ctx context.Context, open channelOpener) (DeviceState, erro
 	if backlight == "" {
 		backlight, _ = display["backlightState"].(string)
 	}
-	if backlight == "on" || backlight == "off" {
-		state.Display = backlight
+	switch backlight {
+	case "on", "activeOn":
+		state.Display = "on"
+	case "off", "inactiveOn":
+		state.Display = "off"
 	}
 	orientation, _ := d["currentOrientation"].(string)
 	if r, ok := map[string]int{"rot0": 0, "rot90": 90, "rot180": 180, "rot270": 270}[orientation]; ok {
@@ -156,6 +147,10 @@ func unsigned(v interface{}) (uint64, bool) {
 		if n >= 0 {
 			return uint64(n), true
 		}
+	case float64:
+		if finite(n) && n >= 0 && n < math.Exp2(64) && math.Trunc(n) == n {
+			return uint64(n), true
+		}
 	}
 	return 0, false
 }
@@ -165,8 +160,7 @@ func selectDisplay(output map[string]interface{}) (map[string]interface{}, error
 	if !ok || len(displays) == 0 || len(displays) > 16 {
 		return nil, wire.Fail(wire.DisplayUnsupported)
 	}
-	var active, primary, only map[string]interface{}
-	usable := 0
+	var active, primary map[string]interface{}
 	for _, value := range displays {
 		d, ok := value.(map[string]interface{})
 		if !ok {
@@ -184,31 +178,21 @@ func selectDisplay(output map[string]interface{}) (map[string]interface{}, error
 			}
 			primary = d
 		}
-		if usableDisplay(d, len(displays)) {
-			usable++
-			only = d
-		}
 	}
 	selected := active
 	if selected == nil {
 		selected = primary
 	}
-	if selected == nil && usable == 1 {
-		selected = only
-	}
-	if selected == nil || !usableDisplay(selected, len(displays)) {
+	if selected == nil || !usableDisplay(selected) {
 		return nil, wire.Fail(wire.DisplayUnsupported)
 	}
 	return selected, nil
 }
-func usableDisplay(d map[string]interface{}, count int) bool {
+func usableDisplay(d map[string]interface{}) bool {
 	external, _ := d["external"].(bool)
-	if kind, ok := d["type"].(map[string]interface{}); ok {
-		if _, exists := kind["external"]; exists {
-			external = true
-		}
-	}
-	if external {
+	kind, _ := d["type"].(map[string]interface{})
+	_, integrated := kind["integrated"]
+	if external || !integrated || len(kind) != 1 {
 		return false
 	}
 	id, ok := unsigned(d["displayId"])
@@ -216,5 +200,12 @@ func usableDisplay(d map[string]interface{}, count int) bool {
 		return false
 	}
 	unique, _ := d["uniqueId"].(string)
-	return count == 1 || unique != ""
+	primary, _ := d["primary"].(bool)
+	size, _ := d["nativeSize"].([]interface{})
+	if len(size) != 2 {
+		return false
+	}
+	width, widthOK := unsigned(size[0])
+	height, heightOK := unsigned(size[1])
+	return widthOK && heightOK && width > 0 && height > 0 && (primary || unique != "")
 }

@@ -21,10 +21,11 @@ type screenBackend interface {
 type nativeScreen struct {
 	open channelOpener
 	dial ServiceDialer
+	lock func(context.Context) string
 }
 
 func (n nativeScreen) State(ctx context.Context) (DeviceState, error) {
-	return readDeviceState(ctx, n.open)
+	return readDeviceState(ctx, n.open, n.lock)
 }
 func (n nativeScreen) Capture(ctx context.Context, display string) ([]byte, error) {
 	input := map[string]interface{}{"requestedFormat": "png"}
@@ -36,7 +37,7 @@ func (n nativeScreen) Capture(ctx context.Context, display string) ([]byte, erro
 		return nil, err
 	}
 	data, ok := out["image"].([]byte)
-	if !ok || len(data) > 32<<20 {
+	if !ok || len(data) == 0 || len(data) > 32<<20 {
 		return nil, wire.Fail(wire.NativeLimit)
 	}
 	return data, nil
@@ -90,7 +91,7 @@ func (s *Session) screenState() *screenSession {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.screen == nil {
-		s.screen = &screenSession{backend: nativeScreen{open: func(ctx context.Context, name string) (xpcChannel, error) { return s.OpenXPC(ctx, name) }, dial: s}, apps: map[string]bool{}, closed: s.closed}
+		s.screen = &screenSession{backend: nativeScreen{open: func(ctx context.Context, name string) (xpcChannel, error) { return s.OpenXPC(ctx, name) }, dial: s, lock: s.readLockState}, apps: map[string]bool{}, closed: s.closed}
 	}
 	return s.screen
 }

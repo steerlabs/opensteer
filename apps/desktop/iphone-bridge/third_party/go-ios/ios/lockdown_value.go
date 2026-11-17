@@ -201,22 +201,34 @@ func (lockDownConn *LockDownConnection) GetProductVersion() (string, error) {
 	return result, nil
 }
 
-// GetValue gets and returns the string value for the lockdown key
+// GetValue returns the typed value for the lockdown key.
 func (lockDownConn *LockDownConnection) GetValue(key string) (interface{}, error) {
-	lockDownConn.Send(newGetValue(key))
-	resp, err := lockDownConn.ReadMessage()
-	response := getValueResponsefromBytes(resp)
-	return response.Value, err
+	return lockDownConn.getValue(newGetValue(key))
 }
 
-// GetValueForDomain gets and returns the string value for the lockdown key and domain
+// GetValueForDomain returns the typed value for the lockdown key and domain.
 func (lockDownConn *LockDownConnection) GetValueForDomain(key string, domain string) (interface{}, error) {
 	gv := newGetValue(key)
 	gv.Domain = domain
-	lockDownConn.Send(gv)
+	return lockDownConn.getValue(gv)
+}
+
+func (lockDownConn *LockDownConnection) getValue(request valueRequest) (interface{}, error) {
+	if err := lockDownConn.Send(request); err != nil {
+		return nil, err
+	}
 	resp, err := lockDownConn.ReadMessage()
-	response := getValueResponsefromBytes(resp)
-	return response.Value, err
+	if err != nil {
+		return nil, err
+	}
+	var response ValueResponse
+	if err := plist.NewDecoder(bytes.NewReader(resp)).Decode(&response); err != nil {
+		return nil, err
+	}
+	if response.Error != "" {
+		return nil, &LockdownError{Code: response.Error}
+	}
+	return response.Value, nil
 }
 
 // SetValueForDomain sets the string value for the lockdown key and domain. If the device returns an error it will be returned as a go error.
