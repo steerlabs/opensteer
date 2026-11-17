@@ -8797,8 +8797,21 @@ class MockHostState {
       !mac.allowedModules.includes("integrations") ||
       (mac.ownership !== "mine" && mac.kind !== "home")
     )
-      throw mockBadRequest("Choose an owned Mac with integrations for screen setup.");
-    const target = command.target;
+      throw new HostClientRequestError({
+        code: "forbidden",
+        message: "Choose an owned Mac with integrations for screen setup.",
+        status: 403,
+      });
+    if (mac.status !== "online" || mac.modules.integrations?.readiness !== "ready")
+      throw mockConflict(
+        "Open Opensteer on the Mac connected to this iPhone and update it to support screen drivers.",
+      );
+    const target =
+      command.target.kind === "new"
+        ? { ...command.target, name: command.target.name.trim() }
+        : command.target;
+    if (target.kind === "new" && (!target.name || target.name.length > 120))
+      throw mockBadRequest("Device name is invalid");
     const prior =
       target.kind === "existing"
         ? this.snapshot.machines.find(({ id }) => id === target.deviceId)
@@ -8807,9 +8820,14 @@ class MockHostState {
       target.kind === "existing" &&
       (!prior ||
         prior.selfRunnerId !== null ||
+        (prior.ownership !== "mine" && prior.kind !== "home") ||
         prior.phoneDisplay?.definitionId !== "iphone-screen")
     )
-      throw mockNotFound("Screen Device not found.");
+      throw new HostClientRequestError({
+        code: "forbidden",
+        message: "Screen Device not found.",
+        status: 403,
+      });
     if (
       prior &&
       target.kind === "existing" &&
