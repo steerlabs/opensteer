@@ -30,7 +30,7 @@ import {
 import { useShell } from "../app-shell.js";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
-import { IntegrationIcon } from "../integrations/integration-icon.js";
+import { IntegrationIcon } from "../integration-icon.js";
 import { LoadingRows } from "../loading-rows.js";
 import {
   SectionHeader,

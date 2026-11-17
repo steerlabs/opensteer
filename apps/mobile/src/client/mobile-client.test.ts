@@ -4,8 +4,6 @@ import type {
   HostApiCommandOutput,
   RpcCallOptions,
 } from "@opensteer/protocol";
-import { createHostNetwork } from "../platform/host-network.js";
-import { withTimeout } from "@opensteer/shared/withTimeout";
 import { NotificationPreviews } from "../notifications/notification-preview.js";
 import { addPersonalDeployment } from "./add-deployment.js";
 import { savedViewFixture } from "../../test-support/saved-views.js";
@@ -17,20 +15,12 @@ import {
 import type { DeploymentConnectionInput, PrivateFilesystem } from "@opensteer/client/connections";
 import { createMockHostPort } from "./mock-host-port.js";
 import { mockDeploymentConnections } from "./mock-mode.js";
-import {
-  HostClientRequestError,
-  createHttpHostApiClient,
-  createMemorySavedViews,
-  unwrapRpcResult,
-} from "@opensteer/client/host";
-import { HostTransportError } from "@opensteer/client/connections";
+import { HostClientRequestError, createMemorySavedViews } from "@opensteer/client/host";
 import { MockDesktopUpdates, MockHostClient } from "@opensteer/client/mock";
 import {
   buildNativeIntegrationAuthorizationCallback,
   IntegrationAuthorizationCancelledError,
-  IntegrationAuthorizationCancelUnconfirmedError,
   IntegrationOAuthAttemptIdSchema,
-  IntegrationAuthorizationAttemptIdSchema,
 } from "@opensteer/client/integrations";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
 import {
@@ -371,71 +361,6 @@ type SignalledDispatch = (
   call?: RpcCallOptions,
 ) => Promise<HostApiCommandOutput>;
 
-/**
- * The real RPC client and network above a recorded wire, with credential loading
- * that can be held. Only the last hop is a stand-in, and it refuses an aborted
- * signal as every platform fetch does, so what reaches `sent` truly left the phone.
- */
-function heldCredentialWire() {
-  const sent: string[] = [];
-  const holds: Promise<void>[] = [];
-  let credentialReads = 0;
-  let lastSignal: AbortSignal | undefined;
-  const network = createHostNetwork({
-    authorization: {
-      cached: () => null,
-      current: async () => {
-        credentialReads += 1;
-        const hold = holds.shift();
-        if (hold)
-          await withTimeout(hold, 60_000, {
-            timeoutError: () => new Error("Credential loading was never released."),
-          });
-        return "Bearer test";
-      },
-    },
-    fetch: async (_input, init) => {
-      init?.signal?.throwIfAborted();
-      const { type } = JSON.parse(String(init?.body)) as { readonly type: string };
-      sent.push(type);
-      return Response.json({
-        data: {
-          connectionId: null,
-          expiresAt: new Date(Date.now() + 600_000).toISOString(),
-          failureCode: null,
-          status: type === "integration.authorization.cancel" ? "cancelled" : "completed",
-          type,
-        },
-        ok: true,
-      });
-    },
-    openWebSocket: () => {
-      throw new Error("This wire carries no sockets.");
-    },
-    origin: "https://host.example.test",
-  });
-  const http = createHttpHostApiClient({
-    baseUrl: new URL("https://host.example.test"),
-    fetch: network.fetch,
-    onAuthenticationRequired: () => undefined,
-  });
-  return {
-    credentialReads: () => credentialReads,
-    /** Holds the next credential read; the call it returns lets it finish. */
-    hold: () => {
-      const gate = Promise.withResolvers<void>();
-      holds.push(gate.promise);
-      return gate.resolve;
-    },
-    lastSignal: () => lastSignal,
-    send: (command: HostApiCommandInput, call?: RpcCallOptions) => {
-      lastSignal = call?.signal;
-      return http["commands.dispatch"](command, call).then(unwrapRpcResult);
-    },
-    sent: (type: string) => sent.filter((candidate) => candidate === type),
-  };
-}
-
 function open(
   port: MobileHostPortFactory,
   privateFiles: PrivateFilesystem = new MemoryPrivateFilesystem(),
@@ -579,66 +504,24 @@ const connectComputer = (generation: number): DeploymentConnectionInput =>
     }),
   );
 
-describe("MobileClient integration authorization", () => {
-  it("binds the native return to the started attempt and accepts only durable Host completion", async () => {
-    const begins = vi.fn();
-    const providerPort = testPort({
-      held: true,
-      configureClient: (host) => {
-        const dispatch = host.dispatch.bind(host);
-        host.dispatch = async (command) => {
-          if (command.type === "integration.authorization.begin") begins(command.input);
-          return dispatch(command);
-        };
-      },
-    });
-    let openedLaunch = "";
-    const { client } = open(providerPort.factory, new MemoryPrivateFilesystem(), {
-      openIntegrationAuthorization: async (launchUrl) => {
-        openedLaunch = launchUrl;
-        const attemptId = new URL(launchUrl).pathname.split("/").at(-2)!;
-        return buildNativeIntegrationAuthorizationCallback({
-          attemptId: IntegrationOAuthAttemptIdSchema.parse(attemptId),
-          deploymentId: DeploymentIdSchema.parse(serverId),
-        });
-      },
-    });
-    await client.catalog.upsert(
-      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
-    );
-    await client.initialize();
-    await client.select(serverId);
-
-    await expect(
-      client.beginIntegrationAuthorization({ definitionId: "slack" }),
-    ).resolves.toMatchObject({
-      status: "completed",
-      connectionId: expect.stringMatching(/^con_/u),
-    });
-    expect(openedLaunch).toContain(`/v1/integration-authorizations/ioa_`);
-    expect(openedLaunch).toContain("ticket=");
-    expect(providerPort.commands).toContain("integration.authorization.begin");
-    expect(begins).toHaveBeenCalledWith(expect.not.objectContaining({ finish: "app" }));
-    client.dispose();
-  });
-
+describe("MobileClient plugin sign-in returns", () => {
   it("requests app finish on a capable Host and deduplicates session and deep-link delivery", async () => {
     const returned = vi.fn(async (_command: { attemptId: unknown }) => ({
-      type: "integration.authorization.return" as const,
+      type: "plugin.authorization.return" as const,
+      attemptId: returnedAttemptId,
+      connection: "con_1",
+      account: "acc_1",
       status: "completed" as const,
       expiresAt: new Date(Date.now() + 600_000).toISOString(),
-      connectionId: null,
       failureCode: null,
     }));
-    const begins: unknown[] = [];
     const port = testPort({
       held: true,
       verification: { status: "compatible", capabilities: ["integration-app-finish-v1"] },
       configureClient: (host) => {
         const dispatch = host.dispatch.bind(host);
         host.dispatch = async (command) => {
-          if (command.type === "integration.authorization.return") return returned(command);
-          if (command.type === "integration.authorization.begin") begins.push(command.input);
+          if (command.type === "plugin.authorization.return") return returned(command);
           return dispatch(command);
         };
       },
@@ -660,10 +543,9 @@ describe("MobileClient integration authorization", () => {
     );
     await client.initialize();
     await client.select(serverId);
-    await expect(
-      client.beginIntegrationAuthorization({ definitionId: "slack" }),
-    ).resolves.toMatchObject({ status: "completed" });
-    expect(begins).toEqual([expect.objectContaining({ finish: "app", surface: "native" })]);
+    const signIn = await beginSignIn(client);
+    expect(signIn.route).toMatchObject({ finish: "app" });
+    await expect(signIn.done).resolves.toBeUndefined();
     expect(returned).toHaveBeenCalledOnce();
     client.dispose();
   });
@@ -673,9 +555,11 @@ describe("MobileClient integration authorization", () => {
     async (mode) => {
       const returned = vi
         .fn(async (_command: unknown) => ({
-          type: "integration.authorization.return" as const,
+          type: "plugin.authorization.return" as const,
+          attemptId: returnedAttemptId,
+          connection: "con_1",
+          account: "acc_1",
           status: "completed" as const,
-          connectionId: null,
           failureCode: null,
           expiresAt: new Date(Date.now() + 600_000).toISOString(),
         }))
@@ -696,20 +580,21 @@ describe("MobileClient integration authorization", () => {
         configureClient: (host) => {
           const dispatch = host.dispatch.bind(host);
           host.dispatch = async (command) =>
-            command.type === "integration.authorization.return"
-              ? returned(command)
-              : dispatch(command);
+            command.type === "plugin.authorization.return" ? returned(command) : dispatch(command);
         },
       });
       const { client } = open(port.factory, new MemoryPrivateFilesystem(), {
         openIntegrationAuthorization: async (url) =>
-          buildNativeIntegrationAuthorizationCallback({
-            deploymentId: DeploymentIdSchema.parse(serverId),
-            attemptId: IntegrationOAuthAttemptIdSchema.parse(
-              new URL(url).pathname.split("/").at(-2),
-            ),
-            returnProof: "r".repeat(43),
-          }),
+          delivered(
+            client,
+            buildNativeIntegrationAuthorizationCallback({
+              deploymentId: DeploymentIdSchema.parse(serverId),
+              attemptId: IntegrationOAuthAttemptIdSchema.parse(
+                new URL(url).pathname.split("/").at(-2),
+              ),
+              returnProof: "r".repeat(43),
+            }),
+          ),
       });
       await client.catalog.upsert(
         asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
@@ -718,9 +603,7 @@ describe("MobileClient integration authorization", () => {
       await client.select(serverId);
       vi.useFakeTimers();
       try {
-        const outcome = client
-          .beginIntegrationAuthorization({ definitionId: "slack" })
-          .catch((error: unknown) => error);
+        const outcome = signedIn(client).catch((error: unknown) => error);
         await vi.advanceTimersByTimeAsync(0);
         expect(returned).toHaveBeenCalledOnce();
         if (mode === "dispose") client.dispose();
@@ -767,9 +650,11 @@ describe("MobileClient integration authorization", () => {
       let unavailable = false;
       const failedSelection = vi.fn();
       const returned = vi.fn(async (_command: unknown) => ({
-        type: "integration.authorization.return" as const,
+        type: "plugin.authorization.return" as const,
+        attemptId: returnedAttemptId,
+        connection: "con_1",
+        account: "acc_1",
         status: "completed" as const,
-        connectionId: null,
         failureCode: null,
         expiresAt: new Date(Date.now() + 600_000).toISOString(),
       }));
@@ -778,9 +663,7 @@ describe("MobileClient integration authorization", () => {
         configureClient: (host: MockHostClient) => {
           const dispatch = host.dispatch.bind(host);
           host.dispatch = async (command) =>
-            command.type === "integration.authorization.return"
-              ? returned(command)
-              : dispatch(command);
+            command.type === "plugin.authorization.return" ? returned(command) : dispatch(command);
         },
       };
       const port = testPort(portOptions);
@@ -811,7 +694,7 @@ describe("MobileClient integration authorization", () => {
           await client.deselect();
           unavailable = true;
           if (failure === "session-exchange") portOptions.held = false;
-          return callback;
+          return delivered(client, callback);
         },
       });
       vi.spyOn(client.sessionExchange, "establish").mockImplementation(async () => {
@@ -831,8 +714,7 @@ describe("MobileClient integration authorization", () => {
       vi.useFakeTimers();
       try {
         let finished = false;
-        const outcome = client
-          .beginIntegrationAuthorization({ definitionId: "slack" })
+        const outcome = signedIn(client)
           .catch((error: unknown) => error)
           .then((result) => {
             finished = true;
@@ -864,7 +746,7 @@ describe("MobileClient integration authorization", () => {
           expect(returned).toHaveBeenCalledExactlyOnceWith(
             expect.objectContaining({
               returnProof: "r".repeat(43),
-              idempotencyKey: expect.stringMatching(/^integration-auth-return:/u),
+              idempotencyKey: expect.stringMatching(/^plugin-auth-return:/u),
             }),
           );
           expect(failedSelection).toHaveBeenCalledOnce();
@@ -935,17 +817,20 @@ describe("MobileClient integration authorization", () => {
           }
           const dispatch = host.dispatch.bind(host);
           host.dispatch = async (command) =>
-            command.type === "integration.authorization.return"
+            command.type === "plugin.authorization.return"
               ? {
-                  type: "integration.authorization.return",
+                  type: "plugin.authorization.return",
+                  attemptId: returnedAttemptId,
+                  connection: "con_1",
+                  account: "acc_1",
                   status: "completed",
-                  connectionId: null,
                   expiresAt: new Date(Date.now() + 600_000).toISOString(),
                   failureCode: null,
                 }
               : dispatch(command);
         },
       });
+      const browserOpened = deferred<void>();
       const first = open(port.factory, files, {
         records,
         openIntegrationAuthorization: async (url) => {
@@ -956,7 +841,9 @@ describe("MobileClient integration authorization", () => {
             ),
             returnProof: "r".repeat(43),
           });
-          throw new Error("browser unavailable");
+          // The app is closed while the system sheet is still open.
+          browserOpened.resolve();
+          return new Promise<string>(() => {});
         },
       }).client;
       await first.catalog.upsert(
@@ -964,9 +851,8 @@ describe("MobileClient integration authorization", () => {
       );
       await first.initialize();
       await first.select(serverId);
-      await expect(first.beginIntegrationAuthorization({ definitionId: "slack" })).rejects.toThrow(
-        "browser unavailable",
-      );
+      void (await beginSignIn(first)).done;
+      await browserOpened.promise;
       first.dispose();
       cold = true;
       const second = open(port.factory, files, { records }).client;
@@ -984,9 +870,9 @@ describe("MobileClient integration authorization", () => {
       await vi.waitFor(() => expect(loading, "Cold Host never began loading").toHaveBeenCalled(), {
         timeout: 1000,
       });
-      expect(
-        port.commands.filter((type) => type === "integration.authorization.return"),
-      ).toHaveLength(0);
+      expect(port.commands.filter((type) => type === "plugin.authorization.return")).toHaveLength(
+        0,
+      );
       try {
         if (mode === "selection-changed") {
           await second.catalog.upsert(
@@ -1010,7 +896,7 @@ describe("MobileClient integration authorization", () => {
         if (mode === "complete") {
           await expect(outcome).resolves.toMatchObject({ status: "completed" });
           expect(
-            port.commands.filter((type) => type === "integration.authorization.return"),
+            port.commands.filter((type) => type === "plugin.authorization.return"),
           ).toHaveLength(1);
         } else {
           await expect(outcome).resolves.toMatchObject(
@@ -1019,7 +905,7 @@ describe("MobileClient integration authorization", () => {
               : { name: "Error" },
           );
           expect(
-            port.commands.filter((type) => type === "integration.authorization.return"),
+            port.commands.filter((type) => type === "plugin.authorization.return"),
           ).toHaveLength(0);
         }
       } finally {
@@ -1027,86 +913,6 @@ describe("MobileClient integration authorization", () => {
         second.dispose();
         vi.useRealTimers();
       }
-    },
-  );
-
-  it.each([true, false])(
-    "uses the same verified native return for MCP authorization (app finish: %s)",
-    async (appFinish) => {
-      const attemptId = IntegrationAuthorizationAttemptIdSchema.parse(
-        "imo_00000000-0000-4000-8000-000000000001",
-      );
-      const beginMcp = vi.fn(async (_input: { requestId: unknown; surface: string }) => ({
-        attemptId,
-        expiresAt: new Date(Date.now() + 600_000).toISOString(),
-        launchTicket: "a".repeat(43),
-        type: "integration.mcp.authorization.begin" as const,
-      }));
-      const status = vi.fn(async (_attemptId: string) => ({
-        connectionId: null,
-        expiresAt: new Date(Date.now() + 600_000).toISOString(),
-        failureCode: "provider-denied",
-        status: "denied" as const,
-      }));
-      const port = testPort({
-        held: true,
-        verification: {
-          status: "compatible",
-          capabilities: appFinish ? ["integration-app-finish-v1"] : [],
-        },
-        configureClient: (client) => {
-          const originalDispatch = client.dispatch.bind(client);
-          client.dispatch = async (command) =>
-            command.type === "integration.mcp.authorization.begin"
-              ? beginMcp(command.input)
-              : originalDispatch(command);
-          Object.defineProperty(client, "rpc", {
-            value: new Proxy(client.rpc, {
-              get(target, property, receiver) {
-                if (property === "integration.authorization.get") {
-                  return async (input: { attemptId: string }) => ({
-                    ok: true,
-                    data: await status(input.attemptId),
-                  });
-                }
-                return Reflect.get(target, property, receiver);
-              },
-            }),
-          });
-        },
-      });
-      let opened = "";
-      const { client } = open(port.factory, new MemoryPrivateFilesystem(), {
-        openIntegrationAuthorization: async (url) => {
-          opened = url;
-          return buildNativeIntegrationAuthorizationCallback({
-            attemptId,
-            deploymentId: DeploymentIdSchema.parse(serverId),
-          });
-        },
-      });
-      await client.catalog.upsert(
-        asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
-      );
-      await client.initialize();
-      await client.select(serverId);
-      const requestId = createId("request");
-      await expect(
-        client.beginMcpIntegrationAuthorization({
-          serverId: "isv_00000000-0000-4000-8000-000000000001",
-          requestId,
-          displayName: "My MCP account",
-        }),
-      ).resolves.toMatchObject({ status: "denied", failureCode: "provider-denied" });
-      expect(beginMcp).toHaveBeenCalledWith(
-        expect.objectContaining({ requestId, surface: "native" }),
-      );
-      if (appFinish)
-        expect(beginMcp).toHaveBeenCalledWith(expect.objectContaining({ finish: "app" }));
-      else expect(beginMcp).toHaveBeenCalledWith(expect.not.objectContaining({ finish: "app" }));
-      expect(opened).toContain(`/v1/integration-authorizations/${attemptId}/launch`);
-      expect(status).toHaveBeenCalledWith(attemptId);
-      client.dispose();
     },
   );
 
@@ -1127,9 +933,7 @@ describe("MobileClient integration authorization", () => {
     await client.initialize();
     await client.select(serverId);
 
-    await expect(client.beginIntegrationAuthorization({ definitionId: "slack" })).rejects.toThrow(
-      /different integration attempt/u,
-    );
+    await expect((await beginSignIn(client)).done).rejects.toThrow(/different sign-in/u);
     client.dispose();
   });
 
@@ -1181,7 +985,7 @@ describe("MobileClient integration authorization", () => {
     );
     await client.initialize();
     await client.select(serverId);
-    await expect(client.beginIntegrationAuthorization({ definitionId: "slack" })).rejects.toThrow();
+    await expect((await beginSignIn(client)).done).rejects.toThrow();
     if (action === "sign-out") await client.signOut(serverId);
     const commands = port.commands.length;
     await expect(client.handleIntegrationAuthorizationCallback(callback)).resolves.toBeNull();
@@ -1191,365 +995,41 @@ describe("MobileClient integration authorization", () => {
   });
 });
 
-describe("MobileClient cancelling an integration sign-in", () => {
-  const expiresAt = new Date(Date.now() + 600_000).toISOString();
-  const proof = "r".repeat(43);
+/** The attempt a mocked Host return names; the phone checks only its own attempt's key. */
+const returnedAttemptId = IntegrationOAuthAttemptIdSchema.parse(
+  "ioa_00000000-0000-4000-8000-000000000001",
+);
 
-  const answered = (status: "cancelled" | "completed") => ({
-    connectionId: status === "completed" ? "con_00000000-0000-4000-8000-0000000000aa" : null,
-    expiresAt,
-    failureCode: null,
-    status,
-    type: "integration.authorization.cancel" as const,
+/**
+ * A plugin sign-in as its screen starts one on a phone: the attempt the Host
+ * began, routed and launched in the system sheet. `done` settles when launching
+ * does.
+ */
+async function beginSignIn(client: MobileClient) {
+  const handle = client.pluginSignInSurface().open();
+  const route = await handle.route();
+  const done = handle.launch({
+    attemptId: IntegrationOAuthAttemptIdSchema.parse(`ioa_${crypto.randomUUID()}`),
+    connection: "con_1",
+    launchTicket: "t".repeat(43),
+    expiresAt: new Date(Date.now() + 600_000).toISOString(),
   });
+  return { route, done };
+}
 
-  async function signingIn(
-    input: {
-      readonly answer?: "cancelled" | "completed";
-      /** Answers the Host's cancel in order; once they run out, `answer` applies. */
-      readonly cancelTries?: readonly (() => Promise<unknown>)[];
-      readonly returned?: () => Promise<unknown>;
-      /** Sends both commands over a real client and network instead of answering them here. */
-      readonly wire?: ReturnType<typeof heldCredentialWire>;
-    } = {},
-  ) {
-    const tries = [...(input.cancelTries ?? [])];
-    const cancels = vi.fn(
-      async (_command: { attemptId: unknown }) =>
-        (await tries.shift()?.()) ?? answered(input.answer ?? "cancelled"),
-    );
-    const returns = vi.fn(
-      async () =>
-        (await input.returned?.()) ?? {
-          connectionId: null,
-          expiresAt,
-          failureCode: null,
-          status: "completed" as const,
-          type: "integration.authorization.return" as const,
-        },
-    );
-    const port = testPort({
-      held: true,
-      verification: { status: "compatible", capabilities: ["integration-app-finish-v1"] },
-      configureClient: (host) => {
-        const dispatch = host.dispatch.bind(host);
-        (host as { dispatch: SignalledDispatch }).dispatch = async (command, call) => {
-          if (
-            input.wire &&
-            (command.type === "integration.authorization.cancel" ||
-              command.type === "integration.authorization.return")
-          )
-            return input.wire.send(command, call);
-          if (command.type === "integration.authorization.cancel") return cancels(command) as never;
-          if (command.type === "integration.authorization.return") return returns() as never;
-          return dispatch(command);
-        };
-      },
-    });
-    let opened!: (url: string) => void;
-    const browserOpened = new Promise<string>((resolve) => {
-      opened = resolve;
-    });
-    const { client } = open(port.factory, new MemoryPrivateFilesystem(), {
-      // Stays open like a real session, and ends only when its signal says so.
-      openIntegrationAuthorization: (url, signal) =>
-        new Promise((_, reject) => {
-          opened(url);
-          signal?.addEventListener("abort", () =>
-            reject(new IntegrationAuthorizationCancelledError()),
-          );
-        }),
-    });
-    await client.catalog.upsert(
-      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
-    );
-    await client.initialize();
-    await client.select(serverId);
-    const controller = new AbortController();
-    const started = client.beginIntegrationAuthorization({
-      definitionId: "slack",
-      signal: controller.signal,
-    });
-    started.catch(() => undefined);
-    const callback = buildNativeIntegrationAuthorizationCallback({
-      attemptId: IntegrationOAuthAttemptIdSchema.parse(
-        new URL(await browserOpened).pathname.split("/").at(-2),
-      ),
-      deploymentId: DeploymentIdSchema.parse(serverId),
-      returnProof: proof,
-    });
-    return { callback, cancels, client, controller, returns, started };
-  }
+let deliveryStarted = deferred<unknown>();
+/** The browser's return also arriving as a deep link; the sign-in's own delivery joins it. */
+function delivered(client: MobileClient, callback: string): string {
+  deliveryStarted.resolve(client.handleIntegrationAuthorizationCallback(callback));
+  return callback;
+}
 
-  it("tells the Host, ends the browser wait and refuses a late return", async () => {
-    const { callback, cancels, client, controller, returns, started } = await signingIn();
-    controller.abort();
-    await expect(started).rejects.toBeInstanceOf(IntegrationAuthorizationCancelledError);
-    expect(cancels).toHaveBeenCalledTimes(1);
-    await expect(client.handleIntegrationAuthorizationCallback(callback)).resolves.toBeNull();
-    expect(returns).not.toHaveBeenCalled();
-    client.dispose();
-  });
-
-  // The ways it could fail: `withTimeout` stops only the waiter, so a request held
-  // by credential loading still goes out when they arrive. A proof reaching the
-  // Host after Cancel can finish a sign-in the person ended.
-  describe("a request still waiting for credentials", () => {
-    const flushed = () => new Promise((resolve) => setImmediate(resolve));
-    const proofs = "integration.authorization.return";
-    const cancels = "integration.authorization.cancel";
-
-    it("sends no proof once Cancel has landed", async () => {
-      const wire = heldCredentialWire();
-      const { callback, client, controller, started } = await signingIn({ wire });
-      const release = wire.hold();
-      const delivery = client.handleIntegrationAuthorizationCallback(callback);
-      await vi.waitFor(() => expect(wire.credentialReads()).toBe(1));
-      const proofRequest = wire.lastSignal();
-      expect(proofRequest?.aborted).toBe(false);
-      controller.abort();
-      expect(proofRequest?.aborted).toBe(true);
-      await expect(started).rejects.toBeInstanceOf(IntegrationAuthorizationCancelledError);
-      release();
-      await expect(delivery).resolves.toBeNull();
-      await flushed();
-      expect(wire.sent(proofs)).toEqual([]);
-      expect(wire.sent(cancels)).toHaveLength(1);
-      client.dispose();
-    });
-
-    it("sends only the retry of a proof whose first try timed out", async () => {
-      const wire = heldCredentialWire();
-      const { callback, client } = await signingIn({ wire });
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      try {
-        const release = wire.hold();
-        const delivery = client.handleIntegrationAuthorizationCallback(callback);
-        await vi.advanceTimersByTimeAsync(20_000);
-        expect(wire.credentialReads()).toBe(1);
-        await vi.advanceTimersByTimeAsync(1_000);
-        await delivery;
-        expect(wire.sent(proofs)).toHaveLength(1);
-        release();
-        await vi.advanceTimersByTimeAsync(0);
-      } finally {
-        vi.useRealTimers();
-      }
-      await flushed();
-      expect(wire.sent(proofs)).toHaveLength(1);
-      client.dispose();
-    });
-
-    it("sends only the retry of a Cancel whose first try timed out", async () => {
-      const wire = heldCredentialWire();
-      const { client, controller, started } = await signingIn({ wire });
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      try {
-        const release = wire.hold();
-        controller.abort();
-        await vi.advanceTimersByTimeAsync(10_000);
-        const error = await started.catch((reason: unknown) => reason);
-        expect(error).toBeInstanceOf(IntegrationAuthorizationCancelUnconfirmedError);
-        await vi.advanceTimersByTimeAsync(1_000);
-        await expect(
-          (error as IntegrationAuthorizationCancelUnconfirmedError).reconciled,
-        ).resolves.toMatchObject({ status: "cancelled" });
-        expect(wire.sent(cancels)).toHaveLength(1);
-        release();
-        await vi.advanceTimersByTimeAsync(0);
-      } finally {
-        vi.useRealTimers();
-      }
-      await flushed();
-      expect(wire.sent(cancels)).toHaveLength(1);
-      client.dispose();
-    });
-  });
-
-  describe("when the Host does not answer the Cancel", () => {
-    const unanswered = () => Promise.reject(new HostTransportError("unreachable"));
-    const reconcile = async (started: Promise<unknown>) => {
-      const error = await started.then(
-        () => null,
-        (reason: unknown) => reason,
-      );
-      expect(error).toBeInstanceOf(IntegrationAuthorizationCancelUnconfirmedError);
-      return error as IntegrationAuthorizationCancelUnconfirmedError;
-    };
-
-    it("says it is unconfirmed, and the completion that won still wins", async () => {
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      try {
-        const { callback, cancels, client, controller, returns, started } = await signingIn({
-          answer: "completed",
-          cancelTries: [unanswered],
-        });
-        controller.abort();
-        const error = await reconcile(started);
-        expect(error.attemptId).toMatch(/^ioa_/u);
-        await expect(client.handleIntegrationAuthorizationCallback(callback)).resolves.toBeNull();
-        await vi.advanceTimersByTimeAsync(1_000);
-        await expect(error.reconciled).resolves.toMatchObject({ status: "completed" });
-        expect(cancels).toHaveBeenCalledTimes(2);
-        expect(returns).not.toHaveBeenCalled();
-        client.dispose();
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it("treats a request that hangs past its deadline the same way", async () => {
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      try {
-        const { client, controller, started } = await signingIn({
-          answer: "completed",
-          cancelTries: [() => new Promise(() => {})],
-        });
-        controller.abort();
-        await vi.advanceTimersByTimeAsync(10_000);
-        const error = await reconcile(started);
-        await vi.advanceTimersByTimeAsync(1_000);
-        await expect(error.reconciled).resolves.toMatchObject({ status: "completed" });
-        client.dispose();
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it("reports the cancel once the Host confirms it", async () => {
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      try {
-        const { client, controller, started } = await signingIn({ cancelTries: [unanswered] });
-        controller.abort();
-        const error = await reconcile(started);
-        await vi.advanceTimersByTimeAsync(1_000);
-        await expect(error.reconciled).resolves.toMatchObject({ status: "cancelled" });
-        client.dispose();
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it("keeps trying until the Host answers, backing off", async () => {
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      try {
-        const { cancels, client, controller, started } = await signingIn({
-          answer: "completed",
-          cancelTries: [unanswered, unanswered, unanswered],
-        });
-        controller.abort();
-        const error = await reconcile(started);
-        await vi.advanceTimersByTimeAsync(1_000);
-        expect(cancels).toHaveBeenCalledTimes(2);
-        await vi.advanceTimersByTimeAsync(2_000);
-        expect(cancels).toHaveBeenCalledTimes(3);
-        await vi.advanceTimersByTimeAsync(4_000);
-        await expect(error.reconciled).resolves.toMatchObject({ status: "completed" });
-        client.dispose();
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it("stops claiming anything when the Host refuses the question", async () => {
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      try {
-        const refused = new HostClientRequestError({
-          code: "forbidden",
-          message: "Wrong owner",
-          status: 403,
-        });
-        const { client, controller, started } = await signingIn({
-          cancelTries: [unanswered, () => Promise.reject(refused)],
-        });
-        controller.abort();
-        const error = await reconcile(started);
-        await vi.advanceTimersByTimeAsync(1_000);
-        await expect(error.reconciled).resolves.toBeNull();
-        client.dispose();
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it("stops asking once the attempt is long past its expiry", async () => {
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-      try {
-        const { client, controller, started } = await signingIn({
-          cancelTries: Array.from({ length: 200 }, () => unanswered),
-        });
-        controller.abort();
-        const error = await reconcile(started);
-        await vi.advanceTimersByTimeAsync(20 * 60_000);
-        await expect(error.reconciled).resolves.toBeNull();
-        client.dispose();
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it("stops when the app is torn down", async () => {
-      const { client, controller, started } = await signingIn({
-        cancelTries: [unanswered, unanswered],
-      });
-      controller.abort();
-      const error = await reconcile(started);
-      client.dispose();
-      await expect(error.reconciled).resolves.toBeNull();
-    });
-  });
-
-  it("reports the completion that won instead of Cancelled", async () => {
-    const { client, controller, started } = await signingIn({ answer: "completed" });
-    controller.abort();
-    await expect(started).resolves.toMatchObject({ status: "completed" });
-    client.dispose();
-  });
-
-  it("stops an app-link delivery that started first, before its proof goes out", async () => {
-    const { callback, cancels, client, controller, returns, started } = await signingIn();
-    const load = client.catalog.load.bind(client.catalog);
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const catalogRead = vi.spyOn(client.catalog, "load").mockImplementationOnce(async () => {
-      await held;
-      return load();
-    });
-    const delivery = client.handleIntegrationAuthorizationCallback(callback);
-    await vi.waitFor(() => expect(catalogRead).toHaveBeenCalled());
-    controller.abort();
-    await expect(started).rejects.toBeInstanceOf(IntegrationAuthorizationCancelledError);
-    release();
-    await expect(delivery).resolves.toBeNull();
-    expect(returns).not.toHaveBeenCalled();
-    expect(cancels).toHaveBeenCalledTimes(1);
-    client.dispose();
-  });
-
-  it("lets the Host decide when the proof had already gone out", async () => {
-    let sent!: () => void;
-    const reached = new Promise<void>((resolve) => {
-      sent = resolve;
-    });
-    const { callback, client, controller, started } = await signingIn({
-      answer: "completed",
-      returned: () => {
-        sent();
-        return new Promise(() => {});
-      },
-    });
-    const delivery = client.handleIntegrationAuthorizationCallback(callback);
-    await withTimeout(reached, 5_000, {
-      timeoutError: () => new Error("The proof never reached the Host."),
-    });
-    controller.abort();
-    await expect(started).resolves.toMatchObject({ status: "completed" });
-    await expect(delivery).resolves.toBeNull();
-    client.dispose();
-  });
-});
+/** Launches a sign-in and answers with how the delivery of its return ended. */
+async function signedIn(client: MobileClient): Promise<unknown> {
+  deliveryStarted = deferred<unknown>();
+  const signIn = await beginSignIn(client);
+  return Promise.race([deliveryStarted.promise, signIn.done.then(() => deliveryStarted.promise)]);
+}
 
 describe("MobileClient startup selection", () => {
   it("distinguishes local hydration from a settled empty selection", async () => {

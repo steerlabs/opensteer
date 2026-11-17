@@ -48,7 +48,6 @@ export type PluginAnswer = {
   content?: Record<string, PluginJson> | undefined;
 };
 export interface PluginServiceOptions {
-  readonly deployment: "personal" | "team";
   readonly databaseUrl: string;
   readonly dataDirectory: string;
   readonly owner: string;
@@ -209,14 +208,6 @@ export class PluginService {
    */
   async start(): Promise<void> {
     if (this.#closed) throw new PluginServiceError("unavailable", "Plugin service is closed");
-    if (this.#options.deployment === "team") {
-      this.#set({
-        status: "unavailable",
-        generation: 0,
-        reason: "Team Deployments do not run plugins",
-      });
-      return;
-    }
     this.#idleCheck ??= setInterval(() => {
       if (this.#state.status === "ready") void this.stopIfIdle().catch(() => {});
     }, idleCheckMs).unref();
@@ -319,7 +310,7 @@ export class PluginService {
       const child = this.#child;
       if (this.#state.status === "ready" && child) return child;
       if (this.#closed) throw new PluginServiceError("unavailable", "Plugin service is closed");
-      if (this.#options.deployment === "team" || this.#state.status === "unavailable")
+      if (this.#state.status === "unavailable")
         throw new PluginServiceError(
           "unavailable",
           this.#state.reason ?? "Plugin engine is unavailable",

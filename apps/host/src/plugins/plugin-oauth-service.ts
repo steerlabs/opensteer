@@ -49,6 +49,7 @@ import {
   type PluginBrokerOperation,
   type PluginBrokerOutput,
   type PluginConsent,
+  pluginOwnerId,
 } from "./engine-protocol.js";
 
 const importConfiguration = (value: unknown) =>
@@ -760,7 +761,7 @@ export class PluginOAuthService {
       const input = raw as PluginBrokerInput<"oauthStart">;
       const session = await this.#session(input.connection, owner);
       await this.#current(session, owner);
-      if (!session.account || input.owner !== "personal")
+      if (!session.account || input.owner !== pluginOwnerId)
         throw new PluginBrokerError("binding_changed");
       const binding = { ...input.binding, accountLinkGeneration: session.account.linkGeneration };
       const started = await this.#startAttempt(session, owner, undefined, binding);

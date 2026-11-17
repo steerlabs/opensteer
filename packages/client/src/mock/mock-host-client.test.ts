@@ -490,49 +490,21 @@ describe("MockHostClient", () => {
     const platform = IntegrationPlatformDashboardSchema.parse(await integrationPlatform(client));
 
     expect(platform.catalog.map(({ definition }) => definition.id)).toEqual([
-      "google-gmail",
       "apple-contacts",
       "apple-calendar",
       "apple-reminders",
       "iphone-location",
       "iphone-photos",
-      "github",
-      "google-calendar",
-      "linear",
-      "notion",
       "apple-messages",
       "macos-app",
       "android-phone",
-      "slack",
-      "resend",
     ]);
+    // Only device data apps, computer use, the phone and local servers remain.
     expect(
-      platform.catalog
-        .filter(({ installationId }) => installationId === null)
-        .map(({ definition }) => definition.id),
-    ).toEqual([
-      "apple-contacts",
-      "apple-calendar",
-      "apple-reminders",
-      "iphone-location",
-      "iphone-photos",
-      "resend",
-    ]);
-    expect(
-      platform.installations.filter(({ installation }) => installation.sourceKind === "remote-mcp"),
-    ).toHaveLength(1);
-    expect(platform.connections.map(({ status }) => status)).toEqual(["connected", "connected"]);
+      platform.installations.map(({ installation }) => installation.sourceKind).sort(),
+    ).not.toContain("remote-mcp");
     expect(dashboard.connections.map(({ definitionId, status }) => [definitionId, status])).toEqual(
       [
-        ["google-gmail", "connected"],
-        ["google-gmail", "connected"],
-        ["github", "connected"],
-        // One pins an app revision that is gone; two wait for their
-        // repositories, and GitHub has revoked the token of the second.
-        ["github", "needs-attention"],
-        ["github", "needs-attention"],
-        ["github", "needs-attention"],
-        ["linear", "connected"],
         // Two Macs with Messages are two connections, never one that moves.
         ["apple-messages", "connected"],
         ["apple-messages", "connected"],
@@ -542,32 +514,9 @@ describe("MockHostClient", () => {
         ["macos-app", "paused"],
         // A phone is one connection for its whole screen.
         ["android-phone", "connected"],
-        ["notion", "needs-attention"],
-        ["slack", "revoked"],
-        // Both Google accounts predate a change to the authorization.
-        ["google-calendar", "needs-attention"],
-        ["google-calendar", "needs-attention"],
-        // An agent-proposed key the service rejected, beside the same-named
-        // account an older reconnect made instead of repairing it.
-        ["vapi-api", "needs-attention"],
-        ["vapi-api", "connected"],
         ["macos-app", "connected"],
       ],
     );
-    expect(
-      Object.entries(dashboard.providerAuthorizations).map(([provider, { code }]) => [
-        provider,
-        code,
-      ]),
-    ).toEqual([
-      ["github", "READY"],
-      ["google", "READY"],
-      ["notion", "ACCOUNT_LINK_REQUIRED"],
-      ["slack", "PROVIDER_APPLICATION_REQUIRED"],
-    ]);
-    expect(dashboard.providerAuthorizations["github"]?.availableSources).toHaveLength(2);
-    expect(dashboard.applications.map(({ provider }) => provider)).toEqual(["github"]);
-    expect(dashboard.callbackUrls["github"]).toMatch(/\/callback\/github$/);
   });
   it("keeps every seeded Thread at work holding the Run the Host would, and stops it", async () => {
     const client = createClient();

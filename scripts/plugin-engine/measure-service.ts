@@ -14,7 +14,6 @@ const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-measure-"));
 const registry = await pluginFixtureRegistry(directory);
 const caller = { caller: "owner:measurement", mode: "automatic" as const };
 const options = {
-  deployment: "personal",
   owner: "owner",
   credentialKey: new Uint8Array(32).fill(1),
   databaseUrl,

@@ -1,3 +1,4 @@
+import { pluginOwnerId } from "./engine-protocol.js";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import { PluginAgentStore, TriggerStore, type OpensteerStore } from "@opensteer/database";
 import type { AgentCaller } from "../mcp/agent-caller.js";
@@ -78,7 +79,7 @@ export class PluginAuthority {
     const owner = await this.options.owner();
     const settings = await this.options.settings.settings(owner);
     const grants = Object.fromEntries(settings.map((s) => [s.pluginId, s.access]));
-    if (input.caller === "personal") {
+    if (input.caller === pluginOwnerId) {
       const access = input.plugin ? (grants[input.plugin] ?? "all") : "all";
       return {
         allowed: input.operation !== "background" || access !== "off",

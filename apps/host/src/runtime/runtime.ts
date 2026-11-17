@@ -1088,7 +1088,6 @@ export async function createHostRuntime(
     });
     let lastEngineStatus: string | undefined;
     pluginService = new PluginService({
-      deployment: "personal",
       databaseUrl: config.databaseUrl,
       dataDirectory,
       owner: "personal",

@@ -177,7 +177,6 @@ beforeEach(async (testContext) => {
     owner: async () => personal.userId,
   });
   service = new PluginService({
-    deployment: "personal",
     databaseUrl: clone.url,
     dataDirectory: directory,
     owner: "personal",

@@ -21,6 +21,8 @@ const files = z.array(
 );
 export const CallerSchema = z.strictObject({ caller: id, mode: z.enum(["ask", "automatic"]) });
 export type PluginCaller = z.infer<typeof CallerSchema>;
+/** The engine owner and caller id of the Deployment's one personal owner acting for themselves. */
+export const pluginOwnerId = "personal";
 export const ConsentSchema = PluginAccountConsentSchema;
 export type PluginConsent = z.infer<typeof ConsentSchema>;
 const plugin = z.strictObject({ plugin: id });

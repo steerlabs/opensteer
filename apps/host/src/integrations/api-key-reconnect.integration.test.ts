@@ -20,7 +20,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createId, type RequestId } from "@opensteer/core";
-import { integrationAccountDetail } from "@opensteer/client/integrations";
 import { notionIntegration } from "@opensteer/integration-catalog";
 import {
   IntegrationConnectionIdSchema,
@@ -330,13 +329,7 @@ integration("API-key reconnect incident", () => {
           };
         }),
       );
-      const labels = accountFacts.map((account) =>
-        integrationAccountDetail(account, accountFacts, new Date("2026-09-17T12:00:00Z")),
-      );
-      expect(new Set(labels).size).toBe(2);
-      expect(labels[0]).toContain(":03");
-      expect(labels[1]).toContain(":49");
-      record("same-named accounts in one minute show seconds", { accounts: accountFacts, labels });
+      record("same-named accounts in one minute", { accounts: accountFacts });
       const attentionSearch = await gateway.call("integration_search", { query: "Vapi API" });
       expect(operations(attentionSearch).map(({ connectionId }) => connectionId)).toEqual([bId]);
       record("needs-attention A is absent while B remains callable", attentionSearch);

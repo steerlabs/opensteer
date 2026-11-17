@@ -81,11 +81,7 @@ export class DesktopIntegrationAuthorizations {
   }
   attach(
     identity: { readonly deploymentId: string; readonly userId: string },
-    receive: (
-      callback: IntegrationAuthorizationAppReturn & {
-        readonly kind: IntegrationAuthorizationAttempt["kind"];
-      },
-    ) => void,
+    receive: (callback: IntegrationAuthorizationAppReturn & { readonly kind: "plugin" }) => void,
   ): () => void {
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -102,8 +98,8 @@ export class DesktopIntegrationAuthorizations {
           (entry.userId !== undefined && entry.userId !== identity.userId)
         )
           return false;
-        // The attempt's own kind decides which Host command the proof goes to.
-        receive({ ...callback, kind: entry.kind });
+        // Every attempt is a plugin sign-in; the bridge's return still names its kind.
+        receive({ ...callback, kind: "plugin" });
         // Emitting an IPC event is not acknowledgement. Keep the proof queued
         // until the renderer confirms a durable terminal outcome.
         if (active && timer === undefined) {

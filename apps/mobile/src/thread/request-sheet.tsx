@@ -77,7 +77,6 @@ import { AnswerPill, AnswerRow } from "./answer-pill.js";
 import { requestTitle, requestTitleLine } from "./docked-requests.js";
 import { answerDeviceAccessRequest } from "@opensteer/client/computers";
 import { AskerByline, useRequestAsker } from "./asker-byline.js";
-import { InstallReview } from "./integration-install-review.js";
 import {
   approvalMenuOptions,
   confirmHighRisk,
@@ -532,11 +531,6 @@ export function RequestSheetContent(props: {
         {detail === null ? null : (
           <RequestDetail mono={request.kind === "harness.approval"} text={detail} />
         )}
-        {request.payload.kind === "integration.input" ? (
-          <AppText role="secondary" tone="muted">
-            Only this plugin receives what you enter. The agent never sees it.
-          </AppText>
-        ) : null}
         {askingWhy ? (
           <>
             <ResponseStatus failure={session.failure} reason={blocked} />
@@ -751,14 +745,6 @@ function RequestBody(props: {
       };
       return (
         <View style={styles.section}>
-          {request.payload.kind === "integration.install" ? (
-            <InstallReview
-              canInstall
-              continuesToAccess={false}
-              installedTitle={null}
-              manifest={request.payload.manifest}
-            />
-          ) : null}
           <ResponseStatus failure={session.failure} reason={reason} />
           <View style={styles.group}>
             {options.map((option, index) => (

@@ -5,12 +5,10 @@ import {
   buildNativeIntegrationAuthorizationCallback,
   opensteerMobileIntegrationAuthorizationCallback,
   parseNativeIntegrationAuthorizationCallback,
-  waitForIntegrationAuthorization,
   IntegrationAuthorizationAttempts,
-  integrationAuthorizationStatusReturned,
 } from "./native-authorization.js";
 
-describe("native integration authorization", () => {
+describe("native sign-in returns", () => {
   it.each(["oauthAttempt", "mcpOauthAttempt"] as const)(
     "round trips an opaque %s identifier",
     (kind) => {
@@ -39,44 +37,10 @@ describe("native integration authorization", () => {
   ])("rejects an untrusted callback shape: %s", (callback) => {
     expect(parseNativeIntegrationAuthorizationCallback(callback)).toBeNull();
   });
-
-  it("treats the durable Host status as the only success channel", async () => {
-    const attemptId = createIntegrationId("oauthAttempt");
-    const rpc = vi
-      .fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        data: {
-          connectionId: null,
-          expiresAt: "2026-09-18T00:00:00.000Z",
-          failureCode: null,
-          status: "launched",
-        },
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        data: {
-          connectionId: createIntegrationId("connection"),
-          expiresAt: "2026-09-18T00:00:00.000Z",
-          failureCode: null,
-          status: "completed",
-        },
-      });
-    const result = await waitForIntegrationAuthorization({
-      attemptId,
-      client: { rpc: { "integration.authorization.get": rpc } },
-      expiresAt: "2026-09-18T00:00:00.000Z",
-      now: () => new Date("2026-09-17T00:00:00.000Z").getTime(),
-      sleep: async () => undefined,
-    });
-    expect(result.status).toBe("completed");
-    expect(rpc).toHaveBeenCalledTimes(2);
-  });
 });
 
 describe("app-started authorization attempts", () => {
   const entry = () => ({
-    kind: "integration" as const,
     deploymentId: createId("deployment"),
     attemptId: createIntegrationId("oauthAttempt"),
     userId: createId("user"),
@@ -152,41 +116,4 @@ describe("app-started authorization attempts", () => {
     await reloaded.load();
     expect(reloaded.find(started)).toBeNull();
   });
-});
-
-it("wakes an existing waiter immediately with the Host return result", async () => {
-  const attemptId = createIntegrationId("oauthAttempt");
-  const pending = {
-    connectionId: null,
-    failureCode: null,
-    status: "launched" as const,
-    expiresAt: "2099-01-01T00:00:00.000Z",
-  };
-  const client = {
-    rpc: {
-      "integration.authorization.get": vi.fn(async () => ({ ok: true as const, data: pending })),
-    },
-  };
-  const sleep = vi.fn(
-    (_milliseconds: number, signal?: AbortSignal) =>
-      new Promise<void>((_resolve, reject) => {
-        signal?.addEventListener("abort", () => reject(new Error("stopped")), { once: true });
-      }),
-  );
-  let result: unknown;
-  const waiting = waitForIntegrationAuthorization({ attemptId, client, sleep }).then((status) => {
-    result = status;
-  });
-  await vi.waitFor(() => expect(sleep).toHaveBeenCalledOnce(), { timeout: 1000 });
-  const completed = { ...pending, status: "completed" as const };
-  integrationAuthorizationStatusReturned(client, attemptId, completed);
-  await vi.waitFor(
-    () =>
-      expect(result, "Host return did not wake the existing authorization waiter").toEqual(
-        completed,
-      ),
-    { timeout: 1000 },
-  );
-  await waiting;
-  expect(client.rpc["integration.authorization.get"]).toHaveBeenCalledOnce();
 });

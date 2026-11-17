@@ -58,7 +58,6 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
     onDiagnostic: (phase) => console.log("Engine phase", phase),
     processEntry: new URL("../apps/host/dist/plugin-engine.js", import.meta.url),
     bridge: new URL("../apps/host/dist/plugin-engine-bridge.json", import.meta.url).pathname,
-    deployment: "personal",
     databaseUrl: clone.url,
     dataDirectory: directory,
     owner: "owner",

@@ -22,6 +22,7 @@ import {
 } from "@opensteer/protocol";
 import { IntegrationAuthorizationAttemptIdSchema } from "@opensteer/integration-core";
 import { HostClientRequestError } from "../host/client.js";
+import { mockNotesServer } from "./mock-integration-fixtures.js";
 import type { PluginOAuthMethods, PluginOAuthStatus } from "../plugins/sign-in.js";
 
 export type MockSignInCommand = Extract<
@@ -557,7 +558,7 @@ const seedLocalTools: Omit<PluginLocalToolView, "access">[] = [
     tools: [],
   },
   {
-    id: "app_server_srv_notes",
+    id: `app_server_${mockNotesServer.serverId}`,
     kind: "local-server",
     name: "notes-search",
     title: "Notes search",
@@ -1079,11 +1080,18 @@ export class MockPlugins {
   }
 
   readonly #localAccess = new Map<string, PluginLocalToolView["access"]>();
+  readonly #removedLocal = new Set<string>();
+  /** A local server removed on its own page leaves the list. */
+  removeLocal(id: string): void {
+    this.#removedLocal.add(id);
+  }
   local(): PluginLocalToolView[] {
-    return seedLocalTools.map((tool) => ({
-      ...tool,
-      access: this.#localAccess.get(tool.id) ?? "all",
-    }));
+    return seedLocalTools
+      .filter((tool) => !this.#removedLocal.has(tool.id))
+      .map((tool) => ({
+        ...tool,
+        access: this.#localAccess.get(tool.id) ?? "all",
+      }));
   }
 
   #link(target: PluginRequirementTarget, accountId: string) {

@@ -3,24 +3,24 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { HostClient } from "@opensteer/client/host";
-import type { IntegrationAuthorizationStatus } from "@opensteer/integration-core";
+import type { PluginOAuthStatus } from "@opensteer/client/plugins";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const waitForIntegrationAuthorization = vi.hoisted(() => vi.fn());
+const waitForPluginAuthorization = vi.hoisted(() => vi.fn());
 
-vi.mock("@opensteer/client/integrations", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@opensteer/client/integrations")>()),
-  waitForIntegrationAuthorization,
+vi.mock("@opensteer/client/plugins", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@opensteer/client/plugins")>()),
+  waitForPluginAuthorization,
 }));
 
-import { IntegrationAuthorizationCompletion } from "./integration-authorization-completion.js";
+import { PluginSignInCompletion } from "./plugin-sign-in-completion.js";
 
 const attemptId = "ioa_00000000-0000-4000-8000-000000000001";
 const client = { rpc: {} } as Pick<HostClient, "rpc">;
 const roots: Root[] = [];
 
 beforeEach(() => {
-  waitForIntegrationAuthorization.mockReset();
+  waitForPluginAuthorization.mockReset();
 });
 
 afterEach(() => {
@@ -28,12 +28,12 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("IntegrationAuthorizationCompletion", () => {
+describe("PluginSignInCompletion", () => {
   it("waits quietly while the source tab creates the authorization attempt", async () => {
     const container = await render(null);
 
     expect(container.textContent).toContain("Opening authorization…");
-    expect(waitForIntegrationAuthorization).not.toHaveBeenCalled();
+    expect(waitForPluginAuthorization).not.toHaveBeenCalled();
   });
 
   it("stops waiting for a source tab that never starts an attempt", async () => {
@@ -45,7 +45,7 @@ describe("IntegrationAuthorizationCompletion", () => {
     expect(container.textContent).toContain("Authorization didn’t open");
     expect(container.textContent).toContain("Return to your original Opensteer tab and try again.");
     expect(container.textContent).toContain("did not cancel an authorization");
-    expect(waitForIntegrationAuthorization).not.toHaveBeenCalled();
+    expect(waitForPluginAuthorization).not.toHaveBeenCalled();
   });
 
   it("clears the opening timeout when the page unmounts", async () => {
@@ -60,8 +60,8 @@ describe("IntegrationAuthorizationCompletion", () => {
   });
 
   it("shows completion only after the authenticated Host reports completed", async () => {
-    const result = deferred<IntegrationAuthorizationStatus>();
-    waitForIntegrationAuthorization.mockReturnValue(result.promise);
+    const result = deferred<PluginOAuthStatus>();
+    waitForPluginAuthorization.mockReturnValue(result.promise);
     const container = await render(attemptId);
 
     expect(container.textContent).toContain("Finishing authorization…");
@@ -70,25 +70,21 @@ describe("IntegrationAuthorizationCompletion", () => {
     await act(async () => result.resolve(status("completed")));
 
     expect(container.textContent).toContain("Account authorization complete");
-    expect(container.textContent).toContain(
-      "Return to your original Opensteer tab to finish setting up this connection.",
-    );
+    expect(container.textContent).toContain("The account is linked.");
     expect(container.textContent).toContain("You can close this tab.");
   });
 
-  it("uses the shared terminal authorization error", async () => {
-    waitForIntegrationAuthorization.mockResolvedValue(status("failed", "scope-escalation"));
+  it("says how a sign-in ended that did not complete", async () => {
+    waitForPluginAuthorization.mockResolvedValue(status("denied"));
     const container = await render(attemptId);
 
     expect(container.textContent).toContain("Authorization wasn’t completed");
-    expect(container.textContent).toContain(
-      "The provider did not grant every permission this integration needs.",
-    );
+    expect(container.textContent).toContain("You didn't approve access at the service.");
     expect(container.textContent).not.toContain("Try again");
   });
 
   it("retries a failed status read for the same attempt", async () => {
-    waitForIntegrationAuthorization
+    waitForPluginAuthorization
       .mockRejectedValueOnce(new Error("The Host is unreachable."))
       .mockResolvedValueOnce(status("completed"));
     const container = await render(attemptId);
@@ -103,16 +99,16 @@ describe("IntegrationAuthorizationCompletion", () => {
     await act(async () => retry?.click());
 
     expect(container.textContent).toContain("Account authorization complete");
-    expect(waitForIntegrationAuthorization).toHaveBeenCalledTimes(2);
-    expect(waitForIntegrationAuthorization.mock.calls[0]?.[0]).toMatchObject({ attemptId });
-    expect(waitForIntegrationAuthorization.mock.calls[1]?.[0]).toMatchObject({ attemptId });
+    expect(waitForPluginAuthorization).toHaveBeenCalledTimes(2);
+    expect(waitForPluginAuthorization.mock.calls[0]?.[0]).toMatchObject({ attemptId });
+    expect(waitForPluginAuthorization.mock.calls[1]?.[0]).toMatchObject({ attemptId });
   });
 
   it("does not ask the Host about an invalid callback identifier", async () => {
     const container = await render("not-an-attempt");
 
     expect(container.textContent).toContain("This authorization link is invalid");
-    expect(waitForIntegrationAuthorization).not.toHaveBeenCalled();
+    expect(waitForPluginAuthorization).not.toHaveBeenCalled();
   });
 });
 
@@ -122,26 +118,20 @@ async function render(integrationAttempt: string | null): Promise<HTMLDivElement
   const root = createRoot(container);
   roots.push(root);
   await act(async () => {
-    root.render(
-      <IntegrationAuthorizationCompletion
-        client={client}
-        integrationAttempt={integrationAttempt}
-      />,
-    );
+    root.render(<PluginSignInCompletion client={client} integrationAttempt={integrationAttempt} />);
   });
   return container;
 }
 
-function status(
-  value: IntegrationAuthorizationStatus["status"],
-  failureCode: string | null = null,
-): IntegrationAuthorizationStatus {
+function status(value: PluginOAuthStatus["status"]): PluginOAuthStatus {
   return {
-    connectionId: null,
+    attemptId,
+    connection: "con_1",
+    account: value === "completed" ? "acc_1" : null,
     expiresAt: "2030-01-01T00:00:00.000Z",
-    failureCode,
+    failureCode: null,
     status: value,
-  };
+  } as PluginOAuthStatus;
 }
 
 function deferred<Value>() {

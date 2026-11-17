@@ -390,16 +390,9 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
-  "packages/client/src/integrations/connect-selection.ts": {
-    counts: {
-      "application?.availability": 1,
-    },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
   "packages/client/src/mock/mock-host-client.ts": {
     counts: {
       "request.kind": 1,
-      availability: 1,
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },

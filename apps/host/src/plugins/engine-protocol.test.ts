@@ -62,25 +62,6 @@ test("catalog cursors retain order and search and refuse changed listings and fo
   expect(() => catalogPage(entries, { cursor: "garbage" })).toThrow(/cursor/u);
 });
 
-test("team Deployments remain unavailable without starting a child", async () => {
-  const { PluginService } = await import("./plugin-service.js");
-  const service = new PluginService({
-    deployment: "team",
-    databaseUrl: "postgres://unused",
-    dataDirectory: "/tmp/unused-plugin-test",
-    owner: "owner",
-    credentialKey: new Uint8Array(32),
-    origin: "https://fixture.invalid",
-  });
-  await service.start();
-  expect(service.state()).toMatchObject({ status: "unavailable", generation: 0 });
-  expect(service.state().pid).toBeUndefined();
-  await expect(service.list({}, { caller: "owner", mode: "ask" })).rejects.toMatchObject({
-    code: "unavailable",
-  });
-  await service.close();
-});
-
 test("stops restarting after consecutive losses even when failed starts are far apart", async () => {
   const { PluginService } = await import("./plugin-service.js");
   const { withTimeout } = await import("@opensteer/shared/withTimeout");
@@ -91,7 +72,6 @@ test("stops restarting after consecutive losses even when failed starts are far 
     unavailable = resolve;
   });
   const service = new PluginService({
-    deployment: "personal",
     databaseUrl: "postgres://unused",
     dataDirectory: "/tmp/unused-plugin-test",
     owner: "owner",

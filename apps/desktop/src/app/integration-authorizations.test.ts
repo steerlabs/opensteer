@@ -1,10 +1,7 @@
 import { EventEmitter } from "node:events";
 import { connect } from "node:net";
 import { DeploymentIdSchema, UserIdSchema } from "@opensteer/core";
-import {
-  buildIntegrationAuthorizationAppReturn,
-  IntegrationAuthorizationAttemptIdSchema,
-} from "@opensteer/integration-core";
+import { IntegrationAuthorizationAttemptIdSchema } from "@opensteer/integration-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DesktopIntegrationAuthorizations } from "./integration-authorizations.js";
 import { DesktopLoginSession } from "./login-session.js";
@@ -50,11 +47,7 @@ function authorizations(input: { sessionless?: boolean; logins?: () => readonly 
   return { instance, open, power };
 }
 
-const started = (
-  expiresAt = new Date(Date.now() + 60_000).toISOString(),
-  kind: "integration" | "plugin" = "integration",
-) => ({
-  kind,
+const started = (expiresAt = new Date(Date.now() + 60_000).toISOString()) => ({
   attemptId,
   deploymentId,
   expiresAt,
@@ -98,43 +91,13 @@ describe("DesktopIntegrationAuthorizations loopback return", () => {
     expect(await post(port)).toBe(200);
     await vi.waitFor(() =>
       expect(received).toHaveBeenCalledWith({
-        kind: "integration",
-        attemptId,
-        deploymentId,
-        returnProof,
-      }),
-    );
-    expect(open).toHaveBeenCalledWith(deploymentId);
-  });
-
-  it("hands a plugin sign-in's return to the renderer as a plugin return, by both routes", async () => {
-    const { instance } = authorizations();
-    const received = vi.fn();
-    instance.attach({ deploymentId, userId }, received);
-    const port = (await instance.prepareReturn(deploymentId))!.port;
-    await instance.register(started(undefined, "plugin"));
-    expect(await post(port)).toBe(200);
-    await vi.waitFor(() =>
-      expect(received).toHaveBeenCalledWith({
         kind: "plugin",
         attemptId,
         deploymentId,
         returnProof,
       }),
     );
-    // The app link carries no kind of its own: the attempt this app started decides it.
-    const other = authorizations();
-    const linked = vi.fn();
-    other.instance.attach({ deploymentId, userId }, linked);
-    await other.instance.register(started(undefined, "plugin"));
-    expect(
-      other.instance.accept(
-        buildIntegrationAuthorizationAppReturn("desktop", { attemptId, deploymentId, returnProof }),
-      ),
-    ).toBe(true);
-    await vi.waitFor(() =>
-      expect(linked).toHaveBeenCalledWith(expect.objectContaining({ kind: "plugin", attemptId })),
-    );
+    expect(open).toHaveBeenCalledWith(deploymentId);
   });
 
   it("refuses a forwarded proof for an attempt this app never started", async () => {
@@ -170,7 +133,7 @@ describe("DesktopIntegrationAuthorizations loopback return", () => {
     instance.attach({ deploymentId, userId }, received);
     await vi.waitFor(() =>
       expect(received).toHaveBeenCalledWith({
-        kind: "integration",
+        kind: "plugin",
         attemptId,
         deploymentId,
         returnProof,

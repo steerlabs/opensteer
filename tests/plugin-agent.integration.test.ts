@@ -156,7 +156,6 @@ beforeAll(async () => {
   });
   service = new PluginService({
     limits: { interactionTtlMs: 5000 },
-    deployment: "personal",
     databaseUrl: clone.url,
     dataDirectory: directory,
     owner: "personal",

@@ -93,25 +93,12 @@ describe("requestCardAnswers", () => {
     expect(requestCardAnswers(choice(options), false)).toEqual({ kind: "sheet", label: "Answer" });
   });
 
-  it("reviews an install, which the card has no room to show", () => {
-    const install = request({
-      kind: "integration.install",
-      payload: { kind: "integration.install" },
-      presentation: {
-        kind: "choice",
-        options: [reject, { hint: "confirm", id: "installed", label: "Install" }],
-        title: "Install?",
-      },
-    });
-    expect(requestCardAnswers(install, false)).toEqual({ kind: "sheet", label: "Review" });
-  });
-
   it("leaves a secret form and plugin input to the sheet", () => {
     const sheet = { kind: "sheet", label: "Answer" };
     expect(requestCardAnswers(form([{ ...text, secret: true }]), false)).toEqual(sheet);
     expect(
       requestCardAnswers(
-        form([one], { kind: "integration.input", payload: { kind: "integration.input" } }),
+        form([one], { kind: "plugin.input", payload: { kind: "plugin.input" } }),
         false,
       ),
     ).toEqual(sheet);
@@ -140,8 +127,8 @@ describe("requestOptionLabel", () => {
   });
 
   it("keeps words chosen on purpose", () => {
-    const install = request({ kind: "integration.install" });
-    expect(requestOptionLabel(install, reject)).toBe("Reject");
+    const plugin = request({ kind: "plugin.approval" });
+    expect(requestOptionLabel(plugin, reject)).toBe("Reject");
     const run = { hint: "allow-for-run", id: "run", label: "Allow for this Run" } as const;
     expect(requestOptionLabel(choice([run]), run)).toBe("Allow for this Run");
   });

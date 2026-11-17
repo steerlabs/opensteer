@@ -210,9 +210,9 @@ export function DevicesSettingsController(): ReactNode {
                   return;
                 }
                 if (deploymentId === null) return;
-                navigation.navigate("SettingsPluginDetail", {
+                navigation.navigate("SettingsOtherDevice", {
                   deploymentId,
-                  target: { kind: "plugin", pluginId: opens.pluginId },
+                  pluginId: opens.pluginId,
                 });
               },
             })),

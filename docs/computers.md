@@ -121,8 +121,9 @@ per connection or server, so a program can mix them with cloud plugins
 for the caller behind the engine's execution, under the device approval, the connection ceiling, the
 Run ceiling and the person's per-plugin agent access. An unavailable provider lists no tools and
 says why; a call never moves to another computer that has the same app. Plugins lists the owner's
-providers outside any task's ceiling and sets their agent access; approvals, launch review and
-secrets stay on the device screens.
+providers outside any task's ceiling and sets their agent access. A device app's approvals stay on
+its device's page; a local server's page also carries its approval state, secrets and removal, and
+the launch review itself is answered as above.
 
 Only the computer's current owner approves new or broader access, unblocks apps and enables
 automatic app approval, which is Mac-only, from any signed-in device. Review verifies GUI identity

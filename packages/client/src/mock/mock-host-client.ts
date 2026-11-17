@@ -189,15 +189,8 @@ import type {
   IntegrationConnectionSummary,
   IntegrationDefinitionSummary,
   IntegrationGrant,
-  IntegrationOAuthApplicationSource,
-  IntegrationProviderApplication,
-  IntegrationRepositoryAccess,
 } from "@opensteer/integration-core";
-import { createIntegrationId, type IntegrationConnectionId } from "@opensteer/integration-core/ids";
-import {
-  IntegrationInstallManifestSummarySchema,
-  integrationCredentialRejectedDetail,
-} from "@opensteer/integration-core/service-models";
+import { createIntegrationId } from "@opensteer/integration-core/ids";
 import { SetComputerAppConnectionSchema } from "@opensteer/integration-core/computer-app-setup";
 import { type CreateIntegrationGrant } from "@opensteer/integration-core/models";
 import type { PasswordSignInRequestResponse } from "@opensteer/protocol";
@@ -332,19 +325,12 @@ import {
   mockComputerAppTools,
   mockComputerUseApps,
   mockComputerUseDefinition,
-  mockGitHubRevoked,
-  mockHostedOAuthDisclosure,
-  mockIntegrationCallbackUrl,
   mockIntegrationDefinitions,
-  mockIntegrationDigest,
   mockIntegrationInstallation,
   mockIphoneAppDefinitions,
   mockMessagesRunnerId,
-  mockRejectedApiKey,
-  mockTmdbInstallation,
-  mockTmdbProposal,
-  mockVapi,
-  type MockIntegrationAttempt,
+  mockNotesServer,
+  mockLocalServerInstallation,
 } from "./mock-integration-fixtures.js";
 import { MockPhoneDisplaySocket } from "./mock-phone-display.js";
 import {
@@ -397,16 +383,6 @@ const mockLongFormRequestId = RequestIdSchema.parse("req_0192f4a1-2222-4000-8000
 const mockPersonQuestionRequestId = RequestIdSchema.parse(
   "req_0192f4a1-2222-4000-8000-000000000044",
 );
-// A task whose agent proposed Vapi and asks for the exact account the service
-// rejected: the reconnect card, end to end, against the seeded accounts.
-const mockVapiThreadId = mockVapi.threadId;
-const mockVapiRunId = "run_00000000-0000-4000-8000-000000000008";
-const mockVapiReason =
-  "Vapi rejected the saved key on my first call, so I need that account reconnected to list your assistants.";
-// A task whose agent researched TMDB and proposed it: the install review, the
-// key form and the rejected key, against an integration not yet installed.
-const mockTmdbThreadId = mockTmdbProposal.threadId;
-const mockTmdbRunId = "run_00000000-0000-4000-8000-000000000009";
 // Three tasks waiting on a plugin: an account to link, a write to approve and a
 // tool's own form, each answered inline and from Needs you.
 const mockPluginTasks = [
@@ -441,9 +417,6 @@ const mockPluginTasks = [
     createdAt: "2026-11-16T20:30:00.000Z",
   },
 ];
-
-const mockTmdbReason =
-  "Set up read-only TMDB lookups for movies and TV shows with your own API Read Access Token.";
 
 /**
  * Computer use as the preview shows it: the architecture Thread is using Notes
@@ -2303,65 +2276,8 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       const overview = client.settings.overview(deploymentId);
       return rpcSuccess({ ...overview, rows: overview.rows.map(listedMockRow) });
     },
-    "plugins.detail.get": async ({ target }) => {
-      try {
-        client.settings.syncServices(
-          DeploymentIdSchema.parse(client.getSnapshot().deploymentId!),
-          await client.loadIntegrationPlatform(),
-        );
-        client.settings.syncPackages(
-          DeploymentIdSchema.parse(client.getSnapshot().deploymentId!),
-          await client.listPlugins(),
-          (id) => client.pluginDevice(id),
-        );
-        const detail = client.settings.detail(
-          DeploymentIdSchema.parse(client.getSnapshot().deploymentId!),
-          target,
-        );
-        return rpcSuccess({ ...detail, row: listedMockRow(detail.row) });
-      } catch (error) {
-        return mockRefusal(error);
-      }
-    },
-    "plugins.directory.get": async () => {
-      const platform = await client.loadIntegrationPlatform();
-      return rpcSuccess({
-        hasMoreRequests:
-          client
-            .getSnapshot()
-            .waitingRequests.filter(({ request }) => request.payload.kind === "integration.access")
-            .length > 100,
-        catalog: platform.catalog.map((item) => ({
-          definitionId: item.definition.id,
-          title: mockCatalogProducts[item.definition.id]?.title ?? item.definition.name,
-          description: item.definition.description,
-          added: item.installationId !== null,
-          ...(mockCatalogProducts[item.definition.id]
-            ? { product: { id: item.definition.id, ...mockCatalogProducts[item.definition.id]! } }
-            : {}),
-          contents: (item.definition.computerApp?.operations ?? []).map(({ name }) => ({
-            name,
-            kind: "tool" as const,
-          })),
-          access: item.definition.computerApp
-            ? [
-                item.definition.computerApp.accessSummaries.read,
-                item.definition.computerApp.accessSummaries.readWrite,
-              ]
-            : item.definition.authMethods.flatMap((method) =>
-                method.kind === "oauth" ? method.oauth.scopes : [method.label],
-              ),
-        })),
-        requests: client
-          .getSnapshot()
-          .waitingRequests.filter(({ request }) => request.payload.kind === "integration.access")
-          .slice(0, 100)
-          .map(({ request }) => ({
-            requestId: request.id,
-            title: request.presentation.title,
-          })),
-      });
-    },
+    "plugins.detail.get": unsupportedMockRpc,
+    "plugins.directory.get": unsupportedMockRpc,
     "devices.overview.get": async () => {
       const otherDevices = client.otherDevices();
       return rpcSuccess(
@@ -2394,8 +2310,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     "voice.say": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.stop": async () => rpcSuccess({}),
     ...client.enginePlugins.signInReads(),
-    "integration.authorization.get": async (input) =>
-      rpcSuccess(await client.getIntegrationAuthorization(input.attemptId)),
+    "integration.authorization.get": unsupportedMockRpc,
     "integration.grants.list": async () =>
       rpcSuccess({
         grants: await client.loadIntegrationGrants(client.getSnapshot().deploymentId!),
@@ -2432,21 +2347,20 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     "integration.computer.setup.review": async ({ setupRequestId }) =>
       rpcSuccess(client.reviewComputerAppSetup(setupRequestId)),
     // This mock runs no MCP server on a computer, so none takes secrets.
-    "integration.server.secrets.list": async () => rpcSuccess({ servers: [] }),
+    "integration.server.secrets.list": async () =>
+      rpcSuccess({ servers: client.localServerSecrets() }),
     "integration.computer.setup.list": async () =>
       rpcSuccess(
         hostApi["integration.computer.setup.list"].success.parse({
           requests: client.listComputerAppSetupRequests(),
         }),
       ),
-    "plugin.list": async () =>
-      rpcSuccess({ plugins: await client.listPlugins(client.getSnapshot().deploymentId!) }),
+    "plugin.list": unsupportedMockRpc,
     "integration.platform.get": async () =>
       rpcSuccess(
         hostApi["integration.platform.get"].success.parse(await client.loadIntegrationPlatform()),
       ),
-    "integration.repositoryAccess.check": (input) =>
-      client.checkRepositoryAccess(input.connectionId).then(rpcSuccess).catch(mockRefusal),
+    "integration.repositoryAccess.check": unsupportedMockRpc,
     "integrations.get": async () =>
       rpcSuccess(hostApi["integrations.get"].success.parse(await client.loadIntegrations())),
     // The preview keeps no durable session history to page back through.
@@ -3272,34 +3186,6 @@ async function executeMockCommand(
         state: await client.retireRunnerEnrollment(command.enrollmentId),
         type: command.type,
       });
-    case "integration.authorization.cancel":
-      return rpcSuccess({
-        ...(await client.cancelIntegrationAuthorization(command.attemptId)),
-        type: command.type,
-      });
-    case "integration.authorization.return":
-      return rpcSuccess({
-        ...(await client.getIntegrationAuthorization(command.attemptId)),
-        type: command.type,
-      });
-    case "integration.providerApplication.save":
-      return rpcSuccess({
-        application: await client.saveIntegrationProviderApplication(command.input),
-        type: command.type,
-      });
-    case "integration.authorization.begin":
-      return rpcSuccess({
-        ...(await client.beginIntegrationAuthorization({
-          ...command.input,
-          returnPath: command.input.returnPath ?? "/",
-        })),
-        type: command.type,
-      });
-    case "integration.apiKey.connect":
-      return rpcSuccess({
-        connectionId: await client.connectIntegrationApiKey(command.input),
-        type: command.type,
-      });
     case "integration.grant.create":
       return rpcSuccess({
         grant: await client.createIntegrationGrant(command.input),
@@ -3334,54 +3220,9 @@ async function executeMockCommand(
     case "integration.computer.app.block":
       await client.blockComputerApp(command.connectionId);
       return rpcSuccess({ type: command.type });
-    case "integration.providerApplication.status.set":
-      return rpcSuccess({
-        application: await client.setIntegrationProviderApplicationStatus({
-          ...command.input,
-          provider: command.provider,
-        }),
-        type: command.type,
-      });
-    case "integration.applicationSourceDefault.set":
-      await client.setIntegrationApplicationSourceDefault({
-        ...command.input,
-        provider: command.provider,
-      });
-      return rpcSuccess({ type: command.type });
-    case "integration.mcp.authorization.begin":
-      return rpcSuccess(await client.beginMcpAuthorization(command.input));
-    case "integration.mcp.disconnect":
-      await client.disconnectMcpConnection(command.connectionId);
-      return rpcSuccess({ type: command.type });
-    case "plugin.list":
-      return rpcSuccess({
-        type: command.type,
-        plugins: await client.listPlugins(client.getSnapshot().deploymentId!),
-      });
-    case "plugin.update":
     case "plugin.remove":
-    case "plugin.activation.set":
-      await client.mutatePlugin(command);
+      await client.removePlugin(command.pluginId);
       return rpcSuccess({ type: command.type });
-    case "plugin.install": {
-      const result = await client.installAgentPlugin(command.input.directory);
-      return rpcSuccess({ ...result, type: command.type });
-    }
-    case "integration.catalog.install":
-      return rpcSuccess({
-        installation: await client.installCatalogIntegration(command.input),
-        type: command.type,
-      });
-    case "integration.remoteMcp.install":
-      return rpcSuccess({
-        installation: await client.installRemoteMcp(command.input),
-        type: command.type,
-      });
-    case "integration.uninstall":
-      return rpcSuccess({
-        ...(await client.uninstallIntegration(command.installationId)),
-        type: command.type,
-      });
     case "integration.grant.revoke":
       await client.revokeIntegrationGrant(client.getSnapshot().deploymentId!, command.grantId);
       return rpcSuccess({ type: command.type });
@@ -5477,46 +5318,36 @@ class MockHostState {
   async listPlugins(_deploymentId?: string): Promise<Record<string, unknown>[]> {
     return this.plugins.map((plugin) => ({ ...plugin, servers: [] }));
   }
-  async mutatePlugin(
-    command: Extract<
-      HostApiCommand,
-      { type: "plugin.update" | "plugin.remove" | "plugin.activation.set" }
-    >,
-  ) {
-    const index = this.plugins.findIndex((plugin) => plugin.id === command.pluginId);
-    const plugin = this.plugins[index];
-    if (!plugin) throw new Error("Plugin not found");
-    if (command.type === "plugin.remove") {
-      this.plugins.splice(index, 1);
-    } else if (command.type === "plugin.update") {
-      if (plugin.scope === "folder")
-        throw new HostClientRequestError({
-          code: "forbidden",
-          message: "Agent-made plugins update when an agent installs their folder again.",
-          status: 403,
-        });
-      const id = crypto.randomUUID();
-      const current = plugin.versions.find((v) => v.id === plugin.currentVersionId);
-      plugin.versions.push({
-        id,
-        digest: id,
-        manifest: current?.manifest ?? { name: plugin.name, skills: [] },
-      });
-      plugin.currentVersionId = id;
-      plugin.source = { directory: command.input.directory };
-      plugin.updatedAt = this.now().toISOString();
-    } else {
-      if (
-        command.active &&
-        this.plugins.some(
-          (other) => other.id !== plugin.id && other.name === plugin.name && other.enabled,
-        )
-      )
-        throw new Error("A plugin with that name is already active here");
-      plugin.enabled = command.active;
-    }
+  async removePlugin(pluginId: string) {
+    const removed = this.integrations.installations.filter(
+      ({ installation }) => installation.pluginId === pluginId,
+    );
+    const index = this.plugins.findIndex((plugin) => plugin.id === pluginId);
+    if (index < 0 && removed.length === 0) throw new Error("Plugin not found");
+    if (index >= 0) this.plugins.splice(index, 1);
+    this.integrations.installations = this.integrations.installations.filter(
+      (entry) => !removed.includes(entry),
+    );
+    for (const entry of removed)
+      for (const server of entry.servers) this.enginePlugins.removeLocal(`app_server_${server.id}`);
   }
-
+  /** The local servers whose secrets their computer's owner entered. */
+  localServerSecrets() {
+    return this.integrations.installations.some(
+      ({ installation }) => installation.id === mockNotesServer.installationId,
+    )
+      ? [
+          {
+            computer: mockNotesServer.computer,
+            id: mockNotesServer.serverId,
+            installationId: mockNotesServer.installationId,
+            name: "notes-search",
+            plugin: mockNotesServer.title,
+            secrets: [...mockNotesServer.secrets],
+          },
+        ]
+      : [];
+  }
   readonly remoteAdministrationListeners = new Set<() => void>();
   readonly connectionsListeners = new Set<() => void>();
   remoteAdministration: import("@opensteer/protocol").PersonalRemoteAdministrationStatus = {
@@ -6081,7 +5912,6 @@ class MockHostState {
 
   private readonly activeRuns = new Map<string, ActiveMockRun>();
   private readonly integrations = createInitialIntegrationState(mockUserId);
-  private readonly integrationAttempts = new Map<string, MockIntegrationAttempt>();
   readonly chrome: MockChromeSignIns;
   private readonly nextRunOrdinals = new Map<string, number>();
   /** Queued messages per Thread in send order; a Run's seed is never here. */
@@ -8538,26 +8368,6 @@ class MockHostState {
     return "https://identity.example.test/authorize";
   }
 
-  async beginIntegrationAuthorization(
-    input: CommandInputOf<"integration.authorization.begin">["input"],
-  ): Promise<Omit<CommandOutputOf<"integration.authorization.begin">, "type">> {
-    const attemptId = createIntegrationId("oauthAttempt");
-    const definition = this.integrationDefinition(input.definitionId);
-    if (!definition) throw new Error("Integration not found.");
-    this.integrationAttempts.set(attemptId, {
-      definitionId: input.definitionId,
-      provider: definition.provider,
-      ...(input.exactApplicationSource
-        ? { source: input.exactApplicationSource as IntegrationOAuthApplicationSource }
-        : {}),
-    });
-    return {
-      attemptId,
-      expiresAt: new Date(this.now().getTime() + 10 * 60_000).toISOString(),
-      launchTicket: "a".repeat(43),
-    };
-  }
-
   /** The mock has no provider to revoke at, so it never claims that it did. */
   async disconnectIntegration(
     connectionId: string,
@@ -8663,6 +8473,15 @@ class MockHostState {
     const at = new Date(0).toISOString();
     for (const device of mockDevicePlugins()) {
       this.devicePlugins.push(device);
+      this.integrations.installations.push(
+        mockLocalServerInstallation({
+          pluginId: device.id,
+          name: device.id,
+          title: device.name,
+          installedBy: mockUserId,
+          issue: device.issue,
+        }),
+      );
       const id = crypto.randomUUID();
       this.plugins.push({
         id: device.id,
@@ -9408,95 +9227,6 @@ class MockHostState {
     }));
   }
 
-  async connectIntegrationApiKey(
-    input: CommandInputOf<"integration.apiKey.connect">["input"],
-  ): Promise<IntegrationConnectionId> {
-    const definition = this.integrationDefinition(input.definitionId);
-    if (!definition) throw new Error("Integration not found.");
-    // The Host's own words when a checked key is turned away; nothing is saved.
-    if (definition.apiKey?.check && Object.values(input.values).includes(mockRejectedApiKey)) {
-      throw new Error(`${definition.name} rejected this key.`);
-    }
-    const timestamp = this.now().toISOString();
-    if (input.connectionId) {
-      const reconnected = this.integrations.connections.find(
-        (connection) =>
-          connection.id === input.connectionId &&
-          connection.connectionMethod === "api-key" &&
-          connection.definitionId === definition.id &&
-          connection.status !== "revoked",
-      );
-      if (!reconnected) throw new Error("This connection is no longer available to reconnect");
-      this.integrations.connections = this.integrations.connections.map((connection) =>
-        connection === reconnected
-          ? {
-              ...connection,
-              displayName: input.displayName?.trim() || connection.displayName,
-              status: "connected",
-              statusDetail: null,
-              statusReason: null,
-              updatedAt: timestamp,
-            }
-          : connection,
-      );
-      await this.#settleMainAccessRequests(reconnected.id);
-      return reconnected.id;
-    }
-    const connectionId = createIntegrationId("connection");
-    this.integrations.connections.push({
-      accountIdentifier: null,
-      applicationSource: { kind: "api-key" },
-      authMethodId: input.authMethodId,
-      authorizationDigest: mockIntegrationDigest(`${definition.id}-authorization`),
-      computer: null,
-      connectionMethod: "api-key",
-      createdAt: timestamp,
-      definitionId: definition.id,
-      displayName: input.displayName?.trim() || definition.name,
-      externalIdentityId: `mock-${definition.id}-key`,
-      externalTenantId: null,
-      grantedScopes: [],
-      id: connectionId,
-      provider: definition.provider,
-      providerApplicationId: null,
-      status: "connected",
-      statusDetail: null,
-      statusReason: null,
-      updatedAt: timestamp,
-    });
-    await this.#settleMainAccessRequests(connectionId);
-    return connectionId;
-  }
-
-  /**
-   * The Host's rule: a connection that gains authority settles the Main-target
-   * access Requests waiting on it, and settling one resumes its agent.
-   */
-  async #settleMainAccessRequests(connectionId: string): Promise<void> {
-    const waiting = Object.values(this.snapshot.requests)
-      .flat()
-      .filter(
-        (request): request is Extract<Request, { readonly status: "pending" }> =>
-          request.status === "pending" &&
-          request.payload.kind === "integration.access" &&
-          request.payload.installationId !== null &&
-          (request.payload.requestedConnectionId === null ||
-            request.payload.requestedConnectionId === connectionId) &&
-          true,
-      );
-    for (const request of waiting) {
-      try {
-        this.#verifyMockIntegrationAccessFulfillment(request, connectionId);
-      } catch {
-        continue;
-      }
-      await this.resolveRequest({
-        requestId: request.id,
-        response: { kind: "external", value: { connectionId, decision: "fulfilled" } },
-      });
-    }
-  }
-
   async createIntegrationGrant(input: CreateIntegrationGrant): Promise<IntegrationGrant> {
     const entry = this.integrations.installations.find(
       ({ installation }) => installation.id === input.installationId,
@@ -9882,7 +9612,8 @@ class MockHostState {
       authorizationSurface: "canonical",
       callbackUrls: { ...this.integrations.callbackUrls },
       connections: [...this.integrations.connections],
-      hostedOAuthDisclosure: mockHostedOAuthDisclosure,
+      // The dashboard still carries it; nothing in a client shows it any more.
+      hostedOAuthDisclosure: "Not shown.",
       isAdministrator: true,
       providerAuthorizations: { ...this.integrations.providerAuthorizations },
       providers: [...this.integrations.providers],
@@ -9897,71 +9628,6 @@ class MockHostState {
       connections: [...this.integrations.mcpConnections],
       installations: [...this.integrations.installations],
     };
-  }
-
-  async beginMcpAuthorization(
-    _input: CommandInputOf<"integration.mcp.authorization.begin">["input"],
-  ): Promise<CommandOutputOf<"integration.mcp.authorization.begin">> {
-    throw new Error("The mock Host does not authorize MCP accounts.");
-  }
-
-  async cancelIntegrationAuthorization(
-    attemptId: string,
-  ): Promise<Omit<CommandOutputOf<"integration.authorization.cancel">, "type">> {
-    this.integrationAttempts.delete(attemptId);
-    return {
-      connectionId: null,
-      expiresAt: new Date(this.now().getTime() + 10 * 60_000).toISOString(),
-      failureCode: null,
-      status: "cancelled",
-    };
-  }
-
-  async getIntegrationAuthorization(
-    attemptId: string,
-  ): Promise<RpcData<"integration.authorization.get">> {
-    const attempt = this.integrationAttempts.get(attemptId);
-    let connectionId: IntegrationConnectionId | null = null;
-    if (attempt) {
-      this.integrationAttempts.delete(attemptId);
-      connectionId = this.completeIntegrationAttempt(attempt);
-      await this.#settleMainAccessRequests(connectionId);
-    }
-    return {
-      connectionId,
-      expiresAt: new Date(this.now().getTime() + 10 * 60_000).toISOString(),
-      failureCode: null,
-      status: "completed",
-    };
-  }
-
-  async disconnectMcpConnection(connectionId: string): Promise<void> {
-    const timestamp = this.now().toISOString();
-    this.integrations.mcpConnections = this.integrations.mcpConnections.map((connection) =>
-      connection.connectionId === connectionId
-        ? { ...connection, status: "revoked", updatedAt: timestamp }
-        : connection,
-    );
-  }
-
-  async installAgentPlugin(directory: string) {
-    const name = directory.split("/").filter(Boolean).at(-1) ?? "plugin";
-    if (name === "opensteer") throw new Error("The plugin name opensteer is reserved");
-    const id = crypto.randomUUID(),
-      versionId = crypto.randomUUID(),
-      at = this.now().toISOString();
-    this.plugins.push({
-      id,
-      name,
-      scope: "deployment",
-      source: { directory },
-      currentVersionId: versionId,
-      versions: [{ id: versionId, digest: versionId, manifest: { name, skills: [] } }],
-      enabled: false,
-      createdAt: at,
-      updatedAt: at,
-    });
-    return { issues: [] };
   }
 
   async installCatalogIntegration(
@@ -10006,226 +9672,12 @@ class MockHostState {
     return installation.installation;
   }
 
-  async installRemoteMcp(
-    input: CommandInputOf<"integration.remoteMcp.install">["input"],
-  ): Promise<CommandOutputOf<"integration.remoteMcp.install">["installation"]> {
-    const timestamp = this.now().toISOString();
-    const installationId = createIntegrationId("installation");
-    const installation: CommandOutputOf<"integration.remoteMcp.install">["installation"] = {
-      createdAt: timestamp,
-      description: input.description ?? "",
-      id: installationId,
-      manifest: { kind: "remote-mcp", url: input.url },
-      name: input.name,
-      provenance: { installedBy: mockUserId, source: "remote-mcp" },
-      revision: 1,
-      sourceKind: "remote-mcp",
-      status: "active",
-      title: input.title,
-      trust: "administrator-approved",
-      updatedAt: timestamp,
-      version: null,
-    };
-    this.integrations.installations.push({
-      installation,
-      servers: [
-        {
-          connectionRequirement: { kind: "mcp-oauth" },
-          id: createIntegrationId("server"),
-          installationId,
-          name: input.name,
-          status: "active",
-          statusDetail: null,
-          toolGeneration: 0,
-          transportType: "streamable-http",
-          updatedAt: timestamp,
-        },
-      ],
-      tools: [],
-    });
-    return installation;
-  }
-
-  /**
-   * Mirrors the Host cascade: the installation and its dependents go, accounts
-   * for a proposed definition go with it because that definition exists nowhere
-   * else, catalog accounts stay, and pending access Requests for the
-   * installation are cancelled.
-   */
-  async uninstallIntegration(
-    installationId: string,
-  ): Promise<Omit<CommandOutputOf<"integration.uninstall">, "type">> {
-    const entry = this.integrations.installations.find(
-      ({ installation }) => installation.id === installationId,
-    );
-    if (!entry) throw new Error("Integration installation not found.");
-    const mcpConnections = this.integrations.mcpConnections.filter(
-      (connection) => connection.installationId === installationId,
-    );
-    // A proposal's definition id is its installation name; nothing else carries it.
-    const proposedDefinitionId =
-      entry.installation.sourceKind === "proposed" ? entry.installation.name : null;
-    const providerConnections = proposedDefinitionId
-      ? this.integrations.connections.filter(
-          (connection) => connection.definitionId === proposedDefinitionId,
-        )
-      : [];
-    this.integrations.installations = this.integrations.installations.filter(
-      ({ installation }) => installation.id !== installationId,
-    );
-    this.integrations.mcpConnections = this.integrations.mcpConnections.filter(
-      (connection) => connection.installationId !== installationId,
-    );
-    this.integrations.connections = this.integrations.connections.filter(
-      (connection) => !providerConnections.includes(connection),
-    );
-    this.integrations.grants = this.integrations.grants.filter(
-      (grant) => grant.installationId !== installationId,
-    );
-    for (const candidate of this.integrations.catalog) {
-      if (candidate.installationId === installationId) candidate.installationId = null;
-    }
-    return {
-      cancelledRequests: this.#cancelIntegrationAccessRequests(installationId),
-      removedConnections: mcpConnections.length + providerConnections.length,
-    };
-  }
-
-  #cancelIntegrationAccessRequests(installationId: string): number {
-    const cancelled = new Map<string, number>();
-    const requests = Object.fromEntries(
-      Object.entries(this.snapshot.requests).map(([threadId, pending]) => {
-        const kept = pending.filter(
-          (request) =>
-            request.payload.kind !== "integration.access" ||
-            request.payload.installationId !== installationId,
-        );
-        if (kept.length !== pending.length) cancelled.set(threadId, pending.length - kept.length);
-        return [threadId, kept];
-      }),
-    );
-    if (cancelled.size === 0) return 0;
-    this.update({
-      ...this.snapshot,
-      requests,
-      threads: this.snapshot.threads.map((thread) => {
-        const removed = cancelled.get(thread.id);
-        return removed === undefined
-          ? thread
-          : {
-              ...thread,
-              pendingRequests: Math.max(0, thread.pendingRequests - removed),
-              updatedAt: this.now().toISOString(),
-            };
-      }),
-    });
-    return [...cancelled.values()].reduce((total, count) => total + count, 0);
-  }
-
   async loadIntegrationGrants(_deploymentId: string): Promise<IntegrationGrant[]> {
     return this.integrations.grants;
   }
 
   async revokeIntegrationGrant(_deploymentId: string, grantId: string): Promise<void> {
     this.integrations.grants = this.integrations.grants.filter((grant) => grant.id !== grantId);
-  }
-
-  async saveIntegrationProviderApplication(
-    input: CommandInputOf<"integration.providerApplication.save">["input"],
-  ): Promise<IntegrationProviderApplication> {
-    const availability = input.availability ?? "deployment";
-    const existing = this.integrations.applications.find((application) =>
-      input.applicationId
-        ? application.id === input.applicationId
-        : application.provider === input.provider && application.availability === "deployment",
-    );
-    if (
-      input.expectedRevision !== null &&
-      input.expectedRevision !== (existing?.revision ?? null)
-    ) {
-      throw new Error("This provider application changed. Reload and try again.");
-    }
-    const timestamp = this.now().toISOString();
-    const callbackUrl =
-      this.integrations.callbackUrls[input.provider] ?? mockIntegrationCallbackUrl(input.provider);
-    const application: IntegrationProviderApplication = {
-      availability,
-      callbackUrl,
-      canManage: true,
-      clientId: input.clientId,
-      configuredSecretFields: [
-        ...new Set([...(existing?.configuredSecretFields ?? []), ...Object.keys(input.secrets)]),
-      ],
-      createdAt: existing?.createdAt ?? timestamp,
-      displayName: input.displayName,
-      id: existing?.id ?? createIntegrationId("providerApplication"),
-      ownerUserId:
-        availability === "personal" ? ("usr_00000000-0000-4000-8000-000000000001" as never) : null,
-      provider: input.provider,
-      revision: (existing?.revision ?? 0) + 1,
-      status: "active",
-      updatedAt: timestamp,
-    };
-    this.integrations.applications = [
-      ...this.integrations.applications.filter(({ id }) => id !== application.id),
-      application,
-    ];
-    this.integrations.callbackUrls[input.provider] = callbackUrl;
-    this.selectApplicationSource(application, "deployment-oauth");
-    return application;
-  }
-
-  async setIntegrationProviderApplicationStatus(
-    input: CommandInputOf<"integration.providerApplication.status.set">["input"] &
-      Pick<CommandInputOf<"integration.providerApplication.status.set">, "provider">,
-  ): Promise<IntegrationProviderApplication> {
-    const existing = this.integrations.applications.find((application) =>
-      input.applicationId
-        ? application.id === input.applicationId
-        : application.provider === input.provider && application.availability === "deployment",
-    );
-    if (!existing) throw new Error("This provider has no OAuth application.");
-    if (existing.revision !== input.expectedRevision) {
-      throw new Error("This provider application changed. Reload and try again.");
-    }
-    const application: IntegrationProviderApplication = {
-      ...existing,
-      revision: existing.revision + 1,
-      status: input.status,
-      updatedAt: this.now().toISOString(),
-    };
-    this.integrations.applications = this.integrations.applications.map((candidate) =>
-      candidate.provider === application.provider ? application : candidate,
-    );
-    this.selectApplicationSource(
-      application,
-      input.status === "active" ? "deployment-oauth" : "hosted-oauth",
-    );
-    return application;
-  }
-
-  async setIntegrationApplicationSourceDefault(
-    input: CommandInputOf<"integration.applicationSourceDefault.set">["input"] &
-      Pick<CommandInputOf<"integration.applicationSourceDefault.set">, "provider">,
-  ): Promise<void> {
-    const authorization = this.integrations.providerAuthorizations[input.provider];
-    const source = authorization?.availableSources.find(
-      ({ kind }) => kind === input.applicationSource,
-    );
-    if (!authorization || !source) {
-      throw new Error("That sign-in method is not available for this provider.");
-    }
-    this.integrations.providerAuthorizations[input.provider] = {
-      ...authorization,
-      code: "READY",
-      detail:
-        source.kind === "hosted-oauth"
-          ? "Opensteer-managed sign-in is ready for new accounts."
-          : "The custom OAuth app configured for this deployment is ready.",
-      selectedSource: source,
-      selectedSourceKind: source.kind,
-      hostedOAuthStatus: authorization.hostedOAuthStatus,
-    };
   }
 
   private integrationDefinition(definitionId: string): IntegrationDefinitionSummary | null {
@@ -10235,122 +9687,6 @@ class MockHostState {
         ?.definition ??
       null
     );
-  }
-
-  /**
-   * The mock provider always signs in as alex@example.com. As on the Host, an
-   * account it already holds for that identity is updated in place, which is
-   * how signing in again reconnects it; any other sign-in adds an account.
-   */
-  private completeIntegrationAttempt(attempt: MockIntegrationAttempt): IntegrationConnectionId {
-    const definition = this.integrationDefinition(attempt.definitionId);
-    const selectedSource =
-      attempt.source ??
-      this.integrations.providerAuthorizations[attempt.provider]?.selectedSource ??
-      null;
-    const timestamp = this.now().toISOString();
-    // As on the Host, a GitHub sign-in waits until its app reaches a repository.
-    const github = attempt.provider === "github";
-    const externalIdentityId = `mock-${attempt.definitionId}-identity`;
-    const existing = this.integrations.connections.find(
-      (connection) =>
-        connection.definitionId === attempt.definitionId &&
-        connection.provider === attempt.provider &&
-        connection.externalIdentityId === externalIdentityId &&
-        connection.externalTenantId === null &&
-        connection.status !== "revoked",
-    );
-    const connection: IntegrationConnectionSummary = {
-      accountIdentifier: "alex@example.com",
-      applicationSource: selectedSource,
-      authMethodId:
-        definition?.authMethods.find(({ kind }) => kind === "oauth")?.id ?? "managed-oauth",
-      authorizationDigest: mockIntegrationDigest(`${attempt.definitionId}-authorization`),
-      computer: null,
-      connectionMethod: "managed-oauth",
-      createdAt: existing?.createdAt ?? timestamp,
-      definitionId: attempt.definitionId,
-      displayName: "alex@example.com",
-      externalIdentityId,
-      externalTenantId: null,
-      grantedScopes: [],
-      id: existing?.id ?? createIntegrationId("connection"),
-      provider: attempt.provider,
-      providerApplicationId:
-        selectedSource?.kind === "deployment-oauth" ? selectedSource.providerApplicationId : null,
-      status: github ? "needs-attention" : "connected",
-      statusDetail: github ? "Check repository access to finish connecting GitHub." : null,
-      statusReason: github ? "permissions" : null,
-      updatedAt: timestamp,
-    };
-    this.integrations.connections = existing
-      ? this.integrations.connections.map((candidate) =>
-          candidate === existing ? connection : candidate,
-        )
-      : [...this.integrations.connections, connection];
-    return connection.id;
-  }
-
-  /** Keeps the provider authorization consistent with the saved application. */
-  private selectApplicationSource(
-    application: IntegrationProviderApplication,
-    preferred: "deployment-oauth" | "hosted-oauth",
-  ): void {
-    const authorization = this.integrations.providerAuthorizations[application.provider];
-    const hosted = authorization?.availableSources.find(({ kind }) => kind === "hosted-oauth");
-    const deployment: IntegrationOAuthApplicationSource | null =
-      application.status === "active"
-        ? {
-            callbackUrl: application.callbackUrl,
-            kind: "deployment-oauth",
-            providerApplicationId: application.id,
-            providerApplicationRevision: application.revision,
-          }
-        : null;
-    const availableSources = [...(hosted ? [hosted] : []), ...(deployment ? [deployment] : [])];
-    const selectedSource =
-      (preferred === "deployment-oauth" ? deployment : (hosted ?? null)) ??
-      availableSources[0] ??
-      null;
-    this.integrations.providerAuthorizations[application.provider] = {
-      availableSources,
-      code: selectedSource ? "READY" : "PROVIDER_APPLICATION_REQUIRED",
-      detail: selectedSource
-        ? selectedSource.kind === "hosted-oauth"
-          ? "Opensteer-managed sign-in is ready for new accounts."
-          : "The custom OAuth app configured for this deployment is ready."
-        : "Add an OAuth application for this deployment before connecting an account.",
-      selectedSource,
-      selectedSourceKind: selectedSource?.kind ?? null,
-      hostedOAuthStatus: authorization?.hostedOAuthStatus ?? "unsupported",
-    };
-  }
-
-  /**
-   * The Host's repository check, as far as the preview goes: no seeded GitHub
-   * App reaches a repository yet, and GitHub refuses the token it revoked,
-   * which the Host records so that account is offered a sign-in instead.
-   */
-  async checkRepositoryAccess(connectionId: string): Promise<IntegrationRepositoryAccess> {
-    if (connectionId === mockGitHubRevoked.connectionId) {
-      const statusDetail = integrationCredentialRejectedDetail(
-        this.integrationDefinition("github")?.name ?? "GitHub",
-        "sign-in",
-      );
-      this.integrations.connections = this.integrations.connections.map((connection) =>
-        connection.id === connectionId
-          ? {
-              ...connection,
-              status: "needs-attention",
-              statusDetail,
-              statusReason: null,
-              updatedAt: this.now().toISOString(),
-            }
-          : connection,
-      );
-      throw new HostClientRequestError({ code: "conflict", message: statusDetail, status: 409 });
-    }
-    return { installationUrl: null, installations: [], ready: false };
   }
 
   async createChannelConnection(
@@ -11831,26 +11167,6 @@ class MockHostState {
           throw new Error("This mock integration access Request is not waiting for installation.");
         }
         const manifest = accessPayload.manifest;
-        const reviewed = IntegrationInstallManifestSummarySchema.safeParse(manifest);
-        if (reviewed.success && reviewed.data.kind === "proposal") {
-          if (reviewed.data.proposal.digest !== mockTmdbProposal.digest) {
-            throw new Error("The mock Host installs only the proposal it seeded.");
-          }
-          const installation = mockTmdbInstallation(mockUserId);
-          this.integrations.installations = [
-            ...this.integrations.installations.filter(
-              (entry) => entry.installation.id !== installation.installation.id,
-            ),
-            installation,
-          ];
-          this.#keepIntegrationAccessPending(request, {
-            ...request.payload,
-            installationId: installation.installation.id,
-            manifest: null,
-            requestedServerId: mockTmdbProposal.serverId,
-          });
-          return;
-        }
         if (manifest["kind"] !== "catalog") {
           throw new Error("The mock integration install manifest is invalid.");
         }
@@ -13087,46 +12403,6 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
         status: "waiting",
       },
     ],
-    [mockVapiThreadId]: [
-      {
-        author: mockHumanAuthor(),
-        body: "List the assistants on our Vapi account.",
-        createdAt: "2026-08-09T09:30:00.000Z",
-        id: "msg_00000000-0000-4000-8000-0000000000f1",
-        kind: "message",
-        messageKind: "input",
-        runId: null,
-      },
-      {
-        createdAt: "2026-08-09T09:30:20.000Z",
-        error: null,
-        id: `run:${mockVapiRunId}`,
-        kind: "run",
-        replyMessageId: null,
-        runId: mockVapiRunId,
-        status: "waiting",
-      },
-    ],
-    [mockTmdbThreadId]: [
-      {
-        author: mockHumanAuthor(),
-        body: "Let me look up movies and TV shows on TMDB with my own API key.",
-        createdAt: "2026-08-09T10:00:00.000Z",
-        id: "msg_00000000-0000-4000-8000-0000000000f9",
-        kind: "message",
-        messageKind: "input",
-        runId: null,
-      },
-      {
-        createdAt: "2026-08-09T10:00:20.000Z",
-        error: null,
-        id: `run:${mockTmdbRunId}`,
-        kind: "run",
-        replyMessageId: null,
-        runId: mockTmdbRunId,
-        status: "waiting",
-      },
-    ],
     ...Object.fromEntries(
       mockPluginTasks.map((task) => [
         task.threadId,
@@ -13465,81 +12741,6 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
           status: "pending",
         }),
       ],
-      [mockVapiThreadId]: [
-        RequestSchema.parse({
-          callId: "mock-vapi-reconnect",
-          cancellationReason: null,
-          createdAt: "2026-08-09T09:32:00.000Z",
-          id: mockVapi.requestId,
-          kind: "integration.access",
-          mode: "durable",
-          originatingOccurrenceId: null,
-          originatingRunId: mockVapiRunId,
-          originatingThreadId: mockVapiThreadId,
-
-          payload: {
-            access: "read",
-            installationId: mockVapi.installationId,
-            kind: "integration.access",
-            manifest: null,
-            reason: mockVapiReason,
-            requestedConnectionId: mockVapi.connectionId,
-            requestedServerId: mockVapi.serverId,
-          },
-          presentation: {
-            agentProposed: true,
-            detail: mockVapiReason,
-            kind: "external",
-            subject: { id: mockVapi.installationId, kind: "integration-installation" },
-            title: "Vapi API access",
-          },
-          requestedBy: mockUserId,
-          requiredActor: "requester",
-          resolvedAt: null,
-          resolvedBy: null,
-          response: null,
-          status: "pending",
-        }),
-      ],
-      [mockTmdbThreadId]: [
-        RequestSchema.parse({
-          callId: "mock-tmdb-proposal",
-          cancellationReason: null,
-          createdAt: "2026-08-09T10:02:00.000Z",
-          id: mockTmdbProposal.requestId,
-          kind: "integration.access",
-          mode: "durable",
-          originatingOccurrenceId: null,
-          originatingRunId: mockTmdbRunId,
-          originatingThreadId: mockTmdbThreadId,
-
-          payload: {
-            access: "read",
-            installationId: null,
-            kind: "integration.access",
-            manifest: mockTmdbProposal.manifest,
-            reason: mockTmdbReason,
-            requestedConnectionId: null,
-            requestedServerId: null,
-          },
-          presentation: {
-            agentProposed: true,
-            detail: mockTmdbReason,
-            kind: "external",
-            subject: {
-              id: `proposal:${mockTmdbProposal.digest}`,
-              kind: "integration-install-manifest",
-            },
-            title: "TMDB access",
-          },
-          requestedBy: mockUserId,
-          requiredActor: "requester",
-          resolvedAt: null,
-          resolvedBy: null,
-          response: null,
-          status: "pending",
-        }),
-      ],
       ...Object.fromEntries(
         mockPluginTasks.map((task) => [task.threadId, [mockPluginRequest(task)]]),
       ),
@@ -13573,20 +12774,6 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
         id: "run_00000000-0000-4000-8000-000000000006",
         status: "running",
         threadId: mockSlackLiveThreadId,
-        runOrdinal: 0,
-      },
-      {
-        createdAt: "2026-08-09T09:30:20.000Z",
-        id: mockVapiRunId,
-        status: "waiting",
-        threadId: mockVapiThreadId,
-        runOrdinal: 0,
-      },
-      {
-        createdAt: "2026-08-09T10:00:20.000Z",
-        id: mockTmdbRunId,
-        status: "waiting",
-        threadId: mockTmdbThreadId,
         runOrdinal: 0,
       },
       ...mockPluginTasks.map((task) => ({
@@ -14013,56 +13200,6 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
         updatedAt: "2026-08-06T23:29:37.000Z",
         deploymentId: "dep_00000000-0000-4000-8000-000000000001",
       })),
-      {
-        lastVisitedAt: null,
-        latestRunCompletedAt: null,
-        teamOrigin: null,
-        accessMode: DEFAULT_THREAD_ACCESS_MODE,
-        continuationIdentity: mockCodexContinuationIdentity,
-        providerSessionId: createId("providerSession"),
-        createdAt: "2026-08-09T09:30:00.000Z",
-        environmentId: "env_00000000-0000-4000-8000-000000000001",
-        harnessInstanceId: mockCodexHarnessInstanceId,
-        harnessLabel: "Codex",
-        id: mockVapiThreadId,
-        inputQueuePaused: false,
-        listed: true,
-        modelLabel: "GPT-5.6-Sol",
-        modelSelection: mockCodexModelSelection,
-        parentThreadId: null,
-        pendingRequests: 1,
-        purpose: "task",
-        runnerLabel: "Home Mac",
-        status: "waiting",
-        title: "List the Vapi assistants",
-        unread: false,
-        updatedAt: "2026-08-09T09:32:00.000Z",
-      },
-      {
-        lastVisitedAt: null,
-        latestRunCompletedAt: null,
-        teamOrigin: null,
-        accessMode: DEFAULT_THREAD_ACCESS_MODE,
-        continuationIdentity: mockCodexContinuationIdentity,
-        providerSessionId: createId("providerSession"),
-        createdAt: "2026-08-09T10:00:00.000Z",
-        environmentId: "env_00000000-0000-4000-8000-000000000001",
-        harnessInstanceId: mockCodexHarnessInstanceId,
-        harnessLabel: "Codex",
-        id: mockTmdbThreadId,
-        inputQueuePaused: false,
-        listed: true,
-        modelLabel: "GPT-5.6-Sol",
-        modelSelection: mockCodexModelSelection,
-        parentThreadId: null,
-        pendingRequests: 1,
-        purpose: "task",
-        runnerLabel: "Home Mac",
-        status: "waiting",
-        title: "Look up movies on TMDB",
-        unread: false,
-        updatedAt: "2026-08-09T10:02:00.000Z",
-      },
       ...mockPluginTasks.map((task) => ({
         lastVisitedAt: null,
         latestRunCompletedAt: null,

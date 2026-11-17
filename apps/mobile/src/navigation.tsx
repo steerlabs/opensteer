@@ -53,8 +53,13 @@ import {
 } from "./screens/settings-home.js";
 import { SettingsMessagingScreen } from "./screens/settings-messaging.js";
 import { AgentAuthorizationScreen } from "./screens/agent-authorization.js";
-import { SettingsPluginsScreen } from "./screens/settings-plugins.js";
-import { PluginCatalogScreen, PluginLocalToolScreen, PluginsScreen } from "./screens/plugins.js";
+import {
+  PluginCatalogScreen,
+  PluginLocalToolScreen,
+  PluginSkillsScreen,
+  PluginsScreen,
+} from "./screens/plugins.js";
+import { OtherDeviceScreen } from "./screens/other-device.js";
 import { PluginDetailScreen } from "./screens/plugin-detail.js";
 import { PluginConnectScreen } from "./screens/plugin-connect.js";
 import { TabsScreen } from "./screens/tabs.js";
@@ -552,12 +557,7 @@ const RootStack = createNativeStackNavigator({
     },
     SettingsAI: { screen: SettingsAIScreen, options: { title: "AI" } },
     SettingsPlugins: { screen: PluginsScreen, options: { title: "Plugins" } },
-    // Device apps, local servers and skills keep their own screen, reached from Plugins.
-    SettingsLocalPlugins: {
-      screen: SettingsPluginsScreen,
-      options: { title: "Device apps and local servers", headerShown: Platform.OS !== "ios" },
-    },
-    SettingsPluginDetail: { screen: SettingsPluginsScreen, options: { title: "Plugin" } },
+    PluginSkills: { screen: PluginSkillsScreen, options: { title: "Skills" } },
     PluginCatalog: {
       screen: PluginCatalogScreen,
       options: { title: "Catalog", headerShown: Platform.OS !== "ios" },
@@ -576,6 +576,8 @@ const RootStack = createNativeStackNavigator({
       }),
     },
     SettingsDeviceDetail: { screen: DevicePageScreen, options: { title: "Device" } },
+    // A device reached through a local server on one of the computers.
+    SettingsOtherDevice: { screen: OtherDeviceScreen, options: { title: "Device" } },
     SettingsSignIns: { screen: SettingsSignInsScreen, options: { title: "Sign-ins" } },
     Settings: {
       screen: SettingsScreen,
@@ -817,10 +819,7 @@ type OpensteerRootParamList = {
   readonly SettingsExternalAgents: { readonly deploymentId: string };
   readonly SettingsAI: { readonly deploymentId: string };
   readonly SettingsPlugins: { readonly deploymentId: string };
-  readonly SettingsLocalPlugins: {
-    readonly deploymentId: string;
-    readonly target?: import("@opensteer/protocol").PluginTarget;
-  };
+  readonly PluginSkills: { readonly deploymentId: string };
   readonly PluginCatalog: { readonly deploymentId: string };
   readonly PluginDetail: { readonly deploymentId: string; readonly pluginId: string };
   readonly PluginLocalTool: { readonly deploymentId: string; readonly id: string };
@@ -830,11 +829,8 @@ type OpensteerRootParamList = {
     readonly requirement: string;
     readonly scope: "app" | "user";
   };
-  readonly SettingsPluginDetail: {
-    readonly deploymentId: string;
-    readonly target: import("@opensteer/protocol").PluginTarget;
-  };
   readonly SettingsDeviceDetail: { readonly deploymentId: string; readonly machineId: string };
+  readonly SettingsOtherDevice: { readonly deploymentId: string; readonly pluginId: string };
   readonly SettingsSignIns: { readonly deploymentId: string };
   readonly Settings: undefined;
   readonly Plugins: { readonly deploymentId: string };

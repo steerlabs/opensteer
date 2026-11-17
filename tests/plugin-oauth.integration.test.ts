@@ -474,7 +474,6 @@ beforeAll(async () => {
     return true;
   });
   service = new PluginService({
-    deployment: "personal",
     databaseUrl: clone.url,
     dataDirectory: directory,
     owner: "personal",

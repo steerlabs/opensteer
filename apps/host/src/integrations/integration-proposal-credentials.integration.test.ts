@@ -12,7 +12,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { RequestIdSchema, requestAgentProposedDetail } from "@opensteer/core";
+import { RequestIdSchema } from "@opensteer/core";
 import {
   IntegrationDefinitionSchema,
   IntegrationDefinitionSummarySchema,
@@ -20,7 +20,6 @@ import {
   type IntegrationServerId,
   createIntegrationId,
   integrationDefinitionSummary,
-  integrationProposalSummary,
   IntegrationProposalManifestSchema,
 } from "@opensteer/integration-core";
 import {
@@ -28,7 +27,6 @@ import {
   extractOpenApiTools,
   planLegacyOpenApiToolNames,
 } from "@opensteer/integration-adapters/openapi";
-import { apiKeyDisclosure, integrationInstallReview } from "@opensteer/client/integrations";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
 import { integrationDefinitions } from "@opensteer/integration-catalog";
 import { IntegrationInstallStore, createDatabase } from "@opensteer/database";
@@ -381,21 +379,6 @@ integration("proposal credential guidance", () => {
         check,
         apiKey: { check: true, destinations: [origin, checkOrigin].sort() },
       });
-      expect(
-        integrationInstallReview({
-          ...reviewed,
-          proposal: integrationProposalSummary(reviewed.proposal),
-        }),
-      ).toEqual({
-        facts: [
-          description,
-          "Researched from a document the agent supplied.",
-          "Your key is stored encrypted by your Opensteer and sent to api.proposal.example, keys.proposal.example when used.",
-          "Opensteer checks the key with Vapi fixture before saving it.",
-        ],
-        name: "Vapi fixture",
-        provenance: requestAgentProposedDetail,
-      });
       for (const [field, changed] of [
         [
           "credential",
@@ -446,8 +429,6 @@ integration("proposal credential guidance", () => {
         destinations: [origin, checkOrigin].sort(),
       });
       expect(installation.manifest.proposal).toMatchObject({ apiKey: definition.apiKey });
-      expect(apiKeyDisclosure(definition)?.custody).toContain("keys.proposal.example");
-      expect(apiKeyDisclosure(definition)?.check).toContain("before saving");
       expect(installation.adapterSnapshot?.config.healthCheck).toEqual(check);
       expect(resolutions.count).toBeGreaterThan(0);
       const resolutionCount = resolutions.count;
@@ -606,7 +587,6 @@ integration("proposal credential guidance", () => {
         "OpenAPI integration from a document the agent supplied.",
       );
       expect(legacyDefinition.apiKey?.check).toBe(false);
-      expect(apiKeyDisclosure(legacyDefinition)?.check).toContain("first time");
       const unchecked = await testRpcRequest(
         host.origin,
         "commands.dispatch",
@@ -694,7 +674,6 @@ integration("proposal credential guidance", () => {
           oldPendingManifestApproved: true,
           uncheckedSavedWithoutProviderCall: true,
           genericLabel: "API credential",
-          uncheckedCopy: apiKeyDisclosure(legacyDefinition)?.check,
           catalogDigestsUnchanged: true,
           catalogPostCheckStillAccepted: true,
         },
@@ -1216,15 +1195,6 @@ integration("proposal credential guidance", () => {
       expect(reviewed.proposal.name).toBe("Vapi");
       expect(reviewed.title).toBe("Install Vapi?");
       expect(reviewed.proposal.digest).not.toBe(unnamed.proposal.digest);
-      const review = integrationInstallReview({
-        kind: "proposal",
-        proposal: integrationProposalSummary(reviewed.proposal),
-      });
-      expect(review?.name).toBe("Vapi");
-      expect(review?.facts.slice(0, 2)).toEqual([
-        description,
-        "Researched from a document the agent supplied.",
-      ]);
 
       await host.store.database
         .updateTable("integrationRequestDetails")
