@@ -227,6 +227,20 @@ const pluginContext = z.strictObject({
   plugin: PluginRequestContextSchema,
   decision: pluginPresentation,
 });
+const PluginAccountConsentViewSchema = z.object(PluginAccountConsentSchema.shape);
+const pluginContextView = z
+  .object({
+    plugin: z.object(PluginRequestContextSchema.shape),
+    decision: z.discriminatedUnion("kind", [
+      z.object({
+        ...pluginPresentation.options[0].shape,
+        consent: PluginAccountConsentViewSchema,
+      }),
+      z.object(pluginPresentation.options[1].shape),
+      z.object(pluginPresentation.options[2].shape),
+    ]),
+  })
+  .optional();
 
 const requestPresentationVariants = [
   z.strictObject({
@@ -262,14 +276,17 @@ export const RequestPresentationSchema = z.discriminatedUnion("kind", requestPre
 const RequestPresentationViewSchema = z.discriminatedUnion("kind", [
   z.object({
     ...requestPresentationVariants[0].shape,
+    plugin: pluginContextView,
     options: z.array(RequestOptionViewSchema).min(1).max(32),
   }),
   z.object({
     ...requestPresentationVariants[1].shape,
+    plugin: pluginContextView,
     fields: z.array(RequestFormFieldViewSchema).min(1).max(16),
   }),
   z.object({
     ...requestPresentationVariants[2].shape,
+    plugin: pluginContextView,
     subject: z.object(requestPresentationVariants[2].shape.subject.shape),
   }),
 ]);
@@ -532,7 +549,10 @@ const RequestPayloadViewSchema = z.discriminatedUnion("kind", [
   z.object(requestPayloadVariants[9].shape),
   z.object(requestPayloadVariants[10].shape),
   z.object(requestPayloadVariants[11].shape),
-  z.object(requestPayloadVariants[12].shape),
+  z.object({
+    ...requestPayloadVariants[12].shape,
+    consent: PluginAccountConsentViewSchema,
+  }),
   z.object(requestPayloadVariants[13].shape),
   z.object(requestPayloadVariants[14].shape),
 ]);
