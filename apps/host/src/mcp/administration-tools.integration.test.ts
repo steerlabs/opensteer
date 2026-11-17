@@ -1,6 +1,7 @@
-import { createId, emptyExecutionPreferences, type Thread } from "@opensteer/core";
-import { IntegrationConnectionAuthStore } from "@opensteer/database";
+import { createId, DeviceIdSchema, emptyExecutionPreferences, type Thread } from "@opensteer/core";
+import { IntegrationConnectionAuthStore, type OpensteerStore } from "@opensteer/database";
 import { createIntegrationId } from "@opensteer/integration-core";
+import { machineAccessPolicyDefault } from "@opensteer/protocol";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   AdministrationService,
@@ -32,6 +33,7 @@ function fixture() {
     machineId = createId("runner"),
     profileId = createId("browserProfile"),
     grantId = crypto.randomUUID();
+  const deviceId = DeviceIdSchema.parse(machineId);
   const connectionId = createIntegrationId("connection");
   const harness = {
     id: harnessInstanceId,
@@ -78,6 +80,7 @@ function fixture() {
     },
     revokeGrant: vi.fn(),
     uninstallIntegration: vi.fn(),
+    deviceConnections: vi.fn(async () => []),
   };
   const store = {
     database: owner.database,
@@ -95,11 +98,35 @@ function fixture() {
       ...emptyExecutionPreferences,
       accessMode: "approval-required",
     })),
+    listDevices: vi.fn<OpensteerStore["listDevices"]>(async () => ({
+      devices: [
+        {
+          id: deviceId,
+          deploymentId: owner.deployment.id,
+          name: "Mac",
+          kind: "home",
+          platform: "macos",
+          form: "desktop",
+          ownerKind: "user",
+          ownerUserId: userId,
+          accessPolicy: machineAccessPolicyDefault,
+          accessPolicyRevision: 1,
+          removedAt: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ],
+      nextCursor: null,
+    })),
+    listDeviceDrivers: vi.fn<OpensteerStore["listDeviceDrivers"]>(async () => [
+      { deviceId, runnerId: machineId, role: "self", generation: 1, detachedAt: null },
+    ]),
     listRunners: vi.fn(async () => ({
       runners: [
         {
           id: machineId,
           name: "Mac",
+          lastSeenAt: null,
           revokedAt: null,
           kind: "local",
           ownerKind: "user",
@@ -114,7 +141,7 @@ function fixture() {
     effectiveMachineOwner: vi.fn(async () => ({ effectiveOwner: userId })),
     listActiveShellSessions: vi.fn(async () => []),
 
-    renameRunner: vi.fn(),
+    renameDevice: vi.fn<OpensteerStore["renameDevice"]>(),
     notificationState: {
       timeZoneFor: vi.fn(async () => null),
       setTimeZone: vi.fn(async () => "UTC"),
@@ -139,7 +166,15 @@ function fixture() {
       listAgentProfiles: vi.fn(async () => [{ id: profileId, name: "Work", home: null }]),
     },
     browserSources: { listState: vi.fn(async () => ({ sources: [], sites: [] })) },
-    runners: { isRunnerConnected: vi.fn(() => true) },
+    runners: {
+      isRunnerConnected: vi.fn(() => true),
+      moduleReadiness: vi.fn(() => undefined),
+    },
+    computerApps: {
+      status: vi.fn(() => []),
+      attached: vi.fn(() => false),
+      deviceStatus: vi.fn(() => null),
+    },
   };
   const service = new AdministrationService(deps as unknown as AdministrationDependencies, vi.fn());
   const handlers = administrationToolHandlers(
@@ -275,7 +310,7 @@ describe("administration through the MCP service", () => {
     await f.mcp.callTool("token", "computer_update", f.inputs.computer_update, {
       operationKey: "run",
     });
-    expect(f.deps.store.renameRunner).toHaveBeenCalledOnce();
+    expect(f.deps.store.renameDevice).toHaveBeenCalledOnce();
   });
   it("rechecks the access ceiling before reading an administration replay", async () => {
     const f = fixture();
@@ -286,6 +321,6 @@ describe("administration through the MCP service", () => {
       }),
     ).rejects.toThrow("Changing settings requires full-access");
     expect(f.deps.store.replayAdministrationCommand).not.toHaveBeenCalled();
-    expect(f.deps.store.renameRunner).not.toHaveBeenCalled();
+    expect(f.deps.store.renameDevice).not.toHaveBeenCalled();
   });
 });

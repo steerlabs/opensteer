@@ -1,4 +1,7 @@
 import { integrationBlocked } from "../../integrations/integration-blocked.js";
+import { androidPhoneDefinitionId, isPhoneDisplayDefinitionId } from "@opensteer/core";
+const isComputerUseDefinition = (value: string) =>
+  value === "macos-app" || isPhoneDisplayDefinitionId(value);
 import {
   AppAccessRequestInputSchema,
   RequestUnionSchema,
@@ -19,10 +22,10 @@ import { integrationDefinitionDigest } from "@opensteer/integration-core/digest"
 import { integrationToolEffect } from "@opensteer/integration-core/effect";
 import { integrationToolSignature } from "@opensteer/integration-core/tool-signature";
 import type { IntegrationRequester, CallableIntegrationTool } from "@opensteer/database";
-import { androidPhoneDefinitionId, computerUseToolRequiredSentence } from "@opensteer/protocol";
+import { computerUseToolRequiredSentence } from "@opensteer/protocol";
 import { computerUseDefinitionId } from "../../computer-use/computer-use-service.js";
 import {
-  RunnerIdSchema,
+  DeviceIdSchema,
   formatReferenceLink,
   UserIdSchema,
   OpensteerError,
@@ -127,7 +130,7 @@ export class IntegrationToolHandlers {
         input.limit,
         input.cursor ?? 0,
         input.provider,
-        input.computerId,
+        input.computerId ? DeviceIdSchema.parse(input.computerId) : undefined,
       ),
     );
   }
@@ -301,9 +304,7 @@ export class IntegrationToolHandlers {
     if (
       computerCall &&
       selected.server.transport.type === "computer" &&
-      [computerUseDefinitionId, androidPhoneDefinitionId].includes(
-        selected.server.transport.definitionId,
-      )
+      isComputerUseDefinition(selected.server.transport.definitionId)
     )
       throw refused("bad_request", computerUseToolRequiredSentence);
     return selected;
@@ -378,10 +379,7 @@ export class IntegrationToolHandlers {
     );
     const definitionId =
       match?.definitionId ?? (accountEntry && installationDefinitionId(accountEntry.installation));
-    if (
-      computerCall &&
-      [computerUseDefinitionId, androidPhoneDefinitionId].includes(definitionId ?? "")
-    )
+    if (computerCall && isComputerUseDefinition(definitionId ?? ""))
       throw refused("bad_request", computerUseToolRequiredSentence);
     if (match?.tool) {
       const readiness = match.entry.readiness.tools.find(
@@ -393,14 +391,14 @@ export class IntegrationToolHandlers {
     if (match?.grant) {
       const { computerWrite, definitionId, entry, grant } = match;
       if (computerWrite && grant.connectionId) {
-        const connection = await this.#platform.store.getComputerConnectionForCall({
+        const connection = await this.#platform.store.getDeviceComputerConnectionForCall({
           connectionId: grant.connectionId,
           ownerUserId: scope.requestedBy,
         });
         if (connection?.access === "read") {
           throw refused(
             "forbidden",
-            definitionId === androidPhoneDefinitionId
+            isPhoneDisplayDefinitionId(definitionId)
               ? `${connection.runnerName} allows seeing only. Ask for read-write to act: call ${phoneRequestShape} with access "read-write"; do not retry this call until it is fulfilled.`
               : `${connection.runnerName} allows reading only. Ask for read-write to send: call integration_request with integration "${entry.installation.name}" and access "read-write"; do not retry this call until it is fulfilled.`,
           );
@@ -416,31 +414,37 @@ export class IntegrationToolHandlers {
     limit: number,
     offset: number,
     provider?: string,
-    runnerId?: z.infer<typeof RunnerIdSchema>,
+    deviceId?: z.infer<typeof DeviceIdSchema>,
   ) {
     const nextCursor = (more: boolean) => (more ? String(offset + limit) : null);
     const access = await this.#platform.computerAccess(
       discoveryRequester(scope),
       "runId" in scope ? scope : undefined,
     );
-    if (runnerId) {
+    if (deviceId) {
       const inventory = access;
-      const machine = inventory.machines.find((machine) => machine.runnerId === runnerId);
-      const phone = inventory.phones.find((phone) => phone.runnerId === runnerId);
+      const machine = inventory.machines.find((machine) => machine.deviceId === deviceId);
+      const phone = inventory.phones.find((phone) => phone.deviceId === deviceId);
       if (phone) {
+        if (!isPhoneDisplayDefinitionId(phone.definitionId))
+          throw refused("not_found", unknownPhone(deviceId));
         const installed = await this.#platform.computerAppApprovals.installedComputerApps(
           {
             actorUserId: scope.requestedBy,
-            runnerId,
+            deviceId,
             query,
             limit,
             offset,
-            definitionId: androidPhoneDefinitionId,
+            definitionId: phone.definitionId,
           },
           inventory.phones,
         );
         const output = {
-          apps: installed.apps,
+          apps: installed.apps.map((app) =>
+            phone.definitionId === androidPhoneDefinitionId
+              ? { ...app, packageName: app.appId }
+              : app,
+          ),
           total: installed.total,
           nextCursor: nextCursor(offset + installed.apps.length < installed.total),
         };
@@ -449,11 +453,11 @@ export class IntegrationToolHandlers {
           structuredContent: output,
         };
       }
-      if (!machine) throw refused("not_found", unknownComputerUseMac(runnerId));
+      if (!machine) throw refused("not_found", unknownComputerUseMac(deviceId));
       const installed = await this.#platform.computerAppApprovals.installedComputerApps(
         {
           actorUserId: scope.requestedBy,
-          runnerId,
+          deviceId,
           query,
           limit,
           offset,
@@ -468,7 +472,7 @@ export class IntegrationToolHandlers {
       }));
       const output = {
         computer: {
-          computerId: runnerId,
+          computerId: deviceId,
           name: machine.name,
           ...access.machine(machine),
           apps,
@@ -508,9 +512,7 @@ export class IntegrationToolHandlers {
         (operation) =>
           !(
             operation.server.transport.type === "computer" &&
-            [computerUseDefinitionId, androidPhoneDefinitionId].includes(
-              operation.server.transport.definitionId,
-            )
+            isComputerUseDefinition(operation.server.transport.definitionId)
           ) && callableToolMatchesProvider(operation, provider, definitionById),
       ),
       query,
@@ -539,10 +541,7 @@ export class IntegrationToolHandlers {
     const searched = (
       query.length > 0 ? searchIntegrationInventory(filtered, query, 20) : filtered
     ).filter(
-      (entry) =>
-        ![computerUseDefinitionId, androidPhoneDefinitionId].includes(
-          installationDefinitionId(entry.installation) ?? "",
-        ),
+      (entry) => !isComputerUseDefinition(installationDefinitionId(entry.installation) ?? ""),
     );
     const matches = searched.slice(offset, offset + limit);
     const terms = integrationSearchTerms(query);
@@ -635,7 +634,7 @@ export class IntegrationToolHandlers {
             ...(definition.id === "macos-app"
               ? {
                   computers: computers.map((machine) => ({
-                    computerId: machine.runnerId,
+                    computerId: machine.deviceId,
                     name: machine.name,
                     ...access.machine(machine),
                     apps: access.appEntries(machine).map(({ name, bundleId, access, blocked }) => ({
@@ -645,13 +644,16 @@ export class IntegrationToolHandlers {
                     })),
                   })),
                 }
-              : definition.id === androidPhoneDefinitionId
+              : isPhoneDisplayDefinitionId(definition.id)
                 ? {
-                    phones: phones.map((phone) => ({
-                      computerId: phone.runnerId,
-                      name: phone.name,
-                      ...access.phone(phone),
-                    })),
+                    phones: phones
+                      .filter((phone) => phone.definitionId === definition.id)
+                      .map((phone) => ({
+                        computerId: phone.deviceId,
+                        definitionId: phone.definitionId,
+                        name: phone.name,
+                        ...access.phone(phone),
+                      })),
                   }
                 : {}),
           },
@@ -663,7 +665,11 @@ export class IntegrationToolHandlers {
       ...(concerned(computerUseDefinitionId) && !computers.length
         ? { computers: noComputerUseMac }
         : {}),
-      ...(concerned(androidPhoneDefinitionId) && !phones.length ? { phones: noPhone } : {}),
+      ...(this.#definitions.some(
+        (definition) => isPhoneDisplayDefinitionId(definition.id) && concerned(definition.id),
+      ) && !phones.length
+        ? { phones: noPhone }
+        : {}),
     };
     const output = {
       ...(Object.keys(guidance).length > 0 ? { guidance } : {}),
@@ -759,7 +765,7 @@ export class IntegrationToolHandlers {
     if ("catalog" in input) {
       if (input.catalog === computerUseDefinitionId)
         throw refused("bad_request", computerUseRequestRefusal);
-      if (input.catalog === androidPhoneDefinitionId)
+      if (isPhoneDisplayDefinitionId(input.catalog))
         throw refused("bad_request", phoneRequestRefusal);
       const definition = this.#definitions.find((candidate) => candidate.id === input.catalog);
       if (!definition) {
@@ -824,7 +830,7 @@ export class IntegrationToolHandlers {
     }
     // Each phone is its own account too, so an ask that names none names no phone.
     if (
-      installationDefinitionId(selected.installation) === androidPhoneDefinitionId &&
+      isPhoneDisplayDefinitionId(installationDefinitionId(selected.installation)) &&
       input.account === undefined
     ) {
       throw refused("bad_request", phoneRequestRefusal);
@@ -885,7 +891,7 @@ export class IntegrationToolHandlers {
         (access === "read" ||
           grant.connectionId === null ||
           (
-            await this.#platform.store.getComputerConnectionForCall({
+            await this.#platform.store.getDeviceComputerConnectionForCall({
               connectionId: grant.connectionId,
               ownerUserId: scope.requestedBy,
             })
@@ -938,18 +944,19 @@ export class IntegrationToolHandlers {
     const app = input.app;
     const { machines: macs, phones } =
       await this.#platform.computerAppApprovals.computerUseInventory(scope.requestedBy);
+    const executingDeviceId = await this.#platform.store.requireSelfDeviceId(scope.runnerId);
     const named = input.computerId
-      ? macs.find(({ runnerId }) => runnerId === input.computerId)
-      : (macs.find(({ runnerId }) => runnerId === scope.runnerId) ??
+      ? macs.find(({ deviceId }) => deviceId === String(input.computerId))
+      : (macs.find(({ deviceId }) => deviceId === executingDeviceId) ??
         (macs.length === 1 ? macs[0] : undefined));
     if (!named) {
       const phone = input.computerId
-        ? phones.find(({ runnerId }) => runnerId === input.computerId)
+        ? phones.find(({ deviceId }) => deviceId === String(input.computerId))
         : undefined;
       if (phone) {
         throw refused(
           "bad_request",
-          `${phone.name} is an Android phone, which is asked for whole: call ${phoneRequestShape} without app.`,
+          `${phone.name} is a phone, which is asked for whole: call ${phoneRequestShape} without app.`,
         );
       }
       const eligible = macs;
@@ -961,7 +968,7 @@ export class IntegrationToolHandlers {
         input.computerId
           ? `That computer is not one of yours set up for computer use. These are: ${eligible.map(({ name }) => name).join(", ")}.`
           : `This task is not running on a Mac set up for computer use, so name one with computerId. These are set up: ${eligible
-              .map(({ name, runnerId }) => `${name} (${runnerId})`)
+              .map(({ name, deviceId }) => `${name} (${deviceId})`)
               .join(", ")}.`,
       );
     }
@@ -972,7 +979,7 @@ export class IntegrationToolHandlers {
       callId,
       originatingRunId: scope.runId,
       ownerUserId: scope.requestedBy,
-      runnerId: named.runnerId,
+      deviceId: named.deviceId,
       threadId: scope.threadId,
     });
     return computerAccessResult(created, scope);
@@ -991,9 +998,9 @@ export class IntegrationToolHandlers {
     const { machines, phones } = await this.#platform.computerAppApprovals.computerUseInventory(
       scope.requestedBy,
     );
-    const phone = phones.find(({ runnerId }) => runnerId === input.computerId);
+    const phone = phones.find(({ deviceId }) => deviceId === String(input.computerId));
     if (!phone) {
-      const mac = machines.find(({ runnerId }) => runnerId === input.computerId);
+      const mac = machines.find(({ deviceId }) => deviceId === String(input.computerId));
       throw refused(
         "bad_request",
         mac
@@ -1010,7 +1017,7 @@ export class IntegrationToolHandlers {
       callId,
       originatingRunId: scope.runId,
       ownerUserId: scope.requestedBy,
-      runnerId: phone.runnerId,
+      deviceId: phone.deviceId,
       threadId: scope.threadId,
     });
     return computerAccessResult(created, scope);
@@ -1018,7 +1025,7 @@ export class IntegrationToolHandlers {
 }
 const computerUseRequestRefusal = `Computer use is requested one app at a time: call ${computerAppRequestShape}.`;
 
-const phoneRequestRefusal = `An Android phone is requested one phone at a time: call ${phoneRequestShape}.`;
+const phoneRequestRefusal = `A phone display is requested one phone at a time: call ${phoneRequestShape}.`;
 
 /** What a task's ask for an app or a phone answers, pending or ready for computer. */
 function computerAccessResult(

@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { TabIdSchema } from "@opensteer/core";
 import { TabStore } from "./tab-store.js";
 import { randomUUID } from "node:crypto";
@@ -69,7 +70,7 @@ it("archives a profile's saved tabs and history while retaining its exact native
       {
         id: tabId,
         ownerId: p.userId,
-        computerId: p.runnerId,
+        computerId: DeviceIdSchema.parse(p.runnerId),
         kind: "page",
         title: "Saved",
         url: "https://example.com/",

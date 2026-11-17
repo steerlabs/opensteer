@@ -1,9 +1,9 @@
 import { refused, OpensteerError, type Blocked, type TabId, type UserId } from "@opensteer/core";
+import { computerConnectionDeviceId, type DeviceComputerConnection } from "../device-drivers.js";
+import type { DeviceId, RunnerId } from "@opensteer/core";
+import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { ComputerUseTabBindingSchema } from "@opensteer/protocol";
-import {
-  computerAppIdentitiesEqual,
-  type IntegrationConnectionSummary,
-} from "@opensteer/integration-core";
+import { computerAppIdentitiesEqual } from "@opensteer/integration-core";
 import type { TabServicePort } from "../../tabs/ports.js";
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
 import type { NativeReplTabTarget } from "../native-tab-targets.js";
@@ -11,12 +11,13 @@ import { ComputerUseError } from "../computer-use-service.js";
 import type { ReplReply } from "./messages.js";
 
 export interface NativeTabBindingOptions {
+  selfDeviceId(runnerId: RunnerId): Promise<DeviceId>;
   tabs: Pick<TabServicePort, "get" | "authorizeShow">;
   lookup(ownerId: UserId, tabId: TabId): Promise<NativeReplTabTarget>;
-  connections(): Promise<readonly IntegrationConnectionSummary[]>;
+  connections(): Promise<readonly DeviceComputerConnection[]>;
   blocked?(target: NativeReplTabTarget): Promise<Blocked | undefined>;
   bind(
-    connection: IntegrationConnectionSummary,
+    connection: DeviceComputerConnection,
     target: NativeReplTabTarget,
     beforeAcquired: () => Promise<void>,
   ): Promise<ReplReply>;
@@ -35,6 +36,9 @@ export async function bindNativeTab(
       current.tabGeneration !== expected.tabGeneration ||
       current.kind !== expected.kind ||
       current.computerId !== expected.computerId ||
+      (current.kind === "phone" &&
+        expected.kind === "phone" &&
+        current.driverGeneration !== expected.driverGeneration) ||
       (current.kind === "window" &&
         expected.kind === "window" &&
         current.windowId !== expected.windowId)
@@ -56,9 +60,10 @@ export async function bindNativeTab(
     throw refused("not_found", "This tab is unavailable.");
   const connection = (await options.connections()).find(
     (entry) =>
-      entry.computer?.runnerId === target.computerId &&
+      entry.computer !== null &&
+      computerConnectionDeviceId(entry) === target.computerId &&
       (target.kind === "phone"
-        ? entry.definitionId === "android-phone"
+        ? isPhoneDisplayDefinitionId(entry.definitionId)
         : entry.computer.app && computerAppIdentitiesEqual(entry.computer.app, target.app)),
   );
   const blocked = await options.blocked?.(target);

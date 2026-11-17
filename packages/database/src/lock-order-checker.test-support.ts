@@ -916,7 +916,15 @@ async function checked(
   }
   if (op === "commit" || (op === "rollback" && !/rollback\s+to/iu.test(sql))) {
     try {
-      if (op === "commit" && !state.migration && state.deferredTables.length)
+      // Without an xid, no row change could have queued a deferred trigger.
+      // Probing their tables anyway can deadlock a reader against fixture TRUNCATE.
+      if (
+        op === "commit" &&
+        !state.migration &&
+        state.deferredTables.length &&
+        (await raw(client, "select pg_current_xact_id_if_assigned() is not null as assigned"))
+          .rows[0]!.assigned
+      )
         await checked(
           client,
           {

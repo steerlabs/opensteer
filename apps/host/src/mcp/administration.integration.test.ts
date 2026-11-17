@@ -3,7 +3,7 @@ import {
   enrollTestRunner,
   personalBrowserRepository,
 } from "@opensteer/database/test-support/store";
-import { createId, SpecialistManifestSchema, type UserId } from "@opensteer/core";
+import { createId, DeviceIdSchema, SpecialistManifestSchema, type UserId } from "@opensteer/core";
 import {
   IntegrationPlatformStore,
   BrowserSourceStore,
@@ -207,7 +207,7 @@ describeStore("MCP administration", (it) => {
           different = { name: "Changed" };
           person = {
             type: "machine.rename",
-            machineId: run.runnerId,
+            machineId: DeviceIdSchema.parse(run.runnerId),
             name: "B",
             idempotencyKey: randomUUID(),
           };
@@ -585,7 +585,11 @@ describeStore("MCP administration", (it) => {
         withMachineAdmission: async (_id: unknown, effect: () => Promise<unknown>) => effect(),
         endMachineSessions: vi.fn(),
       },
+      publishDeploymentEvent: vi.fn(),
       computerApps: {
+        withDeviceAdmissions: async (_ids: unknown, effect: () => Promise<unknown>) => effect(),
+        forgetDevice: vi.fn(),
+        refreshDeviceDrivers: async () => {},
         withRunnerAdmission: async (_id: unknown, effect: () => Promise<unknown>) => effect(),
         detachRunner: vi.fn(),
       },
@@ -778,7 +782,9 @@ describeStore("MCP administration", (it) => {
       listConnections: async () => [],
       definitions: [],
       adapters: [],
-      computerApps: {},
+      computerApps: {
+        withDeviceAdmissions: async (_ids: unknown, effect: () => Promise<unknown>) => effect(),
+      },
       credentialMaterializer: {},
       authorizationSource: {},
       mcpOauth: {},
@@ -1030,7 +1036,9 @@ describeStore("MCP administration", (it) => {
       listConnections: async () => [],
       definitions: [],
       adapters: [],
-      computerApps: {},
+      computerApps: {
+        withDeviceAdmissions: async (_ids: unknown, effect: () => Promise<unknown>) => effect(),
+      },
       credentialMaterializer: {},
       authorizationSource: {},
       mcpOauth: {},

@@ -1,4 +1,4 @@
-import { OpensteerError, type RunnerId } from "@opensteer/core";
+import { OpensteerError, type DeviceId } from "@opensteer/core";
 import type { DatabaseSchema } from "@opensteer/database";
 import { deviceAccess } from "@opensteer/protocol";
 import type { Kysely } from "kysely";
@@ -6,11 +6,11 @@ import type { Kysely } from "kysely";
 export type DeviceCapability = "browser" | "apps" | "files";
 export class DeviceAccessRefusal extends OpensteerError {
   override readonly reason: "device-access-off" | "device-offline";
-  readonly machineId: RunnerId;
+  readonly machineId: DeviceId;
   readonly capability: DeviceCapability;
   constructor(
     reason: "device-access-off" | "device-offline",
-    machineId: RunnerId,
+    machineId: DeviceId,
     capability: DeviceCapability,
   ) {
     super({
@@ -29,16 +29,16 @@ export class DeviceAccessRefusal extends OpensteerError {
 }
 export async function requireDeviceAccess(
   database: Kysely<DatabaseSchema>,
-  machineId: RunnerId,
+  machineId: DeviceId,
   capability: DeviceCapability,
   online: boolean,
 ): Promise<void> {
   const runner = await database
-    .selectFrom("runners")
-    .select(["accessPolicy", "revokedAt"])
+    .selectFrom("devices")
+    .select(["accessPolicy", "removedAt"])
     .where("id", "=", machineId)
     .executeTakeFirst();
-  if (!runner || runner.revokedAt)
+  if (!runner || runner.removedAt)
     throw new OpensteerError({ code: "not_found", message: "Active computer not found" });
   if (!online) throw new DeviceAccessRefusal("device-offline", machineId, capability);
   if (!deviceAccess(runner.accessPolicy)[capability])

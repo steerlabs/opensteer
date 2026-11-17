@@ -6,7 +6,7 @@ import { assignmentTitle } from "@opensteer/client/host";
 import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { type Request, type RequestResponse } from "@opensteer/core";
 import { EngineDotMark } from "./subagent-rows.js";
-import { androidPhoneDefinitionId } from "@opensteer/protocol";
+import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { ActionNote, ChoiceRows } from "./action-rows.js";
 import { useShell } from "./app-shell.js";
 import { composerDraftKeyFor } from "./composer-drafts.js";
@@ -780,7 +780,7 @@ function requestIcon(request: Request): IconName {
   // A phone's access Request asks for the phone itself, so it reads as one.
   if (
     request.payload.kind === "computer.app.access" &&
-    request.payload.definitionId === androidPhoneDefinitionId
+    isPhoneDisplayDefinitionId(request.payload.definitionId)
   )
     return "phone";
   // Both name one enrolled computer, so both read as one.

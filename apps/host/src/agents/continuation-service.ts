@@ -1,4 +1,5 @@
 import { integrationBlocked } from "../integrations/integration-blocked.js";
+import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { createHash } from "node:crypto";
 import { BrowserRequestOutcomeSchema, OpensteerError, type Request } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
@@ -9,7 +10,6 @@ import {
 } from "@opensteer/integration-core";
 import type { CommandService } from "@opensteer/orchestration";
 import {
-  androidPhoneDefinitionId,
   PasswordSignInRequestResponseSchema,
   type PasswordSignInRequestResponse,
 } from "@opensteer/protocol";
@@ -456,8 +456,9 @@ export async function continuationMessage(
       }
       if (
         entry.installation.sourceKind === "built-in" &&
-        CatalogProvenanceSchema.safeParse(entry.installation.provenance).data?.definitionId ===
-          androidPhoneDefinitionId
+        isPhoneDisplayDefinitionId(
+          CatalogProvenanceSchema.safeParse(entry.installation.provenance).data?.definitionId,
+        )
       ) {
         const connectionId =
           request.response.kind === "external" ? request.response.value?.connectionId : undefined;
@@ -515,7 +516,7 @@ export async function continuationMessage(
       if (payload.app === null) {
         // A phone is asked for whole, so its continuation names the phone.
         const phone = (await computerAccess()).phones.find(
-          ({ runnerId }) => runnerId === payload.runnerId,
+          ({ deviceId }) => deviceId === payload.deviceId,
         );
         if (request.status === "declined")
           return `Request ${request.id} was declined by the user. Continue the task without ${phone?.name ?? "that phone"} and do not request it again unless the user asks.`;
@@ -526,7 +527,7 @@ export async function continuationMessage(
       const asked = payload.app;
       const { displayName } = asked;
       const machines = (await computerAccess()).machines;
-      const machine = machines.find(({ runnerId }) => runnerId === payload.runnerId);
+      const machine = machines.find(({ deviceId }) => deviceId === payload.deviceId);
       const mac = machine?.name ?? "that Mac";
       if (request.status === "declined")
         return `Request ${request.id} was declined by the user. Continue the task without ${displayName} on ${mac} and do not request it again unless the user asks.`;
@@ -568,14 +569,14 @@ async function phoneContinuation(
   access: Awaited<ReturnType<IntegrationInventorySource["computerAccess"]>>,
   phone: Awaited<ReturnType<IntegrationInventorySource["computerUsePhones"]>>[number],
 ): Promise<string> {
-  const current = access.phones.find((entry) => entry.runnerId === phone.runnerId);
+  const current = access.phones.find((entry) => entry.deviceId === phone.deviceId);
   const result = current ? access.phone(current) : null;
   return `Request ${request.id} was fulfilled. ${
     !result
-      ? `${phone.name} is unavailable. Use integration_search {query:"Android phone"} to find current targets.`
+      ? `${phone.name} is unavailable. Use integration_search {query:"Phone display"} to find current targets.`
       : result.blocked
         ? `${result.blocked.message} ${result.blocked.next}`
-        : `${phone.name} is ready. Use phone(${JSON.stringify(phone.runnerId)}) in computer_use.`
+        : `${phone.name} is ready. Use phone(${JSON.stringify(phone.deviceId)}) in computer_use.`
   }`;
 }
 

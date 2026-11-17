@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { ComputerScreen } from "./computer.js";
 
-const phoneId = vi.hoisted(() => "rnr_00000000-0000-4000-8000-00000000000b");
+const phoneId = vi.hoisted(() => "dev_00000000-0000-4000-8000-00000000000b");
 const state = vi.hoisted(() => ({
   dispatch: vi.fn(),
   focused: true,
@@ -51,7 +51,8 @@ vi.mock("@opensteer/client/react", () => ({
 vi.mock("@opensteer/client/integrations", () => ({
   isIphone: () => false,
   computerUseView: () => null,
-  phoneUseView: () => ({ access: "read-write", state: { kind: "ready" } }),
+  phoneScreenMac: () => null,
+  phoneUseView: () => ({ access: null, canView: true, state: { kind: "ready" } }),
 }));
 vi.mock("@opensteer/client/computers", () => ({
   computerRole: () => null,
@@ -102,7 +103,7 @@ vi.mock("../ui/screen.js", () => ({
 }));
 vi.mock("../client/mobile-client.js", () => ({ operationDetail: () => "Failed" }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-it("opens the phone's one tab and shows it by its tabId", async () => {
+it("opens a screen-only phone when the Host allows viewing, independently of agent access", async () => {
   const container = document.createElement("div");
   const root = createRoot(container);
   try {

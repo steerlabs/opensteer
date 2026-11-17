@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  deviceMachine,
   HostClientRequestError,
   type HostClient,
   type HostSnapshot,
@@ -340,7 +341,12 @@ export function OwnerView({
           </div>
         ) : null}
       </div>
-      {inputAvailable || phone ? <PhoneControlBar display={display} /> : null}
+      {inputAvailable || phone ? (
+        <PhoneControlBar
+          display={display}
+          phone={machine ? (deviceMachine(machine).phoneDisplay ?? null) : null}
+        />
+      ) : null}
     </section>
   );
 }

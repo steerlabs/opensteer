@@ -4,6 +4,7 @@ import { toWebHeaders } from "../identity/auth.js";
 import { bindAnonymousClientAddress } from "../identity/anonymous-client-address.js";
 import {
   HostApiErrorSchema,
+  assertDeviceWireInput,
   hostApi,
   type HostApiHandlers,
   type HostApiScope,
@@ -11,7 +12,7 @@ import {
   type RpcDeclaration,
   type RpcResult,
 } from "@opensteer/protocol";
-import { OpensteerError, unsupportedVersionReason } from "@opensteer/core";
+import { deploymentPolicy, OpensteerError, unsupportedVersionReason } from "@opensteer/core";
 import { attachmentMaxBytes } from "@opensteer/core";
 import {
   apiCurrentQueryParameter,
@@ -20,6 +21,7 @@ import {
   apiVersionQueryParameter,
   hostApiCurrentHeader,
   minimumHostApiVersion,
+  negotiatedHostApiVersion,
   statesApiVersion,
 } from "@opensteer/deployment-authority";
 import type { DeploymentKind } from "@opensteer/core";
@@ -242,14 +244,23 @@ function registerHostApiMember<Name extends keyof typeof hostApi>(
       }
       const context = createContext(authenticated, request, reply, binaryRequest);
       bindAnonymousClientAddress(context, request);
-      const input = rpcInput(declaration, request);
+      const input = rpcInput(declaration, request, options.kind);
       const handler = handlers[name];
       if (!handler)
         throw new OpensteerError({
           code: "not_found",
           message: "Procedure unavailable on this Host",
         });
+      await options.admit?.(name, input, context);
       const output = await handler(input, context);
+      if (output.ok && options.projectResponse && !declaration.stream) {
+        return sendResult(
+          declaration,
+          { ok: true, data: await options.projectResponse(name, output.data, context) },
+          request,
+          reply,
+        );
+      }
       return sendResult(declaration, output, request, reply);
     },
     method: declaration.method,
@@ -268,17 +279,20 @@ function refusalCause(error: unknown): string | undefined {
 function rpcInput<Declaration extends RpcDeclaration>(
   declaration: Declaration,
   request: FastifyRequest,
+  kind: DeploymentKind,
 ): z.output<Declaration["payload"]> {
-  if (declaration.method === "POST" && !declaration.binaryRequest) {
-    return declaration.payload.parse(request.body) as z.output<Declaration["payload"]>;
-  }
-  const query = z.strictObject({ input: z.string().max(262_144) }).parse(request.query);
-  return declaration.payload.parse(JSON.parse(query.input)) as z.output<Declaration["payload"]>;
+  const raw: unknown =
+    declaration.method === "POST" && !declaration.binaryRequest
+      ? request.body
+      : JSON.parse(z.strictObject({ input: z.string().max(262_144) }).parse(request.query).input);
+  if (deploymentPolicy({ kind }).services.personal)
+    assertDeviceWireInput(raw, negotiatedHostApiVersion(request.headers)!);
+  return declaration.payload.parse(raw) as z.output<Declaration["payload"]>;
 }
 
 function sendResult<Declaration extends RpcDeclaration>(
   declaration: Declaration,
-  output: RpcResult<z.output<Declaration["success"]>, z.output<Declaration["error"]>>,
+  output: RpcResult<unknown, z.output<Declaration["error"]>>,
   request: FastifyRequest,
   reply: FastifyReply,
 ) {
@@ -406,6 +420,16 @@ function createContext(
 
 export interface HostApiRegistrationOptions {
   readonly kind: DeploymentKind;
+  readonly admit?: (
+    name: keyof typeof hostApi,
+    input: unknown,
+    context: HostApiServerContext,
+  ) => Promise<void>;
+  readonly projectResponse?: (
+    name: keyof typeof hostApi,
+    data: unknown,
+    context: HostApiServerContext,
+  ) => Promise<unknown>;
   readonly dispatch?: (
     name: keyof typeof hostApi,
     raw: unknown,

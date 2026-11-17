@@ -1342,105 +1342,116 @@ export type RunnerMessagingModule = z.infer<typeof RunnerMessagingModuleSchema>;
 export const runnerIntegrationsProtocolVersion = 6;
 export const androidIntegrationsProtocolVersion = 4;
 
-export const RunnerIntegrationsModuleSchema = z.object({
-  /** Absent on Runners whose apps cannot move files for an operation. */
-  appFiles: z
-    .number()
-    .int()
-    .positive()
-    .transform((v) => (v === 1 ? (1 as const) : undefined))
-    .optional(),
-  cardUse: z
-    .number()
-    .int()
-    .positive()
-    .transform((v) => (v === 1 ? (1 as const) : undefined))
-    .optional(),
-  /** Deletes a removed plugin's data on request; older Runners keep it until they update. */
-  pluginDataRemoval: z
-    .number()
-    .int()
-    .positive()
-    .transform((v) => (v === 1 ? (1 as const) : undefined))
-    .optional(),
-  computerUseVersion: z
-    .number()
-    .int()
-    .positive()
-    .transform((version) => (version === 2 ? (2 as const) : undefined))
-    .optional(),
-  /** Ciphertext may reach the executor only when every Mac hop supports this version. */
-  loginText: z
-    .number()
-    .int()
-    .positive()
-    .transform((version) => (version === 1 ? (1 as const) : undefined))
-    .optional(),
-  /** Only the Personal desktop's live vault authority supplies this control path. */
-  passwordSignIn: z
-    .number()
-    .int()
-    .positive()
-    .transform((version) => (version === 2 ? (2 as const) : undefined))
-    .optional(),
-  ownerViewVersion: z.number().int().positive().max(1000).optional(),
-  /**
-   * The person's input into exact Mac app windows, shared with the agent's
-   * actions. Only version 2 is understood; the exclusive version 1 is disabled.
-   */
-  macOwnerInputVersion: z
-    .number()
-    .int()
-    .positive()
-    .transform((version) => (version === 2 ? version : undefined))
-    .optional(),
-  macWindowVideoVersion: z
-    .number()
-    .int()
-    .positive()
-    .transform((version) => (version === 1 ? version : undefined))
-    .optional(),
-  /** Selected-text Cut; requires integrations.editing and Host display.start confirmation. */
-  displayCut: z
-    .number()
-    .int()
-    .positive()
-    .transform((version) => (version === 1 ? version : undefined))
-    .optional(),
-  /** Android display editing. A Host confirms support on display.start before new frames flow. */
-  editing: z
-    .number()
-    .int()
-    .positive()
-    .transform((version) => (version === 1 ? version : undefined))
-    .optional(),
-  /**
-   * Android accepts the person's display input alongside the agent's acts,
-   * with no Take over. A Host confirms it on display.start before sending input.
-   */
-  sharedInput: z
-    .number()
-    .int()
-    .positive()
-    .transform((version) => (version === 1 ? version : undefined))
-    .optional(),
-  /** Shared encoder cap for Mac and Android, confirmed by the Host on display.start. */
-  displayProfile: z
-    .number()
-    .int()
-    .positive()
-    .transform((version) => (version === 1 ? version : undefined))
-    .optional(),
-  phoneOwnerControl: z
-    .number()
-    .int()
-    .positive()
-    .transform((version) => (version === 1 ? version : undefined))
-    .optional(),
-  platform: ComputerAppPlatformSchema,
-  // Android, Mac and iPhone have independent protocol versions.
-  protocolVersion: z.number().int().positive().optional(),
-});
+export const RunnerIntegrationsModuleSchema = z
+  .object({
+    screenDrivers: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? (1 as const) : undefined))
+      .optional(),
+    /** Absent on Runners whose apps cannot move files for an operation. */
+    appFiles: z
+      .number()
+      .int()
+      .positive()
+      .transform((v) => (v === 1 ? (1 as const) : undefined))
+      .optional(),
+    cardUse: z
+      .number()
+      .int()
+      .positive()
+      .transform((v) => (v === 1 ? (1 as const) : undefined))
+      .optional(),
+    /** Deletes a removed plugin's data on request; older Runners keep it until they update. */
+    pluginDataRemoval: z
+      .number()
+      .int()
+      .positive()
+      .transform((v) => (v === 1 ? (1 as const) : undefined))
+      .optional(),
+    computerUseVersion: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 2 ? (2 as const) : undefined))
+      .optional(),
+    /** Ciphertext may reach the executor only when every Mac hop supports this version. */
+    loginText: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? (1 as const) : undefined))
+      .optional(),
+    /** Only the Personal desktop's live vault authority supplies this control path. */
+    passwordSignIn: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 2 ? (2 as const) : undefined))
+      .optional(),
+    ownerViewVersion: z.number().int().positive().max(1000).optional(),
+    /**
+     * The person's input into exact Mac app windows, shared with the agent's
+     * actions. Only version 2 is understood; the exclusive version 1 is disabled.
+     */
+    macOwnerInputVersion: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 2 ? version : undefined))
+      .optional(),
+    macWindowVideoVersion: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? version : undefined))
+      .optional(),
+    /** Selected-text Cut; requires integrations.editing and Host display.start confirmation. */
+    displayCut: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? version : undefined))
+      .optional(),
+    /** Android display editing. A Host confirms support on display.start before new frames flow. */
+    editing: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? version : undefined))
+      .optional(),
+    /**
+     * Android accepts the person's display input alongside the agent's acts,
+     * with no Take over. A Host confirms it on display.start before sending input.
+     */
+    sharedInput: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? version : undefined))
+      .optional(),
+    /** Shared encoder cap for Mac and Android, confirmed by the Host on display.start. */
+    displayProfile: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? version : undefined))
+      .optional(),
+    phoneOwnerControl: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? version : undefined))
+      .optional(),
+    platform: ComputerAppPlatformSchema,
+    // Android, Mac and iPhone have independent protocol versions.
+    protocolVersion: z.number().int().positive().optional(),
+  })
+  .refine(
+    (module) => module.screenDrivers === undefined || module.platform === "darwin",
+    "Only Mac integrations can serve screen drivers",
+  );
 export type RunnerIntegrationsModule = z.infer<typeof RunnerIntegrationsModuleSchema>;
 
 /**
@@ -1450,6 +1461,14 @@ export type RunnerIntegrationsModule = z.infer<typeof RunnerIntegrationsModuleSc
  */
 export const agentPhoneOutdatedReason =
   "This phone's Opensteer app is out of date. Plug the phone into a computer and add it again to update it.";
+
+export function runnerSupportsScreenDrivers(module: RunnerIntegrationsModule | undefined): boolean {
+  return (
+    module?.platform === "darwin" &&
+    module.protocolVersion === runnerIntegrationsProtocolVersion &&
+    module.screenDrivers === 1
+  );
+}
 
 export function runnerSupportsComputerUse(module: RunnerIntegrationsModule | undefined): boolean {
   return (

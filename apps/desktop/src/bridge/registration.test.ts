@@ -347,6 +347,7 @@ describe("desktop bridge", () => {
       desktopBridgeChannels.autofillScene,
       desktopBridgeChannels.autofillMeasured,
       desktopBridgeChannels.autofillChoose,
+      desktopBridgeChannels.iphoneSetupChanged,
     ]);
     expect(new Set(handlers.keys())).toEqual(
       new Set(

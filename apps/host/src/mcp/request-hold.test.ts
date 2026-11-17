@@ -80,7 +80,7 @@ describe("Request hold", () => {
       status: "fulfilled",
       payload: {
         kind: "device.access",
-        machineId: createId("runner"),
+        machineId: createId("device"),
         machineName: "Laptop",
         access: "files",
         reason: "Read project",

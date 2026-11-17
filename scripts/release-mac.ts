@@ -70,6 +70,7 @@ const macConfigFields = z
     keychain: absolutePath.optional(),
     personalRuntimeSource: absolutePath.optional(),
     supervisor: binary,
+    iphoneBridge: binary,
     cloudflared: binary,
     /** This Mac, and optionally a second one reached over SSH. */
     targets: z.union([z.tuple([targetSchema]), z.tuple([targetSchema, targetSchema])]),
@@ -430,7 +431,7 @@ async function preflightBuild(config: BuildConfig, context: MacContext) {
       else await execute(context, "/bin/test", ["-e", source]);
     }
   }
-  for (const file of [config.supervisor, config.cloudflared]) {
+  for (const file of [config.supervisor, config.cloudflared, config.iphoneBridge]) {
     if ((await hashFile(file.path)) !== file.sha256)
       throw new Error(`Reviewed binary digest mismatch: ${file.path}`);
     await execute(context, "/usr/bin/codesign", [
@@ -498,6 +499,8 @@ export async function buildSignedMac(config: BuildConfig, context: MacContext) {
     OPENSTEER_PERSONAL_RUNTIME_OUTPUT: personalRuntimeSource,
     OPENSTEER_PERSONAL_RUNTIME_SIGNING_IDENTITY: config.signingIdentity,
     OPENSTEER_DESKTOP_TARGET_OS: "darwin",
+    OPENSTEER_IPHONE_BRIDGE_BINARY_SOURCE: config.iphoneBridge.path,
+    OPENSTEER_IPHONE_BRIDGE_BINARY_SHA256: config.iphoneBridge.sha256,
     OPENSTEER_PROCESS_SUPERVISOR_BINARY_SOURCE: config.supervisor.path,
     OPENSTEER_PROCESS_SUPERVISOR_BINARY_SHA256: config.supervisor.sha256,
     OPENSTEER_CLOUDFLARED_BINARY_SOURCE: config.cloudflared.path,
@@ -839,6 +842,7 @@ async function verifySignedBundle(
   for (const [relative, expected] of [
     ["process-supervisor/opensteer-process-supervisor", config.supervisor.sha256],
     ["cloudflared/cloudflared", config.cloudflared.sha256],
+    ["iphone-bridge/opensteer-iphone-bridge", config.iphoneBridge.sha256],
   ] as const) {
     const file = path.join(app, "Contents/Resources", relative);
     const actual = (await onTarget(context, target, "/usr/bin/shasum", ["-a", "256", file]))

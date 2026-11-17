@@ -324,7 +324,7 @@ test("public Go proxy fallback is a quoted environment value and tests bypass re
   assert.match(runner.scripts["test:native-fs"], /test -count=1 -timeout=2m \.\/\.\.\.$/);
 });
 
-test("native-fs executes once on shard one, fails the lane and Check, and uploads its log", async () => {
+test("Go helpers execute once on shard one, fail the lane and Check, and upload their logs", async () => {
   const { workflow } = await ciConfig();
   const job = workflow.jobs.tests;
   const steps = job.steps.filter((s) => s.run?.includes("test:native-fs"));
@@ -335,6 +335,12 @@ test("native-fs executes once on shard one, fails the lane and Check, and upload
   assert.equal(job["continue-on-error"], undefined);
   assert.match(step.run, /set -o pipefail/);
   assert.match(step.run, /test:native-fs 2>&1 \| tee "\$RUNNER_TEMP\/evidence\/native-fs.log"/);
+  const bridgeSteps = job.steps.filter((s) => s.run?.includes("test:iphone-bridge"));
+  assert.deepEqual(bridgeSteps, steps);
+  assert.match(
+    step.run,
+    /test:iphone-bridge 2>&1 \| tee "\$RUNNER_TEMP\/evidence\/iphone-bridge.log"/,
+  );
   assert.doesNotMatch(step.run, /\|\| true/);
   assert.ok(workflow.jobs.Check.needs.includes("tests"));
   assert.ok(job.steps.some((s) => s.if === "always()" && s.with?.path.includes("evidence")));

@@ -11,7 +11,7 @@ import type { RequestCreationResult } from "@opensteer/protocol";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import type { ContinuationService } from "../agents/continuation-service.js";
 
-type FullAccessStore = Pick<OpensteerStore, "listReachableMachines"> & {
+type FullAccessStore = Pick<OpensteerStore, "listReachableMachines" | "requireSelfDeviceId"> & {
   readonly requests: Pick<
     OpensteerStore["requests"],
     "create" | "declineMachineFullDiskAccessRequest" | "fulfillMachineFullDiskAccessRequests"
@@ -69,7 +69,7 @@ export class MachineFullDiskAccessService {
       requiredActor: "requester",
       payload: {
         kind,
-        machineId: machine.runnerId,
+        machineId: await this.#store.requireSelfDeviceId(machine.runnerId),
         machineName: machine.name,
         reason: input.reason,
       },

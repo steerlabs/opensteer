@@ -1,3 +1,6 @@
+import { requireSelfDeviceId } from "./device-inventory-store.js";
+import { deviceOwnershipIn } from "./machine-ownership.js";
+import type { DeviceId } from "@opensteer/core";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { fulfillDeviceAccessRequestsInTransaction } from "./request-store.js";
 import { type AgentEvent, deploymentPolicy } from "@opensteer/core";
@@ -253,13 +256,24 @@ function decodeShellHistoryCursor(cursor: string): {
  */
 export async function updateMachineAccessPolicy(
   database: Kysely<DatabaseSchema>,
+  input: Omit<Parameters<typeof updateDeviceAccessPolicy>[1], "deviceId" | "legacyRunnerId"> & {
+    readonly runnerId: RunnerId;
+  },
+) {
+  const deviceId = await requireSelfDeviceId(database, input.runnerId);
+  return updateDeviceAccessPolicy(database, { ...input, deviceId, legacyRunnerId: input.runnerId });
+}
+
+export async function updateDeviceAccessPolicy(
+  database: Kysely<DatabaseSchema>,
   input: {
     readonly allowDeployment: boolean;
     readonly expectedRevision: number;
     readonly idempotency?: { readonly key: string; readonly requestedBy: UserId };
     readonly ownerId: UserId;
     readonly policy: MachineAccessPolicy;
-    readonly runnerId: RunnerId;
+    readonly deviceId: DeviceId;
+    readonly legacyRunnerId?: RunnerId;
   },
 ): Promise<
   | { readonly outcome: "conflict"; readonly replayed: boolean }
@@ -278,7 +292,7 @@ export async function updateMachineAccessPolicy(
   const request = {
     expectedRevision: input.expectedRevision,
     policy: input.policy,
-    runnerId: input.runnerId,
+    ...(input.legacyRunnerId ? { runnerId: input.legacyRunnerId } : { deviceId: input.deviceId }),
   };
   return withPersonalTransaction(database, async (transaction) => {
     if (input.idempotency) {
@@ -302,13 +316,13 @@ export async function updateMachineAccessPolicy(
       }
     }
     const stored = await transaction
-      .selectFrom("runners")
+      .selectFrom("devices")
       .select(["accessPolicy", "kind", "ownerKind"])
-      .where("id", "=", input.runnerId)
-      .where("revokedAt", "is", null)
+      .where("id", "=", input.deviceId)
+      .where("removedAt", "is", null)
       .forNoKeyUpdate()
       .executeTakeFirst();
-    const ownership = await machineOwnershipIn(transaction, input.runnerId);
+    const ownership = await deviceOwnershipIn(transaction, input.deviceId);
     if (!ownership || !machineIsManagedBy(ownership, input.ownerId)) {
       throw new OpensteerError({ code: "not_found", message: "Active computer not found" });
     }
@@ -325,7 +339,7 @@ export async function updateMachineAccessPolicy(
     if (!stored)
       throw new OpensteerError({ code: "not_found", message: "Active computer not found" });
     if (
-      stored.kind === "main" &&
+      stored.kind === "home" &&
       stored.ownerKind === "deployment" &&
       !deviceAccess(input.policy).browser
     )
@@ -339,6 +353,25 @@ export async function updateMachineAccessPolicy(
       browser: input.policy.browser ?? previous.browser,
       apps: input.policy.apps ?? previous.apps,
     };
+    const self = await transaction
+      .selectFrom("deviceDrivers")
+      .select("runnerId")
+      .where("deviceId", "=", input.deviceId)
+      .where("role", "=", "self")
+      .where("detachedAt", "is", null)
+      .executeTakeFirst();
+    if (
+      !self &&
+      (deviceAccess(policy).browser ||
+        policy.reach !== "nobody" ||
+        policy.commands ||
+        policy.forwarding ||
+        policy.shares.length > 0)
+    )
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "This device supports Apps access only",
+      });
     const { browser: _oldBrowser, apps: _oldApps, ...oldShell } = stored.accessPolicy;
     const { browser: _browser, apps: _apps, ...newShell } = policy;
     const changed = {
@@ -347,14 +380,14 @@ export async function updateMachineAccessPolicy(
       apps: previous.apps !== deviceAccess(policy).apps,
     };
     const updated = await transaction
-      .updateTable("runners")
+      .updateTable("devices")
       .set({
         accessPolicy: jsonValue(policy),
         accessPolicyRevision: sql`access_policy_revision + 1`,
         updatedAt: new Date(),
       })
-      .where("id", "=", input.runnerId)
-      .where("revokedAt", "is", null)
+      .where("id", "=", input.deviceId)
+      .where("removedAt", "is", null)
       .where("accessPolicyRevision", "=", input.expectedRevision)
       .returning("accessPolicyRevision")
       .executeTakeFirst();
@@ -375,7 +408,7 @@ export async function updateMachineAccessPolicy(
           replayed: false,
           requestEvents: await fulfillDeviceAccessRequestsInTransaction(
             transaction,
-            input.runnerId,
+            input.deviceId,
             policy,
           ),
         }
@@ -440,6 +473,30 @@ export async function effectiveMachineOwners(
   return owners;
 }
 
+export async function effectiveDeviceOwners(
+  database: Kysely<DatabaseSchema>,
+  ids: readonly DeviceId[],
+): Promise<ReadonlyMap<DeviceId, MachineOwnershipRecord>> {
+  const result = new Map<DeviceId, MachineOwnershipRecord>();
+  if (!ids.length) return result;
+  const rows = await database
+    .selectFrom("devices")
+    .select(["id", "ownerKind", "ownerUserId", "kind"])
+    .where("id", "in", [...ids])
+    .where("removedAt", "is", null)
+    .execute();
+  const owner = rows.some((row) => row.kind === "home")
+    ? await personalDeploymentOwner(database)
+    : null;
+  for (const row of rows)
+    result.set(row.id, {
+      ownerKind: row.ownerKind,
+      effectiveOwner:
+        row.ownerKind === "user" ? row.ownerUserId : row.kind === "home" ? owner : null,
+    });
+  return result;
+}
+
 /**
  * The whole session row, for resolving a Stop or a history read to its
  * machine and authorizing it — even for a session that has already ended. An
@@ -480,8 +537,19 @@ export async function getMachineAccessTarget(
 ): Promise<MachineAccessTargetRecord | null> {
   const runner = await database
     .selectFrom("runners")
-    .select(["accessPolicy", "accessPolicyRevision", "lastSeenAt", "moduleDescriptors", "name"])
-    .where("id", "=", runnerId)
+    .innerJoin("deviceDrivers", "deviceDrivers.runnerId", "runners.id")
+    .innerJoin("devices", "devices.id", "deviceDrivers.deviceId")
+    .where("deviceDrivers.role", "=", "self")
+    .where("deviceDrivers.detachedAt", "is", null)
+    .where("devices.removedAt", "is", null)
+    .select([
+      "devices.accessPolicy",
+      "devices.accessPolicyRevision",
+      "lastSeenAt",
+      "moduleDescriptors",
+      "devices.name",
+    ])
+    .where("runners.id", "=", runnerId)
     .where("revokedAt", "is", null)
     .executeTakeFirst();
   if (!runner) return null;
@@ -512,27 +580,39 @@ export async function listReachableMachines(
     : null;
   const rows = await database
     .selectFrom("runners")
-    .select(["accessPolicy", "id", "lastSeenAt", "moduleDescriptors", "name"])
+    .innerJoin("deviceDrivers", "deviceDrivers.runnerId", "runners.id")
+    .innerJoin("devices", "devices.id", "deviceDrivers.deviceId")
+    .where("deviceDrivers.role", "=", "self")
+    .where("deviceDrivers.detachedAt", "is", null)
+    .where("devices.removedAt", "is", null)
+    .select([
+      "devices.accessPolicy",
+      "runners.id",
+      "lastSeenAt",
+      "moduleDescriptors",
+      "devices.name",
+    ])
     .where("revokedAt", "is", null)
     // A Run never reaches the machine it runs on over SSH.
-    .where("id", "!=", callerRunnerId)
+    .where("runners.id", "!=", callerRunnerId)
     .where(sql<boolean>`module_descriptors ? 'shell'`)
+    .where(sql<boolean>`allowed_modules ? 'shell'`)
     .where((expression) =>
       expression.or([
-        expression(sql<string>`access_policy ->> 'reach'`, "=", "deployment"),
+        expression(sql<string>`devices.access_policy ->> 'reach'`, "=", "deployment"),
         expression.and([
-          expression(sql<string>`access_policy ->> 'reach'`, "=", "owner"),
+          expression(sql<string>`devices.access_policy ->> 'reach'`, "=", "owner"),
           expression.or([
             expression.and([
-              expression("ownerKind", "=", "user"),
-              expression("ownerUserId", "=", userId),
+              expression("devices.ownerKind", "=", "user"),
+              expression("devices.ownerUserId", "=", userId),
             ]),
             ...(personalOwner === userId
               ? [
                   expression.and([
-                    expression("kind", "=", "main"),
-                    expression("ownerKind", "=", "deployment"),
-                    expression("ownerUserId", "is", null),
+                    expression("devices.kind", "=", "home"),
+                    expression("devices.ownerKind", "=", "deployment"),
+                    expression("devices.ownerUserId", "is", null),
                   ]),
                 ]
               : []),
@@ -543,8 +623,8 @@ export async function listReachableMachines(
     // By name, with the id breaking ties: the budget keeps the first entries
     // it can fit, and which machines a Run can see should be decided the way
     // a person reads the list rather than by how their ids happened to sort.
-    .orderBy("name", "asc")
-    .orderBy("id", "asc")
+    .orderBy("devices.name", "asc")
+    .orderBy("runners.id", "asc")
     .execute();
   return rows.flatMap((row) => {
     const shell = row.moduleDescriptors.shell;

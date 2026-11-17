@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { seedPrivatePublisher } from "./private-publisher.test-support.js";
 import {
   AgentEventViewSchema,
@@ -898,9 +899,9 @@ describe("fresh personal/team lineage", () => {
     );
     await migrateToLatest(database);
     const runner = await database
-      .selectFrom("runners")
+      .selectFrom("devices")
       .select("accessPolicy")
-      .where("id", "=", fixture.runnerId)
+      .where("id", "=", DeviceIdSchema.parse(fixture.runnerId))
       .executeTakeFirstOrThrow();
     expect(runner.accessPolicy).toEqual({ ...original, browser: true, apps: true });
     const columns = await sql<{

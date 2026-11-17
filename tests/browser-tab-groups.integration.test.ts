@@ -1,5 +1,6 @@
 import {
   createId,
+  DeviceIdSchema,
   WindowIdSchema,
   type App,
   type Tab,
@@ -72,6 +73,7 @@ integration("mixed workspace layout", () => {
     };
     const tabs = new TabService({
       store: f.tabs,
+      devices: f.store,
       nativeTargets: native,
       apps: { get: async () => app },
       computer: async () => ({ name: "Computer", connected: true, removed: false }),
@@ -116,7 +118,7 @@ integration("mixed workspace layout", () => {
             id: tabId,
             ownerId: f.ownerId,
             kind: "page",
-            computerId: f.runnerId,
+            computerId: DeviceIdSchema.parse(f.runnerId),
             title: "Page",
             url: target.url,
             openedBy: actor.kind === "run" ? { taskId: actor.claims.threadId } : "person",
@@ -129,7 +131,11 @@ integration("mixed workspace layout", () => {
     try {
       const opened = await Promise.all([
         tabs.open(actor, { kind: "page", guest: true, url: "https://example.com" }, "page"),
-        tabs.open(actor, { kind: "window", computerId: f.runnerId, windowId }, "window"),
+        tabs.open(
+          actor,
+          { kind: "window", computerId: DeviceIdSchema.parse(f.runnerId), windowId },
+          "window",
+        ),
         tabs.open(actor, { kind: "phone", computerId: f.runnerId }, "phone"),
         tabs.open(actor, { kind: "app", appId: app.appId }, "app"),
       ]);

@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "./devices.js";
 import { CompactionReturnHintSchema } from "./idle-compaction.js";
 import { RunMaintenanceSchema, RunMaintenanceViewSchema } from "./idle-compaction.js";
 import {
@@ -403,14 +404,14 @@ export const BrowserPageContentPartSchema = z.object({
 });
 export const ComputerAppContentPartSchema = z.object({
   type: z.literal("computer-app"),
-  machineId: RunnerIdSchema,
+  machineId: DeviceIdSchema,
   app: ComputerAppIdentityViewSchema,
   name: z.string().min(1).max(255),
   auto: z.literal(false).optional(),
 });
 export const PhoneContentPartSchema = z.object({
   type: z.literal("phone"),
-  machineId: RunnerIdSchema,
+  machineId: DeviceIdSchema,
   display: z.string().min(1).max(255),
   name: z.string().min(1).max(255),
   auto: z.literal(false).optional(),

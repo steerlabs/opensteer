@@ -1,5 +1,6 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
-import { BrowserProfileIdSchema, RunnerIdSchema, type TabTarget } from "@opensteer/core";
+import { BrowserProfileIdSchema, type TabTarget } from "@opensteer/core";
 import { MockHostClient } from "./mock-host-client.js";
 import { placeList } from "../host/places.js";
 
@@ -58,7 +59,7 @@ describe("start page mock journey", () => {
         .machines.flatMap((machine) => machine.computerUse?.sessions ?? []);
       const { tab, view } = await openView(client, {
         kind: "window",
-        computerId: RunnerIdSchema.parse(app.machineId),
+        computerId: DeviceIdSchema.parse(app.machineId),
         bundleId: app.target.app.bundleId,
       });
       const logical = placeList(client.getSnapshot()).find((place) => place.key === tab.tabId)!;
@@ -94,7 +95,7 @@ describe("start page mock journey", () => {
       const phone = approved.find((item) => item.target.kind === "phone")!;
       const { view: phoneView } = await openView(client, {
         kind: "phone",
-        computerId: RunnerIdSchema.parse(phone.machineId),
+        computerId: DeviceIdSchema.parse(phone.machineId),
       });
       now = new Date(now.getTime() + 3 * 60000);
       await expect(
@@ -118,7 +119,7 @@ it("renews owner authority only while a visible retain handle exists", async () 
     if (app.target.kind !== "app") throw new Error("Expected an app");
     const { view } = await openView(client, {
       kind: "window",
-      computerId: RunnerIdSchema.parse(app.machineId),
+      computerId: DeviceIdSchema.parse(app.machineId),
       bundleId: app.target.app.bundleId,
     });
     const ownerView = () =>

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { RunnerIdSchema, requestReasonMaxLength } from "@opensteer/core";
+import { DeviceIdSchema, requestReasonMaxLength } from "@opensteer/core";
 import {
   IntegrationAccessSchema,
   IntegrationConnectionIdSchema,
@@ -32,7 +32,7 @@ export const SearchInputSchema = z
       .optional()
       .describe("nextCursor from the previous page."),
     provider: IntegrationProviderSchema.optional(),
-    computerId: RunnerIdSchema.optional().describe(
+    computerId: DeviceIdSchema.optional().describe(
       "A Mac or phone from this search's computers or phones, to list its installed apps.",
     ),
     query: z.string().trim().max(240).default(""),
@@ -99,7 +99,7 @@ export const RequestInputSchema = z
 /** One app on one Mac, or a whole phone. The Mac resolves what `app` names. */
 export const AppAccessRequestInputSchema = z
   .strictObject({
-    computerId: RunnerIdSchema.optional().describe(
+    computerId: DeviceIdSchema.optional().describe(
       "The Mac or phone; omit for an app on the Mac this task runs on.",
     ),
     app: z
@@ -145,7 +145,7 @@ export const integration_search = defineAgentTool({
   name: "integration_search",
   title: "Find integration operations",
   description:
-    "Find service operations, accounts and setup by query, provider or computerId. Returns each operation's name, effect and input, the accounts with their connectionIds, and every built-in catalog id, with details for matches; provider only orders the catalog. Tell personal and work accounts apart by their address, never by display name alone, and choose accounts by connectionId. Writes need read-write access. Search Computer use or Android phone for Macs and phones, then pass a computerId to list its installed apps; phone apps include launch package names.",
+    "Find service operations, accounts and setup by query, provider or computerId. Returns each operation's name, effect and input, the accounts with their connectionIds, and every built-in catalog id, with details for matches; provider only orders the catalog. Tell personal and work accounts apart by their address, never by display name alone, and choose accounts by connectionId. Writes need read-write access. Search Computer use for Macs or phone for phone screens (Android Agent Phones and Mac-driven iPhones), then pass a computerId to list its installed apps; each phone app has the opaque appId that launch takes.",
   input: SearchInputSchema,
   output: IntegrationSearchOutputSchema,
   access: "read",
@@ -258,7 +258,7 @@ export const app_access_request = defineAgentTool({
   opensRequest: true,
   title: "Request a Mac app or phone",
   description:
-    "Ask the person to let this task use one Mac app, or a whole Agent Phone, through computer_use. For a Mac app pass app and, unless it is on the Mac this task runs on, its computerId; for a phone pass only its computerId. read observes and read-write also acts. Pending grants no access; next explains the result and recommended action.",
+    "Ask the person to let this task use one Mac app, or a whole phone display (Android Agent Phone or Mac-driven iPhone), through computer_use. For a Mac app pass app and, unless it is on the Mac this task runs on, its computerId; for a phone pass only its own computerId. A Mac-driven iPhone has separate approval from its Mac and from the Opensteer iPhone app’s data. read observes and read-write also acts. Pending grants no access; next explains the result and recommended action.",
   input: AppAccessRequestInputSchema,
   output: IntegrationRequestOutputSchema,
   access: "write",

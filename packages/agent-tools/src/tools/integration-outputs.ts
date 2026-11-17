@@ -13,7 +13,13 @@ const ComputerSchema = z.object({
   blocked: BlockedSchema.optional(),
   apps: z.array(AppSchema),
 });
-const PhoneSchema = z.object({ computerId: z.string(), name: z.string() }).and(AccessSchema);
+const PhoneSchema = z
+  .object({
+    computerId: z.string(),
+    name: z.string(),
+    definitionId: z.enum(["android-phone", "iphone-screen"]),
+  })
+  .and(AccessSchema);
 export const IntegrationSearchOutputSchema = z.object({
   guidance: z
     .object({
@@ -98,7 +104,8 @@ export const IntegrationSearchOutputSchema = z.object({
     .array(
       z.object({
         label: z.string(),
-        packageName: z.string(),
+        packageName: z.string().optional(),
+        appId: z.string(),
         access: z.never().optional(),
         blocked: z.never().optional(),
       }),

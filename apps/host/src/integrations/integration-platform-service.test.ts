@@ -1,13 +1,10 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { RunnerIdSchema, DeviceIdSchema } from "@opensteer/core";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { createIntegrationMcpFixture } from "../mcp/integration-fixture.test-support.js";
-import { createServer } from "node:http";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   IntegrationDefinitionSchema,
   createIntegrationId,
@@ -33,7 +30,7 @@ import { createOpenApiAdapter, openApiAdapter } from "@opensteer/integration-ada
 import {
   ComputerAppNotOfferedError,
   type CallableIntegrationTool,
-  type ComputerAppAccessDecision,
+  type DeviceComputerAppAccessDecision as ComputerAppAccessDecision,
   type IntegrationPlatformStore,
   type PreparedIntegrationInstallFulfillment,
 } from "@opensteer/database";
@@ -601,7 +598,7 @@ describe("IntegrationPlatformService definition reconciliation", () => {
 });
 
 describe("IntegrationPlatformService uninstall", () => {
-  it("takes affected Runner admission turns in stable order", async () => {
+  it("takes affected Device admission turns in stable order", async () => {
     const installationId = createIntegrationId("installation");
     const first = createId("runner");
     const second = createId("runner");
@@ -634,7 +631,12 @@ describe("IntegrationPlatformService uninstall", () => {
         }),
       },
       store: {
-        listComputerRunnerIdsForInstallation: vi.fn(async () => [second, first, second]),
+        getDeviceSelfRunnerId: vi.fn(async (id: import("@opensteer/core").DeviceId) =>
+          RunnerIdSchema.parse(id),
+        ),
+        listComputerDeviceIdsForInstallation: vi.fn(async () =>
+          [second, first, second].map((id) => DeviceIdSchema.parse(id)),
+        ),
         uninstall,
       },
     });
@@ -677,12 +679,12 @@ describe("IntegrationPlatformService computer connections", () => {
     };
     let existing = false;
     const setComputerConnection = vi.fn(
-      async (input: Parameters<IntegrationPlatformStore["setComputerConnection"]>[0]) => {
+      async (input: Parameters<IntegrationPlatformStore["setDeviceComputerConnection"]>[0]) => {
         if (!existing && !input.createIfMissing) {
           throw new ComputerAppNotOfferedError("Studio Mac");
         }
         return {
-          connection,
+          connection: deviceConnection(connection),
           created: false,
           fulfilledRequestIds: [],
           grants: [],
@@ -703,7 +705,7 @@ describe("IntegrationPlatformService computer connections", () => {
       definitions: [computerDefinition],
       store: {
         listInstallations: vi.fn(async () => [installed]),
-        setComputerConnection,
+        setDeviceComputerConnection: setComputerConnection,
       },
     });
     const input = {
@@ -723,7 +725,7 @@ describe("IntegrationPlatformService computer connections", () => {
     });
     existing = true;
     await expect(service.computerAppApprovals.setComputerConnection(input)).resolves.toEqual(
-      connection,
+      deviceConnection(connection),
     );
     expect(setComputerConnection).toHaveBeenCalledTimes(2);
   });
@@ -1099,7 +1101,10 @@ describe("IntegrationPlatformService computer invocation", () => {
         }),
         getComputerConnectionForCall,
         listCallableTools: vi.fn(async () => authority),
-        listComputerRunnerIdsForInstallation: vi.fn(async () => [runnerId]),
+        getDeviceSelfRunnerId: vi.fn(async (id: import("@opensteer/core").DeviceId) =>
+          RunnerIdSchema.parse(id),
+        ),
+        listComputerDeviceIdsForInstallation: vi.fn(async () => [DeviceIdSchema.parse(runnerId)]),
         listGrants: vi.fn(async () => [callable.grant as IntegrationGrant]),
         listInstallations: vi.fn(async () => [callable.installation]),
         revokeComputerConnection: vi.fn(async () => {
@@ -1117,11 +1122,11 @@ describe("IntegrationPlatformService computer invocation", () => {
         revokeGrant: vi.fn(async () => {
           authority = [];
         }),
-        setComputerConnection: vi.fn(async () => {
+        setDeviceComputerConnection: vi.fn(async () => {
           connectionAccess = "read";
           authority = [];
           return {
-            connection,
+            connection: deviceConnection(connection),
             created: false,
             fulfilledRequestIds: [],
             grants: [],
@@ -3583,7 +3588,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
         app: notes,
         definitionId: "macos-app",
         kind: "computer.app.access",
-        runnerId,
+        deviceId: DeviceIdSchema.parse(runnerId),
         setupRequestId: "setup-request",
       },
       presentation: {
@@ -3650,8 +3655,8 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       onRequestsChanged,
       onDeploymentEvent,
       store: {
-        requestComputerAppAccess,
-        getComputerUsePolicy: async () => ({
+        requestDeviceComputerAppAccess: requestComputerAppAccess,
+        getDeviceComputerUsePolicy: async () => ({
           appApproval: "ask",
           approvalKeyId: null,
           revision: 0,
@@ -3729,7 +3734,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
             deviceProfile: "iphone",
             publicKeyFingerprint: "phone-key",
           }),
-          requestComputerAppSetup,
+          requestDeviceComputerAppSetup: requestComputerAppSetup,
         },
       });
       const asking = service.computerAppApprovals.requestComputerAppSetup({
@@ -3775,7 +3780,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       grants: [],
       requestEvents: [cancellationEvent],
       requestIds: [createId("request")],
-      runnerId: null,
+      deviceId: null,
     }));
     const onDeploymentEvent = vi.fn();
     const onRequestsChanged = vi.fn();
@@ -3784,7 +3789,10 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       definitions: [computerDefinition],
       onRequestsChanged,
       onDeploymentEvent,
-      store: { cancelComputerAppSetup, requestComputerAppSetup },
+      store: {
+        cancelDeviceComputerAppSetup: cancelComputerAppSetup,
+        requestDeviceComputerAppSetup: requestComputerAppSetup,
+      },
     });
 
     await service.computerAppApprovals.requestComputerAppSetup({
@@ -3816,7 +3824,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       grants: [],
       requestEvents: [requestEvent],
       requestIds: [createId("request")],
-      runnerIds: [],
+      deviceIds: [],
     }));
     const onDeploymentEvent = vi.fn();
     const onRequestsChanged = vi.fn();
@@ -3826,7 +3834,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       onConnectionsChanged,
       onRequestsChanged,
       onDeploymentEvent,
-      store: { expireComputerAppSetupRequests },
+      store: { expireDeviceComputerAppSetupRequests: expireComputerAppSetupRequests },
     });
 
     await service.computerAppApprovals.expireComputerAppSetupRequests();
@@ -3844,11 +3852,11 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       adapters: [],
       onRequestsChanged,
       store: {
-        expireComputerAppSetupRequests: vi.fn(async () => ({
+        expireDeviceComputerAppSetupRequests: vi.fn(async () => ({
           grants: [],
           requestEvents: [],
           requestIds: [],
-          runnerIds: [],
+          deviceIds: [],
         })),
       },
     });
@@ -4221,7 +4229,8 @@ describe("IntegrationPlatformService computer use gateway", () => {
           : [
               {
                 name: "Alex's Mac",
-                runnerId,
+                deviceId: DeviceIdSchema.parse(runnerId),
+                definitionId: "macos-app",
                 ready: true,
                 state: "ready",
                 appApproval: "ask",
@@ -4242,7 +4251,8 @@ describe("IntegrationPlatformService computer use gateway", () => {
           : [
               {
                 name: "Pixel 7",
-                runnerId,
+                deviceId: DeviceIdSchema.parse(runnerId),
+                definitionId: "android-phone",
                 ready: true,
                 state: "ready",
                 blockedByOwner: false,
@@ -4253,7 +4263,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
               },
             ],
     }));
-    vi.spyOn(service.computerAppApprovals, "computerAppHolders").mockReturnValue(new Map());
+    vi.spyOn(service.computerAppApprovals, "computerAppHolders").mockResolvedValue(new Map());
     return {
       callable,
       computerUse,
@@ -4488,61 +4498,18 @@ describe("IntegrationPlatformService computer use gateway", () => {
         actions: [{ type: "type", text: { loginRef: `lgn_${"a".repeat(32)}`, field: "password" } }],
       };
       expect(validateJsonSchema(f.inputSchema, args)).toEqual([]);
-      const who = runCaller(context);
-      let mcp: ReturnType<typeof createIntegrationMcpFixture> | undefined;
-      const server = createServer((request, response) => {
-        void (async () => {
-          const chunks: Buffer[] = [];
-          for await (const chunk of request) chunks.push(Buffer.from(chunk));
-          const body: unknown = chunks.length
-            ? JSON.parse(Buffer.concat(chunks).toString("utf8"))
-            : undefined;
-          await mcp!.handle(request, response, body, "run-token");
-        })().catch((error: unknown) =>
-          response.destroy(error instanceof Error ? error : new Error("MCP test request failed")),
-        );
-      });
-      const client = new Client({ name: "saved-login-contract", version: "1" });
       try {
-        await new Promise<void>((resolve, reject) => {
-          server.once("error", reject);
-          server.listen(0, "127.0.0.1", resolve);
-        });
-        const address = server.address();
-        if (!address || typeof address === "string")
-          throw new Error("MCP test server did not bind");
-        const url = new URL(`http://127.0.0.1:${address.port}/mcp`);
-        mcp = createIntegrationMcpFixture({
-          definitions: [phone ? phoneDefinition : guiDefinition],
-
-          runTokens: {
-            authenticate: async () => who.run!,
-          },
-          triggerTokens: {
-            authenticate: async () => {
-              throw new Error("Not a trigger token");
-            },
-          },
-          onEvent: () => undefined,
-          platform: f.service,
-          publicUrl: url,
-        });
-        await client.connect(new StreamableHTTPClientTransport(url) as unknown as Transport);
-        const result = await client.callTool({
-          name: "computer_use",
-          arguments: {
-            code: phone
-              ? `const p=await phone("Pixel 7");await p.observe();await p.type(${JSON.stringify(args.actions[0]!.text)})`
-              : `const a=await app("Notes");const w=await a.window();await w.observe();await w.type(${JSON.stringify(args.actions[0]!.text)})`,
-          },
-        });
-        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        const result = await f.service.callComputerOperation(
+          runCaller(context),
+          f.callable.grant.connectionId!,
+          f.callable.tool.name,
+          args,
+          new AbortController().signal,
+          Date.now() + 1000,
+        );
+        expect(result.value).toMatchObject({ performed: [] });
       } finally {
-        await client.close();
-        await mcp?.close();
         await f.service.close();
-        server.closeAllConnections();
-        await new Promise<void>((resolve) => server.close(() => resolve()));
       }
 
       expect(f.computerUse.sendAct).toHaveBeenCalledWith(
@@ -4793,7 +4760,9 @@ function platform(input: {
     ownerUserId: ReturnType<typeof createId<"user">>,
   ) => Promise<readonly IntegrationConnectionSummary[]>;
   readonly adapters: readonly IntegrationAdapter[];
-  readonly computerApps?: Partial<Pick<ComputerAppHub, ApprovalHubMember>> &
+  readonly computerApps?: Partial<
+    Pick<ComputerAppHub, ApprovalHubMember | "withDeviceAdmissions">
+  > &
     Pick<ComputerAppHub, "appStatus" | "attached" | "send" | "withRunnerAdmission">;
   readonly computerUse?: ComputerUseGateway;
   readonly nativeTabs?: ConstructorParameters<typeof IntegrationPlatformService>[0]["nativeTabs"];
@@ -4819,6 +4788,22 @@ function platform(input: {
     adapters: input.adapters,
     authorizationSource: { providerAuthorizations: vi.fn(async () => ({})) },
     computerApps: {
+      deviceStatus: () => null,
+      withDeviceAdmission: (id, action) =>
+        input.computerApps?.withRunnerAdmission(RunnerIdSchema.parse(id), action) ?? action(),
+      withDeviceAdmissions: async (ids, action) => {
+        if (input.computerApps?.withDeviceAdmissions)
+          return input.computerApps.withDeviceAdmissions(ids, action);
+        const sorted = [...new Set(ids)].sort();
+        const enter = (index: number): ReturnType<typeof action> =>
+          index === sorted.length
+            ? action()
+            : (input.computerApps?.withRunnerAdmission(RunnerIdSchema.parse(sorted[index]), () =>
+                enter(index + 1),
+              ) ?? enter(index + 1));
+        return enter(0);
+      },
+      requireDeviceAgentAccess: async () => {},
       requireAgentAccess: async () => {},
       removePluginData: async () => {},
       reportsApp: () => "offline",
@@ -4846,7 +4831,18 @@ function platform(input: {
       materializeForAdapter:
         input.materializeForAdapter ?? vi.fn(async () => Promise.reject(new Error("unused"))),
     },
-    ...(input.computerUse ? { computerUse: input.computerUse } : {}),
+    ...(input.computerUse
+      ? {
+          computerUse: Object.assign(input.computerUse, {
+            eligibleInventory:
+              input.computerUse.eligibleInventory ??
+              (async (owner) => ({
+                machines: await input.computerUse!.eligibleMachines(owner, "macos-app"),
+                phones: await input.computerUse!.eligibleMachines(owner, "android-phone"),
+              })),
+          }),
+        }
+      : {}),
     ...(input.nativeTabs ? { nativeTabs: input.nativeTabs } : {}),
     computerToolEnabled: () => true,
     computerUseVersion: () => 2,
@@ -4865,8 +4861,32 @@ function platform(input: {
       ? {
           connections: { assertOwner: vi.fn(async () => undefined) },
           computerAppRunner: vi.fn(async () => null),
+          requireSelfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
+          requireDeviceSelfRunnerId: async (id: unknown) => RunnerIdSchema.parse(id),
+          getDeviceSelfRunnerId: async (id: unknown) => RunnerIdSchema.parse(id),
+          getDeviceComputerConnectionForCall: async (
+            params: Parameters<IntegrationPlatformStore["getComputerConnectionForCall"]>[0],
+          ) => {
+            const found = await input.store?.getComputerConnectionForCall?.(params);
+            return found
+              ? {
+                  ...found,
+                  deviceId: DeviceIdSchema.parse(found.runnerId),
+                  deviceName: found.runnerName,
+                  connection: {
+                    ...found.connection,
+                    computer: found.connection.computer
+                      ? {
+                          ...found.connection.computer,
+                          deviceId: DeviceIdSchema.parse(found.connection.computer.runnerId),
+                        }
+                      : null,
+                  },
+                }
+              : null;
+          },
           listGrants: vi.fn(async () => []),
-          listComputerAppSetupRequests: async () => [],
+          listDeviceComputerAppSetupRequests: async () => [],
           ...input.store,
           requests: {
             listPendingIntegrationAccessRequests: async () => [],
@@ -4877,12 +4897,45 @@ function platform(input: {
           connections: { assertOwner: vi.fn(async () => undefined) },
           getToolInvocation: vi.fn(async () => mailInvocation),
           computerAppRunner: vi.fn(async () => null),
+          requireSelfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
+          requireDeviceSelfRunnerId: async (id: unknown) => RunnerIdSchema.parse(id),
+          getDeviceSelfRunnerId: async (id: unknown) => RunnerIdSchema.parse(id),
+          getDeviceComputerConnectionForCall: async (
+            params: Parameters<IntegrationPlatformStore["getComputerConnectionForCall"]>[0],
+          ) => {
+            const found = await input.store?.getComputerConnectionForCall?.(params);
+            return found
+              ? {
+                  ...found,
+                  deviceId: DeviceIdSchema.parse(found.runnerId),
+                  deviceName: found.runnerName,
+                  connection: {
+                    ...found.connection,
+                    computer: found.connection.computer
+                      ? {
+                          ...found.connection.computer,
+                          deviceId: DeviceIdSchema.parse(found.connection.computer.runnerId),
+                        }
+                      : null,
+                  },
+                }
+              : null;
+          },
           install: vi.fn(),
           listInstallations: vi.fn(async () => []),
         }) as unknown as IntegrationPlatformStore,
   });
   services.push(service);
   return service;
+}
+
+function deviceConnection(connection: IntegrationConnectionSummary) {
+  return {
+    ...connection,
+    computer: connection.computer
+      ? { ...connection.computer, deviceId: DeviceIdSchema.parse(connection.computer.runnerId) }
+      : null,
+  };
 }
 
 function computerConnectionSummary(
@@ -5217,12 +5270,16 @@ describe("computer app request matrix", () => {
     const threadReadInsideAdmission: boolean[] = [];
     const requestComputerAppAccess = vi.fn(
       async (
-        input: Parameters<IntegrationPlatformStore["requestComputerAppAccess"]>[0],
+        input: Parameters<IntegrationPlatformStore["requestDeviceComputerAppAccess"]>[0],
       ): Promise<ComputerAppAccessDecision> => {
         switch (options.decision ?? "computer") {
           case "approved":
             available = input.access;
-            return { connection, kind: "approved", requestEvents: [] };
+            return {
+              connection: deviceConnection(connection),
+              kind: "approved",
+              requestEvents: [],
+            };
           case "personal-grant":
             return { kind: "personal-grant", replayed: false, request, requestEvents: [] };
           case "computer":
@@ -5304,8 +5361,9 @@ describe("computer app request matrix", () => {
         stop: vi.fn(),
       },
       store: {
+        requireSelfDeviceId: async (id) => DeviceIdSchema.parse(id),
         listCallableTools: async () => refs(available),
-        requestComputerAppAccess,
+        requestDeviceComputerAppAccess: requestComputerAppAccess,
       },
     });
     const input = {

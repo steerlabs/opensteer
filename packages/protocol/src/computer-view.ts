@@ -5,7 +5,7 @@ import {
   ComputerViewRecordSchema,
   ComputerViewTargetSchema,
   ComputerAppIdentityViewSchema,
-  RunnerIdSchema,
+  DeviceIdSchema,
 } from "@opensteer/core";
 export * from "./computer-view-requests.js";
 
@@ -103,13 +103,13 @@ export type ComputerViewRefusalReason = z.infer<typeof ComputerViewRefusalReason
 export const ComputerViewRemovedSchema = z.object({
   type: z.literal("host.computer-view.removed"),
   ...ComputerViewRefSchema.shape,
-  machineId: RunnerIdSchema,
+  machineId: DeviceIdSchema,
   reason: z.enum(["closed", "expired", "revoked", "disconnected", "host-restarted"]),
 });
 /** Joins existing connected, unblocked, owner-approved connections to device identities and icons. */
 export const ApprovedComputerAppSchema = z.object({
   connectionId: z.string().min(1).max(255),
-  machineId: RunnerIdSchema,
+  machineId: DeviceIdSchema,
   target: z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("app"), app: ComputerAppIdentityViewSchema }),
     z.object({ kind: z.literal("phone"), display: z.string().min(1).max(255) }),

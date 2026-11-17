@@ -144,11 +144,11 @@ function ApprovalMark({ view }: { readonly view: ComputerAppApprovalView }) {
 
 export function ComputerSetupApprovals(props: {
   readonly hostClient: HostClient;
-  readonly requests: readonly import("@opensteer/integration-core").ComputerAppSetupSummary[];
+  readonly requests: readonly import("@opensteer/client/integrations").ComputerAppSetupSummary[];
   readonly onChanged: () => Promise<void>;
   /** A line under each approval's name, where the name alone would not say what it asks. */
   readonly detail?: (
-    request: import("@opensteer/integration-core").ComputerAppSetupSummary,
+    request: import("@opensteer/client/integrations").ComputerAppSetupSummary,
   ) => string;
 }) {
   const approval = useComputerAppApproval(props.hostClient);

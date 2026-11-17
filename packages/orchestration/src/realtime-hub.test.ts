@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import {
   SequenceSchema,
   createId,
@@ -33,7 +34,7 @@ describe("snapshot-before-live synchronization", () => {
         originatingThreadId: base.threadId,
         payload: {
           kind: "device.access" as const,
-          machineId: createId("runner"),
+          machineId: DeviceIdSchema.parse(createId("runner")),
           machineName: "Laptop",
           access: "browser" as const,
           reason: "Read the task",

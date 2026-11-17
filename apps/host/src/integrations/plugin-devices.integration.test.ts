@@ -316,9 +316,11 @@ describeStore("plugin devices", (test) => {
       credentialMaterializer: {} as ConstructorParameters<
         typeof IntegrationPlatformService
       >[0]["credentialMaterializer"],
-      computerApps: { removePluginData: removeRunnerData } as unknown as ConstructorParameters<
-        typeof IntegrationPlatformService
-      >[0]["computerApps"],
+      computerApps: {
+        removePluginData: removeRunnerData,
+        withDeviceAdmissions: async <T>(_ids: readonly string[], action: () => Promise<T>) =>
+          action(),
+      } as unknown as ConstructorParameters<typeof IntegrationPlatformService>[0]["computerApps"],
       isRunnerConnected: () => false,
       mcpOauth: {} as ConstructorParameters<typeof IntegrationPlatformService>[0]["mcpOauth"],
       secretVault: new AesGcmSecretVault(

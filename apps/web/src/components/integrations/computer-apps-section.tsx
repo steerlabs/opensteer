@@ -1,7 +1,9 @@
+import { computerTargetId } from "@opensteer/client/host";
 import type {
-  IntegrationConnectionSummary,
   IntegrationDashboard,
-} from "@opensteer/integration-core";
+  IntegrationConnectionSummary,
+} from "@opensteer/client/integrations";
+import type {} from "@opensteer/integration-core";
 import type { MachineSummary } from "@opensteer/protocol";
 import {
   computerAppAccessLabel,
@@ -60,7 +62,7 @@ export function ComputerAppConnectionsSection({
           // never as ready or broken, and is undone on its Mac.
           const blocked = computer.blockedAt !== null;
           const machineName =
-            machines.find(({ id }) => id === computer.runnerId)?.name ?? "that Mac";
+            machines.find(({ id }) => id === computerTargetId(computer)!)?.name ?? "that Mac";
           return (
             <div className="card__row" key={connection.id}>
               <IntegrationIcon icon={definition.icon} id={definition.id} name={definition.name} />
@@ -97,7 +99,7 @@ export function ComputerAppConnectionsSection({
                   className="btn btn--small"
                   to={deviceAppRoute({
                     definitionId: definition.id,
-                    runnerId: computer.runnerId,
+                    runnerId: computerTargetId(computer)!,
                   })}
                 >
                   Manage

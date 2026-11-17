@@ -66,6 +66,7 @@ it("builds and resumes the exact source's derived version through the canonical 
         architecture: "arm64",
         signingIdentity: "Fixture",
         supervisor: binary,
+        iphoneBridge: binary,
         cloudflared: binary,
         passwordsProvisioningProfile: path.join(directory, "fixture.profile"),
         targets: [

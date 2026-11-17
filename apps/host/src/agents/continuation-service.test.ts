@@ -1,6 +1,7 @@
 import { gatherComputerAccess } from "../integrations/computer-access.js";
 import type { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
 import { integrationBlocked } from "../integrations/integration-blocked.js";
+import { DeviceIdSchema } from "@opensteer/core";
 import type { BrowserSignInRequestResponse } from "@opensteer/protocol/browser-sources";
 import { createBrowserSessionId } from "@opensteer/protocol";
 import { createHash } from "node:crypto";
@@ -879,7 +880,7 @@ function withMacs(
               ),
           },
           store: {
-            listComputerAppSetupRequests: async () => [],
+            listDeviceComputerAppSetupRequests: async () => [],
             requests: { listPendingIntegrationAccessRequests: async () => [] },
           },
           listCallableTools: this.listCallableTools,
@@ -907,7 +908,8 @@ function withMacs(
                   connectionId: macConnectionId,
                 },
               ],
-              runnerId: macRunnerId,
+              deviceId: DeviceIdSchema.parse(macRunnerId),
+              definitionId: "macos-app",
             },
           ]
         : [],

@@ -119,3 +119,9 @@ export type {
   AppTable,
   AppServerTable,
 } from "./schema.js";
+
+export * from "./device-inventory-store.js";
+export * from "./device-driver-store.js";
+export { deviceOwnershipIn } from "./machine-ownership.js";
+
+export type { DeviceRemovalEffects } from "./device-removal-store.js";

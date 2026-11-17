@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { z } from "zod";
 import {
   RequestIdSchema,
@@ -99,8 +100,13 @@ export const PluginAccountViewSchema = z.object({
   statusReason: IntegrationConnectionStatusReasonSchema.nullable(),
   access: IntegrationAccessSchema.nullable(),
   runnerId: RunnerIdSchema.nullable(),
+  deviceId: DeviceIdSchema.nullable().optional(),
 });
 export const PluginDetailViewSchema = z.object({
+  deviceTargets: z
+    .array(z.object({ deviceId: DeviceIdSchema, name, status: MachineSummarySchema.shape.status }))
+    .max(400)
+    .optional(),
   row: PluginRowSchema,
   installationIds: z.array(IntegrationInstallationIdSchema).max(100),
   grants: z.array(IntegrationGrantViewSchema).max(1000),
@@ -180,6 +186,10 @@ export const DevicesOverviewViewSchema = z.object({
         allowedModules: true,
         kind: true,
         access: true,
+        selfRunnerId: true,
+        drivers: true,
+        capabilities: true,
+        phoneDisplay: true,
         revocable: true,
       }).extend({
         access: MachineSummarySchema.shape.access

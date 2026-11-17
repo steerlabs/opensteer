@@ -1,3 +1,6 @@
+import { createIntegrationId } from "@opensteer/integration-core";
+import { upsertSelfDeviceInTransaction } from "@opensteer/database";
+import { DeviceIdSchema } from "@opensteer/core";
 import { createId, TabIdSchema, WindowIdSchema } from "@opensteer/core";
 import { TabStore } from "@opensteer/database";
 import { createStoreFixture } from "@opensteer/database/test-support/store";
@@ -44,6 +47,7 @@ integration("production tab authority", () => {
     };
     const service = new TabService({
       store,
+      devices: f.store,
       pages: {
         open: unused,
         state: async () => ({ state: "asleep", usedBy: [] }),
@@ -94,7 +98,7 @@ integration("production tab authority", () => {
         {
           id,
           ownerId: run.userId,
-          computerId,
+          computerId: DeviceIdSchema.parse(computerId),
           kind: "page",
           title: label,
           url: `https://${label}.test/private`,
@@ -140,18 +144,18 @@ integration("production tab authority", () => {
           capabilities: sql`${JSON.stringify(source.capabilities)}::jsonb`,
           allowedModules: sql`${JSON.stringify(source.allowedModules)}::jsonb`,
           moduleDescriptors: sql`${JSON.stringify(source.moduleDescriptors)}::jsonb`,
-          accessPolicy: sql`${JSON.stringify(source.accessPolicy)}::jsonb`,
         })
         .execute();
+      await upsertSelfDeviceInTransaction(t.f.database, denied);
       await t.f.database
-        .updateTable("runners")
+        .updateTable("devices")
         .set({ accessPolicy: sql`'{"browser":true,"apps":true,"files":true}'::jsonb` })
-        .where("id", "=", t.run.runnerId)
+        .where("id", "=", DeviceIdSchema.parse(t.run.runnerId))
         .execute();
       await t.f.database
-        .updateTable("runners")
+        .updateTable("devices")
         .set({ accessPolicy: sql`'{"browser":false,"apps":true,"files":true}'::jsonb` })
-        .where("id", "=", denied)
+        .where("id", "=", DeviceIdSchema.parse(denied))
         .execute();
       const allowedId = await t.page(t.run.runnerId, "allowed"),
         deniedId = await t.page(denied, "denied");
@@ -188,9 +192,9 @@ integration("production tab authority", () => {
     const t = await fixture();
     try {
       await t.f.database
-        .updateTable("runners")
+        .updateTable("devices")
         .set({ accessPolicy: sql`'{"browser":true,"apps":true,"files":true}'::jsonb` })
-        .where("id", "=", t.run.runnerId)
+        .where("id", "=", DeviceIdSchema.parse(t.run.runnerId))
         .execute();
       const id = await t.page(t.run.runnerId, "readable");
       await t.f.database
@@ -229,7 +233,7 @@ integration("production tab authority", () => {
         return {
           id: lateId,
           ownerId: t.run.userId,
-          computerId: t.run.runnerId,
+          computerId: DeviceIdSchema.parse(t.run.runnerId),
           kind: "page",
           title: "Not admitted",
           url: "https://not-admitted.test",
@@ -264,9 +268,21 @@ integration("production tab authority", () => {
         .where("id", "=", profileTab)
         .execute();
       // Retain the hosting computer's authority but remove the saved target computer.
+      const removedDeviceId = createId("device");
+      const home = await t.f.store.getDevice(await t.f.store.requireSelfDeviceId(t.run.runnerId));
+      if (!home) throw new Error("Fixture Device missing");
+      await t.f.database
+        .insertInto("devices")
+        .values({
+          ...home,
+          id: removedDeviceId,
+          accessPolicy: sql`${JSON.stringify(home.accessPolicy)}::jsonb`,
+          removedAt: new Date(),
+        })
+        .execute();
       await t.f.database
         .updateTable("personalTabs")
-        .set({ computerId: createId("runner") })
+        .set({ computerId: removedDeviceId })
         .where("id", "=", removed)
         .execute();
       const person = { kind: "person", ownerId: t.run.userId } as const;
@@ -315,6 +331,95 @@ integration("production tab authority", () => {
       await t.f.close();
     }
   });
+  it("shares one iPhone Device tab with approved Runs and cannot reacquire it after removal", async () => {
+    const t = await fixture();
+    try {
+      const deviceId = createId("device");
+      const home = await t.f.store.getDevice(await t.f.store.requireSelfDeviceId(t.run.runnerId));
+      if (!home) throw new Error("Fixture Device missing");
+      await t.f.database
+        .insertInto("devices")
+        .values({
+          ...home,
+          id: deviceId,
+          name: "Travel iPhone",
+          kind: "phone",
+          platform: "ios",
+          form: "phone",
+          ownerKind: "user",
+          ownerUserId: t.run.userId,
+          accessPolicy: sql`'{"browser":false,"apps":true,"reach":"nobody"}'::jsonb`,
+        })
+        .execute();
+      await t.f.database
+        .insertInto("integrationConnections")
+        .values({
+          id: createIntegrationId("connection"),
+          ownerUserId: t.run.userId,
+          deviceId,
+          runnerId: null,
+          connectionKind: "computer",
+          computerAccess: "read-write",
+          computerBlockedAt: null,
+          provider: "iphone-screen",
+          integrationDefinitionId: "iphone-screen",
+          displayName: "Travel iPhone",
+          status: "connected",
+          connectionMethod: "computer",
+          capabilities: sql`'[]'::jsonb`,
+          grantedScopes: sql`'[]'::jsonb`,
+          applicationSource: sql`'null'::jsonb`,
+          accountIdentifier: null,
+          authMethodId: null,
+          authorizationDigest: null,
+          credentialId: null,
+          integrationServerId: null,
+          providerApplicationId: null,
+          externalIdentityId: null,
+          externalTenantId: null,
+          statusDetail: null,
+          transportKind: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .execute();
+      const person = { kind: "person", ownerId: t.run.userId } as const;
+      const first = await t.service.open(
+        person,
+        { kind: "phone", computerId: deviceId },
+        "phone-first",
+      );
+      const second = await t.service.open(
+        person,
+        { kind: "phone", computerId: deviceId },
+        "phone-second",
+      );
+      expect(second.tab.tabId).toBe(first.tab.tabId);
+      const acquisition = {
+        ownerId: t.run.userId,
+        runClaims: t.claims,
+        kind: "phone" as const,
+        computerId: deviceId,
+        key: "phone-acquired",
+        membershipRevision: (await t.store.snapshot(t.run.userId)).layout.revision,
+      };
+      expect(await t.service.acquired(acquisition)).toBe(first.tab.tabId);
+      expect((await t.service.list(t.actor, {})).tabs).toMatchObject([
+        { tabId: first.tab.tabId, computer: { computerId: deviceId, name: "Travel iPhone" } },
+      ]);
+      await t.f.store.removeDevice(deviceId, t.run.userId);
+      await expect(
+        t.service.activate(t.run.userId, first.tab.tabId, "removed-view"),
+      ).rejects.toMatchObject({ code: "not_found" });
+      await expect(
+        t.service.acquired({ ...acquisition, key: "removed-acquisition" }),
+      ).rejects.toMatchObject({ code: "not_found" });
+      expect((await t.store.snapshot(t.run.userId)).rows).toHaveLength(1);
+    } finally {
+      t.service.dispose();
+      await t.f.close();
+    }
+  });
   it("returns a late acquired handle without reopening membership closed after admission", async () => {
     const t = await fixture();
     try {
@@ -324,7 +429,7 @@ integration("production tab authority", () => {
         {
           id,
           ownerId: t.run.userId,
-          computerId: t.run.runnerId,
+          computerId: DeviceIdSchema.parse(t.run.runnerId),
           kind: "window",
           windowId,
           windowApp: { bundleId: "test.app", displayName: "Test", teamId: null },
@@ -338,10 +443,10 @@ integration("production tab authority", () => {
       // Native acquisition already checked its resource; isolate the membership race here.
       t.service.options.authorize = async () => {};
       expect(
-        await t.acquired()({
+        await t.service.acquired({
           ownerId: t.run.userId,
           runClaims: t.claims,
-          computerId: t.run.runnerId,
+          computerId: await t.f.store.requireSelfDeviceId(t.run.runnerId),
           kind: "window",
           windowId,
           key: "late",
@@ -380,7 +485,7 @@ integration("tab projection database cost", () => {
         {
           id,
           ownerId: run.userId,
-          computerId: run.runnerId,
+          computerId: DeviceIdSchema.parse(run.runnerId),
           kind: "window",
           windowId: WindowIdSchema.parse(`win_${randomUUID()}`),
           windowApp: { bundleId: "test.app", displayName: "Test", teamId: null },
@@ -396,6 +501,7 @@ integration("tab projection database cost", () => {
     };
     const service = new TabService({
       store,
+      devices: f.store,
       pages: {
         open: unused,
         state: unused,
@@ -461,7 +567,7 @@ integration("tab projection database cost", () => {
       expect(targeted).toHaveBeenCalledExactlyOnceWith(run.userId, [rows[0]!]);
       expect(await targeted.mock.results[0]!.value).toHaveLength(1);
       expect(nativeRPCs, "rows projected through the native state port").toBe(1);
-      expect(queries).toBe(8);
+      expect(queries).toBe(7);
       for (const sent of messages)
         expect(sent).toMatchObject([
           {

@@ -299,8 +299,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
       "opensteer_automation_list list",
       "visible",
       async () => {
-        const result = hostApi["triggers.list"].success
-          .extend({
+        const result = z
+          .object({
             triggers: z.array(z.object(TriggerSummarySchema.omit({ webhookRouteKey: true }).shape)),
           })
           .parse(

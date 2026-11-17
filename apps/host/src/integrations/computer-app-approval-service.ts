@@ -1,3 +1,4 @@
+import type { RemovedComputerApp as RemovedDeviceComputerApp } from "@opensteer/database";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import {
   OpensteerError,
@@ -7,7 +8,10 @@ import {
   type RequestId,
   type RequestResponse,
   type RunId,
+  type DeviceId,
   type RunnerId,
+  isPhoneDisplayDefinitionId,
+  type PhoneDisplayDefinitionId,
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
@@ -27,56 +31,42 @@ import {
   type ComputerAppIdentity,
   type IntegrationAccess,
   type IntegrationConnectionId,
-  type IntegrationConnectionSummary,
+  type DeviceIntegrationConnectionSummary as IntegrationConnectionSummary,
   type IntegrationDefinition,
   type IntegrationServerId,
-  type RequestComputerAppSetupSchema,
-  type SetComputerAppConnection,
+  type DeviceRequestComputerAppSetupSchema as RequestComputerAppSetupSchema,
+  type DeviceSetComputerAppConnection as SetComputerAppConnection,
 } from "@opensteer/integration-core";
 import type { ComputerAppDefinition } from "@opensteer/integration-core/computer-app";
 import { computerAppTools } from "@opensteer/integration-core/computer-app-tools";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
 import {
   ComputerUseInstalledAppsParamsSchema,
-  AndroidPhoneInstalledAppsParamsSchema,
-  type AndroidPhoneInstalledAppsParams,
-  type AndroidPhoneInstalledAppsResult,
+  PhoneDisplayInstalledAppsParamsSchema,
+  type PhoneDisplayInstalledAppsParams,
+  type PhoneDisplayInstalledAppsResult,
   ComputerUseInstalledAppsResultSchema,
-  androidPhoneDefinitionId,
   type ComputerUseInstalledAppsParams,
   type ComputerUseSessionId,
 } from "@opensteer/protocol";
 import type { z } from "zod";
-import type { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
+import type {
+  DeviceComputerAppsPort,
+  DeviceComputerUseGateway,
+  DeviceComputerOption,
+} from "./device-computer-gateway.js";
 import type { LocalMcpSecrets } from "./local-mcp-secrets.js";
 import {
   ComputerUseError,
   computerUseDefinitionId,
   type ComputerUseHolding,
-  type ComputerUseMachineOption,
-  type ComputerUseService,
 } from "../computer-use/computer-use-service.js";
 import { computerToolRefs, unknownComputerUseMac, unknownPhone } from "./computer-use-discovery.js";
 
 /** What the approval surfaces and `integration_request` need of sessions. */
-export type ComputerUseApprovalGateway = Pick<
-  ComputerUseService,
-  | "closeForConnection"
-  | "eligibleMachines"
-  | "eligibleInventory"
-  | "holders"
-  | "installedApps"
-  | "resolveApp"
-  | "stop"
-  | "threadTitle"
->;
+export type ComputerUseApprovalGateway = DeviceComputerUseGateway;
 
 /** An app or a phone a removal took back, which any session holding it must stop using. */
-interface RemovedComputerApp {
-  readonly appKey: string | null;
-  readonly definitionId: string | null;
-  readonly runnerId: RunnerId;
-}
 
 /**
  * What a session holds when it holds this connection, or null for a computer
@@ -105,15 +95,16 @@ export function computerUseHoldingOf(
  * Removing an app or a phone takes its approval back, so any session holding
  * it ends now rather than running on authority nobody has any more.
  */
-export function endComputerUseSessions(
-  computerUse: Pick<ComputerUseService, "closeForConnection"> | null,
+export async function endComputerUseSessions(
+  computerUse: Pick<DeviceComputerUseGateway, "closeForConnection"> | null,
   definitions: readonly IntegrationDefinition[],
-  removed: readonly RemovedComputerApp[],
-): void {
+  removed: readonly RemovedDeviceComputerApp[],
+): Promise<void> {
   if (!computerUse) return;
   for (const entry of removed) {
+    const deviceId = entry.deviceId;
     const holding = computerUseHoldingOf(definitions, entry);
-    if (holding) computerUse.closeForConnection(entry.runnerId, holding);
+    if (holding) await computerUse.closeForConnection(deviceId, holding);
   }
 }
 
@@ -122,14 +113,15 @@ export const automaticApprovalMacOnlyRefusal =
   "Automatic approval is only for apps on a Mac. The owner allows phone access from any Opensteer app.";
 
 /** Owner decisions consume exact pending requests; reductions need no new approval. */
+type DeviceInput = { readonly deviceId?: DeviceId; readonly runnerId?: RunnerId };
+type TargetInput<T> = T extends { deviceId: DeviceId } ? Omit<T, "deviceId"> & DeviceInput : never;
 type ComputerConnectionChange =
-  | (SetComputerAppConnection & { readonly setupRequestId?: string })
-  | {
+  | (TargetInput<SetComputerAppConnection> & { readonly setupRequestId?: string })
+  | ({
       readonly appApproval: "automatic";
       readonly setupRequestId: string;
       readonly kind: "policy";
-      readonly runnerId: RunnerId;
-    };
+    } & DeviceInput);
 
 /** The session is revalidated inside admission after any queued wait. */
 interface ComputerApprovalAuthorization {
@@ -137,15 +129,7 @@ interface ComputerApprovalAuthorization {
 }
 
 export interface ComputerAppApprovalServiceOptions {
-  readonly computerApps: Pick<
-    ComputerAppHub,
-    | "appStatus"
-    | "reportsApp"
-    | "attached"
-    | "compatibilityReason"
-    | "machinesFor"
-    | "withRunnerAdmission"
-  >;
+  readonly computerApps: DeviceComputerAppsPort;
   readonly computerUse: ComputerUseApprovalGateway | null;
   readonly definitions: readonly IntegrationDefinition[];
   /** Materialises a catalog definition an administrator's first approval needs. */
@@ -164,7 +148,7 @@ export interface ComputerAppApprovalServiceOptions {
   ) => Promise<readonly IntegrationConnectionSummary[]>;
   readonly localMcpSecrets: Pick<LocalMcpSecrets, "saved" | "update">;
   readonly onConnectionsChanged: () => void;
-  readonly onInputAccessWithdrawn?: (runnerId: RunnerId) => void;
+  readonly onInputAccessWithdrawn?: (deviceId: DeviceId) => void | Promise<void>;
   /**
    * A Mac's owner allowed an MCP server to run there. Called once that Mac
    * has been told, so the computer knows before anything asks it to start.
@@ -197,7 +181,7 @@ export class ComputerAppApprovalService {
   readonly #listConnections: ComputerAppApprovalServiceOptions["listConnections"];
   readonly #localMcpSecrets: ComputerAppApprovalServiceOptions["localMcpSecrets"];
   readonly #onConnectionsChanged: () => void;
-  readonly #onInputAccessWithdrawn: (runnerId: RunnerId) => void;
+  readonly #onInputAccessWithdrawn: (deviceId: DeviceId) => void | Promise<void>;
   readonly #onLocalServerApproved: ComputerAppApprovalServiceOptions["onLocalServerApproved"];
   readonly #publishRequestEvents: (events: readonly AgentEvent[]) => void;
   readonly #store: IntegrationPlatformStore;
@@ -217,12 +201,20 @@ export class ComputerAppApprovalService {
     this.#store = options.store;
   }
 
+  async #target<T extends DeviceInput>(input: T): Promise<T & { readonly deviceId: DeviceId }> {
+    const { deviceId, runnerId } = input;
+    const target = deviceId ?? (runnerId ? await this.#store.requireSelfDeviceId(runnerId) : null);
+    if (!target)
+      throw new OpensteerError({ code: "bad_request", message: "A target Device is required." });
+    return { ...input, deviceId: target };
+  }
+
   /** Owner-only details are loaded on review, never in shared events or client snapshots. */
   async reviewComputerAppSetup(input: {
     readonly setupRequestId: string;
     readonly ownerUserId: UserId;
   }) {
-    const request = await this.#store.getComputerAppSetupRequest({
+    const request = await this.#store.getDeviceComputerAppSetupRequest({
       setupRequestId: input.setupRequestId,
     });
     if (!request)
@@ -230,8 +222,13 @@ export class ComputerAppApprovalService {
         code: "conflict",
         message: "This approval is no longer waiting.",
       });
-    await this.#store.getComputerUsePolicy({
-      runnerId: request.runnerId,
+    if (isPhoneDisplayDefinitionId(request.definitionId))
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Allow phone access from any Opensteer app.",
+      });
+    await this.#store.getDeviceComputerUsePolicy({
+      deviceId: request.deviceId,
       ownerUserId: input.ownerUserId,
     });
     if (request.ownerUserId !== input.ownerUserId)
@@ -245,7 +242,7 @@ export class ComputerAppApprovalService {
         if (!this.#computerUse) throw new Error("Helper unavailable");
         app = await this.#computerUse.resolveApp({
           app: request.app.bundleId,
-          runnerId: request.runnerId,
+          deviceId: request.deviceId,
         });
       } catch {
         throw new OpensteerError({
@@ -277,7 +274,10 @@ export class ComputerAppApprovalService {
       savedSecrets: await this.#localMcpSecrets.saved(
         serverId,
         launch,
-        await this.#store.localMcp.secrets(serverId, request.runnerId),
+        await this.#store.localMcp.secrets(
+          serverId,
+          await this.#store.requireDeviceSelfRunnerId(request.deviceId),
+        ),
       ),
     };
   }
@@ -293,7 +293,7 @@ export class ComputerAppApprovalService {
     readonly authorize: () => Promise<void>;
   }): Promise<void> {
     await this.#store.connections.assertOwner(input.actorUserId);
-    const request = await this.#store.getComputerAppSetupRequest({
+    const request = await this.#store.getDeviceComputerAppSetupRequest({
       setupRequestId: input.setupRequestId,
     });
     if (!request || request.ownerUserId !== input.actorUserId)
@@ -318,12 +318,12 @@ export class ComputerAppApprovalService {
         input.decision === "allow" && server
           ? this.#localMcpSecrets.update(server.serverId, server.launch, input.secrets ?? {})
           : null;
-      const approved = await this.#computerApps.withRunnerAdmission(request.runnerId, async () => {
+      const approved = await this.#computerApps.withAdmission(request.deviceId, async () => {
         await input.authorize();
         const answer = {
           settlementSessionId: input.settlementSessionId,
           actorUserId: input.actorUserId,
-          runnerId: request.runnerId,
+          runnerId: await this.#store.requireDeviceSelfRunnerId(request.deviceId),
           setupRequestId: request.id,
         };
         if (input.decision === "deny") {
@@ -342,11 +342,11 @@ export class ComputerAppApprovalService {
       return;
     }
     if (input.decision === "deny") {
-      await this.#computerApps.withRunnerAdmission(request.runnerId, async () => {
+      await this.#computerApps.withAdmission(request.deviceId, async () => {
         await input.authorize();
         // Recheck current ownership after waiting in admission, including enrolled computers.
-        await this.#store.getComputerUsePolicy({
-          runnerId: request.runnerId,
+        await this.#store.getDeviceComputerUsePolicy({
+          deviceId: request.deviceId,
           ownerUserId: input.actorUserId,
         });
         await this.cancelComputerAppSetup({
@@ -367,7 +367,7 @@ export class ComputerAppApprovalService {
               app: request.app,
               definitionId: request.definitionId,
             }),
-        runnerId: request.runnerId,
+        deviceId: request.deviceId,
         setupRequestId: request.id,
         settlementSessionId: input.settlementSessionId,
         actorUserId: input.actorUserId,
@@ -376,7 +376,7 @@ export class ComputerAppApprovalService {
       {
         authorize: async () => {
           await input.authorize();
-          if (request.app && !this.#computerApps.attached(request.runnerId))
+          if (request.app && !(await this.#computerApps.attached(request.deviceId)))
             throw new OpensteerError({
               code: "conflict",
               message:
@@ -391,17 +391,20 @@ export class ComputerAppApprovalService {
 
   /** The picker's ask, an unblock, or the automatic policy. */
   async requestComputerAppSetup(
-    input: z.infer<typeof RequestComputerAppSetupSchema> & { readonly actorUserId: UserId },
+    inputRaw: TargetInput<z.infer<typeof RequestComputerAppSetupSchema>> & {
+      readonly actorUserId: UserId;
+    },
   ) {
+    const input = await this.#target(inputRaw);
     if (input.kind === "policy") {
-      await this.#requireMacForAutomatic(input.runnerId, input.actorUserId);
+      await this.#requireMacForAutomatic(input.deviceId, input.actorUserId);
       const definition = this.#definitions.find(({ id }) => id === computerUseDefinitionId);
       if (!definition)
         throw new OpensteerError({
           code: "not_found",
           message: "Computer use is unavailable on this Deployment.",
         });
-      const { request, settlement } = await this.#store.requestComputerAppSetup({
+      const { request, settlement } = await this.#store.requestDeviceComputerAppSetup({
         ...input,
         definitionDigest: integrationDefinitionDigest(definition),
       });
@@ -409,6 +412,17 @@ export class ComputerAppApprovalService {
       this.#onConnectionsChanged();
       return request;
     }
+    const self = await this.#store.getDeviceSelfRunnerId(input.deviceId);
+    const iphone = self
+      ? (await this.#store.computerAppRunner(self))?.deviceProfile === "iphone"
+      : false;
+    if (isPhoneDisplayDefinitionId(input.definitionId))
+      throw new OpensteerError({
+        code: "forbidden",
+        message: iphone
+          ? "This app is not supported on an iPhone."
+          : "Allow phone access from any Opensteer app.",
+      });
     const definition = this.#definitions.find(({ id }) => id === input.definitionId);
     if (
       !definition ||
@@ -421,8 +435,6 @@ export class ComputerAppApprovalService {
         message: "This app does not offer that access.",
       });
     }
-    const iphone =
-      (await this.#store.computerAppRunner(input.runnerId))?.deviceProfile === "iphone";
     if (iphone && !definition.config.platforms.includes("ios"))
       throw new OpensteerError({
         code: "forbidden",
@@ -441,15 +453,12 @@ export class ComputerAppApprovalService {
           : "This app is the whole integration on that computer, so it names no app.",
       });
     }
-    const createRequest = () => {
-      const incompatibility = this.#computerApps.compatibilityReason(input.runnerId);
+    const createRequest = async () => {
+      const incompatibility = await this.#computerApps.compatibilityReason(input.deviceId);
       if (incompatibility) throw new OpensteerError({ code: "conflict", message: incompatibility });
       if (iphone) {
-        const report = this.#computerApps.reportsApp(input.runnerId, definition.id);
-        const name =
-          this.#computerApps
-            .machinesFor(definition.id)
-            .find((machine) => machine.runnerId === input.runnerId)?.name ?? "this iPhone";
+        const report = await this.#computerApps.reportsApp(input.deviceId, definition.id);
+        const name = "this iPhone";
         if (report !== "reported") {
           const message =
             report === "offline"
@@ -460,18 +469,18 @@ export class ComputerAppApprovalService {
           throw new OpensteerError({ code: "conflict", message });
         }
       }
-      return this.#store.requestComputerAppSetup({
+      return this.#store.requestDeviceComputerAppSetup({
         access: input.access,
         actorUserId: input.actorUserId,
         app,
         definitionDigest: integrationDefinitionDigest(definition),
         definitionId: input.definitionId,
         requiresApp,
-        runnerId: input.runnerId,
+        deviceId: input.deviceId,
       });
     };
-    const { request, settlement } = await this.#computerApps.withRunnerAdmission(
-      input.runnerId,
+    const { request, settlement } = await this.#computerApps.withAdmission(
+      input.deviceId,
       createRequest,
     );
     this.#publishRequestEvents(settlement.requestEvents);
@@ -488,7 +497,7 @@ export class ComputerAppApprovalService {
    * delivers the same continuation a decline anywhere else does.
    */
   async expireComputerAppSetupRequests(): Promise<void> {
-    const settled = await this.#store.expireComputerAppSetupRequests();
+    const settled = await this.#store.expireDeviceComputerAppSetupRequests();
     if (settled.requestIds.length === 0) return;
     this.#publishRequestEvents(settled.requestEvents);
     this.#onConnectionsChanged();
@@ -499,7 +508,7 @@ export class ComputerAppApprovalService {
     readonly requestId: string;
     readonly ownerUserId: UserId;
   }) {
-    const settlement = await this.#store.cancelComputerAppSetup(input);
+    const settlement = await this.#store.cancelDeviceComputerAppSetup(input);
     this.#publishRequestEvents(settlement.requestEvents);
     this.#onConnectionsChanged();
   }
@@ -508,17 +517,18 @@ export class ComputerAppApprovalService {
    * The owner's phone access change, or a Mac app approval or access reduction.
    */
   async setComputerConnection(
-    input: ComputerConnectionChange & {
+    inputRaw: ComputerConnectionChange & {
       readonly settlementSessionId?: string | undefined;
       readonly actorUserId: UserId;
       readonly requestId: string;
     },
     options: ComputerApprovalAuthorization = {},
   ) {
+    const input = await this.#target(inputRaw);
     await this.#store.connections.assertOwner(input.actorUserId);
     if (
       input.kind === "app" &&
-      input.definitionId === androidPhoneDefinitionId &&
+      isPhoneDisplayDefinitionId(input.definitionId) &&
       input.setupRequestId
     ) {
       throw new OpensteerError({
@@ -558,12 +568,12 @@ export class ComputerAppApprovalService {
     if (input.kind === "policy") {
       // Consuming a policy approval is the other way in, so the rule
       // that it is a Mac's holds here too, whichever client answered.
-      await this.#requireMacForAutomatic(input.runnerId, input.actorUserId);
-      await this.#computerApps.withRunnerAdmission(input.runnerId, async () => {
+      await this.#requireMacForAutomatic(input.deviceId, input.actorUserId);
+      await this.#computerApps.withAdmission(input.deviceId, async () => {
         await options.authorize?.();
-        return this.#store.setComputerUsePolicy({
+        return this.#store.setDeviceComputerUsePolicy({
           settlementSessionId: input.settlementSessionId,
-          runnerId: input.runnerId,
+          deviceId: input.deviceId,
           ownerUserId: input.actorUserId,
           requestId: input.requestId,
           appApproval: "automatic",
@@ -575,28 +585,28 @@ export class ComputerAppApprovalService {
       return null;
     }
     const computerApps = this.#computerApps;
-    const mutation = await computerApps.withRunnerAdmission(input.runnerId, async () => {
+    const mutation = await computerApps.withAdmission(input.deviceId, async () => {
       await options.authorize?.();
       try {
-        const mutation = await this.#store.setComputerConnection({
+        const mutation = await this.#store.setDeviceComputerConnection({
           settlementSessionId: input.settlementSessionId,
           ...(input.setupRequestId ? { setupRequestId: input.setupRequestId } : {}),
           definitionDigest: digest,
           access: input.access,
           actorUserId: input.actorUserId,
           app: input.app ?? null,
-          createIfMissing: computerApps.appStatus(input.runnerId, definition.id) !== null,
+          createIfMissing: (await computerApps.appStatus(input.deviceId, definition.id)) !== null,
           definitionId: definition.id,
           requestId: input.requestId,
-          runnerId: input.runnerId,
+          deviceId: input.deviceId,
           tools: (connectionId) => computerAppTools(definition, input.access, connectionId),
         });
-        if (input.definitionId === androidPhoneDefinitionId && input.access !== "read-write")
-          this.#onInputAccessWithdrawn(input.runnerId);
+        if (isPhoneDisplayDefinitionId(input.definitionId) && input.access !== "read-write")
+          await this.#onInputAccessWithdrawn(input.deviceId);
         const reset = mutation.sessionReset;
         if (reset) {
-          this.#computerUse?.closeForConnection(
-            reset.runnerId,
+          await this.#computerUse?.closeForConnection(
+            reset.deviceId,
             reset.kind === "app"
               ? { appKey: reset.appKey, kind: "app" }
               : { definitionId: reset.definitionId, kind: "display" },
@@ -627,15 +637,15 @@ export class ComputerAppApprovalService {
     readonly ownerUserId: UserId;
     readonly requestId: string;
   }): Promise<{ readonly notice: null; readonly revokedUpstream: false }> {
-    const connection = await this.#store.getComputerConnectionForCall(input);
+    const connection = await this.#store.getDeviceComputerConnectionForCall(input);
     if (!connection) {
       throw new OpensteerError({ code: "not_found", message: "Computer app not found" });
     }
-    const mutation = await this.#computerApps.withRunnerAdmission(connection.runnerId, async () => {
+    const mutation = await this.#computerApps.withAdmission(connection.deviceId, async () => {
       const policy =
         connection.connection.definitionId === computerUseDefinitionId
-          ? await this.#store.getComputerUsePolicy({
-              runnerId: connection.runnerId,
+          ? await this.#store.getDeviceComputerUsePolicy({
+              deviceId: connection.deviceId,
               ownerUserId: input.ownerUserId,
             })
           : null;
@@ -644,9 +654,9 @@ export class ComputerAppApprovalService {
         policy?.appApproval === "automatic"
           ? await this.#store.blockComputerApp(input)
           : await this.#store.revokeComputerConnection(input);
-      if (connection.connection.definitionId === androidPhoneDefinitionId)
-        this.#onInputAccessWithdrawn(connection.runnerId);
-      endComputerUseSessions(this.#computerUse, this.#definitions, revoked.removedApps);
+      if (isPhoneDisplayDefinitionId(connection.connection.definitionId))
+        await this.#onInputAccessWithdrawn(connection.deviceId);
+      await endComputerUseSessions(this.#computerUse, this.#definitions, revoked.removedApps);
       return revoked;
     });
     this.#publishRequestEvents(mutation.requestEvents);
@@ -664,11 +674,11 @@ export class ComputerAppApprovalService {
     );
     if (!connection?.computer || connection.definitionId !== computerUseDefinitionId)
       throw new OpensteerError({ code: "not_found", message: "Computer app not found" });
-    const mutation = await this.#computerApps.withRunnerAdmission(
-      connection.computer.runnerId,
+    const mutation = await this.#computerApps.withAdmission(
+      connection.computer.deviceId,
       async () => {
         const mutation = await this.#store.blockComputerApp(input);
-        endComputerUseSessions(this.#computerUse, this.#definitions, mutation.removedApps);
+        await endComputerUseSessions(this.#computerUse, this.#definitions, mutation.removedApps);
         return mutation;
       },
     );
@@ -684,35 +694,36 @@ export class ComputerAppApprovalService {
    * neither asking for the policy nor consuming one is open to any
    * computer but a Mac this person owns.
    */
-  async #requireMacForAutomatic(runnerId: RunnerId, ownerUserId: UserId): Promise<void> {
+  async #requireMacForAutomatic(deviceId: DeviceId, ownerUserId: UserId): Promise<void> {
     const macs =
       (await this.#computerUse?.eligibleMachines(ownerUserId, computerUseDefinitionId)) ?? [];
-    if (!macs.some((mac) => mac.runnerId === runnerId)) {
-      const iphone = (await this.#store.computerAppRunner(runnerId))?.deviceProfile === "iphone";
-      throw new OpensteerError({
-        code: "bad_request",
-        message: iphone
-          ? "Automatic approval is only for apps on a Mac. Approve access in Opensteer from any Opensteer app."
-          : automaticApprovalMacOnlyRefusal,
-      });
+    if (!macs.some((mac) => mac.deviceId === deviceId)) {
+      throw new OpensteerError({ code: "bad_request", message: automaticApprovalMacOnlyRefusal });
     }
   }
 
-  async computerUsePolicy(input: { runnerId: RunnerId; ownerUserId: UserId }) {
-    const { appApproval } = await this.#store.getComputerUsePolicy(input);
+  async computerUsePolicy(inputRaw: {
+    deviceId?: DeviceId;
+    runnerId?: RunnerId;
+    ownerUserId: UserId;
+  }) {
+    const input = await this.#target(inputRaw);
+    const { appApproval } = await this.#store.getDeviceComputerUsePolicy(input);
     return { appApproval };
   }
 
   /** Turning automatic off works from anywhere; turning it on consumes a setup request. */
-  async setComputerUsePolicy(input: {
+  async setComputerUsePolicy(inputRaw: {
     readonly settlementSessionId?: string | undefined;
-    runnerId: RunnerId;
+    deviceId?: DeviceId;
+    runnerId?: RunnerId;
     ownerUserId: UserId;
     requestId: string;
     appApproval: "ask";
   }) {
-    await this.#computerApps.withRunnerAdmission(input.runnerId, () =>
-      this.#store.setComputerUsePolicy(input),
+    const input = await this.#target(inputRaw);
+    await this.#computerApps.withAdmission(input.deviceId, () =>
+      this.#store.setDeviceComputerUsePolicy(input),
     );
     this.#onConnectionsChanged();
     // Switching off also withdraws a waiting "Allow any app" approval.
@@ -740,24 +751,27 @@ export class ComputerAppApprovalService {
         inventory.machines.map(
           async (machine) =>
             [
-              machine.runnerId,
-              await this.#store.getComputerUsePolicy({ runnerId: machine.runnerId, ownerUserId }),
+              machine.deviceId,
+              await this.#store.getDeviceComputerUsePolicy({
+                deviceId: machine.deviceId,
+                ownerUserId,
+              }),
             ] as const,
         ),
       ),
     );
-    const byRunner = new Map<RunnerId, typeof connections>();
+    const byRunner = new Map<DeviceId, typeof connections>();
     for (const connection of connections) {
-      const runnerId = connection.computer?.runnerId;
-      if (!runnerId || connection.status === "revoked") continue;
-      const rows = byRunner.get(runnerId) ?? [];
-      byRunner.set(runnerId, [...rows, connection]);
+      const deviceId = connection.computer?.deviceId;
+      if (!deviceId || connection.status === "revoked") continue;
+      const rows = byRunner.get(deviceId) ?? [];
+      byRunner.set(deviceId, [...rows, connection]);
     }
     return {
       machines: inventory.machines.map((machine) => ({
         ...machine,
-        appApproval: policies.get(machine.runnerId)!.appApproval,
-        apps: (byRunner.get(machine.runnerId) ?? []).flatMap((connection) =>
+        appApproval: policies.get(machine.deviceId)!.appApproval,
+        apps: (byRunner.get(machine.deviceId) ?? []).flatMap((connection) =>
           connection.definitionId === computerUseDefinitionId && connection.computer?.app
             ? [
                 {
@@ -774,8 +788,8 @@ export class ComputerAppApprovalService {
         ),
       })),
       phones: inventory.phones.map((phone) => {
-        const connection = (byRunner.get(phone.runnerId) ?? []).find(
-          (row) => row.definitionId === androidPhoneDefinitionId,
+        const connection = (byRunner.get(phone.deviceId) ?? []).find(
+          (row) => row.definitionId === phone.definitionId,
         );
         return {
           ...phone,
@@ -791,17 +805,18 @@ export class ComputerAppApprovalService {
   }
 
   /** Which Run on this Host holds each app, or the display, on that computer. */
-  computerAppHolders(runnerId: RunnerId): ReturnType<ComputerUseApprovalGateway["holders"]> {
-    return this.#computerUse?.holders(runnerId) ?? new Map();
+  async computerAppHolders(deviceId: DeviceId): ReturnType<ComputerUseApprovalGateway["holders"]> {
+    return this.#computerUse?.holders(deviceId) ?? new Map();
   }
 
   /** Owned app inventory uses no control session and remains available while paused. */
   async installedComputerApps(
     input: {
       readonly actorUserId: UserId;
-      readonly runnerId: RunnerId;
+      readonly deviceId?: DeviceId;
+      readonly runnerId?: RunnerId;
     } & Partial<ComputerUseInstalledAppsParams>,
-    machines?: readonly ComputerUseMachineOption[],
+    machines?: readonly DeviceComputerOption[],
   ): Promise<
     z.infer<typeof ComputerUseInstalledAppsResultSchema> & {
       readonly unavailableReason?: "offline" | "not-ready";
@@ -810,24 +825,27 @@ export class ComputerAppApprovalService {
   async installedComputerApps(
     input: {
       readonly actorUserId: UserId;
-      readonly runnerId: RunnerId;
-      readonly definitionId: typeof androidPhoneDefinitionId;
-    } & Partial<AndroidPhoneInstalledAppsParams>,
-    machines?: readonly ComputerUseMachineOption[],
-  ): Promise<AndroidPhoneInstalledAppsResult>;
+      readonly deviceId?: DeviceId;
+      readonly runnerId?: RunnerId;
+      readonly definitionId: PhoneDisplayDefinitionId;
+    } & Partial<PhoneDisplayInstalledAppsParams>,
+    machines?: readonly DeviceComputerOption[],
+  ): Promise<PhoneDisplayInstalledAppsResult>;
   async installedComputerApps(
-    input: {
+    inputRaw: {
       readonly actorUserId: UserId;
-      readonly runnerId: RunnerId;
-      readonly definitionId?: typeof androidPhoneDefinitionId;
+      readonly deviceId?: DeviceId;
+      readonly runnerId?: RunnerId;
+      readonly definitionId?: PhoneDisplayDefinitionId;
     } & Partial<ComputerUseInstalledAppsParams>,
-    machines?: readonly ComputerUseMachineOption[],
+    machines?: readonly DeviceComputerOption[],
   ): Promise<
     | (z.infer<typeof ComputerUseInstalledAppsResultSchema> & {
         readonly unavailableReason?: "offline" | "not-ready";
       })
-    | AndroidPhoneInstalledAppsResult
+    | PhoneDisplayInstalledAppsResult
   > {
+    const input = await this.#target(inputRaw);
     const computerUse = this.#computerUse;
     if (!computerUse)
       throw new OpensteerError({
@@ -835,18 +853,18 @@ export class ComputerAppApprovalService {
         message: "Computer use is unavailable on this Deployment.",
       });
     try {
-      const { actorUserId, runnerId, definitionId, ...params } = input;
+      const { actorUserId, deviceId, definitionId, ...params } = input;
       const inventory =
         machines ??
         (await computerUse.eligibleMachines(actorUserId, definitionId ?? computerUseDefinitionId));
-      const machine = inventory.find((machine) => machine.runnerId === runnerId);
+      const machine = inventory.find((machine) => machine.deviceId === deviceId);
       if (!machine)
         throw new ComputerUseError(
           "unsupported",
           "Only an owned computer that serves this app can list its apps.",
         );
       if (
-        definitionId !== androidPhoneDefinitionId &&
+        !isPhoneDisplayDefinitionId(definitionId) &&
         (machine.state === "offline" || machine.state === "unavailable")
       )
         return {
@@ -856,21 +874,21 @@ export class ComputerAppApprovalService {
         };
       if (machine.state === "offline")
         throw new ComputerUseError("offline", `${machine.name} is offline.`);
-      return definitionId === androidPhoneDefinitionId
+      return isPhoneDisplayDefinitionId(definitionId)
         ? await computerUse.installedApps(
-            runnerId,
+            deviceId,
             actorUserId,
-            AndroidPhoneInstalledAppsParamsSchema.parse(params),
+            PhoneDisplayInstalledAppsParamsSchema.parse(params),
             definitionId,
           )
         : await computerUse.installedApps(
-            runnerId,
+            deviceId,
             actorUserId,
             ComputerUseInstalledAppsParamsSchema.parse(params),
           );
     } catch (error) {
       if (!(error instanceof ComputerUseError)) throw error;
-      if (input.definitionId !== androidPhoneDefinitionId && error.code === "offline")
+      if (!isPhoneDisplayDefinitionId(input.definitionId) && error.code === "offline")
         return { apps: [], total: 0, unavailableReason: "offline" };
       throw new OpensteerError({
         cause: error,
@@ -915,7 +933,7 @@ export class ComputerAppApprovalService {
   }
 
   /**
-   * How a task asks for one app on one Mac, or for a whole Android phone.
+   * How a task asks for one app on one Mac, or for a whole phone display.
    *
    * For a Mac, the Mac resolves the app, because a model naming one has a
    * name, a path or a bundle identifier and never an identity anybody
@@ -924,7 +942,7 @@ export class ComputerAppApprovalService {
    * computer itself — is decided by the store under that computer's lock,
    * against the policy as it is at that moment.
    */
-  async requestComputerAppAccess(input: {
+  async requestComputerAppAccess(inputRaw: {
     readonly access: IntegrationAccess;
     /** The app on a Mac, in the model's words; null asks for a whole phone. */
     readonly app: string | null;
@@ -932,9 +950,11 @@ export class ComputerAppApprovalService {
     readonly reason: string;
     readonly ownerUserId: UserId;
     readonly originatingRunId: RunId;
-    readonly runnerId: RunnerId;
+    readonly deviceId?: DeviceId;
+    readonly runnerId?: RunnerId;
     readonly threadId: ThreadId;
   }) {
+    const input = await this.#target(inputRaw);
     const computerUse = this.#computerUse;
     if (!computerUse) {
       throw new OpensteerError({
@@ -949,7 +969,10 @@ export class ComputerAppApprovalService {
 
   async #requestMacAppAccess(
     computerUse: ComputerUseApprovalGateway,
-    input: Parameters<ComputerAppApprovalService["requestComputerAppAccess"]>[0] & {
+    input: Omit<
+      Parameters<ComputerAppApprovalService["requestComputerAppAccess"]>[0],
+      "deviceId" | "runnerId"
+    > & { readonly deviceId: DeviceId } & {
       readonly app: string;
     },
   ) {
@@ -962,27 +985,27 @@ export class ComputerAppApprovalService {
     }
     const machine = (
       await computerUse.eligibleMachines(input.ownerUserId, computerUseDefinitionId)
-    ).find(({ runnerId }) => runnerId === input.runnerId);
+    ).find(({ deviceId }) => deviceId === input.deviceId);
     if (!machine) {
       // A phone has no apps to name; the one way to ask for it is whole.
-      const phone = (
-        await computerUse.eligibleMachines(input.ownerUserId, androidPhoneDefinitionId)
-      ).find(({ runnerId }) => runnerId === input.runnerId);
+      const phone = (await computerUse.eligibleInventory(input.ownerUserId)).phones.find(
+        ({ deviceId }) => deviceId === input.deviceId,
+      );
       throw new OpensteerError({
         code: "forbidden",
         message: phone
           ? `${phone.name} is a phone, which is asked for whole: omit app.`
-          : unknownComputerUseMac(input.runnerId),
+          : unknownComputerUseMac(input.deviceId),
       });
     }
-    if (!this.#computerApps.attached(input.runnerId))
+    if (!(await this.#computerApps.attached(input.deviceId)))
       throw new ComputerUseError("offline", `${machine.name} is offline.`);
     let resolved;
     try {
       resolved = await computerUse.resolveApp({
         app: input.app,
         runId: input.originatingRunId,
-        runnerId: input.runnerId,
+        deviceId: input.deviceId,
       });
     } catch (error) {
       if (error instanceof ComputerUseError && error.code === "offline")
@@ -993,7 +1016,7 @@ export class ComputerAppApprovalService {
       (connection) =>
         connection.definitionId === computerUseDefinitionId &&
         connection.status !== "revoked" &&
-        connection.computer?.runnerId === input.runnerId &&
+        connection.computer?.deviceId === input.deviceId &&
         connection.computer.app &&
         computerAppIdentityKey(connection.computer.app) ===
           computerAppIdentityKey(resolved.identity),
@@ -1023,7 +1046,7 @@ export class ComputerAppApprovalService {
           status: "fulfilled" as const,
           app: resolved.identity,
           computer: machine.name,
-          computerId: input.runnerId,
+          computerId: input.deviceId,
         };
     }
     return this.#decide(computerUse, {
@@ -1041,36 +1064,38 @@ export class ComputerAppApprovalService {
    */
   async #requestPhoneAccess(
     computerUse: ComputerUseApprovalGateway,
-    input: Parameters<ComputerAppApprovalService["requestComputerAppAccess"]>[0],
+    input: Omit<
+      Parameters<ComputerAppApprovalService["requestComputerAppAccess"]>[0],
+      "deviceId" | "runnerId"
+    > & { readonly deviceId: DeviceId },
   ) {
-    const definition = this.#definitions.find(({ id }) => id === androidPhoneDefinitionId);
-    if (!definition || !isComputerAppDefinition(definition)) {
+    const phone = (await computerUse.eligibleInventory(input.ownerUserId)).phones.find(
+      ({ deviceId }) => deviceId === input.deviceId,
+    );
+    const definition = this.#definitions.find(({ id }) => id === phone?.definitionId);
+    if (phone && (!definition || !isComputerAppDefinition(definition)))
       throw new OpensteerError({
         code: "conflict",
-        message: "Android phones are unavailable on this Deployment.",
+        message: "Phone displays are unavailable on this Deployment.",
       });
-    }
-    const phone = (
-      await computerUse.eligibleMachines(input.ownerUserId, androidPhoneDefinitionId)
-    ).find(({ runnerId }) => runnerId === input.runnerId);
     if (!phone) {
       const mac = (
         await computerUse.eligibleMachines(input.ownerUserId, computerUseDefinitionId)
-      ).find(({ runnerId }) => runnerId === input.runnerId);
+      ).find(({ deviceId }) => deviceId === input.deviceId);
       throw new OpensteerError({
         code: "forbidden",
         message: mac
           ? `${mac.name} is a Mac, whose apps are asked for one at a time: name the app.`
-          : unknownPhone(input.runnerId),
+          : unknownPhone(input.deviceId),
       });
     }
-    if (!this.#computerApps.attached(input.runnerId))
+    if (!(await this.#computerApps.attached(input.deviceId)))
       throw new ComputerUseError("offline", `${phone.name} is offline.`);
     const connection = (await this.#listConnections(input.ownerUserId)).find(
       (candidate) =>
-        candidate.definitionId === androidPhoneDefinitionId &&
+        candidate.definitionId === phone.definitionId &&
         candidate.status !== "revoked" &&
-        candidate.computer?.runnerId === input.runnerId,
+        candidate.computer?.deviceId === input.deviceId,
     );
     if (
       connection?.computer &&
@@ -1089,9 +1114,14 @@ export class ComputerAppApprovalService {
           status: "fulfilled" as const,
           app: null,
           computer: phone.name,
-          computerId: input.runnerId,
+          computerId: input.deviceId,
         };
     }
+    if (!definition || !isComputerAppDefinition(definition))
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Phone display definition unavailable.",
+      });
     return this.#decide(computerUse, { app: null, computer: phone.name, definition, input });
   }
 
@@ -1102,21 +1132,24 @@ export class ComputerAppApprovalService {
       readonly app: ComputerAppIdentity | null;
       readonly computer: string;
       readonly definition: ComputerAppDefinition;
-      readonly input: Parameters<ComputerAppApprovalService["requestComputerAppAccess"]>[0];
+      readonly input: Omit<
+        Parameters<ComputerAppApprovalService["requestComputerAppAccess"]>[0],
+        "deviceId" | "runnerId"
+      > & { readonly deviceId: DeviceId };
     },
   ) {
     const { definition, input } = ask;
-    const definitionId =
-      definition.id === androidPhoneDefinitionId
-        ? androidPhoneDefinitionId
-        : computerUseDefinitionId;
+    const definitionId = isPhoneDisplayDefinitionId(definition.id)
+      ? definition.id
+      : computerUseDefinitionId;
     // Read before the admission turn: nothing else waiting on this computer
     // should wait on this Thread's name.
     const threadTitle = await computerUse.threadTitle(input.threadId, input.ownerUserId);
-    const decision = await this.#computerApps.withRunnerAdmission(input.runnerId, () => {
-      if (!this.#computerApps.attached(input.runnerId))
+    const decision = await this.#computerApps.withAdmission(input.deviceId, async () => {
+      if (!(await this.#computerApps.attached(input.deviceId)))
         throw new ComputerUseError("offline", `${ask.computer} is offline.`);
-      return this.#store.requestComputerAppAccess({
+      await this.#computerApps.requireAgentAccess(input.deviceId);
+      return this.#store.requestDeviceComputerAppAccess({
         access: input.access,
         app: ask.app,
         auditRequestId: input.callId ?? input.originatingRunId,
@@ -1126,7 +1159,7 @@ export class ComputerAppApprovalService {
         originatingRunId: input.originatingRunId,
         ownerUserId: input.ownerUserId,
         reason: input.reason,
-        runnerId: input.runnerId,
+        deviceId: input.deviceId,
         threadId: input.threadId,
         threadTitle,
         tools: (connectionId) => computerAppTools(definition, input.access, connectionId),
@@ -1140,7 +1173,7 @@ export class ComputerAppApprovalService {
           status: "fulfilled" as const,
           app: ask.app,
           computer: ask.computer,
-          computerId: input.runnerId,
+          computerId: input.deviceId,
         };
       case "personal-grant":
         return {

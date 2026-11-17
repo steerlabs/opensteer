@@ -247,6 +247,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
           await bridge.passkeys.present({ requestId });
         },
       },
+      ...(bridge.iphoneSetup ? { iphoneSetup: bridge.iphoneSetup } : {}),
       baseUrl: selected.canonicalOrigin,
       capabilities: selectedConnection?.capabilities ?? null,
       fetch: createDesktopHostFetch(bridge, selected.canonicalOrigin, selected.id),

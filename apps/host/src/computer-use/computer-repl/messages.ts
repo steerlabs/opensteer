@@ -33,6 +33,7 @@ export const ReplRequestSchema = z
     operation: z.enum([
       "apps",
       "phones",
+      "installedApps",
       "tab",
       "windows",
       "bind",

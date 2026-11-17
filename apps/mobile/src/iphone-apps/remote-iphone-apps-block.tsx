@@ -10,7 +10,7 @@ import {
 } from "../ui/primitives.js";
 import { IphoneAppRow } from "./app-row.js";
 import { useComputerAppApproval } from "../computers/computer-app-approval.js";
-import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
+import { computerTargetId, mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
 import {
   computerAppPermissionNotice,
   computerAppRows,
@@ -60,7 +60,7 @@ export function RemoteIphoneAppsBlock(props: {
     if (!isIphoneAppId(app)) return [];
     const request =
       requests.find(
-        ({ definitionId, runnerId }) => runnerId === machine.id && definitionId === app,
+        (request) => computerTargetId(request) === machine.id && request.definitionId === app,
       ) ?? null;
     return [
       { app, request, row, status: iphoneAppStatus({ machineName: machine.name, request, row }) },

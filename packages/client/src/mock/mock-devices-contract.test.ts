@@ -1,11 +1,13 @@
+import { setPhoneDisplayAccess, setPhoneUseAccess } from "../integrations/computer-use.js";
 import {
   answerDeviceAccessRequest,
   applyDeviceAccess,
 } from "../computers/device-access-request.js";
 import { devicesView } from "../computers/devices.js";
 import { expect, it } from "vitest";
-import { createId } from "@opensteer/core";
-import { MockHostClient } from "./mock-host-client.js";
+import { computerTargetId } from "../host/device-projection.js";
+import { DeviceIdSchema, createId } from "@opensteer/core";
+import { mockAgentPhoneAccessRequest, MockHostClient } from "./mock-host-client.js";
 
 it("preserves disabled switches when a legacy editor saves folders", async () => {
   const client = new MockHostClient({ latencyMs: 0 });
@@ -267,6 +269,231 @@ it("applies a retried setup's choices to a device an earlier enrollment already 
     expect(
       client.getSnapshot().machines.find((entry) => entry.id === machine.id)!.access!.revision,
     ).toBe(applied.revision);
+  } finally {
+    client.dispose();
+  }
+});
+
+it("keeps a screen Device independent from its Mac across CAS detach, reattach and removal", async () => {
+  const client = new MockHostClient({ latencyMs: 0, iphoneScreen: "ready" });
+  try {
+    const phone = client
+      .getSnapshot()
+      .machines.find((machine) => machine.phoneDisplay?.definitionId === "iphone-screen")!;
+    const driver = phone.phoneDisplay!.driver!;
+    const before = phone.access;
+    const detached = await client.detachIphoneScreen({
+      deviceId: phone.id,
+      expectedGeneration: driver.generation,
+      idempotencyKey: "detach-once",
+    });
+    expect(detached.generation).toBe(driver.generation + 1);
+    expect(
+      await client.detachIphoneScreen({
+        deviceId: phone.id,
+        expectedGeneration: driver.generation,
+        idempotencyKey: "detach-once",
+      }),
+    ).toEqual(detached);
+    await expect(
+      client.detachIphoneScreen({ deviceId: phone.id, expectedGeneration: driver.generation }),
+    ).rejects.toThrow(/changed|generation/i);
+    const held = client.getSnapshot().machines.find(({ id }) => id === phone.id)!;
+    expect(held.access).toEqual(before);
+    expect(held.phoneDisplay?.control.reason).toEqual({ kind: "not-connected" });
+    const attached = await client.attachIphoneScreen({
+      driverRunnerId: driver.runnerId,
+      target: {
+        kind: "existing",
+        deviceId: DeviceIdSchema.parse(phone.id),
+        expectedGeneration: detached.generation,
+      },
+    });
+    expect(attached.generation).toBe(detached.generation + 1);
+    await client.dispatch({
+      type: "machine.revoke",
+      machineId: phone.id,
+      idempotencyKey: "remove-phone",
+    });
+    expect(client.getSnapshot().machines.some(({ id }) => id === driver.runnerId)).toBe(true);
+    expect(client.getSnapshot().machines.some(({ id }) => id === phone.id)).toBe(false);
+    await expect(
+      client.attachIphoneScreen({
+        driverRunnerId: driver.runnerId,
+        target: {
+          kind: "existing",
+          deviceId: DeviceIdSchema.parse(phone.id),
+          expectedGeneration: attached.generation,
+        },
+      }),
+    ).rejects.toThrow();
+  } finally {
+    client.dispose();
+  }
+});
+
+it("attaches without granting access and detaches the phone when its Mac is removed", async () => {
+  const client = new MockHostClient({ latencyMs: 0, iphoneScreen: "ready" });
+  try {
+    const existing = client
+      .getSnapshot()
+      .machines.find((machine) => machine.phoneDisplay?.definitionId === "iphone-screen")!;
+    const driver = existing.phoneDisplay!.driver!;
+    const added = await client.attachIphoneScreen({
+      driverRunnerId: driver.runnerId,
+      target: { kind: "new", name: "Second iPhone" },
+      idempotencyKey: "new-phone",
+    });
+    expect(
+      await client.attachIphoneScreen({
+        driverRunnerId: driver.runnerId,
+        target: { kind: "new", name: "Second iPhone" },
+        idempotencyKey: "new-phone",
+      }),
+    ).toEqual(added);
+    expect(
+      client.getSnapshot().machines.find(({ id }) => id === added.deviceId)?.access?.policy.apps,
+    ).toBe(false);
+    const dashboard = await client.rpc["integrations.get"]({});
+    expect(
+      dashboard.ok &&
+        dashboard.data.connections.some(
+          ({ computer }) => computerTargetId(computer) === added.deviceId,
+        ),
+    ).toBe(false);
+    await client.dispatch({
+      type: "machine.revoke",
+      machineId: driver.runnerId,
+      idempotencyKey: "remove-mac",
+    });
+    const retained = client
+      .getSnapshot()
+      .machines.filter(({ id }) => id === existing.id || id === added.deviceId);
+    expect(retained).toHaveLength(2);
+    expect(
+      retained.every((machine) => machine.phoneDisplay?.control.reason?.kind === "not-connected"),
+    ).toBe(true);
+  } finally {
+    client.dispose();
+  }
+});
+
+it("approves the phone Device without granting anything on its driver Mac", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    const phone = client
+      .getSnapshot()
+      .machines.find((machine) => machine.phoneDisplay?.definitionId === "iphone-screen")!;
+    const mac = client
+      .getSnapshot()
+      .machines.find(({ id }) => id === phone.phoneDisplay!.driver!.runnerId)!;
+    await setPhoneUseAccess(client, phone, "read");
+    const dashboard = await client.rpc["integrations.get"]({});
+    if (!dashboard.ok) throw new Error(dashboard.error.message);
+    expect(
+      dashboard.data.connections.find(({ computer }) => computerTargetId(computer) === phone.id)
+        ?.computer?.access,
+    ).toBe("read");
+    expect(client.getSnapshot().machines.find(({ id }) => id === mac.id)).toEqual(mac);
+    expect(
+      client.getSnapshot().machines.find(({ id }) => id === phone.id)?.phoneDisplay?.input.state,
+    ).toBe("disabled");
+    const current = client.getSnapshot().machines.find(({ id }) => id === phone.id)!;
+    await client.updateMachineAccess({
+      deviceId: phone.id,
+      expectedRevision: current.access!.revision,
+      policy: { ...current.access!.policy, apps: false },
+    });
+    await setPhoneUseAccess(client, current, "read-write");
+    expect(
+      client.getSnapshot().machines.find(({ id }) => id === phone.id)?.phoneDisplay,
+    ).toMatchObject({
+      control: { state: "disabled", reason: { kind: "access-off" } },
+      view: { state: "ready" },
+      input: { state: "ready" },
+    });
+  } finally {
+    client.dispose();
+  }
+});
+
+it("keeps canonical phone approvals working for the Android self Device", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    const phone = client.getSnapshot().machines.find((machine) => machine.kind === "agent-phone")!;
+    await setPhoneUseAccess(client, phone, "read");
+    const dashboard = await client.rpc["integrations.get"]({});
+    if (!dashboard.ok) throw new Error(dashboard.error.message);
+    expect(
+      dashboard.data.connections.find(({ computer }) => computerTargetId(computer) === phone.id),
+    ).toMatchObject({ definitionId: "android-phone", computer: { access: "read" } });
+  } finally {
+    client.dispose();
+  }
+});
+
+it("opens a screen-only iPhone as its own tab, while refusing it as a browser location", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    const phone = client
+      .getSnapshot()
+      .machines.find(({ phoneDisplay }) => phoneDisplay?.definitionId === "iphone-screen")!;
+    const target = { kind: "phone" as const, computerId: DeviceIdSchema.parse(phone.id) };
+    const tab = await client.openTab(target);
+    const activated = await client.activateTab(tab.tabId);
+    expect(activated).toMatchObject({
+      kind: "phone",
+      view: { machineId: phone.id, state: "ready" },
+    });
+    expect(client.tabViewer(tab.tabId)).toMatchObject({
+      kind: "phone",
+      view: { machineId: phone.id },
+    });
+    await expect(
+      client.openTab({
+        kind: "page",
+        guest: true,
+        computerId: target.computerId,
+        url: "https://example.com",
+      }),
+    ).rejects.toThrow("cannot host browser pages");
+  } finally {
+    client.dispose();
+  }
+});
+
+it("settles an iPhone screen Request against that Device without changing its Mac", async () => {
+  const deviceId = DeviceIdSchema.parse("dev_eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee");
+  if (mockAgentPhoneAccessRequest.payload.kind !== "computer.app.access")
+    throw new Error("Expected phone Request");
+  const request = {
+    ...mockAgentPhoneAccessRequest,
+    payload: {
+      ...mockAgentPhoneAccessRequest.payload,
+      definitionId: "iphone-screen" as const,
+      deviceId,
+    },
+  };
+  const client = new MockHostClient({ latencyMs: 0, pendingRequests: [request] });
+  try {
+    const phone = client.getSnapshot().machines.find(({ id }) => id === deviceId)!;
+    const mac = client
+      .getSnapshot()
+      .machines.find(({ id }) => id === phone.phoneDisplay?.driver?.runnerId)!;
+    await setPhoneDisplayAccess(client, {
+      access: "read-write",
+      definitionId: "iphone-screen",
+      deviceId,
+    });
+    expect(client.getSnapshot().requests[request.originatingThreadId]).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: request.id })]),
+    );
+    expect(client.getSnapshot().transcripts[request.originatingThreadId]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ requestId: request.id, outcome: "Allowed" }),
+      ]),
+    );
+    expect(client.getSnapshot().machines.find(({ id }) => id === mac.id)).toEqual(mac);
   } finally {
     client.dispose();
   }

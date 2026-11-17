@@ -28,7 +28,8 @@ describe("computer access", () => {
           machines: [],
           phones: [
             {
-              runnerId: "rnr_pixel",
+              deviceId: "rnr_pixel",
+              definitionId: "android-phone",
               name: "Pixel",
               state: "ready",
               connection: { connectionId: "connection", access: "read-write" },
@@ -39,7 +40,7 @@ describe("computer access", () => {
           new Map([["display:android-phone", { runId: holdingRun, threadTitle: "Calendar" }]]),
       },
       store: {
-        listComputerAppSetupRequests: async () => [],
+        listDeviceComputerAppSetupRequests: async () => [],
         requests: { listPendingIntegrationAccessRequests: async () => [] },
       },
       listCallableTools: async () => [
@@ -76,17 +77,17 @@ describe("computer access", () => {
     const platform = {
       computerAppApprovals: {
         computerUseInventory: async () => ({
-          machines: [{ runnerId: "rnr_mac", name: "Mac", state, appApproval: "ask", apps: [] }],
+          machines: [{ deviceId: "rnr_mac", name: "Mac", state, appApproval: "ask", apps: [] }],
           phones: [],
         }),
         computerAppHolders: () => new Map(),
       },
       store: {
-        listComputerAppSetupRequests: async () => [
+        listDeviceComputerAppSetupRequests: async () => [
           {
             kind: "app",
             definitionId: "macos-app",
-            runnerId: "rnr_mac",
+            deviceId: "rnr_mac",
             app: { displayName: "Notes", bundleId: "com.apple.Notes" },
             access: "read",
           },

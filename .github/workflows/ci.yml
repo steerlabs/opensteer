@@ -215,12 +215,13 @@ jobs:
         run: |
           mapfile -t files < "$RUNNER_TEMP/files"
           pnpm exec vitest list --filesOnly --json "$CI_DISCOVERY_PATH" "${files[@]}"
-      - name: Test native-fs once per selected unit lane
+      - name: Test Go helpers once per selected unit lane
         if: matrix.shard == 1
         shell: bash
         run: |
           set -o pipefail
           pnpm --filter @opensteer/runner test:native-fs 2>&1 | tee "$RUNNER_TEMP/evidence/native-fs.log"
+          pnpm --filter @opensteer/desktop test:iphone-bridge 2>&1 | tee "$RUNNER_TEMP/evidence/iphone-bridge.log"
       - shell: bash
         run: |
           set -o pipefail

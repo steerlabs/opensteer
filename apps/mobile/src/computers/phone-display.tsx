@@ -1,4 +1,5 @@
 import {
+  deviceMachine,
   type HostClient,
   type HostSnapshot,
   type NativeViewerSource,
@@ -11,7 +12,10 @@ import {
   computerDisplayScope,
   computerDisplayAuthorityKey,
   computerDisplayStatus,
+  phoneViewerNavigation,
+  phoneViewerPower,
   sharedDisplayStreams,
+  type PhoneNavigationTo,
   type DisplayFrame,
   type DisplaySnapshot,
   type DisplayLease,
@@ -35,7 +39,7 @@ import { color, controlFontScaleLimit, radius, space } from "../theme.js";
 import type { NativeMenuOption, NativeMenuSection } from "../thread/composer-menu.js";
 import { GlassSurface } from "../ui/glass.js";
 import { AppText, SecondaryButton } from "../ui/primitives.js";
-import { Symbol } from "../ui/symbol.js";
+import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import {
   DisplayControls,
   type DisplayPicture,
@@ -126,6 +130,11 @@ export function ComputerDisplay({
   const lift = useAnimatedStyle(() => ({ bottom: reserve.value }));
   const [viewerWidth, setViewerWidth] = useState<number | null>(null);
   const unavailable = !phone && !macWindowVideoSupported();
+  const phoneDisplay = useHostSelector(hostClient, (snapshot) => {
+    const machine = snapshot.machines.find(({ id }) => id === machineId);
+    return phone && machine ? (deviceMachine(machine).phoneDisplay ?? null) : null;
+  });
+  const navigation = phoneViewerNavigation(phoneDisplay);
   const kind = reference.kind;
   const sessionId = reference.kind === "task-session" ? reference.sessionId : "";
   const appKey = reference.kind === "task-session" ? reference.appKey : undefined;
@@ -475,10 +484,15 @@ export function ComputerDisplay({
   ]);
   const navigable =
     interactive && phone && inputLease !== null && shown && displayState?.input === "available";
-  const go = (to: "back" | "home" | "recents") => {
+  const go = (to: PhoneNavigationTo) => {
     if (picture !== null) inputLease?.input(picture.generation, [{ kind: "nav", to }]);
   };
-  const power = displayState?.power === "available" ? displayState.display?.state : null;
+  const state = displayState?.power === "available" ? displayState.display?.state : null;
+  const power =
+    (state === "screen-off" && phoneViewerPower(phoneDisplay, "wake")) ||
+    (state === "live" && phoneViewerPower(phoneDisplay, "lock"))
+      ? state
+      : null;
   const stage = (
     <View
       accessibilityLabel={label}
@@ -601,13 +615,11 @@ export function ComputerDisplay({
       <PlaceVoiceDock />
       <Toolbar edge="bottom" testID="display-toolbar">
         <ToolbarLeave />
-        {interactive && phone ? (
+        {interactive && phone && navigation.length > 0 ? (
           <GlassSurface interactive shape="capsule" style={styles.keys}>
-            {(["back", "home", "recents"] as const).map((to) => (
+            {navigation.map(({ label, to }) => (
               <Pressable
-                accessibilityLabel={
-                  to === "back" ? "Phone back" : to === "home" ? "Home" : "Recent apps"
-                }
+                accessibilityLabel={navLabels[to] ?? label}
                 accessibilityRole="button"
                 accessibilityState={{ disabled: !navigable }}
                 disabled={!navigable}
@@ -616,7 +628,7 @@ export function ComputerDisplay({
                 style={({ pressed }) => [styles.key, pressed && styles.pressed]}
               >
                 <Symbol
-                  name={to === "back" ? "chevron.left" : to === "home" ? "circle" : "square"}
+                  name={navSymbols[to]}
                   size={to === "back" ? 18 : 15}
                   tint={navigable ? color.text : color.mutedDim}
                   weight="semibold"
@@ -705,7 +717,10 @@ export function ComputerTaskView(props: {
       machine.status === "updating" ||
       machine.status === "update-pending") ? (
     <View style={styles.stage}>
-      <AppText>{machine.detail ?? `Update Agent Phone on ${label}.`}</AppText>
+      <AppText>
+        {machine.detail ??
+          `Update ${deviceMachine(machine).phoneDisplay?.setup.location === "android-usb" ? "Agent Phone" : "Opensteer"} on ${label}.`}
+      </AppText>
     </View>
   ) : (
     <ComputerDisplay
@@ -890,3 +905,15 @@ const styles = StyleSheet.create({
   statusText: { textAlign: "center" },
   viewer: { flex: 1 },
 });
+
+const navLabels: Partial<Record<PhoneNavigationTo, string>> = {
+  back: "Phone back",
+  home: "Home",
+  recents: "Recent apps",
+};
+const navSymbols: Readonly<Record<PhoneNavigationTo, SFSymbolName>> = {
+  back: "chevron.left",
+  home: "circle",
+  recents: "square",
+  notifications: "bell",
+};

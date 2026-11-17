@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { RunnerIdSchema } from "@opensteer/core";
 import { tabStoreFixture } from "@opensteer/client/test-support";
 
 import type { ReactNode } from "react";
@@ -210,7 +211,13 @@ function host(manage = true, empty = false) {
     }[],
     browserSessions: [],
     browserPlacements: [],
-    machines: [{ id: "computer-delete", name: "Studio Mac" }],
+    machines: [
+      {
+        id: "computer-delete",
+        selfRunnerId: RunnerIdSchema.parse("rnr_88888888-8888-4888-8888-888888888888"),
+        name: "Studio Mac",
+      },
+    ],
     tabs: tabStoreFixture([]),
   };
   const dispatch = vi.fn(async (command: { type: string }) => ({ type: command.type }));
@@ -275,10 +282,14 @@ describe("mobile browser profiles", () => {
     snapshot.browserProfileDeletions = [
       {
         profileId: "bpr_deleted_offline",
-        computerId: "computer-delete",
+        computerId: RunnerIdSchema.parse("rnr_88888888-8888-4888-8888-888888888888"),
         state: "pending-computer",
       },
-      { profileId: "bpr_deleted_restart", computerId: "computer-delete", state: "pending-restart" },
+      {
+        profileId: "bpr_deleted_restart",
+        computerId: RunnerIdSchema.parse("rnr_88888888-8888-4888-8888-888888888888"),
+        state: "pending-restart",
+      },
     ];
     const repaint = await render();
     expect(text()).toContain("Will be erased when Studio Mac is back online");

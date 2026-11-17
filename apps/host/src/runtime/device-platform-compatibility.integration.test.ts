@@ -1,9 +1,16 @@
+import { TabStore } from "@opensteer/database";
+import { DeviceIdSchema, type Tab, type TabLayout } from "@opensteer/core";
+import { KeyedStreamReceiver } from "@opensteer/protocol/keyed-stream";
+import { hostApiVersionHeader, hostApiCurrentHeader } from "@opensteer/deployment-authority";
+import { frozenPersonalReader } from "@opensteer/protocol/test-support/personal-wire";
+import { openAuxiliaryStream } from "./computer-apps.test-support.js";
+import { runnerIntegrationsProtocolVersion } from "@opensteer/protocol";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createId } from "@opensteer/core";
 import { HostToClientMessageSchema, RunnerDescriptorSchema, hostApi } from "@opensteer/protocol";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import { requestComputerAppSetup } from "./computer-apps.test-support.js";
@@ -24,7 +31,13 @@ const methods = [
   "machines.list",
   "integrations.get",
   "integration.platform.get",
+  "plugins.directory.get",
+  "plugins.overview.get",
   "integration.computer.setup.list",
+  "tabs.state",
+  "devices.overview.get",
+  "needsYou.get",
+  "requests.list",
 ] as const;
 const envelope = z.object({ ok: z.literal(true), data: z.unknown() });
 
@@ -73,7 +86,12 @@ integration("device platform release compatibility", () => {
     const runnerId = createId("runner");
     let setupRequestId: string | null = null;
     try {
-      const realtime = await openRealtime(host, host.ownerHeaders);
+      const v60Headers = {
+        ...host.ownerHeaders,
+        [hostApiVersionHeader]: "60",
+        [hostApiCurrentHeader]: "60",
+      };
+      const realtime = await openRealtime(host, v60Headers, 60);
       closers.unshift(() => realtime.close());
       const primary = await connectPrimary(
         host.hostPort,
@@ -85,7 +103,8 @@ integration("device platform release compatibility", () => {
             integrations: {
               computerAppApprovals: true,
               platform: "darwin",
-              protocolVersion: 5,
+              protocolVersion: runnerIntegrationsProtocolVersion,
+              screenDrivers: 1,
             },
           },
           name: "Compatibility Mac",
@@ -105,6 +124,170 @@ integration("device platform release compatibility", () => {
         primary.socket.close();
         await closed(primary.socket);
       });
+      const auxiliary = await openAuxiliaryStream(host.hostPort, primary, "integrations");
+      closers.unshift(async () => {
+        auxiliary.socket.close();
+        await closed(auxiliary.socket);
+      });
+      const screen = await testRpcData(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "iphone.screen.attach",
+          idempotencyKey: "compatibility-screen",
+          driverRunnerId: runnerId,
+          target: { kind: "new", name: "Compatibility iPhone" },
+        },
+        { headers: host.ownerHeaders },
+      );
+      if (screen.type !== "iphone.screen.attach") throw new Error("Expected a screen Device");
+      const currentMachines = await testRpcData(
+        host.origin,
+        "machines.list",
+        {},
+        { headers: host.ownerHeaders },
+      );
+      expect(
+        currentMachines.machines.find((machine) => machine.id === screen.deviceId),
+      ).toMatchObject({
+        name: "Compatibility iPhone",
+        selfRunnerId: null,
+        allowedModules: [],
+      });
+      const refused = await testRpcRequest(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "machine.rename",
+          idempotencyKey: "old-screen-mutation",
+          machineId: screen.deviceId,
+          name: "Changed",
+        },
+        { headers: v60Headers },
+      );
+      expect(refused.status).toBe(400);
+      expect(await refused.json()).toMatchObject({
+        ok: false,
+        error: {
+          reason: "device-api-update-required",
+          message: expect.stringContaining("Update Opensteer"),
+        },
+      });
+      const oldAttach = await testRpcRequest(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "iphone.screen.attach",
+          idempotencyKey: "old-screen-attach",
+          driverRunnerId: runnerId,
+          target: { kind: "new", name: "Must not be created" },
+        },
+        { headers: v60Headers },
+      );
+      expect(oldAttach.status).toBe(400);
+      expect(await host.store.getDevice(screen.deviceId)).toMatchObject({
+        name: "Compatibility iPhone",
+      });
+      const tabStore = new TabStore(host.store.database);
+      const visibleTabId = createId("tab"),
+        anchorTabId = createId("tab"),
+        phoneTabId = createId("tab");
+      for (const id of [visibleTabId, anchorTabId])
+        await tabStore.open(
+          {
+            id,
+            ownerId: host.ownerId,
+            computerId: DeviceIdSchema.parse(runnerId),
+            kind: "window",
+            title: "Mac window",
+            openedBy: "person",
+            windowId: createId("window"),
+            windowApp: { bundleId: "test.compatibility", displayName: "Fixture", teamId: null },
+          },
+          `fixture-${id}`,
+        );
+      await tabStore.open(
+        {
+          id: phoneTabId,
+          ownerId: host.ownerId,
+          computerId: screen.deviceId,
+          kind: "phone",
+          title: "iPhone",
+          openedBy: "person",
+        },
+        "fixture-phone",
+      );
+      const grouped = await tabStore.organize(
+        host.ownerId,
+        { tabIds: [visibleTabId, phoneTabId], group: { name: "Mixed", color: "blue" } },
+        "fixture-group",
+      );
+      const group = grouped.layout.items.find((item) => item.kind === "group");
+      if (group?.kind !== "group") throw new Error("Expected a mixed group");
+      host.runtime.tabs.changed(host.ownerId);
+      realtime.socket.send(
+        JSON.stringify({
+          type: "client.subscribe",
+          apiVersion: 60,
+          threadId: null,
+          cursor: { deploymentId: host.runtime.deployment.id, apiVersion: 60, afterSequence: "0" },
+        }),
+      );
+      await vi.waitFor(
+        () =>
+          expect(
+            realtime.messages.some(
+              (message) =>
+                message.type === "host.tabs" && (message.stream as { op: string }).op === "end",
+            ),
+          ).toBe(true),
+        { timeout: 5_000 },
+      );
+      const receiver = new KeyedStreamReceiver<Tab, { layout: TabLayout }, "tabId">({
+        key: "tabId",
+      });
+      for (const raw of realtime.messages) {
+        expect(
+          frozenPersonalReader(`host frame ${String(raw.type)}`).safeParse(raw).success,
+          String(raw.type),
+        ).toBe(true);
+        if (raw.type === "host.tabs") {
+          const frame = HostToClientMessageSchema.parse(raw);
+          if (frame.type === "host.tabs") expect(receiver.apply(frame.stream)).not.toBe("resync");
+        }
+      }
+      expect(receiver.state).toBe("committed");
+      expect([...receiver.rows.keys()].sort()).toEqual([visibleTabId, anchorTabId].sort());
+      await testRpcData(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "tab.organize",
+          idempotencyKey: "old-group-move",
+          tabIds: [visibleTabId],
+          group: { groupId: group.group.groupId },
+          beforeTabId: anchorTabId,
+        },
+        { headers: v60Headers },
+      );
+      expect((await tabStore.snapshot(host.ownerId)).layout.items[0]).toMatchObject({
+        kind: "group",
+        group: { tabIds: [visibleTabId, phoneTabId] },
+      });
+      await testRpcData(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "tab.close",
+          idempotencyKey: "old-visible-close",
+          tabIds: [visibleTabId],
+        },
+        { headers: v60Headers },
+      );
+      expect((await tabStore.snapshot(host.ownerId)).rows.map((tab) => tab.id)).toContain(
+        phoneTabId,
+      );
+      expect(realtime.socket.readyState).toBe(1);
       const catalog = await testRpcData(
         host.origin,
         "integration.platform.get",
@@ -138,22 +321,35 @@ integration("device platform release compatibility", () => {
       );
       const changed = realtime.messages.find((message) => message.type === "host.machines.changed");
       HostToClientMessageSchema.parse(changed);
+      expect(
+        frozenPersonalReader("host frame host.machines.changed").safeParse(changed).success,
+      ).toBe(true);
       frames.push(changed);
       for (const method of methods) {
-        const response = await testRpcRequest(
-          host.origin,
-          method,
-          {},
-          { headers: host.ownerHeaders },
-        );
+        const response = await testRpcRequest(host.origin, method, {}, { headers: v60Headers });
         expect(response.status, method).toBe(200);
         const raw = envelope.parse(await response.json()).data;
         hostApi[method].success.parse(raw);
+        expect(frozenPersonalReader(`rpc ${method}`).safeParse(raw).success, method).toBe(true);
+        expect(JSON.stringify(raw), method).not.toContain(screen.deviceId);
+        expect(JSON.stringify(raw), method).not.toContain("iphone-screen");
         rpc.push({ method, data: raw });
       }
       const machineList = hostApi["machines.list"].success.parse(
         rpc.find(({ method }) => method === "machines.list")?.data,
       );
+      for (const legacy of machineList.machines) {
+        const current = currentMachines.machines.find((machine) => machine.id === legacy.id);
+        if (!current) continue;
+        const {
+          selfRunnerId: _self,
+          drivers: _drivers,
+          capabilities: _capabilities,
+          phoneDisplay: _display,
+          ...original
+        } = current;
+        expect(legacy).toEqual(original);
+      }
       expect(machineList.machines.find(({ id }) => id === runnerId)).toMatchObject({
         device: { form: "laptop", platform: "macos" },
         name: "Compatibility Mac",

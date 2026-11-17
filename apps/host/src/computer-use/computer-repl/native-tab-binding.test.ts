@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { createId, TabIdSchema, WindowIdSchema, type Tab } from "@opensteer/core";
 import type { IntegrationConnectionSummary } from "@opensteer/integration-core";
 import { describe, expect, it, vi } from "vitest";
@@ -31,7 +32,7 @@ const tab: Tab = {
   title: "Note",
   appName: "Notes",
   bundleId: app.bundleId,
-  computer: { computerId, name: "Mac" },
+  computer: { computerId: DeviceIdSchema.parse(computerId), name: "Mac" },
   groupId: null,
   state: "asleep",
   openedBy: "person",
@@ -53,6 +54,7 @@ describe("native tab binding", () => {
       next: 'Use app_access_request {computerId:"rnr_pixel", access:"read-write", reason:"Check calendar"}.',
     };
     const options: NativeTabBindingOptions = {
+      selfDeviceId: async (id) => DeviceIdSchema.parse(id),
       tabs: {
         get: async () => ({ ...tab, kind: "phone" }) as Tab,
         authorizeShow: async () => undefined,
@@ -99,6 +101,7 @@ describe("native tab binding", () => {
       },
     );
     const options = {
+      selfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
       tabs,
       lookup: async () => ({ kind: "window" as const, computerId, windowId, app, tabGeneration }),
       connections: async () => [connection],

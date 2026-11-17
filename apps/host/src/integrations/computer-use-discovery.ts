@@ -1,3 +1,5 @@
+import type { DeviceAvailability, PhoneDisplayView } from "@opensteer/protocol";
+import type { PhoneDisplayDefinitionId } from "@opensteer/core";
 import type { CallableIntegrationTool } from "@opensteer/database";
 import type { IntegrationAccess, IntegrationConnectionId } from "@opensteer/integration-core";
 import type { Blocked } from "@opensteer/core";
@@ -34,11 +36,11 @@ export const computerAppRequestShape = "app_access_request {computerId, app, acc
 export const phoneRequestShape = "app_access_request {computerId, access, reason}";
 
 export const noPhone =
-  "No Android phone is set up for agents. The person adds one from Computers in Opensteer, with the phone plugged in.";
+  "No phone display is set up for agents. The person adds one from Computers in Opensteer, with the phone plugged in.";
 
 /** A `computerId` that names none of this person's phones set up for agents. */
 export function unknownPhone(computerId: string): string {
-  return `No Android phone set up for agents has computerId ${computerId}. Search "Android phone" with integration_search to list your phones and their computerIds.`;
+  return `No phone display set up for agents has computerId ${computerId}. Search "Phone display" with integration_search to list your phones and their computerIds.`;
 }
 
 export const noComputerUseMac =
@@ -148,6 +150,9 @@ export interface PhoneDiscoveryFacts extends CommonFacts {
     readonly state: string;
     readonly computerId: string;
     readonly computerToolEnabled?: boolean;
+    readonly definitionId?: PhoneDisplayDefinitionId;
+    readonly availability?: DeviceAvailability;
+    readonly setup?: PhoneDisplayView["setup"];
   };
   readonly connection: { readonly access: IntegrationAccess } | null;
   readonly pendingPhoneAccess: boolean;
@@ -168,7 +173,7 @@ export function phoneDiscovery(facts: PhoneDiscoveryFacts): ComputerAccess {
       `${name} is blocked by its owner.`,
       "The owner can unblock it from any Opensteer app.",
     );
-  const problem = computerMachineProblem(facts.phone);
+  const problem = phoneProblem(facts.phone);
   if (problem) return problem;
   if (facts.heldByAnotherRun) return busy(name);
   if (facts.callable) return { access: facts.canAct ? "read-write" : "read" };
@@ -183,4 +188,95 @@ export function phoneDiscovery(facts: PhoneDiscoveryFacts): ComputerAccess {
     `${name} needs access for this task.`,
     `Request access with app_access_request {computerId:${JSON.stringify(facts.phone.computerId)}, access:"read-write", reason:"<why you need it>"}; the owner can approve from any Opensteer app.`,
   );
+}
+
+function phoneProblem(phone: PhoneDiscoveryFacts["phone"]): { blocked: Blocked } | null {
+  const reason = phone.availability?.reason?.kind;
+  const location =
+    phone.setup?.location === "driver-mac"
+      ? ` in Opensteer on ${phone.setup.driverRunnerName}`
+      : " in Opensteer on its driving Mac";
+  if (reason === "driver-offline" || (!reason && phone.state === "offline"))
+    return blocked(
+      "computer_offline",
+      `${phone.name}'s screen driver is offline.`,
+      phone.definitionId === "iphone-screen"
+        ? `The person can wake its driving Mac and open Opensteer there${phone.setup?.location === "driver-mac" ? ` (${phone.setup.driverRunnerName})` : ""}; other work can continue.`
+        : "The person can bring the phone online; other work can continue.",
+    );
+  switch (reason) {
+    case "locked":
+      return blocked(
+        "permission_required",
+        `${phone.name} is locked.`,
+        "Ask the person to unlock the iPhone physically, then observe again. Never enter or ask for its passcode.",
+      );
+    case "access-off":
+      return blocked(
+        "permission_required",
+        `Apps access is off on ${phone.name}.`,
+        `Ask with computer_access_request {computerId:${JSON.stringify(phone.computerId)}, access:"apps", reason:"<why you need it>"}.`,
+      );
+    case "driver-update-required":
+      return blocked(
+        "update_required",
+        `${phone.name}'s screen driver needs an update.`,
+        `The person can update Opensteer${location}.`,
+      );
+    case "trust-required":
+    case "developer-mode-required":
+    case "setup-required":
+    case "permission-required":
+      return blocked(
+        "permission_required",
+        `${phone.name} needs ${reason.replaceAll("-", " ")}.`,
+        phone.definitionId === "android-phone"
+          ? "The person can enable Opensteer's accessibility service in the phone's settings."
+          : `The person can finish or fix the iPhone's screen setup${location}.`,
+      );
+    case "paused":
+      return blocked(
+        "paused",
+        `${phone.name}'s screen is paused.`,
+        "The person can resume screen control in Opensteer or on the phone; other work can continue.",
+      );
+    case "protected":
+      return blocked(
+        "permission_required",
+        `${phone.name}'s screen is protected.`,
+        "The person can leave the protected screen; other work can continue.",
+      );
+    case "not-connected":
+    case "helper-unavailable":
+    case "connecting":
+    case "unreported":
+    case "runtime-failed":
+    case "unsupported":
+      return blocked(
+        "unavailable",
+        `${phone.name}'s screen is unavailable (${reason}).`,
+        `The person can check the screen driver and finish or fix setup${location}. Continue other work; do not poll or route through the Mac's apps.`,
+      );
+  }
+  if (phone.state === "permission-required")
+    return blocked(
+      "permission_required",
+      `${phone.name} needs screen permissions.`,
+      phone.definitionId === "iphone-screen"
+        ? `The person can check screen permissions and fix setup${location}.`
+        : "The person can enable Opensteer's accessibility service in the phone's settings.",
+    );
+  if (phone.definitionId === "android-phone" && phone.state === "unavailable")
+    return blocked(
+      "paused",
+      `${phone.name} is paused on the phone.`,
+      "The person can resume it on the phone; other work can continue.",
+    );
+  if (phone.definitionId === "iphone-screen" && phone.state !== "ready")
+    return blocked(
+      "unavailable",
+      `${phone.name}'s screen is unavailable.`,
+      `The person can check its screen driver and fix setup${location}.`,
+    );
+  return computerMachineProblem(phone);
 }
