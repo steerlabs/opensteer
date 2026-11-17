@@ -133,6 +133,8 @@ export function threadReturn(
 export function applicationLinkState(
   outcome: Exclude<ApplicationLinkOutcome, { kind: "ignore" | "unknown-deployment" }>,
   ports: {
+    /** Stamped on a link-opened sheet so a newer link supersedes it even before it mounts. */
+    readonly externalIntent: number;
     readonly selectedDeploymentId: string | null;
     readonly select: (deploymentId: string) => Promise<void>;
     readonly teams: Pick<MobileTeams, "team" | "teamAt" | "computersIn">;
@@ -152,7 +154,7 @@ export function applicationLinkState(
       outcome.kind === "team-notice"
         ? ports.teams.team(outcome.teamId)
         : ports.teams.teamAt(outcome.origin);
-    const target = teamLinkTarget(outcome, team);
+    const target = teamLinkTarget(outcome, team, ports.externalIntent);
     const move =
       team === null
         ? null

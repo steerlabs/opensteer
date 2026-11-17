@@ -7,9 +7,12 @@ interface DestinationPorts {
     url: string,
     current: () => boolean,
     release: () => void,
+    intent: number,
   ) => Promise<InitialState | null>;
   readonly present: (state: InitialState) => void;
   readonly failed: (error: unknown) => void;
+  /** Nothing is pending any more, so the published selection may need applying. */
+  readonly settled: () => void;
 }
 
 interface Pending {
@@ -35,6 +38,7 @@ export class PendingDestination {
   #received = false;
   #selection: string | null | undefined;
   #selectionFailed = -1;
+  #reconciled: string | null | undefined;
   #account: string | null | undefined;
 
   constructor(options: DestinationPorts) {
@@ -45,9 +49,12 @@ export class PendingDestination {
     return this.#received;
   }
 
-  /** Also invalidates work still running in a previously presented join sheet. */
-  capture = (): (() => boolean) => {
-    const generation = this.#generation;
+  /**
+   * False once a newer external intent arrives. A screen a destination opened passes that
+   * destination's `intent`, so it is checked against it even if it mounts later.
+   */
+  capture = (intent?: number): (() => boolean) => {
+    const generation = intent ?? this.#generation;
     return () => generation === this.#generation;
   };
 
@@ -56,8 +63,9 @@ export class PendingDestination {
     const consumed = this.#options.receive(url);
     if (consumed === "callback") return Promise.resolve();
     this.#pending?.finish();
-    this.#generation++;
+    const generation = ++this.#generation;
     this.#selection = undefined;
+    this.#reconciled = undefined;
     let finish!: () => void;
     let reject!: (error: unknown) => void;
     const done = new Promise<void>((resolve, fail) => {
@@ -77,14 +85,16 @@ export class PendingDestination {
       work: Promise.resolve(),
     };
     this.#pending = pending;
-    const current = this.capture();
+    const current = (): boolean => generation === this.#generation;
     pending.work = (async () => {
       await this.#hydrated;
       if (!current()) return;
-      const state = consumed ? null : await this.#options.resolve(url, current, release);
+      const state = consumed
+        ? null
+        : await this.#options.resolve(url, current, release, generation);
       if (!current()) return;
       pending.state = state;
-      if (state !== null && this.#selectionFailed !== this.#generation) {
+      if (state !== null && this.#selectionFailed !== generation) {
         const home = state.routes[0];
         this.#selection =
           home?.params &&
@@ -99,6 +109,7 @@ export class PendingDestination {
       this.#pending = null;
       this.#options.failed(error);
       pending.reject(error);
+      this.#options.settled();
     });
     return pending.done;
   }
@@ -138,13 +149,24 @@ export class PendingDestination {
   selectionFailed(): void {
     this.#selectionFailed = this.#generation;
     this.#selection = undefined;
+    this.#reconciled = undefined;
   }
 
+  /** Never over a pending or landed external destination whose Deployment is still being selected. */
   mayReconcileSelection(deploymentId: string | null): boolean {
     if (this.#pending !== null) return false;
     if (this.#selection !== undefined && this.#selection !== deploymentId) return false;
     this.#selection = undefined;
     return true;
+  }
+
+  /** Once per published selection, so a screen the person opened on purpose stays open. */
+  selectionToReconcile(deploymentId: string | null): boolean {
+    return this.mayReconcileSelection(deploymentId) && deploymentId !== this.#reconciled;
+  }
+
+  reconciled(deploymentId: string | null): void {
+    this.#reconciled = deploymentId;
   }
 
   #flush(): void {
@@ -160,5 +182,6 @@ export class PendingDestination {
     }
     this.#pending = null;
     this.#initial = null;
+    this.#options.settled();
   }
 }

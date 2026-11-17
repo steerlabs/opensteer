@@ -356,19 +356,19 @@ describe("direct team destinations", () => {
         [],
       );
       if (outcome.kind !== "team") throw new Error("Expected team");
-      expect(teamLinkTarget(outcome, { ...team, state })).toEqual({
+      expect(teamLinkTarget(outcome, { ...team, state }, 7)).toEqual({
         name: "TeamChannel",
         params: { teamId, channelId, messageId: "42" },
       });
-      expect(teamLinkTarget(outcome, null)).toEqual({
+      expect(teamLinkTarget(outcome, null, 7)).toEqual({
         name: "JoinTeam",
-        params: { link: outcome.page },
+        params: { link: outcome.page, externalIntent: 7 },
       });
       const reply = {
         ...outcome,
         target: { kind: "thread" as const, channelId, threadRootId: "41", messageId: "42" },
       } as typeof outcome;
-      expect(teamLinkTarget(reply, { ...team, state })).toEqual({
+      expect(teamLinkTarget(reply, { ...team, state }, 7)).toEqual({
         name: "TeamThread",
         params: { teamId, channelId, rootId: "41", replyId: "42" },
       });
@@ -379,12 +379,12 @@ describe("direct team destinations", () => {
     const url = `com.opensteer.mobile:/team-notice?${new URLSearchParams({ origin, teamId, noticeId: "tnt_0192f4a1-7777-4000-8000-000000000007" })}`;
     const outcome = resolveApplicationLink(url, []);
     if (outcome.kind !== "team-notice") throw new Error("Expected notice");
-    expect(teamLinkTarget(outcome, team)).toEqual({ name: "TeamNotices", params: { teamId } });
-    expect(() => teamLinkTarget(outcome, null)).toThrow("not on this phone");
-    expect(() => teamLinkTarget(outcome, { ...team, teamId: deploymentId })).toThrow(
+    expect(teamLinkTarget(outcome, team, 7)).toEqual({ name: "TeamNotices", params: { teamId } });
+    expect(() => teamLinkTarget(outcome, null, 7)).toThrow("not on this phone");
+    expect(() => teamLinkTarget(outcome, { ...team, teamId: deploymentId }, 7)).toThrow(
       "not on this phone",
     );
-    expect(() => teamLinkTarget(outcome, { ...team, origin: "https://other.example" })).toThrow(
+    expect(() => teamLinkTarget(outcome, { ...team, origin: "https://other.example" }, 7)).toThrow(
       "does not match",
     );
   });

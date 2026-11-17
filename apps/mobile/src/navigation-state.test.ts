@@ -415,13 +415,16 @@ describe("pending external destinations", () => {
       url: string,
       current: () => boolean,
       release: () => void,
+      intent: number,
     ) => Promise<ReturnType<typeof threadRoot> | null>,
   ) {
     const present = vi.fn();
     const failed = vi.fn();
-    const receive = vi.fn(() => false);
-    const pending = new PendingDestination({ resolve, present, failed, receive });
-    return { pending, present, failed, receive };
+    // "connect" stands in for a Connect code: consumed on arrival, no stack of its own.
+    const receive = vi.fn((url: string) => url === "connect");
+    const settled = vi.fn();
+    const pending = new PendingDestination({ resolve, present, failed, receive, settled });
+    return { pending, present, failed, receive, settled };
   }
   const destination = threadRoot({ deploymentId: "new", threadId: "notified" });
 
@@ -453,6 +456,7 @@ describe("pending external destinations", () => {
       resolve: () => resolve.promise,
       present,
       failed: vi.fn(),
+      settled: vi.fn(),
     });
     pending.hydrated();
     pending.ready();
@@ -488,7 +492,12 @@ describe("pending external destinations", () => {
     const tapA = f.pending.submit("a");
     const initial = f.pending.initialState(() => deploymentsRoot());
     await vi.waitFor(() =>
-      expect(resolve).toHaveBeenCalledWith("a", expect.any(Function), expect.any(Function)),
+      expect(resolve).toHaveBeenCalledWith(
+        "a",
+        expect.any(Function),
+        expect.any(Function),
+        expect.any(Number),
+      ),
     );
     const tapB = f.pending.submit("b");
     await vi.waitFor(async () => expect(await initial).toEqual(destination));
@@ -510,7 +519,12 @@ describe("pending external destinations", () => {
     f.pending.ready();
     const tapA = f.pending.submit("a");
     await vi.waitFor(() =>
-      expect(resolve).toHaveBeenCalledWith("a", expect.any(Function), expect.any(Function)),
+      expect(resolve).toHaveBeenCalledWith(
+        "a",
+        expect.any(Function),
+        expect.any(Function),
+        expect.any(Number),
+      ),
     );
     const acknowledgedB = vi.fn();
     const tapB = f.pending.submit("b").then(acknowledgedB);
@@ -576,6 +590,53 @@ describe("pending external destinations", () => {
     expect(landed.pending.mayReconcileSelection("remembered")).toBe(true);
   });
 
+  it("releases the destination's selection lock even when that selection was already applied", async () => {
+    const f = fixture(async () => threadRoot({ deploymentId: "shown", threadId: "notified" }));
+    f.pending.hydrated();
+    f.pending.ready();
+    f.pending.reconciled("shown");
+    await f.pending.submit("tap-for-shown-computer");
+    expect(f.pending.selectionToReconcile("shown")).toBe(true);
+    f.pending.reconciled("shown");
+    expect(f.pending.selectionToReconcile("shown")).toBe(false);
+    // The computer is later removed from the directory.
+    expect(f.pending.selectionToReconcile(null)).toBe(true);
+  });
+
+  it("supersedes a link-opened sheet by its own intent, even when it mounts after a newer link", async () => {
+    let opened = 0;
+    const f = fixture(async (_url, _current, _release, intent) => {
+      opened = intent;
+      return destination;
+    });
+    f.pending.hydrated();
+    const tap = f.pending.submit("team-link");
+    await f.pending.initialState(() => deploymentsRoot());
+    const connect = f.pending.submit("connect");
+    expect(f.pending.capture(opened)()).toBe(false);
+    expect(f.pending.capture()()).toBe(true);
+    f.pending.ready();
+    await Promise.all([tap, connect]);
+  });
+
+  it("re-applies the published selection when a link finishes without a stack of its own", async () => {
+    const callback = Promise.withResolvers<null>();
+    const f = fixture(async (_url, _current, release) => {
+      release();
+      return callback.promise;
+    });
+    f.pending.hydrated();
+    f.pending.reconciled("before");
+    const link = f.pending.submit("integration-return");
+    await f.pending.initialState(() => deploymentRoot("before"));
+    f.pending.ready();
+    expect(f.pending.selectionToReconcile("selected-by-callback")).toBe(false);
+    callback.resolve(null);
+    await link;
+    expect(f.settled).toHaveBeenCalled();
+    expect(f.pending.selectionToReconcile("selected-by-callback")).toBe(true);
+  });
+
   it("still opens the app on its usual stack when a cold-start destination is refused", async () => {
     const error = new Error("That team is not on this phone.");
     const f = fixture(async () => {
@@ -624,7 +685,7 @@ describe("external link stacks", () => {
       const select = vi.fn(async () => undefined);
       const state = applicationLinkState(
         { kind: "pairing", offer },
-        { selectedDeploymentId, select, teams },
+        { externalIntent: 1, selectedDeploymentId, select, teams },
       );
       expect(state).toEqual({
         index: 1,
@@ -649,7 +710,7 @@ describe("external link stacks", () => {
         page: "unused",
         target: { kind: "message", channelId: "channel", messageId: "42" },
       } as never,
-      { selectedDeploymentId: "unrelated", select, teams },
+      { externalIntent: 1, selectedDeploymentId: "unrelated", select, teams },
     );
     expect(state).toEqual({
       index: 1,
@@ -666,6 +727,7 @@ describe("external link stacks", () => {
     const state = applicationLinkState(
       { kind: "team-notice", origin: team.origin, teamId, noticeId: "notice" },
       {
+        externalIntent: 1,
         selectedDeploymentId: "personal-in-team",
         select: async () => undefined,
         teams: { ...teams, teamAt: () => ({ ...team, teamId: "wrong-team" }) },
@@ -678,7 +740,7 @@ describe("external link stacks", () => {
     const select = vi.fn(async () => undefined);
     const state = applicationLinkState(
       { kind: "open", deploymentId: "new", threadId: "task", requestId: null },
-      { selectedDeploymentId: "old", select, teams },
+      { externalIntent: 1, selectedDeploymentId: "old", select, teams },
     );
     const router = StackRouter({ initialRouteName: "Home" });
     const options = {

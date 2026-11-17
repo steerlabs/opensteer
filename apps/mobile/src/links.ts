@@ -196,6 +196,7 @@ export async function resolveRefreshedApplicationLink(
 export function teamLinkTarget(
   outcome: Extract<ApplicationLinkOutcome, { kind: "team" | "team-notice" }>,
   team: Pick<MobileTeam, "teamId" | "origin" | "onPhone" | "state"> | null,
+  externalIntent: number,
 ): TopLevelTarget {
   if (outcome.kind === "team-notice") {
     if (team === null || !team.onPhone || team.teamId !== outcome.teamId)
@@ -206,11 +207,11 @@ export function teamLinkTarget(
       throw new Error("That notification's team address does not match the team on this phone.");
     return { name: "TeamNotices", params: { teamId: outcome.teamId } };
   }
+  const join = { name: "JoinTeam", params: { link: outcome.page, externalIntent } };
   if (team === null || !team.onPhone || team.state === "join" || team.state === "removed")
-    return { name: "JoinTeam", params: { link: outcome.page } };
+    return join;
   const intent = intentOf({ origin: outcome.origin, target: outcome.target });
-  if (intent.kind === "invite" || intent.kind === "agent-link")
-    return { name: "JoinTeam", params: { link: outcome.page } };
+  if (intent.kind === "invite" || intent.kind === "agent-link") return join;
   return teamPlaceTarget(team.teamId, intent);
 }
 

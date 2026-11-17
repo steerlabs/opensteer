@@ -36,9 +36,13 @@ const downloadPage = "https://opensteer.com/download";
  * Opensteer. Without a link it is the paste field Settings and Welcome open.
  */
 export function JoinTeamScreen(
-  props: StaticScreenProps<{ readonly link?: string | undefined } | undefined>,
+  props: StaticScreenProps<
+    { readonly link?: string | undefined; readonly externalIntent?: number | undefined } | undefined
+  >,
 ): ReactNode {
   const [link, setLink] = useState<string | null>(props.route.params?.link ?? null);
+  const externalIntent =
+    link === props.route.params?.link ? props.route.params?.externalIntent : undefined;
   if (link === null) return <PasteLink onLink={setLink} />;
   const intent = readTeamLinkIntent(link);
   if (intent === null)
@@ -48,7 +52,7 @@ export function JoinTeamScreen(
         onLink={setLink}
       />
     );
-  return <FollowLink intent={intent} key={link} link={link} />;
+  return <FollowLink externalIntent={externalIntent} intent={intent} key={link} link={link} />;
 }
 
 function PasteLink(props: {
@@ -97,11 +101,15 @@ function PasteLink(props: {
   );
 }
 
-function FollowLink(props: { readonly intent: TeamLinkIntent; readonly link: string }): ReactNode {
+function FollowLink(props: {
+  readonly externalIntent: number | undefined;
+  readonly intent: TeamLinkIntent;
+  readonly link: string;
+}): ReactNode {
   const { intent } = props;
   if (intent.kind === "invite") return <Invite intent={intent} link={props.link} />;
   if (intent.kind === "agent-link") return <AgentLink intent={intent} />;
-  return <OpenPlace intent={intent} />;
+  return <OpenPlace externalIntent={props.externalIntent} intent={intent} />;
 }
 
 /**
@@ -235,9 +243,10 @@ function inviteFailure(error: unknown, host: string, team: TeamTileView): Invite
 
 /** A team page, opened once the team says the reader may see it. */
 function OpenPlace(props: {
+  readonly externalIntent: number | undefined;
   readonly intent: Exclude<TeamLinkIntent, { kind: "invite" | "agent-link" }>;
 }): ReactNode {
-  const { intent } = props;
+  const { externalIntent, intent } = props;
   const navigation = useNavigation<Navigation>();
   const teams = useMobileTeams();
   const { captureNavigationIntent } = useAppLinks();
@@ -245,7 +254,7 @@ function OpenPlace(props: {
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let mounted = true;
-    const intentCurrent = captureNavigationIntent();
+    const intentCurrent = captureNavigationIntent(externalIntent);
     // A newer link that doesn't replace the stack (a Connect code) must not leave this sheet spinning.
     const current = (): boolean => {
       if (!mounted) return false;
@@ -282,7 +291,7 @@ function OpenPlace(props: {
     return () => {
       mounted = false;
     };
-  }, [attempt, captureNavigationIntent, intent, navigation, teams]);
+  }, [attempt, captureNavigationIntent, externalIntent, intent, navigation, teams]);
   return failure === null ? (
     <View style={styles.sheet}>
       <AppText role="secondary" tone="muted">
