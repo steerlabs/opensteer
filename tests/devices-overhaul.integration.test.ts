@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "../packages/core/src/index.js";
 import { newTabTarget } from "../packages/client/src/host/link-places.js";
 import { startBrowserRuntime } from "../apps/host/src/browser/browser-runtime.test-support.js";
 import { callMcpTool } from "../apps/host/src/mcp/call-tool.test-support.js";
@@ -240,7 +241,13 @@ it("enrolls, binds, preserves access, removes and heals a real desktop Runner ag
         .selectAll()
         .where("id", "=", runnerId)
         .executeTakeFirstOrThrow();
-    expect((await row()).accessPolicy).toMatchObject({
+    const device = () =>
+      home.runtime.store.database
+        .selectFrom("devices")
+        .selectAll()
+        .where("id", "=", DeviceIdSchema.parse(runnerId))
+        .executeTakeFirstOrThrow();
+    expect((await device()).accessPolicy).toMatchObject({
       browser: true,
       apps: false,
       reach: "nobody",
@@ -251,11 +258,11 @@ it("enrolls, binds, preserves access, removes and heals a real desktop Runner ag
     await command({
       type: "machine.access.update",
       runnerId,
-      expectedRevision: (await row()).accessPolicyRevision,
-      policy: { ...(await row()).accessPolicy, browser: false },
+      expectedRevision: (await device()).accessPolicyRevision,
+      policy: { ...(await device()).accessPolicy, browser: false },
       idempotencyKey: "off",
     });
-    const beforeLegacy = await row();
+    const beforeLegacy = await device();
     await command({
       type: "machine.access.update",
       runnerId,
@@ -263,7 +270,7 @@ it("enrolls, binds, preserves access, removes and heals a real desktop Runner ag
       policy: { reach: "owner", commands: true, forwarding: true, shares: [] },
       idempotencyKey: "legacy",
     });
-    expect((await row()).accessPolicy.browser).toBe(false);
+    expect((await device()).accessPolicy.browser).toBe(false);
     console.info("STEP 4: old full policy shape preserves Browser=false");
     const identityPath = path.join(
       config.localExecution.dataDirectory,
@@ -474,7 +481,7 @@ it("enrolls, binds, preserves access, removes and heals a real desktop Runner ag
     await service.reconcile();
     expect((await service.status(deploymentId)).runner.state).toBe("running");
     expect((await service.status(deploymentId)).runner.runnerId).toBe(runnerId);
-    expect((await row()).accessPolicy).toMatchObject({
+    expect((await device()).accessPolicy).toMatchObject({
       browser: false,
       apps: false,
       reach: "owner",
@@ -844,9 +851,9 @@ it("keeps person and Guest placement while Browser is off and continues a pendin
       title: "Use browser",
     });
     const beforeOff = await home.store.database
-      .selectFrom("runners")
+      .selectFrom("devices")
       .select(["accessPolicy", "accessPolicyRevision"])
-      .where("id", "=", browser.runnerId)
+      .where("id", "=", DeviceIdSchema.parse(browser.runnerId))
       .executeTakeFirstOrThrow();
     const { apps: _apps, browser: _browser, ...shellPolicy } = beforeOff.accessPolicy;
     const off = await testRpcData(
@@ -951,9 +958,9 @@ it("keeps person and Guest placement while Browser is off and continues a pendin
       timeoutError: () => new Error("Browser access Request never created"),
     });
     const row = await home.store.database
-      .selectFrom("runners")
+      .selectFrom("devices")
       .select(["accessPolicy", "accessPolicyRevision"])
-      .where("id", "=", browser.runnerId)
+      .where("id", "=", DeviceIdSchema.parse(browser.runnerId))
       .executeTakeFirstOrThrow();
     await testRpcData(
       home.origin,

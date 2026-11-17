@@ -1,3 +1,6 @@
+import { phoneDeviceUnavailableDetail } from "../computer-apps/computer-app-availability.js";
+import type { DeviceAvailability, PhoneDisplayView } from "@opensteer/protocol";
+import type { PhoneDisplayDefinitionId } from "@opensteer/core";
 import type { CallableIntegrationTool } from "@opensteer/database";
 import type { IntegrationAccess } from "@opensteer/integration-core/access";
 import type { IntegrationConnectionId } from "@opensteer/integration-core/ids";
@@ -32,11 +35,11 @@ export const computerAppRequestShape = "app_access_request {computerId, app, acc
 export const phoneRequestShape = "app_access_request {computerId, access, reason}";
 
 export const noPhone =
-  "No Android phone is set up for agents. The person adds one from Computers in Opensteer, with the phone plugged in.";
+  "No phone display is set up for agents. The person adds one from Computers in Opensteer, with the phone plugged in.";
 
 /** A `computerId` that names none of this person's phones set up for agents. */
 export function unknownPhone(computerId: string): string {
-  return `No Android phone set up for agents has computerId ${computerId}. computer_apps lists your phones and their computerIds.`;
+  return `No phone display set up for agents has computerId ${computerId}. computer_apps lists your phones and their computerIds.`;
 }
 
 export const noComputerUseMac =
@@ -154,7 +157,13 @@ export function computerAppDiscovery(facts: ComputerAppDiscoveryFacts): {
 
 /** What discovery knows about one phone, gathered by the caller. */
 export interface PhoneDiscoveryFacts {
-  readonly phone: { readonly name: string; readonly state: string };
+  readonly phone: {
+    readonly name: string;
+    readonly state: string;
+    readonly definitionId?: PhoneDisplayDefinitionId | undefined;
+    readonly availability?: DeviceAvailability | undefined;
+    readonly setup?: PhoneDisplayView["setup"] | undefined;
+  };
   /** The phone's approved connection, when it has one. */
   readonly connection: { readonly access: IntegrationAccess } | null;
   /** The person holds the phone's observe tool. */
@@ -190,7 +199,11 @@ export function phoneDiscovery(facts: PhoneDiscoveryFacts): {
         : pendingPersonalGrantNextAction,
     };
   const approval = facts.connection ? "approved" : "not-approved";
-  const unusable = unusablePhoneNextAction(facts.phone);
+  const unusable =
+    phoneDeviceUnavailableDetail(facts.phone) ??
+    (facts.phone.definitionId === "iphone-screen" && facts.phone.state !== "ready"
+      ? `${facts.phone.name} is unavailable. Ask the person to check its screen driver on the Mac.`
+      : unusablePhoneNextAction(facts.phone));
   if (unusable) return { approval, inUse, nextAction: unusable };
   if (facts.heldByAnotherRun) {
     const title = facts.heldByAnotherRun.threadTitle;

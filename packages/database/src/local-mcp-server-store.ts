@@ -1,3 +1,4 @@
+import { requireSelfDeviceId } from "./device-inventory-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { requestSettlementActor } from "./request-settlement.js";
 
@@ -141,7 +142,7 @@ export class LocalMcpServerStore {
           .selectFrom("computerAppSetupRequests")
           .selectAll()
           .where("kind", "=", "server")
-          .where("runnerId", "=", runnerId)
+          .where("runnerId", "=", await requireSelfDeviceId(transaction, runnerId))
           .where("definitionId", "=", locked.id)
           // FOR UPDATE: Delete an expired or superseded server setup request.
           .forUpdate()
@@ -182,7 +183,7 @@ export class LocalMcpServerStore {
           ...setup,
           now,
           ownerUserId: owner,
-          runnerId,
+          deviceId: await requireSelfDeviceId(transaction, runnerId),
           server: {
             installationTitle: locked.installationTitle,
             launch: locked.launch,
@@ -482,7 +483,7 @@ async function answeredRequest(
     .selectFrom("computerAppSetupRequests")
     .selectAll()
     .where("id", "=", input.setupRequestId)
-    .where("runnerId", "=", input.runnerId)
+    .where("runnerId", "=", await requireSelfDeviceId(transaction, input.runnerId))
     .where("kind", "=", "server")
     // FOR UPDATE: Approval and denial delete this server setup request.
     .forUpdate()

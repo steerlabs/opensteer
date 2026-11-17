@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { MockPersonalHost } from "../mock/mock-personal-host.js";
 interface PersonalFixture {
   readonly id: import("@opensteer/core").DeploymentId;
@@ -18,7 +19,6 @@ import {
   SequenceSchema,
   ThreadAccessModeSchema,
   ThreadIdSchema,
-  RunnerIdSchema,
   createId,
   emptyExecutionPreferences,
   type AgentEventView as AgentEvent,
@@ -30,8 +30,13 @@ import {
   type Thread,
   type ThreadInputQueue,
 } from "@opensteer/core";
-import { apiVersionQueryParameter, hostApiVersion } from "@opensteer/deployment-authority";
-import { createIntegrationId } from "@opensteer/integration-core/ids";
+import {
+  apiVersionQueryParameter,
+  apiCurrentQueryParameter,
+  hostApiVersion,
+  minimumHostApiVersion,
+} from "@opensteer/deployment-authority";
+import { createIntegrationId } from "@opensteer/integration-core";
 import {
   BrowserSurfaceIdSchema,
   ComputerViewSchema,
@@ -93,7 +98,7 @@ describe("HttpHostClient tabs", () => {
       tabFixture({
         tabId: BrowserSurfaceIdSchema.parse(`tab-${index}`),
         title: `Page ${index}`,
-        computer: { computerId: runnerId, name: "Mac" },
+        computer: { computerId: DeviceIdSchema.parse(runnerId), name: "Mac" },
       }),
     );
   const layoutOf = (tabs: readonly Tab[], revision = 1): TabLayout => ({
@@ -8814,7 +8819,7 @@ describe("HttpHostClient owner views", () => {
     if (app.target.kind !== "app") throw new Error("Expected a Mac app");
     const tab = await mock.openTab({
       kind: "window",
-      computerId: RunnerIdSchema.parse(app.machineId),
+      computerId: DeviceIdSchema.parse(app.machineId),
       bundleId: app.target.app.bundleId,
     });
     const viewer = await mock.activateTab(tab.tabId);
@@ -9034,7 +9039,7 @@ describe("HttpHostClient owner views", () => {
     const tab = tabFixture({
       tabId: BrowserSurfaceIdSchema.parse(`${kind}-tab`),
       kind,
-      computer: { computerId: RunnerIdSchema.parse(view.machineId), name: "Mac" },
+      computer: { computerId: DeviceIdSchema.parse(view.machineId), name: "Mac" },
     });
     host.host.tabs = {
       tabs: [tab],
@@ -9053,7 +9058,7 @@ describe("HttpHostClient owner views", () => {
     });
     let tab!: Tab;
     const host = ownerViewHost(
-      () => [machine],
+      () => [{ ...machine, kind: "agent-phone" }],
       async () => json({ tab, viewer: { kind: "phone", view } }),
     );
     tab = viewTab(host, "phone", view);
@@ -9103,7 +9108,7 @@ describe("HttpHostClient owner views", () => {
         type: "host.computer-view.removed",
         viewId: view.viewId,
         generation: view.generation,
-        machineId: view.machineId,
+        machineId: DeviceIdSchema.parse(machine.id),
         reason: "closed",
       } as HostToClientMessage);
       answering.resolve();
@@ -9164,7 +9169,7 @@ describe("HttpHostClient owner views", () => {
         type: "host.computer-view.removed",
         viewId: newer.viewId,
         generation: newer.generation,
-        machineId: newer.machineId,
+        machineId: DeviceIdSchema.parse(machine.id),
         reason: "expired",
       } as HostToClientMessage);
       expect(host.client.tabViewer(tab.tabId)).toBeNull();
@@ -10433,7 +10438,10 @@ class FakeSocket implements WebSocketClient {
 function pageTabHost(workspace: PersonalFixture, browser?: BrowserWireBootstrap) {
   const sessionId = createBrowserSessionId();
   const tabId = BrowserSurfaceIdSchema.parse("tab");
-  const tab = tabFixture({ tabId, computer: { computerId: runnerId, name: "Example computer" } });
+  const tab = tabFixture({
+    tabId,
+    computer: { computerId: DeviceIdSchema.parse(runnerId), name: "Example computer" },
+  });
   let tabs: TabBootstrap = {
     tabs: [tab],
     layout: { revision: 1, items: [{ kind: "tab", tabId }] },
@@ -11657,6 +11665,9 @@ it.each([false, true])(
       expect(new URL(connection.url).searchParams.get("autofill")).toBe("2");
       expect(new URL(connection.url).searchParams.get("basicInput")).toBe("1");
       expect(new URL(connection.url).searchParams.get(apiVersionQueryParameter)).toBe(
+        String(minimumHostApiVersion),
+      );
+      expect(new URL(connection.url).searchParams.get(apiCurrentQueryParameter)).toBe(
         String(hostApiVersion),
       );
       const popups: string[] = [];
@@ -12784,3 +12795,21 @@ function eventsFrame(input: {
 }) {
   return { ...input, throughSequence: eventsThrough(input.events) };
 }
+
+it.each([60, 61])(
+  "offers Device driver management only inside its served API window (%s)",
+  async (apiVersion) => {
+    const payload = { ...bootstrap([]), apiVersion };
+    const client = createHttpHostClient({
+      capabilities: ["device-drivers-v1"],
+      refreshIntervalMs: 0,
+      fetch: async () => json(payload),
+    });
+    try {
+      await client.load();
+      expect(client.getSnapshot().deviceDriversAvailable).toBe(apiVersion >= 61);
+    } finally {
+      client.dispose();
+    }
+  },
+);

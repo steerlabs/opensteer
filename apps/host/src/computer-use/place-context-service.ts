@@ -1,5 +1,7 @@
+import { computerConnectionDeviceId } from "./device-drivers.js";
 import {
   OpensteerError,
+  isPhoneDisplayDefinitionId,
   type ContentPart,
   type PlaceContentPart,
   type Thread,
@@ -7,7 +9,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
-import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
+import type { DeviceIntegrationConnectionSummary } from "@opensteer/integration-core/models";
 import { computerAppIdentitiesEqual } from "@opensteer/integration-core/computer-app";
 import type { BrowserService } from "../browser/browser-service.js";
 import type { DeviceService } from "../devices/device-service.js";
@@ -19,12 +21,10 @@ interface PlaceContextDependencies {
   readonly browser: Pick<BrowserService, "assertPagesUsable">;
   readonly computerUse: Pick<ComputerUseService, "eligibleInventory" | "sessionsForRunner">;
   readonly connections: {
-    readonly listConnections: (
-      ownerUserId: UserId,
-    ) => Promise<readonly IntegrationConnectionSummary[]>;
+    listConnections(owner: UserId): Promise<readonly DeviceIntegrationConnectionSummary[]>;
   };
   readonly integrations: Pick<DeviceService, "listCallableTools">;
-  readonly store: Pick<OpensteerStore, "hasHumanIncludedPlace">;
+  readonly store: Pick<OpensteerStore, "hasHumanIncludedPlace" | "getDeviceSelfRunnerId">;
 }
 
 /** References are checked against current authority, without opening or borrowing a session. */
@@ -53,7 +53,7 @@ export class PlaceContextService {
     );
     if (!native.length) return;
     const inventory = await this.#dependencies.computerUse.eligibleInventory(input.ownerId);
-    for (const part of native) this.#assertNamed(inventory, part);
+    for (const part of native) await this.#assertNamed(inventory, part);
   }
 
   /** What a forwarded place must prove: its target may use it now, as a call would. */
@@ -79,7 +79,7 @@ export class PlaceContextService {
       threadId: input.threadId,
     });
     for (const part of native) {
-      const machine = this.#assertNamed(inventory, part);
+      const machine = await this.#assertNamed(inventory, part);
       if (!machine.ready)
         throw new OpensteerError({
           code: "conflict",
@@ -89,7 +89,7 @@ export class PlaceContextService {
         const allowedThread =
           input.busyThreadId === undefined ? input.threadId : input.busyThreadId;
         const held = this.#dependencies.computerUse
-          .sessionsForRunner(part.machineId)
+          .sessionsForRunner(machine.runnerId)
           .some((session) => session.display && session.threadId !== allowedThread);
         if (held)
           throw new OpensteerError({
@@ -101,13 +101,17 @@ export class PlaceContextService {
       const connection = connections.find(
         (candidate) =>
           candidate.status === "connected" &&
-          candidate.computer?.runnerId === part.machineId &&
+          candidate.computer !== null &&
+          computerConnectionDeviceId(candidate) === (machine.deviceId ?? machine.runnerId) &&
           !candidate.computer.blockedAt &&
           (part.type === "computer-app"
             ? candidate.definitionId === "macos-app" &&
               candidate.computer.app !== null &&
               computerAppIdentitiesEqual(candidate.computer.app, part.app)
-            : candidate.definitionId === "android-phone" && candidate.computer.app === null),
+            : isPhoneDisplayDefinitionId(candidate.definitionId) &&
+              (machine.definitionId === undefined ||
+                candidate.definitionId === machine.definitionId) &&
+              candidate.computer.app === null),
       );
       if (
         !connection ||
@@ -124,12 +128,12 @@ export class PlaceContextService {
     }
   }
 
-  #assertNamed(
+  async #assertNamed(
     inventory: ComputerUseInventory,
     part: Extract<ContentPart, { readonly type: "computer-app" | "phone" }>,
-  ): ComputerUseInventory["machines"][number] {
+  ): Promise<ComputerUseInventory["machines"][number]> {
     const machine = (part.type === "phone" ? inventory.phones : inventory.machines).find(
-      (candidate) => candidate.runnerId === part.machineId,
+      (candidate) => (candidate.deviceId ?? candidate.runnerId) === part.machineId,
     );
     if (!machine)
       throw new OpensteerError({

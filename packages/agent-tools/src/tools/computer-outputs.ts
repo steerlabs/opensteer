@@ -5,6 +5,7 @@ const AppSchema = z.object({
   name: z.string().optional(),
   bundleId: z.string().optional(),
   packageName: z.string().optional(),
+  appId: z.string().optional(),
   label: z.string().optional(),
   identity: z
     .object({
@@ -31,6 +32,11 @@ const ComputerSchema = z.object({
   apps: z.array(AppSchema).optional(),
 });
 const PhoneSchema = z.object({
+  definitionId: z.string().optional(),
+  availability: z
+    .object({ state: z.string(), reason: z.object({ kind: z.string() }).nullable() })
+    .optional(),
+  setup: z.object({ location: z.string(), driverRunnerName: z.string().optional() }).optional(),
   computerId: z.string(),
   name: z.string(),
   state: z.string(),

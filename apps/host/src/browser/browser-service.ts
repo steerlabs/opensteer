@@ -1,3 +1,4 @@
+import type { DeviceId } from "@opensteer/core";
 import { authorizeTabTarget } from "../tabs/tab-authority.js";
 import type { PageTabsPort } from "../tabs/tab-service.js";
 import type { TabActor } from "../tabs/ports.js";
@@ -270,9 +271,9 @@ export interface BrowserSessionRepository {
     ownerId: UserId,
     threadIds: readonly ThreadId[],
   ): Promise<readonly ThreadId[]>;
-  effectiveMachineOwners?(
-    runnerIds: readonly RunnerId[],
-  ): Promise<ReadonlyMap<RunnerId, { readonly effectiveOwner: UserId | null }>>;
+  effectiveDeviceOwners?: OpensteerStore["effectiveDeviceOwners"];
+  requireSelfDeviceId?: OpensteerStore["requireSelfDeviceId"];
+  requireDeviceSelfRunnerId?: OpensteerStore["requireDeviceSelfRunnerId"];
   listBrowserSessionViewers(
     sessionId: BrowserSessionId,
   ): Promise<{ readonly userIds: readonly UserId[] } | null>;
@@ -1144,7 +1145,7 @@ export class BrowserService {
           {
             id: descriptor.id,
             ownerId: input.ownerId,
-            computerId: record.runnerId,
+            computerId: await this.#selfDeviceId(record.runnerId),
             kind: "page",
             title: descriptor.title,
             url: descriptor.url,
@@ -2124,6 +2125,16 @@ export class BrowserService {
       },
     });
   }
+  async #selfDeviceId(runnerId: RunnerId): Promise<DeviceId> {
+    if (!this.#repository.requireSelfDeviceId)
+      throw new OpensteerError({ code: "not_found", message: "Device identity unavailable" });
+    return this.#repository.requireSelfDeviceId(runnerId);
+  }
+  async #selfRunnerId(deviceId: DeviceId): Promise<RunnerId> {
+    if (!this.#repository.requireDeviceSelfRunnerId)
+      throw new OpensteerError({ code: "not_found", message: "Self runtime unavailable" });
+    return this.#repository.requireDeviceSelfRunnerId(deviceId);
+  }
   async readablePlaces<
     T extends {
       readonly threadId: ThreadId;
@@ -2137,9 +2148,9 @@ export class BrowserService {
         references.map(({ threadId }) => threadId),
       ) ?? [],
       this.#repository.listBrowserSessions(ownerId),
-      this.#repository.effectiveMachineOwners?.(
+      this.#repository.effectiveDeviceOwners?.(
         references.flatMap(({ place }) => (place.kind === "browser" ? [] : [place.machineId])),
-      ) ?? new Map<RunnerId, { readonly effectiveOwner: UserId | null }>(),
+      ) ?? new Map<DeviceId, { readonly effectiveOwner: UserId | null }>(),
     ]);
     const visibleThreads = new Set(threads);
     const visibleSessions = new Set(sessions.map(({ id }) => id));
@@ -2861,7 +2872,7 @@ export class BrowserService {
               origin: "agent",
               environmentId: actor.claims.environmentId,
               ...("computerId" in target && target.computerId
-                ? { chosenRunnerId: target.computerId }
+                ? { chosenRunnerId: await this.#selfRunnerId(target.computerId) }
                 : {}),
             },
             this.#eligiblePlacements(await this.#repository.listEligibleBrowserRunners(ownerId)),
@@ -2877,7 +2888,12 @@ export class BrowserService {
         ...(placement
           ? { placement }
           : "computerId" in target && target.computerId
-            ? { placement: { kind: "runner" as const, runnerId: target.computerId } }
+            ? {
+                placement: {
+                  kind: "runner" as const,
+                  runnerId: await this.#selfRunnerId(target.computerId),
+                },
+              }
             : {}),
         ...(target.url === "about:blank" ? {} : { url: target.url }),
         ...(typed && actor.kind === "person" ? { typed: true } : {}),
@@ -2906,7 +2922,7 @@ export class BrowserService {
       id: opened.tabId,
       ownerId,
       kind: "page",
-      computerId: record.runnerId,
+      computerId: await this.#selfDeviceId(record.runnerId),
       title: descriptor?.title ?? target.url,
       url:
         descriptor?.url === "about:blank" && target.url !== "about:blank"
@@ -2958,7 +2974,8 @@ export class BrowserService {
         }
         // A restore remains on its saved computer and profile, including Guest.
         const homes = await this.#repository.listEligibleBrowserRunners(ownerId);
-        if (!homes.some((home) => home.id === row.computerId))
+        const rowRunnerId = await this.#selfRunnerId(row.computerId);
+        if (!homes.some((home) => home.id === rowRunnerId))
           throw new OpensteerError({
             code: "forbidden",
             message: "This browser computer is unavailable.",
@@ -2983,7 +3000,7 @@ export class BrowserService {
           previousPageBinding: binding,
           dormantSurfaceIds: dormant,
           initialUrl: row.url!,
-          placement: { kind: "runner", runnerId: row.computerId },
+          placement: { kind: "runner", runnerId: rowRunnerId },
           ...(row.profileId ? { profileId: row.profileId } : { fresh: true }),
           origin: claims ? "agent" : "person",
           ...(agent ? { agentBindingId: agent.agentBindingId } : {}),
@@ -3051,7 +3068,7 @@ export class BrowserService {
           id: descriptor.id,
           ownerId,
           kind: "page",
-          computerId: record.runnerId,
+          computerId: await this.#selfDeviceId(record.runnerId),
           title: descriptor.title,
           url: descriptor.url,
           profileId: record.profileId,
@@ -3075,7 +3092,7 @@ export class BrowserService {
             id: descriptor.id,
             ownerId,
             kind: "page",
-            computerId: record.runnerId,
+            computerId: await this.#selfDeviceId(record.runnerId),
             title: descriptor.title,
             url: descriptor.url,
             profileId: opener.profileId,
@@ -3753,7 +3770,7 @@ export class BrowserService {
                 const write: TabWrite = {
                   id,
                   ownerId: input.ownerId,
-                  computerId: record.runnerId,
+                  computerId: await this.#selfDeviceId(record.runnerId),
                   kind: "page",
                   title: descriptor?.title ?? "New tab",
                   url: descriptor?.url ?? "about:blank",

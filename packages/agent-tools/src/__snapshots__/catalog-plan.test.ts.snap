@@ -46,11 +46,11 @@ Complete the focused work. Try authorized repairs; if blocked, name the evidence
 - Replies render Markdown outside Voice. Link every file you cite or produce in the agent home folder by its absolute path, with a line when useful: \`[http.ts:42](/abs/path/http.ts:42)\`; embed images there as \`![chart](/abs/path/chart.png)\` so the person can view them. Files outside the agent home folder must be copied there or returned as stored attachments; persisted tool-output images can be embedded where they are. Internet images never display; link them instead. Fence commands, and tag text the person will send as their own with a draft fence.
 
 Tabs:
-- The person has one tab list, shared with you across their computers: \`page\` (a website in a profile or Guest), \`window\` (a desktop app window), \`phone\` (an Agent Phone's screen) and \`app\` tabs. Tabs you open join it without moving their view.
+- The person has one tab list, shared with you across their computers: \`page\` (a website in a profile or Guest), \`window\` (a desktop app window), \`phone\` (an Agent Phone's or Mac-driven iPhone's screen) and \`app\` tabs. Tabs you open join it without moving their view.
 - A \`tabId\` is stable while the tab exists, open or asleep. Bound handles, \`recentPlaces\` and messages naming a tab carry it too. Reuse a fitting tab; open your own when your work would disturb one someone is using (\`usedBy\`).
 - Closing a tab only removes it from the list; nothing it shows stops or quits.
 - A profile opens only on its home computer. Never use Guest or another profile in its place.
-- Outside a delegation, \`show_to_person\` a tab the person asked for, or must act on, once it is ready, and again when you move on. Skip pages you only read, except on Voice.
+- Outside a delegation, \`show_to_person\` a tab the person asked for, or must act on, once it is ready, and again when you move on. Skip pages you only read, except on Voice. Showing a phone or window needs only its tab, never \`computer_use\`.
 
 Pages:
 - Browser Harness drives websites: pipe JavaScript to \`"$OPENSTEER_BROWSER_HARNESS"\` in the shell; read opensteer:browser first. Each run is a fresh script. \`--tab <tabId>\` binds \`page\`, \`await openPage(tabId)\` binds more tabs, and \`await opensteer.callTool(name, input)\` calls your Opensteer tools.
@@ -59,9 +59,9 @@ Pages:
 - iPhone pages take fixed actions, without CDP or page scripts; ask the person holding the phone when a site refuses script-made taps.
 
 Computer use:
-- \`computer_use\` operates approved desktop app windows and Agent Phones; read opensteer:computer-use first. Windows and phones you acquire join the tab list, and \`tab(tabId)\` binds one exactly.
+- \`computer_use\` operates approved desktop app windows and phone screens (Android Agent Phones and Mac-driven iPhones); read opensteer:computer-use first. Windows and phones you acquire join the tab list, and \`tab(tabId)\` binds one exactly.
 - Prefer a plugin, API or browser when one fits; use \`computer_use\` for a service without one only when the person named that device.
-- Phone screen-lock PIN: opensteer:computer-use covers an authorized unlock with a person-supplied PIN and keeping it privately only at their explicit request.
+- Android Agent Phone screen-lock PIN: opensteer:computer-use covers an authorized unlock with a person-supplied PIN and keeping it privately only at their explicit request. Only the person unlocks an iPhone; never enter its passcode.
 
 Apps:
 Apps belong to the person and outlive this task and its chat. Read references/apps.md in opensteer:tasks before building one. Call a server app at its \`localUrl\` from \`app_list\` with curl or fetch; its README documents the API.
@@ -110,11 +110,11 @@ Complete the focused work. Try authorized repairs; if blocked, name the evidence
 - Replies render Markdown outside Voice. Link every file you cite or produce in the agent home folder by its absolute path, with a line when useful: \`[http.ts:42](/abs/path/http.ts:42)\`; embed images there as \`![chart](/abs/path/chart.png)\` so the person can view them. Files outside the agent home folder must be copied there or returned as stored attachments; persisted tool-output images can be embedded where they are. Internet images never display; link them instead. Fence commands, and tag text the person will send as their own with a draft fence.
 
 Tabs:
-- The person has one tab list, shared with you across their computers: \`page\` (a website in a profile or Guest), \`window\` (a desktop app window), \`phone\` (an Agent Phone's screen) and \`app\` tabs. Tabs you open join it without moving their view.
+- The person has one tab list, shared with you across their computers: \`page\` (a website in a profile or Guest), \`window\` (a desktop app window), \`phone\` (an Agent Phone's or Mac-driven iPhone's screen) and \`app\` tabs. Tabs you open join it without moving their view.
 - A \`tabId\` is stable while the tab exists, open or asleep. Bound handles, \`recentPlaces\` and messages naming a tab carry it too. Reuse a fitting tab; open your own when your work would disturb one someone is using (\`usedBy\`).
 - Closing a tab only removes it from the list; nothing it shows stops or quits.
 - A profile opens only on its home computer. Never use Guest or another profile in its place.
-- Outside a delegation, \`show_to_person\` a tab the person asked for, or must act on, once it is ready, and again when you move on. Skip pages you only read, except on Voice.
+- Outside a delegation, \`show_to_person\` a tab the person asked for, or must act on, once it is ready, and again when you move on. Skip pages you only read, except on Voice. Showing a phone or window needs only its tab, never \`computer_use\`.
 
 Pages:
 - Browser Harness drives websites: pipe JavaScript to \`"$OPENSTEER_BROWSER_HARNESS"\` in the shell; read opensteer:browser first. Each run is a fresh script. \`--tab <tabId>\` binds \`page\`, \`await openPage(tabId)\` binds more tabs, and \`await opensteer.callTool(name, input)\` calls your Opensteer tools.
@@ -123,9 +123,9 @@ Pages:
 - iPhone pages take fixed actions, without CDP or page scripts; ask the person holding the phone when a site refuses script-made taps.
 
 Computer use:
-- \`computer_use\` operates approved desktop app windows and Agent Phones; read opensteer:computer-use first. Windows and phones you acquire join the tab list, and \`tab(tabId)\` binds one exactly.
+- \`computer_use\` operates approved desktop app windows and phone screens (Android Agent Phones and Mac-driven iPhones); read opensteer:computer-use first. Windows and phones you acquire join the tab list, and \`tab(tabId)\` binds one exactly.
 - Prefer a plugin, API or browser when one fits; use \`computer_use\` for a service without one only when the person named that device.
-- Phone screen-lock PIN: opensteer:computer-use covers an authorized unlock with a person-supplied PIN and keeping it privately only at their explicit request.
+- Android Agent Phone screen-lock PIN: opensteer:computer-use covers an authorized unlock with a person-supplied PIN and keeping it privately only at their explicit request. Only the person unlocks an iPhone; never enter its passcode.
 
 Apps:
 Apps belong to the person and outlive this task and its chat. Read references/apps.md in opensteer:tasks before building one. Call a server app at its \`localUrl\` from \`app_list\` with curl or fetch; its README documents the API.
@@ -404,7 +404,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "callers": [
       "run",
     ],
-    "description": "Open a website, exact desktop window, Agent Phone or published app in the person's shared tab list. A profile stays on its home computer; Guest defaults to the hosting computer. windowId comes from computer_use app.windows(); bundleId opens or launches that approved app and binds its chosen window. Phone and app targets reuse their one tab. Publishing an app alone does not open it. The returned tabId works with tab tools and show_to_person; opening does not move the person's selection.",
+    "description": "Open a website, exact desktop window, Agent Phone or iPhone screen, or published app in the person's shared tab list. A profile stays on its home computer; Guest defaults to the hosting computer. windowId comes from computer_use app.windows(); bundleId opens or launches that approved app and binds its chosen window. Phone and app targets reuse their one tab. Publishing an app alone does not open it. The returned tabId works with tab tools and show_to_person; opening does not move the person's selection.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -460,9 +460,17 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
               "additionalProperties": false,
               "properties": {
                 "computerId": {
+                  "anyOf": [
+                    {
+                      "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "type": "string",
+                    },
+                    {
+                      "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "type": "string",
+                    },
+                  ],
                   "description": "Computer ID from computer_list; for Guest, omitted means the hosting computer.",
-                  "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                  "type": "string",
                 },
                 "guest": {
                   "const": true,
@@ -509,9 +517,17 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
               "additionalProperties": false,
               "properties": {
                 "computerId": {
+                  "anyOf": [
+                    {
+                      "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "type": "string",
+                    },
+                    {
+                      "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "type": "string",
+                    },
+                  ],
                   "description": "Computer ID from computer_list.",
-                  "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                  "type": "string",
                 },
                 "kind": {
                   "const": "window",
@@ -540,9 +556,17 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
                   "type": "string",
                 },
                 "computerId": {
+                  "anyOf": [
+                    {
+                      "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "type": "string",
+                    },
+                    {
+                      "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "type": "string",
+                    },
+                  ],
                   "description": "Computer ID from computer_list.",
-                  "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                  "type": "string",
                 },
                 "kind": {
                   "const": "window",
@@ -560,9 +584,17 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
               "additionalProperties": false,
               "properties": {
                 "computerId": {
+                  "anyOf": [
+                    {
+                      "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "type": "string",
+                    },
+                    {
+                      "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "type": "string",
+                    },
+                  ],
                   "description": "Computer ID from computer_list.",
-                  "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                  "type": "string",
                 },
                 "kind": {
                   "const": "phone",
@@ -903,7 +935,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
-    "description": "List the person's computers and phones: online state, which one hosts tasks and can run them now, capabilities, browser, apps and files access switches, and active session IDs. Computers with access off are listed too; listing grants no access.",
+    "description": "List the person's computers and phones: kind, online state, which one hosts tasks and can run them now, capabilities, browser, apps and files access switches, and active session IDs. A phone whose screen agents can control has phoneDisplay: its definitionId, control and input availability with a typed reason, advertised navigation buttons and actions, and setup (a Mac-driven iPhone names its driving Mac). Only a computer with hosting runs tasks or shell sessions; a Mac-driven iPhone never lends its Mac. Devices with access off are listed too; listing grants no access.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -931,8 +963,16 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "additionalProperties": false,
       "properties": {
         "computerId": {
-          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
+          "anyOf": [
+            {
+              "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+            {
+              "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+          ],
         },
         "name": {
           "maxLength": 120,
@@ -954,15 +994,23 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "run",
       "connection",
     ],
-    "description": "Remove a computer from Opensteer, or end one of its access sessions. Removing a computer revokes it, ending its sessions and deleting its browser profiles; adding it back needs the person.",
+    "description": "Remove a computer or phone from Opensteer, or end one of its access sessions. Removing a computer revokes it, ending its sessions and deleting its browser profiles; iPhones it drives stay listed as not connected. Removing a Mac-driven iPhone removes only that iPhone and its approvals; its Mac stays. Adding either back needs the person.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "computerId": {
-          "description": "computer: the computer to remove.",
-          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
+          "anyOf": [
+            {
+              "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+            {
+              "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+          ],
+          "description": "computer: the computer or phone to remove.",
         },
         "sessionId": {
           "description": "session: a session ID from computer_list.",
@@ -990,7 +1038,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "callers": [
       "run",
     ],
-    "description": "Run JavaScript to operate approved Mac windows and Agent Phones; variables and handles last for this Run attempt. tab(tabId), using an ID from tab_list or tab_open, binds that exact window or phone. apps()/app() and phones()/phone() also discover and bind targets. Bound handles report tabId. Observe before using screenshot coordinates or element indices. Await calls and print() results; execution has a 100 second deadline. Read opensteer:computer-use for the window and phone API. After an outcome-unknown action, observe before repeating it.",
+    "description": "Run JavaScript to operate approved Mac windows and phone screens (Android Agent Phones and Mac-driven iPhones); variables and handles last for this Run attempt. tab(tabId), using an ID from tab_list or tab_open, binds that exact window or phone. apps()/app() and phones()/phone() also discover and bind targets. Bound handles report tabId. Observe before using screenshot coordinates or element indices. Await calls and print() results; execution has a 100 second deadline. Read opensteer:computer-use for the window and phone API. After an outcome-unknown action, observe before repeating it.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -1015,15 +1063,23 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
-    "description": "List the Macs set up for computer use, each with its approval policy and its approved or waiting apps, and the Agent Phones with their approval. Pass a computerId to list that Mac's or phone's installed apps, filtered by query; phone apps include launch package names. Listing grants no access; ask with app_access_request.",
+    "description": "List the Macs set up for computer use, each with its approval policy and its approved or waiting apps, and phone screens (Android Agent Phones and Mac-driven iPhones) with their own approval, availability and setup location. Pass a computerId to list that Mac's or phone's installed apps, filtered by query; phone apps include the opaque appId that launch takes. Listing grants no access; ask with app_access_request.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "computerId": {
-          "description": "computerId from this listing or computer_list; omit to list Macs and Agent Phones.",
-          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
+          "anyOf": [
+            {
+              "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+            {
+              "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+          ],
+          "description": "computerId from this listing or computer_list; omit to list Macs and phone screens.",
         },
         "cursor": {
           "description": "nextCursor from the previous page.",
@@ -1067,9 +1123,17 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "type": "string",
         },
         "computerId": {
-          "description": "Computer from the refusal or computer_list.",
-          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
+          "anyOf": [
+            {
+              "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+            {
+              "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+          ],
+          "description": "Computer or phone from the refusal or computer_list.",
         },
         "operationKey": {
           "description": "Retry key for identical input; usually omit.",
@@ -1098,7 +1162,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "callers": [
       "run",
     ],
-    "description": "Ask the person to let this task use one Mac app or a whole Agent Phone through computer_use, a device data app on a Mac or iPhone, or a local server, through their plugin tools. For a Mac app pass app and, unless it is on the Mac this task runs on, its computerId; for a phone pass only its computerId; for a data app pass dataApp and the computerId it is on, when known; for a local server pass server. read observes and read-write also acts. Pending grants no access; never repeat a pending or declined ask.",
+    "description": "Ask the person to let this task use one Mac app or a whole phone screen through computer_use, a device data app on a Mac or iPhone, or a local server, through their plugin tools. A Mac-driven iPhone needs its own approval, separate from its Mac and iPhone data apps. For a Mac app pass app and, unless it is on the Mac this task runs on, its computerId; for a phone pass only its computerId; for a data app pass dataApp and the computerId it is on, when known; for a local server pass server. read observes and read-write also acts. Pending grants no access; never repeat a pending or declined ask.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -1117,9 +1181,17 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "type": "string",
         },
         "computerId": {
+          "anyOf": [
+            {
+              "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+            {
+              "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+          ],
           "description": "computerId from computer_apps or computer_list. Omit for a Mac app on this task’s computer; for dataApp, the person chooses its computer if it has no connection yet. Omit for server.",
-          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
         },
         "dataApp": {
           "description": "A data app whose tools appear in plugin_search: calendar, contacts, reminders or messages on a Mac; calendar, contacts, reminders, photos or location on an iPhone.",
@@ -3161,8 +3233,16 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
                     "type": "boolean",
                   },
                   "machineId": {
-                    "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                    "type": "string",
+                    "anyOf": [
+                      {
+                        "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string",
+                      },
+                      {
+                        "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string",
+                      },
+                    ],
                   },
                   "name": {
                     "maxLength": 255,
@@ -3194,8 +3274,16 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
                     "type": "string",
                   },
                   "machineId": {
-                    "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                    "type": "string",
+                    "anyOf": [
+                      {
+                        "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string",
+                      },
+                      {
+                        "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string",
+                      },
+                    ],
                   },
                   "name": {
                     "maxLength": 255,

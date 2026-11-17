@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { authenticatePasswordApproval } from "./password-approval-auth.js";
 // @vitest-environment happy-dom
 
@@ -214,15 +215,22 @@ afterEach(() => {
  * - the agent's reason is shown twice, or unlabelled as if Opensteer said it.
  */
 describe("RequestSheetContent computer owner approvals", () => {
-  it.each(["macos-app", "android-phone"] as const)(
+  it.each(["macos-app", "android-phone", "iphone-screen"] as const)(
     "reviews %s from the phone and sends the owner command",
     async (definitionId) => {
       const request = computerAppRequest();
       if (request.payload.kind !== "computer.app.access") throw new Error("Expected app request");
       request.payload.definitionId = definitionId;
+      if (definitionId !== "macos-app") request.payload.app = null;
+      if (definitionId === "iphone-screen")
+        request.payload.deviceId = DeviceIdSchema.parse("dev_00000000-0000-4000-8000-000000000004");
       const dispatch = vi.fn(async (command: { type: string }) => ({ type: command.type }));
       const review = computerAppReview(request);
-      await render(surface(request), dispatch, { review });
+      await render(surface(request), dispatch, {
+        review,
+        machines: [studio],
+        snapshot: { deviceDriversAvailable: true },
+      });
       expect(review).not.toHaveBeenCalled();
       await click("Allow");
       if (definitionId === "macos-app") {
@@ -243,7 +251,16 @@ describe("RequestSheetContent computer owner approvals", () => {
       } else {
         expect(review).not.toHaveBeenCalled();
         expect(dispatch).toHaveBeenCalledWith(
-          expect.objectContaining({ type: "integration.computer.setup.set" }),
+          expect.objectContaining({
+            type: "integration.computer.setup.set",
+            input: {
+              kind: "app",
+              app: null,
+              access: request.payload.access,
+              definitionId,
+              deviceId: request.payload.deviceId,
+            },
+          }),
         );
       }
       expect(document.querySelector("[data-modal]")).toBeNull();
@@ -644,7 +661,7 @@ describe("RequestSheetContent external requests", () => {
       expectedRevision: 7,
       idempotencyKey: expect.any(String),
       policy: { reach: policy.reach, commands: false, forwarding: false, shares: [], apps: true },
-      runnerId: laptop.id,
+      deviceId: laptop.id,
       type: "machine.access.update",
     });
     expect(dispatch).not.toHaveBeenCalledWith(expect.objectContaining({ type: "request.respond" }));
@@ -943,7 +960,7 @@ async function render(
             subscribe: () => () => undefined,
             getSnapshot: () => snapshot,
             updateMachineAccess: async (input: {
-              runnerId: string;
+              deviceId: string;
               expectedRevision: number;
               policy: object;
             }) =>
@@ -1163,7 +1180,7 @@ function computerAppRequest(): Request {
       definitionId: "macos-app",
       kind: "computer.app.access",
       reason: "Move the plan into Notes",
-      runnerId: studioId,
+      deviceId: studioId,
       setupRequestId: "00000000-0000-4000-8000-000000000003",
     },
     presentation: {

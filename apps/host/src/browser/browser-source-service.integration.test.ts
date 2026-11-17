@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { createPersonalRunFixturePort } from "@opensteer/database/test-support/personal-run";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
@@ -867,7 +868,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         id: tabId,
         kind: "page",
         ownerId,
-        computerId: run.runnerId,
+        computerId: DeviceIdSchema.parse(run.runnerId),
         title: "Test",
         url: "about:blank",
         openedBy: "person",

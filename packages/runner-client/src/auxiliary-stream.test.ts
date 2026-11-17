@@ -109,6 +109,21 @@ describe("openRunnerAuxiliaryStream", () => {
     modern.close();
   });
 
+  it("exposes screen drivers only after the integrations welcome opts in", async () => {
+    const legacy = await openTestStream({ leaseMs: 60_000, passwords: true });
+    try {
+      expect(legacy.stream).not.toHaveProperty("screenDrivers");
+    } finally {
+      legacy.close();
+    }
+    const modern = await openTestStream({ leaseMs: 60_000, screenDrivers: true });
+    try {
+      expect(modern.stream).toHaveProperty("screenDrivers", 1);
+    } finally {
+      modern.close();
+    }
+  });
+
   it("invalidates immediately on lease expiry before forcing an unresponsive transport closed", async () => {
     let invalidatedAt = 0;
     const openedAt = Date.now();
@@ -166,12 +181,13 @@ describe("openRunnerAuxiliaryStream", () => {
 async function openTestStream(options: {
   readonly leaseMs: number;
   readonly passwords?: boolean;
+  readonly screenDrivers?: boolean;
   readonly browser?: boolean;
   readonly onInvalidated?: () => void;
 }): Promise<OpenedAuxiliaryStream> {
   const module = options.browser
     ? ("browser" as const)
-    : options.passwords
+    : options.passwords || options.screenDrivers
       ? ("integrations" as const)
       : ("shell" as const);
   const bootId = RunnerBootIdSchema.parse(`rbt_${randomUUID()}`);
@@ -218,6 +234,7 @@ async function openTestStream(options: {
           connectionLeaseId,
           heartbeatIntervalMs: 1_000,
           ...(options.passwords ? { loginText: 1, passwordSignIn: 2 } : {}),
+          ...(options.screenDrivers ? { screenDrivers: 1 } : {}),
           module,
           runnerId,
           serverTime: new Date().toISOString(),

@@ -605,7 +605,7 @@ integration.sequential("iPhone integrations Host contract", () => {
     const connection = await host.store.database
       .selectFrom("integrationConnections")
       .select("id")
-      .where("runnerId", "=", phone.runnerId)
+      .where("deviceId", "=", await host.store.requireSelfDeviceId(phone.runnerId))
       .where("integrationDefinitionId", "=", "apple-calendar")
       .executeTakeFirstOrThrow();
     expect(
@@ -676,7 +676,7 @@ integration.sequential("iPhone integrations Host contract", () => {
     const connection = await host.store.database
       .selectFrom("integrationConnections")
       .select("id")
-      .where("runnerId", "=", phone.runnerId)
+      .where("deviceId", "=", await host.store.requireSelfDeviceId(phone.runnerId))
       .where("integrationDefinitionId", "=", "apple-calendar")
       .executeTakeFirstOrThrow();
     const run = await dispatchCallerRun(host, caller, {

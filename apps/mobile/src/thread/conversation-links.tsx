@@ -69,7 +69,7 @@ export function ConversationLinksProvider(props: {
         hostClient,
         deploymentId,
         threadId,
-        target: pageOpenTarget(place.target, url),
+        target: pageOpenTarget(place.target, url, hostClient.getSnapshot().machines),
         address: url,
         failed: () => openOutside(url),
       });

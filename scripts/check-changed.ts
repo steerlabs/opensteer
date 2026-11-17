@@ -38,7 +38,11 @@ export function changedPlan(base: string) {
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const { values } = parseArgs({
-    options: { base: { type: "string", default: "origin/main" }, "dry-run": { type: "boolean" } },
+    options: {
+      base: { type: "string", default: "origin/main" },
+      "dry-run": { type: "boolean" },
+      "integration-runner": { type: "string" },
+    },
   });
   const plan = changedPlan(values.base!);
   console.log(JSON.stringify(plan, null, 2));
@@ -51,11 +55,22 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   if (!values["dry-run"]) {
     const [node, pnpm] = pnpmInvocation(process.env);
     for (const args of plan.commands) {
-      const result = spawnSync(node, [pnpm, ...args], { cwd: root, stdio: "inherit" });
-      if (result.status !== 0) {
-        process.exitCode = result.status ?? 1;
-        break;
+      const runner = values["integration-runner"];
+      const commands: readonly (readonly [string, readonly string[]])[] =
+        runner && args[0] === "test:integration"
+          ? Array.from({ length: Math.ceil((args.length - 2) / 3) }, (_, index) => [
+              resolve(runner),
+              args.slice(2 + index * 3, 5 + index * 3),
+            ])
+          : [[node, [pnpm, ...args]]];
+      for (const [command, parameters] of commands) {
+        const result = spawnSync(command, parameters, { cwd: root, stdio: "inherit" });
+        if (result.status !== 0) {
+          process.exitCode = result.status ?? 1;
+          break;
+        }
       }
+      if (process.exitCode) break;
     }
   }
 }

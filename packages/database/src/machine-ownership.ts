@@ -1,5 +1,10 @@
 import { personalDeploymentOwner } from "./machine-store.js";
-import { runnerRunsItsDeployment, type RunnerId, type UserId } from "@opensteer/core";
+import {
+  runnerRunsItsDeployment,
+  type RunnerId,
+  type DeviceId,
+  type UserId,
+} from "@opensteer/core";
 import type { Kysely, Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
@@ -46,4 +51,26 @@ export async function machineOwnershipIn(
 /** The one management rule shared by reads and writes. */
 export function machineIsManagedBy(ownership: MachineOwnershipRecord, userId: UserId): boolean {
   return ownership.effectiveOwner === userId;
+}
+
+export async function deviceOwnershipIn(
+  database: Kysely<DatabaseSchema>,
+  deviceId: DeviceId,
+): Promise<MachineOwnershipRecord | null> {
+  const device = await database
+    .selectFrom("devices")
+    .select(["kind", "ownerKind", "ownerUserId"])
+    .where("id", "=", deviceId)
+    .where("removedAt", "is", null)
+    .executeTakeFirst();
+  if (!device) return null;
+  return {
+    ownerKind: device.ownerKind,
+    effectiveOwner:
+      device.ownerKind === "user"
+        ? device.ownerUserId
+        : device.kind === "home"
+          ? await personalDeploymentOwner(database)
+          : null,
+  };
 }

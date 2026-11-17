@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 /**
  * The Agent Phone, end to end on a real Android phone or emulator: the real
  * Agent Phone APK, set up by the real setup engine over the local adb server,
@@ -1660,7 +1661,9 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
             "the reconnected phone to replay its Stop into PostgreSQL",
             async () =>
               (await host.store.activeComputerUseStops()).some(
-                (stop) => stop.runId === stoppedAgent.run.runId && stop.runnerId === runnerId,
+                (stop) =>
+                  stop.runId === stoppedAgent.run.runId &&
+                  stop.deviceId === DeviceIdSchema.parse(runnerId),
               )
                 ? true
                 : undefined,
@@ -1726,7 +1729,9 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
         "the Stop the restarted app kept to reach PostgreSQL",
         async () =>
           (await host.store.activeComputerUseStops()).some(
-            (stop) => stop.runId === lostAgent.run.runId && stop.runnerId === runnerId,
+            (stop) =>
+              stop.runId === lostAgent.run.runId &&
+              stop.deviceId === DeviceIdSchema.parse(runnerId),
           )
             ? true
             : undefined,

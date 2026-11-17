@@ -17,12 +17,26 @@ import {
   ComputerViewTargetSchema,
   ComputerViewNativeResultSchema,
 } from "./computer-view.js";
-import { RunIdSchema } from "@opensteer/core";
-import { IntegrationAccessSchema } from "@opensteer/integration-core/access";
-import { IntegrationDefinitionIdSchema } from "@opensteer/integration-core/adapter-kind";
-import { IntegrationServerIdSchema } from "@opensteer/integration-core/ids";
-import { LocalMcpLaunchSchema } from "@opensteer/integration-core/local-mcp";
-import { McpIdentifierSchema } from "@opensteer/integration-core/schema-primitives";
+import {
+  DeviceIdSchema,
+  DeviceDriverGenerationSchema,
+  PhoneDisplayDefinitionIdSchema,
+  isPhoneDisplayDefinitionId,
+  iphoneScreenDefinitionId,
+  RunIdSchema,
+} from "@opensteer/core";
+import {
+  DeviceAvailabilitySchema,
+  PhoneDisplayActionTypeSchema,
+  PhoneDisplayNavigationButtonsSchema,
+} from "./devices.js";
+import {
+  IntegrationAccessSchema,
+  IntegrationDefinitionIdSchema,
+  IntegrationServerIdSchema,
+  LocalMcpLaunchSchema,
+  McpIdentifierSchema,
+} from "@opensteer/integration-core";
 import { z } from "zod";
 import {
   LoginReceiverKeySchema,
@@ -30,7 +44,6 @@ import {
   PasswordSignInAuthorityEventSchema,
   PasswordSignInAuthorityResultSchema,
 } from "./password-sign-in.js";
-import { androidPhoneDefinitionId } from "./android-phone.js";
 import { RunFileExecutionSchema, RunFileTransferSchema, runFileMaxPerCall } from "./run-files.js";
 import {
   ComputerAppIdentitySchema,
@@ -40,7 +53,6 @@ import {
   ComputerUseViewWindowsParamsSchema,
   ComputerUseViewWindowsResultSchema,
   ComputerUseSessionIdSchema,
-  type ComputerUseOperation,
 } from "./computer-use.js";
 import {
   DisplaySourceSchema,
@@ -86,6 +98,16 @@ const integrationsFrameBase = {
   module: z.literal("integrations"),
 } as const;
 
+export const DeviceDriverTargetSchema = z.strictObject({
+  deviceId: DeviceIdSchema,
+  driverGeneration: DeviceDriverGenerationSchema,
+});
+export type DeviceDriverTarget = z.infer<typeof DeviceDriverTargetSchema>;
+const routedDeviceFields = DeviceDriverTargetSchema.partial().shape;
+function pairedDeviceTarget(value: { deviceId?: unknown; driverGeneration?: unknown }): boolean {
+  return (value.deviceId === undefined) === (value.driverGeneration === undefined);
+}
+
 export const ComputerAppStateSchema = z.enum(["ready", "permission-required", "unavailable"]);
 export type ComputerAppState = z.infer<typeof ComputerAppStateSchema>;
 
@@ -125,6 +147,51 @@ export const RunnerIntegrationsStatusSchema = z.strictObject({
   type: z.literal("runner.integrations.status"),
 });
 export type RunnerIntegrationsStatus = z.infer<typeof RunnerIntegrationsStatusSchema>;
+
+export const deviceDriverMaxAssignments = 256;
+export const DeviceScreenDriverAssignmentSchema = z.strictObject({
+  deviceId: DeviceIdSchema,
+  role: z.literal("screen"),
+  definitionId: z.literal(iphoneScreenDefinitionId),
+  generation: DeviceDriverGenerationSchema,
+});
+export type DeviceScreenDriverAssignment = z.infer<typeof DeviceScreenDriverAssignmentSchema>;
+export const HostIntegrationsDeviceDriversSchema = z.strictObject({
+  ...integrationsFrameBase,
+  type: z.literal("host.integrations.device-drivers"),
+  retainedDeviceIds: z.array(DeviceIdSchema).max(deviceDriverMaxAssignments).optional(),
+  drivers: z
+    .array(DeviceScreenDriverAssignmentSchema)
+    .max(deviceDriverMaxAssignments)
+    .refine(
+      (drivers) => new Set(drivers.map(({ deviceId }) => deviceId)).size === drivers.length,
+      "Device assignments must be unique",
+    ),
+});
+export type HostIntegrationsDeviceDrivers = z.infer<typeof HostIntegrationsDeviceDriversSchema>;
+const phoneDisplayVersionSchema = z.literal(1).nullable();
+export const RunnerIntegrationsDeviceStatusSchema = z
+  .strictObject({
+    ...integrationsFrameBase,
+    ...DeviceDriverTargetSchema.shape,
+    type: z.literal("runner.integrations.device-status"),
+    definitionId: z.literal(iphoneScreenDefinitionId),
+    operations: z.array(ComputerAppOperationStatusSchema).max(4),
+    availability: DeviceAvailabilitySchema,
+    navigationButtons: PhoneDisplayNavigationButtonsSchema,
+    actions: z.array(PhoneDisplayActionTypeSchema).max(11),
+    wake: z.boolean(),
+    lock: z.boolean().nullable(),
+    displayVersion: phoneDisplayVersionSchema,
+    ownerViewVersion: phoneDisplayVersionSchema,
+    inputVersion: phoneDisplayVersionSchema,
+    powerVersion: phoneDisplayVersionSchema,
+  })
+  .refine(
+    (status) => status.operations.every(({ operation }) => phoneDisplayOperations.has(operation)),
+    "Device status must name phone display operations",
+  );
+export type RunnerIntegrationsDeviceStatus = z.infer<typeof RunnerIntegrationsDeviceStatusSchema>;
 
 export const HostIntegrationsPasswordSignInSchema = z.strictObject({
   ...integrationsFrameBase,
@@ -200,9 +267,10 @@ export type HostIntegrationsInvoke = z.infer<typeof HostIntegrationsInvokeSchema
 export const HostIntegrationsComputerUseSchema = z
   .strictObject({
     ...integrationsFrameBase,
+    ...routedDeviceFields,
     access: IntegrationAccessSchema.nullable(),
     app: ComputerAppIdentitySchema.nullable(),
-    definitionId: z.literal(androidPhoneDefinitionId).optional(),
+    definitionId: PhoneDisplayDefinitionIdSchema.optional(),
     operation: ComputerUseOperationSchema,
     params: JsonObjectSchema,
     requestId: RunnerAuxiliaryRequestIdSchema,
@@ -218,20 +286,34 @@ export const HostIntegrationsComputerUseSchema = z
       frame.operation === "act" ||
       frame.operation === "windows" ||
       frame.operation === "bind";
-    if (frame.definitionId === androidPhoneDefinitionId) {
+    if (frame.definitionId === iphoneScreenDefinitionId && frame.deviceId === undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "An iPhone screen requires an external device route",
+        path: ["deviceId"],
+      });
+    }
+    if (frame.definitionId !== iphoneScreenDefinitionId && frame.deviceId !== undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "Self routes omit the device target",
+        path: ["deviceId"],
+      });
+    }
+    if (isPhoneDisplayDefinitionId(frame.definitionId)) {
       // A phone's connection is its whole display: there is no app to name,
       // and nothing to pick or resolve before operating it.
       if (frame.app !== null) {
         context.addIssue({
           code: "custom",
-          message: "An Android phone operation names no app",
+          message: "A phone display operation names no app",
           path: ["app"],
         });
       }
-      if (!androidPhoneOperations.has(frame.operation)) {
+      if (!phoneDisplayOperations.has(frame.operation)) {
         context.addIssue({
           code: "custom",
-          message: `An Android phone has no ${frame.operation} operation`,
+          message: `A phone display has no ${frame.operation} operation`,
           path: ["operation"],
         });
       }
@@ -262,7 +344,8 @@ export const HostIntegrationsComputerUseSchema = z
         path: ["access"],
       });
     }
-  });
+  })
+  .refine(pairedDeviceTarget, "Device ID and driver generation must travel together");
 export type HostIntegrationsComputerUse = z.infer<typeof HostIntegrationsComputerUseSchema>;
 
 /**
@@ -270,7 +353,7 @@ export type HostIntegrationsComputerUse = z.infer<typeof HostIntegrationsCompute
  * session lets go of it; `installed_apps` lists what `launch` can open, for
  * its owner, without touching any session.
  */
-const androidPhoneOperations: ReadonlySet<ComputerUseOperation> = new Set([
+const phoneDisplayOperations: ReadonlySet<string> = new Set([
   "observe",
   "act",
   "close",
@@ -283,21 +366,27 @@ const androidPhoneOperations: ReadonlySet<ComputerUseOperation> = new Set([
  * `session.stopped` event that named its Run, which only a phone sends; a
  * Mac's desktop ends its sessions with its connection and never receives it.
  */
-export const HostIntegrationsComputerUseStopRecordedSchema = z.strictObject({
-  ...integrationsFrameBase,
-  runId: RunIdSchema,
-  sessionId: ComputerUseSessionIdSchema,
-  type: z.literal("host.integrations.computer-use-stop-recorded"),
-});
+export const HostIntegrationsComputerUseStopRecordedSchema = z
+  .strictObject({
+    ...integrationsFrameBase,
+    ...routedDeviceFields,
+    runId: RunIdSchema,
+    sessionId: ComputerUseSessionIdSchema,
+    type: z.literal("host.integrations.computer-use-stop-recorded"),
+  })
+  .refine(pairedDeviceTarget, "Device ID and driver generation must travel together");
 export type HostIntegrationsComputerUseStopRecorded = z.infer<
   typeof HostIntegrationsComputerUseStopRecordedSchema
 >;
 
-export const HostIntegrationsCancelSchema = z.strictObject({
-  ...integrationsFrameBase,
-  requestId: RunnerAuxiliaryRequestIdSchema,
-  type: z.literal("host.integrations.cancel"),
-});
+export const HostIntegrationsCancelSchema = z
+  .strictObject({
+    ...integrationsFrameBase,
+    ...routedDeviceFields,
+    requestId: RunnerAuxiliaryRequestIdSchema,
+    type: z.literal("host.integrations.cancel"),
+  })
+  .refine(pairedDeviceTarget, "Device ID and driver generation must travel together");
 export type HostIntegrationsCancel = z.infer<typeof HostIntegrationsCancelSchema>;
 
 /**
@@ -343,6 +432,7 @@ export const HostIntegrationsMcpCloseSchema = z.strictObject({
 export type HostIntegrationsMcpClose = z.infer<typeof HostIntegrationsMcpCloseSchema>;
 
 export type HostIntegrationsOperation =
+  | HostIntegrationsDeviceDrivers
   | HostIntegrationsWindowResolve
   | HostIntegrationsPluginDataRemove
   | HostIntegrationsPasswordSignIn
@@ -410,21 +500,27 @@ const ComputerUseFrameResultSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 
-export const RunnerIntegrationsComputerUseResultSchema = z.strictObject({
-  ...integrationsFrameBase,
-  requestId: RunnerAuxiliaryRequestIdSchema,
-  result: ComputerUseFrameResultSchema,
-  type: z.literal("runner.integrations.computer-use-result"),
-});
+export const RunnerIntegrationsComputerUseResultSchema = z
+  .strictObject({
+    ...integrationsFrameBase,
+    ...routedDeviceFields,
+    requestId: RunnerAuxiliaryRequestIdSchema,
+    result: ComputerUseFrameResultSchema,
+    type: z.literal("runner.integrations.computer-use-result"),
+  })
+  .refine(pairedDeviceTarget, "Device ID and driver generation must travel together");
 export type RunnerIntegrationsComputerUseResult = z.infer<
   typeof RunnerIntegrationsComputerUseResultSchema
 >;
 
-export const RunnerIntegrationsComputerUseEventSchema = z.strictObject({
-  ...integrationsFrameBase,
-  event: ComputerUseHelperEventSchema,
-  type: z.literal("runner.integrations.computer-use-event"),
-});
+export const RunnerIntegrationsComputerUseEventSchema = z
+  .strictObject({
+    ...integrationsFrameBase,
+    ...routedDeviceFields,
+    event: ComputerUseHelperEventSchema,
+    type: z.literal("runner.integrations.computer-use-event"),
+  })
+  .refine(pairedDeviceTarget, "Device ID and driver generation must travel together");
 export type RunnerIntegrationsComputerUseEvent = z.infer<
   typeof RunnerIntegrationsComputerUseEventSchema
 >;
@@ -482,6 +578,7 @@ export const RunnerIntegrationsPluginDataRemovedSchema = z.strictObject({
 export const HostIntegrationsComputerViewSchema = z
   .strictObject({
     ...integrationsFrameBase,
+    ...routedDeviceFields,
     type: z.literal("host.integrations.computer-view"),
     version: z.union([z.literal(1), z.literal(3)]),
     ...ComputerViewAuthoritySchema.shape,
@@ -493,27 +590,35 @@ export const HostIntegrationsComputerViewSchema = z
   .refine(
     (message) => message.version === (message.target.kind === "app" ? 3 : 1),
     "Owner-view version must match the target",
-  );
+  )
+  .refine(
+    (frame) => frame.deviceId === undefined || frame.target.kind === "phone",
+    "External screen owner views target a phone",
+  )
+  .refine(pairedDeviceTarget, "Device ID and driver generation must travel together");
 export type HostIntegrationsComputerView = z.infer<typeof HostIntegrationsComputerViewSchema>;
-export const RunnerIntegrationsComputerViewResultSchema = z.strictObject({
-  ...integrationsFrameBase,
-  type: z.literal("runner.integrations.computer-view-result"),
-  requestId: RunnerAuxiliaryRequestIdSchema,
-  result: z.discriminatedUnion("kind", [
-    z.strictObject({ kind: z.literal("ok"), value: ComputerViewNativeResultSchema }),
-    z.strictObject({
-      kind: z.literal("error"),
-      code: z.enum([
-        "unsupported",
-        "ended",
-        "stale-generation",
-        "permission-required",
-        "unavailable",
-      ]),
-      message: z.string().min(1).max(1000),
-    }),
-  ]),
-});
+export const RunnerIntegrationsComputerViewResultSchema = z
+  .strictObject({
+    ...integrationsFrameBase,
+    ...routedDeviceFields,
+    type: z.literal("runner.integrations.computer-view-result"),
+    requestId: RunnerAuxiliaryRequestIdSchema,
+    result: z.discriminatedUnion("kind", [
+      z.strictObject({ kind: z.literal("ok"), value: ComputerViewNativeResultSchema }),
+      z.strictObject({
+        kind: z.literal("error"),
+        code: z.enum([
+          "unsupported",
+          "ended",
+          "stale-generation",
+          "permission-required",
+          "unavailable",
+        ]),
+        message: z.string().min(1).max(1000),
+      }),
+    ]),
+  })
+  .refine(pairedDeviceTarget, "Device ID and driver generation must travel together");
 export type RunnerIntegrationsComputerViewResult = z.infer<
   typeof RunnerIntegrationsComputerViewResultSchema
 >;
@@ -585,6 +690,7 @@ export const RunnerIntegrationsDisplaySourceChangedSchema = z.strictObject({
 export const HostIntegrationsDisplayStartSchema = z
   .strictObject({
     ...integrationsFrameBase,
+    ...routedDeviceFields,
     type: z.literal("host.integrations.display.start"),
     display: z.literal("main"),
     target: MacWindowTargetSchema.optional(),
@@ -626,21 +732,32 @@ export const HostIntegrationsDisplayStartSchema = z
   .refine(
     (start) => (start.displayProfile === 1) === (start.maxBitrate !== undefined),
     "Bitrate cap requires profile negotiation",
-  );
+  )
+  .refine(
+    (frame) => frame.deviceId === undefined || frame.target === undefined,
+    "External phone streams carry no Mac window target",
+  )
+  .refine(pairedDeviceTarget, "Device ID and driver generation must travel together");
 export type HostIntegrationsDisplayStart = z.infer<typeof HostIntegrationsDisplayStartSchema>;
-export const HostIntegrationsDisplayStopSchema = z.strictObject({
-  ...integrationsFrameBase,
-  type: z.literal("host.integrations.display.stop"),
-  display: z.literal("main"),
-  streamId: DisplayStreamIdSchema,
-});
+export const HostIntegrationsDisplayStopSchema = z
+  .strictObject({
+    ...integrationsFrameBase,
+    ...routedDeviceFields,
+    type: z.literal("host.integrations.display.stop"),
+    display: z.literal("main"),
+    streamId: DisplayStreamIdSchema,
+  })
+  .refine(pairedDeviceTarget, "Device ID and driver generation must travel together");
 export type HostIntegrationsDisplayStop = z.infer<typeof HostIntegrationsDisplayStopSchema>;
-export const HostIntegrationsDisplayRefreshSchema = z.strictObject({
-  ...integrationsFrameBase,
-  type: z.literal("host.integrations.display.refresh"),
-  display: z.literal("main"),
-  streamId: DisplayStreamIdSchema,
-});
+export const HostIntegrationsDisplayRefreshSchema = z
+  .strictObject({
+    ...integrationsFrameBase,
+    ...routedDeviceFields,
+    type: z.literal("host.integrations.display.refresh"),
+    display: z.literal("main"),
+    streamId: DisplayStreamIdSchema,
+  })
+  .refine(pairedDeviceTarget, "Device ID and driver generation must travel together");
 export type HostIntegrationsDisplayRefresh = z.infer<typeof HostIntegrationsDisplayRefreshSchema>;
 /** One batch of the stream's person lane; sent only after display.start carried sharedInput. */
 const displayInputAddress = {
@@ -663,51 +780,64 @@ function inputSourcesSubset(value: {
 export const HostIntegrationsDisplayInputSchema = z
   .strictObject({
     ...integrationsFrameBase,
+    ...routedDeviceFields,
     type: z.literal("host.integrations.display.input"),
     ...displayInputAddress,
     streamId: DisplayStreamIdSchema,
     ...DisplayInputSchema.shape,
   })
-  .refine(oneDisplayInputAddress, "Exactly one input address is required");
+  .refine(oneDisplayInputAddress, "Exactly one input address is required")
+  .refine(pairedDeviceTarget, "Device ID and driver generation must travel together");
 export type HostIntegrationsDisplayInput = z.infer<typeof HostIntegrationsDisplayInputSchema>;
 /** The viewer holding the person lane left mid-gesture: end the stroke, release held keys, drop queued input. */
 export const HostIntegrationsDisplayInputResetSchema = z
   .strictObject({
     ...integrationsFrameBase,
+    ...routedDeviceFields,
     type: z.literal("host.integrations.display.input-reset"),
     ...displayInputAddress,
     streamId: DisplayStreamIdSchema,
   })
-  .refine(oneDisplayInputAddress, "Exactly one input address is required");
+  .refine(oneDisplayInputAddress, "Exactly one input address is required")
+  .refine(pairedDeviceTarget, "Device ID and driver generation must travel together");
 export type HostIntegrationsDisplayInputReset = z.infer<
   typeof HostIntegrationsDisplayInputResetSchema
 >;
-export const HostIntegrationsDisplayPowerSchema = z.strictObject({
-  ...integrationsFrameBase,
-  ...DisplayPowerSchema.omit({ type: true }).shape,
-  type: z.literal("host.integrations.display.power"),
-  streamId: DisplayStreamIdSchema,
-  source: DisplaySourceSchema,
-});
-export const RunnerIntegrationsDisplayPowerResultSchema = z.strictObject({
-  ...integrationsFrameBase,
-  ...DisplayPowerResultSchema.omit({ type: true }).shape,
-  type: z.literal("runner.integrations.display.power-result"),
-  streamId: DisplayStreamIdSchema,
-  source: DisplaySourceSchema,
-});
-export const RunnerIntegrationsDisplayStateSchema = z.strictObject({
-  ...integrationsFrameBase,
-  type: z.literal("runner.integrations.display.state"),
-  display: z.literal("main"),
-  streamId: DisplayStreamIdSchema,
-  state: DisplayStreamStateSchema,
-  reason: DisplayStreamReasonSchema.optional(),
-  generation: DisplayViewerStateSchema.shape.generation,
-  width: DisplayViewerStateSchema.shape.width,
-  height: DisplayViewerStateSchema.shape.height,
-  rotation: z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)]),
-});
+export const HostIntegrationsDisplayPowerSchema = z
+  .strictObject({
+    ...integrationsFrameBase,
+    ...routedDeviceFields,
+    ...DisplayPowerSchema.omit({ type: true }).shape,
+    type: z.literal("host.integrations.display.power"),
+    streamId: DisplayStreamIdSchema,
+    source: DisplaySourceSchema,
+  })
+  .refine(pairedDeviceTarget, "Device ID and driver generation must travel together");
+export const RunnerIntegrationsDisplayPowerResultSchema = z
+  .strictObject({
+    ...integrationsFrameBase,
+    ...routedDeviceFields,
+    ...DisplayPowerResultSchema.omit({ type: true }).shape,
+    type: z.literal("runner.integrations.display.power-result"),
+    streamId: DisplayStreamIdSchema,
+    source: DisplaySourceSchema,
+  })
+  .refine(pairedDeviceTarget, "Device ID and driver generation must travel together");
+export const RunnerIntegrationsDisplayStateSchema = z
+  .strictObject({
+    ...integrationsFrameBase,
+    ...routedDeviceFields,
+    type: z.literal("runner.integrations.display.state"),
+    display: z.literal("main"),
+    streamId: DisplayStreamIdSchema,
+    state: DisplayStreamStateSchema,
+    reason: DisplayStreamReasonSchema.optional(),
+    generation: DisplayViewerStateSchema.shape.generation,
+    width: DisplayViewerStateSchema.shape.width,
+    height: DisplayViewerStateSchema.shape.height,
+    rotation: z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)]),
+  })
+  .refine(pairedDeviceTarget, "Device ID and driver generation must travel together");
 export type RunnerIntegrationsDisplayState = z.infer<typeof RunnerIntegrationsDisplayStateSchema>;
 /** Editing replies name the stream's person lane and the picture fence of their input. */
 const displayEditingReplyBase = {
@@ -720,27 +850,34 @@ export const RunnerIntegrationsDisplayInputResultSchema = z
   .strictObject({
     ...DisplayInputResultSchema.omit({ type: true }).shape,
     ...displayEditingReplyBase,
+    ...routedDeviceFields,
     type: z.literal("runner.integrations.display.input-result"),
   })
-  .refine(oneDisplayInputAddress, "Exactly one input address is required");
+  .refine(oneDisplayInputAddress, "Exactly one input address is required")
+  .refine(pairedDeviceTarget, "Device ID and driver generation must travel together");
 export const RunnerIntegrationsDisplayEditingSchema = z
   .strictObject({
     ...DisplayEditingSchema.omit({ type: true, generation: true }).shape,
     ...displayEditingReplyBase,
+    ...routedDeviceFields,
     type: z.literal("runner.integrations.display.editing"),
   })
-  .refine(oneDisplayInputAddress, "Exactly one input address is required");
+  .refine(oneDisplayInputAddress, "Exactly one input address is required")
+  .refine(pairedDeviceTarget, "Device ID and driver generation must travel together");
 export const RunnerIntegrationsDisplayClipboardSchema = z
   .strictObject({
     ...DisplayClipboardSchema.omit({ type: true }).shape,
     ...displayEditingReplyBase,
+    ...routedDeviceFields,
     type: z.literal("runner.integrations.display.clipboard"),
   })
-  .refine(oneDisplayInputAddress, "Exactly one input address is required");
+  .refine(oneDisplayInputAddress, "Exactly one input address is required")
+  .refine(pairedDeviceTarget, "Device ID and driver generation must travel together");
 
 export const HostIntegrationsDisplayDemandSchema = z
   .strictObject({
     ...integrationsFrameBase,
+    ...routedDeviceFields,
     type: z.literal("host.integrations.display.demand"),
     display: z.literal("main"),
     streamId: DisplayStreamIdSchema,
@@ -751,15 +888,19 @@ export const HostIntegrationsDisplayDemandSchema = z
     warm: MacDisplayWarmSchema.optional(),
     maxLongSide: DisplayMaxLongSideSchema.optional(),
   })
-  .refine(inputSourcesSubset, "Input sources must belong to demand");
-export const RunnerIntegrationsDisplaySourceEndedSchema = z.strictObject({
-  ...integrationsFrameBase,
-  type: z.literal("runner.integrations.display.source-ended"),
-  display: z.literal("main"),
-  streamId: DisplayStreamIdSchema,
-  source: DisplaySourceSchema,
-  reason: z.enum(["session-ended", "owner-ended", "owner-expired", "owner-revoked"]),
-});
+  .refine(inputSourcesSubset, "Input sources must belong to demand")
+  .refine(pairedDeviceTarget, "Device ID and driver generation must travel together");
+export const RunnerIntegrationsDisplaySourceEndedSchema = z
+  .strictObject({
+    ...integrationsFrameBase,
+    ...routedDeviceFields,
+    type: z.literal("runner.integrations.display.source-ended"),
+    display: z.literal("main"),
+    streamId: DisplayStreamIdSchema,
+    source: DisplaySourceSchema,
+    reason: z.enum(["session-ended", "owner-ended", "owner-expired", "owner-revoked"]),
+  })
+  .refine(pairedDeviceTarget, "Device ID and driver generation must travel together");
 
 export const HostIntegrationsWindowResolveSchema = z.strictObject({
   ...integrationsFrameBase,
@@ -802,6 +943,7 @@ export const HostToIntegrationsModuleMessageSchema = z
     HostIntegrationsDisplayInputSchema,
     HostIntegrationsDisplayInputResetSchema,
     HostIntegrationsDisplayPowerSchema,
+    HostIntegrationsDeviceDriversSchema,
     HostIntegrationsInvokeSchema,
     HostIntegrationsComputerUseSchema,
     HostIntegrationsComputerAppWindowsSchema,
@@ -830,6 +972,7 @@ export const IntegrationsModuleEventSchema = z
     RunnerIntegrationsDisplayPowerResultSchema,
     RunnerIntegrationsDisplayEditingSchema,
     RunnerIntegrationsDisplayClipboardSchema,
+    RunnerIntegrationsDeviceStatusSchema,
     RunnerIntegrationsStatusSchema,
     RunnerIntegrationsComputerAppWindowsResultSchema,
     RunnerIntegrationsWindowResolvedSchema,
@@ -853,3 +996,21 @@ export function computerAppFrameFits(value: unknown): boolean {
 function frameFits(value: unknown): boolean {
   return new TextEncoder().encode(JSON.stringify(value)).byteLength <= computerAppMaxFrameBytes;
 }
+
+export type HostIntegrationsDisplayDemand = z.infer<typeof HostIntegrationsDisplayDemandSchema>;
+export type HostIntegrationsDisplayPower = z.infer<typeof HostIntegrationsDisplayPowerSchema>;
+export type RunnerIntegrationsDisplayPowerResult = z.infer<
+  typeof RunnerIntegrationsDisplayPowerResultSchema
+>;
+export type RunnerIntegrationsDisplayInputResult = z.infer<
+  typeof RunnerIntegrationsDisplayInputResultSchema
+>;
+export type RunnerIntegrationsDisplayEditing = z.infer<
+  typeof RunnerIntegrationsDisplayEditingSchema
+>;
+export type RunnerIntegrationsDisplayClipboard = z.infer<
+  typeof RunnerIntegrationsDisplayClipboardSchema
+>;
+export type RunnerIntegrationsDisplaySourceEnded = z.infer<
+  typeof RunnerIntegrationsDisplaySourceEndedSchema
+>;

@@ -3,7 +3,7 @@ import {
   enrollTestRunner,
   personalBrowserRepository,
 } from "@opensteer/database/test-support/store";
-import { createId, type UserId } from "@opensteer/core";
+import { createId, DeviceIdSchema, type UserId } from "@opensteer/core";
 import { BrowserSourceStore } from "@opensteer/database";
 import { describeStore } from "@opensteer/database/test-support/store";
 import { RealtimeHub } from "@opensteer/orchestration";
@@ -191,7 +191,7 @@ describeStore("MCP administration", (it) => {
           different = { name: "Changed" };
           person = {
             type: "machine.rename",
-            machineId: run.runnerId,
+            machineId: DeviceIdSchema.parse(run.runnerId),
             name: "B",
             idempotencyKey: randomUUID(),
           };
@@ -569,7 +569,11 @@ describeStore("MCP administration", (it) => {
         withMachineAdmission: async (_id: unknown, effect: () => Promise<unknown>) => effect(),
         endMachineSessions: vi.fn(),
       },
+      publishDeploymentEvent: vi.fn(),
       computerApps: {
+        withDeviceAdmissions: async (_ids: unknown, effect: () => Promise<unknown>) => effect(),
+        forgetDevice: vi.fn(),
+        refreshDeviceDrivers: async () => {},
         withRunnerAdmission: async (_id: unknown, effect: () => Promise<unknown>) => effect(),
         detachRunner: vi.fn(),
       },

@@ -1,3 +1,6 @@
+import { DeviceIntegrationConnectionReaderSchema } from "@opensteer/integration-core";
+const deviceConnection = DeviceIntegrationConnectionReaderSchema.parse;
+import { DeviceIdSchema, RunnerIdSchema } from "@opensteer/core";
 import {
   caller,
   runCaller,
@@ -33,7 +36,7 @@ import { integrationDefinitionDigest } from "@opensteer/integration-core/digest"
 import {
   ComputerAppNotOfferedError,
   type CallableIntegrationTool,
-  type ComputerAppAccessDecision,
+  type DeviceComputerAppAccessDecision as ComputerAppAccessDecision,
   type IntegrationPlatformStore,
 } from "@opensteer/database";
 import {
@@ -93,12 +96,12 @@ describe("DeviceService computer connections", () => {
     };
     let existing = false;
     const setComputerConnection = vi.fn(
-      async (input: Parameters<IntegrationPlatformStore["setComputerConnection"]>[0]) => {
+      async (input: Parameters<IntegrationPlatformStore["setDeviceComputerConnection"]>[0]) => {
         if (!existing && !input.createIfMissing) {
           throw new ComputerAppNotOfferedError("Studio Mac");
         }
         return {
-          connection,
+          connection: deviceConnection(connection),
           created: false,
           fulfilledRequestIds: [],
           grants: [],
@@ -118,7 +121,7 @@ describe("DeviceService computer connections", () => {
       definitions: [computerDefinition],
       store: {
         listInstallations: vi.fn(async () => [installed]),
-        setComputerConnection,
+        setDeviceComputerConnection: setComputerConnection,
       },
     });
     const input = {
@@ -141,7 +144,7 @@ describe("DeviceService computer connections", () => {
     existing = true;
     await expect(
       service.devices.computerAppApprovals.setComputerConnection(input),
-    ).resolves.toEqual(connection);
+    ).resolves.toEqual(deviceConnection(connection));
     expect(setComputerConnection).toHaveBeenCalledTimes(2);
   });
 
@@ -514,7 +517,10 @@ describe("DeviceService computer invocation", () => {
         }),
         getComputerConnectionForCall,
         listCallableTools: vi.fn(async () => authority),
-        listComputerRunnerIdsForInstallation: vi.fn(async () => [runnerId]),
+        getDeviceSelfRunnerId: vi.fn(async (id: import("@opensteer/core").DeviceId) =>
+          RunnerIdSchema.parse(id),
+        ),
+        listComputerDeviceIdsForInstallation: vi.fn(async () => [DeviceIdSchema.parse(runnerId)]),
         listGrants: vi.fn(async () => [callable.grant as IntegrationGrant]),
         listInstallations: vi.fn(async () => [callable.installation]),
         revokeComputerConnection: vi.fn(async () => {
@@ -532,11 +538,11 @@ describe("DeviceService computer invocation", () => {
         revokeGrant: vi.fn(async () => {
           authority = [];
         }),
-        setComputerConnection: vi.fn(async () => {
+        setDeviceComputerConnection: vi.fn(async () => {
           connectionAccess = "read";
           authority = [];
           return {
-            connection,
+            connection: deviceConnection(connection),
             created: false,
             fulfilledRequestIds: [],
             grants: [],
@@ -1141,7 +1147,7 @@ describe("DeviceService computer app setup expiry", () => {
         app: notes,
         definitionId: "macos-app",
         kind: "computer.app.access",
-        runnerId,
+        deviceId: DeviceIdSchema.parse(runnerId),
         setupRequestId: "setup-request",
       },
       presentation: {
@@ -1207,8 +1213,8 @@ describe("DeviceService computer app setup expiry", () => {
       onRequestsChanged,
       onDeploymentEvent,
       store: {
-        requestComputerAppAccess,
-        getComputerUsePolicy: async () => ({
+        requestDeviceComputerAppAccess: requestComputerAppAccess,
+        getDeviceComputerUsePolicy: async () => ({
           appApproval: "ask",
           approvalKeyId: null,
           revision: 0,
@@ -1285,7 +1291,7 @@ describe("DeviceService computer app setup expiry", () => {
             deviceProfile: "iphone",
             publicKeyFingerprint: "phone-key",
           }),
-          requestComputerAppSetup,
+          requestDeviceComputerAppSetup: requestComputerAppSetup,
         },
       });
       const asking = service.devices.computerAppApprovals.requestComputerAppSetup({
@@ -1331,7 +1337,7 @@ describe("DeviceService computer app setup expiry", () => {
       grants: [],
       requestEvents: [cancellationEvent],
       requestIds: [createId("request")],
-      runnerId: null,
+      deviceId: null,
     }));
     const onDeploymentEvent = vi.fn();
     const onRequestsChanged = vi.fn();
@@ -1339,7 +1345,10 @@ describe("DeviceService computer app setup expiry", () => {
       definitions: [computerDefinition],
       onRequestsChanged,
       onDeploymentEvent,
-      store: { cancelComputerAppSetup, requestComputerAppSetup },
+      store: {
+        cancelDeviceComputerAppSetup: cancelComputerAppSetup,
+        requestDeviceComputerAppSetup: requestComputerAppSetup,
+      },
     });
 
     await service.devices.computerAppApprovals.requestComputerAppSetup({
@@ -1371,7 +1380,7 @@ describe("DeviceService computer app setup expiry", () => {
       grants: [],
       requestEvents: [requestEvent],
       requestIds: [createId("request")],
-      runnerIds: [],
+      deviceIds: [],
     }));
     const onDeploymentEvent = vi.fn();
     const onRequestsChanged = vi.fn();
@@ -1380,7 +1389,7 @@ describe("DeviceService computer app setup expiry", () => {
       onConnectionsChanged,
       onRequestsChanged,
       onDeploymentEvent,
-      store: { expireComputerAppSetupRequests },
+      store: { expireDeviceComputerAppSetupRequests: expireComputerAppSetupRequests },
     });
 
     await service.devices.computerAppApprovals.expireComputerAppSetupRequests();
@@ -1397,11 +1406,11 @@ describe("DeviceService computer app setup expiry", () => {
     const service = platform({
       onRequestsChanged,
       store: {
-        expireComputerAppSetupRequests: vi.fn(async () => ({
+        expireDeviceComputerAppSetupRequests: vi.fn(async () => ({
           grants: [],
           requestEvents: [],
           requestIds: [],
-          runnerIds: [],
+          deviceIds: [],
         })),
       },
     });
@@ -2238,12 +2247,16 @@ describe("computer app request matrix", () => {
     const threadReadInsideAdmission: boolean[] = [];
     const requestComputerAppAccess = vi.fn(
       async (
-        input: Parameters<IntegrationPlatformStore["requestComputerAppAccess"]>[0],
+        input: Parameters<IntegrationPlatformStore["requestDeviceComputerAppAccess"]>[0],
       ): Promise<ComputerAppAccessDecision> => {
         switch (options.decision ?? "computer") {
           case "approved":
             available = input.access;
-            return { connection, kind: "approved", requestEvents: [] };
+            return {
+              connection: deviceConnection(connection),
+              kind: "approved",
+              requestEvents: [],
+            };
           case "personal-grant":
             return { kind: "personal-grant", replayed: false, request, requestEvents: [] };
           case "computer":
@@ -2324,8 +2337,9 @@ describe("computer app request matrix", () => {
         stop: vi.fn(),
       },
       store: {
+        requireSelfDeviceId: async (id) => DeviceIdSchema.parse(id),
         listCallableTools: async () => refs(available),
-        requestComputerAppAccess,
+        requestDeviceComputerAppAccess: requestComputerAppAccess,
       },
     });
     const input = {

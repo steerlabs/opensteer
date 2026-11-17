@@ -299,6 +299,10 @@ describeStore("plugin devices", (test) => {
       computerApps: {
         withRunnerAdmission: async <A>(_runner: RunnerId, work: () => Promise<A> | A): Promise<A> =>
           work(),
+        withDeviceAdmissions: async <A>(
+          _devices: readonly string[],
+          work: () => Promise<A>,
+        ): Promise<A> => work(),
         removePluginData: removeRunnerData,
       } as unknown as DeviceServicesTestOptions["computerApps"],
       isRunnerConnected: () => false,

@@ -35,10 +35,11 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0025_team_copies",
     "0026_tabs_and_apps",
     "0027_message_origin",
-    "0028_drop_specialists_contract",
-    "0029_plugin_host",
-    "0030_plugin_oauth",
-    "0031_drop_service_integrations_contract",
+    "0028_device_drivers",
+    "0029_drop_specialists_contract",
+    "0030_plugin_host",
+    "0031_plugin_oauth",
+    "0032_drop_service_integrations_contract",
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());

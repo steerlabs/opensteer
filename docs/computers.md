@@ -1,14 +1,45 @@
 # Devices: enrollment and access
 
+## Devices, Runners and drivers
+
+A **Device** is what a person controls: its name, owner, Browser/Apps/Files policy, app approvals,
+Stops, setup requests, tab, task holds and owner views. A **Runner** is keyed Opensteer software
+that does work: its module ceiling, browser, shell, execution and credential audit. A **driver**
+binds a Runner to a Device in one role, `self` for the Runner's own computer or phone and `screen`
+for a Mac driving an iPhone's screen
+([migration](../packages/database/src/device-model-migration.ts)). A Device has one driver slot per
+role, and one Runner is `self` for at most one Device.
+
+Every person-visible Runner from before the split became a Device with the same ID and a `self`
+driver; new screen-only Devices get `dev_` IDs. An `rnr_` spelling proves nothing: resolve a
+Device's Runner through its driver, never by parsing the ID. Supervised services and team servers
+have no Devices. The Host stores each Device's kind and projects every capability's availability
+with a typed reason ([devices.ts](../packages/protocol/src/devices.ts)); clients never infer one
+from platform.
+
+A slot's generation rises on every attach, detach and removal and never resets, so work, status
+and media from an older binding are refused even when the same Mac reattaches. Only the owner's
+own Mac, on its current authenticated connection, can attach a screen. Attaching grants nothing:
+a new screen Device starts with Browser, Apps and Files off and no approvals, and a `screen`
+binding gives the Mac no authority over the iPhone beyond serving it. A phone that ever had a
+`self` driver, the iPhone app, can never become a screen target.
+
+Removing a Runner removes the Devices it drives as `self` and detaches those it drives as
+`screen`. A detached Device shows "Not connected" and keeps its policy, approvals, tab and Stops
+until the person sets it up again or removes it. Removing a Device ends its drivers, approvals,
+pending access Requests and Stops. Removing a screen Device never touches the Mac that drove it;
+removing a `self` Device revokes its Runner, so the hosting computer still cannot be removed.
+
 ## Enrollment
 
-A device is one Runner identity in a personal Deployment. Enrollment caps its modules on every reconnect;
-advertising fewer does not reduce the grant, and presentation shape never grants authority.
+Enrollment creates a Runner and its `self` Device in a personal Deployment. It caps the Runner's
+modules on every reconnect; advertising fewer does not reduce the grant, and presentation shape
+never grants authority.
 Execution policy changes preserve identity. Personal Opensteer executes tasks only on its hosting
 computer, which cannot be removed; phones never offer shell. Enrollment profiles live in
 [the grant policy](../apps/host/src/agents/runner-enrollment-grant.ts).
 
-Browser and Apps are live Host policy, separate from the immutable module ceiling and per-app
+Browser and Apps are live Device policy, separate from the immutable module ceiling and per-app
 approvals. Turning them off preserves capability descriptors and saved approvals. Browser gates
 only agents: profile homes, person browsing and the shared browser transport stay available.
 Apps gates agent computer use, phone data apps and computer-hosted MCP; a write already sent may
@@ -111,9 +142,11 @@ skill](../apps/runner/agent-skills/skills/computers/SKILL.md).
 
 ## Computer apps
 
-A connection is pinned to one Runner, and its person-approved access caps every Run. The Host authorizes calls; Runner contract validation detects mismatches and is not
-owner approval. Offline computers keep their connections. A lost write answer is an unknown outcome
-and is never retried ([ComputerAppHub](../apps/host/src/computer-apps/computer-app-hub.ts)).
+A connection belongs to one Device, and its person-approved access caps every Run. Each call goes
+to the Device's current driver for that capability; an iPhone screen's approvals are its own, never
+its Mac's. The Host authorizes calls; Runner contract validation detects mismatches and is not
+owner approval. Offline and detached Devices keep their connections. A lost write answer is an
+unknown outcome and is never retried ([ComputerAppHub](../apps/host/src/computer-apps/computer-app-hub.ts)).
 
 Agents reach approved data apps and local servers as providers in the plugin tool namespace, one
 per connection or server, so a program can mix them with cloud plugins
@@ -131,7 +164,7 @@ and the deny list with the target helper; an unavailable helper leaves the reque
 Automatic policy covers only new GUI apps, never widening or unblocking, and turning it down works
 remotely. Revoking a session stops its approval decisions, but grants it already committed stay
 until the owner reduces them. An approved app missing an OS grant needs local settings, not another
-approval. Android access follows [Agent Phone](agent-phone.md#access-and-stop); protected Mac APIs
+approval. Phone access follows [phone displays](computer-use.md#phone-displays); protected Mac APIs
 live in the [Computer Use helper](computer-use.md#apps-the-helper-serves) so their grants never
 reach every agent process.
 

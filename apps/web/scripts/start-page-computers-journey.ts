@@ -138,12 +138,14 @@ try {
       await shot("2-studio-mac-offline.png");
       expectThat(
         observed,
-        JSON.stringify(observed.before) === JSON.stringify(["Mac mini", "Studio Mac", "Phone"]),
+        JSON.stringify(observed.before) ===
+          JSON.stringify(["Mac mini", "Studio Mac", "Phone", "Phone"]),
         "the rows did not start in their own order",
       );
       expectThat(
         observed,
-        JSON.stringify(observed.after) === JSON.stringify(["Mac mini", "Phone", "Studio Mac"]),
+        JSON.stringify(observed.after) ===
+          JSON.stringify(["Mac mini", "Phone", "Phone", "Studio Mac"]),
         "the offline computer is not after the rows that open",
       );
       expectThat(
@@ -182,8 +184,10 @@ try {
           title: node.getAttribute("title"),
         })),
       );
-      // Down from the field to the first line, then over the offline one to the phone's.
+      // Down past the ready phone to the first line, then over the offline one.
       await page.locator(".start-page__input").focus();
+      await page.keyboard.press("ArrowDown");
+      const readyPhone = await focused();
       await page.keyboard.press("ArrowDown");
       const first = await focused();
       await page.keyboard.press("ArrowDown");
@@ -191,7 +195,7 @@ try {
       await page.keyboard.press("ArrowUp");
       await page.keyboard.press("Enter");
       await page.waitForURL((url) => url.pathname.startsWith("/settings/devices/"));
-      const observed = { lines, first, second, path: new URL(page.url()).pathname };
+      const observed = { lines, readyPhone, first, second, path: new URL(page.url()).pathname };
       expectThat(
         observed,
         JSON.stringify(lines.map(({ tag, name, status }) => [tag, name, status])) ===
@@ -207,6 +211,7 @@ try {
         lines[0]?.title === "Allow Screen Recording on Mac mini to see its apps.",
         "the line does not say what its owner can do",
       );
+      expectThat(observed, readyPhone === "Work iPhone", "the ready iPhone screen is missing");
       expectThat(
         observed,
         first === "Mac mini, Needs permission" && second === "Pixel 7, Needs update",
@@ -390,7 +395,8 @@ try {
     await shot("6-back-and-open.png");
     expectThat(
       observed,
-      JSON.stringify(back) === JSON.stringify(["Mac mini", "Studio Mac", "Phone"]) && folded === 0,
+      JSON.stringify(back) === JSON.stringify(["Mac mini", "Studio Mac", "Phone", "Phone"]) &&
+        folded === 0,
       "the computer did not come back in its own place",
     );
     expectThat(

@@ -16,6 +16,8 @@
     "./desktop-supervisor": "./src/desktop-supervisor.ts",
     "./desktop": "./src/desktop.ts",
     "./dictation": "./src/dictation.ts",
+    "./devices": "./src/devices.ts",
+    "./phone-display": "./src/phone-display.ts",
     "./display-stream": "./src/display-stream.ts",
     "./editing": "./src/editing.ts",
     "./passwords-broker": "./src/passwords-broker.ts",
@@ -27,7 +29,9 @@
     "./browser-tabs": "./src/browser-tabs.ts",
     "./tabs": "./src/tabs.ts",
     "./apps": "./src/apps.ts",
-    "./agent-tool-relay": "./src/agent-tool-relay.ts"
+    "./agent-tool-relay": "./src/agent-tool-relay.ts",
+    "./iphone-bridge": "./src/iphone-bridge.ts",
+    "./test-support/personal-wire": "./src/personal-wire.test-support.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

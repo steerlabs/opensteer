@@ -6,7 +6,12 @@ import {
   type DeviceAccessRow,
   type DeviceCapability,
 } from "@opensteer/client/computers";
-import { isAgentPhone } from "@opensteer/client/integrations";
+import {
+  isAgentPhone,
+  isIphone,
+  phoneScreenMac,
+  phoneScreenStatus,
+} from "@opensteer/client/integrations";
 
 export type { DeviceCapability };
 
@@ -62,7 +67,8 @@ function needsMacos(machine: MachineSummary, capability: DeviceCapability): bool
 
 function appsDetail(machine: MachineSummary): string {
   if (isAgentPhone(machine)) return "See and control the phone";
-  if (machine.device?.platform === "ios") return "Calendar, Contacts and other iPhone apps";
+  if (phoneScreenMac(machine)) return "See and control its screen";
+  if (isIphone(machine)) return "Shares data from the Opensteer app: Calendar, Contacts and more";
   if (machine.device?.platform === "macos") return capabilityDetail.apps;
   return "Apps and tools it hosts";
 }
@@ -100,6 +106,8 @@ export function deviceUsesLine(machine: MachineSummary, devicesAvailable: boolea
     (item) => item.kind === "fixed" || item.on,
   );
   if (items.length === 0) return machine.access ? "Your agent can’t use it" : null;
+  const screen = phoneScreenMac(machine);
+  if (screen) return `Screen control through ${screen.name}`;
   return items
     .map((item) =>
       item.kind === "switch" && item.needsMacos
@@ -112,6 +120,8 @@ export function deviceUsesLine(machine: MachineSummary, devicesAvailable: boolea
 /** "Online", "Offline · last seen Tuesday", or Home's role, in one line. */
 export function deviceStatusLine(machine: MachineSummary, now = new Date()): string {
   if (hostsDeployment(machine)) return "Home · your agent runs here";
+  const screen = phoneScreenStatus(machine);
+  if (screen) return screen.label;
   if (machine.status === "online") return "Online";
   if (machine.status === "pending")
     return machine.expiresAt

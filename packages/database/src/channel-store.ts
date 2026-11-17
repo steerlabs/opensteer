@@ -1,3 +1,5 @@
+import { computerConnectionDeviceId } from "./integration-connections.js";
+import { getDeviceSelfRunnerId, getSelfDeviceId } from "./device-inventory-store.js";
 import { threadFromRow } from "./thread-row-mappers.js";
 import { retryDatabaseTransaction } from "./connection.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
@@ -934,13 +936,15 @@ export class ChannelStore {
     readonly ownerUserId: UserId;
     readonly runnerId: RunnerId;
   }): Promise<IntegrationConnectionId | null> {
+    const deviceId = await getSelfDeviceId(this.#database, input.runnerId);
+    if (!deviceId) return null;
     const row = await this.#database
       .selectFrom("integrationConnections")
       .select("id")
       .where("connectionKind", "=", "computer")
       .where("integrationDefinitionId", "=", input.definitionId)
       .where("ownerUserId", "=", input.ownerUserId)
-      .where("runnerId", "=", input.runnerId)
+      .where(computerConnectionDeviceId, "=", deviceId)
       .where("status", "!=", "revoked")
       .executeTakeFirst();
     return row?.id ?? null;
@@ -2281,7 +2285,7 @@ async function requireComputerChannelSource(
           "connectionKind",
           "integrationDefinitionId",
           "ownerUserId",
-          "runnerId",
+          computerConnectionDeviceId.as("deviceId"),
           "status",
         ])
         .where("id", "=", input.sourceConnectionId)
@@ -2294,7 +2298,8 @@ async function requireComputerChannelSource(
     source.connectionKind !== "computer" ||
     source.integrationDefinitionId !== manifest.computerApp ||
     source.ownerUserId !== input.createdBy ||
-    source.runnerId !== input.runnerId ||
+    !source.deviceId ||
+    (await getDeviceSelfRunnerId(transaction, source.deviceId)) !== input.runnerId ||
     source.computerAccess !== "read-write" ||
     source.status === "revoked"
   ) {

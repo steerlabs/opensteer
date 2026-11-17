@@ -43,6 +43,8 @@ packages/apple-dictation/Tests/Fixtures/dictation-wire.json
 apps/desktop/native/dictation/Tests/Fixtures/request.json
 # Written by the personal wire guard when the minimum moves; prettier must not reshape it.
 packages/protocol/src/personal-wire.baseline.json
+# Frozen from main at v60 for the historical Device projection proofs.
+packages/protocol/src/device-wire-v60.fixture.json
 
 # Repeatable third-party source import.
 vendor/plugin-engine

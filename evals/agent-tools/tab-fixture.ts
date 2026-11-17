@@ -58,7 +58,7 @@ export class TabFixture {
   }
 
   computerId(state: TabState, name: string): string {
-    if (/^rnr_[0-9a-f-]{36}$/u.test(name)) return name;
+    if (/^(?:rnr|dev)_[0-9a-f-]{36}$/u.test(name)) return name;
     return (
       state.computers.find((computer) => computer.name === name)?.computerId ??
       derivedId("rnr", `computer:${name}`)
@@ -222,7 +222,7 @@ export class TabFixture {
           const phone = state.phones.find(
             (candidate) => this.computerId(state, candidate.computer) === target.computerId,
           );
-          if (!phone) return failure("not_found", "That computer has no Agent Phone.", null);
+          if (!phone) return failure("not_found", "That computer has no phone screen.", null);
           const existing = state.tabs.find(
             (tab) => tab.kind === "phone" && tab.computer === phone.computer,
           );

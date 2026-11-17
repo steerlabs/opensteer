@@ -11,6 +11,7 @@ export interface BrowserHostClientOptions {
   readonly desktopMedia?: boolean;
   readonly assetRoute?: HttpHostClientOptions["assetRoute"];
   readonly passkeys?: HttpHostClientOptions["passkeys"];
+  readonly iphoneSetup?: HttpHostClientOptions["iphoneSetup"];
   readonly capabilities: Exclude<HttpHostClientOptions["capabilities"], undefined>;
   /** The Desktop renderer attaches to a selected Deployment rather than to the
    * origin that served this bundle. */
@@ -34,6 +35,7 @@ export function createBrowserHostClient(options: BrowserHostClientOptions): Http
     ...(options.desktopMedia ? { desktopMedia: true } : {}),
     deviceAccessRequests: "include",
     ...(options.passkeys ? { passkeys: options.passkeys } : {}),
+    ...(options.iphoneSetup ? { iphoneSetup: options.iphoneSetup } : {}),
     capabilities: options.capabilities ?? null,
     baseUrl: options.baseUrl ?? window.location.origin,
     ...(options.fetch ? { fetch: options.fetch } : {}),

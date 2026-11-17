@@ -1,8 +1,8 @@
-import { RunnerIdSchema, type IntegrationCallSubject } from "@opensteer/core";
+import { DeviceIdSchema, type IntegrationCallSubject } from "@opensteer/core";
 import { formatComputerUseResultHead } from "@opensteer/protocol";
 import type { MessageEntry, ToolEntry, TranscriptEntry } from "../host/client.js";
 
-const runnerId = RunnerIdSchema.parse("rnr_35a353b8-9b64-4600-9eb1-e25db7c052a3");
+const runnerId = DeviceIdSchema.parse("rnr_35a353b8-9b64-4600-9eb1-e25db7c052a3");
 
 export const mockComputerUseSlack = {
   app: "Slack",

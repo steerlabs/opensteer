@@ -1,3 +1,4 @@
+import { computerTargetId } from "@opensteer/client/host";
 import { useEffect, useId, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 import {
@@ -8,11 +9,19 @@ import {
 import { computerGlyph, deviceRemovalProfiles, hostsDeployment } from "@opensteer/client/computers";
 import {
   canRespondToRequests,
+  deviceMachine,
   fullAccessOnThisMac,
   mutationIdempotencyKey,
 } from "@opensteer/client/host";
-import { isAgentPhone, ownsComputerApps } from "@opensteer/client/integrations";
-import type { ComputerAppSetupSummary as ComputerAppSetupRequest } from "@opensteer/integration-core/computer-app-setup";
+import {
+  ownsComputerApps,
+  phoneScreenDisconnectCopy,
+  phoneScreenMac,
+  phoneScreenRemovalCopy,
+  phoneScreenStatus,
+} from "@opensteer/client/integrations";
+import { DeploymentIdSchema, DeviceIdSchema, TabTargetSchema } from "@opensteer/core";
+import type { ComputerAppSetupSummary as ComputerAppSetupRequest } from "@opensteer/client/integrations";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { useShell } from "../app-shell.js";
 import {
@@ -27,12 +36,14 @@ import { DeviceArt } from "../computers/device-art.js";
 import { HerePin } from "../computers/here-pin.js";
 import { useHereId } from "../computers/here.js";
 import { PhoneSection } from "../computers/phone-section.js";
+import { AddIphoneDialog, type ExistingIphoneTarget } from "./add-iphone-dialog.js";
 import { useDeploymentName } from "../deployment-name.js";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
 import { MacOsPermissionReviewDialog } from "../macos-permission-review-dialog.js";
 import { MachineAccessSection } from "../machine-access/machine-access-section.js";
 import { PageHeader, PageTopbar } from "../page-header.js";
+import { useOptionalWorkspace } from "../workspace/workspace-context.js";
 import { RemoteAccessCard } from "../settings/sections/remote-access-card.js";
 import { SettingsError } from "../settings/primitives.js";
 import {
@@ -42,8 +53,14 @@ import {
   pendingEnrollmentId,
   type DeviceCapability,
 } from "./device-access.js";
-import { DeviceAccessSwitches, useAccessSwitch } from "./device-access-switches.js";
+import {
+  DeviceAccessNotice,
+  DeviceAccessSwitchRow,
+  DeviceAccessSwitches,
+  useAccessSwitch,
+} from "./device-access-switches.js";
 import { deviceNotificationsOn, setDeviceNotifications } from "./device-preferences.js";
+import { IphoneWifiRow } from "./iphone-wifi-row.js";
 import { computerAppIdFromHash, devicesRoute } from "./device-routes.js";
 import { useThisDevice } from "./this-device.js";
 
@@ -175,7 +192,10 @@ function PendingDeviceDetail({
 }
 
 export function deviceRemovalCopy(input: {
-  readonly machine: Pick<MachineSummary, "id" | "name" | "status">;
+  readonly machine: Pick<
+    MachineSummary,
+    "id" | "name" | "status" | "selfRunnerId" | "capabilities"
+  >;
   readonly thisDevice: boolean;
   readonly profiles: Parameters<typeof deviceRemovalProfiles>[1];
 }): { readonly title: string; readonly body: string; readonly confirm: string } {
@@ -208,7 +228,12 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
   const hereId = useHereId();
   const here = hereId !== null && machine.id === hereId;
   const home = hostsDeployment(machine);
-  const phone = isAgentPhone(machine);
+  const phone = Boolean(deviceMachine(machine).phoneDisplay);
+  const screenMac = phoneScreenMac(machine);
+  const screen = phoneScreenStatus(machine);
+  const screenMacHere = desktopBridge !== null && screenMac?.runnerId === hereId;
+  const deploymentId = DeploymentIdSchema.safeParse(snapshot.deploymentId);
+  const workspace = useOptionalWorkspace();
   const leavesHere = here && !home && device !== null;
   const homeName = snapshot.machines.find(hostsDeployment)?.name ?? deploymentName;
   const apps = useComputerAppData(hostClient, snapshot.machineRevision);
@@ -219,10 +244,11 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
   const [renaming, setRenaming] = useState(false);
   const [savingName, setSavingName] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [confirmingRemoval, setConfirmingRemoval] = useState(false);
+  const [confirming, setConfirming] = useState<"remove" | "disconnect" | null>(null);
   const [removing, setRemoving] = useState(false);
   const [permissionReview, setPermissionReview] = useState(false);
   const [pluggingIn, setPluggingIn] = useState(false);
+  const [settingUpAgain, setSettingUpAgain] = useState<ExistingIphoneTarget | null>(null);
   const removalTitleId = useId();
   useEffect(() => setName(machine.name), [machine.name]);
 
@@ -233,11 +259,68 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
     lentByThisDesktop: here && !home,
   });
   const switches = deviceSwitches(machine, snapshot.devicesAvailable === true);
-  const removal = deviceRemovalCopy({
-    machine,
-    thisDevice: leavesHere,
-    profiles: snapshot.browserProfiles,
-  });
+  const removal = screenMac
+    ? phoneScreenRemovalCopy(machine.name, screenMac.name)
+    : {
+        label: leavesHere ? "Sign out and remove this Mac" : "Remove",
+        ...deviceRemovalCopy({
+          machine,
+          thisDevice: leavesHere,
+          profiles: snapshot.browserProfiles,
+        }),
+      };
+  const disconnect = screenMac?.attached
+    ? phoneScreenDisconnectCopy(machine.name, screenMac.name)
+    : null;
+  const confirmation = confirming === "disconnect" ? disconnect : confirming ? removal : null;
+  const statusTone =
+    screen?.tone ??
+    (machine.status === "online" ? "online" : machine.status === "offline" ? "offline" : "waiting");
+  const appsSwitch = switches.find((item) => item.capability === "apps");
+  const driverGeneration = deviceMachine(machine).phoneDisplay?.driver?.generation;
+  // A disconnected iPhone can be set up again on any of the person's Macs; one
+  // that needs setup is fixed on the Mac that drives it, without detaching it.
+  const fixSetup =
+    screenMac &&
+    screen?.needsSetup &&
+    (!screenMac.attached || screenMacHere) &&
+    driverGeneration !== undefined &&
+    hostClient.iphoneSetup &&
+    deploymentId.success
+      ? () =>
+          setSettingUpAgain({
+            kind: "existing",
+            deviceId: DeviceIdSchema.parse(machine.id),
+            expectedGeneration: driverGeneration,
+          })
+      : null;
+
+  const screenTab = TabTargetSchema.safeParse({ kind: "phone", computerId: machine.id });
+  function openScreen() {
+    if (!workspace || !screenTab.success) return;
+    const show = workspace.nav.beginPlaceOperation();
+    void hostClient
+      .openTab(screenTab.data)
+      .then((tab) => show({ kind: "tab", tabId: tab.tabId }))
+      .catch((reason: unknown) => setError(actionErrorMessage(reason)));
+  }
+
+  async function disconnectScreen() {
+    const generation = deviceMachine(machine).phoneDisplay?.driver?.generation;
+    if (generation === undefined) return;
+    setRemoving(true);
+    setError(null);
+    try {
+      await hostClient.detachIphoneScreen({ deviceId: machine.id, expectedGeneration: generation });
+      await hostClient.refresh();
+      setConfirming(null);
+    } catch (reason) {
+      setError(actionErrorMessage(reason));
+      setConfirming(null);
+    } finally {
+      setRemoving(false);
+    }
+  }
 
   async function saveName() {
     const next = name.trim();
@@ -324,7 +407,7 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
       void navigate(devicesRoute);
     } catch (reason) {
       setError(actionErrorMessage(reason));
-      setConfirmingRemoval(false);
+      setConfirming(null);
     } finally {
       setRemoving(false);
     }
@@ -333,6 +416,17 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
   const appsEditor = apps.data ? (
     phone ? (
       <PhoneSection
+        appsSwitch={
+          screenMac && appsSwitch ? (
+            <DeviceAccessSwitchRow
+              item={appsSwitch}
+              machine={machine}
+              onSet={(capability, on) => void access.set(capability, on)}
+              pending={access.pending}
+              thisDevice={false}
+            />
+          ) : null
+        }
         connections={apps.data.connections}
         definitions={apps.data.definitions}
         hostClient={hostClient}
@@ -342,7 +436,21 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
           await apps.reload();
           await hostClient.refresh();
         }}
+        onOpenScreen={workspace && screenTab.success ? openScreen : null}
         onPlugIn={() => setPluggingIn(true)}
+        onFixSetup={fixSetup}
+        wifiRow={
+          screenMacHere && screenMac?.attached && hostClient.iphoneSetup && deploymentId.success ? (
+            <IphoneWifiRow
+              deploymentId={deploymentId.data}
+              deploymentName={deploymentName}
+              deviceId={machine.id}
+              macName={screenMac.name}
+              port={hostClient.iphoneSetup}
+              revision={snapshot.machineRevision}
+            />
+          ) : null
+        }
       />
     ) : (
       <ComputerAppsSection
@@ -385,7 +493,9 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
           machine,
         })}
         platform={apps.data.platform}
-        setupRequests={apps.data.setupRequests.filter((request) => request.runnerId === machine.id)}
+        setupRequests={apps.data.setupRequests.filter(
+          (request) => computerTargetId(request) === machine.id,
+        )}
       />
     )
   ) : null;
@@ -502,11 +612,11 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
             )}
             <p className="computer-header__facts">
               <span
-                className={`computer-status${machine.status === "offline" ? " device-page__away" : ""}`}
+                className={`computer-status${statusTone === "offline" ? " device-page__away" : ""}`}
               >
                 <span
                   aria-hidden
-                  className={`computer-status__dot computer-status__dot--${machine.status === "online" ? "online" : machine.status === "offline" ? "offline" : "waiting"}`}
+                  className={`computer-status__dot computer-status__dot--${statusTone}`}
                 />
                 {deviceStatusLine(machine)}
               </span>
@@ -515,16 +625,23 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
           </div>
         </header>
 
-        <DeviceAccessSwitches
-          editors={editors}
-          machine={machine}
-          notice={access.notice}
-          onSet={(capability, on) => void access.set(capability, on)}
-          pending={access.pending}
-          remedy={remedy}
-          switches={switches}
-          thisDevice={here}
-        />
+        {screenMac ? (
+          <>
+            {appsEditor}
+            {access.notice ? <DeviceAccessNotice notice={access.notice} /> : null}
+          </>
+        ) : (
+          <DeviceAccessSwitches
+            editors={editors}
+            machine={machine}
+            notice={access.notice}
+            onSet={(capability, on) => void access.set(capability, on)}
+            pending={access.pending}
+            remedy={remedy}
+            switches={switches}
+            thisDevice={here}
+          />
+        )}
         {apps.error ? <SettingsError message={apps.error} /> : null}
 
         {here && desktopDeployment ? (
@@ -558,26 +675,36 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
           </>
         ) : machine.revocable || leavesHere ? (
           <section aria-label="Remove" className="device-remove">
+            {disconnect ? (
+              <button
+                className="btn"
+                disabled={removing}
+                onClick={() => setConfirming("disconnect")}
+                type="button"
+              >
+                {disconnect.label}
+              </button>
+            ) : null}
             <button
               className="btn btn--danger"
               disabled={removing}
-              onClick={() => setConfirmingRemoval(true)}
+              onClick={() => setConfirming("remove")}
               type="button"
             >
-              {leavesHere ? "Sign out and remove this Mac" : "Remove"}
+              {removal.label}
             </button>
           </section>
         ) : null}
         <SettingsError message={error} />
       </div>
-      {confirmingRemoval ? (
+      {confirmation ? (
         <Dialog
           footer={
             <>
               <button
                 className="btn btn--ghost"
                 disabled={removing}
-                onClick={() => setConfirmingRemoval(false)}
+                onClick={() => setConfirming(null)}
                 type="button"
               >
                 Cancel
@@ -585,19 +712,33 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
               <button
                 className="btn btn--danger"
                 disabled={removing}
-                onClick={() => void remove()}
+                onClick={() => void (confirming === "disconnect" ? disconnectScreen() : remove())}
                 type="button"
               >
-                {removing ? "Removing…" : removal.confirm}
+                {removing
+                  ? confirming === "disconnect"
+                    ? "Disconnecting…"
+                    : "Removing…"
+                  : confirmation.confirm}
               </button>
             </>
           }
           labelledBy={removalTitleId}
-          onClose={() => setConfirmingRemoval(false)}
-          title={<span id={removalTitleId}>{removal.title}</span>}
+          onClose={() => setConfirming(null)}
+          title={<span id={removalTitleId}>{confirmation.title}</span>}
         >
-          <p>{removal.body}</p>
+          <p>{confirmation.body}</p>
         </Dialog>
+      ) : null}
+      {settingUpAgain && hostClient.iphoneSetup && deploymentId.success ? (
+        <AddIphoneDialog
+          client={hostClient}
+          deploymentId={deploymentId.data}
+          deploymentName={deploymentName}
+          existing={settingUpAgain}
+          onClose={() => setSettingUpAgain(null)}
+          port={hostClient.iphoneSetup}
+        />
       ) : null}
       {pluggingIn ? (
         <AddPhoneDialog

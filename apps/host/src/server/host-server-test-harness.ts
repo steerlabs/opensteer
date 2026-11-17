@@ -72,6 +72,7 @@ export function hostServerTestDependencies(
       continuations: inert(),
       definitions: [],
       devices: {
+        deviceConnections: async () => [],
         computerAppApprovals: {
           computerUsePolicy: async () => ({ appApproval: "ask", approvalKeyId: null }),
         },

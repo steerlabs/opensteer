@@ -258,6 +258,7 @@ it("fits largest catalog and single-message tool pages but rejects an oversized 
   const computers = Array.from({ length: 100 }, () => ({
     computerId: createId("runner"),
     name: "e".repeat(120),
+    kind: "agent-phone",
     online: true,
     hosting: false,
     canRunTasks: false,
@@ -265,6 +266,17 @@ it("fits largest catalog and single-message tool pages but rejects an oversized 
     revoked: false,
     access: { browser: "enabled", apps: "enabled", files: "enabled" },
     sessions: [{ id: createId("authSession") }],
+    phoneDisplay: {
+      definitionId: "iphone-screen",
+      control: { state: "unavailable", reason: { kind: "driver-update-required" } },
+      input: { state: "unavailable", reason: { kind: "driver-update-required" } },
+      navigationButtons: Array.from({ length: 32 }, (_, index) => ({
+        id: `button-${index}`.padEnd(64, "x"),
+        label: "l".repeat(120),
+      })),
+      actions: ["tap", "longPress", "swipe", "drag", "type", "clear", "navigate", "launch"],
+      setup: { location: "driver-mac", driverRunnerName: "m".repeat(120) },
+    },
   }));
   expect(
     Buffer.byteLength(

@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 
 import { RunnerIdSchema, createId, emptyExecutionPreferences, type Request } from "@opensteer/core";
@@ -97,7 +98,7 @@ function fullDiskAccessRequest(machineId: ReturnType<typeof RunnerIdSchema.parse
     originatingThreadId: createId("thread"),
     payload: {
       kind: "machine.full-disk-access",
-      machineId,
+      machineId: DeviceIdSchema.parse(machineId),
       machineName: "Alex's MacBook Pro",
       reason: "Reading Messages to summarise the thread",
     },

@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 
 import { act, StrictMode, useEffect, type ReactNode } from "react";
@@ -16,7 +17,6 @@ import * as Clipboard from "expo-clipboard";
 import { fitOffer, pictureBox, pinched, slideFor } from "../browser/browser-page.js";
 import {
   BrowserPageContentPartSchema,
-  RunnerIdSchema,
   TabIdSchema,
   type App,
   type Tab,
@@ -692,7 +692,7 @@ afterEach(() => {
 const agentHome = { computerId: "rnr_00000000-0000-4000-8000-000000000001", path: "/Users/alex" };
 /** The computer every fixture tab is on. */
 const studio = {
-  computerId: RunnerIdSchema.parse("rnr_00000000-0000-4000-8000-00000000000a"),
+  computerId: DeviceIdSchema.parse("rnr_00000000-0000-4000-8000-00000000000a"),
   name: "Studio Mac",
 };
 const agentAt = "2026-10-13T00:00:00.000Z";
@@ -2304,7 +2304,9 @@ describe("a page beside its agent's thread", () => {
       // The agent moves on; the page keeps up in place.
       state.snapshot = agentOn("page-2");
       await render();
-      act(() => vi.advanceTimersByTime(1000));
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
       expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
         editAddress: false,
         popup: false,
@@ -2317,7 +2319,9 @@ describe("a page beside its agent's thread", () => {
       state.setParams.mockClear();
       await showTab("page-1");
       expect(element(container, "Address, example.com")).not.toBeNull();
-      act(() => vi.advanceTimersByTime(5000));
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
       expect(state.setParams).not.toHaveBeenCalled();
 
       // The conversation's live card shows the agent's tab in place, and following picks up there.
@@ -2337,7 +2341,9 @@ describe("a page beside its agent's thread", () => {
       state.focused = false;
       state.snapshot = agentOn("page-1");
       await render();
-      act(() => vi.advanceTimersByTime(5000));
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
       expect(state.setParams).not.toHaveBeenCalled();
       state.focused = true;
       await render();

@@ -1,5 +1,6 @@
+import { computerTargetId } from "@opensteer/client/host";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
-import { RunnerIdSchema, type Request } from "@opensteer/core";
+import { isPhoneDisplayDefinitionId, RunnerIdSchema, type Request } from "@opensteer/core";
 import {
   mutationIdempotencyKey,
   unwrapRpcResult,
@@ -16,7 +17,7 @@ import {
   computerConnectionState,
   connectCard,
   integrationRequestStillPending,
-  isAgentPhone,
+  setPhoneUseAccess,
   resolveIntegrationAccess,
   type AccessPlan,
   type AccessRequestAccount,
@@ -305,6 +306,16 @@ export function IntegrationConnectCard(props: {
   }) =>
     run(async (generation) => {
       if (!plan?.definition) return;
+      const computer = snapshot.machines.find((machine) => machine.id === input.runnerId);
+      // The owner sets a phone's access here; a Mac app is approved on that Mac.
+      if (isPhoneDisplayDefinitionId(plan.definition.id)) {
+        if (!computer) throw new Error("That phone isn't one of your devices any more.");
+        await setPhoneUseAccess(props.hostClient, computer, input.access);
+        if (generation !== operationGeneration.current) return;
+        setNotice(`Agents can now use ${computer.name} at the access you chose.`);
+        setReload((value) => value + 1);
+        return;
+      }
       const command = {
         idempotencyKey: mutationIdempotencyKey(
           `integration-computer:${plan.definition.id}:${input.runnerId}:${input.access}`,
@@ -317,24 +328,15 @@ export function IntegrationConnectCard(props: {
           kind: "app" as const,
         },
       };
-      const phone = plan.definition.id === "android-phone";
-      const result = phone
-        ? await props.hostClient.dispatch({ ...command, type: "integration.computer.setup.set" })
-        : await props.hostClient.dispatch({
-            ...command,
-            type: "integration.computer.setup.request",
-          });
-      if (
-        result.type !== "integration.computer.setup.set" &&
-        result.type !== "integration.computer.setup.request"
-      )
-        throw new Error("The computer did not take the request.");
+      const result = await props.hostClient.dispatch({
+        ...command,
+        type: "integration.computer.setup.request",
+      });
+      if (result.type !== "integration.computer.setup.request")
+        throw new Error("Integration computer command mismatch.");
       if (generation !== operationGeneration.current) return;
-      const computer = snapshot.machines.find((machine) => machine.id === input.runnerId);
       setNotice(
-        phone && computer && isAgentPhone(computer)
-          ? `Agents can now use ${computer.name} at the access you chose.`
-          : `Setup requested. On ${computer?.name ?? "that computer"}, open Opensteer → Settings → Devices to approve ${plan.definition.name}.`,
+        `Setup requested. On ${computer?.name ?? "that computer"}, open Opensteer → Settings → Devices to approve ${plan.definition.name}.`,
       );
       setReload((value) => value + 1);
     });
@@ -781,8 +783,9 @@ function ReviewStep(props: {
     selectedComputerConnection?.computer === null ||
     selectedComputerConnection?.computer === undefined
       ? null
-      : (props.machines.find(({ id }) => id === selectedComputerConnection.computer?.runnerId) ??
-        null);
+      : (props.machines.find(
+          ({ id }) => id === computerTargetId(selectedComputerConnection.computer),
+        ) ?? null);
   const selectedComputerState =
     selectedComputerConnection === null || plan.definition === null
       ? null

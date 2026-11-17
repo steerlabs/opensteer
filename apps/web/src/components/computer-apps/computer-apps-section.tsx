@@ -1,3 +1,8 @@
+import { computerTargetId } from "@opensteer/client/host";
+import type {
+  IntegrationConnectionSummary,
+  ComputerAppSetupSummary as ComputerAppSetupRequest,
+} from "@opensteer/client/integrations";
 import { computerAppAnchorId } from "../devices/device-routes.js";
 import { ComputerSetupApprovals } from "./computer-app-approval.js";
 import { Icon } from "../icon.js";
@@ -7,10 +12,8 @@ import { ComputerUseBlock } from "./computer-use-section.js";
 
 import type {
   IntegrationAccess,
-  IntegrationConnectionSummary,
   IntegrationDefinitionSummaryView,
   IntegrationPlatformDashboardView,
-  ComputerAppSetupSummary as ComputerAppSetupRequest,
 } from "@opensteer/integration-core";
 import type { ComputerAppRemedy, MachineSummary } from "@opensteer/protocol";
 import {
@@ -195,7 +198,8 @@ export function ComputerAppsSection({
   function requestFor(definitionId: string): ComputerAppSetupRequest | null {
     return (
       setupRequests.find(
-        (request) => request.runnerId === machine.id && request.definitionId === definitionId,
+        (request) =>
+          computerTargetId(request) === machine.id && request.definitionId === definitionId,
       ) ?? null
     );
   }

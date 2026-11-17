@@ -2,8 +2,8 @@ import type { z } from "zod";
 import type { AppAccessRequestInputSchema } from "@opensteer/agent-tools/tools";
 import { computerAppIdentityKey } from "@opensteer/integration-core";
 import type { IntegrationRequester } from "@opensteer/database";
-import { androidPhoneDefinitionId } from "@opensteer/protocol";
-import { formatReferenceLink, refused, type Request, type RunnerId } from "@opensteer/core";
+import { isPhoneDisplayDefinitionId } from "@opensteer/core";
+import { formatReferenceLink, refused, type Request, type DeviceId } from "@opensteer/core";
 import {
   computerUseDefinitionId,
   computerUseHolderKey,
@@ -130,7 +130,7 @@ export class DeviceToolHandlers {
    */
   async #requestComputerApp(
     scope: RunToolScope,
-    input: { readonly app: string; readonly computerId?: RunnerId | undefined } & Pick<
+    input: { readonly app: string; readonly computerId?: DeviceId | undefined } & Pick<
       z.infer<typeof AppAccessRequestInputSchema>,
       "access" | "reason"
     >,
@@ -138,18 +138,19 @@ export class DeviceToolHandlers {
   ) {
     const { machines: macs, phones } =
       await this.#devices.computerAppApprovals.computerUseInventory(scope.requestedBy);
+    const executingDeviceId = await this.#devices.store.requireSelfDeviceId(scope.runnerId);
     const named = input.computerId
-      ? macs.find(({ runnerId }) => runnerId === input.computerId)
-      : (macs.find(({ runnerId }) => runnerId === scope.runnerId) ??
+      ? macs.find(({ deviceId }) => deviceId === input.computerId)
+      : (macs.find(({ deviceId }) => deviceId === executingDeviceId) ??
         (macs.length === 1 ? macs[0] : undefined));
     if (!named) {
       const phone = input.computerId
-        ? phones.find(({ runnerId }) => runnerId === input.computerId)
+        ? phones.find(({ deviceId }) => deviceId === input.computerId)
         : undefined;
       if (phone)
         throw refused(
           "bad_request",
-          `${phone.name} is an Android phone, which is asked for whole: call ${phoneRequestShape} without app.`,
+          `${phone.name} is a phone, which is asked for whole: call ${phoneRequestShape} without app.`,
         );
       if (macs.length === 0) throw refused("conflict", noComputerUseMac);
       throw refused(
@@ -157,7 +158,7 @@ export class DeviceToolHandlers {
         input.computerId
           ? `That computer is not one of yours set up for computer use. These are: ${macs.map(({ name }) => name).join(", ")}.`
           : `This task is not running on a Mac set up for computer use, so name one with computerId. These are set up: ${macs
-              .map(({ name, runnerId }) => `${name} (${runnerId})`)
+              .map(({ name, deviceId }) => `${name} (${deviceId})`)
               .join(", ")}.`,
       );
     }
@@ -168,7 +169,7 @@ export class DeviceToolHandlers {
       callId,
       originatingRunId: scope.runId,
       ownerUserId: scope.requestedBy,
-      runnerId: named.runnerId,
+      deviceId: named.deviceId,
       threadId: scope.threadId,
     });
     return computerAccessResult(created);
@@ -187,9 +188,9 @@ export class DeviceToolHandlers {
     const { machines, phones } = await this.#devices.computerAppApprovals.computerUseInventory(
       scope.requestedBy,
     );
-    const phone = phones.find(({ runnerId }) => runnerId === input.computerId);
+    const phone = phones.find(({ deviceId }) => deviceId === input.computerId);
     if (!phone) {
-      const mac = machines.find(({ runnerId }) => runnerId === input.computerId);
+      const mac = machines.find(({ deviceId }) => deviceId === input.computerId);
       throw refused(
         "bad_request",
         mac
@@ -206,7 +207,7 @@ export class DeviceToolHandlers {
       callId,
       originatingRunId: scope.runId,
       ownerUserId: scope.requestedBy,
-      runnerId: phone.runnerId,
+      deviceId: phone.deviceId,
       threadId: scope.threadId,
     });
     return computerAccessResult(created);
@@ -222,11 +223,11 @@ export class DeviceToolHandlers {
     if (replay.kind !== "integration.access" && replay.kind !== "computer.app.access")
       throw new Error("MCP call identity belongs to another Request kind");
     if (replay.payload?.kind === "computer.app.access" && replay.status === "pending") {
-      const runnerId = replay.payload.runnerId;
+      const deviceId = replay.payload.deviceId;
       const { machines, phones } = await this.#devices.computerAppApprovals.computerUseInventory(
         scope.requestedBy,
       );
-      const computer = [...machines, ...phones].find((machine) => machine.runnerId === runnerId);
+      const computer = [...machines, ...phones].find((machine) => machine.deviceId === deviceId);
       if (computer) return pendingResult(replay, true, pendingOnComputerNextAction(computer.name));
     }
     return requestResult(replay, true);
@@ -240,17 +241,17 @@ export class DeviceToolHandlers {
   async #pendingApprovals(ownerUserId: IntegrationRequester["ownerUserId"]) {
     const store = this.#devices.store;
     const [setupRequests, accessRequests] = await Promise.all([
-      store.listComputerAppSetupRequests(ownerUserId),
+      store.listDeviceComputerAppSetupRequests(ownerUserId),
       store.integrationRequests.listPendingIntegrationAccessRequests(ownerUserId),
     ]);
-    const onMacRequests = setupRequests.flatMap(({ kind, definitionId, runnerId, app, access }) =>
+    const onMacRequests = setupRequests.flatMap(({ kind, definitionId, deviceId, app, access }) =>
       kind === "app" && definitionId === computerUseDefinitionId && app
-        ? [{ runnerId, app, access }]
+        ? [{ deviceId, app, access }]
         : [],
     );
     const phoneAccessRunners = new Set(
-      setupRequests.flatMap(({ kind, definitionId, runnerId }) =>
-        kind === "app" && definitionId === androidPhoneDefinitionId ? [runnerId] : [],
+      setupRequests.flatMap(({ kind, definitionId, deviceId }) =>
+        kind === "app" && isPhoneDisplayDefinitionId(definitionId) ? [deviceId] : [],
       ),
     );
     const grants = new Set(
@@ -260,12 +261,12 @@ export class DeviceToolHandlers {
     );
     return {
       onMacRequests,
-      onMac: (runnerId: RunnerId, appKey: string) =>
+      onMac: (deviceId: DeviceId, appKey: string) =>
         onMacRequests.some(
           (request) =>
-            request.runnerId === runnerId && computerAppIdentityKey(request.app) === appKey,
+            request.deviceId === deviceId && computerAppIdentityKey(request.app) === appKey,
         ),
-      phoneAccess: (runnerId: RunnerId) => phoneAccessRunners.has(runnerId),
+      phoneAccess: (deviceId: DeviceId) => phoneAccessRunners.has(deviceId),
       grant: (connectionId: string) => grants.has(connectionId as never),
     };
   }
@@ -273,7 +274,7 @@ export class DeviceToolHandlers {
   async #installedApps(
     requester: IntegrationRequester,
     run: RunToolScope | null,
-    runnerId: RunnerId,
+    deviceId: DeviceId,
     query: string,
     limit: number,
     offset: number,
@@ -282,16 +283,16 @@ export class DeviceToolHandlers {
     const computerEnabled = run !== null && (await this.#devices.computerToolEnabled(run));
     const nextCursor = (more: boolean) => (more ? String(offset + limit) : null);
     const inventory = await approvals.computerUseInventory(requester.ownerUserId);
-    const phone = inventory.phones.find((candidate) => candidate.runnerId === runnerId);
-    if (phone) {
+    const phone = inventory.phones.find((candidate) => candidate.deviceId === deviceId);
+    if (phone && isPhoneDisplayDefinitionId(phone.definitionId)) {
       const installed = await approvals.installedComputerApps(
         {
           actorUserId: requester.ownerUserId,
-          runnerId,
+          deviceId,
           query,
           limit,
           offset,
-          definitionId: androidPhoneDefinitionId,
+          definitionId: phone.definitionId,
         },
         inventory.phones,
       );
@@ -301,11 +302,11 @@ export class DeviceToolHandlers {
         nextCursor: nextCursor(offset + installed.apps.length < installed.total),
       };
     }
-    const machine = inventory.machines.find((candidate) => candidate.runnerId === runnerId);
-    if (!machine) throw refused("not_found", unknownComputerUseMac(runnerId));
+    const machine = inventory.machines.find((candidate) => candidate.deviceId === deviceId);
+    if (!machine) throw refused("not_found", unknownComputerUseMac(deviceId));
     const [installed, callable, pending] = await Promise.all([
       approvals.installedComputerApps(
-        { actorUserId: requester.ownerUserId, runnerId, query, limit, offset, icons: false },
+        { actorUserId: requester.ownerUserId, deviceId, query, limit, offset, icons: false },
         inventory.machines,
       ),
       this.#devices.listCallableTools(requester),
@@ -318,7 +319,8 @@ export class DeviceToolHandlers {
           ? `${machine.name} is offline. Wait for it to reconnect before calling computer_apps with this computerId again.`
           : `${machine.name} cannot list apps yet. Update Opensteer on that computer, then call computer_apps with its computerId.`,
       );
-    const holders = approvals.computerAppHolders(runnerId);
+    const holders = await approvals.computerAppHolders(deviceId);
+    const version = await this.#devices.computerUseVersion(deviceId);
     const apps = installed.apps.map(({ identity }) => {
       const key = computerAppIdentityKey(identity);
       const approved = machine.apps.find(({ bundleId }) => bundleId.toLowerCase() === key);
@@ -330,7 +332,7 @@ export class DeviceToolHandlers {
         machine,
         approval: approved ?? null,
         callable: !!toolRefs.observe,
-        pendingOnMac: pending.onMac(runnerId, key),
+        pendingOnMac: pending.onMac(deviceId, key),
         pendingPersonalGrant: !!approved && pending.grant(approved.connectionId),
         heldByAnotherRun: holder && !(run && holder.runId === run.runId) ? holder : null,
       });
@@ -344,7 +346,7 @@ export class DeviceToolHandlers {
           !discovery.inUse &&
           computerEnabled &&
           machine.state === "ready" &&
-          this.#devices.computerUseVersion(runnerId) === 2,
+          version === 2,
         ...(approved?.status === "approved" ? { access: approved.access } : {}),
         ...(discovery.pending ? { pending: discovery.pending } : {}),
         ...(discovery.inUse ? { inUse: discovery.inUse } : {}),
@@ -354,11 +356,11 @@ export class DeviceToolHandlers {
     return {
       guidance: { computers: computerGuidance },
       computer: {
-        computerId: runnerId,
+        computerId: deviceId,
         name: machine.name,
         state: machine.state,
         computerToolEnabled: computerEnabled,
-        computerUseVersion: this.#devices.computerUseVersion(runnerId),
+        computerUseVersion: version,
         appApproval: machine.appApproval,
       },
       apps,
@@ -378,104 +380,123 @@ export class DeviceToolHandlers {
     const heldElsewhere = <Holder extends { readonly runId: string }>(
       holder: Holder | undefined,
     ) => (holder && !(run && holder.runId === run.runId) ? holder : null);
-    const computers = machines.map(({ runnerId, name, state, appApproval, apps }) => {
-      const machine = { name, state, appApproval };
-      const holders = approvals.computerAppHolders(runnerId);
-      return {
-        computerId: runnerId,
-        name,
-        state,
-        appApproval,
-        computerToolEnabled: computerEnabled,
-        computerUseVersion: this.#devices.computerUseVersion(runnerId),
-        apps: [
-          ...apps.map(({ connectionId, ...app }) => {
-            const key = app.bundleId.toLowerCase();
-            const toolRefs =
-              app.status === "approved" ? computerToolRefs(callable, connectionId) : {};
-            const holder = holders.get(key);
-            const discovery = computerAppDiscovery({
-              app: app.name,
-              machine,
-              approval: app,
-              callable: !!toolRefs.observe,
-              pendingOnMac: pending.onMac(runnerId, key),
-              pendingPersonalGrant: pending.grant(connectionId),
-              heldByAnotherRun: heldElsewhere(holder),
-            });
-            return {
-              ...app,
-              callable:
-                !!toolRefs.observe &&
-                !discovery.pending &&
-                !discovery.inUse &&
-                computerEnabled &&
-                state === "ready" &&
-                this.#devices.computerUseVersion(runnerId) === 2,
-              ...(discovery.pending ? { pending: discovery.pending } : {}),
-              ...(discovery.inUse ? { inUse: discovery.inUse } : {}),
-              ...(discovery.inUse && holder?.threadTitle ? { heldByTask: holder.threadTitle } : {}),
-            };
-          }),
-          // An app asked for but not yet approved has no connection, so the Mac's list would
-          // otherwise omit exactly what is waiting.
-          ...pending.onMacRequests
-            .filter(
-              (request) =>
-                request.runnerId === runnerId &&
-                !apps.some(
-                  ({ bundleId }) => bundleId.toLowerCase() === computerAppIdentityKey(request.app),
-                ),
-            )
-            .map(({ access, app }) => ({
-              name: app.displayName,
-              bundleId: app.bundleId,
-              access,
-              status: "not-approved" as const,
-              callable: false,
-              pending: "mac" as const,
-            })),
-        ],
-      };
-    });
-    const phoneRows = phones.map(({ connection, name, runnerId, state }) => {
-      const toolRefs = connection ? computerToolRefs(callable, connection.connectionId) : {};
-      const holder = approvals
-        .computerAppHolders(runnerId)
-        .get(computerUseHolderKey({ definitionId: androidPhoneDefinitionId, kind: "display" }));
-      const holdsTools = toolRefs.observe !== undefined;
-      const discovery = phoneDiscovery({
-        callable: holdsTools,
-        canAct: toolRefs.act !== undefined,
-        connection,
-        heldByAnotherRun: heldElsewhere(holder),
-        pendingPhoneAccess: pending.phoneAccess(runnerId),
-        pendingPersonalGrant: connection !== null && pending.grant(connection.connectionId),
-        phone: { name, state },
-      });
-      return {
-        computerId: runnerId,
-        name,
-        state,
-        approval: discovery.approval,
-        // What this task may do when it holds the phone's tools, which the owner's grant can
-        // narrow; else what the phone allows.
-        ...(holdsTools
-          ? { access: toolRefs.act !== undefined ? "read-write" : "read" }
-          : connection
-            ? { access: connection.access }
-            : {}),
-        ...(discovery.inUse ? { inUse: true } : {}),
-        callable:
-          holdsTools &&
-          computerEnabled &&
-          discovery.approval === "approved" &&
-          !discovery.inUse &&
-          state === "ready",
-        computerToolEnabled: computerEnabled,
-        ...(discovery.inUse && holder?.threadTitle ? { heldByTask: holder.threadTitle } : {}),
-      };
-    });
+    const computers = await Promise.all(
+      machines.map(async ({ deviceId, name, state, appApproval, apps }) => {
+        const machine = { name, state, appApproval };
+        const holders = await approvals.computerAppHolders(deviceId);
+        const version = await this.#devices.computerUseVersion(deviceId);
+        return {
+          computerId: deviceId,
+          name,
+          state,
+          appApproval,
+          computerToolEnabled: computerEnabled,
+          computerUseVersion: version,
+          apps: [
+            ...apps.map(({ connectionId, ...app }) => {
+              const key = app.bundleId.toLowerCase();
+              const toolRefs =
+                app.status === "approved" ? computerToolRefs(callable, connectionId) : {};
+              const holder = holders.get(key);
+              const discovery = computerAppDiscovery({
+                app: app.name,
+                machine,
+                approval: app,
+                callable: !!toolRefs.observe,
+                pendingOnMac: pending.onMac(deviceId, key),
+                pendingPersonalGrant: pending.grant(connectionId),
+                heldByAnotherRun: heldElsewhere(holder),
+              });
+              return {
+                ...app,
+                callable:
+                  !!toolRefs.observe &&
+                  !discovery.pending &&
+                  !discovery.inUse &&
+                  computerEnabled &&
+                  state === "ready" &&
+                  version === 2,
+                ...(discovery.pending ? { pending: discovery.pending } : {}),
+                ...(discovery.inUse ? { inUse: discovery.inUse } : {}),
+                ...(discovery.inUse && holder?.threadTitle
+                  ? { heldByTask: holder.threadTitle }
+                  : {}),
+              };
+            }),
+            // An app asked for but not yet approved has no connection, so the Mac's list would
+            // otherwise omit exactly what is waiting.
+            ...pending.onMacRequests
+              .filter(
+                (request) =>
+                  request.deviceId === deviceId &&
+                  !apps.some(
+                    ({ bundleId }) =>
+                      bundleId.toLowerCase() === computerAppIdentityKey(request.app),
+                  ),
+              )
+              .map(({ access, app }) => ({
+                name: app.displayName,
+                bundleId: app.bundleId,
+                access,
+                status: "not-approved" as const,
+                callable: false,
+                pending: "mac" as const,
+              })),
+          ],
+        };
+      }),
+    );
+    const phoneRows = await Promise.all(
+      phones.map(
+        async ({ connection, name, deviceId, state, definitionId, availability, setup }) => {
+          const toolRefs = connection ? computerToolRefs(callable, connection.connectionId) : {};
+          const holder = (await approvals.computerAppHolders(deviceId)).get(
+            computerUseHolderKey({ definitionId, kind: "display" }),
+          );
+          const holdsTools = toolRefs.observe !== undefined;
+          const discovery = phoneDiscovery({
+            callable: holdsTools,
+            canAct: toolRefs.act !== undefined,
+            connection,
+            heldByAnotherRun: heldElsewhere(holder),
+            pendingPhoneAccess: pending.phoneAccess(deviceId),
+            pendingPersonalGrant: connection !== null && pending.grant(connection.connectionId),
+            phone: {
+              name,
+              state,
+              definitionId: isPhoneDisplayDefinitionId(definitionId) ? definitionId : undefined,
+              availability,
+              setup,
+            },
+          });
+          return {
+            computerId: deviceId,
+            definitionId,
+            availability,
+            setup,
+            name,
+            state,
+            approval: discovery.approval,
+            // What this task may do when it holds the phone's tools, which the owner's grant can
+            // narrow; else what the phone allows.
+            ...(holdsTools
+              ? { access: toolRefs.act !== undefined ? "read-write" : "read" }
+              : connection
+                ? { access: connection.access }
+                : {}),
+            ...(discovery.inUse ? { inUse: true } : {}),
+            callable:
+              holdsTools &&
+              computerEnabled &&
+              discovery.approval === "approved" &&
+              !discovery.inUse &&
+              state === "ready",
+            computerToolEnabled: computerEnabled,
+            ...(discovery.inUse && holder?.threadTitle ? { heldByTask: holder.threadTitle } : {}),
+          };
+        },
+      ),
+    );
     return {
       guidance: {
         computers: computers.length ? computerGuidance : noComputerUseMac,
@@ -489,7 +510,7 @@ export class DeviceToolHandlers {
 
 const computerGuidance = `Check computerToolEnabled, computerUseVersion and the computer state first, then blocked, pending and inUse before callable. Call computer_apps with computerId to list installed apps. Request an app with ${computerAppRequestShape}; read observes, read-write also acts. appApproval:automatic makes the app available immediately; ask requires the computer owner to approve from any Opensteer app. blocked: only the computer owner can unblock it from any Opensteer app; never work around it. pending:mac waits for its owner; Pending grants no access; do not poll, repeat or route around the Request. inUse: another task holds the app; report heldByTask when present and continue other work or tell the person it is busy; do not retry in a loop or stop that task. With callable:true, use app() in computer_use. computerToolEnabled:false: update Opensteer on the computer this task runs on; computerUseVersion other than 2: update Opensteer on that Mac. Computer state offline: wait for it to return; permission-required: the person must enable macOS Accessibility and Screen Recording for Opensteer Computer Use; unavailable: install the Opensteer desktop app on that Mac.`;
 
-const phoneGuidance = `Check computerToolEnabled first, then approval:pending, state and inUse before callable. Request a whole phone with ${phoneRequestShape}; the owner approves from any Opensteer app. read observes; read-write also acts. approval:pending waits for the owner and grants no access; do not poll, repeat or route around the Request. state offline: wait for it to return; permission-required: ask the person to enable its Opensteer accessibility service in phone settings; unavailable: tell the person it is not taking agent work (it may be paused). inUse: another task holds the phone; report heldByTask when present and continue other work or tell the person it is busy; do not retry in a loop or stop that task. With callable:true, use phone() in computer_use; release when done so another task can use it. computerToolEnabled:false: update Opensteer on the computer this task runs on. For more access, request read-write.`;
+const phoneGuidance = `Check computerToolEnabled first, then approval:pending, state and inUse before callable. Request a whole phone with ${phoneRequestShape}; the owner approves from any Opensteer app. read observes; read-write also acts. approval:pending waits for the owner and grants no access; do not poll, repeat or route around the Request. state offline: wait for it to return. For android-phone only, permission-required: ask the person to enable its Opensteer accessibility service in phone settings; unavailable: tell the person it is not taking agent work (it may be paused). For iphone-screen, use the recorded availability reason and setup location. A detached iPhone must be reconnected on its named driver Mac; an offline driver or locked phone cannot be fixed by granting access. Ask the person to unlock a locked iPhone physically and never enter a passcode. Android accessibility settings apply only to android-phone. Continue other work while unavailable. inUse: another task holds the phone; report heldByTask when present and continue other work or tell the person it is busy; do not retry in a loop or stop that task. With callable:true, use phone() in computer_use; release when done so another task can use it. computerToolEnabled:false: update Opensteer on the computer this task runs on. For more access, request read-write.`;
 
 /** What a task's ask for an app or a phone answers, pending or ready for computer use. */
 function computerAccessResult(

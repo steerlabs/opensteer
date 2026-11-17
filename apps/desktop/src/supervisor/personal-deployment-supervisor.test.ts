@@ -429,6 +429,11 @@ describe("PersonalDeploymentSupervisor", () => {
     // environment any process of this user could read.
     expect(fixture.computerUse.startForSlot).toHaveBeenCalledWith(
       fixture.files.manifest?.deploymentId,
+      {
+        deploymentId: fixture.files.manifest?.deploymentId,
+        hostInstanceId: fixture.files.manifest?.hostInstanceId,
+        runnerId: fixture.files.manifest?.runnerId,
+      },
     );
     expect(runner.environment.OPENSTEER_COMPUTER_USE_BRIDGE_URL).toBe(
       "ws://127.0.0.1:7788/v1/computer-use",

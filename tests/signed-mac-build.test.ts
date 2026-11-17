@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { buildSignedMac, type MacContext } from "../scripts/release-mac.js";
+import { buildSignedMac, macConfigSchema, type MacContext } from "../scripts/release-mac.js";
 import { signedMacHelpers } from "../scripts/signed-mac-helpers.js";
 
 vi.mock("../apps/desktop/scripts/personal-runtime-provenance.js", () => ({
@@ -43,6 +43,7 @@ it("builds each signed helper before packaging a prebuilt Personal runtime", asy
       passwordsProvisioningProfile: path.join(root, "profile"),
       personalRuntimeSource: path.join(root, "runtime"),
       supervisor: binary,
+      iphoneBridge: binary,
       cloudflared: binary,
       targets: [
         {
@@ -53,6 +54,7 @@ it("builds each signed helper before packaging a prebuilt Personal runtime", asy
         },
       ],
     };
+    expect(macConfigSchema.safeParse({ ...config, iphoneBridge: undefined }).success).toBe(false);
     const context: MacContext = {
       sourceDirectory: process.cwd(),
       stateDirectory: root,

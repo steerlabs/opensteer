@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import type { BrowserSignInRequestResponse } from "@opensteer/protocol/browser-sources";
 import { createBrowserSessionId } from "@opensteer/protocol";
 import { createHash } from "node:crypto";
@@ -47,6 +48,7 @@ describe("ContinuationService", () => {
     );
     expect(
       await continuationMessage(fulfilled, {
+        selfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
         listDiscoveryInventory: async () => [],
         listCallableTools: async () => [],
         computerUseMachines: async () => [],
@@ -60,6 +62,7 @@ describe("ContinuationService", () => {
     });
     expect(
       await continuationMessage(declined, {
+        selfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
         listDiscoveryInventory: async () => [],
         listCallableTools: async () => [],
         computerUseMachines: async () => [],
@@ -394,6 +397,7 @@ describe("continuationMessage", () => {
     });
     const settled = { resolvedAt: now, resolvedBy: ownerId };
     const inventory = {
+      selfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
       listDiscoveryInventory: async () => [],
       listCallableTools: async () => [],
       computerUseMachines: async () => [],
@@ -623,6 +627,7 @@ describe("continuationMessage", () => {
 });
 function inventory(...entries: readonly InventoryEntry[]): IntegrationInventorySource {
   return {
+    selfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
     listDiscoveryInventory: async () => [...entries],
     computerUseMachines: async () => [],
     computerUsePhones: async () => [],
@@ -722,7 +727,8 @@ function withMacs(named: boolean): IntegrationInventorySource {
                   connectionId: macConnectionId,
                 },
               ],
-              runnerId: macRunnerId,
+              deviceId: DeviceIdSchema.parse(macRunnerId),
+              definitionId: "macos-app",
             },
           ]
         : [],

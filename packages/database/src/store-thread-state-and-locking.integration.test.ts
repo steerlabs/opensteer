@@ -1,3 +1,4 @@
+import { DeviceIdSchema } from "@opensteer/core";
 import { ChannelStore, ChannelIngressDeferredError } from "./channel-store.js";
 import { pauseAfterLock } from "./lock-race.test-support.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -1094,7 +1095,7 @@ describeStore("PostgreSQL store", (it) => {
         requestedBy: fixture.userId,
         payload: {
           kind: "machine.full-disk-access",
-          machineId: target,
+          machineId: DeviceIdSchema.parse(target),
           machineName: "Mac",
           reason: "Read Mail",
         },

@@ -1,8 +1,10 @@
 # Agent Phone
 
-Agent Phone is a dedicated Android 11+ phone whose whole display is one computer-use target. It is
-not the [mobile client](mobile.md), never runs agents and offers no SSH. [Computers](computers.md)
-owns membership. Procedures are in the [agent-phone skill](../.agents/skills/agent-phone/SKILL.md).
+Agent Phone is a dedicated Android 11+ phone whose whole display is one computer-use target: the
+Android [phone display](computer-use.md#phone-displays), served by the phone's own Runner as its
+`self` driver. It is not the [mobile client](mobile.md), never runs agents and offers no SSH.
+[Computers](computers.md) owns membership. Procedures are in the
+[agent-phone skill](../.agents/skills/agent-phone/SKILL.md).
 
 An Android phone running the mobile client is not an Agent Phone: it declares `device.app:
 "opensteer"` in its signed descriptor. The Host retains that identity across reconnects, independent
@@ -72,13 +74,13 @@ optional extensions negotiate instead.
 
 ## The agent contract
 
-[android-phone.ts](../packages/protocol/src/android-phone.ts) owns actions and observations. The
-Host derives scope and access from admission, never from agent arguments. One Run attempt holds the
-whole display until release, grant withdrawal, disconnect or removal, and a late close must not
-affect the next holder. Agents cannot launch or operate Agent Phone's own UI. Actions cite the
-latest observation; a new observation, rotation or geometry change makes them stale. Recheck
-authority immediately before each mutation, including each scroll step, and never retry a lost
-action answer.
+[android-phone.ts](../packages/protocol/src/android-phone.ts) owns the Android wire beneath the
+shared [phone display](computer-use.md#phone-displays). The Host derives scope and access from
+admission, never from agent arguments. One Run attempt holds the whole display until release,
+grant withdrawal, disconnect or removal, and a late close must not affect the next holder. Agents
+cannot launch or operate Agent Phone's own UI. Actions cite the latest observation; a new
+observation, rotation or geometry change makes them stale. Recheck authority immediately before
+each mutation, including each scroll step, and never retry a lost action answer.
 
 Password nodes omit text, descriptions and hints, but that guarantees nothing about pixels or text
 an app renders as ordinary content; discard anything collected across a protected interval. A
@@ -92,13 +94,6 @@ person's explicit request and a private local file outside memory and version co
 team content must not hold it. Android 13+ hides the bouncer from MediaProjection, so agents
 may need the person when controls are unavailable. Wake dismisses only
 a keyguard that needs no credential. Lock is not Stop.
-
-## The tab
-
-The phone's one tab carries no authority and outlives task sessions, because agents release before
-replying. Closing it never stops the phone or a Run holding it. Viewing uses its own owner lease
-rather than extending a task hold. A closed tab or ended view must not be resurrected by a late
-response, an agent's action or another viewer's renewal.
 
 ## Live display
 
@@ -133,13 +128,9 @@ initiating viewer. Editing metadata and diagnostics carry no values, selections,
 
 ## Access and Stop
 
-The owner creates, widens, lowers or disables phone access from any client; agents only request it,
-and there is no phone-side approval. Allow settles the Requests it covers; wider ones stay pending.
-Off ends task sessions and owner views. Lowering to read ends task sessions and withdraws owner
-input at once. Old sessions and tickets cannot revive.
-
-Local Stop binds to the holder the person saw, withdraws its work and refuses that Run's later
-sessions; a delayed Stop must not hit the next holder. Stop is journaled under the admitting
+Access follows [phone displays](computer-use.md#phone-displays) and the tab follows
+[Tabs](computer-use.md#tabs). Local Stop binds to the holder the person saw, withdraws its work and
+refuses that Run's later sessions; a delayed Stop must not hit the next holder. Stop is journaled under the admitting
 identity and retried across stream loss and reboot until the Host acknowledges durable recording;
 cleanup close is not acknowledgement.
 

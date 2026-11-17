@@ -6,7 +6,6 @@ import {
   type MockPluginScenario,
   type MockSubagentScene,
 } from "@opensteer/client/mock";
-import type { HostApiCommandInput } from "@opensteer/protocol";
 import type { MobileHostPortFactory } from "./host-port.js";
 import { mockSignedOutDeploymentId } from "./mock-mode.js";
 
@@ -28,7 +27,7 @@ export function createMockHostPort(
     /** The plugin side's state, as the web's `?mock-plugins=` picks it. */
     readonly plugins?: MockPluginScenario | null;
     /** Each command a kept Host accepted, as a real Host would push its effects. */
-    readonly onCommand?: (command: HostApiCommandInput) => void;
+    readonly onCommand?: (command: Parameters<HostClient["dispatch"]>[0]) => void;
   } = {},
 ): MobileHostPortFactory {
   const loginIds = new Map<string, string>();

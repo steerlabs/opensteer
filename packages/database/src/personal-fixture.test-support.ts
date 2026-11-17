@@ -1,3 +1,4 @@
+import { upsertSelfDeviceInTransaction } from "./device-inventory-store.js";
 import { createId, type DeploymentId, type ComputerFolder, type UserId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
@@ -49,9 +50,19 @@ export async function seedPersonalOwnerResources(
     name: "Hosting computer",
     runnerKind: "main",
   });
-  await sql`insert into runners(id,owner_kind,owner_user_id,name,kind,public_key_pem,public_key_fingerprint,enrollment_token_hash,capabilities,allowed_modules,module_descriptors,access_policy,access_policy_revision,connection_generation,max_concurrent_runs) values(${runnerId},'deployment',null,'Hosting computer','main','test-public-key','test-fingerprint','test-enrollment',${JSON.stringify(descriptor.capabilities)},'["agents"]',${JSON.stringify(descriptor.modules)},'{"reach":"nobody","commands":false,"forwarding":false,"shares":[]}',0,1,4)`.execute(
+  const hasDevices = (await database.introspection.getTables()).some(
+    (table) => table.name === "devices",
+  );
+  await sql`insert into runners(id,owner_kind,owner_user_id,name,kind,public_key_pem,public_key_fingerprint,enrollment_token_hash,capabilities,allowed_modules,module_descriptors,${sql.raw(hasDevices ? "" : "access_policy,access_policy_revision,")}connection_generation,max_concurrent_runs) values(${runnerId},'deployment',null,'Hosting computer','main','test-public-key','test-fingerprint','test-enrollment',${JSON.stringify(descriptor.capabilities)},'["agents"]',${JSON.stringify(descriptor.modules)},${sql.raw(hasDevices ? "" : `'{"reach":"nobody","commands":false,"forwarding":false,"shares":[]}',0,`)}1,4)`.execute(
     database,
   );
+  if (hasDevices)
+    await upsertSelfDeviceInTransaction(database, runnerId, {
+      reach: "nobody",
+      commands: false,
+      forwarding: false,
+      shares: [],
+    });
   await sql`insert into execution_environments(id,name,kind,runner_id,capabilities) values(${environmentId},'Hosting computer','main',${runnerId},'[]')`.execute(
     database,
   );

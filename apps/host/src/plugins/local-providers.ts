@@ -1,3 +1,4 @@
+import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { localNamespace, slugify } from "./provider-names.js";
 import { createHash } from "node:crypto";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -11,7 +12,6 @@ import {
   IntegrationConnectionIdSchema,
   IntegrationServerIdSchema,
 } from "@opensteer/integration-core";
-import { androidPhoneDefinitionId } from "@opensteer/protocol";
 import { computerUseDefinitionId } from "../computer-use/computer-use-service.js";
 import { dataAppName } from "../devices/access-requests.js";
 import type { DeviceService } from "../devices/device-service.js";
@@ -53,7 +53,7 @@ const requestAccess = (provider: Pick<Located, "kind" | "computer" | "requestNam
 
 interface LocalProvidersOptions {
   readonly store: IntegrationPlatformStore;
-  readonly devices: Pick<DeviceService, "withAvailability" | "callTool" | "withRunnerAdmissions">;
+  readonly devices: Pick<DeviceService, "withAvailability" | "callTool" | "withDeviceAdmissions">;
   readonly localServers: Pick<LocalServerService, "callTool">;
   readonly authority: Pick<PluginAuthority, "caller" | "authorize">;
 }
@@ -65,11 +65,11 @@ export class LocalProviders {
   async withAdmission<A>(owner: UserId, plugin: string, work: () => Promise<A>): Promise<A> {
     const runner = plugin.startsWith("app_device_")
       ? (
-          await this.#options.store.getComputerConnectionForCall({
+          await this.#options.store.getDeviceComputerConnectionForCall({
             ownerUserId: owner,
             connectionId: IntegrationConnectionIdSchema.parse(plugin.slice("app_device_".length)),
           })
-        )?.runnerId
+        )?.deviceId
       : plugin.startsWith("app_server_")
         ? (
             await this.#options.store.localMcp.get(
@@ -77,7 +77,18 @@ export class LocalProviders {
             )
           )?.runnerId
         : undefined;
-    return runner ? this.#options.devices.withRunnerAdmissions([runner], work) : work();
+    const deviceId =
+      plugin.startsWith("app_server_") && runner
+        ? await this.#options.store.requireSelfDeviceId(
+            runner as import("@opensteer/core").RunnerId,
+          )
+        : runner;
+    return deviceId
+      ? this.#options.devices.withDeviceAdmissions(
+          [deviceId as import("@opensteer/core").DeviceId],
+          work,
+        )
+      : work();
   }
 
   async providers(context: PluginCaller): Promise<PluginHostProvider[]> {
@@ -245,7 +256,7 @@ export class LocalProviders {
             !definition ||
             !isComputerAppDefinition(definition) ||
             definition.id === computerUseDefinitionId ||
-            definition.id === androidPhoneDefinitionId
+            isPhoneDisplayDefinitionId(definition.id)
           )
             continue;
           // Server readiness names one connection; each connection's own state is on its tool rows.
@@ -260,7 +271,7 @@ export class LocalProviders {
             const ready = states.some(({ code }) => code === "READY");
             const state = states.find(({ code }) => code === "INTEGRATION_UNAVAILABLE");
             if (!ready && !state) continue;
-            const connection = await store.getComputerConnectionForCall({
+            const connection = await store.getDeviceComputerConnectionForCall({
               connectionId: account.connectionId,
               ownerUserId: caller.userId as UserId,
             });
@@ -271,7 +282,7 @@ export class LocalProviders {
                 id: `app_device_${account.connectionId}`,
                 kind: "device-app",
                 base: dataAppName(definition),
-                computer: { id: connection.runnerId, name: connection.runnerName },
+                computer: { id: connection.deviceId, name: connection.runnerName },
                 name: `${entry.installation.title} on ${connection.runnerName}`,
                 installationId: entry.installation.id,
                 installationName: entry.installation.name,

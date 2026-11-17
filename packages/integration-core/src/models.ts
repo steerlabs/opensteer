@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { JsonObjectSchema, McpIdentifierSchema } from "./schema-primitives.js";
-import { RunnerIdSchema } from "@opensteer/core";
+import { RunnerIdSchema, DeviceIdSchema } from "@opensteer/core";
 import { ComputerAppIdentitySchema, ComputerAppIdentityViewSchema } from "./computer-app.js";
 import { IntegrationProviderSchema } from "./identifiers.js";
 import {
@@ -288,3 +288,39 @@ export const CreateIntegrationGrantSchema = z.strictObject({
   isDefault: z.boolean().default(false),
 });
 export type CreateIntegrationGrant = z.infer<typeof CreateIntegrationGrantSchema>;
+
+export const LegacyComputerConnectionSchema =
+  IntegrationConnectionSummarySchema.shape.computer.unwrap();
+export const DeviceComputerConnectionSchema = LegacyComputerConnectionSchema.omit({
+  runnerId: true,
+}).extend({ deviceId: DeviceIdSchema });
+export type DeviceComputerConnection = z.infer<typeof DeviceComputerConnectionSchema>;
+export const DeviceIntegrationConnectionSummarySchema = IntegrationConnectionSummarySchema.extend({
+  computer: DeviceComputerConnectionSchema.nullable(),
+});
+export type DeviceIntegrationConnectionSummary = z.infer<
+  typeof DeviceIntegrationConnectionSummarySchema
+>;
+export const DeviceIntegrationConnectionSummaryViewSchema = z.object({
+  ...DeviceIntegrationConnectionSummarySchema.shape,
+  computer: z
+    .object({
+      ...DeviceComputerConnectionSchema.shape,
+      app: ComputerAppIdentityViewSchema.nullable(),
+    })
+    .nullable()
+    .default(null),
+});
+export const DeviceIntegrationConnectionReaderSchema = z.union([
+  DeviceIntegrationConnectionSummarySchema,
+  IntegrationConnectionSummarySchema.transform(({ computer, ...rest }) => ({
+    ...rest,
+    computer: computer === null ? null : legacyComputerTargetToDevice(computer),
+  })),
+]);
+export function legacyComputerTargetToDevice<
+  T extends { runnerId: z.infer<typeof RunnerIdSchema> },
+>(value: T) {
+  const { runnerId, ...rest } = value;
+  return { ...rest, deviceId: DeviceIdSchema.parse(runnerId) };
+}

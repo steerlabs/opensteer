@@ -2,6 +2,7 @@ export * from "./access-request.js";
 export * from "./bundled-icons.js";
 export * from "./computer-apps.js";
 export * from "./computer-use.js";
+export * from "./phone-screen.js";
 export * from "./computer-watch-status.js";
 export * from "./computer-reasons.js";
 export * from "./computer-use-stops.js";
@@ -10,10 +11,7 @@ export * from "./native-authorization.js";
 export type {
   // Clients that do not depend on the integration package — the phone — read
   // these through the one integrations surface they already import.
-  ComputerAppSetupSummary,
   IntegrationAccess,
-  IntegrationConnectionSummary,
-  IntegrationDashboard,
   IntegrationPlatformDashboardView,
   IntegrationDefinitionSummary,
   IntegrationDefinitionSummaryView,
@@ -36,3 +34,9 @@ export type {
 } from "./authorization-attempts.js";
 
 export * from "./connect-card.js";
+
+export type {
+  ClientComputerConnection as IntegrationConnectionSummary,
+  ClientComputerSetupRequest as ComputerAppSetupSummary,
+  ClientIntegrationDashboard as IntegrationDashboard,
+} from "../host/device-projection.js";

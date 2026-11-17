@@ -128,7 +128,12 @@ async function renderOpensteer(): Promise<void> {
           import("./team/mock-team-ask.js"),
         ]).then(
           ([
-            { MockHostClient, mockSubagentScenes },
+            {
+              MockHostClient,
+              createMockIphoneSetupPort,
+              mockIphoneSetupScenes,
+              mockSubagentScenes,
+            },
             { browserPreferencesStorage },
             { browserClientLifecycle },
             {
@@ -224,6 +229,19 @@ async function renderOpensteer(): Promise<void> {
                 ...(subagents ? { subagents } : {}),
               });
               if (teamAsk) client.mockTeamAsk(teamAsk);
+              // `?mock-iphone-setup` lets this window set up iPhones as Opensteer on a Mac does,
+              // playing a whole setup; `?mock-iphone-setup=<state>` holds it at one state.
+              const iphoneScene = search.get("mock-iphone-setup");
+              if (iphoneScene !== null)
+                Object.assign(client, {
+                  iphoneSetup: createMockIphoneSetupPort({
+                    autoplay: !(iphoneScene in mockIphoneSetupScenes),
+                    dispatch: (command) => client.dispatch(command),
+                    ...(iphoneScene in mockIphoneSetupScenes
+                      ? { start: iphoneScene as keyof typeof mockIphoneSetupScenes }
+                      : {}),
+                  }),
+                });
               // The preview's own client, for journeys that count what the page sends.
               Object.assign(window, { opensteerMock: client });
               if (desktopScenario) return attachMockDesktop(client, desktopScenario);

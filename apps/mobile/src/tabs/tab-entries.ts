@@ -34,7 +34,7 @@ export const tabKindGlyph: Record<TabKind, SFSymbolName> = {
 export const tabKindNoun: Record<TabKind, string> = {
   app: "App",
   page: "Tab",
-  phone: "Agent Phone",
+  phone: "Phone",
   window: "Window",
 };
 

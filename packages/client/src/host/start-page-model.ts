@@ -1,3 +1,4 @@
+import { machineSelfRunnerId } from "./device-projection.js";
 import { parseNavigationInput, webSearchUrl, type NavigationInput } from "./navigation-input.js";
 import {
   computerAppIdentityKey,
@@ -232,12 +233,14 @@ export function startPageIndex(input: {
           null)
         : null;
     const home =
-      homeId === null ? undefined : snapshot.machines.find((machine) => machine.id === homeId);
+      homeId === null
+        ? undefined
+        : snapshot.machines.find((machine) => machineSelfRunnerId(machine) === homeId);
     const away = home && home.status !== "online" ? home.name : null;
     return {
       identity,
       presentation,
-      device: deviceElsewhere(snapshot.machines, homeId, input.localMachineId ?? null),
+      device: deviceElsewhere(snapshot.machines, home?.id ?? null, input.localMachineId ?? null),
       away,
       // A profile with a home opens only there; Guest and a profile with no
       // home yet open wherever the Host places them.

@@ -1,3 +1,25 @@
+import {
+  deviceComputerApps,
+  deviceComputerUse,
+  type DeviceComputerAppsPort,
+  type DeviceComputerUseGateway,
+  type ComputerUseGateway as RoutedComputerUseGateway,
+  type DeviceComputerScope,
+  type DeviceComputerResult,
+} from "./device-computer-gateway.js";
+import {
+  DeviceIntegrationConnectionReaderSchema,
+  type IntegrationConnectionSummary as LegacyIntegrationConnectionSummary,
+} from "@opensteer/integration-core";
+import { isPhoneDisplayDefinitionId, type DeviceId } from "@opensteer/core";
+import {
+  AndroidPhoneNavigationSchema,
+  PhoneDisplayActionTypeSchema,
+  PhoneDisplayInstalledAppsParamsSchema,
+  iphoneScreenDefinitionId,
+  type DeviceAvailability,
+  type PhoneDisplayDefinitionId,
+} from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { TabIdSchema, WindowIdSchema, type TabId } from "@opensteer/core";
@@ -45,7 +67,7 @@ import {
   type IntegrationInstallationId,
 } from "@opensteer/integration-core/ids";
 import type {
-  IntegrationConnectionSummary,
+  DeviceIntegrationConnectionSummary as IntegrationConnectionSummary,
   IntegrationGrant,
   IntegrationInstallation,
   IntegrationReadiness,
@@ -54,7 +76,6 @@ import type {
 import {
   ComputerUseBindParamsSchema,
   HostIntegrationsInvokeSchema,
-  androidPhoneDefinitionId,
   computerUseActHeadline,
   computerUseHeadline,
   computerUseToolRequiredSentence,
@@ -91,10 +112,7 @@ import type { NativeReplTabTarget, NativeTabTargets } from "../computer-use/nati
 import {
   ComputerUseError,
   computerUseDefinitionId,
-  type ComputerUseDispatchResult,
   type ComputerUseLease,
-  type ComputerUseScope,
-  type ComputerUseService,
 } from "../computer-use/computer-use-service.js";
 import type { LocalServerService } from "../local-servers/local-server-service.js";
 import { sanitizeToolResult } from "../local-servers/mcp-clients.js";
@@ -103,7 +121,6 @@ import {
   ComputerAppApprovalService,
   computerUseHoldingOf,
   endComputerUseSessions,
-  type ComputerUseApprovalGateway,
 } from "./computer-app-approval-service.js";
 import { computerObservationContent } from "./computer-use-tool-result.js";
 import { IntegrationAuthorizationRequiredError } from "./integration-authorization-required.js";
@@ -127,14 +144,10 @@ export interface EngineCapabilityQuery extends RunToolContext {
 }
 
 /** What `callTool`, the rpc surface and `app_access_request` need of sessions. */
-export type ComputerUseGateway = ComputerUseApprovalGateway &
-  Pick<
-    ComputerUseService,
-    "prepare" | "release" | "releaseSession" | "sendAct" | "sendObserve" | "sendWindowOperation"
-  >;
+export type ComputerUseGateway = RoutedComputerUseGateway;
 
 type ComputerPlacement = NonNullable<
-  Awaited<ReturnType<IntegrationPlatformStore["getComputerConnectionForCall"]>>
+  Awaited<ReturnType<IntegrationPlatformStore["getDeviceComputerConnectionForCall"]>>
 >;
 type JsonObject = Readonly<Record<string, unknown>>;
 type PreparedIntegrationMaterial = Omit<InstallIntegrationInput, "actorUserId" | "requestId">;
@@ -176,7 +189,15 @@ export class DeviceService {
   ) => Promise<readonly IntegrationConnectionSummary[]>;
   readonly #computerApps: Pick<
     ComputerAppHub,
-    "appStatus" | "attached" | "send" | "requireAgentAccess" | "withRunnerAdmission"
+    | "appStatus"
+    | "attached"
+    | "send"
+    | "requireAgentAccess"
+    | "withRunnerAdmission"
+    | "withDeviceAdmission"
+    | "withDeviceAdmissions"
+    | "requireDeviceAgentAccess"
+    | "deviceStatus"
   >;
   readonly #definitions: readonly IntegrationDefinition[];
   readonly #store: IntegrationPlatformStore;
@@ -188,7 +209,10 @@ export class DeviceService {
     ownerUserId?: UserId;
   }) => Promise<void>;
   readonly #isRunnerConnected: (runnerId: RunnerId) => boolean;
-  readonly #computerUse: ComputerUseGateway | null;
+  readonly #computerUse: DeviceComputerUseGateway | null;
+  readonly #deviceApps: DeviceComputerAppsPort;
+  readonly #onDeviceTargetAcquired:
+    ((target: import("../tabs/ports.js").DeviceNativeTargetAcquired) => Promise<TabId>) | undefined;
   readonly #onTabUsed: ((claims: RunToolScope, tabId: TabId, title: string) => void) | undefined;
   readonly #nativeTabs: Pick<NativeTabTargets, "acquired" | "captureMembership"> | undefined;
   readonly #tabs: Pick<TabServicePort, "get" | "authorizeShow"> | undefined;
@@ -207,7 +231,7 @@ export class DeviceService {
   constructor(options: {
     readonly listConnections: (
       ownerUserId: UserId,
-    ) => Promise<readonly IntegrationConnectionSummary[]>;
+    ) => Promise<readonly (IntegrationConnectionSummary | LegacyIntegrationConnectionSummary)[]>;
     readonly computerApps: Pick<
       ComputerAppHub,
       | "appStatus"
@@ -218,6 +242,10 @@ export class DeviceService {
       | "send"
       | "requireAgentAccess"
       | "withRunnerAdmission"
+      | "withDeviceAdmission"
+      | "withDeviceAdmissions"
+      | "requireDeviceAgentAccess"
+      | "deviceStatus"
     >;
     /**
      * Sessions for the one definition whose connections name an app's whole
@@ -225,6 +253,12 @@ export class DeviceService {
      * a Host built without it should answer rather than pretending.
      */
     readonly computerUse?: ComputerUseGateway | null;
+    readonly deviceComputerUse?: DeviceComputerUseGateway;
+    readonly deviceComputerApps?: DeviceComputerAppsPort;
+    readonly onDeviceInputAccessWithdrawn?: (id: DeviceId) => void;
+    readonly onDeviceTargetAcquired?: (
+      target: import("../tabs/ports.js").DeviceNativeTargetAcquired,
+    ) => Promise<TabId>;
     readonly onTabUsed?: (claims: RunToolScope, tabId: TabId, title: string) => void;
     readonly nativeTabs?: Pick<NativeTabTargets, "acquired" | "captureMembership">;
     readonly tabs?: Pick<TabServicePort, "get" | "authorizeShow">;
@@ -260,7 +294,11 @@ export class DeviceService {
     readonly isRunnerConnected: (runnerId: RunnerId) => boolean;
     readonly store: IntegrationPlatformStore;
   }) {
-    this.#listConnections = options.listConnections;
+    this.#listConnections = async (owner) =>
+      (await options.listConnections(owner)).map((row) =>
+        DeviceIntegrationConnectionReaderSchema.parse(row),
+      );
+    this.#deviceApps = options.deviceComputerApps ?? deviceComputerApps(options.computerApps);
     this.#computerApps = options.computerApps;
     this.#definitions = options.definitions;
     this.#localServers = options.localServers;
@@ -268,7 +306,10 @@ export class DeviceService {
     this.#onRequestsChanged = options.onRequestsChanged;
     this.#onSettingsChanged = options.onSettingsChanged ?? (async () => undefined);
     this.#isRunnerConnected = options.isRunnerConnected;
-    this.#computerUse = options.computerUse ?? null;
+    this.#computerUse =
+      options.deviceComputerUse ??
+      (options.computerUse ? deviceComputerUse(options.computerUse) : null);
+    this.#onDeviceTargetAcquired = options.onDeviceTargetAcquired;
     this.#nativeTabs = options.nativeTabs;
     this.#onTabUsed = options.onTabUsed;
     this.#tabs = options.tabs;
@@ -289,7 +330,7 @@ export class DeviceService {
     });
     const localServers = options.localServers;
     this.computerAppApprovals = new ComputerAppApprovalService({
-      computerApps: options.computerApps,
+      computerApps: this.#deviceApps,
       computerUse: this.#computerUse,
       definitions: this.#definitions,
       installCatalogDefinition: (input) => this.installDefinition(input),
@@ -297,9 +338,12 @@ export class DeviceService {
       listConnections: this.#listConnections,
       localMcpSecrets: localServers.secrets,
       onConnectionsChanged: options.onConnectionsChanged,
-      ...(options.onInputAccessWithdrawn
-        ? { onInputAccessWithdrawn: options.onInputAccessWithdrawn }
-        : {}),
+      onInputAccessWithdrawn:
+        options.onDeviceInputAccessWithdrawn ??
+        (async (id) => {
+          const runner = await options.store.getDeviceSelfRunnerId(id);
+          if (runner) options.onInputAccessWithdrawn?.(runner);
+        }),
       onLocalServerApproved: (approved) => {
         void localServers
           .discoverServer(approved.serverId)
@@ -310,6 +354,10 @@ export class DeviceService {
       publishRequestEvents: (events) => this.#publishRequestEvents(events),
       store: this.#store,
     });
+  }
+
+  deviceConnections(owner: UserId) {
+    return this.#listConnections(owner);
   }
 
   get store(): IntegrationPlatformStore {
@@ -333,15 +381,14 @@ export class DeviceService {
     inventory: readonly Entry[],
     input: { readonly ownerUserId: UserId },
   ): Promise<Entry[]> {
-    const computerApps = this.#computerApps;
     const connections = new Map<
       IntegrationConnectionId,
-      ReturnType<IntegrationPlatformStore["getComputerConnectionForCall"]>
+      ReturnType<IntegrationPlatformStore["getDeviceComputerConnectionForCall"]>
     >();
     const connectionFor = (connectionId: IntegrationConnectionId) => {
       const pending = connections.get(connectionId);
       if (pending) return pending;
-      const loaded = this.#store.getComputerConnectionForCall({
+      const loaded = this.#store.getDeviceComputerConnectionForCall({
         connectionId,
         ownerUserId: input.ownerUserId,
       });
@@ -407,34 +454,35 @@ export class DeviceService {
           if (!definitionId || readiness.connectionId === null) return readiness;
           const connection = await connectionFor(readiness.connectionId);
           if (!connection) return readiness;
-          const status = computerApps.appStatus(connection.runnerId, definitionId);
-          const attached = computerApps.attached(connection.runnerId);
+          const status = await this.#deviceApps.appStatus(connection.deviceId, definitionId);
+          const attached = await this.#deviceApps.attached(connection.deviceId);
           const operationStatus =
             operation === undefined
               ? null
               : (status?.operations.find((candidate) => candidate.operation === operation) ?? null);
-          const runnerConnected = this.#isRunnerConnected(connection.runnerId);
+          const runnerConnected = await this.#targetConnected(connection.deviceId);
           const operationStatuses =
             operation === undefined ? (status?.operations ?? null) : operationStatus;
-          const detail =
-            definitionId === androidPhoneDefinitionId
-              ? phoneAvailabilityDetail({
+          const detail = isPhoneDisplayDefinitionId(definitionId)
+            ? phoneAvailabilityDetail({
+                attached,
+                definitionId,
+                availability:
+                  (await this.#deviceApps.availability?.(connection.deviceId)) ?? undefined,
+                phone: connection.runnerName,
+                runnerConnected,
+                status: operationStatuses,
+              })
+            : connection.deviceProfile === "iphone" && (!runnerConnected || !attached)
+              ? iphoneAppsUnavailableDetail(connection.runnerName)
+              : computerAppAvailabilityDetail({
+                  // A Computer use account is one app, which is what comes back.
+                  app: connection.connection.computer?.app?.displayName ?? entry.installation.title,
                   attached,
-                  phone: connection.runnerName,
+                  computer: connection.runnerName,
                   runnerConnected,
                   status: operationStatuses,
-                })
-              : connection.deviceProfile === "iphone" && (!runnerConnected || !attached)
-                ? iphoneAppsUnavailableDetail(connection.runnerName)
-                : computerAppAvailabilityDetail({
-                    // A Computer use account is one app, which is what comes back.
-                    app:
-                      connection.connection.computer?.app?.displayName ?? entry.installation.title,
-                    attached,
-                    computer: connection.runnerName,
-                    runnerConnected,
-                    status: operationStatuses,
-                  });
+                });
           return detail === null
             ? readiness
             : {
@@ -491,15 +539,15 @@ export class DeviceService {
   async createGrant(input: CreateIntegrationGrantInput) {
     const create = () => this.#store.createGrant(input);
     if (!input.connectionId)
-      return this.withRunnerAdmissions(
-        await this.#store.listComputerRunnerIdsForInstallation(input.installationId),
+      return this.withDeviceAdmissions(
+        await this.#store.listComputerDeviceIdsForInstallation(input.installationId),
         create,
       );
-    const computer = await this.#store.getComputerConnectionForCall({
+    const computer = await this.#store.getDeviceComputerConnectionForCall({
       connectionId: input.connectionId,
       ownerUserId: input.ownerUserId,
     });
-    return computer ? this.#computerApps.withRunnerAdmission(computer.runnerId, create) : create();
+    return computer ? this.#deviceApps.withAdmission(computer.deviceId, create) : create();
   }
 
   async revokeGrant(input: {
@@ -510,7 +558,7 @@ export class DeviceService {
   }): Promise<void> {
     const grant = (await this.#store.listGrants(input)).find(({ id }) => id === input.grantId);
     const computer = grant?.connectionId
-      ? await this.#store.getComputerConnectionForCall({
+      ? await this.#store.getDeviceComputerConnectionForCall({
           connectionId: grant.connectionId,
           ownerUserId: input.ownerUserId,
         })
@@ -534,23 +582,29 @@ export class DeviceService {
             if (caller?.run)
               this.resetComputerGeneration(caller.run.runId, caller.run.bindingGeneration);
           }
-        this.#computerUse?.closeForConnection(computer.runnerId, holding);
+        await this.#computerUse?.closeForConnection(computer.deviceId, holding);
       }
     };
     const runners = computer
-      ? [computer.runnerId]
+      ? [computer.deviceId]
       : grant
-        ? await this.#store.listComputerRunnerIdsForInstallation(grant.installationId)
+        ? await this.#store.listComputerDeviceIdsForInstallation(grant.installationId)
         : [];
-    await this.withRunnerAdmissions(runners, revoke);
+    await this.withDeviceAdmissions(runners, revoke);
   }
 
   computerToolEnabled(context: RunCapabilityClaims<string>): boolean | Promise<boolean> {
     return this.#computerToolEnabled(context);
   }
 
-  computerUseVersion(runnerId: RunnerId): number | undefined {
-    return this.#computerUseVersion(runnerId);
+  async computerUseVersion(deviceId: DeviceId): Promise<number | undefined> {
+    const self = await this.#store.getDeviceSelfRunnerId(deviceId);
+    return self ? this.#computerUseVersion(self) : undefined;
+  }
+
+  async #targetConnected(deviceId: DeviceId): Promise<boolean> {
+    const self = await this.#store.getDeviceSelfRunnerId(deviceId);
+    return self ? this.#isRunnerConnected(self) : this.#deviceApps.attached(deviceId);
   }
 
   /** The same catalog pin and fresh admission fence for every computer row. */
@@ -584,7 +638,10 @@ export class DeviceService {
         retryable: true,
       });
     const ownerUserId = UserIdSchema.parse(callable.grant.ownerUserId);
-    const placement = await this.#store.getComputerConnectionForCall({ connectionId, ownerUserId });
+    const placement = await this.#store.getDeviceComputerConnectionForCall({
+      connectionId,
+      ownerUserId,
+    });
     if (!placement) throw new IntegrationAuthorizationRequiredError(callable);
     const admit = <Result>(
       send: (
@@ -592,10 +649,10 @@ export class DeviceService {
         access: IntegrationAccess,
       ) => Promise<Result>,
     ) =>
-      this.#computerApps.withRunnerAdmission(placement.runnerId, async () => {
-        await this.#computerApps.requireAgentAccess(placement.runnerId);
+      this.#deviceApps.withAdmission(placement.deviceId, async () => {
+        await this.#deviceApps.requireAgentAccess(placement.deviceId);
         const [connection, authority] = await Promise.all([
-          this.#store.getComputerConnectionForCall({ connectionId, ownerUserId }),
+          this.#store.getDeviceComputerConnectionForCall({ connectionId, ownerUserId }),
           this.#store.listCallableTools({ ownerUserId, threadId: caller.threadId }),
         ]);
         const current = authority.find(
@@ -611,16 +668,18 @@ export class DeviceService {
           !current ||
           connection.connection.status !== "connected" ||
           connection.runnerRevoked ||
-          connection.runnerId !== placement.runnerId ||
+          connection.deviceId !== placement.deviceId ||
           connection.connection.definitionId !== definition.id ||
-          connection.connection.computer?.runnerId !== connection.runnerId ||
+          connection.connection.computer?.deviceId !== connection.deviceId ||
           !accessCoversEffect(connection.access, operation.effect) ||
           !accessCoversEffect(current.grant.access, operation.effect)
         )
           throw new IntegrationAuthorizationRequiredError(callable);
         if (
           definition.id === computerUseDefinitionId &&
-          this.#computerUseVersion(connection.runnerId) !== 2
+          this.#computerUseVersion(
+            await this.#store.requireDeviceSelfRunnerId(connection.deviceId),
+          ) !== 2
         )
           throw new ComputerUseError(
             "incompatible-version",
@@ -648,7 +707,7 @@ export class DeviceService {
     if (
       transport.type === "computer" &&
       (transport.definitionId === computerUseDefinitionId ||
-        transport.definitionId === androidPhoneDefinitionId)
+        isPhoneDisplayDefinitionId(transport.definitionId))
     )
       return {
         content: [{ type: "text", text: computerUseToolRequiredSentence }],
@@ -664,7 +723,16 @@ export class DeviceService {
         code: "bad_request",
         message: `Invalid ${operation.title} arguments at ${issue.path}: ${issue.message}`,
       });
-    const route = this.#runFileRoute(operation, args, caller, placement, signal);
+    const route = this.#runFileRoute(
+      operation,
+      args,
+      caller,
+      {
+        runnerId: await this.#store.requireDeviceSelfRunnerId(placement.deviceId),
+        runnerName: placement.runnerName,
+      },
+      signal,
+    );
     if (typeof route === "string")
       return { content: [{ type: "text", text: route }], isError: true };
     try {
@@ -680,7 +748,7 @@ export class DeviceService {
             effect: operation.effect,
             ...(route ? { files: route.files } : {}),
             operation: operation.name,
-            runnerId: connection.runnerId,
+            runnerId: await this.#store.requireDeviceSelfRunnerId(connection.deviceId),
             ...(signal ? { signal } : {}),
           });
         }),
@@ -817,7 +885,7 @@ export class DeviceService {
             : computerAppTransportUnavailableDetail(
                 callable.installation.title,
                 placement.runnerName,
-                this.#isRunnerConnected(placement.runnerId),
+                await this.#targetConnected(placement.deviceId),
               );
         break;
       case "permission-required":
@@ -873,19 +941,19 @@ export class DeviceService {
         candidate.tool.name === row &&
         candidate.server.transport.type === "computer" &&
         (candidate.server.transport.definitionId === computerUseDefinitionId ||
-          candidate.server.transport.definitionId === androidPhoneDefinitionId),
+          isPhoneDisplayDefinitionId(candidate.server.transport.definitionId)),
     );
     if (!callable) {
       const connection =
         row === "act"
-          ? await this.#store.getComputerConnectionForCall({
+          ? await this.#store.getDeviceComputerConnectionForCall({
               connectionId: target,
               ownerUserId: run.requestedBy,
             })
           : null;
       if (
         connection?.access === "read" &&
-        connection.connection.definitionId === androidPhoneDefinitionId
+        isPhoneDisplayDefinitionId(connection.connection.definitionId)
       )
         throw new ComputerUseError(
           "failed",
@@ -907,19 +975,22 @@ export class DeviceService {
     } = await this.#computerAuthority(callable, caller);
     const computerUse = this.#computerUse;
     const mac = definition.id === computerUseDefinitionId;
-    if (!this.#computerApps.attached(placement.runnerId))
+    if (!(await this.#deviceApps.attached(placement.deviceId)))
       throw new ComputerUseError(
         "offline",
         mac
           ? computerAppTransportUnavailableDetail(
               placement.connection.computer?.app?.displayName ?? callable.installation.title,
               placement.runnerName,
-              this.#isRunnerConnected(placement.runnerId),
+              await this.#targetConnected(placement.deviceId),
             )
           : phoneAvailabilityDetail({
               attached: false,
+              definitionId: isPhoneDisplayDefinitionId(definition.id) ? definition.id : undefined,
+              availability:
+                (await this.#deviceApps.availability?.(placement.deviceId)) ?? undefined,
               phone: placement.runnerName,
-              runnerConnected: this.#isRunnerConnected(placement.runnerId),
+              runnerConnected: await this.#targetConnected(placement.deviceId),
               status: null,
             })!,
       );
@@ -938,12 +1009,12 @@ export class DeviceService {
     }
     let lease: ComputerUseLease | undefined;
     let started: Extract<AgentEvent, { type: "tool.started" }> | undefined;
-    let result: ComputerUseDispatchResult | undefined;
+    let result: DeviceComputerResult | undefined;
     let released = false;
     let audit: Promise<readonly string[]> | undefined;
     let auditCompletion: Promise<void> | undefined;
     let finishOperation: ((error?: unknown) => void) | undefined;
-    const start = async (connection: NonNullable<typeof placement>, scope: ComputerUseScope) => {
+    const start = async (connection: NonNullable<typeof placement>, scope: DeviceComputerScope) => {
       if (started) return;
       const subject = {
         account: callable.grant.alias,
@@ -953,11 +1024,16 @@ export class DeviceService {
                 app: scope.app.displayName,
                 bundleId: scope.app.bundleId,
                 computer: connection.runnerName,
-                runnerId: connection.runnerId,
+                runnerId: connection.deviceId,
               }
             : null,
         ...(scope.kind === "display"
-          ? { phone: { computer: connection.runnerName, runnerId: connection.runnerId } }
+          ? {
+              phone: {
+                computer: connection.runnerName,
+                runnerId: connection.deviceId,
+              },
+            }
           : {}),
         effect: catalogOperation.effect,
         integration: callable.installation.title,
@@ -992,7 +1068,7 @@ export class DeviceService {
     try {
       if (operation !== "release")
         lease = await computerUse.prepare(
-          { ownerUserId, runnerId: placement.runnerId, runnerName: placement.runnerName },
+          { ownerUserId, deviceId: placement.deviceId, deviceName: placement.runnerName },
           run,
         );
       const initial = await admit(async (connection, access) => {
@@ -1015,7 +1091,7 @@ export class DeviceService {
           return send();
         });
       if (operation === "release")
-        released = await guarded(() => computerUse.releaseSession(run, placement.runnerId));
+        released = await guarded(() => computerUse.releaseSession(run, placement.deviceId));
       else if (lease) {
         const dispatch =
           row === "act"
@@ -1103,19 +1179,23 @@ export class DeviceService {
         const common = {
           ownerId: ownerUserId,
           runClaims,
-          computerId: placement.runnerId,
+          computerId: placement.deviceId,
           key: randomUUID(),
           membershipRevision: membershipRevision!,
         };
-        const tabId = await this.#nativeTabs.acquired(
-          mac
-            ? {
-                ...common,
-                kind: "window",
-                windowId: WindowIdSchema.parse(result?.window?.windowId),
-              }
-            : { ...common, kind: "phone" },
-        );
+        const targetAcquired = mac
+          ? {
+              ...common,
+              kind: "window" as const,
+              windowId: WindowIdSchema.parse(result?.window?.windowId),
+            }
+          : { ...common, kind: "phone" as const };
+        const tabId = this.#onDeviceTargetAcquired
+          ? await this.#onDeviceTargetAcquired(targetAcquired)
+          : await this.#nativeTabs.acquired({
+              ...targetAcquired,
+              computerId: await this.#store.requireDeviceSelfRunnerId(placement.deviceId),
+            });
         this.#onTabUsed?.(runClaims, tabId, result?.window?.title ?? placement.runnerName);
         return {
           value: z.json().parse(
@@ -1125,7 +1205,7 @@ export class DeviceService {
                   tabId,
                   connectionId: target,
                   name: placement.runnerName,
-                  computerId: placement.runnerId,
+                  computerId: placement.deviceId,
                 },
           ),
           content,
@@ -1207,6 +1287,7 @@ export class DeviceService {
       return bindNativeTab(
         {
           tabs: this.#tabs,
+          selfDeviceId: (runnerId) => this.#store.requireSelfDeviceId(runnerId),
           lookup: this.#nativeTabTarget,
           connections: async () => {
             const rows = await this.listCallableTools({
@@ -1245,12 +1326,13 @@ export class DeviceService {
             (row) =>
               row.tool.name === "observe" &&
               row.server.transport.type === "computer" &&
-              row.server.transport.definitionId ===
-                (request.operation === "apps" ? computerUseDefinitionId : androidPhoneDefinitionId),
+              (request.operation === "apps"
+                ? row.server.transport.definitionId === computerUseDefinitionId
+                : isPhoneDisplayDefinitionId(row.server.transport.definitionId)),
           )
           .map(async (row) => {
             if (!row.grant.connectionId) return null;
-            const connection = await this.#store.getComputerConnectionForCall({
+            const connection = await this.#store.getDeviceComputerConnectionForCall({
               connectionId: row.grant.connectionId,
               ownerUserId: caller.run!.requestedBy,
             });
@@ -1261,14 +1343,19 @@ export class DeviceService {
             )
               return null;
             const app = connection.connection.computer?.app;
+            const transport = row.server.transport;
+            const definitionId = transport.type === "computer" ? transport.definitionId : null;
             return {
               id: row.grant.connectionId,
               name: app?.displayName ?? connection.runnerName,
               ...(app ? { bundleId: app.bundleId } : {}),
               computer: connection.runnerName,
-              computerId: connection.runnerId,
+              computerId: connection.deviceId,
               access:
                 row.grant.access === "read" || connection.access === "read" ? "read" : "read-write",
+              ...(isPhoneDisplayDefinitionId(definitionId)
+                ? await this.#replPhoneControls(connection.deviceId, definitionId)
+                : {}),
             };
           }),
       );
@@ -1279,6 +1366,44 @@ export class DeviceService {
       this.#replTargets.set(key, targets);
       return { value: usable };
     }
+    if (request.operation === "installedApps") {
+      const owner = caller.run.requestedBy;
+      const connectionId = IntegrationConnectionIdSchema.parse(request.target);
+      const row = (
+        await this.listCallableTools({ ownerUserId: owner, threadId: caller.threadId })
+      ).find(
+        (candidate) =>
+          candidate.grant.connectionId === connectionId &&
+          candidate.tool.name === "observe" &&
+          candidate.server.transport.type === "computer" &&
+          isPhoneDisplayDefinitionId(candidate.server.transport.definitionId),
+      );
+      const connection = row
+        ? await this.#store.getDeviceComputerConnectionForCall({ connectionId, ownerUserId: owner })
+        : null;
+      if (
+        !row ||
+        row.server.transport.type !== "computer" ||
+        !isPhoneDisplayDefinitionId(row.server.transport.definitionId) ||
+        !connection ||
+        connection.runnerRevoked
+      )
+        throw refused(
+          "forbidden",
+          "This phone is no longer approved for this task. Call computer_apps for current access.",
+        );
+      const { phones } = await this.computerAppApprovals.computerUseInventory(owner);
+      const installed = await this.computerAppApprovals.installedComputerApps(
+        {
+          ...PhoneDisplayInstalledAppsParamsSchema.parse(request.args),
+          actorUserId: owner,
+          deviceId: connection.deviceId,
+          definitionId: row.server.transport.definitionId,
+        },
+        phones,
+      );
+      return { value: z.json().parse(installed) };
+    }
     return this.callComputerOperation(
       caller,
       IntegrationConnectionIdSchema.parse(request.target),
@@ -1287,6 +1412,53 @@ export class DeviceService {
       request.signal,
       request.deadline,
     );
+  }
+
+  /** What a phone handle may send, as the Host enforces it at dispatch. */
+  async #replPhoneControls(deviceId: DeviceId, definitionId: PhoneDisplayDefinitionId) {
+    if (definitionId === iphoneScreenDefinitionId) {
+      const status = this.#computerApps.deviceStatus(deviceId);
+      const attached = await this.#deviceApps.attached(deviceId);
+      const input = status?.operations.some(
+        ({ operation, state }) => operation === "act" && state === "ready",
+      );
+      return {
+        definitionId,
+        platform: "ios",
+        navigation: status?.navigationButtons.map(({ id }) => id) ?? [],
+        actions: (status?.actions ?? []).filter(
+          (action) =>
+            (action !== "wake" || status?.wake === true) &&
+            (input || action === "wait" || action === "wake"),
+        ),
+        availability:
+          status?.availability ??
+          ({
+            state: "unavailable",
+            reason: { kind: attached ? "unreported" : "driver-offline" },
+          } satisfies DeviceAvailability),
+      };
+    }
+    const attached = await this.#deviceApps.attached(deviceId);
+    const operations = (await this.#deviceApps.appStatus(deviceId, definitionId))?.operations ?? [];
+    const blocked = operations.some(({ state }) => state === "ready")
+      ? null
+      : !attached
+        ? "driver-offline"
+        : operations.some(({ state }) => state === "permission-required")
+          ? "permission-required"
+          : operations.some(({ state }) => state === "unavailable")
+            ? "paused"
+            : "unreported";
+    return {
+      definitionId,
+      platform: "android",
+      navigation: AndroidPhoneNavigationSchema.options,
+      actions: PhoneDisplayActionTypeSchema.options,
+      availability: (blocked === null
+        ? { state: "ready", reason: null }
+        : { state: "unavailable", reason: { kind: blocked } }) satisfies DeviceAvailability,
+    };
   }
 
   readonly #computerOperationSettlements = new Map<string, { runId: RunId; done: Promise<void> }>();
@@ -1342,19 +1514,11 @@ export class DeviceService {
   }
 
   /** Runs `task` admitted on every one of these computers, entered in one order. */
-  async withRunnerAdmissions<Result>(
-    runnerIds: readonly RunnerId[],
+  withDeviceAdmissions<Result>(
+    deviceIds: readonly DeviceId[],
     task: () => Promise<Result>,
   ): Promise<Result> {
-    const ordered = [...new Set(runnerIds)].sort((left, right) => left.localeCompare(right));
-    const computerApps = ordered.length > 0 ? this.#computerApps : null;
-    const enter = (index: number): Promise<Result> => {
-      const runnerId = ordered[index];
-      return runnerId && computerApps
-        ? computerApps.withRunnerAdmission(runnerId, () => enter(index + 1))
-        : task();
-    };
-    return enter(0);
+    return this.#deviceApps.withAdmissions(deviceIds, task);
   }
 
   #publishRequestEvents(events: readonly AgentEvent[]): void {
@@ -1376,7 +1540,7 @@ export class DeviceService {
       readonly requestedServerId: IntegrationServer["id"] | null;
     },
   ): Promise<void> {
-    const connection = await this.#store.getComputerConnectionForCall({
+    const connection = await this.#store.getDeviceComputerConnectionForCall({
       connectionId,
       ownerUserId,
     });
@@ -1414,13 +1578,16 @@ export class DeviceService {
     ownerUserId: UserId,
     task: () => Promise<Result>,
   ): Promise<Result> {
-    const computer = await this.#store.getComputerConnectionForCall({ connectionId, ownerUserId });
-    return computer ? this.#computerApps.withRunnerAdmission(computer.runnerId, task) : task();
+    const computer = await this.#store.getDeviceComputerConnectionForCall({
+      connectionId,
+      ownerUserId,
+    });
+    return computer ? this.#deviceApps.withAdmission(computer.deviceId, task) : task();
   }
 
   /** Ends the sessions holding apps or phones an uninstall took back. */
-  endSessionsForRemovedApps(removed: Parameters<typeof endComputerUseSessions>[2]): void {
-    endComputerUseSessions(this.#computerUse, this.#definitions, removed);
+  endSessionsForRemovedApps(removed: Parameters<typeof endComputerUseSessions>[2]): Promise<void> {
+    return endComputerUseSessions(this.#computerUse, this.#definitions, removed);
   }
 
   /**
@@ -1603,8 +1770,8 @@ export class DeviceService {
 function computerUseScope(
   definition: ComputerAppDefinition,
   app: ComputerAppIdentity | null,
-): ComputerUseScope | null {
+): DeviceComputerScope | null {
   if (computerAppNamesApp(definition.config)) return app ? { app, kind: "app" } : null;
-  if (definition.id !== androidPhoneDefinitionId || app !== null) return null;
-  return { definitionId: androidPhoneDefinitionId, kind: "display" };
+  if (!isPhoneDisplayDefinitionId(definition.id) || app !== null) return null;
+  return { definitionId: definition.id, kind: "display" };
 }

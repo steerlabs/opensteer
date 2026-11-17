@@ -265,6 +265,14 @@ async function verifySignedDesktopContents(context) {
       throw new Error(`Personal runtime Sharp library ${library} has the wrong architecture.`);
     }
   }
+  require("./iphone-bridge-release.cjs").verifyIphoneBridgeRelease(
+    join(appPath, "Contents", "Resources", "iphone-bridge"),
+    {
+      architecture: appArchitectures === "x86_64" ? "amd64" : appArchitectures,
+      release: isDesktopRelease(),
+      teamId: process.env.OPENSTEER_APPLE_TEAM_ID,
+    },
+  );
   const manifestArchitecture =
     cloudflaredArchitectures === "x86_64" ? "amd64" : cloudflaredArchitectures;
   if (cloudflared.architecture !== manifestArchitecture) {

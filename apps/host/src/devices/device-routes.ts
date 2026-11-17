@@ -1,8 +1,7 @@
 import {
-  IntegrationDashboardSchema,
   IntegrationPlatformDashboardSchema,
   integrationDefinitionSummary,
-  type IntegrationConnectionSummary,
+  type DeviceIntegrationConnectionSummary as IntegrationConnectionSummary,
   type IntegrationDefinition,
 } from "@opensteer/integration-core";
 import { ComputerAppSetupRequestViewSchema } from "@opensteer/integration-core/computer-app-setup";
@@ -65,13 +64,20 @@ export function createDeviceRpcHandlers(
     "integrations.get": async (_input, context) => {
       const ownerUserId = await owner(context);
       return rpcSuccess(
-        hostApi["integrations.get"].success.parse(
-          IntegrationDashboardSchema.parse({
-            authorizationSurface: requireSurface(context),
-            connections: await options.listConnections(ownerUserId),
-            isAdministrator: true,
-          }),
-        ),
+        hostApi["integrations.get"].success.parse({
+          authorizationSurface: requireSurface(context),
+          connections: await Promise.all(
+            (await options.listConnections(ownerUserId)).map(async (connection) => {
+              const self = connection.computer
+                ? await store.getDeviceSelfRunnerId(connection.computer.deviceId)
+                : null;
+              if (!self || !connection.computer) return connection;
+              const { deviceId: _deviceId, ...computer } = connection.computer;
+              return { ...connection, computer: { ...computer, runnerId: self } };
+            }),
+          ),
+          isAdministrator: true,
+        }),
       );
     },
     "integration.platform.get": async (_input, context) => {
@@ -122,10 +128,19 @@ export function createDeviceRpcHandlers(
       });
       return rpcSuccess({});
     },
-    "integration.computer.setup.review": async (input, context) =>
-      rpcSuccess(
-        await approvals.reviewComputerAppSetup({ ...input, ownerUserId: await owner(context) }),
-      ),
+    "integration.computer.setup.review": async (input, context) => {
+      const result = await approvals.reviewComputerAppSetup({
+        ...input,
+        ownerUserId: await owner(context),
+      });
+      return rpcSuccess({
+        ...result,
+        request: {
+          ...result.request,
+          runnerId: await store.requireDeviceSelfRunnerId(result.request.deviceId),
+        },
+      });
+    },
     "integration.server.secrets.list": async (_input, context) =>
       rpcSuccess({
         servers: (await store.localMcp.withSecretsOwnedBy(await owner(context))).map((server) => ({
@@ -139,8 +154,15 @@ export function createDeviceRpcHandlers(
       }),
     "integration.computer.setup.list": async (_input, context) =>
       rpcSuccess({
-        requests: (await store.listComputerAppSetupRequests(await owner(context))).map((request) =>
-          ComputerAppSetupRequestViewSchema.parse(request),
+        requests: await Promise.all(
+          (await store.listDeviceComputerAppSetupRequests(await owner(context))).map(
+            async (request) => {
+              const self = await store.getDeviceSelfRunnerId(request.deviceId);
+              if (!self) return request;
+              const { deviceId: _deviceId, ...rest } = request;
+              return { ...rest, runnerId: self };
+            },
+          ),
         ),
       }),
     "integration.grants.list": async (_input, context) =>
@@ -219,16 +241,19 @@ async function executeDeviceCommand(
         requestId: context.requestId,
       });
       return { type: command.type };
-    case "integration.computer.setup.request":
+    case "integration.computer.setup.request": {
+      const request = await approvals.requestComputerAppSetup({
+        ...command.input,
+        actorUserId: session.user.id,
+      });
       return {
         type: command.type,
-        request: ComputerAppSetupRequestViewSchema.parse(
-          await approvals.requestComputerAppSetup({
-            ...command.input,
-            actorUserId: session.user.id,
-          }),
-        ),
+        request: ComputerAppSetupRequestViewSchema.parse({
+          ...request,
+          runnerId: await store.requireDeviceSelfRunnerId(request.deviceId),
+        }),
       };
+    }
     case "integration.computer.setup.cancel":
       await approvals.cancelComputerAppSetup({
         settlementSessionId: session.id,
@@ -271,7 +296,15 @@ async function executeDeviceCommand(
         actorUserId: session.user.id,
         requestId: context.requestId,
       });
-      return { connection, type: command.type };
+      const self = connection?.computer
+        ? await store.getDeviceSelfRunnerId(connection.computer.deviceId)
+        : null;
+      if (!self || !connection?.computer) return { connection, type: command.type };
+      const { deviceId: _deviceId, ...computer } = connection.computer;
+      return {
+        connection: { ...connection, computer: { ...computer, runnerId: self } },
+        type: command.type,
+      };
     }
     case "integration.grant.create": {
       const input = command.input;

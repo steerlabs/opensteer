@@ -1,3 +1,4 @@
+import { verifyIphoneBridgeRelease } from "./iphone-bridge-release.cjs";
 import {
   desktopAppUpdateYaml,
   stageDesktopUpdatePolicy,
@@ -157,6 +158,7 @@ async function main(): Promise<void> {
         // Populated on macOS only, like computer-use.
         "passwords",
         "dictation",
+        "iphone-bridge",
         "personal-runtime",
         "process-supervisor",
         "runner",
@@ -231,6 +233,7 @@ async function main(): Promise<void> {
     });
 
     if (targetOs === "darwin") {
+      await stageIphoneBridge(path.join(temporary, "iphone-bridge"), targetArch);
       await stageComputerUseHelper(path.join(temporary, "computer-use"), targetArch);
       await stagePasswordsBroker(path.join(temporary, "passwords"), targetArch);
       await stageDictationHelper(path.join(temporary, "dictation"), targetArch);
@@ -260,6 +263,47 @@ async function main(): Promise<void> {
     await rm(temporary, { force: true, recursive: true }).catch(() => undefined);
     throw error;
   }
+}
+
+async function stageIphoneBridge(
+  directory: string,
+  architecture: "amd64" | "arm64",
+): Promise<void> {
+  const release = process.env.OPENSTEER_DESKTOP_RELEASE === "1";
+  const sourceInput = process.env.OPENSTEER_IPHONE_BRIDGE_BINARY_SOURCE?.trim();
+  const expectedDigest = process.env.OPENSTEER_IPHONE_BRIDGE_BINARY_SHA256?.trim();
+  if ((release || sourceInput !== undefined) && (!sourceInput || !expectedDigest))
+    throw new Error("A reviewed iPhone bridge source and digest are required.");
+  const source = path.resolve(
+    sourceInput ||
+      path.join(
+        desktopDirectory,
+        "generated-native",
+        `darwin-${architecture}`,
+        "opensteer-iphone-bridge",
+      ),
+  );
+  await assertRegularFile(source, "iPhone bridge binary source");
+  const binarySha256 = createHash("sha256")
+    .update(await readFile(source))
+    .digest("hex");
+  if (expectedDigest && expectedDigest !== binarySha256)
+    throw new Error("iPhone bridge binary digest differs from the reviewed input.");
+  const binary = path.join(directory, "opensteer-iphone-bridge");
+  await copyFile(source, binary);
+  await setArtifactMode(binary, "executable", "darwin");
+  await writeJson(path.join(directory, "release.json"), {
+    schemaVersion: 1,
+    operatingSystem: "darwin",
+    architecture,
+    binarySha256,
+    protocolVersion: 1,
+  });
+  verifyIphoneBridgeRelease(directory, {
+    architecture,
+    release,
+    teamId: process.env.OPENSTEER_APPLE_TEAM_ID,
+  });
 }
 
 /**

@@ -442,7 +442,7 @@ export async function setComputerApp(
   const connection = await host.store.database
     .selectFrom("integrationConnections")
     .select("id")
-    .where("runnerId", "=", request.runnerId)
+    .where("deviceId", "=", await host.store.requireSelfDeviceId(request.runnerId))
     .where("integrationDefinitionId", "=", request.definitionId)
     .where("status", "!=", "revoked")
     .executeTakeFirstOrThrow();

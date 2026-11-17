@@ -1,3 +1,13 @@
+import { computerConnectionDeviceId } from "./integration-connections.js";
+import type {
+  IntegrationConnectionSummary as LegacyIntegrationConnectionSummary,
+  ComputerAppSetupRequest as LegacyComputerAppSetupRequest,
+} from "@opensteer/integration-core";
+import { legacySelfConnection, legacySelfSetupRequest } from "./device-legacy-store.js";
+import { requireSelfDeviceId } from "./device-inventory-store.js";
+import { DeviceIdSchema, isPhoneDisplayDefinitionId, type DeviceId } from "@opensteer/core";
+import { deviceOwnershipIn } from "./machine-ownership.js";
+import { getDeviceSelfRunnerId } from "./device-inventory-store.js";
 import { getBrowserSessionForOwner } from "./browser-session-store.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalReadTransaction, withPersonalTransaction } from "./personal-transaction.js";
@@ -49,10 +59,10 @@ import {
   computerAppIdentitiesEqual,
   integrationAccessCovers,
   type ComputerAppIdentity,
-  type ComputerAppSetupRequest,
+  type DeviceComputerAppSetupRequest as ComputerAppSetupRequest,
   type IntegrationAccess,
   type IntegrationConnectionId,
-  type IntegrationConnectionSummary,
+  type DeviceIntegrationConnectionSummary as IntegrationConnectionSummary,
   type IntegrationInstallManifest,
   type IntegrationInstallationId,
   type IntegrationServerId,
@@ -90,7 +100,7 @@ import "./connection.js";
 import { lockIntegrationCatalogDefinitionInTransaction } from "./integration-platform-stores.js";
 import { approveComputerAppAutomaticallyInTransaction } from "./computer-connection-writes.js";
 import { deviceAccessStates } from "./device-store.js";
-import { machineOwnershipIn, machineIsManagedBy } from "./machine-ownership.js";
+import { machineIsManagedBy } from "./machine-ownership.js";
 import { cancelPending } from "./request-cancellation.js";
 import { requestFromRow, requestInsert, requestOriginEnvironment } from "./request-persistence.js";
 import { insertBrowserProfileOnLockedHome } from "./browser-session-store.js";
@@ -144,7 +154,7 @@ interface CreateRequestFields {
 export type CreateRequestInput = CreateRequestFields & RequestOriginInput;
 
 /** What one task's ask for an app on a Mac came to. */
-export type ComputerAppAccessDecision =
+export type DeviceComputerAppAccessDecision =
   | {
       readonly connection: IntegrationConnectionSummary;
       readonly kind: "approved";
@@ -165,6 +175,14 @@ export type ComputerAppAccessDecision =
       readonly setupRequest: ComputerAppSetupRequest;
     };
 
+export type ComputerAppAccessDecision =
+  | (Omit<Extract<DeviceComputerAppAccessDecision, { kind: "approved" }>, "connection"> & {
+      readonly connection: LegacyIntegrationConnectionSummary;
+    })
+  | (Omit<Extract<DeviceComputerAppAccessDecision, { kind: "computer" }>, "setupRequest"> & {
+      readonly setupRequest: LegacyComputerAppSetupRequest;
+    })
+  | Extract<DeviceComputerAppAccessDecision, { kind: "personal-grant" }>;
 export interface RequestMutation {
   readonly events: readonly AgentEvent[];
   readonly replayed: boolean;
@@ -222,7 +240,7 @@ export class RequestStore {
   async createDeviceAccessRequest(
     input: {
       readonly callId: string;
-      readonly machineId: RunnerId;
+      readonly machineId: DeviceId;
       readonly access: "browser" | "apps" | "files";
       readonly reason: string;
       readonly originatingRunId: RunId;
@@ -233,7 +251,7 @@ export class RequestStore {
   ): Promise<RequestMutation> {
     return withPersonalTransaction(this.#database, async (transaction) => {
       const machine = await transaction
-        .selectFrom("runners")
+        .selectFrom("devices")
         .select("name")
         .where("id", "=", input.machineId)
         .executeTakeFirst();
@@ -293,7 +311,7 @@ export class RequestStore {
           code: "not_found",
           message: "Computer access Request not found",
         });
-      const ownership = await machineOwnershipIn(transaction, row.payload.machineId);
+      const ownership = await deviceOwnershipIn(transaction, row.payload.machineId);
       if (!ownership || !machineIsManagedBy(ownership, input.resolvedBy))
         throw new OpensteerError({
           code: "forbidden",
@@ -799,7 +817,29 @@ export class RequestStore {
     });
   }
 
-  async requestComputerAppAccess(input: {
+  async requestComputerAppAccess(
+    input: Omit<Parameters<RequestStore["requestDeviceComputerAppAccess"]>[0], "deviceId"> & {
+      readonly runnerId: RunnerId;
+    },
+  ): Promise<ComputerAppAccessDecision> {
+    const result = await this.requestDeviceComputerAppAccess({
+      ...input,
+      deviceId: await requireSelfDeviceId(this.#database, input.runnerId),
+    });
+    if (result.kind === "computer")
+      return {
+        ...result,
+        setupRequest: await legacySelfSetupRequest(this.#database, result.setupRequest),
+      };
+    if (result.kind === "approved")
+      return {
+        ...result,
+        connection: await legacySelfConnection(this.#database, result.connection),
+      };
+    return result;
+  }
+
+  async requestDeviceComputerAppAccess(input: {
     readonly reason: string;
     readonly threadTitle: string | null;
     readonly access: IntegrationAccess;
@@ -808,17 +848,17 @@ export class RequestStore {
     /** Audit correlation for a connection written inline. */
     readonly auditRequestId: string;
     readonly definitionDigest: string;
-    readonly definitionId: "android-phone" | "macos-app";
+    readonly definitionId: "android-phone" | "iphone-screen" | "macos-app";
     readonly idempotencyKey?: string;
     readonly originatingOccurrenceId?: TriggerOccurrenceId | null;
     readonly originatingRunId: RunId | null;
     readonly ownerUserId: UserId;
-    readonly runnerId: RunnerId;
+    readonly deviceId: DeviceId;
     readonly threadId: ThreadId;
     /** The tool rows of a connection this ask creates inline. */
     readonly tools: (connectionId: IntegrationConnectionId) => readonly IntegrationToolMaterial[];
-  }): Promise<ComputerAppAccessDecision> {
-    if ((input.app === null) !== (input.definitionId === "android-phone")) {
+  }): Promise<DeviceComputerAppAccessDecision> {
+    if ((input.app === null) !== isPhoneDisplayDefinitionId(input.definitionId)) {
       throw new OpensteerError({
         code: "bad_request",
         message: "A Mac app access ask names its app; a phone access ask names none",
@@ -848,11 +888,11 @@ export class RequestStore {
       await ((transaction) => lockRequestOrigin(transaction, origin))(personalTransaction);
       return (async (transaction) => {
         const runner = await lockComputerApprovalScopeInTransaction(transaction, {
-          runnerId: input.runnerId,
+          deviceId: input.deviceId,
         });
         const ownership =
-          runner.revokedAt === null ? await machineOwnershipIn(transaction, runner.id) : null;
-        if (runner.revokedAt !== null) {
+          runner.removedAt === null ? await deviceOwnershipIn(transaction, runner.id) : null;
+        if (runner.removedAt !== null) {
           throw new OpensteerError({
             code: "not_found",
             message: "Computer not found",
@@ -869,7 +909,7 @@ export class RequestStore {
         const scope = computerAppScopeOf({
           app,
           definitionId: input.definitionId,
-          runnerId: input.runnerId,
+          deviceId: input.deviceId,
         });
         // This observation chooses the approval path under the Mac's fence.
         // Each accepting path revalidates it after taking installation/server
@@ -890,7 +930,7 @@ export class RequestStore {
             "integrationServers.installationId",
           ])
           .where("integrationConnections.connectionKind", "=", "computer")
-          .where("integrationConnections.runnerId", "=", input.runnerId)
+          .where(computerConnectionDeviceId, "=", input.deviceId)
           .where("integrationConnections.integrationDefinitionId", "=", input.definitionId)
           // `= null` matches nothing, so a phone's app-less connection is found with `is`.
           .where(
@@ -911,7 +951,7 @@ export class RequestStore {
           integrationAccessCovers(current.computerAccess, access);
         const policy = await computerUsePolicyInTransaction(
           transaction,
-          input.runnerId,
+          input.deviceId,
           input.ownerUserId,
         );
         // Automatic approval never widens or re-identifies a connection, so an
@@ -926,7 +966,7 @@ export class RequestStore {
             definitionId: input.definitionId,
             requestId: input.auditRequestId,
             runner,
-            runnerId: input.runnerId,
+            deviceId: input.deviceId,
             tools: input.tools,
           });
           return {
@@ -944,7 +984,7 @@ export class RequestStore {
               access,
               callId:
                 input.idempotencyKey ??
-                `computer.app.grant:${input.definitionId}:${input.runnerId}:${scope.appKey ?? ""}:${access}`,
+                `computer.app.grant:${input.definitionId}:${input.deviceId}:${scope.appKey ?? ""}:${access}`,
               installationId: current.installationId,
               originatingThreadId: input.threadId,
               reason: input.reason,
@@ -967,7 +1007,7 @@ export class RequestStore {
           definitionId: input.definitionId,
           now,
           ownerUserId: input.ownerUserId,
-          runnerId: input.runnerId,
+          deviceId: input.deviceId,
           task: {
             reason: input.reason,
             threadId: input.threadId,
@@ -979,7 +1019,7 @@ export class RequestStore {
           ...origin,
           callId:
             input.idempotencyKey ??
-            `computer.app.access:${input.definitionId}:${input.runnerId}:${scope.appKey ?? ""}:${access}`,
+            `computer.app.access:${input.definitionId}:${input.deviceId}:${scope.appKey ?? ""}:${access}`,
           kind: "computer.app.access",
           mode: "durable",
           originatingThreadId: input.threadId,
@@ -989,7 +1029,7 @@ export class RequestStore {
             definitionId: input.definitionId,
             kind: "computer.app.access",
             reason: input.reason,
-            runnerId: input.runnerId,
+            deviceId: input.deviceId,
             setupRequestId: setupRequest.id,
           },
           presentation: computerAppAccessPresentation({
@@ -1047,13 +1087,13 @@ export class RequestStore {
         });
       const named = await transaction
         .selectFrom("requests")
-        .select(sql<string>`payload->>'runnerId'`.as("runnerId"))
+        .select(sql<string>`coalesce(payload->>'deviceId',payload->>'runnerId')`.as("runnerId"))
         .where("id", "=", input.requestId)
         .where("kind", "=", "computer.app.access")
         .executeTakeFirst();
       if (!named) throw noLongerPending();
       await lockComputerApprovalScopeInTransaction(transaction, {
-        runnerId: RunnerIdSchema.parse(named.runnerId),
+        deviceId: DeviceIdSchema.parse(named.runnerId),
       });
       const observed = await transaction
         .selectFrom("requests")
@@ -2492,17 +2532,25 @@ async function createRequestInTransaction(
         message: "Use computer_access_request for device access.",
       });
     const payload = input.payload;
-    const runner = await transaction
-      .selectFrom("runners")
-      .select(["accessPolicy", "allowedModules", "moduleDescriptors", "revokedAt", "kind"])
-      .where("id", "=", payload.machineId)
+    const deviceId = payload.machineId;
+    const device = await transaction
+      .selectFrom("devices")
+      .select("accessPolicy")
+      .where("id", "=", deviceId)
       .forNoKeyUpdate()
       .executeTakeFirst();
-    const ownership = await machineOwnershipIn(transaction, payload.machineId);
+    const selfRunnerId = await getDeviceSelfRunnerId(transaction, payload.machineId);
+    const runner = selfRunnerId
+      ? await transaction
+          .selectFrom("runners")
+          .select(["allowedModules", "moduleDescriptors", "revokedAt", "kind"])
+          .where("id", "=", selfRunnerId)
+          .executeTakeFirst()
+      : undefined;
+    const ownership = await deviceOwnershipIn(transaction, payload.machineId);
     if (
-      !runner ||
-      runner.revokedAt ||
-      runner.kind === "managed" ||
+      !device ||
+      (runner?.revokedAt !== null && runner !== undefined) ||
       !ownership ||
       !machineIsManagedBy(ownership, input.requestedBy)
     )
@@ -2531,10 +2579,10 @@ async function createRequestInTransaction(
       .executeTakeFirst();
     if (duplicate) return { replayed: true, request: requestFromRow(duplicate), events: [] };
     const state = deviceAccessStates(
-      runner.accessPolicy,
-      runner.allowedModules,
-      runner.moduleDescriptors,
-      runner.kind === "main" && ownership.ownerKind === "deployment",
+      device.accessPolicy,
+      runner?.allowedModules ?? ["integrations"],
+      runner?.moduleDescriptors ?? { integrations: { platform: "ios" } },
+      runner?.kind === "main" && ownership.ownerKind === "deployment",
     )[payload.access];
     if (state !== "disabled")
       throw new OpensteerError({
@@ -2657,7 +2705,11 @@ async function createRequestInTransaction(
       .where("requestedBy", "=", input.requestedBy)
       .where("originatingThreadId", "=", input.originatingThreadId)
       .where(sql<string>`payload->>'definitionId'`, "=", input.payload.definitionId)
-      .where(sql<string>`payload->>'runnerId'`, "=", input.payload.runnerId)
+      .where(
+        sql<string>`coalesce(payload->>'deviceId',payload->>'runnerId')`,
+        "=",
+        input.payload.deviceId,
+      )
       .where(
         app === null
           ? sql<boolean>`payload->'app' = 'null'::jsonb`
@@ -3379,11 +3431,11 @@ function requestPage(
 
 export async function fulfillDeviceAccessRequestsInTransaction(
   transaction: Transaction<DatabaseSchema>,
-  machineId: RunnerId,
+  machineId: DeviceId,
   policy: MachineAccessPolicy,
 ): Promise<readonly AgentEvent[]> {
   const access = deviceAccess(policy);
-  const ownership = await machineOwnershipIn(transaction, machineId);
+  const ownership = await deviceOwnershipIn(transaction, machineId);
   const rows = await transaction
     .selectFrom("requests")
     .selectAll()
