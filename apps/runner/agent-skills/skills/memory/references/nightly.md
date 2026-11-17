@@ -35,8 +35,9 @@ handoff stopped. Then read all of `memory/`.
 ## Keep the record
 
 - **Summary and notes.** Turn what will still matter into notes: learn, merge, correct in place,
-  expire what is over, and drop what no longer holds. Choose and reorganize the structure of
-  `memory/` as it grows, and keep every note reachable from the summary. Keep `## Memory` under
+  expire what is over, and drop what no longer holds. A note already in memory without a source
+  stays unless evidence contradicts it; the source rule is for what you add. Choose and reorganize
+  the structure of `memory/` as it grows, and keep every note reachable from the summary. Keep `## Memory` under
   4 KB with what matters now first; change only what lies between its heading and the next `## `.
   A shortened line keeps who said it and its `(said …)` source; if it can't, leave it in the notes.
 - **The person's instructions are theirs.** Never write, move or reword them. If they seem to have
