@@ -516,7 +516,7 @@ export function App(): ReactNode {
                 if (!current()) return;
                 destinations.selectionFailed();
                 setLinkFailure(
-                  operationDetail(
+                  presentActionFailure(
                     error,
                     "That deployment could not be opened. You can try again there.",
                   ),
@@ -546,7 +546,7 @@ export function App(): ReactNode {
         },
         failed: (error) =>
           setLinkFailure(
-            operationDetail(error, "That link could not be opened. Try opening it again."),
+            presentActionFailure(error, "That link could not be opened. Try opening it again."),
           ),
         settled: () => observeRootSelection(),
       }),
