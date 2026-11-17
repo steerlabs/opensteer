@@ -29,7 +29,9 @@ export function PluginFormFields({
               {field.prompt}
               {field.required ? null : <span className="plugin-form__optional"> (optional)</span>}
             </p>
-            {field.description ? <p className="plugin-form__description">{field.description}</p> : null}
+            {field.description ? (
+              <p className="plugin-form__description">{field.description}</p>
+            ) : null}
             {field.choices.length ? (
               <div aria-labelledby={promptId} className="action-rows" role="group">
                 {field.choices.map((choice) => {
@@ -68,7 +70,13 @@ export function PluginFormFields({
                 autoFocus={index === 0}
                 className="text-input"
                 disabled={disabled}
-                inputMode={field.kind === "number" ? "decimal" : field.kind === "integer" ? "numeric" : undefined}
+                inputMode={
+                  field.kind === "number"
+                    ? "decimal"
+                    : field.kind === "integer"
+                      ? "numeric"
+                      : undefined
+                }
                 onChange={(event) => set(field.id, event.target.value ? [event.target.value] : [])}
                 placeholder={field.kind === "text" ? "Type your answer…" : "A number"}
                 type="text"

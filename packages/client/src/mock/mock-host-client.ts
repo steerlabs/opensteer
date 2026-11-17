@@ -14292,7 +14292,11 @@ function mockPluginRequest(task: (typeof mockPluginTasks)[number]): Request {
     const { pluginId, pluginName, tool, arguments: args } = mockPluginRequests.approval;
     return RequestSchema.parse({
       ...base,
-      payload: { kind: "plugin.approval", executionId: "exe_mock_approval", interactionId: "int_1" },
+      payload: {
+        kind: "plugin.approval",
+        executionId: "exe_mock_approval",
+        interactionId: "int_1",
+      },
       presentation: {
         kind: "choice",
         title: `${pluginName}: ${tool}`,

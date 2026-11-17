@@ -226,7 +226,11 @@ function PluginOverview({
           <DirectoryRequests />
         ) : null}
         {local ? (
-          <button className="settings-catalog__own" onClick={() => setAddingOwn(true)} type="button">
+          <button
+            className="settings-catalog__own"
+            onClick={() => setAddingOwn(true)}
+            type="button"
+          >
             <span aria-hidden className="settings-catalog__own-glyph">
               <Icon name="plus" />
             </span>
@@ -247,17 +251,17 @@ function PluginOverview({
           />
         ) : null}
         {local ? null : (
-        <PluginCatalog
-          error={directory.error}
-          onChanged={() => {
-            overview.reload();
-            directory.reload();
-          }}
-          products={toAdd}
-          query={search}
-          reveal={false}
-          view={view}
-        />
+          <PluginCatalog
+            error={directory.error}
+            onChanged={() => {
+              overview.reload();
+              directory.reload();
+            }}
+            products={toAdd}
+            query={search}
+            reveal={false}
+            view={view}
+          />
         )}
       </div>
       <PluginSecrets />

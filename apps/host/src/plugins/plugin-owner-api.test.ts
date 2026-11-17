@@ -1,6 +1,12 @@
 import Fastify from "fastify";
 import { createId, OpensteerError, type AuthenticatedSession, type UserId } from "@opensteer/core";
-import { hostApi, rpcSuccess, type HostApiServerContext, type PluginCommand } from "@opensteer/protocol";
+import {
+  hostApi,
+  rpcSuccess,
+  type HostApiCommand,
+  type HostApiServerContext,
+  type PluginCommand,
+} from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { HostAuthenticator } from "../identity/auth.js";
 import { registerHostApi } from "../server/host-api-registration.js";
@@ -10,7 +16,11 @@ import { PluginOwnerApi, isPluginCommand } from "./plugin-owner-api.js";
 const ownerId = createId("user");
 const strangerId = createId("user");
 const owner = { caller: "personal", mode: "automatic" };
-const consent = { digest: "c".repeat(64), sites: ["https://api.linear.app"], credential: "sealed" as const };
+const consent = {
+  digest: "c".repeat(64),
+  sites: ["https://api.linear.app"],
+  credential: "sealed" as const,
+};
 
 function session(userId: UserId): AuthenticatedSession {
   return {
@@ -28,7 +38,8 @@ function session(userId: UserId): AuthenticatedSession {
     },
   };
 }
-const context = (userId: UserId) => ({ session: session(userId) }) as unknown as HostApiServerContext;
+const context = (userId: UserId) =>
+  ({ session: session(userId) }) as unknown as HostApiServerContext;
 
 function plugin(id: string, overrides: Record<string, unknown> = {}) {
   return {
@@ -49,7 +60,10 @@ function plugin(id: string, overrides: Record<string, unknown> = {}) {
                 type: "secrets",
                 label: "API key",
                 fields: {
-                  properties: { token: { type: "string", title: "Token" }, region: { type: "string" } },
+                  properties: {
+                    token: { type: "string", title: "Token" },
+                    region: { type: "string" },
+                  },
                   required: ["token"],
                 },
                 plain: ["region"],
@@ -65,21 +79,40 @@ function plugin(id: string, overrides: Record<string, unknown> = {}) {
 }
 
 function setup(options: { plugins?: number; tools?: number } = {}) {
-  const settings = new Map<string, { pluginId: string; access: "all" | "read-only" | "off"; author: "catalog" | "agent"; versionAuthors: Record<string, "catalog" | "agent"> }>();
+  const settings = new Map<
+    string,
+    {
+      pluginId: string;
+      access: "all" | "read-only" | "off";
+      author: "catalog" | "agent";
+      versionAuthors: Record<string, "catalog" | "agent">;
+    }
+  >();
   const service = {
     state: vi.fn(() => ({ status: "ready" as const, generation: 1 })),
     installed: vi.fn(async () =>
       Array.from({ length: options.plugins ?? 3 }, (_, index) => ({
         plugin: plugin(
           `p${index}`,
-          index === 1 ? { activeVersion: null } : index === 2 ? { requirements: { accounts: {} } } : {},
+          index === 1
+            ? { activeVersion: null }
+            : index === 2
+              ? { requirements: { accounts: {} } }
+              : {},
         ),
         links: [],
       })),
     ),
     detail: vi.fn(async ({ plugin: id }: { plugin: string }) => ({
       plugin: plugin(id),
-      links: [{ requirement: "linear", scope: "app", account: "acc1", consent: { ...consent, digest: "d".repeat(64) } }],
+      links: [
+        {
+          requirement: "linear",
+          scope: "app",
+          account: "acc1",
+          consent: { ...consent, digest: "d".repeat(64) },
+        },
+      ],
       tools: {
         version: "v",
         items: Array.from({ length: options.tools ?? 2 }, (_, index) => ({
@@ -98,12 +131,21 @@ function setup(options: { plugins?: number; tools?: number } = {}) {
       hasPage: true,
     })),
     catalogList: vi.fn(async () => ({
-      items: [{ id: "linear", package: "@x/linear", name: "Linear", description: "d", icons: [], auth: [{ method: "key", kind: "secrets" }] }],
+      items: [
+        {
+          id: "linear",
+          package: "@x/linear",
+          name: "Linear",
+          description: "d",
+          icons: [],
+          auth: [{ method: "key", kind: "secrets" }],
+        },
+      ],
       cursor: "next-page",
       feed: {},
     })),
     catalogDetail: vi.fn(),
-    install: vi.fn(async () => ({
+    install: vi.fn(async (_input: unknown, _context: unknown) => ({
       status: "installed" as const,
       plugin: plugin("new"),
       version: { id: "new-v1" },
@@ -116,22 +158,32 @@ function setup(options: { plugins?: number; tools?: number } = {}) {
     reviewAccountLink: vi.fn(async () => consent),
     linkAccount: vi.fn(async () => consent),
     unlinkAccount: vi.fn(async () => null),
-    manage: vi.fn(async () => ({ id: "run1" })),
+    manage: vi.fn(async (_input: unknown, _context: unknown) => ({ id: "run1" })),
   };
   const store = {
     settings: vi.fn(async () => [...settings.values()]),
-    setAccess: vi.fn(async (_owner: UserId, pluginId: string, access: "all" | "read-only" | "off") => {
-      settings.set(pluginId, { pluginId, access, author: "agent", versionAuthors: {}, ...settings.get(pluginId), ...{ access } });
-    }),
-    recordInstall: vi.fn(async (_owner: UserId, pluginId: string, version: string, author: "catalog" | "agent") => {
-      const row = settings.get(pluginId);
-      settings.set(pluginId, {
-        pluginId,
-        access: row?.access ?? "all",
-        author,
-        versionAuthors: { ...row?.versionAuthors, [version]: author },
-      });
-    }),
+    setAccess: vi.fn(
+      async (_owner: UserId, pluginId: string, access: "all" | "read-only" | "off") => {
+        settings.set(pluginId, {
+          pluginId,
+          author: "agent",
+          versionAuthors: {},
+          ...settings.get(pluginId),
+          access,
+        });
+      },
+    ),
+    recordInstall: vi.fn(
+      async (_owner: UserId, pluginId: string, version: string, author: "catalog" | "agent") => {
+        const row = settings.get(pluginId);
+        settings.set(pluginId, {
+          pluginId,
+          access: row?.access ?? "all",
+          author,
+          versionAuthors: { ...row?.versionAuthors, [version]: author },
+        });
+      },
+    ),
     recordActivation: vi.fn(async () => {}),
   };
   const accountLinked = vi.fn(async () => {});
@@ -141,14 +193,20 @@ function setup(options: { plugins?: number; tools?: number } = {}) {
     settings: store as never,
     accountLinked,
     assertOwner: async (userId) => {
-      if (userId !== ownerId) throw new OpensteerError({ code: "forbidden", message: "Owner only" });
+      if (userId !== ownerId)
+        throw new OpensteerError({ code: "forbidden", message: "Owner only" });
     },
     changed,
   });
   return { api, service, store, settings, accountLinked, changed };
 }
 
-const run = (api: PluginOwnerApi, command: Omit<PluginCommand, "idempotencyKey">, key = crypto.randomUUID()) =>
+type Unkeyed = PluginCommand extends infer C
+  ? C extends PluginCommand
+    ? Omit<C, "idempotencyKey">
+    : never
+  : never;
+const run = (api: PluginOwnerApi, command: Unkeyed, key: string = crypto.randomUUID()) =>
   api.command({ ...command, idempotencyKey: key } as PluginCommand, context(ownerId));
 
 describe("the person's plugin API", () => {
@@ -189,13 +247,18 @@ describe("the person's plugin API", () => {
     const app = Fastify();
     registerHostApi(app, authenticator, {
       ...api.reads(),
-      "commands.dispatch": async (command, ctx) =>
+      "commands.dispatch": async (command: HostApiCommand, ctx: HostApiServerContext) =>
         rpcSuccess(isPluginCommand(command) ? await api.command(command, ctx) : { type: "x" }),
     } as never);
     const headers = { authorization: "Bearer native" };
     try {
       const smuggled = [
-        injectRpcRequest(app, "plugins.get", { pluginId: "p0", caller: "agent:x", mode: "ask" }, headers),
+        injectRpcRequest(
+          app,
+          "plugins.get",
+          { pluginId: "p0", caller: "agent:x", mode: "ask" },
+          headers,
+        ),
         injectRpcRequest(
           app,
           "commands.dispatch",
@@ -222,7 +285,10 @@ describe("the person's plugin API", () => {
     expect(view.plugins).toHaveLength(200);
     expect(view.engine).toEqual({ status: "ready" });
     const byId = new Map(view.plugins.map((entry) => [entry.id, entry]));
-    expect(byId.get("p0")).toMatchObject({ status: "needs-account", accounts: { required: 1, linked: 0 } });
+    expect(byId.get("p0")).toMatchObject({
+      status: "needs-account",
+      accounts: { required: 1, linked: 0 },
+    });
     expect(byId.get("p1")).toMatchObject({ status: "not-built" });
     expect(byId.get("p2")).toMatchObject({ status: "ready", access: "all", author: "agent" });
   });
@@ -248,10 +314,9 @@ describe("the person's plugin API", () => {
 
   it("pages the catalog through the engine with the Host's cursor", async () => {
     const { api, service } = setup();
-    const result = await api.reads()["plugins.catalog.list"](
-      { search: " lin ", cursor: "abc", limit: 20 },
-      context(ownerId),
-    );
+    const result = await api
+      .reads()
+      ["plugins.catalog.list"]({ search: " lin ", cursor: "abc", limit: 20 }, context(ownerId));
     expect(service.catalogList).toHaveBeenCalledWith(
       { search: "lin", cursor: "abc", limit: 20 },
       owner,
@@ -273,21 +338,41 @@ describe("the person's plugin API", () => {
 
   it("offers only API-key methods it can draw, with their fields", async () => {
     const { api } = setup();
-    const result = await api.reads()["plugins.account.review"](
-      { pluginId: "p0", requirement: "linear", scope: "app" },
-      context(ownerId),
-    );
+    const result = await api
+      .reads()
+      ["plugins.account.review"](
+        { pluginId: "p0", requirement: "linear", scope: "app" },
+        context(ownerId),
+      );
     expect(result.ok && result.data.methods).toEqual([
       {
         method: "key",
         label: "API key",
         fields: [
-          { name: "token", title: "Token", description: null, type: "string", choices: null, required: true, plain: false },
-          { name: "region", title: "region", description: null, type: "string", choices: null, required: false, plain: true },
+          {
+            name: "token",
+            title: "Token",
+            description: null,
+            type: "string",
+            choices: null,
+            required: true,
+            plain: false,
+          },
+          {
+            name: "region",
+            title: "region",
+            description: null,
+            type: "string",
+            choices: null,
+            required: false,
+            plain: true,
+          },
         ],
       },
     ]);
-    expect(result.ok && result.data.accounts).toEqual([{ id: "acc1", provider: "linear", label: "Work" }]);
+    expect(result.ok && result.data.accounts).toEqual([
+      { id: "acc1", provider: "linear", label: "Work" },
+    ]);
   });
 
   it("records provenance for what it installs and activates", async () => {
@@ -313,8 +398,14 @@ describe("the person's plugin API", () => {
 
   it("answers a retried command with the first attempt instead of repeating it", async () => {
     const { api, service } = setup();
-    const command = { type: "plugins.install", source: { kind: "catalog", catalogId: "linear" } } as const;
-    const [first, second] = await Promise.all([run(api, command, "same"), run(api, command, "same")]);
+    const command = {
+      type: "plugins.install",
+      source: { kind: "catalog", catalogId: "linear" },
+    } as const;
+    const [first, second] = await Promise.all([
+      run(api, command, "same"),
+      run(api, command, "same"),
+    ]);
     expect(second).toEqual(first);
     expect(service.install).toHaveBeenCalledTimes(1);
   });
@@ -328,7 +419,13 @@ describe("the person's plugin API", () => {
       owner,
     );
     expect(accountLinked).toHaveBeenCalledWith(
-      expect.objectContaining({ owner: ownerId, plugin: "p0", requirement: "linear", scope: "app", consent }),
+      expect.objectContaining({
+        owner: ownerId,
+        plugin: "p0",
+        requirement: "linear",
+        scope: "app",
+        consent,
+      }),
     );
 
     await run(api, {
@@ -348,7 +445,9 @@ describe("the person's plugin API", () => {
     );
     expect(accountLinked).toHaveBeenCalledTimes(2);
 
-    service.linkAccount.mockRejectedValueOnce(new (await import("./engine-protocol.js")).PluginServiceError("consent-changed", "changed"));
+    service.linkAccount.mockRejectedValueOnce(
+      new (await import("./engine-protocol.js")).PluginServiceError("consent-changed", "changed"),
+    );
     await expect(
       run(api, { type: "plugins.account.link", ...target, accountId: "acc1", consent }),
     ).rejects.toMatchObject({ code: "conflict", reason: "plugin-consent-changed" });
@@ -357,15 +456,40 @@ describe("the person's plugin API", () => {
 
   it("keeps agent access in Host settings and drives engine controls as the owner", async () => {
     const { api, service, store } = setup();
-    const result = await run(api, { type: "plugins.access.set", pluginId: "p0", access: "read-only" });
+    const result = await run(api, {
+      type: "plugins.access.set",
+      pluginId: "p0",
+      access: "read-only",
+    });
     expect(result).toEqual({ type: "plugins.access.set", access: "read-only" });
     expect(store.setAccess).toHaveBeenCalledWith(ownerId, "p0", "read-only");
-    await run(api, { type: "plugins.schedule.answer", pluginId: "p0", runId: "r1", action: "decline" });
-    await run(api, { type: "plugins.workflow.start", pluginId: "p0", workflow: "w", input: { a: 1 } }, "wk");
-    await run(api, { type: "plugins.account.unlink", pluginId: "p0", requirement: "linear", scope: "app", accountId: "acc1" });
+    await run(api, {
+      type: "plugins.schedule.answer",
+      pluginId: "p0",
+      runId: "r1",
+      action: "decline",
+    });
+    await run(
+      api,
+      { type: "plugins.workflow.start", pluginId: "p0", workflow: "w", input: { a: 1 } },
+      "wk",
+    );
+    await run(api, {
+      type: "plugins.account.unlink",
+      pluginId: "p0",
+      requirement: "linear",
+      scope: "app",
+      accountId: "acc1",
+    });
     expect(service.manage.mock.calls.map(([input, context]) => [input, context])).toEqual([
       [{ operation: "schedules.answer", input: { run: "r1", action: "decline" } }, owner],
-      [{ operation: "workflowRuns.start", input: { app: "p0", workflow: "w", input: { a: 1 }, key: "wk" } }, owner],
+      [
+        {
+          operation: "workflowRuns.start",
+          input: { app: "p0", workflow: "w", input: { a: 1 }, key: "wk" },
+        },
+        owner,
+      ],
     ]);
     expect(service.unlinkAccount).toHaveBeenCalledWith(
       { plugin: "p0", requirement: "linear", scope: "app", account: "acc1" },

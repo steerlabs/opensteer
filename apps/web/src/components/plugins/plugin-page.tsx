@@ -88,14 +88,25 @@ export function PluginPage({ pluginId }: { readonly pluginId: string }) {
   );
 }
 
-function PluginContent({ data, reload }: { readonly data: InstalledPluginView; readonly reload: () => void }) {
+function PluginContent({
+  data,
+  reload,
+}: {
+  readonly data: InstalledPluginView;
+  readonly reload: () => void;
+}) {
   const { plugin } = data;
   const status = pluginStatusView(plugin);
   const active = data.versions.find((version) => version.active);
   return (
     <>
       <div className="settings-add-hero">
-        <IntegrationIcon icon={plugin.icon ?? undefined} id={plugin.slug} name={plugin.name} size="lg" />
+        <IntegrationIcon
+          icon={plugin.icon ?? undefined}
+          id={plugin.slug}
+          name={plugin.name}
+          size="lg"
+        />
         <SectionHeader
           title={plugin.name}
           lead={[
@@ -171,7 +182,13 @@ function AccessSection({ data }: { readonly data: InstalledPluginView }) {
   );
 }
 
-function AccountsSection({ data, reload }: { readonly data: InstalledPluginView; readonly reload: () => void }) {
+function AccountsSection({
+  data,
+  reload,
+}: {
+  readonly data: InstalledPluginView;
+  readonly reload: () => void;
+}) {
   const { hostClient } = useShell();
   const action = useAction();
   const [connecting, setConnecting] = useState<PluginRequirementTarget | null>(null);
@@ -181,13 +198,20 @@ function AccountsSection({ data, reload }: { readonly data: InstalledPluginView;
       <h2 className="settings-group__title">Connected accounts</h2>
       <div className="card">
         {data.requirements.map((requirement) => {
-          const target = { pluginId: data.plugin.id, requirement: requirement.name, scope: requirement.scope };
+          const target = {
+            pluginId: data.plugin.id,
+            requirement: requirement.name,
+            scope: requirement.scope,
+          };
           const issue = pluginRequirementIssue(requirement);
           return (
             <div className="plugin-requirement" key={`${requirement.scope}:${requirement.name}`}>
               <SettingsRow
                 title={requirement.providerName}
-                detail={issue ?? (requirement.cardinality === "many" ? "Any number of accounts" : "One account")}
+                detail={
+                  issue ??
+                  (requirement.cardinality === "many" ? "Any number of accounts" : "One account")
+                }
                 action={
                   requirement.links.length === 0 || requirement.cardinality === "many" || issue ? (
                     <button
@@ -199,7 +223,11 @@ function AccountsSection({ data, reload }: { readonly data: InstalledPluginView;
                       {requirement.links.length ? (issue ? "Review" : "Add") : "Connect"}
                     </button>
                   ) : (
-                    <button className="btn btn--small" onClick={() => setConnecting(target)} type="button">
+                    <button
+                      className="btn btn--small"
+                      onClick={() => setConnecting(target)}
+                      type="button"
+                    >
                       Change
                     </button>
                   )
@@ -210,7 +238,9 @@ function AccountsSection({ data, reload }: { readonly data: InstalledPluginView;
                   className="plugin-requirement__link"
                   key={link.account.id}
                   title={link.account.label}
-                  detail={link.current ? "Linked" : "Needs review: the plugin changed what it asks for"}
+                  detail={
+                    link.current ? "Linked" : "Needs review: the plugin changed what it asks for"
+                  }
                   action={
                     <button
                       aria-label={`Unlink ${link.account.label}`}
@@ -255,7 +285,8 @@ function ToolsSection({ data }: { readonly data: InstalledPluginView }) {
     <>
       <section className="settings-group">
         <h2 className="settings-group__title">
-          Tools{data.toolCount ? <span className="plugin-page__count">{data.toolCount}</span> : null}
+          Tools
+          {data.toolCount ? <span className="plugin-page__count">{data.toolCount}</span> : null}
         </h2>
         {tools === null ? (
           <p className="settings-footnote">
@@ -272,11 +303,21 @@ function ToolsSection({ data }: { readonly data: InstalledPluginView }) {
                 key={tool.name}
                 title={<code className="plugin-page__tool">{tool.name}</code>}
                 detail={tool.description || undefined}
-                action={tool.readOnly ? <span className="chip">Reads</span> : <span className="chip chip--warn">Writes</span>}
+                action={
+                  tool.readOnly ? (
+                    <span className="chip">Reads</span>
+                  ) : (
+                    <span className="chip chip--warn">Writes</span>
+                  )
+                }
               />
             ))}
             {tools.length > 8 ? (
-              <button className="card__row plugins-link-row" onClick={() => setAll(!all)} type="button">
+              <button
+                className="card__row plugins-link-row"
+                onClick={() => setAll(!all)}
+                type="button"
+              >
                 <span className="card__row-body">
                   <span className="card__row-title">
                     {all ? "Show fewer" : `Show all ${data.toolCount} tools`}
@@ -292,7 +333,11 @@ function ToolsSection({ data }: { readonly data: InstalledPluginView }) {
           <h2 className="settings-group__title">Skills</h2>
           <div className="card">
             {data.skills.map((skill) => (
-              <SettingsRow key={skill.name} title={skill.name} detail={skill.description || undefined} />
+              <SettingsRow
+                key={skill.name}
+                title={skill.name}
+                detail={skill.description || undefined}
+              />
             ))}
           </div>
         </section>
@@ -304,9 +349,13 @@ function ToolsSection({ data }: { readonly data: InstalledPluginView }) {
 function SchedulesSection({ data }: { readonly data: InstalledPluginView }) {
   const { hostClient } = useShell();
   const action = useAction();
-  const runs = useSettingsRead(() => readPluginScheduleRuns(hostClient, data.plugin.id), `plugin-runs:${data.plugin.id}`);
+  const runs = useSettingsRead(
+    () => readPluginScheduleRuns(hostClient, data.plugin.id),
+    `plugin-runs:${data.plugin.id}`,
+  );
   const waiting = runs.data?.runs.filter((run) => run.status === "awaiting-approval") ?? [];
-  const recent = runs.data?.runs.filter((run) => run.status !== "awaiting-approval").slice(0, 5) ?? [];
+  const recent =
+    runs.data?.runs.filter((run) => run.status !== "awaiting-approval").slice(0, 5) ?? [];
   return (
     <section className="settings-group">
       <h2 className="settings-group__title">Schedules</h2>
@@ -370,20 +419,26 @@ function SchedulesSection({ data }: { readonly data: InstalledPluginView }) {
           );
         })}
       </div>
-      <SettingsError message={action.error ?? (runs.error ? actionErrorMessage(runs.error) : null)} />
+      <SettingsError
+        message={action.error ?? (runs.error ? actionErrorMessage(runs.error) : null)}
+      />
       {waiting.map((run) => (
         <div className="plugin-approval" key={run.id}>
           <p className="plugin-approval__title">
             <Icon name="clock" />
             {run.schedule} is waiting for you
-            {run.expiresAt ? <span className="settings-footnote"> · until {formatWhen(run.expiresAt)}</span> : null}
+            {run.expiresAt ? (
+              <span className="settings-footnote"> · until {formatWhen(run.expiresAt)}</span>
+            ) : null}
           </p>
           {run.approval ? (
             <>
               <p className="settings-footnote">
                 It wants to run <code>{run.approval.tool}</code> with exactly:
               </p>
-              <pre className="plugin-arguments">{JSON.stringify(run.approval.arguments, null, 2)}</pre>
+              <pre className="plugin-arguments">
+                {JSON.stringify(run.approval.arguments, null, 2)}
+              </pre>
             </>
           ) : null}
           <div className="action-buttons">
@@ -392,7 +447,9 @@ function SchedulesSection({ data }: { readonly data: InstalledPluginView }) {
               disabled={action.pending !== null}
               onClick={() =>
                 action.run(`decline:${run.id}`, () =>
-                  answerPluginScheduledRun(hostClient, data.plugin.id, run.id, "decline").then(runs.reload),
+                  answerPluginScheduledRun(hostClient, data.plugin.id, run.id, "decline").then(
+                    runs.reload,
+                  ),
                 )
               }
               type="button"
@@ -404,7 +461,9 @@ function SchedulesSection({ data }: { readonly data: InstalledPluginView }) {
               disabled={action.pending !== null}
               onClick={() =>
                 action.run(`accept:${run.id}`, () =>
-                  answerPluginScheduledRun(hostClient, data.plugin.id, run.id, "accept").then(runs.reload),
+                  answerPluginScheduledRun(hostClient, data.plugin.id, run.id, "accept").then(
+                    runs.reload,
+                  ),
                 )
               }
               type="button"
@@ -435,8 +494,13 @@ function SchedulesSection({ data }: { readonly data: InstalledPluginView }) {
 function WorkflowsSection({ data }: { readonly data: InstalledPluginView }) {
   const { hostClient } = useShell();
   const action = useAction();
-  const runs = useSettingsRead(() => readPluginWorkflowRuns(hostClient, data.plugin.id), `plugin-workflows:${data.plugin.id}`);
-  const [starting, setStarting] = useState<NonNullable<InstalledPluginView["workflows"]>[number] | null>(null);
+  const runs = useSettingsRead(
+    () => readPluginWorkflowRuns(hostClient, data.plugin.id),
+    `plugin-workflows:${data.plugin.id}`,
+  );
+  const [starting, setStarting] = useState<
+    NonNullable<InstalledPluginView["workflows"]>[number] | null
+  >(null);
   return (
     <section className="settings-group">
       <h2 className="settings-group__title">Workflows</h2>
@@ -447,7 +511,11 @@ function WorkflowsSection({ data }: { readonly data: InstalledPluginView }) {
             title={workflow.name}
             detail={workflow.description ?? undefined}
             action={
-              <button className="btn btn--small" onClick={() => setStarting(workflow)} type="button">
+              <button
+                className="btn btn--small"
+                onClick={() => setStarting(workflow)}
+                type="button"
+              >
                 Start
               </button>
             }
@@ -527,7 +595,9 @@ function StartWorkflow({
             onClick={() =>
               "content" in content &&
               action.run("start", () =>
-                startPluginWorkflow(hostClient, pluginId, workflow.name, content.content).then(onStarted),
+                startPluginWorkflow(hostClient, pluginId, workflow.name, content.content).then(
+                  onStarted,
+                ),
               )
             }
             type="button"
@@ -574,7 +644,11 @@ function WebhooksSection({ data }: { readonly data: InstalledPluginView }) {
             }
             action={
               webhook.status === "setup-required" ? (
-                <button className="btn btn--small btn--primary" onClick={() => setSetup(webhook.id)} type="button">
+                <button
+                  className="btn btn--small btn--primary"
+                  onClick={() => setSetup(webhook.id)}
+                  type="button"
+                >
                   Finish setup
                 </button>
               ) : (
@@ -586,8 +660,12 @@ function WebhooksSection({ data }: { readonly data: InstalledPluginView }) {
           />
         ))}
       </div>
-      <p className="settings-footnote">Webhook events reach this computer once Opensteer's webhook route is set up for it.</p>
-      {setup ? <WebhookSetup onClose={() => setSetup(null)} pluginId={data.plugin.id} webhookId={setup} /> : null}
+      <p className="settings-footnote">
+        Webhook events reach this computer once Opensteer's webhook route is set up for it.
+      </p>
+      {setup ? (
+        <WebhookSetup onClose={() => setSetup(null)} pluginId={data.plugin.id} webhookId={setup} />
+      ) : null}
     </section>
   );
 }
@@ -602,10 +680,17 @@ function WebhookSetup({
   readonly webhookId: string;
 }) {
   const { hostClient } = useShell();
-  const setup = useSettingsRead(() => readPluginWebhookSetup(hostClient, pluginId, webhookId), `webhook:${webhookId}`);
+  const setup = useSettingsRead(
+    () => readPluginWebhookSetup(hostClient, pluginId, webhookId),
+    `webhook:${webhookId}`,
+  );
   const titleId = useId();
   return (
-    <Dialog labelledBy={titleId} onClose={onClose} title={<span id={titleId}>Set up the webhook</span>}>
+    <Dialog
+      labelledBy={titleId}
+      onClose={onClose}
+      title={<span id={titleId}>Set up the webhook</span>}
+    >
       <div className="plugins-form">
         <SettingsError message={setup.error ? actionErrorMessage(setup.error) : null} />
         {setup.data ? (
@@ -682,7 +767,9 @@ function VersionsSection({ data }: { readonly data: InstalledPluginView }) {
                 disabled={action.pending !== null}
                 onClick={() =>
                   action.run("activate", () =>
-                    activatePluginVersion(hostClient, data.plugin.id, confirming).then(() => setConfirming(null)),
+                    activatePluginVersion(hostClient, data.plugin.id, confirming).then(() =>
+                      setConfirming(null),
+                    ),
                   )
                 }
                 type="button"
@@ -693,8 +780,8 @@ function VersionsSection({ data }: { readonly data: InstalledPluginView }) {
           }
         >
           <p>
-            {data.plugin.name} will run this version's code from now on. Anything it has stored stays
-            as it is: switching back changes code, not data.
+            {data.plugin.name} will run this version's code from now on. Anything it has stored
+            stays as it is: switching back changes code, not data.
           </p>
         </Dialog>
       ) : null}
@@ -715,7 +802,11 @@ function RemoveSection({ data }: { readonly data: InstalledPluginView }) {
           title={`Remove ${data.plugin.name}`}
           detail="Agents lose its tools. Connected accounts stay saved for other plugins."
           action={
-            <button className="btn btn--small btn--danger" onClick={() => setConfirming(true)} type="button">
+            <button
+              className="btn btn--small btn--danger"
+              onClick={() => setConfirming(true)}
+              type="button"
+            >
               Remove
             </button>
           }

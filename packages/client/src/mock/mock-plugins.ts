@@ -34,13 +34,181 @@ const digest = (seed: string) =>
   ).join("");
 
 const catalogCategories = [
-  ["Engineering", ["Linear", "GitHub", "GitLab", "Sentry", "Vercel", "Netlify", "Render", "Fly", "Railway", "Datadog", "PagerDuty", "CircleCI", "Buildkite", "Postman", "Supabase", "Neon", "PlanetScale", "Cloudflare", "Fastly", "Docker Hub"]],
-  ["Productivity", ["Notion", "Todoist", "Asana", "Trello", "ClickUp", "Airtable", "Coda", "Miro", "Calendly", "Cal.com", "Toggl", "Harvest", "Evernote", "Obsidian Sync", "Raindrop", "Readwise", "Things", "TickTick", "Basecamp", "Monday"]],
-  ["Communication", ["Slack", "Discord", "Resend", "Postmark", "SendGrid", "Mailgun", "Twilio", "Vonage", "Intercom", "Front", "Zendesk", "Help Scout", "Crisp", "Loom", "Zoom", "Whereby", "Telegram Bot", "Matrix", "Mattermost", "Pushover"]],
-  ["Finance", ["Stripe", "Paddle", "Lemon Squeezy", "Mercury", "Brex", "Ramp", "QuickBooks", "Xero", "Wise", "Plaid", "Chargebee", "Recurly", "FreshBooks", "Wave", "Expensify", "Bill.com", "Gusto", "Rippling", "Deel", "Pilot"]],
-  ["Marketing", ["HubSpot", "Mailchimp", "ConvertKit", "Beehiiv", "Buttondown", "Ghost", "Webflow", "Framer", "Plausible", "Fathom", "PostHog", "Mixpanel", "Amplitude", "Segment", "Customer.io", "Klaviyo", "Buffer", "Typefully", "Hootsuite", "Later"]],
-  ["Data", ["Snowflake", "BigQuery", "Redshift", "ClickHouse", "MotherDuck", "Metabase", "Hex", "Mode", "dbt Cloud", "Fivetran", "Airbyte", "Census", "Hightouch", "Pinecone", "Weaviate", "Qdrant", "Algolia", "Typesense", "Elastic", "OpenSearch"]],
-  ["Media", ["TMDB", "Spotify", "YouTube", "Vimeo", "Mux", "Cloudinary", "Unsplash", "Pexels", "Figma", "Canva", "Dribbble", "Behance", "SoundCloud", "Bandcamp", "Last.fm", "Letterboxd", "Goodreads", "Pocket Casts", "Podchaser", "Giphy"]],
+  [
+    "Engineering",
+    [
+      "Linear",
+      "GitHub",
+      "GitLab",
+      "Sentry",
+      "Vercel",
+      "Netlify",
+      "Render",
+      "Fly",
+      "Railway",
+      "Datadog",
+      "PagerDuty",
+      "CircleCI",
+      "Buildkite",
+      "Postman",
+      "Supabase",
+      "Neon",
+      "PlanetScale",
+      "Cloudflare",
+      "Fastly",
+      "Docker Hub",
+    ],
+  ],
+  [
+    "Productivity",
+    [
+      "Notion",
+      "Todoist",
+      "Asana",
+      "Trello",
+      "ClickUp",
+      "Airtable",
+      "Coda",
+      "Miro",
+      "Calendly",
+      "Cal.com",
+      "Toggl",
+      "Harvest",
+      "Evernote",
+      "Obsidian Sync",
+      "Raindrop",
+      "Readwise",
+      "Things",
+      "TickTick",
+      "Basecamp",
+      "Monday",
+    ],
+  ],
+  [
+    "Communication",
+    [
+      "Slack",
+      "Discord",
+      "Resend",
+      "Postmark",
+      "SendGrid",
+      "Mailgun",
+      "Twilio",
+      "Vonage",
+      "Intercom",
+      "Front",
+      "Zendesk",
+      "Help Scout",
+      "Crisp",
+      "Loom",
+      "Zoom",
+      "Whereby",
+      "Telegram Bot",
+      "Matrix",
+      "Mattermost",
+      "Pushover",
+    ],
+  ],
+  [
+    "Finance",
+    [
+      "Stripe",
+      "Paddle",
+      "Lemon Squeezy",
+      "Mercury",
+      "Brex",
+      "Ramp",
+      "QuickBooks",
+      "Xero",
+      "Wise",
+      "Plaid",
+      "Chargebee",
+      "Recurly",
+      "FreshBooks",
+      "Wave",
+      "Expensify",
+      "Bill.com",
+      "Gusto",
+      "Rippling",
+      "Deel",
+      "Pilot",
+    ],
+  ],
+  [
+    "Marketing",
+    [
+      "HubSpot",
+      "Mailchimp",
+      "ConvertKit",
+      "Beehiiv",
+      "Buttondown",
+      "Ghost",
+      "Webflow",
+      "Framer",
+      "Plausible",
+      "Fathom",
+      "PostHog",
+      "Mixpanel",
+      "Amplitude",
+      "Segment",
+      "Customer.io",
+      "Klaviyo",
+      "Buffer",
+      "Typefully",
+      "Hootsuite",
+      "Later",
+    ],
+  ],
+  [
+    "Data",
+    [
+      "Snowflake",
+      "BigQuery",
+      "Redshift",
+      "ClickHouse",
+      "MotherDuck",
+      "Metabase",
+      "Hex",
+      "Mode",
+      "dbt Cloud",
+      "Fivetran",
+      "Airbyte",
+      "Census",
+      "Hightouch",
+      "Pinecone",
+      "Weaviate",
+      "Qdrant",
+      "Algolia",
+      "Typesense",
+      "Elastic",
+      "OpenSearch",
+    ],
+  ],
+  [
+    "Media",
+    [
+      "TMDB",
+      "Spotify",
+      "YouTube",
+      "Vimeo",
+      "Mux",
+      "Cloudinary",
+      "Unsplash",
+      "Pexels",
+      "Figma",
+      "Canva",
+      "Dribbble",
+      "Behance",
+      "SoundCloud",
+      "Bandcamp",
+      "Last.fm",
+      "Letterboxd",
+      "Goodreads",
+      "Pocket Casts",
+      "Podchaser",
+      "Giphy",
+    ],
+  ],
 ] as const;
 const verbs = ["Read", "Search", "Create", "Update", "Sync"] as const;
 
@@ -56,7 +224,9 @@ function buildCatalog(): PluginCatalogEntryView[] {
         icon: null,
         auth: [
           { method: "apiKey", kind: "secrets", label: "API key" },
-          ...(name.length % 3 === 0 ? [] : [{ method: "oauth", kind: "oauth2" as const, label: "Sign in" }]),
+          ...(name.length % 3 === 0
+            ? []
+            : [{ method: "oauth", kind: "oauth2" as const, label: "Sign in" }]),
         ],
       });
   // Long-tail wrappers so paging reaches a few hundred entries.
@@ -401,7 +571,11 @@ export class MockPlugins {
       failure: null,
       approval: {
         tool: "update_issue",
-        arguments: { ids: ["ENG-101", "ENG-133"], state: "Canceled", reason: "No activity in 90 days" },
+        arguments: {
+          ids: ["ENG-101", "ENG-133"],
+          state: "Canceled",
+          reason: "No activity in 90 days",
+        },
       },
     },
     {
@@ -487,7 +661,8 @@ export class MockPlugins {
         "The plugin engine stopped three times in a row.",
         "plugin-engine-unavailable",
       );
-    if (this.scenario === "error") throw refusal("conflict", "The plugin engine answered with an error.");
+    if (this.scenario === "error")
+      throw refusal("conflict", "The plugin engine answered with an error.");
     if (this.#started) return;
     this.#started = true;
     this.#setEngine({ status: "starting" });
@@ -508,9 +683,7 @@ export class MockPlugins {
     const linked = plugin.requirements.filter((r) =>
       plugin.links.some((link) => link.requirement === r.name),
     );
-    const missing = plugin.requirements.some(
-      (r) => r.cardinality === "one" && !linked.includes(r),
-    );
+    const missing = plugin.requirements.some((r) => r.cardinality === "one" && !linked.includes(r));
     return {
       id: plugin.id,
       name: plugin.name,
@@ -572,7 +745,11 @@ export class MockPlugins {
       (r) => r.name === target.requirement && r.scope === target.scope,
     );
     if (!requirement)
-      throw refusal("conflict", "This plugin no longer asks for that account.", "plugin-consent-changed");
+      throw refusal(
+        "conflict",
+        "This plugin no longer asks for that account.",
+        "plugin-consent-changed",
+      );
     return {
       plugin: { id: plugin.id, name: plugin.name, author: plugin.author },
       requirement: {
@@ -631,7 +808,8 @@ export class MockPlugins {
           id: "one-click",
           kind: "one-click",
           label: `Sign in with ${requirement.providerName}`,
-          detail: "Opensteer's sign-in service handles the exchange; the account stays on this computer.",
+          detail:
+            "Opensteer's sign-in service handles the exchange; the account stays on this computer.",
           unavailable:
             requirement.provider === "resend"
               ? `${requirement.providerName} doesn't offer one-click sign-in.`
@@ -688,7 +866,9 @@ export class MockPlugins {
       },
       "plugins.get": async ({ pluginId }) => {
         await this.#ready();
-        return rpcSuccess(hostApi["plugins.get"].success.parse(this.detail(this.#plugin(pluginId))));
+        return rpcSuccess(
+          hostApi["plugins.get"].success.parse(this.detail(this.#plugin(pluginId))),
+        );
       },
       "plugins.catalog.list": async ({ search, cursor, limit }) => {
         await this.#ready();
@@ -753,7 +933,8 @@ export class MockPlugins {
           source.kind === "catalog"
             ? this.catalog.find((candidate) => candidate.id === source.catalogId)
             : null;
-        if (source.kind === "catalog" && !entry) throw refusal("not_found", "Catalog entry not found");
+        if (source.kind === "catalog" && !entry)
+          throw refusal("not_found", "Catalog entry not found");
         const name = entry?.name ?? (source.kind === "catalog" ? source.catalogId : source.name);
         if (source.kind !== "catalog" && source.url.includes("broken"))
           return {
@@ -918,8 +1099,16 @@ export class MockPlugins {
   ) {
     const review = this.review(input);
     if (review.consent.digest !== input.consent.digest)
-      throw refusal("conflict", "Plugin declaration changed since review", "plugin-consent-changed");
-    if (!this.accounts.some((account) => account.id === accountId && account.provider === review.requirement.provider))
+      throw refusal(
+        "conflict",
+        "Plugin declaration changed since review",
+        "plugin-consent-changed",
+      );
+    if (
+      !this.accounts.some(
+        (account) => account.id === accountId && account.provider === review.requirement.provider,
+      )
+    )
       throw refusal("bad_request", "Account provider does not match the requirement");
     this.#link(input, accountId);
   }

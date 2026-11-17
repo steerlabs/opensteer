@@ -1853,7 +1853,11 @@ const hostApiGroup3 = defineRpc({
     pluginReads["plugins.installed.list"].input,
     pluginReads["plugins.installed.list"].output,
   ),
-  "plugins.get": declaration("GET", pluginReads["plugins.get"].input, pluginReads["plugins.get"].output),
+  "plugins.get": declaration(
+    "GET",
+    pluginReads["plugins.get"].input,
+    pluginReads["plugins.get"].output,
+  ),
   "plugins.catalog.list": declaration(
     "GET",
     pluginReads["plugins.catalog.list"].input,

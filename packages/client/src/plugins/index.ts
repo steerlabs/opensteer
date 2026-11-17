@@ -53,7 +53,10 @@ export interface PluginSignIn {
   methods(target: PluginRequirementTarget): Promise<readonly PluginSignInMethod[]>;
   /** Starts a sign-in; the caller opens the returned address. */
   begin(
-    target: PluginRequirementTarget & { readonly method: string; readonly consent: PluginConsentView },
+    target: PluginRequirementTarget & {
+      readonly method: string;
+      readonly consent: PluginConsentView;
+    },
   ): Promise<{ readonly url: string }>;
 }
 /** Sign-in methods for a requirement; none until the Host offers sign-in. */
@@ -130,16 +133,20 @@ async function command<T extends PluginCommand["type"]>(
   return result as Extract<PluginCommandResult, { type: T }>;
 }
 
-export const installPlugin = (client: PluginsHost, source: CommandInput<"plugins.install">["source"]) =>
-  command(client, "plugins.install", { source }).then(({ result }) => result);
+export const installPlugin = (
+  client: PluginsHost,
+  source: CommandInput<"plugins.install">["source"],
+) => command(client, "plugins.install", { source }).then(({ result }) => result);
 export const activatePluginVersion = (client: PluginsHost, pluginId: string, versionId: string) =>
   command(client, "plugins.version.activate", { pluginId, versionId });
 export const removePlugin = (client: PluginsHost, pluginId: string) =>
   command(client, "plugins.remove", { pluginId });
 export const setPluginAccess = (client: PluginsHost, pluginId: string, access: PluginAccess) =>
   command(client, "plugins.access.set", { pluginId, access });
-export const createPluginAccount = (client: PluginsHost, input: CommandInput<"plugins.account.create">) =>
-  command(client, "plugins.account.create", input).then(({ account }) => account);
+export const createPluginAccount = (
+  client: PluginsHost,
+  input: CommandInput<"plugins.account.create">,
+) => command(client, "plugins.account.create", input).then(({ account }) => account);
 export const removePluginAccount = (client: PluginsHost, accountId: string) =>
   command(client, "plugins.account.remove", { accountId });
 export const linkPluginAccount = (
@@ -236,7 +243,9 @@ export function pluginEngineRefusal(error: unknown): PluginEngineStateView | nul
     error.reason === "plugin-engine-unavailable"
     ? {
         status: "unavailable",
-        ...("message" in error && typeof error.message === "string" ? { reason: error.message } : {}),
+        ...("message" in error && typeof error.message === "string"
+          ? { reason: error.message }
+          : {}),
       }
     : null;
 }
@@ -273,7 +282,9 @@ export function pluginConsentLines(input: {
 }): readonly { readonly key: string; readonly text: string }[] {
   const { consent } = input;
   const sites = consent.sites.map((site) => site.replace(/^https?:\/\//u, ""));
-  const credential = input.providerName ? `your ${input.providerName} credential` : "the credential";
+  const credential = input.providerName
+    ? `your ${input.providerName} credential`
+    : "the credential";
   return [
     {
       key: "sites",
@@ -330,7 +341,8 @@ export function pluginAccountComplete(
     const value = values[field.name] ?? "";
     if (value === "") return !field.required;
     return field.type === "number" || field.type === "integer"
-      ? Number.isFinite(Number(value)) && (field.type === "number" || Number.isInteger(Number(value)))
+      ? Number.isFinite(Number(value)) &&
+          (field.type === "number" || Number.isInteger(Number(value)))
       : true;
   });
 }
@@ -383,7 +395,9 @@ export function pluginInputForm(schema: Record<string, unknown>): PluginInputFor
       : null;
     const oneOf = Array.isArray(property.oneOf)
       ? property.oneOf.flatMap((option) =>
-          option && typeof option === "object" && typeof (option as { const?: unknown }).const === "string"
+          option &&
+          typeof option === "object" &&
+          typeof (option as { const?: unknown }).const === "string"
             ? [
                 {
                   value: (option as { const: string }).const,
@@ -401,13 +415,12 @@ export function pluginInputForm(schema: Record<string, unknown>): PluginInputFor
       fields.push({
         ...base,
         kind: "choice",
-        choices:
-          oneOf?.length
-            ? oneOf
-            : enumValues!.map((value, index) => ({
-                value,
-                label: typeof names[index] === "string" ? (names[index] as string) : value,
-              })),
+        choices: oneOf?.length
+          ? oneOf
+          : enumValues!.map((value, index) => ({
+              value,
+              label: typeof names[index] === "string" ? (names[index] as string) : value,
+            })),
       });
     } else if (property.type === "array") {
       const items = property.items as Record<string, unknown> | undefined;
@@ -415,13 +428,19 @@ export function pluginInputForm(schema: Record<string, unknown>): PluginInputFor
         ? items.enum.filter((value): value is string => typeof value === "string")
         : Array.isArray(items?.anyOf)
           ? items.anyOf.flatMap((option) =>
-              option && typeof option === "object" && typeof (option as { const?: unknown }).const === "string"
+              option &&
+              typeof option === "object" &&
+              typeof (option as { const?: unknown }).const === "string"
                 ? [(option as { const: string }).const]
                 : [],
             )
           : [];
       if (values.length)
-        fields.push({ ...base, kind: "choices", choices: values.map((value) => ({ value, label: value })) });
+        fields.push({
+          ...base,
+          kind: "choices",
+          choices: values.map((value) => ({ value, label: value })),
+        });
       else unsupported.push(id);
     } else if (property.type === "boolean") {
       fields.push({
@@ -448,7 +467,9 @@ export function pluginInputForm(schema: Record<string, unknown>): PluginInputFor
 export function pluginInputContent(
   form: PluginInputForm,
   answers: Readonly<Record<string, readonly string[]>>,
-): { readonly content: Record<string, string | number | boolean | string[]> } | { readonly problem: string } {
+):
+  | { readonly content: Record<string, string | number | boolean | string[]> }
+  | { readonly problem: string } {
   if (form.unsupported.length)
     return { problem: "This form asks for something Opensteer can't show. Decline it instead." };
   const content: Record<string, string | number | boolean | string[]> = {};
@@ -464,7 +485,9 @@ export function pluginInputContent(
     else if (field.kind === "number" || field.kind === "integer") {
       const number = Number(first);
       if (!Number.isFinite(number) || (field.kind === "integer" && !Number.isInteger(number)))
-        return { problem: `${field.prompt} needs ${field.kind === "integer" ? "a whole number" : "a number"}.` };
+        return {
+          problem: `${field.prompt} needs ${field.kind === "integer" ? "a whole number" : "a number"}.`,
+        };
       content[field.id] = number;
     } else content[field.id] = first;
   }
@@ -504,7 +527,9 @@ export function isPluginRequest(request: Pick<Request, "kind">) {
 }
 
 /** What a plugin Request asks, from the presentation the Host stored; null for any other. */
-export function pluginRequestView(request: Pick<Request, "kind" | "presentation">): PluginRequestView | null {
+export function pluginRequestView(
+  request: Pick<Request, "kind" | "presentation">,
+): PluginRequestView | null {
   const context = request.presentation.plugin;
   if (!context || !isPluginRequest(request)) return null;
   const decision = context.decision;
@@ -512,7 +537,11 @@ export function pluginRequestView(request: Pick<Request, "kind" | "presentation"
     return {
       kind: "account",
       plugin: context.plugin,
-      target: { pluginId: context.plugin.id, requirement: decision.requirement, scope: decision.scope },
+      target: {
+        pluginId: context.plugin.id,
+        requirement: decision.requirement,
+        scope: decision.scope,
+      },
       consent: decision.consent,
     };
   if (request.kind === "plugin.approval" && decision.kind === "approval")
@@ -542,7 +571,10 @@ export const pluginRequestResponses = {
     kind: "external",
     value: { action: "accept", content: JSON.parse(JSON.stringify(content)) },
   }),
-} as const satisfies Record<string, RequestResponse | ((content: Record<string, unknown>) => RequestResponse)>;
+} as const satisfies Record<
+  string,
+  RequestResponse | ((content: Record<string, unknown>) => RequestResponse)
+>;
 
 /* ---- Schedules, workflows, catalog ---- */
 

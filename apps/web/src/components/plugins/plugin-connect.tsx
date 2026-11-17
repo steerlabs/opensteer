@@ -58,7 +58,11 @@ export function PluginConnectDialog({
     <Dialog
       labelledBy={titleId}
       onClose={onClose}
-      title={<span id={titleId}>{review ? `Connect ${review.requirement.providerName}` : "Connect an account"}</span>}
+      title={
+        <span id={titleId}>
+          {review ? `Connect ${review.requirement.providerName}` : "Connect an account"}
+        </span>
+      }
     >
       <div className="plugin-connect">
         <SettingsError message={loadError ? actionErrorMessage(loadError) : null} />
@@ -135,7 +139,15 @@ function ConnectBody({
           }).map((line) => (
             <li className={`plugin-consent__line plugin-consent__line--${line.key}`} key={line.key}>
               <Icon
-                name={line.key === "sites" ? "globe" : line.key === "credential" ? "key" : line.key === "trust" ? "shield" : "code"}
+                name={
+                  line.key === "sites"
+                    ? "globe"
+                    : line.key === "credential"
+                      ? "key"
+                      : line.key === "trust"
+                        ? "shield"
+                        : "code"
+                }
               />
               <span>{line.text}</span>
             </li>
@@ -167,20 +179,17 @@ function ConnectBody({
                 disabled={entry.unavailable !== null || pending !== null}
                 key={entry.id}
                 onClick={() =>
-                  run(
-                    `sign-in:${entry.id}`,
-                    async () => {
-                      const started = await hostClient.pluginSignIn!.begin({
-                        ...target,
-                        method: entry.id,
-                        consent: review.consent,
-                      });
-                      // The sign-in finishes in its own window; the link lands as a plugin change.
-                      if (started.url === "about:blank") return true;
-                      window.open(started.url, "_blank", "noopener");
-                      return false;
-                    },
-                  )
+                  run(`sign-in:${entry.id}`, async () => {
+                    const started = await hostClient.pluginSignIn!.begin({
+                      ...target,
+                      method: entry.id,
+                      consent: review.consent,
+                    });
+                    // The sign-in finishes in its own window; the link lands as a plugin change.
+                    if (started.url === "about:blank") return true;
+                    window.open(started.url, "_blank", "noopener");
+                    return false;
+                  })
                 }
                 title={entry.unavailable ?? entry.detail ?? undefined}
                 type="button"
@@ -206,7 +215,9 @@ function ConnectBody({
               <div className="card__row" key={account.id}>
                 <span className="card__row-body">
                   <span className="card__row-title">{account.label}</span>
-                  {account.linked ? <span className="card__row-detail">Linked to {review.plugin.name}</span> : null}
+                  {account.linked ? (
+                    <span className="card__row-detail">Linked to {review.plugin.name}</span>
+                  ) : null}
                 </span>
                 <span className="card__row-actions">
                   <button
@@ -219,7 +230,11 @@ function ConnectBody({
                     }
                     type="button"
                   >
-                    {pending === `link:${account.id}` ? "Linking…" : account.linked ? "Link again" : "Link"}
+                    {pending === `link:${account.id}`
+                      ? "Linking…"
+                      : account.linked
+                        ? "Link again"
+                        : "Link"}
                   </button>
                 </span>
               </div>
@@ -264,12 +279,16 @@ function ConnectBody({
               <label className="plugins-field" key={field.name}>
                 <span>
                   {field.title}
-                  {field.required ? null : <span className="plugin-form__optional"> (optional)</span>}
+                  {field.required ? null : (
+                    <span className="plugin-form__optional"> (optional)</span>
+                  )}
                 </span>
                 {field.choices ? (
                   <select
                     className="text-input"
-                    onChange={(event) => setValues({ ...values, [field.name]: event.currentTarget.value })}
+                    onChange={(event) =>
+                      setValues({ ...values, [field.name]: event.currentTarget.value })
+                    }
                     value={values[field.name] ?? ""}
                   >
                     <option value="">Choose…</option>
@@ -284,13 +303,17 @@ function ConnectBody({
                     autoComplete="off"
                     className="text-input"
                     inputMode={field.type === "string" ? undefined : "decimal"}
-                    onChange={(event) => setValues({ ...values, [field.name]: event.currentTarget.value })}
+                    onChange={(event) =>
+                      setValues({ ...values, [field.name]: event.currentTarget.value })
+                    }
                     spellCheck={false}
                     type={field.plain || field.type !== "string" ? "text" : "password"}
                     value={values[field.name] ?? ""}
                   />
                 )}
-                {field.description ? <span className="plugin-form__description">{field.description}</span> : null}
+                {field.description ? (
+                  <span className="plugin-form__description">{field.description}</span>
+                ) : null}
               </label>
             ))}
             <label className="plugins-field">

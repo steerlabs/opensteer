@@ -54,7 +54,10 @@ describe("plugin input forms", () => {
   it("can only decline a form with a property it cannot draw", () => {
     const nested = pluginInputForm({
       type: "object",
-      properties: { address: { type: "object" }, tags: { type: "array", items: { enum: ["a", "b"] } } },
+      properties: {
+        address: { type: "object" },
+        tags: { type: "array", items: { enum: ["a", "b"] } },
+      },
     });
     expect(nested.unsupported).toEqual(["address"]);
     expect(nested.fields.map(({ kind }) => kind)).toEqual(["choices"]);
@@ -106,11 +109,21 @@ describe("plugin Requests", () => {
   });
 
   it("names the requirement an account Request links and its consent", () => {
-    const consent = { digest: "a".repeat(64), sites: ["https://api.github.com"], credential: "sealed" };
+    const consent = {
+      digest: "a".repeat(64),
+      sites: ["https://api.github.com"],
+      credential: "sealed",
+    };
     const request = RequestSchema.parse({
       ...base,
       kind: "plugin.account",
-      payload: { kind: "plugin.account", plugin: "plg_github", requirement: "github", scope: "app", consent },
+      payload: {
+        kind: "plugin.account",
+        plugin: "plg_github",
+        requirement: "github",
+        scope: "app",
+        consent,
+      },
       presentation: {
         kind: "external",
         title: "Connect GitHub",
@@ -132,9 +145,33 @@ describe("plugin Requests", () => {
 
 describe("API-key accounts", () => {
   const fields = [
-    { name: "token", title: "Token", description: null, type: "string", choices: null, required: true, plain: false },
-    { name: "region", title: "Region", description: null, type: "string", choices: null, required: false, plain: true },
-    { name: "port", title: "Port", description: null, type: "integer", choices: null, required: false, plain: true },
+    {
+      name: "token",
+      title: "Token",
+      description: null,
+      type: "string",
+      choices: null,
+      required: true,
+      plain: false,
+    },
+    {
+      name: "region",
+      title: "Region",
+      description: null,
+      type: "string",
+      choices: null,
+      required: false,
+      plain: true,
+    },
+    {
+      name: "port",
+      title: "Port",
+      description: null,
+      type: "integer",
+      choices: null,
+      required: false,
+      plain: true,
+    },
   ] as const;
 
   it("sends only filled optional fields, typed", () => {
@@ -161,7 +198,11 @@ describe("catalog paging", () => {
   }
 
   it("pages the whole catalog by cursor and pages a search on its own", async () => {
-    const plugins = new MockPlugins({ changed: () => {}, accountLinked: () => {}, scenario: "default" });
+    const plugins = new MockPlugins({
+      changed: () => {},
+      accountLinked: () => {},
+      scenario: "default",
+    });
     const read = pluginCatalogReader(host(plugins), "");
     const seen: string[] = [];
     let cursor: string | null = null;

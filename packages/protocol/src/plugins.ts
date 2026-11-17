@@ -321,7 +321,10 @@ export const pluginReads = {
     input: z.strictObject({ pluginId: PluginIdSchema }),
     output: InstalledPluginViewSchema,
   },
-  "plugins.catalog.list": { input: PluginCatalogPageInputSchema, output: PluginCatalogPageViewSchema },
+  "plugins.catalog.list": {
+    input: PluginCatalogPageInputSchema,
+    output: PluginCatalogPageViewSchema,
+  },
   "plugins.catalog.get": {
     input: z.strictObject({ catalogId: name }),
     output: PluginCatalogEntryViewSchema,
@@ -330,7 +333,10 @@ export const pluginReads = {
     input: z.strictObject({}),
     output: z.object({ accounts: z.array(ConnectedAccountViewSchema).max(500) }),
   },
-  "plugins.account.review": { input: PluginTargetInputSchema, output: PluginAccountReviewViewSchema },
+  "plugins.account.review": {
+    input: PluginTargetInputSchema,
+    output: PluginAccountReviewViewSchema,
+  },
   "plugins.schedule.runs": {
     input: z.strictObject({ pluginId: PluginIdSchema, pending: z.boolean().optional() }),
     output: z.object({ runs: z.array(PluginScheduledRunViewSchema).max(pluginRunsMax) }),

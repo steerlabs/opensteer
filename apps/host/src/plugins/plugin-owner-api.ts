@@ -141,8 +141,7 @@ function summary(
     links.some((link) => link.requirement === name && link.scope === r.scope),
   );
   const missing = required.some(
-    ([name, r]) =>
-      r.cardinality === "one" && !linked.some(([linkedName]) => linkedName === name),
+    ([name, r]) => r.cardinality === "one" && !linked.some(([linkedName]) => linkedName === name),
   );
   return {
     id: plugin.id,
@@ -177,7 +176,8 @@ const iso = (value: unknown) => {
   const date = new Date(value);
   return Number.isNaN(date.valueOf()) ? null : date.toISOString();
 };
-const clip = (value: unknown, max: number) => (typeof value === "string" ? value.slice(0, max) : "");
+const clip = (value: unknown, max: number) =>
+  typeof value === "string" ? value.slice(0, max) : "";
 
 const scheduleSchema = z.object({
   name: z.string().min(1),
@@ -279,7 +279,11 @@ export class PluginOwnerApi {
     return session;
   }
   async #settings(userId: UserId) {
-    return each(await this.#options.settings.settings(userId), settingsRow, pluginsInstalledMax * 4);
+    return each(
+      await this.#options.settings.settings(userId),
+      settingsRow,
+      pluginsInstalledMax * 4,
+    );
   }
   #call<T>(promise: Promise<T>): Promise<T> {
     return promise.catch(hostError);
@@ -330,7 +334,11 @@ export class PluginOwnerApi {
         .map(async ([name, r]: readonly [string, Requirement]) => {
           const consent = plugin.activeVersion
             ? await service
-                .reviewAccountLink({ plugin: pluginId, requirement: name, scope: r.scope }, owner, signal)
+                .reviewAccountLink(
+                  { plugin: pluginId, requirement: name, scope: r.scope },
+                  owner,
+                  signal,
+                )
                 .catch(() => null)
             : null;
           return {
@@ -809,15 +817,15 @@ export class PluginOwnerApi {
           ),
         );
         if (command.link)
-          await this.#link(
-            { ...command.link, accountId: account.id },
-            userId,
-            sessionId,
-          );
+          await this.#link({ ...command.link, accountId: account.id }, userId, sessionId);
         changed();
         return {
           type: command.type,
-          account: { id: account.id, provider: account.provider, label: account.label.slice(0, 240) },
+          account: {
+            id: account.id,
+            provider: account.provider,
+            label: account.label.slice(0, 240),
+          },
         };
       }
       case "plugins.account.remove":
@@ -856,16 +864,14 @@ export class PluginOwnerApi {
         changed();
         return { type: command.type };
       case "plugins.workflow.start": {
-        const run = z
-          .object({ id: z.string().min(1).max(240) })
-          .parse(
-            await manage("workflowRuns.start", {
-              app: command.pluginId,
-              workflow: command.workflow,
-              input: command.input,
-              key: command.idempotencyKey,
-            }),
-          );
+        const run = z.object({ id: z.string().min(1).max(240) }).parse(
+          await manage("workflowRuns.start", {
+            app: command.pluginId,
+            workflow: command.workflow,
+            input: command.input,
+            key: command.idempotencyKey,
+          }),
+        );
         return { type: command.type, runId: run.id };
       }
       case "plugins.workflow.stop":

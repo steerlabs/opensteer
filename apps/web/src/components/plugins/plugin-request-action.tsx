@@ -28,8 +28,7 @@ export function ThreadPluginAction({
   readonly request: Request;
 }) {
   const view = pluginRequestView(request);
-  if (!view)
-    return <ActionNote>This Request needs a newer Opensteer to answer.</ActionNote>;
+  if (!view) return <ActionNote>This Request needs a newer Opensteer to answer.</ActionNote>;
   return (
     <>
       <p className="plugin-request__who">
@@ -191,7 +190,9 @@ function InputAction({
         <button
           className="btn btn--primary"
           disabled={disabled || pending !== null || "problem" in content}
-          onClick={() => "content" in content && respond("send", pluginRequestResponses.input(content.content))}
+          onClick={() =>
+            "content" in content && respond("send", pluginRequestResponses.input(content.content))
+          }
           title={"problem" in content ? content.problem : undefined}
           type="button"
         >

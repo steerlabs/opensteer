@@ -41,7 +41,9 @@ export function EngineNotice({ engine }: { readonly engine: PluginEngineStateVie
       className={`notice ${notice.tone === "error" ? "notice--error" : "notice--accent plugin-engine-notice"}`}
       role="status"
     >
-      {notice.tone === "progress" ? <span aria-hidden className="plugin-engine-notice__dot" /> : null}
+      {notice.tone === "progress" ? (
+        <span aria-hidden className="plugin-engine-notice__dot" />
+      ) : null}
       {notice.text}
     </p>
   );
@@ -63,7 +65,11 @@ export function PluginsArea({ legacy }: { readonly legacy: React.ReactNode }) {
 
 function InstalledPlugins() {
   const { hostClient } = useShell();
-  const installed = useSettingsRead(() => readInstalledPlugins(hostClient), "plugins-installed", true);
+  const installed = useSettingsRead(
+    () => readInstalledPlugins(hostClient),
+    "plugins-installed",
+    true,
+  );
   const refused = installed.data ? null : pluginEngineRefusal(installed.error);
   const engine = usePluginEngine(installed.data?.engine ?? refused);
   const [installing, setInstalling] = useState(false);
@@ -82,7 +88,11 @@ function InstalledPlugins() {
       />
       <EngineNotice engine={engine} />
       <SettingsError
-        message={installed.error && !installed.data && !refused ? actionErrorMessage(installed.error) : null}
+        message={
+          installed.error && !installed.data && !refused
+            ? actionErrorMessage(installed.error)
+            : null
+        }
       />
       {installed.error && !installed.data ? (
         <button className="btn plugins-retry" onClick={installed.reload} type="button">
@@ -141,7 +151,9 @@ function InstalledPlugins() {
             </span>
             <span className="card__row-body">
               <span className="card__row-title">Install from an address</span>
-              <span className="card__row-detail">An MCP server, OpenAPI document or GraphQL API</span>
+              <span className="card__row-detail">
+                An MCP server, OpenAPI document or GraphQL API
+              </span>
             </span>
             <Icon name="chevron-right" />
           </button>
@@ -171,7 +183,9 @@ function InstalledRow({ plugin }: { readonly plugin: PluginSummaryView }) {
         <span className="card__row-title">{plugin.name}</span>
         <span className="card__row-detail">
           <span className={`plugins-status plugins-status--${status.tone}`}>{status.label}</span>
-          {plugin.author === "agent" ? <span className="plugins-author"> · Written by an agent</span> : null}
+          {plugin.author === "agent" ? (
+            <span className="plugins-author"> · Written by an agent</span>
+          ) : null}
         </span>
       </span>
       {plugin.status !== "ready" ? (
@@ -188,7 +202,11 @@ function PluginCatalog() {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const search = useDeferredValue(query.trim());
-  const installed = useSettingsRead(() => readInstalledPlugins(hostClient), "plugins-installed", true);
+  const installed = useSettingsRead(
+    () => readInstalledPlugins(hostClient),
+    "plugins-installed",
+    true,
+  );
   const engine = usePluginEngine(installed.data?.engine ?? null);
   const list = usePagedList(pluginCatalogReader(hostClient, search), `catalog:${search}`);
   const [adding, setAdding] = useState<PluginCatalogEntryView | null>(null);
@@ -198,7 +216,10 @@ function PluginCatalog() {
         <Icon name="arrow-left" />
         Plugins
       </Link>
-      <SectionHeader title="Plugin catalog" lead="Plugins reviewed for the catalog. Each runs sandboxed until you connect an account." />
+      <SectionHeader
+        title="Plugin catalog"
+        lead="Plugins reviewed for the catalog. Each runs sandboxed until you connect an account."
+      />
       <label className="settings-plugin-search">
         <Icon name="search" />
         <input
@@ -249,7 +270,12 @@ function PluginCatalog() {
         </div>
       )}
       {list.nextCursor ? (
-        <button className="btn plugins-more" disabled={list.loadingMore} onClick={list.more} type="button">
+        <button
+          className="btn plugins-more"
+          disabled={list.loadingMore}
+          onClick={list.more}
+          type="button"
+        >
           {list.loadingMore ? "Loading…" : "Show more"}
         </button>
       ) : null}
@@ -262,7 +288,7 @@ function PluginCatalog() {
         <InstallCatalogEntry
           entry={adding}
           onClose={() => setAdding(null)}
-          onInstalled={(pluginId) => navigate(pluginPath(pluginId))}
+          onInstalled={(pluginId) => void navigate(pluginPath(pluginId))}
         />
       ) : null}
     </div>
@@ -316,7 +342,12 @@ function InstallCatalogEntry({
     >
       <div className="plugins-install">
         <div className="settings-add-hero">
-          <IntegrationIcon icon={entry.icon ?? undefined} id={entry.id} name={entry.name} size="lg" />
+          <IntegrationIcon
+            icon={entry.icon ?? undefined}
+            id={entry.id}
+            name={entry.name}
+            size="lg"
+          />
           <p>{entry.description}</p>
         </div>
         <p className="settings-footnote">
@@ -365,7 +396,7 @@ function InstallFromAddress({ onClose }: { readonly onClose: () => void }) {
               setError(null);
               void installPlugin(hostClient, { kind, url: url.trim(), name: name.trim() })
                 .then((result) => {
-                  if (result.status === "installed") navigate(pluginPath(result.pluginId));
+                  if (result.status === "installed") void navigate(pluginPath(result.pluginId));
                   else setError(`It didn't build: ${result.message}`);
                 })
                 .catch((reason: unknown) => setError(actionErrorMessage(reason)))
@@ -379,7 +410,12 @@ function InstallFromAddress({ onClose }: { readonly onClose: () => void }) {
       }
     >
       <div className="plugins-form">
-        <SettingsSegmented label="What it is" onChange={setKind} options={addressKinds} value={kind} />
+        <SettingsSegmented
+          label="What it is"
+          onChange={setKind}
+          options={addressKinds}
+          value={kind}
+        />
         <label className="plugins-field">
           <span>Address</span>
           <input
@@ -387,7 +423,11 @@ function InstallFromAddress({ onClose }: { readonly onClose: () => void }) {
             className="text-input"
             inputMode="url"
             onChange={(event) => setUrl(event.currentTarget.value)}
-            placeholder={kind === "mcp" ? "https://mcp.example.com/mcp" : "https://api.example.com/openapi.json"}
+            placeholder={
+              kind === "mcp"
+                ? "https://mcp.example.com/mcp"
+                : "https://api.example.com/openapi.json"
+            }
             value={url}
           />
         </label>
