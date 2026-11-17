@@ -252,6 +252,16 @@ test.each(["feed", "receipt"] as const)(
 test("commits provisional and final tool statements once while retaining one card", async () => {
   const fixture = await createPersonalStateFixture("provisional-tool");
   const { database, run, attemptId } = fixture;
+  let starts = 0;
+  const releaseHooks = installPersonalMutationHooks(database, {
+    wake() {},
+    onFailure(error) {
+      throw error;
+    },
+    react(reaction) {
+      if (reaction.type === "teamStep") starts++;
+    },
+  });
   try {
     const common = {
       runId: run.runId,
@@ -274,7 +284,6 @@ test("commits provisional and final tool statements once while retaining one car
       ordinal: 2,
       data: { callId: "one", tool, arguments: { command: "pwd" } },
     };
-    let starts = 0;
     const write = (statement: typeof first | typeof final) =>
       commitPersonalMutation(database, (tx, mutation) =>
         acceptPersonalRunnerStatement(tx, mutation, statement, async () => {
@@ -287,10 +296,6 @@ test("commits provisional and final tool statements once while retaining one car
             nodeId: null,
             ...statement.data,
           });
-          if (result.started)
-            mutation.reaction(() => {
-              starts++;
-            });
           return result.started || statement.ordinal === final.ordinal ? "applied" : "absorbed";
         }),
       );
@@ -321,6 +326,7 @@ test("commits provisional and final tool statements once while retaining one car
     expect(call).toEqual({ arguments: { command: "pwd" }, provisional: false });
     expect(starts).toBe(1);
   } finally {
+    releaseHooks();
     await fixture.close();
   }
 });
@@ -480,6 +486,51 @@ test("fails an authority mutation closed when no dispatch fence is installed", a
         .executeTakeFirstOrThrow(),
     ).toEqual({ removedAt: null });
   } finally {
+    await fixture.close();
+  }
+});
+
+test("resumes a suspended scope when a deferred constraint rolls back COMMIT", async () => {
+  const fixture = await createPersonalStateFixture("authority-rollback");
+  const { database, run } = fixture;
+  const observed: string[] = [];
+  const uninstall = installPersonalMutationHooks(database, {
+    wake() {
+      observed.push("wake");
+    },
+    onFailure(error) {
+      throw error;
+    },
+    suspend() {
+      observed.push("suspend");
+      return {
+        committed() {
+          observed.push("close");
+        },
+        rolledBack() {
+          observed.push("resume");
+        },
+      };
+    },
+  });
+  try {
+    await expect(
+      commitPersonalMutation(database, async (tx, mutation) => {
+        await tx
+          .updateTable("runs")
+          .set({
+            status: "completed",
+            completedAt: mutation.state.now,
+            terminalReplyMessageId: createId("message"),
+          })
+          .where("id", "=", run.runId)
+          .execute();
+        mutation.fence(`thread:${run.threadId}`);
+      }),
+    ).rejects.toMatchObject({ code: "23503" });
+    expect(observed).toEqual(["suspend", "resume"]);
+  } finally {
+    uninstall();
     await fixture.close();
   }
 });

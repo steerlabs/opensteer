@@ -280,6 +280,14 @@ export async function advancePersonalRunFinish(
     throw new Error("The finishing Run still has unsettled children");
   await actions.finalize(run.finishIntent);
   await recordFinishedRunnerStatement(tx, mutation, runId, run.finishIntent);
+  mutation.react({
+    type: "runFinished",
+    runId,
+    threadId: run.threadId,
+    attemptId: run.finishIntent.attemptId,
+    bindingGeneration: run.finishIntent.bindingGeneration,
+    outcome: run.finishIntent.outcome,
+  });
   await tx
     .updateTable("runs")
     .set({ finishIntent: null, revision: mutation.sequence })

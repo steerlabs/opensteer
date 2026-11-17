@@ -1,7 +1,18 @@
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
-import type { DeploymentId } from "@opensteer/core";
+import type {
+  DeploymentId,
+  ExecutionNodeId,
+  RequestId,
+  RunAttemptId,
+  RunId,
+  ThreadId,
+} from "@opensteer/core";
 import { PersonalChangeSchema } from "@opensteer/protocol/personal-sync";
-import { isTransactionConflict, withDatabaseTransaction } from "./connection.js";
+import {
+  isConstraintViolation,
+  isTransactionConflict,
+  withDatabaseTransaction,
+} from "./connection.js";
 import { inheritExecutionClock } from "./personal-transaction.js";
 import type {
   ClientChangeOperation,
@@ -67,8 +78,43 @@ interface CommitNotice {
   readonly nextExpiryAt: number | null;
 }
 
+export type PersonalCommitReaction =
+  | {
+      readonly type: "requestChanged";
+      readonly requestId: RequestId;
+      readonly kind: PersonalStateSchema["requests"]["kind"];
+      readonly status: PersonalStateSchema["requests"]["status"];
+      readonly threadId: ThreadId;
+      readonly runId: RunId | null;
+    }
+  | {
+      readonly type: "teamStep";
+      readonly runId: RunId;
+      readonly toolName: string;
+      readonly isIntegration: boolean;
+    }
+  | {
+      readonly type: "runFinished";
+      readonly runId: RunId;
+      readonly threadId: ThreadId;
+      readonly attemptId: RunAttemptId | null;
+      readonly bindingGeneration: number | null;
+      readonly outcome: "completed" | "failed" | "interrupted";
+    }
+  | {
+      readonly type: "liveClosed";
+      readonly itemId: string;
+      readonly runId: RunId;
+      readonly attemptId: RunAttemptId | null;
+      readonly bindingGeneration: number | null;
+      readonly threadId: ThreadId;
+      readonly nodeId: ExecutionNodeId | null;
+      readonly afterSequence: string;
+    };
+
 interface PersonalMutationHooks {
   wake(notice: CommitNotice): void;
+  react?(reaction: PersonalCommitReaction): void | Promise<void>;
   suspend?(scopes: ReadonlySet<ScopeAuthority>): {
     committed(): void;
     rolledBack(): void;
@@ -90,16 +136,20 @@ export function installPersonalMutationHooks(database: TargetDb, listener: Perso
 function notify(
   listener: PersonalMutationHooks | undefined,
   operation: Parameters<PersonalMutationHooks["onFailure"]>[1],
-  callback: () => void,
+  callback: () => void | Promise<void>,
 ) {
-  try {
-    callback();
-  } catch (error) {
+  const onFailure = (error: unknown) => {
     try {
       listener?.onFailure(error, operation);
     } catch {
       // A diagnostic callback cannot undo the committed mutation or its acknowledgement.
     }
+  };
+  try {
+    const pending = callback();
+    if (pending) void pending.catch(onFailure);
+  } catch (error) {
+    onFailure(error);
   }
 }
 
@@ -111,6 +161,7 @@ class Mutation {
   readonly #scopes = new Map<PersonalScopeKey, Map<string, Change>>();
   readonly #invalidated = new Set<PersonalScopeKey>();
   readonly #reactions = new Set<() => void>();
+  readonly #ownerReactions: PersonalCommitReaction[] = [];
   readonly #observations = new Set<() => void>();
   readonly #receipts: ((head: string) => Promise<void>)[] = [];
   readonly #counters = { pendingRequestCount: 0, needsYouCount: 0, unreadTaskCount: 0 };
@@ -253,6 +304,9 @@ class Mutation {
   reaction(dispatch: () => void) {
     this.#reactions.add(dispatch);
   }
+  react(reaction: PersonalCommitReaction) {
+    this.#ownerReactions.push(reaction);
+  }
   receipt(write: (head: string) => Promise<void>) {
     this.#receipts.push(write);
   }
@@ -372,6 +426,9 @@ class Mutation {
     for (const install of this.#observations) notify(listener, "observation", install);
     if (listener) notify(listener, "wake", () => listener.wake(notice));
     for (const dispatch of this.#reactions) notify(listener, "reaction", dispatch);
+    if (listener?.react)
+      for (const reaction of this.#ownerReactions)
+        notify(listener, "reaction", () => listener.react?.(reaction));
   }
 }
 
@@ -387,6 +444,7 @@ export type PersonalMutation = Pick<
   | "receipt"
   | "observation"
   | "reaction"
+  | "react"
 >;
 
 export async function commitPersonalMutation<Result>(
@@ -437,7 +495,7 @@ export async function commitPersonalMutation<Result>(
     (error) => {
       if (suspended)
         notify(listener, "authority", () => {
-          if (isTransactionConflict(error)) suspended?.rolledBack();
+          if (isTransactionConflict(error) || isConstraintViolation(error)) suspended?.rolledBack();
           else suspended?.committed();
         });
       suspended = undefined;

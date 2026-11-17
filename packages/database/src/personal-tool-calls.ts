@@ -304,6 +304,12 @@ export async function startPersonalToolCall(
     .returningAll()
     .executeTakeFirstOrThrow();
   await storeToolCard(tx, mutation, call, position);
+  mutation.react({
+    type: "teamStep",
+    runId: call.runId,
+    toolName: tool.name,
+    isIntegration: integration !== null,
+  });
   const handle: HostToolEffectHandle | undefined =
     input.origin === "runner" ? undefined : { toolCallId: call.id, origin: input.origin };
   return { call, started: true, handle };
@@ -406,6 +412,16 @@ async function completeToolCall(
   await storeToolCard(tx, mutation, completed, order);
   const images = retainedToolImages(completed, output.images ?? [], order);
   if (images.length) await tx.insertInto("toolOutputImages").values(images).execute();
+  mutation.react({
+    type: "liveClosed",
+    itemId: `tool:${completed.id}`,
+    runId: completed.runId,
+    attemptId: completed.attemptId,
+    bindingGeneration: completed.bindingGeneration,
+    threadId: completed.threadId,
+    nodeId: completed.nodeId,
+    afterSequence: mutation.sequence,
+  });
   return { call: completed, completed: true };
 }
 

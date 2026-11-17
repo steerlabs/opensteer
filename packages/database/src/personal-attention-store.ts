@@ -59,7 +59,7 @@ export async function refreshRequestAttention(
 ) {
   const source = await tx
     .selectFrom("requests")
-    .select(["id", "status", "originatingThreadId", "createdAt"])
+    .select(["id", "kind", "status", "originatingThreadId", "originatingRunId", "createdAt"])
     .where("id", "=", requestId)
     .executeTakeFirst();
   if (!source) throw new Error("The Request must be refreshed before deleting its source");
@@ -102,6 +102,14 @@ export async function refreshRequestAttention(
         : null,
     );
     needsYouChanged(mutation);
+    mutation.react({
+      type: "requestChanged",
+      requestId,
+      kind: source.kind,
+      status: source.status,
+      threadId: source.originatingThreadId,
+      runId: source.originatingRunId,
+    });
   }
 }
 

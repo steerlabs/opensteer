@@ -4,6 +4,8 @@ interface RetentionCut {
   readonly nextExpiryAt: number | null;
 }
 
+const failedPruneDelayMs = 1_000;
+
 export class PersonalRetentionDeadline {
   readonly #prune: () => Promise<void>;
   readonly #onFailure: (error: unknown) => void;
@@ -30,15 +32,18 @@ export class PersonalRetentionDeadline {
     clearTimeout(this.#timer);
     this.#timer = undefined;
     if (cut.nextExpiryAt === null) return;
-    this.#timer = setTimeout(
-      () => {
-        this.#timer = undefined;
-        void this.#prune().catch((error) => {
-          if (!this.#closed) this.#onFailure(error);
-        });
-      },
-      Math.max(0, cut.nextExpiryAt - Date.now()),
-    );
+    this.#schedule(cut, Math.max(0, cut.nextExpiryAt - Date.now()));
+  }
+
+  #schedule(cut: RetentionCut, delayMs: number) {
+    this.#timer = setTimeout(() => {
+      this.#timer = undefined;
+      void this.#prune().catch((error: unknown) => {
+        if (this.#closed) return;
+        if (this.#cut === cut && !this.#timer) this.#schedule(cut, failedPruneDelayMs);
+        this.#onFailure(error);
+      });
+    }, delayMs);
     this.#timer.unref();
   }
 
