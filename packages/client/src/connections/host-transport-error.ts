@@ -33,7 +33,19 @@ export class HostTransportError extends ClientOperationError {
 
   constructor(code: HostTransportErrorCode, options?: ErrorOptions) {
     const detail = details[code];
-    super(detail.message, detail.retryable ? "transient" : "blocked", options);
+    super(detail.message, detail.retryable ? "transient" : "blocked", {
+      ...options,
+      code,
+      reason: code,
+      retryable: detail.retryable,
+      provenance: "transport",
+      kind:
+        code === "cancelled" || code === "deployment-changed"
+          ? "cancelled"
+          : code === "response-too-large"
+            ? "protocol"
+            : "transport",
+    });
     this.name = code === "cancelled" ? "AbortError" : "HostTransportError";
     this.code = code;
     this.retryable = detail.retryable;

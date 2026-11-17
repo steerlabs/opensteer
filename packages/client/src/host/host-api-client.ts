@@ -294,15 +294,15 @@ async function request<Name extends keyof typeof hostApi>(
     // server fault may answer without an envelope; anything else is a body
     // this client cannot read, which no retry will change.
     const missing = response.status === 404;
-    const fault = response.status >= 500;
+    const temporary = [502, 503, 504].includes(response.status);
     return {
       error: HostApiErrorSchema.parse({
         code: missing ? "not_found" : "internal",
         message: missing
           ? "This Host doesn’t offer that yet."
           : "The Host returned an incompatible response.",
-        ...(missing ? { reason: "unknown-method" } : fault ? {} : { reason: "invalid-response" }),
-        retryable: false,
+        reason: missing ? "unknown-method" : temporary ? "proxy-unavailable" : "invalid-response",
+        retryable: temporary,
       }),
       ok: false,
     } as RpcOutput<(typeof hostApi)[Name]>;

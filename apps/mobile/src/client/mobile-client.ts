@@ -30,6 +30,7 @@ import {
   HostTransportError,
   ClientOperationError,
   clientPublicDetail,
+  CapabilityVerificationError,
   emptyDeploymentCatalog,
   resolveConnection,
   type AccountDeploymentDirectoryUnavailable,
@@ -1698,8 +1699,7 @@ export class MobileClient {
           if (!evidence && !verifying) {
             verifying = (async () => {
               const agreement = await this.#checkProtocolEpoch(attachment, generation, id, attempt);
-              if (typeof agreement === "string")
-                throw new Error(`Host capability verification failed: ${agreement}`);
+              if (typeof agreement === "string") throw new CapabilityVerificationError(agreement);
               assertCurrentAttachment();
               evidence = agreement;
               return agreement.capabilities;

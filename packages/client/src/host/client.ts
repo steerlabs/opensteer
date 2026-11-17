@@ -1,3 +1,4 @@
+import { failureProvenance } from "../connections/operation-error.js";
 import type { ClientCommandInput } from "./device-commands.js";
 import type { MachineAccessUpdateInput, IphoneScreenAttachInput } from "./device-commands.js";
 import type { TabsClient } from "./tabs-contract.js";
@@ -1380,18 +1381,24 @@ export class HostClientRequestError extends Error {
    */
   readonly reason: string | undefined;
   readonly status: number;
+  readonly retryable: boolean;
+  readonly provenance: import("../connections/operation-error.js").ClientFailureProvenance;
 
   constructor(options: {
     readonly code: string;
     readonly message: string;
     readonly reason?: string;
     readonly status: number;
+    readonly retryable?: boolean;
+    readonly provenance?: import("../connections/operation-error.js").ClientFailureProvenance;
   }) {
     super(options.message);
     this.name = "HostClientRequestError";
     this.code = options.code;
     this.reason = options.reason;
     this.status = options.status;
+    this.retryable = options.retryable ?? options.status >= 500;
+    this.provenance = options.provenance ?? failureProvenance(options.reason ?? "");
   }
 }
 
@@ -1403,6 +1410,7 @@ export class HostClientRequestError extends Error {
 export function isHostRefusal(error: unknown): boolean {
   return (
     error instanceof HostClientRequestError &&
+    error.provenance === "host" &&
     error.status < 500 &&
     error.status !== 408 &&
     error.status !== 429

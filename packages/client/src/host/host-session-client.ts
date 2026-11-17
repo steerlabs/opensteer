@@ -5678,6 +5678,7 @@ export function unwrapRpcResult<Success>(
     message: result.error.message,
     ...(result.error.reason === undefined ? {} : { reason: result.error.reason }),
     status: rpcErrorStatus(result.error.code),
+    retryable: result.error.retryable,
   });
 }
 
