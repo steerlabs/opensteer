@@ -113,4 +113,28 @@ describe("phone display availability", () => {
       );
     },
   );
+  it("turns device approval readiness into the exact task access request", () => {
+    expect(
+      phoneDiscovery({
+        phone: {
+          computerId: "dev_travel",
+          name: "Travel iPhone",
+          state: "unavailable",
+          definitionId: "iphone-screen",
+          availability: { state: "unavailable", reason: { kind: "approval-required" } },
+        },
+        connection: null,
+        callable: false,
+        pendingPhoneAccess: false,
+        pendingPersonalGrant: false,
+        heldByAnotherRun: false,
+      }),
+    ).toEqual({
+      blocked: {
+        code: "access_required",
+        message: "Travel iPhone needs access for this task.",
+        next: 'Request access with app_access_request {computerId:"dev_travel", access:"read-write", reason:"<why you need it>"}; the owner can approve from any Opensteer app.',
+      },
+    });
+  });
 });

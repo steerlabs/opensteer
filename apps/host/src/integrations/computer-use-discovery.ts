@@ -205,6 +205,8 @@ function phoneProblem(phone: PhoneDiscoveryFacts["phone"]): { blocked: Blocked }
         : "The person can bring the phone online; other work can continue.",
     );
   switch (reason) {
+    case "approval-required":
+      return computerMachineProblem({ ...phone, state: "ready" });
     case "locked":
       return blocked(
         "permission_required",
