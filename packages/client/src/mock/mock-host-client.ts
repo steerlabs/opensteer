@@ -1,9 +1,14 @@
+import { ItemTextStore } from "../host/item-text-store.js";
 import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import {
   mockMessageContent,
+  mockOverlayRows,
+  mockResourceView,
+  mockRequestRevision,
   mockScopedShell,
   mockScopedDetail,
   mockScopedItems,
+  mockScopedLive,
   mockScopedCursor,
   mockScopedResource,
   boundedMockPage,
@@ -23,7 +28,8 @@ import {
   deviceAccessCommand,
   type MachineAccessUpdateInput,
 } from "../host/device-commands.js";
-import { deviceMachine, deviceDriverKey } from "../host/device-projection.js";
+import { deviceDriverKey } from "../host/device-projection.js";
+import { mockDeviceMachine } from "./mock-device-machine.js";
 import {
   mockIphoneScreenDevice,
   mockIphoneScreenSession,
@@ -129,7 +135,6 @@ import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 
 import { BrowserPasskeys } from "../host/browser-passkeys.js";
 import { BrowserPreferences } from "../host/browser-preferences.js";
-import { emptySavedViewReadiness } from "../host/saved-host-view.js";
 
 import { sha256 } from "@noble/hashes/sha2.js";
 import { channelProviderCatalog } from "@opensteer/channel-core";
@@ -2355,19 +2360,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
           ok: false,
           error: { code: "conflict", message: "Overlay changed", retryable: false },
         };
-      const all =
-        kind === "requests"
-          ? (snapshot.requests[threadId] ?? [])
-              .filter(({ status }) => status === "pending")
-              .map(({ id, kind, status }) => ({
-                id,
-                kind,
-                status,
-                revision,
-                threadId,
-                title: kind,
-              }))
-          : [];
+      const all = mockOverlayRows(snapshot, threadId, nodeId, kind, revision, client.nodeEvents);
       const nextOffset = offset + 20;
       return rpcSuccess({
         threadId,
@@ -2477,11 +2470,13 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
         );
       return rpcNotFound("Item has no body.");
     },
-    "resources.get": async () =>
-      rpcSuccess({
-        revision: String(client.getSnapshot().revision),
-        view: { complete: true, hasMore: false, entries: [] },
-      }),
+    "resources.get": async ({ kind }) => {
+      const snapshot = client.getSnapshot();
+      return rpcSuccess({
+        revision: String(snapshot.revision),
+        view: mockResourceView(snapshot, kind),
+      });
+    },
     "resources.detail.get": async ({ kind }) =>
       rpcSuccess(
         hostApi["resources.detail.get"].success.parse({
@@ -2900,6 +2895,19 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
         revision: String(client.getSnapshot().revision),
       }),
     "thread.message.revisions.list": async (input) => {
+      if (input.leaseId !== undefined) {
+        const current = client
+          .loadThreadInputQueue(input.threadId)
+          .items.find(({ message }) => message.id === input.messageId);
+        if (
+          current?.lease?.leaseId !== input.leaseId ||
+          (current?.message.edit?.revision ?? 0) !== input.expectedRevision
+        )
+          return {
+            ok: false,
+            error: { code: "conflict", message: "Waiting message changed", retryable: false },
+          };
+      }
       const page = client.messageRevisionPage(input.messageId, input.before);
       if (input.expectedRevision !== 0 || page.revisions.length) return rpcSuccess(page);
       const row = client
@@ -2942,7 +2950,8 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
           request.originatingThreadId === input.threadId &&
           (!input.review ||
             input.review.some(
-              ({ id, revision: expected }) => id === request.id && expected === revision,
+              ({ id, revision: expected }) =>
+                id === request.id && expected === mockRequestRevision(request, revision),
             )) &&
           (input.requestId !== undefined || request.status === "pending") &&
           (input.review !== undefined ||
@@ -2956,7 +2965,11 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
           threadId: input.threadId,
           window: mockWindow(requests.length),
           ...(input.review || input.requestId
-            ? { reviewedRevisions: Object.fromEntries(requests.map(({ id }) => [id, revision])) }
+            ? {
+                reviewedRevisions: Object.fromEntries(
+                  requests.map((request) => [request.id, mockRequestRevision(request, revision)]),
+                ),
+              }
             : {}),
         }),
       );
@@ -3974,6 +3987,12 @@ const MockMacAnswerSchema = z.discriminatedUnion("kind", [
 ]);
 type MockMacAnswer = z.output<typeof MockMacAnswerSchema>;
 
+type MockHistoryWindow = {
+  readonly ids: ReadonlySet<string>;
+  readonly before: import("@opensteer/protocol/transcript").TranscriptOrderCursor | null;
+  readonly after: import("@opensteer/protocol/transcript").TranscriptOrderCursor | null;
+};
+
 export class MockHostClient implements HostClient {
   deploymentSnapshot(
     sequence = String(this.getSnapshot().revision),
@@ -4643,6 +4662,7 @@ export class MockHostClient implements HostClient {
     let rows: NodeDetailSnapshot["entries"] = [];
     let before: import("@opensteer/protocol/transcript").TranscriptOrderCursor | null = null;
     let offset = 0;
+    let status: NodeDetailSnapshot["status"] = "loading";
     const sources = new Set<() => void>();
     const onChange = () => {
       for (const listener of sources) listener();
@@ -4656,7 +4676,7 @@ export class MockHostClient implements HostClient {
         nodeId,
         node: node?.kind === "node" ? node : null,
         entries: rows,
-        status: node ? "ready" : "missing",
+        status: node ? status : "missing",
         hasMore: before !== null,
         loadingOlder: false,
         error: null,
@@ -4676,6 +4696,7 @@ export class MockHostClient implements HostClient {
       const entries = page.items.flatMap((item) => nodeTranscriptCard(item) ?? []);
       rows = reset ? entries : [...entries, ...rows];
       before = page.nextBefore;
+      status = "ready";
       view = read();
       onChange();
     };
@@ -4697,6 +4718,7 @@ export class MockHostClient implements HostClient {
       },
       release: () => {
         ++offset;
+        view = { ...view, status: "closed", entries: [], node: null };
         releasePage?.();
         sources.clear();
       },
@@ -4705,6 +4727,10 @@ export class MockHostClient implements HostClient {
 
   scopedShell(selected?: string, revision?: string) {
     return mockScopedShell(this.getSnapshot(), mockThread, selected, revision);
+  }
+
+  scopedResource(kind: import("@opensteer/protocol/resources").PersonalResourceKind) {
+    return mockResourceView(this.getSnapshot(), kind);
   }
 
   scopedDetail(threadId: string, nodeId?: string, anchor?: string, revision?: string) {
@@ -4719,42 +4745,120 @@ export class MockHostClient implements HostClient {
     );
   }
 
+  readonly #mockHistory = new Map<string, MockHistoryWindow>();
+  readonly #mockOverlays = new Map<string, string | null>();
+
   readonly #transcriptSources = new Map<string, ThreadViewSource>();
 
   getThreadTranscript(threadId: string): ThreadViewSource {
     const held = this.#transcriptSources.get(threadId);
     if (held) return held;
+    const empty: readonly never[] = [];
     let previous: PublicHostSnapshot | undefined;
     let data: ThreadViewState | undefined;
+    let priorWindow: MockHistoryWindow | undefined;
+    let priorOverlay: string | null | undefined;
     const source = {
       subscribe: this.subscribe,
       getSnapshot: () => {
         const value = this.getSnapshot();
-        if (value === previous && data) return data;
+        const window = this.#mockHistory.get(threadId);
+        const overlay = this.#mockOverlays.get(`${threadId}:requests`);
+        if (value === previous && window === priorWindow && overlay === priorOverlay && data)
+          return data;
+        priorWindow = window;
+        priorOverlay = overlay;
         previous = value;
+        const whole = value.transcripts[threadId] ?? empty;
+        const entries = window ? whole.filter(({ id }) => window.ids.has(id)) : whole;
+        const requests = value.requests[threadId] ?? empty;
+        const runQueue = value.runQueue.filter((run) => run.threadId === threadId);
+        const inputQueue = value.inputQueues[threadId] ?? null;
+        const synchronized = value.connection === "connected";
+        const hasMore = window
+          ? window.before !== null
+          : (value.transcriptWindows[threadId]?.hasMore ?? false);
+        const hasNewer = window?.after != null;
+        const moreRequests = overlay === undefined ? requests.length > 20 : overlay !== null;
+        if (
+          data &&
+          entries === data.entries &&
+          requests === data.requests &&
+          inputQueue === data.inputQueue &&
+          synchronized === data.synchronized &&
+          hasMore === data.hasMore &&
+          hasNewer === data.hasNewer &&
+          moreRequests === data.moreRequests &&
+          runQueue.length === data.runQueue.length &&
+          runQueue.every((row, i) => row === data!.runQueue[i])
+        )
+          return data;
         data = {
-          entries: value.transcripts[threadId] ?? [],
-          requests: value.requests[threadId] ?? [],
-          runQueue: value.runQueue.filter((run) => run.threadId === threadId),
-          inputQueue: value.inputQueues[threadId] ?? null,
-          synchronized: value.connection === "connected",
-          hasMore: value.transcriptWindows[threadId]?.hasMore ?? false,
-          moreRequests: false,
-          hasNewer: false,
+          entries,
+          requests,
+          runQueue,
+          inputQueue,
+          synchronized,
+          hasMore,
+          moreRequests,
+          hasNewer,
         };
         return data;
       },
     };
     if (this.#transcriptSources.size >= 100) {
       const oldest = this.#transcriptSources.keys().next();
-      if (!oldest.done) this.#transcriptSources.delete(oldest.value);
+      if (!oldest.done) {
+        this.#transcriptSources.delete(oldest.value);
+        this.#mockHistory.delete(oldest.value);
+        for (const kind of ["requests", "tools", "nodes"])
+          this.#mockOverlays.delete(`${oldest.value}:${kind}`);
+      }
     }
     this.#transcriptSources.set(threadId, source);
     return source;
   }
 
-  getThreadItemText() {
-    return undefined;
+  readonly #transcriptTexts = new Map<string, { store: ItemTextStore; release: () => void }>();
+
+  scopedLive(
+    ...args: Parameters<typeof mockScopedLive> extends [unknown, ...infer Rest] ? Rest : never
+  ) {
+    return mockScopedLive(this.getSnapshot(), ...args);
+  }
+
+  getThreadItemText(threadId: string, nodeId?: string) {
+    if (nodeId) return;
+    const id = ThreadIdSchema.safeParse(threadId);
+    if (!id.success) return;
+    const existing = this.#transcriptTexts.get(threadId);
+    if (existing) return existing.store;
+    const store = new ItemTextStore();
+    store.generation(1);
+    let previous = new Set<string>();
+    const update = () => {
+      const revision = String(this.getSnapshot().revision);
+      const frames = this.scopedLive(
+        { kind: "thread", threadId: id.data },
+        "detail:0",
+        1,
+        revision,
+      );
+      const current = new Set(frames.map(({ itemId }) => itemId));
+      for (const itemId of previous) if (!current.has(itemId)) store.finishItem(itemId);
+      for (const frame of frames) store.apply(frame, revision);
+      previous = current;
+    };
+    update();
+    const release = this.subscribe(update);
+    this.#transcriptTexts.set(threadId, { store, release });
+    if (this.#transcriptTexts.size > 8) {
+      const oldest = this.#transcriptTexts.entries().next().value!;
+      oldest[1].release();
+      oldest[1].store.clear();
+      this.#transcriptTexts.delete(oldest[0]);
+    }
+    return store;
   }
 
   async readTranscriptItem(threadId: string, itemId: string) {
@@ -4763,8 +4867,21 @@ export class MockHostClient implements HostClient {
   }
 
   setTranscriptAnchor() {}
-  async loadMoreOverlays() {}
-  async loadNewerTranscript() {}
+  async loadMoreOverlays(threadId: string, kind: "requests" | "tools" | "nodes") {
+    const key = `${threadId}:${kind}`;
+    const cursor =
+      this.#mockOverlays.get(key) ?? this.scopedDetail(threadId)?.overlayCursors?.[kind];
+    if (!cursor || this.#mockOverlays.get(key) === null) return;
+    const page = unwrapRpcResult(
+      await this.rpc["thread.overlays.page"]({ threadId, kind, cursor }),
+    );
+    this.#mockOverlays.set(key, page.next);
+    this.#state.refreshBrowserView();
+  }
+  async loadNewerTranscript(threadId: string) {
+    const window = this.#mockHistory.get(threadId);
+    if (window?.after) await this.#readMockHistory(threadId, { after: window.after });
+  }
   watchPersonalResource() {
     return () => {};
   }
@@ -4961,31 +5078,34 @@ export class MockHostClient implements HostClient {
   }
 
   async loadTranscriptAround(threadId: string, messageId: string): Promise<void> {
-    const result = await this.rpc["thread.messages.list"]({
-      threadId,
-      aroundMessageId: messageId,
-      limit: 50,
-    });
-    if (!result.ok) throw new Error(result.error.message);
-    // The preview keeps the whole transcript resident, including the requested source.
-    this.#state.updatePlaces({
-      ...this.#state.getSnapshot(),
-      savedViewReadiness: {
-        ...(this.#state.getSnapshot().savedViewReadiness ?? emptySavedViewReadiness()),
-      },
-    });
+    await this.#readMockHistory(threadId, { aroundMessageId: messageId });
   }
 
   async loadLatestTranscript(threadId: string): Promise<void> {
     if (!this.#state.getSnapshot().threads.some((thread) => thread.id === threadId))
       throw new Error("Thread not found.");
-    const snapshot = this.#state.getSnapshot();
-    this.#state.updatePlaces({
-      ...snapshot,
-      savedViewReadiness: {
-        ...(snapshot.savedViewReadiness ?? emptySavedViewReadiness()),
-      },
+    await this.#readMockHistory(threadId, {});
+  }
+
+  async #readMockHistory(
+    threadId: string,
+    query: Omit<Parameters<HostApiClient["thread.items.page"]>[0], "threadId">,
+  ): Promise<void> {
+    const page = unwrapRpcResult(await this.rpc["thread.items.page"]({ threadId, ...query }));
+    if (page.kind === "history-reset") {
+      this.#mockHistory.delete(threadId);
+      this.#state.refreshBrowserView();
+      return;
+    }
+    const held = this.#mockHistory.get(threadId);
+    const ids = new Set(query.before || query.after ? held?.ids : []);
+    for (const { id } of page.items) ids.add(id);
+    this.#mockHistory.set(threadId, {
+      ids,
+      before: query.after ? (held?.before ?? page.nextBefore) : page.nextBefore,
+      after: query.before ? (held?.after ?? page.nextAfter ?? null) : (page.nextAfter ?? null),
     });
+    this.#state.refreshBrowserView();
   }
 
   subscribePersonalRemoteAccess(listener: () => void): () => void {
@@ -5026,14 +5146,17 @@ export class MockHostClient implements HostClient {
     this.#state.loadEarlierNeedsYou();
   }
   async readRequest(threadId: string, requestId: string): Promise<Request | null> {
-    const { requests } = unwrapRpcResult(
+    const { requests, reviewedRevisions } = unwrapRpcResult(
       await this.rpc["thread.requests.list"]({
         deviceAccessRequests: "include",
         requestId: RequestIdSchema.parse(requestId),
         threadId: ThreadIdSchema.parse(threadId),
       }),
     );
-    return requests.find(({ id }) => id === requestId) ?? null;
+    const request = requests.find(({ id }) => id === requestId);
+    if (!request) return null;
+    const reviewed = { ...request, reviewedRevision: reviewedRevisions?.[request.id] };
+    return reviewed;
   }
 
   async loadDoneTasks(deploymentId?: string): Promise<void> {
@@ -5166,6 +5289,11 @@ export class MockHostClient implements HostClient {
   }
 
   dispose(): void {
+    for (const { store, release } of this.#transcriptTexts.values()) {
+      release();
+      store.clear();
+    }
+    this.#transcriptTexts.clear();
     clearRunPageViews(this);
     clearRunPlacePictures(this);
     this.references.dispose();
@@ -5183,8 +5311,9 @@ export class MockHostClient implements HostClient {
     return this.#state.load();
   }
 
-  loadEarlierTranscript(threadId: string): Promise<void> {
-    return this.#state.loadEarlierTranscript(threadId);
+  async loadEarlierTranscript(threadId: string): Promise<void> {
+    const before = this.#mockHistory.get(threadId)?.before;
+    if (before) await this.#readMockHistory(threadId, { before });
   }
 
   loadThreadInputQueue(threadId: string): Promise<ThreadInputQueue> {
@@ -5512,7 +5641,7 @@ class MockHostState {
         "guest" in target && target.computerId
           ? this.snapshot.machines.find(({ id }) => id === target.computerId)
           : null;
-      const runnerId = targetDevice ? deviceMachine(targetDevice).selfRunnerId : null;
+      const runnerId = targetDevice ? mockDeviceMachine(targetDevice).selfRunnerId : null;
       if ("guest" in target && target.computerId && !runnerId)
         throw new Error("This device cannot host browser pages.");
       const opened = await this.places.openTarget({
@@ -6018,7 +6147,11 @@ class MockHostState {
 
   bootstrap() {
     this.publishedSnapshot();
-    return mockBootstrap(this.snapshot, this.tabCatalog.store, this.harnessSourceConfigs);
+    return mockBootstrap(
+      { ...this.snapshot, machines: this.publishedSnapshot().machines },
+      this.tabCatalog.store,
+      this.harnessSourceConfigs,
+    );
   }
 
   receiveAgentInput(threadId: string, author: MessageEntry["author"], body: string): void {
@@ -6040,12 +6173,28 @@ class MockHostState {
     this.onReferenceEvent?.(event);
     const previous = this.snapshot.threads.find(({ id }) => id === event.threadId);
     this.sequence = Math.max(this.sequence, Number(event.sequence));
-    this.#threadState.record(event);
     this.update({
       ...this.snapshot,
       threads: this.snapshot.threads.map((thread) =>
         thread.id === event.threadId
-          ? this.#threadState.reconcile(thread, event.sequence, thread)
+          ? this.#threadState.reconcile(
+              {
+                ...thread,
+                ...event.data,
+                title: event.data.title ?? thread.title,
+                icon: event.data.icon === undefined ? thread.icon : event.data.icon,
+                doneAt: event.data.doneAt === undefined ? thread.doneAt : event.data.doneAt,
+                doneReason:
+                  event.data.doneReason === undefined ? thread.doneReason : event.data.doneReason,
+                latestRunCompletedAt:
+                  event.data.latestRunCompletedAt === undefined
+                    ? thread.latestRunCompletedAt
+                    : event.data.latestRunCompletedAt,
+                updatedAt: event.data.updatedAt ?? event.createdAt,
+              },
+              event.sequence,
+              thread,
+            )
           : thread,
       ),
     });
@@ -6526,6 +6675,7 @@ class MockHostState {
   private sessions: AuthSessionSummary[];
   private snapshot: HostSnapshot;
   #published: PublicHostSnapshot | null = null;
+  readonly #deviceViews = new WeakMap<MachineSummary[], MachineSummary[]>();
   #pendingBrowserNotification: ReturnType<typeof setTimeout> | null = null;
   readonly tabCatalog = new MockTabCatalog();
   /** The person's published apps, as the mock Host keeps them. */
@@ -6543,7 +6693,19 @@ class MockHostState {
       this.#published,
       this.snapshot,
     );
-    this.#published = { ...published, tabs: this.tabCatalog.store };
+    let machines = this.#deviceViews.get(published.machines);
+    if (!machines) {
+      machines = published.machines.map((machine) =>
+        machine.capabilities === undefined &&
+        machine.ownership === "deployment" &&
+        !machine.allowedModules.includes("agents")
+          ? machine
+          : mockDeviceMachine(machine),
+      );
+
+      this.#deviceViews.set(published.machines, machines);
+    }
+    this.#published = { ...published, machines, tabs: this.tabCatalog.store };
   }
 
   constructor(options: MockHostClientOptions = {}) {
@@ -6928,7 +7090,7 @@ class MockHostState {
     if (command.type === "integration.computer.setup.request" && "deviceId" in command.input) {
       const { deviceId, ...input } = command.input;
       const machine = this.snapshot.machines.find(({ id }) => id === deviceId);
-      const self = machine ? deviceMachine(machine).selfRunnerId : null;
+      const self = machine ? mockDeviceMachine(machine).selfRunnerId : null;
       if (!self || (input.kind === "app" && isPhoneDisplayDefinitionId(input.definitionId)))
         throw mockBadRequest("Allow phone access from any Opensteer app.");
       return rpcSuccess({
@@ -6940,7 +7102,7 @@ class MockHostState {
       const { deviceId, ...input } = command.input;
       const machine = this.snapshot.machines.find(({ id }) => id === deviceId);
       if (!machine) throw mockNotFound("Device not found.");
-      const selfRunnerId = deviceMachine(machine).selfRunnerId;
+      const selfRunnerId = mockDeviceMachine(machine).selfRunnerId;
       if (
         !selfRunnerId &&
         (input.definitionId !== machine.phoneDisplay?.definitionId || input.app !== null)
@@ -9212,7 +9374,7 @@ class MockHostState {
     if (this.snapshot.machines.find((machine) => machine.id === machineId)?.kind === "home")
       throw new Error("Home cannot be removed");
     const machine = this.snapshot.machines.find((machine) => machine.id === machineId);
-    const selfRunnerId = machine ? deviceMachine(machine).selfRunnerId : null;
+    const selfRunnerId = machine ? mockDeviceMachine(machine).selfRunnerId : null;
     this.#screenConnections.delete(machineId);
     this.sessions = this.sessions.filter((session) => session.deviceId !== machineId);
     let snapshot = this.snapshot;
@@ -9259,7 +9421,7 @@ class MockHostState {
       !this.snapshot.machines.some(
         (machine) =>
           machine.id === machineId &&
-          deviceMachine(machine).selfRunnerId !== null &&
+          mockDeviceMachine(machine).selfRunnerId !== null &&
           (machine.ownership === "mine" || machine.kind === "home"),
       )
     )
@@ -9541,7 +9703,7 @@ class MockHostState {
 
   private selfDeviceId(runnerId: string) {
     const machine = this.snapshot.machines.find(
-      (machine) => deviceMachine(machine).selfRunnerId === runnerId,
+      (machine) => mockDeviceMachine(machine).selfRunnerId === runnerId,
     );
     if (!machine) throw new Error("This Runner has no Device.");
     return DeviceIdSchema.parse(machine.id);
@@ -9550,7 +9712,7 @@ class MockHostState {
     request: DeviceComputerAppSetupRequest,
   ): ComputerAppSetupRequest {
     const machine = this.snapshot.machines.find(({ id }) => id === request.deviceId);
-    const runnerId = machine ? deviceMachine(machine).selfRunnerId : null;
+    const runnerId = machine ? mockDeviceMachine(machine).selfRunnerId : null;
     if (!runnerId) throw new Error("This Device has no local app approval to review.");
     const { deviceId: _deviceId, ...rest } = request;
     return { ...rest, runnerId };
@@ -9560,7 +9722,7 @@ class MockHostState {
       const machine = this.snapshot.machines.find(({ id }) => id === request.deviceId);
       return Date.parse(request.expiresAt) > this.now().getTime() &&
         machine &&
-        deviceMachine(machine).selfRunnerId
+        mockDeviceMachine(machine).selfRunnerId
         ? [this.legacyComputerSetupRequest(request)]
         : [];
     });
@@ -9672,7 +9834,7 @@ class MockHostState {
       throw new Error(`${definition.name} can only be read.`);
     }
     const machine = this.ownedComputer(input.runnerId);
-    if (!deviceMachine(machine).phoneDisplay && machine.device?.platform === "ios") {
+    if (!mockDeviceMachine(machine).phoneDisplay && machine.device?.platform === "ios") {
       this.ownedComputer(input.runnerId);
       if (!definition.computerApp.platforms.includes("ios"))
         throw new Error("This app is not supported on this computer.");
@@ -9680,7 +9842,7 @@ class MockHostState {
     const phone =
       isPhoneDisplayDefinitionId(input.definitionId) &&
       input.app === null &&
-      deviceMachine(machine).phoneDisplay?.definitionId === input.definitionId;
+      mockDeviceMachine(machine).phoneDisplay?.definitionId === input.definitionId;
     if (isPhoneDisplayDefinitionId(input.definitionId) && !phone) {
       throw new Error("That is not this device’s phone display connection.");
     }
@@ -9876,9 +10038,9 @@ class MockHostState {
   } {
     const machine = this.ownedComputer(input.runnerId);
     if (
-      deviceMachine(machine).phoneDisplay ||
+      mockDeviceMachine(machine).phoneDisplay ||
       machine.selfRunnerId === null ||
-      deviceMachine(machine).kind === "phone"
+      mockDeviceMachine(machine).kind === "phone"
     )
       throw new HostClientRequestError({
         code: "bad_request",
@@ -11438,8 +11600,6 @@ class MockHostState {
     this.#recentMarkColors.set(key, [color, ...recent].slice(0, 6));
     return color;
   }
-
-  async loadEarlierTranscript(_threadId: string): Promise<void> {}
 
   renameThread(threadId: string, title: string): ThreadSummary {
     const thread = this.snapshot.threads.find((thread) => thread.id === threadId);
@@ -14642,7 +14802,6 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
     searchSuggestionsAvailable: true,
     iphoneAppsAvailable: true,
     devicesAvailable: true,
-    deviceDriversAvailable: true,
     ownerViewWindowsAvailable: true,
     voiceAvailable: true,
 

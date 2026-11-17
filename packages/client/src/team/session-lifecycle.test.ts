@@ -285,10 +285,11 @@ it("keeps Personal and Team attachments alive together with independent durable 
       connect: teamHost.connect,
     });
   try {
+    const initialPersonalCut = String(personalHost.client.getSnapshot().revision);
     await Promise.all([personal.load(), team.load()]);
     team.selectChannel(mockTeamChannelId);
     await vi.waitFor(() => {
-      expect(personal.deploymentPosition()).toBe("0");
+      expect(personal.deploymentPosition()).toBe(initialPersonalCut);
       expect(team.getSnapshot().channel?.throughSeq).toBe("0");
     });
     personalHost.publish("47");

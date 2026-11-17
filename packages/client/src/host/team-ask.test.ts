@@ -154,6 +154,7 @@ describe.each(["approve", "decline"] as const)("%s decision", (decision) => {
     });
     try {
       await client.load();
+      await client.loadEarlierNeedsYou();
       await vi.waitFor(
         () => expect(listed(client.getSnapshot().needsYou, ask.requestId)?.task).toBeDefined(),
         { timeout: 1000 },
@@ -287,7 +288,7 @@ it("refreshes the loaded Needs you range without losing an older review or retai
         ),
       { timeout: 1000 },
     );
-    transport.invalidateShell();
+    await client.loadEarlierNeedsYou();
     await vi.waitFor(
       () =>
         expect(

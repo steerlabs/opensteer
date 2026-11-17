@@ -1,5 +1,4 @@
 import {
-  deviceMachine,
   type HostClient,
   type HostSnapshot,
   type NativeViewerSource,
@@ -132,7 +131,7 @@ export function ComputerDisplay({
   const unavailable = !phone && !macWindowVideoSupported();
   const phoneDisplay = useHostSelector(hostClient, (snapshot) => {
     const machine = snapshot.machines.find(({ id }) => id === machineId);
-    return phone && machine ? (deviceMachine(machine).phoneDisplay ?? null) : null;
+    return phone && machine ? (machine.phoneDisplay ?? null) : null;
   });
   const navigation = phoneViewerNavigation(phoneDisplay);
   const kind = reference.kind;
@@ -719,7 +718,7 @@ export function ComputerTaskView(props: {
     <View style={styles.stage}>
       <AppText>
         {machine.detail ??
-          `Update ${deviceMachine(machine).phoneDisplay?.setup.location === "android-usb" ? "Agent Phone" : "Opensteer"} on ${label}.`}
+          `Update ${machine.phoneDisplay?.setup.location === "android-usb" ? "Agent Phone" : "Opensteer"} on ${label}.`}
       </AppText>
     </View>
   ) : (

@@ -171,8 +171,8 @@ export class ScopedPersonalStream {
           !held ||
           this.#authority !== authority ||
           this.#send ||
-          held.scope.format !== personalCacheFormat ||
-          held.cursor.deploymentId !== key.deploymentId ||
+          held.scope?.format !== personalCacheFormat ||
+          held.cursor?.deploymentId !== key.deploymentId ||
           held.cursor.viewerId !== key.viewerId ||
           held.cursor.epoch !== key.epoch ||
           held.cursor.scopeKey !== key.scopeKey ||
@@ -208,7 +208,7 @@ export class ScopedPersonalStream {
           if (!ScopedHostMessageSchema.safeParse(frame).success || !this.shell.apply(frame)) return;
           this.#cacheKeys.set(key.scopeKey, key);
           this.resources.updateRevisions(generation, snapshot.resourceRevisions);
-          for (const [kind, resource] of Object.entries(held.resources)) {
+          for (const [kind, resource] of Object.entries(held.resources ?? {})) {
             if (
               resource &&
               PersonalResourceKindSchema.safeParse(kind).success &&
@@ -237,7 +237,10 @@ export class ScopedPersonalStream {
             throughSequence: held.cursor.afterSequence,
             snapshot: state.data,
           } as const;
-          if (!ScopedHostMessageSchema.safeParse(frame).success || !detail.transcript.apply(frame))
+          if (
+            !ScopedHostMessageSchema.safeParse(frame).success ||
+            !detail.transcript.apply(frame, this.#identity)
+          )
             return;
           this.#cacheKeys.set(key.scopeKey, key);
         }
@@ -298,7 +301,14 @@ export class ScopedPersonalStream {
       this.#deactivate(detail);
       this.#removeCheckpoint(detail.scope);
     }
-    for (const threadId of roots) this.shell.removeTask(threadId);
+    for (const threadId of roots) {
+      this.shell.removeTask(threadId);
+      const identity = this.#identity;
+      if (identity && this.cache?.removeThread)
+        this.#enqueue(`thread-cache:${threadId}`, () =>
+          this.cache!.removeThread!(identity, threadId),
+        );
+    }
     return scopes;
   }
 
@@ -497,7 +507,10 @@ export class ScopedPersonalStream {
         throw new Error("Transcript snapshot omitted its anchor.");
       delete detail.anchor;
     }
-    if (frame.type === "host.snapshot-required" || !detail.transcript.apply(frame)) {
+    if (
+      frame.type === "host.snapshot-required" ||
+      !detail.transcript.apply(frame, this.#identity)
+    ) {
       if (frame.type === "host.snapshot-required") detail.transcript.apply(frame);
       this.#subscribe(detail, false, true);
       return;
@@ -508,6 +521,12 @@ export class ScopedPersonalStream {
       return;
     }
     this.#ack(frame);
+    if (frame.type === "host.changes")
+      for (const change of frame.changes) {
+        if (change.entityKind !== "item") continue;
+        if (change.operation === "remove" || finalizedText(change.value))
+          detail.text.finishItem(change.entityId);
+      }
     const stale = detail.transcript.getSnapshot().stale;
     if (stale.has("run-queue") || stale.has("node-subject")) {
       this.#subscribe(detail, false, true);
@@ -525,8 +544,13 @@ export class ScopedPersonalStream {
   }
 
   #live(detail: ObservedDetail, frame: Live) {
-    const { synchronized, through } = detail.transcript.getSnapshot();
-    if (!synchronized || through === null) return;
+    const { synchronized, through, items } = detail.transcript.getSnapshot();
+    if (
+      !synchronized ||
+      through === null ||
+      (frame.update.operation !== "close" && finalizedText(items.get(frame.itemId)))
+    )
+      return;
     const result = detail.text.apply(frame, through);
     if (result === "applied") {
       for (const id of detail.transcript.getSnapshot().liveItems.keys())
@@ -781,4 +805,18 @@ export class ScopedPersonalStream {
 function withoutSession(snapshot: import("zod").infer<typeof PersonalShellSnapshotSchema>) {
   const { session: _session, ...state } = snapshot;
   return state;
+}
+
+function finalizedText(item: import("@opensteer/protocol/transcript").TranscriptItem | undefined) {
+  if (!item) return false;
+  switch (item.kind) {
+    case "message":
+    case "reasoning":
+    case "node-message":
+      return true;
+    case "tool":
+      return item.view.status !== "running";
+    default:
+      return false;
+  }
 }

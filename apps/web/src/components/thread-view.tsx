@@ -183,6 +183,7 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
       moreRequests={transcript.moreRequests}
       moreTools={transcript.moreTools ?? false}
       moreNodes={transcript.moreNodes ?? false}
+      inputQueueError={transcript.inputQueueError}
       entries={transcript.entries}
       environmentStatus={
         snapshot.environments.find((item) => item.id === thread.environmentId)?.status ??
@@ -217,6 +218,7 @@ interface ThreadViewProps {
   moreRequests?: boolean;
   moreTools?: boolean;
   moreNodes?: boolean;
+  inputQueueError?: unknown;
   entries: readonly TranscriptEntry[];
   detailCurrent?: boolean;
   runQueue?: readonly import("@opensteer/client/host").RunQueueEntry[];
@@ -241,6 +243,7 @@ function ThreadView({
   moreRequests = false,
   moreTools = false,
   moreNodes = false,
+  inputQueueError,
   entries,
   environmentStatus,
   executionPlacements,
@@ -389,6 +392,10 @@ function ThreadView({
       setFocusTarget(null);
       return;
     }
+    if (!known && moreRequests && detailCurrent) {
+      void hostClient.loadMoreOverlays(thread.id, "requests").catch(reportActionError);
+      return;
+    }
     if (!dockedRequests.some((item) => item.surface.request.id === focusTarget.id)) return;
     if (openRequestId !== focusTarget.id) {
       openRequest(focusTarget.id);
@@ -406,7 +413,17 @@ function ThreadView({
       setFocusTarget(null);
     });
     return () => cancelAnimationFrame(frame);
-  }, [dockedRequests, focusTarget, openRequest, openRequestId, requests]);
+  }, [
+    detailCurrent,
+    dockedRequests,
+    focusTarget,
+    hostClient,
+    moreRequests,
+    openRequest,
+    openRequestId,
+    requests,
+    thread.id,
+  ]);
   const conversational = thread.purpose === "voice";
   // In work, a message waiting behind the current turn stands unsent at the
   // conversation's foot until a Run takes it. In a conversation the reply under
@@ -1403,6 +1420,17 @@ function ThreadView({
                   openId={openRequestId}
                   threadId={thread.id}
                 />
+                {inputQueueError !== undefined ? (
+                  <button
+                    className="btn"
+                    type="button"
+                    onClick={() =>
+                      void hostClient.loadThreadInputQueue(thread.id).catch(reportActionError)
+                    }
+                  >
+                    Retry loading waiting messages
+                  </button>
+                ) : null}
                 {(["tools", "nodes"] as const).map((kind) =>
                   (kind === "tools" ? moreTools : moreNodes) ? (
                     <button

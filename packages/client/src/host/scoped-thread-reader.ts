@@ -58,6 +58,20 @@ type RequestSummaries = NonNullable<
 
 export class TranscriptBodies {
   readonly #entries = new Map<string, { value: TranscriptItemResult; size: number }>();
+  readonly #listeners = new Set<() => void>();
+
+  subscribe = (listener: () => void) => {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  };
+
+  peek(key: string, revision: string) {
+    const value = this.#entries.get(key)?.value;
+    return value?.item.revision === revision ? value : undefined;
+  }
+
   #bytes = 0;
 
   get(key: string, revision: string) {
@@ -77,16 +91,18 @@ export class TranscriptBodies {
       if (this.#bytes <= 4 * 1024 * 1024) break;
       this.remove(id);
     }
+    for (const listener of this.#listeners) listener();
   }
 
   remove(key: string) {
     this.#bytes -= this.#entries.get(key)?.size ?? 0;
-    this.#entries.delete(key);
+    if (this.#entries.delete(key)) for (const listener of this.#listeners) listener();
   }
 
   clear() {
     this.#entries.clear();
     this.#bytes = 0;
+    for (const listener of this.#listeners) listener();
   }
 }
 
@@ -107,6 +123,7 @@ export class ScopedThreadReader implements ThreadViewSource {
   #liveRows: ReadonlyMap<string, TranscriptItem> | undefined;
   #queueRows: unknown;
   #requestGeneration = 0;
+  #bodyGeneration = 0;
   #view: ThreadViewState = emptyThreadView;
 
   constructor(detail: ObservedDetail, rpc: HostApiClient, bodies: TranscriptBodies, listen = true) {
@@ -138,6 +155,11 @@ export class ScopedThreadReader implements ThreadViewSource {
 
   #update() {
     const state = this.#detail.transcript.getSnapshot();
+    if (this.#bodyGeneration !== state.generation) {
+      for (const id of this.#rows?.keys() ?? [])
+        this.#bodies.remove(this.#bodyKey(id, this.#bodyGeneration));
+      this.#bodyGeneration = state.generation;
+    }
     let entries = this.#view.entries;
     if (this.#rows !== state.items || this.#liveRows !== state.liveItems) {
       for (const [id, item] of this.#rows ?? [])
@@ -583,9 +605,8 @@ export class ScopedThreadReader implements ThreadViewSource {
     }
   }
 
-  #bodyKey(itemId: string) {
-    const scope = this.#detail.scope;
-    return JSON.stringify([scope.threadId, scope.kind === "node" ? scope.nodeId : null, itemId]);
+  #bodyKey(itemId: string, generation = this.#detail.transcript.getSnapshot().generation) {
+    return transcriptBodyKey(this.#detail.scope, generation, itemId);
   }
 
   async body(itemId: string) {
@@ -643,9 +664,21 @@ function matchesBody(item: TranscriptItem, body: TranscriptItemResult["body"]) {
     case "run":
       return body.kind === "run" && body.run.id === item.runId;
     case "assignment":
-    case "delegation":
       return body.kind === "assignment" && body.assignment.id === item.delegationId;
     default:
       return false;
   }
+}
+
+export function transcriptBodyKey(
+  scope: ObservedDetail["scope"],
+  generation: number,
+  itemId: string,
+) {
+  return JSON.stringify([
+    scope.threadId,
+    scope.kind === "node" ? scope.nodeId : null,
+    generation,
+    itemId,
+  ]);
 }

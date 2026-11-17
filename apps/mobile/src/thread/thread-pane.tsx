@@ -1184,6 +1184,19 @@ function ThreadPaneForUser(
 
   const listFooter = (
     <>
+      {threadDetail.inputQueueError !== undefined ? (
+        <AnswerPill
+          tone="secondary"
+          label="Retry loading waiting messages"
+          onPress={() => {
+            void hostClient
+              .loadThreadInputQueue(threadId)
+              .catch((error: unknown) =>
+                setFailure(operationDetail(error, "Waiting messages could not be loaded.")),
+              );
+          }}
+        />
+      ) : null}
       {conversationFooter}
       {threadDetail.hasNewer ? (
         <AnswerPill

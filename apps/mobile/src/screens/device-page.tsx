@@ -18,7 +18,6 @@ import { TabTargetSchema } from "@opensteer/core";
 import { computerStatus } from "@opensteer/client/computers";
 import {
   canRespondToRequests,
-  deviceMachine,
   mutationIdempotencyKey,
   type HostClient,
   type HostSnapshot,
@@ -393,12 +392,12 @@ function DevicePage(props: {
         confirm: copy.confirm,
         onConfirm: () => run(act, `${machine.name} did not change. Try again.`),
       });
-    const generation = deviceMachine(machine).phoneDisplay?.driver?.generation;
+    const generation = machine.phoneDisplay?.driver?.generation;
     return {
       card: {
         key: "screen",
         title: screenMac.attached
-          ? phoneUseCardTitle({ driver: deviceMachine(machine).phoneDisplay?.driver ?? null })
+          ? phoneUseCardTitle({ driver: machine.phoneDisplay?.driver ?? null })
           : "Screen control",
         ...(failure !== null
           ? { footer: { text: failure, tone: "danger" as const } }

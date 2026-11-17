@@ -39,7 +39,7 @@ afterEach(() => {
  * waiting in its own task. `lose` drops the answer to the next command of
  * that type after the Host has carried it out.
  */
-async function setup() {
+async function setup(holdBody?: (response: Response) => Promise<Response>) {
   const mock = new MockHostClient({ latencyMs: 0, teamAsks: [ask] });
   const host = new MockPersonalHost(mock);
   const sent: string[] = [];
@@ -58,6 +58,7 @@ async function setup() {
       sent.push(type);
       const response = await host.fetch(input, init);
       if (lost.delete(type)) throw new TypeError("The connection was lost.");
+      if (holdBody && type === "/v1/rpc/thread.message.revisions.list") return holdBody(response);
       return response;
     },
   });
@@ -176,6 +177,41 @@ it("holds a message another device is editing until this one takes it over, and 
   expect(waiting()!.lease).toEqual({ kind: "none" });
   await editor.cancel();
   expect(client.ownsEditLease(editor.leaseId)).toBe(false);
+});
+
+it("refuses to open an editor when another device takes the lease during the body read", async () => {
+  const body = Promise.withResolvers<Response>();
+  const returnBody = Promise.withResolvers<void>();
+  const { client, messageId, mock, threadId, waiting } = await setup(async (response) => {
+    body.resolve(response);
+    await returnBody.promise;
+    return response;
+  });
+  const editing = client.editWaitingMessage(threadId, messageId);
+  void editing.catch(() => undefined);
+  try {
+    let bodyReady = false;
+    void body.promise.then(() => {
+      bodyReady = true;
+    });
+    await vi.waitFor(() => expect(bodyReady, "the edit body was never read").toBe(true), {
+      timeout: 1000,
+    });
+    expect((await body.promise).ok).toBe(true);
+    mock.mockOtherDeviceEdit(threadId, messageId, "Alex's iPad");
+    await vi.waitFor(
+      () =>
+        expect(waiting()?.lease).toMatchObject({
+          kind: "other",
+          deviceLabel: "Alex's iPad",
+        }),
+      { timeout: 1000 },
+    );
+  } finally {
+    returnBody.resolve();
+  }
+  await expect(editing).rejects.toMatchObject({ code: "conflict" });
+  expect(waiting()?.lease).toMatchObject({ kind: "other", deviceLabel: "Alex's iPad" });
 });
 
 it("reloads a revised lease only for the observed queue and purges the removed scope", async () => {

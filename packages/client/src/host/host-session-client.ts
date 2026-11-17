@@ -3,7 +3,7 @@ import { MessageIdSchema, utf8ByteLength } from "@opensteer/core";
 import type { PersonalStreamCache } from "./personal-stream-cache.js";
 import { needsYouEntryKey, settleTeamAsk } from "./needs-you.js";
 import { withThreadNames } from "./optimistic-command-patches.js";
-import { ScopedThreadReader, TranscriptBodies } from "./scoped-thread-reader.js";
+import { ScopedThreadReader, TranscriptBodies, transcriptBodyKey } from "./scoped-thread-reader.js";
 import { nodeTranscriptCard, transcriptCard } from "./transcript-item-view.js";
 import {
   scopedPersonalApiVersion,
@@ -189,6 +189,7 @@ export interface HttpHostClientOptions {
   readonly assetRoute?: AssetRoute;
   readonly desktopMedia?: boolean;
   readonly streamCache?: PersonalStreamCache;
+  readonly cacheDeploymentId?: string;
   readonly passkeys?: BrowserPasskeyPort;
   /** The viewer's command platform for exact baseline shortcut projection. */
   readonly viewerPlatform?: "mac" | "pc";
@@ -253,6 +254,8 @@ export class HttpHostClient {
   #socketGeneration = 0;
   #probe: { nonce: string; timer: Timer } | undefined;
   #attachDeadline: Timer | undefined;
+  #warmRead: AbortController | undefined;
+  readonly #cacheDeploymentId: string | undefined;
   readonly #reportRealtimeFrame: HttpHostClientOptions["reportRealtimeFrame"];
   #socket: WebSocketClient | null = null;
   #reconnect: Timer | undefined;
@@ -262,6 +265,8 @@ export class HttpHostClient {
   #load: Promise<void> | undefined;
   #resolveLoad: (() => void) | undefined;
   #resourceReads = new Map<PersonalResourceKind, AbortController>();
+  readonly #environmentCatalogs = new Map<string, EnvironmentSummary["harnessCatalogs"]>();
+  readonly #environmentAuth = new Map<string, boolean>();
   readonly #scopeReaders = new Map<string, ScopedThreadReader>();
   readonly #bodies = new TranscriptBodies();
   readonly #resourceRevisions = new Map<PersonalResourceKind, string>();
@@ -605,6 +610,7 @@ export class HttpHostClient {
   constructor(options: HttpHostClientOptions) {
     this.#origin = options.origin;
     this.#prepareSocket = options.prepareSocket;
+    this.#cacheDeploymentId = options.cacheDeploymentId;
     this.#reportRealtimeFrame = options.reportRealtimeFrame;
     this.#stream = new ScopedPersonalStream(options.streamCache, (kind) =>
       this.#resourceChanged(kind),
@@ -651,6 +657,7 @@ export class HttpHostClient {
       ...(options.bufferedResponses === undefined
         ? {}
         : { bufferedResponses: options.bufferedResponses }),
+      onSignedOut: () => this.#expireSession(),
       onAuthenticationRequired: () => {
         this.#expireSession();
         this.#reverifyCapabilities();
@@ -834,6 +841,17 @@ export class HttpHostClient {
     const parsedCommand = clientCommandSchema.parse(
       this.#withOrigin(browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes)),
     );
+    if (
+      (parsedCommand.type === "request.respond" ||
+        parsedCommand.type === "browser.sign-in.respond" ||
+        parsedCommand.type === "browser.password-sign-in.respond") &&
+      parsedCommand.expectedRevision === undefined
+    )
+      throw new HostClientRequestError({
+        code: "conflict",
+        status: 409,
+        message: "Review the latest request before answering.",
+      });
     const needsDevices =
       parsedCommand.type === "machine.session.bind" ||
       (parsedCommand.type === "machine.access.update" &&
@@ -1070,16 +1088,35 @@ export class HttpHostClient {
     return scope && this.#stream.peekDetail(scope)?.text;
   }
 
+  getCachedTranscriptItem(threadId: string, itemId: string, nodeId?: string) {
+    const scope = this.#detailScope(threadId, nodeId);
+    const state = scope && this.#stream.peekDetail(scope)?.transcript.getSnapshot();
+    const item = state?.items.get(itemId);
+    if (!scope || !state?.synchronized || !item) return;
+    return this.#bodies.peek(transcriptBodyKey(scope, state.generation, itemId), item.revision);
+  }
+
+  subscribeTranscriptBody(
+    threadId: string,
+    _itemId: string,
+    nodeId: string | undefined,
+    listener: () => void,
+  ) {
+    const scope = this.#detailScope(threadId, nodeId);
+    const releaseScope = scope && this.#stream.peekDetail(scope)?.transcript.subscribe(listener);
+    const releaseCache = this.#bodies.subscribe(listener);
+    return () => {
+      releaseScope?.();
+      releaseCache();
+    };
+  }
+
   async readTranscriptItem(threadId: string, itemId: string, nodeId?: string) {
     if (!nodeId) return this.#reader(threadId)?.body(itemId);
     const scope = this.#detailScope(threadId, nodeId);
-    if (!scope) return;
-    const reader = new ScopedThreadReader(
-      this.#stream.detail(scope),
-      this.rpc,
-      this.#bodies,
-      false,
-    );
+    const detail = scope && this.#stream.peekDetail(scope);
+    if (!detail) return;
+    const reader = new ScopedThreadReader(detail, this.rpc, this.#bodies, false);
     try {
       return await reader.body(itemId);
     } finally {
@@ -1330,6 +1367,8 @@ export class HttpHostClient {
       this.#viewerGeneration++;
       this.#threadState.clear();
       this.#resourceRevisions.clear();
+      this.#environmentCatalogs.clear();
+      this.#environmentAuth.clear();
       this.#bodies.clear();
       this.#clearAttachmentReads();
       this.#threadDeployment.clear();
@@ -1454,15 +1493,21 @@ export class HttpHostClient {
       (shell.counts.needsYouCount || this.#snapshot.needsYou) &&
       (!old?.synchronized || attentionChanged)
     )
-      this.#invalidateAttention();
+      this.#invalidateAttention(true);
   }
 
   #attentionRead: { controller: AbortController; promise: Promise<void> } | undefined;
+  #attentionTarget = 0;
 
-  #invalidateAttention() {
+  #invalidateAttention(refresh = false) {
     this.#attentionRead?.controller.abort();
     this.#attentionRead = undefined;
-    if (this.#snapshot.needsYou) this.#update({ ...this.#snapshot, needsYou: null });
+    if (!refresh) {
+      this.#attentionTarget = 0;
+      if (this.#snapshot.needsYou) this.#update({ ...this.#snapshot, needsYou: null });
+      return;
+    }
+    if (this.#attentionTarget) void this.#readAttention(true).catch(() => undefined);
   }
 
   #resourceChanged(kind: PersonalResourceKind) {
@@ -1494,6 +1539,7 @@ export class HttpHostClient {
         )
       ) {
         const id = this.#activeThreadId;
+        this.#threadState.forget(id);
         this.#update({
           ...this.#snapshot,
           threads: this.#snapshot.threads.map((row) =>
@@ -1520,12 +1566,14 @@ export class HttpHostClient {
         this.#update({ ...snapshot, harnesses: [] });
         break;
       case "harness-catalog":
+        this.#environmentCatalogs.clear();
         this.#update({
           ...snapshot,
           environments: snapshot.environments.map((row) => ({ ...row, harnessCatalogs: [] })),
         });
         break;
       case "harness-auth":
+        this.#environmentAuth.clear();
         this.#update({
           ...snapshot,
           environments: snapshot.environments.map((row) => ({
@@ -1545,6 +1593,9 @@ export class HttpHostClient {
         break;
       case "browser-availability":
         this.#update({ ...snapshot, browserAvailable: false });
+        break;
+      case "identity":
+        this.#update({ ...snapshot, identityConfig: null });
         break;
       case "owner-profile":
         this.#update({ ...snapshot, ownerProfile: null });
@@ -1602,7 +1653,10 @@ export class HttpHostClient {
       .finally(() => {
         if (this.#resourceReads.get(kind) === controller) {
           this.#resourceReads.delete(kind);
-          if (this.#stream.resources.get(kind)?.revision !== installed.revision)
+          if (
+            this.#stream.resources.get(kind)?.revision !== installed.revision ||
+            this.#stream.shell.getSnapshot().generation !== scope
+          )
             this.#readResource(kind);
         }
       });
@@ -1636,31 +1690,22 @@ export class HttpHostClient {
           ...snapshot,
           environments: mergeResourceRows(
             append ? snapshot.environments : [],
-            data.environments,
+            data.environments.map((row) => this.#withEnvironmentCapabilities(row)),
             (row) => row.id,
           ),
         });
-        // These revisions may have arrived before the environments they enrich.
-        for (const kind of ["harness-catalog", "harness-auth"] as const) {
-          this.#resourceRevisions.delete(kind);
-          this.#readResource(kind);
-        }
         break;
       case "harness-catalog":
-      case "harness-auth": {
-        const byId = new Map(data.environments.map((row) => [row.id, row]));
+      case "harness-auth":
+        for (const row of data.environments)
+          if (data.kind === "harness-catalog")
+            this.#environmentCatalogs.set(row.id, row.harnessCatalogs);
+          else this.#environmentAuth.set(row.id, row.harnessAuthenticationAllowed);
         this.#update({
           ...snapshot,
-          environments: snapshot.environments.map((row) => {
-            const fields = byId.get(row.id);
-            if (!fields) return row;
-            return data.kind === "harness-catalog"
-              ? { ...row, harnessCatalogs: fields.harnessCatalogs }
-              : { ...row, harnessAuthenticationAllowed: fields.harnessAuthenticationAllowed };
-          }),
+          environments: snapshot.environments.map((row) => this.#withEnvironmentCapabilities(row)),
         });
         break;
-      }
       case "machine":
         this.#update({
           ...snapshot,
@@ -1721,6 +1766,14 @@ export class HttpHostClient {
       case "agent-home-settings":
         break;
     }
+  }
+
+  #withEnvironmentCapabilities(row: EnvironmentSummary): EnvironmentSummary {
+    return {
+      ...row,
+      harnessCatalogs: this.#environmentCatalogs.get(row.id) ?? [],
+      harnessAuthenticationAllowed: this.#environmentAuth.get(row.id) ?? false,
+    };
   }
 
   async getAssignment(assignmentId: string): Promise<AssignmentView> {
@@ -2817,47 +2870,74 @@ export class HttpHostClient {
   }
 
   loadEarlierNeedsYou(): Promise<void> {
+    return this.#readAttention(false);
+  }
+
+  #readAttention(refresh: boolean): Promise<void> {
     if (this.#attentionRead) return this.#attentionRead.promise;
     const held = this.#snapshot.needsYou;
     const state = this.#stream.shell.getSnapshot();
     if (
       !state.synchronized ||
       this.#visibility === "background" ||
-      (held && (!held.window.hasMore || !held.window.nextBefore))
+      (!refresh && held && (!held.window.hasMore || !held.window.nextBefore))
     )
       return Promise.resolve();
     const controller = new AbortController();
-    const before = held?.window.nextBefore;
-    const promise = this.rpc["needsYou.get"](
-      { ...(before ? { before } : {}), limit: 50 },
-      { signal: controller.signal },
-    )
-      .then((result) => {
-        if (controller.signal.aborted) return;
-        const page = unwrapRpcResult(result);
-        const current = this.#stream.shell.getSnapshot();
+    const current = () => {
+      const latest = this.#stream.shell.getSnapshot();
+      return (
+        !controller.signal.aborted &&
+        latest.synchronized &&
+        latest.generation === state.generation &&
+        latest.attention === state.attention &&
+        latest.snapshot?.counts.needsYouCount === state.snapshot?.counts.needsYouCount &&
+        latest.snapshot?.counts.pendingRequestCount === state.snapshot?.counts.pendingRequestCount
+      );
+    };
+    const read = async (before?: string) =>
+      unwrapRpcResult(
+        await this.rpc["needsYou.get"](
+          { ...(before ? { before } : {}), limit: 50 },
+          { signal: controller.signal },
+        ),
+      );
+    const promise = (async () => {
+      let page = await read(refresh ? undefined : (held?.window.nextBefore ?? undefined));
+      if (!current()) return;
+      const entries = new Map(
+        (refresh ? [] : (held?.entries ?? [])).map((entry) => [needsYouEntryKey(entry), entry]),
+      );
+      let byteCount = 0;
+      for (let pages = 0; ; pages++) {
+        byteCount += page.window.byteCount;
+        for (const entry of page.entries) entries.set(needsYouEntryKey(entry), entry);
+        const cursor = page.window.nextBefore;
         if (
-          current.generation !== state.generation ||
-          current.attention !== state.attention ||
-          current.snapshot?.counts.needsYouCount !== state.snapshot?.counts.needsYouCount ||
-          current.snapshot?.counts.pendingRequestCount !==
-            state.snapshot?.counts.pendingRequestCount ||
-          this.#snapshot.needsYou !== held
+          !refresh ||
+          pages >= 2 ||
+          entries.size >= this.#attentionTarget ||
+          !page.window.hasMore ||
+          !cursor
         )
-          return;
-        const ids = new Set(held?.entries.map(needsYouEntryKey));
-        this.#update({
-          ...this.#snapshot,
-          needsYou: {
-            ...page,
-            entries: [
-              ...(held?.entries ?? []),
-              ...page.entries.filter((entry) => !ids.has(needsYouEntryKey(entry))),
-            ].slice(-150),
-          },
-        });
-      })
-      .catch((error) => {
+          break;
+        page = await read(cursor);
+        if (!current()) return;
+        if (page.window.nextBefore === cursor)
+          throw new Error("The Host returned the same Needs you cursor.");
+      }
+      const visible = [...entries.values()].slice(-150);
+      this.#attentionTarget = visible.length || 1;
+      this.#update({
+        ...this.#snapshot,
+        needsYou: {
+          ...page,
+          entries: visible,
+          window: { ...page.window, byteCount, itemCount: visible.length },
+        },
+      });
+    })()
+      .catch((error: unknown) => {
         if (!controller.signal.aborted) throw error;
       })
       .finally(() => {
@@ -3077,7 +3157,6 @@ export class HttpHostClient {
       searchSuggestionsAvailable: capabilities.includes("browser-search-suggestions-v1"),
       iphoneAppsAvailable: capabilities.includes("iphone-apps-v1"),
       devicesAvailable: capabilities.includes("devices-v1"),
-      deviceDriversAvailable: true,
       voiceAvailable: capabilities.includes("voice-run-v1"),
       ownerViewWindowsAvailable: capabilities.includes("ownerViewWindows"),
     });
@@ -3098,6 +3177,7 @@ export class HttpHostClient {
   #enterBackground() {
     if (this.#disposed || this.#visibility === "background") return;
     this.#visibility = "background";
+    this.#warmRead?.abort();
     this.#finishLoad();
     this.#stream.setBackground(true);
     this.#invalidateAttention();
@@ -3176,13 +3256,26 @@ export class HttpHostClient {
     await this.#prepareSocket?.();
     if (socketGeneration !== this.#socketGeneration) return;
     const cache = this.#stream.cache;
-    const cacheCandidate = await cache?.hasCheckpoints?.().catch(() => false);
+    const cacheCandidate = await cache
+      ?.hasCheckpoints?.(this.#cacheDeploymentId)
+      .catch(() => false);
     if (socketGeneration !== this.#socketGeneration) return;
     if (cacheCandidate && this.#snapshot.session === "checking") {
       const selected = ThreadIdSchema.safeParse(this.#activeThreadId);
+      const controller = new AbortController();
+      this.#warmRead = controller;
       const result = await this.rpc["personal.shell.get"](
         selected.success ? { selectedThreadId: selected.data } : {},
-      );
+        { signal: controller.signal },
+      )
+        .catch((error: unknown) => {
+          if (!controller.signal.aborted) throw error;
+          return undefined;
+        })
+        .finally(() => {
+          if (this.#warmRead === controller) this.#warmRead = undefined;
+        });
+      if (!result) return;
       if (socketGeneration !== this.#socketGeneration) return;
       if (result.ok && validNetworkShell(result.data)) await this.#stream.restore(result.data);
       else if (
@@ -3282,6 +3375,7 @@ export class HttpHostClient {
               if (scope.kind !== "thread") continue;
               const id = scope.threadId;
               this.#threadDeployment.delete(id);
+              this.#threadState.forget(id);
               this.#assignmentReads.delete(id);
               this.#automationReads.delete(id);
             }
@@ -3331,6 +3425,7 @@ export class HttpHostClient {
 
   #closeSocket() {
     this.#socketGeneration++;
+    this.#warmRead?.abort();
     this.#clearProbe();
     const socket = this.#socket;
     this.#socket = null;
@@ -3441,6 +3536,8 @@ export class HttpHostClient {
     this.#stream.clear(true);
     this.#bodies.clear();
     this.#resourceRevisions.clear();
+    this.#environmentCatalogs.clear();
+    this.#environmentAuth.clear();
     this.#browserUsageRead.clear();
     this.#browserUsageReads.clear();
     this.#browserUsageRunSources.clear();

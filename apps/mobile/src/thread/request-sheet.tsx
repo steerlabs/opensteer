@@ -168,6 +168,26 @@ function SubscribedRequestSheet(props: {
     transcript.requestsRefreshing ||
     transcript.pendingRequestIds?.includes(requestId) ||
     transcript.moreRequests;
+  useEffect(() => {
+    if (
+      !transcript.synchronized ||
+      pending ||
+      transcript.requestsRefreshing ||
+      transcript.pendingRequestIds?.includes(requestId) ||
+      !transcript.moreRequests
+    )
+      return;
+    void props.hostClient.loadMoreOverlays(threadId, "requests").catch(() => undefined);
+  }, [
+    pending,
+    props.hostClient,
+    requestId,
+    threadId,
+    transcript.moreRequests,
+    transcript.pendingRequestIds,
+    transcript.requestsRefreshing,
+    transcript.synchronized,
+  ]);
   // Admitted and gone can both ask to close; only the sheet itself may go back.
   const close = useRef(() => undefined as void);
   close.current = () => {
@@ -234,7 +254,11 @@ function ReferencedRequest(props: {
     };
   }, [attempt, hostClient, requestId, threadId]);
   const held = transcript.requests.find(({ id }) => id === requestId);
-  if (held?.status === "pending" || transcript.pendingRequestIds?.includes(requestId))
+  if (
+    held?.status === "pending" ||
+    transcript.pendingRequestIds?.includes(requestId) ||
+    (read.state === "read" && read.request?.status === "pending" && transcript.moreRequests)
+  )
     return (
       <SubscribedRequestSheet
         deploymentId={deploymentId}

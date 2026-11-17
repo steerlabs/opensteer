@@ -127,7 +127,6 @@ export function transcriptCard(
       return runId
         ? { ...base, runId, kind: "app", appId: item.appId, title: view.title ?? "App", version: 0 }
         : undefined;
-    case "delegation":
     case "assignment": {
       const assignment = body?.kind === "assignment" ? body.assignment : item.assignment;
       return assignment ? { ...base, kind: "assignment", assignment } : undefined;

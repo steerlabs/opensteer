@@ -1,5 +1,11 @@
+import { usePersonalResources } from "@opensteer/client/react";
 import { useHeaderHeight } from "@react-navigation/elements";
-import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import {
+  StackActions,
+  useNavigation,
+  useIsFocused,
+  type StaticScreenProps,
+} from "@react-navigation/native";
 import { useCallback, type ReactNode } from "react";
 import { dismissKeyboard } from "../ui/composer-editor.js";
 import { Screen } from "../ui/screen.js";
@@ -7,6 +13,14 @@ import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { NewTaskPane } from "./new-task.js";
 import { useNotificationsIntro } from "./notifications-intro.js";
 import { usePhoneSetup } from "../phone-setup/use-phone-setup.js";
+
+const homeResources = [
+  "environment",
+  "harness",
+  "harness-catalog",
+  "harness-auth",
+  "settings",
+] as const;
 
 export type HomeScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -24,6 +38,8 @@ export function HomeScreen(props: HomeScreenProps): ReactNode {
   const navigation = useNavigation();
   const headerHeight = useHeaderHeight();
   const hostClient = useAttachedHost(deploymentId);
+  const focused = useIsFocused();
+  usePersonalResources(focused ? hostClient : null, homeResources);
   const setupDue = usePhoneSetup(hostClient, deploymentId);
   useNotificationsIntro(setupDue ? null : hostClient);
   const onStarted = useCallback(

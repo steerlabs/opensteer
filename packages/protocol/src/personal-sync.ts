@@ -227,6 +227,10 @@ export const PersonalShellSnapshotSchema = z.strictObject({
     .optional(),
 });
 
+export const PersonalNetworkShellSnapshotSchema = PersonalShellSnapshotSchema.extend({
+  session: PersonalShellSnapshotSchema.shape.session.unwrap(),
+}).refine(({ session, viewerId }) => session.user.id === viewerId);
+
 const change = {
   sequence: PersonalRevisionSchema,
   ordinal: z.int().min(0).max(127),

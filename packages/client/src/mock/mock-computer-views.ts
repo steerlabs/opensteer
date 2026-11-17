@@ -1,6 +1,6 @@
+import { mockDeviceMachine } from "./mock-device-machine.js";
 import { DeviceIdSchema, isPhoneDisplayDefinitionId, type DeviceId } from "@opensteer/core";
 import {
-  deviceMachine,
   deviceDriverKey,
   computerTargetId,
   type ClientComputerConnection,
@@ -156,15 +156,15 @@ export class MockComputerViews {
     if (!approved)
       this.#refuse("computer-view-not-approved", "This app or phone needs an existing approval.");
     if (
-      deviceMachine(machine).phoneDisplay
-        ? deviceMachine(machine).phoneDisplay?.view.state !== "ready"
+      mockDeviceMachine(machine).phoneDisplay
+        ? mockDeviceMachine(machine).phoneDisplay?.view.state !== "ready"
         : machine?.computerUse?.ownerViewVersion !== 3
     )
       this.#refuse("computer-view-unsupported", "Update this computer to view apps and devices.");
     if (
       snapshot.connection === "offline" ||
       machine.status !== "online" ||
-      (!deviceMachine(machine).phoneDisplay && machine.computerUse?.state !== "ready")
+      (!mockDeviceMachine(machine).phoneDisplay && machine.computerUse?.state !== "ready")
     )
       this.#refuse("computer-view-unavailable", "This computer is unavailable.");
     return approved;
@@ -274,7 +274,7 @@ export class MockComputerViews {
       expiresAt: new Date(at + computerViewIdleMs[target.kind]).toISOString(),
       unavailableReason: null,
     });
-    const driver = deviceMachine(
+    const driver = mockDeviceMachine(
       this.#snapshot().machines.find((machine) => machine.id === machineId)!,
     ).phoneDisplay?.driver;
     const view =

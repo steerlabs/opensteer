@@ -36,7 +36,12 @@ export type PersonalStreamCheckpoint = {
 );
 
 export interface PersonalStreamCache {
-  hasCheckpoints?(): Promise<boolean>;
+  hasCheckpoints?(deploymentId?: string): Promise<boolean>;
+  removeDeployment?(deploymentId: string): Promise<void>;
+  removeThread?(
+    identity: Pick<PersonalCacheScope, "deploymentId" | "viewerId" | "epoch">,
+    threadId: string,
+  ): Promise<void>;
   clear?(): Promise<void>;
   removeViewer?(identity: Pick<PersonalCacheScope, "deploymentId" | "viewerId">): Promise<void>;
   load(scope: PersonalCacheScope): Promise<PersonalStreamCheckpoint | null>;
@@ -89,8 +94,27 @@ export function createPersonalStreamCache(storage: CheckpointStorage): PersonalS
     else await storage.remove();
     if (isCurrent()) held = Promise.resolve(entries);
   };
+  const removeWhere = (match: (checkpoint: PersonalStreamCheckpoint) => boolean) =>
+    update(async () => {
+      const entries = new Map(await load());
+      let changed = false;
+      for (const [id, entry] of entries) {
+        if (!match(entry)) continue;
+        entries.delete(id);
+        changed = true;
+      }
+      if (changed) await replace(entries);
+    });
   return {
-    hasCheckpoints: () => storage.exists(),
+    hasCheckpoints: async (deploymentId) => {
+      if (!(await storage.exists())) return false;
+      await tail;
+      return [...(await load()).values()].some(
+        (entry) =>
+          entry?.scope?.format === personalCacheFormat &&
+          (!deploymentId || entry.scope.deploymentId === deploymentId),
+      );
+    },
     clear: () => update(() => replace(new Map())),
     load: async (scope) => {
       await tail;
@@ -117,15 +141,21 @@ export function createPersonalStreamCache(storage: CheckpointStorage): PersonalS
         if (entries.delete(key(scope))) await replace(entries);
       }),
     removeViewer: (identity) =>
-      update(async () => {
-        const entries = new Map(await load());
-        for (const [id, entry] of entries)
-          if (
-            entry?.scope?.deploymentId === identity.deploymentId &&
-            entry.scope.viewerId === identity.viewerId
-          )
-            entries.delete(id);
-        await replace(entries);
-      }),
+      removeWhere(
+        (entry) =>
+          entry?.scope?.deploymentId === identity.deploymentId &&
+          entry.scope.viewerId === identity.viewerId,
+      ),
+    removeDeployment: (deploymentId) =>
+      removeWhere((entry) => entry?.scope?.deploymentId === deploymentId),
+    removeThread: (identity, threadId) =>
+      removeWhere(
+        (entry) =>
+          entry?.kind === "detail" &&
+          entry.scope?.deploymentId === identity.deploymentId &&
+          entry.scope.viewerId === identity.viewerId &&
+          entry.scope.epoch === identity.epoch &&
+          entry.state?.thread?.id === threadId,
+      ),
   };
 }

@@ -1,6 +1,8 @@
 import { hostApi, type HostToClientMessage } from "@opensteer/protocol";
 import {
   ScopedClientMessageSchema,
+  ScopedHostMessageSchema,
+  type PersonalChangeSchema,
   type ScopedClientMessage,
   type ScopedHostMessage,
 } from "@opensteer/protocol/personal-sync";
@@ -46,8 +48,13 @@ export class MockPersonalSocket implements WebSocketClient {
   }
 }
 type Subscription = Extract<ScopedClientMessage, { type: "client.subscribe" }>;
+type Snapshot = Extract<ScopedHostMessage, { type: "host.snapshot" }>["snapshot"];
+type Change = import("zod").infer<typeof PersonalChangeSchema>;
+type Revisioned = { readonly revision: string };
 interface SocketState {
   subscriptions: Map<string, Subscription>;
+  cuts: Map<string, Snapshot>;
+  live: Map<string, Extract<ScopedHostMessage, { type: "host.live" }>[]>;
   interests: readonly PersonalResourceKind[];
   selected?: string;
 }
@@ -63,17 +70,52 @@ export class MockPersonalHost {
     this.client = client;
     this.#through = String(client.getSnapshot().revision);
     this.#release = client.subscribe(() => {
-      this.#through = String(client.getSnapshot().revision);
-      for (const [socket, state] of this.#states)
-        for (const { generation, subscriptionId, scope } of state.subscriptions.values())
-          socket.deliver({
-            type: "host.snapshot-required",
-            subscriptionId,
-            generation,
-            scope,
-            throughSequence: this.#through,
-            reason: "scope-invalidated",
-          });
+      const revision = String(client.getSnapshot().revision);
+      if (BigInt(revision) <= BigInt(this.#through)) return;
+      const fromSequence = this.#through;
+      this.#through = revision;
+      for (const [socket, state] of this.#states) {
+        for (const held of state.subscriptions.values()) {
+          const { subscriptionId, scope, generation } = held;
+          const previous = state.cuts.get(subscriptionId);
+          const snapshot = this.#readSnapshot(state, held);
+          const changes = previous && snapshot ? diffCuts(previous, snapshot, revision) : undefined;
+          const frame =
+            changes &&
+            ScopedHostMessageSchema.safeParse({
+              type: "host.changes",
+              scope,
+              subscriptionId,
+              generation,
+              fromSequence,
+              throughSequence: revision,
+              changes,
+              ...(snapshot && "tasks" in snapshot
+                ? {
+                    shellProgress: {
+                      counts: snapshot.counts,
+                      resourceRevisions: snapshot.resourceRevisions,
+                    },
+                  }
+                : {}),
+            });
+          if (frame && frame.success && snapshot) {
+            state.cuts.set(subscriptionId, snapshot);
+            socket.deliver(frame.data);
+            if (scope.kind === "shell") this.#resources(socket, held, state);
+            else this.#live(socket, state, held);
+          } else {
+            socket.deliver({
+              type: "host.snapshot-required",
+              subscriptionId,
+              generation,
+              scope,
+              throughSequence: revision,
+              reason: "scope-invalidated",
+            });
+          }
+        }
+      }
     });
   }
 
@@ -91,7 +133,12 @@ export class MockPersonalHost {
   };
 
   readonly connect = (): MockPersonalSocket => {
-    const state: SocketState = { subscriptions: new Map(), interests: [] };
+    const state: SocketState = {
+      subscriptions: new Map(),
+      cuts: new Map(),
+      live: new Map(),
+      interests: [],
+    };
     const socket = new MockPersonalSocket((data) => {
       const frame = ScopedClientMessageSchema.parse(JSON.parse(data));
       queueMicrotask(() => {
@@ -135,8 +182,11 @@ export class MockPersonalHost {
         this.#snapshot(socket, state, frame);
         break;
       case "client.unsubscribe":
-        if (state.subscriptions.get(frame.subscriptionId)?.generation === frame.generation)
+        if (state.subscriptions.get(frame.subscriptionId)?.generation === frame.generation) {
           state.subscriptions.delete(frame.subscriptionId);
+          state.cuts.delete(frame.subscriptionId);
+          state.live.delete(frame.subscriptionId);
+        }
         break;
       case "client.resources.watch": {
         const shell = state.subscriptions.get("shell");
@@ -152,19 +202,9 @@ export class MockPersonalHost {
   }
 
   #snapshot(socket: MockPersonalSocket, state: SocketState, subscription: Subscription) {
-    const { generation, subscriptionId, scope, cursor, anchorItemId } = subscription;
+    const { generation, subscriptionId, scope, cursor } = subscription;
     const address = { generation, subscriptionId, scope };
-    const shell =
-      scope.kind === "shell" ? this.client.scopedShell(state.selected, this.#through) : undefined;
-    const snapshot =
-      scope.kind === "shell"
-        ? shell
-        : this.client.scopedDetail(
-            scope.threadId,
-            scope.kind === "node" ? scope.nodeId : undefined,
-            anchorItemId,
-            this.#through,
-          );
+    const snapshot = this.#readSnapshot(state, subscription);
     if (!snapshot) {
       if (scope.kind !== "shell" && subscriptionId !== "shell")
         socket.deliver({
@@ -176,6 +216,7 @@ export class MockPersonalHost {
         });
       return;
     }
+    state.cuts.set(subscriptionId, snapshot);
     const after = cursor?.afterSequence;
     if (!after || after !== this.#through || cursor?.scopeKey !== scopeKey(scope))
       socket.deliver({
@@ -185,7 +226,38 @@ export class MockPersonalHost {
         snapshot,
       });
     socket.deliver({ ...address, type: "host.synchronized", throughSequence: this.#through });
-    if (shell) this.#resources(socket, subscription, state);
+    if (scope.kind === "shell") this.#resources(socket, subscription, state);
+    else this.#live(socket, state, subscription);
+  }
+
+  #live(socket: MockPersonalSocket, state: SocketState, subscription: Subscription) {
+    const { scope, subscriptionId, generation } = subscription;
+    if (scope.kind === "shell" || subscriptionId === "shell") return;
+    const latest = this.client.scopedLive(scope, subscriptionId, generation, this.#through);
+    const current = new Set(latest.map(({ streamId }) => streamId));
+    for (const frame of state.live.get(subscriptionId) ?? []) {
+      if (frame.generation === generation && !current.has(frame.streamId)) {
+        const { item: _item, ...address } = frame;
+        socket.deliver({
+          ...address,
+          afterSequence: this.#through,
+          update: { operation: "close" },
+        });
+      }
+    }
+    state.live.set(subscriptionId, latest);
+    for (const frame of latest) socket.deliver(frame);
+  }
+
+  #readSnapshot(state: SocketState, { scope, anchorItemId }: Subscription) {
+    return scope.kind === "shell"
+      ? this.client.scopedShell(state.selected, this.#through)
+      : this.client.scopedDetail(
+          scope.threadId,
+          scope.kind === "node" ? scope.nodeId : undefined,
+          anchorItemId,
+          this.#through,
+        );
   }
 
   #resources(
@@ -202,7 +274,7 @@ export class MockPersonalHost {
         generation: shell.generation,
         kind,
         revision: this.#through,
-        view: { complete: true, hasMore: false, entries: [] },
+        view: this.client.scopedResource(kind),
       });
     }
   }
@@ -244,4 +316,109 @@ export class MockPersonalHost {
     for (const socket of this.sockets) socket.close();
     this.client.dispose();
   }
+}
+
+function diffCuts(previous: Snapshot, next: Snapshot, sequence: string): Change[] | undefined {
+  const changes: Change[] = [];
+  const address = (entityId: string) => ({ entityId, sequence, ordinal: changes.length });
+  const rows = <T extends Revisioned>(
+    before: readonly T[],
+    after: readonly T[],
+    id: (row: T) => string,
+    upsert: (row: T) => Change,
+    entityKind: Change["entityKind"],
+  ) => {
+    const known = new Map(before.map((row) => [id(row), row]));
+    for (const row of after) {
+      const old = known.get(id(row));
+      if (!old || !sameRevisioned(old, row)) changes.push(upsert(row));
+      known.delete(id(row));
+    }
+    for (const entityId of known.keys())
+      changes.push({ ...address(entityId), entityKind, operation: "remove" });
+  };
+  if ("tasks" in previous && "tasks" in next) {
+    if (
+      JSON.stringify(previous.activeTaskIds) !== JSON.stringify(next.activeTaskIds) ||
+      JSON.stringify(previous.recentTaskIds) !== JSON.stringify(next.recentTaskIds) ||
+      previous.nextBefore !== next.nextBefore
+    )
+      return undefined;
+    rows(
+      previous.tasks,
+      next.tasks,
+      ({ id }) => id,
+      (row) => ({ ...address(row.id), entityKind: "task", operation: "upsert", value: row }),
+      "task",
+    );
+    rows(
+      previous.visits,
+      next.visits,
+      ({ threadId }) => threadId,
+      (row) => ({ ...address(row.threadId), entityKind: "visit", operation: "upsert", value: row }),
+      "visit",
+    );
+    rows(
+      previous.attention,
+      next.attention,
+      ({ id }) => id,
+      (row) => ({ ...address(row.id), entityKind: "attention", operation: "upsert", value: row }),
+      "attention",
+    );
+    return changes;
+  }
+  if ("tasks" in previous || "tasks" in next) return undefined;
+  if (
+    (previous.nextBefore?.beforeId ?? null) !== (next.nextBefore?.beforeId ?? null) ||
+    (previous.nextAfter?.beforeId ?? null) !== (next.nextAfter?.beforeId ?? null) ||
+    previous.nodeSubject?.revision !== next.nodeSubject?.revision
+  )
+    return undefined;
+  if (!sameRevisioned(previous.thread, next.thread))
+    changes.push({
+      ...address(next.thread.id),
+      entityKind: "thread",
+      operation: "upsert",
+      value: next.thread,
+    });
+  if (next.queue && (!previous.queue || !sameRevisioned(previous.queue, next.queue)))
+    changes.push({
+      ...address("run-queue"),
+      entityKind: "run-queue",
+      operation: "upsert",
+      value: next.queue,
+    });
+  const before = [
+    ...new Map([...previous.items, ...previous.activeItems].map((row) => [row.id, row])).values(),
+  ];
+  const after = [
+    ...new Map([...next.items, ...next.activeItems].map((row) => [row.id, row])).values(),
+  ];
+  rows(
+    before,
+    after,
+    ({ id }) => id,
+    (row) => ({ ...address(row.id), entityKind: "item", operation: "upsert", value: row }),
+    "item",
+  );
+  rows(
+    previous.pendingRequests,
+    next.pendingRequests,
+    ({ id }) => id,
+    (row) => ({ ...address(row.id), entityKind: "request", operation: "upsert", value: row }),
+    "request",
+  );
+  if (previous.inputQueueRevision !== next.inputQueueRevision)
+    changes.push({
+      ...address("input-queue"),
+      entityKind: "collection",
+      operation: "invalidate",
+      value: { revision: next.inputQueueRevision },
+    });
+  return changes;
+}
+
+function sameRevisioned<T extends Revisioned>(before: T, after: T) {
+  const content = ({ revision: _revision, ...row }: T) => JSON.stringify(row);
+  return content(before) === content(after);
 }

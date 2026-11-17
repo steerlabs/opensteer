@@ -1,24 +1,23 @@
-import { useCallback } from "react";
 import type { HostClient, ToolEntry } from "../host/client.js";
-import { useHostRead } from "./use-host-read.js";
+import { useTranscriptBody } from "./use-transcript-body.js";
 
 /** Mount only when a person opens the step. */
 export function useToolOutput(client: HostClient | null, threadId: string | null, tool: ToolEntry) {
   const cut = tool.output === undefined && tool.itemId !== undefined && tool.state !== "running";
-  const read = useCallback(async () => {
-    const result = await client!.readTranscriptItem(threadId!, tool.itemId!, tool.nodeId);
-    if (result?.body.kind !== "tool") throw new Error("This step's output is unavailable.");
-    return result.body;
-  }, [client, threadId, tool]);
-  const state = useHostRead(
-    cut && client && threadId ? read : null,
-    `${threadId}:${tool.itemId ?? tool.id}:${tool.itemRevision ?? ""}`,
-  );
-  const shown: ToolEntry = state.data
+  const state = useTranscriptBody({
+    client,
+    threadId,
+    nodeId: tool.nodeId,
+    itemId: tool.itemId,
+    revision: tool.itemRevision,
+    enabled: cut,
+  });
+  const body = state.data?.body.kind === "tool" ? state.data.body : null;
+  const shown: ToolEntry = body
     ? {
         ...tool,
-        arguments: state.data.arguments,
-        output: state.data.output,
+        arguments: body.arguments,
+        output: body.output,
         outputPreview: undefined,
       }
     : tool;
@@ -26,7 +25,7 @@ export function useToolOutput(client: HostClient | null, threadId: string | null
     ...state,
     loading: cut && state.data === null && state.error === null,
     error: cut ? state.error : null,
-    images: state.data?.images ?? [],
+    images: body?.images ?? [],
     tool: shown,
   };
 }

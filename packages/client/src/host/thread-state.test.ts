@@ -1,9 +1,9 @@
 import { expect, it } from "vitest";
-import { createId, AgentEventViewSchema, SequenceSchema } from "@opensteer/core";
+import { createId, SequenceSchema } from "@opensteer/core";
 import type { ThreadSummary } from "./client.js";
 import { ThreadStateProjection } from "./thread-state.js";
 
-it("retains return hints across stale pages and clears them through resumable state events", () => {
+it("retains return hints across stale pages and clears them when the next scoped Task revision clears them", () => {
   const projection = new ThreadStateProjection();
   const thread = {
     id: createId("thread"),
@@ -18,19 +18,8 @@ it("retains return hints across stale pages and clears them through resumable st
     sourceRunId: createId("run"),
     sessionRevision: "session:1:2",
   };
-  const state = (sequence: string, returnHint: typeof hint | null) =>
-    AgentEventViewSchema.parse({
-      eventId: createId("event"),
-      type: "thread.state-changed",
-      threadId: thread.id,
-      environmentId: createId("environment"),
-      runId: null,
-      sequence,
-      createdAt: thread.updatedAt,
-      data: { status: "idle", inputQueuePaused: false, pendingRequests: 0, returnHint },
-    });
-  projection.record(state("2", hint));
+  projection.reconcile({ ...thread, returnHint: hint }, SequenceSchema.parse("2"));
   expect(projection.reconcile(thread, SequenceSchema.parse("1")).returnHint).toEqual(hint);
-  projection.record(state("3", null));
+  projection.reconcile({ ...thread, returnHint: null }, SequenceSchema.parse("3"));
   expect(projection.reconcile(thread, SequenceSchema.parse("2")).returnHint).toBeNull();
 });

@@ -105,7 +105,7 @@ export const TranscriptItemSchema = z.discriminatedUnion("kind", [
   }),
   z.strictObject({
     ...card,
-    kind: z.enum(["assignment", "delegation"]),
+    kind: z.literal("assignment"),
     delegationId: DelegationIdSchema,
     assignment: AssignmentSummarySchema.optional(),
   }),

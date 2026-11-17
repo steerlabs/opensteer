@@ -1,3 +1,4 @@
+import { mockDeviceMachine } from "../mock/mock-device-machine.js";
 import { deviceAccessCommand } from "../host/device-commands.js";
 import { mockIphoneScreenDevice } from "../mock/mock-screen-devices.js";
 import { describe, expect, it } from "vitest";
@@ -185,19 +186,21 @@ describe("device access rows", () => {
     readonly device: { readonly form: string; readonly platform: string; readonly app?: string };
     readonly status?: "online" | "offline";
   }) =>
-    MachineSummarySchema.parse({
-      ...machine("rnr_device", "computer"),
-      access: {
-        activeSessions: [],
-        ownerReachAvailable: true,
-        revision: 1,
-        policy: { apps: false, reach: "owner", commands: true, forwarding: true, shares: [] },
-      },
-      allowedModules: input.allowedModules,
-      device: input.device,
-      modules: Object.fromEntries(input.modules.map((name) => [name, unreported])),
-      status: input.status ?? "online",
-    });
+    mockDeviceMachine(
+      MachineSummarySchema.parse({
+        ...machine("rnr_device", "computer"),
+        access: {
+          activeSessions: [],
+          ownerReachAvailable: true,
+          revision: 1,
+          policy: { apps: false, reach: "owner", commands: true, forwarding: true, shares: [] },
+        },
+        allowedModules: input.allowedModules,
+        device: input.device,
+        modules: Object.fromEntries(input.modules.map((name) => [name, unreported])),
+        status: input.status ?? "online",
+      }),
+    );
   const rows = (summary: ReturnType<typeof device>) =>
     deviceAccessRows(summary, true).map((row) => row.capability);
 

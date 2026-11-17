@@ -138,6 +138,12 @@ export class ItemTextStore {
     return "applied";
   }
 
+  finishItem(id: string) {
+    const current = this.#identities.get(id);
+    if (current) this.#close(current.key, current.barrier.toString());
+    this.#delete(id);
+  }
+
   #close(key: string, through: string) {
     this.#closed.set(key, through);
     this.#gaps.delete(key);

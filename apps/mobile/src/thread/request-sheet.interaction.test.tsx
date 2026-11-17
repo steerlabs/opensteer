@@ -230,7 +230,6 @@ describe("RequestSheetContent computer owner approvals", () => {
       await render(surface(request), dispatch, {
         review,
         machines: [studio],
-        snapshot: { deviceDriversAvailable: true },
       });
       expect(review).not.toHaveBeenCalled();
       await click("Allow");

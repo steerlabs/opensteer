@@ -314,6 +314,22 @@ function mobileClient(): MobileRoot {
         notifications.registration,
         port.signedInSubject,
       );
+  const checkpointDirectory = `${root}${storeName}/personal-stream-v62`;
+  const checkpointPath = `${checkpointDirectory}/checkpoints.json`;
+  const personalStreamCache = createPersonalStreamCache({
+    exists: () => privateFiles.fileExists(checkpointPath),
+    read: async () => {
+      const bytes = await privateFiles.readFile(checkpointPath, 512 * 1024);
+      return bytes ? new TextDecoder().decode(bytes) : null;
+    },
+    write: async (state, isCurrent) => {
+      await privateFiles.ensureDirectory(checkpointDirectory);
+      if (isCurrent()) await privateFiles.writeFileAtomic(checkpointPath, state);
+    },
+    remove: async () => {
+      await privateFiles.removeFile(checkpointPath);
+    },
+  });
   const client: MobileClient = new MobileClient({
     notificationPreviews: previews,
     lifecycle,
@@ -335,24 +351,7 @@ function mobileClient(): MobileRoot {
           browserPreferencesStorage: createBrowsingChoiceStorage(
             new File(`${root}${storeName}/browsing-choices.json`),
           ),
-          streamCache: (deploymentId) => {
-            const directory = `${root}${storeName}/personal-stream-v62`;
-            const path = `${directory}/${deploymentId}.json`;
-            return createPersonalStreamCache({
-              exists: () => privateFiles.fileExists(path),
-              read: async () => {
-                const bytes = await privateFiles.readFile(path, 512 * 1024);
-                return bytes ? new TextDecoder().decode(bytes) : null;
-              },
-              write: async (state, isCurrent) => {
-                await privateFiles.ensureDirectory(directory);
-                if (isCurrent()) await privateFiles.writeFileAtomic(path, state);
-              },
-              remove: async () => {
-                await privateFiles.removeFile(path);
-              },
-            });
-          },
+          streamCache: () => personalStreamCache,
           fetch: mobileHostFetch,
           lifecycle,
           now: () => new Date(),

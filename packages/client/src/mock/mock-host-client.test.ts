@@ -676,7 +676,7 @@ describe("MockHostClient", () => {
     }
   });
 
-  it("reports the streams a reply is still writing through the live read", async () => {
+  it("exposes a writing reply through its scoped item text", async () => {
     vi.useFakeTimers();
     const client = new MockHostClient({ latencyMs: 40, now: () => fixedNow });
     try {
@@ -691,27 +691,15 @@ describe("MockHostClient", () => {
       expect(streaming()).toBeDefined();
       const drawn = streaming();
       if (drawn?.kind !== "reasoning") throw new Error("Nothing is streaming.");
-      const live = unwrap(await client.rpc["thread.live.get"]({ threadId: thread.id }));
-      expect(live.runs).toEqual([
-        expect.objectContaining({
-          progress: expect.objectContaining({
-            items: [
-              {
-                blockId: "block-1",
-                length: drawn.text.length,
-                op: "replace",
-                stream: "reasoning",
-                text: drawn.text,
-              },
-            ],
-            runId: drawn.runId,
-            threadId: thread.id,
-          }),
-        }),
-      ]);
-      await vi.runAllTimersAsync();
+      const live = client.getThreadItemText(thread.id);
+      expect(live?.get(drawn.id)).toMatchObject({
+        text: drawn.text,
+        totalLength: drawn.text.length,
+        incomplete: false,
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
       await sending;
-      expect(unwrap(await client.rpc["thread.live.get"]({ threadId: thread.id })).runs).toEqual([]);
+      expect(live?.get(drawn.id)).toBeUndefined();
     } finally {
       client.dispose();
       vi.useRealTimers();
@@ -990,14 +978,17 @@ describe("shared task Done", () => {
   });
 });
 
-it("accepts a whole-turn history read without a durable mock event log", async () => {
+it("returns the mock history window as typed scoped cards", async () => {
   const client = createClient();
   try {
     const threadId = client.getSnapshot().threads[0]!.id;
-    const result = unwrap(await client.rpc["thread.events.list"]({ threadId, turns: 10 }));
+    const result = unwrap(await client.rpc["thread.items.page"]({ threadId }));
+    if (result.kind !== "page") throw new Error("Missing current card window");
     expect(result.threadId).toBe(threadId);
-    expect(result.events).toEqual([]);
-    expect(result.window.hasMore).toBe(false);
+    expect(result.items.map(({ id }) => id)).toEqual(
+      client.scopedDetail(threadId)?.items.map(({ id }) => id),
+    );
+    expect(result.hasMore).toBe(false);
   } finally {
     client.dispose();
   }

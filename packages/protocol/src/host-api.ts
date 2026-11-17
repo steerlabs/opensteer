@@ -1,7 +1,7 @@
 import {
   PersonalDetailSnapshotSchema,
   PersonalRequestSummarySchema,
-  PersonalShellSnapshotSchema,
+  PersonalNetworkShellSnapshotSchema,
 } from "./personal-sync.js";
 import {
   PersonalResourceDetailSchema,
@@ -2433,7 +2433,7 @@ const workspaceHostApi = defineRpc({
   "personal.shell.get": declaration(
     "GET",
     z.strictObject({ selectedThreadId: ThreadIdSchema.optional() }),
-    PersonalShellSnapshotSchema,
+    PersonalNetworkShellSnapshotSchema,
   ),
   "personal.readiness.get": declaration(
     "GET",

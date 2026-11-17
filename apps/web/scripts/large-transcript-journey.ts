@@ -64,7 +64,7 @@ const fixture = (() => {
           arguments: { cmd: "read synthetic output" },
           output: {
             text: `Synthetic output for tool ${tools}: a repeatable line of diagnostic text.\n`.repeat(
-              40,
+              56,
             ),
           },
           state: "done",

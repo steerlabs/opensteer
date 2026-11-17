@@ -52,6 +52,7 @@ export interface HttpHostApiClientOptions {
   /** IPC adapters return buffered bodies together with their headers. */
   readonly bufferedResponses?: boolean;
   readonly assertResponseCurrent?: (response: Response) => void;
+  readonly onSignedOut?: () => void;
   readonly onAuthenticationRequired: () => void;
   readonly onVersionMismatch?: () => void;
 }
@@ -283,6 +284,7 @@ async function request<Name extends keyof typeof hostApi>(
     options.assertResponseCurrent?.(response);
     const parsed = responseEnvelopes.get(name)!.safeParse(body);
     if (parsed.success) {
+      if (name === "auth.signOut" && parsed.data.ok) options.onSignedOut?.();
       if (
         !parsed.data.ok &&
         ["unsupported-version", "api-version-mismatch"].includes(parsed.data.error.reason ?? "")

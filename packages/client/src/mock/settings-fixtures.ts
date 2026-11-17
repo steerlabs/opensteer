@@ -1,9 +1,8 @@
-import { machineSelfRunnerId } from "../host/device-projection.js";
 import type {
   IntegrationPlatformDashboardView,
   IntegrationConnectionSummary,
 } from "@opensteer/integration-core";
-import { createId, type DeploymentId } from "@opensteer/core";
+import { createId, RunnerIdSchema, type DeploymentId } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core/ids";
 import {
   DevicesOverviewViewSchema,
@@ -195,7 +194,7 @@ export class MockSettingsFixtures {
                   entry.title === "Calendar" ? name.includes("iPhone") : name.includes("MacBook"),
                 )
                 .flatMap((device) => {
-                  const runnerId = machineSelfRunnerId(device);
+                  const runnerId = device.selfRunnerId ?? RunnerIdSchema.safeParse(device.id).data;
                   return runnerId ? [{ runnerId, name: device.name, status: device.status }] : [];
                 })
             : [],

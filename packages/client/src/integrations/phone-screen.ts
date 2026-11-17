@@ -1,5 +1,5 @@
 import type { DisplayInputEvent, MachineSummary, PhoneDisplayView } from "@opensteer/protocol";
-import { deviceMachine, deviceReasonLabel } from "../host/device-projection.js";
+import { deviceReasonLabel } from "../host/device-projection.js";
 
 /**
  * A phone whose screen a Mac drives, as every client words it. Setup happens on
@@ -13,7 +13,7 @@ export interface PhoneScreenMac {
 }
 
 export function phoneScreenMac(machine: MachineSummary): PhoneScreenMac | null {
-  const display = deviceMachine(machine).phoneDisplay;
+  const display = machine.phoneDisplay;
   if (display?.setup.location !== "driver-mac") return null;
   return {
     runnerId: display.setup.driverRunnerId,
@@ -33,7 +33,7 @@ export interface PhoneScreenStatus {
 
 export function phoneScreenStatus(machine: MachineSummary): PhoneScreenStatus | null {
   const mac = phoneScreenMac(machine);
-  const display = deviceMachine(machine).phoneDisplay;
+  const display = machine.phoneDisplay;
   if (!mac || !display) return null;
   if (!mac.attached)
     return {

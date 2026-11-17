@@ -923,7 +923,6 @@ export interface HostSnapshot {
   iphoneAppsAvailable: boolean;
   /** The Host serves `devices-v1`: device setup choices, session binding and the Browser and Apps switches. */
   devicesAvailable?: boolean;
-  deviceDriversAvailable?: boolean;
   ownerViewWindowsAvailable?: boolean;
   /** The Host advertises voice-run-v1: a call's agent runs as a Run with Opensteer's tools. */
   voiceAvailable?: boolean;
@@ -1160,6 +1159,17 @@ export interface HostClient extends TabsClient {
     threadId: string,
     nodeId?: string,
   ): import("./item-text-store.js").ItemTextStore | undefined;
+  getCachedTranscriptItem?(
+    threadId: string,
+    itemId: string,
+    nodeId?: string,
+  ): import("@opensteer/protocol/transcript").TranscriptItemResult | undefined;
+  subscribeTranscriptBody?(
+    threadId: string,
+    itemId: string,
+    nodeId: string | undefined,
+    listener: () => void,
+  ): () => void;
   readTranscriptItem(
     threadId: string,
     itemId: string,

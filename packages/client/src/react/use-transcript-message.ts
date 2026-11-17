@@ -1,7 +1,6 @@
-import { useCallback } from "react";
 import type { HostClient, MessageEntry } from "../host/client.js";
 import { toMessageEntry } from "../host/transcript.js";
-import { useHostRead } from "./use-host-read.js";
+import { useTranscriptBody } from "./use-transcript-body.js";
 import { useItemText, useThreadTranscript } from "./use-thread-transcript.js";
 
 export function useTranscriptMessage(
@@ -16,16 +15,14 @@ export function useTranscriptMessage(
     itemId,
   );
   const transcript = useThreadTranscript(client, expanded && itemId ? threadId : null, false);
-  const read = useCallback(
-    () => client!.readTranscriptItem(threadId!, itemId!),
-    [client, threadId, itemId],
-  );
-  const body = useHostRead(
-    expanded && client && threadId && itemId && message.previewTruncated && transcript.synchronized
-      ? read
-      : null,
-    `${threadId}:${itemId}:${message.itemRevision}:${transcript.generation}`,
-  ).data?.body;
+  const body = useTranscriptBody({
+    client,
+    threadId,
+    itemId,
+    revision: message.itemRevision,
+    generation: transcript.generation,
+    enabled: expanded && message.previewTruncated === true && transcript.synchronized,
+  }).data?.body;
   if (text)
     return { ...message, body: text.incomplete ? `…${text.text}` : text.text, streaming: true };
   if (body?.kind === "message") {
@@ -51,14 +48,15 @@ export function useTranscriptText(input: {
     threadId && itemId ? client?.getThreadItemText(threadId, nodeId) : undefined,
     itemId,
   );
-  const read = useCallback(
-    () => client!.readTranscriptItem(threadId!, itemId!, nodeId),
-    [client, threadId, nodeId, itemId],
-  );
-  const body = useHostRead(
-    input.expanded && threadId && itemId && client ? read : null,
-    JSON.stringify([threadId, nodeId, itemId, input.revision, input.generation]),
-  ).data?.body;
+  const body = useTranscriptBody({
+    client,
+    threadId,
+    nodeId,
+    itemId,
+    revision: input.revision,
+    generation: input.generation,
+    enabled: input.expanded,
+  }).data?.body;
   return {
     streaming: live !== undefined,
     text: live

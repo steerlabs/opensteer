@@ -100,17 +100,12 @@ export function createNetworkHostPort(options: {
   ) => WebSocketClient;
 }): MobileHostPortFactory {
   const maintenanceNetwork = createMaintenanceNetwork(options);
-  const caches = new Map<DeploymentId, PersonalStreamCache>();
-  const streamCache = (id: DeploymentId) => {
-    const cache = caches.get(id) ?? options.streamCache?.(id);
-    if (cache) caches.set(id, cache);
-    return cache;
-  };
   return ({ oauth, sessions, sessionExchange }) => ({
     credentials: createDeploymentCredentials({ now: options.now, oauth, sessions }),
     clearPersonalStreamCache: async (deploymentId) => {
-      await streamCache(deploymentId)?.clear?.();
-      caches.delete(deploymentId);
+      const cache = options.streamCache?.(deploymentId);
+      if (cache?.removeDeployment) await cache.removeDeployment(deploymentId);
+      else await cache?.clear?.();
     },
 
     desktopUpdates: ({ catalog, deploymentId }) => {
@@ -154,10 +149,11 @@ export function createNetworkHostPort(options: {
         origin,
         openWebSocket: options.openWebSocket,
       });
-      const cache = streamCache(connection.authority.document.deploymentId);
+      const cacheDeploymentId = connection.authority.document.deploymentId;
+      const cache = options.streamCache?.(cacheDeploymentId);
       const client = new HttpHostClient({
         ...(assetRoute ? { assetRoute } : {}),
-        ...(cache ? { streamCache: cache } : {}),
+        ...(cache ? { streamCache: cache, cacheDeploymentId } : {}),
 
         baseUrl: origin,
         ...(options.browserPreferencesStorage

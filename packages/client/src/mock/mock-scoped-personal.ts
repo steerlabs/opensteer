@@ -14,16 +14,19 @@ import {
   DeploymentIdSchema,
   utf8ByteLength,
   type Thread,
+  type Request,
 } from "@opensteer/core";
 import {
-  PersonalShellSnapshotSchema,
+  PersonalNetworkShellSnapshotSchema,
   PersonalDetailSnapshotSchema,
+  type ScopedHostMessage,
 } from "@opensteer/protocol/personal-sync";
 import {
   PersonalResourceDataSchema,
   PersonalResourceRevisionsSchema,
   personalResourceKinds,
   type PersonalResourceKind,
+  type PersonalResourceView,
 } from "@opensteer/protocol/resources";
 import { TranscriptItemSchema, type TranscriptItem } from "@opensteer/protocol/transcript";
 import { type HostBootstrap } from "@opensteer/protocol";
@@ -31,6 +34,15 @@ import type { TranscriptFixtureSnapshot, ThreadSummary, TranscriptEntry } from "
 import type { z } from "zod";
 
 type MockTranscriptSnapshot = TranscriptFixtureSnapshot;
+const itemRevisions = new WeakMap<TranscriptEntry, string>();
+const requestRevisions = new WeakMap<Request, string>();
+
+export function mockRequestRevision(request: Request, through: string) {
+  const revision = requestRevisions.get(request) ?? through;
+  requestRevisions.set(request, revision);
+  return revision;
+}
+
 export const mockPersonalEpoch = "4eae39b7-8771-4ed4-9f87-632a36e0818e";
 
 export function mockScopedTask(
@@ -71,7 +83,7 @@ export function mockScopedShell(
     mockScopedTask(toThread(thread), revision, lastReply, failure),
   );
 
-  return PersonalShellSnapshotSchema.parse({
+  return PersonalNetworkShellSnapshotSchema.parse({
     deploymentId: snapshot.deploymentId,
     viewerId: snapshot.user?.id,
     session: {
@@ -126,10 +138,18 @@ export function mockScopedItems(
   nodeEvents: readonly AgentEventView[] = [],
 ) {
   const rows = (snapshot.transcripts[threadId] ?? []).flatMap((entry, index) => {
+    if (
+      (entry.kind === "reasoning" && entry.state === "streaming") ||
+      (entry.kind === "message" && entry.streaming)
+    )
+      return [];
     const item = mockScopedItem(entry, String(index + 1), revision);
     return item && item.nodeId === (nodeId ?? null) ? [item] : [];
   });
-  return nodeId ? [...rows, ...mockScopedNodeItems(threadId, nodeId, nodeEvents, revision)] : rows;
+  if (!nodeId) return rows;
+  return [...mockScopedNodeItems(threadId, nodeId, nodeEvents, revision), ...rows]
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+    .map((row, index) => ({ ...row, position: String(index + 1) }));
 }
 
 function mockScopedItem(
@@ -137,10 +157,12 @@ function mockScopedItem(
   position: string,
   revision: string,
 ): TranscriptItem | undefined {
+  const itemRevision = itemRevisions.get(entry) ?? revision;
+  itemRevisions.set(entry, itemRevision);
   const value = {
     id: entry.id,
     position,
-    revision,
+    revision: itemRevision,
     nodeId: null,
     attemptId: null,
     runId: "runId" in entry && entry.runId ? RunIdSchema.parse(entry.runId) : null,
@@ -238,14 +260,11 @@ function mockScopedItem(
         },
       });
     case "assignment":
-    case "delegation":
       return TranscriptItemSchema.parse({
         ...value,
         kind: entry.kind,
-        delegationId: DelegationIdSchema.parse(
-          entry.kind === "delegation" ? entry.delegationId : entry.assignment.id,
-        ),
-        ...(entry.kind === "assignment" ? { assignment: entry.assignment } : {}),
+        delegationId: DelegationIdSchema.parse(entry.assignment.id),
+        assignment: entry.assignment,
         view: {},
       });
     case "app":
@@ -265,6 +284,50 @@ function mockScopedItem(
     default:
       return undefined;
   }
+}
+
+type MockLive = Extract<ScopedHostMessage, { type: "host.live" }>;
+const mockLiveBoot = "4eae39b7-8771-4ed4-9f87-632a36e0819e";
+
+export function mockScopedLive(
+  snapshot: MockTranscriptSnapshot,
+  scope: MockLive["scope"],
+  subscriptionId: MockLive["subscriptionId"],
+  generation: number,
+  afterSequence: string,
+): MockLive[] {
+  if (scope.kind === "node") return [];
+  return (snapshot.transcripts[scope.threadId] ?? []).flatMap((entry, index): MockLive[] => {
+    if (entry.kind !== "reasoning" || entry.state !== "streaming" || !entry.runId) return [];
+    const runId = RunIdSchema.parse(entry.runId);
+    const attemptId = RunAttemptIdSchema.parse(runId.replace(/^run_/, "rat_"));
+    const item = mockScopedItem(entry, String(index + 1), afterSequence);
+    if (!item) return [];
+    const text = entry.text.slice(-4000);
+    return [
+      {
+        type: "host.live",
+        scope,
+        subscriptionId,
+        generation,
+        afterSequence,
+        runId,
+        attemptId,
+        liveBootId: mockLiveBoot,
+        bindingGeneration: 1,
+        streamId: entry.id,
+        itemId: item.id,
+        item: { ...item, attemptId, view: {} },
+        update: {
+          operation: "replace",
+          offset: entry.text.length - text.length,
+          totalLength: entry.text.length,
+          text,
+          incomplete: text.length !== entry.text.length,
+        },
+      },
+    ];
+  });
 }
 
 export function mockScopedCursor(
@@ -306,7 +369,18 @@ export function mockScopedDetail(
     : undefined;
   if (nodeId && !node) return;
   const all = mockScopedItems(snapshot, threadId, nodeId, revision, nodeEvents);
-  const requests = (snapshot.requests[threadId] ?? []).filter(({ status }) => status === "pending");
+  const requests = mockOverlayRows(snapshot, threadId, nodeId, "requests", revision, nodeEvents);
+  const tools = mockOverlayRows(snapshot, threadId, nodeId, "tools", revision, nodeEvents);
+  const nodes = mockOverlayRows(snapshot, threadId, nodeId, "nodes", revision, nodeEvents);
+  const overlayCursors = Object.fromEntries(
+    (
+      [
+        ["requests", requests],
+        ["tools", tools],
+        ["nodes", nodes],
+      ] as const
+    ).flatMap(([kind, entries]) => (entries.length > 20 ? [[kind, `${revision}:20`]] : [])),
+  );
   const anchorIndex = anchor ? all.findIndex(({ id }) => id === anchor) : -1;
   const end = anchorIndex < 0 ? all.length : Math.min(all.length, anchorIndex + 25);
   const start = Math.max(0, end - 50);
@@ -317,17 +391,15 @@ export function mockScopedDetail(
     orderRevision: revision,
     inputQueueRevision: revision,
     items,
-    activeItems: [],
+    activeItems: [...tools, ...nodes].slice(0, 20),
     ...(node ? { nodeSubject: mockScopedItem(node, "1", revision) } : {}),
-    pendingRequests: requests
-      .slice(0, 20)
-      .map(({ id, kind, status }) => ({ id, kind, status, title: kind, revision, threadId })),
+    pendingRequests: requests.slice(0, 20),
     nextBefore: start ? mockScopedCursor(snapshot, threadId, nodeId, revision, items[0]) : null,
     nextAfter:
       end < all.length
         ? mockScopedCursor(snapshot, threadId, nodeId, revision, items.at(-1))
         : null,
-    ...(requests.length > 20 ? { overlayCursors: { requests: `${revision}:20` } } : {}),
+    overlayCursors,
     queue: {
       revision,
       paused: thread.inputQueuePaused,
@@ -344,6 +416,78 @@ export function mockScopedDetail(
         })),
     },
   });
+}
+
+export function mockOverlayRows(
+  snapshot: MockTranscriptSnapshot,
+  threadId: string,
+  nodeId: string | undefined,
+  kind: "requests" | "tools" | "nodes",
+  revision: string,
+  nodeEvents: readonly AgentEventView[],
+) {
+  if (kind === "requests")
+    return (snapshot.requests[threadId] ?? [])
+      .filter(
+        (request) =>
+          request.status === "pending" && (!nodeId || request.originatingNodeId === nodeId),
+      )
+      .map((request) => ({
+        id: request.id,
+        kind: request.kind,
+        status: request.status,
+        threadId: ThreadIdSchema.parse(threadId),
+        title: request.kind,
+        revision: mockRequestRevision(request, revision),
+      }));
+  return mockScopedItems(snapshot, threadId, nodeId, revision, nodeEvents).filter(
+    (item) => item.kind === (kind === "tools" ? "tool" : "node") && item.view.status === "running",
+  );
+}
+
+export function mockResourceView(
+  snapshot: MockTranscriptSnapshot,
+  kind: PersonalResourceKind,
+): PersonalResourceView {
+  const view = (() => {
+    switch (kind) {
+      case "machine":
+        return snapshot.machines.map(({ id, name, status }) => ({ id, label: name, status }));
+      case "environment":
+      case "harness-catalog":
+      case "harness-auth":
+        return snapshot.environments.map(({ id, name, status }) => ({ id, label: name, status }));
+      case "harness":
+        return snapshot.harnesses.map(({ id, name, enabled }) => ({
+          id,
+          label: name,
+          status: enabled ? "enabled" : "disabled",
+        }));
+      case "tab":
+      case "tab-layout":
+        return [...snapshot.tabs.rows.values()].map(({ tabId, title }) => ({
+          id: tabId,
+          label: title.slice(0, 256),
+        }));
+      case "browser-profile":
+        return snapshot.browserProfiles.map(({ id, name }) => ({ id, label: name }));
+      case "browser-placement":
+        return snapshot.browserPlacements.flatMap(({ runtimeId, label }) =>
+          runtimeId ? [{ id: runtimeId, label }] : [],
+        );
+      case "browser-home":
+        return (snapshot.browserProfileHomes ?? []).map((id) => ({ id }));
+      case "browser-availability":
+        return [{ id: "browser", status: snapshot.browserAvailable ? "available" : "unavailable" }];
+      case "owner-profile":
+        return snapshot.ownerProfile?.name
+          ? [{ id: "owner", label: snapshot.ownerProfile.name }]
+          : [];
+      default:
+        return [];
+    }
+  })();
+  return { entries: view.slice(0, 32), complete: view.length <= 32, hasMore: view.length > 32 };
 }
 
 function mockScopedNodeItems(

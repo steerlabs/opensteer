@@ -1,6 +1,9 @@
 import { createId } from "@opensteer/core";
 import { afterEach, expect, test, vi } from "vitest";
-import type { ScopedClientMessage } from "@opensteer/protocol/personal-sync";
+import {
+  personalAuthorityChangedReason,
+  type ScopedClientMessage,
+} from "@opensteer/protocol/personal-sync";
 import {
   personalResourceKinds,
   PersonalResourceRevisionsSchema,
@@ -10,6 +13,7 @@ import { MockPersonalSocket } from "../mock/mock-personal-host.js";
 import { HttpHostClient } from "./host-session-client.js";
 import {
   createPersonalStreamCache,
+  personalCacheFormat,
   type PersonalStreamCache,
   type PersonalStreamCheckpoint,
 } from "./personal-stream-cache.js";
@@ -677,6 +681,17 @@ test("uses no timers or network reads when an attached personal client is idle",
           attention: [],
           counts,
           resourceRevisions: revisions("0"),
+          resources: [
+            {
+              kind: "machine",
+              revision: "0",
+              view: {
+                entries: [{ id: "device", label: "Mac" }],
+                complete: true,
+                hasMore: false,
+              },
+            },
+          ],
         },
       });
       socket.deliver({ ...address, type: "host.synchronized", throughSequence: "0" });
@@ -691,8 +706,9 @@ test("uses no timers or network reads when an attached personal client is idle",
     await client.load();
     expect(client.getSnapshot().connection).toBe("connected");
     const frames = socket!.sent.length;
+    expect(client.getSnapshot().resourceSummaries?.machine?.entries[0]?.label).toBe("Mac");
     expect(vi.getTimerCount()).toBe(0);
-    await vi.advanceTimersByTimeAsync(90_000);
+    await vi.advanceTimersByTimeAsync(300_000);
     expect(fetch).not.toHaveBeenCalled();
     expect(socket!.sent).toHaveLength(frames);
   } finally {
@@ -1123,5 +1139,136 @@ test("hides an invalidated Request prefix until its current membership has been 
     expect(reader.getSnapshot().requests).toEqual([]);
   } finally {
     reader.dispose();
+  }
+});
+
+test("a named socket close purges its task and resumes the unaffected scope", async () => {
+  const other = { kind: "thread" as const, threadId: createId("thread") };
+  const saved = new Map<string, PersonalStreamCheckpoint>();
+  const cache: PersonalStreamCache = {
+    hasCheckpoints: async () => false,
+    load: async (key) => saved.get(key.scopeKey) ?? null,
+    commit: async (checkpoint, current) => {
+      if (current()) saved.set(checkpoint.scope.scopeKey, checkpoint);
+    },
+    remove: async (key) => {
+      saved.delete(key.scopeKey);
+    },
+  };
+  const sockets: MockPersonalSocket[] = [];
+  const attachments: Extract<ScopedClientMessage, { type: "client.attach" }>[] = [];
+  let revokedSlot: `detail:${0 | 1 | 2 | 3}` | undefined;
+  const connect = () => {
+    const connection = sockets.length;
+    const socket = new MockPersonalSocket((raw) => {
+      const frame = JSON.parse(raw) as ScopedClientMessage;
+      const detail = (subscription: Extract<ScopedClientMessage, { type: "client.subscribe" }>) => {
+        const { scope, subscriptionId, generation, cursor: resume } = subscription;
+        if (scope.kind !== "thread" || subscriptionId === "shell") return;
+        if (scope.threadId === other.threadId) revokedSlot = subscriptionId;
+        if (connection > 0 && scope.threadId === other.threadId) {
+          socket.deliver({
+            type: "host.removed",
+            scope,
+            subscriptionId,
+            generation,
+            reason: "unavailable",
+          });
+          return;
+        }
+        const address = { scope, subscriptionId, generation, throughSequence: "1" };
+        if (!resume)
+          socket.deliver({
+            ...address,
+            type: "host.snapshot",
+            snapshot: {
+              thread: { ...task, id: scope.threadId },
+              items: [item],
+              activeItems: [],
+              pendingRequests: [],
+              orderRevision: "1",
+              inputQueueRevision: "1",
+              nextBefore: null,
+            },
+          });
+        socket.deliver({ ...address, type: "host.synchronized" });
+      };
+      queueMicrotask(() => {
+        if (frame.type === "client.subscribe") detail(frame);
+        if (frame.type !== "client.attach") return;
+        attachments.push(frame);
+        const address = {
+          generation: frame.generation,
+          scope: shellScope,
+          subscriptionId: "shell" as const,
+          throughSequence: "1",
+        };
+        if (!frame.cursor)
+          socket.deliver({
+            ...address,
+            type: "host.snapshot",
+            snapshot: {
+              deploymentId,
+              viewerId,
+              epoch,
+              session,
+              tasks: [task],
+              visits: [],
+              attention: [],
+              counts,
+              resourceRevisions: revisions("0"),
+            },
+          });
+        socket.deliver({ ...address, type: "host.synchronized" });
+        if (frame.selected) detail({ type: "client.subscribe", ...frame.selected });
+      });
+    });
+    sockets.push(socket);
+    return socket;
+  };
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    streamCache: cache,
+    webSocketFactory: connect,
+    capabilities: [],
+    reconnectBaseDelayMs: 1,
+    reconnectMaxDelayMs: 1,
+    fetch: async () =>
+      Response.json({
+        ok: false,
+        error: { code: "not_found", message: "Unavailable", retryable: false },
+      }),
+  });
+  const release = client.observeThread(other.threadId);
+  try {
+    client.activateThread(threadId);
+    await client.load();
+    await vi.waitFor(() => expect(saved.size).toBe(3));
+    expect(client.getThreadTranscript(other.threadId)?.getSnapshot().entries).toHaveLength(1);
+    sockets[0]!.emit("close", {
+      code: 4003,
+      reason: personalAuthorityChangedReason([revokedSlot!]),
+    });
+    expect(client.getThreadTranscript(other.threadId)?.getSnapshot().entries).toEqual([]);
+    await vi.waitFor(() => expect(attachments).toHaveLength(2));
+    expect(attachments[1]?.cursor?.afterSequence).toBe("1");
+    expect(attachments[1]?.selected?.cursor?.afterSequence).toBe("1");
+    await vi.waitFor(() => expect(saved.has(`thread:${other.threadId}`)).toBe(false));
+    const restored = new ScopedPersonalStream(cache);
+    restored.select(other);
+    await restored.restore({ deploymentId, viewerId, epoch, session });
+    expect(restored.detail(other).transcript.getSnapshot().items.size).toBe(0);
+    expect(
+      await cache.load({
+        deploymentId,
+        viewerId,
+        epoch,
+        format: personalCacheFormat,
+        scopeKey: `thread:${threadId}`,
+      }),
+    ).not.toBeNull();
+  } finally {
+    release();
+    client.dispose();
   }
 });

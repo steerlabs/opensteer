@@ -1,4 +1,4 @@
-import type { ScopedHostMessage } from "@opensteer/protocol/personal-sync";
+import type { PersonalResumeCursor, ScopedHostMessage } from "@opensteer/protocol/personal-sync";
 import type { ThreadInputQueue } from "@opensteer/core";
 import type {
   TranscriptPageSchema,
@@ -34,6 +34,8 @@ export interface TranscriptState {
   readonly historyIds: readonly string[];
   readonly activeIds: ReadonlySet<string>;
   readonly readRevision: string;
+  readonly cursorScope?:
+    Omit<TranscriptOrderCursor, "beforeId" | "beforePosition" | "orderRevision"> | undefined;
   readonly liveItems: ReadonlyMap<string, TranscriptItem>;
   readonly removed: boolean;
   readonly stale: ReadonlySet<string>;
@@ -93,7 +95,10 @@ export class ThreadTranscriptStore {
     });
   }
 
-  apply(frame: Frame): boolean {
+  apply(
+    frame: Frame,
+    authority?: Pick<PersonalResumeCursor, "deploymentId" | "viewerId" | "epoch">,
+  ): boolean {
     const state = this.#state;
     if (frame.generation !== state.generation || frame.scope.kind === "shell") return false;
     switch (frame.type) {
@@ -129,6 +134,13 @@ export class ThreadTranscriptStore {
           activeIds: new Set(frame.snapshot.activeItems.map(({ id }) => id)),
           ids: sortedIds(items),
           readRevision: "0",
+          cursorScope: authority
+            ? {
+                ...authority,
+                threadId: frame.scope.threadId,
+                nodeId: frame.scope.kind === "node" ? frame.scope.nodeId : null,
+              }
+            : (frame.snapshot.nextBefore ?? frame.snapshot.nextAfter ?? undefined),
           orderRevision: frame.snapshot.orderRevision,
           inputQueueRevision: frame.snapshot.inputQueueRevision,
           inputQueue:
@@ -258,6 +270,7 @@ export class ThreadTranscriptStore {
             snapshot,
             orderRevision,
             state.newest ? "latest" : "earlier",
+            state.cursorScope,
           );
           ids = ids.filter((id) => items!.has(id));
         }
@@ -350,7 +363,7 @@ export class ThreadTranscriptStore {
       },
       page.orderRevision,
       mode === "earlier" ? "earlier" : "latest",
-      state.snapshot.nextBefore ?? state.snapshot.nextAfter,
+      state.cursorScope,
     );
     const stale = new Set(state.stale);
     stale.delete("history-order");
@@ -442,7 +455,7 @@ export class ThreadTranscriptStore {
       state.stale.size === 0 &&
       state.newest &&
       BigInt(state.through) >= BigInt(state.readRevision) &&
-      state.historyIds.length <= 50 &&
+      (state.historyIds.length <= 50 || state.cursorScope !== undefined) &&
       state.activeIds.size <= 20 &&
       state.snapshot.pendingRequests.length <= 20
     );
@@ -451,9 +464,21 @@ export class ThreadTranscriptStore {
   checkpoint(state = this.#state): DetailSnapshot | undefined {
     const { snapshot, items, orderRevision, inputQueueRevision } = state;
     if (!snapshot || !this.canCheckpoint(state)) return;
+    const history = state.historyIds.slice(-50).map((id) => items.get(id)!);
+    const boundary = history[0];
+    const nextBefore =
+      state.historyIds.length > history.length && boundary && state.cursorScope
+        ? {
+            ...state.cursorScope,
+            orderRevision,
+            beforeId: boundary.id,
+            beforePosition: boundary.position,
+          }
+        : snapshot.nextBefore;
     return {
       ...snapshot,
-      items: state.historyIds.map((id) => items.get(id)!),
+      nextBefore,
+      items: history,
       activeItems: [...state.activeIds].map((id) => items.get(id)!),
       orderRevision,
       inputQueueRevision,
@@ -504,7 +529,7 @@ function trimWindow(
   snapshot: DetailSnapshot | null,
   orderRevision: string,
   edge: "earlier" | "latest",
-  fallback?: TranscriptOrderCursor | null,
+  fallback?: TranscriptState["cursorScope"],
 ) {
   const extra = historyIds.length - 250;
   if (!snapshot || extra <= 0) return snapshot;
