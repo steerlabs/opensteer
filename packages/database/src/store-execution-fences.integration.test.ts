@@ -1021,7 +1021,7 @@ describeStore("PostgreSQL store", (it) => {
             }>`select query from pg_stat_activity where datname=current_database() and application_name='opensteer-integration-test' and wait_event_type='Lock'`.execute(
               database,
             )
-          ).rows.some(({ query }) => query.includes('from "harness_instances"')),
+          ).rows.some(({ query }) => query.includes('from "client_sync_state"')),
         )
         .toBe(true);
       barrier.release();

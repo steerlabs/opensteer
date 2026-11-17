@@ -1,3 +1,4 @@
+import type { OpensteerStore } from "./store.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   emptyExecutionPreferences,
@@ -22,6 +23,13 @@ import {
   testContinuationIdentity,
   pendingEvent,
 } from "./store.integration.test-support.js";
+async function initializeDeployment(store: OpensteerStore) {
+  await store.ensureDeployment({
+    canonicalOrigin: "http://127.0.0.1:4310",
+    hostInstanceId: createId("hostInstance"),
+    deploymentShape: { kind: "personal" },
+  });
+}
 describeStore("PostgreSQL store", (it) => {
   it("trims a person's execution history to the limit, dropping the oldest", async ({
     storeFixture,
@@ -54,6 +62,7 @@ describeStore("PostgreSQL store", (it) => {
     storeFixture,
   }) => {
     const { store } = storeFixture;
+    await initializeDeployment(store);
     const environmentId = await store.createEnvironment({
       kind: "local",
       name: "Laptop",
@@ -175,6 +184,7 @@ describeStore("PostgreSQL store", (it) => {
     storeFixture,
   }) => {
     const { store } = storeFixture;
+    await initializeDeployment(store);
     const firstEnvironmentId = await store.createEnvironment({
       kind: "local",
       name: "Laptop",
@@ -265,6 +275,7 @@ describeStore("PostgreSQL store", (it) => {
     storeFixture,
   }) => {
     const { store } = storeFixture;
+    await initializeDeployment(store);
     const environmentId = await store.createEnvironment({
       kind: "local",
       name: "Model Mac",
@@ -328,6 +339,7 @@ describeStore("PostgreSQL store", (it) => {
   });
   it("turns a disabled profile's stale catalog off with it", async ({ storeFixture }) => {
     const { store } = storeFixture;
+    await initializeDeployment(store);
     const environmentId = await store.createEnvironment({
       kind: "local",
       name: "Laptop",
@@ -525,6 +537,7 @@ describeStore("PostgreSQL store", (it) => {
   });
   it("admits one existing-CLI profile per driver on a work location", async ({ storeFixture }) => {
     const { store, database } = storeFixture;
+    await initializeDeployment(store);
     const environmentId = await store.createEnvironment({
       kind: "local",
       name: "Laptop",
@@ -612,6 +625,7 @@ describeStore("PostgreSQL store", (it) => {
     storeFixture,
   }) => {
     const { store } = storeFixture;
+    await initializeDeployment(store);
     const environmentId = await store.createEnvironment({
       kind: "local",
       name: "Laptop",
@@ -796,6 +810,7 @@ describeStore("PostgreSQL store", (it) => {
     storeFixture,
   }) => {
     const { store, database } = storeFixture;
+    await initializeDeployment(store);
     const environmentId = await store.createEnvironment({
       kind: "local",
       name: "Laptop",
@@ -925,6 +940,7 @@ describeStore("PostgreSQL store", (it) => {
     storeFixture,
   }) => {
     const { store, database } = storeFixture;
+    await initializeDeployment(store);
     const environmentId = await store.createEnvironment({
       kind: "local",
       name: "Laptop",
@@ -1004,6 +1020,7 @@ describeStore("PostgreSQL store", (it) => {
   });
   it("serializes concurrent profile creation at the wire cap", async ({ storeFixture }) => {
     const { store, database } = storeFixture;
+    await initializeDeployment(store);
     const environmentId = await store.createEnvironment({
       kind: "local",
       name: "Laptop",
@@ -1084,6 +1101,7 @@ describeStore("PostgreSQL store", (it) => {
     storeFixture,
   }) => {
     const { store, database } = storeFixture;
+    await initializeDeployment(store);
     const environmentId = await store.createEnvironment({
       kind: "local",
       name: "Laptop",

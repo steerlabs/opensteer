@@ -41,6 +41,12 @@ describeStore("waiting input edits", (it) => {
     expect(queue.items[0]?.lease).toEqual({
       deviceLabel: "Desktop",
       expiresAt: expect.any(String),
+      ownedBySession: false,
+    });
+    expect((await f.store.getThreadInputQueue(other)).items[0]?.lease).toEqual({
+      deviceLabel: "Desktop",
+      expiresAt: expect.any(String),
+      ownedBySession: true,
     });
     await expect(
       f.store.renewThreadInputLease({ ...other, leaseId: "replacement" }),

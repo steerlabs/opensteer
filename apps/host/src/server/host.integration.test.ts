@@ -28,7 +28,6 @@ import {
   personalRemoteAuthorizationScheme,
   rememberExecutionChoice,
   ThreadAccessModeSchema,
-  ThreadViewSchema,
   type AuthenticatedSession,
   type EnvironmentId,
   type ExecutionChoice,

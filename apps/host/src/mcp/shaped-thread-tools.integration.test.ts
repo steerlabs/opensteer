@@ -1974,9 +1974,11 @@ describeStore("shaped agent task tools", (it) => {
     ])
       expect(serialized).not.toContain(secret);
     expect((await s.read({ view: "activity", itemId: messageId })).items).toEqual(page.items);
-    expect(
-      (await s.read({ view: "activity", itemId: `request:${requestId}` })).items[0],
-    ).toBeUndefined();
+    await expect(
+      s.read({ view: "activity", itemId: `request:${requestId}` }),
+    ).rejects.toMatchObject({
+      code: "forbidden",
+    });
   });
 
   it("pages projected text and large messages within the agent byte limit without splitting a surrogate pair", async ({

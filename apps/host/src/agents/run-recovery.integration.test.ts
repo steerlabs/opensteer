@@ -2113,7 +2113,7 @@ integration.sequential("Run recovery acceptance", () => {
       .orderBy("ordinal")
       .execute();
     expect(stored).toEqual(
-      emitted.map((event) => ({ ordinal: event.runnerOrdinal, disposition: "applied" })),
+      emitted.map((event) => ({ ordinal: String(event.runnerOrdinal), disposition: "applied" })),
     );
     const statement = emitted.find((event) => event.type === "assistant.message")!;
     const { messageId } = recordSchema.parse(statement.data);

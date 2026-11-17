@@ -15,7 +15,7 @@ import {
 } from "@opensteer/core";
 import { type PendingAgentEvent } from "@opensteer/protocol";
 import { sql } from "kysely";
-import { expect, vi } from "vitest";
+import { expect } from "vitest";
 import { runFromRow } from "./thread-row-mappers.js";
 import { ChannelStore, OpensteerStore } from "./index.js";
 import { ChannelIngressDeferredError } from "./channel-store.js";
@@ -3648,7 +3648,7 @@ describeStore("PostgreSQL store", (it) => {
       store.claimCommand(authorityCancelledResponse.command.id, "cancelled-response-worker"),
     ).resolves.toBeNull();
   });
-  it("rejects the Runner receipt when authority is revoked after the response handoff", async ({
+  it("rejects the Runner receipt when Stop revokes authority after the response handoff", async ({
     storeFixture,
   }) => {
     const { startRunFixture, openLiveRequest, store, database, reactions } = storeFixture;
@@ -3681,9 +3681,6 @@ describeStore("PostgreSQL store", (it) => {
         timeoutError: () => new Error("The Runner never received the Request response intent"),
       });
       expect(await store.stopHeldRun(claims, "device-access")).not.toBeNull();
-      expect(await store.requests.cancelForRun(fixture.run.id, "authority-revoked")).toEqual([
-        requestId,
-      ]);
     } finally {
       receipt.resolve();
       await expect(delivery).rejects.toMatchObject({ code: "conflict" });
@@ -3703,7 +3700,7 @@ describeStore("PostgreSQL store", (it) => {
         .where("id", "=", requestId)
         .executeTakeFirstOrThrow(),
     ).resolves.toEqual({
-      cancellationReason: "authority-revoked",
+      cancellationReason: "run-ended",
       response: null,
       status: "cancelled",
     });

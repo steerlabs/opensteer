@@ -784,7 +784,8 @@ export class ScopedPersonalStream {
 
   #enqueue(key: string, write: () => Promise<void>) {
     this.#writes.set(key, write);
-    this.#writing ??= Promise.resolve().then(async () => {
+    if (this.#writing) return;
+    this.#writing = Promise.resolve().then(async () => {
       try {
         for (const [scope, next] of this.#writes) {
           this.#writes.delete(scope);
