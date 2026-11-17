@@ -112,7 +112,7 @@ credentials.
 ## Integration access requests
 
 Installation and account consent belong to the personal owner; team membership grants no
-private integration access ([Run tool authority](agent-orchestration.md#run-tool-authority)). Reviewed
+private integration access. Reviewed
 manifests, requested access and explicit account choices are pinned through installation; a pinned
 account is repaired or the request declined, never fulfilled by another. Installation alone does not
 resolve access or resume the agent. Proposals can impersonate catalog names, so every approval

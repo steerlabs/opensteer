@@ -5,9 +5,7 @@ description: Use when building or testing the desktop iPhone bridge (`apps/deskt
 
 # iPhone screen
 
-Procedures for a Mac driving an iPhone's screen. Constraints live in
-[iPhone screens](../../../docs/computer-use.md#iphone-screens) and
-[Devices, Runners and drivers](../../../docs/computers.md#devices-runners-and-drivers).
+Procedures for a Mac driving an iPhone's screen.
 
 ## Safety rules
 

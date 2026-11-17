@@ -654,13 +654,13 @@ final class PersonStream: @unchecked Sendable {
       : (fixtureEffects?["clicks"] as? Int ?? 0) == 1 && (fixtureEffects?["shortcuts"] as? Int ?? 0) == 1)
     let safetyEvidence = safety(before, after, pid: pid)
     let continuousSafe = ["keysStable", "frontStable", "pointerStable", "finalPersonOnTop"].allSatisfy { safetyEvidence[$0] as? Bool == true }
-    // Decision (A), as in R0's reviewed contract (docs/computer-use.md, "Preparing
-    // an app"): the agent's own input may move the app's focus to its target, and
+    // Decision (A), as in R0's reviewed contract: the agent's own input may
+    // move the app's focus to its target, and
     // the helper's own record of that (`helperFocus`) is reported, not failed on.
     // What the person has must hold: the front app, the key window, the pointer,
     // the window order and the 5 ms samples of all of them.
     let normalStatus = !delivered || !routeEffect || !batchEffects || !(receipt["error"] as? String ?? "").isEmpty ? "regression" : frontChanged || activated || pointerMoved || keyChanged || !orderUnchanged || !continuousSafe ? "regression" : "pass"
-    // docs/computer-use.md: a ⌃ chord without ⌘ also inserts its character.
+    // A ⌃ chord without ⌘ also inserts its character.
     // Assert Batch + j exactly, so fixing the limitation changes this result.
     let status = route == "batch" && normalStatus == "pass" ? "accepted-limitation" : normalStatus
     rows.append(["journey": "R2", "app": name, "route": route, "before": before, "after": after,
@@ -922,7 +922,7 @@ final class PersonStream: @unchecked Sendable {
         && state["globalPID"] as? Int32 == coverPID
         && state["globalWindowID"] as? UInt32 == before["globalKeyWindowID"] as? UInt32
     }
-    // Decision (A), as Codex (docs/computer-use.md): the agent's own popup click may
+    // Decision (A), as Codex: the agent's own popup click may
     // raise the window it clicked over the person's, and that window then stays where
     // it is; nothing sends it back. Every sample is the baseline, with the person's
     // window on top, until a raise first seen at or after the click starts and before
@@ -1108,7 +1108,7 @@ final class PersonStream: @unchecked Sendable {
         observed = try await observe(target, monitor)
         let effect = webEffects(target, window: window.serverWindowID)
         try require((effect["clicks"] as? Int) == 1 && (effect["shortcuts"] as? Int) == 1, "Input did not stay in explicit Chrome window")
-        // The known limitation in docs/computer-use.md: the batch's ⌃⌥J also
+        // Known limitation: the batch's ⌃⌥J also
         // types "j" into the focused field. Asserted as it is, so a fix shows.
         let typed = "Window-\(window.serverWindowID)" + "j"
         try require(
@@ -1141,8 +1141,8 @@ final class PersonStream: @unchecked Sendable {
     try observationEvidence(observed, prefix + "-after")
     try desktop(prefix + "-after")
     let safe = ["keysStable", "frontStable", "pointerStable"].allSatisfy { evidence[$0] as? Bool == true }
-    // Decision (A) with Codex's preparation (docs/computer-use.md, "Preparing an
-    // app"): an agent's click may raise the window it clicked to the top, above
+    // Decision (A) with Codex's preparation: an agent's click may raise the
+    // window it clicked to the top, above
     // the person's window too, and it stays there until the next agent action.
     // That action's preparation may raise the person's window back over it, as
     // Codex's `safelyEnforceActiveState` does, and only that. Nothing else moves
