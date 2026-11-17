@@ -861,6 +861,19 @@ test("account Request pins disclosure and a person-reviewed link fulfils it", as
   const target = { plugin: installed.plugin.id, requirement: "service", scope: "user" as const };
   await records.recordInstall(personal.userId, installed.plugin.id, installed.version.id, "agent");
   await records.recordInstall(personal.userId, installed.plugin.id, "older-version", "catalog");
+  const unavailable = await call(caller, "plugin_search", { namespace: installed.plugin.slug });
+  expect(unavailable.unavailableApps).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        app: target.plugin,
+        blocked: {
+          code: "sign_in_required",
+          message: expect.any(String),
+          next: expect.stringContaining(`"pluginId":"${target.plugin}"`),
+        },
+      }),
+    ]),
+  );
   const result = await call(caller, "plugin_account_request", {
     pluginId: target.plugin,
     requirement: target.requirement,

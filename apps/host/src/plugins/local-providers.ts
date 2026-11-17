@@ -1,3 +1,5 @@
+import { localTargetBlocked } from "../devices/target-blocked.js";
+import type { Blocked } from "@opensteer/core";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { localNamespace, slugify } from "./provider-names.js";
 import { createHash } from "node:crypto";
@@ -44,6 +46,7 @@ type Located = PluginHostProvider & {
   readonly transport: "computer" | "runner";
   /** What app_access_request names this provider by: a data app's name or a server's. */
   readonly requestName: string;
+  readonly blocked?: Blocked;
 };
 /** How an agent asks for more of a provider: the data app on its computer, or the server by name. */
 const requestAccess = (provider: Pick<Located, "kind" | "computer" | "requestName">) =>
@@ -104,8 +107,17 @@ export class LocalProviders {
         connectionId: _c,
         transport: _t,
         requestName: _r,
+        blocked: _b,
         ...provider
       }) => provider,
+    );
+  }
+
+  async blockers(context: PluginCaller) {
+    const caller = this.#options.authority.caller(context.caller);
+    if (!caller) return [];
+    return (await this.#list(caller)).providers.flatMap((provider) =>
+      provider.blocked ? [{ id: provider.id, slug: provider.slug, blocked: provider.blocked }] : [],
     );
   }
 
@@ -123,7 +135,7 @@ export class LocalProviders {
     const caller = this.#options.authority.caller(input.caller);
     if (!caller || caller.kind === "connection")
       throw failure("Local tools are called only from a task or its programs.");
-    const { providers, callables, access } = await this.#list(caller);
+    const { providers, callables, access, inventory } = await this.#list(caller);
     const provider = providers.find(({ id }) => id === input.plugin);
     if (!provider) throw failure("This local tool was removed or changed; search again.");
     if (provider.unavailable) throw failure(provider.unavailable);
@@ -136,6 +148,16 @@ export class LocalProviders {
         candidate.tool.name === input.tool,
     );
     if (!tool || !callable) {
+      const entry = inventory.find((entry) => entry.installation.id === provider.installationId);
+      const row = entry?.tools.find(
+        (tool) =>
+          tool.serverId === provider.serverId &&
+          (tool.connectionId ?? null) === provider.connectionId &&
+          tool.name === input.tool,
+      );
+      const state = entry?.readiness.tools.find((entry) => entry.toolId === row?.id)?.readiness;
+      const blocked = localTargetBlocked(state, provider.name, requestTarget(provider));
+      if (blocked) throw failure(`${blocked.message} ${blocked.next}`);
       if (tool?.readOnly === false && provider.connectionId && access.get(provider.connectionId))
         throw failure(
           `${provider.name} allows reading only. To ${input.tool}, ${requestAccess(provider)}.`,
@@ -194,7 +216,9 @@ export class LocalProviders {
       const refusal = agentToolFailure(error, tool.readOnly ? "read" : "write");
       if (refusal.code === internalToolFailureCode) throw error;
       const { message, next } = normalizeToolError(refusal);
-      throw failure([message, next].filter(Boolean).join(" "));
+      const live = await this.#list(caller).catch(() => undefined);
+      const current = live?.providers.find((entry) => entry.id === provider.id)?.blocked;
+      throw failure([...new Set([message, next, current?.next].filter(Boolean))].join(" "));
     }
     const text = (Array.isArray(result.content) ? result.content : [])
       .flatMap((part: { type?: unknown; text?: unknown }) =>
@@ -269,7 +293,7 @@ export class LocalProviders {
                 : [],
             );
             const ready = states.some(({ code }) => code === "READY");
-            const state = states.find(({ code }) => code === "INTEGRATION_UNAVAILABLE");
+            const state = states.find(({ code }) => code !== "READY");
             if (!ready && !state) continue;
             const connection = await store.getDeviceComputerConnectionForCall({
               connectionId: account.connectionId,
@@ -290,6 +314,13 @@ export class LocalProviders {
                 connectionId: account.connectionId,
                 transport: "computer",
                 requestName: dataAppName(definition),
+                blocked: ready
+                  ? undefined
+                  : localTargetBlocked(
+                      state,
+                      `${entry.installation.title} on ${connection.runnerName}`,
+                      { dataApp: dataAppName(definition), computerId: connection.deviceId },
+                    ),
                 unavailable: ready
                   ? undefined
                   : (state?.detail ??
@@ -342,6 +373,17 @@ export class LocalProviders {
               connectionId: null,
               transport: "runner",
               requestName: serverName(entry.installation),
+              blocked:
+                localTargetBlocked(state, entry.installation.title, {
+                  server: serverName(entry.installation),
+                }) ??
+                (!runnerId
+                  ? {
+                      code: "setup_required",
+                      message: `${entry.installation.title} has no computer to run on.`,
+                      next: "Call local_server_add again, choosing its computer.",
+                    }
+                  : undefined),
               unavailable:
                 !state || state.code === "READY"
                   ? runnerId
@@ -368,7 +410,7 @@ export class LocalProviders {
           .digest("hex")
           .slice(0, 32)}`,
       }));
-    return { providers, callables, access: readOnlyConnections };
+    return { providers, callables, inventory, access: readOnlyConnections };
   }
 }
 
@@ -387,6 +429,7 @@ function provider(input: {
   transport: "computer" | "runner";
   requestName: string;
   unavailable: string | undefined;
+  blocked?: Blocked | undefined;
   tools: PluginHostProvider["tools"];
 }): Located {
   return {
@@ -407,7 +450,25 @@ function provider(input: {
     connectionId: input.connectionId,
     transport: input.transport,
     requestName: input.requestName,
-    ...(input.unavailable ? { unavailable: input.unavailable } : {}),
+    ...(input.blocked
+      ? {
+          blocked: input.blocked,
+          unavailable: `${input.blocked.message} ${input.blocked.next}`.slice(0, 2000),
+        }
+      : input.unavailable
+        ? {
+            blocked: {
+              code: "unavailable",
+              message: input.unavailable.slice(0, 2000),
+              next: "Continue without it and tell the person what the message says.",
+            },
+            unavailable:
+              `${input.unavailable} Continue without it and tell the person what the message says.`.slice(
+                0,
+                2000,
+              ),
+          }
+        : {}),
   };
 }
 
@@ -427,4 +488,10 @@ function serverName(installation: IntegrationInstallation): string {
 
 function failure(message: string) {
   return new PluginServiceError("tool", message.slice(0, 4000));
+}
+
+function requestTarget(provider: Pick<Located, "kind" | "computer" | "requestName">) {
+  return provider.kind === "device-app" && provider.computer
+    ? { dataApp: provider.requestName, computerId: provider.computer.id }
+    : { server: provider.requestName };
 }

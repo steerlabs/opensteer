@@ -1,3 +1,6 @@
+import { deviceDefinitions } from "@opensteer/integration-catalog/devices";
+import { dataAppName } from "../devices/access-requests.js";
+import { localTargetBlocked } from "../devices/target-blocked.js";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { createHash } from "node:crypto";
 import { BrowserRequestOutcomeSchema, OpensteerError, type Request } from "@opensteer/core";
@@ -17,7 +20,6 @@ import { CoalescedWake } from "@opensteer/shared/coalescedWake";
 import { z } from "zod";
 import type { PasswordSignInContinuationState } from "../browser/password-sign-in-service.js";
 import type { ComputerAppApprovalService } from "../devices/computer-app-approval-service.js";
-import { computerToolRefs } from "../devices/computer-use-discovery.js";
 import type { DeviceService } from "../devices/device-service.js";
 const defaultIntervalMs = 5_000;
 const cancelledContinuationReason = "Continuation delivery was cancelled by Thread input admission";
@@ -37,11 +39,9 @@ type ThreadInputDisposition = Awaited<
  */
 export type IntegrationInventorySource = Pick<
   DeviceService,
-  "listDiscoveryInventory" | "listCallableTools"
-> & { readonly selfDeviceId: OpensteerStore["requireSelfDeviceId"] } & Pick<
-    ComputerAppApprovalService,
-    "computerUseMachines" | "computerUsePhones"
-  >;
+  "listDiscoveryInventory" | "listCallableTools" | "computerAccess"
+> &
+  Pick<ComputerAppApprovalService, "computerUseMachines" | "computerUsePhones">;
 type IntegrationInventoryEntry = Awaited<
   ReturnType<IntegrationInventorySource["listDiscoveryInventory"]>
 >[number];
@@ -296,6 +296,13 @@ export async function continuationMessage(
   ) {
     throw new Error("The Request continuation outbox contains an ineligible Request");
   }
+  let computerFacts: ReturnType<IntegrationInventorySource["computerAccess"]> | undefined;
+  const computerAccess = () =>
+    (computerFacts ??= integrations.computerAccess({
+      ownerUserId: request.requestedBy,
+      threadId: request.originatingThreadId,
+      ...(request.originatingRunId ? { runId: request.originatingRunId } : {}),
+    }));
   switch (request.kind) {
     case "plugin.account":
       return request.status === "fulfilled"
@@ -425,11 +432,17 @@ export async function continuationMessage(
       ) {
         const connectionId =
           request.response.kind === "external" ? request.response.value?.connectionId : undefined;
-        const machines = await integrations.computerUseMachines(request.requestedBy);
+        const machines = (await computerAccess()).machines;
         for (const machine of machines) {
           const app = machine.apps.find(({ connectionId: id }) => id === connectionId);
           if (app)
-            return computerAppContinuation(request, integrations, machine.name, app.name, app);
+            return computerAppContinuation(
+              request,
+              await computerAccess(),
+              machine.name,
+              app.name,
+              app,
+            );
         }
       }
       if (
@@ -440,10 +453,10 @@ export async function continuationMessage(
       ) {
         const connectionId =
           request.response.kind === "external" ? request.response.value?.connectionId : undefined;
-        const phone = (await integrations.computerUsePhones(request.requestedBy)).find(
+        const phone = (await computerAccess()).phones.find(
           ({ connection }) => connection !== null && connection.connectionId === connectionId,
         );
-        if (phone) return phoneContinuation(request, integrations, phone);
+        if (phone) return phoneContinuation(request, await computerAccess(), phone);
       }
       if (!target.success) {
         return `${receipt} The fulfilled connection was not recorded; its current state is unverified.`;
@@ -456,11 +469,9 @@ export async function continuationMessage(
         case "ready":
           return `${receipt} Its ${access} access is active.`;
         case "needs-grant":
-          return `${receipt} Your Opensteer still holds no access grant${detailClause(state.detail)}.`;
         case "needs-account":
-          return `${receipt} The fulfilled target is not usable${detailClause(state.detail)}.`;
         case "blocked":
-          return `${receipt} The integration is not usable: ${state.detail ?? "the integration is unavailable"}.`;
+          return `${receipt} ${state.detail} ${state.remedy}`;
       }
     }
     case "computer.app.access": {
@@ -469,25 +480,26 @@ export async function continuationMessage(
       const payload = request.payload;
       if (payload.app === null) {
         // A phone is asked for whole, so its continuation names the phone.
-        const phones = await integrations.computerUsePhones(request.requestedBy);
-        const phone = phones.find((phone) => phone.deviceId === payload.deviceId);
+        const phone = (await computerAccess()).phones.find(
+          ({ deviceId }) => deviceId === payload.deviceId,
+        );
         if (request.status === "declined")
           return `Request ${request.id} was declined by the user. Continue the task without ${phone?.name ?? "that phone"} and do not request it again unless the user asks.`;
         return phone
-          ? phoneContinuation(request, integrations, phone)
+          ? phoneContinuation(request, await computerAccess(), phone)
           : `Request ${request.id} was fulfilled, but that phone is no longer available to this task. Continue without it.`;
       }
       const asked = payload.app;
       const { displayName } = asked;
-      const machines = await integrations.computerUseMachines(request.requestedBy);
-      const machine = machines.find((machine) => machine.deviceId === payload.deviceId);
+      const machines = (await computerAccess()).machines;
+      const machine = machines.find(({ deviceId }) => deviceId === payload.deviceId);
       const mac = machine?.name ?? "that Mac";
       if (request.status === "declined")
         return `Request ${request.id} was declined by the user. Continue the task without ${displayName} on ${mac} and do not request it again unless the user asks.`;
       const app = machine?.apps.find(
         ({ bundleId }) => bundleId.toLowerCase() === asked.bundleId.toLowerCase(),
       );
-      return computerAppContinuation(request, integrations, mac, displayName, app);
+      return computerAppContinuation(request, await computerAccess(), mac, displayName, app);
     }
     case "harness.approval":
     case "harness.input":
@@ -496,44 +508,43 @@ export async function continuationMessage(
 }
 async function computerAppContinuation(
   request: Request,
-  integrations: IntegrationInventorySource,
+  access: Awaited<ReturnType<IntegrationInventorySource["computerAccess"]>>,
   mac: string,
   displayName: string,
   app:
     | Awaited<ReturnType<IntegrationInventorySource["computerUseMachines"]>>[number]["apps"][number]
     | undefined,
 ): Promise<string> {
-  const unavailable = `Request ${request.id} was fulfilled, but ${displayName} on ${mac} is no longer available to this task. Continue without it.`;
-  if (!app || app.status === "blocked") return unavailable;
-  const refs = computerToolRefs(
-    await integrations.listCallableTools({
-      ownerUserId: request.requestedBy,
-      threadId: request.originatingThreadId,
-    }),
-    app.connectionId,
+  const machine = access.machines.find(
+    (machine) =>
+      machine.name === mac &&
+      machine.apps.some((entry) => entry.connectionId === app?.connectionId),
   );
-  if (!refs.observe) return unavailable;
-  return `Request ${request.id} was fulfilled. ${displayName} on ${mac} is ready. Use app(${JSON.stringify(displayName)}, {computer: ${JSON.stringify(mac)}}) in computer_use. Continue.`;
+  if (!machine || !app)
+    return `Request ${request.id} was fulfilled, but ${displayName} on ${mac} is unavailable. Use computer_apps to find current targets.`;
+  const result = access.app(machine, { displayName: app.name, bundleId: app.bundleId });
+  return `Request ${request.id} was fulfilled. ${
+    result.blocked
+      ? `${result.blocked.message} ${result.blocked.next}`
+      : `${displayName} on ${mac} is ready. Use app(${JSON.stringify(displayName)}, {computer:${JSON.stringify(mac)}}) in computer_use.`
+  }`;
 }
-
-/** A fulfilled ask names the phone exactly as the computer library accepts it. */
 async function phoneContinuation(
   request: Request,
-  integrations: IntegrationInventorySource,
+  access: Awaited<ReturnType<IntegrationInventorySource["computerAccess"]>>,
   phone: Awaited<ReturnType<IntegrationInventorySource["computerUsePhones"]>>[number],
 ): Promise<string> {
-  const unavailable = `Request ${request.id} was fulfilled, but ${phone.name} is no longer available to this task. Continue without it.`;
-  if (!phone.connection) return unavailable;
-  const refs = computerToolRefs(
-    await integrations.listCallableTools({
-      ownerUserId: request.requestedBy,
-      threadId: request.originatingThreadId,
-    }),
-    phone.connection.connectionId,
-  );
-  if (!refs.observe) return unavailable;
-  return `Request ${request.id} was fulfilled. ${phone.name} is ready. Use phone(${JSON.stringify(phone.name)}) in computer_use. Release it when you are done so another task can use it. Continue.`;
+  const current = access.phones.find((entry) => entry.deviceId === phone.deviceId);
+  const result = current ? access.phone(current) : null;
+  return `Request ${request.id} was fulfilled. ${
+    !result
+      ? `${phone.name} is unavailable. Use computer_apps to find current targets.`
+      : result.blocked
+        ? `${result.blocked.message} ${result.blocked.next}`
+        : `${phone.name} is ready. Use phone(${JSON.stringify(phone.deviceId)}) in computer_use.`
+  }`;
 }
+
 function inventoryFor(
   request: Request,
   integrations: IntegrationInventorySource,
@@ -549,16 +560,11 @@ function inventoryFor(
     threadId: request.originatingThreadId,
   });
 }
-type IntegrationState =
-  | {
-      readonly detail: string | null;
-      readonly disposition: "needs-account" | "needs-grant" | "ready";
-    }
-  | {
-      readonly detail: string | null;
-      readonly disposition: "blocked";
-      readonly remedy: string;
-    };
+type IntegrationState = {
+  readonly detail: string | null;
+  readonly disposition: "needs-account" | "needs-grant" | "ready" | "blocked";
+  readonly remedy: string;
+};
 
 /**
  * Access continuations scope inventory to the fulfilled connection and access,
@@ -584,53 +590,55 @@ function integrationState(
         !server || (server.connectionRequirement.kind === "none") === (target.connectionId === null)
       );
     })
-    .map(readinessState);
+    .map((readiness) => {
+      const transport = entry.servers.find((server) => server.id === readiness.serverId)?.transport;
+      const definition =
+        transport?.type === "computer"
+          ? deviceDefinitions.find((definition) => definition.id === transport.definitionId)
+          : undefined;
+      return readinessState(
+        readiness,
+        entry.installation.name,
+        definition
+          ? { dataApp: dataAppName(definition) }
+          : {
+              server:
+                typeof entry.installation.manifest.name === "string"
+                  ? entry.installation.manifest.name
+                  : entry.installation.name,
+            },
+      );
+    });
   return (
     states.find(({ disposition }) => disposition === "ready") ??
     states.find(({ disposition }) => disposition === "needs-grant") ??
     states.find(({ disposition }) => disposition === "needs-account") ??
     states[0] ?? {
-      detail: target
-        ? "the fulfilled target has no matching server"
-        : "the installation exposes no servers",
+      detail: `${entry.installation.name} ${target ? "has no matching server for the fulfilled target" : "exposes no servers"}.`,
       disposition: "blocked",
       remedy:
         "An administrator must repair the installation. Continue without it and tell the user.",
     }
   );
 }
-function readinessState(readiness: IntegrationReadiness): IntegrationState {
-  const detail = readiness.detail ? readiness.detail.slice(0, 240) : null;
-  switch (readiness.code) {
-    // A ready server has nothing left to explain, so any detail it still
-    // carries is stale and would only mislead.
-    case "READY":
-      return {
-        detail: null,
-        disposition: "ready",
-      };
-    case "ACCESS_GRANT_REQUIRED":
-      return {
-        detail,
-        disposition: "needs-grant",
-      };
-    case "USER_AUTHORIZATION_REQUIRED":
-    case "REAUTHORIZATION_REQUIRED":
-      return {
-        detail,
-        disposition: "needs-account",
-      };
-    case "INTEGRATION_UNAVAILABLE":
-      return {
-        detail,
-        disposition: "blocked",
-        remedy:
-          "Requesting it again will not help. Continue without it and tell the user what that detail says.",
-      };
-  }
-}
-function detailClause(detail: string | null): string {
-  return detail ? ` (${detail})` : "";
+function readinessState(
+  readiness: IntegrationReadiness,
+  integration: string,
+  target: Parameters<typeof localTargetBlocked>[2],
+): IntegrationState {
+  const blocked = localTargetBlocked(readiness, integration, target);
+  return blocked
+    ? {
+        disposition:
+          blocked.code === "access_required"
+            ? "needs-grant"
+            : blocked.code === "sign_in_required" || blocked.code === "reauthorization_required"
+              ? "needs-account"
+              : "blocked",
+        detail: blocked.message,
+        remedy: blocked.next,
+      }
+    : { disposition: "ready", detail: null, remedy: "" };
 }
 function isPermanentContinuationFailure(error: unknown): boolean {
   return error instanceof OpensteerError && !error.retryable;

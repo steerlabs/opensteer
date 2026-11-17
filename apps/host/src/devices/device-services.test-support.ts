@@ -29,6 +29,7 @@ export type DeviceServicesTestOptions = Omit<
 /** The device and local-server services as the Host wires them, with one call path for tests. */
 export interface DeviceServicesTestHarness {
   readonly listDiscoveryInventory: DeviceService["listDiscoveryInventory"];
+  readonly computerAccess: DeviceService["computerAccess"];
   readonly listCallableTools: DeviceService["listCallableTools"];
   readonly installCatalogDefinition: DeviceService["installDefinition"];
   readonly uninstallIntegration: LocalServerRegistry["uninstall"];
@@ -91,6 +92,7 @@ export function createDeviceServices(
     registry,
     store: options.store,
     listDiscoveryInventory: (input) => devices.listDiscoveryInventory(input),
+    computerAccess: (input, run, tools) => devices.computerAccess(input, run, tools),
     listCallableTools: (input) => devices.listCallableTools(input),
     installCatalogDefinition: (input) => devices.installDefinition(input),
     uninstallIntegration: (input) => registry.uninstall(input),

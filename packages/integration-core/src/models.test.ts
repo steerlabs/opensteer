@@ -33,6 +33,14 @@ describe("integration readiness", () => {
     expect(
       resolveIntegrationReadiness({ ...connected, hasAccess: (id) => id === connectionId }),
     ).toMatchObject({ code: "READY", connectionId, requiredAccess: null });
+    expect(
+      resolveIntegrationReadiness({
+        ...connected,
+        hasAccess: () => true,
+        requiredAccess: "read-write",
+        runAccess: "read",
+      }),
+    ).toMatchObject({ code: "READ_ONLY_TASK", requiredAccess: null });
   });
 
   it("reports reauthorization instead of pretending a broken connection is usable", () => {

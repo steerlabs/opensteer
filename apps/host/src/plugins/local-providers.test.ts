@@ -1,0 +1,95 @@
+import { expect, it } from "vitest";
+import { createId, OpensteerError } from "@opensteer/core";
+import { deviceDefinitions } from "@opensteer/integration-catalog/devices";
+import { computerCallable } from "../devices/device-service.test-support.js";
+import { LocalProviders } from "./local-providers.js";
+
+it.each([false, true])(
+  "preserves an uncertain local write when the readiness recheck fails=%s",
+  async (fails) => {
+    const definition = deviceDefinitions.find((definition) => definition.id === "apple-calendar")!;
+    const callable = computerCallable("write", definition);
+    let failed = false;
+    const store = {
+      listDiscoveryInventory: async () => {
+        if (failed && fails) throw new Error("inventory down");
+        const readiness = {
+          code: failed ? "ACCESS_GRANT_REQUIRED" : "READY",
+          serverId: callable.server.id,
+          connectionId: callable.grant.connectionId,
+          requiredAccess: failed ? "read-write" : null,
+          detail: null,
+        };
+        return [
+          {
+            installation: callable.installation,
+            servers: [callable.server],
+            accounts: [{ connectionId: callable.grant.connectionId }],
+            tools: [callable.tool],
+            readiness: { servers: [readiness], tools: [{ toolId: callable.tool.id, readiness }] },
+          },
+        ];
+      },
+      listCallableTools: async () => (failed ? [] : [callable]),
+      getDeviceComputerConnectionForCall: async () => ({
+        deviceId: "dev_mac",
+        runnerName: "Studio Mac",
+        access: "read-write",
+      }),
+    };
+    const providers = new LocalProviders({
+      store,
+      devices: {
+        withAvailability: async (entries: unknown) => entries,
+        callTool: async () => {
+          failed = true;
+          throw new OpensteerError({
+            code: "harness_error",
+            message: "Outcome unknown. Check whether it happened before trying again.",
+            next: "Check the event list before retrying.",
+            retryable: false,
+          });
+        },
+      },
+      localServers: {},
+      authority: {
+        caller: () => ({
+          kind: "run",
+          userId: createId("user"),
+          thread: { id: createId("thread") },
+        }),
+      },
+    } as unknown as ConstructorParameters<typeof LocalProviders>[0]);
+    const context = { caller: "test", mode: "automatic" as const };
+    const [provider] = await providers.providers(context);
+    expect(provider).toBeDefined();
+    await expect(
+      providers.call(
+        {
+          ...context,
+          execution: "execution",
+          plugin: provider!.id,
+          tool: callable.tool.name,
+          input: {},
+        },
+        AbortSignal.timeout(5000),
+        async () => {
+          throw new Error("Unexpected approval");
+        },
+      ),
+    ).rejects.toMatchObject({
+      message: fails
+        ? "Outcome unknown. Check whether it happened before trying again. Check the event list before retrying."
+        : expect.stringMatching(/Outcome unknown.*Check the event list.*app_access_request/s),
+    });
+    if (!fails)
+      expect(await providers.blockers(context)).toMatchObject([
+        {
+          blocked: {
+            code: "access_required",
+            next: expect.stringContaining('"dataApp":"calendar"'),
+          },
+        },
+      ]);
+  },
+);

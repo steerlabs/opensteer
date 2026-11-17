@@ -152,9 +152,10 @@ describe("owner-session computer app approvals", () => {
       originatingRunId: createId("run"),
       threadId: createId("thread"),
     });
-    expect(result).toMatchObject({
+    expect(result).toEqual({
       status: "pending",
-      nextAction: expect.stringContaining("any Opensteer app"),
+      request: { id: "pending-phone" },
+      replayed: false,
     });
     expect(store.requestDeviceComputerAppAccess).toHaveBeenCalledWith(
       expect.objectContaining({ deviceId: phoneId, definitionId: "iphone-screen", app: null }),

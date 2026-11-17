@@ -378,7 +378,11 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
             return;
           }
           const { loginRef } = z
-            .object({ status: z.literal("ready"), loginRef: z.string() })
+            .object({
+              status: z.literal("fulfilled"),
+              loginStatus: z.literal("ready"),
+              loginRef: z.string(),
+            })
             .parse(ready.structuredContent);
           const authorize = authority.commands.findLast((c) => c.type === "login.authorize");
           if (authorize?.type !== "login.authorize") throw new Error("Missing authorization");
@@ -468,7 +472,11 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
             });
             results.push(foreignReady);
             const foreignLogin = z
-              .object({ status: z.literal("ready"), loginRef: z.string() })
+              .object({
+                status: z.literal("fulfilled"),
+                loginStatus: z.literal("ready"),
+                loginRef: z.string(),
+              })
               .parse(foreignReady.structuredContent);
             expect(foreign.threadId).not.toBe(run.threadId);
             // The current task cannot spend another task’s saved-login lease.

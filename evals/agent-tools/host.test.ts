@@ -40,6 +40,13 @@ it("returns a fixture refusal as an MCP tool error after validation", async () =
     expect(host.calls).toMatchObject([
       { ...call, valid: true, result: { $error: "Service is offline." } },
     ]);
+    const badOutput = await client.callTool({
+      name: "saved_login_request",
+      arguments: { tabId: "sign-in-tab", site: "https://example.com", reason: "Sign in" },
+    });
+    expect(badOutput.isError).toBe(true);
+    expect(JSON.stringify(badOutput)).toContain("invalid mock output for saved_login_request");
+    expect(host.calls.at(-1)?.valid).toBe(false);
     const invalid = await client.callTool({ name: call.tool, arguments: { unexpected: true } });
     expect(invalid.isError).toBe(true);
     expect(invalid.content).not.toEqual(result.content);
@@ -61,9 +68,30 @@ it("serves the production inventory and validates mocked calls through real MCP 
       profile: "task",
       turns: ["hi"],
       mocks: {
-        plugin_search: { $responses: [{ marker: "first" }, { marker: "second" }] },
+        plugin_search: {
+          $responses: [
+            {
+              items: [],
+              namespaces: [{ app: "first", path: "tools.fixture" }],
+              remaining: 0,
+              next: null,
+              stale: "must be stripped",
+            },
+            {
+              items: [],
+              namespaces: [{ app: "second", path: "tools.fixture" }],
+              remaining: 0,
+              next: null,
+            },
+          ],
+        },
         opensteer_automation_list: {
-          $byArgs: [{ args: { systemRole: "memory-light" }, result: { marker: "light" } }],
+          $byArgs: [
+            {
+              args: { systemRole: "memory-light" },
+              result: { automations: [], replayed: true },
+            },
+          ],
         },
       },
       expect: {},
@@ -91,6 +119,7 @@ it("serves the production inventory and validates mocked calls through real MCP 
       });
       expect(valid.isError).not.toBe(true);
       expect(JSON.stringify(valid)).toContain("first");
+      expect(JSON.stringify(valid)).not.toContain("must be stripped");
       const invalid = await client.callTool({
         name: "plugin_search",
         arguments: { unexpected: true },
@@ -107,7 +136,7 @@ it("serves the production inventory and validates mocked calls through real MCP 
       JSON.stringify(
         await clients[0]!.callTool({ name: "opensteer_automation_list", arguments: args }),
       );
-    expect(await byArgs({ systemRole: "memory-light" })).toContain("light");
+    expect(await byArgs({ systemRole: "memory-light" })).toContain('"replayed":true');
     expect(await byArgs({})).toContain("No case mock matches these arguments");
     expect(host.calls.map((call) => call.valid)).toEqual([true, false, true, true, true]);
     const out = await mkdtemp(join(tmpdir(), "opensteer-eval-mcp-evidence-"));
@@ -138,7 +167,7 @@ it("validates prompt overhaul case inputs and mocked positive calls with product
     "b0efe75413a275f2e4a5cb06d1606fae7cd96713",
     "0c9e437c0ae12ad1e3ea45f9730996a73d0ce511",
   ];
-  for (const file of ["integrations", "triggers", "browser", "apps", "computer-use"]) {
+  for (const file of ["integrations", "plugins", "triggers", "browser", "apps", "computer-use"]) {
     const cases = parseCases(
       await readFile(new URL(`./cases/${file}.ndjson`, import.meta.url), "utf8"),
     );
@@ -175,11 +204,16 @@ it("validates prompt overhaul case inputs and mocked positive calls with product
           await client.callTool({
             name: required.tool,
             arguments:
-              required.tool === "saved_login_request" || required.tool === "chrome_cookies_request"
+              required.tool === "saved_login_request" ||
+              required.tool === "chrome_cookies_request" ||
+              required.tool === "app_access_request"
                 ? { ...args, reason: "Check the assigned account" }
                 : args,
           });
-          expect(host.calls.at(-1)?.valid, `${c.id}: ${required.tool} args`).toBe(true);
+          expect(
+            host.calls.at(-1)?.valid,
+            `${c.id}: ${required.tool} args ${JSON.stringify(host.calls.at(-1)?.result)}`,
+          ).toBe(true);
         }
       } finally {
         await Promise.allSettled([...clients.values()].map((c) => c.close()));
@@ -257,7 +291,7 @@ it("preserves production action validation before consuming mocks", async () => 
       turns: ["hi"],
       expect: {},
       mocks: {
-        opensteer_automation_create: { marker: "admitted" },
+        opensteer_automation_create: { replayed: true },
         opensteer_automation_control: { marker: "admitted" },
         opensteer_automation_read: { marker: "admitted" },
       },
@@ -310,7 +344,7 @@ it("preserves production action validation before consuming mocks", async () => 
         },
       },
     });
-    expect(JSON.stringify(result)).toContain("admitted");
+    expect(result).toMatchObject({ structuredContent: { replayed: true } });
     expect(host.calls.at(-1)?.valid).toBe(true);
   } finally {
     await client.close();

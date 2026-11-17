@@ -48,7 +48,6 @@ import {
   type Request,
 } from "@opensteer/core";
 import {
-  computerUseUpdateMacSentence,
   computerUseUpdateSentence,
   mintComputerUseSessionId,
   type MachineAppStatus,
@@ -1580,6 +1579,7 @@ describe("DeviceService computer use gateway", () => {
     };
     const lease = { sessionId: mintComputerUseSessionId() };
     const mockedComputerUse = {
+      eligibleInventory: async () => ({ machines: [], phones: [] }),
       closeForConnection: vi.fn(),
       eligibleMachines: vi.fn(async () => []),
       installedApps: vi.fn(async () => []),
@@ -1774,6 +1774,52 @@ describe("DeviceService computer use gateway", () => {
         }),
       },
     });
+    vi.spyOn(service.devices.computerAppApprovals, "computerUseInventory").mockImplementation(
+      async () => ({
+        machines:
+          input.phone || input.revoked?.()
+            ? []
+            : [
+                {
+                  name: "Alex's Mac",
+                  deviceId: DeviceIdSchema.parse(runnerId),
+                  definitionId: "macos-app",
+                  ready: true,
+                  state: "ready",
+                  appApproval: "ask",
+                  apps: [
+                    {
+                      name: notes.displayName,
+                      bundleId: notes.bundleId,
+                      connectionId: connection.id,
+                      access: input.connectionAccess ?? "read-write",
+                      status: "approved",
+                    },
+                  ],
+                },
+              ],
+        phones:
+          !input.phone || input.revoked?.()
+            ? []
+            : [
+                {
+                  name: "Pixel 7",
+                  deviceId: DeviceIdSchema.parse(runnerId),
+                  definitionId: "android-phone",
+                  ready: true,
+                  state: "ready",
+                  blockedByOwner: false,
+                  connection: {
+                    connectionId: connection.id,
+                    access: input.connectionAccess ?? "read-write",
+                  },
+                },
+              ],
+      }),
+    );
+    vi.spyOn(service.devices.computerAppApprovals, "computerAppHolders").mockResolvedValue(
+      new Map(),
+    );
     return {
       callable,
       runnerId,
@@ -1816,6 +1862,112 @@ describe("DeviceService computer use gateway", () => {
   }
 
   const context = { runId: createId("run"), threadId: createId("thread") };
+
+  it("explains a missing callable with the listing blocker and reuses its tool lookup", async () => {
+    const f = guiFixture({ operation: "observe" });
+    const who = runCaller(context);
+    const tools = vi.spyOn(f.service.devices, "listCallableTools").mockResolvedValue([]);
+    try {
+      const access = await f.service.devices.computerAccess(
+        { ownerUserId: who.run!.requestedBy, threadId: who.threadId },
+        who.run!,
+      );
+      const state = access.appEntries(access.machines[0]!)[0]!;
+      tools.mockClear();
+      await expect(operate(f.service, f.callable, {}, who)).rejects.toMatchObject({
+        code: "forbidden",
+        reason: state.blocked!.code,
+        message: state.blocked!.message,
+        next: state.blocked!.next,
+      });
+      expect(tools).toHaveBeenCalledOnce();
+    } finally {
+      await f.service.close();
+    }
+  });
+
+  it("preserves the owner blocker when a phone's bound connection becomes unusable", async () => {
+    const f = guiFixture({ phone: true, operation: "observe" });
+    const who = runCaller(context);
+    const inventory = await f.service.devices.computerAppApprovals.computerUseInventory(
+      who.run!.requestedBy,
+    );
+    vi.spyOn(f.service.devices, "listCallableTools").mockResolvedValue([]);
+    vi.spyOn(f.service.devices.computerAppApprovals, "computerUseInventory").mockResolvedValue({
+      ...inventory,
+      phones: inventory.phones.map((phone) => ({
+        ...phone,
+        connectionId: f.callable.grant.connectionId!,
+        connection: null,
+        blockedByOwner: true,
+      })),
+    });
+    try {
+      const access = await f.service.devices.computerAccess(
+        { ownerUserId: who.run!.requestedBy, threadId: who.threadId },
+        who.run!,
+      );
+      const state = access.phone(access.phones[0]!);
+      await expect(operate(f.service, f.callable, {}, who)).rejects.toMatchObject({
+        reason: state.blocked!.code,
+        message: state.blocked!.message,
+        next: state.blocked!.next,
+      });
+    } finally {
+      await f.service.close();
+    }
+  });
+
+  it.each([false, true])(
+    "uses the listing blocker when a granted target goes offline (phone=%s)",
+    async (phone) => {
+      const f = guiFixture({
+        phone,
+        settleRefusal: new ComputerUseError("offline", "Disconnected"),
+      });
+      const who = runCaller(context);
+      const inventory = await f.service.devices.computerAppApprovals.computerUseInventory(
+        who.run!.requestedBy,
+      );
+      vi.spyOn(f.service.devices.computerAppApprovals, "computerUseInventory").mockResolvedValue({
+        machines: inventory.machines.map((machine) => ({
+          ...machine,
+          state: "offline",
+          ready: false,
+        })),
+        phones: inventory.phones.map((entry) => ({ ...entry, state: "offline", ready: false })),
+      });
+      try {
+        const access = await f.service.devices.computerAccess(
+          { ownerUserId: who.run!.requestedBy, threadId: who.threadId },
+          who.run!,
+        );
+        const state = phone
+          ? access.phone(access.phones[0]!)
+          : access.appEntries(access.machines[0]!)[0]!;
+        await expect(operate(f.service, f.callable, {}, who)).rejects.toMatchObject({
+          reason: state.blocked!.code,
+          message: state.blocked!.message,
+          next: state.blocked!.next,
+        });
+      } finally {
+        await f.service.close();
+      }
+    },
+  );
+
+  it("authorizes callable operations without gathering discovery facts", async () => {
+    const f = guiFixture({ operation: "observe" });
+    const access = vi
+      .spyOn(f.service.devices, "computerAccess")
+      .mockRejectedValue(new Error("Unexpected discovery"));
+    try {
+      await operate(f.service, f.callable, {}, runCaller(context));
+      expect(access).not.toHaveBeenCalled();
+    } finally {
+      await f.service.close();
+    }
+  });
 
   it.each([false, true])(
     "revokes during a slow saved-login seal without dispatch (phone=%s)",
@@ -2052,30 +2204,24 @@ describe("DeviceService computer use gateway", () => {
     });
   });
 
-  /*
-   * A refusal for want of permission is said in the computer's own words.
-   * Failure modes:
-   * - a phone's sentence, already a whole sentence about the phone — paused
-   *   or a task that may only look — gets " on Pixel 7" bolted on
-   *   after its full stop;
-   * - a Mac's sentence, which names only the app, loses the Mac it is about.
-   */
   it.each([
     ["a paused phone", "This phone is paused. Resume it in the Opensteer Agent Phone app."],
     ["a task that may only look", "This task may look at the phone but not operate it."],
-  ])("says a phone's refusal for %s in the phone's own sentence", async (_name, sentence) => {
+  ])("normalizes a phone permission failure for %s", async (_name, sentence) => {
     const { callable, service } = guiFixture({
       phone: true,
       settleRefusal: new ComputerUseError("permission-required", sentence),
     });
 
     await expect(operate(service, callable, {}, runCaller(context))).rejects.toMatchObject({
-      code: "permission-required",
-      message: sentence,
+      code: "forbidden",
+      reason: "permission_required",
+      message: "Pixel 7 needs computer-use permissions.",
+      next: expect.any(String),
     });
   });
 
-  it("names the Mac after an app's refusal for want of permission", async () => {
+  it("normalizes an app permission failure with the Mac identity", async () => {
     const { callable, service } = guiFixture({
       settleRefusal: new ComputerUseError(
         "permission-required",
@@ -2084,8 +2230,10 @@ describe("DeviceService computer use gateway", () => {
     });
 
     await expect(operate(service, callable, {}, runCaller(context))).rejects.toMatchObject({
-      code: "permission-required",
-      message: "Notes needs Accessibility permission on Alex's Mac.",
+      code: "forbidden",
+      reason: "permission_required",
+      message: "Alex's Mac needs computer-use permissions.",
+      next: expect.any(String),
     });
   });
 
@@ -2095,8 +2243,10 @@ describe("DeviceService computer use gateway", () => {
     });
 
     await expect(operate(service, callable, {}, runCaller(context))).rejects.toMatchObject({
-      code: "incompatible-version",
-      message: computerUseUpdateMacSentence("Alex's Mac"),
+      code: "forbidden",
+      reason: "update_required",
+      message: "Alex's Mac needs an Opensteer update.",
+      next: expect.any(String),
     });
   });
 
@@ -2378,13 +2528,14 @@ describe("computer app request matrix", () => {
     await test.service.devices.computerAppApprovals.requestComputerAppAccess(test.input);
     expect(test.threadReadInsideAdmission).toEqual([false]);
   });
-  it("returns already available and toolRefs when the requested access is callable", async () => {
+  it("returns the resolved target when the requested access is callable", async () => {
     const test = fixture({ connectionAccess: "read-write", callableAccess: "read-write" });
     expect(
       await test.service.devices.computerAppApprovals.requestComputerAppAccess(test.input),
     ).toMatchObject({
-      status: "already-available",
-      toolRefs: { observe: expect.any(String), act: expect.any(String) },
+      status: "fulfilled",
+      app: { displayName: expect.any(String), bundleId: expect.any(String) },
+      computerId: expect.any(String),
     });
     expect(test.requestComputerAppAccess).not.toHaveBeenCalled();
   });

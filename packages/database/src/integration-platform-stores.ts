@@ -1293,6 +1293,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
               connectionRequirement: server.connectionRequirement,
               connections,
               hasAccess: hasInstallationAccess,
+              runAccess: requesterAccess.runAccess,
               installationStatus: installation.status,
               requiredAccess:
                 input.target?.access ??
@@ -1325,6 +1326,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
                   connectionRequirement: server.connectionRequirement,
                   connections,
                   hasAccess: hasInstallationAccess,
+                  runAccess: requesterAccess.runAccess,
                   installationStatus: installation.status,
                   requiredAccess: input.target?.access ?? "read",
                   requiredConnectionId: input.target?.connectionId ?? null,

@@ -23,6 +23,7 @@ export interface ResolveIntegrationReadinessInput {
   ) => boolean;
   readonly installationStatus: "active" | "disabled" | "needs-attention";
   readonly requiredAccess: IntegrationAccess;
+  readonly runAccess?: IntegrationAccess;
   readonly requiredConnectionId: string | null;
   readonly serverId: IntegrationServerId;
   readonly serverStatus: "active" | "disabled" | "needs-attention";
@@ -44,6 +45,14 @@ export function resolveIntegrationReadiness(
   } as const;
   if (input.installationStatus !== "active" || input.serverStatus !== "active")
     return { ...base, code: "INTEGRATION_UNAVAILABLE", connectionId: null };
+  if (input.runAccess === "read" && input.requiredAccess === "read-write")
+    return {
+      ...base,
+      code: "READ_ONLY_TASK",
+      connectionId: input.requiredConnectionId
+        ? IntegrationConnectionIdSchema.parse(input.requiredConnectionId)
+        : null,
+    };
   if (input.connectionRequirement.kind === "none") {
     return input.hasAccess(null, input.requiredAccess)
       ? { ...base, code: "READY", connectionId: null }

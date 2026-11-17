@@ -343,6 +343,17 @@ return { events, cloud: await tools.fixture.read({ amount: 2 }) };`,
       namespace: localNamespace("calendar-studio-mac", `app_device_${calendar.connection.id}`),
     });
     expect(JSON.stringify(offlineSearch)).toContain("Studio Mac is offline");
+    expect(offlineSearch.unavailableApps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          blocked: {
+            code: "unavailable",
+            message: expect.stringContaining("Studio Mac is offline"),
+            next: "Continue without it and tell the person what the message says.",
+          },
+        }),
+      ]),
+    );
     sent = helper.invocations.length;
     const offline = await pluginCall(gateway, listEvents, {
       end: "2026-10-07",

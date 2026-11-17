@@ -119,6 +119,20 @@ integration("local servers as plugin tools", () => {
       },
       { timeout: 15_000 },
     );
+    const blocked = await gateway.call("plugin_search", {
+      namespace: /"([^"]+)"/u.exec(pair)?.[1],
+    });
+    expect(blocked.unavailableApps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          blocked: {
+            code: "access_required",
+            message: expect.any(String),
+            next: expect.stringContaining('"server":"tv"'),
+          },
+        }),
+      ]),
+    );
     await dispatch(host, {
       type: "integration.grant.create",
       input: {

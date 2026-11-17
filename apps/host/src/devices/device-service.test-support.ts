@@ -211,9 +211,13 @@ export function platform(input: {
           requireDeviceSelfRunnerId: async (id) => RunnerIdSchema.parse(id),
           requireSelfDeviceId: async (id) => DeviceIdSchema.parse(id),
           computerAppRunner: vi.fn(async () => null),
+          listDeviceComputerAppSetupRequests: async () => [],
           listGrants: vi.fn(async () => []),
           // A fake's Request methods serve both stores the platform reads them from.
-          ...(input.store.requests ? { integrationRequests: input.store.requests } : {}),
+          integrationRequests: {
+            listPendingIntegrationAccessRequests: async () => [],
+            ...input.store.requests,
+          },
           ...input.store,
         }
       : {

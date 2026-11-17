@@ -1,63 +1,43 @@
+import { BlockedSchema, RequestStatusSchema } from "@opensteer/core";
 import { z } from "zod";
 import { AgentLinkSchema } from "./agent-links.js";
 
-const AppSchema = z.object({
-  name: z.string().optional(),
-  bundleId: z.string().optional(),
-  packageName: z.string().optional(),
-  appId: z.string().optional(),
-  label: z.string().optional(),
-  identity: z
-    .object({
-      displayName: z.string(),
-      bundleId: z.string().optional(),
-      packageName: z.string().optional(),
-    })
-    .optional(),
-  access: z.string().optional(),
-  status: z.string().optional(),
-  blocked: z.boolean().optional(),
-  callable: z.boolean().optional(),
-  pending: z.string().optional(),
-  inUse: z.boolean().optional(),
-  heldByTask: z.string().optional(),
-});
+const AccessSchema = z.union([
+  z.object({ access: z.enum(["read", "read-write"]), blocked: z.never().optional() }),
+  z.object({ blocked: BlockedSchema, access: z.never().optional() }),
+]);
+const AppSchema = z.object({ name: z.string(), bundleId: z.string() }).and(AccessSchema);
 const ComputerSchema = z.object({
   computerId: z.string(),
   name: z.string(),
-  state: z.string(),
-  appApproval: z.string().optional(),
-  computerToolEnabled: z.boolean(),
-  computerUseVersion: z.number().nullable().optional(),
-  apps: z.array(AppSchema).optional(),
+  blocked: BlockedSchema.optional(),
+  apps: z.array(AppSchema),
 });
-const PhoneSchema = z.object({
-  definitionId: z.string().optional(),
-  availability: z
-    .object({ state: z.string(), reason: z.object({ kind: z.string() }).nullable() })
-    .optional(),
-  setup: z.object({ location: z.string(), driverRunnerName: z.string().optional() }).optional(),
-  computerId: z.string(),
-  name: z.string(),
-  state: z.string(),
-  approval: z.string(),
-  access: z.string().optional(),
-  inUse: z.boolean().optional(),
-  callable: z.boolean(),
-  computerToolEnabled: z.boolean(),
-  heldByTask: z.string().optional(),
-});
+const PhoneSchema = z
+  .object({
+    computerId: z.string(),
+    name: z.string(),
+    definitionId: z.enum(["android-phone", "iphone-screen"]),
+  })
+  .and(AccessSchema);
 export const ComputerAppsOutputSchema = z.object({
   guidance: z
-    .object({
-      computers: z.string().optional(),
-      phones: z.string().optional(),
-    })
+    .object({ computers: z.string().optional(), phones: z.string().optional() })
     .optional(),
   computers: z.array(ComputerSchema).optional(),
   phones: z.array(PhoneSchema).optional(),
   computer: ComputerSchema.optional(),
-  apps: z.array(AppSchema).optional(),
+  apps: z
+    .array(
+      z.object({
+        label: z.string(),
+        appId: z.string(),
+        packageName: z.string().optional(),
+        access: z.never().optional(),
+        blocked: z.never().optional(),
+      }),
+    )
+    .optional(),
   total: z.number().optional(),
   nextCursor: z.string().nullable().optional(),
 });
@@ -82,12 +62,13 @@ export const ComputerUseOutputSchema = z.object({
   isError: z.boolean().optional(),
 });
 export const AppAccessRequestOutputSchema = z.object({
+  computerId: z.string().optional(),
+  computer: z.string().optional(),
+  app: z.object({ displayName: z.string(), bundleId: z.string() }).nullable().optional(),
   link: AgentLinkSchema.optional(),
-  status: z.string(),
-  kind: z.string().optional(),
+  status: RequestStatusSchema.or(z.literal("blocked")),
+  kind: z.string(),
   replayed: z.boolean().optional(),
-  requestId: z.string().nullable().optional(),
-  alreadyGranted: z.boolean().optional(),
-  nextAction: z.string().optional(),
-  guidance: z.string().optional(),
+  requestId: z.string().nullable(),
+  next: z.string().min(1),
 });

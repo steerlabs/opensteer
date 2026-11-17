@@ -1,3 +1,7 @@
+import { pluginTargetBlocked } from "../../plugins/target-blocked.js";
+import { requestResult } from "../request-result.js";
+import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
+import type { PluginCaller } from "../../plugins/engine-protocol.js";
 import { z } from "zod";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import type { OpensteerStore, PluginAgentStore } from "@opensteer/database";
@@ -15,7 +19,7 @@ export class PluginToolHandlers {
   readonly options: {
     service: PluginService;
     /** Device data apps and local servers, which list beside plugins. */
-    localProviders?: Pick<LocalProviders, "providers">;
+    localProviders?: Pick<LocalProviders, "providers" | "blockers">;
     authority: PluginAuthority;
     executions: PluginExecutions;
     store: OpensteerStore;
@@ -46,9 +50,10 @@ export class PluginToolHandlers {
     const context = this.options.authority.admit(c.caller);
     const first = !c.input.cursor && !c.input.pluginId;
     const settings = await this.options.settings.settings(c.caller.userId);
-    const [plugins, local] = await Promise.all([
+    const [plugins, local, localBlockers] = await Promise.all([
       this.options.service.list({}, context, c.signal),
       first ? (this.options.localProviders?.providers(context) ?? []) : [],
+      first ? (this.options.localProviders?.blockers(context) ?? []) : [],
     ]);
     const access = (id: string) => settings.find((s) => s.pluginId === id)?.access ?? "all";
     const page = c.input.pluginId
@@ -69,7 +74,12 @@ export class PluginToolHandlers {
           slug: provider.slug,
           access: access(provider.id) as "all" | "read-only",
           status: provider.unavailable ? "unavailable" : "active",
-          ...(provider.unavailable ? { unavailable: provider.unavailable } : {}),
+          ...(provider.unavailable
+            ? {
+                unavailable: provider.unavailable,
+                blocked: localBlockers.find((target) => target.id === provider.id)?.blocked,
+              }
+            : {}),
           toolCount: provider.tools.length,
           readOnlyToolCount: provider.tools.filter(({ readOnly }) => readOnly === true).length,
         })),
@@ -85,7 +95,32 @@ export class PluginToolHandlers {
             .catch([])
             .parse(detail.versions)
             .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+          const missingAccount = Object.entries(detail.plugin.requirements.accounts).some(
+            ([requirement, { scope }]) =>
+              !detail.links.some(
+                (link) => link.requirement === requirement && link.scope === scope,
+              ),
+          );
+          const blocked = !plugin.activeVersion
+            ? {
+                code: "unavailable",
+                message: `${plugin.name} has no active version.`,
+                next: "The person can choose an active version in Plugins; continue without it until then.",
+              }
+            : missingAccount
+              ? pluginTargetBlocked({
+                  id: plugin.id,
+                  name: plugin.name,
+                  reason: `${plugin.name} has no active version.`,
+                  requirements: detail.plugin.requirements.accounts,
+                  links: z
+                    .array(z.object({ requirement: z.string(), scope: z.enum(["app", "user"]) }))
+                    .parse(detail.links),
+                  canRequestAccount: c.caller.kind === "run",
+                })
+              : undefined;
           return {
+            ...(blocked ? { blocked } : {}),
             id: plugin.id,
             name: plugin.name,
             slug: plugin.slug,
@@ -109,6 +144,42 @@ export class PluginToolHandlers {
         }),
       ),
       cursor: page.cursor,
+    };
+  }
+  async discoveryResult<T extends object>(context: PluginCaller, result: T) {
+    const { unavailableApps: unavailable } = z
+      .object({
+        unavailableApps: z
+          .array(z.object({ app: z.string(), name: z.string(), reason: z.string() }).passthrough())
+          .optional(),
+      })
+      .parse(result);
+    if (!unavailable?.length) return result;
+    const local = (await this.options.localProviders?.blockers(context)) ?? [];
+    return {
+      ...result,
+      unavailableApps: await Promise.all(
+        unavailable.map(async (entry) => {
+          const known = local.find((target) => target.id === entry.app)?.blocked;
+          if (known) return { ...entry, blocked: known };
+          const detail = await this.options.service
+            .detail({ plugin: entry.app }, { caller: "personal", mode: "automatic" })
+            .catch(() => null);
+          return {
+            ...entry,
+            blocked: pluginTargetBlocked({
+              id: entry.app,
+              name: entry.name,
+              reason: entry.reason,
+              canRequestAccount: this.options.authority.caller(context.caller)?.kind === "run",
+              requirements: detail?.plugin.requirements.accounts ?? {},
+              links: z
+                .array(z.object({ requirement: z.string(), scope: z.enum(["app", "user"]) }))
+                .parse(detail?.links ?? []),
+            }),
+          };
+        }),
+      ),
     };
   }
   async install(c: ToolCall<"opensteer_plugin_install">) {
@@ -211,11 +282,15 @@ export class PluginToolHandlers {
       },
     });
     for (const event of created.events) this.options.publish(event);
-    return {
-      status: created.request.status,
-      requestId: created.request.id,
-      next: "Waiting on the person in Needs you to connect or link an account. Do not collect credentials or repeat the Request; continue other work.",
-    };
+    return requestResult(
+      created.request,
+      created.request.status === "pending"
+        ? requestPendingGuidance
+        : created.request.status === "fulfilled"
+          ? "The request was fulfilled. Use plugin_search to check the plugin's current tools."
+          : "The request is closed. Continue without this account.",
+      created.replayed,
+    );
   }
   /** Called after a person-reviewed link commits, including an OAuth completion. */
   async accountLinked(input: {
@@ -319,8 +394,14 @@ export class PluginToolHandlers {
         o.changed?.(c.caller.userId);
         return result;
       },
-      plugin_search: (c) => o.service.search(c.input, o.authority.admit(c.caller), c.signal),
-      plugin_describe: (c) => o.service.describe(c.input, o.authority.admit(c.caller), c.signal),
+      plugin_search: async (c) => {
+        const context = o.authority.admit(c.caller);
+        return this.discoveryResult(context, await o.service.search(c.input, context, c.signal));
+      },
+      plugin_describe: async (c) => {
+        const context = o.authority.admit(c.caller);
+        return this.discoveryResult(context, await o.service.describe(c.input, context, c.signal));
+      },
       plugin_call: (c) => o.executions.execute(c.caller, "call", c.input, c.signal),
       plugin_execute: (c) => o.executions.execute(c.caller, "execute", c.input, c.signal),
       plugin_resume: (c) => o.executions.resume(c.caller, c.input.executionId, c.signal),

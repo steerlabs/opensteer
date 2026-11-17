@@ -1,3 +1,4 @@
+import type { DeviceAvailability, PhoneDisplayView } from "@opensteer/protocol";
 import { sameDeviceDriver } from "./device-drivers.js";
 import type { ComputerTargetId } from "../computer-apps/computer-app-hub.js";
 import type { DeviceDisplayAuthorization, DeviceDriverRoute } from "./device-drivers.js";
@@ -304,6 +305,8 @@ export interface ComputerUseMachineOption {
   readonly definitionId?: DisplayDefinitionId;
   readonly runnerId: ComputerTargetId;
   readonly deviceId?: ComputerTargetId;
+  readonly availability?: DeviceAvailability;
+  readonly setup?: PhoneDisplayView["setup"];
 }
 
 type MachineOwners = ReadonlyMap<ComputerTargetId, { readonly effectiveOwner: UserId | null }>;
@@ -367,6 +370,8 @@ export interface ComputerUseServiceOptions {
       readonly name: string;
       readonly platform: ComputerAppPlatform;
       readonly definitionId?: DisplayDefinitionId;
+      readonly availability?: DeviceAvailability;
+      readonly setup?: PhoneDisplayView["setup"];
     } & ({ deviceId: DeviceId } | { runnerId: import("@opensteer/core").RunnerId }))[]
   >;
   readonly machineOwners: (deviceIds: readonly ComputerTargetId[]) => Promise<MachineOwners>;
@@ -1334,10 +1339,9 @@ export class ComputerUseService {
     const owners = this.#appOwners.get(session.deviceId) ?? new Map<string, Session>();
     const holder = owners.get(key);
     if (holder && holder !== session) {
-      const title = holder.threadTitle;
       throw new ComputerUseError(
         "busy",
-        `${session.deviceName} is already being used by another task.${title ? ` (Task: ${title})` : ""} ${computerUseBusyNextStep}`,
+        `${session.deviceName} is already being used by another task. ${computerUseBusyNextStep}`,
         true,
       );
     }
@@ -1392,11 +1396,6 @@ export class ComputerUseService {
     if (session.confirmed) this.#onSessionsChanged();
   }
 
-  /**
-   * The computer's own sentence, plus the Thread when this Host is the one
-   * holding the session. `busy` names no other Deployment's Thread, because
-   * only the Host that opened a session knows what it is for.
-   */
   #sentence(
     session: Session,
     scope: ComputerUseScope,
@@ -1409,11 +1408,7 @@ export class ComputerUseService {
       return `Computer use for this task on ${session.deviceName} ended before this call ran. Observe the ${scopeWords(scope).subject} again to continue.`;
     }
     if (code !== "busy") return message;
-    const holder = this.#appOwners
-      .get(session.deviceId)
-      ?.get(computerUseHolderKey(holdingOf(scope)));
-    const title = holder?.runId !== session.runId ? holder?.threadTitle : null;
-    return `${title ? `${message} (Task: ${title})` : message} ${computerUseBusyNextStep}`;
+    return `${message} ${computerUseBusyNextStep}`;
   }
 
   // ---- Mac operations --------------------------------------------------
@@ -1533,7 +1528,7 @@ export class ComputerUseService {
               : machine.definitionId === undefined || machine.definitionId === definitionId) &&
             owners.get(machine.deviceId)?.effectiveOwner === ownerUserId,
         )
-        .map(({ name, deviceId }) => {
+        .map(({ name, deviceId, availability, setup }) => {
           const status = live.get(deviceId)?.status;
           const ready =
             !!status?.operations.length &&
@@ -1541,6 +1536,8 @@ export class ComputerUseService {
           return {
             name,
             deviceId,
+            ...(availability ? { availability } : {}),
+            ...(setup ? { setup } : {}),
             runnerId: deviceId,
             ...(isPhoneDisplayDefinitionId(definitionId) ? { definitionId } : {}),
             ready,
@@ -1590,14 +1587,9 @@ export class ComputerUseService {
   }
 
   /** The Run holding each app, or the display, on this computer, keyed by `computerUseHolderKey`. */
-  holders(
-    deviceId: ComputerTargetId,
-  ): ReadonlyMap<string, { readonly runId: RunId; readonly threadTitle: string | null }> {
+  holders(deviceId: ComputerTargetId): ReadonlyMap<string, { readonly runId: RunId }> {
     return new Map(
-      [...(this.#appOwners.get(deviceId) ?? [])].map(([app, { runId, threadTitle }]) => [
-        app,
-        { runId, threadTitle },
-      ]),
+      [...(this.#appOwners.get(deviceId) ?? [])].map(([app, { runId }]) => [app, { runId }]),
     );
   }
 
