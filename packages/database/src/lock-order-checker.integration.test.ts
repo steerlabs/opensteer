@@ -200,21 +200,68 @@ integration("PostgreSQL global lock order checker", () => {
       });
     },
   );
-  it("checks deferred trigger acquisitions before COMMIT releases their locks", async () => {
+  it("commits a read-only transaction on a Device while fixture truncation waits for it", async () => {
+    const blocker = new Client({ connectionString: process.env.OPENSTEER_TEST_DATABASE_URL });
+    await blocker.connect();
+    const pid = (await blocker.query("select pg_backend_pid() as pid")).rows[0]!.pid as number;
+    let truncating: Promise<PromiseSettledResult<unknown>[]> | undefined;
+    try {
+      await client.query("begin");
+      await client.query("set local lock_timeout = '5s'");
+      await client.query("select * from public.devices");
+      await blocker.query("begin");
+      await blocker.query("set local lock_timeout = '5s'");
+      truncating = Promise.allSettled([
+        blocker.query(
+          "truncate table credential_vault_canaries, deployments,users,runners restart identity cascade",
+        ),
+      ]);
+      await vi.waitFor(async () => {
+        const waiting = await client.query(
+          "select exists(select 1 from pg_stat_activity where pid=$1 and wait_event_type='Lock') as waiting",
+          [pid],
+        );
+        expect(
+          waiting.rows[0]!.waiting,
+          "Fixture truncation never waited on the Device reader",
+        ).toBe(true);
+      });
+      const results = [
+        ...(await Promise.allSettled([client.query("commit")])),
+        ...(await truncating),
+      ];
+      for (const result of results) expect(result).toMatchObject({ status: "fulfilled" });
+    } finally {
+      await client.query("rollback");
+      await truncating;
+      await blocker.query("rollback");
+      await blocker.end();
+    }
+  });
+  it.each([
+    "update threads set name='deferred' where id='a'",
+    "select pg_temp.phase3m_queue_deferred()",
+    "do $$ begin perform pg_temp.phase3m_queue_deferred(); end $$",
+  ])("checks deferred trigger acquisitions before COMMIT: %s", async (statement) => {
     await client.query(
       "create function pg_temp.phase3m_deferred_deployment() returns trigger language plpgsql as $$ begin perform id from pg_temp.deployment_event_state where id='a' for share; return new; end $$",
     );
     await client.query(
       "create constraint trigger phase3m_deferred_deployment after update on threads deferrable initially deferred for each row execute function pg_temp.phase3m_deferred_deployment()",
     );
+    await client.query(
+      "create function pg_temp.phase3m_queue_deferred() returns void language plpgsql as $$ begin update pg_temp.threads set name='deferred' where id='a'; end $$",
+    );
     try {
       await client.query("begin");
-      await client.query("update threads set name='deferred' where id='a'");
+      await client.query("select * from threads where id='a' for no key update");
+      await client.query(statement);
       await expect(client.query("commit")).rejects.toThrow(
         /lock order.*threads.*deployment_event_state/is,
       );
     } finally {
       await client.query("rollback");
+      await client.query("drop function pg_temp.phase3m_queue_deferred()");
       await client.query("drop trigger phase3m_deferred_deployment on threads");
       await client.query("drop function pg_temp.phase3m_deferred_deployment()");
     }
