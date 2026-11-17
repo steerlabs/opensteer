@@ -1135,7 +1135,7 @@ async function buildGo(options: {
       `-ldflags=${[
         "-s",
         "-w",
-        `-buildid=opensteer-native-fs-v1.6.0-${options.targetOs}-${options.targetArch}-production`,
+        `-buildid=opensteer-native-fs-v1.7.0-${options.targetOs}-${options.targetArch}-production`,
         ...(options.targetOs === "darwin" ? ["-B", "gobuildid"] : []),
         ...(options.linkerFlags ?? []),
       ].join(" ")}`,

@@ -45,7 +45,7 @@ it("bounds request and response bytes and rejects a false containment claim", as
   ).rejects.toThrow("response exceeds its byte limit");
   const otherPlatform = process.platform === "darwin" ? "linux" : "darwin";
   const lying = await helper(
-    `process.stdout.write(JSON.stringify({binaryIdentity:"opensteer-native-fs",binaryVersion:"1.6.0",platform:${JSON.stringify(otherPlatform)},containment:${JSON.stringify(otherPlatform === "linux" ? "linux-openat2" : "posix-openat-nofollow")},ok:true,result:{contentBase64:"eA==",path:"x",size:1}}));`,
+    `process.stdout.write(JSON.stringify({binaryIdentity:"opensteer-native-fs",binaryVersion:"1.7.0",platform:${JSON.stringify(otherPlatform)},containment:${JSON.stringify(otherPlatform === "linux" ? "linux-openat2" : "posix-openat-nofollow")},ok:true,result:{contentBase64:"eA==",path:"x",size:1}}));`,
   );
   await expect(
     lying.helper.read({ root: "/tmp", path: "x" }, new AbortController().signal),

@@ -22,9 +22,6 @@ import type { HostApiCommand } from "@opensteer/protocol";
 import { expect, vi } from "vitest";
 import { sql } from "kysely";
 import { ShellSessionIdSchema } from "@opensteer/protocol";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { IntegrationService } from "../integrations/integration-service.js";
 import {
   AdministrationService,
@@ -54,7 +51,6 @@ function mcp(dependencies: AdministrationDependencies, userId: UserId) {
       async () => [],
       () => true,
     ),
-    vi.fn(),
   );
   const service = new OpensteerMcpService({
     callers: { authenticate: async () => caller },
@@ -699,142 +695,6 @@ describeStore("MCP administration", (it) => {
       await channels.close();
     }
   });
-  it("reverses the personal plugin switch", async ({ storeFixture: f }) => {
-    const run = await f.createRunFixture("admin-plugin");
-    const platform = new IntegrationPlatformStore(f.database);
-    const pluginId = randomUUID();
-    await platform.plugins.install({
-      id: pluginId,
-      name: "admin-research",
-      actorUserId: run.userId,
-      source: {},
-      digest: "a".repeat(64),
-      manifest: { name: "admin-research" },
-    });
-    const agent = mcp(
-      {
-        store: f.store,
-        integrations: { platform: { store: platform } },
-        realtime: { broadcast: vi.fn() },
-      } as unknown as AdministrationDependencies,
-      run.userId,
-    );
-    try {
-      await retryAfterPersonChange(
-        agent,
-        "opensteer_plugin_update",
-        { pluginId, enabled: false },
-        () => setPluginEnabled(platform, run.userId, pluginId, true),
-        () => platform.settings.detail(run.userId, { kind: "plugin", pluginId }),
-        { enabled: true },
-      );
-      await retryAfterPersonChange(
-        agent,
-        "opensteer_plugin_update",
-        { pluginId, enabled: true },
-        () => setPluginEnabled(platform, run.userId, pluginId, false),
-        () => platform.settings.detail(run.userId, { kind: "plugin", pluginId }),
-        { enabled: false },
-      );
-    } finally {
-      await agent.service.close();
-    }
-  });
-  it("replays plugin update and removal after a person replaces their state", async ({
-    storeFixture: f,
-  }) => {
-    const run = await f.createRunFixture("plugin-retries");
-    const store = new IntegrationPlatformStore(f.database);
-    const directory = await mkdtemp(join(tmpdir(), "opensteer-admin-plugin-"));
-    const source = join(directory, "source");
-    await mkdir(source);
-    const platform = createIntegrationPlatform({
-      store,
-      dataDirectory: join(directory, "data"),
-      listConnections: async () => [],
-      definitions: [],
-      adapters: [],
-      computerApps: {},
-      credentialMaterializer: {},
-      authorizationSource: {},
-      mcpOauth: {},
-      secretVault: {},
-      isRunnerConnected: () => false,
-      onDeploymentEvent: vi.fn(),
-      onConnectionsChanged: vi.fn(),
-      onRequestsChanged: vi.fn(),
-    } as unknown as IntegrationPlatformTestOptions);
-    const agent = mcp(
-      {
-        store: f.store,
-        integrations: {
-          devices: platform.devices,
-          localServers: platform.localServers,
-          platform,
-        },
-        realtime: { broadcast: vi.fn() },
-      } as unknown as AdministrationDependencies,
-      run.userId,
-    );
-    const manifest = (description: string) =>
-      writeFile(
-        join(source, "plugin.json"),
-        JSON.stringify({
-          $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-          name: "admin-retry",
-          description,
-        }),
-      );
-    try {
-      await manifest("Initial");
-      const installed = await platform.installAgentPlugin({
-        actorUserId: run.userId,
-        directory: source,
-        requestId: randomUUID(),
-      });
-      const pluginId = installed.installation.pluginId!;
-      const observe = () =>
-        f.database.selectFrom("plugins").selectAll().where("id", "=", pluginId).executeTakeFirst();
-      await manifest("Agent update");
-      await retryAfterPersonChange(
-        agent,
-        "opensteer_plugin_install",
-        { pluginId, directory: source },
-        async () => {
-          await manifest("Person update");
-          await platform.installAgentPlugin({
-            actorUserId: run.userId,
-            directory: source,
-            pluginId,
-            requestId: randomUUID(),
-          });
-        },
-        observe,
-        { directory: join(directory, "different") },
-      );
-      await retryAfterPersonChange(
-        agent,
-        "opensteer_plugin_remove",
-        { pluginId },
-        () =>
-          store.plugins.install({
-            id: pluginId,
-            name: "admin-retry",
-            actorUserId: run.userId,
-            source: {},
-            digest: "c".repeat(64),
-            manifest: { name: "admin-retry" },
-          }),
-        observe,
-        { pluginId: randomUUID() },
-      );
-    } finally {
-      await agent.service.close();
-      await platform.close();
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
-
   it("replays a provider disconnection after the person reconnects the same account", async ({
     storeFixture: f,
   }) => {
@@ -1122,20 +982,3 @@ describeStore("MCP administration", (it) => {
     }
   });
 });
-
-async function setPluginEnabled(
-  platform: IntegrationPlatformStore,
-  owner: UserId,
-  pluginId: string,
-  enabled: boolean,
-) {
-  const target = { kind: "plugin" as const, pluginId };
-  const detail = await platform.settings.detail(owner, target);
-  return platform.settings.setEnabled(owner, {
-    type: "settings.plugin.enabled.set",
-    idempotencyKey: randomUUID(),
-    target,
-    enabled,
-    expectedRevision: detail.row.placement.revision,
-  });
-}

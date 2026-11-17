@@ -89,6 +89,7 @@ const testAgentSkills = {
     "opensteer:skills": "/runner/agent-skills/skills/skills",
     "opensteer:memory": "/runner/agent-skills/skills/memory",
     "opensteer:integrations": "/runner/agent-skills/skills/integrations",
+    "opensteer:plugins": "/runner/agent-skills/skills/plugins",
     "opensteer:browser": "/runner/agent-skills/skills/browser",
     "opensteer:computer-use": "/runner/agent-skills/skills/computer-use",
     "opensteer:computers": "/runner/agent-skills/skills/computers",
@@ -6039,7 +6040,7 @@ function triggerCommand(
       mcp: { token: "trigger-mcp-token", url: "https://host.example/internal/v1/mcp" },
       occurrenceId,
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "javascript",
         source: "export default async () => null",
       },

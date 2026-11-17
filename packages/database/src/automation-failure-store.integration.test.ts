@@ -153,7 +153,7 @@ integration.sequential("automation failure notices", () => {
     const program = {
       language: "javascript",
       source: "export default async () => null",
-      toolContractVersion: 4,
+      toolContractVersion: 5,
     } as const;
     function createOneShotTrigger(fixture: Fixture, suffix: string) {
       return triggers.create({
@@ -665,7 +665,7 @@ integration.sequential("automation failure notices", () => {
       program: {
         language: "javascript",
         source: "export default async () => new Promise(() => setInterval(() => {}, 1000))",
-        toolContractVersion: 4,
+        toolContractVersion: 5,
       },
       source: {
         kind: "watch",

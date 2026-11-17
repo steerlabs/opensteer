@@ -1,3 +1,8 @@
+import { PluginAuthority } from "../plugins/plugin-authority.js";
+import { PluginExecutions } from "../plugins/plugin-executions.js";
+import { PluginAgentStore } from "@opensteer/database";
+import { PluginToolHandlers } from "../mcp/handlers/plugins.js";
+import { pluginSourceFiles, exportPluginSource } from "../plugins/plugin-source.js";
 import { PluginService } from "../plugins/plugin-service.js";
 import { TabStore, AgentToolActivityStore, appendHostDeploymentEvent } from "@opensteer/database";
 import { TabService } from "../tabs/tab-service.js";
@@ -60,7 +65,7 @@ import {
 import { ThreadService } from "../threads/thread-service.js";
 import { ConnectionOAuth } from "../mcp/connections/index.js";
 import { AgentConnectionStore, recoverAssignmentResultWaits } from "@opensteer/database";
-import { createHmac, randomUUID } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { withFolderPluginPackage } from "../integrations/folder-plugin-package.js";
 import { AppTunnelHub } from "../apps/app-tunnel-hub.js";
 import {
@@ -410,6 +415,9 @@ export function runnerRegistrationHook<T>(
 export interface PersonalHostRuntime {
   readonly kind: "personal";
   readonly plugins: PluginService;
+  readonly pluginAgentSettings: PluginAgentStore;
+  readonly pluginRequests: PluginExecutions;
+  readonly pluginTools: PluginToolHandlers;
   readonly app: FastifyInstance;
   readonly browser: BrowserService;
   readonly tabs: TabService;
@@ -525,6 +533,7 @@ export async function createHostRuntime(
   let threadStateStopped = false;
   let taskQuestions: TaskQuestionNotices | undefined;
   let pluginService: PluginService | undefined;
+  let pluginExecutions: PluginExecutions | undefined;
   let pluginChangeNotices: PluginChangeNotices | undefined;
   try {
     // A team database is served by several Host processes at once; a personal one by exactly one.
@@ -1055,11 +1064,26 @@ export async function createHostRuntime(
       new StaticEncryptionKeyProvider(new Map([[1, credentialKey]]), 1),
     );
     const credentials = new CredentialService({ key: credentialKey, store });
+    const pluginAgentStore = new PluginAgentStore(database);
+    const pluginAuthority = new PluginAuthority({
+      store,
+      settings: pluginAgentStore,
+      owner: async () => (await personalSettings(database)).ownerId,
+      beforeAuthorize: () => pluginExecutions?.settled() ?? Promise.resolve(),
+    });
     pluginService = new PluginService({
       deployment: "personal",
       databaseUrl: config.databaseUrl,
       dataDirectory,
       owner: "personal",
+      authorize: (input) => pluginAuthority.authorize(input),
+      onExecution: (execution) => pluginExecutions?.report(execution),
+      onState: (state) => {
+        if (state.status === "restarting" || state.status === "unavailable")
+          void pluginExecutions
+            ?.recover()
+            .catch((error) => app.log.error({ err: error }, "Plugin recovery failed"));
+      },
       credentialKey,
       origin: config.canonicalOrigin.origin,
     });
@@ -1481,6 +1505,7 @@ export async function createHostRuntime(
       taskQuestions?.observe(event);
       teamRunEvents?.observe(event);
       observeIntegrationInput?.(event);
+      pluginExecutions?.observe(event);
       if (
         (event.type === "request.opened" || event.type === "request.resolved") &&
         "request" in event.data
@@ -1678,6 +1703,20 @@ export async function createHostRuntime(
     // Before accepting installs: their data folder can precede the plugin transaction.
     await localServers.recoverPluginData();
     await localServers.inputRequests.recover();
+    pluginExecutions = new PluginExecutions({
+      service: pluginService,
+      store,
+      records: pluginAgentStore,
+      authority: pluginAuthority,
+      publish: publishDeploymentEvent,
+      notify: () => notifyIntegrationContinuations(),
+      onError: (error) => app.log.error({ err: error }, "Plugin execution failed"),
+      onStopped: (stopped) => {
+        for (const event of stopped.events) publishDeploymentEvent(event);
+        wakeExecutionCoordinator();
+      },
+    });
+    await pluginExecutions.recover();
     for (const event of await integrationPlatformStore.computerOperations.finalize())
       publishDeploymentEvent(event);
     const integrationDashboard = new IntegrationDashboardService({
@@ -2584,7 +2623,30 @@ export async function createHostRuntime(
       (ownerId) => integrationStore.listConnections(ownerId),
       execution.canExecute,
     );
+    const pluginTools = new PluginToolHandlers({
+      service: pluginService,
+      authority: pluginAuthority,
+      executions: pluginExecutions,
+      store,
+      settings: pluginAgentStore,
+      publish: publishDeploymentEvent,
+      notify: () => continuations.notify(),
+      folder: async (caller, directory) => {
+        requirePluginRun(caller);
+        return withFolderPluginPackage({ directory, files, install: pluginSourceFiles });
+      },
+      exportFiles: async (caller, directory, source) => {
+        requirePluginRun(caller);
+        await exportPluginSource(
+          (await personalExecution()).options.agentHome.path,
+          directory,
+          source.files,
+          files.options.helperPath!,
+        );
+      },
+    });
     const agentTools = new OpensteerMcpService({
+      pluginExecutions,
       teamsAvailable: async () =>
         (await database
           .selectFrom("personalTeamLinks")
@@ -2614,6 +2676,7 @@ export async function createHostRuntime(
       store,
       handlers: agentToolHandlers({
         administration,
+        plugins: pluginTools,
         apps,
         tabs: new TabToolHandlers(tabs),
         product: productHandlers,
@@ -2639,24 +2702,6 @@ export async function createHostRuntime(
           write: async (...args) => (await ensureLinks()).knowledge.write(...args),
         },
         personalContextForRun: (runId) => runAllowsPersonalContext(database, runId),
-        pluginInstall: async (scope, directory) => {
-          const thread = await store.getThreadForOwner(scope.threadId, scope.requestedBy);
-          if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });
-          return withFolderPluginPackage({
-            directory,
-            files,
-            install: async (stagedDirectory) => {
-              const result = await integrationPlatform.installAgentPlugin({
-                directory: stagedDirectory,
-                threadId: scope.threadId,
-                actorUserId: scope.requestedBy,
-                runnerId: scope.runnerId,
-                requestId: randomUUID(),
-              });
-              return { pluginId: result.installation.pluginId, issues: result.issues };
-            },
-          });
-        },
       }),
     });
     const taskAdmission = new TaskAdmissionService({
@@ -2811,6 +2856,7 @@ export async function createHostRuntime(
         execution,
         teamLinks: async () => (await ensureLinks()).links,
         harnessAuthenticationCoordinator,
+        pluginRequests: pluginExecutions,
         integrations: {
           authAttempts: integrationAuthAttempts,
           continuations,
@@ -3114,6 +3160,9 @@ export async function createHostRuntime(
       deployment,
       store,
       plugins: pluginService,
+      pluginAgentSettings: pluginAgentStore,
+      pluginRequests: pluginExecutions,
+      pluginTools,
       authorityLost: authorityLease.lost,
       settleExecutionLeases: () => executionLeaseLoop.settled(),
       async close() {
@@ -3184,6 +3233,7 @@ export async function createHostRuntime(
         threadStateStopped = true;
         await step("plugin change notices", () => notices.close());
         await step("plugin engine", () => pluginService?.close());
+        await step("plugin executions", () => pluginExecutions?.close());
         await step("authority lease", () => authorityLease?.close());
         await step("database", () => database.destroy());
         closingStep = undefined;
@@ -3198,6 +3248,7 @@ export async function createHostRuntime(
     };
   } catch (error) {
     await pluginService?.close();
+    await pluginExecutions?.close();
     await taskQuestions?.close();
     await administrationCatalogs?.close();
     await notificationDispatcher?.close();
@@ -3334,4 +3385,9 @@ export async function ensureDefaultHarnesses(
 
 export function hostAppRealOrigins(shape: import("@opensteer/core").DeploymentShape): boolean {
   return deploymentPolicy(shape).services.personal;
+}
+
+function requirePluginRun(caller: import("../mcp/agent-caller.js").AgentCaller) {
+  if (caller.kind !== "run")
+    throw new OpensteerError({ code: "forbidden", message: "Plugin source requires a task Run." });
 }

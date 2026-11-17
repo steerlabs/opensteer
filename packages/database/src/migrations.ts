@@ -15,6 +15,7 @@ import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
 import { TEAM_COPIES_SQL, teamCopiesMigrationName } from "./team-copies-migration.js";
 import { TEAM_KNOWLEDGE_NOTES_SQL } from "./team-knowledge-schema.js";
 import type { DatabaseSchema } from "./schema.js";
+import { PLUGIN_HOST_SQL } from "./plugin-host-migration.js";
 
 /**
  * One current reusable invite per team, with unlimited (`null`) or capped uses. Its verifier is
@@ -320,6 +321,11 @@ export function migrationProvider(): MigrationProvider {
         [dropSpecialistsMigrationName]: {
           async up(database) {
             await sql.raw(DROP_SPECIALISTS_SQL).execute(database);
+          },
+        },
+        "0029_plugin_host": {
+          async up(database) {
+            await sql.raw(PLUGIN_HOST_SQL).execute(database);
           },
         },
       };

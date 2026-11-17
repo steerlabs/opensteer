@@ -143,7 +143,6 @@ function fixture() {
       async () => [],
       (id) => id === environmentId,
     ),
-    vi.fn(),
   );
   const mcp = new OpensteerMcpService({
     callers: { authenticate: async () => caller },
@@ -160,7 +159,6 @@ function fixture() {
     computer_update: { computerId: machineId, name: "Mac" },
     integration_remove: { target: "account", connectionId },
     opensteer_messaging_bridge_update: { bridgeId: connectionId, paused: true },
-    opensteer_plugin_update: { pluginId: "p", enabled: true },
     browser_profile_update: { profileId, name: "Work" },
   };
   return {
@@ -183,7 +181,6 @@ const mutations = [
   "computer_update",
   "integration_remove",
   "opensteer_messaging_bridge_update",
-  "opensteer_plugin_update",
   "browser_profile_update",
 ] as const;
 const reads = [
@@ -192,7 +189,6 @@ const reads = [
   "browser_profile_list",
   "integration_list",
   "opensteer_messaging_bridge_list",
-  "opensteer_plugin_list",
 ] as const;
 describe("administration through the MCP service", () => {
   it.each(mutations)("executes %s and refuses the same action below full-access", async (name) => {
@@ -249,7 +245,6 @@ describe("administration through the MCP service", () => {
     const f = fixture();
     for (const [name, input] of [
       ["opensteer_defaults_read", {}],
-      ["opensteer_plugin_list", {}],
       ["browser_profile_update", f.inputs.browser_profile_update],
     ] as const) {
       expect(

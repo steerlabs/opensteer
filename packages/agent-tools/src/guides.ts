@@ -19,7 +19,8 @@ Needs you:
 - \`opensteer_request_read\` shows status, not the answer. Do not poll it. Answer questions about a Request from its current kind and title, never memory.`;
 
 const routingGuide = `Routing:
-- Services: read opensteer:integrations; discover with \`integration_search\`, then call.
+- Plugins: read opensteer:plugins; discover with \`plugin_search\`, then \`plugin_call\` or \`plugin_execute\`. Account links and input always need the person in Needs you.
+- Legacy integrations: read opensteer:integrations; discover with \`integration_search\`, then call.
 - Reminders, schedules, webhooks or watches: read opensteer:automations before writing code. Put them on a real task; omit taskId for this task.
 - Full-access callers manage AI accounts, defaults, computers, integrations, messaging bridges, plugins and browser profiles directly; new profiles, grants and credentials need the person.`;
 

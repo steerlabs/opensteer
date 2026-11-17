@@ -37,6 +37,7 @@ import {
   type RunnerId,
   type ThreadId,
   type TriggerOccurrenceId,
+  type TriggerWatchActivationId,
   type UserId,
   type WaitingRequest,
 } from "@opensteer/core";
@@ -118,11 +119,18 @@ export interface IntegrationRequestDetailInput {
 export type RequestOriginInput =
   | {
       readonly originatingOccurrenceId?: never;
+      readonly originatingWatchActivationId?: never;
       readonly originatingRunId: RunId;
     }
   | {
       readonly originatingOccurrenceId: TriggerOccurrenceId;
+      readonly originatingWatchActivationId?: never;
       readonly originatingRunId?: never;
+    }
+  | {
+      readonly originatingRunId?: never;
+      readonly originatingOccurrenceId?: never;
+      readonly originatingWatchActivationId: TriggerWatchActivationId;
     };
 interface CreateRequestFields {
   readonly callId: string;
@@ -443,6 +451,129 @@ export class RequestStore {
       return ((transaction) => createRequestInTransaction(this.#links, transaction, input))(
         personalTransaction,
       );
+    });
+  }
+  async settlePluginRequest(input: {
+    requestId: RequestId;
+    resolvedBy: UserId;
+    settlementSessionId?: string;
+    decision: "fulfilled" | "declined";
+  }): Promise<RequestMutation> {
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      const row = await transaction
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", input.requestId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!row || !row.kind.startsWith("plugin."))
+        throw new OpensteerError({ code: "not_found", message: "Plugin Request is unavailable." });
+      if (row.requestedBy !== input.resolvedBy)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Only the person asked may answer this Request.",
+        });
+      if (row.status !== "pending")
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Plugin Request is no longer pending.",
+        });
+      await lockActiveDurableRequestAuthority(transaction, requestFromRow(row));
+      const now = new Date();
+      const resolved = await transaction
+        .updateTable("requests")
+        .set({
+          status: input.decision,
+          resolvedAt: now,
+          resolvedBy: input.resolvedBy,
+          settlementProvenance: await readRequestSettlementProvenance(
+            transaction,
+            input.resolvedBy,
+            input.settlementSessionId,
+          ),
+          response: jsonValue({ kind: "external", value: { decision: input.decision } }),
+        })
+        .where("id", "=", row.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      const request = requestFromRow(resolved);
+      await enqueueContinuation(transaction, request, now);
+      await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+      return { request, events: await terminalEvents(transaction, request), replayed: false };
+    });
+  }
+  cancelPluginRequests(
+    requestIds: readonly RequestId[],
+    reason: RequestCancellationReason,
+  ): Promise<readonly AgentEvent[]> {
+    return withPersonalTransaction(this.#database, (tx) =>
+      cancelPending(tx, { requestIds, reason, resolvedAt: new Date() }),
+    );
+  }
+  async endPluginExecutionRequest(
+    requestId: RequestId,
+    reason: "plugin-interrupted" | "plugin-expired" | "run-ended",
+  ): Promise<readonly AgentEvent[]> {
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      const row = await transaction
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", requestId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!row || !["plugin.approval", "plugin.input"].includes(row.kind)) return [];
+      const updated = await transaction
+        .updateTable("requests")
+        .set({
+          status: "cancelled",
+          cancellationReason: reason,
+          response: null,
+          resolvedBy: null,
+          settlementProvenance: null,
+          resolvedAt: new Date(),
+        })
+        .where("id", "=", requestId)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      if (reason === "run-ended")
+        await transaction
+          .updateTable("requestContinuations")
+          .set({
+            status: "undeliverable",
+            reason: "Plugin execution stopped with its Run",
+            updatedAt: new Date(),
+          })
+          .where("requestId", "=", requestId)
+          .execute();
+      else
+        await transaction
+          .insertInto("requestContinuations")
+          .values({
+            requestId,
+            status: "waiting",
+            reason: null,
+            attemptedAt: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .onConflict((c) =>
+            c.column("requestId").doUpdateSet({
+              status: "waiting",
+              reason: null,
+              attemptedAt: null,
+              updatedAt: new Date(),
+            }),
+          )
+          .execute();
+      return [
+        await appendHostDeploymentEvent(transaction, {
+          type: "request.cancelled",
+          data: { requestId, reason },
+          runId: row.originatingRunId,
+          threadId: row.originatingThreadId,
+          environmentId: await requestOriginEnvironment(transaction, requestFromRow(updated)),
+        }),
+      ];
     });
   }
   async get(id: RequestId): Promise<Request | null> {
@@ -2762,6 +2893,7 @@ async function createRequestInTransaction(
     createdAt: new Date().toISOString(),
     id: createId("request"),
     originatingOccurrenceId: input.originatingOccurrenceId ?? null,
+    originatingWatchActivationId: input.originatingWatchActivationId ?? null,
     originatingRunId: input.originatingRunId ?? null,
     resolvedAt: null,
     resolvedBy: null,
@@ -2774,15 +2906,20 @@ async function createRequestInTransaction(
     // Call identity is unique per origin through a partial index, so the
     // conflict target has to name that index's predicate too.
     .onConflict((conflict) =>
-      input.originatingRunId === undefined
+      input.originatingWatchActivationId !== undefined
         ? conflict
-            .columns(["originatingOccurrenceId", "callId"])
-            .where("originatingOccurrenceId", "is not", null)
+            .columns(["originatingWatchActivationId", "callId"])
+            .where("originatingWatchActivationId", "is not", null)
             .doNothing()
-        : conflict
-            .columns(["originatingRunId", "callId"])
-            .where("originatingRunId", "is not", null)
-            .doNothing(),
+        : input.originatingRunId === undefined
+          ? conflict
+              .columns(["originatingOccurrenceId", "callId"])
+              .where("originatingOccurrenceId", "is not", null)
+              .doNothing()
+          : conflict
+              .columns(["originatingRunId", "callId"])
+              .where("originatingRunId", "is not", null)
+              .doNothing(),
     )
     .returningAll()
     .executeTakeFirst();
@@ -3117,6 +3254,7 @@ function boundedProfileName(value: string): string {
 }
 type RequestOriginSelector = {
   readonly originatingOccurrenceId?: TriggerOccurrenceId | null;
+  readonly originatingWatchActivationId?: TriggerWatchActivationId | null | undefined;
   readonly originatingRunId?: RunId | null;
 };
 
@@ -3131,6 +3269,8 @@ export function requestOriginOf(input: RequestOriginSelector): RequestOriginInpu
       originatingOccurrenceId: input.originatingOccurrenceId,
     };
   }
+  if (input.originatingWatchActivationId != null)
+    return { originatingWatchActivationId: input.originatingWatchActivationId };
   throw new OpensteerError({
     code: "bad_request",
     message: "A Request must originate from a Run or an automation occurrence",
@@ -3161,9 +3301,11 @@ function callIdentityFilter(
   return (expression: ExpressionBuilder<DatabaseSchema, "requests">) =>
     expression.and([
       expression("callId", "=", input.callId),
-      origin.originatingRunId === undefined
-        ? expression("originatingOccurrenceId", "=", origin.originatingOccurrenceId)
-        : expression("originatingRunId", "=", origin.originatingRunId),
+      origin.originatingWatchActivationId !== undefined
+        ? expression("originatingWatchActivationId", "=", origin.originatingWatchActivationId)
+        : origin.originatingRunId === undefined
+          ? expression("originatingOccurrenceId", "=", origin.originatingOccurrenceId)
+          : expression("originatingRunId", "=", origin.originatingRunId),
     ]);
 }
 function integrationSubjectFilter(
@@ -3202,6 +3344,23 @@ async function lockRequestOrigin(
   lock = true,
 ): Promise<LockedRequestOrigin | undefined> {
   const origin = requestOriginOf(input);
+  if (origin.originatingWatchActivationId !== undefined) {
+    const watch = await transaction
+      .selectFrom("triggerWatchActivations")
+      .selectAll()
+      .where("id", "=", origin.originatingWatchActivationId)
+      .$if(lock, (q) => q.forNoKeyUpdate())
+      .executeTakeFirst();
+    return watch
+      ? {
+          environmentId: watch.environmentId,
+          requestedBy: watch.createdBy,
+          runId: null,
+          running: watch.desired === "active" && watch.observed === "running",
+          threadId: watch.anchorThreadId,
+        }
+      : undefined;
+  }
   if (origin.originatingRunId === undefined) {
     const occurrence = await transaction
       .selectFrom("triggerOccurrences")

@@ -52,7 +52,7 @@ describe("Runner Agent Skills", () => {
     const references = files.flatMap((text) =>
       [
         ...text.matchAll(
-          /`((?:browser|opensteer|tab|app|person|computer|integration|saved|chrome|card)_[a-z_]+|(?:send|show)_to_person|ask_person)`/gu,
+          /`((?:browser|opensteer|tab|app|person|computer|integration|plugin|saved|chrome|card)_[a-z_]+|(?:send|show)_to_person|ask_person)`/gu,
         ),
       ].map((match) => match[1]!),
     );
@@ -138,7 +138,7 @@ describe("Runner Agent Skills", () => {
       /opensteer\.callTool\("opensteer_task_send", \{\s+delivery: "queue",\s+message: "Reminder: /u,
     );
     expect(automations).toContain("taskId: event.trigger.anchorThreadId");
-    expect(automations).toContain("toolContractVersion: 4");
+    expect(automations).toContain("toolContractVersion: 5");
   });
 
   it("ships the machine access refusal sentences verbatim", async () => {

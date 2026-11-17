@@ -1327,7 +1327,7 @@ describeStore("PostgreSQL store", (it) => {
         name: "Watch FK race",
         program: {
           language: "javascript",
-          toolContractVersion: 4,
+          toolContractVersion: 5,
           source: "export default async () => null",
         },
         source: {

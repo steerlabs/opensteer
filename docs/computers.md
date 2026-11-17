@@ -139,9 +139,8 @@ An approved server's changed launch on the same computer keeps consent unless it
 names, because personal agents already run as that OS user without isolation. Team servers run no
 agents or plugin servers. A new, moved or declined server always asks.
 
-An agent-made plugin records its folder in Agent home, not a Host path, so only an agent updates it,
-by installing that folder again; Settings' Update and `opensteer_plugin_install` with a `pluginId` update
-person-installed plugins.
+Local-server packages retain their existing snapshots, launch consent and Settings controls. The
+sandboxed plugin tools do not register or update these packages.
 
 Program servers declare secret names, never values, in their plugin metadata. The owner supplies
 values through consent; new names require review, and consent and values belong to one computer.

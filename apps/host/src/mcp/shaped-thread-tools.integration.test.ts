@@ -582,6 +582,23 @@ describeStore("agents answering task questions", (it) => {
         installationId: "installation",
         serverId: "server",
       },
+      "plugin.account": {
+        kind: "plugin.account",
+        plugin: "fixture",
+        requirement: "service",
+        scope: "user",
+        consent: { digest: "a".repeat(64), sites: [], credential: "value" },
+      },
+      "plugin.approval": {
+        kind: "plugin.approval",
+        executionId: "execution",
+        interactionId: "interaction",
+      },
+      "plugin.input": {
+        kind: "plugin.input",
+        executionId: "execution",
+        interactionId: "interaction",
+      },
       "person.question": { kind: "person.question" },
     };
     for (const kind of RequestKindSchema.options.filter((kind) => kind !== "harness.input")) {

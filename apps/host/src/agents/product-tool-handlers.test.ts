@@ -789,7 +789,7 @@ describe("Product tool handlers", () => {
         name: "Nightly report",
         operation: "create",
         program: {
-          toolContractVersion: 4,
+          toolContractVersion: 5,
           language: "javascript",
           source: "export default () => {}",
         },

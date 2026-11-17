@@ -29,6 +29,9 @@ describe("agent answer classification", () => {
     "device.access": false,
     "computer.app.access": false,
     "integration.input": false,
+    "plugin.account": false,
+    "plugin.approval": false,
+    "plugin.input": false,
     "person.question": false,
   };
   it("deliberately classifies every Request kind", () => {

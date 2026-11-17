@@ -1158,7 +1158,7 @@ describe("Opensteer MCP spine", () => {
       f.service.callTool(
         "run",
         "opensteer_plugin_install",
-        { directory: "plugin" },
+        { source: "folder", directory: "plugin" },
         { operationKey: "settings" },
       ),
     ).rejects.toThrow("requires full-access");

@@ -1068,7 +1068,7 @@ integration("notification decision boundary", () => {
           idempotencyKey: randomUUID(),
           name: "Automatic work",
           program: {
-            toolContractVersion: 4,
+            toolContractVersion: 5,
             language: "javascript",
             source: "export default async () => null",
           },

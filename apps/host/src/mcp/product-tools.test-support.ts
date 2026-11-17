@@ -326,9 +326,6 @@ export class ProductToolsTestClient {
       triggers: new TriggerToolHandlers(options.triggers ?? (unavailable as AgentTriggerManager)),
       teamRequestForRun: async () => null,
       personalContextForRun: async () => true,
-      pluginInstall: async () => {
-        throw new Error("Unexpected install");
-      },
     });
     this.service = new OpensteerMcpService({
       store: options.store,

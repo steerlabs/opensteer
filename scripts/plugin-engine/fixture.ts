@@ -48,7 +48,11 @@ export function pluginFixtureProcesses(parent: number) {
 }
 const deadline = <T>(promise: Promise<T>, message: string) =>
   withTimeout(promise, 15_000, { timeoutError: () => new Error(message) });
-export async function pluginFixtureRegistry(directory: string, waiting?: () => void) {
+export async function pluginFixtureRegistry(
+  directory: string,
+  waiting?: () => void,
+  catalogFiles?: ReturnType<typeof pluginFixtureFiles>,
+) {
   await cp(resolve("vendor/plugin-engine/apps/dist"), join(directory, "package"), {
     recursive: true,
   });
@@ -77,7 +81,27 @@ export async function pluginFixtureRegistry(directory: string, waiting?: () => v
     } else if (request.url === "/framework.tgz") response.end(tarball);
     else if (request.url === "/wait") {
       waiting?.();
-    } else if (request.url === "/catalog") response.end(JSON.stringify({ version: 1, apps: [] }));
+    } else if (request.url === "/catalog")
+      response.end(
+        JSON.stringify({
+          version: 1,
+          apps: catalogFiles
+            ? [
+                {
+                  id: "fixture",
+                  package: "fixture-plugin",
+                  name: "Catalog fixture",
+                  description: "Hermetic catalog plugin",
+                  auth: [],
+                  icons: [],
+                  source: "apps/fixture.json",
+                },
+              ]
+            : [],
+        }),
+      );
+    else if (request.url === "/apps/fixture.json" && catalogFiles)
+      response.end(JSON.stringify({ package: "fixture-plugin", files: catalogFiles }));
     else {
       response.statusCode = 404;
       response.end();

@@ -44,7 +44,7 @@ export const opensteer_automation_create = defineAgentTool({
   name: "opensteer_automation_create",
   title: "Create an automation",
   description:
-    "Create a schedule, reminder, cron, webhook or watch on a task; this requires full access and a program with tool contract version 4. Connections must name taskId. ownTask: true runs it in a new task linked under that task and kept off the task list: it keeps running after that task is Done, its failures and Requests reach that task, and nothing returns automatically.",
+    "Create a schedule, reminder, cron, webhook or watch on a task; this requires full access and a program with tool contract version 5. Connections must name taskId. ownTask: true runs it in a new task linked under that task and kept off the task list: it keeps running after that task is Done, its failures and Requests reach that task, and nothing returns automatically.",
   targetFields: ["taskId"],
   input: z.strictObject({
     taskId: ThreadIdSchema.optional(),

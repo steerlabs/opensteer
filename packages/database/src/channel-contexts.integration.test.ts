@@ -361,7 +361,7 @@ describeStore("personal Messaging conversation contexts", (it) => {
       idempotencyKey: "group-briefing",
       name: "Group briefing",
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "javascript",
         source: "export default () => {}",
       },

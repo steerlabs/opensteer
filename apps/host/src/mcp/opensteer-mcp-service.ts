@@ -39,6 +39,7 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { RequestHold } from "./request-hold.js";
+import type { PluginExecutions } from "../plugins/plugin-executions.js";
 import { mcpToolCallId } from "./call-id.js";
 import { agentToolFailure, internalToolFailureCode } from "./agent-tool-failure.js";
 import { mcpResourceMetadataPath } from "./connections/connection-oauth.js";
@@ -72,6 +73,7 @@ export class OpensteerMcpService {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
     readonly handlers: Partial<AgentToolHandlers>;
     readonly requestHold?: Pick<RequestHold, "admit" | "wait">;
+    readonly pluginExecutions?: Pick<PluginExecutions, "hold">;
     readonly longRequestHold?: (caller: RunCaller) => Promise<boolean>;
     readonly realtime?: Pick<RealtimeHub, "observe">;
     readonly store: Pick<OpensteerStore, "getThreadForOwner"> & {
@@ -86,6 +88,7 @@ export class OpensteerMcpService {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
     readonly handlers: Partial<AgentToolHandlers>;
     readonly requestHold?: Pick<RequestHold, "admit" | "wait">;
+    readonly pluginExecutions?: Pick<PluginExecutions, "hold">;
     readonly longRequestHold?: (caller: RunCaller) => Promise<boolean>;
     readonly realtime?: Pick<RealtimeHub, "observe">;
     readonly store: Pick<OpensteerStore, "getThreadForOwner"> & {
@@ -425,6 +428,16 @@ export class OpensteerMcpService {
       const token = bearer;
       if (!token) throw new Error("MCP authorization is missing");
       const currentCaller = identity.caller ?? (await this.options.callers.authenticate(token));
+      const pluginHold =
+        currentCaller.kind === "run" &&
+        ["plugin_call", "plugin_execute", "plugin_resume"].includes(name) &&
+        this.options.pluginExecutions
+          ? {
+              caller: currentCaller,
+              service: this.options.pluginExecutions,
+              steersAtAdmission: (await this.options.requestHold?.admit(currentCaller)) ?? 0,
+            }
+          : null;
       const hold =
         currentCaller.kind === "run" && requestTools.has(name) && this.options.requestHold
           ? {
@@ -448,6 +461,20 @@ export class OpensteerMcpService {
       if (typeof result === "string") return { content: [{ type: "text" as const, text: result }] };
       if (tool?.output === IntegrationCallOutputSchema)
         return IntegrationCallOutputSchema.parse(result);
+      if (pluginHold && result.status === "pending" && typeof result.executionId === "string") {
+        const held = await pluginHold.service.hold({
+          caller: pluginHold.caller,
+          record: result,
+          admittedAt,
+          steersAtAdmission: pluginHold.steersAtAdmission,
+          signal,
+          limitMs:
+            (identity.longRequestHold ?? (await this.options.longRequestHold?.(pluginHold.caller)))
+              ? requestHoldLimitMs
+              : shortRequestHoldMs,
+        });
+        return agentToolRecordResult(held);
+      }
       if (hold && typeof result.requestId === "string") {
         const held = await hold.service.wait({
           caller: hold.caller,

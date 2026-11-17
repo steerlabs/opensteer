@@ -30,7 +30,7 @@ describe("WatchControlTokenService", () => {
       executionGeneration: 4,
       revisionId: createId("triggerRevision"),
       triggerId: createId("trigger"),
-      toolContractVersion: 4,
+      toolContractVersion: 5,
     } as const;
     const issuedAt = Date.now();
     const issued = service.issue(scope);

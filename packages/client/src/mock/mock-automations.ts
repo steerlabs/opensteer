@@ -81,7 +81,7 @@ const reminderProgram: TriggerProgram = {
     taskId: "TASK_ID",
   });
 }`,
-  toolContractVersion: 4,
+  toolContractVersion: 5,
 };
 
 const watchProgram: TriggerProgram = {
@@ -99,7 +99,7 @@ export default async function ({ opensteer }) {
   });
   await new Promise(() => {});
 }`,
-  toolContractVersion: 4,
+  toolContractVersion: 5,
 };
 
 /**

@@ -186,7 +186,7 @@ export async function createStoreFixture() {
         idempotencyKey: "trigger-" + suffix,
         name: "Trigger " + suffix,
         program: {
-          toolContractVersion: 4,
+          toolContractVersion: 5,
           language: "javascript",
           source: "export default async () => null",
         },

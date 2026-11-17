@@ -24,7 +24,8 @@ Needs you:
 - \`opensteer_request_read\` shows status, not the answer. Do not poll it. Answer questions about a Request from its current kind and title, never memory.
 
 Routing:
-- Services: read opensteer:integrations; discover with \`integration_search\`, then call.
+- Plugins: read opensteer:plugins; discover with \`plugin_search\`, then \`plugin_call\` or \`plugin_execute\`. Account links and input always need the person in Needs you.
+- Legacy integrations: read opensteer:integrations; discover with \`integration_search\`, then call.
 - Reminders, schedules, webhooks or watches: read opensteer:automations before writing code. Put them on a real task; omit taskId for this task.
 - Full-access callers manage AI accounts, defaults, computers, integrations, messaging bridges, plugins and browser profiles directly; new profiles, grants and credentials need the person.
 
@@ -88,7 +89,8 @@ Needs you:
 - \`opensteer_request_read\` shows status, not the answer. Do not poll it. Answer questions about a Request from its current kind and title, never memory.
 
 Routing:
-- Services: read opensteer:integrations; discover with \`integration_search\`, then call.
+- Plugins: read opensteer:plugins; discover with \`plugin_search\`, then \`plugin_call\` or \`plugin_execute\`. Account links and input always need the person in Needs you.
+- Legacy integrations: read opensteer:integrations; discover with \`integration_search\`, then call.
 - Reminders, schedules, webhooks or watches: read opensteer:automations before writing code. Put them on a real task; omit taskId for this task.
 - Full-access callers manage AI accounts, defaults, computers, integrations, messaging bridges, plugins and browser profiles directly; new profiles, grants and credentials need the person.
 
@@ -1363,9 +1365,220 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "access": "read",
     "callers": [
       "run",
+      "program",
       "connection",
     ],
-    "description": "List the person's installed plugins.",
+    "description": "Find plugin tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with plugins and linked accounts listed once. Pass a path to plugin_call or plugin_describe, or use tools.<plugin>.<tool>() in plugin_execute. Omit query to list a namespace. Read the following page by passing next as the whole input; null ends paging.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "namespace": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "offset": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer",
+        },
+        "query": {
+          "maxLength": 2000,
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "plugin_search",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "description": "Read the whole description and TypeScript signature, including input and output types, for exact paths from plugin_search. Unknown paths appear in missing with closest paths.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "paths": {
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string",
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "type": "array",
+        },
+      },
+      "required": [
+        "paths",
+      ],
+      "type": "object",
+    },
+    "name": "plugin_describe",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+    ],
+    "description": "Call plugin tools at exact paths from plugin_search. Pass one {path,input} as calls, or an array of independent calls to run concurrently; results keep that order with ok and value or error. Use plugin_execute when output feeds another call or to filter large results. Accounts connect through plugin_account_request; never collect secrets in chat. Waiting on the person opens Needs you. Never answer it yourself or repeat a call/program to continue it; after the person answers use plugin_resume with executionId. Earlier effects are not rolled back.",
+    "input": {
+      "$defs": {
+        "__schema0": {
+          "anyOf": [
+            {
+              "type": "string",
+            },
+            {
+              "type": "number",
+            },
+            {
+              "type": "boolean",
+            },
+            {
+              "type": "null",
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/__schema0",
+              },
+              "type": "array",
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/__schema0",
+              },
+              "propertyNames": {
+                "type": "string",
+              },
+              "type": "object",
+            },
+          ],
+        },
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "calls": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "input": {
+                  "$ref": "#/$defs/__schema0",
+                },
+                "path": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "path",
+                "input",
+              ],
+              "type": "object",
+            },
+            {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "input": {
+                    "$ref": "#/$defs/__schema0",
+                  },
+                  "path": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "path",
+                  "input",
+                ],
+                "type": "object",
+              },
+              "maxItems": 100,
+              "minItems": 1,
+              "type": "array",
+            },
+          ],
+        },
+      },
+      "required": [
+        "calls",
+      ],
+      "type": "object",
+    },
+    "name": "plugin_call",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+    ],
+    "description": "Run a short JavaScript program over tools.<plugin>.<tool>() when one result feeds another call or large results should be filtered before reaching you. For one or a few independent calls use plugin_call. Discover with plugin_search or tools.search, and full signatures with plugin_describe or tools.search.describe({paths}). First read opensteer:plugins and its code mode reference. Return only the result needed. No filesystem, process or direct network APIs. Waiting on the person opens Needs you. Never answer it yourself or repeat a call/program to continue it; after the person answers use plugin_resume with executionId. Earlier effects are not rolled back.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "maxLength": 65536,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "code",
+      ],
+      "type": "object",
+    },
+    "name": "plugin_execute",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+    ],
+    "description": "Collect or continue an execution by executionId after the person answers in Needs you. Pass no approval or input answer; only the person can provide those. An id belongs to the task or program that started it; a later Run of that task can resume. Pending means wait, without polling. Interrupted or expired means check current state before starting any new work; never rerun blindly.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "executionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "executionId",
+      ],
+      "type": "object",
+    },
+    "name": "plugin_resume",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "description": "List installed plugins, active versions, connected account links, agent access and status. Use plugin_search for callable tools.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -1378,33 +1591,49 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "access": "settings",
     "callers": [
       "run",
-      "connection",
     ],
-    "description": "Install an Agent Plugins 1.0 folder from Agent home, or install it again to update it; symlinks are refused. To update a plugin the person installed, also pass its pluginId and, if its folder is on another computer, that computerId. Skills become available to the owner; resource grants and local MCP launch approval need the person.",
+    "description": "Install without approval from a catalog id, a URL (MCP, OpenAPI or GraphQL), or a folder inside Agent home. A folder contains sandboxed TypeScript plugin source, not the old Agent Plugins folder format. Pass pluginId with a folder to deploy a new version. Build errors return as data: fix the draft and install again. The deployed version is the truth. Installation never links an account; that always needs the person. Read opensteer:plugins before writing a plugin.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "computerId": {
-          "description": "With pluginId: the computer holding the folder; omit to keep its current place.",
-          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "directory": {
-          "description": "Plugin folder, relative to Agent home unless pluginId is given.",
-          "maxLength": 4096,
-          "minLength": 1,
-          "type": "string",
-        },
-        "pluginId": {
-          "description": "A person-installed plugin to update.",
+        "catalogId": {
           "maxLength": 256,
           "minLength": 1,
           "type": "string",
         },
+        "directory": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string",
+        },
+        "name": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "pluginId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "source": {
+          "enum": [
+            "catalog",
+            "mcp",
+            "openapi",
+            "graphql",
+            "folder",
+          ],
+          "type": "string",
+        },
+        "url": {
+          "format": "uri",
+          "type": "string",
+        },
       },
       "required": [
-        "directory",
+        "source",
       ],
       "type": "object",
     },
@@ -1414,17 +1643,23 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "access": "settings",
     "callers": [
       "run",
-      "connection",
     ],
-    "description": "Turn an installed plugin on or off. Turning it on grants no resource access; local MCP launch approval needs the person.",
+    "description": "Write a deployed plugin version's source into a new folder inside Agent home. Edit that draft and install the folder with pluginId to deploy a new version. Existing folders are refused.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "enabled": {
-          "type": "boolean",
+        "directory": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string",
         },
         "pluginId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "versionId": {
           "maxLength": 256,
           "minLength": 1,
           "type": "string",
@@ -1432,19 +1667,47 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       },
       "required": [
         "pluginId",
-        "enabled",
+        "directory",
       ],
       "type": "object",
     },
-    "name": "opensteer_plugin_update",
+    "name": "opensteer_plugin_export",
   },
   {
     "access": "settings",
     "callers": [
       "run",
-      "connection",
     ],
-    "description": "Remove an installed plugin.",
+    "description": "Make an installed earlier version the running plugin version. Rollback changes code, not plugin data; widened credential destinations require the person to consent again.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "pluginId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "versionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "pluginId",
+        "versionId",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_plugin_activate",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+    ],
+    "description": "Remove an installed plugin. This does not authorize account linking or change another plugin's access.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -1461,6 +1724,49 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "type": "object",
     },
     "name": "opensteer_plugin_remove",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+    ],
+    "description": "Ask the person in Needs you to connect or link an account to a plugin requirement. Installation needs no approval; account linking always does, including reusing an existing saved account. Never enter, collect or link credentials yourself. Pending is waiting on the person, not permission; continue other work and do not repeat the request.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "pluginId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string",
+        },
+        "requirement": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "scope": {
+          "enum": [
+            "app",
+            "user",
+          ],
+          "type": "string",
+        },
+      },
+      "required": [
+        "pluginId",
+        "requirement",
+        "scope",
+        "reason",
+      ],
+      "type": "object",
+    },
+    "name": "plugin_account_request",
   },
   {
     "access": "read",
@@ -2926,7 +3232,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
               "type": "string",
             },
             "toolContractVersion": {
-              "const": 4,
+              "const": 5,
               "type": "number",
             },
           },
@@ -3063,7 +3369,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
-    "description": "Create a schedule, reminder, cron, webhook or watch on a task; this requires full access and a program with tool contract version 4. Connections must name taskId. ownTask: true runs it in a new task linked under that task and kept off the task list: it keeps running after that task is Done, its failures and Requests reach that task, and nothing returns automatically.",
+    "description": "Create a schedule, reminder, cron, webhook or watch on a task; this requires full access and a program with tool contract version 5. Connections must name taskId. ownTask: true runs it in a new task linked under that task and kept off the task list: it keeps running after that task is Done, its failures and Requests reach that task, and nothing returns automatically.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -3099,7 +3405,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
               "type": "string",
             },
             "toolContractVersion": {
-              "const": 4,
+              "const": 5,
               "type": "number",
             },
           },

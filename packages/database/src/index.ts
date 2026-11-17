@@ -120,3 +120,4 @@ export type {
   AppTable,
   AppServerTable,
 } from "./schema.js";
+export * from "./plugin-agent-store.js";

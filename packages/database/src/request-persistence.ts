@@ -21,7 +21,10 @@ export function requestRevision(request: Request): string {
 
 export async function requestOriginEnvironment(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
-  request: Pick<Request, "originatingOccurrenceId" | "originatingRunId">,
+  request: Pick<
+    Request,
+    "originatingOccurrenceId" | "originatingRunId" | "originatingWatchActivationId"
+  >,
 ): Promise<EnvironmentId> {
   if (request.originatingRunId !== null) {
     const run = await database
@@ -31,6 +34,14 @@ export async function requestOriginEnvironment(
       .executeTakeFirstOrThrow();
     return run.environmentId;
   }
+  if (request.originatingWatchActivationId)
+    return (
+      await database
+        .selectFrom("triggerWatchActivations")
+        .select("environmentId")
+        .where("id", "=", request.originatingWatchActivationId)
+        .executeTakeFirstOrThrow()
+    ).environmentId;
   if (request.originatingOccurrenceId === null) {
     throw new Error("Request has no origin to read its environment from");
   }
@@ -55,6 +66,7 @@ export function requestFromRow(row: RequestRow): Request {
         }
       : {}),
     originatingOccurrenceId: row.originatingOccurrenceId,
+    originatingWatchActivationId: row.originatingWatchActivationId,
     originatingRunId: row.originatingRunId,
     originatingThreadId: row.originatingThreadId,
     payload: row.payload,
@@ -78,6 +90,7 @@ export function requestInsert(request: Request) {
     mode: request.mode,
     originatingNodeId: request.originatingNodeId ?? null,
     originatingOccurrenceId: request.originatingOccurrenceId,
+    originatingWatchActivationId: request.originatingWatchActivationId ?? null,
     originatingRunId: request.originatingRunId,
     originatingThreadId: request.originatingThreadId,
     payload: jsonValue(request.payload),

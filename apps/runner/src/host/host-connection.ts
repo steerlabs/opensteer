@@ -2365,7 +2365,7 @@ export function runnerCapabilities(
     "browser-page-input-v1",
     "browser-profile-create-v1",
     "environment-list-v1",
-    "trigger-program-v4",
+    "trigger-program-v5",
     "native-place-input-v1",
     "execution-plane-v2",
     "filesystem",

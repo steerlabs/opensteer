@@ -27,18 +27,18 @@ building another.
    a specific name, a skill that records the device's address, model and quirks, a server with one
    tool per action, and the device declared in `plugin.json`. One plugin covers what the person would
    remove together, such as a stereo pair. Keep state such as pairing credentials in `PLUGIN_DATA`.
-5. **Install** with `opensteer_plugin_install`, find its installation with `integration_search`, then ask for
-   access with `integration_request` naming that installation. The computer's owner approves the
-   server's launch from this task; its tools stay unavailable until then.
+5. **Register the local server package** through its existing Settings flow. The sandboxed service
+   plugin installer does not register plugin.json/mcp.json packages. Find registered device tools with
+   `integration_search` and ask for access with `integration_request`; the owner approves launch.
 6. **Codes the device shows,** such as a TV's pairing code, never go through chat. A server tool asks
    the person with MCP elicitation; they type the code on a card and only the server receives it.
 7. **Verify** with the same reversible action through the installed tools. Then tell the person what
    you connected, which computer runs it, and that removing it in Settings › Devices deletes its
    pairing from that computer.
 
-To fix a device, read its plugin's folder and skill, repair it there and call `opensteer_plugin_install` on
-the same folder. To remove one, use `opensteer_plugin_remove`. Shell access can still reach a device after its
-plugin is removed or its launch is refused; never use it to work around either.
+To fix a device, read its package folder and skill, repair it there, and update its local-server
+registration through Settings. Remove it through Settings, Devices. Shell access can still reach a
+device after removal or refused launch; never use it to work around either.
 
 - Read [device notes](references/device-notes.md) before connecting an Apple TV, HomePod or WiZ light.
 - Read [plugin shape](references/plugin-shape.md) before writing the plugin.

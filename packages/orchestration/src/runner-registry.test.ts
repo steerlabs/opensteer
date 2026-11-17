@@ -2433,7 +2433,7 @@ function triggerCommand(environmentId: ReturnType<typeof createId<"environment">
       },
       occurrenceId,
       program: {
-        toolContractVersion: 4,
+        toolContractVersion: 5,
         language: "javascript",
         source: "export default async () => null",
       },

@@ -371,6 +371,10 @@ const HarnessAuthenticationParamsSchema = z.strictObject({
 const machinePageLimit = 100;
 
 export interface HostServerDependencies {
+  readonly pluginRequests?: Pick<
+    import("./plugins/plugin-executions.js").PluginExecutions,
+    "respond"
+  >;
   readonly assets?: AssetService;
   readonly transcriptFiles?: TranscriptFiles;
   readonly execution: Pick<PersonalExecution, "canExecute">;
@@ -1901,6 +1905,16 @@ export async function createHostServer(
           };
           await (async (): Promise<void> => {
             switch (pending.kind) {
+              case "plugin.account":
+              case "plugin.approval":
+              case "plugin.input":
+                if (!dependencies.pluginRequests)
+                  throw new OpensteerError({
+                    code: "conflict",
+                    message: "Plugin Requests are unavailable.",
+                  });
+                await dependencies.pluginRequests.respond(input);
+                return;
               case "integration.input":
                 await dependencies.integrations.localServers.inputRequests.respond(input);
                 return;
