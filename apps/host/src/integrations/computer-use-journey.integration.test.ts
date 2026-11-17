@@ -585,14 +585,14 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const discovery = json(await gateway.call("integration_search", { query: "Android phone" }));
       expect(JSON.stringify(discovery)).not.toContain("toolRef");
       const listed = await gateway.call("computer_use", {
-        code: 'const [entry]=await phones(); const p=await phone("Pixel 8"); return [entry.definitionId, entry.platform, entry.navigation, entry.availability, await p.installedApps({query:"mess"})]',
+        code: 'const [entry]=await phones(); const p=await phone("Pixel 8"); return [entry.definitionId, entry.platform, entry.navigation, entry.access, await p.installedApps({query:"mess"})]',
       });
       expect(listed.isError, JSON.stringify(listed)).toBeUndefined();
       expect(JSON.parse(text(listed).split("\n").at(-1)!)).toEqual([
         "android-phone",
         "android",
         ["back", "home", "recents", "notifications", "quickSettings"],
-        { state: "ready", reason: null },
+        "read-write",
         { apps: [{ label: "Messages", appId: "com.google.android.apps.messaging" }], total: 1 },
       ]);
       const initialTabs = await world.tabStore.snapshot(world.owner.userId);
@@ -3425,7 +3425,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
               ? "computer_offline"
               : state === "permission-required"
                 ? "permission_required"
-                : "unavailable",
+                : "paused",
         },
       });
       const entries = await world.platform.listDiscoveryInventory({

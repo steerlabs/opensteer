@@ -1,3 +1,4 @@
+import { integration_search } from "@opensteer/agent-tools/integrations";
 import {
   apiVersionQueryParameter,
   apiCurrentQueryParameter,
@@ -462,19 +463,9 @@ integration("iPhone screen routing on an authenticated Mac", () => {
       const result = await callMcpTool(host.origin, run.toolsToken, "integration_search", {
         query: "Phone display",
       });
-      const data = JSON.parse(result.content.find((item) => item.type === "text")!.text) as {
-        catalog: {
-          definitionId: string;
-          phones?: {
-            computerId: string;
-            definitionId: string;
-            access?: string;
-            blocked?: { code: string; message: string; next: string };
-          }[];
-        }[];
-      };
-      return data.catalog
-        .find((row) => row.definitionId === "iphone-screen")!
+      const data = integration_search.output.parse(result.structuredContent);
+      return data
+        .catalog!.find((row) => row.definitionId === "iphone-screen")!
         .phones!.find((row) => row.computerId === first.deviceId)!;
     };
     expect(await phoneRow()).toEqual({
