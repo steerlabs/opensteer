@@ -233,19 +233,15 @@ function FileBody({
     case "offline":
       return state.cached && state.cached.preview.kind === "text" ? (
         <>
-          <p className="file-viewer__banner" role="status">
-            <Icon name="cloud-off" />
-            You're offline. This is the copy you opened before.
-            <RetryButton retry={retry} />
-          </p>
+          {/* The copy opened before stays; the pill says why it isn't fresher. */}
           <TextLines input={input} text={state.cached.preview.text} />
         </>
       ) : (
         <ViewerState
           action={<RetryButton retry={retry} />}
-          body="Reconnect to open this file."
-          icon="cloud-off"
-          title="You're offline"
+          body="It will open once this file can be read."
+          icon="file"
+          title="Couldn't open this file yet"
         />
       );
     case "ok": {
@@ -492,11 +488,9 @@ function DownloadButton({
         if (result.status !== "ok") {
           if (mounted.current)
             setError(
-              result.status === "offline"
-                ? "You're offline."
-                : result.status === "unavailable"
-                  ? "This file isn't available."
-                  : "Couldn't download this file.",
+              result.status === "unavailable"
+                ? "This file isn't available."
+                : "Couldn't download this file.",
             );
           return;
         }
