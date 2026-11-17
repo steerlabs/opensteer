@@ -122,7 +122,12 @@ import {
 import { insertBrowserProfileOnLockedHome } from "./browser-session-store.js";
 import { runHasActiveGrant } from "./run-grants.js";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
-import { jsonValue, lockThreadRow, threadPathLinks, type ChannelLinks } from "./store-primitives.js";
+import {
+  jsonValue,
+  lockThreadRow,
+  threadPathLinks,
+  type ChannelLinks,
+} from "./store-primitives.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 export { cancelPending } from "./request-cancellation.js";
 export { requestFromRow, requestInsert } from "./request-persistence.js";
@@ -1487,13 +1492,23 @@ export class RequestStore {
       const batch = await commitPersonalMutation(this.#database, async (transaction) => {
         const rows = await transaction
           .selectFrom("requests")
-          .select("id")
+          .select(["id", "originatingThreadId"])
           .where("kind", "=", "integration.input")
           .where("status", "=", "pending")
           .$if(requestId !== undefined, (query) => query.where("id", "=", requestId!))
           .orderBy("id")
           .limit(128)
           .execute();
+        if (rows.length)
+          await transaction
+            .selectFrom("threads")
+            .select("id")
+            .where("id", "in", [
+              ...new Set(rows.map(({ originatingThreadId }) => originatingThreadId)),
+            ])
+            .orderBy("id")
+            .forNoKeyUpdate()
+            .execute();
         return cancelPending(transaction, {
           reason,
           resolvedAt: new Date(),
