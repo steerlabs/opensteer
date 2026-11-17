@@ -81,6 +81,12 @@ describe("real-engine computer use", () => {
       evidence.helperRequests = desktop.requests;
       const bridge = desktop;
       const dataDirectory = scratch;
+      const prepared = await prepareIntegrationsModule({
+        computerUseBridge: bridge,
+        dataDirectory,
+        platform: "darwin",
+      });
+      if (!prepared) throw new Error("No scripted Mac integrations module");
       stack = await startVerticalStack({
         databaseUrl,
         catalogTimeoutMs: 180_000,
@@ -94,15 +100,7 @@ describe("real-engine computer use", () => {
           },
         ),
         harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
-        integrations: () => {
-          const prepared = prepareIntegrationsModule({
-            computerUseBridge: bridge,
-            dataDirectory,
-            platform: "darwin",
-          });
-          if (!prepared) throw new Error("No scripted Mac integrations module");
-          return prepared;
-        },
+        integrations: () => prepared,
       });
       evidence.catalog = stack.catalog;
       const machines = await stack.api["machines.list"]({});

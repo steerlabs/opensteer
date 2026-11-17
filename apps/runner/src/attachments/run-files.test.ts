@@ -234,6 +234,6 @@ it("removes stale helper scratch at integration startup", async () => {
     dataDirectory: files.options.dataDirectory,
     platform: "linux",
   });
-  prepared?.close?.();
+  await prepared?.close?.();
   await expect(stat(files.scratchRoot)).rejects.toMatchObject({ code: "ENOENT" });
 });

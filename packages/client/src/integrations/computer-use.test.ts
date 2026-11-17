@@ -869,6 +869,7 @@ function phone(overrides: Partial<MachineSummary>): MachineSummary {
   return machine({
     kind: overrides.device?.app === "opensteer" ? "phone" : "agent-phone",
     device: { form: "phone", platform: "android" },
+    allowedModules: ["integrations"],
     id: pixel,
     name: "Pixel",
     ...overrides,
