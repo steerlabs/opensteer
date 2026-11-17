@@ -962,7 +962,7 @@ export async function revokeRunner(
       throw new TransactionScopeChanged();
     }
   };
-  return commitPersonalMutation(database, async (personalTransaction) => {
+  return commitPersonalMutation(database, async (personalTransaction, mutation) => {
     const identity = await personalTransaction
       .selectFrom("runners")
       .select(["ownerKind", "ownerUserId", "publicKeyPem", "revokedAt"])
@@ -1190,6 +1190,10 @@ export async function revokeRunner(
           .where("deviceId", "in", sessionTargets)
           .returning("id")
           .execute();
+        mutation.bumpResource("machine");
+        mutation.bumpResource("environment");
+        mutation.bumpResource("browser-placement");
+        mutation.bumpResource("browser-availability");
         return {
           ...deviceEffects,
           endedSessionIds: endedSessions.map((row) => row.id),
@@ -1220,7 +1224,7 @@ export async function renameRunner(
     readonly administration?: AdministrationCommandIdentity | undefined;
   } = {},
 ): Promise<void> {
-  await commitPersonalMutation(database, (transaction) =>
+  await commitPersonalMutation(database, (transaction, mutation) =>
     administrationCommand(transaction, options.administration, async () => {
       const updatedAt = new Date();
       const result = await transaction
@@ -1247,6 +1251,8 @@ export async function renameRunner(
           message: "Active Runner not found",
         });
       }
+      mutation.bumpResource("machine");
+      mutation.bumpResource("environment");
       const deviceId = await getSelfDeviceId(transaction, runnerId);
       if (deviceId)
         await transaction
@@ -1705,7 +1711,7 @@ export async function enrollRunnerConnection(
     readonly publicKeyPem: string;
   },
 ): Promise<RunnerConnectionRecord> {
-  return commitPersonalMutation(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     await sql`select pg_advisory_xact_lock(hashtextextended(${input.enrollmentTokenHash}, 0))`.execute(
       transaction,
       databaseOperationOptions(),
@@ -1911,6 +1917,8 @@ export async function enrollRunnerConnection(
     );
     await bindRunnerEnvironments(transaction, input.descriptor, enrollment.name);
     const connection = await activateRunnerConnection(transaction, input.descriptor);
+    mutation.bumpResource("machine");
+    mutation.bumpResource("environment");
     return connection;
   });
 }
@@ -1919,7 +1927,8 @@ export async function setRunnerShellFullDiskAccess(
   runnerId: RunnerId,
   fullDiskAccess: boolean,
 ): Promise<boolean> {
-  const result = await database
+  return commitPersonalMutation(database, async (tx, mutation) => {
+  const result = await tx
     .updateTable("runners")
     .set({
       moduleDescriptors: sql`jsonb_set(module_descriptors, '{shell,fullDiskAccess}', to_jsonb(${fullDiskAccess}::boolean))`,
@@ -1928,7 +1937,9 @@ export async function setRunnerShellFullDiskAccess(
     .where("revokedAt", "is", null)
     .where(sql<boolean>`module_descriptors ? 'shell'`)
     .executeTakeFirst(databaseOperationOptions());
+  if (result.numUpdatedRows > 0n) mutation.bumpResource("machine");
   return result.numUpdatedRows > 0n;
+  });
 }
 export async function authenticateRunnerConnection(
   database: Kysely<DatabaseSchema>,

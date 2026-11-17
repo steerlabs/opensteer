@@ -68,6 +68,7 @@ import { invalidateExecution } from "./execution-changes.js";
 import {
   assertActiveExecutionBinding as assertActiveExecutionBindingInStore,
   assertActiveGrant as assertActiveGrantInStore,
+  assignmentWasCancelled,
 } from "./execution-authority.js";
 
 /**
@@ -590,6 +591,7 @@ export async function acquireExecutionBinding(
         "runs.requestedBy",
         "runs.status",
         "runs.finishIntent",
+        "runs.assignmentId",
         "runs.threadId",
         "runs.runOrdinal",
       ])
@@ -613,7 +615,10 @@ export async function acquireExecutionBinding(
         message: "Run is not awaiting an execution binding",
       });
     }
-    if (!(await threadExecutionIsAvailableToUser(transaction, run.threadId, run.requestedBy))) {
+    if (
+      (await assignmentWasCancelled(transaction, run.assignmentId)) ||
+      !(await threadExecutionIsAvailableToUser(transaction, run.threadId, run.requestedBy))
+    ) {
       throw new OpensteerError({
         code: "forbidden",
         message: "Run execution authority is no longer active",

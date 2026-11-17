@@ -21,7 +21,6 @@ import { resolveResourceAccess, type ResourceAccessInput } from "./resource-acce
 import { type ChannelTransportKind, type IntegrationConnectionId } from "@opensteer/channel-core";
 import {
   createId,
-  type AgentEvent,
   type AssignmentId,
   type AssignmentSummary,
   type AssignmentView,
@@ -1453,7 +1452,6 @@ export class OpensteerStore {
     readonly threadId: ThreadId;
   }): Promise<
     ThreadExecutionBinding & {
-      readonly continuationEvent?: AgentEvent;
       readonly grantId: GrantId;
       readonly revokedGrants: readonly RevokedRunGrant[];
     }

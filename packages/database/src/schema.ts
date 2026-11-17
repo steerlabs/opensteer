@@ -1031,7 +1031,7 @@ export interface GrantTable {
 }
 
 export interface DelegationTable {
-  cancellationPending: Generated<boolean>;
+  cancellationRootId: Generated<AssignmentId | null>;
   initialInputMessageId: MessageId;
   objective: string;
   origin: AssignmentOrigin;

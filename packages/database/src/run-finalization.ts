@@ -201,6 +201,31 @@ export async function settleFinishChildren(
   children: Awaited<ReturnType<typeof readFinishChildren>>,
   recovering = false,
 ) {
+  if (children.steers.length) {
+    const run = await tx
+      .selectFrom("runs")
+      .select("threadId")
+      .where("id", "=", runId)
+      .executeTakeFirstOrThrow();
+    const work = tx
+      .selectFrom("threadWorkInputs")
+      .select("causalChainId")
+      .where("threadId", "=", run.threadId)
+      .where("state", "=", "pending")
+      .orderBy("queueRank")
+      .limit(100);
+    const steers = tx
+      .selectFrom("threadInputs")
+      .select("causalChainId")
+      .where("messageId", "in", children.steers);
+    await tx
+      .selectFrom("causalChains")
+      .select("id")
+      .where((eb) => eb.or([eb("id", "in", work), eb("id", "in", steers)]))
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
+  }
   for (const id of children.requests) {
     const request = await tx
       .updateTable("requests")

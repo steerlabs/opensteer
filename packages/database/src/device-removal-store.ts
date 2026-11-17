@@ -131,7 +131,7 @@ export async function removeDevice(
   ownerId: UserId,
   options: { readonly administration?: AdministrationCommandIdentity } = {},
 ): Promise<DeviceRemovalEffects> {
-  return commitPersonalMutation(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     const device = await transaction
       .selectFrom("devices")
       .selectAll()
@@ -200,6 +200,7 @@ export async function removeDevice(
         .where("deviceId", "=", deviceId)
         .returning("id")
         .execute();
+      if (!device.removedAt) mutation.bumpResource("machine");
       return {
         ...effects,
         endedSessionIds: ended.map((r) => r.id),

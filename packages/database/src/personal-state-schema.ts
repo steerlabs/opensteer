@@ -449,9 +449,10 @@ const retainedStateDdl = `
 `;
 
 const currentStateIndexes = `
-  alter table delegations add column cancellation_pending boolean not null default false
-    check (not cancellation_pending or status = 'cancelled');
-  create index delegations_pending_cancellation on delegations(id) where cancellation_pending;
+  alter table delegations add column cancellation_root_id text
+    check (cancellation_root_id is null or status = 'cancelled');
+  create index delegations_pending_cancellation on delegations(cancellation_root_id,id)
+    where cancellation_root_id is not null;
   create index delegations_open_child on delegations(parent_assignment_id,id) where status = 'open';
   create index thread_inputs_pending_assignment on thread_inputs(assignment_id,message_id) where state = 'pending';
   create index requests_pending_origin_thread on requests(originating_thread_id,id) where status = 'pending';

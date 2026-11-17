@@ -570,7 +570,7 @@ export async function cancelAssignmentInTransaction(
     throw new OpensteerError({ code: "conflict", message: "Delegation is already finished" });
   await transaction
     .updateTable("delegations")
-    .set({ cancellationPending: true })
+    .set({ cancellationRootId: target.id })
     .where("id", "=", target.id)
     .execute();
   await publishAssignmentSummaries(transaction, target, true);
@@ -615,21 +615,12 @@ export async function drainAssignmentCancellation(
       const assignment = await tx
         .selectFrom("delegations")
         .selectAll()
-        .where(sql<boolean>`cancellation_pending`)
-        .$if(root !== undefined, (query) =>
-          query.where(sql<boolean>`id in (
-          with recursive tree(id) as (
-            select id from delegations where id = ${root}
-            union
-            select child.id from delegations child join tree on child.parent_assignment_id = tree.id
-            where child.status = 'cancelled'
-          ) select id from tree
-        )`),
-        )
+        .where("cancellationRootId", "is not", null)
+        .$if(root !== undefined, (query) => query.where("cancellationRootId", "=", root!))
         .orderBy("id")
         .limit(1)
         .executeTakeFirst();
-      if (!assignment) return null;
+      if (!assignment?.cancellationRootId) return null;
       const now = new Date();
       const children = await tx
         .selectFrom("delegations")
@@ -647,7 +638,7 @@ export async function drainAssignmentCancellation(
         );
         await tx
           .updateTable("delegations")
-          .set({ cancellationPending: true })
+          .set({ cancellationRootId: assignment.cancellationRootId })
           .where(
             "id",
             "in",
@@ -725,7 +716,7 @@ export async function drainAssignmentCancellation(
       if (!run) {
         await tx
           .updateTable("delegations")
-          .set({ cancellationPending: false })
+          .set({ cancellationRootId: null })
           .where("id", "=", assignment.id)
           .execute();
         return {};
@@ -751,11 +742,14 @@ export async function drainAssignmentCancellation(
         .insertInto("commands")
         .values({
           actorPrincipalId: await principalIdForUser(tx, run.requestedBy),
-          authoritySource: jsonValue({ assignmentId: assignment.id, kind: "assignment-cancel" }),
+          authoritySource: jsonValue({
+            assignmentId: assignment.cancellationRootId,
+            kind: "assignment-cancel",
+          }),
           dispatcherId: null,
           environmentId: run.environmentId,
           id: createId("command"),
-          idempotencyKey: `assignment-cancel:${assignment.id}:${run.id}`,
+          idempotencyKey: `assignment-cancel:${assignment.cancellationRootId}:${run.id}`,
           lastError: null,
           payload: jsonValue({ runId: run.id, threadId: run.threadId, type: "run.interrupt" }),
           requestedBy: run.requestedBy,

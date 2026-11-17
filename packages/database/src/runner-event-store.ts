@@ -1,4 +1,4 @@
-import { publishThreadSummary } from "./thread-status.js";
+import { projectLastReply } from "./thread-status.js";
 import { refreshRequestState } from "./request-persistence.js";
 import { commitPersonalMutation, type PersonalMutation } from "./personal-mutation.js";
 import { acceptPersonalRunnerStatement } from "./personal-runner-receipts.js";
@@ -157,18 +157,7 @@ async function publishRunnerMessage(
     isTurnStart,
     view,
   });
-  if (message.kind === "assistant") {
-    await tx
-      .updateTable("threads")
-      .set({
-        revision: mutation.sequence,
-        lastReplyMessageId: row.id,
-        lastReplyPreview: utf8Prefix(view.preview ?? "", 1120),
-      })
-      .where("id", "=", row.threadId)
-      .execute();
-    await publishThreadSummary(tx, row.threadId);
-  }
+  if (message.kind === "assistant") await projectLastReply(tx, message);
 }
 
 async function applyEventProjection(

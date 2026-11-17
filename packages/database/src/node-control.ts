@@ -158,7 +158,6 @@ export async function enqueueNodeStop(database: Kysely<DatabaseSchema>, input: N
         });
       return {
         command: existing,
-        events: [],
         wasDuplicate: true,
       };
     }
@@ -216,7 +215,6 @@ export async function enqueueNodeStop(database: Kysely<DatabaseSchema>, input: N
     await publishExecutionNode(tx, node.id);
     return {
       command,
-      events: [],
       wasDuplicate: false,
     };
   });
@@ -232,8 +230,7 @@ export async function failNodeStop(
       .selectAll()
       .where("id", "=", commandId)
       .executeTakeFirstOrThrow();
-    if (command.type !== "node.stop" || !command.runId || command.status !== "dispatched")
-      return [];
+    if (command.type !== "node.stop" || !command.runId || command.status !== "dispatched") return;
     await tx
       .selectFrom("runs")
       .select("id")
@@ -274,7 +271,7 @@ export async function failNodeStop(
       })
       .where("id", "=", commandId)
       .execute();
-    return [];
+    return;
   });
 }
 export async function dispatchNodeStop(

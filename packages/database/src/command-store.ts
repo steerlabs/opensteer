@@ -1,3 +1,4 @@
+import { PersonalRevisionSchema } from "@opensteer/protocol/resources";
 import { assignmentWasCancelled } from "./execution-authority.js";
 import { refreshRequestState } from "./request-persistence.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
@@ -112,7 +113,7 @@ export type RunnerControlInput =
   | {
       readonly idempotencyKey: string;
       readonly requestId: RequestId;
-      readonly expectedRevision?: string;
+      readonly expectedRevision: string;
       readonly settlementSessionId?: string;
       readonly agentResponder?: z.infer<typeof AgentRequestResponderSchema>;
       readonly requestedBy: UserId;
@@ -473,7 +474,8 @@ async function succeedCommandInTransaction(
           .forNoKeyUpdate()
           .executeTakeFirst()
       : null;
-  if (responsePayload && !pending) return none;
+  if (responsePayload && (!pending || pending.revision !== responsePayload.expectedRevision))
+    return none;
   const command = await transaction
     .selectFrom("commands")
     .select(["id", "status", "type"])
@@ -696,9 +698,7 @@ function canonicalRunnerControlInput(input: RunnerControlInput): Readonly<Record
     case "request.respond":
       return {
         requestId: input.requestId,
-        ...(input.expectedRevision !== undefined
-          ? { expectedRevision: input.expectedRevision }
-          : {}),
+        expectedRevision: PersonalRevisionSchema.parse(input.expectedRevision),
         idempotencyKey: input.idempotencyKey,
         requestedBy: input.requestedBy,
         responseFingerprint: input.sealedResponse.requestFingerprint,
@@ -733,6 +733,7 @@ function omitRequestResponse(payload: unknown): unknown {
 }
 function requestResponseCommandPayload(payload: unknown): {
   readonly requestId: RequestId;
+  readonly expectedRevision: string;
   readonly requestedBy: UserId;
   readonly response: RequestResponse;
   readonly settlementProvenance?:
@@ -754,6 +755,7 @@ function requestResponseCommandPayload(payload: unknown): {
         }
       : {}),
     requestId: RequestIdSchema.parse(value.requestId),
+    expectedRevision: PersonalRevisionSchema.parse(value.expectedRevision),
     requestedBy: UserIdSchema.parse(value.requestedBy),
     response: RequestResponseSchema.parse(value.response),
   };
@@ -972,7 +974,7 @@ export async function enqueueRunnerControlInTransaction(
       !pending ||
       pending.status !== "pending" ||
       pending.responseCommandId !== null ||
-      (input.expectedRevision !== undefined && pending.revision !== input.expectedRevision) ||
+      pending.revision !== input.expectedRevision ||
       pending.mode !== "live" ||
       pending.originatingRunId !== input.runId ||
       pending.originatingThreadId !== input.threadId
@@ -1273,6 +1275,7 @@ export async function dispatchRequestResponse(
           !requestRow ||
           requestRow.mode !== "live" ||
           requestRow.status !== "pending" ||
+          requestRow.revision !== payload.expectedRevision ||
           requestRow.responseCommandId !== commandId ||
           requestRow.originatingRunId !== observed.runId ||
           requestRow.originatingThreadId !== observed.threadId ||

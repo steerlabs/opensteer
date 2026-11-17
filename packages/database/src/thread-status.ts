@@ -1,5 +1,8 @@
 import {
   SequenceSchema,
+  contentSaysSomething,
+  type ContentPart,
+  type MessageId,
   deriveThreadStatus,
   nonTerminalRunStatuses,
   type RunId,
@@ -96,6 +99,28 @@ export async function publishThreadSummary(tx: Tx, threadId: ThreadId): Promise<
       });
     }
   });
+}
+
+export async function projectLastReply(
+  tx: Tx,
+  reply: {
+    readonly id: MessageId;
+    readonly threadId: ThreadId;
+    readonly content: readonly ContentPart[];
+  },
+): Promise<void> {
+  if (!contentSaysSomething(reply.content)) return;
+  const firstText = reply.content.find((part) => part.type === "text" && /\S/u.test(part.text));
+  const preview =
+    firstText?.type === "text"
+      ? plainTextExcerpt(firstText.text.slice(0, 16_384), taskLineMaxLength)
+      : null;
+  await tx
+    .updateTable("threads")
+    .set({ lastReplyMessageId: reply.id, lastReplyPreview: preview })
+    .where("id", "=", reply.threadId)
+    .execute();
+  await publishThreadSummary(tx, reply.threadId);
 }
 
 export async function publishRunQueue(tx: Tx, threadId: ThreadId, runId?: RunId) {
