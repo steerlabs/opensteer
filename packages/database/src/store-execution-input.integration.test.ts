@@ -505,7 +505,7 @@ describeStore("PostgreSQL store", (it) => {
       runId: null,
       state: "pending",
     });
-    await expect(store.recoverThreadWorkQueues()).resolves.toEqual([]);
+    await expect(store.recoverThreadWorkQueues()).resolves.toBeUndefined();
     await expect(
       database
         .selectFrom("runs")
@@ -961,29 +961,19 @@ describeStore("PostgreSQL store", (it) => {
     const unbound = await enqueue("claimed-unbound-input");
     if (!unbound.command || !unbound.run) throw new Error("Expected a Run");
     await store.claimCommand(unbound.command.id, "host-before-restart");
-    const events = await store.recoverCommandsAfterHostRestart();
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        data: {
-          status: "queued",
-          startedAt: (
-            await database
-              .selectFrom("runs")
-              .select("createdAt")
-              .where("id", "=", unbound.run.id)
-              .executeTakeFirstOrThrow()
-          ).createdAt.toISOString(),
-          personWaiting: true,
-          startedBy: {
-            displayName: "Alex",
-            kind: "human",
-            userId: fixture.userId,
-            principalId: await storeFixture.principalIdFor(fixture.userId),
-          },
-        },
-        runId: unbound.run.id,
-      }),
-    );
+    await store.recoverCommandsAfterHostRestart();
+    expect(
+      await database
+        .selectFrom("runs")
+        .select(["status", "createdAt", "personWaited", "requestedBy"])
+        .where("id", "=", unbound.run.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({
+      status: "queued",
+      createdAt: new Date(unbound.run.createdAt),
+      personWaited: true,
+      requestedBy: fixture.userId,
+    });
     await expect(
       database
         .selectFrom("commands")
@@ -1071,7 +1061,7 @@ describeStore("PostgreSQL store", (it) => {
     });
     // The execute acknowledgement and run.started were both lost. Only the
     // session binding committed before the Host stopped a second time.
-    expect(await store.recoverCommandsAfterHostRestart()).toEqual([]);
+    expect(await store.recoverCommandsAfterHostRestart()).toBeUndefined();
     await expect(
       database
         .selectFrom("runs")
@@ -2256,7 +2246,7 @@ describeStore("PostgreSQL store", (it) => {
     expect(delivered).toMatchObject({ throughOrdinal: 1, replayed: false });
     await expect(
       store.markSteerUnknown(steered.command.id, "Late ambiguous transport result"),
-    ).resolves.toEqual([]);
+    ).resolves.toBeUndefined();
     await expect(
       database
         .selectFrom("threadInputs")
@@ -2304,8 +2294,7 @@ describeStore("PostgreSQL store", (it) => {
     });
     if (!refused.command) throw new Error("Expected refused steer Command");
     expect(refused.input.causalChainId).toBe(refusedRun.run.causalChainId);
-    const refusedEvents = await store.refuseSteer(refused.command.id, "Harness refused steer");
-    expect(refusedEvents.map(({ type }) => type)).toEqual(["thread-input.updated"]);
+    await store.refuseSteer(refused.command.id, "Harness refused steer");
     const refusedInput = await database
       .selectFrom("threadInputs")
       .select(["causalChainId", "runId", "state", "steerCommandId"])
@@ -2474,11 +2463,7 @@ describeStore("PostgreSQL store", (it) => {
     });
     if (!unknown.command) throw new Error("Expected unknown steer Command");
     await store.claimCommand(unknown.command.id, "thread-steer-unknown-dispatcher");
-    const unknownEvents = await store.markSteerUnknown(
-      unknown.command.id,
-      "Runner disconnected after dispatch",
-    );
-    expect(unknownEvents.map(({ type }) => type)).toEqual(["thread-input.updated"]);
+    await store.markSteerUnknown(unknown.command.id, "Runner disconnected after dispatch");
     await expect(
       database
         .selectFrom("threadInputs")

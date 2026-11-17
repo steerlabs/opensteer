@@ -15,7 +15,6 @@ import {
   utf8Prefix,
   MessageContentSchema,
   messageContentMaxSerializedBytes,
-  type AgentEvent,
   type ContentPart,
   type RunFailure,
   type RunId,
@@ -49,7 +48,7 @@ export async function recoverLostRunTransaction(
   },
 ): Promise<{
   readonly status: "recovered" | "terminal" | "unchanged";
-  readonly events: readonly AgentEvent[];
+
   readonly revokedGrants: readonly RevokedRunGrant[];
 }> {
   const messageId = createId("message");
@@ -62,7 +61,7 @@ export async function recoverLostRunTransaction(
   if (run.finishIntent || !["starting", "running", "waiting"].includes(run.status)) {
     return {
       status: "unchanged",
-      events: [],
+
       revokedGrants: [],
     };
   }
@@ -89,9 +88,8 @@ export async function recoverLostRunTransaction(
     .where("bindingGeneration", "=", run.bindingGeneration)
     .limit(1)
     .executeTakeFirst();
-  const fail = async (status: "failed" | "interrupted", failure = input.failure) => ({
-    status: "terminal" as const,
-    events: await finalizeRunTransaction(transaction, {
+  const fail = async (status: "failed" | "interrupted", failure = input.failure) => {
+    await finalizeRunTransaction(transaction, {
       completedAt: input.now,
       failure,
       links: input.links,
@@ -101,9 +99,9 @@ export async function recoverLostRunTransaction(
       source: "host",
       status,
       ...(input.statement ? { statement: input.statement } : {}),
-    }),
-    revokedGrants: [],
-  });
+    });
+    return { status: "terminal" as const, revokedGrants: [] };
+  };
   if (run.voiceSessionId || run.maintenance) return fail("failed");
   if (await runWasStopped(transaction, run.id)) return fail("interrupted");
   if (
@@ -376,7 +374,7 @@ export async function recoverLostRunTransaction(
       outcome: "interrupted",
     });
   });
-  return { status: "recovered", events: [], revokedGrants: [] };
+  return { status: "recovered", revokedGrants: [] };
 }
 
 export async function completeRunReplacement(

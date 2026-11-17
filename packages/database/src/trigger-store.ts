@@ -1,5 +1,5 @@
 import { personalSettings, requirePersonalOwner } from "./personal-settings-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { TransactionScopeChanged } from "./connection.js";
 import { jsonValue, lockCommandIdempotency } from "./store-primitives.js";
 import { createHash } from "node:crypto";
@@ -351,7 +351,6 @@ export async function createTriggerInTransaction(
       .executeTakeFirstOrThrow(),
   ]);
   return {
-    ...(ownTask?.event ? { event: ownTask.event } : {}),
     revision: revisionFromRow(revision),
     trigger: triggerFromRow(trigger),
     wasDuplicate: false,
@@ -430,7 +429,7 @@ export class TriggerStore {
     this.#database = database;
   }
   async create(input: CreateTriggerInput) {
-    return withPersonalTransaction(this.#database, (transaction) =>
+    return commitPersonalMutation(this.#database, (transaction) =>
       createTriggerInTransaction(transaction, input),
     );
   }
@@ -470,7 +469,7 @@ export class TriggerStore {
         message: "Automation update requires at least one of name, program, or source",
       });
     }
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       await lockWatchCapacityForTrigger(transaction, input.triggerId);
       const trigger = await lockTriggerForMutation(transaction, input, "define");
       if (!systemProgram) await requireTriggerExecutionAuthority(transaction, trigger);
@@ -589,7 +588,7 @@ export class TriggerStore {
     readonly status: "active" | "paused" | "archived";
     readonly triggerId: TriggerId;
   }): Promise<Trigger> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       await lockWatchCapacityForTrigger(transaction, input.triggerId);
       const trigger = await lockTriggerForMutation(
         transaction,
@@ -673,7 +672,7 @@ export class TriggerStore {
       });
     }
     const nextFireAt = new Date(parsed.data);
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const trigger = await lockTriggerForMutation(transaction, input, "control");
       await requireTriggerExecutionAuthority(transaction, trigger);
       if (nextFireAt.getTime() <= Date.now()) {
@@ -842,7 +841,7 @@ export class TriggerStore {
     readonly activations: readonly WatchActivationContext[];
     readonly reconcileGeneration: number;
   }> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const rows = await transaction
         .selectFrom("triggerWatchActivations")
         .innerJoin("triggers", "triggers.id", "triggerWatchActivations.triggerId")
@@ -973,7 +972,7 @@ export class TriggerStore {
     readonly activation: TriggerWatchActivation;
     readonly autoPaused: boolean;
   }> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const identity = await transaction
         .selectFrom("triggerWatchActivations")
         .select("triggerId")
@@ -1245,7 +1244,7 @@ export class TriggerStore {
     readonly occurrence: TriggerOccurrence;
     readonly wasDuplicate: boolean;
   }> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const trigger = await transaction
         .selectFrom("triggers")
         .selectAll()
@@ -1284,7 +1283,7 @@ export class TriggerStore {
     readonly payload?: unknown;
     readonly triggerId: TriggerId;
   }): Promise<TriggerOccurrence> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const trigger = await lockTriggerForMutation(transaction, input, "define");
       if (trigger.status === "archived") throw conflict("Archived automation cannot run");
       if (trigger.kind === "watch") {
@@ -1326,7 +1325,7 @@ export class TriggerStore {
   ): Promise<{
     readonly canceledOccurrenceIds: readonly TriggerOccurrenceId[];
   }> {
-    return withPersonalTransaction(
+    return commitPersonalMutation(
       this.#database,
       async (transaction) => {
         const observedPending = await transaction
@@ -1405,7 +1404,6 @@ export class TriggerStore {
           canceledOccurrenceIds,
         };
       },
-      undefined,
       (error) => error instanceof TriggerOccurrenceSetChanged,
     );
   }
@@ -1431,7 +1429,7 @@ export class TriggerStore {
       .limit(1)
       .executeTakeFirst();
     if (!candidate) return { occurrences: [], changed: false };
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const due = await transaction
         .selectFrom("triggers")
         .selectAll()
@@ -1554,7 +1552,7 @@ export class TriggerStore {
     readonly context: TriggerDispatchContext;
     readonly executionGeneration: number;
   }> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const occurrence = await transaction
         .selectFrom("triggerOccurrences")
         .innerJoin("commands", "commands.id", "triggerOccurrences.commandId")
@@ -1609,7 +1607,7 @@ export class TriggerStore {
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
   }): Promise<TriggerOccurrence> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       const occurrence = await transaction
         .selectFrom("triggerOccurrences")
         .selectAll()
@@ -1755,7 +1753,7 @@ export class TriggerStore {
     readonly runnerBootId?: string;
     readonly runnerId?: RunnerId;
   }): Promise<number> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return commitPersonalMutation(this.#database, async (transaction) => {
       let query = transaction
         .selectFrom("triggerOccurrences")
         .select(["commandId", "event", "id", "revisionId", "triggerId"])

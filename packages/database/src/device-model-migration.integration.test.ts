@@ -219,7 +219,7 @@ it("creates no Devices on a team deployment, including historical visible Runner
 it("keeps the previous Host's writes readable after expanding the device model", async () => {
   await previous();
   const fixture = await seedPrivatePublisher(db);
-  await migrateToLatest(db);
+  await migrateToLatest(db, migrationProvider({ personalCurrentState: false }));
   const deviceId = DeviceIdSchema.parse(fixture.runnerId);
   const store = new OpensteerStore(db);
   const integrations = new IntegrationPlatformStore(db);

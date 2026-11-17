@@ -1,3 +1,5 @@
+import { lockThreadProviderSession } from "./run-projection-locks.js";
+import { refreshRequestState } from "./request-persistence.js";
 import { ChannelConversationIdSchema } from "@opensteer/channel-core";
 import { commitPersonalMutation, type PersonalMutation } from "./personal-mutation.js";
 import {
@@ -9,28 +11,23 @@ import { interruptPersonalToolCalls } from "./personal-tool-calls.js";
 import type { FinishIntent } from "./personal-state-schema.js";
 import {
   publishExecutionInput,
-  publishExecutionRequest,
-  publishExecutionThread,
   recordExecutionRunChange,
   updateExecutionThread,
   writeExecutionItem,
 } from "./execution-changes.js";
-import { refreshLatestRunCompletion, unreadTaskContribution } from "./personal-attention-store.js";
 import { threadExecutionIsAvailableToUser } from "./store-primitives.js";
 import { sql } from "kysely";
 import { recordPersonWaited } from "./run-visibility.js";
-import { appendDoneState } from "./task-done.js";
+import { publishThreadSummary } from "./thread-status.js";
 import { pauseTriggerInTransaction } from "./trigger-store.js";
 import {
   OpensteerError,
   MessageContentSchema,
   harnessUsageLimitFailureCode,
   ReplyTargetSchema,
-  type AgentEvent,
   type RequestCancellationReason,
   type RunId,
   type RunAttemptId,
-  utf8Prefix,
   type RunFailure,
 } from "@opensteer/core";
 import type { Kysely, Transaction } from "kysely";
@@ -66,7 +63,7 @@ interface FinalizeRunRequest {
 export async function finalizeRunTransaction(
   transaction: Transaction<DatabaseSchema>,
   requested: FinalizeRunRequest,
-): Promise<readonly AgentEvent[]> {
+): Promise<void> {
   if (requested.status === "failed" && !requested.failure) {
     throw new OpensteerError({
       code: "internal",
@@ -96,9 +93,9 @@ export async function finalizeRunTransaction(
     .where("runs.id", "=", requested.runId)
     .forNoKeyUpdate("runs")
     .executeTakeFirst();
-  if (!run || !["queued", "starting", "running", "waiting"].includes(run.runStatus)) return [];
+  if (!run || !["queued", "starting", "running", "waiting"].includes(run.runStatus)) return;
   const offline = isOfflineSettlement(transaction);
-  if (!offline && run.finishIntent) return [];
+  if (!offline && run.finishIntent) return;
   if (requested.source === "host" && requested.status === "completed")
     throw new OpensteerError({
       code: "internal",
@@ -132,7 +129,7 @@ export async function finalizeRunTransaction(
       command.type !== "run.execute" ||
       command.status !== "dispatched"
     ) {
-      return [];
+      return;
     }
   }
   const reply = input.status === "completed" ? await runReply(transaction, run) : null;
@@ -140,8 +137,9 @@ export async function finalizeRunTransaction(
   return commitPersonalMutation(transaction, async (tx, mutation) => {
     const children = await readFinishChildren(tx, run.id);
     if (!children.hasMore) {
+      await lockThreadProviderSession(tx, run.threadId, run.providerSessionId);
       await settleFinishChildren(tx, mutation, run.id, input, children);
-      const events = await finalizeRunOutcome(tx, input, run, thread, reply?.id ?? null, mutation);
+      await finalizeRunOutcome(tx, input, run, thread, reply?.id ?? null, mutation);
       mutation.react({
         type: "runFinished",
         runId: run.id,
@@ -150,7 +148,7 @@ export async function finalizeRunTransaction(
         bindingGeneration: run.bindingGeneration,
         outcome: input.status,
       });
-      return events;
+      return;
     }
     await beginPersonalRunFinish(tx, mutation, {
       runId: run.id,
@@ -174,7 +172,7 @@ export async function finalizeRunTransaction(
       threadId: run.threadId,
       transition: "finishing",
     });
-    return [];
+    return;
   });
 }
 
@@ -205,6 +203,31 @@ export async function settleFinishChildren(
   children: Awaited<ReturnType<typeof readFinishChildren>>,
   recovering = false,
 ) {
+  if (children.steers.length) {
+    const run = await tx
+      .selectFrom("runs")
+      .select("threadId")
+      .where("id", "=", runId)
+      .executeTakeFirstOrThrow();
+    const work = tx
+      .selectFrom("threadWorkInputs")
+      .select("causalChainId")
+      .where("threadId", "=", run.threadId)
+      .where("state", "=", "pending")
+      .orderBy("queueRank")
+      .limit(100);
+    const steers = tx
+      .selectFrom("threadInputs")
+      .select("causalChainId")
+      .where("messageId", "in", children.steers);
+    await tx
+      .selectFrom("causalChains")
+      .select("id")
+      .where((eb) => eb.or([eb("id", "in", work), eb("id", "in", steers)]))
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
+  }
   for (const id of children.requests) {
     const request = await tx
       .updateTable("requests")
@@ -219,7 +242,7 @@ export async function settleFinishChildren(
       .where("status", "=", "pending")
       .returning("responseCommandId")
       .executeTakeFirst();
-    if (request) await publishExecutionRequest(tx, { id });
+    if (request) await refreshRequestState(tx, id);
   }
   const replacement = children.steers.length ? await pendingReplacementAttempt(tx, runId) : null;
   const stoppedConversation =
@@ -349,6 +372,7 @@ export async function drainRunFinish(
         .executeTakeFirst();
       if (!run?.finishIntent) return "settled";
       await lockThreadRow(tx, run.threadId);
+      await lockThreadProviderSession(tx, run.threadId, run.providerSessionId);
       const thread = await tx
         .selectFrom("threads")
         .selectAll()
@@ -424,10 +448,8 @@ async function finalizeRunOutcome(
   thread: import("./schema.js").ThreadRow,
   replyId: import("@opensteer/core").MessageId | null,
   mutation: PersonalMutation | null,
-): Promise<readonly AgentEvent[]> {
+): Promise<void> {
   const offline = mutation === null;
-  const unreadBefore = offline ? 0 : await unreadTaskContribution(transaction, run.threadId);
-  const events: AgentEvent[] = [];
   // A person who started this from a channel never sees the Thread, so how it
   // ended has to reach them where they wrote: the Run's reply when it
   // completed, which is all they are sent of what the agent wrote, and a
@@ -606,18 +628,16 @@ async function finalizeRunOutcome(
     .where("id", "=", run.id)
     .executeTakeFirstOrThrow();
   if (run.assignmentId) {
-    events.push(
-      ...(await settleAssignmentAfterRun(transaction, {
-        assignmentId: run.assignmentId,
-        failureSummary: input.status === "failed" ? failureSummary(input.failure) || null : null,
-        finishedAt: input.completedAt,
-        run: {
-          id: run.id,
-          threadId: run.threadId,
-        },
-        status: input.status,
-      })),
-    );
+    await settleAssignmentAfterRun(transaction, {
+      assignmentId: run.assignmentId,
+      failureSummary: input.status === "failed" ? failureSummary(input.failure) || null : null,
+      finishedAt: input.completedAt,
+      run: {
+        id: run.id,
+        threadId: run.threadId,
+      },
+      status: input.status,
+    });
   }
   if (run.doneWhenFinished) {
     await transaction
@@ -653,17 +673,16 @@ async function finalizeRunOutcome(
       thread.doneAt = doneAt;
       thread.doneReason = null;
       thread.inputQueuePaused = false;
-      if (!offline) await appendDoneState(transaction, run.threadId);
+      if (!offline) await publishThreadSummary(transaction, run.threadId);
     }
   }
 
   // A corrupt selection must not roll back an already accepted terminal event.
   // Pending work remains queued until an explicit engine selection repairs it.
   if (!offline) {
-    const followOn = await ensureQueuedRun(transaction, thread, {
+    await ensureQueuedRun(transaction, thread, {
       onInvalidSelection: "defer",
     });
-    events.push(...followOn.events);
     await updateExecutionThread(transaction, run.threadId, input.completedAt);
     if (input.status === "failed" && input.failure?.code === harnessUsageLimitFailureCode)
       await recordExecutionRunChange(transaction, mutation, {
@@ -671,15 +690,6 @@ async function finalizeRunOutcome(
         threadId: run.threadId,
         transition: "usage-limit",
       });
-    await refreshLatestRunCompletion(transaction, mutation, run.threadId, unreadBefore);
-    await transaction
-      .updateTable("threads")
-      .set({
-        failurePreview: input.status === "failed" ? utf8Prefix(input.failure!.message, 1120) : null,
-      })
-      .where("id", "=", run.threadId)
-      .execute();
-    await publishExecutionThread(transaction, mutation, run.threadId);
     const cardId = `run:${run.id}`;
     const existing = await transaction
       .selectFrom("transcriptItems")
@@ -701,7 +711,6 @@ async function finalizeRunOutcome(
   }
   // Nodes and attempts rank last; the Run's lock already orders these writes.
   await endOpenAttempts(transaction, run.id, input.status);
-  return events;
 }
 
 /** One sentence a person can act on, never a stack trace. */
@@ -725,8 +734,8 @@ export async function endStoppedUnconfirmedRun(
     readonly links: ChannelLinks;
     readonly runId: RunId;
   },
-): Promise<readonly AgentEvent[]> {
-  const events = await finalizeRunTransaction(transaction, {
+): Promise<void> {
+  await finalizeRunTransaction(transaction, {
     completedAt: new Date(),
     links: input.links,
     queuedInputCancellation: "activation-input",
@@ -743,5 +752,4 @@ export async function endStoppedUnconfirmedRun(
     })
     .where("id", "=", input.runId)
     .execute();
-  return events;
 }

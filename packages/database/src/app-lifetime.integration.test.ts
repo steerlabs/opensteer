@@ -5,6 +5,7 @@ import { expect, it } from "vitest";
 import { AppStore, appPortFirst } from "./app-store.js";
 import { TabStore } from "./tab-store.js";
 import { createDatabase } from "./connection.js";
+import { installPersonalMutationHooks } from "./personal-mutation.js";
 import { seedPrivatePublisher } from "./private-publisher.test-support.js";
 import type { DatabaseSchema } from "./schema.js";
 import { cloneTestDatabase } from "./test-database.test-support.js";
@@ -13,6 +14,13 @@ it("keeps person-owned apps and their fixed port through versions, HTML conversi
   const clone = await cloneTestDatabase("host");
   const seed = createDatabase<DatabaseSchema>({ connectionString: clone.url });
   const database = createDatabase<DatabaseSchema>({ connectionString: clone.url });
+  installPersonalMutationHooks(database, {
+    wake() {},
+    suspend: () => ({ committed() {}, rolledBack() {} }),
+    onFailure(error) {
+      throw error;
+    },
+  });
   try {
     const p = await seedPrivatePublisher(seed);
     const store = new AppStore(database);

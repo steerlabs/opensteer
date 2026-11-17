@@ -119,7 +119,7 @@ type ReplayChange = Pick<
   "sequence" | "ordinal" | "entityKind" | "entityId" | "operation"
 > & { readonly value?: Record<string, unknown> };
 
-interface ScopeCommit {
+export interface ScopeCommit {
   readonly fromSequence: string;
   readonly throughSequence: string;
   readonly changes: readonly ReplayChange[];

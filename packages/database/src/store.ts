@@ -21,7 +21,6 @@ import { resolveResourceAccess, type ResourceAccessInput } from "./resource-acce
 import { type ChannelTransportKind, type IntegrationConnectionId } from "@opensteer/channel-core";
 import {
   createId,
-  type AgentEvent,
   type AssignmentId,
   type AssignmentSummary,
   type AssignmentView,
@@ -37,14 +36,12 @@ import {
   type GrantId,
   type HarnessInstanceId,
   type HostInstanceId,
-  type IntegrationCallSubject,
   type Message,
   type MessageId,
   type ModelSelection,
   type PlaceContentPart,
   type ProviderContinuationIdentity,
   type ProviderSessionId,
-  type RequestId,
   type Run,
   type RunAttempt,
   type RunId,
@@ -65,17 +62,13 @@ import {
   type HarnessInstanceCatalog,
   type HostedBrowserSessionState,
   type MachineAccessPolicy,
-  type PendingAgentEvent,
   type RunnerDescriptor,
   type RunnerModuleName,
   type ShellAuditEvent,
   type ShellCloseReason,
   type ShellSessionId,
   type ShellSessionSummary,
-  type TaskPage,
-  type ThreadEventPage,
   type ThreadMessagePage,
-  type DeploymentSnapshot,
 } from "@opensteer/protocol";
 import type { Clock } from "@opensteer/shared/clock";
 import { type Kysely } from "kysely";
@@ -153,16 +146,12 @@ import {
   type RunnerInventoryRecord,
 } from "./runner-store.js";
 import { type CommandRow, type DatabaseSchema, type PendingCommandRow } from "./schema.js";
-import * as snapshotStore from "./snapshot-store.js";
-import {
-  type DurableWindowReadOptions,
-  type EventReplayWindow,
-  type DeploymentSnapshotReadOptions,
-} from "./snapshot-store.js";
+import { readPersonalTaskPage } from "./personal-task-store.js";
+import { drainRunFinish } from "./run-finalization.js";
 import { threadPathLinks, type ChannelLinks } from "./store-primitives.js";
 import * as taskDone from "./task-done.js";
 import * as quietTasks from "./quiet-tasks.js";
-import { type ThreadHistoryQuery } from "./thread-history.js";
+import { readThreadHistory, type ThreadHistoryQuery } from "./thread-history.js";
 import { latestRunStoppedByPerson, type AssignmentReturnDrain } from "./thread-inbox.js";
 import { executionNodeFromRow, runAttemptFromRow } from "./thread-row-mappers.js";
 import * as threadStore from "./thread-store.js";
@@ -202,7 +191,6 @@ export class OpensteerStore {
   // knows the origin its own web app answers on.
   readonly #links: ChannelLinks;
   readonly #executionNow: () => number;
-  readonly #readPersonalResources: snapshotStore.PersonalSnapshotResourcesReader | undefined;
   readonly requests: RequestStore;
   readonly notificationState: NotificationStateStore;
   readonly ownerProfile: OwnerProfileStore;
@@ -212,11 +200,9 @@ export class OpensteerStore {
     options: {
       readonly links?: ChannelLinks;
       readonly executionClock?: Pick<Clock, "now">;
-      readonly readPersonalResources?: snapshotStore.PersonalSnapshotResourcesReader;
     } = {},
   ) {
     this.#database = database;
-    this.#readPersonalResources = options.readPersonalResources;
     this.#links = options.links ?? threadPathLinks;
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
     setExecutionClock(database, this.#executionNow);
@@ -367,20 +353,7 @@ export class OpensteerStore {
       readonly allowDeployment?: boolean;
       readonly allowOtherOwners?: boolean;
     } = {},
-  ): Promise<{
-    readonly removedDeviceIds: readonly import("@opensteer/core").DeviceId[];
-    readonly detachedDeviceBindings: readonly import("@opensteer/core").DeviceDriverIdentity[];
-    readonly endedSessionIds: readonly import("@opensteer/core").AuthSessionId[];
-    readonly deletedBrowserProfiles: readonly {
-      readonly id: BrowserProfileId;
-      readonly ownerId: UserId;
-    }[];
-    readonly cancelledRequestIds: readonly RequestId[];
-    readonly closedBrowserSessions: readonly BrowserSessionId[];
-    readonly events: readonly AgentEvent[];
-    readonly requestEvents: readonly AgentEvent[];
-    readonly revokedComputerConnectionIds: readonly IntegrationConnectionId[];
-  }> {
+  ) {
     return runnerStore.revokeRunner(this.#database, this.#links, runnerId, ownerId, options);
   }
   async removeDevice(
@@ -475,7 +448,7 @@ export class OpensteerStore {
         readonly outcome: "updated";
         readonly replayed: boolean;
         readonly revision: number;
-        readonly requestEvents: readonly AgentEvent[];
+        readonly fulfilledRequestIds: readonly import("@opensteer/core").RequestId[];
         readonly changed: {
           readonly shell: boolean;
           readonly browser: boolean;
@@ -765,9 +738,6 @@ export class OpensteerStore {
   }): Promise<readonly browserSessionStore.BrowserUsageCredit[]> {
     return browserSessionStore.recordBrowserSessionUse(this.#database, input);
   }
-  async latestNativePlaces(ownerId: UserId) {
-    return browserSessionStore.latestNativePlaces(this.#database, ownerId);
-  }
   async authorizedPlaceThreadIds(ownerId: UserId, threadIds: readonly ThreadId[]) {
     return browserSessionStore.authorizedPlaceThreadIds(this.#database, ownerId, threadIds);
   }
@@ -852,20 +822,14 @@ export class OpensteerStore {
   }): Promise<readonly BrowserSessionWithAttachmentCountRecord[]> {
     return browserSessionStore.listActiveBrowserSessionsForAgent(this.#database, input);
   }
-  async failActiveBrowserSessions(placementKey?: string): Promise<{
-    readonly events: readonly AgentEvent[];
-    readonly failed: number;
-  }> {
+  async failActiveBrowserSessions(placementKey?: string) {
     return browserSessionStore.failActiveBrowserSessions(this.#database, placementKey);
   }
   async transitionBrowserSession(input: {
     readonly from?: readonly HostedBrowserSessionState[];
     readonly sessionId: BrowserSessionId;
     readonly state: HostedBrowserSessionState;
-  }): Promise<{
-    readonly events: readonly AgentEvent[];
-    readonly session: BrowserSessionRecord;
-  }> {
+  }) {
     return browserSessionStore.transitionBrowserSession(this.#database, input);
   }
   async renewActiveExecutionBindings(input: {
@@ -1377,7 +1341,6 @@ export class OpensteerStore {
   }
   async enqueueRunnerControl(input: RunnerControlInput): Promise<{
     readonly command: CommandRow;
-    readonly events: readonly AgentEvent[];
     readonly revokedGrants: readonly RevokedRunGrant[];
     readonly wasDuplicate: boolean;
   }> {
@@ -1394,18 +1357,18 @@ export class OpensteerStore {
   async dispatchRequestResponse(
     commandId: CommandRow["id"],
     send: (beforeAck: () => Promise<void>) => Promise<void>,
-  ): Promise<readonly AgentEvent[]> {
-    return this.#announceRevokedGrants(
+  ): Promise<void> {
+    this.#announceRevokedGrants(
       await commandStore.dispatchRequestResponse(this.#database, commandId, send),
-    ).events;
+    );
   }
   async dispatchChannelCommand(
     commandId: CommandRow["id"],
     send: (beforeAck: () => Promise<void>) => Promise<void>,
-  ): Promise<readonly AgentEvent[]> {
-    return this.#announceRevokedGrants(
+  ): Promise<void> {
+    this.#announceRevokedGrants(
       await commandStore.dispatchChannelCommand(this.#database, commandId, send),
-    ).events;
+    );
   }
   async listPendingCommands(limit = 500): Promise<readonly PendingCommandRow[]> {
     return commandStore.listPendingCommands(this.#database, limit);
@@ -1432,7 +1395,7 @@ export class OpensteerStore {
   }
   async loadRunDispatchContext(
     commandId: CommandRow["id"],
-    options: DurableWindowReadOptions = {},
+    options: Parameters<typeof executionStore.loadRunDispatchContext>[2] = {},
   ): Promise<RunDispatchContext> {
     return executionStore.loadRunDispatchContext(this.#database, commandId, options);
   }
@@ -1445,7 +1408,7 @@ export class OpensteerStore {
   }> {
     return commandStore.loadSteerDispatchInput(this.#database, commandId);
   }
-  async retryCommand(commandId: CommandRow["id"], error: unknown): Promise<readonly AgentEvent[]> {
+  async retryCommand(commandId: CommandRow["id"], error: unknown): Promise<void> {
     return commandStore.retryCommand(this.#database, this.#links, commandId, error);
   }
   async failCommand(
@@ -1454,7 +1417,7 @@ export class OpensteerStore {
     queuedInputCancellation:
       "activation-input" | "authority-cohort" | "seed-input" = "activation-input",
     failureCode: "dispatch_failed" | "runner_restarted" = "dispatch_failed",
-  ): Promise<readonly AgentEvent[]> {
+  ): Promise<void> {
     return commandStore.failCommand(
       this.#database,
       this.#links,
@@ -1468,18 +1431,14 @@ export class OpensteerStore {
     commandId: CommandRow["id"],
     reason: string,
     reasonCode?: string,
-  ): Promise<readonly AgentEvent[]> {
+  ): Promise<void> {
     return commandStore.refuseSteer(this.#database, commandId, reason, reasonCode);
   }
-  async markSteerUnknown(
-    commandId: CommandRow["id"],
-    reason: string,
-  ): Promise<readonly AgentEvent[]> {
+  async markSteerUnknown(commandId: CommandRow["id"], reason: string): Promise<void> {
     return commandStore.markSteerUnknown(this.#database, commandId, reason);
   }
-  async succeedCommand(commandId: CommandRow["id"]): Promise<readonly AgentEvent[]> {
-    return this.#announceRevokedGrants(await commandStore.succeedCommand(this.#database, commandId))
-      .events;
+  async succeedCommand(commandId: CommandRow["id"]): Promise<void> {
+    this.#announceRevokedGrants(await commandStore.succeedCommand(this.#database, commandId));
   }
   async acquireExecutionBinding(input: {
     readonly personalContext?: boolean;
@@ -1493,7 +1452,6 @@ export class OpensteerStore {
     readonly threadId: ThreadId;
   }): Promise<
     ThreadExecutionBinding & {
-      readonly continuationEvent?: AgentEvent;
       readonly grantId: GrantId;
       readonly revokedGrants: readonly RevokedRunGrant[];
     }
@@ -1519,26 +1477,7 @@ export class OpensteerStore {
   }): Promise<UserId | null> {
     return executionStore.runRequester(this.#database, input);
   }
-  async commitRunnerEvent(input: {
-    readonly environmentId: EnvironmentId;
-    readonly event: PendingAgentEvent;
-    /**
-     * What a `tool.started` integration call addressed, as the Host resolved
-     * it. It is stored with the event but is not the Runner's to send, so a
-     * replay is still compared against the Runner's data alone.
-     */
-    readonly integration?: IntegrationCallSubject;
-    readonly runnerBootId: string;
-    readonly runnerId: RunnerId;
-  }): Promise<{
-    /** Turns the Host requeued because this event ended their injection window. */
-    readonly compensatingEvents: readonly AgentEvent[];
-    /** A `run.usage` this Run had already stated; the first one still stands. */
-    readonly duplicateRunUsage: boolean;
-    readonly event: AgentEvent;
-    readonly revokedGrants: readonly RevokedRunGrant[];
-    readonly wasDuplicate: boolean;
-  }> {
+  async commitRunnerEvent(input: Parameters<typeof runnerEventStore.commitRunnerEvent>[2]) {
     return this.#announceRevokedGrants(
       await runnerEventStore.commitRunnerEvent(
         this.#database,
@@ -1586,7 +1525,7 @@ export class OpensteerStore {
     readonly runId: RunId;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
-  }): Promise<readonly AgentEvent[]> {
+  }): Promise<void> {
     return executionRecovery.failRunForRefusedRunnerEvent(this.#database, this.#links, input);
   }
   recoverRemovedAskTasks(): Promise<void> {
@@ -1595,7 +1534,7 @@ export class OpensteerStore {
   recordThreadVisit(input: Parameters<typeof recordThreadVisit>[1]) {
     return recordThreadVisit(this.#database, input);
   }
-  async recoverThreadWorkQueues(): Promise<readonly AgentEvent[]> {
+  async recoverThreadWorkQueues(): Promise<void> {
     return executionRecovery.recoverThreadWorkQueues(this.#database);
   }
   async recordComputerUseStop(input: {
@@ -1615,7 +1554,7 @@ export class OpensteerStore {
   async clearComputerUseStops(runId: RunId): Promise<void> {
     return computerUseStore.clearComputerUseStops(this.#database, runId);
   }
-  async recoverCommandsAfterHostRestart(): Promise<readonly AgentEvent[]> {
+  async recoverCommandsAfterHostRestart(): Promise<void> {
     return executionRecovery.recoverCommandsAfterHostRestart(this.#database, this.#links);
   }
   async attachRunnerExecutions(input: {
@@ -1626,8 +1565,6 @@ export class OpensteerStore {
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
   }): Promise<{
-    readonly events: readonly AgentEvent[];
-
     readonly resumed: readonly ResumedExecution[];
     readonly results: readonly ExecutionAttachment[];
   }> {
@@ -1694,24 +1631,11 @@ export class OpensteerStore {
   }): Promise<void> {
     return executionStore.bindProviderSession(this.#database, input);
   }
-  async deploymentSnapshot(
-    options: DeploymentSnapshotReadOptions = {},
-  ): Promise<DeploymentSnapshot> {
-    return snapshotStore.deploymentSnapshot(this.#database, this.notificationState, {
-      ...options,
-      ...(this.#readPersonalResources ? { readResources: this.#readPersonalResources } : {}),
-    });
+  taskPageForUser(input: Parameters<typeof readPersonalTaskPage>[1]) {
+    return readPersonalTaskPage(this.#database, input);
   }
-  async taskPageForUser(input: {
-    readonly deviceAccessRequests?: "include";
-    readonly active?: boolean;
-    readonly before?: string;
-    readonly done?: boolean;
-    readonly maxBytes?: number;
-    readonly maxItems?: number;
-    readonly userId: UserId;
-  }): Promise<TaskPage> {
-    return snapshotStore.taskPageForUser(this.#database, this.notificationState, input);
+  drainRunFinish(runId: RunId) {
+    return drainRunFinish(this.#database, this.#links, runId);
   }
   onPersonMessageReady(wake: (message: PersonMessageReady) => void | Promise<void>) {
     return installPersonMessageWake(this.#database, wake);
@@ -1720,43 +1644,7 @@ export class OpensteerStore {
     return publishPersonMessage(this.#database, input);
   }
   async threadMessagePageForOwner(input: ThreadHistoryQuery): Promise<ThreadMessagePage | null> {
-    return snapshotStore.threadMessagePageForOwner(this.#database, input);
-  }
-  toolOutputForOwner(input: Parameters<typeof snapshotStore.toolOutputForOwner>[1]) {
-    return snapshotStore.toolOutputForOwner(this.#database, input);
-  }
-  nodeEventPageForOwner(input: Parameters<typeof snapshotStore.nodeEventPageForOwner>[1]) {
-    return snapshotStore.nodeEventPageForOwner(this.#database, input);
-  }
-  async threadEventPageForOwner(input: {
-    readonly deviceAccessRequests?: "include";
-    readonly view?: "conversation";
-    readonly placeEvents?: "include";
-    readonly aroundMessageId?: MessageId;
-    readonly before?: string;
-    readonly maxBytes?: number;
-    readonly maxItems?: number;
-    readonly maxTurns?: number;
-    readonly ownerId: UserId;
-    readonly threadId: ThreadId;
-  }): Promise<ThreadEventPage | null> {
-    return snapshotStore.threadEventPageForOwner(this.#database, this.notificationState, input);
-  }
-  async eventsAfter(afterSequence: Sequence, limit = 500): Promise<readonly AgentEvent[]> {
-    return snapshotStore.eventsAfter(this.#database, afterSequence, limit);
-  }
-  async eventsAfterWindow(
-    afterSequence: Sequence,
-    options: {
-      readonly maxBytes: number;
-      readonly maxItems: number;
-      readonly throughSequence?: Sequence;
-    },
-  ): Promise<EventReplayWindow> {
-    return snapshotStore.eventsAfterWindow(this.#database, afterSequence, options);
-  }
-  async deploymentHead(): Promise<Sequence> {
-    return snapshotStore.deploymentHead(this.#database);
+    return readThreadHistory(this.#database, input);
   }
 }
 export { machineIsManagedBy, type MachineOwnershipRecord } from "./machine-ownership.js";

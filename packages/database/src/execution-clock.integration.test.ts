@@ -49,7 +49,7 @@ describeStore("execution lease clock", (it) => {
     expect(single).toBe(false);
     expect(multiple).toEqual([]);
     // Renewal is > now; sweep remains < now. Equality must not be normalized.
-    expect((await store.recoverRunsWithExpiredExecutionBindings()).events).toEqual([]);
+    expect((await store.recoverRunsWithExpiredExecutionBindings()).terminatedRuns).toEqual([]);
     clock.advanceBy(1);
     await expect(store.assertActiveGrant(authority)).rejects.toMatchObject({
       code: "forbidden",
@@ -103,7 +103,7 @@ describeStore("execution lease clock", (it) => {
         type: "run.interrupted",
       }),
     });
-    expect(admitted.wasDuplicate).toBe(false);
+    expect(admitted.replayed).toBe(false);
     const directory = await mkdtemp(join(tmpdir(), "opensteer-execution-clock-"));
     await writeFile(
       join(directory, "authority.json"),

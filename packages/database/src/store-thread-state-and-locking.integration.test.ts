@@ -119,23 +119,34 @@ describeStore("PostgreSQL store", (it) => {
     await make("failed", "failed");
     await make("archived", "archived");
     await make("hidden", "running", false);
-    const page = await store.taskPageForUser({ active: true, maxItems: 1, userId: fixture.userId });
-    expect(page.window).toMatchObject({ hasMore: true, itemCount: 1, totalItems: 2 });
-    const next = await store.taskPageForUser({
-      active: true,
-      before: page.window.nextBefore!,
-      maxItems: 1,
-      userId: fixture.userId,
+    const page = await store.taskPageForUser({
+      window: "active",
+      limit: 1,
+      viewerId: fixture.userId,
     });
-    expect(next.window.hasMore).toBe(false);
-    expect(new Set([...page.tasks, ...next.tasks].map(({ thread }) => thread.id))).toEqual(
+    expect(page.hasMore).toBe(true);
+    expect(page.tasks).toHaveLength(1);
+    const next = await store.taskPageForUser({
+      window: "active",
+      before: page.nextBefore!,
+      limit: 1,
+      viewerId: fixture.userId,
+    });
+    expect(next.hasMore).toBe(false);
+    expect(new Set([...page.tasks, ...next.tasks].map(({ id }) => id))).toEqual(
       new Set([running, waiting]),
     );
     await expect(
-      store.taskPageForUser({ before: page.window.nextBefore!, userId: fixture.userId }),
+      store.taskPageForUser({
+        window: "recent",
+        before: page.nextBefore!,
+        viewerId: fixture.userId,
+      }),
     ).rejects.toMatchObject({ code: "bad_request" });
     const outsider = await store.createUser("Outsider");
-    await expect(store.taskPageForUser({ active: true, userId: outsider })).rejects.toMatchObject({
+    await expect(
+      store.taskPageForUser({ window: "active", viewerId: outsider }),
+    ).rejects.toMatchObject({
       code: "forbidden",
     });
     await database
@@ -144,7 +155,7 @@ describeStore("PostgreSQL store", (it) => {
       .where("id", "=", fixture.userId)
       .execute();
     await expect(
-      store.taskPageForUser({ active: true, userId: fixture.userId }),
+      store.taskPageForUser({ window: "active", viewerId: fixture.userId }),
     ).rejects.toMatchObject({ code: "forbidden" });
   });
 
@@ -314,6 +325,7 @@ describeStore("PostgreSQL store", (it) => {
         requestedBy: fixture.userId,
         runId: fixture.run.id,
         threadId: fixture.thread.id,
+        expectedRevision: (await store.requests.revision(first.id))!,
         type: "request.respond",
         requestId: first.id,
         response: {
@@ -616,7 +628,9 @@ describeStore("PostgreSQL store", (it) => {
         "idle",
       );
       // A dispatch retry finds nothing to put back.
-      expect(await store.retryCommand(turn.command.id, new Error("Not dispatched"))).toEqual([]);
+      expect(
+        await store.retryCommand(turn.command.id, new Error("Not dispatched")),
+      ).toBeUndefined();
       // Sent while paused, the next message waits without a Run until resume.
       const later = await store.enqueueThreadInput({
         content: [
@@ -890,6 +904,7 @@ describeStore("PostgreSQL store", (it) => {
     const otherUser = await store.createUser("Other requester");
     await expect(
       store.requests.declineMachineFullDiskAccessRequest({
+        expectedRevision: (await store.requests.revision(declined.request.id))!,
         requestId: declined.request.id,
         resolvedBy: otherUser,
         response: {
@@ -904,6 +919,7 @@ describeStore("PostgreSQL store", (it) => {
     });
     await expect(
       store.requests.declineMachineFullDiskAccessRequest({
+        expectedRevision: (await store.requests.revision(declined.request.id))!,
         requestId: declined.request.id,
         resolvedBy: fixture.userId,
         response: {
@@ -918,6 +934,7 @@ describeStore("PostgreSQL store", (it) => {
     });
     expect(
       await store.requests.declineMachineFullDiskAccessRequest({
+        expectedRevision: (await store.requests.revision(declined.request.id))!,
         requestId: declined.request.id,
         resolvedBy: fixture.userId,
         response: {
@@ -945,13 +962,8 @@ describeStore("PostgreSQL store", (it) => {
         (request) => request.status === "fulfilled" && request.resolvedBy === fixture.userId,
       ),
     ).toBe(true);
-    expect(fulfilled.events.map((event) => event.type)).toEqual([
-      "request.resolved",
-      "request.resolved",
-    ]);
     expect((await store.requests.get(other.request.id))?.status).toBe("pending");
     expect(await store.requests.fulfillMachineFullDiskAccessRequests(machineId)).toEqual({
-      events: [],
       requests: [],
     });
     const continuations = await database
@@ -1031,18 +1043,12 @@ describeStore("PostgreSQL store", (it) => {
       withdrawnBy: fixture.userId,
     });
     expect(withdrawn).toMatchObject({
-      events: [
-        expect.objectContaining({
-          type: "request.resolved",
-        }),
-      ],
       replayed: false,
       request: {
         status: "withdrawn",
       },
     });
     expect(withdrawnReplay).toMatchObject({
-      events: [],
       replayed: true,
       request: {
         status: "withdrawn",
@@ -1219,8 +1225,9 @@ describeStore("PostgreSQL store", (it) => {
               status: "active",
               triggerId: watch.trigger.id,
             });
-      const startWriter = () =>
+      const startWriter = async () =>
         racingStore.requests.resolveBrowserRequest({
+          expectedRevision: (await store.requests.revision(opened.request.id))!,
           requestId: opened.request.id,
           resolvedBy: fixture.userId,
           response: { kind: "external", value: { decision: "declined" } },
@@ -1258,13 +1265,18 @@ describeStore("PostgreSQL store", (it) => {
         expect(await store.requests.get(opened.request.id)).toMatchObject({ status: "declined" });
         const changes = await database
           .selectFrom("clientChanges")
-          .select("payload")
+          .select(["operation", "payload"])
           .where("scopeKey", "=", `thread:${fixture.thread.id}`)
-          .where("entityKind", "=", "request")
-          .where("entityId", "=", opened.request.id)
+          .where("entityId", "in", [opened.request.id, `request:${opened.request.id}`])
           .execute();
+        expect(changes).toContainEqual({ operation: "remove", payload: {} });
         expect(changes).toContainEqual(
-          expect.objectContaining({ payload: expect.objectContaining({ status: "declined" }) }),
+          expect.objectContaining({
+            operation: "upsert",
+            payload: expect.objectContaining({
+              view: expect.objectContaining({ status: "declined" }),
+            }),
+          }),
         );
       } finally {
         release.resolve();
@@ -1579,8 +1591,9 @@ describeStore("PostgreSQL store", (it) => {
           .where("id", "=", opened.request.id)
           .forUpdate()
           .execute(),
-      () =>
+      async () =>
         store.requests.resolveBrowserRequest({
+          expectedRevision: (await store.requests.revision(opened.request.id))!,
           requestId: opened.request.id,
           resolvedBy: fixture.userId,
           response: {

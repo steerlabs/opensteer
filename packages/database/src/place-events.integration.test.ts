@@ -1,9 +1,10 @@
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
-import { readEmptyPersonalResources } from "./store.integration.test-support.js";
 import { BrowserSessionIdSchema } from "@opensteer/core";
-import { PendingAgentEventSchema, DeploymentSnapshotSchema } from "@opensteer/protocol";
+import { PendingAgentEventSchema } from "@opensteer/protocol";
 import { expect } from "vitest";
 import { OpensteerStore } from "./store.js";
+import { readTranscriptPage, readTranscriptItem } from "./personal-sync-store.js";
+import { readPersonalDetailSnapshot } from "./snapshot-store.js";
 import {
   describeStore,
   pendingEvent,
@@ -34,86 +35,52 @@ describeStore("durable Run place entries", (it) => {
         site: "https://example.com",
       },
     };
-    const first = await store.recordRunTabPlace(input);
-    expect(first).toMatchObject({
-      type: "place.entered",
-      threadId: f.thread.id,
-      environmentId: f.environmentId,
-    });
+    expect(await store.recordRunTabPlace(input)).toBe(true);
     expect(
       await store.recordRunTabPlace({
         ...input,
-        data: {
-          ...input.data,
-          title: "Navigated",
-        },
+        data: { ...input.data, title: "Navigated" },
       }),
-    ).toBeUndefined();
+    ).toBe(false);
+    expect(await new OpensteerStore(database).recordRunTabPlace(input)).toBe(false);
     expect(
-      await new OpensteerStore(database, {
-        readPersonalResources: readEmptyPersonalResources,
-      }).recordRunTabPlace(input),
-    ).toBeUndefined();
-    const second = await store.recordRunTabPlace({
-      ...input,
-      data: {
-        ...input.data,
-        tabId: b.surfaceId,
-      },
+      await store.recordRunTabPlace({
+        ...input,
+        data: { ...input.data, tabId: b.surfaceId },
+      }),
+    ).toBe(true);
+    expect(await store.recordRunTabPlace(input)).toBe(true);
+    expect(await new OpensteerStore(database).latestRunPlace(f.run.id)).toMatchObject({
+      tabId: a.surfaceId,
     });
-    const third = await store.recordRunTabPlace(input);
-    expect(
-      await new OpensteerStore(database, {
-        readPersonalResources: readEmptyPersonalResources,
-      }).latestRunPlace(f.run.id),
-    ).toEqual(third);
-    expect([first, second, third].every(Boolean)).toBe(true);
-    expect(BigInt(first!.sequence)).toBeLessThan(BigInt(second!.sequence));
-    expect(BigInt(second!.sequence)).toBeLessThan(BigInt(third!.sequence));
     expect(
       await store.recordRunTabPlace({
         ...input,
         bindingGeneration: f.bindingGeneration + 1,
-        data: {
-          ...input.data,
-          tabId: b.surfaceId,
-        },
       }),
-    ).toBeUndefined();
-    const hidden = await store.threadEventPageForOwner({
-      ownerId: f.userId,
-      threadId: f.thread.id,
+    ).toBe(false);
+
+    const scope = { kind: "thread", threadId: f.thread.id } as const;
+    const page = await readTranscriptPage(database, { viewerId: f.userId, scope, limit: 2 });
+    if (page.kind !== "page") throw new Error("Expected a place page");
+    expect(page.items.map(({ kind }) => kind)).toEqual(["place", "place"]);
+    expect(page.hasMore).toBe(true);
+    const older = await readTranscriptPage(database, {
+      viewerId: f.userId,
+      scope,
+      cursor: page.nextBefore!,
     });
-    expect(hidden!.events.some((event) => event.type === "place.entered")).toBe(false);
-    const visible = await store.threadEventPageForOwner({
-      ownerId: f.userId,
-      threadId: f.thread.id,
-      placeEvents: "include",
-      maxItems: 2,
+    if (older.kind !== "page") throw new Error("Expected an older place page");
+    const firstPlace = older.items.find(({ kind }) => kind === "place")!;
+    const stored = await readTranscriptItem(database, {
+      viewerId: f.userId,
+      scope,
+      itemId: firstPlace.id,
     });
-    expect(visible!.events.map((event) => event.eventId)).toEqual([
-      second!.eventId,
-      third!.eventId,
-    ]);
-    expect(visible!.window.hasMore).toBe(true);
-    const older = await store.threadEventPageForOwner({
-      ownerId: f.userId,
-      threadId: f.thread.id,
-      placeEvents: "include",
-      before: visible!.window.nextBefore!,
-      maxItems: 2,
+    expect(stored).toMatchObject({
+      kind: "item",
+      body: { kind: "place", place: { tabId: a.surfaceId, site: input.data.site } },
     });
-    expect(older!.events).toContainEqual(first);
-    const storedPlace = older!.events.find((event) => event.eventId === first!.eventId);
-    expect(storedPlace).toMatchObject({
-      type: "place.entered",
-      data: {
-        title: "A".repeat(255) + "\uFFFD",
-      },
-    });
-    if (storedPlace?.type !== "place.entered")
-      throw new Error("Stored place event was not returned");
-    expect(storedPlace.data.title.isWellFormed()).toBe(true);
     const delegated = await store.delegateThread({
       accessMode: "auto",
       createdBy: f.userId,
@@ -187,20 +154,17 @@ describeStore("durable Run place entries", (it) => {
         runId: delegated.run.id,
         bindingGeneration: binding.bindingGeneration,
       }),
-    ).toMatchObject({
-      threadId: delegated.thread.id,
-      runId: delegated.run.id,
-    });
+    ).toBe(true);
     const appPlace = {
       tabId: BrowserSurfaceIdSchema.parse("native-tab"),
       title: "Notes",
       site: null,
     };
-    const native = await store.recordRunTabPlace({
+    await store.recordRunTabPlace({
       ...input,
       data: appPlace,
     });
-    const phone = await store.recordRunTabPlace({
+    await store.recordRunTabPlace({
       ...input,
       runId: delegated.run.id,
       bindingGeneration: binding.bindingGeneration,
@@ -210,56 +174,18 @@ describeStore("durable Run place entries", (it) => {
         site: null,
       },
     });
-    const seedOptions = {
-      viewerId: f.userId,
-      placeEvents: "include" as const,
-      listedOnly: true,
-      omitMessages: true,
-      maxThreads: 1,
-    };
-    let placeQueries = 0;
-    const observed = new OpensteerStore(
-      database.withPlugin({
-        transformQuery({ node }) {
-          if (JSON.stringify(node).includes('"name":"deployment_events"')) placeQueries += 1;
-          return node;
-        },
-        async transformResult({ result }) {
-          return result;
-        },
-      }),
-      { readPersonalResources: readEmptyPersonalResources },
-    );
-    const seeded = await observed.deploymentSnapshot(seedOptions);
-    expect(placeQueries).toBe(1);
-    expect(seeded.runPlaces).toEqual([phone, native]);
-    expect(seeded.threads).toHaveLength(1);
-    expect(DeploymentSnapshotSchema.safeParse(seeded).success).toBe(true);
-    expect(seeded.serializedBytes).toBe(Buffer.byteLength(JSON.stringify(seeded)));
-    expect(
-      await observed.deploymentSnapshot({
-        viewerId: f.userId,
-      }),
-    ).not.toHaveProperty("runPlaces");
-    expect(placeQueries).toBe(1);
+    const cut = await readPersonalDetailSnapshot(database, { viewerId: f.userId, scope });
+    if (cut.kind !== "snapshot") throw new Error("Expected task detail");
+    expect(cut.snapshot).toMatchObject({ thread: { latestPlace: appPlace } });
+    expect(Buffer.byteLength(JSON.stringify(cut.snapshot))).toBeLessThanOrEqual(128 * 1024);
     const outsider = await store.createUser("Outsider");
     await expect(
-      store.deploymentSnapshot({ ...seedOptions, viewerId: outsider }),
+      readPersonalDetailSnapshot(database, { viewerId: outsider, scope }),
     ).rejects.toMatchObject({ code: "forbidden" });
-    const baseline = await store.deploymentSnapshot({
-      viewerId: f.userId,
-      listedOnly: true,
-      omitMessages: true,
-      maxThreads: 1,
+    expect(await store.latestRunPlace(delegated.run.id)).toMatchObject({
+      title: "Phone",
+      site: null,
     });
-    const bounded = await store.deploymentSnapshot({
-      ...seedOptions,
-      maxSerializedBytes: baseline.serializedBytes + 20,
-    });
-    expect(bounded.serializedBytes).toBeLessThanOrEqual(baseline.serializedBytes + 20);
-    // Missing Runs in a complete seed are terminal; a budget-limited seed must stay unknown.
-    expect(bounded).not.toHaveProperty("runPlaces");
-    expect(bounded.serializedBytes).toBe(Buffer.byteLength(JSON.stringify(bounded)));
     const terminalEvent = pendingEvent({
       bindingGeneration: f.bindingGeneration,
       data: {
@@ -284,8 +210,7 @@ describeStore("durable Run place entries", (it) => {
       runnerBootId: f.runnerBootId,
       runnerId: f.runnerId,
     });
-    expect(BigInt(third!.sequence)).toBeLessThan(BigInt(terminal.event.sequence));
-    expect((await store.deploymentSnapshot(seedOptions)).runPlaces).toEqual([phone]);
+    expect(terminal.throughOrdinal).toBe(1);
     expect(
       await store.recordRunTabPlace({
         ...input,
@@ -294,6 +219,6 @@ describeStore("durable Run place entries", (it) => {
           tabId: b.surfaceId,
         },
       }),
-    ).toBeUndefined();
+    ).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { upsertSelfDeviceInTransaction } from "./device-inventory-store.js";
 import { DeviceIdSchema } from "@opensteer/core";
-import { withPersonalTransaction } from "./personal-transaction.js";
 import {
   personalFixtureOwner,
   createPersonalRunFixturePort,
@@ -740,9 +740,7 @@ integration.sequential("PostgreSQL integration uninstall", () => {
             await sql<{ query: string }>`select query from pg_stat_activity
         where datname = current_database() and application_name = 'opensteer-integration-uninstall-test'
         and wait_event_type = 'Lock'`.execute(database)
-          ).rows.some(({ query }) =>
-            query.includes("from deployment_event_state for no key update"),
-          ),
+          ).rows.some(({ query }) => /client_sync_state.*for no key update/iu.test(query)),
         )
         .toBe(true);
       release.resolve();
@@ -2978,7 +2976,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         where datname = current_database()
           and application_name = 'opensteer-computer-app-connections-test'
           and wait_event_type = 'Lock'
-          and query ilike '%deployment_event_state%'
+          and query ilike '%client_sync_state%'
       `.execute(database);
       expect(Number(blockedOnFence.rows[0]?.count)).toBeGreaterThanOrEqual(1);
       release();
@@ -3360,9 +3358,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
             }>`select query from pg_stat_activity where datname=current_database() and application_name='opensteer-computer-app-connections-test' and wait_event_type='Lock'`.execute(
               database,
             )
-          ).rows.some(({ query }) =>
-            query.includes("from deployment_event_state for no key update"),
-          ),
+          ).rows.some(({ query }) => /client_sync_state.*for no key update/iu.test(query)),
         )
         .toBe(true);
       barrier.release();
@@ -3484,7 +3480,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     let replacing: Promise<unknown> | undefined;
     try {
       await barrier.reached;
-      replacing = withPersonalTransaction(database, (transaction) =>
+      replacing = commitPersonalMutation(database, (transaction) =>
         installIntegrationInTransaction(transaction, {
           actorUserId: setup.ownerUserId,
           adapterSnapshot: null,
@@ -3564,7 +3560,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         /"name":"integration_?tools"/iu.test(node) &&
         node.includes("ForNoKeyUpdate"),
     );
-    const replacing = withPersonalTransaction(barrier.database, (transaction) =>
+    const replacing = commitPersonalMutation(barrier.database, (transaction) =>
       installIntegrationInTransaction(transaction, {
         actorUserId: setup.ownerUserId,
         adapterSnapshot: null,
@@ -3599,7 +3595,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     let revoking: Promise<unknown> | undefined;
     try {
       await barrier.reached;
-      revoking = withPersonalTransaction(database, (transaction) =>
+      revoking = commitPersonalMutation(database, (transaction) =>
         revokeComputerConnectionsInTransaction(transaction, {
           connectionId: source.connection.id,
           ownerUserId: setup.ownerUserId,
@@ -3614,9 +3610,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
             }>`select query from pg_stat_activity where datname=current_database() and application_name='opensteer-computer-app-connections-test' and wait_event_type='Lock'`.execute(
               database,
             )
-          ).rows.some(({ query }) =>
-            query.includes("from deployment_event_state for no key update"),
-          ),
+          ).rows.some(({ query }) => /client_sync_state.*for no key update/iu.test(query)),
         )
         .toBe(true);
       barrier.release();
@@ -3760,8 +3754,8 @@ integration.sequential("PostgreSQL computer app connections", () => {
           transformQuery(args) {
             const node = JSON.stringify(args.node);
             if (
-              args.node.kind === "RawNode" &&
-              node.includes("select deployment_id from deployment_event_state for no key update")
+              /client_?sync_?state/iu.test(node) &&
+              /ForNoKeyUpdate|for no key update/iu.test(node)
             )
               acquiring.resolve();
             return args.node;
@@ -3795,9 +3789,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
               await sql<{ query: string }>`select query from pg_stat_activity
         where datname = current_database() and application_name = 'opensteer-covered-order-test'
         and wait_event_type = 'Lock'`.execute(database)
-            ).rows.some(({ query }) =>
-              query.includes("from deployment_event_state for no key update"),
-            ),
+            ).rows.some(({ query }) => /client_sync_state.*for no key update/iu.test(query)),
           )
           .toBe(true);
         release.resolve();
@@ -6233,7 +6225,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
       const mainRead = await mainAsk("read");
       const opened = await askOnMac(phoneAsk(run, setup.phone.phoneId, "read"));
       const allowed = await allowPhoneFromClient(storeFixture, setup, "read", opened.setupRequest);
-      expect(allowed.fulfilledRequestIds).toEqual([opened.request.id]);
+      expect([...allowed.fulfilledRequestIds].sort()).toEqual(
+        [opened.request.id, mainRead.request.id].sort(),
+      );
       expect(allowed.grants).toEqual([
         expect.objectContaining({
           access: "read",

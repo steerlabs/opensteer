@@ -15,7 +15,7 @@ import { cancelPending } from "./request-cancellation.js";
 import { deviceOwnershipIn } from "./machine-ownership.js";
 import { revokeComputerConnectionsInTransaction } from "./integration-platform-stores.js";
 import { revokeRunner } from "./runner-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation } from "./personal-mutation.js";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue, type ChannelLinks } from "./store-primitives.js";
 
@@ -131,7 +131,7 @@ export async function removeDevice(
   ownerId: UserId,
   options: { readonly administration?: AdministrationCommandIdentity } = {},
 ): Promise<DeviceRemovalEffects> {
-  return withPersonalTransaction(database, async (transaction) => {
+  return commitPersonalMutation(database, async (transaction, mutation) => {
     const device = await transaction
       .selectFrom("devices")
       .selectAll()
@@ -182,7 +182,7 @@ export async function removeDevice(
         .where("status", "=", "pending")
         .where(sql<string>`payload->>'machineId'`, "=", deviceId)
         .execute();
-      const events = await cancelPending(transaction, {
+      const cancelledRequestIds = await cancelPending(transaction, {
         requestIds: pending.map((r) => r.id),
         reason: "resource-deleted",
         resolvedAt: new Date(),
@@ -200,14 +200,13 @@ export async function removeDevice(
         .where("deviceId", "=", deviceId)
         .returning("id")
         .execute();
+      if (!device.removedAt) mutation.bumpResource("machine");
       return {
         ...effects,
         endedSessionIds: ended.map((r) => r.id),
         deletedBrowserProfiles: [],
-        cancelledRequestIds: [...revoked.cancelledRequestIds, ...pending.map((r) => r.id)],
+        cancelledRequestIds: [...revoked.cancelledRequestIds, ...cancelledRequestIds],
         closedBrowserSessions: [],
-        events: [],
-        requestEvents: [...revoked.requestEvents, ...events],
         revokedComputerConnectionIds: revoked.connectionIds,
       };
     });

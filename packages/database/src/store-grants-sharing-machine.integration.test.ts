@@ -162,7 +162,6 @@ describeStore("PostgreSQL store", (it) => {
       message: {
         id: row.id,
       },
-      events: [],
     });
     await database
       .updateTable("runs")
@@ -1161,7 +1160,6 @@ describeStore("PostgreSQL store", (it) => {
         id: installationId,
         status: "active",
       },
-      requestEvents: [],
     });
   });
 
@@ -1248,12 +1246,13 @@ describeStore("PostgreSQL store", (it) => {
         requestedBy: fixture.userId,
         requestedServerId: serverId,
       });
-    const resolve = (
+    const resolve = async (
       requestId: ReturnType<typeof createId<"request">>,
       access: "read" | "read-write",
     ) =>
       platform.requests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
+        expectedRevision: (await platform.requests.revision(requestId))!,
         requestId,
         resolvedBy: fixture.userId,
         response: {
@@ -1467,7 +1466,7 @@ describeStore("PostgreSQL store", (it) => {
         outcome: "updated",
         replayed: false,
         changed: { shell: true, browser: false, apps: false },
-        requestEvents: [],
+        fulfilledRequestIds: [],
         revision: 2,
       });
       // A second editor still holding revision 1 changes nothing at all.
@@ -1503,7 +1502,7 @@ describeStore("PostgreSQL store", (it) => {
         outcome: "updated",
         replayed: false,
         changed: { shell: false, browser: false, apps: false },
-        requestEvents: [],
+        fulfilledRequestIds: [],
         revision: 3,
       });
     });
@@ -1532,7 +1531,7 @@ describeStore("PostgreSQL store", (it) => {
         outcome: "updated",
         replayed: false,
         changed: { shell: true, browser: false, apps: false },
-        requestEvents: [],
+        fulfilledRequestIds: [],
         revision: 2,
       });
       // The retried click: the same answer, the revision does not move, and it
@@ -1542,7 +1541,7 @@ describeStore("PostgreSQL store", (it) => {
         outcome: "updated",
         replayed: true,
         changed: { shell: false, browser: false, apps: false },
-        requestEvents: [],
+        fulfilledRequestIds: [],
         revision: 2,
       });
       await expect(store.getMachineAccessTarget(runnerId)).resolves.toMatchObject({

@@ -1,3 +1,5 @@
+import { assignmentWasCancelled } from "./execution-authority.js";
+import { writeExecutionItem } from "./execution-changes.js";
 import { unreadTaskContribution } from "./personal-attention-store.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { syncTranscriptMessage } from "./message-visibility.js";
@@ -3904,7 +3906,11 @@ export async function ensureQueuedRun(
         .select("status")
         .where("id", "=", candidate.assignmentId)
         .executeTakeFirst();
-      if (assignment && assignment.status !== "open") {
+      if (
+        assignment &&
+        (assignment.status !== "open" ||
+          (await assignmentWasCancelled(transaction, candidate.assignmentId)))
+      ) {
         const cancelled = await transaction
           .updateTable("threadInputs")
           .set({
@@ -4053,6 +4059,21 @@ export async function ensureQueuedRun(
     .where("id", "=", thread.id)
     .executeTakeFirstOrThrow();
   await placeQueuedMessage(transaction, thread, seed.messageId, runId);
+  if (!options.maintenance)
+    await commitPersonalMutation(transaction, (tx, mutation) =>
+      writeExecutionItem(tx, mutation, {
+        id: `run:${runId}`,
+        kind: "run",
+        threadId: thread.id,
+        runId,
+        nodeId: null,
+        attemptId: null,
+        createdAt: runRow.createdAt,
+        visible: true,
+        isTurnStart: false,
+        view: { status: "queued" },
+      }),
+    );
   await publishRunQueue(transaction, thread.id, runId);
   await projectThreadState(transaction, thread.id, new Date(), true);
   if (seed.teamRequestId)

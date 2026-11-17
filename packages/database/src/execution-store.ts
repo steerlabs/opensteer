@@ -60,7 +60,6 @@ import {
   threadFromRow,
 } from "./thread-row-mappers.js";
 import { readRunThreadState } from "./run-thread-state.js";
-import { type DurableWindowReadOptions } from "./snapshot-store.js";
 import { newestMessageWindow } from "./message-window.js";
 
 import { channelRunAuthorityIsCurrent } from "./channel-execution.js";
@@ -69,6 +68,7 @@ import { invalidateExecution } from "./execution-changes.js";
 import {
   assertActiveExecutionBinding as assertActiveExecutionBindingInStore,
   assertActiveGrant as assertActiveGrantInStore,
+  assignmentWasCancelled,
 } from "./execution-authority.js";
 
 /**
@@ -333,7 +333,7 @@ export function loadRunThreadState(
 export async function loadRunDispatchContext(
   database: Kysely<DatabaseSchema>,
   commandId: CommandRow["id"],
-  options: DurableWindowReadOptions = {},
+  options: { readonly maxItems?: number; readonly maxBytes?: number } = {},
 ): Promise<RunDispatchContext> {
   const maxHistoryItems = boundedWindowLimit(options.maxItems, runHistoryMaxMessages);
   const maxHistoryBytes = boundedWindowBytes(options.maxBytes, runHistoryMaxSerializedBytes);
@@ -591,6 +591,7 @@ export async function acquireExecutionBinding(
         "runs.requestedBy",
         "runs.status",
         "runs.finishIntent",
+        "runs.assignmentId",
         "runs.threadId",
         "runs.runOrdinal",
       ])
@@ -614,7 +615,10 @@ export async function acquireExecutionBinding(
         message: "Run is not awaiting an execution binding",
       });
     }
-    if (!(await threadExecutionIsAvailableToUser(transaction, run.threadId, run.requestedBy))) {
+    if (
+      (await assignmentWasCancelled(transaction, run.assignmentId)) ||
+      !(await threadExecutionIsAvailableToUser(transaction, run.threadId, run.requestedBy))
+    ) {
       throw new OpensteerError({
         code: "forbidden",
         message: "Run execution authority is no longer active",

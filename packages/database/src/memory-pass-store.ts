@@ -83,7 +83,7 @@ export async function createMemoryPass(
         pauseReason: input.pauseReason,
       },
     );
-    return { ...trigger, event: created.event };
+    return trigger;
   });
 }
 

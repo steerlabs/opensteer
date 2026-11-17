@@ -7,7 +7,7 @@ import { expect, test } from "vitest";
 import { createDatabase } from "./connection.js";
 import { withLockOrderMode } from "./lock-order-checker.test-support.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
-import { applyPersonalStateSchema } from "./personal-state-schema.js";
+import { preparePersonalConversion } from "./personal-state.test-support.js";
 import { finishPersonalStateUpgrade } from "./personal-state-upgrade.js";
 import { authorizedSyncState, withPersonalSyncRead } from "./personal-sync-store.js";
 import {
@@ -35,6 +35,7 @@ async function measure(events: number) {
   const { database } = fixture;
   try {
     const run = await fixture.startRunFixture(`personal-perf-${events}`);
+    await preparePersonalConversion(database, events + 100);
     const current = await database
       .selectFrom("runs")
       .select("actorPrincipalId")
@@ -63,9 +64,6 @@ async function measure(events: number) {
           else jsonb_build_object('blockId','perf:'||n,'text','Retained reasoning') end,
         ${createdAt},n,${run.runnerId},${run.runnerBootId},${run.bindingGeneration}
       from generate_series(1,${events}) n`.execute(database);
-    await sql`update deployment_event_state set sequence=${events + 100} where deployment_id=${run.deploymentId}`.execute(
-      database,
-    );
     await database
       .updateTable("runs")
       .set({ nextRunnerOrdinal: events + 1 })
@@ -81,7 +79,6 @@ async function measure(events: number) {
       from commands cross join generate_series(1,512) n where id=${run.turn.command.id}`.execute(
       database,
     );
-    await database.transaction().execute(applyPersonalStateSchema);
     const start = performance.now();
     globalThis.gc?.();
     const startMemory = process.memoryUsage();

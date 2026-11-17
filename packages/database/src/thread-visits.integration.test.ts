@@ -120,8 +120,8 @@ describeStore("thread visits", (it) => {
         runnerBootId: task.runnerBootId,
         event,
       });
-    expect((await commit()).wasDuplicate).toBe(false);
-    expect((await commit()).wasDuplicate).toBe(true);
+    expect((await commit()).replayed).toBe(false);
+    expect((await commit()).replayed).toBe(true);
     const message = await f.database
       .selectFrom("messages")
       .select("createdAt")

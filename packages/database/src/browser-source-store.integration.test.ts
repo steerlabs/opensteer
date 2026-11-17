@@ -289,7 +289,6 @@ integration.sequential("browser sign-in authority", () => {
     expect(committed).toMatchObject({
       replayed: false,
       receipt: { requestId: opened.request.id, sessionId, site },
-      events: [expect.objectContaining({ type: "request.resolved" })],
     });
     const fulfilled = await store.requests.get(opened.request.id);
     expect(fulfilled).toMatchObject({
@@ -305,7 +304,7 @@ integration.sequential("browser sign-in authority", () => {
         ?.lastSignedInAt,
     ).toBeInstanceOf(Date);
 
-    expect(await sources.commitSignIn(input)).toMatchObject({ replayed: true, events: [] });
+    expect(await sources.commitSignIn(input)).toMatchObject({ replayed: true });
     await expect(
       sources.commitSignIn({ ...input, site: "https://other.test" }),
     ).rejects.toMatchObject({ code: "conflict" });
@@ -320,7 +319,7 @@ integration.sequential("browser sign-in authority", () => {
     // A Request that is no longer pending still gets the receipt of a
     // sign-in that already reached the browser, but is not re-fulfilled.
     const late = await sources.commitSignIn({ ...input, invocationId: randomUUID() });
-    expect(late).toMatchObject({ replayed: false, events: [], receipt: { requestId: null } });
+    expect(late).toMatchObject({ replayed: false, receipt: { requestId: null } });
   });
 
   it("declines, settles a closed session, and keeps each Request's continuation single", async ({
@@ -333,16 +332,18 @@ integration.sequential("browser sign-in authority", () => {
     const sessionId = await liveSession(scope, run);
     const declined = await createSignInRequest(scope, run, sessionId);
     const first = await store.requests.declineBrowserSignInRequest({
+      expectedRevision: (await store.requests.revision(declined.request.id))!,
       requestId: declined.request.id,
       resolvedBy: scope.ownerId,
     });
     expect(first).toMatchObject({ replayed: false, request: { status: "declined" } });
     expect(
       await store.requests.declineBrowserSignInRequest({
+        expectedRevision: (await store.requests.revision(declined.request.id))!,
         requestId: declined.request.id,
         resolvedBy: scope.ownerId,
       }),
-    ).toMatchObject({ replayed: true, events: [] });
+    ).toMatchObject({ replayed: true });
     expect(await continuationFor(declined.request.id)).toEqual({ status: "waiting" });
 
     const closed = await createSignInRequest(scope, run, sessionId, "https://closed.test");
@@ -451,6 +452,7 @@ integration.sequential("browser sign-in authority", () => {
     );
     expect(await sources.fence({ ...fence, site: "https://other.test" })).toBe("request-closed");
     await store.requests.declineBrowserSignInRequest({
+      expectedRevision: (await store.requests.revision(opened.request.id))!,
       requestId: opened.request.id,
       resolvedBy: scope.ownerId,
     });

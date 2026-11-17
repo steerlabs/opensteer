@@ -403,7 +403,7 @@ describeStore("Assignment result delivery", (it) => {
     const waitId = (await s.begin(task.assignment.id))!;
     const otherId = (await s.begin(task.assignment.id))!;
     await task.settle("Waited result");
-    expect(await s.store.drainAssignmentReturn(task.assignment.id)).toEqual([]);
+    await s.store.drainAssignmentReturn(task.assignment.id);
     expect(await s.returns()).toEqual([]);
     await endAssignmentResultWait(s.database, {
       assignmentId: task.assignment.id,

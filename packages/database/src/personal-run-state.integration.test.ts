@@ -155,7 +155,11 @@ test("a finishing Run resumes its bounded work and only acknowledges an exact te
         .executeTakeFirstOrThrow(),
     ).toEqual({ status: "failed" });
     expect(
-      await database.selectFrom("runnerEventReceipts").select("ordinal").limit(1).execute(),
+      await database
+        .selectFrom("runnerEventReceipts")
+        .select("ordinal")
+        .where("ordinal", "=", 1)
+        .execute(),
     ).toEqual([]);
     const checkpoint = await database
       .selectFrom("runs")
@@ -187,7 +191,11 @@ test("a finishing Run resumes its bounded work and only acknowledges an exact te
     ).rejects.toThrow("The Run is finishing");
     await expect(advance(crash)).rejects.toBe(crash);
     expect(
-      await database.selectFrom("runnerEventReceipts").select("ordinal").limit(1).execute(),
+      await database
+        .selectFrom("runnerEventReceipts")
+        .select("ordinal")
+        .where("ordinal", "=", 1)
+        .execute(),
     ).toEqual([]);
     expect(await advance()).toBe("settled");
     await expect(

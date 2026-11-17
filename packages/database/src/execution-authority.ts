@@ -1,5 +1,6 @@
 import {
   OpensteerError,
+  type AssignmentId,
   type EnvironmentId,
   type GrantId,
   type RunId,
@@ -7,7 +8,7 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 type Database = Kysely<DatabaseSchema>;
 export interface ActiveExecutionBindingInput {
@@ -75,6 +76,23 @@ export async function assertActiveExecutionBinding(
       message: "Execution capability came from a stale or invalid binding",
     });
 }
+export async function assignmentWasCancelled(
+  database: Database,
+  assignmentId: AssignmentId | null,
+): Promise<boolean> {
+  if (!assignmentId) return false;
+  const { rows } = await sql<{ cancelled: boolean }>`
+    with recursive ancestors(id, parent_assignment_id, status) as (
+      select id, parent_assignment_id, status from delegations where id = ${assignmentId}
+      union
+      select parent.id, parent.parent_assignment_id, parent.status
+      from delegations parent join ancestors on parent.id = ancestors.parent_assignment_id
+    )
+    select exists (select 1 from ancestors where status = 'cancelled') as cancelled
+  `.execute(database);
+  return rows[0]!.cancelled;
+}
+
 export async function assertActiveGrant(
   database: Database,
   input: ActiveExecutionBindingInput & {
@@ -83,6 +101,11 @@ export async function assertActiveGrant(
   executionNow: () => number = Date.now,
 ): Promise<void> {
   await assertActiveExecutionBinding(database, input, executionNow);
+  const run = await database
+    .selectFrom("runs")
+    .select("assignmentId")
+    .where("id", "=", input.runId)
+    .executeTakeFirstOrThrow();
   const grant = await database
     .selectFrom("grants")
     .select(["runnerBootId", "runnerId"])
@@ -91,7 +114,12 @@ export async function assertActiveGrant(
     .where("bindingGeneration", "=", input.bindingGeneration)
     .$if(input.grantId !== undefined, (query) => query.where("id", "=", input.grantId!))
     .executeTakeFirst();
-  if (!grant || grant.runnerId !== input.runnerId || grant.runnerBootId !== input.runnerBootId)
+  if (
+    !grant ||
+    grant.runnerId !== input.runnerId ||
+    grant.runnerBootId !== input.runnerBootId ||
+    (await assignmentWasCancelled(database, run.assignmentId))
+  )
     throw new OpensteerError({
       code: "forbidden",
       message: "Run tool authority has ended",

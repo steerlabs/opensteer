@@ -1,12 +1,12 @@
+import { projectLastReply } from "./thread-status.js";
+import { refreshRequestState } from "./request-persistence.js";
 import { commitPersonalMutation, type PersonalMutation } from "./personal-mutation.js";
 import { acceptPersonalRunnerStatement } from "./personal-runner-receipts.js";
 import { beginPersonalRunFinish, readFinishChildren } from "./personal-run-state.js";
 import { completePersonalToolCall, startPersonalToolCall } from "./personal-tool-calls.js";
 import {
   invalidateExecution,
-  publishExecutionThread,
   publishExecutionInput,
-  publishExecutionRequest,
   recordExecutionRunChange,
   updateExecutionThread,
   writeExecutionItem,
@@ -157,18 +157,7 @@ async function publishRunnerMessage(
     isTurnStart,
     view,
   });
-  if (message.kind === "assistant") {
-    await tx
-      .updateTable("threads")
-      .set({
-        revision: mutation.sequence,
-        lastReplyMessageId: row.id,
-        lastReplyPreview: utf8Prefix(view.preview ?? "", 1120),
-      })
-      .where("id", "=", row.threadId)
-      .execute();
-    await publishExecutionThread(tx, mutation, row.threadId);
-  }
+  if (message.kind === "assistant") await projectLastReply(tx, message);
 }
 
 async function applyEventProjection(
@@ -372,7 +361,7 @@ async function applyEventProjection(
         .returningAll()
         .executeTakeFirst();
       if (!cancelled) break;
-      await publishExecutionRequest(transaction, cancelled);
+      await refreshRequestState(transaction, cancelled.id);
       const anotherLiveRequest = event.runId
         ? await transaction
             .selectFrom("requests")
@@ -569,10 +558,10 @@ async function applyEventProjection(
           .set({ status: "cancelled", cancellationReason: "source-closed", resolvedAt: now })
           .where("id", "=", event.data.request.id)
           .execute();
-        await publishExecutionRequest(transaction, { id: event.data.request.id });
+        await refreshRequestState(transaction, event.data.request.id);
         break;
       }
-      await publishExecutionRequest(transaction, { id: event.data.request.id });
+      await refreshRequestState(transaction, event.data.request.id);
       if (event.runId) {
         await transaction
           .updateTable("runs")

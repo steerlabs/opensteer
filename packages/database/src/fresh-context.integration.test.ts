@@ -57,20 +57,11 @@ describeStore("fresh model context", (it) => {
     const claimed = await f.store.claimCommand(fresh.command.id, "first-dispatch");
     const context = await f.store.loadRunDispatchContext(fresh.command.id);
     expect(context.run.providerSessionId).not.toBe(prior.run.providerSessionId);
-    expect(claimed?.events.filter(({ type }) => type === "thread.execution-updated")).toMatchObject(
-      [
-        {
-          threadId: prior.thread.id,
-          runId: null,
-          data: {
-            thread: {
-              providerSessionId: context.run.providerSessionId,
-              continuationIdentity: null,
-            },
-          },
-        },
-      ],
-    );
+    expect(claimed?.command.id).toBe(fresh.command.id);
+    expect(await f.store.getThreadForOwner(prior.thread.id, prior.userId)).toMatchObject({
+      providerSessionId: context.run.providerSessionId,
+      continuationIdentity: null,
+    });
     expect(context.history).toEqual([]);
     expect(context.initialContext).toBeNull();
     const selected = await f.database
@@ -89,9 +80,7 @@ describeStore("fresh model context", (it) => {
       .execute();
     await f.store.recoverCommandsAfterHostRestart();
     const recoveredClaim = await f.store.claimCommand(fresh.command.id, "recovered-dispatch");
-    expect(
-      recoveredClaim?.events.filter(({ type }) => type === "thread.execution-updated"),
-    ).toEqual([]);
+    expect(recoveredClaim?.command.id).toBe(fresh.command.id);
     const recovered = await f.store.loadRunDispatchContext(fresh.command.id);
     expect(recovered.run.providerSessionId).toBe(context.run.providerSessionId);
     expect(recovered.history).toEqual([]);
@@ -221,14 +210,7 @@ describeStore("fresh model context", (it) => {
       }
       const selected = await f.store.getThreadForOwner(prior.thread.id, prior.userId);
       expect(selected!.providerSessionId).not.toBe(prior.run.providerSessionId);
-      expect(claimed?.events).toContainEqual(
-        expect.objectContaining({
-          type: "thread.execution-updated",
-          data: expect.objectContaining({
-            thread: expect.objectContaining({ providerSessionId: selected!.providerSessionId }),
-          }),
-        }),
-      );
+      expect(claimed?.command.id).toBe(fresh.command.id);
       // Audience rotation also creates a new session, so it must reconstruct from the boundary.
       await f.database
         .transaction()

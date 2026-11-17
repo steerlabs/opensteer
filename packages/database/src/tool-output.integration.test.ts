@@ -1,4 +1,5 @@
-import { createId, previewToolOutput } from "@opensteer/core";
+import { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
+import { createId } from "@opensteer/core";
 import { expect } from "vitest";
 import { describeStore, pendingEvent } from "./store.integration.test-support.js";
 describeStore("on-demand tool output", (it) => {
@@ -76,71 +77,45 @@ describeStore("on-demand tool output", (it) => {
         }),
       });
     }
-    const input = {
-      ownerId: f.userId,
-      threadId: f.thread.id,
-      runId: f.run.id,
-      callId: "call",
-    };
-    expect(await store.toolOutputForOwner(input)).toEqual({
-      text,
-    });
-    expect(
-      await store.toolOutputForOwner({
-        ...input,
-        nodeId,
-      }),
-    ).toEqual({
-      text: `child ${text}`,
-    });
-    const nodePage = await store.nodeEventPageForOwner({
-      ...input,
-      nodeId,
-      maxItems: 1,
-    });
-    expect(nodePage!.events).toHaveLength(1);
-    expect(nodePage!.events[0]).toMatchObject({
-      type: "tool.completed",
-      data: {
-        output: {
-          text: `child ${text}`,
-        },
-      },
-    });
-    expect(nodePage!.events.map(previewToolOutput)[0]).toMatchObject({
-      data: {
-        outputPreview: {
-          bytes: Buffer.byteLength(`child ${text}`),
-          cut: true,
-        },
-      },
-    });
-    expect(
-      await store.toolOutputForOwner({
-        ...input,
-        ownerId: await store.createUser("Outsider"),
-      }),
-    ).toBeNull();
-    expect(
-      await store.toolOutputForOwner({
-        ...input,
-        nodeId: createId("executionNode"),
-      }),
-    ).toBeNull();
-    const page = await store.threadEventPageForOwner(input);
-    const completed = page!.events.find((event) => event.type === "tool.completed")!;
-    expect(completed.type === "tool.completed" && completed.data.output.text).toBe(text);
-    const projected = previewToolOutput(completed);
-    expect(projected.type === "tool.completed" && projected.data.outputPreview).toEqual({
-      bytes: new TextEncoder().encode(text).byteLength,
-      cut: true,
-      digest: expect.any(String),
-    });
+    const threadScope = { kind: "thread", threadId: f.thread.id } as const;
+    const nodeScope = { kind: "node", threadId: f.thread.id, nodeId } as const;
+    for (const [scope, expected] of [
+      [threadScope, text],
+      [nodeScope, `child ${text}`],
+    ] as const) {
+      const page = await readTranscriptPage(database, { viewerId: f.userId, scope });
+      if (page.kind !== "page") throw new Error("Expected transcript page");
+      const items = page.items.filter((item) => item.kind === "tool");
+      expect(items).toHaveLength(1);
+      const item = items[0]!;
+      expect(item.view.status).toBe("completed");
+      expect(Buffer.byteLength(JSON.stringify(item))).toBeLessThan(Buffer.byteLength(expected));
+      expect(
+        await readTranscriptItem(database, { viewerId: f.userId, scope, itemId: item.id }),
+      ).toMatchObject({ kind: "item", body: { kind: "tool", output: { text: expected } } });
+      const otherScope = scope.kind === "thread" ? nodeScope : threadScope;
+      expect(
+        await readTranscriptItem(database, {
+          viewerId: f.userId,
+          scope: otherScope,
+          itemId: item.id,
+        }),
+      ).toEqual({ kind: "unavailable" });
+      await expect(
+        readTranscriptItem(database, {
+          viewerId: await store.createUser("Outsider"),
+          scope,
+          itemId: item.id,
+        }),
+      ).rejects.toMatchObject({ code: "forbidden" });
+    }
     await database
       .updateTable("users")
       .set({ disabledAt: new Date() })
       .where("id", "=", f.userId)
       .execute();
-    expect(await store.toolOutputForOwner(input)).toBeNull();
+    await expect(
+      readTranscriptPage(database, { viewerId: f.userId, scope: threadScope }),
+    ).rejects.toMatchObject({ code: "forbidden" });
   });
 });

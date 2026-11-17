@@ -93,11 +93,15 @@ describeStore("waiting input edits", (it) => {
       requestedBy: task.userId,
       idempotencyKey: "cancel-edited",
     });
-    expect(await f.store.editThreadInput(edit)).toMatchObject({
+    const readHead = () =>
+      f.database.selectFrom("clientSyncState").select("sequence").executeTakeFirstOrThrow();
+    const head = await readHead();
+    expect(await f.store.editThreadInput(edit)).toEqual({
       message: saved.message,
       edit: saved.edit,
-      events: [],
+      revokedGrants: [],
     });
+    expect(await readHead()).toEqual(head);
     await expect(
       f.store.editThreadInput({ ...edit, content: [{ type: "text", text: "Different" }] }),
     ).rejects.toMatchObject({ code: "conflict" });

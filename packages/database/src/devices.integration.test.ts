@@ -20,7 +20,7 @@ import { OpensteerStore } from "./store.js";
 import type { DatabaseSchema } from "./schema.js";
 import { testRunnerDescriptor } from "./runner-fixture.test-support.js";
 import { personalReachableGrant } from "./runner-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { commitPersonalMutation, installPersonalMutationHooks } from "./personal-mutation.js";
 
 let clone: TestDatabase;
 let db: Kysely<DatabaseSchema>;
@@ -30,6 +30,13 @@ beforeEach(async () => {
   clone = await cloneTestDatabase("host");
   db = createDatabase({ connectionString: clone.url });
   fixture = await seedPersonalFixture(db, "/tmp/device-test-home");
+  installPersonalMutationHooks(db, {
+    wake() {},
+    suspend: () => ({ committed() {}, rolledBack() {} }),
+    onFailure(error) {
+      throw error;
+    },
+  });
   store = new OpensteerStore(db);
   await db
     .insertInto("personalRemoteAccess")
@@ -313,7 +320,7 @@ it("serializes a binding behind removal and refuses to bind the tombstone", asyn
   const login = await session();
   const locked = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  const removal = withPersonalTransaction(db, async (transaction) => {
+  const removal = commitPersonalMutation(db, async (transaction) => {
     locked.resolve();
     await withTimeout(release.promise, 3000, {
       timeoutError: () => new Error("removal transaction was not released"),
@@ -407,7 +414,7 @@ it("publishes the runner tombstone and bound-session deletion in one commit", as
   await bind(target, login);
   const written = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  const removing = withPersonalTransaction(db, async (transaction) => {
+  const removing = commitPersonalMutation(db, async (transaction) => {
     const removed = await new OpensteerStore(transaction).revokeRunner(
       target.runnerId,
       fixture.userId,
@@ -442,7 +449,7 @@ it.each(["cancel", "redeem"] as const)(
     const target = await enrollment();
     const written = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
-    const first = withPersonalTransaction(db, async (transaction) => {
+    const first = commitPersonalMutation(db, async (transaction) => {
       const transactional = new OpensteerStore(transaction);
       if (winner === "cancel") {
         const proof = {

@@ -344,8 +344,8 @@ integration("workspace tabs", () => {
     await tabs.open(app, "app");
     await tabs.open(phone, "phone");
     await tabs.close(ownerId, [app.id], "close");
-    const { withPersonalTransaction } = await import("./personal-transaction.js");
-    await withPersonalTransaction(database, (tx) => tabs.removeTabs(tx, app.appId!));
+    const { commitPersonalMutation } = await import("./personal-mutation.js");
+    await commitPersonalMutation(database, (tx) => tabs.removeTabs(tx, app.appId!));
     expect(await tabs.get(ownerId, app.id, true)).toBeNull();
     expect(tabLayoutIds((await tabs.snapshot(ownerId)).layout)).toEqual([phone.id]);
   });

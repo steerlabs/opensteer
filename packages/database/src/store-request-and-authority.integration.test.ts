@@ -1,3 +1,4 @@
+import { commitPersonalMutation } from "./personal-mutation.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   createId,
@@ -264,12 +265,6 @@ describeStore("PostgreSQL store", (it) => {
           status: "declined",
           originatingOccurrenceId: occurrence.id,
         },
-        events: [
-          expect.objectContaining({
-            type: "request.resolved",
-            runId: null,
-          }),
-        ],
       },
     });
   });
@@ -430,13 +425,6 @@ describeStore("PostgreSQL store", (it) => {
     const created = await store.requests.create(input);
     const replay = await store.requests.create(input);
     expect(created).toMatchObject({
-      // A Trigger Occurrence has no Run to attribute its event to.
-      events: [
-        expect.objectContaining({
-          runId: null,
-          type: "request.opened",
-        }),
-      ],
       replayed: false,
       request: {
         originatingOccurrenceId: occurrence.id,
@@ -483,12 +471,6 @@ describeStore("PostgreSQL store", (it) => {
       withdrawnBy: fixture.userId,
     });
     expect(withdrawn).toMatchObject({
-      events: [
-        expect.objectContaining({
-          runId: null,
-          type: "request.resolved",
-        }),
-      ],
       replayed: false,
       request: {
         status: "withdrawn",
@@ -819,7 +801,7 @@ describeStore("PostgreSQL store", (it) => {
             writes,
           });
           expect(result.session.state).toBe(terminal);
-          expect(result.events).toEqual([]);
+
           expect(after).toEqual(before);
         }
       }
@@ -991,11 +973,6 @@ describeStore("PostgreSQL store", (it) => {
       installationId: null,
     });
     expect(resolved).toMatchObject({
-      events: [
-        expect.objectContaining({
-          type: "request.resolved",
-        }),
-      ],
       installation: {
         id: installationId,
         manifest: contract.manifest,
@@ -1223,11 +1200,6 @@ describeStore("PostgreSQL store", (it) => {
       },
     });
     expect(mainResolution).toMatchObject({
-      events: [
-        expect.objectContaining({
-          type: "request.resolved",
-        }),
-      ],
       grant: { access: "read", alias: "Records", connectionId },
       request: {
         response: {
@@ -1315,11 +1287,6 @@ describeStore("PostgreSQL store", (it) => {
       },
     });
     expect(selectedResolution).toMatchObject({
-      events: [
-        expect.objectContaining({
-          type: "request.resolved",
-        }),
-      ],
       grant: {},
       request: {
         status: "fulfilled",
@@ -1621,7 +1588,7 @@ describeStore("PostgreSQL store", (it) => {
     const installationWritten = new Promise<void>((resolve) => {
       announceInstallation = resolve;
     });
-    const installing = database.transaction().execute(async (transaction) => {
+    const installing = commitPersonalMutation(database, async (transaction) => {
       const mutation = await installIntegrationInTransaction(transaction, {
         ...material,
         actorUserId: fixture.userId,
@@ -1653,11 +1620,11 @@ describeStore("PostgreSQL store", (it) => {
           where locks.granted = false
             and activity.datname = current_database()
             and activity.application_name = 'opensteer-integration-test'
-            and activity.query like '%deployment_event_state%'
+            and activity.query like '%client_sync_state%'
         `.execute(database);
           expect(
             Number(result.rows[0]?.waiting ?? 0),
-            "Install Request never waited for Deployment event order",
+            "Install Request never waited for the personal mutation fence",
           ).toBeGreaterThan(0);
         },
         { timeout: 1_000, interval: 5 },
@@ -1844,7 +1811,6 @@ describeStore("PostgreSQL store", (it) => {
       },
     });
     expect(repeated).toMatchObject({
-      events: [],
       replayed: true,
       request: {
         id: first.request.id,
@@ -1988,18 +1954,12 @@ describeStore("PostgreSQL store", (it) => {
       title: "Records — approved by your administrator access",
     });
     expect(repeated).toMatchObject({
-      events: [],
       replayed: true,
       request: {
         id: first.request.id,
       },
     });
     expect(other).toMatchObject({
-      events: [
-        expect.objectContaining({
-          type: "request.opened",
-        }),
-      ],
       replayed: false,
       request: {
         payload: {

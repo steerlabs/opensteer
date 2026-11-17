@@ -1,6 +1,7 @@
+import { sql } from "kysely";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import { latestRunPlace, recordRunTabPlace } from "./browser-session-store.js";
-import { createId } from "@opensteer/core";
+import { createId, MessageIdSchema } from "@opensteer/core";
 import { expect } from "vitest";
 import { describeStore } from "./store.integration.test-support.js";
 import "./connection.js";
@@ -170,34 +171,30 @@ describeStore("agent Thread history", (it) => {
     ).rejects.toMatchObject({ code: "forbidden" });
   });
   it("says a wait has more when messages after it were left unread", async ({ storeFixture }) => {
-    const { store, database, startRunFixture } = storeFixture;
+    const { database, startRunFixture } = storeFixture;
     const f = await startRunFixture("agent-wait-more");
-    const sent: Awaited<ReturnType<typeof store.enqueueThreadInput>>[] = [];
-    for (let index = 0; index < 102; index += 1)
-      sent.push(
-        await store.enqueueThreadInput({
-          threadId: f.thread.id,
-          requestedBy: f.userId,
-          policy: "report",
-          content: [
-            {
-              type: "text",
-              text: `Report ${index}`,
-            },
-          ],
-          source: {
-            kind: "human",
-          },
-          idempotencyKey: `wait-more-${index}`,
-        }),
-      );
-    const read = (afterMessageId: (typeof sent)[number]["message"]["id"]) =>
+    const author = await database
+      .selectFrom("messages")
+      .select(["actorPrincipalId", "author"])
+      .where("id", "=", f.turn.message.id)
+      .executeTakeFirstOrThrow();
+    const ids = await sql<{ id: string }>`
+      with batch as (
+        insert into messages (id,thread_id,sequence,kind,actor_principal_id,author,content,published)
+        select 'msg_90000000-0000-4000-8000-'||lpad(n::text,12,'0'), ${f.thread.id}, n+1,
+          'input', ${author.actorPrincipalId}, ${JSON.stringify(author.author)}::jsonb,
+          jsonb_build_array(jsonb_build_object('type','text','text','Report '||n)), true
+        from generate_series(1,102) n returning id,sequence
+      ) select id from batch order by sequence
+    `.execute(database);
+    const sent = ids.rows.map(({ id }) => MessageIdSchema.parse(id));
+    const read = (afterMessageId: (typeof sent)[number]) =>
       readThreadWaitSnapshot(database, {
         threadId: f.thread.id,
         userId: f.userId,
         afterMessageId,
       });
-    const first = await read(sent[0]!.message.id);
+    const first = await read(sent[0]!);
     expect(first).toMatchObject({
       hasMore: true,
     });
@@ -206,6 +203,6 @@ describeStore("agent Thread history", (it) => {
     expect(rest).toMatchObject({
       hasMore: false,
     });
-    expect(rest.messages.map(({ id }) => id)).toEqual([sent[101]!.message.id]);
+    expect(rest.messages.map(({ id }) => id)).toEqual([sent[101]!]);
   });
 });

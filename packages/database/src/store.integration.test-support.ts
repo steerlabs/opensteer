@@ -91,9 +91,19 @@ export async function createStoreFixture() {
       return { database, close: () => database.destroy() };
     });
     const { OpensteerStore } = await import("./store.js");
-    const store = new OpensteerStore(database, {
-      readPersonalResources: readEmptyPersonalResources,
+    const reactions: import("./personal-mutation.js").PersonalCommitReaction[] = [];
+    const { installPersonalMutationHooks } = await import("./personal-mutation.js");
+    installPersonalMutationHooks(database, {
+      wake() {},
+      react(reaction) {
+        reactions.push(reaction);
+      },
+      onFailure(error) {
+        throw error;
+      },
+      suspend: () => ({ committed() {}, rolledBack() {} }),
     });
+    const store = new OpensteerStore(database);
     const { createPersonalRunFixturePort } = await import("./personal-run-fixture.test-support.js");
     const personalRuns = createPersonalRunFixturePort(store);
     let personal: Awaited<ReturnType<typeof seedPersonalFixture>> | undefined;
@@ -726,6 +736,7 @@ export async function createStoreFixture() {
       createRunFixture,
       startRunFixture,
       close: clone.drop,
+      reactions,
     });
   } catch (error) {
     await clone.drop();
@@ -924,32 +935,6 @@ export function testChannelAccessPolicy(mode: "anyone" | "approved" | "owner") {
     directMessages: sender,
   };
 }
-
-export const readEmptyPersonalResources: import("./snapshot-store.js").PersonalSnapshotResourcesReader =
-  async ({ database }) => {
-    const [app, tab, profile] = await Promise.all([
-      database.selectFrom("apps").select("id").limit(1).executeTakeFirst(),
-      database
-        .selectFrom("personalTabs")
-        .select("id")
-        .where("closedAt", "is", null)
-        .limit(1)
-        .executeTakeFirst(),
-      database.selectFrom("browserProfiles").select("id").limit(1).executeTakeFirst(),
-    ]);
-    if (app || tab || profile)
-      throw new Error(
-        "This fixture needs a resource snapshot collaborator for its private resources",
-      );
-    return {
-      tabs: { tabs: [], layout: { revision: 0, items: [] }, complete: true },
-      browser: {
-        available: false,
-        placements: [],
-        profiles: [],
-      },
-    };
-  };
 
 export const testMessagingRunnerId = RunnerIdSchema.parse(
   "rnr_00000000-0000-4000-8000-000000000001",

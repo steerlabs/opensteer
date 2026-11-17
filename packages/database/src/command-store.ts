@@ -1,3 +1,6 @@
+import { PersonalRevisionSchema } from "@opensteer/protocol/resources";
+import { assignmentWasCancelled } from "./execution-authority.js";
+import { refreshRequestState } from "./request-persistence.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { runDeliverySelection } from "./thread-row-mappers.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
@@ -37,7 +40,6 @@ import {
   type ThreadId,
   type RequestId,
   type RequestResponse,
-  type AgentEvent,
   OpensteerError,
   nonTerminalRunStatuses,
   type Request,
@@ -84,7 +86,6 @@ import {
 import {
   invalidateExecution,
   publishExecutionInput,
-  publishExecutionRequest,
   recordExecutionRunChange,
   updateExecutionThread,
 } from "./execution-changes.js";
@@ -112,7 +113,7 @@ export type RunnerControlInput =
   | {
       readonly idempotencyKey: string;
       readonly requestId: RequestId;
-      readonly expectedRevision?: string;
+      readonly expectedRevision: string;
       readonly settlementSessionId?: string;
       readonly agentResponder?: z.infer<typeof AgentRequestResponderSchema>;
       readonly requestedBy: UserId;
@@ -128,7 +129,7 @@ export type RunnerControlInput =
     };
 export interface ClaimedCommand {
   readonly command: CommandRow;
-  readonly events: readonly AgentEvent[];
+
   /**
    * A durable command that lost execution authority is claimed only so the
    * coordinator can terminalize it without ever handing it to a Runner.
@@ -158,12 +159,19 @@ async function claimObservedCommand(
           "runOrdinal",
           "seedInputId",
           "finishIntent",
+          "assignmentId",
         ])
         .where("id", "=", observed.runId)
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow()
     : undefined;
   if (run?.finishIntent) return null;
+  if (
+    run?.assignmentId &&
+    observed.type !== "run.interrupt" &&
+    (await assignmentWasCancelled(transaction, run.assignmentId))
+  )
+    return null;
   if (observed.type === "request.respond") {
     const payload = requestResponseCommandPayload(observed.payload);
     const reservation = await transaction
@@ -353,22 +361,17 @@ async function claimObservedCommand(
 
   // Control commands target an already active Run and must not rewrite its
   // state. Only dispatching the original turn transitions queued -> starting.
-  const events: AgentEvent[] = [];
   if (command.type === "run.execute" && !terminalFailure) {
     if (!run || run.status !== "queued") {
       throw new Error("Claimed Run state changed");
     }
-    events.push(
-      ...(restart?.reason === "recovery"
-        ? []
-        : restart
-          ? await claimConversationBatch(
-              transaction,
-              run.id,
-              await restartBatchCapacity(transaction, run.id),
-            )
-          : await claimRunInputBatch(transaction, run.id)),
-    );
+    if (!restart) await claimRunInputBatch(transaction, run.id);
+    else if (restart.reason !== "recovery")
+      await claimConversationBatch(
+        transaction,
+        run.id,
+        await restartBatchCapacity(transaction, run.id),
+      );
     const started = await transaction
       .updateTable("runs")
       .set({
@@ -391,11 +394,11 @@ async function claimObservedCommand(
       }),
     );
     await updateExecutionThread(transaction, run.threadId, command.updatedAt);
-    events.push(...(await assignmentActivityEventsForRun(transaction, run.id)));
+    await assignmentActivityEventsForRun(transaction, run.id);
   }
   return {
     command,
-    events,
+
     ...(terminalFailure
       ? {
           terminalFailure,
@@ -417,7 +420,6 @@ const runnerControlCommandTypes = [
 ] as const;
 type RunnerControlCommandType = (typeof runnerControlCommandTypes)[number];
 interface SucceededCommand {
-  readonly events: readonly AgentEvent[];
   readonly revokedGrants: readonly RevokedRunGrant[];
 }
 async function succeedCommandInTransaction(
@@ -425,7 +427,6 @@ async function succeedCommandInTransaction(
   commandId: CommandRow["id"],
 ): Promise<SucceededCommand> {
   const none: SucceededCommand = {
-    events: [],
     revokedGrants: [],
   };
   const observed = await transaction
@@ -473,7 +474,8 @@ async function succeedCommandInTransaction(
           .forNoKeyUpdate()
           .executeTakeFirst()
       : null;
-  if (responsePayload && !pending) return none;
+  if (responsePayload && (!pending || pending.revision !== responsePayload.expectedRevision))
+    return none;
   const command = await transaction
     .selectFrom("commands")
     .select(["id", "status", "type"])
@@ -518,8 +520,7 @@ async function succeedCommandInTransaction(
     if (!resolved) return none;
     if (!responsePayload.settlementProvenance || !("kind" in responsePayload.settlementProvenance))
       await recordPersonWaited(transaction, observed.runId);
-    await publishExecutionRequest(transaction, resolved);
-    const events: AgentEvent[] = [];
+    await refreshRequestState(transaction, resolved.id);
     // The engine has its last answer: the Run is working again, which is
     // also when the person's messages written meanwhile can reach it.
     const stillAsking = await transaction
@@ -551,13 +552,11 @@ async function succeedCommandInTransaction(
           }),
         );
         const handed = await deliverConversationInputsInTransaction(transaction, observed.runId);
-        events.push(...handed.events);
         revokedGrants = handed.revokedGrants;
       }
     }
-    events.push(...(await assignmentActivityEventsForRun(transaction, observed.runId)));
+    await assignmentActivityEventsForRun(transaction, observed.runId);
     return {
-      events,
       revokedGrants,
     };
   }
@@ -699,9 +698,7 @@ function canonicalRunnerControlInput(input: RunnerControlInput): Readonly<Record
     case "request.respond":
       return {
         requestId: input.requestId,
-        ...(input.expectedRevision !== undefined
-          ? { expectedRevision: input.expectedRevision }
-          : {}),
+        expectedRevision: PersonalRevisionSchema.parse(input.expectedRevision),
         idempotencyKey: input.idempotencyKey,
         requestedBy: input.requestedBy,
         responseFingerprint: input.sealedResponse.requestFingerprint,
@@ -736,6 +733,7 @@ function omitRequestResponse(payload: unknown): unknown {
 }
 function requestResponseCommandPayload(payload: unknown): {
   readonly requestId: RequestId;
+  readonly expectedRevision: string;
   readonly requestedBy: UserId;
   readonly response: RequestResponse;
   readonly settlementProvenance?:
@@ -757,6 +755,7 @@ function requestResponseCommandPayload(payload: unknown): {
         }
       : {}),
     requestId: RequestIdSchema.parse(value.requestId),
+    expectedRevision: PersonalRevisionSchema.parse(value.expectedRevision),
     requestedBy: UserIdSchema.parse(value.requestedBy),
     response: RequestResponseSchema.parse(value.response),
   };
@@ -781,7 +780,7 @@ export async function enqueueRunnerControl(
   input: RunnerControlInput,
 ): Promise<{
   readonly command: CommandRow;
-  readonly events: readonly AgentEvent[];
+
   readonly revokedGrants: readonly RevokedRunGrant[];
   readonly wasDuplicate: boolean;
 }> {
@@ -836,7 +835,7 @@ export async function enqueueRunnerControlInTransaction(
       await assertAgentRequestTarget(transaction, input.agentResponder.authority, input.threadId);
     return {
       command: existing,
-      events: [],
+
       revokedGrants: [],
       wasDuplicate: true,
     };
@@ -900,7 +899,6 @@ export async function enqueueRunnerControlInTransaction(
     });
   if (input.type === "request.respond" && input.agentResponder)
     await assertAgentRequestTarget(transaction, input.agentResponder.authority, input.threadId);
-  const controlEvents: AgentEvent[] = [];
   // A Run the dispatcher has not bound yet has never reached a Runner, and
   // under this lock it never will: binding requires `starting`. It ends
   // here, as a queued Run does, rather than waiting on an interrupt the
@@ -917,7 +915,7 @@ export async function enqueueRunnerControlInTransaction(
         runIds: [input.runId],
         threadIds: [thread.id],
       });
-      controlEvents.push(...(await settleStoppedConversationInputs(transaction, input.runId)));
+      await settleStoppedConversationInputs(transaction, input.runId);
     } else if (!input.keepQueueRunning) {
       await transaction
         .updateTable("threads")
@@ -943,13 +941,11 @@ export async function enqueueRunnerControlInTransaction(
     // Finalizing a Run that ends here settles its Requests and Thread state.
     if (!endsHere) {
       // Nothing a stopped Run asked for can be answered any more.
-      controlEvents.push(
-        ...(await cancelPending(transaction, {
-          reason: "run-ended",
-          resolvedAt: new Date(),
-          runId: input.runId,
-        })),
-      );
+      await cancelPending(transaction, {
+        reason: "run-ended",
+        resolvedAt: new Date(),
+        runId: input.runId,
+      });
       // With nothing left to answer, the Run is running again until it stops.
       await transaction
         .updateTable("runs")
@@ -978,7 +974,7 @@ export async function enqueueRunnerControlInTransaction(
       !pending ||
       pending.status !== "pending" ||
       pending.responseCommandId !== null ||
-      (input.expectedRevision !== undefined && pending.revision !== input.expectedRevision) ||
+      pending.revision !== input.expectedRevision ||
       pending.mode !== "live" ||
       pending.originatingRunId !== input.runId ||
       pending.originatingThreadId !== input.threadId
@@ -990,7 +986,8 @@ export async function enqueueRunnerControlInTransaction(
     }
     const request = requestFromRow(pending);
     await requirePersonalOwner(transaction, input.requestedBy);
-    if (input.agentResponder) assertAgentRequestAnswer(request, input.agentResponder);
+    if (input.agentResponder)
+      assertAgentRequestAnswer(request, input.agentResponder, pending.revision);
     if (
       !input.agentResponder &&
       request.requiredActor === "requester" &&
@@ -1085,7 +1082,7 @@ export async function enqueueRunnerControlInTransaction(
     }
   }
   if (endsHere) {
-    const events = await finalizeRunTransaction(transaction, {
+    await finalizeRunTransaction(transaction, {
       completedAt: new Date(),
       links,
       source: "host",
@@ -1105,7 +1102,6 @@ export async function enqueueRunnerControlInTransaction(
       .executeTakeFirstOrThrow();
     return {
       command: interruptedCommand,
-      events: [...controlEvents, ...events],
       revokedGrants: [],
       wasDuplicate: false,
     };
@@ -1126,7 +1122,6 @@ export async function enqueueRunnerControlInTransaction(
     await assertAgentRequestTarget(transaction, input.agentResponder.authority, input.threadId);
   return {
     command,
-    events: controlEvents,
     revokedGrants,
     wasDuplicate: false,
   };
@@ -1203,7 +1198,7 @@ export async function dispatchRequestResponse(
   let sendPromise: Promise<void> | undefined;
   try {
     // Non-retrying: the Runner send/acknowledgement gate cannot safely be replayed.
-    const events = await commitPersonalMutation(
+    const result = await commitPersonalMutation(
       database,
       async (transaction) => {
         const observed = await transaction
@@ -1280,6 +1275,7 @@ export async function dispatchRequestResponse(
           !requestRow ||
           requestRow.mode !== "live" ||
           requestRow.status !== "pending" ||
+          requestRow.revision !== payload.expectedRevision ||
           requestRow.responseCommandId !== commandId ||
           requestRow.originatingRunId !== observed.runId ||
           requestRow.originatingThreadId !== observed.threadId ||
@@ -1292,7 +1288,7 @@ export async function dispatchRequestResponse(
           throw requestResponseDispatchConflict();
         }
         const request = requestFromRow(requestRow);
-        if (agentResponder) assertAgentRequestAnswer(request, agentResponder);
+        if (agentResponder) assertAgentRequestAnswer(request, agentResponder, requestRow.revision);
         if (
           !agentResponder &&
           request.requiredActor === "requester" &&
@@ -1333,7 +1329,7 @@ export async function dispatchRequestResponse(
     // abort racing after that receipt cannot turn the durable response back
     // into an uncertain command.
     await sendPromise?.catch(() => undefined);
-    return events;
+    return result;
   } catch (error) {
     committed.reject(error);
     await sendPromise?.catch(() => undefined);
@@ -1352,7 +1348,7 @@ export async function dispatchChannelCommand(
   let sendPromise: Promise<void> | undefined;
   try {
     // Non-retrying: the Runner send/acknowledgement gate cannot safely be replayed.
-    const events = await commitPersonalMutation(
+    const result = await commitPersonalMutation(
       database,
       async (transaction) => {
         const observed = await transaction
@@ -1439,7 +1435,7 @@ export async function dispatchChannelCommand(
     );
     committed.resolve();
     await sendPromise?.catch(() => undefined);
-    return events;
+    return result;
   } catch (error) {
     committed.reject(error);
     await sendPromise?.catch(() => undefined);
@@ -1543,7 +1539,7 @@ export async function retryCommand(
   links: ChannelLinks,
   commandId: CommandRow["id"],
   error: unknown,
-): Promise<readonly AgentEvent[]> {
+): Promise<void> {
   return commitPersonalMutation(database, async (transaction) => {
     const observed = await transaction
       .selectFrom("commands")
@@ -1551,7 +1547,7 @@ export async function retryCommand(
       .where("id", "=", commandId)
       .where("status", "=", "dispatched")
       .executeTakeFirst();
-    if (!observed) return [];
+    if (!observed) return;
     if (observed.type === "trigger.execute") {
       await transaction
         .selectFrom("triggerOccurrences")
@@ -1632,7 +1628,7 @@ export async function retryCommand(
         .where("status", "=", "running")
         .execute();
     }
-    return [];
+    return;
   });
 }
 export async function failCommand(
@@ -1643,14 +1639,17 @@ export async function failCommand(
   queuedInputCancellation:
     "activation-input" | "authority-cohort" | "seed-input" = "activation-input",
   failureCode: "dispatch_failed" | "runner_restarted" = "dispatch_failed",
-): Promise<readonly AgentEvent[]> {
+): Promise<void> {
   const observed = await database
     .selectFrom("commands")
     .select(["runId", "type"])
     .where("id", "=", commandId)
     .executeTakeFirst();
-  if (!observed) return [];
-  if (observed.type === "node.stop") return failNodeStop(database, commandId, publicMessage);
+  if (!observed) return;
+  if (observed.type === "node.stop") {
+    await failNodeStop(database, commandId, publicMessage);
+    return;
+  }
   if (observed.type === "run.steer") return refuseSteer(database, commandId, publicMessage);
   const failure = {
     ...dispatchFailure(publicMessage),
@@ -1703,9 +1702,9 @@ export async function failCommand(
           .execute();
       }
     });
-    return [];
+    return;
   }
-  const terminalEvents = await commitPersonalMutation(database, (transaction) =>
+  await commitPersonalMutation(database, (transaction) =>
     finalizeRunTransaction(transaction, {
       completedAt: new Date(),
       expectedCommandId: commandId,
@@ -1718,14 +1717,13 @@ export async function failCommand(
     }),
   );
   await drainRunFinish(database, links, observed.runId!);
-  return terminalEvents;
 }
 export async function refuseSteer(
   database: Kysely<DatabaseSchema>,
   commandId: CommandRow["id"],
   reason: string,
   reasonCode?: string,
-): Promise<readonly AgentEvent[]> {
+): Promise<void> {
   return commitPersonalMutation(database, (transaction) =>
     settleSteer(transaction, commandId, "failed", reason, reasonCode),
   );
@@ -1734,7 +1732,7 @@ export async function markSteerUnknown(
   database: Kysely<DatabaseSchema>,
   commandId: CommandRow["id"],
   reason: string,
-): Promise<readonly AgentEvent[]> {
+): Promise<void> {
   return commitPersonalMutation(database, (transaction) =>
     settleSteer(transaction, commandId, "unknown", reason),
   );

@@ -116,7 +116,7 @@ import {
   type CancelAssignmentInput,
   type CancelAssignmentResult,
   cancelAssignmentInTransaction,
-  assignmentTreeChangedReason,
+  drainAssignmentCancellation,
 } from "./assignment-store.js";
 import {
   ensureSelectedProviderSession,
@@ -1227,24 +1227,20 @@ export async function cancelAssignment(
       message: "Assignment cancel admission disagrees with Run",
     });
   }
-  // Work that joined the tree after its snapshot cannot be locked in order
-  // inside the same transaction; a fresh attempt snapshots it first.
-  return commitPersonalMutation(
-    database,
-    async (transaction) => {
-      if (input.admission) {
-        await admitRunToolCallInTransaction(transaction, input.admission, "check", executionNow);
-      }
-      await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
-      const result = await cancelAssignmentInTransaction(transaction, input, links);
-      if (input.admission) {
-        await admitRunToolCallInTransaction(transaction, input.admission, "admit", executionNow);
-      }
-      return result;
-    },
-    (error) => error instanceof OpensteerError && error.reason === assignmentTreeChangedReason,
-  );
+  const result = await commitPersonalMutation(database, async (transaction) => {
+    if (input.admission) {
+      await admitRunToolCallInTransaction(transaction, input.admission, "check", executionNow);
+    }
+    await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
+    if (input.admission) {
+      await admitRunToolCallInTransaction(transaction, input.admission, "admit", executionNow);
+    }
+    return cancelAssignmentInTransaction(transaction, input);
+  });
+  const cleanup = await drainAssignmentCancellation(database, links, input.assignmentId);
+  return { ...result, ...cleanup };
 }
+
 export function drainPendingAssignmentReturns(
   database: Kysely<DatabaseSchema>,
   limit?: number,
@@ -1601,22 +1597,17 @@ export async function resumeThreadInputQueue(
           type: payload.type,
         })
         .execute();
-      await transaction
-        .updateTable("threads")
-        .set({
-          inputQueuePaused: false,
-          inputQueuePausedBy: null,
-          updatedAt: new Date(),
-        })
-        .where("id", "=", thread.id)
-        .execute();
-      await refreshInputQueue(transaction, thread.id);
-      await ensureQueuedRun(transaction, {
-        ...thread,
-        inputQueuePaused: false,
-      });
-      await publishRunQueue(transaction, thread.id);
-      await projectThreadState(transaction, thread.id, new Date(), true);
+      if (thread.inputQueuePaused) {
+        await transaction
+          .updateTable("threads")
+          .set({ inputQueuePaused: false, inputQueuePausedBy: null, updatedAt: new Date() })
+          .where("id", "=", thread.id)
+          .execute();
+        await refreshInputQueue(transaction, thread.id);
+        await publishRunQueue(transaction, thread.id);
+      }
+      await ensureQueuedRun(transaction, { ...thread, inputQueuePaused: false });
+      await projectThreadState(transaction, thread.id, new Date(), thread.inputQueuePaused);
       const current = await transaction
         .selectFrom("threads")
         .selectAll()

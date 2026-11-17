@@ -27,7 +27,7 @@ export async function seedPrivatePublisher(database: Kysely<DatabaseSchema>) {
   await sql`insert into threads(id,lineage_root_thread_id,purpose,parent_thread_id,listed,title,icon_source,color,environment_id,harness_instance_id,model_selection,created_by,created_by_principal_id) values(${threadId},${threadId},'task',null,true,'Publisher','default','blue',${personal.environmentId},${harnessInstanceId},${JSON.stringify(modelSelection)}::jsonb,${personal.userId},${principalId})`.execute(
     database,
   );
-  await sql`insert into messages(id,thread_id,sequence,kind,actor_principal_id,author,content) values(${messageId},${threadId},1,'input',${principalId},'{}','{}')`.execute(
+  await sql`insert into messages(id,thread_id,sequence,kind,actor_principal_id,author,content) values(${messageId},${threadId},1,'input',${principalId},${JSON.stringify({ kind: "human", displayName: "Alex", userId: personal.userId, principalId })}::jsonb,'[]')`.execute(
     database,
   );
   await sql`insert into causal_chains(id,max_delegations,max_autonomous_runs,root_message_id,used_delegations,used_autonomous_runs) values(${causalChainId},10,10,${messageId},0,0)`.execute(
